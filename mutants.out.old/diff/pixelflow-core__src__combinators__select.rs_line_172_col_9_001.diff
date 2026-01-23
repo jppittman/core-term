@@ -1,0 +1,21 @@
+--- pixelflow-core/src/combinators/select.rs
++++ delete ! in <impl FieldCondition<P> for BNot<T>>::eval_mask
+@@ -164,17 +164,17 @@
+
+ impl<T, P> FieldCondition<P> for BNot<T>
+ where
+     P: Copy,
+     T: FieldCondition<P>,
+ {
+     #[inline(always)]
+     fn eval_mask(&self, p: P) -> NativeMask {
+-        !self.0.eval_mask(p)
++         /* ~ changed by cargo-mutants ~ */self.0.eval_mask(p)
+     }
+ }
+
+ // ============================================================================
+ // FieldCondition for Abs<T> (common in threshold patterns like |winding| >= 0.5)
+ // ============================================================================
+
+ impl<T> FieldCondition<Field4> for crate::ops::unary::Abs<T>

@@ -1,0 +1,21 @@
+--- pixelflow-core/src/combinators/select.rs
++++ delete ! in <impl Manifold<Jet3_4> for Select<C, T, F>>::eval
+@@ -294,17 +294,17 @@
+     fn eval(&self, p: Jet3_4) -> O {
+         let cond_jet = self.cond.eval(p);
+         let mask = cond_jet.val; // Extract Field mask from Jet3
+
+         // Early exit using Field's any/all
+         if mask.all() {
+             return self.if_true.eval(p);
+         }
+-        if !mask.any() {
++        if  /* ~ changed by cargo-mutants ~ */mask.any() {
+             return self.if_false.eval(p);
+         }
+
+         let true_val = self.if_true.eval(p);
+         let false_val = self.if_false.eval(p);
+         O::select_raw(mask, true_val, false_val)
+     }
+ }

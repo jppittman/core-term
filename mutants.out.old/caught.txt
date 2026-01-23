@@ -1,0 +1,7 @@
+pixelflow-core/src/combinators/select.rs:92:9: replace <impl FieldCondition<Field4> for Lt<L, R>>::eval_mask -> NativeMask with Default::default()
+pixelflow-core/src/combinators/select.rs:105:9: replace <impl FieldCondition<Field4> for Gt<L, R>>::eval_mask -> NativeMask with Default::default()
+pixelflow-core/src/combinators/select.rs:118:9: replace <impl FieldCondition<Field4> for Le<L, R>>::eval_mask -> NativeMask with Default::default()
+pixelflow-core/src/combinators/select.rs:131:9: replace <impl FieldCondition<Field4> for Ge<L, R>>::eval_mask -> NativeMask with Default::default()
+pixelflow-core/src/combinators/select.rs:172:9: replace <impl FieldCondition<P> for BNot<T>>::eval_mask -> NativeMask with Default::default()
+pixelflow-core/src/combinators/select.rs:172:9: delete ! in <impl FieldCondition<P> for BNot<T>>::eval_mask
+pixelflow-core/src/combinators/select.rs:225:12: delete ! in <impl Manifold<Field4> for Select<C, T, F>>::eval

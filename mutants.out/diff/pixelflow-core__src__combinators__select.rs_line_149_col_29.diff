@@ -1,0 +1,21 @@
+--- pixelflow-core/src/combinators/select.rs
++++ replace & with | in <impl FieldCondition<P> for And<L, R>>::eval_mask
+@@ -141,17 +141,17 @@
+ impl<L, R, P> FieldCondition<P> for And<L, R>
+ where
+     P: Copy,
+     L: FieldCondition<P>,
+     R: FieldCondition<P>,
+ {
+     #[inline(always)]
+     fn eval_mask(&self, p: P) -> NativeMask {
+-        self.0.eval_mask(p) & self.1.eval_mask(p)
++        self.0.eval_mask(p) | /* ~ changed by cargo-mutants ~ */ self.1.eval_mask(p)
+     }
+ }
+
+ impl<L, R, P> FieldCondition<P> for Or<L, R>
+ where
+     P: Copy,
+     L: FieldCondition<P>,
+     R: FieldCondition<P>,

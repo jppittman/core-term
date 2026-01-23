@@ -1,0 +1,23 @@
+--- pixelflow-core/src/combinators/select.rs
++++ replace <impl FieldCondition<Field4> for Le<L, R>>::eval_mask -> NativeMask with Default::default()
+@@ -110,19 +110,17 @@
+
+ impl<L, R> FieldCondition<Field4> for Le<L, R>
+ where
+     L: Manifold<Field4, Output = Field>,
+     R: Manifold<Field4, Output = Field>,
+ {
+     #[inline(always)]
+     fn eval_mask(&self, p: Field4) -> NativeMask {
+-        let left = self.0.eval(p);
+-        let right = self.1.eval(p);
+-        left.0.cmp_le(right.0)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+
+ impl<L, R> FieldCondition<Field4> for Ge<L, R>
+ where
+     L: Manifold<Field4, Output = Field>,
+     R: Manifold<Field4, Output = Field>,
+ {

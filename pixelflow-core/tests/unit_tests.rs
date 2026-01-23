@@ -371,6 +371,75 @@ mod select_tests {
         assert!((lane0 - 10.0).abs() < 1e-5, "Lane 0 should be 10.0");
         assert!((lane1 - 20.0).abs() < 1e-5, "Lane 1 should be 20.0");
     }
+
+    #[test]
+    fn select_comparisons_should_respect_equality_boundary() {
+        let zero = Field::from(0.0);
+        let coords = (zero, zero, zero, zero);
+
+        // Gt: 0 > 0 -> False
+        let sel_gt = Select {
+            cond: X.gt(0.0f32),
+            if_true: Field::from(1.0),
+            if_false: Field::from(2.0),
+        };
+        assert_field_approx_eq(sel_gt.eval(coords), 2.0);
+
+        // Ge: 0 >= 0 -> True
+        let sel_ge = Select {
+            cond: X.ge(0.0f32),
+            if_true: Field::from(1.0),
+            if_false: Field::from(2.0),
+        };
+        assert_field_approx_eq(sel_ge.eval(coords), 1.0);
+
+        // Lt: 0 < 0 -> False
+        let sel_lt = Select {
+            cond: X.lt(0.0f32),
+            if_true: Field::from(1.0),
+            if_false: Field::from(2.0),
+        };
+        assert_field_approx_eq(sel_lt.eval(coords), 2.0);
+
+        // Le: 0 <= 0 -> True
+        let sel_le = Select {
+            cond: X.le(0.0f32),
+            if_true: Field::from(1.0),
+            if_false: Field::from(2.0),
+        };
+        assert_field_approx_eq(sel_le.eval(coords), 1.0);
+    }
+
+    #[test]
+    fn select_logic_and_should_behave_like_and() {
+        let cond = X.gt(0.0f32) & X.lt(10.0f32);
+        let sel = Select {
+            cond,
+            if_true: Field::from(1.0),
+            if_false: Field::from(2.0),
+        };
+        // Use input where AND is TRUE to kill "Always False" mutant.
+        // X = 5.0. (5 > 0) True. (5 < 10) True. True & True = True.
+        let x = Field::from(5.0);
+        let zero = Field::from(0.0);
+        let coords = (x, zero, zero, zero);
+        assert_field_approx_eq(sel.eval(coords), 1.0);
+    }
+
+    #[test]
+    fn select_logic_or_should_behave_like_or() {
+        let cond = X.lt(0.0f32) | X.gt(10.0f32);
+        let sel = Select {
+            cond,
+            if_true: Field::from(1.0),
+            if_false: Field::from(2.0),
+        };
+        // X = 20. (20 < 0) False. (20 > 10) True. False | True = True.
+        let x = Field::from(20.0);
+        let zero = Field::from(0.0);
+        let coords = (x, zero, zero, zero);
+        assert_field_approx_eq(sel.eval(coords), 1.0);
+    }
 }
 
 // ============================================================================
@@ -450,6 +519,62 @@ mod jet2_tests {
         assert_field_approx_eq(result.val, 28.0);
         assert_field_approx_eq(result.dx, 10.0); // 2x
         assert_field_approx_eq(result.dy, 1.0);  // 1
+    }
+
+    #[test]
+    fn select_jet2_mixed_mask_should_blend() {
+        if PARALLELISM < 2 { return; }
+
+        // Helper to provide constant Jet2 values
+        #[derive(Clone, Copy)]
+        struct ConstJet(f32);
+        impl Manifold<(Jet2, Jet2, Jet2, Jet2)> for ConstJet {
+            type Output = Jet2;
+            fn eval(&self, _p: (Jet2, Jet2, Jet2, Jet2)) -> Jet2 {
+                Jet2::constant(Field::from(self.0))
+            }
+        }
+
+        let sel = Select {
+            cond: X.gt(ConstJet(0.0)),
+            if_true: ConstJet(1.0),
+            if_false: ConstJet(2.0),
+        };
+
+        // Mixed input: Lane 0 = -1.5 (False), Lane 2 = 0.5 (True)
+        let x_vals = Field::sequential(-1.5);
+        let x_jet = Jet2::x(x_vals);
+        let zero = Jet2::constant(Field::from(0.0));
+        let coords = (x_jet, zero, zero, zero);
+
+        let result = sel.eval(coords);
+
+        // Helper wrapper to use materialize
+        #[derive(Clone, Copy)]
+        struct Res(Field);
+        impl pixelflow_core::ops::Vector for Res {
+             type Component = Field;
+             fn get(&self, _axis: Axis) -> Field { self.0 }
+        }
+        impl Manifold for Res {
+             type Output = Res;
+             fn eval(&self, _: (Field, Field, Field, Field)) -> Res { *self }
+        }
+
+        let m = Res(result.val);
+        let mut out = vec![0.0f32; PARALLELISM * 4];
+        materialize(&m, 0.0, 0.0, &mut out);
+
+        // Lane 0: x = -1.5 -> False -> 2.0
+        let lane0 = out[0];
+        assert!((lane0 - 2.0).abs() < 1e-5, "Lane 0 should be 2.0");
+
+        // Lane 2: x = 0.5 -> True -> 1.0
+        // (If PARALLELISM >= 3)
+        if PARALLELISM >= 3 {
+             let lane2 = out[2 * 4];
+             assert!((lane2 - 1.0).abs() < 1e-5, "Lane 2 should be 1.0");
+        }
     }
 }
 

@@ -1,0 +1,21 @@
+--- pixelflow-core/src/combinators/select.rs
++++ delete ! in <impl Manifold<Field4> for Select<C, T, F>>::eval
+@@ -217,17 +217,17 @@
+     fn eval(&self, p: Field4) -> O {
+         // Get native mask directly - no float conversion!
+         let mask = self.cond.eval_mask(p);
+
+         // Early exit using native mask ops (free on AVX-512 k-registers)
+         if mask.all() {
+             return self.if_true.eval(p);
+         }
+-        if !mask.any() {
++        if  /* ~ changed by cargo-mutants ~ */mask.any() {
+             return self.if_false.eval(p);
+         }
+
+         // Select using Selectable trait
+         // Convert native mask back to Field (float mask) for the generic interface
+         let mask_field = Field(NativeSimd::mask_to_float(mask));
+         let true_val = self.if_true.eval(p);
+         let false_val = self.if_false.eval(p);

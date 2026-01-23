@@ -1,0 +1,16 @@
+pixelflow-core/src/combinators/select.rs:149:9: replace <impl FieldCondition<P> for And<L, R>>::eval_mask -> NativeMask with Default::default()
+pixelflow-core/src/combinators/select.rs:149:29: replace & with | in <impl FieldCondition<P> for And<L, R>>::eval_mask
+pixelflow-core/src/combinators/select.rs:161:9: replace <impl FieldCondition<P> for Or<L, R>>::eval_mask -> NativeMask with Default::default()
+pixelflow-core/src/combinators/select.rs:161:29: replace | with & in <impl FieldCondition<P> for Or<L, R>>::eval_mask
+pixelflow-core/src/combinators/select.rs:190:9: replace <impl FieldCondition<Field4> for crate::ops::unary::Abs<T>>::eval_mask -> NativeMask with Default::default()
+pixelflow-core/src/combinators/select.rs:200:9: replace <impl FieldCondition<Field4> for Field>::eval_mask -> NativeMask with Default::default()
+pixelflow-core/src/combinators/select.rs:264:12: delete ! in <impl Manifold<Jet4> for Select<C, T, F>>::eval
+pixelflow-core/src/combinators/select.rs:302:12: delete ! in <impl Manifold<Jet3_4> for Select<C, T, F>>::eval
+pixelflow-core/src/combinators/select.rs:342:12: delete ! in <impl Manifold<((V0, V1, V2, V3, V4), P)> for Select<C, T, F>>::eval
+pixelflow-core/src/combinators/select.rs:373:12: delete ! in <impl Manifold<((V0, V1, V2, V3, V4, V5), P)> for Select<C, T, F>>::eval
+pixelflow-core/src/combinators/select.rs:406:12: delete ! in <impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)> for Select<C, T, F>>::eval
+pixelflow-core/src/combinators/select.rs:440:12: delete ! in <impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>>::eval
+pixelflow-core/src/combinators/select.rs:514:12: delete ! in <impl Manifold<(([T; N],), P)> for Select<C, Tr, F>>::eval
+pixelflow-core/src/combinators/select.rs:542:12: delete ! in <impl Manifold<(([T0; N], [T1; M]), P)> for Select<C, Tr, F>>::eval
+pixelflow-core/src/combinators/select.rs:571:12: delete ! in <impl Manifold<(([T0; N], [T1; M], [T2; K]), P)> for Select<C, Tr, F>>::eval
+pixelflow-core/src/combinators/select.rs:614:12: delete ! in <impl Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for Select<C, Tr, F>>::eval

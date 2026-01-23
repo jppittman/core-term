@@ -1,0 +1,20 @@
+--- pixelflow-core/src/combinators/select.rs
++++ delete ! in <impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>>::eval
+@@ -432,17 +432,17 @@
+ {
+     type Output = O;
+     #[inline(always)]
+     fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> O {
+         let mask = self.cond.eval(p);
+         if mask.all() {
+             return self.if_true.eval(p);
+         }
+-        if !mask.any() {
++        if  /* ~ changed by cargo-mutants ~ */mask.any() {
+             return self.if_false.eval(p);
+         }
+         let true_val = self.if_true.eval(p);
+         let false_val = self.if_false.eval(p);
+         O::select_raw(mask, true_val, false_val)
+     }
+ }

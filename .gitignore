@@ -7,3 +7,7 @@ CoreTerm.app
 .gemini*/
 gha-creds-*.json
 *.ppm
+
+# Cargo Mutants
+**/mutants.out
+**/mutants.out.old

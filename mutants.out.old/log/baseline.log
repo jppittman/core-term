@@ -1,0 +1,1241 @@
+
+*** baseline
+
+*** /home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=pixelflow-core@0.1.0
+   Compiling proc-macro2 v1.0.95
+   Compiling unicode-ident v1.0.18
+   Compiling crossbeam-utils v0.8.21
+   Compiling zerocopy v0.8.28
+   Compiling serde v1.0.219
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name unicode_ident --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.18/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d280aa51300dbae4 -C extra-filename=-39318cad45386723 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.95/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "nightly", "proc-macro", "span-locations"))' -C metadata=5614441d33913023 -C extra-filename=-f5f2980509f4e6fc --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/proc-macro2-f5f2980509f4e6fc -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crossbeam-utils-0.8.21/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --warn=unexpected_cfgs '--allow=clippy::lint_groups_priority' '--allow=clippy::declare_interior_mutable_const' --check-cfg 'cfg(crossbeam_loom)' --check-cfg 'cfg(crossbeam_sanitize)' --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "loom", "nightly", "std"))' -C metadata=8bb67c0dc870972d -C extra-filename=-991b04f95437af59 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/crossbeam-utils-991b04f95437af59 -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.28/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="derive"' --cfg 'feature="simd"' --cfg 'feature="zerocopy-derive"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("__internal_use_only_features_that_work_on_stable", "alloc", "derive", "float-nightly", "simd", "simd-nightly", "std", "zerocopy-derive"))' -C metadata=ee9ba9be12479041 -C extra-filename=-e1371de81ebbcb9f --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/zerocopy-e1371de81ebbcb9f -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.219/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="alloc"' --cfg 'feature="default"' --cfg 'feature="derive"' --cfg 'feature="serde_derive"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "default", "derive", "rc", "serde_derive", "std", "unstable"))' -C metadata=f2dc8866095358e1 -C extra-filename=-8585a70f40b715d8 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/serde-8585a70f40b715d8 -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling autocfg v1.5.0
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name autocfg --edition=2015 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.0/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=3504f85799756c67 -C extra-filename=-be6a28c665fcb50d --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/serde-8585a70f40b715d8/build-script-build`
+   Compiling either v1.15.0
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name either --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.15.0/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="std"' --cfg 'feature="use_std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "serde", "std", "use_std"))' -C metadata=00c6b058183d32e7 -C extra-filename=-70425c9691356a36 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/crossbeam-utils-991b04f95437af59/build-script-build`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name crossbeam_utils --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crossbeam-utils-0.8.21/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --warn=unexpected_cfgs '--allow=clippy::lint_groups_priority' '--allow=clippy::declare_interior_mutable_const' --check-cfg 'cfg(crossbeam_loom)' --check-cfg 'cfg(crossbeam_sanitize)' -C debug-assertions=on --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "loom", "nightly", "std"))' -C metadata=69b778c721731789 -C extra-filename=-b9bc9caf92489980 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast --check-cfg 'cfg(crossbeam_no_atomic,crossbeam_sanitize_thread)'`
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/proc-macro2-f5f2980509f4e6fc/build-script-build`
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/zerocopy-e1371de81ebbcb9f/build-script-build`
+   Compiling cfg-if v1.0.0
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name cfg_if --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.0/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("compiler_builtins", "core", "rustc-dep-of-std"))' -C metadata=990db424e6e64178 -C extra-filename=-f711740f4b47c4f5 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling serde_json v1.0.140
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name proc_macro2 --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.95/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "nightly", "proc-macro", "span-locations"))' -C metadata=1f8323eb73900cfa -C extra-filename=-cec5ce8c25c6d7e3 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern unicode_ident=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libunicode_ident-39318cad45386723.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg wrap_proc_macro --check-cfg 'cfg(fuzzing)' --check-cfg 'cfg(no_is_available)' --check-cfg 'cfg(no_literal_byte_character)' --check-cfg 'cfg(no_literal_c_string)' --check-cfg 'cfg(no_source_text)' --check-cfg 'cfg(proc_macro_span)' --check-cfg 'cfg(procmacro2_backtrace)' --check-cfg 'cfg(procmacro2_nightly_testing)' --check-cfg 'cfg(procmacro2_semver_exempt)' --check-cfg 'cfg(randomize_layout)' --check-cfg 'cfg(span_locations)' --check-cfg 'cfg(super_unstable)' --check-cfg 'cfg(wrap_proc_macro)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.140/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "arbitrary_precision", "default", "float_roundtrip", "indexmap", "preserve_order", "raw_value", "std", "unbounded_depth"))' -C metadata=5e425b7da35bd189 -C extra-filename=-5f66e4ab43bda234 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/serde_json-5f66e4ab43bda234 -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling libc v0.2.172
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.172/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("align", "const-extern-fn", "default", "extra_traits", "rustc-dep-of-std", "rustc-std-workspace-core", "std", "use_std"))' -C metadata=8478a57a3c8df4c6 -C extra-filename=-0c8bedfbe17bb08f --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/libc-0c8bedfbe17bb08f -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling rayon-core v1.13.0
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rayon-core-1.13.0/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("web_spin_lock"))' -C metadata=dc345623e3e787a9 -C extra-filename=-e19d5cc8c9dca8c0 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/rayon-core-e19d5cc8c9dca8c0 -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling num-traits v0.2.19
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-traits-0.2.19/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "i128", "libm", "std"))' -C metadata=3fe686514619e514 -C extra-filename=-d2dd95b873a4e136 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/num-traits-d2dd95b873a4e136 -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern autocfg=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libautocfg-be6a28c665fcb50d.rlib --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/rayon-core-e19d5cc8c9dca8c0/build-script-build`
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/serde_json-5f66e4ab43bda234/build-script-build`
+   Compiling regex-syntax v0.8.5
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name regex_syntax --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/regex-syntax-0.8.5/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("arbitrary", "default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"))' -C metadata=8de48abc78b8ae48 -C extra-filename=-428b32a0820cd027 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling quote v1.0.40
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name quote --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/quote-1.0.40/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "proc-macro"))' -C metadata=e2e1423cc306c34a -C extra-filename=-840a5e080a04f302 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libproc_macro2-cec5ce8c25c6d7e3.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling crossbeam-epoch v0.9.18
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name crossbeam_epoch --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crossbeam-epoch-0.9.18/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="alloc"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "default", "loom", "loom-crate", "nightly", "std"))' -C metadata=4aa2142628e833c6 -C extra-filename=-a9bcf72b0ee2b2cc --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern crossbeam_utils=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcrossbeam_utils-b9bc9caf92489980.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling syn v2.0.101
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name syn --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.101/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --cfg 'feature="clone-impls"' --cfg 'feature="default"' --cfg 'feature="derive"' --cfg 'feature="extra-traits"' --cfg 'feature="fold"' --cfg 'feature="full"' --cfg 'feature="parsing"' --cfg 'feature="printing"' --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "test", "visit", "visit-mut"))' -C metadata=86df5038a81402c1 -C extra-filename=-c791ec975422d003 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libproc_macro2-cec5ce8c25c6d7e3.rmeta --extern quote=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libquote-840a5e080a04f302.rmeta --extern unicode_ident=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libunicode_ident-39318cad45386723.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling crossbeam-deque v0.8.6
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name crossbeam_deque --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crossbeam-deque-0.8.6/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --warn=unexpected_cfgs '--allow=clippy::lint_groups_priority' '--allow=clippy::declare_interior_mutable_const' --check-cfg 'cfg(crossbeam_loom)' --check-cfg 'cfg(crossbeam_sanitize)' -C debug-assertions=on --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "std"))' -C metadata=8b0e5dc3119fd6f9 -C extra-filename=-76b5f1a24d3b1c4b --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern crossbeam_epoch=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcrossbeam_epoch-a9bcf72b0ee2b2cc.rmeta --extern crossbeam_utils=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcrossbeam_utils-b9bc9caf92489980.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/libc-0c8bedfbe17bb08f/build-script-build`
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/num-traits-d2dd95b873a4e136/build-script-build`
+   Compiling clap_lex v0.7.6
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name clap_lex --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap_lex-0.7.6/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--warn=clippy::zero_sized_map_values' '--warn=clippy::verbose_file_reads' --warn=unused_qualifications --warn=unused_macro_rules --warn=unused_lifetimes --warn=unsafe_op_in_unsafe_fn --warn=unreachable_pub --allow=unnameable_types '--warn=clippy::uninlined_format_args' '--warn=clippy::trait_duplication_in_bounds' '--warn=clippy::todo' '--warn=clippy::string_lit_as_bytes' '--warn=clippy::string_add_assign' '--warn=clippy::semicolon_if_nothing_returned' '--warn=clippy::self_named_module_files' '--warn=clippy::same_functions_in_if_condition' '--allow=clippy::result_large_err' '--warn=clippy::rest_pat_in_fully_bound_structs' '--warn=clippy::ref_option_ref' '--warn=clippy::redundant_feature_names' '--warn=clippy::rc_mutex' '--warn=clippy::ptr_as_ptr' '--warn=clippy::path_buf_push_overwrite' '--warn=clippy::negative_feature_names' '--warn=clippy::needless_for_each' '--allow=clippy::needless_continue' '--warn=clippy::mutex_integer' '--allow=clippy::multiple_bound_locations' '--warn=clippy::mem_forget' '--warn=clippy::macro_use_imports' '--warn=clippy::lossy_float_literal' '--warn=clippy::linkedlist' '--allow=clippy::let_and_return' '--warn=clippy::large_types_passed_by_value' '--warn=clippy::large_stack_arrays' '--warn=clippy::large_digit_groups' '--warn=clippy::invalid_upcast_comparisons' '--warn=clippy::infinite_loop' '--warn=clippy::inefficient_to_string' '--warn=clippy::inconsistent_struct_constructor' '--warn=clippy::imprecise_flops' '--warn=clippy::implicit_clone' '--allow=clippy::if_same_then_else' '--warn=clippy::from_iter_instead_of_collect' '--warn=clippy::fn_params_excessive_bools' '--warn=clippy::float_cmp_const' '--warn=clippy::flat_map_option' '--warn=clippy::filter_map_next' '--warn=clippy::fallible_impl_from' '--warn=clippy::explicit_into_iter_loop' '--warn=clippy::explicit_deref_methods' '--warn=clippy::expl_impl_clone_on_copy' '--warn=clippy::enum_glob_use' '--warn=clippy::empty_enum' '--warn=clippy::doc_markdown' '--warn=clippy::debug_assert_with_mut_call' '--warn=clippy::dbg_macro' '--warn=clippy::create_dir' '--allow=clippy::collapsible_else_if' '--warn=clippy::checked_conversions' '--allow=clippy::branches_sharing_code' '--allow=clippy::bool_assert_comparison' '--allow=clippy::blocks_in_conditions' '--allow=clippy::assigning_clones' -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=499c02eed8bf7eee -C extra-filename=-5c67fbdc550a5558 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling plotters-backend v0.3.7
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name plotters_backend --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plotters-backend-0.3.7/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=825f604b247b03b5 -C extra-filename=-c073cad1bc24389c --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling anstyle v1.0.10
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name anstyle --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--warn=clippy::zero_sized_map_values' '--warn=clippy::wildcard_imports' '--warn=clippy::verbose_file_reads' --warn=unused_qualifications --warn=unused_macro_rules --warn=unused_lifetimes --warn=unsafe_op_in_unsafe_fn --warn=unreachable_pub '--warn=clippy::uninlined_format_args' '--warn=clippy::trait_duplication_in_bounds' '--warn=clippy::todo' '--warn=clippy::string_to_string' '--warn=clippy::string_lit_as_bytes' '--warn=clippy::string_add_assign' '--warn=clippy::string_add' '--warn=clippy::str_to_string' '--warn=clippy::semicolon_if_nothing_returned' '--warn=clippy::self_named_module_files' '--warn=clippy::same_functions_in_if_condition' '--warn=clippy::rest_pat_in_fully_bound_structs' '--warn=clippy::ref_option_ref' '--warn=clippy::redundant_feature_names' '--warn=clippy::rc_mutex' '--warn=clippy::ptr_as_ptr' '--warn=clippy::path_buf_push_overwrite' '--warn=clippy::negative_feature_names' '--warn=clippy::needless_for_each' '--warn=clippy::needless_continue' '--warn=clippy::mutex_integer' '--warn=clippy::mem_forget' '--warn=clippy::macro_use_imports' '--warn=clippy::lossy_float_literal' '--warn=clippy::linkedlist' '--allow=clippy::let_and_return' '--warn=clippy::large_types_passed_by_value' '--warn=clippy::large_stack_arrays' '--warn=clippy::large_digit_groups' '--warn=clippy::invalid_upcast_comparisons' '--warn=clippy::infinite_loop' '--warn=clippy::inefficient_to_string' '--warn=clippy::inconsistent_struct_constructor' '--warn=clippy::imprecise_flops' '--warn=clippy::implicit_clone' '--allow=clippy::if_same_then_else' '--warn=clippy::from_iter_instead_of_collect' '--warn=clippy::fn_params_excessive_bools' '--warn=clippy::float_cmp_const' '--warn=clippy::flat_map_option' '--warn=clippy::filter_map_next' '--warn=clippy::fallible_impl_from' '--warn=clippy::explicit_into_iter_loop' '--warn=clippy::explicit_deref_methods' '--warn=clippy::expl_impl_clone_on_copy' '--warn=clippy::enum_glob_use' '--warn=clippy::empty_enum' '--warn=clippy::doc_markdown' '--warn=clippy::debug_assert_with_mut_call' '--warn=clippy::dbg_macro' '--warn=clippy::create_dir' '--allow=clippy::collapsible_else_if' '--warn=clippy::checked_conversions' '--allow=clippy::branches_sharing_code' '--allow=clippy::bool_assert_comparison' -C debug-assertions=on --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "std"))' -C metadata=412a700baedc0ae5 -C extra-filename=-4f9153be529cd76d --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling libm v0.2.15
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libm-0.2.15/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --warn=unexpected_cfgs --check-cfg 'cfg(feature, values("compiler-builtins"))' --cfg 'feature="arch"' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("arch", "default", "force-soft-floats", "unstable", "unstable-float", "unstable-intrinsics", "unstable-public-internals"))' -C metadata=398d6fa33b5068d0 -C extra-filename=-0f03b7092e6f4f77 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/libm-0f03b7092e6f4f77 -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling ryu v1.0.20
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name ryu --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ryu-1.0.20/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("no-panic", "small"))' -C metadata=0a8c18a6bf83af52 -C extra-filename=-3c48aadc9887f05d --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling itoa v1.0.15
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name itoa --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/itoa-1.0.15/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("no-panic"))' -C metadata=280c38465f0331d4 -C extra-filename=-2500400fdefe7ffd --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling ciborium-io v0.2.2
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name ciborium_io --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ciborium-io-0.2.2/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="alloc"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "std"))' -C metadata=234b01bb723c124f -C extra-filename=-a16e972622b75094 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling memchr v2.7.4
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name memchr --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memchr-2.7.4/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="alloc"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "compiler_builtins", "core", "default", "libc", "logging", "rustc-dep-of-std", "std", "use_std"))' -C metadata=488b1006cca74ee6 -C extra-filename=-918028efdbe5c13e --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling regex-automata v0.4.9
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name regex_automata --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/regex-automata-0.4.9/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="alloc"' --cfg 'feature="meta"' --cfg 'feature="nfa-pikevm"' --cfg 'feature="nfa-thompson"' --cfg 'feature="std"' --cfg 'feature="syntax"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "internal-instrument", "internal-instrument-pikevm", "logging", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"))' -C metadata=000a79aa8c1a0736 -C extra-filename=-814fe857bf68021e --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern regex_syntax=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libregex_syntax-428b32a0820cd027.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/libm-0f03b7092e6f4f77/build-script-build`
+   Compiling plotters-svg v0.3.7
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name plotters_svg --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plotters-svg-0.3.7/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("bitmap_encoder", "debug", "image"))' -C metadata=4e1166c426230281 -C extra-filename=-1da78cdb17eeba11 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern plotters_backend=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libplotters_backend-c073cad1bc24389c.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling clap_builder v4.5.53
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name clap_builder --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap_builder-4.5.53/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--warn=clippy::zero_sized_map_values' '--warn=clippy::verbose_file_reads' --warn=unused_qualifications --warn=unused_macro_rules --warn=unused_lifetimes --warn=unsafe_op_in_unsafe_fn --warn=unreachable_pub --allow=unnameable_types '--warn=clippy::uninlined_format_args' '--warn=clippy::trait_duplication_in_bounds' '--warn=clippy::todo' '--warn=clippy::string_lit_as_bytes' '--warn=clippy::string_add_assign' '--warn=clippy::semicolon_if_nothing_returned' '--warn=clippy::self_named_module_files' '--warn=clippy::same_functions_in_if_condition' '--allow=clippy::result_large_err' '--warn=clippy::rest_pat_in_fully_bound_structs' '--warn=clippy::ref_option_ref' '--warn=clippy::redundant_feature_names' '--warn=clippy::rc_mutex' '--warn=clippy::ptr_as_ptr' '--warn=clippy::path_buf_push_overwrite' '--warn=clippy::negative_feature_names' '--warn=clippy::needless_for_each' '--allow=clippy::needless_continue' '--warn=clippy::mutex_integer' '--allow=clippy::multiple_bound_locations' '--warn=clippy::mem_forget' '--warn=clippy::macro_use_imports' '--warn=clippy::lossy_float_literal' '--warn=clippy::linkedlist' '--allow=clippy::let_and_return' '--warn=clippy::large_types_passed_by_value' '--warn=clippy::large_stack_arrays' '--warn=clippy::large_digit_groups' '--warn=clippy::invalid_upcast_comparisons' '--warn=clippy::infinite_loop' '--warn=clippy::inefficient_to_string' '--warn=clippy::inconsistent_struct_constructor' '--warn=clippy::imprecise_flops' '--warn=clippy::implicit_clone' '--allow=clippy::if_same_then_else' '--warn=clippy::from_iter_instead_of_collect' '--warn=clippy::fn_params_excessive_bools' '--warn=clippy::float_cmp_const' '--warn=clippy::flat_map_option' '--warn=clippy::filter_map_next' '--warn=clippy::fallible_impl_from' '--warn=clippy::explicit_into_iter_loop' '--warn=clippy::explicit_deref_methods' '--warn=clippy::expl_impl_clone_on_copy' '--warn=clippy::enum_glob_use' '--warn=clippy::empty_enum' '--warn=clippy::doc_markdown' '--warn=clippy::debug_assert_with_mut_call' '--warn=clippy::dbg_macro' '--warn=clippy::create_dir' '--allow=clippy::collapsible_else_if' '--warn=clippy::checked_conversions' '--allow=clippy::branches_sharing_code' '--allow=clippy::bool_assert_comparison' '--allow=clippy::blocks_in_conditions' '--allow=clippy::assigning_clones' -C debug-assertions=on --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("cargo", "color", "debug", "default", "deprecated", "env", "error-context", "help", "std", "string", "suggestions", "unicode", "unstable-doc", "unstable-ext", "unstable-styles", "unstable-v5", "usage", "wrap_help"))' -C metadata=88be7d47c8f112db -C extra-filename=-2053c2bdeac33cc6 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern anstyle=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libanstyle-4f9153be529cd76d.rmeta --extern clap_lex=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libclap_lex-5c67fbdc550a5558.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name num_traits --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-traits-0.2.19/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "i128", "libm", "std"))' -C metadata=c570e0ca5002f0ad -C extra-filename=-a2716c923764f662 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg has_total_cmp --check-cfg 'cfg(has_total_cmp)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name rayon_core --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rayon-core-1.13.0/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("web_spin_lock"))' -C metadata=b42e75883dd12a43 -C extra-filename=-c7934eee291741b7 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern crossbeam_deque=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcrossbeam_deque-76b5f1a24d3b1c4b.rmeta --extern crossbeam_utils=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcrossbeam_utils-b9bc9caf92489980.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling zerocopy-derive v0.8.28
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name zerocopy_derive --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.28/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type proc-macro --emit=dep-info,link -C prefer-dynamic -C embed-bitcode=no --warn=unexpected_cfgs --check-cfg 'cfg(zerocopy_derive_union_into_bytes)' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=5b179f0a367a0cea -C extra-filename=-3e63454ac678e196 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libproc_macro2-cec5ce8c25c6d7e3.rlib --extern quote=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libquote-840a5e080a04f302.rlib --extern syn=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libsyn-c791ec975422d003.rlib --extern proc_macro --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling serde_derive v1.0.219
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name serde_derive --edition=2015 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_derive-1.0.219/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type proc-macro --emit=dep-info,link -C prefer-dynamic -C embed-bitcode=no --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "deserialize_in_place"))' -C metadata=ff1652d642d53744 -C extra-filename=-57593c12c4dc66ce --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libproc_macro2-cec5ce8c25c6d7e3.rlib --extern quote=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libquote-840a5e080a04f302.rlib --extern syn=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libsyn-c791ec975422d003.rlib --extern proc_macro --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name zerocopy --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.28/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="derive"' --cfg 'feature="simd"' --cfg 'feature="zerocopy-derive"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("__internal_use_only_features_that_work_on_stable", "alloc", "derive", "float-nightly", "simd", "simd-nightly", "std", "zerocopy-derive"))' -C metadata=9252fc6fcc123d55 -C extra-filename=-2b6d78cadd21f126 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern zerocopy_derive=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libzerocopy_derive-3e63454ac678e196.so --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg zerocopy_core_error_1_81_0 --cfg zerocopy_diagnostic_on_unimplemented_1_78_0 --cfg zerocopy_generic_bounds_in_const_fn_1_61_0 --cfg zerocopy_target_has_atomics_1_60_0 --cfg zerocopy_aarch64_simd_1_59_0 --cfg zerocopy_panic_in_const_and_vec_try_reserve_1_57_0 --check-cfg 'cfg(zerocopy_core_error_1_81_0)' --check-cfg 'cfg(rust, values("1.81.0"))' --check-cfg 'cfg(zerocopy_diagnostic_on_unimplemented_1_78_0)' --check-cfg 'cfg(rust, values("1.78.0"))' --check-cfg 'cfg(zerocopy_generic_bounds_in_const_fn_1_61_0)' --check-cfg 'cfg(rust, values("1.61.0"))' --check-cfg 'cfg(zerocopy_target_has_atomics_1_60_0)' --check-cfg 'cfg(rust, values("1.60.0"))' --check-cfg 'cfg(zerocopy_aarch64_simd_1_59_0)' --check-cfg 'cfg(rust, values("1.59.0"))' --check-cfg 'cfg(zerocopy_panic_in_const_and_vec_try_reserve_1_57_0)' --check-cfg 'cfg(rust, values("1.57.0"))' --check-cfg 'cfg(doc_cfg)' --check-cfg 'cfg(kani)' --check-cfg 'cfg(__ZEROCOPY_INTERNAL_USE_ONLY_NIGHTLY_FEATURES_IN_TESTS)' --check-cfg 'cfg(coverage_nightly)'`
+   Compiling half v2.7.1
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name half --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/half-2.7.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "arbitrary", "bytemuck", "default", "nightly", "num-traits", "rand_distr", "rkyv", "serde", "std", "use-intrinsics", "zerocopy"))' -C metadata=b9d24df7c3cab94d -C extra-filename=-781fdd58791a5ae4 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern cfg_if=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcfg_if-f711740f4b47c4f5.rmeta --extern zerocopy=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libzerocopy-2b6d78cadd21f126.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling ciborium-ll v0.2.2
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name ciborium_ll --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ciborium-ll-0.2.2/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "std"))' -C metadata=3f6a00e65dbcfc85 -C extra-filename=-3682c92d18f771d0 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern ciborium_io=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libciborium_io-a16e972622b75094.rmeta --extern half=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libhalf-781fdd58791a5ae4.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name libc --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.172/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("align", "const-extern-fn", "default", "extra_traits", "rustc-dep-of-std", "rustc-std-workspace-core", "std", "use_std"))' -C metadata=51acdca70631cc86 -C extra-filename=-625193e0cd3c1579 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg freebsd11 --cfg libc_const_extern_fn --check-cfg 'cfg(emscripten_old_stat_abi)' --check-cfg 'cfg(espidf_time32)' --check-cfg 'cfg(freebsd10)' --check-cfg 'cfg(freebsd11)' --check-cfg 'cfg(freebsd12)' --check-cfg 'cfg(freebsd13)' --check-cfg 'cfg(freebsd14)' --check-cfg 'cfg(freebsd15)' --check-cfg 'cfg(gnu_file_offset_bits64)' --check-cfg 'cfg(libc_const_extern_fn)' --check-cfg 'cfg(libc_deny_warnings)' --check-cfg 'cfg(libc_thread_local)' --check-cfg 'cfg(libc_ctest)' --check-cfg 'cfg(linux_time_bits64)' --check-cfg 'cfg(target_os,values("switch","aix","ohos","hurd","rtems","visionos","nuttx","cygwin"))' --check-cfg 'cfg(target_env,values("illumos","wasi","aix","ohos","nto71_iosock","nto80"))' --check-cfg 'cfg(target_arch,values("loongarch64","mips32r6","mips64r6","csky"))'`
+   Compiling itertools v0.10.5
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name itertools --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/itertools-0.10.5/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="default"' --cfg 'feature="use_alloc"' --cfg 'feature="use_std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "use_alloc", "use_std"))' -C metadata=c3593060114b6fba -C extra-filename=-0dcae0faa1dcfb9d --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern either=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libeither-70425c9691356a36.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name serde --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.219/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="alloc"' --cfg 'feature="default"' --cfg 'feature="derive"' --cfg 'feature="serde_derive"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "default", "derive", "rc", "serde_derive", "std", "unstable"))' -C metadata=a381fb781629b10f -C extra-filename=-afea00632bc816bc --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern serde_derive=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libserde_derive-57593c12c4dc66ce.so --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast --check-cfg 'cfg(no_core_cstr)' --check-cfg 'cfg(no_core_error)' --check-cfg 'cfg(no_core_net)' --check-cfg 'cfg(no_core_num_saturating)' --check-cfg 'cfg(no_core_try_from)' --check-cfg 'cfg(no_diagnostic_namespace)' --check-cfg 'cfg(no_float_copysign)' --check-cfg 'cfg(no_num_nonzero_signed)' --check-cfg 'cfg(no_relaxed_trait_bounds)' --check-cfg 'cfg(no_serde_derive)' --check-cfg 'cfg(no_std_atomic)' --check-cfg 'cfg(no_std_atomic64)' --check-cfg 'cfg(no_systemtime_checked_add)' --check-cfg 'cfg(no_target_has_atomic)'`
+   Compiling pixelflow-core v0.1.0 (/tmp/cargo-mutants-app-aQHEon.tmp/pixelflow-core)
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2024 pixelflow-core/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=ca1a43f572758536 -C extra-filename=-322a137ee32ef4c9 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/pixelflow-core-322a137ee32ef4c9 -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling same-file v1.0.6
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name same_file --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/same-file-1.0.6/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=949d2f65ad996390 -C extra-filename=-fa7a94c7b414c8a7 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling cast v0.3.0
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name cast --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cast-0.3.0/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("std"))' -C metadata=5b2f9c74f0b97fe3 -C extra-filename=-0ab44e7e55ebc5f9 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling walkdir v2.5.0
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name walkdir --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=8370a170e27f935d -C extra-filename=-5ab890edc4915b4b --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern same_file=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libsame_file-fa7a94c7b414c8a7.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling criterion-plot v0.5.0
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name criterion_plot --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/criterion-plot-0.5.0/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=b34b0306f5a8a3c5 -C extra-filename=-0d5be9f5ad635466 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern cast=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcast-0ab44e7e55ebc5f9.rmeta --extern itertools=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libitertools-0dcae0faa1dcfb9d.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/build/pixelflow-core-322a137ee32ef4c9/build-script-build`
+   Compiling is-terminal v0.4.17
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name is_terminal --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/is-terminal-0.4.17/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=a96d4cdf82c341ff -C extra-filename=-bfc4298ff605fe1e --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern libc=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibc-625193e0cd3c1579.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling pixelflow-macros v0.1.0 (/tmp/cargo-mutants-app-aQHEon.tmp/pixelflow-macros)
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name pixelflow_macros --edition=2024 pixelflow-macros/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type proc-macro --emit=dep-info,link -C prefer-dynamic -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=9b6627dea62f2c4c -C extra-filename=-fe2f3925093bec6e --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libproc_macro2-cec5ce8c25c6d7e3.rlib --extern quote=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libquote-840a5e080a04f302.rlib --extern syn=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libsyn-c791ec975422d003.rlib --extern proc_macro -C target-cpu=native -C llvm-args=-fp-contract=fast`
+warning: unused import: `CallExpr`
+  --> pixelflow-macros/src/annotate.rs:22:39
+   |
+22 | use crate::ast::{BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, Stmt, UnaryOp};
+   |                                       ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Op`
+  --> pixelflow-macros/src/egraph/mod.rs:28:33
+   |
+28 | pub use node::{EClassId, ENode, Op};
+   |                                 ^^
+
+warning: unused imports: `BinaryExpr`, `BlockExpr`, `CallExpr`, `IdentExpr`, `LiteralExpr`, `MethodCallExpr`, and `UnaryExpr`
+  --> pixelflow-macros/src/fold.rs:26:18
+   |
+26 | use crate::ast::{BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt, UnaryExpr, UnaryOp};
+   |                  ^^^^^^^^^^            ^^^^^^^^^  ^^^^^^^^        ^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^        ^^^^^^^^^
+
+warning: unused imports: `GenericParam`, `Generics`, and `parse_quote`
+  --> pixelflow-macros/src/manifold_expr.rs:27:11
+   |
+27 | use syn::{parse_quote, DeriveInput, GenericParam, Generics};
+   |           ^^^^^^^^^^^               ^^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused import: `CallExpr`
+  --> pixelflow-macros/src/optimize.rs:18:38
+   |
+18 |     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
+   |                                      ^^^^^^^^
+
+warning: unused variable: `n`
+   --> pixelflow-macros/src/codegen.rs:992:17
+    |
+992 |             let n = params.len();
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_n`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `ty`
+   --> pixelflow-macros/src/parser.rs:166:15
+    |
+166 |     if let Ok(ty) = fork.parse::<Type>() {
+    |               ^^ help: if this is intentional, prefix it with an underscore: `_ty`
+
+warning: method `literal_count` is never used
+  --> pixelflow-macros/src/annotate.rs:40:12
+   |
+34 | impl AnnotationCtx {
+   | ------------------ method in this implementation
+...
+40 |     pub fn literal_count(&self) -> usize {
+   |            ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:65:9
+   |
+63 | pub struct AnnotatedLiteral {
+   |            ---------------- field in this struct
+64 |     pub lit: Lit,
+65 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedLiteral` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:76:9
+   |
+72 | pub struct AnnotatedBinary {
+   |            --------------- field in this struct
+...
+76 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedBinary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:83:9
+   |
+80 | pub struct AnnotatedUnary {
+   |            -------------- field in this struct
+...
+83 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedUnary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:91:9
+   |
+87 | pub struct AnnotatedMethodCall {
+   |            ------------------- field in this struct
+...
+91 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedMethodCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:99:9
+   |
+96 | pub struct AnnotatedCall {
+   |            ------------- field in this struct
+...
+99 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:106:9
+    |
+103 | pub struct AnnotatedBlock {
+    |            -------------- field in this struct
+...
+106 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedBlock` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:120:9
+    |
+116 | pub struct AnnotatedLet {
+    |            ------------ field in this struct
+...
+120 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedLet` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `AnnotationResult` is never constructed
+   --> pixelflow-macros/src/annotate.rs:131:12
+    |
+131 | pub struct AnnotationResult {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/ast.rs:119:9
+    |
+117 | pub struct IdentExpr {
+    |            --------- field in this struct
+118 |     pub name: Ident,
+119 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `IdentExpr` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `build_tuple` is never used
+  --> pixelflow-macros/src/codegen.rs:91:4
+   |
+91 | fn build_tuple(values: &[TokenStream]) -> TokenStream {
+   |    ^^^^^^^^^^^
+
+warning: enum `BindingStrategy` is never used
+   --> pixelflow-macros/src/codegen.rs:131:6
+    |
+131 | enum BindingStrategy {
+    |      ^^^^^^^^^^^^^^^
+
+warning: method `emit` is never used
+   --> pixelflow-macros/src/codegen.rs:166:8
+    |
+162 | impl BindingStrategy {
+    | -------------------- method in this implementation
+...
+166 |     fn emit(self, expr: TokenStream) -> TokenStream {
+    |        ^^^^
+
+warning: methods `is_associative` and `inverse` are never used
+  --> pixelflow-macros/src/egraph/node.rs:37:12
+   |
+30 | impl Op {
+   | ------- methods in this implementation
+...
+37 |     pub fn is_associative(&self) -> bool {
+   |            ^^^^^^^^^^^^^^
+...
+65 |     pub fn inverse(&self) -> Option<(Op, f32)> {
+   |            ^^^^^^^
+
+warning: variant `Associate` is never constructed
+  --> pixelflow-macros/src/egraph/rewrite.rs:37:5
+   |
+ 8 | pub enum RewriteAction {
+   |          ------------- variant in this enum
+...
+37 |     Associate {
+   |     ^^^^^^^^^
+   |
+   = note: `RewriteAction` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `Associative` is never constructed
+  --> pixelflow-macros/src/egraph/rules.rs:10:12
+   |
+10 | pub struct Associative {
+   |            ^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> pixelflow-macros/src/egraph/rules.rs:15:12
+   |
+14 | impl Associative {
+   | ---------------- associated function in this implementation
+15 |     pub fn new(op: Op) -> Box<Self> {
+   |            ^^^
+
+warning: trait `ExprFold` is never used
+  --> pixelflow-macros/src/fold.rs:38:11
+   |
+38 | pub trait ExprFold {
+   |           ^^^^^^^^
+
+warning: function `fold_expr` is never used
+  --> pixelflow-macros/src/fold.rs:97:8
+   |
+97 | pub fn fold_expr<F: ExprFold>(folder: &mut F, expr: &Expr) -> F::Output {
+   |        ^^^^^^^^^
+
+warning: enum `TokenClass` is never used
+  --> pixelflow-macros/src/lexer.rs:30:10
+   |
+30 | pub enum TokenClass {
+   |          ^^^^^^^^^^
+
+warning: function `classify_ident` is never used
+  --> pixelflow-macros/src/lexer.rs:46:8
+   |
+46 | pub fn classify_ident(name: &str) -> TokenClass {
+   |        ^^^^^^^^^^^^^^
+
+warning: function `lex` is never used
+  --> pixelflow-macros/src/lexer.rs:56:8
+   |
+56 | pub fn lex(input: TokenStream) -> TokenStream {
+   |        ^^^
+
+warning: struct `KernelParser` is never constructed
+  --> pixelflow-macros/src/parser.rs:43:8
+   |
+43 | struct KernelParser;
+   |        ^^^^^^^^^^^^
+
+warning: fields `name`, `ty`, and `span` are never read
+  --> pixelflow-macros/src/symbol.rs:57:9
+   |
+55 | pub struct Symbol {
+   |            ------ fields in this struct
+56 |     /// The identifier name.
+57 |     pub name: Ident,
+   |         ^^^^
+...
+61 |     pub ty: Option<Type>,
+   |         ^^
+62 |     /// Where the symbol was defined.
+63 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `Symbol` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: methods `is_parameter`, `parameters`, `is_manifold_param`, and `manifold_params` are never used
+   --> pixelflow-macros/src/symbol.rs:166:12
+    |
+ 75 | impl SymbolTable {
+    | ---------------- methods in this implementation
+...
+166 |     pub fn is_parameter(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^
+...
+173 |     pub fn parameters(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^
+...
+180 |     pub fn is_manifold_param(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^^^^^^
+...
+187 |     pub fn manifold_params(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^^^^^^
+
+   Compiling rayon v1.11.0
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name rayon --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rayon-1.11.0/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("web_spin_lock"))' -C metadata=814c21335db93739 -C extra-filename=-2f835233ad3d0a97 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern either=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libeither-70425c9691356a36.rmeta --extern rayon_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/librayon_core-c7934eee291741b7.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name serde_json --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.140/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "arbitrary_precision", "default", "float_roundtrip", "indexmap", "preserve_order", "raw_value", "std", "unbounded_depth"))' -C metadata=2c0d0149daf795c8 -C extra-filename=-cbc3ef34dc1df78c --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern itoa=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libitoa-2500400fdefe7ffd.rmeta --extern memchr=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libmemchr-918028efdbe5c13e.rmeta --extern ryu=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libryu-3c48aadc9887f05d.rmeta --extern serde=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libserde-afea00632bc816bc.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg 'fast_arithmetic="64"' --check-cfg 'cfg(fast_arithmetic, values("32", "64"))'`
+   Compiling ciborium v0.2.2
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name ciborium --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ciborium-0.2.2/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "std"))' -C metadata=8a6b6a142c3dae35 -C extra-filename=-810821bc3b5993ef --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern ciborium_io=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libciborium_io-a16e972622b75094.rmeta --extern ciborium_ll=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libciborium_ll-3682c92d18f771d0.rmeta --extern serde=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libserde-afea00632bc816bc.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+warning: `pixelflow-macros` (lib) generated 32 warnings (run `cargo fix --lib -p pixelflow-macros` to apply 7 suggestions)
+   Compiling clap v4.5.53
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name clap --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap-4.5.53/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--warn=clippy::zero_sized_map_values' '--warn=clippy::verbose_file_reads' --warn=unused_qualifications --warn=unused_macro_rules --warn=unused_lifetimes --warn=unsafe_op_in_unsafe_fn --warn=unreachable_pub --allow=unnameable_types '--warn=clippy::uninlined_format_args' '--warn=clippy::trait_duplication_in_bounds' '--warn=clippy::todo' '--warn=clippy::string_lit_as_bytes' '--warn=clippy::string_add_assign' '--warn=clippy::semicolon_if_nothing_returned' '--warn=clippy::self_named_module_files' '--warn=clippy::same_functions_in_if_condition' '--allow=clippy::result_large_err' '--warn=clippy::rest_pat_in_fully_bound_structs' '--warn=clippy::ref_option_ref' '--warn=clippy::redundant_feature_names' '--warn=clippy::rc_mutex' '--warn=clippy::ptr_as_ptr' '--warn=clippy::path_buf_push_overwrite' '--warn=clippy::negative_feature_names' '--warn=clippy::needless_for_each' '--allow=clippy::needless_continue' '--warn=clippy::mutex_integer' '--allow=clippy::multiple_bound_locations' '--warn=clippy::mem_forget' '--warn=clippy::macro_use_imports' '--warn=clippy::lossy_float_literal' '--warn=clippy::linkedlist' '--allow=clippy::let_and_return' '--warn=clippy::large_types_passed_by_value' '--warn=clippy::large_stack_arrays' '--warn=clippy::large_digit_groups' '--warn=clippy::invalid_upcast_comparisons' '--warn=clippy::infinite_loop' '--warn=clippy::inefficient_to_string' '--warn=clippy::inconsistent_struct_constructor' '--warn=clippy::imprecise_flops' '--warn=clippy::implicit_clone' '--allow=clippy::if_same_then_else' '--warn=clippy::from_iter_instead_of_collect' '--warn=clippy::fn_params_excessive_bools' '--warn=clippy::float_cmp_const' '--warn=clippy::flat_map_option' '--warn=clippy::filter_map_next' '--warn=clippy::fallible_impl_from' '--warn=clippy::explicit_into_iter_loop' '--warn=clippy::explicit_deref_methods' '--warn=clippy::expl_impl_clone_on_copy' '--warn=clippy::enum_glob_use' '--warn=clippy::empty_enum' '--warn=clippy::doc_markdown' '--warn=clippy::debug_assert_with_mut_call' '--warn=clippy::dbg_macro' '--warn=clippy::create_dir' '--allow=clippy::collapsible_else_if' '--warn=clippy::checked_conversions' '--allow=clippy::branches_sharing_code' '--allow=clippy::bool_assert_comparison' '--allow=clippy::blocks_in_conditions' '--allow=clippy::assigning_clones' -C debug-assertions=on --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("cargo", "color", "debug", "default", "deprecated", "derive", "env", "error-context", "help", "std", "string", "suggestions", "unicode", "unstable-derive-ui-tests", "unstable-doc", "unstable-ext", "unstable-markdown", "unstable-styles", "unstable-v5", "usage", "wrap_help"))' -C metadata=f329205ceda01674 -C extra-filename=-ade71b237900cfdb --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern clap_builder=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libclap_builder-2053c2bdeac33cc6.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling plotters v0.3.7
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name plotters --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/plotters-0.3.7/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --warn=unexpected_cfgs --allow=deprecated --check-cfg 'cfg(doc_cfg)' -C debug-assertions=on --cfg 'feature="area_series"' --cfg 'feature="line_series"' --cfg 'feature="plotters-svg"' --cfg 'feature="svg_backend"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("ab_glyph", "all_elements", "all_series", "area_series", "bitmap_backend", "bitmap_encoder", "bitmap_gif", "boxplot", "candlestick", "chrono", "colormaps", "datetime", "default", "deprecated_items", "errorbar", "evcxr", "evcxr_bitmap", "font-kit", "fontconfig-dlopen", "full_palette", "histogram", "image", "lazy_static", "line_series", "once_cell", "pathfinder_geometry", "plotters-bitmap", "plotters-svg", "point_series", "surface_series", "svg_backend", "ttf", "ttf-parser"))' -C metadata=3354b8d15d674afb -C extra-filename=-be8bd179784a91e1 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern num_traits=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libnum_traits-a2716c923764f662.rmeta --extern plotters_backend=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libplotters_backend-c073cad1bc24389c.rmeta --extern plotters_svg=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libplotters_svg-1da78cdb17eeba11.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling tinytemplate v1.2.1
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name tinytemplate --edition=2015 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tinytemplate-1.2.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=ff0e88eafe3533d7 -C extra-filename=-f5a883a1ca885a74 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern serde=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libserde-afea00632bc816bc.rmeta --extern serde_json=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libserde_json-cbc3ef34dc1df78c.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling regex v1.11.1
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name regex --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/regex-1.11.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "logging", "pattern", "perf", "perf-backtrack", "perf-cache", "perf-dfa", "perf-dfa-full", "perf-inline", "perf-literal", "perf-onepass", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unstable", "use_std"))' -C metadata=32c788f26dfb66a5 -C extra-filename=-00b731bb8c8bbb99 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern regex_automata=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libregex_automata-814fe857bf68021e.rmeta --extern regex_syntax=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libregex_syntax-428b32a0820cd027.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name libm --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libm-0.2.15/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --warn=unexpected_cfgs --check-cfg 'cfg(feature, values("compiler-builtins"))' -C debug-assertions=on --cfg 'feature="arch"' --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("arch", "default", "force-soft-floats", "unstable", "unstable-float", "unstable-intrinsics", "unstable-public-internals"))' -C metadata=a5e33414c6e01917 -C extra-filename=-0bdcba870aba2368 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg arch_enabled --cfg optimizations_enabled --check-cfg 'cfg(assert_no_panic)' --check-cfg 'cfg(intrinsics_enabled)' --check-cfg 'cfg(arch_enabled)' --check-cfg 'cfg(optimizations_enabled)' --check-cfg 'cfg(x86_no_sse)' --check-cfg 'cfg(f16_enabled)' --check-cfg 'cfg(f128_enabled)'`
+   Compiling once_cell v1.21.3
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name once_cell --edition=2021 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.3/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="alloc"' --cfg 'feature="default"' --cfg 'feature="race"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "atomic-polyfill", "critical-section", "default", "parking_lot", "portable-atomic", "race", "std", "unstable"))' -C metadata=68a18f4b228dbb22 -C extra-filename=-8806e24cf87e15f3 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling anes v0.1.6
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name anes --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anes-0.1.6/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("bitflags", "default", "parser"))' -C metadata=9093287601f42ef0 -C extra-filename=-1aba0476942f72ce --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling oorandom v11.1.5
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name oorandom --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/oorandom-11.1.5/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=2d8193694f95b454 -C extra-filename=-687fa3fc4bfa5400 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+   Compiling criterion v0.5.1
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name criterion --edition=2018 /home/jules/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/criterion-0.5.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 -C debug-assertions=on --cfg 'feature="cargo_bench_support"' --cfg 'feature="default"' --cfg 'feature="html_reports"' --cfg 'feature="plotters"' --cfg 'feature="rayon"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("async", "async-std", "async_futures", "async_smol", "async_std", "async_tokio", "cargo_bench_support", "csv", "csv_output", "default", "futures", "html_reports", "plotters", "rayon", "real_blackbox", "smol", "stable", "tokio"))' -C metadata=ebe61fc649cf725a -C extra-filename=-b89a3a8c83975470 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern anes=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libanes-1aba0476942f72ce.rmeta --extern cast=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcast-0ab44e7e55ebc5f9.rmeta --extern ciborium=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libciborium-810821bc3b5993ef.rmeta --extern clap=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libclap-ade71b237900cfdb.rmeta --extern criterion_plot=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion_plot-0d5be9f5ad635466.rmeta --extern is_terminal=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libis_terminal-bfc4298ff605fe1e.rmeta --extern itertools=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libitertools-0dcae0faa1dcfb9d.rmeta --extern num_traits=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libnum_traits-a2716c923764f662.rmeta --extern once_cell=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libonce_cell-8806e24cf87e15f3.rmeta --extern oorandom=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liboorandom-687fa3fc4bfa5400.rmeta --extern plotters=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libplotters-be8bd179784a91e1.rmeta --extern rayon=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/librayon-2f835233ad3d0a97.rmeta --extern regex=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libregex-00b731bb8c8bbb99.rmeta --extern serde=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libserde-afea00632bc816bc.rmeta --extern serde_derive=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libserde_derive-57593c12c4dc66ce.so --extern serde_json=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libserde_json-cbc3ef34dc1df78c.rmeta --extern tinytemplate=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libtinytemplate-f5a883a1ca885a74.rmeta --extern walkdir=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libwalkdir-5ab890edc4915b4b.rmeta --cap-lints allow -C target-cpu=native -C llvm-args=-fp-contract=fast`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name pixelflow_core --edition=2024 pixelflow-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=54e380c56c3ce718 -C extra-filename=-b5ba3349add61c22 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rmeta --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+warning: associated items `select`, `from_i32`, `from_field`, `atan2`, `pow`, and `recip` are never used
+   --> pixelflow-core/src/numeric.rs:92:8
+    |
+ 64 | pub(crate) trait Numeric: Computational {
+    |                  ------- associated items in this trait
+...
+ 92 |     fn select(mask: Self, if_true: Self, if_false: Self) -> Self;
+    |        ^^^^^^
+...
+109 |     fn from_i32(val: i32) -> Self;
+    |        ^^^^^^^^
+...
+112 |     fn from_field(field: crate::Field) -> Self;
+    |        ^^^^^^^^^^
+...
+125 |     fn atan2(self, x: Self) -> Self;
+    |        ^^^^^
+...
+128 |     fn pow(self, exp: Self) -> Self;
+    |        ^^^
+...
+148 |     fn recip(self) -> Self;
+    |        ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `Field4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:484:6
+    |
+484 | type Field4 = (Field, Field, Field, Field);
+    |      ^^^^^^
+
+warning: type alias `Jet2_4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:485:6
+    |
+485 | type Jet2_4 = (Jet2, Jet2, Jet2, Jet2);
+    |      ^^^^^^
+
+warning: type alias `Jet3_4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:486:6
+    |
+486 | type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
+    |      ^^^^^^
+
+warning: missing documentation for a trait
+   --> pixelflow-core/src/combinators/binding.rs:163:1
+    |
+163 | pub trait Pred {
+    | ^^^^^^^^^^^^^^
+    |
+note: the lint level is defined here
+   --> pixelflow-core/src/lib.rs:130:9
+    |
+130 | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for an associated type
+   --> pixelflow-core/src/combinators/binding.rs:164:5
+    |
+164 |     type Output;
+    |     ^^^^^^^^^^^
+
+warning: `pixelflow-core` (lib) generated 6 warnings
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name test_jet2h --edition=2024 pixelflow-core/tests/test_jet2h.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=0530fa0e09e8955e -C extra-filename=-4e4f711c30f4c2de --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name test_context_tuple --edition=2024 pixelflow-core/tests/test_context_tuple.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=5b47e72c47429399 -C extra-filename=-49ca14ee284a34eb --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name test_jet2 --edition=2024 pixelflow-core/tests/test_jet2.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=b5759dc99276c77d -C extra-filename=-d3ec9c5b989cd171 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name select_asm --edition=2024 pixelflow-core/examples/select_asm.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d847a1262349e946 -C extra-filename=-0a02e69d200632c5 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/examples -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name reference --edition=2024 pixelflow-core/tests/reference.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=3c34a895e8adba78 -C extra-filename=-0be242160ca34dc1 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+warning: unused import: `Manifold`
+ --> pixelflow-core/tests/test_context_tuple.rs:6:29
+  |
+6 | use pixelflow_core::{Field, Manifold, WithContext, X, Y};
+  |                             ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `Field4` is never used
+ --> pixelflow-core/tests/test_context_tuple.rs:8:6
+  |
+8 | type Field4 = (Field, Field, Field, Field);
+  |      ^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name x86_backend_tests --edition=2024 pixelflow-core/tests/x86_backend_tests.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=7dd9c93ec3100562 -C extra-filename=-535e2373f2b957ee --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+warning: `pixelflow-core` (test "test_context_tuple") generated 2 warnings (run `cargo fix --test "test_context_tuple" -p pixelflow-core` to apply 1 suggestion)
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name pixelflow_core --edition=2024 pixelflow-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=ce112429c3847c6b -C extra-filename=-efdf9a96430e87d9 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name unit_tests --edition=2024 pixelflow-core/tests/unit_tests.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=3fae35441106d1a2 -C extra-filename=-d6de773337827b24 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name test_kernel_5params --edition=2024 pixelflow-core/tests/test_kernel_5params.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=99b20a349e31ab7e -C extra-filename=-761da0d1c2e0751a --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+warning: unused import: `Y`
+  --> pixelflow-core/tests/test_kernel_5params.rs:62:36
+   |
+62 |     use pixelflow_core::{Manifold, Y, jet::Jet3, Field};
+   |                                    ^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Manifold`
+ --> pixelflow-core/tests/test_kernel_5params.rs:5:29
+  |
+5 | use pixelflow_core::{Field, Manifold};
+  |                             ^^^^^^^^
+
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name asm_check --edition=2024 pixelflow-core/examples/asm_check.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=403742d59ae4fc8b -C extra-filename=-64a22fbda2d68f68 --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/examples -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+warning: type alias `Field4` is never used
+ --> pixelflow-core/tests/test_kernel_5params.rs:8:6
+  |
+8 | type Field4 = (Field, Field, Field, Field);
+  |      ^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::domain::LetExtended`
+   --> pixelflow-core/src/combinators/binding.rs:526:9
+    |
+526 |     use crate::domain::LetExtended;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Y`
+   --> pixelflow-core/src/combinators/binding.rs:527:27
+    |
+527 |     use crate::{Field, X, Y};
+    |                           ^
+
+warning: variable does not need to be mutable
+ --> pixelflow-core/examples/asm_check.rs:9:9
+  |
+9 |     let mut packed = [0u32; PARALLELISM];
+  |         ----^^^^^^
+  |         |
+  |         help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `packed`
+ --> pixelflow-core/examples/asm_check.rs:9:9
+  |
+9 |     let mut packed = [0u32; PARALLELISM];
+  |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_packed`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `discrete`
+  --> pixelflow-core/examples/asm_check.rs:34:17
+   |
+34 |             let discrete = Discrete::pack(clamped, clamped, clamped, one);
+   |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_discrete`
+
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name fma_test --edition=2024 pixelflow-core/examples/fma_test.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=8556950e1f00a016 -C extra-filename=-2477300ea2a2c71c --out-dir /tmp/cargo-mutants-app-aQHEon.tmp/target/debug/examples -C incremental=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+warning: `pixelflow-core` (test "test_kernel_5params") generated 3 warnings (run `cargo fix --test "test_kernel_5params" -p pixelflow-core` to apply 1 suggestion)
+warning: `pixelflow-core` (example "asm_check") generated 3 warnings (run `cargo fix --example "asm_check" -p pixelflow-core` to apply 3 suggestions)
+warning: `pixelflow-core` (lib test) generated 8 warnings (6 duplicates) (run `cargo fix --lib -p pixelflow-core --tests` to apply 2 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 52.63s
+  Executable `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/pixelflow_core-efdf9a96430e87d9`
+  Executable `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/reference-0be242160ca34dc1`
+  Executable `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/test_context_tuple-49ca14ee284a34eb`
+  Executable `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/test_jet2-d3ec9c5b989cd171`
+  Executable `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/test_jet2h-4e4f711c30f4c2de`
+  Executable `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/test_kernel_5params-761da0d1c2e0751a`
+  Executable `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/unit_tests-d6de773337827b24`
+  Executable `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/x86_backend_tests-535e2373f2b957ee`
+
+*** result: Success
+
+*** /home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=pixelflow-core@0.1.0
+       Fresh unicode-ident v1.0.18
+       Fresh proc-macro2 v1.0.95
+       Fresh quote v1.0.40
+       Fresh autocfg v1.5.0
+       Fresh syn v2.0.101
+       Fresh crossbeam-utils v0.8.21
+       Fresh zerocopy-derive v0.8.28
+       Fresh serde_derive v1.0.219
+       Fresh cfg-if v1.0.0
+       Fresh zerocopy v0.8.28
+       Fresh crossbeam-epoch v0.9.18
+       Fresh serde v1.0.219
+       Fresh either v1.15.0
+       Fresh half v2.7.1
+       Fresh crossbeam-deque v0.8.6
+       Fresh clap_lex v0.7.6
+       Fresh ciborium-io v0.2.2
+       Fresh itoa v1.0.15
+       Fresh ryu v1.0.20
+       Fresh regex-syntax v0.8.5
+       Fresh memchr v2.7.4
+       Fresh anstyle v1.0.10
+       Fresh plotters-backend v0.3.7
+       Fresh regex-automata v0.4.9
+       Fresh serde_json v1.0.140
+       Fresh plotters-svg v0.3.7
+       Fresh clap_builder v4.5.53
+       Fresh num-traits v0.2.19
+       Fresh ciborium-ll v0.2.2
+       Fresh libc v0.2.172
+       Fresh rayon-core v1.13.0
+       Fresh itertools v0.10.5
+       Fresh cast v0.3.0
+       Fresh same-file v1.0.6
+       Fresh is-terminal v0.4.17
+       Fresh criterion-plot v0.5.0
+       Fresh walkdir v2.5.0
+       Fresh ciborium v0.2.2
+       Fresh libm v0.2.15
+       Fresh plotters v0.3.7
+       Fresh rayon v1.11.0
+       Fresh regex v1.11.1
+       Fresh tinytemplate v1.2.1
+       Fresh clap v4.5.53
+       Fresh pixelflow-macros v0.1.0 (/tmp/cargo-mutants-app-aQHEon.tmp/pixelflow-macros)
+warning: unused import: `CallExpr`
+  --> pixelflow-macros/src/annotate.rs:22:39
+   |
+22 | use crate::ast::{BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, Stmt, UnaryOp};
+   |                                       ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Op`
+  --> pixelflow-macros/src/egraph/mod.rs:28:33
+   |
+28 | pub use node::{EClassId, ENode, Op};
+   |                                 ^^
+
+warning: unused imports: `BinaryExpr`, `BlockExpr`, `CallExpr`, `IdentExpr`, `LiteralExpr`, `MethodCallExpr`, and `UnaryExpr`
+  --> pixelflow-macros/src/fold.rs:26:18
+   |
+26 | use crate::ast::{BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt, UnaryExpr, UnaryOp};
+   |                  ^^^^^^^^^^            ^^^^^^^^^  ^^^^^^^^        ^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^        ^^^^^^^^^
+
+warning: unused imports: `GenericParam`, `Generics`, and `parse_quote`
+  --> pixelflow-macros/src/manifold_expr.rs:27:11
+   |
+27 | use syn::{parse_quote, DeriveInput, GenericParam, Generics};
+   |           ^^^^^^^^^^^               ^^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused import: `CallExpr`
+  --> pixelflow-macros/src/optimize.rs:18:38
+   |
+18 |     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
+   |                                      ^^^^^^^^
+
+warning: unused variable: `n`
+   --> pixelflow-macros/src/codegen.rs:992:17
+    |
+992 |             let n = params.len();
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_n`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `ty`
+   --> pixelflow-macros/src/parser.rs:166:15
+    |
+166 |     if let Ok(ty) = fork.parse::<Type>() {
+    |               ^^ help: if this is intentional, prefix it with an underscore: `_ty`
+
+warning: method `literal_count` is never used
+  --> pixelflow-macros/src/annotate.rs:40:12
+   |
+34 | impl AnnotationCtx {
+   | ------------------ method in this implementation
+...
+40 |     pub fn literal_count(&self) -> usize {
+   |            ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:65:9
+   |
+63 | pub struct AnnotatedLiteral {
+   |            ---------------- field in this struct
+64 |     pub lit: Lit,
+65 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedLiteral` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:76:9
+   |
+72 | pub struct AnnotatedBinary {
+   |            --------------- field in this struct
+...
+76 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedBinary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:83:9
+   |
+80 | pub struct AnnotatedUnary {
+   |            -------------- field in this struct
+...
+83 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedUnary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:91:9
+   |
+87 | pub struct AnnotatedMethodCall {
+   |            ------------------- field in this struct
+...
+91 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedMethodCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:99:9
+   |
+96 | pub struct AnnotatedCall {
+   |            ------------- field in this struct
+...
+99 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:106:9
+    |
+103 | pub struct AnnotatedBlock {
+    |            -------------- field in this struct
+...
+106 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedBlock` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:120:9
+    |
+116 | pub struct AnnotatedLet {
+    |            ------------ field in this struct
+...
+120 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedLet` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `AnnotationResult` is never constructed
+   --> pixelflow-macros/src/annotate.rs:131:12
+    |
+131 | pub struct AnnotationResult {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/ast.rs:119:9
+    |
+117 | pub struct IdentExpr {
+    |            --------- field in this struct
+118 |     pub name: Ident,
+119 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `IdentExpr` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `build_tuple` is never used
+  --> pixelflow-macros/src/codegen.rs:91:4
+   |
+91 | fn build_tuple(values: &[TokenStream]) -> TokenStream {
+   |    ^^^^^^^^^^^
+
+warning: enum `BindingStrategy` is never used
+   --> pixelflow-macros/src/codegen.rs:131:6
+    |
+131 | enum BindingStrategy {
+    |      ^^^^^^^^^^^^^^^
+
+warning: method `emit` is never used
+   --> pixelflow-macros/src/codegen.rs:166:8
+    |
+162 | impl BindingStrategy {
+    | -------------------- method in this implementation
+...
+166 |     fn emit(self, expr: TokenStream) -> TokenStream {
+    |        ^^^^
+
+warning: methods `is_associative` and `inverse` are never used
+  --> pixelflow-macros/src/egraph/node.rs:37:12
+   |
+30 | impl Op {
+   | ------- methods in this implementation
+...
+37 |     pub fn is_associative(&self) -> bool {
+   |            ^^^^^^^^^^^^^^
+...
+65 |     pub fn inverse(&self) -> Option<(Op, f32)> {
+   |            ^^^^^^^
+
+warning: variant `Associate` is never constructed
+  --> pixelflow-macros/src/egraph/rewrite.rs:37:5
+   |
+ 8 | pub enum RewriteAction {
+   |          ------------- variant in this enum
+...
+37 |     Associate {
+   |     ^^^^^^^^^
+   |
+   = note: `RewriteAction` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `Associative` is never constructed
+  --> pixelflow-macros/src/egraph/rules.rs:10:12
+   |
+10 | pub struct Associative {
+   |            ^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> pixelflow-macros/src/egraph/rules.rs:15:12
+   |
+14 | impl Associative {
+   | ---------------- associated function in this implementation
+15 |     pub fn new(op: Op) -> Box<Self> {
+   |            ^^^
+
+warning: trait `ExprFold` is never used
+  --> pixelflow-macros/src/fold.rs:38:11
+   |
+38 | pub trait ExprFold {
+   |           ^^^^^^^^
+
+warning: function `fold_expr` is never used
+  --> pixelflow-macros/src/fold.rs:97:8
+   |
+97 | pub fn fold_expr<F: ExprFold>(folder: &mut F, expr: &Expr) -> F::Output {
+   |        ^^^^^^^^^
+
+warning: enum `TokenClass` is never used
+  --> pixelflow-macros/src/lexer.rs:30:10
+   |
+30 | pub enum TokenClass {
+   |          ^^^^^^^^^^
+
+warning: function `classify_ident` is never used
+  --> pixelflow-macros/src/lexer.rs:46:8
+   |
+46 | pub fn classify_ident(name: &str) -> TokenClass {
+   |        ^^^^^^^^^^^^^^
+
+warning: function `lex` is never used
+  --> pixelflow-macros/src/lexer.rs:56:8
+   |
+56 | pub fn lex(input: TokenStream) -> TokenStream {
+   |        ^^^
+
+warning: struct `KernelParser` is never constructed
+  --> pixelflow-macros/src/parser.rs:43:8
+   |
+43 | struct KernelParser;
+   |        ^^^^^^^^^^^^
+
+warning: fields `name`, `ty`, and `span` are never read
+  --> pixelflow-macros/src/symbol.rs:57:9
+   |
+55 | pub struct Symbol {
+   |            ------ fields in this struct
+56 |     /// The identifier name.
+57 |     pub name: Ident,
+   |         ^^^^
+...
+61 |     pub ty: Option<Type>,
+   |         ^^
+62 |     /// Where the symbol was defined.
+63 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `Symbol` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: methods `is_parameter`, `parameters`, `is_manifold_param`, and `manifold_params` are never used
+   --> pixelflow-macros/src/symbol.rs:166:12
+    |
+ 75 | impl SymbolTable {
+    | ---------------- methods in this implementation
+...
+166 |     pub fn is_parameter(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^
+...
+173 |     pub fn parameters(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^
+...
+180 |     pub fn is_manifold_param(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^^^^^^
+...
+187 |     pub fn manifold_params(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^^^^^^
+
+       Fresh once_cell v1.21.3
+       Fresh anes v0.1.6
+       Fresh oorandom v11.1.5
+warning: `pixelflow-macros` (lib) generated 32 warnings (run `cargo fix --lib -p pixelflow-macros` to apply 7 suggestions)
+       Fresh criterion v0.5.1
+warning: associated items `select`, `from_i32`, `from_field`, `atan2`, `pow`, and `recip` are never used
+   --> pixelflow-core/src/numeric.rs:92:8
+    |
+ 64 | pub(crate) trait Numeric: Computational {
+    |                  ------- associated items in this trait
+...
+ 92 |     fn select(mask: Self, if_true: Self, if_false: Self) -> Self;
+    |        ^^^^^^
+...
+109 |     fn from_i32(val: i32) -> Self;
+    |        ^^^^^^^^
+...
+112 |     fn from_field(field: crate::Field) -> Self;
+    |        ^^^^^^^^^^
+...
+125 |     fn atan2(self, x: Self) -> Self;
+    |        ^^^^^
+...
+128 |     fn pow(self, exp: Self) -> Self;
+    |        ^^^
+...
+148 |     fn recip(self) -> Self;
+    |        ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `Field4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:484:6
+    |
+484 | type Field4 = (Field, Field, Field, Field);
+    |      ^^^^^^
+
+warning: type alias `Jet2_4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:485:6
+    |
+485 | type Jet2_4 = (Jet2, Jet2, Jet2, Jet2);
+    |      ^^^^^^
+
+warning: type alias `Jet3_4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:486:6
+    |
+486 | type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
+    |      ^^^^^^
+
+warning: missing documentation for a trait
+   --> pixelflow-core/src/combinators/binding.rs:163:1
+    |
+163 | pub trait Pred {
+    | ^^^^^^^^^^^^^^
+    |
+note: the lint level is defined here
+   --> pixelflow-core/src/lib.rs:130:9
+    |
+130 | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for an associated type
+   --> pixelflow-core/src/combinators/binding.rs:164:5
+    |
+164 |     type Output;
+    |     ^^^^^^^^^^^
+
+warning: `pixelflow-core` (lib) generated 6 warnings
+warning: variable does not need to be mutable
+ --> pixelflow-core/examples/asm_check.rs:9:9
+  |
+9 |     let mut packed = [0u32; PARALLELISM];
+  |         ----^^^^^^
+  |         |
+  |         help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `packed`
+ --> pixelflow-core/examples/asm_check.rs:9:9
+  |
+9 |     let mut packed = [0u32; PARALLELISM];
+  |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_packed`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `discrete`
+  --> pixelflow-core/examples/asm_check.rs:34:17
+   |
+34 |             let discrete = Discrete::pack(clamped, clamped, clamped, one);
+   |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_discrete`
+
+warning: unused import: `Manifold`
+ --> pixelflow-core/tests/test_context_tuple.rs:6:29
+  |
+6 | use pixelflow_core::{Field, Manifold, WithContext, X, Y};
+  |                             ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `Field4` is never used
+ --> pixelflow-core/tests/test_context_tuple.rs:8:6
+  |
+8 | type Field4 = (Field, Field, Field, Field);
+  |      ^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::domain::LetExtended`
+   --> pixelflow-core/src/combinators/binding.rs:526:9
+    |
+526 |     use crate::domain::LetExtended;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Y`
+   --> pixelflow-core/src/combinators/binding.rs:527:27
+    |
+527 |     use crate::{Field, X, Y};
+    |                           ^
+
+warning: `pixelflow-core` (example "asm_check") generated 3 warnings (run `cargo fix --example "asm_check" -p pixelflow-core` to apply 3 suggestions)
+warning: `pixelflow-core` (test "test_context_tuple") generated 2 warnings (run `cargo fix --test "test_context_tuple" -p pixelflow-core` to apply 1 suggestion)
+warning: `pixelflow-core` (lib test) generated 8 warnings (6 duplicates) (run `cargo fix --lib -p pixelflow-core --tests` to apply 2 suggestions)
+warning: unused import: `Y`
+  --> pixelflow-core/tests/test_kernel_5params.rs:62:36
+   |
+62 |     use pixelflow_core::{Manifold, Y, jet::Jet3, Field};
+   |                                    ^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Manifold`
+ --> pixelflow-core/tests/test_kernel_5params.rs:5:29
+  |
+5 | use pixelflow_core::{Field, Manifold};
+  |                             ^^^^^^^^
+
+warning: type alias `Field4` is never used
+ --> pixelflow-core/tests/test_kernel_5params.rs:8:6
+  |
+8 | type Field4 = (Field, Field, Field, Field);
+  |      ^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pixelflow-core` (test "test_kernel_5params") generated 3 warnings (run `cargo fix --test "test_kernel_5params" -p pixelflow-core` to apply 1 suggestion)
+       Fresh pixelflow-core v0.1.0 (/tmp/cargo-mutants-app-aQHEon.tmp/pixelflow-core)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.09s
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/pixelflow_core-efdf9a96430e87d9`
+
+running 31 tests
+test combinators::binding::tests::test_legacy_let_binding ... ok
+test combinators::binding::tests::test_nested_let_new_style ... ok
+test combinators::binding::tests::test_let_with_spatial ... ok
+test combinators::binding::tests::test_let_binding_new_style ... ok
+test combinators::block::tests::test_block_compiles_and_runs ... ok
+test combinators::block::tests::test_block_nested ... ok
+test combinators::block::tests::test_block_with_complex_expr ... ok
+test combinators::spherical::tests::test_sh_orthonormality ... ok
+test combinators::texture::tests::test_texture_clamping ... ok
+test combinators::texture::tests::test_texture_creation ... ok
+test combinators::texture::tests::test_texture_sample ... ok
+test combinators::with_gradient::tests::test_with_gradient_2d_distance ... ok
+test combinators::with_gradient::tests::test_with_gradient_2d_product ... ok
+test combinators::with_gradient::tests::test_with_gradient_2d_quadratic ... ok
+test combinators::with_gradient::tests::test_with_gradient_3d_distance ... ok
+test combinators::with_gradient::tests::test_with_gradient_3d_product ... ok
+test domain::tests::test_2d_spatial ... ok
+test domain::tests::test_4d_spatial ... ok
+test domain::tests::test_let_extended ... ok
+test domain::tests::test_nested_let ... ok
+test tests::test_gather_behavior ... ok
+test variables::tests::test_on_4d ... ok
+test variables::tests::test_x_on_2d ... ok
+test variables::tests::test_y_on_2d ... ok
+test variables::tests::test_z_on_2d_is_zero ... ok
+test zst::tests::test_combinators_with_zst_operands_are_zst ... ok
+test zst::tests::test_complex_expression_is_zst ... ok
+test zst::tests::test_coordinate_variables_are_zst ... ok
+test zst::tests::test_operators_with_zst_operands_are_zst ... ok
+test zst::tests::test_spherical_harmonics_are_zst ... ok
+test combinators::spherical::tests::test_sh_coeffs_dot ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/reference-0be242160ca34dc1`
+
+running 5 tests
+test tests::test_ref_gather_4bit_single ... ok
+test tests::test_ref_blend_alpha ... ok
+test tests::test_ref_unpack_4bit ... ok
+test tests::test_ref_saturating_operations ... ok
+test tests::test_ref_bilinear_interpolate ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/test_context_tuple-49ca14ee284a34eb`
+
+running 2 tests
+test test_with_context_5_params_compiles ... ok
+test test_with_context_constructs ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/test_jet2-d3ec9c5b989cd171`
+
+running 4 tests
+test test_jet2_automatic_gradient ... ignored, Needs internal Field access for lane extraction
+test test_jet2_chain_rule_sqrt ... ignored, Needs internal Field access for lane extraction
+test test_jet2_circle_normal ... ignored, Needs internal Field access for lane extraction
+test test_jet2_product_rule ... ignored, Needs internal Field access for lane extraction
+
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/test_jet2h-4e4f711c30f4c2de`
+
+running 7 tests
+test test_jet2h_arithmetic ... ok
+test test_jet2h_comparison ... ok
+test test_jet2h_complex_expression ... ok
+test test_jet2h_bitwise ... ok
+test test_jet2h_unary_ops ... ok
+test test_jet2h_seeding ... ok
+test test_jet2h_select ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/test_kernel_5params-761da0d1c2e0751a`
+
+running 5 tests
+test test_jet_kernel_with_param ... ok
+test test_kernel_6_params_compiles ... ok
+test test_kernel_7_params_compiles ... ok
+test test_kernel_5_params_compiles ... ok
+test test_kernel_8_params_compiles ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/unit_tests-d6de773337827b24`
+
+running 29 tests
+test binary_ops_tests::manifold_operators_should_compute_correctly ... ok
+test clone_copy_tests::field_copy_should_work ... ok
+test bnot_tests::bnot_should_invert_logic ... ok
+test complex_expr_tests::circle_sdf_should_compute_distance ... ok
+test debug_tests::field_debug_should_produce_output ... ok
+test field_tests::field_arithmetic_should_compute_correctly ... ok
+test default_tests::field_default_should_be_zero ... ok
+test field_tests::field_bitwise_should_compute_correctly ... ok
+test field_tests::field_from_i32_should_broadcast_value ... ok
+test clone_copy_tests::axis_clone_should_work ... ok
+test field_tests::field_from_f32_should_broadcast_value ... ok
+test field_tests::field_min_max_should_select_extremes ... ok
+test field_tests::field_sqrt_should_handle_negative ... ok
+test field_tests::field_sqrt_should_handle_zero ... ok
+test fix_tests::fix_combinator_should_iterate ... ok
+test hash_tests::axis_should_be_hashable ... ok
+test jet2_tests::jet2_derivatives_should_be_correct ... ok
+test manifold_tests::constant_types_should_eval_to_constant ... ok
+test manifold_tests::scale_combinator_should_scale_coordinates ... ok
+test map_tests::map_clamp_should_restrict_range ... ok
+test map_tests::map_should_transform_coordinates ... ok
+test select_tests::select_comparisons_should_respect_equality_boundary ... ok
+test select_tests::select_should_blend_mixed_mask ... ok
+test select_tests::select_should_choose_based_on_condition ... ok
+test select_tests::select_should_short_circuit_false_branch ... ok
+test select_tests::select_should_short_circuit_true_branch ... ok
+test unary_ops_tests::unary_operators_should_compute_correctly ... ok
+test variable_tests::axis_enums_should_be_distinct ... ok
+test variable_tests::coordinate_variables_should_evaluate_to_inputs ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/x86_backend_tests-535e2373f2b957ee`
+
+running 7 tests
+test tests::test_sse2_logic ... ok
+test tests::test_sse2_arithmetic ... ok
+test tests::test_sse2_bitwise ... ok
+test tests::test_sse2_mask_any_all ... ok
+test tests::test_sse2_math ... ok
+test tests::test_sse2_sequential ... ok
+test tests::test_sse2_store_panic - should panic ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pixelflow_core
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc --edition=2024 --crate-type lib --color auto --crate-name pixelflow_core --test pixelflow-core/src/lib.rs --test-run-directory /tmp/cargo-mutants-app-aQHEon.tmp/pixelflow-core -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' --extern criterion=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-aQHEon.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)' --error-format human`
+
+running 40 tests
+test pixelflow-core/src/backend/fastmath.rs - backend::fastmath::FastMathGuard (line 22) ... ignored
+test pixelflow-core/src/combinators/at.rs - combinators::at (line 16) ... ignored
+test pixelflow-core/src/combinators/at.rs - combinators::at (line 31) ... ignored
+test pixelflow-core/src/combinators/at.rs - combinators::at::AtArray (line 129) ... ignored
+test pixelflow-core/src/combinators/binding.rs - combinators::binding (line 30) ... ignored
+test pixelflow-core/src/combinators/block.rs - combinators::block (line 24) ... ignored
+test pixelflow-core/src/combinators/map.rs - combinators::map::Map (line 21) ... ignored
+test pixelflow-core/src/combinators/pack.rs - combinators::pack::Pack (line 20) ... ignored
+test pixelflow-core/src/combinators/texture.rs - combinators::texture::Texture (line 31) ... ignored
+test pixelflow-core/src/combinators/with_gradient.rs - combinators::with_gradient (line 23) ... ignored
+test pixelflow-core/src/combinators/with_gradient.rs - combinators::with_gradient::WithGradient<M,DIM>::new (line 98) ... ignored
+test pixelflow-core/src/ext.rs - ext::ManifoldExpr (line 448) ... ignored
+test pixelflow-core/src/ext.rs - ext::ManifoldExt (line 139) ... ignored
+test pixelflow-core/src/ext.rs - ext::ManifoldExt::at (line 401) ... ignored
+test pixelflow-core/src/lib.rs - (line 58) ... ignored
+test pixelflow-core/src/lib.rs - (line 83) ... ignored
+test pixelflow-core/src/lib.rs - Discrete (line 353) ... ignored
+test pixelflow-core/src/lib.rs - Discrete (line 366) ... ignored
+test pixelflow-core/src/lib.rs - Field (line 302) ... ignored
+test pixelflow-core/src/lib.rs - ext (line 187) ... ignored
+test pixelflow-core/src/lib.rs - ext (line 197) ... ignored
+test pixelflow-core/src/lib.rs - ext (line 205) ... ignored
+test pixelflow-core/src/lib.rs - manifold (line 165) ... ignored
+test pixelflow-core/src/lib.rs - manifold (line 180) ... ignored
+test pixelflow-core/src/lib.rs - manifold (line 195) ... ignored
+test pixelflow-core/src/lib.rs - manifold (line 210) ... ignored
+test pixelflow-core/src/lib.rs - materialize_discrete (line 1355) ... ignored
+test pixelflow-core/src/lib.rs - materialize_discrete_fields (line 1376) ... ignored
+test pixelflow-core/src/lib.rs - variables (line 171) ... ignored
+test pixelflow-core/src/lib.rs - zst (line 178) ... ignored
+test pixelflow-core/src/manifold.rs - manifold::Differentiable (line 351) ... ignored
+test pixelflow-core/src/manifold.rs - manifold::Manifold (line 112) ... ignored
+test pixelflow-core/src/manifold.rs - manifold::Thunk (line 276) ... ignored
+test pixelflow-core/src/ops/base.rs - ops::base (line 14) ... ignored
+test pixelflow-core/src/ops/binary.rs - ops::binary (line 11) ... ignored
+test pixelflow-core/src/ops/compare.rs - ops::compare (line 11) ... ignored
+test pixelflow-core/src/ops/derivative.rs - ops::derivative (line 21) ... ignored
+test pixelflow-core/src/ops/derivative.rs - ops::derivative::DxOf (line 88) ... ignored
+test pixelflow-core/src/ops/derivative.rs - ops::derivative::V (line 131) ... ignored
+test pixelflow-core/src/ops/derivative.rs - ops::derivative::ValOf (line 78) ... ignored
+
+test result: ok. 0 passed; 0 failed; 40 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test pixelflow-core/src/lib.rs - domain (line 168) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.23s; merged doctests compilation took 0.23s
+
+*** result: Success

@@ -1,0 +1,21 @@
+--- pixelflow-core/src/combinators/select.rs
++++ replace <impl FieldCondition<P> for Or<L, R>>::eval_mask -> NativeMask with Default::default()
+@@ -153,17 +153,17 @@
+ impl<L, R, P> FieldCondition<P> for Or<L, R>
+ where
+     P: Copy,
+     L: FieldCondition<P>,
+     R: FieldCondition<P>,
+ {
+     #[inline(always)]
+     fn eval_mask(&self, p: P) -> NativeMask {
+-        self.0.eval_mask(p) | self.1.eval_mask(p)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+
+ impl<T, P> FieldCondition<P> for BNot<T>
+ where
+     P: Copy,
+     T: FieldCondition<P>,
+ {

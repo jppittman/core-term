@@ -1,0 +1,1201 @@
+
+*** pixelflow-core/src/combinators/select.rs:571:12: delete ! in <impl Manifold<(([T0; N], [T1; M], [T2; K]), P)> for Select<C, Tr, F>>::eval
+
+*** mutation diff:
+--- pixelflow-core/src/combinators/select.rs
++++ delete ! in <impl Manifold<(([T0; N], [T1; M], [T2; K]), P)> for Select<C, Tr, F>>::eval
+@@ -563,17 +563,17 @@
+ {
+     type Output = O;
+     #[inline(always)]
+     fn eval(&self, p: (([T0; N], [T1; M], [T2; K]), P)) -> O {
+         let mask = self.cond.eval(p);
+         if mask.all() {
+             return self.if_true.eval(p);
+         }
+-        if !mask.any() {
++        if  /* ~ changed by cargo-mutants ~ */mask.any() {
+             return self.if_false.eval(p);
+         }
+         let true_val = self.if_true.eval(p);
+         let false_val = self.if_false.eval(p);
+         O::select_raw(mask, true_val, false_val)
+     }
+ }
+
+
+
+*** /home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=pixelflow-core@0.1.0
+       Fresh unicode-ident v1.0.18
+       Fresh proc-macro2 v1.0.95
+       Fresh autocfg v1.5.0
+       Fresh quote v1.0.40
+       Fresh syn v2.0.101
+       Fresh crossbeam-utils v0.8.21
+       Fresh cfg-if v1.0.0
+       Fresh either v1.15.0
+       Fresh serde_derive v1.0.219
+       Fresh zerocopy-derive v0.8.28
+       Fresh crossbeam-epoch v0.9.18
+       Fresh serde v1.0.219
+       Fresh zerocopy v0.8.28
+       Fresh crossbeam-deque v0.8.6
+       Fresh half v2.7.1
+       Fresh ciborium-io v0.2.2
+       Fresh ryu v1.0.20
+       Fresh anstyle v1.0.10
+       Fresh itoa v1.0.15
+       Fresh clap_lex v0.7.6
+       Fresh memchr v2.7.4
+       Fresh regex-syntax v0.8.5
+       Fresh plotters-backend v0.3.7
+       Fresh clap_builder v4.5.53
+       Fresh serde_json v1.0.140
+       Fresh num-traits v0.2.19
+       Fresh regex-automata v0.4.9
+       Fresh plotters-svg v0.3.7
+       Fresh ciborium-ll v0.2.2
+       Fresh libc v0.2.172
+       Fresh rayon-core v1.13.0
+       Fresh itertools v0.10.5
+       Fresh same-file v1.0.6
+       Fresh cast v0.3.0
+       Fresh rayon v1.11.0
+       Dirty pixelflow-core v0.1.0 (/tmp/cargo-mutants-app-8BuROU.tmp/pixelflow-core): the precalculated components changed
+   Compiling pixelflow-core v0.1.0 (/tmp/cargo-mutants-app-8BuROU.tmp/pixelflow-core)
+       Fresh walkdir v2.5.0
+       Fresh criterion-plot v0.5.0
+       Fresh plotters v0.3.7
+       Fresh ciborium v0.2.2
+       Fresh regex v1.11.1
+       Fresh libm v0.2.15
+       Fresh is-terminal v0.4.17
+     Running `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/build/pixelflow-core-322a137ee32ef4c9/build-script-build`
+       Fresh clap v4.5.53
+       Fresh tinytemplate v1.2.1
+       Fresh pixelflow-macros v0.1.0 (/tmp/cargo-mutants-app-8BuROU.tmp/pixelflow-macros)
+warning: unused import: `CallExpr`
+  --> pixelflow-macros/src/annotate.rs:22:39
+   |
+22 | use crate::ast::{BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, Stmt, UnaryOp};
+   |                                       ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Op`
+  --> pixelflow-macros/src/egraph/mod.rs:28:33
+   |
+28 | pub use node::{EClassId, ENode, Op};
+   |                                 ^^
+
+warning: unused imports: `BinaryExpr`, `BlockExpr`, `CallExpr`, `IdentExpr`, `LiteralExpr`, `MethodCallExpr`, and `UnaryExpr`
+  --> pixelflow-macros/src/fold.rs:26:18
+   |
+26 | use crate::ast::{BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt, UnaryExpr, UnaryOp};
+   |                  ^^^^^^^^^^            ^^^^^^^^^  ^^^^^^^^        ^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^        ^^^^^^^^^
+
+warning: unused imports: `GenericParam`, `Generics`, and `parse_quote`
+  --> pixelflow-macros/src/manifold_expr.rs:27:11
+   |
+27 | use syn::{parse_quote, DeriveInput, GenericParam, Generics};
+   |           ^^^^^^^^^^^               ^^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused import: `CallExpr`
+  --> pixelflow-macros/src/optimize.rs:18:38
+   |
+18 |     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
+   |                                      ^^^^^^^^
+
+warning: unused variable: `n`
+   --> pixelflow-macros/src/codegen.rs:992:17
+    |
+992 |             let n = params.len();
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_n`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `ty`
+   --> pixelflow-macros/src/parser.rs:166:15
+    |
+166 |     if let Ok(ty) = fork.parse::<Type>() {
+    |               ^^ help: if this is intentional, prefix it with an underscore: `_ty`
+
+warning: method `literal_count` is never used
+  --> pixelflow-macros/src/annotate.rs:40:12
+   |
+34 | impl AnnotationCtx {
+   | ------------------ method in this implementation
+...
+40 |     pub fn literal_count(&self) -> usize {
+   |            ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:65:9
+   |
+63 | pub struct AnnotatedLiteral {
+   |            ---------------- field in this struct
+64 |     pub lit: Lit,
+65 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedLiteral` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:76:9
+   |
+72 | pub struct AnnotatedBinary {
+   |            --------------- field in this struct
+...
+76 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedBinary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:83:9
+   |
+80 | pub struct AnnotatedUnary {
+   |            -------------- field in this struct
+...
+83 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedUnary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:91:9
+   |
+87 | pub struct AnnotatedMethodCall {
+   |            ------------------- field in this struct
+...
+91 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedMethodCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:99:9
+   |
+96 | pub struct AnnotatedCall {
+   |            ------------- field in this struct
+...
+99 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:106:9
+    |
+103 | pub struct AnnotatedBlock {
+    |            -------------- field in this struct
+...
+106 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedBlock` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:120:9
+    |
+116 | pub struct AnnotatedLet {
+    |            ------------ field in this struct
+...
+120 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedLet` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `AnnotationResult` is never constructed
+   --> pixelflow-macros/src/annotate.rs:131:12
+    |
+131 | pub struct AnnotationResult {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/ast.rs:119:9
+    |
+117 | pub struct IdentExpr {
+    |            --------- field in this struct
+118 |     pub name: Ident,
+119 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `IdentExpr` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `build_tuple` is never used
+  --> pixelflow-macros/src/codegen.rs:91:4
+   |
+91 | fn build_tuple(values: &[TokenStream]) -> TokenStream {
+   |    ^^^^^^^^^^^
+
+warning: enum `BindingStrategy` is never used
+   --> pixelflow-macros/src/codegen.rs:131:6
+    |
+131 | enum BindingStrategy {
+    |      ^^^^^^^^^^^^^^^
+
+warning: method `emit` is never used
+   --> pixelflow-macros/src/codegen.rs:166:8
+    |
+162 | impl BindingStrategy {
+    | -------------------- method in this implementation
+...
+166 |     fn emit(self, expr: TokenStream) -> TokenStream {
+    |        ^^^^
+
+warning: methods `is_associative` and `inverse` are never used
+  --> pixelflow-macros/src/egraph/node.rs:37:12
+   |
+30 | impl Op {
+   | ------- methods in this implementation
+...
+37 |     pub fn is_associative(&self) -> bool {
+   |            ^^^^^^^^^^^^^^
+...
+65 |     pub fn inverse(&self) -> Option<(Op, f32)> {
+   |            ^^^^^^^
+
+warning: variant `Associate` is never constructed
+  --> pixelflow-macros/src/egraph/rewrite.rs:37:5
+   |
+ 8 | pub enum RewriteAction {
+   |          ------------- variant in this enum
+...
+37 |     Associate {
+   |     ^^^^^^^^^
+   |
+   = note: `RewriteAction` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `Associative` is never constructed
+  --> pixelflow-macros/src/egraph/rules.rs:10:12
+   |
+10 | pub struct Associative {
+   |            ^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> pixelflow-macros/src/egraph/rules.rs:15:12
+   |
+14 | impl Associative {
+   | ---------------- associated function in this implementation
+15 |     pub fn new(op: Op) -> Box<Self> {
+   |            ^^^
+
+warning: trait `ExprFold` is never used
+  --> pixelflow-macros/src/fold.rs:38:11
+   |
+38 | pub trait ExprFold {
+   |           ^^^^^^^^
+
+warning: function `fold_expr` is never used
+  --> pixelflow-macros/src/fold.rs:97:8
+   |
+97 | pub fn fold_expr<F: ExprFold>(folder: &mut F, expr: &Expr) -> F::Output {
+   |        ^^^^^^^^^
+
+warning: enum `TokenClass` is never used
+  --> pixelflow-macros/src/lexer.rs:30:10
+   |
+30 | pub enum TokenClass {
+   |          ^^^^^^^^^^
+
+warning: function `classify_ident` is never used
+  --> pixelflow-macros/src/lexer.rs:46:8
+   |
+46 | pub fn classify_ident(name: &str) -> TokenClass {
+   |        ^^^^^^^^^^^^^^
+
+warning: function `lex` is never used
+  --> pixelflow-macros/src/lexer.rs:56:8
+   |
+56 | pub fn lex(input: TokenStream) -> TokenStream {
+   |        ^^^
+
+warning: struct `KernelParser` is never constructed
+  --> pixelflow-macros/src/parser.rs:43:8
+   |
+43 | struct KernelParser;
+   |        ^^^^^^^^^^^^
+
+warning: fields `name`, `ty`, and `span` are never read
+  --> pixelflow-macros/src/symbol.rs:57:9
+   |
+55 | pub struct Symbol {
+   |            ------ fields in this struct
+56 |     /// The identifier name.
+57 |     pub name: Ident,
+   |         ^^^^
+...
+61 |     pub ty: Option<Type>,
+   |         ^^
+62 |     /// Where the symbol was defined.
+63 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `Symbol` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: methods `is_parameter`, `parameters`, `is_manifold_param`, and `manifold_params` are never used
+   --> pixelflow-macros/src/symbol.rs:166:12
+    |
+ 75 | impl SymbolTable {
+    | ---------------- methods in this implementation
+...
+166 |     pub fn is_parameter(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^
+...
+173 |     pub fn parameters(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^
+...
+180 |     pub fn is_manifold_param(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^^^^^^
+...
+187 |     pub fn manifold_params(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^^^^^^
+
+       Fresh anes v0.1.6
+warning: `pixelflow-macros` (lib) generated 32 warnings (run `cargo fix --lib -p pixelflow-macros` to apply 7 suggestions)
+       Fresh once_cell v1.21.3
+       Fresh oorandom v11.1.5
+       Fresh criterion v0.5.1
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name pixelflow_core --edition=2024 pixelflow-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=54e380c56c3ce718 -C extra-filename=-b5ba3349add61c22 --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rmeta --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name pixelflow_core --edition=2024 pixelflow-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=ce112429c3847c6b -C extra-filename=-efdf9a96430e87d9 --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+warning: unused import: `crate::domain::LetExtended`
+   --> pixelflow-core/src/combinators/binding.rs:526:9
+    |
+526 |     use crate::domain::LetExtended;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Y`
+   --> pixelflow-core/src/combinators/binding.rs:527:27
+    |
+527 |     use crate::{Field, X, Y};
+    |                           ^
+
+warning: associated items `select`, `from_i32`, `from_field`, `atan2`, `pow`, and `recip` are never used
+   --> pixelflow-core/src/numeric.rs:92:8
+    |
+ 64 | pub(crate) trait Numeric: Computational {
+    |                  ------- associated items in this trait
+...
+ 92 |     fn select(mask: Self, if_true: Self, if_false: Self) -> Self;
+    |        ^^^^^^
+...
+109 |     fn from_i32(val: i32) -> Self;
+    |        ^^^^^^^^
+...
+112 |     fn from_field(field: crate::Field) -> Self;
+    |        ^^^^^^^^^^
+...
+125 |     fn atan2(self, x: Self) -> Self;
+    |        ^^^^^
+...
+128 |     fn pow(self, exp: Self) -> Self;
+    |        ^^^
+...
+148 |     fn recip(self) -> Self;
+    |        ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `Field4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:484:6
+    |
+484 | type Field4 = (Field, Field, Field, Field);
+    |      ^^^^^^
+
+warning: type alias `Jet2_4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:485:6
+    |
+485 | type Jet2_4 = (Jet2, Jet2, Jet2, Jet2);
+    |      ^^^^^^
+
+warning: type alias `Jet3_4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:486:6
+    |
+486 | type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
+    |      ^^^^^^
+
+warning: missing documentation for a trait
+   --> pixelflow-core/src/combinators/binding.rs:163:1
+    |
+163 | pub trait Pred {
+    | ^^^^^^^^^^^^^^
+    |
+note: the lint level is defined here
+   --> pixelflow-core/src/lib.rs:130:9
+    |
+130 | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for an associated type
+   --> pixelflow-core/src/combinators/binding.rs:164:5
+    |
+164 |     type Output;
+    |     ^^^^^^^^^^^
+
+warning: `pixelflow-core` (lib test) generated 8 warnings (run `cargo fix --lib -p pixelflow-core --tests` to apply 2 suggestions)
+warning: `pixelflow-core` (lib) generated 6 warnings (6 duplicates)
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name test_jet2 --edition=2024 pixelflow-core/tests/test_jet2.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=b5759dc99276c77d -C extra-filename=-d3ec9c5b989cd171 --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name select_asm --edition=2024 pixelflow-core/examples/select_asm.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=d847a1262349e946 -C extra-filename=-0a02e69d200632c5 --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/examples -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name test_jet2h --edition=2024 pixelflow-core/tests/test_jet2h.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=0530fa0e09e8955e -C extra-filename=-4e4f711c30f4c2de --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name unit_tests --edition=2024 pixelflow-core/tests/unit_tests.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=3fae35441106d1a2 -C extra-filename=-d6de773337827b24 --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name asm_check --edition=2024 pixelflow-core/examples/asm_check.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=403742d59ae4fc8b -C extra-filename=-64a22fbda2d68f68 --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/examples -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+warning: variable does not need to be mutable
+ --> pixelflow-core/examples/asm_check.rs:9:9
+  |
+9 |     let mut packed = [0u32; PARALLELISM];
+  |         ----^^^^^^
+  |         |
+  |         help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `packed`
+ --> pixelflow-core/examples/asm_check.rs:9:9
+  |
+9 |     let mut packed = [0u32; PARALLELISM];
+  |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_packed`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `discrete`
+  --> pixelflow-core/examples/asm_check.rs:34:17
+   |
+34 |             let discrete = Discrete::pack(clamped, clamped, clamped, one);
+   |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_discrete`
+
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name x86_backend_tests --edition=2024 pixelflow-core/tests/x86_backend_tests.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=7dd9c93ec3100562 -C extra-filename=-535e2373f2b957ee --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name reference --edition=2024 pixelflow-core/tests/reference.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=3c34a895e8adba78 -C extra-filename=-0be242160ca34dc1 --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name test_kernel_5params --edition=2024 pixelflow-core/tests/test_kernel_5params.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=99b20a349e31ab7e -C extra-filename=-761da0d1c2e0751a --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+warning: `pixelflow-core` (example "asm_check") generated 3 warnings (run `cargo fix --example "asm_check" -p pixelflow-core` to apply 3 suggestions)
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name test_context_tuple --edition=2024 pixelflow-core/tests/test_context_tuple.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=5b47e72c47429399 -C extra-filename=-49ca14ee284a34eb --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+warning: unused import: `Manifold`
+ --> pixelflow-core/tests/test_context_tuple.rs:6:29
+  |
+6 | use pixelflow_core::{Field, Manifold, WithContext, X, Y};
+  |                             ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `Field4` is never used
+ --> pixelflow-core/tests/test_context_tuple.rs:8:6
+  |
+8 | type Field4 = (Field, Field, Field, Field);
+  |      ^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Y`
+  --> pixelflow-core/tests/test_kernel_5params.rs:62:36
+   |
+62 |     use pixelflow_core::{Manifold, Y, jet::Jet3, Field};
+   |                                    ^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Manifold`
+ --> pixelflow-core/tests/test_kernel_5params.rs:5:29
+  |
+5 | use pixelflow_core::{Field, Manifold};
+  |                             ^^^^^^^^
+
+warning: type alias `Field4` is never used
+ --> pixelflow-core/tests/test_kernel_5params.rs:8:6
+  |
+8 | type Field4 = (Field, Field, Field, Field);
+  |      ^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name fma_test --edition=2024 pixelflow-core/examples/fma_test.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C opt-level=2 -C embed-bitcode=no -C debuginfo=2 --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' -C debug-assertions=on --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=8556950e1f00a016 -C extra-filename=-2477300ea2a2c71c --out-dir /tmp/cargo-mutants-app-8BuROU.tmp/target/debug/examples -C incremental=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C target-cpu=native -C llvm-args=-fp-contract=fast --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)'`
+warning: `pixelflow-core` (test "test_context_tuple") generated 2 warnings (run `cargo fix --test "test_context_tuple" -p pixelflow-core` to apply 1 suggestion)
+warning: `pixelflow-core` (test "test_kernel_5params") generated 3 warnings (run `cargo fix --test "test_kernel_5params" -p pixelflow-core` to apply 1 suggestion)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.13s
+  Executable `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/pixelflow_core-efdf9a96430e87d9`
+  Executable `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/reference-0be242160ca34dc1`
+  Executable `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/test_context_tuple-49ca14ee284a34eb`
+  Executable `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/test_jet2-d3ec9c5b989cd171`
+  Executable `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/test_jet2h-4e4f711c30f4c2de`
+  Executable `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/test_kernel_5params-761da0d1c2e0751a`
+  Executable `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/unit_tests-d6de773337827b24`
+  Executable `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/x86_backend_tests-535e2373f2b957ee`
+
+*** result: Success
+
+*** /home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=pixelflow-core@0.1.0
+       Fresh unicode-ident v1.0.18
+       Fresh proc-macro2 v1.0.95
+       Fresh quote v1.0.40
+       Fresh syn v2.0.101
+       Fresh autocfg v1.5.0
+       Fresh crossbeam-utils v0.8.21
+       Fresh zerocopy-derive v0.8.28
+       Fresh serde_derive v1.0.219
+       Fresh crossbeam-epoch v0.9.18
+       Fresh zerocopy v0.8.28
+       Fresh serde v1.0.219
+       Fresh either v1.15.0
+       Fresh cfg-if v1.0.0
+       Fresh crossbeam-deque v0.8.6
+       Fresh half v2.7.1
+       Fresh ciborium-io v0.2.2
+       Fresh itoa v1.0.15
+       Fresh clap_lex v0.7.6
+       Fresh memchr v2.7.4
+       Fresh anstyle v1.0.10
+       Fresh ryu v1.0.20
+       Fresh regex-syntax v0.8.5
+       Fresh plotters-backend v0.3.7
+       Fresh clap_builder v4.5.53
+       Fresh serde_json v1.0.140
+       Fresh regex-automata v0.4.9
+       Fresh plotters-svg v0.3.7
+       Fresh num-traits v0.2.19
+       Fresh ciborium-ll v0.2.2
+       Fresh rayon-core v1.13.0
+       Fresh libc v0.2.172
+       Fresh itertools v0.10.5
+       Fresh cast v0.3.0
+       Fresh same-file v1.0.6
+       Fresh is-terminal v0.4.17
+       Fresh criterion-plot v0.5.0
+       Fresh walkdir v2.5.0
+       Fresh ciborium v0.2.2
+       Fresh rayon v1.11.0
+       Fresh regex v1.11.1
+       Fresh plotters v0.3.7
+       Fresh libm v0.2.15
+       Fresh clap v4.5.53
+       Fresh tinytemplate v1.2.1
+       Fresh pixelflow-macros v0.1.0 (/tmp/cargo-mutants-app-8BuROU.tmp/pixelflow-macros)
+warning: unused import: `CallExpr`
+  --> pixelflow-macros/src/annotate.rs:22:39
+   |
+22 | use crate::ast::{BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, Stmt, UnaryOp};
+   |                                       ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Op`
+  --> pixelflow-macros/src/egraph/mod.rs:28:33
+   |
+28 | pub use node::{EClassId, ENode, Op};
+   |                                 ^^
+
+warning: unused imports: `BinaryExpr`, `BlockExpr`, `CallExpr`, `IdentExpr`, `LiteralExpr`, `MethodCallExpr`, and `UnaryExpr`
+  --> pixelflow-macros/src/fold.rs:26:18
+   |
+26 | use crate::ast::{BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt, UnaryExpr, UnaryOp};
+   |                  ^^^^^^^^^^            ^^^^^^^^^  ^^^^^^^^        ^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^        ^^^^^^^^^
+
+warning: unused imports: `GenericParam`, `Generics`, and `parse_quote`
+  --> pixelflow-macros/src/manifold_expr.rs:27:11
+   |
+27 | use syn::{parse_quote, DeriveInput, GenericParam, Generics};
+   |           ^^^^^^^^^^^               ^^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused import: `CallExpr`
+  --> pixelflow-macros/src/optimize.rs:18:38
+   |
+18 |     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
+   |                                      ^^^^^^^^
+
+warning: unused variable: `n`
+   --> pixelflow-macros/src/codegen.rs:992:17
+    |
+992 |             let n = params.len();
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_n`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `ty`
+   --> pixelflow-macros/src/parser.rs:166:15
+    |
+166 |     if let Ok(ty) = fork.parse::<Type>() {
+    |               ^^ help: if this is intentional, prefix it with an underscore: `_ty`
+
+warning: method `literal_count` is never used
+  --> pixelflow-macros/src/annotate.rs:40:12
+   |
+34 | impl AnnotationCtx {
+   | ------------------ method in this implementation
+...
+40 |     pub fn literal_count(&self) -> usize {
+   |            ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:65:9
+   |
+63 | pub struct AnnotatedLiteral {
+   |            ---------------- field in this struct
+64 |     pub lit: Lit,
+65 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedLiteral` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:76:9
+   |
+72 | pub struct AnnotatedBinary {
+   |            --------------- field in this struct
+...
+76 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedBinary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:83:9
+   |
+80 | pub struct AnnotatedUnary {
+   |            -------------- field in this struct
+...
+83 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedUnary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:91:9
+   |
+87 | pub struct AnnotatedMethodCall {
+   |            ------------------- field in this struct
+...
+91 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedMethodCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:99:9
+   |
+96 | pub struct AnnotatedCall {
+   |            ------------- field in this struct
+...
+99 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:106:9
+    |
+103 | pub struct AnnotatedBlock {
+    |            -------------- field in this struct
+...
+106 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedBlock` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:120:9
+    |
+116 | pub struct AnnotatedLet {
+    |            ------------ field in this struct
+...
+120 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedLet` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `AnnotationResult` is never constructed
+   --> pixelflow-macros/src/annotate.rs:131:12
+    |
+131 | pub struct AnnotationResult {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/ast.rs:119:9
+    |
+117 | pub struct IdentExpr {
+    |            --------- field in this struct
+118 |     pub name: Ident,
+119 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `IdentExpr` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `build_tuple` is never used
+  --> pixelflow-macros/src/codegen.rs:91:4
+   |
+91 | fn build_tuple(values: &[TokenStream]) -> TokenStream {
+   |    ^^^^^^^^^^^
+
+warning: enum `BindingStrategy` is never used
+   --> pixelflow-macros/src/codegen.rs:131:6
+    |
+131 | enum BindingStrategy {
+    |      ^^^^^^^^^^^^^^^
+
+warning: method `emit` is never used
+   --> pixelflow-macros/src/codegen.rs:166:8
+    |
+162 | impl BindingStrategy {
+    | -------------------- method in this implementation
+...
+166 |     fn emit(self, expr: TokenStream) -> TokenStream {
+    |        ^^^^
+
+warning: methods `is_associative` and `inverse` are never used
+  --> pixelflow-macros/src/egraph/node.rs:37:12
+   |
+30 | impl Op {
+   | ------- methods in this implementation
+...
+37 |     pub fn is_associative(&self) -> bool {
+   |            ^^^^^^^^^^^^^^
+...
+65 |     pub fn inverse(&self) -> Option<(Op, f32)> {
+   |            ^^^^^^^
+
+warning: variant `Associate` is never constructed
+  --> pixelflow-macros/src/egraph/rewrite.rs:37:5
+   |
+ 8 | pub enum RewriteAction {
+   |          ------------- variant in this enum
+...
+37 |     Associate {
+   |     ^^^^^^^^^
+   |
+   = note: `RewriteAction` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `Associative` is never constructed
+  --> pixelflow-macros/src/egraph/rules.rs:10:12
+   |
+10 | pub struct Associative {
+   |            ^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> pixelflow-macros/src/egraph/rules.rs:15:12
+   |
+14 | impl Associative {
+   | ---------------- associated function in this implementation
+15 |     pub fn new(op: Op) -> Box<Self> {
+   |            ^^^
+
+warning: trait `ExprFold` is never used
+  --> pixelflow-macros/src/fold.rs:38:11
+   |
+38 | pub trait ExprFold {
+   |           ^^^^^^^^
+
+warning: function `fold_expr` is never used
+  --> pixelflow-macros/src/fold.rs:97:8
+   |
+97 | pub fn fold_expr<F: ExprFold>(folder: &mut F, expr: &Expr) -> F::Output {
+   |        ^^^^^^^^^
+
+warning: enum `TokenClass` is never used
+  --> pixelflow-macros/src/lexer.rs:30:10
+   |
+30 | pub enum TokenClass {
+   |          ^^^^^^^^^^
+
+warning: function `classify_ident` is never used
+  --> pixelflow-macros/src/lexer.rs:46:8
+   |
+46 | pub fn classify_ident(name: &str) -> TokenClass {
+   |        ^^^^^^^^^^^^^^
+
+warning: function `lex` is never used
+  --> pixelflow-macros/src/lexer.rs:56:8
+   |
+56 | pub fn lex(input: TokenStream) -> TokenStream {
+   |        ^^^
+
+warning: struct `KernelParser` is never constructed
+  --> pixelflow-macros/src/parser.rs:43:8
+   |
+43 | struct KernelParser;
+   |        ^^^^^^^^^^^^
+
+warning: fields `name`, `ty`, and `span` are never read
+  --> pixelflow-macros/src/symbol.rs:57:9
+   |
+55 | pub struct Symbol {
+   |            ------ fields in this struct
+56 |     /// The identifier name.
+57 |     pub name: Ident,
+   |         ^^^^
+...
+61 |     pub ty: Option<Type>,
+   |         ^^
+62 |     /// Where the symbol was defined.
+63 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `Symbol` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: methods `is_parameter`, `parameters`, `is_manifold_param`, and `manifold_params` are never used
+   --> pixelflow-macros/src/symbol.rs:166:12
+    |
+ 75 | impl SymbolTable {
+    | ---------------- methods in this implementation
+...
+166 |     pub fn is_parameter(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^
+...
+173 |     pub fn parameters(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^
+...
+180 |     pub fn is_manifold_param(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^^^^^^
+...
+187 |     pub fn manifold_params(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^^^^^^
+
+       Fresh oorandom v11.1.5
+       Fresh once_cell v1.21.3
+       Fresh anes v0.1.6
+warning: `pixelflow-macros` (lib) generated 32 warnings (run `cargo fix --lib -p pixelflow-macros` to apply 7 suggestions)
+       Fresh criterion v0.5.1
+warning: associated items `select`, `from_i32`, `from_field`, `atan2`, `pow`, and `recip` are never used
+   --> pixelflow-core/src/numeric.rs:92:8
+    |
+ 64 | pub(crate) trait Numeric: Computational {
+    |                  ------- associated items in this trait
+...
+ 92 |     fn select(mask: Self, if_true: Self, if_false: Self) -> Self;
+    |        ^^^^^^
+...
+109 |     fn from_i32(val: i32) -> Self;
+    |        ^^^^^^^^
+...
+112 |     fn from_field(field: crate::Field) -> Self;
+    |        ^^^^^^^^^^
+...
+125 |     fn atan2(self, x: Self) -> Self;
+    |        ^^^^^
+...
+128 |     fn pow(self, exp: Self) -> Self;
+    |        ^^^
+...
+148 |     fn recip(self) -> Self;
+    |        ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `Field4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:484:6
+    |
+484 | type Field4 = (Field, Field, Field, Field);
+    |      ^^^^^^
+
+warning: type alias `Jet2_4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:485:6
+    |
+485 | type Jet2_4 = (Jet2, Jet2, Jet2, Jet2);
+    |      ^^^^^^
+
+warning: type alias `Jet3_4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:486:6
+    |
+486 | type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
+    |      ^^^^^^
+
+warning: missing documentation for a trait
+   --> pixelflow-core/src/combinators/binding.rs:163:1
+    |
+163 | pub trait Pred {
+    | ^^^^^^^^^^^^^^
+    |
+note: the lint level is defined here
+   --> pixelflow-core/src/lib.rs:130:9
+    |
+130 | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for an associated type
+   --> pixelflow-core/src/combinators/binding.rs:164:5
+    |
+164 |     type Output;
+    |     ^^^^^^^^^^^
+
+warning: `pixelflow-core` (lib) generated 6 warnings
+warning: variable does not need to be mutable
+ --> pixelflow-core/examples/asm_check.rs:9:9
+  |
+9 |     let mut packed = [0u32; PARALLELISM];
+  |         ----^^^^^^
+  |         |
+  |         help: remove this `mut`
+  |
+  = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `packed`
+ --> pixelflow-core/examples/asm_check.rs:9:9
+  |
+9 |     let mut packed = [0u32; PARALLELISM];
+  |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_packed`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `discrete`
+  --> pixelflow-core/examples/asm_check.rs:34:17
+   |
+34 |             let discrete = Discrete::pack(clamped, clamped, clamped, one);
+   |                 ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_discrete`
+
+warning: `pixelflow-core` (example "asm_check") generated 3 warnings (run `cargo fix --example "asm_check" -p pixelflow-core` to apply 3 suggestions)
+warning: unused import: `Y`
+  --> pixelflow-core/tests/test_kernel_5params.rs:62:36
+   |
+62 |     use pixelflow_core::{Manifold, Y, jet::Jet3, Field};
+   |                                    ^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Manifold`
+ --> pixelflow-core/tests/test_kernel_5params.rs:5:29
+  |
+5 | use pixelflow_core::{Field, Manifold};
+  |                             ^^^^^^^^
+
+warning: type alias `Field4` is never used
+ --> pixelflow-core/tests/test_kernel_5params.rs:8:6
+  |
+8 | type Field4 = (Field, Field, Field, Field);
+  |      ^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Manifold`
+ --> pixelflow-core/tests/test_context_tuple.rs:6:29
+  |
+6 | use pixelflow_core::{Field, Manifold, WithContext, X, Y};
+  |                             ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: type alias `Field4` is never used
+ --> pixelflow-core/tests/test_context_tuple.rs:8:6
+  |
+8 | type Field4 = (Field, Field, Field, Field);
+  |      ^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pixelflow-core` (test "test_kernel_5params") generated 3 warnings (run `cargo fix --test "test_kernel_5params" -p pixelflow-core` to apply 1 suggestion)
+warning: `pixelflow-core` (test "test_context_tuple") generated 2 warnings (run `cargo fix --test "test_context_tuple" -p pixelflow-core` to apply 1 suggestion)
+warning: unused import: `crate::domain::LetExtended`
+   --> pixelflow-core/src/combinators/binding.rs:526:9
+    |
+526 |     use crate::domain::LetExtended;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Y`
+   --> pixelflow-core/src/combinators/binding.rs:527:27
+    |
+527 |     use crate::{Field, X, Y};
+    |                           ^
+
+       Fresh pixelflow-core v0.1.0 (/tmp/cargo-mutants-app-8BuROU.tmp/pixelflow-core)
+warning: `pixelflow-core` (lib test) generated 8 warnings (6 duplicates) (run `cargo fix --lib -p pixelflow-core --tests` to apply 2 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.10s
+     Running `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/pixelflow_core-efdf9a96430e87d9`
+
+running 31 tests
+test combinators::binding::tests::test_let_binding_new_style ... ok
+test combinators::binding::tests::test_legacy_let_binding ... ok
+test combinators::binding::tests::test_let_with_spatial ... ok
+test combinators::binding::tests::test_nested_let_new_style ... ok
+test combinators::block::tests::test_block_compiles_and_runs ... ok
+test combinators::block::tests::test_block_nested ... ok
+test combinators::block::tests::test_block_with_complex_expr ... ok
+test combinators::spherical::tests::test_sh_coeffs_dot ... ok
+test combinators::spherical::tests::test_sh_orthonormality ... ok
+test combinators::texture::tests::test_texture_clamping ... ok
+test combinators::texture::tests::test_texture_sample ... ok
+test combinators::with_gradient::tests::test_with_gradient_2d_product ... ok
+test combinators::texture::tests::test_texture_creation ... ok
+test combinators::with_gradient::tests::test_with_gradient_2d_distance ... ok
+test combinators::with_gradient::tests::test_with_gradient_2d_quadratic ... ok
+test combinators::with_gradient::tests::test_with_gradient_3d_distance ... ok
+test combinators::with_gradient::tests::test_with_gradient_3d_product ... ok
+test domain::tests::test_2d_spatial ... ok
+test domain::tests::test_4d_spatial ... ok
+test domain::tests::test_let_extended ... ok
+test domain::tests::test_nested_let ... ok
+test tests::test_gather_behavior ... ok
+test variables::tests::test_on_4d ... ok
+test variables::tests::test_x_on_2d ... ok
+test variables::tests::test_y_on_2d ... ok
+test variables::tests::test_z_on_2d_is_zero ... ok
+test zst::tests::test_combinators_with_zst_operands_are_zst ... ok
+test zst::tests::test_complex_expression_is_zst ... ok
+test zst::tests::test_coordinate_variables_are_zst ... ok
+test zst::tests::test_operators_with_zst_operands_are_zst ... ok
+test zst::tests::test_spherical_harmonics_are_zst ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/reference-0be242160ca34dc1`
+
+running 5 tests
+test tests::test_ref_bilinear_interpolate ... ok
+test tests::test_ref_gather_4bit_single ... ok
+test tests::test_ref_blend_alpha ... ok
+test tests::test_ref_unpack_4bit ... ok
+test tests::test_ref_saturating_operations ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/test_context_tuple-49ca14ee284a34eb`
+
+running 2 tests
+test test_with_context_5_params_compiles ... ok
+test test_with_context_constructs ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/test_jet2-d3ec9c5b989cd171`
+
+running 4 tests
+test test_jet2_automatic_gradient ... ignored, Needs internal Field access for lane extraction
+test test_jet2_chain_rule_sqrt ... ignored, Needs internal Field access for lane extraction
+test test_jet2_circle_normal ... ignored, Needs internal Field access for lane extraction
+test test_jet2_product_rule ... ignored, Needs internal Field access for lane extraction
+
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/test_jet2h-4e4f711c30f4c2de`
+
+running 7 tests
+test test_jet2h_arithmetic ... ok
+test test_jet2h_bitwise ... ok
+test test_jet2h_comparison ... ok
+test test_jet2h_select ... ok
+test test_jet2h_complex_expression ... ok
+test test_jet2h_unary_ops ... ok
+test test_jet2h_seeding ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/test_kernel_5params-761da0d1c2e0751a`
+
+running 5 tests
+test test_jet_kernel_with_param ... ok
+test test_kernel_5_params_compiles ... ok
+test test_kernel_6_params_compiles ... ok
+test test_kernel_7_params_compiles ... ok
+test test_kernel_8_params_compiles ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/unit_tests-d6de773337827b24`
+
+running 32 tests
+test clone_copy_tests::field_copy_should_work ... ok
+test binary_ops_tests::manifold_operators_should_compute_correctly ... ok
+test complex_expr_tests::circle_sdf_should_compute_distance ... ok
+test bnot_tests::bnot_should_invert_logic ... ok
+test clone_copy_tests::axis_clone_should_work ... ok
+test debug_tests::field_debug_should_produce_output ... ok
+test default_tests::field_default_should_be_zero ... ok
+test field_tests::field_bitwise_should_compute_correctly ... ok
+test field_tests::field_from_f32_should_broadcast_value ... ok
+test field_tests::field_from_i32_should_broadcast_value ... ok
+test field_tests::field_min_max_should_select_extremes ... ok
+test field_tests::field_sqrt_should_handle_negative ... ok
+test field_tests::field_sqrt_should_handle_zero ... ok
+test fix_tests::fix_combinator_should_iterate ... ok
+test hash_tests::axis_should_be_hashable ... ok
+test jet2_tests::jet2_derivatives_should_be_correct ... ok
+test jet2_tests::select_jet2_should_respect_all_true_condition ... ok
+test manifold_tests::constant_types_should_eval_to_constant ... ok
+test manifold_tests::scale_combinator_should_scale_coordinates ... ok
+test map_tests::map_clamp_should_restrict_range ... ok
+test map_tests::map_should_transform_coordinates ... ok
+test field_tests::field_arithmetic_should_compute_correctly ... ok
+test select_tests::select_comparisons_should_respect_equality_boundary ... ok
+test select_tests::select_logic_and_should_behave_like_and ... ok
+test select_tests::select_should_blend_mixed_mask ... ok
+test select_tests::select_should_choose_based_on_condition ... ok
+test select_tests::select_should_short_circuit_false_branch ... ok
+test select_tests::select_should_short_circuit_true_branch ... ok
+test unary_ops_tests::unary_operators_should_compute_correctly ... ok
+test select_tests::select_logic_or_should_behave_like_or ... ok
+test variable_tests::axis_enums_should_be_distinct ... ok
+test variable_tests::coordinate_variables_should_evaluate_to_inputs ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/x86_backend_tests-535e2373f2b957ee`
+
+running 7 tests
+test tests::test_sse2_arithmetic ... ok
+test tests::test_sse2_bitwise ... ok
+test tests::test_sse2_logic ... ok
+test tests::test_sse2_math ... ok
+test tests::test_sse2_mask_any_all ... ok
+test tests::test_sse2_sequential ... ok
+test tests::test_sse2_store_panic - should panic ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pixelflow_core
+     Running `/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc --edition=2024 --crate-type lib --color auto --crate-name pixelflow_core --test pixelflow-core/src/lib.rs --test-run-directory /tmp/cargo-mutants-app-8BuROU.tmp/pixelflow-core -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps --deny=unused_must_use '--warn=clippy::must_use_candidate' '--deny=clippy::let_underscore_must_use' --extern criterion=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libcriterion-b89a3a8c83975470.rlib --extern libm=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/liblibm-0bdcba870aba2368.rlib --extern pixelflow_core=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_core-b5ba3349add61c22.rlib --extern pixelflow_macros=/tmp/cargo-mutants-app-8BuROU.tmp/target/debug/deps/libpixelflow_macros-fe2f3925093bec6e.so -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' --cfg pixelflow_avx2 --check-cfg 'cfg(pixelflow_avx512f)' --check-cfg 'cfg(pixelflow_avx2)' --check-cfg 'cfg(pixelflow_neon)' --error-format human`
+
+running 40 tests
+test pixelflow-core/src/backend/fastmath.rs - backend::fastmath::FastMathGuard (line 22) ... ignored
+test pixelflow-core/src/combinators/at.rs - combinators::at (line 16) ... ignored
+test pixelflow-core/src/combinators/at.rs - combinators::at (line 31) ... ignored
+test pixelflow-core/src/combinators/at.rs - combinators::at::AtArray (line 129) ... ignored
+test pixelflow-core/src/combinators/binding.rs - combinators::binding (line 30) ... ignored
+test pixelflow-core/src/combinators/block.rs - combinators::block (line 24) ... ignored
+test pixelflow-core/src/combinators/map.rs - combinators::map::Map (line 21) ... ignored
+test pixelflow-core/src/combinators/pack.rs - combinators::pack::Pack (line 20) ... ignored
+test pixelflow-core/src/combinators/texture.rs - combinators::texture::Texture (line 31) ... ignored
+test pixelflow-core/src/combinators/with_gradient.rs - combinators::with_gradient (line 23) ... ignored
+test pixelflow-core/src/combinators/with_gradient.rs - combinators::with_gradient::WithGradient<M,DIM>::new (line 98) ... ignored
+test pixelflow-core/src/ext.rs - ext::ManifoldExpr (line 448) ... ignored
+test pixelflow-core/src/ext.rs - ext::ManifoldExt (line 139) ... ignored
+test pixelflow-core/src/ext.rs - ext::ManifoldExt::at (line 401) ... ignored
+test pixelflow-core/src/lib.rs - (line 58) ... ignored
+test pixelflow-core/src/lib.rs - (line 83) ... ignored
+test pixelflow-core/src/lib.rs - Discrete (line 353) ... ignored
+test pixelflow-core/src/lib.rs - Discrete (line 366) ... ignored
+test pixelflow-core/src/lib.rs - Field (line 302) ... ignored
+test pixelflow-core/src/lib.rs - ext (line 187) ... ignored
+test pixelflow-core/src/lib.rs - ext (line 197) ... ignored
+test pixelflow-core/src/lib.rs - ext (line 205) ... ignored
+test pixelflow-core/src/lib.rs - manifold (line 165) ... ignored
+test pixelflow-core/src/lib.rs - manifold (line 180) ... ignored
+test pixelflow-core/src/lib.rs - manifold (line 195) ... ignored
+test pixelflow-core/src/lib.rs - manifold (line 210) ... ignored
+test pixelflow-core/src/lib.rs - materialize_discrete (line 1355) ... ignored
+test pixelflow-core/src/lib.rs - materialize_discrete_fields (line 1376) ... ignored
+test pixelflow-core/src/lib.rs - variables (line 171) ... ignored
+test pixelflow-core/src/lib.rs - zst (line 178) ... ignored
+test pixelflow-core/src/manifold.rs - manifold::Differentiable (line 351) ... ignored
+test pixelflow-core/src/manifold.rs - manifold::Manifold (line 112) ... ignored
+test pixelflow-core/src/manifold.rs - manifold::Thunk (line 276) ... ignored
+test pixelflow-core/src/ops/base.rs - ops::base (line 14) ... ignored
+test pixelflow-core/src/ops/binary.rs - ops::binary (line 11) ... ignored
+test pixelflow-core/src/ops/compare.rs - ops::compare (line 11) ... ignored
+test pixelflow-core/src/ops/derivative.rs - ops::derivative (line 21) ... ignored
+test pixelflow-core/src/ops/derivative.rs - ops::derivative::DxOf (line 88) ... ignored
+test pixelflow-core/src/ops/derivative.rs - ops::derivative::V (line 131) ... ignored
+test pixelflow-core/src/ops/derivative.rs - ops::derivative::ValOf (line 78) ... ignored
+
+test result: ok. 0 passed; 0 failed; 40 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test pixelflow-core/src/lib.rs - domain (line 168) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.23s; merged doctests compilation took 0.23s
+
+*** result: Success

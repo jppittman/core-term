@@ -1,0 +1,2209 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 52.692135695,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.803954349,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:92:9: replace <impl FieldCondition<Field4> for Lt<L, R>>::eval_mask -> NativeMask with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<Field4> for Lt<L, R>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 90,
+                "column": 5
+              },
+              "end": {
+                "line": 95,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 92,
+              "column": 9
+            },
+            "end": {
+              "line": 94,
+              "column": 31
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_92_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_92_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.965389638,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151431834,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:105:9: replace <impl FieldCondition<Field4> for Gt<L, R>>::eval_mask -> NativeMask with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<Field4> for Gt<L, R>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 103,
+                "column": 5
+              },
+              "end": {
+                "line": 108,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 105,
+              "column": 9
+            },
+            "end": {
+              "line": 107,
+              "column": 31
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_105_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_105_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.012835887,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151405951,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:118:9: replace <impl FieldCondition<Field4> for Le<L, R>>::eval_mask -> NativeMask with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<Field4> for Le<L, R>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 116,
+                "column": 5
+              },
+              "end": {
+                "line": 121,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 118,
+              "column": 9
+            },
+            "end": {
+              "line": 120,
+              "column": 31
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_118_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_118_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.8651843019999998,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151420703,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:131:9: replace <impl FieldCondition<Field4> for Ge<L, R>>::eval_mask -> NativeMask with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<Field4> for Ge<L, R>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 129,
+                "column": 5
+              },
+              "end": {
+                "line": 134,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 131,
+              "column": 9
+            },
+            "end": {
+              "line": 133,
+              "column": 31
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_131_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_131_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.808974027,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151429279,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:149:9: replace <impl FieldCondition<P> for And<L, R>>::eval_mask -> NativeMask with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<P> for And<L, R>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 147,
+                "column": 5
+              },
+              "end": {
+                "line": 150,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 149,
+              "column": 9
+            },
+            "end": {
+              "line": 149,
+              "column": 50
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_149_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_149_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.866213237,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.055076518,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:149:29: replace & with | in <impl FieldCondition<P> for And<L, R>>::eval_mask",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<P> for And<L, R>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 147,
+                "column": 5
+              },
+              "end": {
+                "line": 150,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 149,
+              "column": 29
+            },
+            "end": {
+              "line": 149,
+              "column": 30
+            }
+          },
+          "replacement": "|",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_149_col_29.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_149_col_29.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.923544132,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.308815331,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:149:29: replace & with ^ in <impl FieldCondition<P> for And<L, R>>::eval_mask",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<P> for And<L, R>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 147,
+                "column": 5
+              },
+              "end": {
+                "line": 150,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 149,
+              "column": 29
+            },
+            "end": {
+              "line": 149,
+              "column": 30
+            }
+          },
+          "replacement": "^",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_149_col_29_001.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_149_col_29_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.457834141,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:161:9: replace <impl FieldCondition<P> for Or<L, R>>::eval_mask -> NativeMask with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<P> for Or<L, R>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 159,
+                "column": 5
+              },
+              "end": {
+                "line": 162,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 161,
+              "column": 9
+            },
+            "end": {
+              "line": 161,
+              "column": 50
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_161_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_161_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.915508776,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.753560442,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:161:29: replace | with & in <impl FieldCondition<P> for Or<L, R>>::eval_mask",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<P> for Or<L, R>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 159,
+                "column": 5
+              },
+              "end": {
+                "line": 162,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 161,
+              "column": 29
+            },
+            "end": {
+              "line": 161,
+              "column": 30
+            }
+          },
+          "replacement": "&",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_161_col_29.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_161_col_29.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.715994569,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.753378161,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:161:29: replace | with ^ in <impl FieldCondition<P> for Or<L, R>>::eval_mask",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<P> for Or<L, R>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 159,
+                "column": 5
+              },
+              "end": {
+                "line": 162,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 161,
+              "column": 29
+            },
+            "end": {
+              "line": 161,
+              "column": 30
+            }
+          },
+          "replacement": "^",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_161_col_29_001.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_161_col_29_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.756561363,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:172:9: replace <impl FieldCondition<P> for BNot<T>>::eval_mask -> NativeMask with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<P> for BNot<T>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 170,
+                "column": 5
+              },
+              "end": {
+                "line": 173,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 172,
+              "column": 9
+            },
+            "end": {
+              "line": 172,
+              "column": 29
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_172_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_172_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.119373689,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151535476,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:172:9: delete ! in <impl FieldCondition<P> for BNot<T>>::eval_mask",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<P> for BNot<T>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 170,
+                "column": 5
+              },
+              "end": {
+                "line": 173,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 172,
+              "column": 9
+            },
+            "end": {
+              "line": 172,
+              "column": 10
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_172_col_9_001.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_172_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.367846177,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.151730461,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:190:9: replace <impl FieldCondition<Field4> for crate::ops::unary::Abs<T>>::eval_mask -> NativeMask with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<Field4> for crate::ops::unary::Abs<T>>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 184,
+                "column": 5
+              },
+              "end": {
+                "line": 192,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 190,
+              "column": 9
+            },
+            "end": {
+              "line": 191,
+              "column": 30
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_190_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_190_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.066852386,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.803652845,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:200:9: replace <impl FieldCondition<Field4> for Field>::eval_mask -> NativeMask with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl FieldCondition<Field4> for Field>::eval_mask",
+            "return_type": "-> NativeMask",
+            "span": {
+              "start": {
+                "line": 198,
+                "column": 5
+              },
+              "end": {
+                "line": 201,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 200,
+              "column": 9
+            },
+            "end": {
+              "line": 200,
+              "column": 31
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_200_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_200_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.919106852,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.804071295,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:219:9: replace <impl Manifold<Field4> for Select<C, T, F>>::eval -> O with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<Field4> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 216,
+                "column": 5
+              },
+              "end": {
+                "line": 236,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 219,
+              "column": 9
+            },
+            "end": {
+              "line": 235,
+              "column": 55
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_219_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_219_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.904705097,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:225:12: delete ! in <impl Manifold<Field4> for Select<C, T, F>>::eval",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<Field4> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 216,
+                "column": 5
+              },
+              "end": {
+                "line": 236,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 225,
+              "column": 12
+            },
+            "end": {
+              "line": 225,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_225_col_12.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_225_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.964390498,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.202173055,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:260:9: replace <impl Manifold<Jet4> for Select<C, T, F>>::eval -> O with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<Jet4> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 258,
+                "column": 5
+              },
+              "end": {
+                "line": 271,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 260,
+              "column": 9
+            },
+            "end": {
+              "line": 270,
+              "column": 49
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_260_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_260_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.955976372,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:264:12: delete ! in <impl Manifold<Jet4> for Select<C, T, F>>::eval",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<Jet4> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 258,
+                "column": 5
+              },
+              "end": {
+                "line": 271,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 264,
+              "column": 12
+            },
+            "end": {
+              "line": 264,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_264_col_12.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_264_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.114499218,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.753349584,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:295:9: replace <impl Manifold<Jet3_4> for Select<C, T, F>>::eval -> O with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<Jet3_4> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 293,
+                "column": 5
+              },
+              "end": {
+                "line": 309,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 295,
+              "column": 9
+            },
+            "end": {
+              "line": 308,
+              "column": 49
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_295_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_295_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.805100732,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:302:12: delete ! in <impl Manifold<Jet3_4> for Select<C, T, F>>::eval",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<Jet3_4> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 293,
+                "column": 5
+              },
+              "end": {
+                "line": 309,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 302,
+              "column": 12
+            },
+            "end": {
+              "line": 302,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_302_col_12.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_302_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.764727899,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.803655925,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:338:9: replace <impl Manifold<((V0, V1, V2, V3, V4), P)> for Select<C, T, F>>::eval -> O with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<((V0, V1, V2, V3, V4), P)> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 336,
+                "column": 5
+              },
+              "end": {
+                "line": 348,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 338,
+              "column": 9
+            },
+            "end": {
+              "line": 347,
+              "column": 49
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_338_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_338_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.80344924,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:342:12: delete ! in <impl Manifold<((V0, V1, V2, V3, V4), P)> for Select<C, T, F>>::eval",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<((V0, V1, V2, V3, V4), P)> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 336,
+                "column": 5
+              },
+              "end": {
+                "line": 348,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 342,
+              "column": 12
+            },
+            "end": {
+              "line": 342,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_342_col_12.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_342_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.913543835,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.803615782,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:369:9: replace <impl Manifold<((V0, V1, V2, V3, V4, V5), P)> for Select<C, T, F>>::eval -> O with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<((V0, V1, V2, V3, V4, V5), P)> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 367,
+                "column": 5
+              },
+              "end": {
+                "line": 379,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 369,
+              "column": 9
+            },
+            "end": {
+              "line": 378,
+              "column": 49
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_369_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_369_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.855681713,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:373:12: delete ! in <impl Manifold<((V0, V1, V2, V3, V4, V5), P)> for Select<C, T, F>>::eval",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<((V0, V1, V2, V3, V4, V5), P)> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 367,
+                "column": 5
+              },
+              "end": {
+                "line": 379,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 373,
+              "column": 12
+            },
+            "end": {
+              "line": 373,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_373_col_12.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_373_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.712711794,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.753458937,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:402:9: replace <impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)> for Select<C, T, F>>::eval -> O with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 400,
+                "column": 5
+              },
+              "end": {
+                "line": 412,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 402,
+              "column": 9
+            },
+            "end": {
+              "line": 411,
+              "column": 49
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_402_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_402_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.804022392,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:406:12: delete ! in <impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)> for Select<C, T, F>>::eval",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 400,
+                "column": 5
+              },
+              "end": {
+                "line": 412,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 406,
+              "column": 12
+            },
+            "end": {
+              "line": 406,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_406_col_12.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_406_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.714788232,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.905379838,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:436:9: replace <impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>>::eval -> O with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 434,
+                "column": 5
+              },
+              "end": {
+                "line": 446,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 436,
+              "column": 9
+            },
+            "end": {
+              "line": 445,
+              "column": 49
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_436_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_436_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.056461199,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:440:12: delete ! in <impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>>::eval",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 434,
+                "column": 5
+              },
+              "end": {
+                "line": 446,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 440,
+              "column": 12
+            },
+            "end": {
+              "line": 440,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_440_col_12.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_440_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.613528417,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.753222734,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:510:9: replace <impl Manifold<(([T; N],), P)> for Select<C, Tr, F>>::eval -> O with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<(([T; N],), P)> for Select<C, Tr, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 508,
+                "column": 5
+              },
+              "end": {
+                "line": 520,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 510,
+              "column": 9
+            },
+            "end": {
+              "line": 519,
+              "column": 49
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_510_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_510_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.753086095,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:514:12: delete ! in <impl Manifold<(([T; N],), P)> for Select<C, Tr, F>>::eval",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<(([T; N],), P)> for Select<C, Tr, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 508,
+                "column": 5
+              },
+              "end": {
+                "line": 520,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 514,
+              "column": 12
+            },
+            "end": {
+              "line": 514,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_514_col_12.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_514_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.7120174430000001,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.753564873,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:538:9: replace <impl Manifold<(([T0; N], [T1; M]), P)> for Select<C, Tr, F>>::eval -> O with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<(([T0; N], [T1; M]), P)> for Select<C, Tr, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 536,
+                "column": 5
+              },
+              "end": {
+                "line": 548,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 538,
+              "column": 9
+            },
+            "end": {
+              "line": 547,
+              "column": 49
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_538_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_538_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.803796727,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:542:12: delete ! in <impl Manifold<(([T0; N], [T1; M]), P)> for Select<C, Tr, F>>::eval",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<(([T0; N], [T1; M]), P)> for Select<C, Tr, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 536,
+                "column": 5
+              },
+              "end": {
+                "line": 548,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 542,
+              "column": 12
+            },
+            "end": {
+              "line": 542,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_542_col_12.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_542_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.660750201,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.753732446,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:567:9: replace <impl Manifold<(([T0; N], [T1; M], [T2; K]), P)> for Select<C, Tr, F>>::eval -> O with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<(([T0; N], [T1; M], [T2; K]), P)> for Select<C, Tr, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 565,
+                "column": 5
+              },
+              "end": {
+                "line": 577,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 567,
+              "column": 9
+            },
+            "end": {
+              "line": 576,
+              "column": 49
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_567_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_567_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.753374913,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:571:12: delete ! in <impl Manifold<(([T0; N], [T1; M], [T2; K]), P)> for Select<C, Tr, F>>::eval",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<(([T0; N], [T1; M], [T2; K]), P)> for Select<C, Tr, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 565,
+                "column": 5
+              },
+              "end": {
+                "line": 577,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 571,
+              "column": 12
+            },
+            "end": {
+              "line": 571,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_571_col_12.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_571_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.714284931,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.803740036,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:610:9: replace <impl Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for Select<C, Tr, F>>::eval -> O with Default::default()",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for Select<C, Tr, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 608,
+                "column": 5
+              },
+              "end": {
+                "line": 620,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 610,
+              "column": 9
+            },
+            "end": {
+              "line": 619,
+              "column": 49
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_610_col_9.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_610_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.755145636,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "pixelflow-core/src/combinators/select.rs:614:12: delete ! in <impl Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for Select<C, Tr, F>>::eval",
+          "package": "pixelflow-core",
+          "file": "pixelflow-core/src/combinators/select.rs",
+          "function": {
+            "function_name": "<impl Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for Select<C, Tr, F>>::eval",
+            "return_type": "-> O",
+            "span": {
+              "start": {
+                "line": 608,
+                "column": 5
+              },
+              "end": {
+                "line": 620,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 614,
+              "column": 12
+            },
+            "end": {
+              "line": 614,
+              "column": 13
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/pixelflow-core__src__combinators__select.rs_line_614_col_12.log",
+      "diff_path": "diff/pixelflow-core__src__combinators__select.rs_line_614_col_12.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.660990288,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.803833143,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=pixelflow-core@0.1.0"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 36,
+  "missed": 16,
+  "caught": 7,
+  "timeout": 0,
+  "unviable": 13,
+  "success": 0,
+  "start_time": "2026-01-23T12:38:38.296690718Z",
+  "end_time": "2026-01-23T12:40:42.208442846Z",
+  "cargo_mutants_version": "26.1.2"
+}

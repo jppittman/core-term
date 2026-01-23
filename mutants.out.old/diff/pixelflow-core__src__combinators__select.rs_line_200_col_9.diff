@@ -1,0 +1,21 @@
+--- pixelflow-core/src/combinators/select.rs
++++ replace <impl FieldCondition<Field4> for Field>::eval_mask -> NativeMask with Default::default()
+@@ -192,17 +192,17 @@
+     }
+ }
+
+ // Field itself can be a condition (mask stored as float bits).
+ // Used when Field::gt/lt/etc. returns a Field mask directly.
+ impl FieldCondition<Field4> for Field {
+     #[inline(always)]
+     fn eval_mask(&self, _p: Field4) -> NativeMask {
+-        self.0.float_to_mask()
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+
+ // ============================================================================
+ // Select implementation for 4D Field domain with FieldCondition (OPTIMIZED PATH)
+ // ============================================================================
+
+ impl<C, T, F, O> Manifold<Field4> for Select<C, T, F>

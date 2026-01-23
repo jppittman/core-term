@@ -1,0 +1,37 @@
+--- pixelflow-core/src/combinators/select.rs
++++ replace <impl Manifold<Field4> for Select<C, T, F>>::eval -> O with Default::default()
+@@ -211,33 +211,17 @@
+     C: FieldCondition<Field4>,
+     T: Manifold<Field4, Output = O>,
+     F: Manifold<Field4, Output = O>,
+ {
+     type Output = O;
+     #[inline(always)]
+     fn eval(&self, p: Field4) -> O {
+         // Get native mask directly - no float conversion!
+-        let mask = self.cond.eval_mask(p);
+-
+-        // Early exit using native mask ops (free on AVX-512 k-registers)
+-        if mask.all() {
+-            return self.if_true.eval(p);
+-        }
+-        if !mask.any() {
+-            return self.if_false.eval(p);
+-        }
+-
+-        // Select using Selectable trait
+-        // Convert native mask back to Field (float mask) for the generic interface
+-        let mask_field = Field(NativeSimd::mask_to_float(mask));
+-        let true_val = self.if_true.eval(p);
+-        let false_val = self.if_false.eval(p);
+-
+-        O::select_raw(mask_field, true_val, false_val)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+
+ // ============================================================================
+ // Generic implementation for non-Field types (Jet2, etc.) on 4D domains
+ // ============================================================================
+
+ type Jet4 = (

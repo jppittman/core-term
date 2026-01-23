@@ -1,0 +1,13 @@
+pixelflow-core/src/combinators/select.rs:149:29: replace & with ^ in <impl FieldCondition<P> for And<L, R>>::eval_mask
+pixelflow-core/src/combinators/select.rs:161:29: replace | with ^ in <impl FieldCondition<P> for Or<L, R>>::eval_mask
+pixelflow-core/src/combinators/select.rs:219:9: replace <impl Manifold<Field4> for Select<C, T, F>>::eval -> O with Default::default()
+pixelflow-core/src/combinators/select.rs:260:9: replace <impl Manifold<Jet4> for Select<C, T, F>>::eval -> O with Default::default()
+pixelflow-core/src/combinators/select.rs:295:9: replace <impl Manifold<Jet3_4> for Select<C, T, F>>::eval -> O with Default::default()
+pixelflow-core/src/combinators/select.rs:338:9: replace <impl Manifold<((V0, V1, V2, V3, V4), P)> for Select<C, T, F>>::eval -> O with Default::default()
+pixelflow-core/src/combinators/select.rs:369:9: replace <impl Manifold<((V0, V1, V2, V3, V4, V5), P)> for Select<C, T, F>>::eval -> O with Default::default()
+pixelflow-core/src/combinators/select.rs:402:9: replace <impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)> for Select<C, T, F>>::eval -> O with Default::default()
+pixelflow-core/src/combinators/select.rs:436:9: replace <impl Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>>::eval -> O with Default::default()
+pixelflow-core/src/combinators/select.rs:510:9: replace <impl Manifold<(([T; N],), P)> for Select<C, Tr, F>>::eval -> O with Default::default()
+pixelflow-core/src/combinators/select.rs:538:9: replace <impl Manifold<(([T0; N], [T1; M]), P)> for Select<C, Tr, F>>::eval -> O with Default::default()
+pixelflow-core/src/combinators/select.rs:567:9: replace <impl Manifold<(([T0; N], [T1; M], [T2; K]), P)> for Select<C, Tr, F>>::eval -> O with Default::default()
+pixelflow-core/src/combinators/select.rs:610:9: replace <impl Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for Select<C, Tr, F>>::eval -> O with Default::default()

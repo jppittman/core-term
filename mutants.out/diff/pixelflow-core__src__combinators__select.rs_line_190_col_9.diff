@@ -1,0 +1,22 @@
+--- pixelflow-core/src/combinators/select.rs
++++ replace <impl FieldCondition<Field4> for crate::ops::unary::Abs<T>>::eval_mask -> NativeMask with Default::default()
+@@ -182,18 +182,17 @@
+     T: Manifold<Field4, Output = Field>,
+ {
+     #[inline(always)]
+     fn eval_mask(&self, p: Field4) -> NativeMask {
+         // Abs doesn't produce a mask directly, so this shouldn't be called.
+         // But we need it for nested expressions like Ge(Abs(m), 0.5)
+         // In that case, Ge's eval_mask handles it properly.
+         // This impl is for cases where Abs is used as a bare condition (unusual).
+-        let val = self.0.eval(p);
+-        val.0.float_to_mask()
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+
+ // Field itself can be a condition (mask stored as float bits).
+ // Used when Field::gt/lt/etc. returns a Field mask directly.
+ impl FieldCondition<Field4> for Field {
+     #[inline(always)]
+     fn eval_mask(&self, _p: Field4) -> NativeMask {
