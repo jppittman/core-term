@@ -4,7 +4,8 @@
 
 pub mod at;
 pub mod binding;
-pub mod context; // Flat context tuple prototype
+pub mod block;
+pub mod context;  // Flat context tuple prototype
 pub mod fix;
 pub mod map;
 pub mod pack;
@@ -19,7 +20,8 @@ pub use binding::{
     B0, B1, Empty, GAdd, GDiv, GMul, GSub, Get, Graph, Let, Lift, N0, N1, N2, N3, N4, N5, N6, N7,
     Root, UInt, UTerm, Var,
 };
-pub use context::{CtxVar, WithContext}; // Flat context prototype
+pub use block::Block;
+pub use context::{A0, A1, A2, A3, CtxVar, WithContext};  // Array-based context
 pub use fix::Fix;
 pub use map::{ClosureMap, Map};
 pub use pack::Pack;

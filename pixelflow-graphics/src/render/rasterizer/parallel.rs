@@ -1,6 +1,6 @@
 //! # Parallel Rasterization
 //!
-//! Three strategies for multi-threaded manifold rendering, each with different tradeoffs.
+//! Two strategies for multi-threaded manifold rendering, each with different tradeoffs.
 //!
 //! ## Overview: Why Parallelize?
 //!
@@ -92,51 +92,11 @@
 //! render_work_stealing(&manifold, &mut buffer, shape, 4);
 //! ```
 //!
-//! ## Strategy 3: Thread Pool (`render_parallel_pooled`)
-//!
-//! **How it works**: Like work-stealing, but threads are persistent (pre-allocated). New rendering
-//! jobs are submitted to the pool; existing threads race for rows.
-//!
-//! ```text
-//! First Render         Second Render (reuses threads!)
-//! ├─ Create pool       ├─ pool.submit(job1)
-//! │ (spawn 4 threads)  │ pool.submit(job2)
-//! ├─ pool.submit(job)  │ pool.submit(job3)
-//! │                    │ pool.submit(job4)
-//! ├─ Wait (atomic)     │
-//! └─ Done              └─ Wait (reused threads)
-//!
-//! Benefit: No thread spawning overhead on subsequent calls
-//! ```
-//!
-//! **Precondition**: `pool` must be initialized with desired thread count
-//!
-//! **Postcondition**: All rows rendered; buffer fully populated; threads remain alive for next job
-//!
-//! **Tradeoffs**:
-//! - ✅ **Best amortized latency**: Zero spawn overhead after first render
-//! - ✅ **Good load balancing**: Work-stealing among pool threads
-//! - ✅ **Efficient for animation**: Frames 2, 3, 4... have minimal overhead
-//! - ❌ **Memory overhead**: Threads always live (stack overhead even when idle)
-//! - ❌ **Most complex**: Requires ThreadPool management
-//!
-//! **Best for**: Continuous animation (rendering many frames; amortizes thread creation)
-//!
-//! **Example usage**:
-//! ```ignore
-//! use pixelflow_graphics::render::ThreadPool;
-//!
-//! let pool = ThreadPool::new(4);
-//! render_parallel_pooled(&pool, &manifold, &mut buffer, shape);
-//! render_parallel_pooled(&pool, &manifold, &mut buffer, shape); // Reuses threads
-//! ```
-//!
 //! ## Which Strategy Should I Use?
 //!
 //! | Workload | Strategy | Reason |
 //! |----------|----------|--------|
 //! | Single render | `render_work_stealing` | Load balancing + low overhead |
-//! | Animation (60 FPS) | `render_parallel_pooled` | Amortizes thread spawn cost |
 //! | Simple, uniform | `render_parallel` | Minimal complexity |
 //! | Unknown complexity | `render_work_stealing` | Safe default; handles all cases |
 //!
@@ -162,10 +122,6 @@
 //!
 //! Work-steal: T_steal = W × N / P + O_atomic × ceil(N / row_width)
 //!             (better: fast threads help slow threads finish)
-//!
-//! Pool:       T_pool_1st = W × N / P + O_spawn
-//!             T_pool_nth = W × N / P + O_atomic × ceil(N / row_width)
-//!             (amortizes O_spawn across many renders)
 //! ```
 //!
 //! Where:
@@ -180,7 +136,7 @@
 //!
 //! ## Integration with Single-Threaded Rasterizer
 //!
-//! All three functions check `num_threads <= 1` and fall back to `execute()` (single-threaded).
+//! Both functions check `num_threads <= 1` and fall back to `execute()` (single-threaded).
 //! This simplifies usage: you can always call the parallel version with dynamic thread count.
 
 use super::Stripe;

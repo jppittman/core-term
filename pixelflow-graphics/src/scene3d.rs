@@ -177,6 +177,99 @@ pub fn plane(height: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
     PlaneKernel { h: height }
 }
 
+// ============================================================================
+// PATHJET GEOMETRY: Spheres with arbitrary ray origins
+// ============================================================================
+
+/// Sphere for PathJet rays (supports arbitrary ray origins).
+///
+/// Unlike the Jet3_4 sphere which assumes rays from camera at origin,
+/// this handles rays with explicit origin and direction components.
+///
+/// Ray equation: P(t) = O + t*D
+/// Sphere: |P - C|² = r²
+/// Solution: t = -(oc·D) - sqrt((oc·D)² - (|oc|² - r²))
+///   where oc = O - C (vector from center to ray origin)
+#[derive(Clone, Copy, ManifoldExpr)]
+pub struct PathJetSphere {
+    pub center: (f32, f32, f32),
+    pub radius: f32,
+}
+
+impl PathJetSphere {
+    pub fn new(center: (f32, f32, f32), radius: f32) -> Self {
+        Self { center, radius }
+    }
+}
+
+impl Manifold<PathJet4> for PathJetSphere {
+    type Output = Jet3;
+
+    #[inline]
+    fn eval(&self, p: PathJet4) -> Jet3 {
+        let (x, y, z, _w) = p;
+        let cx = Jet3::constant(Field::from(self.center.0));
+        let cy = Jet3::constant(Field::from(self.center.1));
+        let cz = Jet3::constant(Field::from(self.center.2));
+        let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
+        let eps = Jet3::constant(Field::from(0.0001));
+
+        // oc = O - C (origin minus center)
+        let oc_x = x.val - cx;
+        let oc_y = y.val - cy;
+        let oc_z = z.val - cz;
+
+        // Direction (assume normalized or will normalize later)
+        let dx = x.dir;
+        let dy = y.dir;
+        let dz = z.dir;
+
+        // oc·D (dot product)
+        let oc_dot_d = oc_x * dx + oc_y * dy + oc_z * dz;
+
+        // |oc|²
+        let oc_sq = oc_x * oc_x + oc_y * oc_y + oc_z * oc_z;
+
+        // discriminant = (oc·D)² - (|oc|² - r²)
+        let discriminant = oc_dot_d * oc_dot_d - (oc_sq - r_sq);
+
+        // t = -(oc·D) - sqrt(discriminant + epsilon)
+        let zero = Jet3::constant(Field::from(0.0));
+        let neg_oc_dot_d = zero - oc_dot_d;
+        neg_oc_dot_d - (discriminant + eps).sqrt()
+    }
+}
+
+/// Also implement Jet3_4 for PathJetSphere (backwards compatibility).
+/// When used with Jet3_4, assumes origin = 0 (camera at origin).
+impl Manifold<Jet3_4> for PathJetSphere {
+    type Output = Jet3;
+
+    #[inline]
+    fn eval(&self, p: Jet3_4) -> Jet3 {
+        let (rx, ry, rz, _w) = p;
+        let cx = Jet3::constant(Field::from(self.center.0));
+        let cy = Jet3::constant(Field::from(self.center.1));
+        let cz = Jet3::constant(Field::from(self.center.2));
+        let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
+        let eps = Jet3::constant(Field::from(0.0001));
+
+        // For origin at 0: oc = -C
+        // oc·D = -C·D = -(D·C)
+        // So -(oc·D) = D·C
+        let d_dot_c = rx * cx + ry * cy + rz * cz;
+
+        // |oc|² = |C|²
+        let c_sq = cx * cx + cy * cy + cz * cz;
+
+        // discriminant = (D·C)² - (|C|² - r²)
+        let discriminant = d_dot_c * d_dot_c - (c_sq - r_sq);
+
+        // t = (D·C) - sqrt(discriminant + epsilon)
+        d_dot_c - (discriminant + eps).sqrt()
+    }
+}
+
 /// Height field geometry: z = base_height + scale * f(x, y)
 ///
 /// Single-step intersection: hit base plane, sample height, adjust t.

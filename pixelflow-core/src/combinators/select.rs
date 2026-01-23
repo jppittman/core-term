@@ -315,59 +315,8 @@ where
 // This enables Select to work with WithContext-extended domains.
 // The condition, true branch, and false branch all evaluate on the extended domain,
 // but we extract the base spatial domain P for coordinate access.
-
-/// Generic Select impl for 1-element tuple domains
-impl<V0, P, C, T, F, O> Manifold<((V0,), P)> for Select<C, T, F>
-where
-    V0: Copy + Send + Sync,
-    P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    C: Manifold<((V0,), P), Output = O>,
-    T: Manifold<((V0,), P), Output = O>,
-    F: Manifold<((V0,), P), Output = O>,
-{
-    type Output = O;
-    #[inline(always)]
-    fn eval(&self, p: ((V0,), P)) -> O {
-        let mask = self.cond.eval(p);
-        if mask.all() {
-            return self.if_true.eval(p);
-        }
-        if !mask.any() {
-            return self.if_false.eval(p);
-        }
-        let true_val = self.if_true.eval(p);
-        let false_val = self.if_false.eval(p);
-        O::select_raw(mask, true_val, false_val)
-    }
-}
-
-/// Generic Select impl for 2-element tuple domains
-impl<V0, V1, P, C, T, F, O> Manifold<((V0, V1), P)> for Select<C, T, F>
-where
-    V0: Copy + Send + Sync,
-    V1: Copy + Send + Sync,
-    P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    C: Manifold<((V0, V1), P), Output = O>,
-    T: Manifold<((V0, V1), P), Output = O>,
-    F: Manifold<((V0, V1), P), Output = O>,
-{
-    type Output = O;
-    #[inline(always)]
-    fn eval(&self, p: ((V0, V1), P)) -> O {
-        let mask = self.cond.eval(p);
-        if mask.all() {
-            return self.if_true.eval(p);
-        }
-        if !mask.any() {
-            return self.if_false.eval(p);
-        }
-        let true_val = self.if_true.eval(p);
-        let false_val = self.if_false.eval(p);
-        O::select_raw(mask, true_val, false_val)
-    }
-}
+//
+// NOTE: 1-4 element tuple impls removed - covered by array-based impls below
 
 /// Generic Select impl for 5-element tuple domains (the critical font rendering case)
 impl<V0, V1, V2, V3, V4, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4), P)> for Select<C, T, F>
@@ -500,29 +449,167 @@ where
     }
 }
 
-/// Generic Select impl for 10-element tuple domains (for Loop-Blinn quadratic curves)
-impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, P, C, T, F, O>
-    Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)> for Select<C, T, F>
+// ============================================================================
+// Macro-generated Select impls for context tuple domains (10-16 elements)
+// ============================================================================
+
+macro_rules! impl_select_for_ctx {
+    ([$($V:ident),+]) => {
+        impl<$($V,)+ P, C, T, F, O> Manifold<(($($V,)+), P)> for Select<C, T, F>
+        where
+            $($V: Copy + Send + Sync,)+
+            P: Copy + Send + Sync,
+            O: crate::numeric::Numeric,
+            C: Manifold<(($($V,)+), P), Output = O>,
+            T: Manifold<(($($V,)+), P), Output = O>,
+            F: Manifold<(($($V,)+), P), Output = O>,
+        {
+            type Output = O;
+            #[inline(always)]
+            fn eval(&self, p: (($($V,)+), P)) -> O {
+                let mask = self.cond.eval(p);
+                if mask.all() {
+                    return self.if_true.eval(p);
+                }
+                if !mask.any() {
+                    return self.if_false.eval(p);
+                }
+                let true_val = self.if_true.eval(p);
+                let false_val = self.if_false.eval(p);
+                O::select_raw(mask, true_val, false_val)
+            }
+        }
+    };
+}
+
+impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9]);
+impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10]);
+impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11]);
+impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12]);
+impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13]);
+impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14]);
+impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15]);
+
+// ============================================================================
+// Select Implementations for Array-Based Context Domains
+// ============================================================================
+//
+// These support the new array-based WithContext approach where values are
+// grouped by type into arrays: ([T; N],) or ([T0; N], [T1; M]), etc.
+
+/// Select impl for single array context domains
+impl<T, const N: usize, P, C, Tr, F, O> Manifold<(([T; N],), P)> for Select<C, Tr, F>
 where
-    V0: Copy + Send + Sync,
-    V1: Copy + Send + Sync,
-    V2: Copy + Send + Sync,
-    V3: Copy + Send + Sync,
-    V4: Copy + Send + Sync,
-    V5: Copy + Send + Sync,
-    V6: Copy + Send + Sync,
-    V7: Copy + Send + Sync,
-    V8: Copy + Send + Sync,
-    V9: Copy + Send + Sync,
+    T: Copy + Send + Sync,
     P: Copy + Send + Sync,
     O: crate::numeric::Numeric,
-    C: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P), Output = O>,
-    T: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P), Output = O>,
-    F: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P), Output = O>,
+    C: Manifold<(([T; N],), P), Output = O>,
+    Tr: Manifold<(([T; N],), P), Output = O>,
+    F: Manifold<(([T; N],), P), Output = O>,
 {
     type Output = O;
     #[inline(always)]
-    fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8, V9), P)) -> O {
+    fn eval(&self, p: (([T; N],), P)) -> O {
+        let mask = self.cond.eval(p);
+        if mask.all() {
+            return self.if_true.eval(p);
+        }
+        if !mask.any() {
+            return self.if_false.eval(p);
+        }
+        let true_val = self.if_true.eval(p);
+        let false_val = self.if_false.eval(p);
+        O::select_raw(mask, true_val, false_val)
+    }
+}
+
+/// Select impl for two array context domains
+impl<T0, T1, const N: usize, const M: usize, P, C, Tr, F, O> Manifold<(([T0; N], [T1; M]), P)>
+    for Select<C, Tr, F>
+where
+    T0: Copy + Send + Sync,
+    T1: Copy + Send + Sync,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    C: Manifold<(([T0; N], [T1; M]), P), Output = O>,
+    Tr: Manifold<(([T0; N], [T1; M]), P), Output = O>,
+    F: Manifold<(([T0; N], [T1; M]), P), Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: (([T0; N], [T1; M]), P)) -> O {
+        let mask = self.cond.eval(p);
+        if mask.all() {
+            return self.if_true.eval(p);
+        }
+        if !mask.any() {
+            return self.if_false.eval(p);
+        }
+        let true_val = self.if_true.eval(p);
+        let false_val = self.if_false.eval(p);
+        O::select_raw(mask, true_val, false_val)
+    }
+}
+
+/// Select impl for three array context domains
+impl<T0, T1, T2, const N: usize, const M: usize, const K: usize, P, C, Tr, F, O>
+    Manifold<(([T0; N], [T1; M], [T2; K]), P)> for Select<C, Tr, F>
+where
+    T0: Copy + Send + Sync,
+    T1: Copy + Send + Sync,
+    T2: Copy + Send + Sync,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    C: Manifold<(([T0; N], [T1; M], [T2; K]), P), Output = O>,
+    Tr: Manifold<(([T0; N], [T1; M], [T2; K]), P), Output = O>,
+    F: Manifold<(([T0; N], [T1; M], [T2; K]), P), Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: (([T0; N], [T1; M], [T2; K]), P)) -> O {
+        let mask = self.cond.eval(p);
+        if mask.all() {
+            return self.if_true.eval(p);
+        }
+        if !mask.any() {
+            return self.if_false.eval(p);
+        }
+        let true_val = self.if_true.eval(p);
+        let false_val = self.if_false.eval(p);
+        O::select_raw(mask, true_val, false_val)
+    }
+}
+
+/// Select impl for four array context domains
+impl<
+        T0,
+        T1,
+        T2,
+        T3,
+        const N: usize,
+        const M: usize,
+        const K: usize,
+        const L: usize,
+        P,
+        C,
+        Tr,
+        F,
+        O,
+    > Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for Select<C, Tr, F>
+where
+    T0: Copy + Send + Sync,
+    T1: Copy + Send + Sync,
+    T2: Copy + Send + Sync,
+    T3: Copy + Send + Sync,
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    C: Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P), Output = O>,
+    Tr: Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P), Output = O>,
+    F: Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P), Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: (([T0; N], [T1; M], [T2; K], [T3; L]), P)) -> O {
         let mask = self.cond.eval(p);
         if mask.all() {
             return self.if_true.eval(p);

@@ -1,9 +1,19 @@
 //! # Numeric Traits
 //!
-//! Three-tier trait design:
-//! - `Computational`: Public trait for user-facing manifold bounds
+//! Four-tier trait design:
+//! - `Computational`: Public trait for types that support constant embedding
+//! - `Coordinate`: Marker for types usable as domain coordinates (Field, Jet*, PathJet*)
 //! - `Selectable`: Internal trait for types that support branchless selection
 //! - `Numeric`: Internal trait with full SIMD operations
+
+/// Marker trait for types that can be used as domain coordinates.
+///
+/// Types implementing this trait can appear in kernel domains like `(T, T, T, T)`.
+/// This includes Field, Jet2, Jet3, PathJet, etc.
+///
+/// Types like `Discrete` implement `Computational` (for constant embedding) but
+/// NOT `Coordinate` because they are output-only types, not coordinate types.
+pub trait Coordinate: Computational {}
 
 /// Public trait for user-facing manifold bounds.
 ///

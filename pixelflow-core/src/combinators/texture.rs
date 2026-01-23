@@ -118,8 +118,12 @@ impl Manifold<Field4> for Texture {
         let max_x = Field::from((self.width - 1) as f32);
         let max_y = Field::from((self.height - 1) as f32);
 
-        // Floor first to get integer pixel coords, then clamp
-        let x_idx = x.floor().max(zero).min(max_x);
+        // Optimization: x.floor() is redundant because Field::gather implicitly truncates indices.
+        // For x (minor dimension), truncation is sufficient as long as we clamp first.
+        let x_idx = x.max(zero).min(max_x);
+
+        // For y (major dimension), we MUST floor explicitly because multiplying by width
+        // would magnify fractional parts (e.g. 1.9 * 64 = 121.6 -> row 1, pixel 57 vs row 1, pixel 0).
         let y_idx = y.floor().max(zero).min(max_y);
 
         // Linear index = y * width + x

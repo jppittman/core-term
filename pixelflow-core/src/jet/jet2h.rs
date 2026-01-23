@@ -534,6 +534,9 @@ impl Computational for Jet2H {
     }
 }
 
+// Jet2H is a coordinate type
+impl crate::numeric::Coordinate for Jet2H {}
+
 // ============================================================================
 // Selectable trait implementation (Jet2H)
 // ============================================================================

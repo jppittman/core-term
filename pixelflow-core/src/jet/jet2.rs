@@ -384,6 +384,9 @@ impl Computational for Jet2 {
     }
 }
 
+// Jet2 is a coordinate type
+impl crate::numeric::Coordinate for Jet2 {}
+
 // ============================================================================
 // Selectable trait implementation (Jet2)
 // ============================================================================

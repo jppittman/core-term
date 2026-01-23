@@ -22,7 +22,7 @@
 //! - `dir` = that component of the ray direction
 
 use crate::Field;
-use crate::numeric::{Computational, Numeric, Selectable};
+use crate::numeric::{Computational, Coordinate, Numeric, Selectable};
 use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Sub};
 
 /// A coordinate in ray space, carrying both origin and direction.
@@ -195,6 +195,9 @@ impl<T: Computational> Computational for PathJet<T> {
         }
     }
 }
+
+// PathJet<T> is a coordinate type when T is a coordinate type
+impl<T: Coordinate> Coordinate for PathJet<T> {}
 
 // ============================================================================
 // Selectable trait implementation

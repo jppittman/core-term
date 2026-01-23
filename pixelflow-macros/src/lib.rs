@@ -38,6 +38,9 @@
 mod annotate;
 mod ast;
 mod codegen;
+mod egraph;
+mod fold;
+mod lexer;
 mod manifold_expr;
 mod optimize;
 mod parser;

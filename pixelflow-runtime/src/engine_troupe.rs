@@ -156,9 +156,23 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
     fn handle_control(&mut self, ctrl: EngineControl) -> HandlerResult {
         match ctrl {
             EngineControl::Quit => {
+                self.vsync
+                    .send(Message::Shutdown)
+                    .expect("Failed to shutdown vsync on Quit");
+                if let Some(rasterizer) = &self.rasterizer {
+                    rasterizer
+                        .send(Message::Shutdown)
+                        .expect("Failed to shutdown rasterizer on Quit");
+                }
+                self.app_handle = None;
                 self.driver
-                    .send(Message::Control(DisplayControl::Shutdown))
-                    .expect("Failed to send Shutdown to driver on Quit");
+                    .send(Message::Shutdown)
+                    .expect("Failed to shutdown driver on Quit");
+                if let Some(self_handle) = &self.self_handle {
+                    self_handle
+                        .send(Message::Shutdown)
+                        .expect("Failed to shutdown engine on Quit");
+                }
             }
             EngineControl::UpdateRefreshRate(rr) => {
                 self.vsync
@@ -240,9 +254,23 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                     .expect("Failed to relay CreateWindow to driver");
             }
             AppManagement::Quit => {
+                self.vsync
+                    .send(Message::Shutdown)
+                    .expect("Failed to shutdown vsync on AppManagement::Quit");
+                if let Some(rasterizer) = &self.rasterizer {
+                    rasterizer
+                        .send(Message::Shutdown)
+                        .expect("Failed to shutdown rasterizer on AppManagement::Quit");
+                }
+                self.app_handle = None;
                 self.driver
-                    .send(Message::Control(DisplayControl::Shutdown))
-                    .expect("Failed to send Shutdown to driver on AppManagement::Quit");
+                    .send(Message::Shutdown)
+                    .expect("Failed to shutdown driver on AppManagement::Quit");
+                if let Some(self_handle) = &self.self_handle {
+                    self_handle
+                        .send(Message::Shutdown)
+                        .expect("Failed to shutdown engine on AppManagement::Quit");
+                }
             }
         }
         Ok(())
@@ -392,7 +420,7 @@ impl EngineHandler {
     fn handle_driver_event(&mut self, event: DisplayEvent) {
         match event {
             DisplayEvent::WindowCreated { window } => {
-                log::info!(
+                log::debug!(
                     "Relaying WindowCreated: id={}, {}x{}, scale={}",
                     window.id.0,
                     window.width_px,
@@ -431,7 +459,7 @@ impl EngineHandler {
                 }
             }
             DisplayEvent::Resized { window } => {
-                log::info!(
+                log::debug!(
                     "Relaying Resized: id={}, {}x{}",
                     window.id.0,
                     window.width_px,
@@ -535,14 +563,32 @@ impl EngineHandler {
                 }
             }
             DisplayEvent::CloseRequested { .. } => {
-                log::info!("Close requested");
-                if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Control(EngineEventControl::CloseRequested))
-                        .expect("Failed to send CloseRequested event to app");
+                log::debug!("Close requested");
+                // Stop vsync from generating more frame requests
+                self.vsync
+                    .send(Message::Shutdown)
+                    .expect("Failed to shutdown vsync on CloseRequested");
+                // Shutdown rasterizer
+                if let Some(rasterizer) = &self.rasterizer {
+                    rasterizer
+                        .send(Message::Shutdown)
+                        .expect("Failed to shutdown rasterizer on CloseRequested");
                 }
+                // Notify app, then drop it - cleanup goes in app's Drop impl
+                if let Some(app) = self.app_handle.take() {
+                    app.send(EngineEvent::Control(EngineEventControl::CloseRequested))
+                        .expect("Failed to send CloseRequested to app");
+                }
+                // Shutdown the driver actor (terminates platform event loop)
                 self.driver
-                    .send(Message::Control(DisplayControl::Shutdown))
-                    .expect("Failed to send Shutdown to driver on CloseRequested");
+                    .send(Message::Shutdown)
+                    .expect("Failed to shutdown driver on CloseRequested");
+                // Shutdown self
+                if let Some(self_handle) = &self.self_handle {
+                    self_handle
+                        .send(Message::Shutdown)
+                        .expect("Failed to shutdown engine on CloseRequested");
+                }
             }
             DisplayEvent::FocusGained { .. } => {
                 if let Some(app) = &self.app_handle {
@@ -563,7 +609,7 @@ impl EngineHandler {
                 }
             }
             DisplayEvent::ScaleChanged { id, scale } => {
-                log::info!("Relaying ScaleChanged: id={}, scale={}", id.0, scale);
+                log::debug!("Relaying ScaleChanged: id={}, scale={}", id.0, scale);
                 if let Some(app) = &self.app_handle {
                     app.send(EngineEvent::Control(EngineEventControl::ScaleChanged {
                         id,

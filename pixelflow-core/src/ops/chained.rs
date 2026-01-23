@@ -34,7 +34,7 @@ use super::derivative::{
 };
 use super::logic::{And, Or};
 use super::{
-    Abs, Add, AddMasked, Cos, Div, Exp2, Floor, Ge, Gt, Le, Log2, Lt, Max, Min, Mul, MulAdd,
+    Abs, Add, AddMasked, Cos, Div, Exp, Exp2, Floor, Ge, Gt, Le, Log2, Lt, Max, Min, Mul, MulAdd,
     MulRecip, MulRsqrt, Neg, Rsqrt, Sin, Sqrt, Sub,
 };
 use crate::Field;
@@ -110,6 +110,14 @@ macro_rules! impl_div_for {
             fn div(self, rhs: $div_ty) -> Self::Output { Div(self, rhs) }
         }
     };
+    // Self<...> / CtxVar<ArrayPos, INDEX> (type + const generic)
+    ($self_ty:ident <$($sg:ident),*> / CtxVar) => {
+        impl<$($sg,)* __A, const __I: usize> core::ops::Div<CtxVar<__A, __I>> for $self_ty<$($sg),*> {
+            type Output = Div<Self, CtxVar<__A, __I>>;
+            #[inline(always)]
+            fn div(self, rhs: CtxVar<__A, __I>) -> Self::Output { Div(self, rhs) }
+        }
+    };
 }
 
 /// Generate all Div impls for a type (rsqrt fusion + all other divisors)
@@ -136,7 +144,7 @@ macro_rules! impl_all_divs {
         impl_div_for!($ty<$($gen),*> / MulRsqrt<DL2, DR2>);
         impl_div_for!($ty<$($gen),*> / AddMasked<DAcc, DVal, DMask>);
         impl_div_for!($ty<$($gen),*> / Var<DN>);
-        impl_div_for!($ty<$($gen),*> / CtxVar<DCN>);
+        impl_div_for!($ty<$($gen),*> / CtxVar);
 
         // Fused derivative combinators
         impl_div_for!($ty<$($gen),*> / GradientMag2D<DDM>);
@@ -234,6 +242,9 @@ impl_chained_ops!(Floor<M>);
 impl_chained_ops!(Rsqrt<M>);
 impl_chained_ops!(Sin<M>);
 impl_chained_ops!(Cos<M>);
+impl_chained_ops!(Log2<M>);
+impl_chained_ops!(Exp2<M>);
+impl_chained_ops!(Exp<M>);
 
 // Combinators
 impl_chained_ops!(Select<C, T, F>);
@@ -311,6 +322,7 @@ impl_manifold_expr!(DyyOf<M>);
 impl_manifold_expr!(Neg<M>);
 impl_manifold_expr!(Log2<M>);
 impl_manifold_expr!(Exp2<M>);
+impl_manifold_expr!(Exp<M>);
 
 // Comparison ops
 impl_manifold_expr!(Lt<L, R>);

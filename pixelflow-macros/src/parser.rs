@@ -87,13 +87,11 @@ impl Parse for KernelDef {
 
         input.parse::<Token![|]>()?;
 
-        // Parse optional return type: -> Type
-        let return_ty = if input.peek(Token![->]) {
-            input.parse::<Token![->]>()?;
-            Some(input.parse::<Type>()?)
-        } else {
-            None
-        };
+        // Parse optional domain and return types:
+        // - `DomainType -> OutputType` (both)
+        // - `-> OutputType` (just output)
+        // - (nothing) (neither)
+        let (domain_ty, return_ty) = parse_type_annotations(input)?;
 
         // Parse the body expression
         let syn_expr: syn::Expr = input.parse()?;
@@ -102,6 +100,7 @@ impl Parse for KernelDef {
         Ok(KernelDef {
             struct_decl,
             params,
+            domain_ty,
             return_ty,
             body,
         })
@@ -140,6 +139,44 @@ fn parse_struct_decl(input: ParseStream) -> syn::Result<Option<StructDecl>> {
         // Not a struct declaration, leave input unchanged
         Ok(None)
     }
+}
+
+/// Parse optional domain and return type annotations.
+///
+/// Grammar:
+/// - `DomainType -> OutputType` → (Some(domain), Some(output))
+/// - `-> OutputType` → (None, Some(output))
+/// - (nothing) → (None, None)
+///
+/// This allows syntax like `Field -> Discrete` where Field is the domain
+/// type (used for coordinates) and Discrete is the output type.
+fn parse_type_annotations(input: ParseStream) -> syn::Result<(Option<Type>, Option<Type>)> {
+    // Check if we have `->` directly (no domain type)
+    if input.peek(Token![->]) {
+        input.parse::<Token![->]>()?;
+        let output_ty = input.parse::<Type>()?;
+        return Ok((None, Some(output_ty)));
+    }
+
+    // Try to parse a type followed by `->`
+    // Use a fork to speculatively check if this is `Type ->`
+    let fork = input.fork();
+
+    // Try to parse a type
+    if let Ok(ty) = fork.parse::<Type>() {
+        // Check if followed by `->`
+        if fork.peek(Token![->]) {
+            // Yes! This is `DomainType -> OutputType`
+            // Consume from the real stream
+            let domain_ty = input.parse::<Type>()?;
+            input.parse::<Token![->]>()?;
+            let output_ty = input.parse::<Type>()?;
+            return Ok((Some(domain_ty), Some(output_ty)));
+        }
+    }
+
+    // No type annotations
+    Ok((None, None))
 }
 
 /// Check if a type is the `kernel` keyword (manifold parameter marker).
@@ -423,6 +460,31 @@ mod tests {
         let input = quote! { |cx: f32| X - cx };
         let kernel = parse(input).unwrap();
         assert!(kernel.return_ty.is_none());
+        assert!(kernel.domain_ty.is_none());
+    }
+
+    #[test]
+    fn parse_domain_and_output_type() {
+        // Field -> Discrete syntax: Field is domain, Discrete is output
+        let input = quote! { |cx: f32| Field -> Discrete X - cx };
+        let kernel = parse(input).unwrap();
+        assert_eq!(kernel.params.len(), 1);
+
+        // Verify domain type is "Field"
+        let domain = kernel.domain_ty.expect("expected domain type");
+        if let syn::Type::Path(type_path) = domain {
+            assert_eq!(type_path.path.segments[0].ident.to_string(), "Field");
+        } else {
+            panic!("expected path type for domain");
+        }
+
+        // Verify output type is "Discrete"
+        let output = kernel.return_ty.expect("expected return type");
+        if let syn::Type::Path(type_path) = output {
+            assert_eq!(type_path.path.segments[0].ident.to_string(), "Discrete");
+        } else {
+            panic!("expected path type for output");
+        }
     }
 
     #[test]
