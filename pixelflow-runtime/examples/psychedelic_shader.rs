@@ -12,11 +12,11 @@
 //! The GLSL loop is just summing interference at different frequencies.
 //! That's algebra, not iteration. Express it as manifold composition.
 //!
-//! Time flows through W - use time_shift to set the current time.
+//! This version uses a single unified kernel for all three color channels,
+//! enabling CSE (common subexpression elimination) across the entire expression.
 
 use actor_scheduler::Message;
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldExt, W, X, Y};
-use pixelflow_graphics::animation::{screen_remap, time_shift};
+use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_macros::kernel;
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::{AppData, EngineEvent, EngineEventControl, EngineEventData};
@@ -30,65 +30,66 @@ const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
 
 // ============================================================================
-// THE SHADER - Algebraic, not imperative
+// THE SHADER - Morphism from screen coords to color space
 // ============================================================================
 
-/// Build one color channel using a kernel.
-/// y_mult: 1.0 for red, -1.0 for green, -2.0 for blue
-/// Time comes from W coordinate (set via time_shift)
-fn build_channel(y_mult: f32) -> impl Manifold<Output = Field> + Clone + Send + Sync {
-    kernel!(|y_mult: f32| -> Field {
-        // Radial field: distance from the magic ring at |p|² = 0.7
-        let r_sq = X * X + Y * Y;
-        let radial = (r_sq - 0.7).abs();
+// The psychedelic scene - contramap screen coords through color cube.
+//
+// Computes (red, green, blue) ∈ [0,1]³ from screen position and time,
+// then contramaps through ColorCube to get Discrete.
+kernel!(pub struct PsychedelicScene = |t: f32, width: f32, height: f32| Field -> Discrete {
+    // Screen coordinate remapping
+    let scale = 2.0 / height;
+    let half_width = width * 0.5;
+    let half_height = height * 0.5;
+    let x = (X - half_width) * scale;
+    let y = (half_height - Y) * scale;
 
-        // Swirl: animated interference pattern (W is time)
-        let scale = (1.0 - radial) * 5.0;
-        let vx = X * scale;
-        let vy = Y * scale;
+    // Time via W coordinate
+    let time = W + t;
 
-        // Time-based animation via W coordinate
-        let phase = W * 0.5;
-        let swirl = ((vx + phase).sin() + 1.0) * ((vx + phase) - (vy + phase * 0.7)).abs() * 0.2 + 0.001;
+    // Radial field
+    let r_sq = x * x + y * y;
+    let radial = (r_sq - 0.7).abs();
 
-        // Vertical gradient with time modulation
-        let y_factor = (Y * y_mult + (W * 0.3).sin() * 0.2).exp();
+    // Swirl
+    let swirl_scale = (1.0 - radial) * 5.0;
+    let vx = x * swirl_scale;
+    let vy = y * swirl_scale;
 
-        // Radial falloff with pulsing
-        let pulse = 1.0 + (W * 2.0).sin() * 0.1;
-        let radial_factor = (radial * -4.0 * pulse).exp();
+    // Time-based values
+    let phase = time * 0.5;
+    let sin_w03 = (time * 0.3).sin();
+    let sin_w20 = (time * 2.0).sin();
 
-        // Combine with swirl
-        let raw = y_factor * radial_factor / swirl;
+    // Swirl computation
+    let swirl = ((vx + phase).sin() + 1.0) * ((vx + phase) - (vy + phase * 0.7)).abs() * 0.2 + 0.001;
 
-        // Soft tanh approximation: x / (1 + |x|)
-        let soft = raw / (raw.abs() + 1.0);
-        (soft + 1.0) * 0.5
-    })(y_mult)
-}
+    // Radial falloff with pulsing
+    let pulse = 1.0 + sin_w20 * 0.1;
+    let radial_factor = (radial * -4.0 * pulse).exp();
 
-/// Build the psychedelic scene (time-independent, uses W for animation).
-fn build_psychedelic_scene() -> impl Manifold<Output = Discrete> + Clone + Sync + Send {
-    // Build each channel independently
-    let red = build_channel(1.0);
-    let green = build_channel(-1.0);
-    let blue = build_channel(-2.0);
-    let alpha = Field::from(1.0);
+    // Red channel
+    let y_factor_r = (y * 1.0 + sin_w03 * 0.2).exp();
+    let raw_r = y_factor_r * radial_factor / swirl;
+    let soft_r = raw_r / (raw_r.abs() + 1.0);
+    let red = (soft_r + 1.0) * 0.5;
 
-    // Compose through ColorCube
-    ColorCube::default().at(red, green, blue, alpha)
-}
+    // Green channel
+    let y_factor_g = (y * -1.0 + sin_w03 * 0.2).exp();
+    let raw_g = y_factor_g * radial_factor / swirl;
+    let soft_g = raw_g / (raw_g.abs() + 1.0);
+    let green = (soft_g + 1.0) * 0.5;
 
-/// Apply screen remapping and time shift.
-fn build_scene_at_time(
-    t: f32,
-    width: u32,
-    height: u32,
-) -> impl Manifold<Output = Discrete> + Clone + Sync + Send {
-    let scene = build_psychedelic_scene();
-    let remapped = screen_remap(scene, width as f32, height as f32);
-    time_shift(remapped, t)
-}
+    // Blue channel
+    let y_factor_b = (y * -2.0 + sin_w03 * 0.2).exp();
+    let raw_b = y_factor_b * radial_factor / swirl;
+    let soft_b = raw_b / (raw_b.abs() + 1.0);
+    let blue = (soft_b + 1.0) * 0.5;
+
+    // Contramap through color cube
+    ColorCube::default().at(red, green, blue, 1.0)
+});
 
 // ============================================================================
 // APPLICATION
@@ -109,7 +110,8 @@ impl Application for PsychedelicApp {
                 let width = self.width.load(Ordering::Relaxed);
                 let height = self.height.load(Ordering::Relaxed);
 
-                let scene = build_scene_at_time(t, width, height);
+                // Build scene - contramap through color cube
+                let scene = PsychedelicScene::new(t, width as f32, height as f32);
 
                 let arc: Arc<dyn Manifold<Output = Discrete> + Send + Sync> = Arc::new(scene);
 
