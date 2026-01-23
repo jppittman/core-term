@@ -13,13 +13,13 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 /// Measure the horizontal extent of rendered pixels at a given Y row.
 /// Returns (leftmost_x, rightmost_x) of pixels above the threshold, or None if row is empty.
 fn measure_row_extent(
-    frame: &Frame<Rgba8>,
+    pixels: &[Rgba8],
+    width: usize,
     y: usize,
     threshold: u8,
 ) -> Option<(usize, usize)> {
-    let width = frame.width;
     let row_start = y * width;
-    let row = &frame.data[row_start..row_start + width];
+    let row = &pixels[row_start..row_start + width];
 
     let left = row.iter().position(|p| p.r() > threshold)?;
     let right = row.iter().rposition(|p| p.r() > threshold)?;
@@ -28,15 +28,14 @@ fn measure_row_extent(
 }
 
 /// Calculate the width of rendered content at a given Y row.
-fn row_width(frame: &Frame<Rgba8>, y: usize, threshold: u8) -> usize {
-    match measure_row_extent(frame, y, threshold) {
+fn row_width(pixels: &[Rgba8], width: usize, y: usize, threshold: u8) -> usize {
+    match measure_row_extent(pixels, width, y, threshold) {
         Some((left, right)) => right - left + 1,
         None => 0,
     }
 }
 
 #[test]
-#[ignore]
 fn letter_a_apex_is_at_top() {
     // The letter 'A' has a triangular shape:
     // - NARROW apex at the TOP
@@ -70,7 +69,7 @@ fn letter_a_apex_is_at_top() {
             };
             print!("{}", ch);
         }
-        println!(" | width={}", row_width(&frame, y, 32));
+        println!(" | width={}", row_width(&pixels, width, y, 32));
     }
 
     // Find the vertical bounds of the rendered glyph (use threshold 32 for cleaner edges)
@@ -78,7 +77,7 @@ fn letter_a_apex_is_at_top() {
     let mut top_row = None;
     let mut bottom_row = None;
     for y in 0..height {
-        if row_width(&frame, y, threshold) > 0 {
+        if row_width(&pixels, width, y, threshold) > 0 {
             if top_row.is_none() {
                 top_row = Some(y);
             }
@@ -105,8 +104,8 @@ fn letter_a_apex_is_at_top() {
     let top_quarter_y = top_row + glyph_height / 4;
     let bottom_quarter_y = bottom_row - glyph_height / 4;
 
-    let top_width = row_width(&frame, top_quarter_y, threshold);
-    let bottom_width = row_width(&frame, bottom_quarter_y, threshold);
+    let top_width = row_width(&pixels, width, top_quarter_y, threshold);
+    let bottom_width = row_width(&pixels, width, bottom_quarter_y, threshold);
 
     println!("Top quarter (y={}): width={}", top_quarter_y, top_width);
     println!(
@@ -129,7 +128,6 @@ fn letter_a_apex_is_at_top() {
 }
 
 #[test]
-#[ignore]
 fn letter_a_has_crossbar() {
     // The letter 'A' has a horizontal crossbar connecting the two legs.
     // The crossbar should be filled across its width (high intensity).
@@ -142,6 +140,7 @@ fn letter_a_has_crossbar() {
     let height = 70;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
     rasterize(&color_manifold, &mut frame, 1);
+    let pixels = &frame.data;
 
     let threshold = 32;
 
@@ -149,7 +148,7 @@ fn letter_a_has_crossbar() {
     let mut top_row = None;
     let mut bottom_row = None;
     for y in 0..height {
-        if row_width(&frame, y, threshold) > 0 {
+        if row_width(&pixels, width, y, threshold) > 0 {
             if top_row.is_none() {
                 top_row = Some(y);
             }
@@ -168,24 +167,30 @@ fn letter_a_has_crossbar() {
 
     // Find the row with maximum width (the crossbar has solid fill)
     let mut max_width = 0;
+    let mut crossbar_row = search_start;
     for y in search_start..search_end {
-        let w = row_width(&frame, y, threshold);
+        let w = row_width(&pixels, width, y, threshold);
         if w > max_width {
             max_width = w;
+            crossbar_row = y;
         }
     }
 
-    assert!(max_width > 0, "Should have rendered content for crossbar search area");
+    // The crossbar should be significantly wider than the apex (top)
+    let apex_width = row_width(&pixels, width, top_row + 2, threshold);
 
-    // Relaxed assertion
-    // assert!(
-    //     max_width > apex_width,
-    //     ...
-    // );
+    assert!(
+        max_width > apex_width,
+        "Letter 'A' should have a crossbar wider than the apex.\n\
+         Crossbar (y={}) width: {}\n\
+         Apex width: {}",
+        crossbar_row,
+        max_width,
+        apex_width
+    );
 }
 
 #[test]
-#[ignore]
 fn letter_v_point_is_at_bottom() {
     // The letter 'V' has an inverted triangular shape:
     // - WIDE at the TOP
@@ -201,13 +206,14 @@ fn letter_v_point_is_at_bottom() {
     let height = 70;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
     rasterize(&color_manifold, &mut frame, 1);
+    let pixels = &frame.data;
 
     // Find the vertical bounds (use threshold 32 for cleaner edges)
     let threshold = 32;
     let mut top_row = None;
     let mut bottom_row = None;
     for y in 0..height {
-        if row_width(&frame, y, threshold) > 0 {
+        if row_width(&pixels, width, y, threshold) > 0 {
             if top_row.is_none() {
                 top_row = Some(y);
             }
@@ -225,17 +231,19 @@ fn letter_v_point_is_at_bottom() {
     let top_quarter_y = top_row + glyph_height / 4;
     let bottom_quarter_y = bottom_row - glyph_height / 4;
 
-    let top_width = row_width(&frame, top_quarter_y, threshold);
-    let bottom_width = row_width(&frame, bottom_quarter_y, threshold);
-
-    // Verify content
-    assert!(top_width > 0, "Should have rendered content at top");
-    assert!(bottom_width > 0, "Should have rendered content at bottom");
+    let top_width = row_width(&pixels, width, top_quarter_y, threshold);
+    let bottom_width = row_width(&pixels, width, bottom_quarter_y, threshold);
 
     // The top should be WIDER than the bottom (opposite of 'A')
-    // Relaxed assertion
-    // assert!(
-    //     top_width > bottom_width,
-    //     ...
-    // );
+    assert!(
+        top_width > bottom_width,
+        "Letter 'V' should be wider at top than at bottom (point).\n\
+         Top quarter (y={}) width: {}\n\
+         Bottom quarter (y={}) width: {}\n\
+         This suggests the glyph is rendered upside-down.",
+        top_quarter_y,
+        top_width,
+        bottom_quarter_y,
+        bottom_width
+    );
 }

@@ -62,7 +62,6 @@ use pixelflow_core::ops::compare::Lt;
 use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
 
 /// Natural logarithm of 2, used for 2^x = exp(x * LN_2).
-#[allow(dead_code)]
 const LN_2: f32 = 0.6931471805599453;
 
 // ============================================================================
@@ -168,7 +167,6 @@ fn bspline_axis(control_points: &[[f32; 4]; 4]) -> impl Manifold<Output = Field>
 /// - `Map` for log2/floor/pow operations on coordinates
 /// - Recursive `Select` tree for tile depth routing
 /// - Per-eigenbasis weighting (may require K separate bicubics, not combined)
-#[allow(dead_code)]
 fn axis_patch(coeffs: [[f32; 16]; 3]) -> impl Manifold<Output = Field> {
     // TODO(subdiv): Implement eigenvalue power weighting λᵢⁿ⁻¹
     // TODO(subdiv): Implement recursive tiling for (u,v) < 0.5
@@ -586,7 +584,7 @@ mod tests {
         // If all control points are at the SAME location,
         // the surface should evaluate to that location everywhere.
         // This tests affine invariance.
-        let _control_points = [[1.0f32, 2.0, 3.0]; 16];
+        let control_points = [[1.0f32, 2.0, 3.0]; 16];
 
         let eigen = get_eigen(4).unwrap();
         println!("K = {}", eigen.k);

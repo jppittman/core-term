@@ -171,7 +171,6 @@ impl<K> Line<K> {
 
 /// Line segment optimized with precomputed division reciprocal.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub struct OptLine {
     x0: f32,
     y0: f32,
@@ -203,7 +202,6 @@ impl OptLine {
 
 /// Quadratic curve optimized with precomputed reciprocals.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub struct OptQuad {
     // Bezier coefficients
     ax: f32,

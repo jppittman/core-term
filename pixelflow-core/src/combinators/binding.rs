@@ -160,7 +160,6 @@ impl<N> Default for Var<N> {
 // Maps each positive number to its predecessor.
 // Uses a helper trait to avoid impl conflicts.
 
-#[allow(missing_docs)]
 pub trait Pred {
     type Output;
 }

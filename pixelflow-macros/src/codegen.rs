@@ -45,7 +45,7 @@
 //! ```
 
 use crate::annotate::{
-    annotate, AnnotatedExpr, AnnotatedStmt, AnnotationCtx, CollectedLiteral,
+    annotate, AnnotatedCall, AnnotatedExpr, AnnotatedStmt, AnnotationCtx, CollectedLiteral,
 };
 use crate::ast::{BinaryOp, ParamKind, UnaryOp};
 use crate::sema::AnalyzedKernel;
@@ -768,7 +768,7 @@ impl<'a> CodeEmitter<'a> {
         } else {
             // Build tuple of param values ordered by index
             // Index 0 goes to tuple position 0, index 1 to position 1, etc.
-            let _n = params.len();
+            let n = params.len();
             let mut indexed_params: Vec<(usize, TokenStream)> = Vec::new();
 
             for param in params.iter() {

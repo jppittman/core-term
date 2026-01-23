@@ -79,7 +79,6 @@ pub(crate) trait Numeric: Computational {
     /// Conditional select with early-exit optimization.
     /// Returns if_true where mask is set, if_false elsewhere.
     /// Short-circuits: if all lanes true, returns if_true without evaluating if_false's blend.
-    #[allow(dead_code)]
     fn select(mask: Self, if_true: Self, if_false: Self) -> Self;
 
     /// Raw conditional select - always blends both values.
@@ -97,11 +96,9 @@ pub(crate) trait Numeric: Computational {
     fn all(&self) -> bool;
 
     /// Create from i32 scalar.
-    #[allow(dead_code)]
     fn from_i32(val: i32) -> Self;
 
     /// Create from Field (zero-cost for Field, constant jet for Jet2).
-    #[allow(dead_code)]
     fn from_field(field: crate::Field) -> Self;
 
     // ========================================================================
@@ -115,15 +112,12 @@ pub(crate) trait Numeric: Computational {
     fn cos(self) -> Self;
 
     /// Two-argument arctangent (atan2(y, x)).
-    #[allow(dead_code)]
     fn atan2(self, x: Self) -> Self;
 
     /// Raise to a power.
-    #[allow(dead_code)]
     fn pow(self, exp: Self) -> Self;
 
     /// Exponential function.
-    #[allow(dead_code)]
     fn exp(self) -> Self;
 
     /// Base-2 logarithm.
@@ -141,7 +135,6 @@ pub(crate) trait Numeric: Computational {
 
     /// Fast approximate reciprocal (1/x).
     /// Uses SIMD reciprocal instruction when available (~12-14 bits accuracy).
-    #[allow(dead_code)]
     fn recip(self) -> Self;
 
     /// Fast approximate reciprocal square root (1/sqrt(x)).
