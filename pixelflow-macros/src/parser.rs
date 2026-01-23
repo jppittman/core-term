@@ -28,7 +28,7 @@
 
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, KernelDef, LetStmt, LiteralExpr,
-    MethodCallExpr, Param, ParamKind, Stmt, StructDecl, UnaryExpr, UnaryOp,
+    MethodCallExpr, Param, ParamKind, Stmt, StructDecl, TupleExpr, UnaryExpr, UnaryOp,
 };
 use proc_macro2::{Span, TokenStream};
 use syn::parse::{Parse, ParseStream};
@@ -306,6 +306,18 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
             Ok(Expr::Paren(Box::new(inner)))
         }
 
+        syn::Expr::Tuple(expr_tuple) => {
+            let elems = expr_tuple
+                .elems
+                .into_iter()
+                .map(convert_expr)
+                .collect::<syn::Result<Vec<_>>>()?;
+            Ok(Expr::Tuple(TupleExpr {
+                elems,
+                span: Span::call_site(),
+            }))
+        }
+
         syn::Expr::Block(expr_block) => {
             let block = convert_block(expr_block.block)?;
             Ok(Expr::Block(block))
@@ -561,5 +573,38 @@ mod tests {
         assert_eq!(kernel.params.len(), 2);
         assert!(matches!(kernel.params[0].kind, ParamKind::Manifold));
         assert!(matches!(kernel.params[1].kind, ParamKind::Manifold));
+    }
+
+    #[test]
+    fn parse_domain_with_block() {
+        // This is the syntax that's failing
+        let input = quote! {
+            |x: f32| Field -> Discrete {
+                let a = X + x;
+                a
+            }
+        };
+        let kernel = parse(input).unwrap();
+
+        eprintln!("Domain: {:?}", kernel.domain_ty);
+        eprintln!("Return: {:?}", kernel.return_ty);
+        eprintln!("Body: {:?}", kernel.body);
+
+        // Verify domain is Field
+        assert!(kernel.domain_ty.is_some(), "expected domain type");
+
+        // Verify return is Discrete
+        assert!(kernel.return_ty.is_some(), "expected return type");
+
+        // The body should be a block with let binding
+        match kernel.body {
+            Expr::Block(block) => {
+                eprintln!("Block stmts: {:?}", block.stmts);
+                eprintln!("Block expr: {:?}", block.expr);
+                assert_eq!(block.stmts.len(), 1, "expected 1 let statement");
+                assert!(block.expr.is_some(), "expected final expression");
+            }
+            other => panic!("expected block expression, got {:?}", other),
+        }
     }
 }
