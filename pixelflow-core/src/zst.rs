@@ -103,6 +103,7 @@ impl<const L: usize> sealed::Sealed for crate::combinators::ZonalHarmonic<L> {}
 impl<const NUM_COEFFS: usize> sealed::Sealed for crate::combinators::ShProject<NUM_COEFFS> {}
 
 // Backend markers (internal, but technically ZSTs)
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 impl sealed::Sealed for crate::backend::scalar::Scalar {}
 
 #[cfg(target_arch = "x86_64")]
@@ -193,6 +194,7 @@ impl<const L: usize> crate::Zst for crate::combinators::ZonalHarmonic<L> {}
 impl<const NUM_COEFFS: usize> crate::Zst for crate::combinators::ShProject<NUM_COEFFS> {}
 
 // Backend markers (internal, but technically ZSTs)
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 impl crate::Zst for crate::backend::scalar::Scalar {}
 
 #[cfg(target_arch = "x86_64")]

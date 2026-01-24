@@ -10,8 +10,11 @@ workspace = true
 bench = false
 
 [dependencies]
-libm = "0.2.15"
 pixelflow-macros = { path = "../pixelflow-macros" }
+
+# libm only needed for scalar fallback (non-x86_64, non-aarch64)
+[target.'cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+libm = "0.2.15"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

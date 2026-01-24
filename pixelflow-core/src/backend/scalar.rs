@@ -197,12 +197,12 @@ impl SimdOps for ScalarF32 {
     }
 
     #[inline(always)]
-    fn simd_log2(self) -> Self {
+    fn log2(self) -> Self {
         Self(libm::log2f(self.0))
     }
 
     #[inline(always)]
-    fn simd_exp2(self) -> Self {
+    fn exp2(self) -> Self {
         Self(libm::exp2f(self.0))
     }
 }

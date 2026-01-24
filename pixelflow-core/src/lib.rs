@@ -284,7 +284,7 @@ type NativeU32Simd = <backend::scalar::Scalar as Backend>::U32;
 ///
 /// Almost never. If you're tempted to:
 /// - ❌ Call `Field::...` methods directly
-/// - ❌ Use `map_lanes`, `zip_lanes`, `gather`
+/// - ❌ Use `zip_lanes`, `gather`, or per-lane scalar fallbacks
 /// - ❌ Write custom loops over SIMD lanes
 ///
 /// **Instead:**
@@ -575,14 +575,12 @@ impl Field {
         ops::trig::cheby_atan2(self, x)
     }
 
-    /// Exponential function.
+    /// Exponential function (e^x).
     ///
-    /// TODO(simd): Currently uses scalar fallback via map_lanes.
-    /// Should use range reduction + polynomial for proper SIMD.
+    /// Uses SIMD polynomial approximation via exp2(x * log2(e)).
     #[inline(always)]
     pub fn exp(self) -> Self {
-        // TODO(simd): Replace with SIMD polynomial approximation
-        self.map_lanes(libm::expf)
+        Self(self.0.exp())
     }
 
     /// Base-2 logarithm.
@@ -591,7 +589,16 @@ impl Field {
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
     #[inline(always)]
     pub fn log2(self) -> Self {
-        Self(self.0.simd_log2())
+        Self(self.0.log2())
+    }
+
+    /// Natural logarithm (ln).
+    ///
+    /// Computed as log2(x) * ln(2).
+    #[inline(always)]
+    pub fn ln(self) -> Self {
+        const LN_2: f32 = 0.6931471805599453;
+        Self(self.0.log2() * NativeSimd::splat(LN_2))
     }
 
     /// Base-2 exponential (2^x).
@@ -600,7 +607,7 @@ impl Field {
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
     #[inline(always)]
     pub fn exp2(self) -> Self {
-        Self(self.0.simd_exp2())
+        Self(self.0.exp2())
     }
 
     /// Floor (round toward negative infinity).
@@ -640,17 +647,6 @@ impl Field {
     }
 
     /// Apply a unary function to each lane.
-    #[inline(always)]
-    pub(crate) fn map_lanes(self, f: fn(f32) -> f32) -> Self {
-        let mut buf = [0.0f32; PARALLELISM];
-        self.store(&mut buf);
-        for v in buf.iter_mut() {
-            *v = f(*v);
-        }
-        // Reconstruct from buffer
-        Self::from_slice(&buf)
-    }
-
     /// Load from a slice.
     #[inline(always)]
     fn from_slice(slice: &[f32]) -> Self {
@@ -974,15 +970,8 @@ impl numeric::Numeric for Field {
 
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
-        // Store in temporary buffers and compute lane-wise
-        let mut buf_a = [0.0f32; PARALLELISM];
-        let mut buf_b = [0.0f32; PARALLELISM];
-        self.store(&mut buf_a);
-        exp.store(&mut buf_b);
-        for i in 0..PARALLELISM {
-            buf_a[i] = libm::powf(buf_a[i], buf_b[i]);
-        }
-        Self::from_slice(&buf_a)
+        // pow(a, b) = exp2(b * log2(a)) for positive a
+        Self(Self(self.0.log2() * exp.0).0.exp2())
     }
 
     #[inline(always)]

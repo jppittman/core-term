@@ -633,7 +633,7 @@ impl Numeric for Jet3 {
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
         let val = self.val.pow(exp.val);
-        let ln_base = self.val.map_lanes(libm::logf);
+        let ln_base = self.val.ln();
         let inv_self = Field::from(1.0) / self.val;
         let coeff = exp.val.clone() * inv_self;
         Self::new(
