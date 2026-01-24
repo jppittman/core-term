@@ -268,10 +268,13 @@ where
 
         let ys = Field::from(y as f32 + 0.5);
 
+        let mut xs = Field::sequential(x as f32 + 0.5);
+        let step = Field::from(PARALLELISM as f32);
+        // Field ignores the domain arguments, so we pass zeroes. Hoisted to avoid reconstruction.
+        let dummy_domain = (Field::from(0.0), Field::from(0.0), Field::from(0.0), Field::from(0.0));
+
         // SIMD Hot Path - process PARALLELISM pixels at a time
         while x + PARALLELISM <= stripe.width {
-            let xs = Field::sequential(x as f32 + 0.5);
-
             // Use materialize_discrete_fields to evaluate and store
             materialize_discrete_fields(manifold, xs, ys, &mut packed);
 
@@ -281,6 +284,8 @@ where
             }
 
             x += PARALLELISM;
+            // Field + Field -> Add<Field, Field> (AST). Evaluate to get concrete Field.
+            xs = (xs + step).eval(dummy_domain);
         }
 
         // Scalar Fallback (Tail) - handle remaining pixels one at a time
