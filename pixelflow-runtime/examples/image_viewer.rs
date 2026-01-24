@@ -9,6 +9,7 @@
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
+use pixelflow_macros::ManifoldExpr;
 use pixelflow_runtime::{api::public::AppData, EngineConfig, EngineTroupe, WindowConfig};
 use std::sync::Arc;
 
@@ -25,7 +26,7 @@ use pixelflow_graphics::scene3d::{
 use pixelflow_runtime::platform::ColorCube;
 
 /// Sphere at given center with radius (local to this example).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 struct SphereAt {
     center: (f32, f32, f32),
     radius: f32,
@@ -52,7 +53,7 @@ impl Manifold<Jet3_4> for SphereAt {
 }
 
 /// Screen coordinate remapper for Discrete output.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 struct ScreenRemap<M> {
     inner: M,
     width: f32,
@@ -80,10 +81,11 @@ impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ScreenRem
 
 /// Build the chrome sphere scene.
 fn build_scene() -> impl Manifold<Output = Discrete> + Send + Sync + Clone {
+    let color_cube = ColorCube::default();
     let world = ColorSurface {
         geometry: plane(-1.0),
-        material: ColorChecker::<ColorCube>::default(),
-        background: ColorSky::<ColorCube>::default(),
+        material: ColorChecker::new(color_cube.clone()),
+        background: ColorSky::new(color_cube),
     };
 
     let scene = ColorSurface {

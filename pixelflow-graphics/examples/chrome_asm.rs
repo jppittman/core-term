@@ -6,6 +6,7 @@ use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
 use pixelflow_graphics::render::color::RgbaColorCube;
+use pixelflow_macros::ManifoldExpr;
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
 };
@@ -15,7 +16,7 @@ type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 use std::hint::black_box;
 
 /// Sphere at given center with radius (local to this example).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 struct SphereAt {
     center: (f32, f32, f32),
     radius: f32,

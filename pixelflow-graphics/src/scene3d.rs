@@ -157,21 +157,24 @@ pub fn unit_sphere() -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
     })()
 }
 
+/// Horizontal plane geometry kernel.
+#[derive(Copy, Clone, ManifoldExpr)]
+pub struct PlaneKernel {
+    h: f32,
+}
+
+impl Manifold<Jet3_4> for PlaneKernel {
+    type Output = Jet3;
+    fn eval(&self, p: Jet3_4) -> Jet3 {
+        let h = Jet3::from(Field::from(self.h));
+        h / p.1 // h / Y
+    }
+}
+
 /// Horizontal plane at y = height.
 /// Solves P.y = height => t * ry = height => t = height / ry
-///
-/// TODO: kernel! macro doesn't support Jet3_4 domain yet - needs generic domain support
 #[allow(dead_code)]
-pub fn plane(height: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
-    #[derive(Copy, Clone)]
-    struct PlaneKernel { h: f32 }
-    impl Manifold<Jet3_4> for PlaneKernel {
-        type Output = Jet3;
-        fn eval(&self, p: Jet3_4) -> Jet3 {
-            let h = Jet3::from(Field::from(self.h));
-            h / p.1  // h / Y
-        }
-    }
+pub fn plane(height: f32) -> PlaneKernel {
     PlaneKernel { h: height }
 }
 
@@ -334,144 +337,61 @@ impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldG
 /// Performs **The Warp**: `P = ray * t`.
 /// Because `t` carries derivatives from Layer 1, and `ray` carries derivatives
 /// from Root, `P` automatically contains the Surface Tangent Frame via the Chain Rule.
-#[derive(Clone, Copy, ManifoldExpr)]
-pub struct Surface<G, M, B> {
-    pub geometry: G,   // Returns t
-    pub material: M,   // Evaluates at Hit Point P
-    pub background: B, // Evaluates at Ray Direction D (if miss)
-}
+///
+/// Evaluates geometry to get t, computes hit point P = ray * t, then selects
+/// between material (at P) and background based on hit validity.
+kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Field {
+    // 1. Get distance t from geometry
+    let t = geometry;
 
-impl<G, M, B> Manifold<Jet3_4> for Surface<G, M, B>
-where
-    G: ManifoldCompat<Jet3, Output = Jet3>,
-    M: ManifoldCompat<Jet3, Output = Field>,
-    B: ManifoldCompat<Jet3, Output = Field>,
-{
-    type Output = Field;
+    // 2. Validate hit: t > 0, t < max, derivatives reasonable
+    let t_max = 1000000.0;
+    let deriv_max = 10000.0;
+    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
+    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let mask = valid_t & valid_deriv;
 
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Field {
-        let (rx, ry, rz, w) = p;
-        // 1. Ask Geometry for distance t
-        let t = self.geometry.eval_raw(rx, ry, rz, w);
+    // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
+    let hx = X * t;
+    let hy = Y * t;
+    let hz = Z * t;
 
-        // 2. Check Hit Validity (Mask) - is t a valid hit?
-        let fzero = Field::from(0.0);
-        let t_max = Field::from(1e6);
-        let deriv_max = Field::from(1e4);
+    // 4. Sample material at hit point, background at ray direction
+    let mat_val = material.at(hx, hy, hz, W);
+    let bg_val = background;
 
-        // Collapse AST nodes to Field for mask operations
-        let valid_t = t.val.gt(fzero) & t.val.lt(t_max);
-        let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz).constant();
-        let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).constant());
-        let mask = valid_t & valid_deriv;
-
-        // 3. THE SAFE WARP: P = ray * t (sanitized against NaN/Inf)
-        let safe_t = Select {
-            cond: FieldMask(mask),
-            if_true: t,
-            if_false: Jet3::constant(fzero),
-        }
-        .eval_raw(rx, ry, rz, w);
-
-        let hx = rx * safe_t;
-        let hy = ry * safe_t;
-        let hz = rz * safe_t;
-
-        // 4. Blend via manifold composition using At + Select
-        // At takes Jet3 values as constant manifolds (Jet3 implements Manifold)
-        let mat = At {
-            inner: &self.material,
-            x: hx,
-            y: hy,
-            z: hz,
-            w,
-        };
-        let bg = At {
-            inner: &self.background,
-            x: rx,
-            y: ry,
-            z: rz,
-            w,
-        };
-
-        // Compose fully: mask selects between material and background manifolds
-        Select {
-            cond: FieldMask(mask),
-            if_true: mat,
-            if_false: bg,
-        }
-        .eval_raw(rx, ry, rz, w)
-    }
-}
+    // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
+    mask.select(mat_val, bg_val)
+});
 
 /// Color Surface: geometry + material + background, outputs Discrete.
-#[derive(Clone, Copy, ManifoldExpr)]
-pub struct ColorSurface<G, M, B> {
-    pub geometry: G,
-    pub material: M,
-    pub background: B,
-}
+kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Discrete {
+    // 1. Get distance t from geometry
+    let t = geometry;
 
-impl<G, M, B> Manifold<Jet3_4> for ColorSurface<G, M, B>
-where
-    G: ManifoldCompat<Jet3, Output = Jet3>,
-    M: ManifoldCompat<Jet3, Output = Discrete>,
-    B: ManifoldCompat<Jet3, Output = Discrete>,
-{
-    type Output = Discrete;
+    // 2. Validate hit: t > 0, t < max, derivatives reasonable
+    let t_max = 1000000.0;
+    let deriv_max = 10000.0;
+    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
+    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let mask = valid_t & valid_deriv;
 
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Discrete {
-        let (rx, ry, rz, w) = p;
-        let t = self.geometry.eval_raw(rx, ry, rz, w);
+    // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
+    let hx = X * t;
+    let hy = Y * t;
+    let hz = Z * t;
 
-        let fzero = Field::from(0.0);
-        let t_max = Field::from(1e6);
-        let deriv_max = Field::from(1e4);
+    // 4. Sample material at hit point, background at ray direction
+    let mat_val = material.at(hx, hy, hz, W);
+    let bg_val = background;
 
-        // Collapse AST nodes to Field for mask operations
-        let valid_t = t.val.gt(fzero) & t.val.lt(t_max);
-        let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz).constant();
-        let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).constant());
-        let mask = valid_t & valid_deriv;
+    // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
+    mask.select(mat_val, bg_val)
+});
 
-        // 3. THE SAFE WARP: P = ray * t (sanitized against NaN/Inf)
-        let safe_t = Select {
-            cond: FieldMask(mask),
-            if_true: t,
-            if_false: Jet3::constant(fzero),
-        }
-        .eval_raw(rx, ry, rz, w);
-
-        let hx = rx * safe_t;
-        let hy = ry * safe_t;
-        let hz = rz * safe_t;
-
-        // 4. Blend via manifold composition using At + Select
-        let mat = At {
-            inner: &self.material,
-            x: hx,
-            y: hy,
-            z: hz,
-            w,
-        };
-        let bg = At {
-            inner: &self.background,
-            x: rx,
-            y: ry,
-            z: rz,
-            w,
-        };
-
-        Select {
-            cond: FieldMask(mask),
-            if_true: mat,
-            if_false: bg,
-        }
-        .eval_raw(rx, ry, rz, w)
-    }
-}
+// ... SCENE COMPOSITION ...
 
 // ============================================================================
 // SCENE COMPOSITION: Union via priority order
@@ -545,31 +465,6 @@ pub struct SceneObject<G, M> {
     pub material: M,
 }
 
-/// Mask manifold for geometry hit detection.
-#[derive(Clone, Copy, ManifoldExpr)]
-pub struct GeometryMask<G> {
-    geometry: G,
-}
-
-impl<G: ManifoldCompat<Jet3, Output = Jet3>> Manifold<Jet3_4> for GeometryMask<G> {
-    type Output = Field;
-
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Field {
-        let (rx, ry, rz, w) = p;
-        let t = self.geometry.eval_raw(rx, ry, rz, w);
-
-        let fzero = Field::from(0.0);
-        let t_max = Field::from(1e6);
-        let deriv_max = Field::from(1e4);
-
-        let valid_t = t.val.gt(fzero) & t.val.lt(t_max);
-        let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz).constant();
-        let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).constant());
-        valid_t & valid_deriv
-    }
-}
-
 /// Color manifold for material evaluation at hit point.
 #[derive(Clone, Copy, ManifoldExpr)]
 pub struct GeometryColor<G, M> {
@@ -599,10 +494,24 @@ where
     }
 }
 
+/// Mask manifold for geometry hit detection.
+kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
+    let t = geometry;
+    let t_max = 1000000.0;
+    let deriv_max = 10000.0;
+
+    // Valid if: t > 0, t < max, derivatives reasonable
+    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
+    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+
+    valid_t & valid_deriv
+});
+
 impl<G, M> Scene for SceneObject<G, M>
 where
-    G: ManifoldCompat<Jet3, Output = Jet3> + Clone + Copy,
-    M: ManifoldCompat<Jet3, Output = Discrete> + Clone + Copy,
+    G: ManifoldCompat<Jet3, Output = Jet3> + ManifoldExpr + Clone + Copy,
+    M: ManifoldCompat<Jet3, Output = Discrete> + ManifoldExpr + Clone + Copy,
 {
     type Mask = GeometryMask<G>;
     type Color = GeometryColor<G, M>;
@@ -1055,57 +964,41 @@ where
 
 /// Checkerboard pattern based on X/Z coordinates.
 /// Uses Jet3 derivatives for automatic antialiasing at edges.
-#[derive(Clone, Copy, ManifoldExpr)]
-pub struct Checker;
+kernel!(pub struct Checker = || Jet3 -> Field {
+    // Which checker cell are we in?
+    let cell_x = V(X).floor();
+    let cell_z = V(Z).floor();
+    let sum = cell_x + cell_z;
+    let half = sum * 0.5;
+    let fract_half = half - half.floor();
+    let is_even = fract_half.abs() < 0.25;
 
-impl Manifold<Jet3_4> for Checker {
-    type Output = Field;
+    // Colors
+    let color_a = 0.9;
+    let color_b = 0.2;
+    let base_color = is_even.select(color_a, color_b);
 
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Field {
-        let (x, _y, z, _w) = p;
-        // Which checker cell are we in?
-        let cell_x = x.val.floor();
-        let cell_z = z.val.floor();
-        let sum = cell_x + cell_z;
-        let half = sum * Field::from(0.5);
-        let fract_half = half.clone() - half.floor();
-        let is_even = fract_half.abs().lt(Field::from(0.25));
+    // AA: distance to nearest grid line in X and Z
+    let fx = V(X) - cell_x;
+    let fz = V(Z) - cell_z;
 
-        // Colors - use select for branchless conditional
-        let color_a = Field::from(0.9);
-        let color_b = Field::from(0.2);
-        let base_color = is_even.clone().select(color_a, color_b);
+    // Distance to nearest edge (0.0 or 1.0 boundary)
+    let dx_edge = (fx - 0.5).abs();
+    let dz_edge = (fz - 0.5).abs();
+    let dist_to_edge = (0.5 - dx_edge).min(0.5 - dz_edge);
 
-        // AA: distance to nearest grid line in X and Z
-        let fx = x.val - cell_x; // [0, 1) within cell
-        let fz = z.val - cell_z;
+    // Gradient magnitude from Jet3 derivatives
+    let grad_x = (DX(X) * DX(X) + DY(X) * DY(X) + DZ(X) * DZ(X)).sqrt();
+    let grad_z = (DX(Z) * DX(Z) + DY(Z) * DY(Z) + DZ(Z) * DZ(Z)).sqrt();
+    let pixel_size = grad_x.max(grad_z) + 0.001;
 
-        // Distance to nearest edge (0.0 or 1.0 boundary)
-        let dx_edge = (fx - Field::from(0.5)).abs(); // 0.5 at center, 0.0 at edge
-        let dz_edge = (fz - Field::from(0.5)).abs();
-        let dist_to_edge = (Field::from(0.5) - dx_edge).min(Field::from(0.5) - dz_edge);
+    // Coverage: how much of the pixel is in this cell vs neighbor
+    let coverage = (dist_to_edge / pixel_size).min(1.0).max(0.0);
 
-        // Gradient magnitude from Jet3 derivatives (how fast coords change per pixel)
-        // Build expression once with coordinate variables, evaluate at Jet derivative components
-        let grad_mag = (X * X + Y * Y + Z * Z).sqrt();
-        let grad_x = grad_mag.at(x.dx, x.dy, x.dz, Field::from(0.0)).collapse();
-        let grad_z = grad_mag.at(z.dx, z.dy, z.dz, Field::from(0.0)).collapse();
-        // This tells us how wide one pixel is in world space
-        let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
-
-        // Coverage: how much of the pixel is in this cell vs neighbor
-        let coverage = (dist_to_edge / pixel_size)
-            .min(Field::from(1.0))
-            .max(Field::from(0.0));
-
-        // Blend with neighbor color at edges
-        let neighbor_color = is_even.select(color_b, color_a);
-        (base_color * coverage.clone() + neighbor_color * (Field::from(1.0) - coverage))
-            .at(x.val, Field::from(0.0), z.val, Field::from(0.0))
-            .collapse()
-    }
-}
+    // Blend with neighbor color at edges
+    let neighbor_color = is_even.select(color_b, color_a);
+    base_color * coverage + neighbor_color * (1.0 - coverage)
+});
 
 /// Simple Sky Gradient based on Y direction.
 ///
@@ -1117,81 +1010,93 @@ pub fn sky() -> Lift<impl Manifold<Field4, Output = Field> + Clone> {
     })())
 }
 
-/// Color Sky: Blue gradient, generic over ColorCube for platform-specific byte order.
+/// Color Sky: Blue gradient, takes a color cube for platform-specific byte order.
 ///
-/// Generic over `C` to support different pixel formats (RGBA, BGRA).
-/// Use `ColorSky<RgbaColorCube>` for RGBA byte order (macOS, Web).
-/// Use `ColorSky<BgraColorCube>` for BGRA byte order (Linux X11).
+/// Manual struct implementation because the color_cube parameter needs
+/// `Manifold<Field4>` (Field coordinates from V() extraction), not the kernel's
+/// Jet3_4 domain.
 #[derive(Clone, Copy, ManifoldExpr)]
 pub struct ColorSky<C> {
-    _cube: core::marker::PhantomData<C>,
+    pub color_cube: C,
 }
 
-impl<C> Default for ColorSky<C> {
-    fn default() -> Self {
-        Self {
-            _cube: core::marker::PhantomData,
-        }
+impl<C> ColorSky<C> {
+    pub fn new(color_cube: C) -> Self {
+        Self { color_cube }
     }
 }
 
-impl<C> Manifold<Jet3_4> for ColorSky<C>
-where
-    C: ManifoldCompat<Field, Output = Discrete> + Default,
-{
+impl<C: Default> Default for ColorSky<C> {
+    fn default() -> Self {
+        Self::new(C::default())
+    }
+}
+
+impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorSky<C> {
     type Output = Discrete;
 
     #[inline]
     fn eval(&self, p: Jet3_4) -> Discrete {
         let (_x, y, _z, _w) = p;
-        let t = y.val * Field::from(0.5) + Field::from(0.5);
-        let t = t.max(Field::from(0.0)).min(Field::from(1.0));
 
-        let r = (Field::from(0.7) - t.clone() * Field::from(0.5)).constant();
-        let g = (Field::from(0.85) - t.clone() * Field::from(0.45)).constant();
-        let b = (Field::from(1.0) - t * Field::from(0.2)).constant();
-        let a = Field::from(1.0);
+        // t = (V(Y) * 0.5 + 0.5).max(0.0).min(1.0)
+        let y_val: Field = y.into();
+        let half = Field::from(0.5);
+        let zero = Field::from(0.0);
+        let one = Field::from(1.0);
+        let t = (y_val * half + half).max(zero).min(one).constant();
 
-        // Use generic ColorCube instead of hardcoded pack()
-        // This respects platform-specific byte ordering
-        C::default().eval_raw(r, g, b, a)
+        // Gradient colors - collapse to Field with .constant()
+        let r = (Field::from(0.7) - t * Field::from(0.5)).constant();
+        let g = (Field::from(0.85) - t * Field::from(0.45)).constant();
+        let b = (one - t * Field::from(0.2)).constant();
+
+        self.color_cube.eval_raw(r, g, b, one)
     }
 }
 
-/// Color Checker: Warm/cool checker with AA, generic over ColorCube for platform-specific byte order.
+/// Color Checker: Warm/cool checker with AA, takes a color cube for platform-specific byte order.
 ///
-/// Generic over `C` to support different pixel formats (RGBA, BGRA).
-/// Use `ColorChecker<RgbaColorCube>` for RGBA byte order (macOS, Web).
-/// Use `ColorChecker<BgraColorCube>` for BGRA byte order (Linux X11).
+/// Manual struct implementation because the color_cube parameter needs
+/// `Manifold<Field4>` (Field coordinates), not the kernel's Jet3_4 domain.
 #[derive(Clone, Copy, ManifoldExpr)]
 pub struct ColorChecker<C> {
-    _cube: core::marker::PhantomData<C>,
+    pub color_cube: C,
 }
 
-impl<C> Default for ColorChecker<C> {
-    fn default() -> Self {
-        Self {
-            _cube: core::marker::PhantomData,
-        }
+impl<C> ColorChecker<C> {
+    pub fn new(color_cube: C) -> Self {
+        Self { color_cube }
     }
 }
 
-impl<C> Manifold<Jet3_4> for ColorChecker<C>
-where
-    C: ManifoldCompat<Field, Output = Discrete> + Default,
-{
+impl<C: Default> Default for ColorChecker<C> {
+    fn default() -> Self {
+        Self::new(C::default())
+    }
+}
+
+impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorChecker<C> {
     type Output = Discrete;
 
     #[inline]
     fn eval(&self, p: Jet3_4) -> Discrete {
         let (x, _y, z, _w) = p;
-        let cell_x = x.val.floor();
-        let cell_z = z.val.floor();
-        let sum = cell_x + cell_z;
-        let half = sum * Field::from(0.5);
-        let fract_half = half.clone() - half.floor();
+
+        // Extract Field values from Jet3
+        let x_val: Field = x.val;
+        let z_val: Field = z.val;
+
+        // Which checker cell are we in?
+        let cell_x = x_val.clone().floor();
+        let cell_z = z_val.clone().floor();
+        let sum = (cell_x.clone() + cell_z.clone()).constant();
+        let half = Field::from(0.5);
+        let sum_half = (sum.clone() * half.clone()).constant();
+        let fract_half = (sum_half.clone() - sum_half.floor()).constant();
         let is_even = fract_half.abs().lt(Field::from(0.25));
 
+        // Colors (warm and cool)
         let ra = Field::from(0.95);
         let ga = Field::from(0.9);
         let ba = Field::from(0.8);
@@ -1199,37 +1104,40 @@ where
         let gb = Field::from(0.25);
         let bb = Field::from(0.3);
 
-        let fx = x.val - cell_x;
-        let fz = z.val - cell_z;
-        let dx_edge = (fx - Field::from(0.5)).abs();
-        let dz_edge = (fz - Field::from(0.5)).abs();
-        let dist_to_edge = (Field::from(0.5) - dx_edge).min(Field::from(0.5) - dz_edge);
+        // AA: distance to nearest grid line in X and Z
+        let fx = (x_val - cell_x).constant();
+        let fz = (z_val - cell_z).constant();
 
-        let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt();
-        let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt();
-        let pixel_size = grad_x.max(grad_z) + Field::from(0.001);
+        // Distance to nearest edge (0.0 or 1.0 boundary)
+        let dx_edge = (fx - half.clone()).abs().constant();
+        let dz_edge = (fz - half.clone()).abs().constant();
+        let dist_to_edge = (half.clone() - dx_edge).min(half - dz_edge).constant();
 
-        let coverage = (dist_to_edge / pixel_size)
-            .min(Field::from(1.0))
-            .max(Field::from(0.0));
-        let one_minus_cov = Field::from(1.0) - coverage.clone();
+        // Gradient magnitude from Jet3 derivatives
+        let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt().constant();
+        let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt().constant();
+        let pixel_size = (grad_x.max(grad_z) + Field::from(0.001)).constant();
 
-        // Use select for branchless color choice
-        let r_base = is_even.clone().select(ra, rb);
-        let g_base = is_even.clone().select(ga, gb);
-        let b_base = is_even.clone().select(ba, bb);
+        // Coverage: how much of the pixel is in this cell vs neighbor
+        let zero = Field::from(0.0);
+        let one = Field::from(1.0);
+        let coverage = (dist_to_edge / pixel_size).min(one.clone()).max(zero).constant();
+
+        // Select and blend colors
+        let r_base = is_even.clone().select(ra.clone(), rb.clone());
+        let g_base = is_even.clone().select(ga.clone(), gb.clone());
+        let b_base = is_even.clone().select(ba.clone(), bb.clone());
 
         let r_neighbor = is_even.clone().select(rb, ra);
         let g_neighbor = is_even.clone().select(gb, ga);
         let b_neighbor = is_even.select(bb, ba);
 
-        let r = (r_base * coverage.clone() + r_neighbor * one_minus_cov.clone()).constant();
-        let g = (g_base * coverage.clone() + g_neighbor * one_minus_cov.clone()).constant();
-        let b = (b_base * coverage + b_neighbor * one_minus_cov).constant();
-        let a = Field::from(1.0);
+        let inv_coverage = (one.clone() - coverage.clone()).constant();
+        let r = (r_base * coverage.clone() + r_neighbor * inv_coverage.clone()).constant();
+        let g = (g_base * coverage.clone() + g_neighbor * inv_coverage.clone()).constant();
+        let b = (b_base * coverage + b_neighbor * inv_coverage).constant();
 
-        // Use generic ColorCube instead of hardcoded pack()
-        // This respects platform-specific byte ordering
-        C::default().eval_raw(r, g, b, a)
+        // Sample the color cube
+        self.color_cube.eval_raw(r, g, b, one)
     }
 }

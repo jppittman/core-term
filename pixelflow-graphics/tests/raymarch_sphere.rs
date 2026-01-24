@@ -3,6 +3,7 @@
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
+use pixelflow_macros::ManifoldExpr;
 
 type Field4 = (Field, Field, Field, Field);
 type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
@@ -14,7 +15,7 @@ use pixelflow_graphics::scene3d::{
 };
 
 /// Sphere at given center with radius (local to this test).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 struct SphereAt {
     center: (f32, f32, f32),
     radius: f32,
@@ -133,7 +134,7 @@ fn test_sphere_on_matte_floor() {
     const H: usize = 300;
 
     // Simple solid gray material
-    #[derive(Copy, Clone)]
+    #[derive(Copy, Clone, ManifoldExpr)]
     struct SolidGray;
 
     impl pixelflow_core::Manifold<Jet3_4> for SolidGray {
