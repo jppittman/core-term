@@ -124,13 +124,27 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                     if pending.stale {
                         // Resize happened during this render - frame dimensions are wrong.
                         // Discard the stale frame. The correct window is already in self.window
-                        // (set by the resize handler). Next manifold will render correctly.
+                        // (set by the resize handler).
                         log::debug!(
                             "Discarding stale render ({}x{}) - resize happened during render",
                             pending.width_px,
                             pending.height_px
                         );
-                        // Don't present the stale frame - just drop it
+                        // Don't present the stale frame - just drop it.
+                        // Now check if we have a pending manifold to render with correct dimensions.
+                        if let Some(manifold) = self.pending_manifold.take() {
+                            if let Some(window) = self.window.take() {
+                                log::debug!(
+                                    "Triggering render with correct dimensions after stale discard: {}x{}",
+                                    window.width_px,
+                                    window.height_px
+                                );
+                                self.trigger_render_with_window(manifold, window);
+                            } else {
+                                // Window not available yet - keep manifold pending
+                                self.pending_manifold = Some(manifold);
+                            }
+                        }
                     } else {
                         let window = Window {
                             id: pending.id,
@@ -514,10 +528,17 @@ impl EngineHandler {
                 // Update window with new one from driver
                 self.window = Some(window);
 
-                // Check if we have a pending manifold waiting for this window
-                if let Some(manifold) = self.pending_manifold.take() {
-                    if let Some(window) = self.window.take() {
-                        self.trigger_render_with_window(manifold, window);
+                // DON'T start a new render here if one is already in flight.
+                // The stale render will complete, be discarded, and then we can
+                // render with the correct dimensions. Starting a new render now
+                // would overwrite pending_render metadata for the in-flight render.
+                //
+                // If no render is in flight and we have a pending manifold, render now.
+                if self.pending_render.is_none() {
+                    if let Some(manifold) = self.pending_manifold.take() {
+                        if let Some(window) = self.window.take() {
+                            self.trigger_render_with_window(manifold, window);
+                        }
                     }
                 }
 
