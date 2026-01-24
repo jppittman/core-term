@@ -93,9 +93,14 @@ fn register_parameter(symbols: &mut SymbolTable, param: &Param) -> syn::Result<(
         return Err(syn::Error::new(
             param.name.span(),
             format!(
-                "parameter '{}' shadows intrinsic coordinate variable\n\
-                 note: intrinsics are: X, Y, Z, W (coordinate variables)\n\
-                 help: rename this parameter to something else",
+                "parameter '{}' would shadow the intrinsic coordinate variable\n\
+                 \n\
+                 note: X, Y, Z, W are built-in coordinate variables provided by PixelFlow\n\
+                 note: these are always available and represent the (x, y, z, w) evaluation point\n\
+                 \n\
+                 help: choose a different parameter name, for example:\n\
+                 help:   |cx: f32| ...  // center x coordinate (not 'X')\n\
+                 help:   |x_offset: f32| ...  // x offset (not 'X')",
                 name
             ),
         ));
@@ -106,8 +111,13 @@ fn register_parameter(symbols: &mut SymbolTable, param: &Param) -> syn::Result<(
         return Err(syn::Error::new(
             param.name.span(),
             format!(
-                "duplicate parameter '{}'\n\
-                 help: each parameter must have a unique name",
+                "duplicate parameter name '{}'\n\
+                 \n\
+                 note: each parameter in a kernel must have a unique name\n\
+                 \n\
+                 help: rename one of these parameters:\n\
+                 help:   |cx: f32, cy: f32| ...  // good: different names\n\
+                 help:   |cx: f32, cx: f32| ...  // bad: duplicate 'cx'",
                 name
             ),
         ));
@@ -191,16 +201,30 @@ fn resolve_ident(ident: &Ident, symbols: &SymbolTable, ctx: &SemaContext) -> syn
             let suggestion = find_similar_symbol(&name, symbols);
             let msg = match suggestion {
                 Some(similar) => format!(
-                    "undefined symbol '{}'\n\
-                     help: did you mean '{}'?\n\
-                     note: available intrinsics: X, Y, Z, W",
+                    "cannot find value `{}` in this scope\n\
+                     \n\
+                     help: a value with a similar name exists: `{}`\n\
+                     \n\
+                     note: available intrinsic coordinates: X, Y, Z, W\n\
+                     note: these represent the evaluation point (x, y, z, w)\n\
+                     \n\
+                     help: if you meant to use a variable from the environment,\n\
+                     help: use an anonymous kernel instead:\n\
+                     help:   kernel!(|| ...) instead of kernel!(struct Foo = || ...)",
                     name, similar
                 ),
                 None => format!(
-                    "undefined symbol '{}'\n\
-                     note: available intrinsics: X, Y, Z, W\n\
-                     help: check spelling or add as a parameter",
-                    name
+                    "cannot find value `{}` in this scope\n\
+                     \n\
+                     note: not found in kernel parameters or intrinsic coordinates\n\
+                     \n\
+                     help: add `{}` as a parameter to the kernel:\n\
+                     help:   |{}: f32| ...  // scalar parameter\n\
+                     help:   |{}: kernel| ...  // manifold parameter\n\
+                     \n\
+                     note: or use one of the intrinsic coordinates:\n\
+                     note:   X, Y, Z, W  // the (x, y, z, w) evaluation point",
+                    name, name, name, name
                 ),
             };
             Err(syn::Error::new(ident.span(), msg))
@@ -282,14 +306,28 @@ fn validate_method_call(call: &MethodCallExpr, symbols: &SymbolTable, ctx: &Sema
 
         let msg = match suggestion {
             Some(similar) => format!(
-                "unknown method '{}'\n\
-                 help: did you mean '{}'?",
+                "no method named `{}` found\n\
+                 \n\
+                 help: there is a method with a similar name: `{}`\n\
+                 \n\
+                 note: common math methods:\n\
+                 note:   sqrt, abs, floor, ceil, round\n\
+                 note:   sin, cos, tan, exp, ln, pow\n\
+                 note:   min, max, clamp",
                 method_name, similar
             ),
             None => format!(
-                "unknown method '{}'\n\
-                 note: common methods: sqrt, abs, sin, cos, exp, min, max, clone\n\
-                 help: see ManifoldExt trait for available methods",
+                "no method named `{}` found\n\
+                 \n\
+                 note: available methods on manifold expressions:\n\
+                 note:   math: sqrt, abs, floor, ceil, round, fract\n\
+                 note:   trig: sin, cos, tan, asin, acos, atan, atan2\n\
+                 note:   exp:  exp, exp2, ln, log2, log10, pow\n\
+                 note:   ops:  min, max, clamp, hypot, rsqrt, recip\n\
+                 note:   cmp:  lt, le, gt, ge, eq, ne\n\
+                 note:   misc: select, at, constant, collapse, neg, clone\n\
+                 \n\
+                 help: see the ManifoldExt trait for complete documentation",
                 method_name
             ),
         };
@@ -386,7 +424,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("undefined symbol"));
+        assert!(err.to_string().contains("cannot find value"));
     }
 
     #[test]
@@ -406,7 +444,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("shadows intrinsic"));
+        assert!(err.to_string().contains("would shadow"));
     }
 
     #[test]
@@ -431,8 +469,8 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("undefined symbol"));
-        assert!(err.contains("did you mean 'X'"));
+        assert!(err.contains("cannot find value"));
+        assert!(err.contains("similar name exists: `X`"));
     }
 
     #[test]
@@ -444,7 +482,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("undefined symbol"));
+        assert!(err.contains("cannot find value"));
         // Similar names with 1-2 char difference should be suggested
     }
 
@@ -456,7 +494,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("unknown method"));
+        assert!(err.contains("no method named"));
     }
 
     #[test]
@@ -468,7 +506,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("unknown method"));
+        assert!(err.contains("no method named"));
     }
 
     #[test]
