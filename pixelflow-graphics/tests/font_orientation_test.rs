@@ -13,13 +13,13 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 /// Measure the horizontal extent of rendered pixels at a given Y row.
 /// Returns (leftmost_x, rightmost_x) of pixels above the threshold, or None if row is empty.
 fn measure_row_extent(
-    pixels: &[Rgba8],
-    width: usize,
+    frame: &Frame<Rgba8>,
     y: usize,
     threshold: u8,
 ) -> Option<(usize, usize)> {
+    let width = frame.width;
     let row_start = y * width;
-    let row = &pixels[row_start..row_start + width];
+    let row = &frame.data[row_start..row_start + width];
 
     let left = row.iter().position(|p| p.r() > threshold)?;
     let right = row.iter().rposition(|p| p.r() > threshold)?;
@@ -28,8 +28,8 @@ fn measure_row_extent(
 }
 
 /// Calculate the width of rendered content at a given Y row.
-fn row_width(pixels: &[Rgba8], width: usize, y: usize, threshold: u8) -> usize {
-    match measure_row_extent(pixels, width, y, threshold) {
+fn row_width(frame: &Frame<Rgba8>, y: usize, threshold: u8) -> usize {
+    match measure_row_extent(frame, y, threshold) {
         Some((left, right)) => right - left + 1,
         None => 0,
     }
@@ -69,7 +69,7 @@ fn letter_a_apex_is_at_top() {
             };
             print!("{}", ch);
         }
-        println!(" | width={}", row_width(&pixels, width, y, 32));
+        println!(" | width={}", row_width(&frame, y, 32));
     }
 
     // Find the vertical bounds of the rendered glyph (use threshold 32 for cleaner edges)
@@ -77,7 +77,7 @@ fn letter_a_apex_is_at_top() {
     let mut top_row = None;
     let mut bottom_row = None;
     for y in 0..height {
-        if row_width(&pixels, width, y, threshold) > 0 {
+        if row_width(&frame, y, threshold) > 0 {
             if top_row.is_none() {
                 top_row = Some(y);
             }
@@ -104,8 +104,8 @@ fn letter_a_apex_is_at_top() {
     let top_quarter_y = top_row + glyph_height / 4;
     let bottom_quarter_y = bottom_row - glyph_height / 4;
 
-    let top_width = row_width(&pixels, width, top_quarter_y, threshold);
-    let bottom_width = row_width(&pixels, width, bottom_quarter_y, threshold);
+    let top_width = row_width(&frame, top_quarter_y, threshold);
+    let bottom_width = row_width(&frame, bottom_quarter_y, threshold);
 
     println!("Top quarter (y={}): width={}", top_quarter_y, top_width);
     println!(
@@ -140,7 +140,6 @@ fn letter_a_has_crossbar() {
     let height = 70;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
     rasterize(&color_manifold, &mut frame, 1);
-    let pixels = &frame.data;
 
     let threshold = 32;
 
@@ -148,7 +147,7 @@ fn letter_a_has_crossbar() {
     let mut top_row = None;
     let mut bottom_row = None;
     for y in 0..height {
-        if row_width(&pixels, width, y, threshold) > 0 {
+        if row_width(&frame, y, threshold) > 0 {
             if top_row.is_none() {
                 top_row = Some(y);
             }
@@ -169,7 +168,7 @@ fn letter_a_has_crossbar() {
     let mut max_width = 0;
     let mut crossbar_row = search_start;
     for y in search_start..search_end {
-        let w = row_width(&pixels, width, y, threshold);
+        let w = row_width(&frame, y, threshold);
         if w > max_width {
             max_width = w;
             crossbar_row = y;
@@ -177,7 +176,7 @@ fn letter_a_has_crossbar() {
     }
 
     // The crossbar should be significantly wider than the apex (top)
-    let apex_width = row_width(&pixels, width, top_row + 2, threshold);
+    let apex_width = row_width(&frame, top_row + 2, threshold);
 
     assert!(
         max_width > apex_width,
@@ -206,14 +205,13 @@ fn letter_v_point_is_at_bottom() {
     let height = 70;
     let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
     rasterize(&color_manifold, &mut frame, 1);
-    let pixels = &frame.data;
 
     // Find the vertical bounds (use threshold 32 for cleaner edges)
     let threshold = 32;
     let mut top_row = None;
     let mut bottom_row = None;
     for y in 0..height {
-        if row_width(&pixels, width, y, threshold) > 0 {
+        if row_width(&frame, y, threshold) > 0 {
             if top_row.is_none() {
                 top_row = Some(y);
             }
@@ -231,8 +229,8 @@ fn letter_v_point_is_at_bottom() {
     let top_quarter_y = top_row + glyph_height / 4;
     let bottom_quarter_y = bottom_row - glyph_height / 4;
 
-    let top_width = row_width(&pixels, width, top_quarter_y, threshold);
-    let bottom_width = row_width(&pixels, width, bottom_quarter_y, threshold);
+    let top_width = row_width(&frame, top_quarter_y, threshold);
+    let bottom_width = row_width(&frame, bottom_quarter_y, threshold);
 
     // The top should be WIDER than the bottom (opposite of 'A')
     assert!(
