@@ -50,7 +50,6 @@ pub enum DomainConfig {
     /// Fixed domain: `impl Manifold<__Domain> for Struct`
     Fixed {
         domain_type: TokenStream,
-        scalar_type: TokenStream,
         output_type: TokenStream,
         trait_bounds: Vec<TokenStream>,
     },
@@ -111,13 +110,11 @@ impl StructEmitter {
     pub fn with_fixed_domain(
         mut self,
         domain_type: TokenStream,
-        scalar_type: TokenStream,
         output_type: TokenStream,
         trait_bounds: Vec<TokenStream>,
     ) -> Self {
         self.domain_config = DomainConfig::Fixed {
             domain_type,
-            scalar_type,
             output_type,
             trait_bounds,
         };
@@ -151,24 +148,26 @@ impl StructEmitter {
         let ctor_params = &self.constructor_params;
 
         // Build struct definition
+        // All structs derive ManifoldExpr for composability
         let struct_def = if self.fields.is_empty() {
             // Unit struct
-            quote! { #[derive(Clone, Copy)] #vis struct #name; }
+            quote! { #[derive(Clone, Copy, ::pixelflow_macros::ManifoldExpr)] #vis struct #name; }
         } else if generics.is_empty() {
             // Non-generic struct
             match self.derives {
                 Derives::CloneCopy => quote! {
-                    #[derive(Clone, Copy)]
+                    #[derive(Clone, Copy, ::pixelflow_macros::ManifoldExpr)]
                     #vis struct #name { #(#fields),* }
                 },
                 Derives::Clone => quote! {
-                    #[derive(Clone)]
+                    #[derive(Clone, ::pixelflow_macros::ManifoldExpr)]
                     #vis struct #name { #(#fields),* }
                 },
             }
         } else {
-            // Generic struct - manual Clone/Copy impls
+            // Generic struct - manual Clone/Copy impls, derive ManifoldExpr
             quote! {
+                #[derive(::pixelflow_macros::ManifoldExpr)]
                 #vis struct #name<#(#generics),*> { #(#fields),* }
 
                 impl<#(#generics: Clone),*> Clone for #name<#(#generics),*> {
@@ -218,7 +217,7 @@ impl StructEmitter {
         let binding = &eval_body.binding;
 
         let manifold_impl = match &self.domain_config {
-            DomainConfig::Fixed { domain_type, scalar_type, output_type, trait_bounds } => {
+            DomainConfig::Fixed { domain_type, output_type, trait_bounds } => {
                 if generics.is_empty() {
                     quote! {
                         impl ::pixelflow_core::Manifold<#domain_type> for #name {

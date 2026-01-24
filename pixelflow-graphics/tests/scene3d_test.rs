@@ -8,6 +8,7 @@
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, ManifoldExt};
+use pixelflow_macros::ManifoldExpr;
 
 type Field4 = (Field, Field, Field, Field);
 type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
@@ -22,7 +23,7 @@ use std::fs::File;
 use std::io::Write;
 
 /// Sphere at given center with radius (local to this test).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ManifoldExpr)]
 struct SphereAt {
     center: (f32, f32, f32),
     radius: f32,
@@ -372,7 +373,7 @@ fn test_mullet_vs_3channel_comparison() {
     // ============================================================
 
     /// Per-channel sky (inline version since we deleted BlueSky)
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, ManifoldExpr)]
     struct ChannelSky {
         channel: u8,
     }
@@ -391,7 +392,7 @@ fn test_mullet_vs_3channel_comparison() {
     }
 
     /// Per-channel checker (inline version)
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, ManifoldExpr)]
     struct ChannelChecker {
         channel: u8,
     }

@@ -22,6 +22,7 @@
 use crate::mesh::{Point3, QuadMesh};
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Field, Manifold, ManifoldExt};
+use pixelflow_macros::ManifoldExpr;
 
 /// The 4D Jet3 domain type for 3D ray tracing autodiff.
 type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
@@ -316,7 +317,7 @@ pub struct SurfaceStats {
 ///
 /// Evaluates ray-patch intersection using Newton iteration on the limit surface.
 /// For now, simplified to single-patch intersection at a fixed height.
-#[derive(Clone)]
+#[derive(Clone, ManifoldExpr)]
 pub struct SubdivisionGeometry {
     /// The patch to raytrace
     patch: SubdivisionPatch,
@@ -449,9 +450,9 @@ impl Manifold<Jet3_4> for SubdivisionGeometry {
         // Return valid t if in bounds, else negative (miss)
         let miss = Field::from(-1.0);
         Jet3::new(
-            in_bounds.select(t_hit.val, miss),
-            in_bounds.select(t_hit.dx, miss),
-            in_bounds.select(t_hit.dy, miss),
+            in_bounds.clone().select(t_hit.val, miss),
+            in_bounds.clone().select(t_hit.dx, miss),
+            in_bounds.clone().select(t_hit.dy, miss),
             in_bounds.select(t_hit.dz, miss),
         )
     }

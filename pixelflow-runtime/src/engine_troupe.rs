@@ -32,6 +32,9 @@ struct PendingRender {
     width_px: u32,
     height_px: u32,
     scale: f64,
+    /// True if a resize event arrived while this render was in progress.
+    /// Stale renders are discarded because the frame dimensions don't match the window.
+    stale: bool,
 }
 
 /// Engine handler - coordinates app, rendering, display.
@@ -118,21 +121,46 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
             EngineData::RenderComplete(response) => {
                 // Reconstruct Window from pending_render metadata + cooked frame
                 if let Some(pending) = self.pending_render.take() {
-                    let window = Window {
-                        id: pending.id,
-                        frame: response.frame,
-                        width_px: pending.width_px,
-                        height_px: pending.height_px,
-                        scale: pending.scale,
-                    };
-                    self.present_cooked_frame(response.render_time, window);
+                    if pending.stale {
+                        // Resize happened during this render - frame dimensions are wrong.
+                        // Discard the stale frame. The correct window is already in self.window
+                        // (set by the resize handler). Next manifold will render correctly.
+                        log::debug!(
+                            "Discarding stale render ({}x{}) - resize happened during render",
+                            pending.width_px,
+                            pending.height_px
+                        );
+                        // Don't present the stale frame - just drop it
+                    } else {
+                        let window = Window {
+                            id: pending.id,
+                            frame: response.frame,
+                            width_px: pending.width_px,
+                            height_px: pending.height_px,
+                            scale: pending.scale,
+                        };
+                        self.present_cooked_frame(response.render_time, window);
+                    }
                 } else {
                     log::warn!("RenderComplete received but no pending_render metadata");
                 }
             }
-            EngineData::PresentComplete(window) => {
-                // Driver returned the window - store it for next render
-                self.window = Some(window);
+            EngineData::PresentComplete(returned_window) => {
+                // Driver returned the window after presentation.
+                // IMPORTANT: If a resize happened while presenting, self.window already
+                // contains the NEW resized window from the driver. Don't overwrite it
+                // with the stale returned window - that would lose the new dimensions forever.
+                if self.window.is_none() {
+                    self.window = Some(returned_window);
+                } else {
+                    // A resize happened - we already have the new window.
+                    // Discard the old returned window (its dimensions are stale).
+                    log::debug!(
+                        "Discarding stale window from PresentComplete (resize happened): {}x{}",
+                        returned_window.width_px,
+                        returned_window.height_px
+                    );
+                }
 
                 // Notify VSync for FPS tracking (actual rasterization completion)
                 self.vsync
@@ -378,6 +406,7 @@ impl EngineHandler {
             width_px,
             height_px,
             scale,
+            stale: false,
         });
 
         // Build render request (no response_tx - rasterizer uses registered channel)
@@ -469,6 +498,18 @@ impl EngineHandler {
                 let id = window.id;
                 let width_px = window.width_px;
                 let height_px = window.height_px;
+
+                // Mark any in-progress render as stale - its frame dimensions won't match
+                if let Some(pending) = &mut self.pending_render {
+                    log::debug!(
+                        "Resize during render: marking stale (was {}x{}, now {}x{})",
+                        pending.width_px,
+                        pending.height_px,
+                        width_px,
+                        height_px
+                    );
+                    pending.stale = true;
+                }
 
                 // Update window with new one from driver
                 self.window = Some(window);

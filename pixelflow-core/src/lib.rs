@@ -175,7 +175,7 @@ pub use domain::{Head, LetExtended, Spatial, Tail};
 pub use ext::*;
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 pub use manifold::*;
-pub use numeric::{Computational, Coordinate};
+pub use numeric::{Computational, Coordinate, Selectable};
 pub use ops::binary::*;
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
 pub use ops::logic::*;
@@ -429,14 +429,18 @@ impl Field {
         self.0.store(out)
     }
 
-    /// Check if any lane is non-zero.
+    /// Check if any lane is non-zero (mask is partially true).
+    ///
+    /// Used for SIMD branching decisions in rendering code.
     #[inline(always)]
     pub fn any(&self) -> bool {
         // Convert float representation to native mask, then check
         self.0.float_to_mask().any()
     }
 
-    /// Check if all lanes are non-zero.
+    /// Check if all lanes are non-zero (mask is fully true).
+    ///
+    /// Used for SIMD branching decisions in rendering code.
     #[inline(always)]
     pub fn all(&self) -> bool {
         // Convert float representation to native mask, then check
@@ -444,6 +448,9 @@ impl Field {
     }
 
     /// Less than comparison (returns mask as Field).
+    ///
+    /// Returns a Field where each lane is all-1s (true) or all-0s (false).
+    /// Used for SIMD branching in rendering code like BSP traversal.
     #[inline(always)]
     pub fn lt(self, rhs: Self) -> Self {
         // Returns native mask, convert back to float representation
@@ -451,18 +458,24 @@ impl Field {
     }
 
     /// Less than or equal (returns mask as Field).
+    ///
+    /// Returns a Field where each lane is all-1s (true) or all-0s (false).
     #[inline(always)]
     pub fn le(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_le(rhs.0)))
     }
 
     /// Greater than comparison (returns mask as Field).
+    ///
+    /// Returns a Field where each lane is all-1s (true) or all-0s (false).
     #[inline(always)]
     pub fn gt(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_gt(rhs.0)))
     }
 
     /// Greater than or equal (returns mask as Field).
+    ///
+    /// Returns a Field where each lane is all-1s (true) or all-0s (false).
     #[inline(always)]
     pub fn ge(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_ge(rhs.0)))
@@ -470,7 +483,7 @@ impl Field {
 
     /// Square root.
     #[inline(always)]
-    pub fn sqrt(self) -> Self {
+    pub(crate) fn sqrt(self) -> Self {
         self.sqrt_fast()
     }
 
@@ -484,7 +497,7 @@ impl Field {
     ///
     /// Handles x=0 correctly (returns 0, not NaN from 0 * ∞).
     #[inline(always)]
-    pub fn sqrt_fast(self) -> Self {
+    pub(crate) fn sqrt_fast(self) -> Self {
         let rsqrt = self.rsqrt();
         // sqrt(x) = x * (1/sqrt(x))
         // Use raw_mul since this is Field's internal implementation, not AST building.
@@ -506,13 +519,13 @@ impl Field {
 
     /// Element-wise minimum.
     #[inline(always)]
-    pub fn min(self, rhs: Self) -> Self {
+    pub(crate) fn min(self, rhs: Self) -> Self {
         Self(self.0.simd_min(rhs.0))
     }
 
     /// Element-wise maximum.
     #[inline(always)]
-    pub fn max(self, rhs: Self) -> Self {
+    pub(crate) fn max(self, rhs: Self) -> Self {
         Self(self.0.simd_max(rhs.0))
     }
 
@@ -579,7 +592,7 @@ impl Field {
     ///
     /// Uses SIMD polynomial approximation via exp2(x * log2(e)).
     #[inline(always)]
-    pub fn exp(self) -> Self {
+    pub(crate) fn exp(self) -> Self {
         Self(self.0.exp())
     }
 
@@ -588,7 +601,7 @@ impl Field {
     /// Uses hardware getexp/getmant on AVX-512, bit manipulation + Remez polynomial elsewhere.
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
     #[inline(always)]
-    pub fn log2(self) -> Self {
+    pub(crate) fn log2(self) -> Self {
         Self(self.0.log2())
     }
 
@@ -596,7 +609,7 @@ impl Field {
     ///
     /// Computed as log2(x) * ln(2).
     #[inline(always)]
-    pub fn ln(self) -> Self {
+    pub(crate) fn ln(self) -> Self {
         const LN_2: f32 = 0.6931471805599453;
         Self(self.0.log2() * NativeSimd::splat(LN_2))
     }
@@ -606,13 +619,13 @@ impl Field {
     /// Uses polynomial approximation with efficient 2^n scaling.
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
     #[inline(always)]
-    pub fn exp2(self) -> Self {
+    pub(crate) fn exp2(self) -> Self {
         Self(self.0.exp2())
     }
 
     /// Floor (round toward negative infinity).
     #[inline(always)]
-    pub fn floor(self) -> Self {
+    pub(crate) fn floor(self) -> Self {
         Self(self.0.simd_floor())
     }
     /// Fused multiply-add: `self * b + c` in a single operation.
@@ -634,7 +647,7 @@ impl Field {
     /// Uses SIMD rsqrt + one NR iteration for near-full f32 precision.
     /// Much faster than `sqrt` followed by division (~8 vs ~25 cycles).
     #[inline(always)]
-    pub fn rsqrt(self) -> Self {
+    pub(crate) fn rsqrt(self) -> Self {
         Self(self.0.simd_rsqrt())
     }
 
