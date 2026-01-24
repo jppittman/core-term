@@ -11,7 +11,7 @@ use actor_scheduler::{
     SystemStatus,
 };
 use pixelflow_core::{
-    Add, And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Mul, Select, Sub, W, X, Y, Z,
+    And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Select, Sub, W, X, Y, Z,
 };
 
 /// Adapter to send PTY commands to TerminalApp actor.
@@ -71,7 +71,6 @@ fn find_font_path() -> std::path::PathBuf {
         }
     }
 
-    // Try workspace-relative path (cargo run)
     let workspace_path =
         std::path::PathBuf::from(format!("pixelflow-graphics/assets/{}", FONT_FILENAME));
     if workspace_path.exists() {
@@ -79,7 +78,6 @@ fn find_font_path() -> std::path::PathBuf {
         return workspace_path;
     }
 
-    // Try crate-relative path (tests)
     let crate_path =
         std::path::PathBuf::from(format!("../pixelflow-graphics/assets/{}", FONT_FILENAME));
     if crate_path.exists() {
@@ -99,21 +97,6 @@ type BoundedGlyph =
 /// Positioned glyph manifold
 type PositionedGlyph = At<Sub<X, f32>, Sub<Y, f32>, Z, W, BoundedGlyph>;
 
-/// Lerp manifold: X + Z * (Y - X)
-/// Maps X -> background, Y -> foreground, Z -> coverage
-type LerpManifold = Add<X, Mul<Z, Sub<Y, X>>>;
-
-/// Blended channel: Lerp(coverage, background, foreground)
-type BlendedChannel = At<f32, f32, PositionedGlyph, f32, LerpManifold>;
-
-/// Concrete leaf type: a terminal cell with background and foreground blending.
-type TerminalCellLeaf = At<
-    BlendedChannel, // R
-    BlendedChannel, // G
-    BlendedChannel, // B
-    f32,            // A
-    ColorCube,      // M
->;
 
 /// Layout parameters for a terminal cell.
 #[derive(Clone, Copy)]
@@ -170,7 +153,6 @@ impl TerminalApp {
         layout: CellLayout,
         colors: CellColors,
     ) -> impl Manifold<Output = Discrete> + Clone {
-        // Create bounded glyph in local coordinates [0, width] x [0, height]
         // IMPORTANT: Bound BEFORE translating to avoid evaluating every glyph for every pixel
         let cond = X.ge(0.0) & X.le(layout.width) & Y.ge(0.0) & Y.le(layout.height);
         let bounded = Select {
@@ -179,7 +161,6 @@ impl TerminalApp {
             if_false: 0.0f32,
         };
 
-        // Position the glyph in global coordinates
         let positioned = At {
             inner: bounded,
             x: X - layout.x,
@@ -188,37 +169,23 @@ impl TerminalApp {
             w: W,
         };
 
-        // Lerp expression: X + Z * (Y - X)
-        // We map: X -> bg, Y -> fg, Z -> coverage
         let lerp = X + Z * (Y - X);
 
-        // Blend each channel
-        // Note: we use positioned (which is a Manifold) as the Z coordinate
-        // The At combinator expects manifolds for coordinates.
-        // Also note: f32 constants are auto-lifted to Manifolds.
-        let r = At {
-            inner: lerp,
-            x: colors.bg[0],
-            y: colors.fg[0],
-            z: positioned.clone(),
-            w: 0.0,
-        };
-        let g = At {
-            inner: lerp,
-            x: colors.bg[1],
-            y: colors.fg[1],
-            z: positioned.clone(),
-            w: 0.0,
-        };
-        let b = At {
-            inner: lerp,
-            x: colors.bg[2],
-            y: colors.fg[2],
-            z: positioned,
-            w: 0.0,
+        // Helper to blend a single channel
+        let blend_channel = |bg: f32, fg: f32, coverage: &PositionedGlyph| {
+            At {
+                inner: lerp,
+                x: bg,
+                y: fg,
+                z: coverage.clone(),
+                w: 0.0,
+            }
         };
 
-        // Pack into platform color cube
+        let r = blend_channel(colors.bg[0], colors.fg[0], &positioned);
+        let g = blend_channel(colors.bg[1], colors.fg[1], &positioned);
+        let b = blend_channel(colors.bg[2], colors.fg[2], &positioned);
+
         let blended = At {
             inner: ColorCube::default(),
             x: r,
@@ -227,14 +194,11 @@ impl TerminalApp {
             w: 1.0,
         };
 
-        // Only show the cell (including background) when pixel is in bounds
-        // When out of bounds, return transparent black
         let in_bounds = X.ge(layout.x)
             & X.le(layout.x + layout.width)
             & Y.ge(layout.y)
             & Y.le(layout.y + layout.height);
 
-        // Create a transparent black color (all zeros)
         let transparent = At {
             inner: ColorCube::default(),
             x: 0.0,
