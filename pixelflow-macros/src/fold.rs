@@ -84,6 +84,9 @@ pub trait ExprFold {
     /// Transform a block expression.
     fn fold_block(&mut self, stmts: Vec<Self::Output>, final_expr: Option<Self::Output>) -> Self::Output;
 
+    /// Transform a tuple expression.
+    fn fold_tuple(&mut self, elems: Vec<Self::Output>) -> Self::Output;
+
     /// Transform a let statement's initializer.
     fn fold_let(&mut self, name: &Ident, init: Self::Output) -> Self::Output;
 
@@ -135,6 +138,10 @@ pub fn fold_expr<F: ExprFold>(folder: &mut F, expr: &Expr) -> F::Output {
             let final_expr = block.expr.as_ref().map(|e| fold_expr(folder, e));
             folder.fold_block(stmts, final_expr)
         }
+        Expr::Tuple(tuple) => {
+            let elems: Vec<_> = tuple.elems.iter().map(|e| fold_expr(folder, e)).collect();
+            folder.fold_tuple(elems)
+        }
         Expr::Verbatim(syn_expr) => folder.fold_verbatim(syn_expr),
     }
 }
@@ -180,6 +187,10 @@ mod tests {
         }
 
         fn fold_block(&mut self, _stmts: Vec<()>, _final_expr: Option<()>) -> () {
+            self.count += 1;
+        }
+
+        fn fold_tuple(&mut self, _elems: Vec<()>) -> () {
             self.count += 1;
         }
 

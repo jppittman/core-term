@@ -104,12 +104,21 @@ pub enum Expr {
     /// A block expression ({ let dx = ...; dx * dx }).
     Block(BlockExpr),
 
+    /// A tuple expression: (a, b, c)
+    Tuple(TupleExpr),
+
     /// A parenthesized expression ((a + b)).
     Paren(Box<Expr>),
 
     /// Passthrough for expressions we don't specially handle.
     /// The codegen phase will emit these verbatim.
     Verbatim(syn::Expr),
+}
+
+#[derive(Debug, Clone)]
+pub struct TupleExpr {
+    pub elems: Vec<Expr>,
+    pub span: Span,
 }
 
 /// An identifier expression.

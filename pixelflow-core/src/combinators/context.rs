@@ -54,6 +54,54 @@ pub struct A2;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct A3;
 
+/// Marker for the fifth array (index 4) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A4;
+
+/// Marker for the sixth array (index 5) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A5;
+
+/// Marker for the seventh array (index 6) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A6;
+
+/// Marker for the eighth array (index 7) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A7;
+
+/// Marker for the ninth array (index 8) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A8;
+
+/// Marker for the tenth array (index 9) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A9;
+
+/// Marker for the eleventh array (index 10) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A10;
+
+/// Marker for the twelfth array (index 11) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A11;
+
+/// Marker for the thirteenth array (index 12) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A12;
+
+/// Marker for the fourteenth array (index 13) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A13;
+
+/// Marker for the fifteenth array (index 14) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A14;
+
+/// Marker for the sixteenth array (index 15) in a context tuple.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct A15;
+
 // ============================================================================
 // Context Combinator
 // ============================================================================

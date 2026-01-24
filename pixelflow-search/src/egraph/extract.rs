@@ -43,6 +43,7 @@ pub enum ExprTree {
     Ne(Box<ExprTree>, Box<ExprTree>),
     Select(Box<ExprTree>, Box<ExprTree>, Box<ExprTree>),
     Clamp(Box<ExprTree>, Box<ExprTree>, Box<ExprTree>),
+    Tuple(Vec<ExprTree>),
 }
 
 #[cfg(test)]

@@ -539,4 +539,5 @@ core-term/src/
     3c. variables.rs is the symbol table
 4. **Minimal public API** - Composition over exposure
 5. **Zero allocations** - No per-frame heap allocation
+6. **No copies of unknown sized types** pixelflow language types are copy iff they are provably zero sized 
 6. **Platform on main thread** - Especially macOS Cocoa

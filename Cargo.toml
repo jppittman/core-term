@@ -1,12 +1,13 @@
 [workspace]
-members = ["core-term", "pixelflow-core", "pixelflow-graphics", "pixelflow-ml", "pixelflow-macros", "xtask", "pixelflow-runtime", "actor-scheduler", "actor-scheduler-macros"]
+members = ["core-term", "pixelflow-core", "pixelflow-graphics", "pixelflow-ml", "pixelflow-macros", "xtask", "pixelflow-runtime", "actor-scheduler", "actor-scheduler-macros", "pixelflow-search"]
 exclude = ["pixelflow-core/fuzz"]
 resolver = "2"
 
 # Dev profile - use opt-level=2 because deep Manifold recursion causes
 # stack overflow without aggressive inlining. opt-level=1 isn't enough.
 [profile.dev]
-opt-level = 2
+opt-level = 1
+panic = "abort"
 
 # Workspace-wide lints - prevents swallowing errors with `let _ = `
 [workspace.lints.rust]
@@ -22,8 +23,7 @@ must_use_candidate = "warn"
 # Normal release - fast compile, good perf
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+panic = "abort"
 
 # Benchmark profile - ensure LTO is used
 [profile.bench]
