@@ -5,6 +5,7 @@
 pub mod at;
 pub mod binding;
 pub mod block;
+pub mod computed;
 pub mod context;  // Flat context tuple prototype
 pub mod fix;
 pub mod map;
@@ -21,8 +22,9 @@ pub use binding::{
     Var, UTerm, B0, B1, UInt,
 };
 pub use block::Block;
-pub use context::{A0, A1, A2, A3, CtxVar, WithContext};  // Array-based context
-pub use fix::Fix;
+pub use computed::{Computed, ManifoldBind};
+pub use context::{A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15, CtxVar, WithContext};  // Array-based context
+pub use fix::{Fix, RecFix, Recurse, RecDomain};
 pub use map::{ClosureMap, Map};
 pub use pack::Pack;
 pub use project::Project;

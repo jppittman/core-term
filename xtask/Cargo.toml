@@ -12,3 +12,4 @@ path = "src/main.rs"
 bench = false
 
 [dependencies]
+pixelflow-search = { path = "../pixelflow-search" }

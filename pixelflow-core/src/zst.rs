@@ -157,6 +157,11 @@ impl<Seed, Step, Done> sealed::Sealed for crate::combinators::Fix<Seed, Step, Do
 impl<Val, Body> sealed::Sealed for crate::combinators::Let<Val, Body> {}
 impl<N> sealed::Sealed for crate::combinators::Var<N> {}
 
+// RecFix and Recurse
+impl sealed::Sealed for crate::combinators::Recurse {}
+impl<T, P> sealed::Sealed for crate::combinators::RecDomain<T, P> {}
+impl<N, S, B> sealed::Sealed for crate::combinators::RecFix<N, S, B> {}
+
 // Seal binary type-level number types
 impl sealed::Sealed for crate::combinators::UTerm {}
 impl sealed::Sealed for crate::combinators::B0 {}
@@ -208,6 +213,11 @@ impl crate::Zst for crate::combinators::B0 {}
 impl crate::Zst for crate::combinators::B1 {}
 impl<U: crate::Zst, B: crate::Zst> crate::Zst for crate::combinators::UInt<U, B> {}
 impl<N: crate::Zst> crate::Zst for crate::combinators::Var<N> {}
+
+// RecFix and Recurse
+impl crate::Zst for crate::combinators::Recurse {}
+// RecDomain is NOT a ZST (contains P)
+impl<N: crate::Zst, S: crate::Zst, B: crate::Zst> crate::Zst for crate::combinators::RecFix<N, S, B> {}
 
 // Context array position markers
 impl crate::Zst for crate::combinators::A0 {}

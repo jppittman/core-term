@@ -7,9 +7,10 @@
 
 use crate::shapes::{square, Bounded};
 use pixelflow_core::{
-    Abs, At, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Mul, MulAdd, Select,
-    Sub, W, X, Y, Z,
+    Abs, At, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Select,
+    W, X, Y, Z,
 };
+use pixelflow_macros::kernel;
 use std::sync::Arc;
 
 // Import analytical curve kernels
@@ -33,11 +34,12 @@ pub type QuadKernel = AnalyticalQuad;
 // Combinators
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Affine coordinate transform AST node.
+/// Affine coordinate transform kernel.
 /// Computes: (X - tx) * a + (Y - ty) * b
-///
-/// Note: The compiler fuses this into `MulAdd`, so the type matches the fusion.
-pub type AffineTransform = MulAdd<Sub<X, f32>, f32, Mul<Sub<Y, f32>, f32>>;
+kernel!(
+    pub struct AffineTransform = |tx: f32, a: f32, ty: f32, b: f32|
+    (X - tx) * a + (Y - ty) * b
+);
 
 /// Affine transform combinator type alias.
 ///
@@ -58,17 +60,11 @@ pub fn affine<M>(inner: M, [a, b, c, d, tx, ty]: [f32; 6]) -> Affine<M> {
     let inv_tx = tx;
     let inv_ty = ty;
 
-    // x' = (X - tx) * a + (Y - ty) * b
-    let trans_x = (X - inv_tx) * inv_a + (Y - inv_ty) * inv_b;
-
-    // y' = (X - tx) * c + (Y - ty) * d
-    let trans_y = (X - inv_tx) * inv_c + (Y - inv_ty) * inv_d;
-
     // Construct At directly to avoid requiring M: Manifold bound for the type alias if it were a function
     At {
         inner,
-        x: trans_x,
-        y: trans_y,
+        x: AffineTransform::new(inv_tx, inv_a, inv_ty, inv_b),
+        y: AffineTransform::new(inv_tx, inv_c, inv_ty, inv_d),
         z: Z,
         w: W,
     }

@@ -54,8 +54,15 @@ pub enum AnnotatedExpr {
     MethodCall(AnnotatedMethodCall),
     Call(AnnotatedCall),
     Block(AnnotatedBlock),
+    Tuple(AnnotatedTuple),
     Paren(Box<AnnotatedExpr>),
     Verbatim(syn::Expr),
+}
+
+#[derive(Debug, Clone)]
+pub struct AnnotatedTuple {
+    pub elems: Vec<AnnotatedExpr>,
+    pub span: Span,
 }
 
 /// A literal with its binding information.
@@ -219,6 +226,23 @@ fn annotate_expr(
                     method: call.method.clone(),
                     args,
                     span: call.span,
+                }),
+                ctx1,
+            )
+        }
+
+        Expr::Tuple(tuple) => {
+            let mut ctx1 = ctx;
+            let mut elems = Vec::with_capacity(tuple.elems.len());
+            for elem in &tuple.elems {
+                let (annotated_elem, new_ctx) = annotate_expr(elem, ctx1, literals);
+                elems.push(annotated_elem);
+                ctx1 = new_ctx;
+            }
+            (
+                AnnotatedExpr::Tuple(AnnotatedTuple {
+                    elems,
+                    span: tuple.span,
                 }),
                 ctx1,
             )

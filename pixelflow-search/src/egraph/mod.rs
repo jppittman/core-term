@@ -12,9 +12,11 @@
 //! - [`rules`]: Concrete rewrite rules
 //! - [`extract`]: Expression tree for extracted results
 //! - [`graph`]: The EGraph itself
+//! - [`deps`]: Dependency analysis for uniform hoisting
 
 mod algebra;
 mod cost;
+mod deps;
 mod extract;
 mod graph;
 mod node;
@@ -23,6 +25,7 @@ mod rules;
 
 // Re-export public API
 pub use cost::CostModel;
+pub use deps::{Deps, DepsAnalysis};
 pub use extract::ExprTree;
 pub use graph::EGraph;
 pub use node::{EClassId, ENode, Op};

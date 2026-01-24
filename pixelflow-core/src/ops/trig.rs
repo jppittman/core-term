@@ -53,9 +53,9 @@ const TWO_PI_INV: f32 = inv_two_pi();
 /// Formula: x' = x - 2π * round(x / 2π)
 #[inline(always)]
 fn range_reduce_pi(x: Field) -> Field {
-    // Compute k = round(x / 2π)
-    // Eval the floor result to get Field, then add 0.5
-    let k = eval((x * Field::from(TWO_PI_INV)).floor()) + Field::from(0.5);
+    // Compute k = round(x / 2π) using floor(x + 0.5)
+    // The 0.5 must be added BEFORE floor, not after
+    let k = eval((x * Field::from(TWO_PI_INV) + Field::from(0.5)).floor());
 
     // x' = x - 2π * k
     eval(x - k * Field::from(TWO_PI))

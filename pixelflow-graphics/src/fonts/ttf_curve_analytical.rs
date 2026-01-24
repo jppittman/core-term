@@ -7,7 +7,7 @@
 //! For winding numbers: we compute signed coverage at curve boundaries and
 //! accumulate fractional winding contributions for antialiased fill.
 
-use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
+use pixelflow_core::{Field, Manifold};
 use pixelflow_macros::kernel;
 
 type Field4 = (Field, Field, Field, Field);
@@ -233,36 +233,45 @@ impl Manifold<Field4> for AnalyticalQuad {
             });
             k(self.u_x, self.u_y, self.u_c, self.orientation, self.y_min, self.y_max).eval(p)
         } else {
-            // Quadratic Loop-Blinn case: Compose Manifolds directly, no big kernel
+            // Quadratic Loop-Blinn case using kernel! for optimization
+            let k = kernel!(
+                |ux: f32, uy: f32, uc: f32,
+                 vx: f32, vy: f32, vc: f32,
+                 wx: f32, wy: f32, wc: f32,
+                 orientation: f32|
+                {
+                    // Barycentric coords
+                    let u = X * ux + Y * uy + uc;
+                    let v = X * vx + Y * vy + vc;
+                    let w = X * wx + Y * wy + wc;
 
-            // Build barycentric coordinates as Manifold expressions
-            let u = X * self.u_x + Y * self.u_y + self.u_c;
-            let v = X * self.v_x + Y * self.v_y + self.v_c;
-            let w = X * self.w_x + Y * self.w_y + self.w_c;
+                    // Implicit function: f = u² - vw
+                    let f = u * u - v * w;
 
-            // Loop-Blinn implicit function: f = u² - vw
-            let f = u.clone() * u.clone() - v.clone() * w.clone();
+                    // Analytical gradient components
+                    // ∇f = 2u∇u - v∇w - w∇v
+                    let gx = u * (2.0 * ux) - v * wx - w * vx;
+                    let gy = u * (2.0 * uy) - v * wy - w * vy;
+                    
+                    // Gradient magnitude
+                    let gmag = (gx * gx + gy * gy).sqrt();
 
-            // Analytical gradient components
-            let grad_x = u.clone() * (2.0 * self.u_x)
-                       - v.clone() * self.w_x
-                       - w.clone() * self.v_x;
-            let grad_y = u.clone() * (2.0 * self.u_y)
-                       - v.clone() * self.w_y
-                       - w.clone() * self.v_y;
+                    // Coverage from signed distance
+                    // Safe divide by max(gmag, epsilon)
+                    let scaled_f = f / gmag.max(1e-6);
+                    let coverage = (scaled_f * -1.0 + 0.5).max(0.0).min(1.0);
 
-            // Gradient magnitude
-            let grad_mag = (grad_x.clone() * grad_x + grad_y.clone() * grad_y).sqrt();
+                    // Apply orientation for winding
+                    coverage * orientation
+                }
+            );
 
-            // Coverage from signed distance
-            let scaled_f = f / grad_mag.max(1e-6);
-            let coverage = (scaled_f * -1.0 + 0.5).max(0.0).min(1.0);
-
-            // Apply orientation for winding and Y-bounds check
-            // Even for curves, we need to bound the vertical extent to prevent
-            // infinite strips from filling the bounding box.
-            let in_y_range = Y.ge(self.y_min) & Y.lt(self.y_max);
-            in_y_range.select(coverage * self.orientation, 0.0).eval(p)
+            k(
+                self.u_x, self.u_y, self.u_c,
+                self.v_x, self.v_y, self.v_c,
+                self.w_x, self.w_y, self.w_c,
+                self.orientation
+            ).eval(p)
         }
     }
 }

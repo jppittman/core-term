@@ -99,33 +99,9 @@ impl CostModel {
             ENode::Min(_, _) => self.min,
             ENode::Max(_, _) => self.max,
             ENode::MulAdd(_, _, _) => self.mul_add,
-            // Pass-through unary ops
-            ENode::Floor(_)
-            | ENode::Ceil(_)
-            | ENode::Round(_)
-            | ENode::Fract(_)
-            | ENode::Sin(_)
-            | ENode::Cos(_)
-            | ENode::Tan(_)
-            | ENode::Asin(_)
-            | ENode::Acos(_)
-            | ENode::Atan(_)
-            | ENode::Exp(_)
-            | ENode::Exp2(_)
-            | ENode::Ln(_)
-            | ENode::Log2(_)
-            | ENode::Log10(_) => self.sqrt,
-            // Pass-through binary ops
-            ENode::Atan2(_, _) | ENode::Pow(_, _) | ENode::Hypot(_, _) => self.sqrt,
-            // Comparisons
-            ENode::Lt(_, _)
-            | ENode::Le(_, _)
-            | ENode::Gt(_, _)
-            | ENode::Ge(_, _)
-            | ENode::Eq(_, _)
-            | ENode::Ne(_, _) => self.add,
-            // Ternary
             ENode::Select(_, _, _) | ENode::Clamp(_, _, _) => self.add,
+            ENode::Tuple(_) => 0,
+            _ => self.add, // Default for functions like sin, cos, etc.
         }
     }
 }

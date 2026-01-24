@@ -43,3 +43,11 @@ harness = false
 [[bench]]
 name = "generated_kernels"
 harness = false
+
+[[example]]
+name = "nnue_train_test"
+required-features = ["training"]
+
+[[example]]
+name = "critical_path_test"
+required-features = ["training"]

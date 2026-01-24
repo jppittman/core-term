@@ -154,6 +154,9 @@ pub enum ENode {
     // === Selection/Ternary ===
     Select(EClassId, EClassId, EClassId),
     Clamp(EClassId, EClassId, EClassId),
+
+    // === Structural ===
+    Tuple(Vec<EClassId>),
 }
 
 impl ENode {
@@ -252,6 +255,7 @@ impl ENode {
             ENode::MulAdd(a, b, c) | ENode::Select(a, b, c) | ENode::Clamp(a, b, c) => {
                 vec![*a, *b, *c]
             }
+            ENode::Tuple(elems) => elems.clone(),
         }
     }
 }

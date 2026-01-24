@@ -167,6 +167,11 @@ impl EGraph {
                 *b = self.find(*b);
                 *c = self.find(*c);
             }
+            ENode::Tuple(elems) => {
+                for e in elems {
+                    *e = self.find(*e);
+                }
+            }
         }
     }
 
@@ -413,6 +418,7 @@ impl EGraph {
             ENode::Ne(a, b) => ExprTree::Ne(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
             ENode::Select(a, b, c) => ExprTree::Select(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs)), Box::new(self.extract_tree_with_costs(*c, costs))),
             ENode::Clamp(a, b, c) => ExprTree::Clamp(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs)), Box::new(self.extract_tree_with_costs(*c, costs))),
+            ENode::Tuple(elems) => ExprTree::Tuple(elems.iter().map(|&e| self.extract_tree_with_costs(e, costs)).collect()),
         }
     }
 }
@@ -452,5 +458,156 @@ mod tests {
         let div = eg.add(ENode::Div(prod, x));
         eg.saturate();
         assert_eq!(eg.find(div), eg.find(five));
+    }
+
+    #[test]
+    fn test_nested_subtraction() {
+        // a - (b - c) should equal a - b + c
+        // Test: 10 - (6 - 2) = 10 - 4 = 6
+        let mut eg = EGraph::new();
+        let a = eg.add(ENode::constant(10.0));  // a = 10
+        let b = eg.add(ENode::constant(6.0));   // b = 6
+        let c = eg.add(ENode::constant(2.0));   // c = 2
+
+        // Build a - (b - c)
+        let b_minus_c = eg.add(ENode::Sub(b, c));   // 6 - 2 = 4
+        let result = eg.add(ENode::Sub(a, b_minus_c));  // 10 - 4 = 6
+
+        eg.saturate();
+
+        // Extract and verify
+        let costs = CostModel::default();
+        let tree = eg.extract_tree_with_costs(result, &costs);
+        let val = tree.eval(&[0.0; 4]);
+
+        // Should be 6.0, not something else
+        assert!((val - 6.0).abs() < 0.001, "10 - (6 - 2) should be 6.0, got {}", val);
+    }
+
+    #[test]
+    fn test_mul_sub_pattern() {
+        // This is the problematic pattern from discriminant:
+        // d*d - (c - r) where d=4, c=16, r=1
+        // = 16 - (16 - 1) = 16 - 15 = 1
+        let mut eg = EGraph::new();
+        let d = eg.add(ENode::constant(4.0));
+        let c_sq = eg.add(ENode::constant(16.0));
+        let r_sq = eg.add(ENode::constant(1.0));
+
+        // d * d = 16
+        let d_sq = eg.add(ENode::Mul(d, d));
+        // c_sq - r_sq = 15
+        let inner_sub = eg.add(ENode::Sub(c_sq, r_sq));
+        // d_sq - inner_sub = 16 - 15 = 1
+        let result = eg.add(ENode::Sub(d_sq, inner_sub));
+
+        eg.saturate();
+
+        let costs = CostModel::default();
+        let tree = eg.extract_tree_with_costs(result, &costs);
+        eprintln!("Extracted tree: {:?}", tree);
+        let val = tree.eval(&[0.0; 4]);
+
+        assert!((val - 1.0).abs() < 0.001, "16 - (16 - 1) should be 1.0, got {}", val);
+    }
+
+    #[test]
+    fn test_mul_sub_pattern_with_vars() {
+        // Same pattern but with variables:
+        // x*x - (y - z) where x=4, y=16, z=1
+        // = 16 - (16 - 1) = 16 - 15 = 1
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));  // Will be 4
+        let y = eg.add(ENode::Var(1));  // Will be 16
+        let z = eg.add(ENode::Var(2));  // Will be 1
+
+        // x * x = 16
+        let x_sq = eg.add(ENode::Mul(x, x));
+        // y - z = 15
+        let inner_sub = eg.add(ENode::Sub(y, z));
+        // x_sq - inner_sub = 16 - 15 = 1
+        let result = eg.add(ENode::Sub(x_sq, inner_sub));
+
+        eg.saturate();
+
+        let costs = CostModel::default();
+        let tree = eg.extract_tree_with_costs(result, &costs);
+        eprintln!("Extracted tree with vars: {:?}", tree);
+        let val = tree.eval(&[4.0, 16.0, 1.0, 0.0]);
+
+        assert!((val - 1.0).abs() < 0.001, "16 - (16 - 1) should be 1.0, got {}", val);
+    }
+
+    #[test]
+    fn test_mul_sub_pattern_with_fma() {
+        // Same pattern but with FMA costs (what the kernel! macro uses)
+        // x*x - (y - z) where x=4, y=16, z=1
+        // = 16 - (16 - 1) = 16 - 15 = 1
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));  // Will be 4
+        let y = eg.add(ENode::Var(1));  // Will be 16
+        let z = eg.add(ENode::Var(2));  // Will be 1
+
+        // x * x = 16
+        let x_sq = eg.add(ENode::Mul(x, x));
+        // y - z = 15
+        let inner_sub = eg.add(ENode::Sub(y, z));
+        // x_sq - inner_sub = 16 - 15 = 1
+        let result = eg.add(ENode::Sub(x_sq, inner_sub));
+
+        eg.saturate();
+
+        // Use fully_optimized costs like the kernel! macro does
+        let costs = CostModel::fully_optimized();
+        let tree = eg.extract_tree_with_costs(result, &costs);
+        eprintln!("Extracted tree with FMA costs: {:?}", tree);
+        let val = tree.eval(&[4.0, 16.0, 1.0, 0.0]);
+
+        assert!((val - 1.0).abs() < 0.001, "16 - (16 - 1) with FMA should be 1.0, got {}", val);
+    }
+
+    #[test]
+    fn test_discriminant_structure() {
+        // Match the actual discriminant structure:
+        // d_dot_c² - (c_sq - r_sq)
+        // where c_sq = a² + b² and r_sq = r² (3 scalar vars to fit in eval's 4-slot array)
+        // Using d=4, a=0, b=4, r=1
+        // d_sq = 16
+        // c_sq = 0 + 16 = 16
+        // r_sq = 1
+        // discriminant = 16 - (16 - 1) = 16 - 15 = 1
+        let mut eg = EGraph::new();
+        let d = eg.add(ENode::Var(0));  // d = 4
+        let a = eg.add(ENode::Var(1));  // a = 0
+        let b = eg.add(ENode::Var(2));  // b = 4
+        let r = eg.add(ENode::Var(3));  // r = 1
+
+        // d_sq = d * d = 16
+        let d_sq = eg.add(ENode::Mul(d, d));
+
+        // c_sq = a*a + b*b = 0 + 16 = 16
+        let a_sq = eg.add(ENode::Mul(a, a));
+        let b_sq = eg.add(ENode::Mul(b, b));
+        let c_sq = eg.add(ENode::Add(a_sq, b_sq));
+
+        // r_sq = r * r = 1
+        let r_sq = eg.add(ENode::Mul(r, r));
+
+        // inner = c_sq - r_sq = 15
+        let inner = eg.add(ENode::Sub(c_sq, r_sq));
+
+        // result = d_sq - inner = 1
+        let result = eg.add(ENode::Sub(d_sq, inner));
+
+        eg.saturate();
+
+        let costs = CostModel::fully_optimized();
+        let tree = eg.extract_tree_with_costs(result, &costs);
+        eprintln!("Discriminant tree: {:?}", tree);
+        // d=4, a=0, b=4, r=1
+        let val = tree.eval(&[4.0, 0.0, 4.0, 1.0]);
+        eprintln!("Discriminant value: {}", val);
+
+        assert!((val - 1.0).abs() < 0.001, "discriminant should be 1.0, got {}", val);
     }
 }

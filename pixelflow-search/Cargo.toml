@@ -1,0 +1,13 @@
+[package]
+name = "pixelflow-search"
+version = "0.1.0"
+edition = "2024"
+description = "A generic graph search framework for algebraic optimization and scheduling"
+
+[dependencies]
+libm = "0.2.15"
+rand = "0.8" # Optional, for training/search randomization
+
+[features]
+std = ["rand/std"]
+default = ["std"]
