@@ -136,18 +136,100 @@ impl Manifold<Field4> for Texture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PARALLELISM;
+    use crate::{PARALLELISM, X, Y};
 
     #[test]
-    fn test_texture_creation() {
-        let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
-        let tex = Texture::new(data, 4, 4);
-        assert_eq!(tex.width(), 4);
-        assert_eq!(tex.height(), 4);
+    fn texture_from_manifold_should_sample_at_pixel_centers() {
+        // Source manifold returns x + y
+        // We test that from_manifold samples at (0.5, 0.5), (1.5, 0.5) etc.
+        let source = X + Y;
+
+        // Create 2x2 texture
+        let tex = Texture::from_manifold(&source, 2, 2);
+
+        let data = tex.data();
+        assert_eq!(
+            data.len(),
+            4,
+            "texture data should have size width * height"
+        );
+
+        // Pixel (0,0): x=0.5, y=0.5 -> sum=1.0
+        assert!(
+            (data[0] - 1.0).abs() < 1e-5,
+            "pixel (0,0) should be 1.0, got {}",
+            data[0]
+        );
+
+        // Pixel (1,0): x=1.5, y=0.5 -> sum=2.0
+        assert!(
+            (data[1] - 2.0).abs() < 1e-5,
+            "pixel (1,0) should be 2.0, got {}",
+            data[1]
+        );
+
+        // Pixel (0,1): x=0.5, y=1.5 -> sum=2.0
+        assert!(
+            (data[2] - 2.0).abs() < 1e-5,
+            "pixel (0,1) should be 2.0, got {}",
+            data[2]
+        );
+
+        // Pixel (1,1): x=1.5, y=1.5 -> sum=3.0
+        assert!(
+            (data[3] - 3.0).abs() < 1e-5,
+            "pixel (1,1) should be 3.0, got {}",
+            data[3]
+        );
     }
 
     #[test]
-    fn test_texture_sample() {
+    fn texture_should_clamp_y_coordinates_when_sampled_out_of_bounds() {
+        // Create 1x4 texture with values 0, 1, 2, 3
+        // row 0: 0, row 1: 1, row 2: 2, row 3: 3
+        let data: Vec<f32> = (0..4).map(|i| i as f32).collect();
+        let tex = Texture::new(data, 1, 4);
+
+        // Sample at y > height
+        let val = tex.eval((
+            Field::from(0.5),
+            Field::from(10.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        ));
+        let mut buf = [0.0f32; PARALLELISM];
+        val.store(&mut buf);
+        assert!(
+            (buf[0] - 3.0).abs() < 0.01,
+            "large y should clamp to height-1 (3.0), got {}",
+            buf[0]
+        );
+
+        // Sample at y < 0
+        let val = tex.eval((
+            Field::from(0.5),
+            Field::from(-5.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        ));
+        val.store(&mut buf);
+        assert!(
+            (buf[0] - 0.0).abs() < 0.01,
+            "negative y should clamp to 0, got {}",
+            buf[0]
+        );
+    }
+
+    #[test]
+    fn texture_should_have_correct_dimensions_when_created() {
+        let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let tex = Texture::new(data, 4, 4);
+        assert_eq!(tex.width(), 4, "width should match constructor argument");
+        assert_eq!(tex.height(), 4, "height should match constructor argument");
+    }
+
+    #[test]
+    fn texture_should_return_correct_value_when_sampled_at_pixel_centers() {
         // Create 4x4 texture with values 0-15
         let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
         let tex = Texture::new(data, 4, 4);
@@ -161,7 +243,11 @@ mod tests {
         ));
         let mut buf = [0.0f32; PARALLELISM];
         val.store(&mut buf);
-        assert!((buf[0] - 0.0).abs() < 0.01);
+        assert!(
+            (buf[0] - 0.0).abs() < 0.01,
+            "sample at (0.5, 0.5) should be 0.0, got {}",
+            buf[0]
+        );
 
         // Sample at (1.5, 0.5) should give value at index 1
         let val = tex.eval((
@@ -171,7 +257,11 @@ mod tests {
             Field::from(0.0),
         ));
         val.store(&mut buf);
-        assert!((buf[0] - 1.0).abs() < 0.01);
+        assert!(
+            (buf[0] - 1.0).abs() < 0.01,
+            "sample at (1.5, 0.5) should be 1.0, got {}",
+            buf[0]
+        );
 
         // Sample at (0.5, 1.5) should give value at index 4 (row 1, col 0)
         let val = tex.eval((
@@ -181,11 +271,15 @@ mod tests {
             Field::from(0.0),
         ));
         val.store(&mut buf);
-        assert!((buf[0] - 4.0).abs() < 0.01);
+        assert!(
+            (buf[0] - 4.0).abs() < 0.01,
+            "sample at (0.5, 1.5) should be 4.0, got {}",
+            buf[0]
+        );
     }
 
     #[test]
-    fn test_texture_clamping() {
+    fn texture_should_clamp_coordinates_when_sampled_out_of_bounds() {
         let data: Vec<f32> = (0..16).map(|i| i as f32).collect();
         let tex = Texture::new(data, 4, 4);
 
@@ -198,7 +292,11 @@ mod tests {
         ));
         let mut buf = [0.0f32; PARALLELISM];
         val.store(&mut buf);
-        assert!((buf[0] - 0.0).abs() < 0.01);
+        assert!(
+            (buf[0] - 0.0).abs() < 0.01,
+            "negative x should clamp to 0, got {}",
+            buf[0]
+        );
 
         // Sample at coords > width should clamp to edge
         let val = tex.eval((
@@ -208,6 +306,10 @@ mod tests {
             Field::from(0.0),
         ));
         val.store(&mut buf);
-        assert!((buf[0] - 3.0).abs() < 0.01); // Last column of row 0
+        assert!(
+            (buf[0] - 3.0).abs() < 0.01,
+            "large x should clamp to width-1 (3.0), got {}",
+            buf[0]
+        ); // Last column of row 0
     }
 }
