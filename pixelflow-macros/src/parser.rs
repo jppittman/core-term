@@ -213,12 +213,19 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
 
         syn::Expr::Binary(expr_binary) => {
             let op = BinaryOp::from_syn(&expr_binary.op).ok_or_else(|| {
+                let op_str = quote::quote!(#expr_binary.op).to_string();
                 syn::Error::new_spanned(
                     &expr_binary.op,
                     format!(
                         "unsupported binary operator `{}`\n\
-                         note: kernel! supports: + - * / % < <= > >= == != & |",
-                        quote::quote!(#expr_binary.op)
+                         \n\
+                         note: the kernel! macro only supports these binary operators:\n\
+                         note:   arithmetic: + - * / %\n\
+                         note:   comparison: < <= > >= == !=\n\
+                         note:   logical: & |\n\
+                         \n\
+                         help: if you need bitwise operations or other operators, extract them to a helper function",
+                        op_str
                     ),
                 )
             })?;
@@ -234,10 +241,19 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
 
         syn::Expr::Unary(expr_unary) => {
             let op = UnaryOp::from_syn(&expr_unary.op).ok_or_else(|| {
+                let op_str = quote::quote!(#expr_unary.op).to_string();
                 syn::Error::new_spanned(
                     &expr_unary.op,
-                    "unsupported unary operator\n\
-                     note: kernel! supports: - (negation), ! (logical not)",
+                    format!(
+                        "unsupported unary operator `{}`\n\
+                         \n\
+                         note: the kernel! macro supports these unary operators:\n\
+                         note:   - (negation)   example: -X\n\
+                         note:   ! (logical not) example: !condition\n\
+                         \n\
+                         help: for other unary operations, use method calls like .abs() or helper functions",
+                        op_str
+                    ),
                 )
             })?;
             let operand = convert_expr(*expr_unary.expr)?;
@@ -318,14 +334,26 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
                         _ => {
                             return Err(syn::Error::new_spanned(
                                 &local.pat,
-                                "expected identifier pattern in let",
+                                "complex pattern not supported in let binding\n\
+                                 \n\
+                                 note: kernel! only supports simple identifier patterns\n\
+                                 \n\
+                                 help: use a simple identifier like:\n\
+                                 help:   let dx = X - cx;\n\
+                                 help:   let result: f32 = calculation;",
                             ));
                         }
                     },
                     _ => {
                         return Err(syn::Error::new_spanned(
                             &local.pat,
-                            "expected identifier pattern in let",
+                            "complex pattern not supported in let binding\n\
+                             \n\
+                             note: kernel! only supports simple identifier patterns\n\
+                             \n\
+                             help: destructuring, tuples, and other patterns are not allowed\n\
+                             help: use a simple identifier like:\n\
+                             help:   let value = expression;",
                         ));
                     }
                 };
@@ -336,7 +364,13 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
                 };
 
                 let init = local.init.as_ref().ok_or_else(|| {
-                    syn::Error::new_spanned(&local.pat, "let binding must have initializer")
+                    syn::Error::new_spanned(
+                        &local.pat,
+                        "let binding must have an initializer\n\
+                         \n\
+                         help: provide a value for this binding:\n\
+                         help:   let dx = X - cx;",
+                    )
                 })?;
 
                 let init_expr = convert_expr((*init.expr).clone())?;
@@ -359,19 +393,29 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
                 }
             }
 
-            syn::Stmt::Item(_) => {
-                return Err(syn::Error::new(
-                    Span::call_site(),
-                    "items (fn, struct, etc.) not allowed in kernel block\n\
-                     help: define items outside the kernel! macro",
+            syn::Stmt::Item(item) => {
+                return Err(syn::Error::new_spanned(
+                    item,
+                    "item definitions are not allowed inside kernel! blocks\n\
+                     \n\
+                     note: kernel! blocks can only contain let bindings and expressions\n\
+                     \n\
+                     help: define functions, structs, and other items outside the kernel! macro:\n\
+                     help:   fn helper(x: f32) -> f32 { x * 2.0 }\n\
+                     help:   let my_kernel = kernel!(|| helper(X));",
                 ));
             }
 
-            syn::Stmt::Macro(_) => {
-                return Err(syn::Error::new(
-                    Span::call_site(),
-                    "macro invocations not allowed in kernel block\n\
-                     help: expand macros outside kernel! or use equivalent expressions",
+            syn::Stmt::Macro(mac) => {
+                return Err(syn::Error::new_spanned(
+                    mac,
+                    "macro invocations are not allowed inside kernel! blocks\n\
+                     \n\
+                     note: kernel! needs to analyze the expression at compile time\n\
+                     \n\
+                     help: expand the macro outside the kernel! or use equivalent expressions:\n\
+                     help:   let value = some_macro!();\n\
+                     help:   let my_kernel = kernel!(|| value * X);",
                 ));
             }
         }
