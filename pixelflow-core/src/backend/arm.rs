@@ -325,7 +325,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn simd_log2(self) -> Self {
+    fn log2(self) -> Self {
         // NEON: Use bit manipulation for exponent/mantissa extraction
         // log2(x) = exponent + log2(mantissa) where mantissa ∈ [1, 2)
         unsafe {
@@ -360,7 +360,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn simd_exp2(self) -> Self {
+    fn exp2(self) -> Self {
         // NEON: 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
         // Use polynomial approximation for 2^f
         unsafe {

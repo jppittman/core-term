@@ -162,12 +162,22 @@ pub trait SimdOps:
     /// Computes log2(x) for positive finite x.
     /// Uses hardware getexp/getmant on AVX-512, bit manipulation + polynomial elsewhere.
     /// Accuracy: ~10^-7 relative error (24-bit mantissa precision).
-    fn simd_log2(self) -> Self;
+    fn log2(self) -> Self;
 
     /// Base-2 exponential (internal SIMD op).
     ///
     /// Computes 2^x = exp(x * ln(2)).
-    fn simd_exp2(self) -> Self;
+    fn exp2(self) -> Self;
+
+    /// Natural exponential (internal SIMD op).
+    ///
+    /// Computes e^x via exp2(x * log2(e)).
+    #[inline(always)]
+    fn exp(self) -> Self {
+        // log2(e) = 1/ln(2)
+        const LOG2_E: f32 = 1.4426950408889634;
+        (self * Self::splat(LOG2_E)).exp2()
+    }
 }
 
 /// SIMD operations for u32 (packed pixels).
@@ -213,6 +223,7 @@ pub mod arm;
 #[cfg(target_arch = "x86_64")]
 pub mod x86;
 
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub mod scalar;
 
 pub mod fastmath;

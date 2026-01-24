@@ -297,7 +297,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn simd_log2(self) -> Self {
+    fn log2(self) -> Self {
         // SSE2: Use bit manipulation for exponent/mantissa extraction
         // log2(x) = exponent + log2(mantissa) where mantissa ∈ [1, 2)
         unsafe {
@@ -333,7 +333,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
-    fn simd_exp2(self) -> Self {
+    fn exp2(self) -> Self {
         // SSE2: 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
         unsafe {
             // n = floor(x), f = x - n
@@ -865,7 +865,7 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
-    fn simd_log2(self) -> Self {
+    fn log2(self) -> Self {
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
 
@@ -909,7 +909,7 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
-    fn simd_exp2(self) -> Self {
+    fn exp2(self) -> Self {
         unsafe {
             // n = floor(x), f = x - n
             let n = _mm256_floor_ps(self.0);
@@ -1489,7 +1489,7 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn simd_log2(self) -> Self {
+    fn log2(self) -> Self {
         // AVX-512: Use dedicated getexp/getmant intrinsics
         // log2(x) = exponent + log2(mantissa)
         unsafe {
@@ -1522,7 +1522,7 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
-    fn simd_exp2(self) -> Self {
+    fn exp2(self) -> Self {
         // AVX-512: Use scalef for efficient 2^n computation
         // 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
         unsafe {
