@@ -59,6 +59,27 @@ use alloc::vec::Vec;
 use alloc::boxed::Box;
 use libm::{sqrtf, fabsf};
 
+/// Total number of cases in the generator match block (includes fused ops).
+const NUM_GENERATOR_CASES: usize = 12;
+/// Number of regular (non-fused) cases in the generator match block.
+const NUM_REGULAR_GENERATOR_CASES: usize = 10;
+/// Probability that a leaf node is a variable (vs constant).
+const VAR_PROBABILITY: f32 = 0.7;
+/// Scale factor for random constant generation (range size).
+const CONST_RANGE_SCALE: f32 = 10.0;
+/// Offset for random constant generation (range start/center).
+const CONST_RANGE_OFFSET: f32 = 5.0;
+/// Probability of adding an identity operation during unfusing.
+const IDENTITY_UNFUSE_PROBABILITY: f32 = 0.2;
+
+// Constants for backward generator
+/// Scale factor for backward generator constants (smaller range).
+const BWD_CONST_RANGE_SCALE: f32 = 4.0;
+/// Offset for backward generator constants.
+const BWD_CONST_RANGE_OFFSET: f32 = 2.0;
+/// Probability of choosing MulAdd when generating a fused op (vs MulRsqrt).
+const MUL_ADD_SUB_PROBABILITY: f32 = 0.6;
+
 // ============================================================================
 // Operation Types (mirrors ENode from egraph.rs)
 // ============================================================================
@@ -628,20 +649,20 @@ impl ExprGenerator {
     fn generate_recursive(&mut self, depth: usize) -> Expr {
         // Force leaf at max depth or with probability leaf_prob
         if depth >= self.config.max_depth || self.rand_f32() < self.config.leaf_prob {
-            if self.rand_f32() < 0.7 {
+            if self.rand_f32() < VAR_PROBABILITY {
                 // Variable
                 Expr::Var(self.rand_usize(self.config.num_vars) as u8)
             } else {
                 // Constant (small values to avoid overflow)
-                let val = self.rand_f32() * 10.0 - 5.0;
+                let val = self.rand_f32() * CONST_RANGE_SCALE - CONST_RANGE_OFFSET;
                 Expr::Const(val)
             }
         } else {
             // Generate an operation
             let op_choice = if self.config.include_fused {
-                self.rand_usize(12) // Include all ops
+                self.rand_usize(NUM_GENERATOR_CASES) // Include all ops
             } else {
-                self.rand_usize(10) // Exclude fused ops
+                self.rand_usize(NUM_REGULAR_GENERATOR_CASES) // Exclude fused ops
             };
 
             match op_choice {
@@ -1101,7 +1122,7 @@ impl BwdGenerator {
         // Decide: fused op or regular op
         if self.rand_f32() < self.config.fused_op_prob {
             // Generate a fused operation
-            if self.rand_f32() < 0.6 {
+            if self.rand_f32() < MUL_ADD_SUB_PROBABILITY {
                 // MulAdd: a * b + c
                 Expr::Ternary(
                     OpType::MulAdd,
@@ -1125,11 +1146,11 @@ impl BwdGenerator {
 
     /// Generate a leaf node (variable or constant).
     fn generate_leaf(&mut self) -> Expr {
-        if self.rand_f32() < 0.7 {
+        if self.rand_f32() < VAR_PROBABILITY {
             Expr::Var(self.rand_usize(self.config.num_vars) as u8)
         } else {
             // Constants: small range to avoid numerical issues
-            let val = self.rand_f32() * 4.0 - 2.0;
+            let val = self.rand_f32() * BWD_CONST_RANGE_SCALE - BWD_CONST_RANGE_OFFSET;
             Expr::Const(val)
         }
     }
@@ -1245,7 +1266,7 @@ impl BwdGenerator {
         }
 
         // Occasionally add identity operations (bloat the expression)
-        if self.rand_f32() < 0.2 {
+        if self.rand_f32() < IDENTITY_UNFUSE_PROBABILITY {
             let identity_rewrites = [
                 UnfuseRewrite::AddIdentity,
                 UnfuseRewrite::MulIdentity,
