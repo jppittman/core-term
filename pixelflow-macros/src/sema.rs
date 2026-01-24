@@ -1,6 +1,12 @@
 //! # Semantic Analysis
 //!
-//! Analyzes the AST for semantic correctness and annotates it with symbol information.
+//! Analyzes the AST for semantic correctness using pure functional transformations.
+//!
+//! ## Functional Design
+//!
+//! Unlike the annotation pass which uses explicit state threading, semantic analysis
+//! is purely validating - it doesn't transform the AST. We use pure functions that
+//! work with immutable data and build up the symbol table functionally.
 //!
 //! ## Responsibilities
 //!
@@ -19,7 +25,7 @@
 //! ## Output
 //!
 //! The semantic phase produces an `AnalyzedKernel` which includes:
-//! - The original AST (possibly annotated)
+//! - The original AST (immutable)
 //! - The populated symbol table
 //! - Any resolved type information
 
@@ -36,314 +42,322 @@ pub struct AnalyzedKernel {
     pub symbols: SymbolTable,
 }
 
-/// Perform semantic analysis on a parsed kernel.
-pub fn analyze(kernel: KernelDef) -> syn::Result<AnalyzedKernel> {
-    // Anonymous kernels (no struct_decl) allow captured variables from environment
-    let is_anonymous = kernel.struct_decl.is_none();
-    let mut analyzer = SemanticAnalyzer::new(is_anonymous);
-
-    // Register all parameters in the symbol table
-    for param in &kernel.params {
-        analyzer.register_parameter(param)?;
-    }
-
-    // Analyze the body expression
-    analyzer.analyze_expr(&kernel.body)?;
-
-    Ok(AnalyzedKernel {
-        def: kernel,
-        symbols: analyzer.symbols,
-    })
-}
-
-/// The semantic analyzer state.
-struct SemanticAnalyzer {
-    symbols: SymbolTable,
+/// Configuration for semantic analysis.
+#[derive(Clone)]
+struct SemaContext {
     /// Whether this is an anonymous kernel (allows captured variables).
     is_anonymous: bool,
 }
 
-impl SemanticAnalyzer {
-    fn new(is_anonymous: bool) -> Self {
-        SemanticAnalyzer {
-            symbols: SymbolTable::new(),
-            is_anonymous,
-        }
+/// Perform semantic analysis on a parsed kernel.
+///
+/// This is the entry point. It builds the symbol table and validates all symbols.
+pub fn analyze(kernel: KernelDef) -> syn::Result<AnalyzedKernel> {
+    // Anonymous kernels (no struct_decl) allow captured variables from environment
+    let ctx = SemaContext {
+        is_anonymous: kernel.struct_decl.is_none(),
+    };
+
+    // Build initial symbol table with parameters
+    let symbols = register_parameters(&kernel.params)?;
+
+    // Validate all symbols in the body
+    validate_expr(&kernel.body, &symbols, &ctx)?;
+
+    Ok(AnalyzedKernel {
+        def: kernel,
+        symbols,
+    })
+}
+
+/// Register all parameters in the symbol table (pure function).
+fn register_parameters(params: &[Param]) -> syn::Result<SymbolTable> {
+    let mut symbols = SymbolTable::new();
+
+    for param in params {
+        register_parameter(&mut symbols, param)?;
     }
 
-    /// Register a parameter in the symbol table.
-    fn register_parameter(&mut self, param: &Param) -> syn::Result<()> {
-        let name = param.name.to_string();
+    Ok(symbols)
+}
 
-        // Check for shadowing intrinsics (error)
-        if self.symbols.is_intrinsic(&name) {
-            return Err(syn::Error::new(
-                param.name.span(),
-                format!(
-                    "parameter '{}' shadows intrinsic coordinate variable\n\
-                     note: intrinsics are: X, Y, Z, W (coordinate variables)\n\
-                     help: rename this parameter to something else",
+/// Register a single parameter in the symbol table.
+///
+/// This is a helper that mutates the SymbolTable for convenience,
+/// but conceptually it's building up the table functionally.
+fn register_parameter(symbols: &mut SymbolTable, param: &Param) -> syn::Result<()> {
+    let name = param.name.to_string();
+
+    // Check for shadowing intrinsics (error)
+    if symbols.is_intrinsic(&name) {
+        return Err(syn::Error::new(
+            param.name.span(),
+            format!(
+                "parameter '{}' shadows intrinsic coordinate variable\n\
+                 note: intrinsics are: X, Y, Z, W (coordinate variables)\n\
+                 help: rename this parameter to something else",
+                name
+            ),
+        ));
+    }
+
+    // Check for duplicate parameters
+    if symbols.lookup(&name).is_some() {
+        return Err(syn::Error::new(
+            param.name.span(),
+            format!(
+                "duplicate parameter '{}'\n\
+                 help: each parameter must have a unique name",
+                name
+            ),
+        ));
+    }
+
+    // Register based on parameter kind
+    match &param.kind {
+        ParamKind::Scalar(ty) => {
+            symbols.register_parameter(param.name.clone(), ty.clone());
+        }
+        ParamKind::Manifold => {
+            symbols.register_manifold_param(param.name.clone());
+        }
+    }
+    Ok(())
+}
+
+/// Validate an expression for symbol resolution (pure function).
+///
+/// Takes immutable references and returns () or Error. No mutation.
+fn validate_expr(expr: &Expr, symbols: &SymbolTable, ctx: &SemaContext) -> syn::Result<()> {
+    match expr {
+        Expr::Ident(ident_expr) => {
+            resolve_ident(&ident_expr.name, symbols, ctx)?;
+        }
+
+        Expr::Literal(_) => {
+            // Literals are always valid
+        }
+
+        Expr::Binary(binary) => {
+            validate_expr(&binary.lhs, symbols, ctx)?;
+            validate_expr(&binary.rhs, symbols, ctx)?;
+        }
+
+        Expr::Unary(unary) => {
+            validate_expr(&unary.operand, symbols, ctx)?;
+        }
+
+        Expr::MethodCall(call) => {
+            validate_method_call(call, symbols, ctx)?;
+        }
+
+        Expr::Call(call) => {
+            // Validate all arguments (function name is external, not resolved here)
+            for arg in &call.args {
+                validate_expr(arg, symbols, ctx)?;
+            }
+        }
+
+        Expr::Block(block) => {
+            validate_block(block, symbols, ctx)?;
+        }
+
+        Expr::Paren(inner) => {
+            validate_expr(inner, symbols, ctx)?;
+        }
+
+        Expr::Verbatim(_) => {
+            // Verbatim expressions pass through without analysis
+            // The Rust compiler will catch any errors
+        }
+    }
+    Ok(())
+}
+
+/// Resolve an identifier reference (pure function).
+fn resolve_ident(ident: &Ident, symbols: &SymbolTable, ctx: &SemaContext) -> syn::Result<SymbolKind> {
+    let name = ident.to_string();
+
+    match symbols.lookup(&name) {
+        Some(symbol) => Ok(symbol.kind),
+        None => {
+            // For anonymous kernels, unknown symbols are captured from environment
+            // The Rust closure will handle the capture - no error needed
+            if ctx.is_anonymous {
+                return Ok(SymbolKind::Local); // Treat as external/captured
+            }
+
+            // For named kernels, undefined symbols are errors
+            let suggestion = find_similar_symbol(&name, symbols);
+            let msg = match suggestion {
+                Some(similar) => format!(
+                    "undefined symbol '{}'\n\
+                     help: did you mean '{}'?\n\
+                     note: available intrinsics: X, Y, Z, W",
+                    name, similar
+                ),
+                None => format!(
+                    "undefined symbol '{}'\n\
+                     note: available intrinsics: X, Y, Z, W\n\
+                     help: check spelling or add as a parameter",
                     name
                 ),
-            ));
+            };
+            Err(syn::Error::new(ident.span(), msg))
         }
-
-        // Check for duplicate parameters
-        if self.symbols.lookup(&name).is_some() {
-            return Err(syn::Error::new(
-                param.name.span(),
-                format!(
-                    "duplicate parameter '{}'\n\
-                     help: each parameter must have a unique name",
-                    name
-                ),
-            ));
-        }
-
-        // Register based on parameter kind
-        match &param.kind {
-            ParamKind::Scalar(ty) => {
-                self.symbols
-                    .register_parameter(param.name.clone(), ty.clone());
-            }
-            ParamKind::Manifold => {
-                self.symbols.register_manifold_param(param.name.clone());
-            }
-        }
-        Ok(())
     }
+}
 
-    /// Analyze an expression for symbol resolution.
-    fn analyze_expr(&mut self, expr: &Expr) -> syn::Result<()> {
-        match expr {
-            Expr::Ident(ident_expr) => {
-                self.resolve_ident(&ident_expr.name)?;
-            }
+/// Find a similar symbol name for typo suggestions (pure function).
+fn find_similar_symbol(name: &str, symbols: &SymbolTable) -> Option<String> {
+    let name_lower = name.to_lowercase();
 
-            Expr::Literal(_) => {
-                // Literals are always valid
-            }
-
-            Expr::Binary(binary) => {
-                self.analyze_expr(&binary.lhs)?;
-                self.analyze_expr(&binary.rhs)?;
-            }
-
-            Expr::Unary(unary) => {
-                self.analyze_expr(&unary.operand)?;
-            }
-
-            Expr::MethodCall(call) => {
-                self.analyze_method_call(call)?;
-            }
-
-            Expr::Call(call) => {
-                // Analyze all arguments (function name is external, not resolved here)
-                for arg in &call.args {
-                    self.analyze_expr(arg)?;
-                }
-            }
-
-            Expr::Block(block) => {
-                self.analyze_block(block)?;
-            }
-
-            Expr::Paren(inner) => {
-                self.analyze_expr(inner)?;
-            }
-
-            Expr::Verbatim(_) => {
-                // Verbatim expressions pass through without analysis
-                // The Rust compiler will catch any errors
-            }
-        }
-        Ok(())
-    }
-
-    /// Resolve an identifier reference.
-    fn resolve_ident(&self, ident: &Ident) -> syn::Result<SymbolKind> {
-        let name = ident.to_string();
-
-        match self.symbols.lookup(&name) {
-            Some(symbol) => Ok(symbol.kind),
-            None => {
-                // For anonymous kernels, unknown symbols are captured from environment
-                // The Rust closure will handle the capture - no error needed
-                if self.is_anonymous {
-                    return Ok(SymbolKind::Local); // Treat as external/captured
-                }
-
-                // For named kernels, undefined symbols are errors
-                let suggestion = self.find_similar_symbol(&name);
-                let msg = match suggestion {
-                    Some(similar) => format!(
-                        "undefined symbol '{}'\n\
-                         help: did you mean '{}'?\n\
-                         note: available intrinsics: X, Y, Z, W",
-                        name, similar
-                    ),
-                    None => format!(
-                        "undefined symbol '{}'\n\
-                         note: available intrinsics: X, Y, Z, W\n\
-                         help: check spelling or add as a parameter",
-                        name
-                    ),
-                };
-                Err(syn::Error::new(ident.span(), msg))
-            }
+    // Check intrinsics first (common typos)
+    let intrinsics = ["X", "Y", "Z", "W"];
+    for intr in intrinsics {
+        if intr.to_lowercase() == name_lower {
+            return Some(intr.to_string());
         }
     }
 
-    /// Find a similar symbol name for typo suggestions.
-    fn find_similar_symbol(&self, name: &str) -> Option<String> {
-        let name_lower = name.to_lowercase();
-
-        // Check intrinsics first (common typos)
-        let intrinsics = ["X", "Y", "Z", "W"];
-        for intr in intrinsics {
-            if intr.to_lowercase() == name_lower {
-                return Some(intr.to_string());
-            }
-        }
-
-        // Check parameters and locals
-        for sym_name in self.symbols.all_names() {
-            // Simple similarity: same length and differs by 1-2 chars
-            if sym_name.len() == name.len() {
-                let diff_count = sym_name
-                    .chars()
-                    .zip(name.chars())
-                    .filter(|(a, b)| a != b)
-                    .count();
-                if diff_count <= 2 {
-                    return Some(sym_name);
-                }
-            }
-            // Case-insensitive match
-            if sym_name.to_lowercase() == name_lower {
+    // Check parameters and locals
+    for sym_name in symbols.all_names() {
+        // Simple similarity: same length and differs by 1-2 chars
+        if sym_name.len() == name.len() {
+            let diff_count = sym_name
+                .chars()
+                .zip(name.chars())
+                .filter(|(a, b)| a != b)
+                .count();
+            if diff_count <= 2 {
                 return Some(sym_name);
             }
         }
-
-        None
+        // Case-insensitive match
+        if sym_name.to_lowercase() == name_lower {
+            return Some(sym_name);
+        }
     }
 
-    /// Known methods from ManifoldExt and standard operations.
-    const KNOWN_METHODS: &'static [&'static str] = &[
-        // ManifoldExt methods
-        "abs", "sqrt", "floor", "ceil", "round", "fract",
-        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-        "exp", "exp2", "ln", "log2", "log10", "pow",
-        "min", "max", "clamp",
-        "hypot", "rsqrt", "recip",
-        // Comparison methods
-        "lt", "le", "gt", "ge", "eq", "ne",
-        // Selection
-        "select",
-        // Coordinate warp (contramap)
-        "at",
-        // Field/Jet specific
-        "constant", "collapse",
-        // Unary
-        "neg",
-        // Clone for reusing expressions
-        "clone",
-    ];
+    None
+}
 
-    /// Analyze a method call.
-    fn analyze_method_call(&mut self, call: &MethodCallExpr) -> syn::Result<()> {
-        // Analyze the receiver
-        self.analyze_expr(&call.receiver)?;
+/// Known methods from ManifoldExt and standard operations.
+const KNOWN_METHODS: &[&str] = &[
+    // ManifoldExt methods
+    "abs", "sqrt", "floor", "ceil", "round", "fract",
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+    "exp", "exp2", "ln", "log2", "log10", "pow",
+    "min", "max", "clamp",
+    "hypot", "rsqrt", "recip",
+    // Comparison methods
+    "lt", "le", "gt", "ge", "eq", "ne",
+    // Selection
+    "select",
+    // Coordinate warp (contramap)
+    "at",
+    // Field/Jet specific
+    "constant", "collapse",
+    // Unary
+    "neg",
+    // Clone for reusing expressions
+    "clone",
+];
 
-        // Analyze arguments
-        for arg in &call.args {
-            self.analyze_expr(arg)?;
-        }
+/// Validate a method call (pure function).
+fn validate_method_call(call: &MethodCallExpr, symbols: &SymbolTable, ctx: &SemaContext) -> syn::Result<()> {
+    // Validate the receiver
+    validate_expr(&call.receiver, symbols, ctx)?;
 
-        // Validate method name against known methods
-        let method_name = call.method.to_string();
-        if !Self::KNOWN_METHODS.contains(&method_name.as_str()) {
-            // Find similar method for suggestion
-            let suggestion = Self::KNOWN_METHODS
-                .iter()
-                .find(|&&m| {
-                    let m_lower = m.to_lowercase();
-                    let name_lower = method_name.to_lowercase();
-                    m_lower == name_lower
-                        || (m.len() == method_name.len()
-                            && m.chars()
-                                .zip(method_name.chars())
-                                .filter(|(a, b)| a != b)
-                                .count()
-                                <= 2)
-                })
-                .copied();
-
-            let msg = match suggestion {
-                Some(similar) => format!(
-                    "unknown method '{}'\n\
-                     help: did you mean '{}'?",
-                    method_name, similar
-                ),
-                None => format!(
-                    "unknown method '{}'\n\
-                     note: common methods: sqrt, abs, sin, cos, exp, min, max, clone\n\
-                     help: see ManifoldExt trait for available methods",
-                    method_name
-                ),
-            };
-
-            return Err(syn::Error::new(call.method.span(), msg));
-        }
-        Ok(())
+    // Validate arguments
+    for arg in &call.args {
+        validate_expr(arg, symbols, ctx)?;
     }
 
-    /// Analyze a block expression.
-    fn analyze_block(&mut self, block: &BlockExpr) -> syn::Result<()> {
-        // Enter a new scope
-        self.symbols.push_scope();
+    // Validate method name against known methods
+    let method_name = call.method.to_string();
+    if !KNOWN_METHODS.contains(&method_name.as_str()) {
+        // Find similar method for suggestion
+        let suggestion = find_similar_method(&method_name);
 
-        // Analyze each statement
-        for stmt in &block.stmts {
-            match stmt {
-                Stmt::Let(let_stmt) => {
-                    self.analyze_let(let_stmt)?;
+        let msg = match suggestion {
+            Some(similar) => format!(
+                "unknown method '{}'\n\
+                 help: did you mean '{}'?",
+                method_name, similar
+            ),
+            None => format!(
+                "unknown method '{}'\n\
+                 note: common methods: sqrt, abs, sin, cos, exp, min, max, clone\n\
+                 help: see ManifoldExt trait for available methods",
+                method_name
+            ),
+        };
+
+        return Err(syn::Error::new(call.method.span(), msg));
+    }
+    Ok(())
+}
+
+/// Find a similar method name for typo suggestions (pure function).
+fn find_similar_method(method_name: &str) -> Option<&'static str> {
+    KNOWN_METHODS
+        .iter()
+        .find(|&&m| {
+            let m_lower = m.to_lowercase();
+            let name_lower = method_name.to_lowercase();
+            m_lower == name_lower
+                || (m.len() == method_name.len()
+                    && m.chars()
+                        .zip(method_name.chars())
+                        .filter(|(a, b)| a != b)
+                        .count()
+                        <= 2)
+        })
+        .copied()
+}
+
+/// Validate a block expression with scoped symbols (functional approach).
+///
+/// Blocks introduce new scopes. We handle this by creating a new symbol table
+/// with the block's local bindings added.
+fn validate_block(block: &BlockExpr, symbols: &SymbolTable, ctx: &SemaContext) -> syn::Result<()> {
+    // Clone the symbol table to add block-local bindings
+    let mut scoped_symbols = symbols.clone();
+    scoped_symbols.push_scope();
+
+    // Validate each statement, accumulating locals
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Let(let_stmt) => {
+                // First, validate the initializer (uses current scope)
+                validate_expr(&let_stmt.init, &scoped_symbols, ctx)?;
+
+                // Then register the new binding in the scoped table
+                let name = let_stmt.name.to_string();
+
+                // Warning: shadowing intrinsics in let is allowed but unusual
+                if scoped_symbols.is_intrinsic(&name) {
+                    // Could emit a warning here in the future
                 }
-                Stmt::Expr(expr) => {
-                    self.analyze_expr(expr)?;
-                }
+
+                scoped_symbols.register_local(let_stmt.name.clone(), let_stmt.ty.clone());
+            }
+            Stmt::Expr(expr) => {
+                validate_expr(expr, &scoped_symbols, ctx)?;
             }
         }
-
-        // Analyze the final expression
-        if let Some(expr) = &block.expr {
-            self.analyze_expr(expr)?;
-        }
-
-        // Exit the scope
-        self.symbols.pop_scope();
-
-        Ok(())
     }
 
-    /// Analyze a let statement.
-    fn analyze_let(&mut self, let_stmt: &LetStmt) -> syn::Result<()> {
-        // First, analyze the initializer (uses current scope)
-        self.analyze_expr(&let_stmt.init)?;
-
-        // Then register the new binding
-        let name = let_stmt.name.to_string();
-
-        // Warning: shadowing intrinsics in let is allowed but unusual
-        if self.symbols.is_intrinsic(&name) {
-            // Could emit a warning here in the future
-        }
-
-        self.symbols
-            .register_local(let_stmt.name.clone(), let_stmt.ty.clone());
-
-        Ok(())
+    // Validate the final expression with the full scoped symbols
+    if let Some(expr) = &block.expr {
+        validate_expr(expr, &scoped_symbols, ctx)?;
     }
+
+    // Scope is automatically cleaned up when scoped_symbols is dropped
+    // (Rust's ownership handles the "pop_scope" automatically)
+
+    Ok(())
 }
 
 #[cfg(test)]

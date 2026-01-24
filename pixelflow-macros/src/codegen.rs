@@ -47,12 +47,13 @@
 use crate::annotate::{
     annotate, AnnotatedExpr, AnnotatedStmt, AnnotationCtx, CollectedLiteral,
 };
-use crate::ast::{BinaryOp, ParamKind, UnaryOp};
+use crate::ast::{BinaryOp, Param, ParamKind, UnaryOp};
 use crate::sema::AnalyzedKernel;
 use crate::symbol::SymbolKind;
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use std::collections::HashMap;
+use syn::Type;
 
 // ============================================================================
 // Shared Constants
@@ -197,10 +198,16 @@ impl BindingStrategy {
 }
 
 // ============================================================================
-// Struct Emitter (Builder Pattern)
+// Struct Emitter (Functional Builder Pattern)
 // ============================================================================
 
-/// Builder for generating struct definitions with Manifold impls.
+/// Configuration for generating struct definitions with Manifold impls.
+///
+/// ## Functional Design
+///
+/// This uses an immutable builder pattern where each method returns a new
+/// configuration with the updated field. This makes it clear what's being
+/// configured and ensures the configuration is complete before building.
 ///
 /// ## Purpose
 ///
@@ -213,15 +220,15 @@ impl BindingStrategy {
 /// ## Usage
 ///
 /// ```ignore
-/// StructEmitter::new(visibility, name)
+/// StructConfig::new(visibility, name)
 ///     .with_generics(generic_names)
 ///     .with_derives(Derives::CloneCopy)
-///     .with_fields(fields)
-///     .with_fixed_domain(domain_type, scalar_type, output_type)
-///     .with_eval_body(body, imports)
+///     .with_fields(fields, field_names, constructor_params)
+///     .with_fixed_domain(domain_type, scalar_type, output_type, trait_bounds)
+///     .with_eval_body(imports, peano_imports, pre_eval_stmts, expr, binding)
 ///     .build()
 /// ```
-struct StructEmitter {
+struct StructConfig {
     visibility: syn::Visibility,
     name: syn::Ident,
     generic_names: Vec<syn::Ident>,
@@ -266,7 +273,8 @@ struct EvalBody {
     binding: TokenStream,
 }
 
-impl StructEmitter {
+impl StructConfig {
+    /// Create a new struct configuration with defaults.
     fn new(visibility: syn::Visibility, name: syn::Ident) -> Self {
         Self {
             visibility,
@@ -283,62 +291,74 @@ impl StructEmitter {
         }
     }
 
-    fn with_generics(mut self, names: Vec<syn::Ident>) -> Self {
-        self.generic_names = names;
-        self
+    /// Add generic type parameters (immutable update).
+    fn with_generics(self, names: Vec<syn::Ident>) -> Self {
+        Self { generic_names: names, ..self }
     }
 
-    fn with_derives(mut self, derives: Derives) -> Self {
-        self.derives = derives;
-        self
+    /// Set derive traits (immutable update).
+    fn with_derives(self, derives: Derives) -> Self {
+        Self { derives, ..self }
     }
 
+    /// Set struct fields and constructor parameters (immutable update).
     fn with_fields(
-        mut self,
+        self,
         fields: Vec<TokenStream>,
         field_names: Vec<syn::Ident>,
         constructor_params: Vec<TokenStream>,
     ) -> Self {
-        self.fields = fields;
-        self.field_names = field_names;
-        self.constructor_params = constructor_params;
-        self
+        Self {
+            fields,
+            field_names,
+            constructor_params,
+            ..self
+        }
     }
 
+    /// Set a fixed domain type configuration (immutable update).
     fn with_fixed_domain(
-        mut self,
+        self,
         domain_type: TokenStream,
         scalar_type: TokenStream,
         output_type: TokenStream,
         trait_bounds: Vec<TokenStream>,
     ) -> Self {
-        self.domain_config = DomainConfig::Fixed {
-            domain_type,
-            scalar_type,
-            output_type,
-            trait_bounds,
-        };
-        self
+        Self {
+            domain_config: DomainConfig::Fixed {
+                domain_type,
+                scalar_type,
+                output_type,
+                trait_bounds,
+            },
+            ..self
+        }
     }
 
+    /// Set the eval body configuration (immutable update).
     fn with_eval_body(
-        mut self,
+        self,
         imports: TokenStream,
         peano_imports: TokenStream,
         pre_eval_stmts: TokenStream,
         expr: TokenStream,
         binding: TokenStream,
     ) -> Self {
-        self.eval_body = Some(EvalBody {
-            imports,
-            peano_imports,
-            pre_eval_stmts,
-            expr,
-            binding,
-        });
-        self
+        Self {
+            eval_body: Some(EvalBody {
+                imports,
+                peano_imports,
+                pre_eval_stmts,
+                expr,
+                binding,
+            }),
+            ..self
+        }
     }
 
+    /// Build the final struct definition and Manifold impl (pure function).
+    ///
+    /// This consumes the configuration and returns the generated code.
     fn build(self) -> TokenStream {
         let vis = &self.visibility;
         let name = &self.name;
@@ -514,12 +534,15 @@ impl StructEmitter {
 
 /// Emit Rust code for an analyzed kernel.
 pub fn emit(analyzed: AnalyzedKernel) -> TokenStream {
-    let mut emitter = CodeEmitter::new(&analyzed);
-    emitter.emit_kernel()
+    let mut ctx = CodegenContext::new(&analyzed);
+    ctx.emit_kernel()
 }
 
-/// The code emitter state.
-struct CodeEmitter<'a> {
+/// Code generation context (immutable configuration).
+///
+/// Instead of a mutable emitter, we use an immutable context that holds
+/// all the configuration needed for code generation.
+struct CodegenContext<'a> {
     analyzed: &'a AnalyzedKernel,
     /// Maps parameter names to their Peano index for Var<N> access.
     /// First param → highest index (deepest in stack), last param → N0 (head).
@@ -533,49 +556,55 @@ struct CodeEmitter<'a> {
     collected_literals: Vec<CollectedLiteral>,
 }
 
-impl<'a> CodeEmitter<'a> {
+/// Compute parameter indices (pure function).
+///
+/// First param (i=0) gets highest index (n-1), last param gets 0.
+fn compute_param_indices(params: &[Param]) -> HashMap<String, usize> {
+    let n = params.len();
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, param)| (param.name.to_string(), n - 1 - i))
+        .collect()
+}
+
+/// Compute manifold parameter indices (pure function).
+///
+/// Numbered in declaration order (M0, M1, ...).
+fn compute_manifold_indices(params: &[Param]) -> HashMap<String, usize> {
+    params
+        .iter()
+        .filter(|p| matches!(p.kind, ParamKind::Manifold))
+        .enumerate()
+        .map(|(idx, param)| (param.name.to_string(), idx))
+        .collect()
+}
+
+/// Check if literal wrapping is needed (pure function).
+///
+/// Returns true if we need to wrap literals (non-Field domain types).
+fn needs_jet_wrapper(domain_ty: Option<&Type>, return_ty: Option<&Type>) -> bool {
+    domain_ty
+        .or(return_ty)
+        .map(|ty| {
+            let ty_str = quote! { #ty }.to_string();
+            // Field doesn't need wrapping, everything else does
+            !(ty_str == "Field" || ty_str.contains(":: Field") || ty_str.ends_with("::Field"))
+        })
+        .unwrap_or(false)
+}
+
+impl<'a> CodegenContext<'a> {
+    /// Create a new code generation context (pure function).
     fn new(analyzed: &'a AnalyzedKernel) -> Self {
-        let n = analyzed.def.params.len();
-
-        // Compute Peano indices for ALL parameters (both scalar and manifold).
-        // First param (i=0) gets highest index (n-1), last param gets 0.
-        let param_indices: HashMap<String, usize> = analyzed
-            .def
-            .params
-            .iter()
-            .enumerate()
-            .map(|(i, param)| (param.name.to_string(), n - 1 - i))
-            .collect();
-
-        // Compute generic type indices for manifold parameters (M0, M1, ...).
-        // Numbered in declaration order.
-        let manifold_indices: HashMap<String, usize> = analyzed
-            .def
-            .params
-            .iter()
-            .filter(|p| matches!(p.kind, ParamKind::Manifold))
-            .enumerate()
-            .map(|(idx, param)| (param.name.to_string(), idx))
-            .collect();
-
-        // Determine if we need to wrap literals (any non-Field domain type needs from_f32 wrapping)
-        let use_jet_wrapper = analyzed
-            .def
-            .domain_ty
-            .as_ref()
-            .or(analyzed.def.return_ty.as_ref())
-            .map(|ty| {
-                let ty_str = quote! { #ty }.to_string();
-                // Field doesn't need wrapping, everything else does
-                !(ty_str == "Field" || ty_str.contains(":: Field") || ty_str.ends_with("::Field"))
-            })
-            .unwrap_or(false);
-
-        CodeEmitter {
+        CodegenContext {
             analyzed,
-            param_indices,
-            manifold_indices,
-            use_jet_wrapper,
+            param_indices: compute_param_indices(&analyzed.def.params),
+            manifold_indices: compute_manifold_indices(&analyzed.def.params),
+            use_jet_wrapper: needs_jet_wrapper(
+                analyzed.def.domain_ty.as_ref(),
+                analyzed.def.return_ty.as_ref(),
+            ),
             collected_literals: Vec::new(),
         }
     }
@@ -886,34 +915,34 @@ impl<'a> CodeEmitter<'a> {
             Derives::Clone
         };
 
-        // Build the emitter
-        let mut emitter = StructEmitter::new(visibility, name)
+        // Build the struct configuration
+        let config = StructConfig::new(visibility, name)
             .with_generics(generic_names.clone())
             .with_derives(derives)
             .with_fields(struct_fields, field_names, constructor_params);
 
         // Configure domain
-        if has_fixed_domain || manifold_count == 0 {
+        let config = if has_fixed_domain || manifold_count == 0 {
             // Fixed domain: all scalar params, or explicit domain/return type
-            emitter = emitter.with_fixed_domain(
+            config.with_fixed_domain(
                 domain_type,
                 scalar_type,
                 output_type,
                 trait_bounds,
-            );
-        }
-        // else: generic domain (default in StructEmitter)
+            )
+        } else {
+            // Generic domain (default)
+            config
+        };
 
-        // Configure eval body
-        emitter = emitter.with_eval_body(
+        // Configure eval body and build
+        config.with_eval_body(
             standard_imports,
             peano_imports,
             manifold_eval_stmts,
             body,
             at_binding,
-        );
-
-        emitter.build()
+        ).build()
     }
 
     /// Emit imports for array-based context system.

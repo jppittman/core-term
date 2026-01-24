@@ -64,7 +64,7 @@ pub struct Symbol {
 }
 
 /// The symbol table for a kernel compilation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SymbolTable {
     /// All symbols indexed by name.
     symbols: HashMap<String, Symbol>,
