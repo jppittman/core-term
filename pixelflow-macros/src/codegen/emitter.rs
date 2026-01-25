@@ -421,7 +421,6 @@ impl<'a> CodeEmitter<'a> {
             // Fixed domain: all scalar params, or explicit domain/return type
             emitter = emitter.with_fixed_domain(
                 domain_type,
-                scalar_type,
                 output_type,
                 trait_bounds,
             );
