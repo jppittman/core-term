@@ -72,6 +72,16 @@ const CONST_RANGE_OFFSET: f32 = 5.0;
 /// Probability of adding an identity operation during unfusing.
 const IDENTITY_UNFUSE_PROBABILITY: f32 = 0.2;
 
+// Quantization constants
+const QUANTIZATION_SHIFT: i32 = 6;
+const QUANTIZATION_MAX: i32 = 127;
+
+// LCG constants
+const LCG_MULTIPLIER: u64 = 6364136223846793005;
+const LCG_INCREMENT: u64 = 1;
+const LCG_SHIFT: u32 = 33;
+const LCG_DIVISOR_SHIFT: u32 = 31;
+
 // Constants for backward generator
 /// Scale factor for backward generator constants (smaller range).
 const BWD_CONST_RANGE_SCALE: f32 = 4.0;
@@ -270,6 +280,13 @@ pub const MAX_DEPTH: usize = 8;
 /// Maximum child index (for position encoding).
 pub const MAX_CHILD_INDEX: usize = 8;
 
+/// Traversal state for feature extraction.
+#[derive(Clone, Copy)]
+struct TraversalState {
+    depth: u8,
+    path: u8,
+}
+
 /// A HalfEP feature: (perspective_op, descendant_op, depth, child_path).
 ///
 /// This is analogous to HalfKP in chess:
@@ -329,35 +346,81 @@ impl HalfEPFeature {
 /// king's perspective).
 pub fn extract_features(expr: &Expr) -> Vec<HalfEPFeature> {
     let mut features = Vec::new();
-    extract_features_recursive(expr, &mut features, 0, 0);
+    extract_features_recursive(expr, &mut features, TraversalState { path: 0, depth: 0 });
     features
 }
 
 fn extract_features_recursive(
     expr: &Expr,
     features: &mut Vec<HalfEPFeature>,
-    path: u8,
-    depth: u8,
+    state: TraversalState,
 ) {
     let root_op = expr.op_type();
 
     // Add features for all descendants from this node's perspective
-    add_descendant_features(expr, features, root_op.index() as u8, 0, 0);
+    add_descendant_features(
+        expr,
+        features,
+        root_op.index() as u8,
+        TraversalState { path: 0, depth: 0 },
+    );
 
     // Recurse into children with updated path
     match expr {
         Expr::Var(_) | Expr::Const(_) => {}
         Expr::Unary(_, a) => {
-            extract_features_recursive(a, features, path, depth.saturating_add(1));
+            extract_features_recursive(
+                a,
+                features,
+                TraversalState {
+                    path: state.path,
+                    depth: state.depth.saturating_add(1),
+                },
+            );
         }
         Expr::Binary(_, a, b) => {
-            extract_features_recursive(a, features, path << 1, depth.saturating_add(1));
-            extract_features_recursive(b, features, (path << 1) | 1, depth.saturating_add(1));
+            extract_features_recursive(
+                a,
+                features,
+                TraversalState {
+                    path: state.path << 1,
+                    depth: state.depth.saturating_add(1),
+                },
+            );
+            extract_features_recursive(
+                b,
+                features,
+                TraversalState {
+                    path: (state.path << 1) | 1,
+                    depth: state.depth.saturating_add(1),
+                },
+            );
         }
         Expr::Ternary(_, a, b, c) => {
-            extract_features_recursive(a, features, path, depth.saturating_add(1));
-            extract_features_recursive(b, features, path, depth.saturating_add(1));
-            extract_features_recursive(c, features, path, depth.saturating_add(1));
+            extract_features_recursive(
+                a,
+                features,
+                TraversalState {
+                    path: state.path,
+                    depth: state.depth.saturating_add(1),
+                },
+            );
+            extract_features_recursive(
+                b,
+                features,
+                TraversalState {
+                    path: state.path,
+                    depth: state.depth.saturating_add(1),
+                },
+            );
+            extract_features_recursive(
+                c,
+                features,
+                TraversalState {
+                    path: state.path,
+                    depth: state.depth.saturating_add(1),
+                },
+            );
         }
     }
 }
@@ -366,10 +429,9 @@ fn add_descendant_features(
     expr: &Expr,
     features: &mut Vec<HalfEPFeature>,
     perspective_op: u8,
-    depth: u8,
-    path: u8,
+    state: TraversalState,
 ) {
-    if depth as usize >= MAX_DEPTH {
+    if state.depth as usize >= MAX_DEPTH {
         return;
     }
 
@@ -377,25 +439,73 @@ fn add_descendant_features(
     features.push(HalfEPFeature {
         perspective_op,
         descendant_op: expr.op_type().index() as u8,
-        depth,
-        path,
+        depth: state.depth,
+        path: state.path,
     });
 
     // Recurse into children
     match expr {
         Expr::Var(_) | Expr::Const(_) => {}
         Expr::Unary(_, a) => {
-            add_descendant_features(a, features, perspective_op, depth + 1, path << 1);
+            add_descendant_features(
+                a,
+                features,
+                perspective_op,
+                TraversalState {
+                    depth: state.depth + 1,
+                    path: state.path << 1,
+                },
+            );
         }
         Expr::Binary(_, a, b) => {
-            add_descendant_features(a, features, perspective_op, depth + 1, path << 1);
-            add_descendant_features(b, features, perspective_op, depth + 1, (path << 1) | 1);
+            add_descendant_features(
+                a,
+                features,
+                perspective_op,
+                TraversalState {
+                    depth: state.depth + 1,
+                    path: state.path << 1,
+                },
+            );
+            add_descendant_features(
+                b,
+                features,
+                perspective_op,
+                TraversalState {
+                    depth: state.depth + 1,
+                    path: (state.path << 1) | 1,
+                },
+            );
         }
         Expr::Ternary(_, a, b, c) => {
             // For ternary, use bits 0, 1, 2 for the three children
-            add_descendant_features(a, features, perspective_op, depth + 1, path << 2);
-            add_descendant_features(b, features, perspective_op, depth + 1, (path << 2) | 1);
-            add_descendant_features(c, features, perspective_op, depth + 1, (path << 2) | 2);
+            add_descendant_features(
+                a,
+                features,
+                perspective_op,
+                TraversalState {
+                    depth: state.depth + 1,
+                    path: state.path << 2,
+                },
+            );
+            add_descendant_features(
+                b,
+                features,
+                perspective_op,
+                TraversalState {
+                    depth: state.depth + 1,
+                    path: (state.path << 2) | 1,
+                },
+            );
+            add_descendant_features(
+                c,
+                features,
+                perspective_op,
+                TraversalState {
+                    depth: state.depth + 1,
+                    path: (state.path << 2) | 2,
+                },
+            );
         }
     }
 }
@@ -546,7 +656,7 @@ impl Accumulator {
         let mut l2 = nnue.b2.clone();
         for i in 0..l1_size {
             // Clipped ReLU: clamp to [0, 127] then scale
-            let a = (self.values[i] >> 6).clamp(0, 127) as i8;
+            let a = (self.values[i] >> QUANTIZATION_SHIFT).clamp(0, QUANTIZATION_MAX) as i8;
             for j in 0..l2_size {
                 l2[j] += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
             }
@@ -555,7 +665,7 @@ impl Accumulator {
         // L2 -> L3 with clipped ReLU
         let mut l3 = nnue.b3.clone();
         for i in 0..l2_size {
-            let a = (l2[i] >> 6).clamp(0, 127) as i8;
+            let a = (l2[i] >> QUANTIZATION_SHIFT).clamp(0, QUANTIZATION_MAX) as i8;
             for j in 0..l3_size {
                 l3[j] += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
             }
@@ -564,7 +674,7 @@ impl Accumulator {
         // L3 -> output
         let mut output = nnue.b_out;
         for i in 0..l3_size {
-            let a = (l3[i] >> 6).clamp(0, 127) as i8;
+            let a = (l3[i] >> QUANTIZATION_SHIFT).clamp(0, QUANTIZATION_MAX) as i8;
             output += (a as i32) * (nnue.w_out[i] as i32);
         }
 
@@ -632,8 +742,9 @@ impl ExprGenerator {
 
     /// Generate a random f32 in [0, 1).
     fn rand_f32(&mut self) -> f32 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        (self.state >> 33) as f32 / (1u64 << 31) as f32
+        self.state =
+            self.state.wrapping_mul(LCG_MULTIPLIER).wrapping_add(LCG_INCREMENT);
+        (self.state >> LCG_SHIFT) as f32 / (1u64 << LCG_DIVISOR_SHIFT) as f32
     }
 
     /// Generate a random usize in [0, max).
@@ -1084,8 +1195,9 @@ impl BwdGenerator {
 
     /// Generate a random f32 in [0, 1).
     fn rand_f32(&mut self) -> f32 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        (self.state >> 33) as f32 / (1u64 << 31) as f32
+        self.state =
+            self.state.wrapping_mul(LCG_MULTIPLIER).wrapping_add(LCG_INCREMENT);
+        (self.state >> LCG_SHIFT) as f32 / (1u64 << LCG_DIVISOR_SHIFT) as f32
     }
 
     /// Generate a random usize in [0, max).
