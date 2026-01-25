@@ -340,127 +340,56 @@ impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldG
 ///
 /// Evaluates geometry to get t, computes hit point P = ray * t, then selects
 /// between material (at P) and background based on hit validity.
-#[derive(Clone, Copy, ManifoldExpr)]
-pub struct Surface<G, M, B> {
-    pub geometry: G,
-    pub material: M,
-    pub background: B,
-}
+kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Field {
+    // 1. Get distance t from geometry
+    let t = geometry;
 
-impl<G, M, B> Manifold<Jet3_4> for Surface<G, M, B>
-where
-    G: ManifoldCompat<Jet3, Output = Jet3>,
-    M: ManifoldCompat<Jet3, Output = Field>,
-    B: ManifoldCompat<Jet3, Output = Field>,
-{
-    type Output = Field;
+    // 2. Validate hit: t > 0, t < max, derivatives reasonable
+    let t_max = 1000000.0;
+    let deriv_max = 10000.0;
+    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
+    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let mask = valid_t & valid_deriv;
 
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Field {
-        let (rx, ry, rz, w) = p;
+    // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
+    let hx = X * t;
+    let hy = Y * t;
+    let hz = Z * t;
 
-        // 1. Get distance t from geometry
-        let t = self.geometry.eval_raw(rx, ry, rz, w);
+    // 4. Sample material at hit point, background at ray direction
+    let mat_val = material.at(hx, hy, hz, W);
+    let bg_val = background;
 
-        // 2. Validate hit: t > 0, t < max, derivatives reasonable
-        let t_val = t.val;
-        let t_max = Field::from(1000000.0);
-        let valid_t = t_val.gt(Field::from(0.0)) & t_val.lt(t_max);
-
-        let dx = t.dx;
-        let dy = t.dy;
-        let dz = t.dz;
-        let deriv_mag_sq = (dx * dx + dy * dy + dz * dz).eval(p);
-        let deriv_max = Field::from(10000.0);
-        let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).eval(p)).eval(p);
-        let mask = valid_t & valid_deriv;
-
-        // Optimization: Conditional evaluation to skip expensive branches
-        // If all pixels hit, skip background
-        if mask.all() {
-            let hx = rx * t;
-            let hy = ry * t;
-            let hz = rz * t;
-            return self.material.eval_raw(hx, hy, hz, w);
-        }
-
-        // If all pixels miss, skip material
-        if !mask.any() {
-            return self.background.eval_raw(rx, ry, rz, w);
-        }
-
-        // Mixed case: evaluate both and blend
-        let hx = rx * t;
-        let hy = ry * t;
-        let hz = rz * t;
-
-        let mat_val = self.material.eval_raw(hx, hy, hz, w);
-        let bg_val = self.background.eval_raw(rx, ry, rz, w);
-
-        // 5. Select based on hit validity
-        Field::select_raw(mask, mat_val, bg_val)
-    }
-}
+    // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
+    mask.select(mat_val, bg_val)
+});
 
 /// Color Surface: geometry + material + background, outputs Discrete.
-#[derive(Clone, Copy, ManifoldExpr)]
-pub struct ColorSurface<G, M, B> {
-    pub geometry: G,
-    pub material: M,
-    pub background: B,
-}
+kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Discrete {
+    // 1. Get distance t from geometry
+    let t = geometry;
 
-impl<G, M, B> Manifold<Jet3_4> for ColorSurface<G, M, B>
-where
-    G: ManifoldCompat<Jet3, Output = Jet3>,
-    M: ManifoldCompat<Jet3, Output = Discrete>,
-    B: ManifoldCompat<Jet3, Output = Discrete>,
-{
-    type Output = Discrete;
+    // 2. Validate hit: t > 0, t < max, derivatives reasonable
+    let t_max = 1000000.0;
+    let deriv_max = 10000.0;
+    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
+    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let mask = valid_t & valid_deriv;
 
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Discrete {
-        let (rx, ry, rz, w) = p;
+    // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
+    let hx = X * t;
+    let hy = Y * t;
+    let hz = Z * t;
 
-        // 1. Get distance t from geometry
-        let t = self.geometry.eval_raw(rx, ry, rz, w);
+    // 4. Sample material at hit point, background at ray direction
+    let mat_val = material.at(hx, hy, hz, W);
+    let bg_val = background;
 
-        // 2. Validate hit: t > 0, t < max, derivatives reasonable
-        let t_val = t.val;
-        let t_max = Field::from(1000000.0);
-        let valid_t = t_val.gt(Field::from(0.0)) & t_val.lt(t_max);
-
-        let dx = t.dx;
-        let dy = t.dy;
-        let dz = t.dz;
-        let deriv_mag_sq = (dx * dx + dy * dy + dz * dz).eval(p);
-        let deriv_max = Field::from(10000.0);
-        let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).eval(p)).eval(p);
-        let mask = valid_t & valid_deriv;
-
-        // Optimization: Conditional evaluation
-        if mask.all() {
-            let hx = rx * t;
-            let hy = ry * t;
-            let hz = rz * t;
-            return self.material.eval_raw(hx, hy, hz, w);
-        }
-
-        if !mask.any() {
-            return self.background.eval_raw(rx, ry, rz, w);
-        }
-
-        // Mixed case
-        let hx = rx * t;
-        let hy = ry * t;
-        let hz = rz * t;
-
-        let mat_val = self.material.eval_raw(hx, hy, hz, w);
-        let bg_val = self.background.eval_raw(rx, ry, rz, w);
-
-        Discrete::select(mask, mat_val, bg_val)
-    }
-}
+    // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
+    mask.select(mat_val, bg_val)
+});
 
 // ... SCENE COMPOSITION ...
 
@@ -566,37 +495,18 @@ where
 }
 
 /// Mask manifold for geometry hit detection.
-/// Note: Manual implementation used because kernel! macro fails with missing symbols (__call_*)
-#[derive(Clone, Copy, ManifoldExpr)]
-pub struct GeometryMask<G> {
-    pub geometry: G,
-}
+kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
+    let t = geometry;
+    let t_max = 1000000.0;
+    let deriv_max = 10000.0;
 
-impl<G> Manifold<Jet3_4> for GeometryMask<G>
-where
-    G: ManifoldCompat<Jet3, Output = Jet3>,
-{
-    type Output = Field;
+    // Valid if: t > 0, t < max, derivatives reasonable
+    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
+    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
 
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Field {
-        let (rx, ry, rz, w) = p;
-        let t = self.geometry.eval_raw(rx, ry, rz, w);
-        let t_val = t.val;
-        let t_max = Field::from(1000000.0);
-
-        let valid_t = t_val.gt(Field::from(0.0)) & t_val.lt(t_max);
-
-        let dx = t.dx;
-        let dy = t.dy;
-        let dz = t.dz;
-        let deriv_mag_sq = (dx * dx + dy * dy + dz * dz).eval(p);
-        let deriv_max = Field::from(10000.0);
-        let valid_deriv = deriv_mag_sq.lt((deriv_max * deriv_max).eval(p)).eval(p);
-
-        valid_t & valid_deriv
-    }
-}
+    valid_t & valid_deriv
+});
 
 impl<G, M> Scene for SceneObject<G, M>
 where
@@ -1054,55 +964,41 @@ where
 
 /// Checkerboard pattern based on X/Z coordinates.
 /// Uses Jet3 derivatives for automatic antialiasing at edges.
-/// Note: Manual implementation used because kernel! macro fails with missing symbols (__call_*)
-#[derive(Clone, Copy, ManifoldExpr)]
-pub struct Checker;
+kernel!(pub struct Checker = || Jet3 -> Field {
+    // Which checker cell are we in?
+    let cell_x = V(X).floor();
+    let cell_z = V(Z).floor();
+    let sum = cell_x + cell_z;
+    let half = sum * 0.5;
+    let fract_half = half - half.floor();
+    let is_even = fract_half.abs() < 0.25;
 
-impl Manifold<Jet3_4> for Checker {
-    type Output = Field;
+    // Colors
+    let color_a = 0.9;
+    let color_b = 0.2;
+    let base_color = is_even.select(color_a, color_b);
 
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Field {
-        let (x, _y, z, _w) = p;
+    // AA: distance to nearest grid line in X and Z
+    let fx = V(X) - cell_x;
+    let fz = V(Z) - cell_z;
 
-        // Which checker cell are we in?
-        let cell_x = x.val.floor();
-        let cell_z = z.val.floor();
-        let sum = cell_x.clone() + cell_z.clone();
-        let half = (sum * Field::from(0.5)).eval(p);
-        let fract_half = (half.clone() - half.floor()).eval(p);
-        let is_even = fract_half.abs().lt(Field::from(0.25)).eval(p);
+    // Distance to nearest edge (0.0 or 1.0 boundary)
+    let dx_edge = (fx - 0.5).abs();
+    let dz_edge = (fz - 0.5).abs();
+    let dist_to_edge = (0.5 - dx_edge).min(0.5 - dz_edge);
 
-        // Colors
-        let color_a = Field::from(0.9);
-        let color_b = Field::from(0.2);
-        let base_color = Field::select_raw(is_even.clone(), color_a.clone(), color_b.clone());
+    // Gradient magnitude from Jet3 derivatives
+    let grad_x = (DX(X) * DX(X) + DY(X) * DY(X) + DZ(X) * DZ(X)).sqrt();
+    let grad_z = (DX(Z) * DX(Z) + DY(Z) * DY(Z) + DZ(Z) * DZ(Z)).sqrt();
+    let pixel_size = grad_x.max(grad_z) + 0.001;
 
-        // AA: distance to nearest grid line in X and Z
-        let fx = (x.val - cell_x).eval(p);
-        let fz = (z.val - cell_z).eval(p);
+    // Coverage: how much of the pixel is in this cell vs neighbor
+    let coverage = (dist_to_edge / pixel_size).min(1.0).max(0.0);
 
-        // Distance to nearest edge (0.0 or 1.0 boundary)
-        let half_c = Field::from(0.5);
-        let dx_edge = (fx - half_c.clone()).abs().eval(p);
-        let dz_edge = (fz - half_c.clone()).abs().eval(p);
-        let dist_to_edge = (half_c.clone() - dx_edge).min(half_c - dz_edge).eval(p);
-
-        // Gradient magnitude from Jet3 derivatives
-        let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt().eval(p);
-        let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt().eval(p);
-        let pixel_size = (grad_x.max(grad_z) + Field::from(0.001)).eval(p);
-
-        // Coverage: how much of the pixel is in this cell vs neighbor
-        let coverage = (dist_to_edge / pixel_size)
-            .min(Field::from(1.0))
-            .max(Field::from(0.0)).eval(p);
-
-        // Blend with neighbor color at edges
-        let neighbor_color = Field::select_raw(is_even, color_b, color_a);
-        (base_color * coverage.clone() + neighbor_color * (Field::from(1.0) - coverage)).eval(p)
-    }
-}
+    // Blend with neighbor color at edges
+    let neighbor_color = is_even.select(color_b, color_a);
+    base_color * coverage + neighbor_color * (1.0 - coverage)
+});
 
 /// Simple Sky Gradient based on Y direction.
 ///
