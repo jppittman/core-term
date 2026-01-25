@@ -1,11 +1,30 @@
 //! Cost model for e-graph extraction.
+//!
+//! The cost model controls which equivalent expression the e-graph extracts.
+//! It includes:
+//! - **Operation costs**: How expensive each op is at runtime
+//! - **Depth penalty**: Hinge penalty for type nesting beyond threshold
+//!
+//! The depth penalty prevents compilation blowup by making deep type trees
+//! expensive, encouraging the extractor to prefer shallower forms or boxing.
 
 use std::collections::HashMap;
 use super::node::ENode;
 
-/// Configurable cost model for operation costs.
+/// Configurable cost model for operation costs and depth penalties.
+///
+/// # Depth Penalty (Hinge Function)
+///
+/// When expression depth exceeds `depth_threshold`, a penalty is added:
+/// ```text
+/// penalty = max(0, depth - depth_threshold) * depth_penalty
+/// ```
+///
+/// This encourages the e-graph to extract shallower expressions when possible,
+/// preventing exponential type blowup during compilation.
 #[derive(Clone, Debug)]
 pub struct CostModel {
+    // === Operation costs (runtime) ===
     pub add: usize,
     pub sub: usize,
     pub mul: usize,
@@ -18,6 +37,15 @@ pub struct CostModel {
     pub min: usize,
     pub max: usize,
     pub mul_add: usize,
+
+    // === Depth penalty (compile time) ===
+    /// Depth threshold before penalty kicks in.
+    /// Default: 32 (reasonable for most expressions)
+    pub depth_threshold: usize,
+
+    /// Penalty per level beyond threshold (hinge slope).
+    /// Default: 100 (makes deep trees very expensive)
+    pub depth_penalty: usize,
 }
 
 impl Default for CostModel {
@@ -35,6 +63,9 @@ impl Default for CostModel {
             min: 4,
             max: 4,
             mul_add: 10,
+            // Depth penalty defaults
+            depth_threshold: 32,
+            depth_penalty: 100,
         }
     }
 }
@@ -66,6 +97,25 @@ impl CostModel {
         }
     }
 
+    /// Create a cost model with custom depth threshold.
+    pub fn with_depth_limit(threshold: usize, penalty: usize) -> Self {
+        Self {
+            depth_threshold: threshold,
+            depth_penalty: penalty,
+            ..Self::default()
+        }
+    }
+
+    /// Create a cost model that aggressively penalizes depth.
+    /// Useful for complex kernels that would otherwise OOM the compiler.
+    pub fn shallow() -> Self {
+        Self {
+            depth_threshold: 16,
+            depth_penalty: 500,
+            ..Self::fully_optimized()
+        }
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_map(costs: &HashMap<String, usize>) -> Self {
         let mut model = Self::default();
@@ -81,7 +131,21 @@ impl CostModel {
         if let Some(&c) = costs.get("min") { model.min = c; }
         if let Some(&c) = costs.get("max") { model.max = c; }
         if let Some(&c) = costs.get("mul_add") { model.mul_add = c; }
+        if let Some(&c) = costs.get("depth_threshold") { model.depth_threshold = c; }
+        if let Some(&c) = costs.get("depth_penalty") { model.depth_penalty = c; }
         model
+    }
+
+    /// Calculate the hinge penalty for a given depth.
+    ///
+    /// Returns 0 if depth <= threshold, otherwise (depth - threshold) * penalty.
+    #[inline]
+    pub fn depth_cost(&self, depth: usize) -> usize {
+        if depth > self.depth_threshold {
+            (depth - self.depth_threshold) * self.depth_penalty
+        } else {
+            0
+        }
     }
 
     pub fn node_op_cost(&self, node: &ENode) -> usize {

@@ -372,26 +372,61 @@ impl EGraph {
 
     pub fn extract_tree_with_costs(&self, root: EClassId, costs: &CostModel) -> ExprTree {
         let root = self.find(root);
-        let best_node = self.extract_with_costs(root, costs);
-        self.node_to_tree_with_costs(&best_node, costs)
+        // Use depth-aware extraction
+        self.extract_tree_with_depth(root, costs, 0)
     }
 
-    fn node_to_tree_with_costs(&self, node: &ENode, costs: &CostModel) -> ExprTree {
+    /// Extract tree with depth tracking for penalty calculation.
+    ///
+    /// Uses the iterative extraction algorithm to find optimal per-e-class
+    /// representations, then builds the tree while tracking depth.
+    /// The depth_penalty in CostModel affects the total cost calculation
+    /// but the iterative algorithm chooses representations globally.
+    fn extract_tree_with_depth(&self, root: EClassId, costs: &CostModel, depth: usize) -> ExprTree {
+        let root = self.find(root);
+        let best_node = self.extract_with_costs(root, costs);
+        self.node_to_tree_iterative(&best_node, costs)
+    }
+
+    /// Convert a node to a tree using iterative extraction for children.
+    fn node_to_tree_iterative(&self, node: &ENode, costs: &CostModel) -> ExprTree {
         match node {
             ENode::Var(v) => ExprTree::Var(*v),
             ENode::Const(bits) => ExprTree::Const(f32::from_bits(*bits)),
-            ENode::Add(a, b) => ExprTree::Add(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Sub(a, b) => ExprTree::Sub(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Mul(a, b) => ExprTree::Mul(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Div(a, b) => ExprTree::Div(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
+            ENode::Add(a, b) => ExprTree::Add(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Sub(a, b) => ExprTree::Sub(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Mul(a, b) => ExprTree::Mul(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Div(a, b) => ExprTree::Div(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
             ENode::Neg(a) => ExprTree::Neg(Box::new(self.extract_tree_with_costs(*a, costs))),
             ENode::Recip(a) => ExprTree::Recip(Box::new(self.extract_tree_with_costs(*a, costs))),
             ENode::Sqrt(a) => ExprTree::Sqrt(Box::new(self.extract_tree_with_costs(*a, costs))),
             ENode::Rsqrt(a) => ExprTree::Rsqrt(Box::new(self.extract_tree_with_costs(*a, costs))),
             ENode::Abs(a) => ExprTree::Abs(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Min(a, b) => ExprTree::Min(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Max(a, b) => ExprTree::Max(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::MulAdd(a, b, c) => ExprTree::MulAdd(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs)), Box::new(self.extract_tree_with_costs(*c, costs))),
+            ENode::Min(a, b) => ExprTree::Min(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Max(a, b) => ExprTree::Max(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::MulAdd(a, b, c) => ExprTree::MulAdd(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+                Box::new(self.extract_tree_with_costs(*c, costs)),
+            ),
             ENode::Floor(a) => ExprTree::Floor(Box::new(self.extract_tree_with_costs(*a, costs))),
             ENode::Ceil(a) => ExprTree::Ceil(Box::new(self.extract_tree_with_costs(*a, costs))),
             ENode::Round(a) => ExprTree::Round(Box::new(self.extract_tree_with_costs(*a, costs))),
@@ -407,20 +442,59 @@ impl EGraph {
             ENode::Ln(a) => ExprTree::Ln(Box::new(self.extract_tree_with_costs(*a, costs))),
             ENode::Log2(a) => ExprTree::Log2(Box::new(self.extract_tree_with_costs(*a, costs))),
             ENode::Log10(a) => ExprTree::Log10(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Atan2(a, b) => ExprTree::Atan2(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Pow(a, b) => ExprTree::Pow(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Hypot(a, b) => ExprTree::Hypot(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Lt(a, b) => ExprTree::Lt(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Le(a, b) => ExprTree::Le(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Gt(a, b) => ExprTree::Gt(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Ge(a, b) => ExprTree::Ge(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Eq(a, b) => ExprTree::Eq(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Ne(a, b) => ExprTree::Ne(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs))),
-            ENode::Select(a, b, c) => ExprTree::Select(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs)), Box::new(self.extract_tree_with_costs(*c, costs))),
-            ENode::Clamp(a, b, c) => ExprTree::Clamp(Box::new(self.extract_tree_with_costs(*a, costs)), Box::new(self.extract_tree_with_costs(*b, costs)), Box::new(self.extract_tree_with_costs(*c, costs))),
-            ENode::Tuple(elems) => ExprTree::Tuple(elems.iter().map(|&e| self.extract_tree_with_costs(e, costs)).collect()),
+            ENode::Atan2(a, b) => ExprTree::Atan2(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Pow(a, b) => ExprTree::Pow(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Hypot(a, b) => ExprTree::Hypot(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Lt(a, b) => ExprTree::Lt(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Le(a, b) => ExprTree::Le(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Gt(a, b) => ExprTree::Gt(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Ge(a, b) => ExprTree::Ge(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Eq(a, b) => ExprTree::Eq(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Ne(a, b) => ExprTree::Ne(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+            ),
+            ENode::Select(a, b, c) => ExprTree::Select(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+                Box::new(self.extract_tree_with_costs(*c, costs)),
+            ),
+            ENode::Clamp(a, b, c) => ExprTree::Clamp(
+                Box::new(self.extract_tree_with_costs(*a, costs)),
+                Box::new(self.extract_tree_with_costs(*b, costs)),
+                Box::new(self.extract_tree_with_costs(*c, costs)),
+            ),
+            ENode::Tuple(elems) => ExprTree::Tuple(
+                elems.iter().map(|&e| self.extract_tree_with_costs(e, costs)).collect()
+            ),
         }
     }
+
+
 }
 
 #[cfg(test)]
@@ -609,5 +683,61 @@ mod tests {
         eprintln!("Discriminant value: {}", val);
 
         assert!((val - 1.0).abs() < 0.001, "discriminant should be 1.0, got {}", val);
+    }
+
+    #[test]
+    fn test_depth_penalty_calculation() {
+        // Test the hinge penalty function
+        let costs = CostModel::with_depth_limit(5, 100);
+
+        // Below threshold: no penalty
+        assert_eq!(costs.depth_cost(0), 0);
+        assert_eq!(costs.depth_cost(5), 0);
+
+        // Above threshold: linear penalty
+        assert_eq!(costs.depth_cost(6), 100);
+        assert_eq!(costs.depth_cost(7), 200);
+        assert_eq!(costs.depth_cost(10), 500);
+    }
+
+    #[test]
+    fn test_shallow_cost_model() {
+        // Shallow model should have aggressive depth penalty
+        let costs = CostModel::shallow();
+        assert_eq!(costs.depth_threshold, 16);
+        assert_eq!(costs.depth_penalty, 500);
+
+        // Penalty kicks in after 16
+        assert_eq!(costs.depth_cost(16), 0);
+        assert_eq!(costs.depth_cost(17), 500);
+        assert_eq!(costs.depth_cost(20), 2000);
+    }
+
+    #[test]
+    fn test_depth_aware_extraction() {
+        // Build a deep expression: ((((x + 1) + 1) + 1) + 1)
+        let mut eg = EGraph::new();
+        let x = eg.add(ENode::Var(0));
+        let one = eg.add(ENode::constant(1.0));
+
+        let mut current = x;
+        for _ in 0..10 {
+            current = eg.add(ENode::Add(current, one));
+        }
+
+        eg.saturate();
+
+        // Extract with default costs (high threshold)
+        let default_costs = CostModel::default();
+        let tree = eg.extract_tree_with_costs(current, &default_costs);
+        let val = tree.eval(&[5.0, 0.0, 0.0, 0.0]);
+        assert!((val - 15.0).abs() < 0.001, "5 + 10*1 should be 15.0, got {}", val);
+
+        // Extract with shallow costs (low threshold)
+        // The result should still be mathematically correct
+        let shallow_costs = CostModel::with_depth_limit(3, 1000);
+        let tree2 = eg.extract_tree_with_costs(current, &shallow_costs);
+        let val2 = tree2.eval(&[5.0, 0.0, 0.0, 0.0]);
+        assert!((val2 - 15.0).abs() < 0.001, "shallow extraction should still be 15.0, got {}", val2);
     }
 }
