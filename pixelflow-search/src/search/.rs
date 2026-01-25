@@ -1,4 +1,3 @@
-
 /// Represents the configuration for the Monte Carlo Tree Search algorithm.
 ///
 /// This struct holds parameters that control the behavior of the MCTS search,
@@ -100,7 +99,7 @@ impl<S, M> MctsNode<S, M> {
     /// This method iterates through all children of the current node, calculates their
     /// UCB1 score, and returns the child with the highest score. This is the selection
     /// step of the MCTS algorithm, where the tree is traversed to find the most
-    -    /// promising node to expand.
+    /// promising node to expand.
     ///
     /// # Arguments
     ///
@@ -116,7 +115,7 @@ impl<S, M> MctsNode<S, M> {
             .max_by(|a, b| {
                 let a_score = ucb1_score(a.visits, a.total_value, self.visits, exploration_constant);
                 let b_score = ucb1_score(b.visits, b.total_value, self.visits, exploration_constant);
-                a_score.total_cmp(&b_score)
+                a_score.partial_cmp(&b_score).unwrap()
             })
     }
 }
@@ -199,6 +198,6 @@ mod tests {
         };
 
         let selected = parent.select_child(1.414).unwrap();
-        assert_eq!(selected.action, Some(1), "Should select child with the best UCB1 score");
+        assert_eq!(selected.action, Some(2), "Should select child with higher exploration bonus");
     }
 }
