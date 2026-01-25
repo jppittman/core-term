@@ -1,57 +1,54 @@
-//! # Unary Operations
-//!
-//! AST nodes for unary ops: Sqrt, Abs, Floor, Sin, Min, Max.
-
 use crate::Manifold;
 use crate::numeric::{Computational, Numeric};
+use pixelflow_macros::Element;
 
 /// Square root.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Sqrt<M>(pub M);
 
 /// Negation: -M
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Neg<M>(pub M);
 
 /// Absolute value.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Abs<M>(pub M);
 
 /// Floor (round toward negative infinity).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Floor<M>(pub M);
 
 /// Reciprocal square root: 1/sqrt(M).
 /// Uses fast SIMD rsqrt with Newton-Raphson refinement.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Rsqrt<M>(pub M);
 
 /// Sine function.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Sin<M>(pub M);
 
 /// Cosine function.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Cos<M>(pub M);
 
 /// Base-2 logarithm.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Log2<M>(pub M);
 
 /// Base-2 exponential.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Exp2<M>(pub M);
 
 /// Natural exponential (e^x).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Exp<M>(pub M);
 
 /// Element-wise maximum.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Max<L, R>(pub L, pub R);
 
 /// Element-wise minimum.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Min<L, R>(pub L, pub R);
 
 // ============================================================================

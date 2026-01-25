@@ -18,21 +18,24 @@
 //! ```
 
 use crate::Manifold;
+use crate::jet::Jet3;
+use crate::Field;
+use pixelflow_macros::Element;
 
 /// Addition: L + R
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Element)]
 pub struct Add<L, R>(pub L, pub R);
 
 /// Subtraction: L - R
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Element)]
 pub struct Sub<L, R>(pub L, pub R);
 
 /// Multiplication: L * R
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Element)]
 pub struct Mul<L, R>(pub L, pub R);
 
 /// Division: L / R
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Element)]
 pub struct Div<L, R>(pub L, pub R);
 
 /// Fused Multiply-Add: A * B + C
@@ -40,7 +43,7 @@ pub struct Div<L, R>(pub L, pub R);
 /// Uses FMA instruction when available (single rounding).
 /// This is automatically generated when `Mul + Rhs` or `Lhs + Mul` is written,
 /// enabling zero-cost compile-time fusion.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Element)]
 pub struct MulAdd<A, B, C>(pub A, pub B, pub C);
 
 /// Multiply by precomputed reciprocal: M * (1/divisor)
@@ -48,7 +51,7 @@ pub struct MulAdd<A, B, C>(pub A, pub B, pub C);
 /// Optimizes division by constants. The reciprocal is computed once at
 /// construction time, turning expensive divisions into fast multiplies.
 /// Automatically generated when `Manifold / f32` is written.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Element)]
 pub struct MulRecip<M> {
     /// The inner manifold to evaluate
     pub inner: M,
@@ -60,7 +63,7 @@ pub struct MulRecip<M> {
 ///
 /// Optimized winding number accumulation. On AVX-512, uses masked add
 /// instruction for true single-instruction operation.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Element)]
 pub struct AddMasked<Acc, Val, Mask> {
     /// Accumulator value
     pub acc: Acc,
@@ -69,6 +72,18 @@ pub struct AddMasked<Acc, Val, Mask> {
     /// Mask determining which lanes to add
     pub mask: Mask,
 }
+
+/// Scalar multiplication: Jet3 * Field (scales value and all derivatives).
+///
+/// Essential for ray marching where `hit_point = ray_direction * distance`.
+/// The ray direction (Jet3) carries derivatives showing how it varies with
+/// screen position, while distance (Field) is a scalar multiplier.
+///
+/// ```ignore
+/// let hx = Scale(X, safe_t);  // X is Jet3, safe_t is Field
+/// ```
+#[derive(Clone, Debug, Default, Element)]
+pub struct Scale<J, S>(pub J, pub S);
 
 // ============================================================================
 // Domain-Generic Manifold Implementations
@@ -181,6 +196,23 @@ where
 }
 
 // ============================================================================
+// Scalar Multiplication: Jet3 * Field
+// ============================================================================
+
+impl<P, J, S> Manifold<P> for Scale<J, S>
+where
+    P: Copy + Send + Sync,
+    J: Manifold<P, Output = Jet3>,
+    S: Manifold<P, Output = Field>,
+{
+    type Output = Jet3;
+    #[inline(always)]
+    fn eval(&self, p: P) -> Jet3 {
+        self.0.eval(p).scale(self.1.eval(p))
+    }
+}
+
+// ============================================================================
 // Automatic Fusion: L / Sqrt(R) → L * Rsqrt(R)
 // ============================================================================
 
@@ -191,7 +223,7 @@ where
 /// sqrt and divide operations (~8 cycles vs ~25 cycles).
 ///
 /// Created automatically when dividing by `Sqrt<R>`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct MulRsqrt<L, R>(pub L, pub R);
 
 impl<P, L, R, O> Manifold<P> for MulRsqrt<L, R>

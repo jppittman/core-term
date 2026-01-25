@@ -874,6 +874,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pixelflow-nnue"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "libm",
+]
+
+[[package]]
 name = "pixelflow-runtime"
 version = "0.1.0"
 dependencies = [
@@ -900,6 +908,7 @@ name = "pixelflow-search"
 version = "0.1.0"
 dependencies = [
  "libm",
+ "pixelflow-nnue",
  "rand 0.8.5",
 ]
 

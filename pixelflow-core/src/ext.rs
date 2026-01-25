@@ -476,3 +476,7 @@ impl ManifoldExpr for f32 {}
 impl ManifoldExpr for i32 {}
 impl ManifoldExpr for crate::Field {}
 impl ManifoldExpr for BoxedManifold {}
+
+// References to ManifoldExpr types are also ManifoldExpr
+// This enables (&manifold).at(...) for borrowed manifolds
+impl<M: ManifoldExpr + ?Sized> ManifoldExpr for &M {}

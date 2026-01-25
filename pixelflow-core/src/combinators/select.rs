@@ -23,12 +23,13 @@ use crate::backend::{MaskOps, SimdOps};
 use crate::numeric::Numeric;
 use crate::ops::compare::{Ge, Gt, Le, Lt};
 use crate::ops::logic::{And, BNot, Or};
+use pixelflow_macros::Element;
 
 /// Branchless conditional with short-circuit.
 ///
 /// Evaluates `if_true` only when some lanes are true,
 /// `if_false` only when some are false.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Select<C, T, F> {
     /// The condition (produces a mask).
     pub cond: C,
@@ -249,15 +250,16 @@ type Jet4 = (
 
 impl<C, T, F, O> Manifold<Jet4> for Select<C, T, F>
 where
-    O: Numeric,
-    C: Manifold<Jet4, Output = O>,
+    O: crate::numeric::Selectable,
+    C: Manifold<Jet4>,
+    <C as Manifold<Jet4>>::Output: Into<Field> + Copy,
     T: Manifold<Jet4, Output = O>,
     F: Manifold<Jet4, Output = O>,
 {
     type Output = O;
     #[inline(always)]
     fn eval(&self, p: Jet4) -> O {
-        let mask = self.cond.eval(p);
+        let mask: Field = self.cond.eval(p).into();
         if mask.all() {
             return self.if_true.eval(p);
         }
@@ -285,15 +287,15 @@ type Jet3_4 = (
 impl<C, T, F, O> Manifold<Jet3_4> for Select<C, T, F>
 where
     O: crate::numeric::Selectable,
-    C: Manifold<Jet3_4, Output = crate::jet::Jet3>,
+    C: Manifold<Jet3_4>,
+    <C as Manifold<Jet3_4>>::Output: Into<Field> + Copy,
     T: Manifold<Jet3_4, Output = O>,
     F: Manifold<Jet3_4, Output = O>,
 {
     type Output = O;
     #[inline(always)]
     fn eval(&self, p: Jet3_4) -> O {
-        let cond_jet = self.cond.eval(p);
-        let mask = cond_jet.val; // Extract Field mask from Jet3
+        let mask: Field = self.cond.eval(p).into();
 
         // Early exit using Field's any/all
         if mask.all() {
@@ -327,15 +329,16 @@ where
     V3: Copy + Send + Sync,
     V4: Copy + Send + Sync,
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    C: Manifold<((V0, V1, V2, V3, V4), P), Output = O>,
+    O: crate::numeric::Selectable,
+    C: Manifold<((V0, V1, V2, V3, V4), P)>,
+    <C as Manifold<((V0, V1, V2, V3, V4), P)>>::Output: Into<Field> + Copy,
     T: Manifold<((V0, V1, V2, V3, V4), P), Output = O>,
     F: Manifold<((V0, V1, V2, V3, V4), P), Output = O>,
 {
     type Output = O;
     #[inline(always)]
     fn eval(&self, p: ((V0, V1, V2, V3, V4), P)) -> O {
-        let mask = self.cond.eval(p);
+        let mask: Field = self.cond.eval(p).into();
         if mask.all() {
             return self.if_true.eval(p);
         }
@@ -358,15 +361,16 @@ where
     V4: Copy + Send + Sync,
     V5: Copy + Send + Sync,
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    C: Manifold<((V0, V1, V2, V3, V4, V5), P), Output = O>,
+    O: crate::numeric::Selectable,
+    C: Manifold<((V0, V1, V2, V3, V4, V5), P)>,
+    <C as Manifold<((V0, V1, V2, V3, V4, V5), P)>>::Output: Into<Field> + Copy,
     T: Manifold<((V0, V1, V2, V3, V4, V5), P), Output = O>,
     F: Manifold<((V0, V1, V2, V3, V4, V5), P), Output = O>,
 {
     type Output = O;
     #[inline(always)]
     fn eval(&self, p: ((V0, V1, V2, V3, V4, V5), P)) -> O {
-        let mask = self.cond.eval(p);
+        let mask: Field = self.cond.eval(p).into();
         if mask.all() {
             return self.if_true.eval(p);
         }
@@ -391,15 +395,16 @@ where
     V6: Copy + Send + Sync,
     V7: Copy + Send + Sync,
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    C: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P), Output = O>,
+    O: crate::numeric::Selectable,
+    C: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)>,
+    <C as Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)>>::Output: Into<Field> + Copy,
     T: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P), Output = O>,
     F: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P), Output = O>,
 {
     type Output = O;
     #[inline(always)]
     fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7), P)) -> O {
-        let mask = self.cond.eval(p);
+        let mask: Field = self.cond.eval(p).into();
         if mask.all() {
             return self.if_true.eval(p);
         }
@@ -425,15 +430,16 @@ where
     V7: Copy + Send + Sync,
     V8: Copy + Send + Sync,
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    C: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P), Output = O>,
+    O: crate::numeric::Selectable,
+    C: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)>,
+    <C as Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)>>::Output: Into<Field> + Copy,
     T: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P), Output = O>,
     F: Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P), Output = O>,
 {
     type Output = O;
     #[inline(always)]
     fn eval(&self, p: ((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)) -> O {
-        let mask = self.cond.eval(p);
+        let mask: Field = self.cond.eval(p).into();
         if mask.all() {
             return self.if_true.eval(p);
         }
@@ -456,15 +462,16 @@ macro_rules! impl_select_for_ctx {
         where
             $($V: Copy + Send + Sync,)+
             P: Copy + Send + Sync,
-            O: crate::numeric::Numeric,
-            C: Manifold<(($($V,)+), P), Output = O>,
+            O: crate::numeric::Selectable,
+            C: Manifold<(($($V,)+), P)>,
+            <C as Manifold<(($($V,)+), P)>>::Output: Into<Field> + Copy,
             T: Manifold<(($($V,)+), P), Output = O>,
             F: Manifold<(($($V,)+), P), Output = O>,
         {
             type Output = O;
             #[inline(always)]
             fn eval(&self, p: (($($V,)+), P)) -> O {
-                let mask = self.cond.eval(p);
+                let mask: Field = self.cond.eval(p).into();
                 if mask.all() {
                     return self.if_true.eval(p);
                 }
@@ -499,15 +506,16 @@ impl<T, const N: usize, P, C, Tr, F, O> Manifold<(([T; N],), P)> for Select<C, T
 where
     T: Copy + Send + Sync,
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    C: Manifold<(([T; N],), P), Output = O>,
+    O: crate::numeric::Selectable,
+    C: Manifold<(([T; N],), P)>,
+    <C as Manifold<(([T; N],), P)>>::Output: Into<Field> + Copy,
     Tr: Manifold<(([T; N],), P), Output = O>,
     F: Manifold<(([T; N],), P), Output = O>,
 {
     type Output = O;
     #[inline(always)]
     fn eval(&self, p: (([T; N],), P)) -> O {
-        let mask = self.cond.eval(p);
+        let mask: Field = self.cond.eval(p).into();
         if mask.all() {
             return self.if_true.eval(p);
         }
@@ -527,15 +535,16 @@ where
     T0: Copy + Send + Sync,
     T1: Copy + Send + Sync,
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    C: Manifold<(([T0; N], [T1; M]), P), Output = O>,
+    O: crate::numeric::Selectable,
+    C: Manifold<(([T0; N], [T1; M]), P)>,
+    <C as Manifold<(([T0; N], [T1; M]), P)>>::Output: Into<Field> + Copy,
     Tr: Manifold<(([T0; N], [T1; M]), P), Output = O>,
     F: Manifold<(([T0; N], [T1; M]), P), Output = O>,
 {
     type Output = O;
     #[inline(always)]
     fn eval(&self, p: (([T0; N], [T1; M]), P)) -> O {
-        let mask = self.cond.eval(p);
+        let mask: Field = self.cond.eval(p).into();
         if mask.all() {
             return self.if_true.eval(p);
         }
@@ -556,15 +565,16 @@ where
     T1: Copy + Send + Sync,
     T2: Copy + Send + Sync,
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    C: Manifold<(([T0; N], [T1; M], [T2; K]), P), Output = O>,
+    O: crate::numeric::Selectable,
+    C: Manifold<(([T0; N], [T1; M], [T2; K]), P)>,
+    <C as Manifold<(([T0; N], [T1; M], [T2; K]), P)>>::Output: Into<Field> + Copy,
     Tr: Manifold<(([T0; N], [T1; M], [T2; K]), P), Output = O>,
     F: Manifold<(([T0; N], [T1; M], [T2; K]), P), Output = O>,
 {
     type Output = O;
     #[inline(always)]
     fn eval(&self, p: (([T0; N], [T1; M], [T2; K]), P)) -> O {
-        let mask = self.cond.eval(p);
+        let mask: Field = self.cond.eval(p).into();
         if mask.all() {
             return self.if_true.eval(p);
         }
@@ -599,15 +609,16 @@ where
     T2: Copy + Send + Sync,
     T3: Copy + Send + Sync,
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    C: Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P), Output = O>,
+    O: crate::numeric::Selectable,
+    C: Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)>,
+    <C as Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)>>::Output: Into<Field> + Copy,
     Tr: Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P), Output = O>,
     F: Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P), Output = O>,
 {
     type Output = O;
     #[inline(always)]
     fn eval(&self, p: (([T0; N], [T1; M], [T2; K], [T3; L]), P)) -> O {
-        let mask = self.cond.eval(p);
+        let mask: Field = self.cond.eval(p).into();
         if mask.all() {
             return self.if_true.eval(p);
         }

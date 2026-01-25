@@ -20,6 +20,7 @@ mod deps;
 mod extract;
 mod graph;
 mod node;
+pub mod nnue_adapter;
 mod rewrite;
 mod rules;
 

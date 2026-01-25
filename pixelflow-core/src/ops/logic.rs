@@ -5,17 +5,18 @@
 use crate::Manifold;
 use crate::numeric::Numeric;
 use core::ops::{BitAnd, BitOr, Not};
+use pixelflow_macros::Element;
 
 /// Bitwise AND.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct And<L, R>(pub L, pub R);
 
 /// Bitwise OR.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Or<L, R>(pub L, pub R);
 
 /// Bitwise NOT.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct BNot<M>(pub M);
 
 // ============================================================================
@@ -25,7 +26,7 @@ pub struct BNot<M>(pub M);
 impl<P, L, R, O> Manifold<P> for And<L, R>
 where
     P: Copy + Send + Sync,
-    O: Numeric + BitAnd<Output = O>,
+    O: crate::numeric::Computational,
     L: Manifold<P, Output = O>,
     R: Manifold<P, Output = O>,
 {
@@ -39,7 +40,7 @@ where
 impl<P, L, R, O> Manifold<P> for Or<L, R>
 where
     P: Copy + Send + Sync,
-    O: Numeric + BitOr<Output = O>,
+    O: crate::numeric::Computational,
     L: Manifold<P, Output = O>,
     R: Manifold<P, Output = O>,
 {
@@ -53,7 +54,7 @@ where
 impl<P, M, O> Manifold<P> for BNot<M>
 where
     P: Copy + Send + Sync,
-    O: Numeric + Not<Output = O>,
+    O: crate::numeric::Computational,
     M: Manifold<P, Output = O>,
 {
     type Output = O;

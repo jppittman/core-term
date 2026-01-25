@@ -28,6 +28,7 @@ use crate::combinators::binding::{Let, Var, N0, N1, N2};
 use crate::ext::ManifoldExt;
 use crate::Field;
 use crate::Manifold;
+use pixelflow_macros::Element;
 
 // ============================================================================
 // Traits for Derivative Access
@@ -79,7 +80,7 @@ pub trait HasHessian: HasDerivatives {
 /// let sdf = kernel!(|| (X * X + Y * Y).sqrt() - 1.0);
 /// let value = V(sdf);  // Just the SDF value, no derivatives
 /// ```
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct ValOf<M>(pub M);
 
 /// Extract ∂f/∂X (the `.dx` component) from a Jet-returning manifold.
@@ -89,33 +90,33 @@ pub struct ValOf<M>(pub M);
 /// let sdf = kernel!(|| (X * X + Y * Y).sqrt() - 1.0);
 /// let grad_x = DX(sdf);  // ∂sdf/∂X
 /// ```
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct DxOf<M>(pub M);
 
 /// Extract ∂f/∂Y (the `.dy` component) from a Jet-returning manifold.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct DyOf<M>(pub M);
 
 /// Extract ∂f/∂Z (the `.dz` component) from a Jet3-returning manifold.
 ///
 /// Only works with manifolds that return `Jet3` (3D autodiff).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct DzOf<M>(pub M);
 
 /// Extract ∂²f/∂X² (the `.dxx` component) from a Jet2H-returning manifold.
 ///
 /// Only works with manifolds that return `Jet2H` (2D with Hessian).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct DxxOf<M>(pub M);
 
 /// Extract ∂²f/∂X∂Y (the `.dxy` component) from a Jet2H-returning manifold.
 ///
 /// The mixed partial derivative.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct DxyOf<M>(pub M);
 
 /// Extract ∂²f/∂Y² (the `.dyy` component) from a Jet2H-returning manifold.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct DyyOf<M>(pub M);
 
 // ============================================================================
@@ -187,14 +188,14 @@ pub fn DYY<M>(m: M) -> DyyOf<M> {
 ///
 /// Evaluates the inner manifold once and computes the gradient magnitude.
 /// Works with Jet2 and Jet2H.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct GradientMag2D<M>(pub M);
 
 /// Compute 3D gradient magnitude: √(dx² + dy² + dz²)
 ///
 /// Evaluates the inner manifold once and computes the 3D gradient magnitude.
 /// Only works with Jet3.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct GradientMag3D<M>(pub M);
 
 /// Compute antialiased value: val / √(dx² + dy²)
@@ -202,35 +203,35 @@ pub struct GradientMag3D<M>(pub M);
 /// Evaluates the inner manifold once, then divides the value by the gradient
 /// magnitude. This is the standard SDF antialiasing technique.
 /// Works with Jet2 and Jet2H.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Antialias2D<M>(pub M);
 
 /// Compute antialiased value in 3D: val / √(dx² + dy² + dz²)
 ///
 /// Evaluates the inner manifold once, then divides the value by the 3D gradient
 /// magnitude. Only works with Jet3.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Antialias3D<M>(pub M);
 
 /// Compute normalized 2D gradient: (dx, dy) / √(dx² + dy²)
 ///
 /// Evaluates the inner manifold once and returns the unit gradient vector.
 /// Works with Jet2 and Jet2H.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Normalized2D<M>(pub M);
 
 /// Compute normalized 3D gradient: (dx, dy, dz) / √(dx² + dy² + dz²)
 ///
 /// Evaluates the inner manifold once and returns the unit gradient vector.
 /// Only works with Jet3.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Normalized3D<M>(pub M);
 
 /// Compute 2D curvature from Hessian: κ = (fxx·fy² - 2·fxy·fx·fy + fyy·fx²) / (fx² + fy²)^(3/2)
 ///
 /// Evaluates the inner manifold once and computes the signed curvature.
 /// Only works with Jet2H (requires second derivatives).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Curvature2D<M>(pub M);
 
 // ============================================================================

@@ -71,6 +71,7 @@ pub struct RecDomain<Target, P> {
 
 impl<Target, P: crate::domain::Spatial> crate::domain::Spatial for RecDomain<Target, P> {
     type Coord = P::Coord;
+    type Scalar = P::Scalar;
     #[inline(always)]
     fn x(&self) -> Self::Coord { self.coords.x() }
     #[inline(always)]

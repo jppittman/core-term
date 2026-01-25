@@ -219,10 +219,10 @@ mod tests {
             output_str
         );
 
-        // inner → index 1, r → index 0
+        // inner → ContextFree(inner), r → CtxVar::<A0, 0usize>
         assert!(
-            output_str.contains("CtxVar :: < A0 , 1usize >") || output_str.contains("CtxVar :: < A1 , 0usize >"),
-            "Expected CtxVar for inner, got: {}", output_str
+            output_str.contains("ContextFree (inner)"),
+            "Expected ContextFree for inner, got: {}", output_str
         );
         assert!(
             output_str.contains("CtxVar :: < A0 , 0usize >"),
@@ -251,17 +251,10 @@ mod tests {
             output_str
         );
 
-        // a → index 1, b → index 0 (or separate arrays for manifolds)
+        // a, b -> ContextFree(a), ContextFree(b)
         assert!(
-            output_str.contains("CtxVar :: < A0 , 1usize >") ||
-            output_str.contains("CtxVar :: < A1 , 0usize >") ||
-            output_str.contains("CtxVar :: < A2 , 0usize >"),
-            "Expected CtxVar for a, got: {}", output_str
-        );
-        assert!(
-            output_str.contains("CtxVar :: < A0 , 0usize >") ||
-            output_str.contains("CtxVar :: < A1 , 0usize >"),
-            "Expected CtxVar for b, got: {}", output_str
+            output_str.contains("ContextFree (a)") && output_str.contains("ContextFree (b)"),
+            "Expected ContextFree for a and b, got: {}", output_str
         );
 
         // Should use WithContext with tuple

@@ -1,0 +1,22 @@
+[package]
+name = "pixelflow-nnue"
+version = "0.1.0"
+edition = "2024"
+description = "NNUE neural network for instruction selection - no pixelflow-core dependency"
+
+[lints]
+workspace = true
+
+[lib]
+bench = false
+
+[features]
+default = ["std"]
+std = []
+training = ["std"]
+
+[dependencies]
+libm = "0.2.15"
+
+[dev-dependencies]
+criterion = "0.5"

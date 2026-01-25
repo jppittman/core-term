@@ -165,6 +165,25 @@ impl sealed::Sealed for crate::combinators::A3 {}
 // Context variables (for kernel! macro)
 impl<A, const I: usize> sealed::Sealed for crate::combinators::CtxVar<A, I> {}
 
+// ContextFree wrapper (for kernel! macro)
+impl<M> sealed::Sealed for crate::combinators::context::ContextFree<M> {}
+
+// Derivative accessor combinators (ValOf, DxOf, DyOf, DzOf, etc.)
+impl<M> sealed::Sealed for crate::ops::derivative::ValOf<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::DxOf<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::DyOf<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::DzOf<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::DxxOf<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::DxyOf<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::DyyOf<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::GradientMag2D<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::GradientMag3D<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::Antialias2D<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::Antialias3D<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::Normalized2D<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::Normalized3D<M> {}
+impl<M> sealed::Sealed for crate::ops::derivative::Curvature2D<M> {}
+
 // ============================================================================
 // Base ZST Implementations
 // ============================================================================
@@ -202,6 +221,28 @@ impl crate::Zst for crate::combinators::A2 {}
 impl crate::Zst for crate::combinators::A3 {}
 
 impl<A: crate::Zst, const I: usize> crate::Zst for crate::combinators::CtxVar<A, I> {}
+
+// ContextFree wraps manifold references for context-extended domains.
+// While not technically zero-sized (contains a reference), we treat it as Zst
+// to enable Copy for expression trees containing manifold params.
+// This is safe because ContextFree only wraps references, which are trivially copyable.
+impl<M: Copy> crate::Zst for crate::combinators::context::ContextFree<M> {}
+
+// Derivative accessor combinators: ZST when M is ZST
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::ValOf<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::DxOf<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::DyOf<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::DzOf<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::DxxOf<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::DxyOf<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::DyyOf<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::GradientMag2D<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::GradientMag3D<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::Antialias2D<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::Antialias3D<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::Normalized2D<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::Normalized3D<M> {}
+impl<M: crate::Zst> crate::Zst for crate::ops::derivative::Curvature2D<M> {}
 
 // ============================================================================
 // Operator Trait Implementations (Enumerate operators once)
@@ -481,6 +522,22 @@ impl<Seed: crate::Zst + Copy, Step: crate::Zst + Copy, Done: crate::Zst + Copy> 
     for crate::combinators::Fix<Seed, Step, Done>
 {
 }
+
+// Derivative accessor combinators: Copy when M is ZST + Copy
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::ValOf<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::DxOf<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::DyOf<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::DzOf<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::DxxOf<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::DxyOf<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::DyyOf<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::GradientMag2D<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::GradientMag3D<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::Antialias2D<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::Antialias3D<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::Normalized2D<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::Normalized3D<M> {}
+impl<M: crate::Zst + Copy> Copy for crate::ops::derivative::Curvature2D<M> {}
 
 // ============================================================================
 // Tests

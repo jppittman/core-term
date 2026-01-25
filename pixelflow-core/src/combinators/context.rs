@@ -1,38 +1,54 @@
 //! # Array-Based Context System
 //!
 //! Provides `WithContext` and `CtxVar` for binding parameters in kernel expressions.
-//! Uses array-based indexing instead of flat tuples for scalable impl coverage.
+//! Uses array-based indexing with trait abstraction for scalable impl coverage.
 //!
-//! ## Problem Solved
+//! ## Design
 //!
-//! The previous tuple-based approach required one impl per tuple arity:
-//! - `(V0, V1, ..., V15)` needed 16 separate impls
-//! - Adding support for 17+ elements required more impls
+//! Instead of separate impls for each tuple arity, we use:
+//! 1. `ContextShape` marker trait - identifies context tuple shapes
+//! 2. `ArrayAccess<Pos, I>` trait - provides element access for CtxVar
 //!
-//! The array-based approach groups values by type:
-//! - `([Field; 17], [f32; 1])` only needs impls for "2 arrays"
-//! - Impl count is bounded by number of distinct types, not value count
-//!
-//! ## Architecture
-//!
-//! ```text
-//! // Old: 18-element tuple - needs impl for size 18
-//! (Field, Field, Field, ..., f32)
-//!
-//! // New: 2-element tuple of arrays - just need impl for 2-array combo
-//! ([Field; 17], [f32; 1])
-//! ```
+//! This gives us:
+//! - Single `WithContext` Manifold impl (generic over any context shape)
+//! - Single `CtxVar` Manifold impl (generic over ArrayAccess)
+//! - Single `Spatial` impl for context-extended domains
 //!
 //! ## CtxVar Indexing
 //!
 //! `CtxVar<A0, 5>` reads from array A0 at index 5.
 //! `CtxVar<A1, 0>` reads from array A1 at index 0.
 //!
-//! Array position markers: `A0`, `A1`, `A2`, `A3`
+//! Array position markers: `A0`, `A1`, `A2`, `A3`, etc.
 
 use crate::Manifold;
 use crate::domain::Spatial;
 use core::marker::PhantomData;
+
+// ============================================================================
+// ContextShape: Marker Trait for Context Tuple Shapes
+// ============================================================================
+
+/// Marker trait for context tuple shapes.
+///
+/// This distinguishes context tuples (e.g., `([T; N],)`) from base spatial domains
+/// (e.g., `(Field, Field)`), avoiding impl conflicts for `Spatial`.
+pub trait ContextShape: Copy + Send + Sync {}
+
+// ============================================================================
+// ArrayAccess: Element Access for CtxVar
+// ============================================================================
+
+/// Access an element from a context tuple at array position `Pos` and index `I`.
+///
+/// This trait enables a single generic `CtxVar` Manifold impl instead of
+/// separate impls for each (arity, position) combination.
+pub trait ArrayAccess<Pos, const I: usize>: ContextShape {
+    /// The element type at this position.
+    type Element: Copy + Send + Sync;
+    /// Get the element at array position `Pos`, index `I`.
+    fn access(&self) -> Self::Element;
+}
 
 // ============================================================================
 // Array Position Markers
@@ -101,6 +117,142 @@ pub struct A14;
 /// Marker for the sixteenth array (index 15) in a context tuple.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct A15;
+
+// ============================================================================
+// ContextShape Implementations
+// ============================================================================
+
+// Note: () is NOT a ContextShape - it's a special case that passes through
+// without extending the domain.
+impl<T: Copy + Send + Sync, const N: usize> ContextShape for ([T; N],) {}
+impl<T0: Copy + Send + Sync, T1: Copy + Send + Sync, const N: usize, const M: usize> ContextShape
+    for ([T0; N], [T1; M])
+{
+}
+impl<
+        T0: Copy + Send + Sync,
+        T1: Copy + Send + Sync,
+        T2: Copy + Send + Sync,
+        const N: usize,
+        const M: usize,
+        const K: usize,
+    > ContextShape for ([T0; N], [T1; M], [T2; K])
+{
+}
+impl<
+        T0: Copy + Send + Sync,
+        T1: Copy + Send + Sync,
+        T2: Copy + Send + Sync,
+        T3: Copy + Send + Sync,
+        const N: usize,
+        const M: usize,
+        const K: usize,
+        const L: usize,
+    > ContextShape for ([T0; N], [T1; M], [T2; K], [T3; L])
+{
+}
+
+// ============================================================================
+// ArrayAccess Implementations
+// ============================================================================
+
+// Macro to generate ArrayAccess impls for all shapes and positions
+macro_rules! impl_array_access {
+    // Single array: A0 only
+    (1: $($bound:ident: $t:ident),*; $n:ident) => {
+        impl<$($t: Copy + Send + Sync,)* const $n: usize, const I: usize>
+            ArrayAccess<A0, I> for ([$($t)*; $n],)
+        {
+            type Element = $($t)*;
+            #[inline(always)]
+            fn access(&self) -> Self::Element { self.0[I] }
+        }
+    };
+    // Two arrays: A0, A1
+    (2: $t0:ident, $t1:ident; $n:ident, $m:ident) => {
+        impl<$t0: Copy + Send + Sync, $t1: Copy + Send + Sync, const $n: usize, const $m: usize, const I: usize>
+            ArrayAccess<A0, I> for ([$t0; $n], [$t1; $m])
+        {
+            type Element = $t0;
+            #[inline(always)]
+            fn access(&self) -> Self::Element { self.0[I] }
+        }
+        impl<$t0: Copy + Send + Sync, $t1: Copy + Send + Sync, const $n: usize, const $m: usize, const I: usize>
+            ArrayAccess<A1, I> for ([$t0; $n], [$t1; $m])
+        {
+            type Element = $t1;
+            #[inline(always)]
+            fn access(&self) -> Self::Element { self.1[I] }
+        }
+    };
+    // Three arrays: A0, A1, A2
+    (3: $t0:ident, $t1:ident, $t2:ident; $n:ident, $m:ident, $k:ident) => {
+        impl<$t0: Copy + Send + Sync, $t1: Copy + Send + Sync, $t2: Copy + Send + Sync,
+             const $n: usize, const $m: usize, const $k: usize, const I: usize>
+            ArrayAccess<A0, I> for ([$t0; $n], [$t1; $m], [$t2; $k])
+        {
+            type Element = $t0;
+            #[inline(always)]
+            fn access(&self) -> Self::Element { self.0[I] }
+        }
+        impl<$t0: Copy + Send + Sync, $t1: Copy + Send + Sync, $t2: Copy + Send + Sync,
+             const $n: usize, const $m: usize, const $k: usize, const I: usize>
+            ArrayAccess<A1, I> for ([$t0; $n], [$t1; $m], [$t2; $k])
+        {
+            type Element = $t1;
+            #[inline(always)]
+            fn access(&self) -> Self::Element { self.1[I] }
+        }
+        impl<$t0: Copy + Send + Sync, $t1: Copy + Send + Sync, $t2: Copy + Send + Sync,
+             const $n: usize, const $m: usize, const $k: usize, const I: usize>
+            ArrayAccess<A2, I> for ([$t0; $n], [$t1; $m], [$t2; $k])
+        {
+            type Element = $t2;
+            #[inline(always)]
+            fn access(&self) -> Self::Element { self.2[I] }
+        }
+    };
+    // Four arrays: A0, A1, A2, A3
+    (4: $t0:ident, $t1:ident, $t2:ident, $t3:ident; $n:ident, $m:ident, $k:ident, $l:ident) => {
+        impl<$t0: Copy + Send + Sync, $t1: Copy + Send + Sync, $t2: Copy + Send + Sync, $t3: Copy + Send + Sync,
+             const $n: usize, const $m: usize, const $k: usize, const $l: usize, const I: usize>
+            ArrayAccess<A0, I> for ([$t0; $n], [$t1; $m], [$t2; $k], [$t3; $l])
+        {
+            type Element = $t0;
+            #[inline(always)]
+            fn access(&self) -> Self::Element { self.0[I] }
+        }
+        impl<$t0: Copy + Send + Sync, $t1: Copy + Send + Sync, $t2: Copy + Send + Sync, $t3: Copy + Send + Sync,
+             const $n: usize, const $m: usize, const $k: usize, const $l: usize, const I: usize>
+            ArrayAccess<A1, I> for ([$t0; $n], [$t1; $m], [$t2; $k], [$t3; $l])
+        {
+            type Element = $t1;
+            #[inline(always)]
+            fn access(&self) -> Self::Element { self.1[I] }
+        }
+        impl<$t0: Copy + Send + Sync, $t1: Copy + Send + Sync, $t2: Copy + Send + Sync, $t3: Copy + Send + Sync,
+             const $n: usize, const $m: usize, const $k: usize, const $l: usize, const I: usize>
+            ArrayAccess<A2, I> for ([$t0; $n], [$t1; $m], [$t2; $k], [$t3; $l])
+        {
+            type Element = $t2;
+            #[inline(always)]
+            fn access(&self) -> Self::Element { self.2[I] }
+        }
+        impl<$t0: Copy + Send + Sync, $t1: Copy + Send + Sync, $t2: Copy + Send + Sync, $t3: Copy + Send + Sync,
+             const $n: usize, const $m: usize, const $k: usize, const $l: usize, const I: usize>
+            ArrayAccess<A3, I> for ([$t0; $n], [$t1; $m], [$t2; $k], [$t3; $l])
+        {
+            type Element = $t3;
+            #[inline(always)]
+            fn access(&self) -> Self::Element { self.3[I] }
+        }
+    };
+}
+
+impl_array_access!(1: T: T; N);
+impl_array_access!(2: T0, T1; N, M);
+impl_array_access!(3: T0, T1, T2; N, M, K);
+impl_array_access!(4: T0, T1, T2, T3; N, M, K, L);
 
 // ============================================================================
 // Context Combinator
@@ -184,9 +336,10 @@ impl<ArrayPos, const INDEX: usize, R> core::ops::Div<R> for CtxVar<ArrayPos, IND
 }
 
 // ============================================================================
-// 0-element context (special case - no arrays)
+// WithContext Manifold Implementations
 // ============================================================================
 
+// Special case: empty context passes through without domain extension
 impl<P, B, Out> Manifold<P> for WithContext<(), B>
 where
     P: Copy + Send + Sync,
@@ -200,17 +353,12 @@ where
     }
 }
 
-impl<B: Copy> Copy for WithContext<(), B> {}
-
-// ============================================================================
-// Single Array Context: ([T; N],)
-// ============================================================================
-
-impl<T, const N: usize, P, B, Out> Manifold<P> for WithContext<([T; N],), B>
+// Generic impl for all non-empty context shapes
+impl<Ctx, P, B, Out> Manifold<P> for WithContext<Ctx, B>
 where
+    Ctx: ContextShape,
     P: Copy + Send + Sync,
-    T: Copy + Send + Sync,
-    B: Manifold<(([T; N],), P), Output = Out>,
+    B: Manifold<(Ctx, P), Output = Out>,
 {
     type Output = Out;
 
@@ -220,420 +368,394 @@ where
     }
 }
 
-impl<T: Copy, const N: usize, B: Copy> Copy for WithContext<([T; N],), B> {}
+// Copy impl for all WithContext types
+impl<Ctx: Copy, B: Copy> Copy for WithContext<Ctx, B> {}
 
 // ============================================================================
-// Two Array Context: ([T0; N], [T1; M])
+// CtxVar Manifold Implementation (Generic)
 // ============================================================================
 
-impl<T0, T1, const N: usize, const M: usize, P, B, Out> Manifold<P>
-    for WithContext<([T0; N], [T1; M]), B>
+/// Single generic impl for all CtxVar types.
+///
+/// Uses ArrayAccess trait to access the correct element from any context shape.
+impl<Ctx, Pos, const I: usize, P> Manifold<(Ctx, P)> for CtxVar<Pos, I>
 where
-    P: Copy + Send + Sync,
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
-    B: Manifold<(([T0; N], [T1; M]), P), Output = Out>,
-{
-    type Output = Out;
-
-    #[inline(always)]
-    fn eval(&self, p: P) -> Self::Output {
-        self.body.eval((self.ctx, p))
-    }
-}
-
-impl<T0: Copy, T1: Copy, const N: usize, const M: usize, B: Copy> Copy
-    for WithContext<([T0; N], [T1; M]), B>
-{
-}
-
-// ============================================================================
-// Three Array Context: ([T0; N], [T1; M], [T2; K])
-// ============================================================================
-
-impl<T0, T1, T2, const N: usize, const M: usize, const K: usize, P, B, Out> Manifold<P>
-    for WithContext<([T0; N], [T1; M], [T2; K]), B>
-where
-    P: Copy + Send + Sync,
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
-    T2: Copy + Send + Sync,
-    B: Manifold<(([T0; N], [T1; M], [T2; K]), P), Output = Out>,
-{
-    type Output = Out;
-
-    #[inline(always)]
-    fn eval(&self, p: P) -> Self::Output {
-        self.body.eval((self.ctx, p))
-    }
-}
-
-impl<T0: Copy, T1: Copy, T2: Copy, const N: usize, const M: usize, const K: usize, B: Copy> Copy
-    for WithContext<([T0; N], [T1; M], [T2; K]), B>
-{
-}
-
-// ============================================================================
-// Four Array Context: ([T0; N], [T1; M], [T2; K], [T3; L])
-// ============================================================================
-
-impl<T0, T1, T2, T3, const N: usize, const M: usize, const K: usize, const L: usize, P, B, Out>
-    Manifold<P> for WithContext<([T0; N], [T1; M], [T2; K], [T3; L]), B>
-where
-    P: Copy + Send + Sync,
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
-    T2: Copy + Send + Sync,
-    T3: Copy + Send + Sync,
-    B: Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P), Output = Out>,
-{
-    type Output = Out;
-
-    #[inline(always)]
-    fn eval(&self, p: P) -> Self::Output {
-        self.body.eval((self.ctx, p))
-    }
-}
-
-impl<
-        T0: Copy,
-        T1: Copy,
-        T2: Copy,
-        T3: Copy,
-        const N: usize,
-        const M: usize,
-        const K: usize,
-        const L: usize,
-        B: Copy,
-    > Copy for WithContext<([T0; N], [T1; M], [T2; K], [T3; L]), B>
-{
-}
-
-// ============================================================================
-// CtxVar Manifold Implementations - Single Array Domain
-// ============================================================================
-
-impl<T, const N: usize, const INDEX: usize, P> Manifold<(([T; N],), P)> for CtxVar<A0, INDEX>
-where
-    T: Copy + Send + Sync,
+    Ctx: ArrayAccess<Pos, I>,
+    Pos: Send + Sync,
     P: Copy + Send + Sync,
 {
-    type Output = T;
+    type Output = Ctx::Element;
 
     #[inline(always)]
-    fn eval(&self, p: (([T; N],), P)) -> T {
-        p.0 .0[INDEX]
+    fn eval(&self, (ctx, _): (Ctx, P)) -> Self::Output {
+        ctx.access()
     }
 }
 
 // ============================================================================
-// CtxVar Manifold Implementations - Two Array Domain
+// ContextFree: Lift Manifold<P> to Manifold<(Ctx, P)>
 // ============================================================================
 
-impl<T0, T1, const N: usize, const M: usize, const INDEX: usize, P>
-    Manifold<(([T0; N], [T1; M]), P)> for CtxVar<A0, INDEX>
-where
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
-    P: Copy + Send + Sync,
-{
-    type Output = T0;
+/// Lifts a `Manifold<P>` to `Manifold<(Ctx, P)>` by ignoring the context.
+///
+/// Used for manifold params in kernels with context variables. The manifold
+/// param only knows about the base domain P, but expressions using it alongside
+/// context variables need to work at the context-extended domain (Ctx, P).
+///
+/// # Example
+///
+/// ```ignore
+/// // Manifold param geometry: M where M: Manifold<(Jet3, Jet3, Jet3, Jet3)>
+/// // But we need it to work with CtxVar which is Manifold<(([Jet3; 4],), (Jet3, Jet3, Jet3, Jet3))>
+/// let geometry = ContextFree(&self.geometry);
+/// // Now geometry.gt(CtxVar::<A0, 0>::new()) works!
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub struct ContextFree<M>(pub M);
 
+impl<M> ContextFree<M> {
+    /// Create a new context-free wrapper.
     #[inline(always)]
-    fn eval(&self, p: (([T0; N], [T1; M]), P)) -> T0 {
-        p.0 .0[INDEX]
+    pub const fn new(inner: M) -> Self {
+        Self(inner)
     }
 }
 
-impl<T0, T1, const N: usize, const M: usize, const INDEX: usize, P>
-    Manifold<(([T0; N], [T1; M]), P)> for CtxVar<A1, INDEX>
+impl<M: crate::ext::ManifoldExpr> crate::ext::ManifoldExpr for ContextFree<M> {}
+
+// Implement Manifold for all context shapes
+impl<Ctx, P, M> Manifold<(Ctx, P)> for ContextFree<M>
 where
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
+    Ctx: ContextShape,
     P: Copy + Send + Sync,
+    M: Manifold<P>,
 {
-    type Output = T1;
+    type Output = M::Output;
 
     #[inline(always)]
-    fn eval(&self, p: (([T0; N], [T1; M]), P)) -> T1 {
-        p.0 .1[INDEX]
+    fn eval(&self, (_, p): (Ctx, P)) -> Self::Output {
+        self.0.eval(p)
     }
 }
 
-// ============================================================================
-// CtxVar Manifold Implementations - Three Array Domain
-// ============================================================================
-
-impl<T0, T1, T2, const N: usize, const M: usize, const K: usize, const INDEX: usize, P>
-    Manifold<(([T0; N], [T1; M], [T2; K]), P)> for CtxVar<A0, INDEX>
+// Allow ContextFree to be evaluated on Field4 (e.g. inside At)
+impl<M> Manifold<(crate::Field, crate::Field, crate::Field, crate::Field)> for ContextFree<M>
 where
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
-    T2: Copy + Send + Sync,
-    P: Copy + Send + Sync,
+    M: Manifold<(crate::Field, crate::Field, crate::Field, crate::Field)>,
 {
-    type Output = T0;
+    type Output = M::Output;
 
     #[inline(always)]
-    fn eval(&self, p: (([T0; N], [T1; M], [T2; K]), P)) -> T0 {
-        p.0 .0[INDEX]
-    }
-}
-
-impl<T0, T1, T2, const N: usize, const M: usize, const K: usize, const INDEX: usize, P>
-    Manifold<(([T0; N], [T1; M], [T2; K]), P)> for CtxVar<A1, INDEX>
-where
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
-    T2: Copy + Send + Sync,
-    P: Copy + Send + Sync,
-{
-    type Output = T1;
-
-    #[inline(always)]
-    fn eval(&self, p: (([T0; N], [T1; M], [T2; K]), P)) -> T1 {
-        p.0 .1[INDEX]
-    }
-}
-
-impl<T0, T1, T2, const N: usize, const M: usize, const K: usize, const INDEX: usize, P>
-    Manifold<(([T0; N], [T1; M], [T2; K]), P)> for CtxVar<A2, INDEX>
-where
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
-    T2: Copy + Send + Sync,
-    P: Copy + Send + Sync,
-{
-    type Output = T2;
-
-    #[inline(always)]
-    fn eval(&self, p: (([T0; N], [T1; M], [T2; K]), P)) -> T2 {
-        p.0 .2[INDEX]
+    fn eval(&self, p: (crate::Field, crate::Field, crate::Field, crate::Field)) -> Self::Output {
+        self.0.eval(p)
     }
 }
 
 // ============================================================================
-// CtxVar Manifold Implementations - Four Array Domain
+// Spatial Implementations for Context-Extended Domains
 // ============================================================================
 
-impl<
-        T0,
-        T1,
-        T2,
-        T3,
-        const N: usize,
-        const M: usize,
-        const K: usize,
-        const L: usize,
-        const INDEX: usize,
-        P,
-    > Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for CtxVar<A0, INDEX>
-where
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
-    T2: Copy + Send + Sync,
-    T3: Copy + Send + Sync,
-    P: Copy + Send + Sync,
-{
-    type Output = T0;
+// Macro to generate Spatial impls for context-extended domains.
+// These can't use a blanket impl due to overlap with base domain (I, I) impls.
+macro_rules! impl_spatial_for_context {
+    ($($shape:ty),+ $(,)?) => {
+        $(
+            impl<P: Spatial> Spatial for ($shape, P) {
+                type Coord = P::Coord;
+                type Scalar = P::Scalar;
 
-    #[inline(always)]
-    fn eval(&self, p: (([T0; N], [T1; M], [T2; K], [T3; L]), P)) -> T0 {
-        p.0 .0[INDEX]
-    }
+                #[inline(always)]
+                fn x(&self) -> Self::Coord { self.1.x() }
+
+                #[inline(always)]
+                fn y(&self) -> Self::Coord { self.1.y() }
+
+                #[inline(always)]
+                fn z(&self) -> Self::Coord { self.1.z() }
+
+                #[inline(always)]
+                fn w(&self) -> Self::Coord { self.1.w() }
+            }
+        )+
+    };
 }
 
-impl<
-        T0,
-        T1,
-        T2,
-        T3,
-        const N: usize,
-        const M: usize,
-        const K: usize,
-        const L: usize,
-        const INDEX: usize,
-        P,
-    > Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for CtxVar<A1, INDEX>
-where
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
-    T2: Copy + Send + Sync,
-    T3: Copy + Send + Sync,
-    P: Copy + Send + Sync,
-{
-    type Output = T1;
-
+// Generate Spatial impls for each context shape.
+// Note: The type parameters must be concrete for each invocation.
+impl<T: Copy + Send + Sync, const N: usize, P: Spatial> Spatial for (([T; N],), P) {
+    type Coord = P::Coord;
+    type Scalar = P::Scalar;
     #[inline(always)]
-    fn eval(&self, p: (([T0; N], [T1; M], [T2; K], [T3; L]), P)) -> T1 {
-        p.0 .1[INDEX]
-    }
+    fn x(&self) -> Self::Coord { self.1.x() }
+    #[inline(always)]
+    fn y(&self) -> Self::Coord { self.1.y() }
+    #[inline(always)]
+    fn z(&self) -> Self::Coord { self.1.z() }
+    #[inline(always)]
+    fn w(&self) -> Self::Coord { self.1.w() }
 }
 
-impl<
-        T0,
-        T1,
-        T2,
-        T3,
-        const N: usize,
-        const M: usize,
-        const K: usize,
-        const L: usize,
-        const INDEX: usize,
-        P,
-    > Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for CtxVar<A2, INDEX>
-where
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
-    T2: Copy + Send + Sync,
-    T3: Copy + Send + Sync,
-    P: Copy + Send + Sync,
-{
-    type Output = T2;
-
-    #[inline(always)]
-    fn eval(&self, p: (([T0; N], [T1; M], [T2; K], [T3; L]), P)) -> T2 {
-        p.0 .2[INDEX]
-    }
-}
-
-impl<
-        T0,
-        T1,
-        T2,
-        T3,
-        const N: usize,
-        const M: usize,
-        const K: usize,
-        const L: usize,
-        const INDEX: usize,
-        P,
-    > Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for CtxVar<A3, INDEX>
-where
-    T0: Copy + Send + Sync,
-    T1: Copy + Send + Sync,
-    T2: Copy + Send + Sync,
-    T3: Copy + Send + Sync,
-    P: Copy + Send + Sync,
-{
-    type Output = T3;
-
-    #[inline(always)]
-    fn eval(&self, p: (([T0; N], [T1; M], [T2; K], [T3; L]), P)) -> T3 {
-        p.0 .3[INDEX]
-    }
-}
-
-// ============================================================================
-// Spatial Implementations for Array-Based Context Domains
-// ============================================================================
-
-impl<T, const N: usize, P> Spatial for (([T; N],), P)
-where
-    P: Spatial,
+impl<T0: Copy + Send + Sync, T1: Copy + Send + Sync, const N: usize, const M: usize, P: Spatial>
+    Spatial for (([T0; N], [T1; M]), P)
 {
     type Coord = P::Coord;
-
+    type Scalar = P::Scalar;
     #[inline(always)]
-    fn x(&self) -> Self::Coord {
-        self.1.x()
-    }
-
+    fn x(&self) -> Self::Coord { self.1.x() }
     #[inline(always)]
-    fn y(&self) -> Self::Coord {
-        self.1.y()
-    }
-
+    fn y(&self) -> Self::Coord { self.1.y() }
     #[inline(always)]
-    fn z(&self) -> Self::Coord {
-        self.1.z()
-    }
-
+    fn z(&self) -> Self::Coord { self.1.z() }
     #[inline(always)]
-    fn w(&self) -> Self::Coord {
-        self.1.w()
-    }
+    fn w(&self) -> Self::Coord { self.1.w() }
 }
 
-impl<T0, T1, const N: usize, const M: usize, P> Spatial for (([T0; N], [T1; M]), P)
-where
-    P: Spatial,
+impl<
+        T0: Copy + Send + Sync,
+        T1: Copy + Send + Sync,
+        T2: Copy + Send + Sync,
+        const N: usize,
+        const M: usize,
+        const K: usize,
+        P: Spatial,
+    > Spatial for (([T0; N], [T1; M], [T2; K]), P)
 {
     type Coord = P::Coord;
-
+    type Scalar = P::Scalar;
     #[inline(always)]
-    fn x(&self) -> Self::Coord {
-        self.1.x()
-    }
-
+    fn x(&self) -> Self::Coord { self.1.x() }
     #[inline(always)]
-    fn y(&self) -> Self::Coord {
-        self.1.y()
-    }
-
+    fn y(&self) -> Self::Coord { self.1.y() }
     #[inline(always)]
-    fn z(&self) -> Self::Coord {
-        self.1.z()
-    }
-
+    fn z(&self) -> Self::Coord { self.1.z() }
     #[inline(always)]
-    fn w(&self) -> Self::Coord {
-        self.1.w()
-    }
+    fn w(&self) -> Self::Coord { self.1.w() }
 }
 
-impl<T0, T1, T2, const N: usize, const M: usize, const K: usize, P> Spatial
-    for (([T0; N], [T1; M], [T2; K]), P)
-where
-    P: Spatial,
+impl<
+        T0: Copy + Send + Sync,
+        T1: Copy + Send + Sync,
+        T2: Copy + Send + Sync,
+        T3: Copy + Send + Sync,
+        const N: usize,
+        const M: usize,
+        const K: usize,
+        const L: usize,
+        P: Spatial,
+    > Spatial for (([T0; N], [T1; M], [T2; K], [T3; L]), P)
 {
     type Coord = P::Coord;
-
+    type Scalar = P::Scalar;
     #[inline(always)]
-    fn x(&self) -> Self::Coord {
-        self.1.x()
-    }
-
+    fn x(&self) -> Self::Coord { self.1.x() }
     #[inline(always)]
-    fn y(&self) -> Self::Coord {
-        self.1.y()
-    }
-
+    fn y(&self) -> Self::Coord { self.1.y() }
     #[inline(always)]
-    fn z(&self) -> Self::Coord {
-        self.1.z()
-    }
-
+    fn z(&self) -> Self::Coord { self.1.z() }
     #[inline(always)]
-    fn w(&self) -> Self::Coord {
-        self.1.w()
-    }
+    fn w(&self) -> Self::Coord { self.1.w() }
 }
 
-impl<T0, T1, T2, T3, const N: usize, const M: usize, const K: usize, const L: usize, P> Spatial
-    for (([T0; N], [T1; M], [T2; K], [T3; L]), P)
-where
-    P: Spatial,
-{
-    type Coord = P::Coord;
+#[cfg(test)]
+mod context_domain_tests {
+    use super::*;
+    use crate::Field;
+    use crate::X;
+    use crate::jet::Jet3;
+    use crate::ops::derivative::DZ;
+    use crate::ops::binary::MulAdd;
+    use crate::ops::logic::And;
+    use crate::ext::ManifoldExt;
 
-    #[inline(always)]
-    fn x(&self) -> Self::Coord {
-        self.1.x()
+    type CtxDomain = (([Jet3; 3],), (Jet3, Jet3, Jet3, Jet3));
+
+    fn check_manifold<P: Copy + Send + Sync, M: Manifold<P>>(_m: &M) {}
+
+    #[test]
+    fn test_x_in_context_domain() {
+        // X should work in context-extended domain via Spatial impl
+        check_manifold::<CtxDomain, _>(&X);
     }
 
-    #[inline(always)]
-    fn y(&self) -> Self::Coord {
-        self.1.y()
+    #[test]
+    fn test_dz_x_in_context_domain() {
+        // DZ(X) should work since X::Output = Jet3: HasDz
+        check_manifold::<CtxDomain, _>(&DZ(X));
     }
 
-    #[inline(always)]
-    fn z(&self) -> Self::Coord {
-        self.1.z()
+    #[test]
+    fn test_ctxvar_in_context_domain() {
+        // CtxVar should read from context
+        let cv = CtxVar::<A0, 0>::new();
+        check_manifold::<CtxDomain, _>(&cv);
     }
 
-    #[inline(always)]
-    fn w(&self) -> Self::Coord {
-        self.1.w()
+    #[test]
+    fn test_mul_dz_x_in_context_domain() {
+        // DZ(X) * DZ(X) should work
+        let expr = crate::Mul(DZ(X), DZ(X));
+        check_manifold::<CtxDomain, _>(&expr);
+    }
+
+    #[test]
+    fn test_muladd_dz_in_context_domain() {
+        // mul_add(DZ(X), DZ(X), Mul(DX(X), DX(X))) should work - all Field outputs
+        let expr = MulAdd(DZ(X), DZ(X), crate::Mul(crate::ops::derivative::DX(X), crate::ops::derivative::DX(X)));
+        check_manifold::<CtxDomain, _>(&expr);
+    }
+
+    #[test]
+    fn test_comparison_in_context_domain() {
+        // CtxVar.gt(CtxVar) should work
+        let a = CtxVar::<A0, 0>::new();
+        let b = CtxVar::<A0, 1>::new();
+        let expr = a.gt(b);
+        check_manifold::<CtxDomain, _>(&expr);
+    }
+
+    #[test]
+    fn test_and_in_context_domain() {
+        // (a > b) & (a < c) should work
+        let a = CtxVar::<A0, 0>::new();
+        let b = CtxVar::<A0, 1>::new();
+        let c = CtxVar::<A0, 2>::new();
+        let expr = And(a.gt(b), a.lt(c));
+        check_manifold::<CtxDomain, _>(&expr);
+    }
+
+    // Test matching the GeometryMask kernel pattern
+    #[test]
+    fn test_geometry_mask_pattern() {
+        // geometry: kernel is ContextFree<&M> where M: Manifold<Jet3_4, Output = Jet3>
+        // DZ(geometry) should work, returning Field
+        fn check_geometry_mask<M>(geometry: &M)
+        where
+            M: Manifold<(Jet3, Jet3, Jet3, Jet3), Output = Jet3>,
+        {
+            let t = ContextFree(geometry);
+            // DZ(t) extracts .dz() from M::Output (Jet3), returning Field
+            let dz_t = DZ(t);
+            // Check that dz_t is Manifold<CtxDomain>
+            check_manifold::<CtxDomain, _>(&dz_t);
+
+            // Full pattern: DZ(t) * DZ(t) + DX(t) * DX(t) + DY(t) * DY(t)
+            let dx_t = crate::ops::derivative::DX(t);
+            let dy_t = crate::ops::derivative::DY(t);
+            let expr = MulAdd(dz_t, dz_t, MulAdd(dx_t, dx_t, crate::Mul(dy_t, dy_t)));
+            check_manifold::<CtxDomain, _>(&expr);
+        }
+
+        // Create a dummy manifold that returns Jet3
+        struct DummyGeometry;
+        impl Manifold<(Jet3, Jet3, Jet3, Jet3)> for DummyGeometry {
+            type Output = Jet3;
+            fn eval(&self, (x, _y, _z, _w): (Jet3, Jet3, Jet3, Jet3)) -> Jet3 { x }
+        }
+
+        let g = DummyGeometry;
+        check_geometry_mask(&g);
+    }
+
+    #[test]
+    fn test_select_in_context_domain() {
+        // Select requires branches with matching output types
+        use crate::combinators::Select;
+
+        // Simple case: Select<Field, CtxVar, CtxVar>
+        let cond = CtxVar::<A0, 0>::new().gt(CtxVar::<A0, 1>::new());
+        let true_branch = CtxVar::<A0, 2>::new();
+        let false_branch = CtxVar::<A0, 2>::new();
+
+        let select = Select { cond, if_true: true_branch, if_false: false_branch };
+        check_manifold::<CtxDomain, _>(&select);
+    }
+
+    #[test]
+    fn test_select_with_valof_in_context_domain() {
+        // More complex: Select with ValOf branches
+        use crate::combinators::Select;
+        use crate::ops::derivative::V;
+
+        let cond = CtxVar::<A0, 0>::new().gt(CtxVar::<A0, 1>::new());
+        let true_branch = V(X);  // Field output
+        let false_branch = V(X);  // Field output
+
+        let select = Select { cond, if_true: true_branch, if_false: false_branch };
+        check_manifold::<CtxDomain, _>(&select);
+    }
+
+    #[test]
+    fn test_checker_like_pattern() {
+        // Replicate the Checker kernel pattern with 12 context elements
+        // Uses Field coordinates since V() extracts the value component (Field)
+        use crate::combinators::Select;
+        use crate::ops::derivative::{V, DX, DY, DZ};
+        use crate::ops::unary::{Floor, Abs, Sqrt};
+        use crate::Z;
+
+        type CheckerCtx = (([Field; 12],), (Field, Field, Field, Field));
+
+        // cell_x = V(X).floor()
+        let cell_x = Floor(V(X));
+        // cell_z = V(Z).floor()
+        let cell_z = Floor(V(Z));
+        // sum = cell_x + cell_z
+        let sum = crate::Add(cell_x, cell_z);
+        // half = sum * CtxVar::<A0, 0>
+        let half = crate::Mul(sum, CtxVar::<A0, 0>::new());
+        // fract_half = half - half.floor()
+        let fract_half = crate::Sub(half, Floor(half));
+        // is_even = fract_half.abs() < CtxVar::<A0, 1>
+        let is_even = Abs(fract_half).lt(CtxVar::<A0, 1>::new());
+
+        // color_a, color_b
+        let color_a = CtxVar::<A0, 2>::new();
+        let color_b = CtxVar::<A0, 2>::new();
+
+        // base_color = is_even.select(color_a, color_b)
+        let base_color = Select {
+            cond: is_even,
+            if_true: color_a,
+            if_false: color_b,
+        };
+
+        // Simple coverage calculation
+        let coverage = CtxVar::<A0, 2>::new();
+
+        // Final: base_color * coverage
+        let result = crate::Mul(base_color, coverage);
+
+        check_manifold::<CheckerCtx, _>(&result);
+    }
+
+    #[test]
+    fn test_muladd_select_pattern() {
+        // Test MulAdd with Select - this is the exact pattern failing
+        // Uses Field coordinates since V() extracts the value component (Field)
+        use crate::combinators::Select;
+        use crate::ops::derivative::V;
+
+        type CheckerCtx = (([Field; 12],), (Field, Field, Field, Field));
+
+        // Condition
+        let cond = CtxVar::<A0, 0>::new().gt(CtxVar::<A0, 1>::new());
+
+        // Branches with Field output
+        let a = V(X);
+        let b = V(X);
+
+        let select = Select { cond, if_true: a, if_false: b };
+
+        // coverage (Field)
+        let coverage = V(X);
+
+        // neighbor_color (Field)
+        let neighbor = V(X);
+
+        // MulAdd(select, coverage, neighbor * (1.0 - coverage))
+        // Simplify to: MulAdd(select, coverage, neighbor)
+        let result = MulAdd(select, coverage, neighbor);
+
+        check_manifold::<CheckerCtx, _>(&result);
     }
 }
