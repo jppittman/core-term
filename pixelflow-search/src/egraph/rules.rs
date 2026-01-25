@@ -7,11 +7,13 @@ use super::node::{EClassId, ENode, Op};
 use super::rewrite::{Rewrite, RewriteAction};
 
 /// Associativity: (a op b) op c → a op (b op c)
+#[allow(dead_code)]
 pub struct Associative {
     op: Op,
 }
 
 impl Associative {
+    #[allow(dead_code)]
     pub fn new(op: Op) -> Box<Self> {
         Box::new(Self { op })
     }
