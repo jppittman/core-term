@@ -80,6 +80,22 @@ const BWD_CONST_RANGE_OFFSET: f32 = 2.0;
 /// Probability of choosing MulAdd when generating a fused op (vs MulRsqrt).
 const MUL_ADD_SUB_PROBABILITY: f32 = 0.6;
 
+// Constants for NNUE quantization
+/// Shift amount for quantization (fixed point arithmetic).
+const QUANTIZATION_SHIFT: i32 = 6;
+/// Maximum value for quantization (clipped ReLU range).
+const QUANTIZATION_MAX: i32 = 127;
+
+// Constants for RNG
+/// Multiplier for the Linear Congruential Generator.
+const LCG_MULTIPLIER: u64 = 6364136223846793005;
+/// Increment for the Linear Congruential Generator.
+const LCG_INCREMENT: u64 = 1;
+
+// Constants for Backward Generator
+/// Number of operations used in backward regular generation.
+const BWD_REGULAR_OP_COUNT: usize = 8;
+
 // ============================================================================
 // Operation Types (mirrors ENode from egraph.rs)
 // ============================================================================
@@ -545,8 +561,8 @@ impl Accumulator {
         // L1 -> L2 with clipped ReLU
         let mut l2 = nnue.b2.clone();
         for i in 0..l1_size {
-            // Clipped ReLU: clamp to [0, 127] then scale
-            let a = (self.values[i] >> 6).clamp(0, 127) as i8;
+            // Clipped ReLU: clamp to [0, QUANTIZATION_MAX] then scale
+            let a = (self.values[i] >> QUANTIZATION_SHIFT).clamp(0, QUANTIZATION_MAX) as i8;
             for j in 0..l2_size {
                 l2[j] += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
             }
@@ -555,7 +571,7 @@ impl Accumulator {
         // L2 -> L3 with clipped ReLU
         let mut l3 = nnue.b3.clone();
         for i in 0..l2_size {
-            let a = (l2[i] >> 6).clamp(0, 127) as i8;
+            let a = (l2[i] >> QUANTIZATION_SHIFT).clamp(0, QUANTIZATION_MAX) as i8;
             for j in 0..l3_size {
                 l3[j] += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
             }
@@ -564,7 +580,7 @@ impl Accumulator {
         // L3 -> output
         let mut output = nnue.b_out;
         for i in 0..l3_size {
-            let a = (l3[i] >> 6).clamp(0, 127) as i8;
+            let a = (l3[i] >> QUANTIZATION_SHIFT).clamp(0, QUANTIZATION_MAX) as i8;
             output += (a as i32) * (nnue.w_out[i] as i32);
         }
 
@@ -632,7 +648,7 @@ impl ExprGenerator {
 
     /// Generate a random f32 in [0, 1).
     fn rand_f32(&mut self) -> f32 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        self.state = self.state.wrapping_mul(LCG_MULTIPLIER).wrapping_add(LCG_INCREMENT);
         (self.state >> 33) as f32 / (1u64 << 31) as f32
     }
 
@@ -1084,7 +1100,7 @@ impl BwdGenerator {
 
     /// Generate a random f32 in [0, 1).
     fn rand_f32(&mut self) -> f32 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        self.state = self.state.wrapping_mul(LCG_MULTIPLIER).wrapping_add(LCG_INCREMENT);
         (self.state >> 33) as f32 / (1u64 << 31) as f32
     }
 
@@ -1157,7 +1173,7 @@ impl BwdGenerator {
 
     /// Generate a regular (non-fused) operation.
     fn generate_regular_op(&mut self, depth: usize) -> Expr {
-        let choice = self.rand_usize(8);
+        let choice = self.rand_usize(BWD_REGULAR_OP_COUNT);
         match choice {
             0 => Expr::Binary(
                 OpType::Add,
