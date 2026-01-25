@@ -220,10 +220,13 @@ pub trait SimdU32Ops:
 #[cfg(target_arch = "aarch64")]
 pub mod arm;
 
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
 #[cfg(target_arch = "x86_64")]
 pub mod x86;
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 pub mod scalar;
 
 pub mod fastmath;

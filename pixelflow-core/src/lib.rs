@@ -139,7 +139,7 @@ extern crate alloc;
 pub mod backend;
 
 /// Numeric trait for computational substrate (private).
-mod numeric;
+pub mod numeric;
 
 /// Jet types for automatic differentiation.
 pub mod jet;
@@ -202,10 +202,19 @@ use backend::{Backend, MaskOps, SimdOps, SimdU32Ops};
 // Build.rs detects the build machine's CPU and emits pixelflow_* flags for optimal selection.
 // The actual backend availability still requires target_feature (enabled by target-cpu=native).
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+type NativeBackend = backend::x86::Avx512;
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
 type NativeSimd = <backend::x86::Avx512 as Backend>::F32;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
 type NativeU32Simd = <backend::x86::Avx512 as Backend>::U32;
 
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(all(target_feature = "avx512f", pixelflow_avx512f)),
+    pixelflow_avx2
+))]
+type NativeBackend = backend::x86::Avx2;
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
@@ -227,6 +236,12 @@ type NativeU32Simd = <backend::x86::Avx2 as Backend>::U32;
     not(all(target_feature = "avx512f", pixelflow_avx512f)),
     not(all(target_feature = "avx2", pixelflow_avx2))
 ))]
+type NativeBackend = backend::x86::Sse2;
+#[cfg(all(
+    target_arch = "x86_64",
+    not(all(target_feature = "avx512f", pixelflow_avx512f)),
+    not(all(target_feature = "avx2", pixelflow_avx2))
+))]
 type NativeSimd = <backend::x86::Sse2 as Backend>::F32;
 #[cfg(all(
     target_arch = "x86_64",
@@ -236,13 +251,24 @@ type NativeSimd = <backend::x86::Sse2 as Backend>::F32;
 type NativeU32Simd = <backend::x86::Sse2 as Backend>::U32;
 
 #[cfg(target_arch = "aarch64")]
+type NativeBackend = backend::arm::Neon;
+#[cfg(target_arch = "aarch64")]
 type NativeSimd = <backend::arm::Neon as Backend>::F32;
 #[cfg(target_arch = "aarch64")]
 type NativeU32Simd = <backend::arm::Neon as Backend>::U32;
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "wasm32")]
+type NativeBackend = backend::wasm::Wasm;
+#[cfg(target_arch = "wasm32")]
+type NativeSimd = <backend::wasm::Wasm as Backend>::F32;
+#[cfg(target_arch = "wasm32")]
+type NativeU32Simd = <backend::wasm::Wasm as Backend>::U32;
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
+type NativeBackend = backend::scalar::Scalar;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 type NativeSimd = <backend::scalar::Scalar as Backend>::F32;
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
 type NativeU32Simd = <backend::scalar::Scalar as Backend>::U32;
 
 /// The computational substrate for continuous values (intermediate representation).
@@ -746,7 +772,19 @@ impl Discrete {
     }
 
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[cfg(target_arch = "wasm32")]
+    #[inline(always)]
+    pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
+        Self(backend::wasm::U32x4::pack_rgba(
+            unsafe { core::mem::transmute(r.0) },
+            unsafe { core::mem::transmute(g.0) },
+            unsafe { core::mem::transmute(b.0) },
+            unsafe { core::mem::transmute(a.0) },
+        ))
+    }
+
+    /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
     #[inline(always)]
     pub fn pack(r: Field, g: Field, b: Field, _a: Field) -> Self {
         // Scalar fallback - only packs first element
@@ -765,7 +803,7 @@ impl Discrete {
         let a_u8 = (a_buf[0].clamp(0.0, 1.0) * 255.0) as u32;
         let packed = r_u8 | (g_u8 << 8) | (b_u8 << 16) | (a_u8 << 24);
 
-        Self(backend::scalar::ScalarU32::splat(packed))
+        Self(<NativeBackend as Backend>::U32::splat(packed))
     }
 
     /// Branchless select: returns `if_true` where mask is set, `if_false` elsewhere.

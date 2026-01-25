@@ -120,11 +120,12 @@ mod field_tests {
 
     #[test]
     fn field_min_max_should_select_extremes() {
+        use pixelflow_core::numeric::Numeric;
         let a: Field = 5.0f32.into();
         let b: Field = 3.0f32.into();
         // min/max return Field directly (see lib.rs)
-        assert_field_approx_eq(a.min(b), 3.0);
-        assert_field_approx_eq(a.max(b), 5.0);
+        assert_field_approx_eq(Numeric::min(a, b), 3.0);
+        assert_field_approx_eq(Numeric::max(a, b), 5.0);
     }
 
     // Robustness tests
