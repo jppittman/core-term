@@ -23,6 +23,7 @@ mod node;
 pub mod nnue_adapter;
 mod rewrite;
 mod rules;
+pub mod search_adapter;
 
 // Re-export public API
 pub use cost::CostModel;

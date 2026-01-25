@@ -1,5 +1,8 @@
 //! Expression tree for extracted expressions.
 
+use std::hash::{Hash, Hasher};
+use super::cost::CostModel;
+
 /// A simplified expression tree extracted from the e-graph.
 ///
 /// This is the output of e-graph extraction. It can be:
@@ -121,6 +124,97 @@ impl ExprTree {
 
             ExprTree::Tuple(elems) => {
                 1 + elems.iter().map(|e| e.node_count()).sum::<usize>()
+            }
+        }
+    }
+
+    /// Calculate the cost of this expression tree using the given cost model.
+    pub fn cost(&self, costs: &CostModel) -> usize {
+        match self {
+            ExprTree::Var(_) | ExprTree::Const(_) => 0,
+
+            // Unary operations
+            ExprTree::Neg(a) => costs.neg + a.cost(costs),
+            ExprTree::Recip(a) => costs.recip + a.cost(costs),
+            ExprTree::Sqrt(a) => costs.sqrt + a.cost(costs),
+            ExprTree::Rsqrt(a) => costs.rsqrt + a.cost(costs),
+            ExprTree::Abs(a) => costs.abs + a.cost(costs),
+            ExprTree::Floor(a) | ExprTree::Ceil(a) | ExprTree::Round(a)
+            | ExprTree::Fract(a) | ExprTree::Sin(a) | ExprTree::Cos(a) | ExprTree::Tan(a)
+            | ExprTree::Asin(a) | ExprTree::Acos(a) | ExprTree::Atan(a) | ExprTree::Exp(a)
+            | ExprTree::Exp2(a) | ExprTree::Ln(a) | ExprTree::Log2(a) | ExprTree::Log10(a) => {
+                // Use sqrt cost as default for transcendentals
+                costs.sqrt + a.cost(costs)
+            }
+
+            // Binary operations
+            ExprTree::Add(a, b) => costs.add + a.cost(costs) + b.cost(costs),
+            ExprTree::Sub(a, b) => costs.sub + a.cost(costs) + b.cost(costs),
+            ExprTree::Mul(a, b) => costs.mul + a.cost(costs) + b.cost(costs),
+            ExprTree::Div(a, b) => costs.div + a.cost(costs) + b.cost(costs),
+            ExprTree::Min(a, b) => costs.min + a.cost(costs) + b.cost(costs),
+            ExprTree::Max(a, b) => costs.max + a.cost(costs) + b.cost(costs),
+            ExprTree::Atan2(a, b) | ExprTree::Pow(a, b) | ExprTree::Hypot(a, b) => {
+                // Use div cost as default for expensive binary ops
+                costs.div + a.cost(costs) + b.cost(costs)
+            }
+            ExprTree::Lt(a, b) | ExprTree::Le(a, b) | ExprTree::Gt(a, b)
+            | ExprTree::Ge(a, b) | ExprTree::Eq(a, b) | ExprTree::Ne(a, b) => {
+                // Comparisons are cheap
+                costs.add + a.cost(costs) + b.cost(costs)
+            }
+
+            // Ternary operations
+            ExprTree::MulAdd(a, b, c) => costs.mul_add + a.cost(costs) + b.cost(costs) + c.cost(costs),
+            ExprTree::Select(a, b, c) | ExprTree::Clamp(a, b, c) => {
+                costs.add + a.cost(costs) + b.cost(costs) + c.cost(costs)
+            }
+
+            ExprTree::Tuple(elems) => {
+                elems.iter().map(|e| e.cost(costs)).sum()
+            }
+        }
+    }
+}
+
+// Manual Hash implementation because f32 doesn't implement Hash
+impl Hash for ExprTree {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Use discriminant for variant identification
+        core::mem::discriminant(self).hash(state);
+
+        match self {
+            ExprTree::Var(i) => i.hash(state),
+            ExprTree::Const(c) => c.to_bits().hash(state),
+
+            // Unary operations
+            ExprTree::Neg(a) | ExprTree::Recip(a) | ExprTree::Sqrt(a) | ExprTree::Rsqrt(a)
+            | ExprTree::Abs(a) | ExprTree::Floor(a) | ExprTree::Ceil(a) | ExprTree::Round(a)
+            | ExprTree::Fract(a) | ExprTree::Sin(a) | ExprTree::Cos(a) | ExprTree::Tan(a)
+            | ExprTree::Asin(a) | ExprTree::Acos(a) | ExprTree::Atan(a) | ExprTree::Exp(a)
+            | ExprTree::Exp2(a) | ExprTree::Ln(a) | ExprTree::Log2(a) | ExprTree::Log10(a) => {
+                a.hash(state);
+            }
+
+            // Binary operations
+            ExprTree::Add(a, b) | ExprTree::Sub(a, b) | ExprTree::Mul(a, b) | ExprTree::Div(a, b)
+            | ExprTree::Min(a, b) | ExprTree::Max(a, b) | ExprTree::Atan2(a, b)
+            | ExprTree::Pow(a, b) | ExprTree::Hypot(a, b) | ExprTree::Lt(a, b)
+            | ExprTree::Le(a, b) | ExprTree::Gt(a, b) | ExprTree::Ge(a, b)
+            | ExprTree::Eq(a, b) | ExprTree::Ne(a, b) => {
+                a.hash(state);
+                b.hash(state);
+            }
+
+            // Ternary operations
+            ExprTree::MulAdd(a, b, c) | ExprTree::Select(a, b, c) | ExprTree::Clamp(a, b, c) => {
+                a.hash(state);
+                b.hash(state);
+                c.hash(state);
+            }
+
+            ExprTree::Tuple(elems) => {
+                elems.hash(state);
             }
         }
     }
