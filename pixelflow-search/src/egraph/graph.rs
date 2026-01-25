@@ -382,7 +382,7 @@ impl EGraph {
     /// representations, then builds the tree while tracking depth.
     /// The depth_penalty in CostModel affects the total cost calculation
     /// but the iterative algorithm chooses representations globally.
-    fn extract_tree_with_depth(&self, root: EClassId, costs: &CostModel, depth: usize) -> ExprTree {
+    fn extract_tree_with_depth(&self, root: EClassId, costs: &CostModel, _depth: usize) -> ExprTree {
         let root = self.find(root);
         let best_node = self.extract_with_costs(root, costs);
         self.node_to_tree_iterative(&best_node, costs)
