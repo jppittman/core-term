@@ -21,7 +21,7 @@ mod extract;
 mod graph;
 mod node;
 mod rewrite;
-mod rules;
+pub mod rules;
 
 // Re-export public API
 pub use cost::CostModel;
