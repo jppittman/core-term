@@ -75,22 +75,25 @@ fn test_d_dot_c(cx: f32, cy: f32, cz: f32) -> impl Manifold<Jet3_4, Output = Jet
 }
 
 // Test c_sq = cx*cx + cy*cy + cz*cz (should be 16 for center at (0,0,4))
-fn test_c_sq(cx: f32, cy: f32, cz: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
-    kernel!(|cx: f32, cy: f32, cz: f32| -> Jet3 {
+// Returns Field since this only computes with scalar params
+fn test_c_sq(cx: f32, cy: f32, cz: f32) -> impl Manifold<Jet3_4, Output = Field> + Clone {
+    kernel!(|cx: f32, cy: f32, cz: f32| -> Field {
         cx * cx + cy * cy + cz * cz
     })(cx, cy, cz)
 }
 
 // Test: just r*r (should be 1 for r=1)
-fn test_r_sq(r: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
-    kernel!(|r: f32| -> Jet3 {
+// Returns Field since this only computes with scalar params
+fn test_r_sq(r: f32) -> impl Manifold<Jet3_4, Output = Field> + Clone {
+    kernel!(|r: f32| -> Field {
         r * r
     })(r)
 }
 
 // Test: c_sq - r_sq (should be 15 for c_sq=16, r_sq=1)
-fn test_c_sq_minus_r_sq(cx: f32, cy: f32, cz: f32, r: f32) -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
-    kernel!(|cx: f32, cy: f32, cz: f32, r: f32| -> Jet3 {
+// Returns Field since this only computes with scalar params
+fn test_c_sq_minus_r_sq(cx: f32, cy: f32, cz: f32, r: f32) -> impl Manifold<Jet3_4, Output = Field> + Clone {
+    kernel!(|cx: f32, cy: f32, cz: f32, r: f32| -> Field {
         let c_sq = cx * cx + cy * cy + cz * cz;
         let r_sq = r * r;
         c_sq - r_sq
@@ -144,10 +147,10 @@ fn test_step2_c_sq() {
 
     let result = k.eval((rx, ry, rz, rw));
 
-    // c_sq should be 16.0
+    // c_sq should be 16.0 (Field output)
     let low = Field::from(15.9);
     let high = Field::from(16.1);
-    let in_range = result.val.gt(low) & result.val.lt(high);
+    let in_range = result.gt(low) & result.lt(high);
     assert!(in_range.all(), "c_sq should be ~16.0");
 }
 
@@ -161,10 +164,10 @@ fn test_step3a_r_sq() {
 
     let result = k.eval((rx, ry, rz, rw));
 
-    // r_sq should be 1.0
+    // r_sq should be 1.0 (Field output)
     let low = Field::from(0.9);
     let high = Field::from(1.1);
-    let in_range = result.val.gt(low) & result.val.lt(high);
+    let in_range = result.gt(low) & result.lt(high);
     assert!(in_range.all(), "r_sq should be ~1.0");
 }
 
@@ -178,10 +181,10 @@ fn test_step3b_c_sq_minus_r_sq() {
 
     let result = k.eval((rx, ry, rz, rw));
 
-    // c_sq - r_sq = 16 - 1 = 15
+    // c_sq - r_sq = 16 - 1 = 15 (Field output)
     let low = Field::from(14.9);
     let high = Field::from(15.1);
-    let in_range = result.val.gt(low) & result.val.lt(high);
+    let in_range = result.gt(low) & result.lt(high);
     assert!(in_range.all(), "c_sq - r_sq should be ~15.0");
 }
 

@@ -45,6 +45,7 @@
 use crate::Manifold;
 use crate::domain::{Head, LetExtended, Tail};
 use core::marker::PhantomData;
+use pixelflow_macros::Element;
 
 // ============================================================================
 // Binary Type-Level Numbers (Logarithmic Depth)
@@ -85,7 +86,7 @@ pixelflow_macros::generate_binary_types!(256);
 /// - `Body` is evaluated on domain `LetExtended<V, P>`
 /// - Inside `Body`, `Var<0>` reads the bound value `V`
 /// - `X`, `Y`, `Z`, `W` still work (via `Spatial` trait delegation)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Let<Val, Body> {
     /// The value expression to bind.
     pub val: Val,
@@ -130,7 +131,7 @@ where
 ///
 /// `Var<N>` retrieves the value at Peano index `N` from the domain stack.
 /// Index 0 is the most recently bound value (head of domain).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Element)]
 pub struct Var<N>(PhantomData<N>);
 
 impl<N> Var<N> {
@@ -233,38 +234,6 @@ type Field4 = (crate::Field, crate::Field, crate::Field, crate::Field);
 
 // Note: Var<N> Manifold impls above work within LetExtended domains created by Let combinators.
 // They're never evaluated on the base Field4 domain directly.
-
-// ============================================================================
-// Operator Overloading for Var
-// ============================================================================
-
-impl<N, R> core::ops::Add<R> for Var<N> {
-    type Output = crate::ops::Add<Var<N>, R>;
-    fn add(self, rhs: R) -> Self::Output {
-        crate::ops::Add(self, rhs)
-    }
-}
-
-impl<N, R> core::ops::Sub<R> for Var<N> {
-    type Output = crate::ops::Sub<Var<N>, R>;
-    fn sub(self, rhs: R) -> Self::Output {
-        crate::ops::Sub(self, rhs)
-    }
-}
-
-impl<N, R> core::ops::Mul<R> for Var<N> {
-    type Output = crate::ops::Mul<Var<N>, R>;
-    fn mul(self, rhs: R) -> Self::Output {
-        crate::ops::Mul(self, rhs)
-    }
-}
-
-impl<N, R> core::ops::Div<R> for Var<N> {
-    type Output = crate::ops::Div<Var<N>, R>;
-    fn div(self, rhs: R) -> Self::Output {
-        crate::ops::Div(self, rhs)
-    }
-}
 
 // ============================================================================
 // Legacy Compatibility: Graph trait and Root

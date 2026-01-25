@@ -5,4 +5,4 @@
 //! This module defines how we convert algebraic expression trees into
 //! sparse feature vectors for the neural network.
 
-pub use crate::nnue::{HalfEPFeature, OpType, extract_features};
+pub use pixelflow_nnue::{HalfEPFeature, OpType, extract_features};

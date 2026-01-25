@@ -1,40 +1,26 @@
-//! # Comparison Operations
-//!
-//! AST nodes for comparisons: Lt, Gt, Le, Ge (hard thresholds)
-//! and SoftLt, SoftGt, SoftSelect (sigmoid-smooth for Jet2 gradients).
-//!
-//! ## Automatic Optimization
-//!
-//! When used with `Select`, comparison operations automatically use native
-//! mask registers (k-registers on AVX-512) without any extra work:
-//!
-//! ```ignore
-//! // This automatically uses native masks - no manual optimization needed!
-//! Select { cond: Lt(a, b), if_true, if_false }
-//! ```
-
 use crate::Manifold;
 use crate::jet::Jet2;
 use crate::numeric::Computational;
+use pixelflow_macros::Element;
 
 // ============================================================================
 // Hard Comparisons (generic over Numeric)
 // ============================================================================
 
 /// Less than: L < R
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Lt<L, R>(pub L, pub R);
 
 /// Greater than: L > R
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Gt<L, R>(pub L, pub R);
 
 /// Less than or equal: L <= R
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Le<L, R>(pub L, pub R);
 
 /// Greater than or equal: L >= R
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct Ge<L, R>(pub L, pub R);
 
 // Select is defined in combinators/select.rs with early-exit optimization.
@@ -43,93 +29,82 @@ pub struct Ge<L, R>(pub L, pub R);
 // ============================================================================
 // Domain-Generic Manifold Implementations for Comparisons
 // ============================================================================
+//
+// Comparisons normalize both sides to Field via Into<Field>, enabling:
+// - Field < Field (identity conversion)
+// - Jet3 < Jet3 (both convert via .val())
+// - Field < Jet3 (cross-type, both normalize to Field)
+// - Jet3 < Field (cross-type, both normalize to Field)
+//
+// Output is always Field, which is the sensible type for boolean masks.
 
-impl<P, L, R, O> Manifold<P> for Lt<L, R>
+impl<P, L, R, OL, OR> Manifold<P> for Lt<L, R>
 where
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    L: Manifold<P, Output = O>,
-    R: Manifold<P, Output = O>,
+    L: Manifold<P, Output = OL>,
+    R: Manifold<P, Output = OR>,
+    OL: Into<crate::Field> + Copy,
+    OR: Into<crate::Field> + Copy,
 {
-    type Output = O;
+    type Output = crate::Field;
     #[inline(always)]
-    fn eval(&self, p: P) -> O {
-        self.0.eval(p).lt(self.1.eval(p))
+    fn eval(&self, p: P) -> crate::Field {
+        let l: crate::Field = self.0.eval(p).into();
+        let r: crate::Field = self.1.eval(p).into();
+        l.lt(r)
     }
 }
 
-impl<P, L, R, O> Manifold<P> for Gt<L, R>
+impl<P, L, R, OL, OR> Manifold<P> for Gt<L, R>
 where
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    L: Manifold<P, Output = O>,
-    R: Manifold<P, Output = O>,
+    L: Manifold<P, Output = OL>,
+    R: Manifold<P, Output = OR>,
+    OL: Into<crate::Field> + Copy,
+    OR: Into<crate::Field> + Copy,
 {
-    type Output = O;
+    type Output = crate::Field;
     #[inline(always)]
-    fn eval(&self, p: P) -> O {
-        self.0.eval(p).gt(self.1.eval(p))
+    fn eval(&self, p: P) -> crate::Field {
+        let l: crate::Field = self.0.eval(p).into();
+        let r: crate::Field = self.1.eval(p).into();
+        l.gt(r)
     }
 }
 
-impl<P, L, R, O> Manifold<P> for Le<L, R>
+impl<P, L, R, OL, OR> Manifold<P> for Le<L, R>
 where
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    L: Manifold<P, Output = O>,
-    R: Manifold<P, Output = O>,
+    L: Manifold<P, Output = OL>,
+    R: Manifold<P, Output = OR>,
+    OL: Into<crate::Field> + Copy,
+    OR: Into<crate::Field> + Copy,
 {
-    type Output = O;
+    type Output = crate::Field;
     #[inline(always)]
-    fn eval(&self, p: P) -> O {
-        self.0.eval(p).le(self.1.eval(p))
+    fn eval(&self, p: P) -> crate::Field {
+        let l: crate::Field = self.0.eval(p).into();
+        let r: crate::Field = self.1.eval(p).into();
+        l.le(r)
     }
 }
 
-impl<P, L, R, O> Manifold<P> for Ge<L, R>
+impl<P, L, R, OL, OR> Manifold<P> for Ge<L, R>
 where
     P: Copy + Send + Sync,
-    O: crate::numeric::Numeric,
-    L: Manifold<P, Output = O>,
-    R: Manifold<P, Output = O>,
+    L: Manifold<P, Output = OL>,
+    R: Manifold<P, Output = OR>,
+    OL: Into<crate::Field> + Copy,
+    OR: Into<crate::Field> + Copy,
 {
-    type Output = O;
+    type Output = crate::Field;
     #[inline(always)]
-    fn eval(&self, p: P) -> O {
-        self.0.eval(p).ge(self.1.eval(p))
+    fn eval(&self, p: P) -> crate::Field {
+        let l: crate::Field = self.0.eval(p).into();
+        let r: crate::Field = self.1.eval(p).into();
+        l.ge(r)
     }
 }
-
-// ============================================================================
-// Bitwise ops for chaining comparisons: X.ge(0) & X.le(1)
-// ============================================================================
-
-use crate::ops::logic::{And, Or};
-
-macro_rules! impl_logic_ops {
-    ($ty:ident) => {
-        impl<L, R, Rhs> core::ops::BitAnd<Rhs> for $ty<L, R> {
-            type Output = And<Self, Rhs>;
-            fn bitand(self, rhs: Rhs) -> Self::Output {
-                And(self, rhs)
-            }
-        }
-
-        impl<L, R, Rhs> core::ops::BitOr<Rhs> for $ty<L, R> {
-            type Output = Or<Self, Rhs>;
-            fn bitor(self, rhs: Rhs) -> Self::Output {
-                Or(self, rhs)
-            }
-        }
-    };
-}
-
-impl_logic_ops!(Lt);
-impl_logic_ops!(Gt);
-impl_logic_ops!(Le);
-impl_logic_ops!(Ge);
-impl_logic_ops!(And);
-impl_logic_ops!(Or);
 
 // ============================================================================
 // Smooth/Sigmoid Comparisons (Jet2-specific for gradients)
@@ -141,7 +116,7 @@ impl_logic_ops!(Or);
 ///
 /// **Jet2-specific**: Only works with Jet2 to provide smooth derivatives.
 /// For Field evaluation, use hard Gt.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct SoftGt<L, R> {
     /// Left operand.
     pub left: L,
@@ -153,7 +128,7 @@ pub struct SoftGt<L, R> {
 
 /// Smooth less-than: sigmoid((R - L) / k).
 /// **Jet2-specific** for smooth derivatives.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct SoftLt<L, R> {
     /// Left operand.
     pub left: L,
@@ -168,7 +143,7 @@ pub struct SoftLt<L, R> {
 ///
 /// **Always returns Jet2** and **only takes Manifold<Jet2> inputs**.
 /// For Field select, use hard Select.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Element)]
 pub struct SoftSelect<Mask, IfTrue, IfFalse> {
     /// The smooth mask (0.0 to 1.0).
     pub mask: Mask,

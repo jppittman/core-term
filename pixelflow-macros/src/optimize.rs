@@ -106,11 +106,15 @@ fn optimize_expr_with_egraph(expr: Expr, costs: &CostModel) -> Expr {
     }
 }
 
-/// Check if a block contains opaque expressions that reference local variables.
+/// Check if a block must preserve its structure during optimization.
 ///
-/// An "opaque expression" is one the e-graph can't optimize (like a method call
-/// on a captured manifold). If such expressions reference let-bound locals,
-/// we must preserve the block structure.
+/// A block must preserve structure if:
+/// 1. It has let bindings that are referenced in the final expression, OR
+/// 2. It has opaque expressions (like method calls on captured manifolds)
+///    that reference let-bound locals
+///
+/// The e-graph optimizer inlines variable references, so if we don't preserve
+/// the block structure, the let bindings would be lost in the extracted result.
 fn block_has_opaque_with_locals(block: &BlockExpr) -> bool {
     // Collect names of let-bound locals
     let local_names: std::collections::HashSet<String> = block
@@ -129,14 +133,16 @@ fn block_has_opaque_with_locals(block: &BlockExpr) -> bool {
         return false;
     }
 
-    // Check if the final expression or any statement references locals in opaque contexts
+    // If the final expression references ANY let-bound local in an opaque context,
+    // we must preserve the block structure.
+    // Note: Standard usage (e.g. `x + y`) is fine - the e-graph will inline it.
     if let Some(ref final_expr) = block.expr {
         if expr_has_opaque_refs(final_expr, &local_names) {
             return true;
         }
     }
 
-    // Also check statement expressions
+    // Also check if any statement's init references locals in opaque contexts
     for stmt in &block.stmts {
         if let Stmt::Let(let_stmt) = stmt {
             if expr_has_opaque_refs(&let_stmt.init, &local_names) {
@@ -178,15 +184,15 @@ fn expr_has_opaque_refs(expr: &Expr, local_names: &std::collections::HashSet<Str
                 || call.args.iter().any(|a| expr_has_opaque_refs(a, local_names))
         }
 
-        // Function calls that aren't known intrinsics
+        // Function calls are treated as opaque because expr_to_egraph doesn't
+        // map them to ENodes (it falls through to create_opaque_var).
+        // Therefore, if any arg references a local, we must preserve structure.
         Expr::Call(call) => {
-            let func_name = call.func.to_string();
-            // V, DX, DY, DZ are known - others might be opaque
-            if !["V", "DX", "DY", "DZ", "DXX", "DXY", "DYY"].contains(&func_name.as_str()) {
-                if call.args.iter().any(|arg| expr_references_any(arg, local_names)) {
-                    return true;
-                }
+            // Calls are opaque. If args reference locals, the call itself is an opaque ref.
+            if call.args.iter().any(|a| expr_references_any(a, local_names)) {
+                return true;
             }
+            // Recurse to check for nested opaque refs
             call.args.iter().any(|a| expr_has_opaque_refs(a, local_names))
         }
 
@@ -479,7 +485,7 @@ impl EGraphContext {
                         };
                         self.egraph.add(node)
                     }
-                    // For other ops (Rem, And, Or, BitAnd, BitOr, BitXor, Shl, Shr)
+                    // For other ops (Rem, BitXor, Shl, Shr)
                     // preserve as opaque expression with original structure
                     _ => self.create_opaque_var("binop", expr),
                 }
@@ -492,8 +498,10 @@ impl EGraphContext {
                         self.egraph.add(ENode::Neg(operand))
                     }
                     UnaryOp::Not => {
-                        // Boolean not - preserve original
-                        self.create_opaque_var("not", expr)
+                        // Map Not(x) to 1.0 - x (assuming boolean 0.0/1.0 logic)
+                        let operand = self.expr_to_egraph(&unary.operand);
+                        let one = self.egraph.add(ENode::constant(1.0));
+                        self.egraph.add(ENode::Sub(one, operand))
                     }
                 }
             }
@@ -623,14 +631,13 @@ impl EGraphContext {
                 }
             }
 
-            // For Call and Verbatim, treat as opaque
+            // For Call and Verbatim, treat as opaque and store original expression
+            // so it can be restored during extraction
             Expr::Call(call) => {
-                let name = unique_opaque_name(&format!("call_{}_", call.func));
-                self.get_or_create_var(&name)
+                self.create_opaque_var(&format!("call_{}_", call.func), expr)
             }
 
             Expr::Verbatim(_) => {
-                // Store verbatim expressions as opaque so they can be restored during extraction
                 self.create_opaque_var("verbatim_", expr)
             }
 
@@ -861,6 +868,10 @@ fn optimize_expr(expr: Expr) -> Expr {
         Expr::Tuple(mut tuple) => {
             tuple.elems = tuple.elems.into_iter().map(optimize_expr).collect();
             Expr::Tuple(tuple)
+        }
+        Expr::Call(mut call) => {
+            call.args = call.args.into_iter().map(optimize_expr).collect();
+            Expr::Call(call)
         }
         _ => expr,
     }

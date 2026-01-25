@@ -38,6 +38,7 @@
 mod annotate;
 mod ast;
 mod codegen;
+mod element;
 mod fold;
 mod lexer;
 mod manifold_expr;
@@ -50,6 +51,27 @@ use proc_macro::TokenStream;
 use quote::format_ident;
 use syn::parse::{Parse, ParseStream};
 use syn::{parse_macro_input, LitInt};
+
+/// Derive macro for the `Element` trait.
+///
+/// This macro generates the "Applicative" structure for a type, making it behave
+/// like a first-class value in the DSL. It automatically implements:
+///
+/// - `ManifoldExpr` marker trait
+/// - Arithmetic operators: `Add`, `Sub`, `Mul`, `Div`, `Neg`
+/// - Logic operators: `BitAnd`, `BitOr`, `Not`
+///
+/// # Usage
+///
+/// ```ignore
+/// #[derive(Element)]
+/// pub struct MyCombinator<A, B>(pub A, pub B);
+/// ```
+#[proc_macro_derive(Element)]
+pub fn derive_element(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    element::derive_element(input).into()
+}
 
 /// The `kernel!` macro: closure-like syntax for SIMD manifold kernels.
 ///

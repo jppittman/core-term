@@ -11,14 +11,16 @@ workspace = true
 bench = false
 
 [features]
-default = []
+default = ["graphics"]
 # Enable std for benchmarking and training data generation
 std = []
 # Enable training data generation (implies std)
 training = ["std"]
+# Enable graphics integration (harmonic attention, SH features) - requires pixelflow-core
+graphics = ["dep:pixelflow-core"]
 
 [dependencies]
-pixelflow-core = { path = "../pixelflow-core" }
+pixelflow-core = { path = "../pixelflow-core", optional = true }
 libm = "0.2.15"
 
 [dev-dependencies]

@@ -52,6 +52,12 @@ use crate::numeric::Computational;
 pub trait Spatial {
     /// The coordinate value type (e.g., `Field`, `Jet2`).
     type Coord;
+    /// The scalar type that coordinates reduce to via V() extraction.
+    ///
+    /// For `Field` domains, this is `Field`.
+    /// For `Jet3` domains, this is also `Field` (the value component).
+    /// Used by `.at()` coordinate transformations in kernels.
+    type Scalar;
     /// Get the X coordinate.
     fn x(&self) -> Self::Coord;
     /// Get the Y coordinate.
@@ -108,6 +114,7 @@ pub trait Tail {
 // z and w are zero-padded per GLSL conventions
 impl<I: Copy + Computational> Spatial for (I, I) {
     type Coord = I;
+    type Scalar = crate::Field;
     #[inline(always)]
     fn x(&self) -> I {
         self.0
@@ -130,6 +137,7 @@ impl<I: Copy + Computational> Spatial for (I, I) {
 // w is zero-padded per GLSL conventions
 impl<I: Copy + Computational> Spatial for (I, I, I) {
     type Coord = I;
+    type Scalar = crate::Field;
     #[inline(always)]
     fn x(&self) -> I {
         self.0
@@ -152,6 +160,7 @@ impl<I: Copy + Computational> Spatial for (I, I, I) {
 // All coordinates available
 impl<I: Copy> Spatial for (I, I, I, I) {
     type Coord = I;
+    type Scalar = crate::Field;
     #[inline(always)]
     fn x(&self) -> I {
         self.0
@@ -240,6 +249,7 @@ where
     Rest: Spatial,
 {
     type Coord = Rest::Coord;
+    type Scalar = Rest::Scalar;
     #[inline(always)]
     fn x(&self) -> Self::Coord {
         self.1.x()

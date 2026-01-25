@@ -41,7 +41,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use alloc::string::String;
 
-use crate::nnue::{
+use pixelflow_nnue::{
     Expr, ExprGenConfig, ExprGenerator, HalfEPFeature, OpType, RewriteRule,
     extract_features, find_all_rewrites,
 };

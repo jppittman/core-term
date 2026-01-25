@@ -396,6 +396,22 @@ impl core::ops::Mul for Jet3 {
     }
 }
 
+impl Jet3 {
+    /// Scalar multiplication: scales both value and derivatives by a Field.
+    ///
+    /// This is `pub(crate)` because external code should construct AST nodes
+    /// via operator overloads, not call raw SIMD operations directly.
+    #[inline(always)]
+    pub(crate) fn scale(self, s: Field) -> Jet3 {
+        Jet3::new(
+            self.val * s,
+            self.dx * s,
+            self.dy * s,
+            self.dz * s,
+        )
+    }
+}
+
 impl core::ops::Div for Jet3 {
     type Output = Self;
     #[inline(always)]

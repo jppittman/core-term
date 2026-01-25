@@ -11,7 +11,7 @@ pub fn standard_imports() -> TokenStream {
         use ::pixelflow_core::{
             X, Y, Z, W,
             ManifoldExt, ManifoldCompat, Manifold,
-            Let, Var, WithContext, CtxVar, Computed, ManifoldBind,
+            Let, Var, WithContext, CtxVar, ContextFree, Computed, ManifoldBind,
             A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15,
             GradientMag2D, GradientMag3D,
             Antialias2D, Antialias3D,

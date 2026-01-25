@@ -1,8 +1,9 @@
 //! # Numeric Traits
 //!
-//! Four-tier trait design:
+//! Five-tier trait design:
 //! - `Computational`: Public trait for types that support constant embedding
 //! - `Coordinate`: Marker for types usable as domain coordinates (Field, Jet*, PathJet*)
+//! - `AsField`: Extract the scalar Field value from any coordinate type
 //! - `Selectable`: Internal trait for types that support branchless selection
 //! - `Numeric`: Internal trait with full SIMD operations
 
