@@ -7,6 +7,7 @@ description = "A generic graph search framework for algebraic optimization and s
 [dependencies]
 libm = "0.2.15"
 rand = "0.8" # Optional, for training/search randomization
+pixelflow-nnue = "0.1.0"
 
 [features]
 std = ["rand/std"]
