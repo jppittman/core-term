@@ -112,6 +112,79 @@ pub fn eclass_to_expr(egraph: &EGraph, class: EClassId) -> Expr {
     }
 }
 
+/// Convert an `ExprTree` to a NNUE `Expr` for feature extraction.
+pub fn expr_tree_to_nnue(tree: &crate::egraph::ExprTree) -> Expr {
+    use crate::egraph::ExprTree;
+
+    match tree {
+        ExprTree::Var(i) => Expr::Var(*i),
+        ExprTree::Const(c) => Expr::Const(*c),
+
+        // Unary operations
+        ExprTree::Neg(a) => Expr::Unary(OpType::Neg, Box::new(expr_tree_to_nnue(a))),
+        ExprTree::Sqrt(a) => Expr::Unary(OpType::Sqrt, Box::new(expr_tree_to_nnue(a))),
+        ExprTree::Rsqrt(a) => Expr::Unary(OpType::Rsqrt, Box::new(expr_tree_to_nnue(a))),
+        ExprTree::Abs(a) => Expr::Unary(OpType::Abs, Box::new(expr_tree_to_nnue(a))),
+        ExprTree::Recip(a) => {
+            // Recip(x) = 1/x
+            Expr::Binary(
+                OpType::Div,
+                Box::new(Expr::Const(1.0)),
+                Box::new(expr_tree_to_nnue(a)),
+            )
+        }
+        // Map unsupported unary ops to Neg (placeholder)
+        ExprTree::Floor(a) | ExprTree::Ceil(a) | ExprTree::Round(a)
+        | ExprTree::Fract(a) | ExprTree::Sin(a) | ExprTree::Cos(a) | ExprTree::Tan(a)
+        | ExprTree::Asin(a) | ExprTree::Acos(a) | ExprTree::Atan(a)
+        | ExprTree::Exp(a) | ExprTree::Exp2(a) | ExprTree::Ln(a)
+        | ExprTree::Log2(a) | ExprTree::Log10(a) => {
+            // Map to Neg as a placeholder - these aren't in NNUE's OpType
+            Expr::Unary(OpType::Neg, Box::new(expr_tree_to_nnue(a)))
+        }
+
+        // Binary operations
+        ExprTree::Add(a, b) => Expr::Binary(OpType::Add, Box::new(expr_tree_to_nnue(a)), Box::new(expr_tree_to_nnue(b))),
+        ExprTree::Sub(a, b) => Expr::Binary(OpType::Sub, Box::new(expr_tree_to_nnue(a)), Box::new(expr_tree_to_nnue(b))),
+        ExprTree::Mul(a, b) => Expr::Binary(OpType::Mul, Box::new(expr_tree_to_nnue(a)), Box::new(expr_tree_to_nnue(b))),
+        ExprTree::Div(a, b) => Expr::Binary(OpType::Div, Box::new(expr_tree_to_nnue(a)), Box::new(expr_tree_to_nnue(b))),
+        ExprTree::Min(a, b) => Expr::Binary(OpType::Min, Box::new(expr_tree_to_nnue(a)), Box::new(expr_tree_to_nnue(b))),
+        ExprTree::Max(a, b) => Expr::Binary(OpType::Max, Box::new(expr_tree_to_nnue(a)), Box::new(expr_tree_to_nnue(b))),
+        // Map unsupported binary ops to Add (placeholder)
+        ExprTree::Atan2(a, b) | ExprTree::Pow(a, b) | ExprTree::Hypot(a, b)
+        | ExprTree::Lt(a, b) | ExprTree::Le(a, b) | ExprTree::Gt(a, b)
+        | ExprTree::Ge(a, b) | ExprTree::Eq(a, b) | ExprTree::Ne(a, b) => {
+            Expr::Binary(OpType::Add, Box::new(expr_tree_to_nnue(a)), Box::new(expr_tree_to_nnue(b)))
+        }
+
+        // Ternary operations
+        ExprTree::MulAdd(a, b, c) => Expr::Ternary(
+            OpType::MulAdd,
+            Box::new(expr_tree_to_nnue(a)),
+            Box::new(expr_tree_to_nnue(b)),
+            Box::new(expr_tree_to_nnue(c)),
+        ),
+        // Map unsupported ternary ops to MulAdd (placeholder)
+        ExprTree::Select(a, b, c) | ExprTree::Clamp(a, b, c) => {
+            Expr::Ternary(
+                OpType::MulAdd,
+                Box::new(expr_tree_to_nnue(a)),
+                Box::new(expr_tree_to_nnue(b)),
+                Box::new(expr_tree_to_nnue(c)),
+            )
+        }
+
+        ExprTree::Tuple(elems) => {
+            // Tuples don't have a direct mapping - just use first element
+            if let Some(first) = elems.first() {
+                expr_tree_to_nnue(first)
+            } else {
+                Expr::Const(0.0)
+            }
+        }
+    }
+}
+
 /// Insert an `Expr` into the e-graph, returning the root e-class.
 pub fn expr_to_egraph(expr: &Expr, egraph: &mut EGraph) -> EClassId {
     match expr {

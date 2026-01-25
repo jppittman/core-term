@@ -371,6 +371,76 @@ pub fn insert_tree(eg: &mut EGraph, tree: &ExprTree) -> EClassId {
 }
 
 // ============================================================================
+// NNUE-Based Valuation (Neural Network)
+// ============================================================================
+
+use crate::egraph::nnue_adapter::expr_tree_to_nnue;
+use pixelflow_nnue::{Nnue, NnueConfig, Accumulator, extract_features};
+
+/// NNUE-based valuation using a neural network for evaluation.
+/// This enables learned cost prediction from training data.
+pub struct NNUEValuation {
+    /// The NNUE network.
+    pub network: Nnue,
+    /// Cost model for normalization.
+    pub costs: CostModel,
+}
+
+impl Default for NNUEValuation {
+    fn default() -> Self {
+        Self {
+            network: Nnue::new(NnueConfig::default()),
+            costs: CostModel::fully_optimized(),
+        }
+    }
+}
+
+impl NNUEValuation {
+    /// Create with a custom network.
+    pub fn with_network(network: Nnue) -> Self {
+        Self {
+            network,
+            costs: CostModel::fully_optimized(),
+        }
+    }
+
+    /// Evaluate an expression tree using the NNUE network.
+    pub fn evaluate(&self, tree: &ExprTree) -> f64 {
+        // Convert ExprTree to NNUE Expr
+        let expr = expr_tree_to_nnue(tree);
+
+        // Extract features
+        let features = extract_features(&expr);
+
+        // Create accumulator and add features
+        let mut acc = Accumulator::new(&self.network);
+        for f in &features {
+            let idx = f.to_index();
+            // Only add if within bounds (features can be large)
+            if idx < pixelflow_nnue::HalfEPFeature::COUNT {
+                acc.add_feature(&self.network, idx);
+            }
+        }
+
+        // Forward pass to get value
+        let raw_value = acc.forward(&self.network);
+
+        // Normalize: NNUE outputs a raw value, we want it bounded
+        // Higher NNUE value = better (lower cost predicted)
+        // Sigmoid to bound between 0 and 1
+        1.0 / (1.0 + (-raw_value as f64 / 1000.0).exp())
+    }
+}
+
+impl Valuation<EGraphCategory> for NNUEValuation {
+    type Value = f64;
+
+    fn eval(&self, object: &SearchState) -> Self::Value {
+        self.evaluate(&object.tree)
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
