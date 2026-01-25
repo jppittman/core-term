@@ -41,7 +41,6 @@ mod codegen;
 mod fold;
 mod lexer;
 mod manifold_expr;
-mod optimize;
 mod parser;
 mod sema;
 mod symbol;
@@ -98,10 +97,10 @@ pub fn kernel(input: TokenStream) -> TokenStream {
     };
 
     // Phase 4: Optimization
-    let optimized = optimize::optimize(analyzed);
+    // let optimized = optimize::optimize(analyzed);
 
     // Phase 5: Code generation
-    codegen::emit(optimized).into()
+    codegen::emit(analyzed).into()
 }
 
 /// Derive macro for the `ManifoldExpr` marker trait.

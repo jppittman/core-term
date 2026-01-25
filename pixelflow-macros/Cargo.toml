@@ -13,7 +13,6 @@ proc-macro = true
 syn = { version = "2", features = ["full", "fold", "extra-traits", "parsing"] }
 quote = "1"
 proc-macro2 = "1"
-pixelflow-search = { path = "../pixelflow-search" }
 
 [dev-dependencies]
 pixelflow-core = { path = "../pixelflow-core" }

@@ -858,7 +858,6 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "pixelflow-core",
- "pixelflow-search",
  "proc-macro2",
  "quote",
  "syn",
@@ -900,6 +899,7 @@ name = "pixelflow-search"
 version = "0.1.0"
 dependencies = [
  "libm",
+ "pixelflow-ml",
  "rand 0.8.5",
 ]
 

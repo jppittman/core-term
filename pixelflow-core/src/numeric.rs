@@ -49,7 +49,7 @@ pub trait Computational:
 /// Much weaker than `Numeric` - only requires bitwise blending capability.
 /// This allows `Discrete` (packed RGBA) to participate in Select combinators
 /// without implementing nonsensical math operations.
-pub(crate) trait Selectable: Copy + Send + Sync {
+pub trait Selectable: Copy + Send + Sync {
     /// Raw conditional select - always blends both values.
     ///
     /// For each SIMD lane, picks `if_true` or `if_false` based on mask.

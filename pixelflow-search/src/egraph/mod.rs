@@ -22,6 +22,7 @@ mod graph;
 mod node;
 mod rewrite;
 mod rules;
+pub mod nnue_adapter;
 
 // Re-export public API
 pub use cost::CostModel;
