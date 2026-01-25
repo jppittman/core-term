@@ -103,20 +103,7 @@ impl<const L: usize> sealed::Sealed for crate::combinators::ZonalHarmonic<L> {}
 impl<const NUM_COEFFS: usize> sealed::Sealed for crate::combinators::ShProject<NUM_COEFFS> {}
 
 // Backend markers (internal, but technically ZSTs)
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-impl sealed::Sealed for crate::backend::scalar::Scalar {}
-
-#[cfg(target_arch = "x86_64")]
-impl sealed::Sealed for crate::backend::x86::Sse2 {}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-impl sealed::Sealed for crate::backend::x86::Avx2 {}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-impl sealed::Sealed for crate::backend::x86::Avx512 {}
-
-#[cfg(target_arch = "aarch64")]
-impl sealed::Sealed for crate::backend::arm::Neon {}
+impl sealed::Sealed for crate::NativeBackend {}
 
 // Seal all operators (they get Zst from blanket impls below)
 impl<L, R> sealed::Sealed for crate::ops::Add<L, R> {}
@@ -194,20 +181,7 @@ impl<const L: usize> crate::Zst for crate::combinators::ZonalHarmonic<L> {}
 impl<const NUM_COEFFS: usize> crate::Zst for crate::combinators::ShProject<NUM_COEFFS> {}
 
 // Backend markers (internal, but technically ZSTs)
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-impl crate::Zst for crate::backend::scalar::Scalar {}
-
-#[cfg(target_arch = "x86_64")]
-impl crate::Zst for crate::backend::x86::Sse2 {}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-impl crate::Zst for crate::backend::x86::Avx2 {}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-impl crate::Zst for crate::backend::x86::Avx512 {}
-
-#[cfg(target_arch = "aarch64")]
-impl crate::Zst for crate::backend::arm::Neon {}
+impl crate::Zst for crate::NativeBackend {}
 
 // Binary type-level numbers (for Let/Var bindings)
 impl crate::Zst for crate::combinators::UTerm {}

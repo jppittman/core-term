@@ -59,7 +59,7 @@ type NativeSimd = crate::backend::x86::F32x4;
 #[cfg(target_arch = "aarch64")]
 type NativeSimd = crate::backend::arm::F32x4;
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-type NativeSimd = crate::backend::scalar::ScalarF32;
+type NativeSimd = crate::NativeSimd;
 
 type NativeMask = <NativeSimd as SimdOps>::Mask;
 

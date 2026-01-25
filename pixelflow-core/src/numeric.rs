@@ -49,7 +49,7 @@ pub trait Computational:
 /// Much weaker than `Numeric` - only requires bitwise blending capability.
 /// This allows `Discrete` (packed RGBA) to participate in Select combinators
 /// without implementing nonsensical math operations.
-pub(crate) trait Selectable: Copy + Send + Sync {
+pub trait Selectable: Copy + Send + Sync {
     /// Raw conditional select - always blends both values.
     ///
     /// For each SIMD lane, picks `if_true` or `if_false` based on mask.
@@ -61,7 +61,7 @@ pub(crate) trait Selectable: Copy + Send + Sync {
 ///
 /// Extends `Computational` with methods users shouldn't call directly.
 /// These are used by the library's combinators (Sqrt, Select, etc.).
-pub(crate) trait Numeric: Computational {
+pub trait Numeric: Computational {
     /// Square root.
     fn sqrt(self) -> Self;
 
