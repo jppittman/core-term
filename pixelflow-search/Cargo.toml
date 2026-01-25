@@ -25,3 +25,7 @@ required-features = ["std"]
 [[example]]
 name = "cost_weight_optimizer"
 required-features = ["std"]
+
+[[example]]
+name = "mcts_optimization"
+required-features = ["std"]
