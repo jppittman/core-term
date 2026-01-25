@@ -1616,6 +1616,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "web-demo"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "pixelflow-core",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "web-sys"
 version = "0.3.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
