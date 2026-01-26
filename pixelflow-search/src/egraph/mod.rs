@@ -15,14 +15,19 @@
 //! - [`deps`]: Dependency analysis for uniform hoisting
 
 mod algebra;
+pub mod anytime;
+pub mod best_first;
+pub mod codegen;
 mod cost;
 mod deps;
 mod extract;
 mod graph;
+pub mod guided;
 mod node;
 pub mod nnue_adapter;
 mod rewrite;
 mod rules;
+pub mod saturate;
 pub mod search_adapter;
 
 // Re-export public API
@@ -30,4 +35,8 @@ pub use cost::CostModel;
 pub use deps::{Deps, DepsAnalysis};
 pub use extract::ExprTree;
 pub use graph::EGraph;
+pub use guided::{GuidedAction, GuidedResult, GuidedState, GuidedStats, ActionRecord, GuidedConfig, GuidedMcts, guided_optimize};
 pub use node::{EClassId, ENode, Op};
+pub use saturate::{SaturationResult, saturate_with_budget, achievable_cost_within_budget};
+pub use anytime::{AnytimeConfig, AnytimeResult, optimize_with_budget, optimize_egraph_with_budget};
+pub use best_first::{BestFirstPlanner, BestFirstConfig, BestFirstResult};
