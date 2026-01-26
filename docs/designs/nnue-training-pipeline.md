@@ -2,255 +2,378 @@
 
 ## Metadata
 - **Author**: jppittman + claude
-- **Status**: Approved
+- **Status**: REVISED - Curriculum Bootstrapping (Simplified)
 - **Created**: 2026-01-24
+- **Updated**: 2026-01-25
 - **Reviewers**: -
+- **Key Decision**: Replace MCTS with Curriculum Learning + Best-First Search
 
 ---
 
 ## 1. Overview
 
 ### 1.1 Problem Statement
-We have NNUE infrastructure (`pixelflow-nnue`) and MCTS search (`pixelflow-search/mcts.rs`), but they're not connected. We need:
-1. A bridge between e-graph `Op` types and NNUE `OpType`
-2. Feature extraction from e-graph states
-3. End-to-end training that uses MCTS to find optimal rewrites
+Train NNUE to predict expression costs via **Curriculum Learning**, not complex RL.
 
-### 1.2 Goals
-- [ ] Convert e-graph nodes to NNUE expressions for feature extraction
-- [ ] Train NNUE to predict rewrite costs with Spearman ρ > 0.7
-- [ ] Use NNUE-guided MCTS to find better rewrites than random search
+### 1.2 The Pragmatic Pivot: Why Not MCTS?
 
-### 1.3 Non-Goals
+MCTS adds complexity (UCB1, visit counts, tree backpropagation, Policy+Value heads) that's unnecessary when we have:
+1. **Ground truth from saturation** (for small kernels)
+2. **A simple priority queue with ε-greedy exploration**
+
+**Delete the RL magic. Replace with standard engineering.**
+
+### 1.3 Architecture: Curriculum Bootstrapping
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  PHASE 1: KINDERGARTEN (Saturation = Ground Truth)              │
+├─────────────────────────────────────────────────────────────────┤
+│  • Generate TINY kernels (10-50 nodes)                          │
+│  • SATURATE completely (brute force - affordable for small)     │
+│  • Get PERFECT optimal cost                                     │
+│  • Train NNUE: "This graph has potential cost X"                │
+│  • Result: Network learns basic algebra (x*0=0, x+0=x, etc.)    │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  PHASE 2: UNIVERSITY (Guided Search + Noise)                    │
+├─────────────────────────────────────────────────────────────────┤
+│  • Generate HUGE kernels (1000+ nodes)                          │
+│  • Saturation IMPOSSIBLE                                        │
+│  • Use Best-First Search (A*) with trained NNUE                 │
+│  • ε-greedy exploration (10% random) to escape local minima     │
+│  • Network already knows basics, now learns deeper tricks       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 1.4 Key Simplifications
+
+| Old (MCTS Complexity) | New (Curriculum + A*) |
+|-----------------------|-----------------------|
+| UCB1 formula | Priority queue |
+| Tree backpropagation | Direct supervised learning |
+| Visit counts | ε-greedy exploration |
+| Policy + Value heads | Single value network |
+| Online RL from scratch | Curriculum: small→large |
+
+### 1.5 Goals
+- [x] Convert e-graph nodes to NNUE expressions for feature extraction
+- [x] CSE-aware feature extraction (BackRef tokens)
+- [x] Full backpropagation through NNUE
+- [x] Train NNUE on saturated small kernels (ground truth)
+- [x] Use NNUE-guided Best-First search for large kernels
+- [ ] Scale linearly with search budget, NOT exponentially with rule count
+
+### 1.6 The Two-Loop Architecture
+
+The system has two components trained in separate loops:
+
+**The Judge** (CostModel with learned weights):
+- Predicts `cost(expr) → nanoseconds` using learned operation weights
+- Trained on real SIMD benchmark data (Loop A: slow, run weekly)
+- Once trained, evaluates expressions instantly (nanoseconds)
+- File: `pixelflow-ml/examples/train_cost_model.rs`
+
+**The Guide** (NNUE):
+- Predicts which rewrites lead to lower-cost expressions
+- Trained against The Judge (Loop B: fast, no compilation)
+- Learns to navigate the e-graph search space efficiently
+- File: `pixelflow-ml/examples/guided_training.rs`
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  LOOP A: CALIBRATION (Weekly, Slow)                             │
+├─────────────────────────────────────────────────────────────────┤
+│  1. Generate expression variants via gen_egraph_variants        │
+│  2. Compile to SIMD kernels                                     │
+│  3. Benchmark with criterion                                    │
+│  4. Train The Judge: learns Op → Cost mapping                   │
+│  Result: learned_cost_model.toml                                │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  LOOP B: TRAINING (Continuous, Fast)                            │
+├─────────────────────────────────────────────────────────────────┤
+│  • Generate expressions                                         │
+│  • E-graph saturation + extraction                              │
+│  • Score with The Judge (instant, no compilation)               │
+│  • Train NNUE to predict The Judge's scores                     │
+│  Result: NNUE that guides search without physical benchmarks    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 1.7 Why This Works
+
+1. **Cold Start Solved**: By saturating small kernels, network starts smart. No 10,000 rollouts to learn `x * 0 = 0`.
+
+2. **Valley Crossing**: ε-greedy (10% random) forces exploration of "bad" intermediate states, finding brilliant optimizations.
+
+3. **Simple Code**: Priority queue + ε-greedy. No UCB1, no tree backprop.
+
+4. **Ground Truth**: Small kernel saturation gives mathematically perfect costs - no noise in training signal.
+
+5. **Model-Based Training**: The Judge lets us train NNUE without running physical benchmarks every iteration.
+
+### 1.8 Non-Goals
 - GPU acceleration (CPU SIMD only)
-- Production deployment (research/prototype quality)
 - Distributed training
+- Full equality saturation for large kernels (that's the point!)
 
 ---
 
-## 2. Background
+## 2. CRITICAL: CSE-Aware Features
 
-### 2.1 Current State
+### 2.1 The Aliasing Problem
+
+**E-Graph = DAG, ExprTree = Tree**
+
+When the same subexpression appears twice, the e-graph has ONE e-class referenced multiple times. But `ExprTree` uses `Box<ExprTree>` - no sharing!
 
 ```
-pixelflow-nnue/           # NNUE network, features, expressions
-├── OpType                # 14 operation types
-├── Expr                  # Expression AST
-├── HalfEPFeature         # Sparse features
-├── Nnue                  # Network weights
-└── Accumulator           # Incremental evaluation
-
-pixelflow-search/
-├── egraph/               # E-graph implementation
-│   ├── Op                # E-graph operation enum (DIFFERENT from OpType!)
-│   └── EGraph            # Equality saturation
-├── search/
-│   └── mcts.rs           # MCTS (just implemented)
-└── eval.rs               # Training data generation (uses pixelflow_nnue)
+E-Graph: Add(e-class_5, e-class_5)  // Same e-class, computed once
+ExprTree: Add(subtree, subtree)     // Two separate copies
+Codegen: expensive() + expensive()  // Computed TWICE!
 ```
 
-**The Gap**: `egraph::Op` and `nnue::OpType` are separate enums. No conversion exists.
+### 2.2 The Solution: DAG-Walk Feature Extraction ✓ DONE
 
-### 2.2 Prior Art
-- Stockfish NNUE: HalfKP features, incremental updates
-- egg (e-graphs): Rust equality saturation library
-- AlphaGo: MCTS + neural network evaluation
+The feature extractor now uses structural hashing to detect shared subexpressions:
+
+```rust
+// Before (Tree Walk - Double Vision):
+x + x  →  [Feature(x), Feature(Add), Feature(x)]  // Counts x twice!
+
+// After (DAG Walk - CSE Aware):
+x + x  →  [Feature(x), Feature(Add), BackRef]     // Recognizes sharing!
+```
+
+**Implementation** (`guided_training.rs`):
+- `structural_hash()` computes unique hash per subtree
+- `extract_tree_features_dag()` uses visited HashSet
+- `BACKREF_FEATURE` emitted for duplicate subtrees
+
+This lets NNUE learn that shared computation is cheap.
 
 ---
 
 ## 3. Design
 
-### 3.1 Architecture
+### 3.1 Best-First Search (`best_first.rs`) ✓ DONE
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Training Loop                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌───────┐ │
-│  │ Generate │───▶│ Extract  │───▶│ Search   │───▶│ Train │ │
-│  │ Expr     │    │ Features │    │ (MCTS)   │    │ NNUE  │ │
-│  └──────────┘    └──────────┘    └──────────┘    └───────┘ │
-│       │               │               │               │     │
-│       ▼               ▼               ▼               ▼     │
-│  ExprGenerator   EGraph+Adapter   MctsTree      Gradient   │
-│                                   +Evaluator    Descent    │
-└─────────────────────────────────────────────────────────────┘
-```
+A simple priority queue planner replaces MCTS:
 
-### 3.2 Interfaces
-
-**T1: Op ↔ OpType Adapter** (`pixelflow-search/src/egraph/nnue_adapter.rs`)
 ```rust
-use crate::egraph::Op;
-use pixelflow_nnue::OpType;
-
-/// Convert e-graph Op to NNUE OpType.
-pub fn op_to_nnue(op: &Op) -> OpType;
-
-/// Convert NNUE OpType to e-graph Op (for generating test expressions).
-pub fn nnue_to_op(op_type: OpType) -> Option<Op>;
-```
-
-**T2: EGraph → Expr Conversion** (`pixelflow-search/src/egraph/nnue_adapter.rs`)
-```rust
-use crate::egraph::{EGraph, EClassId};
-use pixelflow_nnue::Expr;
-
-/// Extract a concrete Expr from an e-class (picks canonical representative).
-pub fn eclass_to_expr(egraph: &EGraph, class: EClassId) -> Expr;
-
-/// Convert an Expr back to e-graph nodes (for testing).
-pub fn expr_to_egraph(expr: &Expr, egraph: &mut EGraph) -> EClassId;
-```
-
-**T3: MCTS Evaluator using NNUE** (`pixelflow-search/src/search/nnue_eval.rs`)
-```rust
-use crate::search::mcts::MctsTree;
-use pixelflow_nnue::{Nnue, Accumulator};
-
-/// State for MCTS: an e-graph with a focus e-class.
-pub struct SearchState {
-    pub egraph: EGraph,
-    pub focus: EClassId,
+pub struct BestFirstPlanner {
+    queue: BinaryHeap<Candidate>,
+    best_found: Option<Candidate>,
+    config: BestFirstConfig,
 }
 
-/// Action for MCTS: a rewrite rule application.
-pub struct RewriteAction {
-    pub rule_id: usize,
-    pub target: EClassId,
+impl BestFirstPlanner {
+    /// Run search with NNUE evaluator
+    pub fn run<F>(&mut self, evaluator: F) -> BestFirstResult
+    where
+        F: FnMut(&ExprTree) -> i64,
+    {
+        // Small kernel? Just saturate.
+        if self.should_saturate() {
+            return self.run_saturation();
+        }
+
+        // Best-first with ε-greedy exploration
+        while self.expansions < self.config.max_expansions {
+            // ε-greedy: occasionally pick random instead of best
+            let candidate = if rng.gen() < self.config.epsilon {
+                self.pick_random()
+            } else {
+                self.queue.pop()
+            };
+
+            // Expand: apply one round of rewrites
+            for child in self.expand(&candidate) {
+                child.priority = evaluator(&child.best_tree);
+                self.queue.push(child);
+            }
+        }
+    }
+}
+```
+
+### 3.2 Full Backpropagation (`guided_training.rs`) ✓ DONE
+
+Complete gradient flow through all NNUE layers:
+
+```rust
+struct ForwardState {
+    l1_pre: Vec<i32>,   // Before clipped ReLU
+    l1_post: Vec<f32>,  // After clipped ReLU
+    l2_pre: Vec<i32>,
+    l2_post: Vec<f32>,
+    l3_pre: Vec<i32>,
+    l3_post: Vec<f32>,
+    active_features: Vec<usize>,
 }
 
-/// Create an NNUE-based evaluator for MCTS.
-pub fn nnue_evaluator(nnue: &Nnue) -> impl Fn(&SearchState) -> f64;
-```
-
-**T4: Training Loop** (`pixelflow-search/src/training.rs`)
-```rust
-use pixelflow_nnue::{Nnue, TrainingSample};
-
-/// Training configuration.
-pub struct TrainConfig {
-    pub learning_rate: f32,
-    pub batch_size: usize,
-    pub epochs: usize,
+fn backward(nnue: &mut Nnue, state: &ForwardState, error: f32, lr: f32) {
+    // Output layer → L3 → L2 → L1 → sparse W1
+    // Updates all weights: w1, b1, w2, b2, w3, b3, w_out, b_out
 }
-
-/// Train NNUE on samples, return final loss.
-pub fn train(nnue: &mut Nnue, samples: &[TrainingSample], config: &TrainConfig) -> f32;
-
-/// Evaluate Spearman correlation on held-out data.
-pub fn evaluate_correlation(nnue: &Nnue, samples: &[TrainingSample]) -> f64;
 ```
 
-### 3.3 Data Flow
+### 3.3 Curriculum Training Loop (TODO)
 
-```
-1. Generate random Expr (pixelflow_nnue::ExprGenerator)
-         │
-         ▼
-2. Insert into EGraph (expr_to_egraph)
-         │
-         ▼
-3. Run equality saturation (egraph.saturate())
-         │
-         ▼
-4. Extract features from e-classes (eclass_to_expr → extract_features)
-         │
-         ▼
-5. MCTS search with NNUE evaluation (nnue_evaluator)
-         │
-         ▼
-6. Record (features, cost) pairs as TrainingSamples
-         │
-         ▼
-7. Train NNUE (gradient descent on cost prediction)
-         │
-         ▼
-8. Repeat with improved NNUE
-```
-
----
-
-## 4. Implementation Plan
-
-### 4.1 Task Breakdown
-
-| ID | Task | File | Deps | Size | Assignee |
-|----|------|------|------|------|----------|
-| T1 | Op ↔ OpType mapping | `egraph/nnue_adapter.rs` | None | S | Jules |
-| T2 | EClass ↔ Expr conversion | `egraph/nnue_adapter.rs` | T1 | M | Jules |
-| T3 | NNUE MCTS evaluator | `search/nnue_eval.rs` | T1 | M | Jules |
-| T4 | Training loop | `training.rs` | T2, T3 | M | Claude |
-| T5 | Integration test | `tests/nnue_e2e.rs` | T4 | S | Claude |
-
-**Size**: S = <50 lines, M = 50-200 lines, L = >200 lines
-
-### 4.2 Parallelization
-
-```
-T1 (Op mapping) ─────┬──▶ T2 (EClass conversion) ──┐
-                     │                              ├──▶ T4 (Training) ──▶ T5 (E2E)
-                     └──▶ T3 (NNUE evaluator) ─────┘
-```
-
-**Parallel batch 1**: T1 (single file, no deps)
-**Parallel batch 2**: T2, T3 (both depend on T1, different files)
-**Sequential**: T4, T5 (integration work)
-
-### 4.3 Risk Assessment
-
-| Risk | Likelihood | Impact | Mitigation |
-|------|------------|--------|------------|
-| Op/OpType mismatch | Medium | High | Explicit test for all variants |
-| MCTS too slow | Low | Medium | Limit iterations, profile |
-| Training diverges | Medium | Medium | Gradient clipping, validation set |
-
----
-
-## 5. Testing Strategy
-
-### 5.1 Unit Tests
-
-**T1 Tests** (in `nnue_adapter.rs`):
-- `test_op_to_nnue_roundtrip`: All Op variants convert and back
-- `test_op_arity_matches`: Op and OpType arities are consistent
-
-**T2 Tests**:
-- `test_eclass_to_expr_simple`: Leaf nodes convert correctly
-- `test_eclass_to_expr_nested`: Binary ops convert correctly
-- `test_expr_to_egraph_roundtrip`: Convert and extract matches
-
-**T3 Tests**:
-- `test_nnue_evaluator_deterministic`: Same state → same score
-- `test_nnue_evaluator_prefers_simpler`: Simpler expr gets better score
-
-### 5.2 Integration Tests
-
-**T5** (`tests/nnue_e2e.rs`):
 ```rust
-#[test]
-fn test_training_improves_correlation() {
-    // Generate 1000 samples
-    // Train for 10 epochs
-    // Assert Spearman ρ > 0.5
+fn main() {
+    let mut nnue = Nnue::new(NnueConfig::default());
+
+    // ============================================
+    // PHASE 1: KINDERGARTEN (Ground Truth)
+    // ============================================
+    println!("=== Phase 1: Kindergarten (Saturation) ===");
+
+    for epoch in 0..KINDERGARTEN_EPOCHS {
+        for _ in 0..SAMPLES_PER_EPOCH {
+            // Generate SMALL kernel (10-50 nodes)
+            let tree = generate_small_kernel();
+
+            // SATURATE completely - get perfect cost
+            let config = BestFirstConfig::default()
+                .with_saturation_threshold(1000);  // Force saturation
+            let mut planner = BestFirstPlanner::from_tree(&tree, config);
+            let result = planner.run_default();
+
+            // Train: features(tree) → optimal_cost
+            train_on_ground_truth(&mut nnue, &tree, result.best_cost);
+        }
+    }
+
+    // ============================================
+    // PHASE 2: UNIVERSITY (Guided Search)
+    // ============================================
+    println!("=== Phase 2: University (Guided Search) ===");
+
+    for epoch in 0..UNIVERSITY_EPOCHS {
+        for _ in 0..SAMPLES_PER_EPOCH {
+            // Generate LARGE kernel (100+ nodes)
+            let tree = generate_large_kernel();
+
+            // Best-First with trained NNUE + exploration
+            let config = BestFirstConfig::default()
+                .with_saturation_threshold(0)   // Never saturate
+                .with_epsilon(0.1)              // 10% exploration
+                .with_max_expansions(1000);
+
+            let mut planner = BestFirstPlanner::from_tree(&tree, config);
+            let result = planner.run(|tree| nnue_predict(&nnue, tree));
+
+            // Train on achieved cost
+            train_on_achieved(&mut nnue, &tree, result.best_cost);
+        }
+    }
 }
 ```
 
 ---
 
-## 6. Alternatives Considered
+## 4. Implementation Status
 
-| Alternative | Pros | Cons | Why Not |
-|-------------|------|------|---------|
-| Unify Op/OpType into one enum | No conversion needed | Breaks crate separation | Tight coupling |
-| Skip MCTS, use random search | Simpler | Less effective | Defeats purpose |
-| Train on real compiler IR | More realistic | Complex setup | Research scope |
+### ✓ COMPLETED
+
+| Component | File | Description |
+|-----------|------|-------------|
+| Full Backpropagation | `guided_training.rs` | Updates all NNUE weights through 4 layers |
+| CSE-Aware Features | `guided_training.rs` | `structural_hash()` + `BACKREF_FEATURE` |
+| Best-First Search | `best_first.rs` | Priority queue with ε-greedy exploration |
+| Auto-saturation | `best_first.rs` | Small kernels (<100 nodes) saturate automatically |
+
+### ✓ COMPLETED (Session 3)
+
+| Component | File | Description |
+|-----------|------|-------------|
+| Curriculum Training | `guided_training.rs` | Phase 1 (small/saturate) → Phase 2 (large/guided) |
+
+### ✓ COMPLETED (Session 2)
+
+| Component | File | Description |
+|-----------|------|-------------|
+| EGraph Cloneable | `graph.rs` | Arc-wrapped rules for cheap clone during search |
+| Best-First Search | `best_first.rs` | A* with ε-greedy, auto-saturates small kernels |
+| Export BestFirstPlanner | `egraph/mod.rs` | Exported via `pub mod best_first` |
+| The Judge Training | `train_cost_model.rs` | Learns cost model weights from real SIMD benchmarks |
+
+### DEFERRED (Not Needed)
+
+| Component | Reason |
+|-----------|--------|
+| `rewrite_mcts.rs` | Best-First search is simpler and sufficient |
+| UCB1 formula | ε-greedy exploration is sufficient |
+| Visit counts | Not needed without MCTS tree |
 
 ---
 
-## 7. Open Questions
+## 5. Files Reference
 
-- [x] How to handle Op variants not in OpType? → Map to closest equivalent
-- [x] Which e-class representative to extract? → Lowest cost (greedy)
+| File | Status | Purpose |
+|------|--------|---------|
+| `pixelflow-search/src/egraph/best_first.rs` | **NEW** ✓ | Simple A* search with ε-greedy |
+| `pixelflow-search/src/egraph/mod.rs` | MODIFY | Export `BestFirstPlanner` |
+| `pixelflow-ml/examples/guided_training.rs` | MODIFY | Curriculum training loop |
+| `pixelflow-search/src/egraph/guided.rs` | KEEP | Existing guided state (may simplify) |
+| `pixelflow-nnue/src/lib.rs` | DONE | NNUE network implementation |
+
+---
+
+## 6. Verification
+
+```bash
+# Test Best-First search compiles and works
+cargo test -p pixelflow-search -- best_first
+
+# Test small kernels saturate correctly
+cargo test -p pixelflow-search -- best_first::test_small_kernel_saturates
+
+# Run curriculum training (quick mode)
+cargo run -p pixelflow-ml --example guided_training --features training --release -- --quick
+
+# Full training
+cargo run -p pixelflow-ml --example guided_training --features training --release
+
+# Compare guided vs random search
+cargo test -p pixelflow-search -- guided_vs_random
+```
+
+---
+
+## 7. Historical Notes
+
+### 7.1 Previous Approach (MCTS-based)
+
+The original design used MCTS over rewrite actions:
+- UCB1 formula for action selection
+- Tree backpropagation for value updates
+- Policy + Value network heads
+- Complex online RL from scratch
+
+**Why abandoned**: Too complex for the problem. Curriculum learning with simple best-first search achieves the same goals with far less code.
+
+### 7.2 CSE Fix Options Considered
+
+| Option | Decision | Reason |
+|--------|----------|--------|
+| A: Hook into optimize.rs | Deferred | Requires proc-macro changes |
+| B: CSE-aware extraction | Deferred | Complex |
+| **C: DAG-walk features** | **CHOSEN** | Simple, works in feature extractor |
+
+The DAG-walk approach using `structural_hash()` solves the CSE problem at the feature extraction level without requiring changes to the compilation pipeline.
+
+---
+
+## 8. Open Questions
+
+- [x] How to handle Op variants not in OpType? → Map to closest equivalent (14 buckets)
+- [x] How to detect shared subexpressions? → `structural_hash()` + visited HashSet
+- [x] How to simplify MCTS? → Replace with Best-First + curriculum learning
+- [x] Curriculum transition point? → Fixed epochs (kindergarten → university)
 - [ ] Learning rate schedule? → Start with constant, tune later
+- [ ] ε-greedy annealing? → Start with 0.1, may reduce over training
