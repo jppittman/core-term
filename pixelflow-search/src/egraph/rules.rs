@@ -3,18 +3,19 @@
 //! These rules use Op directly rather than being derived from InversePair.
 
 use super::graph::EGraph;
-use super::node::{EClassId, ENode, Op};
+use super::node::{EClassId, ENode};
+use super::ops::{self, Op};
 use super::rewrite::{Rewrite, RewriteAction};
 
 /// Associativity: (a op b) op c → a op (b op c)
 #[allow(dead_code)]
 pub struct Associative {
-    op: Op,
+    op: &'static dyn Op,
 }
 
 impl Associative {
     #[allow(dead_code)]
-    pub fn new(op: Op) -> Box<Self> {
+    pub fn new(op: &'static dyn Op) -> Box<Self> {
         Box::new(Self { op })
     }
 }
@@ -23,18 +24,22 @@ impl Rewrite for Associative {
     fn name(&self) -> &str { "associative" }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if node.op() != Some(self.op) { return None; }
+        let node_op = node.op()?;
+        if node_op.name() != self.op.name() { return None; }
+
         let (left, right) = node.binary_operands()?;
 
         for child in egraph.nodes(left) {
-            if child.op() == Some(self.op) {
-                if let Some((a, b)) = child.binary_operands() {
-                    return Some(RewriteAction::Associate {
-                        op: self.op,
-                        a,
-                        b,
-                        c: right,
-                    });
+            if let Some(child_op) = child.op() {
+                if child_op.name() == self.op.name() {
+                    if let Some((a, b)) = child.binary_operands() {
+                        return Some(RewriteAction::Associate {
+                            op: self.op,
+                            a,
+                            b,
+                            c: right,
+                        });
+                    }
                 }
             }
         }
@@ -44,11 +49,11 @@ impl Rewrite for Associative {
 
 /// Commutativity: a op b → b op a
 pub struct Commutative {
-    op: Op,
+    op: &'static dyn Op,
 }
 
 impl Commutative {
-    pub fn new(op: Op) -> Box<Self> {
+    pub fn new(op: &'static dyn Op) -> Box<Self> {
         Box::new(Self { op })
     }
 }
@@ -57,23 +62,28 @@ impl Rewrite for Commutative {
     fn name(&self) -> &str { "commutative" }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if node.op() != Some(self.op) { return None; }
+        let node_op = node.op()?;
+        if node_op.name() != self.op.name() { return None; }
+
         let (a, b) = node.binary_operands()?;
         if a == b { return None; }
 
-        let swapped = self.op.make_binary(b, a)?;
+        let swapped = ENode::Op {
+            op: self.op,
+            children: vec![b, a],
+        };
         Some(RewriteAction::Create(swapped))
     }
 }
 
 /// Distributivity: A * (B + C) → A*B + A*C
 pub struct Distributive {
-    outer: Op,
-    inner: Op,
+    outer: &'static dyn Op,
+    inner: &'static dyn Op,
 }
 
 impl Distributive {
-    pub fn new(outer: Op, inner: Op) -> Box<Self> {
+    pub fn new(outer: &'static dyn Op, inner: &'static dyn Op) -> Box<Self> {
         Box::new(Self { outer, inner })
     }
 }
@@ -82,19 +92,23 @@ impl Rewrite for Distributive {
     fn name(&self) -> &str { "distribute" }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if node.op() != Some(self.outer) { return None; }
+        let node_op = node.op()?;
+        if node_op.name() != self.outer.name() { return None; }
+
         let (a, other) = node.binary_operands()?;
 
         for child_node in egraph.nodes(other) {
-            if child_node.op() == Some(self.inner) {
-                if let Some((b, c)) = child_node.binary_operands() {
-                    return Some(RewriteAction::Distribute {
-                        outer: self.outer,
-                        inner: self.inner,
-                        a,
-                        b,
-                        c,
-                    });
+            if let Some(child_op) = child_node.op() {
+                if child_op.name() == self.inner.name() {
+                    if let Some((b, c)) = child_node.binary_operands() {
+                        return Some(RewriteAction::Distribute {
+                            outer: self.outer,
+                            inner: self.inner,
+                            a,
+                            b,
+                            c,
+                        });
+                    }
                 }
             }
         }
@@ -104,12 +118,12 @@ impl Rewrite for Distributive {
 
 /// Factoring: A*B + A*C → A * (B + C)
 pub struct Factor {
-    outer: Op,
-    inner: Op,
+    outer: &'static dyn Op,
+    inner: &'static dyn Op,
 }
 
 impl Factor {
-    pub fn new(outer: Op, inner: Op) -> Box<Self> {
+    pub fn new(outer: &'static dyn Op, inner: &'static dyn Op) -> Box<Self> {
         Box::new(Self { outer, inner })
     }
 }
@@ -118,15 +132,19 @@ impl Rewrite for Factor {
     fn name(&self) -> &str { "factor" }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if node.op() != Some(self.outer) { return None; }
+        let node_op = node.op()?;
+        if node_op.name() != self.outer.name() { return None; }
+
         let (left, right) = node.binary_operands()?;
 
         for l_node in egraph.nodes(left) {
-            if l_node.op() != Some(self.inner) { continue; }
+            let l_op = l_node.op()?;
+            if l_op.name() != self.inner.name() { continue; }
             let (la, lb) = l_node.binary_operands()?;
 
             for r_node in egraph.nodes(right) {
-                if r_node.op() != Some(self.inner) { continue; }
+                let r_op = r_node.op()?;
+                if r_op.name() != self.inner.name() { continue; }
                 let (ra, rb) = r_node.binary_operands()?;
 
                 let (common, unique_l, unique_r) = if egraph.find(la) == egraph.find(ra) {
@@ -156,11 +174,11 @@ impl Rewrite for Factor {
 
 /// Identity: x op identity → x
 pub struct Identity {
-    op: Op,
+    op: &'static dyn Op,
 }
 
 impl Identity {
-    pub fn new(op: Op) -> Box<Self> {
+    pub fn new(op: &'static dyn Op) -> Box<Self> {
         Box::new(Self { op })
     }
 }
@@ -169,23 +187,29 @@ impl Rewrite for Identity {
     fn name(&self) -> &str { "identity" }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if node.op() != Some(self.op) { return None; }
+        let node_op = node.op()?;
+        if node_op.name() != self.op.name() { return None; }
+
         let id_val = self.op.identity()?;
         let (a, b) = node.binary_operands()?;
 
-        if egraph.contains_const(b, id_val) { return Some(RewriteAction::Union(a)); }
-        if egraph.contains_const(a, id_val) { return Some(RewriteAction::Union(b)); }
+        if egraph.contains_const(b, id_val) {
+            return Some(RewriteAction::Union(a));
+        }
+        if egraph.contains_const(a, id_val) {
+            return Some(RewriteAction::Union(b));
+        }
         None
     }
 }
 
 /// Annihilator: x op annihilator → annihilator
 pub struct Annihilator {
-    op: Op,
+    op: &'static dyn Op,
 }
 
 impl Annihilator {
-    pub fn new(op: Op) -> Box<Self> {
+    pub fn new(op: &'static dyn Op) -> Box<Self> {
         Box::new(Self { op })
     }
 }
@@ -194,7 +218,9 @@ impl Rewrite for Annihilator {
     fn name(&self) -> &str { "annihilator" }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if node.op() != Some(self.op) { return None; }
+        let node_op = node.op()?;
+        if node_op.name() != self.op.name() { return None; }
+
         let zero_val = self.op.annihilator()?;
         let (a, b) = node.binary_operands()?;
 
@@ -207,11 +233,11 @@ impl Rewrite for Annihilator {
 
 /// Idempotence: x op x → x
 pub struct Idempotent {
-    op: Op,
+    op: &'static dyn Op,
 }
 
 impl Idempotent {
-    pub fn new(op: Op) -> Box<Self> {
+    pub fn new(op: &'static dyn Op) -> Box<Self> {
         Box::new(Self { op })
     }
 }
@@ -220,8 +246,10 @@ impl Rewrite for Idempotent {
     fn name(&self) -> &str { "idempotent" }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if node.op() != Some(self.op) { return None; }
+        let node_op = node.op()?;
+        if node_op.name() != self.op.name() { return None; }
         if !self.op.is_idempotent() { return None; }
+
         let (a, b) = node.binary_operands()?;
 
         if egraph.find(a) == egraph.find(b) {
@@ -238,10 +266,19 @@ impl Rewrite for RecipSqrt {
     fn name(&self) -> &str { "recip-sqrt" }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if let ENode::Recip(a) = node {
-            for child in egraph.nodes(*a) {
-                if let ENode::Sqrt(inner) = child {
-                    return Some(RewriteAction::Create(ENode::Rsqrt(*inner)));
+        if let ENode::Op { op, children } = node {
+            if op.name() == "recip" && children.len() == 1 {
+                let a = children[0];
+                for child in egraph.nodes(a) {
+                    if let ENode::Op { op: child_op, children: child_children } = child {
+                        if child_op.name() == "sqrt" && child_children.len() == 1 {
+                            let inner = child_children[0];
+                            return Some(RewriteAction::Create(ENode::Op {
+                                op: &ops::Rsqrt,
+                                children: vec![inner],
+                            }));
+                        }
+                    }
                 }
             }
         }
@@ -261,21 +298,40 @@ impl Rewrite for FmaFusion {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match Add(Mul(a, b), c) → MulAdd(a, b, c)
-        if let ENode::Add(left, right) = node {
-            // Check if left is a Mul
-            for left_node in egraph.nodes(*left) {
-                if let ENode::Mul(a, b) = left_node {
-                    return Some(RewriteAction::Create(ENode::MulAdd(*a, *b, *right)));
+        if let ENode::Op { op, children } = node {
+            if op.name() == "add" && children.len() == 2 {
+                let left = children[0];
+                let right = children[1];
+
+                // Check if left is a Mul
+                for left_node in egraph.nodes(left) {
+                    if let ENode::Op { op: left_op, children: left_children } = left_node {
+                        if left_op.name() == "mul" && left_children.len() == 2 {
+                            let a = left_children[0];
+                            let b = left_children[1];
+                            return Some(RewriteAction::Create(ENode::Op {
+                                op: &ops::MulAdd,
+                                children: vec![a, b, right],
+                            }));
+                        }
+                    }
                 }
-            }
-            // Check if right is a Mul (commutativity)
-            for right_node in egraph.nodes(*right) {
-                if let ENode::Mul(a, b) = right_node {
-                    return Some(RewriteAction::Create(ENode::MulAdd(*a, *b, *left)));
+
+                // Check if right is a Mul (commutativity)
+                for right_node in egraph.nodes(right) {
+                    if let ENode::Op { op: right_op, children: right_children } = right_node {
+                        if right_op.name() == "mul" && right_children.len() == 2 {
+                            let a = right_children[0];
+                            let b = right_children[1];
+                            return Some(RewriteAction::Create(ENode::Op {
+                                op: &ops::MulAdd,
+                                children: vec![a, b, left],
+                            }));
+                        }
+                    }
                 }
             }
         }
         None
     }
 }
-

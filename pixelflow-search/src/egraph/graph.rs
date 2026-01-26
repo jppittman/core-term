@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use super::algebra::{AddNeg, MulRecip, Canonicalize, Cancellation, InverseAnnihilation, Involution};
 use super::cost::CostModel;
 use super::extract::ExprTree;
-use super::node::{EClassId, ENode, Op};
+use super::node::{EClassId, ENode};
+use super::ops;
 use super::rewrite::{Rewrite, RewriteAction};
 use super::rules::{Annihilator, Commutative, Distributive, Factor, FmaFusion, Idempotent, Identity, RecipSqrt};
 
@@ -61,7 +62,7 @@ impl EGraph {
     fn create_algebraic_rules() -> Vec<Box<dyn Rewrite>> {
         let mut rules: Vec<Box<dyn Rewrite>> = Vec::new();
 
-        // InversePair-derived rules
+        // TEST: Adding remaining rules
         rules.push(Canonicalize::<AddNeg>::new());
         rules.push(Involution::<AddNeg>::new());
         rules.push(Cancellation::<AddNeg>::new());
@@ -70,23 +71,16 @@ impl EGraph {
         rules.push(Involution::<MulRecip>::new());
         rules.push(Cancellation::<MulRecip>::new());
         rules.push(InverseAnnihilation::<MulRecip>::new());
-
-        // Non-InversePair rules
-        rules.push(Commutative::new(Op::Add));
-        rules.push(Commutative::new(Op::Mul));
-        rules.push(Commutative::new(Op::Min));
-        rules.push(Commutative::new(Op::Max));
-        rules.push(Identity::new(Op::Add));
-        rules.push(Identity::new(Op::Mul));
-        rules.push(Annihilator::new(Op::Mul));
-        rules.push(Idempotent::new(Op::Min));
-        rules.push(Idempotent::new(Op::Max));
-        rules.push(Distributive::new(Op::Mul, Op::Add));
-        rules.push(Distributive::new(Op::Mul, Op::Sub));
-        rules.push(Factor::new(Op::Add, Op::Mul));
-        rules.push(Factor::new(Op::Sub, Op::Mul));
-        rules.push(Box::new(RecipSqrt));
+        rules.push(Commutative::new(&ops::Add));
+        rules.push(Commutative::new(&ops::Mul));
+        rules.push(Commutative::new(&ops::Min));
+        rules.push(Commutative::new(&ops::Max));
+        rules.push(Distributive::new(&ops::Mul, &ops::Add));
+        rules.push(Distributive::new(&ops::Mul, &ops::Sub));
         rules.push(Box::new(FmaFusion));
+        // Identity rules: x + 0 = x, x * 1 = x
+        rules.push(Identity::new(&ops::Add));
+        rules.push(Identity::new(&ops::Mul));
 
         rules
     }
@@ -105,50 +99,54 @@ impl EGraph {
         // InversePair-derived rules: One trait, four rules each
         // =================================================================
 
+        // BINARY SEARCH: First half disabled
         // AddNeg: Addition and Negation are inverses
-        self.add_rule(Canonicalize::<AddNeg>::new());        // a - b → a + neg(b)
-        self.add_rule(Involution::<AddNeg>::new());          // neg(neg(x)) → x
-        self.add_rule(Cancellation::<AddNeg>::new());        // (x + a) - a → x
-        self.add_rule(InverseAnnihilation::<AddNeg>::new()); // x + neg(x) → 0
+        // self.add_rule(Canonicalize::<AddNeg>::new());        // a - b → a + neg(b)
+        // self.add_rule(Involution::<AddNeg>::new());          // neg(neg(x)) → x
+        // self.add_rule(Cancellation::<AddNeg>::new());        // (x + a) - a → x
+        // self.add_rule(InverseAnnihilation::<AddNeg>::new()); // x + neg(x) → 0
 
         // MulRecip: Multiplication and Reciprocal are inverses
-        self.add_rule(Canonicalize::<MulRecip>::new());        // a / b → a * recip(b)
-        self.add_rule(Involution::<MulRecip>::new());          // recip(recip(x)) → x
-        self.add_rule(Cancellation::<MulRecip>::new());        // (x * a) / a → x
-        self.add_rule(InverseAnnihilation::<MulRecip>::new()); // x * recip(x) → 1
+        // self.add_rule(Canonicalize::<MulRecip>::new());        // a / b → a * recip(b)
+        // self.add_rule(Involution::<MulRecip>::new());          // recip(recip(x)) → x
+        // self.add_rule(Cancellation::<MulRecip>::new());        // (x * a) / a → x
+        // self.add_rule(InverseAnnihilation::<MulRecip>::new()); // x * recip(x) → 1
 
         // =================================================================
         // Non-InversePair rules
         // =================================================================
 
         // Commutativity
-        self.add_rule(Commutative::new(Op::Add));
-        self.add_rule(Commutative::new(Op::Mul));
-        self.add_rule(Commutative::new(Op::Min));
-        self.add_rule(Commutative::new(Op::Max));
+        // self.add_rule(Commutative::new(&ops::Add));
+        // self.add_rule(Commutative::new(&ops::Mul));
+        // self.add_rule(Commutative::new(&ops::Min));
+        // self.add_rule(Commutative::new(&ops::Max));
 
         // Identity
-        self.add_rule(Identity::new(Op::Add));
-        self.add_rule(Identity::new(Op::Mul));
+        // self.add_rule(Identity::new(&ops::Add));
+        // self.add_rule(Identity::new(&ops::Mul));
 
         // Annihilator
-        self.add_rule(Annihilator::new(Op::Mul));
+        // self.add_rule(Annihilator::new(&ops::Mul));
 
+        // BINARY SEARCH: Second subdivision - disable Idempotent and Distributive
         // Idempotence
-        self.add_rule(Idempotent::new(Op::Min));
-        self.add_rule(Idempotent::new(Op::Max));
+        // self.add_rule(Idempotent::new(&ops::Min));
+        // self.add_rule(Idempotent::new(&ops::Max));
 
         // Distributivity
-        self.add_rule(Distributive::new(Op::Mul, Op::Add));
-        self.add_rule(Distributive::new(Op::Mul, Op::Sub));
+        // self.add_rule(Distributive::new(&ops::Mul, &ops::Add));
+        // self.add_rule(Distributive::new(&ops::Mul, &ops::Sub));
 
+        // BINARY SEARCH: Third subdivision - disable Factor
         // Factoring
-        self.add_rule(Factor::new(Op::Add, Op::Mul));
-        self.add_rule(Factor::new(Op::Sub, Op::Mul));
+        // self.add_rule(Factor::new(&ops::Add, &ops::Mul));
+        // self.add_rule(Factor::new(&ops::Sub, &ops::Mul));
 
+        // BINARY SEARCH: Disable all rules to test baseline
         // Structural / Fusion
-        self.add_rule(Box::new(RecipSqrt)); // 1/sqrt(x) → rsqrt(x)
-        self.add_rule(Box::new(FmaFusion)); // a * b + c → mul_add(a, b, c)
+        // self.add_rule(Box::new(RecipSqrt)); // 1/sqrt(x) → rsqrt(x)
+        // self.add_rule(Box::new(FmaFusion)); // a * b + c → mul_add(a, b, c)
     }
 
     pub fn find(&self, id: EClassId) -> EClassId {
@@ -175,54 +173,9 @@ impl EGraph {
     fn canonicalize_node(&self, node: &mut ENode) {
         match node {
             ENode::Var(_) | ENode::Const(_) => {}
-            ENode::Add(a, b)
-            | ENode::Sub(a, b)
-            | ENode::Mul(a, b)
-            | ENode::Div(a, b)
-            | ENode::Min(a, b)
-            | ENode::Max(a, b)
-            | ENode::Atan2(a, b)
-            | ENode::Pow(a, b)
-            | ENode::Hypot(a, b)
-            | ENode::Lt(a, b)
-            | ENode::Le(a, b)
-            | ENode::Gt(a, b)
-            | ENode::Ge(a, b)
-            | ENode::Eq(a, b)
-            | ENode::Ne(a, b) => {
-                *a = self.find(*a);
-                *b = self.find(*b);
-            }
-            ENode::Neg(a)
-            | ENode::Recip(a)
-            | ENode::Sqrt(a)
-            | ENode::Rsqrt(a)
-            | ENode::Abs(a)
-            | ENode::Floor(a)
-            | ENode::Ceil(a)
-            | ENode::Round(a)
-            | ENode::Fract(a)
-            | ENode::Sin(a)
-            | ENode::Cos(a)
-            | ENode::Tan(a)
-            | ENode::Asin(a)
-            | ENode::Acos(a)
-            | ENode::Atan(a)
-            | ENode::Exp(a)
-            | ENode::Exp2(a)
-            | ENode::Ln(a)
-            | ENode::Log2(a)
-            | ENode::Log10(a) => {
-                *a = self.find(*a);
-            }
-            ENode::MulAdd(a, b, c) | ENode::Select(a, b, c) | ENode::Clamp(a, b, c) => {
-                *a = self.find(*a);
-                *b = self.find(*b);
-                *c = self.find(*c);
-            }
-            ENode::Tuple(elems) => {
-                for e in elems {
-                    *e = self.find(*e);
+            ENode::Op { children, .. } => {
+                for child in children {
+                    *child = self.find(*child);
                 }
             }
         }
@@ -299,185 +252,23 @@ impl EGraph {
 
     /// Insert an expression tree into the e-graph, returning the root e-class.
     pub fn add_expr(&mut self, tree: &ExprTree) -> EClassId {
+        use super::extract::Leaf;
+
         match tree {
-            ExprTree::Var(v) => self.add(ENode::Var(*v)),
-            ExprTree::Const(c) => self.add(ENode::constant(*c)),
-            ExprTree::Add(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Add(a_id, b_id))
-            }
-            ExprTree::Sub(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Sub(a_id, b_id))
-            }
-            ExprTree::Mul(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Mul(a_id, b_id))
-            }
-            ExprTree::Div(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Div(a_id, b_id))
-            }
-            ExprTree::Neg(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Neg(a_id))
-            }
-            ExprTree::Recip(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Recip(a_id))
-            }
-            ExprTree::Sqrt(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Sqrt(a_id))
-            }
-            ExprTree::Rsqrt(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Rsqrt(a_id))
-            }
-            ExprTree::Abs(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Abs(a_id))
-            }
-            ExprTree::Min(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Min(a_id, b_id))
-            }
-            ExprTree::Max(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Max(a_id, b_id))
-            }
-            ExprTree::MulAdd(a, b, c) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                let c_id = self.add_expr(c);
-                self.add(ENode::MulAdd(a_id, b_id, c_id))
-            }
-            ExprTree::Floor(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Floor(a_id))
-            }
-            ExprTree::Ceil(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Ceil(a_id))
-            }
-            ExprTree::Round(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Round(a_id))
-            }
-            ExprTree::Fract(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Fract(a_id))
-            }
-            ExprTree::Sin(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Sin(a_id))
-            }
-            ExprTree::Cos(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Cos(a_id))
-            }
-            ExprTree::Tan(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Tan(a_id))
-            }
-            ExprTree::Asin(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Asin(a_id))
-            }
-            ExprTree::Acos(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Acos(a_id))
-            }
-            ExprTree::Atan(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Atan(a_id))
-            }
-            ExprTree::Exp(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Exp(a_id))
-            }
-            ExprTree::Exp2(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Exp2(a_id))
-            }
-            ExprTree::Ln(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Ln(a_id))
-            }
-            ExprTree::Log2(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Log2(a_id))
-            }
-            ExprTree::Log10(a) => {
-                let a_id = self.add_expr(a);
-                self.add(ENode::Log10(a_id))
-            }
-            ExprTree::Atan2(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Atan2(a_id, b_id))
-            }
-            ExprTree::Pow(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Pow(a_id, b_id))
-            }
-            ExprTree::Hypot(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Hypot(a_id, b_id))
-            }
-            ExprTree::Lt(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Lt(a_id, b_id))
-            }
-            ExprTree::Le(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Le(a_id, b_id))
-            }
-            ExprTree::Gt(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Gt(a_id, b_id))
-            }
-            ExprTree::Ge(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Ge(a_id, b_id))
-            }
-            ExprTree::Eq(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Eq(a_id, b_id))
-            }
-            ExprTree::Ne(a, b) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                self.add(ENode::Ne(a_id, b_id))
-            }
-            ExprTree::Select(a, b, c) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                let c_id = self.add_expr(c);
-                self.add(ENode::Select(a_id, b_id, c_id))
-            }
-            ExprTree::Clamp(a, b, c) => {
-                let a_id = self.add_expr(a);
-                let b_id = self.add_expr(b);
-                let c_id = self.add_expr(c);
-                self.add(ENode::Clamp(a_id, b_id, c_id))
-            }
-            ExprTree::Tuple(elems) => {
-                let elem_ids: Vec<_> = elems.iter().map(|e| self.add_expr(e)).collect();
-                self.add(ENode::Tuple(elem_ids))
+            ExprTree::Leaf(Leaf::Var(v)) => self.add(ENode::Var(*v)),
+            ExprTree::Leaf(Leaf::Const(c)) => self.add(ENode::constant(*c)),
+
+            ExprTree::Op { op, children } => {
+                // Recursively add all children first
+                let child_ids: Vec<_> = children.iter().map(|c| self.add_expr(c)).collect();
+
+                // Create ENode::Op with the operation and children
+                let node = ENode::Op {
+                    op: *op,
+                    children: child_ids,
+                };
+
+                self.add(node)
             }
         }
     }
@@ -531,59 +322,58 @@ impl EGraph {
                 }
             }
             RewriteAction::Distribute { outer, inner, a, b, c } => {
-                if let Some(ab_node) = outer.make_binary(a, b) {
-                    let ab_id = self.add(ab_node);
-                    if let Some(ac_node) = outer.make_binary(a, c) {
-                        let ac_id = self.add(ac_node);
-                        if let Some(result_node) = inner.make_binary(ab_id, ac_id) {
-                            let result_id = self.add(result_node);
-                            if self.find(class_id) != self.find(result_id) {
-                                self.union(class_id, result_id);
-                                return true;
-                            }
-                        }
-                    }
+                // A * (B + C) → A*B + A*C
+                let ab_node = ENode::Op { op: outer, children: vec![a, b] };
+                let ab_id = self.add(ab_node);
+                let ac_node = ENode::Op { op: outer, children: vec![a, c] };
+                let ac_id = self.add(ac_node);
+                let result_node = ENode::Op { op: inner, children: vec![ab_id, ac_id] };
+                let result_id = self.add(result_node);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    true
+                } else {
+                    false
                 }
-                false
             }
             RewriteAction::Factor { outer, inner, common, unique_l, unique_r } => {
-                if let Some(sum_node) = outer.make_binary(unique_l, unique_r) {
-                    let sum_id = self.add(sum_node);
-                    if let Some(result_node) = inner.make_binary(common, sum_id) {
-                        let result_id = self.add(result_node);
-                        if self.find(class_id) != self.find(result_id) {
-                            self.union(class_id, result_id);
-                            return true;
-                        }
-                    }
+                // A*B + A*C → A * (B + C)
+                let sum_node = ENode::Op { op: outer, children: vec![unique_l, unique_r] };
+                let sum_id = self.add(sum_node);
+                let result_node = ENode::Op { op: inner, children: vec![common, sum_id] };
+                let result_id = self.add(result_node);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    true
+                } else {
+                    false
                 }
-                false
             }
             RewriteAction::Canonicalize { target, inverse, a, b } => {
-                if let Some(inv_node) = inverse.make_unary(b) {
-                    let inv_id = self.add(inv_node);
-                    if let Some(target_node) = target.make_binary(a, inv_id) {
-                        let target_id = self.add(target_node);
-                        if self.find(class_id) != self.find(target_id) {
-                            self.union(class_id, target_id);
-                            return true;
-                        }
-                    }
+                // a - b → a + neg(b)
+                let inv_node = ENode::Op { op: inverse, children: vec![b] };
+                let inv_id = self.add(inv_node);
+                let target_node = ENode::Op { op: target, children: vec![a, inv_id] };
+                let target_id = self.add(target_node);
+                if self.find(class_id) != self.find(target_id) {
+                    self.union(class_id, target_id);
+                    true
+                } else {
+                    false
                 }
-                false
             }
             RewriteAction::Associate { op, a, b, c } => {
-                if let Some(bc_node) = op.make_binary(b, c) {
-                    let bc_id = self.add(bc_node);
-                    if let Some(result_node) = op.make_binary(a, bc_id) {
-                        let result_id = self.add(result_node);
-                        if self.find(class_id) != self.find(result_id) {
-                            self.union(class_id, result_id);
-                            return true;
-                        }
-                    }
+                // (a op b) op c → a op (b op c)
+                let bc_node = ENode::Op { op, children: vec![b, c] };
+                let bc_id = self.add(bc_node);
+                let result_node = ENode::Op { op, children: vec![a, bc_id] };
+                let result_id = self.add(result_node);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    true
+                } else {
+                    false
                 }
-                false
             }
         };
 
@@ -651,54 +441,45 @@ impl EGraph {
                     }
                 }
                 RewriteAction::Distribute { outer, inner, a, b, c } => {
-                    if let Some(ab_node) = outer.make_binary(a, b) {
-                        let ab_id = self.add(ab_node);
-                        if let Some(ac_node) = outer.make_binary(a, c) {
-                            let ac_id = self.add(ac_node);
-                            if let Some(result_node) = inner.make_binary(ab_id, ac_id) {
-                                let result_id = self.add(result_node);
-                                if self.find(class_id) != self.find(result_id) {
-                                    self.union(class_id, result_id);
-                                    unions += 1;
-                                }
-                            }
-                        }
+                    let ab_node = ENode::Op { op: outer, children: vec![a, b] };
+                    let ab_id = self.add(ab_node);
+                    let ac_node = ENode::Op { op: outer, children: vec![a, c] };
+                    let ac_id = self.add(ac_node);
+                    let result_node = ENode::Op { op: inner, children: vec![ab_id, ac_id] };
+                    let result_id = self.add(result_node);
+                    if self.find(class_id) != self.find(result_id) {
+                        self.union(class_id, result_id);
+                        unions += 1;
                     }
                 }
                 RewriteAction::Factor { outer, inner, common, unique_l, unique_r } => {
-                    if let Some(sum_node) = outer.make_binary(unique_l, unique_r) {
-                        let sum_id = self.add(sum_node);
-                        if let Some(result_node) = inner.make_binary(common, sum_id) {
-                            let result_id = self.add(result_node);
-                            if self.find(class_id) != self.find(result_id) {
-                                self.union(class_id, result_id);
-                                unions += 1;
-                            }
-                        }
+                    let sum_node = ENode::Op { op: outer, children: vec![unique_l, unique_r] };
+                    let sum_id = self.add(sum_node);
+                    let result_node = ENode::Op { op: inner, children: vec![common, sum_id] };
+                    let result_id = self.add(result_node);
+                    if self.find(class_id) != self.find(result_id) {
+                        self.union(class_id, result_id);
+                        unions += 1;
                     }
                 }
                 RewriteAction::Canonicalize { target, inverse, a, b } => {
-                    if let Some(inv_node) = inverse.make_unary(b) {
-                        let inv_id = self.add(inv_node);
-                        if let Some(target_node) = target.make_binary(a, inv_id) {
-                            let target_id = self.add(target_node);
-                            if self.find(class_id) != self.find(target_id) {
-                                self.union(class_id, target_id);
-                                unions += 1;
-                            }
-                        }
+                    let inv_node = ENode::Op { op: inverse, children: vec![b] };
+                    let inv_id = self.add(inv_node);
+                    let target_node = ENode::Op { op: target, children: vec![a, inv_id] };
+                    let target_id = self.add(target_node);
+                    if self.find(class_id) != self.find(target_id) {
+                        self.union(class_id, target_id);
+                        unions += 1;
                     }
                 }
                 RewriteAction::Associate { op, a, b, c } => {
-                    if let Some(bc_node) = op.make_binary(b, c) {
-                        let bc_id = self.add(bc_node);
-                        if let Some(result_node) = op.make_binary(a, bc_id) {
-                            let result_id = self.add(result_node);
-                            if self.find(class_id) != self.find(result_id) {
-                                self.union(class_id, result_id);
-                                unions += 1;
-                            }
-                        }
+                    let bc_node = ENode::Op { op, children: vec![b, c] };
+                    let bc_id = self.add(bc_node);
+                    let result_node = ENode::Op { op, children: vec![a, bc_id] };
+                    let result_id = self.add(result_node);
+                    if self.find(class_id) != self.find(result_id) {
+                        self.union(class_id, result_id);
+                        unions += 1;
                     }
                 }
             }
@@ -741,135 +522,15 @@ impl EGraph {
         child_cost.saturating_add(op_cost)
     }
 
+    /// Extract the minimum-cost expression tree from an e-class.
     pub fn extract_tree_with_costs(&self, root: EClassId, costs: &CostModel) -> ExprTree {
-        let root = self.find(root);
-        // Use depth-aware extraction
-        self.extract_tree_with_depth(root, costs, 0)
+        let (tree, _cost) = super::extract::extract(self, root, costs);
+        tree
     }
 
     /// Extract the best expression tree and its cost.
     pub fn extract_best(&self, root: EClassId, costs: &CostModel) -> (ExprTree, usize) {
-        let tree = self.extract_tree_with_costs(root, costs);
-        let cost = tree.cost(costs);
-        (tree, cost)
-    }
-
-    /// Extract tree with depth tracking for penalty calculation.
-    ///
-    /// Uses the iterative extraction algorithm to find optimal per-e-class
-    /// representations, then builds the tree while tracking depth.
-    /// The depth_penalty in CostModel affects the total cost calculation
-    /// but the iterative algorithm chooses representations globally.
-    fn extract_tree_with_depth(&self, root: EClassId, costs: &CostModel, _depth: usize) -> ExprTree {
-        let root = self.find(root);
-        let best_node = self.extract_with_costs(root, costs);
-        self.node_to_tree_iterative(&best_node, costs)
-    }
-
-    /// Convert a node to a tree using iterative extraction for children.
-    fn node_to_tree_iterative(&self, node: &ENode, costs: &CostModel) -> ExprTree {
-        match node {
-            ENode::Var(v) => ExprTree::Var(*v),
-            ENode::Const(bits) => ExprTree::Const(f32::from_bits(*bits)),
-            ENode::Add(a, b) => ExprTree::Add(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Sub(a, b) => ExprTree::Sub(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Mul(a, b) => ExprTree::Mul(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Div(a, b) => ExprTree::Div(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Neg(a) => ExprTree::Neg(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Recip(a) => ExprTree::Recip(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Sqrt(a) => ExprTree::Sqrt(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Rsqrt(a) => ExprTree::Rsqrt(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Abs(a) => ExprTree::Abs(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Min(a, b) => ExprTree::Min(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Max(a, b) => ExprTree::Max(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::MulAdd(a, b, c) => ExprTree::MulAdd(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-                Box::new(self.extract_tree_with_costs(*c, costs)),
-            ),
-            ENode::Floor(a) => ExprTree::Floor(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Ceil(a) => ExprTree::Ceil(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Round(a) => ExprTree::Round(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Fract(a) => ExprTree::Fract(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Sin(a) => ExprTree::Sin(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Cos(a) => ExprTree::Cos(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Tan(a) => ExprTree::Tan(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Asin(a) => ExprTree::Asin(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Acos(a) => ExprTree::Acos(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Atan(a) => ExprTree::Atan(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Exp(a) => ExprTree::Exp(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Exp2(a) => ExprTree::Exp2(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Ln(a) => ExprTree::Ln(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Log2(a) => ExprTree::Log2(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Log10(a) => ExprTree::Log10(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Atan2(a, b) => ExprTree::Atan2(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Pow(a, b) => ExprTree::Pow(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Hypot(a, b) => ExprTree::Hypot(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Lt(a, b) => ExprTree::Lt(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Le(a, b) => ExprTree::Le(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Gt(a, b) => ExprTree::Gt(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Ge(a, b) => ExprTree::Ge(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Eq(a, b) => ExprTree::Eq(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Ne(a, b) => ExprTree::Ne(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Select(a, b, c) => ExprTree::Select(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-                Box::new(self.extract_tree_with_costs(*c, costs)),
-            ),
-            ENode::Clamp(a, b, c) => ExprTree::Clamp(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-                Box::new(self.extract_tree_with_costs(*c, costs)),
-            ),
-            ENode::Tuple(elems) => ExprTree::Tuple(
-                elems.iter().map(|&e| self.extract_tree_with_costs(e, costs)).collect()
-            ),
-        }
+        super::extract::extract(self, root, costs)
     }
 
     /// Extract up to N different equivalent expressions from an e-class.
@@ -915,110 +576,25 @@ impl EGraph {
 
     /// Convert a specific ENode to a tree, recursively extracting children.
     ///
-    /// Unlike `node_to_tree_iterative`, this uses the optimal extraction for
-    /// children, but preserves the specific node structure at this level.
+    /// Unlike extraction, this preserves the specific node structure at this level,
+    /// but uses optimal extraction for children.
     fn node_to_tree_variant(&self, node: &ENode, costs: &CostModel) -> ExprTree {
+        use super::extract::Leaf;
+
         match node {
-            ENode::Var(v) => ExprTree::Var(*v),
-            ENode::Const(bits) => ExprTree::Const(f32::from_bits(*bits)),
-            ENode::Add(a, b) => ExprTree::Add(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Sub(a, b) => ExprTree::Sub(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Mul(a, b) => ExprTree::Mul(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Div(a, b) => ExprTree::Div(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Neg(a) => ExprTree::Neg(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Recip(a) => ExprTree::Recip(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Sqrt(a) => ExprTree::Sqrt(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Rsqrt(a) => ExprTree::Rsqrt(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Abs(a) => ExprTree::Abs(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Min(a, b) => ExprTree::Min(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Max(a, b) => ExprTree::Max(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::MulAdd(a, b, c) => ExprTree::MulAdd(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-                Box::new(self.extract_tree_with_costs(*c, costs)),
-            ),
-            ENode::Floor(a) => ExprTree::Floor(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Ceil(a) => ExprTree::Ceil(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Round(a) => ExprTree::Round(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Fract(a) => ExprTree::Fract(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Sin(a) => ExprTree::Sin(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Cos(a) => ExprTree::Cos(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Tan(a) => ExprTree::Tan(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Asin(a) => ExprTree::Asin(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Acos(a) => ExprTree::Acos(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Atan(a) => ExprTree::Atan(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Exp(a) => ExprTree::Exp(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Exp2(a) => ExprTree::Exp2(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Ln(a) => ExprTree::Ln(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Log2(a) => ExprTree::Log2(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Log10(a) => ExprTree::Log10(Box::new(self.extract_tree_with_costs(*a, costs))),
-            ENode::Atan2(a, b) => ExprTree::Atan2(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Pow(a, b) => ExprTree::Pow(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Hypot(a, b) => ExprTree::Hypot(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Lt(a, b) => ExprTree::Lt(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Le(a, b) => ExprTree::Le(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Gt(a, b) => ExprTree::Gt(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Ge(a, b) => ExprTree::Ge(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Eq(a, b) => ExprTree::Eq(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Ne(a, b) => ExprTree::Ne(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-            ),
-            ENode::Select(a, b, c) => ExprTree::Select(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-                Box::new(self.extract_tree_with_costs(*c, costs)),
-            ),
-            ENode::Clamp(a, b, c) => ExprTree::Clamp(
-                Box::new(self.extract_tree_with_costs(*a, costs)),
-                Box::new(self.extract_tree_with_costs(*b, costs)),
-                Box::new(self.extract_tree_with_costs(*c, costs)),
-            ),
-            ENode::Tuple(elems) => ExprTree::Tuple(
-                elems.iter().map(|&e| self.extract_tree_with_costs(e, costs)).collect()
-            ),
+            ENode::Var(v) => ExprTree::Leaf(Leaf::Var(*v)),
+            ENode::Const(bits) => ExprTree::Leaf(Leaf::Const(f32::from_bits(*bits))),
+            ENode::Op { op, children } => {
+                // Recursively extract optimal children
+                let child_trees = children
+                    .iter()
+                    .map(|&child| self.extract_tree_with_costs(child, costs))
+                    .collect();
+                ExprTree::Op {
+                    op: *op,
+                    children: child_trees,
+                }
+            }
         }
     }
 }
@@ -1031,8 +607,8 @@ mod tests {
     fn test_inverse_add() {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
-        let neg_x = eg.add(ENode::Neg(x));
-        let sum = eg.add(ENode::Add(x, neg_x));
+        let neg_x = eg.add(ENode::Op { op: &ops::Neg, children: vec![x] });
+        let sum = eg.add(ENode::Op { op: &ops::Add, children: vec![x, neg_x] });
         eg.saturate();
         let zero = eg.add(ENode::constant(0.0));
         assert_eq!(eg.find(sum), eg.find(zero));
@@ -1042,8 +618,8 @@ mod tests {
     fn test_inverse_mul() {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
-        let recip_x = eg.add(ENode::Recip(x));
-        let product = eg.add(ENode::Mul(x, recip_x));
+        let recip_x = eg.add(ENode::Op { op: &ops::Recip, children: vec![x] });
+        let product = eg.add(ENode::Op { op: &ops::Mul, children: vec![x, recip_x] });
         eg.saturate();
         let one = eg.add(ENode::constant(1.0));
         assert_eq!(eg.find(product), eg.find(one));
@@ -1054,8 +630,8 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let five = eg.add(ENode::constant(5.0));
-        let prod = eg.add(ENode::Mul(x, five));
-        let div = eg.add(ENode::Div(prod, x));
+        let prod = eg.add(ENode::Op { op: &ops::Mul, children: vec![x, five] });
+        let div = eg.add(ENode::Op { op: &ops::Div, children: vec![prod, x] });
         eg.saturate();
         assert_eq!(eg.find(div), eg.find(five));
     }
@@ -1070,8 +646,8 @@ mod tests {
         let c = eg.add(ENode::constant(2.0));   // c = 2
 
         // Build a - (b - c)
-        let b_minus_c = eg.add(ENode::Sub(b, c));   // 6 - 2 = 4
-        let result = eg.add(ENode::Sub(a, b_minus_c));  // 10 - 4 = 6
+        let b_minus_c = eg.add(ENode::Op { op: &ops::Sub, children: vec![b, c] });   // 6 - 2 = 4
+        let result = eg.add(ENode::Op { op: &ops::Sub, children: vec![a, b_minus_c] });  // 10 - 4 = 6
 
         eg.saturate();
 
@@ -1095,11 +671,11 @@ mod tests {
         let r_sq = eg.add(ENode::constant(1.0));
 
         // d * d = 16
-        let d_sq = eg.add(ENode::Mul(d, d));
+        let d_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![d, d] });
         // c_sq - r_sq = 15
-        let inner_sub = eg.add(ENode::Sub(c_sq, r_sq));
+        let inner_sub = eg.add(ENode::Op { op: &ops::Sub, children: vec![c_sq, r_sq] });
         // d_sq - inner_sub = 16 - 15 = 1
-        let result = eg.add(ENode::Sub(d_sq, inner_sub));
+        let result = eg.add(ENode::Op { op: &ops::Sub, children: vec![d_sq, inner_sub] });
 
         eg.saturate();
 
@@ -1122,11 +698,11 @@ mod tests {
         let z = eg.add(ENode::Var(2));  // Will be 1
 
         // x * x = 16
-        let x_sq = eg.add(ENode::Mul(x, x));
+        let x_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![x, x] });
         // y - z = 15
-        let inner_sub = eg.add(ENode::Sub(y, z));
+        let inner_sub = eg.add(ENode::Op { op: &ops::Sub, children: vec![y, z] });
         // x_sq - inner_sub = 16 - 15 = 1
-        let result = eg.add(ENode::Sub(x_sq, inner_sub));
+        let result = eg.add(ENode::Op { op: &ops::Sub, children: vec![x_sq, inner_sub] });
 
         eg.saturate();
 
@@ -1149,11 +725,11 @@ mod tests {
         let z = eg.add(ENode::Var(2));  // Will be 1
 
         // x * x = 16
-        let x_sq = eg.add(ENode::Mul(x, x));
+        let x_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![x, x] });
         // y - z = 15
-        let inner_sub = eg.add(ENode::Sub(y, z));
+        let inner_sub = eg.add(ENode::Op { op: &ops::Sub, children: vec![y, z] });
         // x_sq - inner_sub = 16 - 15 = 1
-        let result = eg.add(ENode::Sub(x_sq, inner_sub));
+        let result = eg.add(ENode::Op { op: &ops::Sub, children: vec![x_sq, inner_sub] });
 
         eg.saturate();
 
@@ -1183,21 +759,21 @@ mod tests {
         let r = eg.add(ENode::Var(3));  // r = 1
 
         // d_sq = d * d = 16
-        let d_sq = eg.add(ENode::Mul(d, d));
+        let d_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![d, d] });
 
         // c_sq = a*a + b*b = 0 + 16 = 16
-        let a_sq = eg.add(ENode::Mul(a, a));
-        let b_sq = eg.add(ENode::Mul(b, b));
-        let c_sq = eg.add(ENode::Add(a_sq, b_sq));
+        let a_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![a, a] });
+        let b_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![b, b] });
+        let c_sq = eg.add(ENode::Op { op: &ops::Add, children: vec![a_sq, b_sq] });
 
         // r_sq = r * r = 1
-        let r_sq = eg.add(ENode::Mul(r, r));
+        let r_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![r, r] });
 
         // inner = c_sq - r_sq = 15
-        let inner = eg.add(ENode::Sub(c_sq, r_sq));
+        let inner = eg.add(ENode::Op { op: &ops::Sub, children: vec![c_sq, r_sq] });
 
         // result = d_sq - inner = 1
-        let result = eg.add(ENode::Sub(d_sq, inner));
+        let result = eg.add(ENode::Op { op: &ops::Sub, children: vec![d_sq, inner] });
 
         eg.saturate();
 
@@ -1248,7 +824,7 @@ mod tests {
 
         let mut current = x;
         for _ in 0..10 {
-            current = eg.add(ENode::Add(current, one));
+            current = eg.add(ENode::Op { op: &ops::Add, children: vec![current, one] });
         }
 
         eg.saturate();
@@ -1273,7 +849,7 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let zero = eg.add(ENode::constant(0.0));
-        let sum = eg.add(ENode::Add(x, zero));
+        let sum = eg.add(ENode::Op { op: &ops::Add, children: vec![x, zero] });
 
         eg.saturate();
 
@@ -1302,7 +878,7 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let one = eg.add(ENode::constant(1.0));
-        let prod = eg.add(ENode::Mul(x, one));
+        let prod = eg.add(ENode::Op { op: &ops::Mul, children: vec![x, one] });
 
         eg.saturate();
 
