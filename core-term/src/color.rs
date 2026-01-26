@@ -1,9 +1,3 @@
-// src/color.rs
-
-//! Re-exports color types from pixelflow-render.
-//!
-//! The Color type and all conversion logic now lives in pixelflow-render,
-//! as it's part of the renderer's semantic API.
-
-// Re-export color types from pixelflow-render
-pub use pixelflow_graphics::render::{Color, NamedColor};
+version https://git-lfs.github.com/spec/v1
+oid sha256:15cdf655e1556b1eca34be4dfb9dec338837525dbe27c41035e3e5ea7e340181
+size 300

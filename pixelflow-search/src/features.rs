@@ -1,8 +1,3 @@
-//! # HalfEP Features
-//!
-//! "Half-Expression-Position" features for the NNUE.
-//!
-//! This module defines how we convert algebraic expression trees into
-//! sparse feature vectors for the neural network.
-
-pub use pixelflow_nnue::{HalfEPFeature, OpType, extract_features};
+version https://git-lfs.github.com/spec/v1
+oid sha256:b44110513990589e9c3a6e23ef478475e816cb8f47e6ecd9fdb402baa7f99233
+size 274

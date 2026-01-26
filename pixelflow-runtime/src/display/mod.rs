@@ -1,30 +1,3 @@
-// src/display/mod.rs
-//! Channel-based display system.
-//!
-//! - DisplayDriver: Platform-specific driver (Cocoa, X11, etc.)
-//! - Messages: Display events and render snapshots
-
-// pub mod generic;
-pub mod ops;
-pub mod platform;
-
-pub mod driver;
-pub mod drivers;
-pub mod messages;
-
-pub use driver::DriverActor;
-pub use messages::DisplayEvent;
-pub use platform::Platform;
-
-// Re-export the active display driver for convenience
-#[cfg(use_cocoa_display)]
-pub use drivers::MetalDisplayDriver;
-
-// #[cfg(use_x11_display)]
-// pub use drivers::X11DisplayDriver;
-
-#[cfg(use_headless_display)]
-pub use drivers::HeadlessDisplayDriver;
-
-#[cfg(use_web_display)]
-pub use drivers::WebDisplayDriver;
+version https://git-lfs.github.com/spec/v1
+oid sha256:95f47510a43cbf4370a432d90019961223dc7b03c1eb879a37b6245677ab84ee
+size 686

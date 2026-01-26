@@ -1,14 +1,3 @@
-# Clippy configuration for core-term
-#
-# Based on the style guidelines from STYLE.md
-# Configuration for use with:
-# `cargo clippy --all-targets --all-features -- -D warnings`
-
-# ---- Function & Module Design ----
-# "Functions should generally take fewer than 4 arguments"
-# "+1 for self"
-too-many-arguments-threshold = 5
-
-# Keep functions and modules reasonably sized
-cognitive-complexity-threshold = 20
-too-many-lines-threshold = 350
+version https://git-lfs.github.com/spec/v1
+oid sha256:9e07baab714af038f1112d6bab63b0a4df4d3cbee8970b8fd39d25e78309788a
+size 436

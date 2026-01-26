@@ -1,14 +1,3 @@
-//! Platform-specific pixel type definition.
-
-// Platform-appropriate pixel format
-#[cfg(target_os = "macos")]
-pub type PlatformPixel = pixelflow_graphics::render::color::Rgba8;
-
-#[cfg(target_os = "linux")]
-pub type PlatformPixel = pixelflow_graphics::render::color::Bgra8;
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub type PlatformPixel = pixelflow_graphics::render::color::Rgba8;
-
-// Platform-appropriate ColorCube (re-export from pixelflow-graphics)
-pub type ColorCube = pixelflow_graphics::PlatformColorCube;
+version https://git-lfs.github.com/spec/v1
+oid sha256:8f2ca92a4e240482aa57519742fa1515dd9c598f6670dc6ce62dbf5f8775cbba
+size 532

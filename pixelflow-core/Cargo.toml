@@ -1,31 +1,3 @@
-[package]
-name = "pixelflow-core"
-version = "0.1.0"
-edition = "2024"
-
-[lints]
-workspace = true
-
-[lib]
-bench = false
-
-[features]
-default = []
-# Enable std for benchmarking (interp module timing)
-std = []
-# Disable kernel! macro optimization - for training the cost model
-no_optimize = ["pixelflow-macros/no_optimize"]
-
-[dependencies]
-pixelflow-macros = { path = "../pixelflow-macros" }
-
-# libm only needed for scalar fallback (non-x86_64, non-aarch64)
-[target.'cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
-libm = "0.2.15"
-
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-
-[[bench]]
-name = "core_benches"
-harness = false
+version https://git-lfs.github.com/spec/v1
+oid sha256:a3d608e54b46c6dbd8f25d8a54885b1eaf61e3a0a7d02b32617e54ce4b5d606c
+size 483

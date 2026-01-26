@@ -1,15 +1,3 @@
-[package]
-name = "pixelflow-search"
-version = "0.1.0"
-edition = "2024"
-description = "A generic graph search framework for algebraic optimization and scheduling"
-
-[dependencies]
-libm = "0.2.15"
-rand = "0.8" # Optional, for training/search randomization
-pixelflow-nnue = { path = "../pixelflow-nnue", default-features = false }
-
-[features]
-std = ["rand/std", "pixelflow-nnue/std"]
-default = ["std"]
-training = ["std"]
+version https://git-lfs.github.com/spec/v1
+oid sha256:53467034a816bd7b853455fa8375f132fc22fcd8a3718cabe60a1865db08a781
+size 417
