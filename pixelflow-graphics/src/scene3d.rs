@@ -146,14 +146,6 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Field4> for ColorScree
 // LAYER 1: Geometry (Returns t)
 // ============================================================================
 
-/// Unit sphere centered at origin.
-/// Solves |t * ray| = 1  =>  t = 1 / |ray|
-pub fn unit_sphere() -> impl Manifold<Jet3_4, Output = Jet3> + Clone {
-    kernel!(|| -> Jet3 {
-        let len_sq = X * X + Y * Y + Z * Z;
-        1.0 / len_sq.sqrt()
-    })()
-}
 
 /// Horizontal plane geometry kernel.
 #[derive(Copy, Clone, ManifoldExpr)]

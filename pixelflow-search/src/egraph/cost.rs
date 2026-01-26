@@ -150,6 +150,24 @@ impl CostModel {
         }
     }
 
+    pub fn cost_by_name(&self, name: &str) -> usize {
+        match name {
+            "add" => self.add,
+            "sub" => self.sub,
+            "mul" => self.mul,
+            "div" => self.div,
+            "neg" => self.neg,
+            "recip" => self.recip,
+            "sqrt" => self.sqrt,
+            "rsqrt" => self.rsqrt,
+            "abs" => self.abs,
+            "min" => self.min,
+            "max" => self.max,
+            "mul_add" => self.mul_add,
+            _ => self.add,
+        }
+    }
+
     pub fn node_op_cost(&self, node: &ENode) -> usize {
         match node {
             ENode::Var(_) | ENode::Const(_) => 0,
