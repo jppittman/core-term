@@ -4,6 +4,18 @@ use crate::platform::macos::cocoa::{NSPoint, NSRect, NSSize, NSView, NSWindow};
 use crate::platform::macos::sys::{self, Id, BOOL, YES};
 use std::ffi::c_void;
 
+// Constants for NSWindow style mask
+const NS_WINDOW_STYLE_MASK_TITLED: u64 = 1;
+const NS_WINDOW_STYLE_MASK_CLOSABLE: u64 = 2;
+const NS_WINDOW_STYLE_MASK_MINIATURIZABLE: u64 = 4;
+const NS_WINDOW_STYLE_MASK_RESIZABLE: u64 = 8;
+
+// Constant for NSBackingStore
+const NS_BACKING_STORE_BUFFERED: u64 = 2;
+
+// Constant for Metal Pixel Format
+const MTL_PIXEL_FORMAT_RGBA8_UNORM: u64 = 70;
+
 pub struct MacWindow {
     pub(crate) window: NSWindow,
     pub(crate) view: NSView,
@@ -20,9 +32,12 @@ impl MacWindow {
         );
 
         // NSWindowStyleMask: Titled | Closable | Miniaturizable | Resizable
-        let style_mask = 1 | 2 | 4 | 8;
+        let style_mask = NS_WINDOW_STYLE_MASK_TITLED
+            | NS_WINDOW_STYLE_MASK_CLOSABLE
+            | NS_WINDOW_STYLE_MASK_MINIATURIZABLE
+            | NS_WINDOW_STYLE_MASK_RESIZABLE;
         // NSBackingStoreBuffered = 2
-        let backing = 2;
+        let backing = NS_BACKING_STORE_BUFFERED;
 
         let window = NSWindow::alloc().init_with_content_rect(rect, style_mask, backing, false);
         window.set_title(&desc.title);
@@ -48,7 +63,11 @@ impl MacWindow {
             sys::send_1::<(), Id>(layer, sys::sel(b"setDevice:\0"), device);
 
             // [layer setPixelFormat: 70 (RGBA8Unorm)]
-            sys::send_1::<(), u64>(layer, sys::sel(b"setPixelFormat:\0"), 70);
+            sys::send_1::<(), u64>(
+                layer,
+                sys::sel(b"setPixelFormat:\0"),
+                MTL_PIXEL_FORMAT_RGBA8_UNORM,
+            );
 
             // [layer setFramebufferOnly: YES] - optimization
             sys::send_1::<(), BOOL>(layer, sys::sel(b"setFramebufferOnly:\0"), YES);
@@ -250,7 +269,7 @@ mod tests {
             // The code sets 70.
             let format: u64 = sys::send(layer, sys::sel(b"pixelFormat\0"));
             assert_eq!(
-                format, 70,
+                format, MTL_PIXEL_FORMAT_RGBA8_UNORM,
                 "Pixel format should be 70 (BGRA8Unorm_sRGB or similar)"
             );
 
