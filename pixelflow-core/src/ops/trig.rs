@@ -55,10 +55,15 @@ const TWO_PI_INV: f32 = inv_two_pi();
 fn range_reduce_pi(x: Field) -> Field {
     // Compute k = round(x / 2π) using floor(x + 0.5)
     // The 0.5 must be added BEFORE floor, not after
-    let k = eval((x * Field::from(TWO_PI_INV) + Field::from(0.5)).floor());
+    // Optimized: x.mul_add(inv_2pi, 0.5)
+    let k = eval(x
+        .clone()
+        .mul_add(Field::from(TWO_PI_INV), Field::from(0.5))
+        .floor());
 
     // x' = x - 2π * k
-    eval(x - k * Field::from(TWO_PI))
+    // Optimized: (-2π).mul_add(k, x)
+    eval(Field::from(-TWO_PI).mul_add(k, x))
 }
 
 /// Chebyshev approximation for sin(x) on [-π, π].
@@ -82,14 +87,17 @@ pub(crate) fn cheby_sin(x: Field) -> Field {
     // Horner's method: accumulate from highest degree down
     // p(t) = C1*t + C3*t^3 + C5*t^5 + C7*t^7
     // Rewrite as: ((C7*t^2 + C5)*t^2 + C3)*t^2 + C1)*t
-    // AST building enables FMA fusion
-    let t2 = t.clone() * t.clone();
-    let result =
-        (((Field::from(C7) * t2.clone() + Field::from(C5)) * t2.clone() + Field::from(C3)) * t2
-            + Field::from(C1))
-            * t;
+    // Using mul_add for explicit FMA fusion
+    let t2 = eval(t.clone() * t.clone());
 
-    eval(result)
+    // p = C7 * t2 + C5
+    let p = Field::from(C7).mul_add(t2.clone(), Field::from(C5));
+    // p = p * t2 + C3
+    let p = p.mul_add(t2.clone(), Field::from(C3));
+    // p = p * t2 + C1
+    let p = p.mul_add(t2, Field::from(C1));
+
+    eval(p * t)
 }
 
 /// Chebyshev approximation for cos(x) on [-π, π].
@@ -113,13 +121,17 @@ pub(crate) fn cheby_cos(x: Field) -> Field {
     // Horner's method for even polynomial
     // p(t) = C0 + C2*t^2 + C4*t^4 + C6*t^6
     // Rewrite as: ((C6*t^2 + C4)*t^2 + C2)*t^2 + C0
-    // AST building enables FMA fusion
-    let t2 = t.clone() * t;
-    let result = ((Field::from(C6) * t2.clone() + Field::from(C4)) * t2.clone() + Field::from(C2))
-        * t2
-        + Field::from(C0);
+    // Using mul_add for explicit FMA fusion
+    let t2 = eval(t.clone() * t);
 
-    eval(result)
+    // p = C6 * t2 + C4
+    let p = Field::from(C6).mul_add(t2.clone(), Field::from(C4));
+    // p = p * t2 + C2
+    let p = p.mul_add(t2.clone(), Field::from(C2));
+    // p = p * t2 + C0
+    let p = p.mul_add(t2, Field::from(C0));
+
+    eval(p)
 }
 
 /// Chebyshev approximation for atan2(y, x).
@@ -141,19 +153,29 @@ pub(crate) fn cheby_atan2(y: Field, x: Field) -> Field {
     const C7: f32 = -0.142857143f32;
 
     // Horner's method for approximation of atan(|r|)
-    // AST building enables FMA fusion
+    // Using mul_add for explicit FMA fusion
     let t = r_abs;
-    let t2 = t * t;
-    let atan_approx =
-        (((Field::from(C7) * t2.clone() + Field::from(C5)) * t2.clone() + Field::from(C3)) * t2
-            + Field::from(C1))
-            * t;
+    let t2 = eval(t * t);
+
+    // p = C7 * t2 + C5
+    let p = Field::from(C7).mul_add(t2.clone(), Field::from(C5));
+    // p = p * t2 + C3
+    let p = p.mul_add(t2.clone(), Field::from(C3));
+    // p = p * t2 + C1
+    let p = p.mul_add(t2, Field::from(C1));
+
+    let atan_approx = p * t;
 
     // Handle quadrants
     // For |r| > 1, use identity: atan(r) = π/2 - atan(1/r)
     // Use ManifoldExt's select which builds AST
     let mask_large = r_abs.gt(Field::from(1.0));
-    let atan_large = Field::from(PI_2) - (Field::from(1.0) / r_abs) * atan_approx.clone();
+
+    // atan_large = PI_2 - (1.0 / r_abs) * atan_approx
+    // atan_large = (-1.0 / r_abs) * atan_approx + PI_2
+    // atan_large = (-recip(r_abs)).mul_add(atan_approx, PI_2)
+    let atan_large = Field::from(-1.0).div(r_abs).mul_add(atan_approx.clone(), Field::from(PI_2));
+
     let atan_val = mask_large.select(atan_large, atan_approx);
 
     // Apply sign of y
