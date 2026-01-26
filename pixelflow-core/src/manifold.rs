@@ -71,7 +71,7 @@
 //! // result.val = 4.0, result.dx ≈ 0.6, result.dy ≈ 0.8
 //! ```
 
-use crate::Field;
+use crate::{Discrete, Field};
 
 /// A manifold is a function from a domain to a value.
 ///
@@ -192,7 +192,7 @@ where
 // Computational Types as Constant Manifolds
 // ============================================================================
 //
-// All Computational types (Field, Jet2, Jet3, etc.) are constant manifolds.
+// All Computational types (Field, Jet2, Jet3, Discrete, etc.) are constant manifolds.
 // They ignore the input domain and return themselves unchanged.
 // This allows them to be used in Let bindings as bound values.
 
@@ -215,9 +215,9 @@ macro_rules! impl_constant_manifold {
 
 impl_constant_manifold!(
     Field,
+    Discrete,
     crate::jet::Jet2,
     crate::jet::Jet3,
-    // Add Jet2H, PathJet, etc. here as needed
 );
 
 // ============================================================================

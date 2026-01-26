@@ -9,6 +9,8 @@
 //! expensive, encouraging the extractor to prefer shallower forms or boxing.
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use super::node::ENode;
 
 /// Configurable cost model for operation costs and depth penalties.
@@ -167,5 +169,146 @@ impl CostModel {
             ENode::Tuple(_) => 0,
             _ => self.add, // Default for functions like sin, cos, etc.
         }
+    }
+
+    /// Save cost model to a TOML file.
+    ///
+    /// File format:
+    /// ```toml
+    /// # Learned cost model from SIMD benchmarks
+    /// add = 4
+    /// sub = 4
+    /// mul = 5
+    /// ...
+    /// ```
+    pub fn save_toml<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
+        let contents = format!(
+            r#"# Learned cost model weights
+# Generated from SIMD benchmark measurements
+
+# Operation costs (relative to fastest operation)
+add = {}
+sub = {}
+mul = {}
+div = {}
+neg = {}
+sqrt = {}
+recip = {}
+rsqrt = {}
+abs = {}
+min = {}
+max = {}
+mul_add = {}
+
+# Depth penalty (compile-time optimization)
+depth_threshold = {}
+depth_penalty = {}
+"#,
+            self.add, self.sub, self.mul, self.div, self.neg,
+            self.sqrt, self.recip, self.rsqrt, self.abs,
+            self.min, self.max, self.mul_add,
+            self.depth_threshold, self.depth_penalty,
+        );
+        fs::write(path, contents)
+    }
+
+    /// Load cost model from a TOML file.
+    ///
+    /// Falls back to defaults for missing fields.
+    pub fn load_toml<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
+        let contents = fs::read_to_string(path)?;
+        let mut model = Self::default();
+
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+                if let Ok(v) = value.parse::<usize>() {
+                    match key {
+                        "add" => model.add = v,
+                        "sub" => model.sub = v,
+                        "mul" => model.mul = v,
+                        "div" => model.div = v,
+                        "neg" => model.neg = v,
+                        "sqrt" => model.sqrt = v,
+                        "recip" => model.recip = v,
+                        "rsqrt" => model.rsqrt = v,
+                        "abs" => model.abs = v,
+                        "min" => model.min = v,
+                        "max" => model.max = v,
+                        "mul_add" => model.mul_add = v,
+                        "depth_threshold" => model.depth_threshold = v,
+                        "depth_penalty" => model.depth_penalty = v,
+                        _ => {} // Ignore unknown keys
+                    }
+                }
+            }
+        }
+
+        Ok(model)
+    }
+
+    /// Try to load from a standard location, falling back to fully_optimized.
+    ///
+    /// Checks in order:
+    /// 1. `PIXELFLOW_COST_MODEL` environment variable
+    /// 2. `~/.config/pixelflow/cost_model.toml`
+    /// 3. `<workspace>/pixelflow-ml/data/learned_cost_model.toml`
+    /// 4. Falls back to `fully_optimized()`
+    pub fn load_or_default() -> Self {
+        // Check environment variable first
+        if let Ok(path) = std::env::var("PIXELFLOW_COST_MODEL") {
+            if let Ok(model) = Self::load_toml(&path) {
+                return model;
+            }
+        }
+
+        // Try user config directory
+        if let Some(home) = std::env::var_os("HOME") {
+            let config_path = Path::new(&home)
+                .join(".config/pixelflow/cost_model.toml");
+            if let Ok(model) = Self::load_toml(&config_path) {
+                return model;
+            }
+        }
+
+        // Try workspace data directory (for development)
+        let workspace_paths = [
+            "pixelflow-ml/data/learned_cost_model.toml",
+            "../pixelflow-ml/data/learned_cost_model.toml",
+        ];
+        for path in workspace_paths {
+            if let Ok(model) = Self::load_toml(path) {
+                return model;
+            }
+        }
+
+        // Default to hardcoded optimized settings
+        Self::fully_optimized()
+    }
+
+    /// Convert to HashMap for interop with other systems.
+    pub fn to_map(&self) -> HashMap<String, usize> {
+        let mut map = HashMap::new();
+        map.insert("add".to_string(), self.add);
+        map.insert("sub".to_string(), self.sub);
+        map.insert("mul".to_string(), self.mul);
+        map.insert("div".to_string(), self.div);
+        map.insert("neg".to_string(), self.neg);
+        map.insert("sqrt".to_string(), self.sqrt);
+        map.insert("recip".to_string(), self.recip);
+        map.insert("rsqrt".to_string(), self.rsqrt);
+        map.insert("abs".to_string(), self.abs);
+        map.insert("min".to_string(), self.min);
+        map.insert("max".to_string(), self.max);
+        map.insert("mul_add".to_string(), self.mul_add);
+        map.insert("depth_threshold".to_string(), self.depth_threshold);
+        map.insert("depth_penalty".to_string(), self.depth_penalty);
+        map
     }
 }

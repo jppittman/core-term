@@ -175,7 +175,7 @@ pub use domain::{Head, LetExtended, Spatial, Tail};
 pub use ext::*;
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 pub use manifold::*;
-pub use numeric::{Computational, Coordinate, Selectable};
+pub use numeric::{Computational, Coordinate};
 pub use ops::binary::*;
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
 pub use ops::logic::*;

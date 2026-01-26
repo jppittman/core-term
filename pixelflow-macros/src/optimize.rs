@@ -21,35 +21,67 @@
 //! let b = Y * Y;
 //! (a + b).sqrt()  // E-graph sees: sqrt(X*X + Y*Y)
 //! ```
+//!
+//! ## Training Mode
+//!
+//! When the `no_optimize` feature is enabled, all optimization is disabled.
+//! This allows benchmarking unoptimized kernels to collect training data
+//! for the cost model.
 
+use crate::sema::AnalyzedKernel;
+
+// Optimization-only imports
+#[cfg(not(feature = "no_optimize"))]
 use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
     UnaryExpr, UnaryOp,
 };
-use crate::sema::AnalyzedKernel;
+#[cfg(not(feature = "no_optimize"))]
 use pixelflow_search::egraph::{CostModel, EClassId, EGraph, ENode, ExprTree};
+#[cfg(not(feature = "no_optimize"))]
 use proc_macro2::Span;
+#[cfg(not(feature = "no_optimize"))]
 use std::collections::HashMap;
+#[cfg(not(feature = "no_optimize"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(not(feature = "no_optimize"))]
 use syn::{Ident, Lit};
 
 /// Counter for generating unique opaque variable names.
+#[cfg(not(feature = "no_optimize"))]
 static OPAQUE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Generate a unique name for an opaque expression (unknown method call, etc.)
+#[cfg(not(feature = "no_optimize"))]
 fn unique_opaque_name(prefix: &str) -> String {
     let id = OPAQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("__{}{}", prefix, id)
 }
 
 /// Optimize an analyzed kernel using tree rewriting and e-graphs.
+///
+/// When the `no_optimize` feature is enabled, this function returns the
+/// analyzed kernel unchanged. This is used for training the cost model:
+/// benchmark unoptimized kernels to measure true expression costs.
+#[cfg(not(feature = "no_optimize"))]
 pub fn optimize(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
     // 1. Structural optimization (catches things inside opaque nodes)
     analyzed.def.body = optimize_expr(analyzed.def.body);
 
     // 2. E-Graph optimization (global rewriting & fusion)
-    // We assume fully optimized costs for this project (AVX-512 target implied)
-    optimize_with_egraph(analyzed, &CostModel::fully_optimized())
+    // Load learned cost model if available, otherwise use defaults.
+    // Set PIXELFLOW_COST_MODEL env var to use a specific cost model file.
+    let cost_model = CostModel::load_or_default();
+    optimize_with_egraph(analyzed, &cost_model)
+}
+
+/// No-op optimization for training the cost model.
+///
+/// Returns the analyzed kernel unchanged, allowing benchmarking of
+/// unoptimized expression structures.
+#[cfg(feature = "no_optimize")]
+pub fn optimize(analyzed: AnalyzedKernel) -> AnalyzedKernel {
+    analyzed
 }
 
 /// Optimize an analyzed kernel using e-graph equality saturation.
@@ -57,6 +89,7 @@ pub fn optimize(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
 /// This optimizer discovers all equivalent forms of an expression and
 /// extracts the optimal one based on the provided cost model. It enables
 /// optimizations like FMA fusion that span multiple operations.
+#[cfg(not(feature = "no_optimize"))]
 pub fn optimize_with_egraph(mut analyzed: AnalyzedKernel, costs: &CostModel) -> AnalyzedKernel {
     analyzed.def.body = optimize_expr_with_egraph(analyzed.def.body, costs);
     analyzed
@@ -71,6 +104,7 @@ pub fn optimize_with_egraph(mut analyzed: AnalyzedKernel, costs: &CostModel) -> 
 /// However, blocks containing opaque expressions that reference local variables
 /// must preserve their structure, since the e-graph extraction would lose the
 /// let bindings those locals depend on.
+#[cfg(not(feature = "no_optimize"))]
 fn optimize_expr_with_egraph(expr: Expr, costs: &CostModel) -> Expr {
     match &expr {
         // Blocks with opaque expressions need special handling
@@ -115,6 +149,7 @@ fn optimize_expr_with_egraph(expr: Expr, costs: &CostModel) -> Expr {
 ///
 /// The e-graph optimizer inlines variable references, so if we don't preserve
 /// the block structure, the let bindings would be lost in the extracted result.
+#[cfg(not(feature = "no_optimize"))]
 fn block_has_opaque_with_locals(block: &BlockExpr) -> bool {
     // Collect names of let-bound locals
     let local_names: std::collections::HashSet<String> = block
@@ -155,6 +190,7 @@ fn block_has_opaque_with_locals(block: &BlockExpr) -> bool {
 }
 
 /// Check if an expression has opaque sub-expressions that reference the given names.
+#[cfg(not(feature = "no_optimize"))]
 fn expr_has_opaque_refs(expr: &Expr, local_names: &std::collections::HashSet<String>) -> bool {
     match expr {
         // Method calls on non-intrinsic receivers are opaque if they use locals
@@ -221,6 +257,7 @@ fn expr_has_opaque_refs(expr: &Expr, local_names: &std::collections::HashSet<Str
 }
 
 /// Check if an expression references any of the given names.
+#[cfg(not(feature = "no_optimize"))]
 fn expr_references_any(expr: &Expr, names: &std::collections::HashSet<String>) -> bool {
     match expr {
         Expr::Ident(i) => names.contains(&i.name.to_string()),
@@ -255,6 +292,7 @@ fn expr_references_any(expr: &Expr, names: &std::collections::HashSet<String>) -
 ///
 /// This walks the syn::Expr tree looking for identifiers that match any of the names.
 /// Used for checking Verbatim expressions that wrap raw syn::Expr values.
+#[cfg(not(feature = "no_optimize"))]
 fn syn_expr_references_any(expr: &syn::Expr, names: &std::collections::HashSet<String>) -> bool {
     use syn::Expr as SynExpr;
 
@@ -343,6 +381,7 @@ fn syn_expr_references_any(expr: &syn::Expr, names: &std::collections::HashSet<S
 }
 
 /// Check if a name is a coordinate intrinsic (X, Y, Z, W).
+#[cfg(not(feature = "no_optimize"))]
 fn is_coordinate_intrinsic(name: &str) -> bool {
     matches!(name, "X" | "Y" | "Z" | "W")
 }
@@ -350,6 +389,7 @@ fn is_coordinate_intrinsic(name: &str) -> bool {
 /// Optimize a block while preserving its structure.
 ///
 /// Each let binding and the final expression are optimized independently.
+#[cfg(not(feature = "no_optimize"))]
 fn optimize_block_preserving_structure(mut block: BlockExpr, costs: &CostModel) -> Expr {
     for stmt in &mut block.stmts {
         if let Stmt::Let(let_stmt) = stmt {
@@ -367,12 +407,59 @@ fn optimize_block_preserving_structure(mut block: BlockExpr, costs: &CostModel) 
 }
 
 /// Optimize an expression via the e-graph.
+#[cfg(not(feature = "no_optimize"))]
 fn optimize_via_egraph(expr: &Expr, costs: &CostModel) -> Expr {
     let mut ctx = EGraphContext::new();
     let root = ctx.expr_to_egraph(expr);
     ctx.egraph.saturate();
     let tree = ctx.egraph.extract_tree_with_costs(root, costs);
-    ctx.tree_to_expr(&tree)
+    let optimized = ctx.tree_to_expr(&tree);
+
+    // TRAINING: emit sample with correct CSE for cost model training
+    #[cfg(feature = "training")]
+    emit_training_sample(expr, &optimized, &tree);
+
+    optimized
+}
+
+/// Emit a training sample for NNUE cost model training.
+///
+/// When the `training` feature is enabled, this writes kernel expressions to a file
+/// specified by the `PIXELFLOW_TRAINING_OUT` environment variable. Each line contains:
+/// - The original expression (before optimization)
+/// - The optimized expression (after e-graph extraction)
+/// - The ExprTree structure (for cost analysis)
+///
+/// The output preserves CSE via let bindings, ensuring benchmarks measure real costs.
+#[cfg(all(not(feature = "no_optimize"), feature = "training"))]
+fn emit_training_sample(original: &Expr, optimized: &Expr, tree: &ExprTree) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let Some(path) = std::env::var_os("PIXELFLOW_TRAINING_OUT") else {
+        return;
+    };
+
+    // Format expressions for output
+    let original_str = format!("{:?}", original);
+    let optimized_str = format!("{:?}", optimized);
+    let tree_str = format!("{:?}", tree);
+
+    // Append to output file
+    let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+
+    // Write as JSON-like record for easy parsing
+    let _ = writeln!(
+        file,
+        r#"{{"original": {:?}, "optimized": {:?}, "tree": {:?}}}"#,
+        original_str, optimized_str, tree_str
+    );
 }
 
 // ============================================================================
@@ -380,6 +467,7 @@ fn optimize_via_egraph(expr: &Expr, costs: &CostModel) -> Expr {
 // ============================================================================
 
 /// Context for converting between AST and e-graph representations.
+#[cfg(not(feature = "no_optimize"))]
 struct EGraphContext {
     /// The e-graph being built.
     egraph: EGraph,
@@ -392,6 +480,7 @@ struct EGraphContext {
     opaque_exprs: HashMap<String, Expr>,
 }
 
+#[cfg(not(feature = "no_optimize"))]
 impl EGraphContext {
     fn new() -> Self {
         Self {
@@ -845,6 +934,7 @@ impl EGraphContext {
 }
 
 /// Extract f64 from a syn::Lit.
+#[cfg(not(feature = "no_optimize"))]
 fn extract_f64_from_lit(lit: &Lit) -> Option<f64> {
     match lit {
         Lit::Float(f) => f.base10_parse::<f64>().ok(),
@@ -853,6 +943,7 @@ fn extract_f64_from_lit(lit: &Lit) -> Option<f64> {
     }
 }
 
+#[cfg(not(feature = "no_optimize"))]
 fn optimize_expr(expr: Expr) -> Expr {
     match expr {
         Expr::Binary(binary) => optimize_binary(binary),
@@ -877,6 +968,7 @@ fn optimize_expr(expr: Expr) -> Expr {
     }
 }
 
+#[cfg(not(feature = "no_optimize"))]
 fn optimize_binary(mut binary: BinaryExpr) -> Expr {
     // 1. Optimize operands first
     binary.lhs = Box::new(optimize_expr(*binary.lhs));
@@ -897,6 +989,7 @@ fn optimize_binary(mut binary: BinaryExpr) -> Expr {
     Expr::Binary(binary)
 }
 
+#[cfg(not(feature = "no_optimize"))]
 fn optimize_unary(mut unary: UnaryExpr) -> Expr {
     unary.operand = Box::new(optimize_expr(*unary.operand));
 
@@ -909,6 +1002,7 @@ fn optimize_unary(mut unary: UnaryExpr) -> Expr {
     Expr::Unary(unary)
 }
 
+#[cfg(not(feature = "no_optimize"))]
 fn optimize_block(mut block: BlockExpr) -> Expr {
     // Optimize statements
     for stmt in &mut block.stmts {
@@ -935,6 +1029,7 @@ fn optimize_block(mut block: BlockExpr) -> Expr {
 
 // --- Helpers ---
 
+#[cfg(not(feature = "no_optimize"))]
 fn extract_f64(expr: &Expr) -> Option<f64> {
     if let Expr::Literal(lit_expr) = expr {
         match &lit_expr.lit {
@@ -947,6 +1042,7 @@ fn extract_f64(expr: &Expr) -> Option<f64> {
     }
 }
 
+#[cfg(not(feature = "no_optimize"))]
 fn make_literal(val: f64, span: Span) -> Expr {
     let mut s = val.to_string();
     if !s.contains('.') && !s.contains('e') && !s.contains('E') {
@@ -959,6 +1055,7 @@ fn make_literal(val: f64, span: Span) -> Expr {
     })
 }
 
+#[cfg(not(feature = "no_optimize"))]
 fn fold_constants(op: BinaryOp, lhs: f64, rhs: f64) -> Option<f64> {
     match op {
         BinaryOp::Add => Some(lhs + rhs),
@@ -970,6 +1067,7 @@ fn fold_constants(op: BinaryOp, lhs: f64, rhs: f64) -> Option<f64> {
     }
 }
 
+#[cfg(not(feature = "no_optimize"))]
 fn fold_unary(op: UnaryOp, val: f64) -> Option<f64> {
     match op {
         UnaryOp::Neg => Some(-val),
@@ -977,6 +1075,7 @@ fn fold_unary(op: UnaryOp, val: f64) -> Option<f64> {
     }
 }
 
+#[cfg(not(feature = "no_optimize"))]
 fn simplify_algebraic(binary: &BinaryExpr) -> Option<Expr> {
     let lhs_val = extract_f64(&binary.lhs);
     let rhs_val = extract_f64(&binary.rhs);
@@ -1032,15 +1131,17 @@ fn simplify_algebraic(binary: &BinaryExpr) -> Option<Expr> {
     None
 }
 
+#[cfg(not(feature = "no_optimize"))]
 fn is_zero(val: Option<f64>) -> bool {
     matches!(val, Some(v) if v.abs() < f64::EPSILON)
 }
 
+#[cfg(not(feature = "no_optimize"))]
 fn is_one(val: Option<f64>) -> bool {
     matches!(val, Some(v) if (v - 1.0).abs() < f64::EPSILON)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "no_optimize")))]
 mod tests {
     use super::*;
     use crate::parser::parse;

@@ -16,7 +16,7 @@
 //! - Per-lane blending only at cell boundaries
 //! - O(log n) tree depth
 
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, Select};
 use std::sync::Arc;
 
 /// The standard 4D Field domain type.
@@ -282,8 +282,8 @@ where
         let left_val = self.eval_child(node.left, x, y, z, w);
         let right_val = self.eval_child(node.right, x, y, z, w);
 
-        // Blend using mask
-        Discrete::select(mask, left_val, right_val)
+        // Blend using Select combinator
+        Select { cond: mask, if_true: left_val, if_false: right_val }.eval((x, y, z, w))
     }
 
     /// Evaluate a child node (either interior or leaf).

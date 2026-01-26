@@ -9,6 +9,15 @@ license = "Apache-2.0"
 [lib]
 proc-macro = true
 
+[features]
+default = []
+# Disable e-graph optimization in kernel! macro.
+# Used for training the cost model: benchmark unoptimized kernels to measure true costs.
+no_optimize = []
+# Emit training samples during compilation for NNUE cost model training.
+# Set PIXELFLOW_TRAINING_OUT env var to specify output file path.
+training = []
+
 [dependencies]
 syn = { version = "2", features = ["full", "fold", "extra-traits", "parsing"] }
 quote = "1"

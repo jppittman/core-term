@@ -200,6 +200,11 @@ pub fn expr_to_egraph(expr: &Expr, egraph: &mut EGraph) -> EClassId {
                 OpType::Div => ENode::Div(a_class, b_class),
                 OpType::Min => ENode::Min(a_class, b_class),
                 OpType::Max => ENode::Max(a_class, b_class),
+                OpType::MulRsqrt => {
+                    // Decompose: mul_rsqrt(a, b) = a * rsqrt(b)
+                    let rsqrt_b = egraph.add(ENode::Rsqrt(b_class));
+                    ENode::Mul(a_class, rsqrt_b)
+                }
                 _ => panic!("Unsupported binary op type: {:?}", op),
             };
             egraph.add(node)
