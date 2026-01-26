@@ -37,7 +37,7 @@ use crate::ast::{
     UnaryExpr, UnaryOp,
 };
 #[cfg(not(feature = "no_optimize"))]
-use pixelflow_search::egraph::{CostModel, EClassId, EGraph, ENode, ExprTree};
+use pixelflow_search::egraph::{CostModel, EClassId, EGraph, ENode, ExprTree, Leaf, ops};
 #[cfg(not(feature = "no_optimize"))]
 use proc_macro2::Span;
 #[cfg(not(feature = "no_optimize"))]
@@ -411,8 +411,11 @@ fn optimize_block_preserving_structure(mut block: BlockExpr, costs: &CostModel) 
 fn optimize_via_egraph(expr: &Expr, costs: &CostModel) -> Expr {
     let mut ctx = EGraphContext::new();
     let root = ctx.expr_to_egraph(expr);
-    ctx.egraph.saturate();
+
+    ctx.egraph.saturate_with_limit(2);
+
     let tree = ctx.egraph.extract_tree_with_costs(root, costs);
+
     let optimized = ctx.tree_to_expr(&tree);
 
     // TRAINING: emit sample with correct CSE for cost model training
@@ -560,16 +563,16 @@ impl EGraphContext {
                         let rhs = self.expr_to_egraph(&binary.rhs);
 
                         let node = match binary.op {
-                            BinaryOp::Add => ENode::Add(lhs, rhs),
-                            BinaryOp::Sub => ENode::Sub(lhs, rhs),
-                            BinaryOp::Mul => ENode::Mul(lhs, rhs),
-                            BinaryOp::Div => ENode::Div(lhs, rhs),
-                            BinaryOp::Lt => ENode::Lt(lhs, rhs),
-                            BinaryOp::Le => ENode::Le(lhs, rhs),
-                            BinaryOp::Gt => ENode::Gt(lhs, rhs),
-                            BinaryOp::Ge => ENode::Ge(lhs, rhs),
-                            BinaryOp::Eq => ENode::Eq(lhs, rhs),
-                            BinaryOp::Ne => ENode::Ne(lhs, rhs),
+                            BinaryOp::Add => ENode::Op { op: &ops::Add, children: vec![lhs, rhs] },
+                            BinaryOp::Sub => ENode::Op { op: &ops::Sub, children: vec![lhs, rhs] },
+                            BinaryOp::Mul => ENode::Op { op: &ops::Mul, children: vec![lhs, rhs] },
+                            BinaryOp::Div => ENode::Op { op: &ops::Div, children: vec![lhs, rhs] },
+                            BinaryOp::Lt => ENode::Op { op: &ops::Lt, children: vec![lhs, rhs] },
+                            BinaryOp::Le => ENode::Op { op: &ops::Le, children: vec![lhs, rhs] },
+                            BinaryOp::Gt => ENode::Op { op: &ops::Gt, children: vec![lhs, rhs] },
+                            BinaryOp::Ge => ENode::Op { op: &ops::Ge, children: vec![lhs, rhs] },
+                            BinaryOp::Eq => ENode::Op { op: &ops::Eq, children: vec![lhs, rhs] },
+                            BinaryOp::Ne => ENode::Op { op: &ops::Ne, children: vec![lhs, rhs] },
                             _ => unreachable!(),
                         };
                         self.egraph.add(node)
@@ -584,13 +587,13 @@ impl EGraphContext {
                 match unary.op {
                     UnaryOp::Neg => {
                         let operand = self.expr_to_egraph(&unary.operand);
-                        self.egraph.add(ENode::Neg(operand))
+                        self.egraph.add(ENode::Op { op: &ops::Neg, children: vec![operand] })
                     }
                     UnaryOp::Not => {
                         // Map Not(x) to 1.0 - x (assuming boolean 0.0/1.0 logic)
                         let operand = self.expr_to_egraph(&unary.operand);
                         let one = self.egraph.add(ENode::constant(1.0));
-                        self.egraph.add(ENode::Sub(one, operand))
+                        self.egraph.add(ENode::Op { op: &ops::Sub, children: vec![one, operand] })
                     }
                 }
             }
@@ -608,90 +611,90 @@ impl EGraphContext {
 
                 match method.as_str() {
                     // === Unary methods ===
-                    "sqrt" => self.egraph.add(ENode::Sqrt(receiver)),
-                    "rsqrt" => self.egraph.add(ENode::Rsqrt(receiver)),
-                    "recip" => self.egraph.add(ENode::Recip(receiver)),
-                    "abs" => self.egraph.add(ENode::Abs(receiver)),
-                    "neg" => self.egraph.add(ENode::Neg(receiver)),
-                    "floor" => self.egraph.add(ENode::Floor(receiver)),
-                    "ceil" => self.egraph.add(ENode::Ceil(receiver)),
-                    "round" => self.egraph.add(ENode::Round(receiver)),
-                    "fract" => self.egraph.add(ENode::Fract(receiver)),
-                    "sin" => self.egraph.add(ENode::Sin(receiver)),
-                    "cos" => self.egraph.add(ENode::Cos(receiver)),
-                    "tan" => self.egraph.add(ENode::Tan(receiver)),
-                    "asin" => self.egraph.add(ENode::Asin(receiver)),
-                    "acos" => self.egraph.add(ENode::Acos(receiver)),
-                    "atan" => self.egraph.add(ENode::Atan(receiver)),
-                    "exp" => self.egraph.add(ENode::Exp(receiver)),
-                    "exp2" => self.egraph.add(ENode::Exp2(receiver)),
-                    "ln" => self.egraph.add(ENode::Ln(receiver)),
-                    "log2" => self.egraph.add(ENode::Log2(receiver)),
-                    "log10" => self.egraph.add(ENode::Log10(receiver)),
+                    "sqrt" => self.egraph.add(ENode::Op { op: &ops::Sqrt, children: vec![receiver] }),
+                    "rsqrt" => self.egraph.add(ENode::Op { op: &ops::Rsqrt, children: vec![receiver] }),
+                    "recip" => self.egraph.add(ENode::Op { op: &ops::Recip, children: vec![receiver] }),
+                    "abs" => self.egraph.add(ENode::Op { op: &ops::Abs, children: vec![receiver] }),
+                    "neg" => self.egraph.add(ENode::Op { op: &ops::Neg, children: vec![receiver] }),
+                    "floor" => self.egraph.add(ENode::Op { op: &ops::Floor, children: vec![receiver] }),
+                    "ceil" => self.egraph.add(ENode::Op { op: &ops::Ceil, children: vec![receiver] }),
+                    "round" => self.egraph.add(ENode::Op { op: &ops::Round, children: vec![receiver] }),
+                    "fract" => self.egraph.add(ENode::Op { op: &ops::Fract, children: vec![receiver] }),
+                    "sin" => self.egraph.add(ENode::Op { op: &ops::Sin, children: vec![receiver] }),
+                    "cos" => self.egraph.add(ENode::Op { op: &ops::Cos, children: vec![receiver] }),
+                    "tan" => self.egraph.add(ENode::Op { op: &ops::Tan, children: vec![receiver] }),
+                    "asin" => self.egraph.add(ENode::Op { op: &ops::Asin, children: vec![receiver] }),
+                    "acos" => self.egraph.add(ENode::Op { op: &ops::Acos, children: vec![receiver] }),
+                    "atan" => self.egraph.add(ENode::Op { op: &ops::Atan, children: vec![receiver] }),
+                    "exp" => self.egraph.add(ENode::Op { op: &ops::Exp, children: vec![receiver] }),
+                    "exp2" => self.egraph.add(ENode::Op { op: &ops::Exp2, children: vec![receiver] }),
+                    "ln" => self.egraph.add(ENode::Op { op: &ops::Ln, children: vec![receiver] }),
+                    "log2" => self.egraph.add(ENode::Op { op: &ops::Log2, children: vec![receiver] }),
+                    "log10" => self.egraph.add(ENode::Op { op: &ops::Log10, children: vec![receiver] }),
 
                     // === Binary methods ===
                     "min" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Min(receiver, arg))
+                        self.egraph.add(ENode::Op { op: &ops::Min, children: vec![receiver, arg] })
                     }
                     "max" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Max(receiver, arg))
+                        self.egraph.add(ENode::Op { op: &ops::Max, children: vec![receiver, arg] })
                     }
                     "atan2" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Atan2(receiver, arg))
+                        self.egraph.add(ENode::Op { op: &ops::Atan2, children: vec![receiver, arg] })
                     }
                     "pow" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Pow(receiver, arg))
+                        self.egraph.add(ENode::Op { op: &ops::Pow, children: vec![receiver, arg] })
                     }
                     "hypot" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Hypot(receiver, arg))
+                        self.egraph.add(ENode::Op { op: &ops::Hypot, children: vec![receiver, arg] })
                     }
 
                     // === Comparison methods ===
                     "lt" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Lt(receiver, arg))
+                        self.egraph.add(ENode::Op { op: &ops::Lt, children: vec![receiver, arg] })
                     }
                     "le" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Le(receiver, arg))
+                        self.egraph.add(ENode::Op { op: &ops::Le, children: vec![receiver, arg] })
                     }
                     "gt" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Gt(receiver, arg))
+                        self.egraph.add(ENode::Op { op: &ops::Gt, children: vec![receiver, arg] })
                     }
                     "ge" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Ge(receiver, arg))
+                        self.egraph.add(ENode::Op { op: &ops::Ge, children: vec![receiver, arg] })
                     }
                     "eq" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Eq(receiver, arg))
+                        self.egraph.add(ENode::Op { op: &ops::Eq, children: vec![receiver, arg] })
                     }
                     "ne" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
-                        self.egraph.add(ENode::Ne(receiver, arg))
+                        self.egraph.add(ENode::Op { op: &ops::Ne, children: vec![receiver, arg] })
                     }
 
                     // === Ternary methods ===
                     "mul_add" => {
                         let b = self.expr_to_egraph(&call.args[0]);
                         let c = self.expr_to_egraph(&call.args[1]);
-                        self.egraph.add(ENode::MulAdd(receiver, b, c))
+                        self.egraph.add(ENode::Op { op: &ops::MulAdd, children: vec![receiver, b, c] })
                     }
                     "select" => {
                         let if_true = self.expr_to_egraph(&call.args[0]);
                         let if_false = self.expr_to_egraph(&call.args[1]);
-                        self.egraph.add(ENode::Select(receiver, if_true, if_false))
+                        self.egraph.add(ENode::Op { op: &ops::Select, children: vec![receiver, if_true, if_false] })
                     }
                     "clamp" => {
                         let min_val = self.expr_to_egraph(&call.args[0]);
                         let max_val = self.expr_to_egraph(&call.args[1]);
-                        self.egraph.add(ENode::Clamp(receiver, min_val, max_val))
+                        self.egraph.add(ENode::Op { op: &ops::Clamp, children: vec![receiver, min_val, max_val] })
                     }
 
                     // Should not reach here due to is_known_method check
@@ -732,17 +735,27 @@ impl EGraphContext {
 
             Expr::Tuple(tuple) => {
                 let elems = tuple.elems.iter().map(|e| self.expr_to_egraph(e)).collect();
-                self.egraph.add(ENode::Tuple(elems))
+                self.egraph.add(ENode::Op { op: &ops::Tuple, children: elems })
             }
         }
     }
 
     /// Convert an extracted expression tree back to an AST expression.
     fn tree_to_expr(&self, tree: &ExprTree) -> Expr {
+        self.tree_to_expr_impl(tree, 0)
+    }
+
+    /// Implementation with depth limit to prevent stack overflow.
+    fn tree_to_expr_impl(&self, tree: &ExprTree, depth: usize) -> Expr {
+        const MAX_DEPTH: usize = 1000;
+        if depth > MAX_DEPTH {
+            panic!("tree_to_expr exceeded maximum depth of {}", MAX_DEPTH);
+        }
+
         let span = Span::call_site();
 
         match tree {
-            ExprTree::Var(idx) => {
+            ExprTree::Leaf(Leaf::Var(idx)) => {
                 let name = self
                     .idx_to_name
                     .get(*idx as usize)
@@ -760,174 +773,127 @@ impl EGraphContext {
                 })
             }
 
-            ExprTree::Const(val) => make_literal(*val as f64, span),
+            ExprTree::Leaf(Leaf::Const(val)) => make_literal(*val as f64, span),
 
-            ExprTree::Add(a, b) => Expr::Binary(BinaryExpr {
-                op: BinaryOp::Add,
-                lhs: Box::new(self.tree_to_expr(a)),
-                rhs: Box::new(self.tree_to_expr(b)),
-                span,
-            }),
+            ExprTree::Op { op, children } => {
+                let name = op.name();
+                match name {
+                    // Binary arithmetic ops
+                    "add" if children.len() == 2 => Expr::Binary(BinaryExpr {
+                        op: BinaryOp::Add,
+                        lhs: Box::new(self.tree_to_expr_impl(&children[0], depth + 1)),
+                        rhs: Box::new(self.tree_to_expr_impl(&children[1], depth + 1)),
+                        span,
+                    }),
+                    "sub" if children.len() == 2 => Expr::Binary(BinaryExpr {
+                        op: BinaryOp::Sub,
+                        lhs: Box::new(self.tree_to_expr_impl(&children[0], depth + 1)),
+                        rhs: Box::new(self.tree_to_expr_impl(&children[1], depth + 1)),
+                        span,
+                    }),
+                    "mul" if children.len() == 2 => Expr::Binary(BinaryExpr {
+                        op: BinaryOp::Mul,
+                        lhs: Box::new(self.tree_to_expr_impl(&children[0], depth + 1)),
+                        rhs: Box::new(self.tree_to_expr_impl(&children[1], depth + 1)),
+                        span,
+                    }),
+                    "div" if children.len() == 2 => Expr::Binary(BinaryExpr {
+                        op: BinaryOp::Div,
+                        lhs: Box::new(self.tree_to_expr_impl(&children[0], depth + 1)),
+                        rhs: Box::new(self.tree_to_expr_impl(&children[1], depth + 1)),
+                        span,
+                    }),
 
-            ExprTree::Sub(a, b) => Expr::Binary(BinaryExpr {
-                op: BinaryOp::Sub,
-                lhs: Box::new(self.tree_to_expr(a)),
-                rhs: Box::new(self.tree_to_expr(b)),
-                span,
-            }),
+                    // Unary ops
+                    "neg" if children.len() == 1 => Expr::Unary(UnaryExpr {
+                        op: UnaryOp::Neg,
+                        operand: Box::new(self.tree_to_expr_impl(&children[0], depth + 1)),
+                        span,
+                    }),
 
-            ExprTree::Mul(a, b) => Expr::Binary(BinaryExpr {
-                op: BinaryOp::Mul,
-                lhs: Box::new(self.tree_to_expr(a)),
-                rhs: Box::new(self.tree_to_expr(b)),
-                span,
-            }),
+                    // Unary methods
+                    "sqrt" | "rsqrt" | "abs" | "floor" | "ceil" | "round" | "fract" |
+                    "sin" | "cos" | "tan" | "asin" | "acos" | "atan" |
+                    "exp" | "exp2" | "ln" | "log2" | "log10" if children.len() == 1 => {
+                        self.unary_method(&children[0], name, span, depth + 1)
+                    }
 
-            ExprTree::Div(a, b) => Expr::Binary(BinaryExpr {
-                op: BinaryOp::Div,
-                lhs: Box::new(self.tree_to_expr(a)),
-                rhs: Box::new(self.tree_to_expr(b)),
-                span,
-            }),
+                    // Binary methods
+                    "min" | "max" | "atan2" | "pow" | "hypot" if children.len() == 2 => {
+                        self.binary_method(&children[0], &children[1], name, span, depth + 1)
+                    }
 
-            ExprTree::Neg(a) => Expr::Unary(UnaryExpr {
-                op: UnaryOp::Neg,
-                operand: Box::new(self.tree_to_expr(a)),
-                span,
-            }),
+                    // Special case for recip
+                    "recip" if children.len() == 1 => Expr::Binary(BinaryExpr {
+                        op: BinaryOp::Div,
+                        lhs: Box::new(make_literal(1.0, span)),
+                        rhs: Box::new(self.tree_to_expr_impl(&children[0], depth + 1)),
+                        span,
+                    }),
 
-            ExprTree::Sqrt(a) => Expr::MethodCall(MethodCallExpr {
-                receiver: Box::new(self.tree_to_expr(a)),
-                method: Ident::new("sqrt", span),
-                args: vec![],
-                span,
-            }),
+                    // Comparison ops
+                    "lt" if children.len() == 2 => self.binary_op(&children[0], &children[1], BinaryOp::Lt, span, depth + 1),
+                    "le" if children.len() == 2 => self.binary_op(&children[0], &children[1], BinaryOp::Le, span, depth + 1),
+                    "gt" if children.len() == 2 => self.binary_op(&children[0], &children[1], BinaryOp::Gt, span, depth + 1),
+                    "ge" if children.len() == 2 => self.binary_op(&children[0], &children[1], BinaryOp::Ge, span, depth + 1),
+                    "eq" if children.len() == 2 => self.binary_op(&children[0], &children[1], BinaryOp::Eq, span, depth + 1),
+                    "ne" if children.len() == 2 => self.binary_op(&children[0], &children[1], BinaryOp::Ne, span, depth + 1),
 
-            ExprTree::Rsqrt(a) => {
-                // rsqrt(x) = 1.0 / sqrt(x), but we emit it as a method call
-                // since pixelflow-core has rsqrt support
-                Expr::MethodCall(MethodCallExpr {
-                    receiver: Box::new(self.tree_to_expr(a)),
-                    method: Ident::new("rsqrt", span),
-                    args: vec![],
-                    span,
-                })
+                    // Ternary methods
+                    "mul_add" if children.len() == 3 => Expr::MethodCall(MethodCallExpr {
+                        receiver: Box::new(self.tree_to_expr_impl(&children[0], depth + 1)),
+                        method: Ident::new("mul_add", span),
+                        args: vec![self.tree_to_expr_impl(&children[1], depth + 1), self.tree_to_expr_impl(&children[2], depth + 1)],
+                        span,
+                    }),
+                    "select" if children.len() == 3 => Expr::MethodCall(MethodCallExpr {
+                        receiver: Box::new(self.tree_to_expr_impl(&children[0], depth + 1)),
+                        method: Ident::new("select", span),
+                        args: vec![self.tree_to_expr_impl(&children[1], depth + 1), self.tree_to_expr_impl(&children[2], depth + 1)],
+                        span,
+                    }),
+                    "clamp" if children.len() == 3 => Expr::MethodCall(MethodCallExpr {
+                        receiver: Box::new(self.tree_to_expr_impl(&children[0], depth + 1)),
+                        method: Ident::new("clamp", span),
+                        args: vec![self.tree_to_expr_impl(&children[1], depth + 1), self.tree_to_expr_impl(&children[2], depth + 1)],
+                        span,
+                    }),
+
+                    // Tuple
+                    "tuple" => Expr::Tuple(crate::ast::TupleExpr {
+                        elems: children.iter().map(|e| self.tree_to_expr_impl(e, depth + 1)).collect(),
+                        span,
+                    }),
+
+                    _ => panic!("Unknown operation in tree_to_expr: {}", name),
+                }
             }
-
-            ExprTree::Recip(a) => {
-                // recip(x) = 1.0 / x - emit as division since there's no Recip combinator
-                Expr::Binary(BinaryExpr {
-                    op: BinaryOp::Div,
-                    lhs: Box::new(make_literal(1.0, span)),
-                    rhs: Box::new(self.tree_to_expr(a)),
-                    span,
-                })
-            }
-
-            ExprTree::Abs(a) => Expr::MethodCall(MethodCallExpr {
-                receiver: Box::new(self.tree_to_expr(a)),
-                method: Ident::new("abs", span),
-                args: vec![],
-                span,
-            }),
-
-            ExprTree::Min(a, b) => Expr::MethodCall(MethodCallExpr {
-                receiver: Box::new(self.tree_to_expr(a)),
-                method: Ident::new("min", span),
-                args: vec![self.tree_to_expr(b)],
-                span,
-            }),
-
-            ExprTree::Max(a, b) => Expr::MethodCall(MethodCallExpr {
-                receiver: Box::new(self.tree_to_expr(a)),
-                method: Ident::new("max", span),
-                args: vec![self.tree_to_expr(b)],
-                span,
-            }),
-
-            ExprTree::MulAdd(a, b, c) => {
-                // a.mul_add(b, c) = a * b + c
-                Expr::MethodCall(MethodCallExpr {
-                    receiver: Box::new(self.tree_to_expr(a)),
-                    method: Ident::new("mul_add", span),
-                    args: vec![self.tree_to_expr(b), self.tree_to_expr(c)],
-                    span,
-                })
-            }
-
-            // Unary
-            ExprTree::Floor(a) => self.unary_method(a, "floor", span),
-            ExprTree::Ceil(a) => self.unary_method(a, "ceil", span),
-            ExprTree::Round(a) => self.unary_method(a, "round", span),
-            ExprTree::Fract(a) => self.unary_method(a, "fract", span),
-            ExprTree::Sin(a) => self.unary_method(a, "sin", span),
-            ExprTree::Cos(a) => self.unary_method(a, "cos", span),
-            ExprTree::Tan(a) => self.unary_method(a, "tan", span),
-            ExprTree::Asin(a) => self.unary_method(a, "asin", span),
-            ExprTree::Acos(a) => self.unary_method(a, "acos", span),
-            ExprTree::Atan(a) => self.unary_method(a, "atan", span),
-            ExprTree::Exp(a) => self.unary_method(a, "exp", span),
-            ExprTree::Exp2(a) => self.unary_method(a, "exp2", span),
-            ExprTree::Ln(a) => self.unary_method(a, "ln", span),
-            ExprTree::Log2(a) => self.unary_method(a, "log2", span),
-            ExprTree::Log10(a) => self.unary_method(a, "log10", span),
-
-            // Binary
-            ExprTree::Atan2(a, b) => self.binary_method(a, b, "atan2", span),
-            ExprTree::Pow(a, b) => self.binary_method(a, b, "pow", span),
-            ExprTree::Hypot(a, b) => self.binary_method(a, b, "hypot", span),
-
-            // Comparisons
-            ExprTree::Lt(a, b) => self.binary_op(a, b, BinaryOp::Lt, span),
-            ExprTree::Le(a, b) => self.binary_op(a, b, BinaryOp::Le, span),
-            ExprTree::Gt(a, b) => self.binary_op(a, b, BinaryOp::Gt, span),
-            ExprTree::Ge(a, b) => self.binary_op(a, b, BinaryOp::Ge, span),
-            ExprTree::Eq(a, b) => self.binary_op(a, b, BinaryOp::Eq, span),
-            ExprTree::Ne(a, b) => self.binary_op(a, b, BinaryOp::Ne, span),
-
-            // Ternary
-            ExprTree::Select(a, b, c) => Expr::MethodCall(MethodCallExpr {
-                receiver: Box::new(self.tree_to_expr(a)),
-                method: Ident::new("select", span),
-                args: vec![self.tree_to_expr(b), self.tree_to_expr(c)],
-                span,
-            }),
-            ExprTree::Clamp(a, b, c) => Expr::MethodCall(MethodCallExpr {
-                receiver: Box::new(self.tree_to_expr(a)),
-                method: Ident::new("clamp", span),
-                args: vec![self.tree_to_expr(b), self.tree_to_expr(c)],
-                span,
-            }),
-            ExprTree::Tuple(elems) => Expr::Tuple(crate::ast::TupleExpr {
-                elems: elems.iter().map(|e| self.tree_to_expr(e)).collect(),
-                span,
-            }),
         }
     }
 
-    fn unary_method(&self, a: &ExprTree, name: &str, span: Span) -> Expr {
+    fn unary_method(&self, a: &ExprTree, name: &str, span: Span, depth: usize) -> Expr {
         Expr::MethodCall(MethodCallExpr {
-            receiver: Box::new(self.tree_to_expr(a)),
+            receiver: Box::new(self.tree_to_expr_impl(a, depth)),
             method: Ident::new(name, span),
             args: vec![],
             span,
         })
     }
 
-    fn binary_method(&self, a: &ExprTree, b: &ExprTree, name: &str, span: Span) -> Expr {
+    fn binary_method(&self, a: &ExprTree, b: &ExprTree, name: &str, span: Span, depth: usize) -> Expr {
         Expr::MethodCall(MethodCallExpr {
-            receiver: Box::new(self.tree_to_expr(a)),
+            receiver: Box::new(self.tree_to_expr_impl(a, depth)),
             method: Ident::new(name, span),
-            args: vec![self.tree_to_expr(b)],
+            args: vec![self.tree_to_expr_impl(b, depth)],
             span,
         })
     }
 
-    fn binary_op(&self, a: &ExprTree, b: &ExprTree, op: BinaryOp, span: Span) -> Expr {
+    fn binary_op(&self, a: &ExprTree, b: &ExprTree, op: BinaryOp, span: Span, depth: usize) -> Expr {
         Expr::Binary(BinaryExpr {
             op,
-            lhs: Box::new(self.tree_to_expr(a)),
-            rhs: Box::new(self.tree_to_expr(b)),
+            lhs: Box::new(self.tree_to_expr_impl(a, depth)),
+            rhs: Box::new(self.tree_to_expr_impl(b, depth)),
             span,
         })
     }
