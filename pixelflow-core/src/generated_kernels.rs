@@ -1,9 +1,3 @@
-//! Auto-generated kernels by xtask codegen.
-
-use crate::{Field, Manifold};
-
-/// Discriminant: d^2 - (c^2 - r^2)
-/// Optimized form: d.mul_add(d, -c.mul_add(c, -(r * r)))
-pub fn discriminant(d: Field, c: Field, r: Field) -> Field {
-    d.mul_add(d, -c.mul_add(c, -(r * r)))
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:311f9dc97cf0e07e200e32567a73815d5aebe09aae559167c7ebdf5edd036138
+size 276

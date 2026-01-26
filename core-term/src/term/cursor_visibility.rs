@@ -1,20 +1,3 @@
-use serde::{Deserialize, Serialize};
-
-/// Defines the visibility state of the cursor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CursorVisibility {
-    /// The cursor is visible.
-    Visible,
-    /// The cursor is hidden.
-    Hidden,
-}
-
-impl From<bool> for CursorVisibility {
-    fn from(visible: bool) -> Self {
-        if visible {
-            CursorVisibility::Visible
-        } else {
-            CursorVisibility::Hidden
-        }
-    }
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:c1654368f5f4218b5079d6c083d2e0015e2494ffe88ef3f6b70af63e05c06760
+size 479

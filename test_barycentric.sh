@@ -1,9 +1,3 @@
-#!/bin/bash
-grep -q "barycentric" pixelflow-graphics/src/fonts/ttf.rs
-if [ $? -eq 0 ]; then
-  # If "barycentric" is found, it's a bad commit
-  exit 1
-else
-  # If "barycentric" is NOT found, it's a good commit
-  exit 0
-fi
+version https://git-lfs.github.com/spec/v1
+oid sha256:4d7a7e5261a6e847501b5858252ca21eaeffef456f45864767961aa1fb19beab
+size 220

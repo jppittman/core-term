@@ -1,33 +1,3 @@
-[package]
-name = "pixelflow-macros"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
-description = "Procedural macros for PixelFlow: express algebra, get SIMD"
-license = "Apache-2.0"
-
-[lib]
-proc-macro = true
-
-[features]
-default = []
-# Disable e-graph optimization in kernel! macro.
-# Used for training the cost model: benchmark unoptimized kernels to measure true costs.
-no_optimize = []
-# Emit training samples during compilation for NNUE cost model training.
-# Set PIXELFLOW_TRAINING_OUT env var to specify output file path.
-training = []
-
-[dependencies]
-syn = { version = "2", features = ["full", "fold", "extra-traits", "parsing"] }
-quote = "1"
-proc-macro2 = "1"
-pixelflow-search = { path = "../pixelflow-search" }
-
-[dev-dependencies]
-pixelflow-core = { path = "../pixelflow-core" }
-criterion = "0.5"
-
-[[bench]]
-name = "macro_bench"
-harness = false
+version https://git-lfs.github.com/spec/v1
+oid sha256:b48897c2c499359828a536380affd5709d937b244cd21065948745be86308d85
+size 528
