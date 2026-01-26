@@ -1,5 +1,3 @@
-//! # Analytic 3D Scene Primitives (The "Genius" Architecture)
-//!
 //! Three-Layer Pull-Based Architecture:
 //! 1. Geometry: Returns `t` (Jet3)
 //! 2. Surface: Warps `P = ray * t` (Creates tangent frame via Chain Rule)

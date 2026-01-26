@@ -13,19 +13,3 @@ pixelflow-nnue = { path = "../pixelflow-nnue", default-features = false }
 std = ["rand/std", "pixelflow-nnue/std"]
 default = ["std"]
 training = ["std"]
-
-[[example]]
-name = "egraph_training"
-required-features = ["std"]
-
-[[example]]
-name = "train_cost_weights"
-required-features = ["std"]
-
-[[example]]
-name = "cost_weight_optimizer"
-required-features = ["std"]
-
-[[example]]
-name = "mcts_optimization"
-required-features = ["std"]

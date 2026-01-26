@@ -13,6 +13,7 @@
 
 - **NO TERMINAL LOGIC GOES IN PIXELFLOW.** PixelFlow is a general-purpose graphics library being extracted to its own crate/repo. Keep it terminal-agnostic.
 - Exporting direct manipulation of fields from pixelflow-core is strictly forbidden. Construct compute kernels at load time and render them.
+- **NO PUBLIC raw_mul, raw_select, raw_add ETC USAGE** NONE. ZERO. Do not perform raw operations on fields/jets without explicit direction. ALWAYS construct the ast, then uses the nested contramap pattern to evaluate it.
 
 ### Philosophy
 
@@ -71,20 +72,9 @@ These directories configure AI assistants to understand project conventions and 
 
 ### The Manifold Abstraction
 
-Everything is a `Manifold<Output = T>` - a profunctor from coordinates to values or a morphism on manifolds:
+Everything is a `kernel` - the pixelflow-macros compiler uses this to generate profunctors from coordinates to values or a morphism on manifolds:
 dimap is broken up into covariant `map` and contramap `at`
 conditionals are performed using Select or postfix (ManifoldExt) `.select`
-
-```rust
-// Manifold hierarchy (dimensional collapse):
-// Manifold (x,y,z,w) → Volume (x,y,z) → Surface (x,y) → scalar
-// All higher dimensions satisfy lower dimension contracts via blanket impls.
-
-trait Manifold {
-    type Output;
-    fn eval_raw(&self, x: Field, y: Field, z: Field, w: Field) -> Self::Output;
-}
-```
 
 ### Actor Model
 

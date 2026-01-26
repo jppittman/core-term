@@ -869,8 +869,12 @@ name = "pixelflow-ml"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "libc",
  "libm",
  "pixelflow-core",
+ "pixelflow-macros",
+ "pixelflow-nnue",
+ "pixelflow-search",
 ]
 
 [[package]]

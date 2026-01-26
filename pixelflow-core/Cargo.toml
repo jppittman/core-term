@@ -9,6 +9,13 @@ workspace = true
 [lib]
 bench = false
 
+[features]
+default = []
+# Enable std for benchmarking (interp module timing)
+std = []
+# Disable kernel! macro optimization - for training the cost model
+no_optimize = ["pixelflow-macros/no_optimize"]
+
 [dependencies]
 pixelflow-macros = { path = "../pixelflow-macros" }
 

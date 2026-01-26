@@ -13,18 +13,27 @@ bench = false
 [features]
 default = ["graphics"]
 # Enable std for benchmarking and training data generation
-std = []
-# Enable training data generation (implies std)
-training = ["std"]
+std = ["pixelflow-nnue/std"]
+# Enable training data generation (requires std + graphics for real SIMD benchmarks)
+training = ["std", "graphics"]
 # Enable graphics integration (harmonic attention, SH features) - requires pixelflow-core
 graphics = ["dep:pixelflow-core"]
+# Disable kernel! macro optimization - for benchmarking unoptimized expressions
+no_optimize = ["pixelflow-core/no_optimize"]
 
 [dependencies]
 pixelflow-core = { path = "../pixelflow-core", optional = true }
+pixelflow-nnue = { path = "../pixelflow-nnue", default-features = false }
 libm = "0.2.15"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 criterion = "0.5"
+pixelflow-core = { path = "../pixelflow-core" }
+pixelflow-macros = { path = "../pixelflow-macros" }
+pixelflow-search = { path = "../pixelflow-search", features = ["std"] }
 
 [[bench]]
 name = "hce_bench"
@@ -47,9 +56,17 @@ name = "generated_kernels"
 harness = false
 
 [[example]]
-name = "nnue_train_test"
+name = "collect_benchmark_costs"
 required-features = ["training"]
 
 [[example]]
-name = "critical_path_test"
+name = "train_cost_model"
+required-features = ["training"]
+
+[[example]]
+name = "gen_egraph_variants"
+required-features = ["training"]
+
+[[example]]
+name = "guided_training"
 required-features = ["training"]

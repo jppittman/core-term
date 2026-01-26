@@ -240,7 +240,7 @@ impl SemanticAnalyzer {
         "abs", "sqrt", "floor", "ceil", "round", "fract",
         "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
         "exp", "exp2", "ln", "log2", "log10", "pow",
-        "min", "max", "clamp",
+        "min", "max", "clamp", "mul_add",
         "hypot", "rsqrt", "recip",
         // Comparison methods
         "lt", "le", "gt", "ge", "eq", "ne",
