@@ -19,6 +19,21 @@ use pixelflow_core::jet::Jet3;
 use pixelflow_core::*;
 use pixelflow_macros::{kernel, ManifoldExpr};
 
+// ============================================================================
+// Constants
+// ============================================================================
+
+const HIT_T_MAX: f32 = 1_000_000.0;
+const HIT_DERIV_MAX: f32 = 10_000.0;
+const SPHERE_EPSILON: f32 = 0.0001;
+const NORMAL_EPSILON: f32 = 1e-10;
+const REFLECT_MIN_COS_INCIDENCE: f32 = 0.1;
+const REFLECT_CURVATURE_SCALE: f32 = 2.0;
+const CHECKER_LIGHT: f32 = 0.9;
+const CHECKER_DARK: f32 = 0.2;
+const CHECKER_WARM: (f32, f32, f32) = (0.95, 0.9, 0.8);
+const CHECKER_COOL: (f32, f32, f32) = (0.2, 0.25, 0.3);
+
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
 
@@ -213,7 +228,7 @@ impl Manifold<PathJet4> for PathJetSphere {
         let cy = Jet3::constant(Field::from(self.center.1));
         let cz = Jet3::constant(Field::from(self.center.2));
         let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
-        let eps = Jet3::constant(Field::from(0.0001));
+        let eps = Jet3::constant(Field::from(SPHERE_EPSILON));
 
         // oc = O - C (origin minus center)
         let oc_x = x.val - cx;
@@ -253,7 +268,7 @@ impl Manifold<Jet3_4> for PathJetSphere {
         let cy = Jet3::constant(Field::from(self.center.1));
         let cz = Jet3::constant(Field::from(self.center.2));
         let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
-        let eps = Jet3::constant(Field::from(0.0001));
+        let eps = Jet3::constant(Field::from(SPHERE_EPSILON));
 
         // For origin at 0: oc = -C
         // oc·D = -C·D = -(D·C)
@@ -583,7 +598,7 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq.max(Field::from(NORMAL_EPSILON)).sqrt().rsqrt();
 
         // Normal components - evaluate at Jet3 construction boundary
         let nx = (cross_x * inv_n_len.clone()).constant();
@@ -600,8 +615,8 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
 
         // Curvature-aware scaling: reflection magnifies angular spread
         // Scale = 2 / |cos(incidence)|, clamped to avoid infinity
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(REFLECT_MIN_COS_INCIDENCE));
+        let curvature_scale = (Field::from(REFLECT_CURVATURE_SCALE) / cos_incidence).constant();
 
         let n_jet_x = Jet3 {
             val: nx,
@@ -671,7 +686,7 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq.max(Field::from(NORMAL_EPSILON)).sqrt().rsqrt();
 
         // Normal components - evaluate at Jet3 construction boundary
         let nx = (cross_x * inv_n_len.clone()).constant();
@@ -688,8 +703,8 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
 
         // Curvature-aware scaling: reflection magnifies angular spread
         // Scale = 2 / |cos(incidence)|, clamped to avoid infinity
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(REFLECT_MIN_COS_INCIDENCE));
+        let curvature_scale = (Field::from(REFLECT_CURVATURE_SCALE) / cos_incidence).constant();
 
         let n_jet_x = Jet3 {
             val: nx,
@@ -778,7 +793,7 @@ where
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq.max(Field::from(NORMAL_EPSILON)).sqrt().rsqrt();
 
         let nx = (cross_x * inv_n_len.clone()).constant();
         let ny = (cross_y * inv_n_len.clone()).constant();
@@ -802,8 +817,8 @@ where
 
         // Compute D·N for curvature scaling
         let d_dot_n_scalar = (dx.val * nx + dy.val * ny + dz.val * nz).constant();
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(REFLECT_MIN_COS_INCIDENCE));
+        let curvature_scale = (Field::from(REFLECT_CURVATURE_SCALE) / cos_incidence).constant();
 
         // Normal as Jet3 with scaled derivatives
         let fzero = Field::from(0.0);
@@ -891,7 +906,7 @@ where
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq.max(Field::from(NORMAL_EPSILON)).sqrt().rsqrt();
 
         let nx = (cross_x * inv_n_len.clone()).constant();
         let ny = (cross_y * inv_n_len.clone()).constant();
@@ -907,8 +922,8 @@ where
 
         // 3. Curvature scaling
         let d_dot_n_scalar = (dx.val * nx + dy.val * ny + dz.val * nz).constant();
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(REFLECT_MIN_COS_INCIDENCE));
+        let curvature_scale = (Field::from(REFLECT_CURVATURE_SCALE) / cos_incidence).constant();
 
         let fzero = Field::from(0.0);
         let n_jet_x = Jet3 {
@@ -1097,12 +1112,12 @@ impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorChec
         let is_even = fract_half.abs().lt(Field::from(0.25));
 
         // Colors (warm and cool)
-        let ra = Field::from(0.95);
-        let ga = Field::from(0.9);
-        let ba = Field::from(0.8);
-        let rb = Field::from(0.2);
-        let gb = Field::from(0.25);
-        let bb = Field::from(0.3);
+        let ra = Field::from(CHECKER_WARM.0);
+        let ga = Field::from(CHECKER_WARM.1);
+        let ba = Field::from(CHECKER_WARM.2);
+        let rb = Field::from(CHECKER_COOL.0);
+        let gb = Field::from(CHECKER_COOL.1);
+        let bb = Field::from(CHECKER_COOL.2);
 
         // AA: distance to nearest grid line in X and Z
         let fx = (x_val - cell_x).constant();
