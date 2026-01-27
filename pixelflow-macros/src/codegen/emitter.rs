@@ -626,22 +626,11 @@ fn find_at_manifold_params_inner(
                     trait_bounds,
                 );
             } else if manifold_count == 0 {
-                // No manifold params, might have scalar params
-                if params.is_empty() {
-                    // No params at all: algebra-generic
-                    // kernel!(|| expr) becomes Kernel<__O> implementing
-                    // Manifold<(__O, __O, __O, __O), Output = __O> for any __O: Computational
-                    emitter = emitter.with_algebra_generic();
-                } else {
-                    // Scalar params exist: use fixed Field domain (backward compat)
-                    // kernel!(|r: f32| expr) becomes Kernel implementing
-                    // Manifold<Field4> for backward compatibility
-                    emitter = emitter.with_fixed_domain(
-                        quote! { (::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field) },
-                        quote! { ::pixelflow_core::Field },
-                        vec![],
-                    );
-                }
+                // No manifold params: enable algebra-generic
+                // kernel!(|| expr) or kernel!(|r: f32| expr) becomes Kernel or Kernel<__O>
+                // Both implement Manifold<(__O, __O, __O, __O), Output = __O> where __O: Computational
+                // Scalar params are converted via __O::from_f32(self.param)
+                emitter = emitter.with_algebra_generic();
             }
             // else: generic domain (manifolds without explicit types)
 
@@ -675,6 +664,12 @@ fn find_at_manifold_params_inner(
                 return (quote! {}, quote! { __expr.eval(__p) });
             }
 
+            // Check if we're in algebra-generic mode
+            // This happens when: no explicit domain/output types, no manifold params
+            let is_algebra_generic = self.analyzed.def.domain_ty.is_none()
+                && self.analyzed.def.return_ty.is_none()
+                && self.manifold_indices.is_empty();
+
             // NOTE: Manifold params are NO LONGER pre-evaluated.
             // They're accessed directly via (&self.name) in the expression tree.
             // This allows Rust to infer output types from usage context.
@@ -685,13 +680,17 @@ fn find_at_manifold_params_inner(
             // A1..AN: Manifold params
             let mut arrays: Vec<Vec<(usize, TokenStream)>> = vec![Vec::new(); 16]; // Max 16 arrays
 
-            // 1. Add Literals to A0 - convert to Field
-            // Use .into() only when return type needs conversion (e.g., Jet3)
+            // 1. Add Literals to A0
             for c in &self.collected_literals {
                 let lit = &c.lit;
-                let val = if self.needs_into {
+                let val = if is_algebra_generic {
+                    // Algebra-generic: convert literals to __O
+                    quote! { __O::from_f32(#lit) }
+                } else if self.needs_into {
+                    // Fixed domain with non-Field return type (e.g., Jet3)
                     quote! { ::pixelflow_core::Field::from(#lit).into() }
                 } else {
+                    // Fixed Field domain
                     quote! { ::pixelflow_core::Field::from(#lit) }
                 };
                 arrays[0].push((c.index, val));
@@ -710,11 +709,15 @@ fn find_at_manifold_params_inner(
                 }
 
                 let (array_id, idx) = self.param_indices[&name_str];
-                // Scalar params: convert to Field
-                // Use .into() only when return type needs conversion (e.g., Jet3)
-                let param_value = if self.needs_into {
+                // Scalar params: convert appropriately for the domain
+                let param_value = if is_algebra_generic {
+                    // Algebra-generic: convert via __O::from_f32
+                    quote! { __O::from_f32(self.#name) }
+                } else if self.needs_into {
+                    // Fixed domain with non-Field return type (e.g., Jet3)
                     quote! { ::pixelflow_core::Field::from(self.#name).into() }
                 } else {
+                    // Fixed Field domain
                     quote! { ::pixelflow_core::Field::from(self.#name) }
                 };
 
