@@ -1,3 +1,21 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:3a7155c3a59becdff64ff0a74f24dca08de4a4e6df4162990367c8e47bcf2b48
-size 410
+# Learned cost model weights (The Judge)
+# Trained from real SIMD benchmark measurements
+# Generated: SystemTime { tv_sec: 1769441819, tv_nsec: 599630466 }
+
+# Operation costs (relative units learned from benchmarks)
+add = 1
+sub = 2
+mul = 2
+div = 12
+neg = 1
+sqrt = 14
+recip = 5
+rsqrt = 5
+abs = 1
+min = 0
+max = 1
+mul_add = 10
+
+# Depth penalty (compile-time optimization)
+depth_threshold = 32
+depth_penalty = 100

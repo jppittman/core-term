@@ -1,3 +1,26 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:25275433df91f737026598e6f012ad9cd52214fe04034d4a1a7e6545344cd66c
-size 651
+//! Display driver implementations.
+//!
+//! Display drivers are selected at build time based on:
+//! - DISPLAY_DRIVER environment variable
+//! - Cargo features (display_cocoa, display_x11, display_headless)
+//! - Target OS defaults
+
+#[cfg(use_cocoa_display)]
+pub mod metal;
+#[cfg(use_cocoa_display)]
+pub use metal::MetalDisplayDriver;
+
+// #[cfg(use_x11_display)]
+// pub mod x11;
+// #[cfg(use_x11_display)]
+// pub use x11::X11DisplayDriver;
+
+#[cfg(use_headless_display)]
+pub mod headless;
+#[cfg(use_headless_display)]
+pub use headless::HeadlessDisplayDriver;
+
+#[cfg(use_web_display)]
+pub mod web;
+#[cfg(use_web_display)]
+pub use web::WebDisplayDriver;

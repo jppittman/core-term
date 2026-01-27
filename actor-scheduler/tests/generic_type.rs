@@ -1,3 +1,49 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:3a97340fec13dbaade8c18c18bf457a4102f285e2a4a82b8c7cdf8b369170d8e
-size 1225
+// Test: troupe! macro should handle generic types
+use actor_scheduler::{
+    Actor, ActorStatus, ActorTypes, HandlerError, HandlerResult, SystemStatus, TroupeActor,
+};
+
+struct Platform;
+struct DriverActor<P> {
+    _platform: std::marker::PhantomData<P>,
+}
+
+impl<P> Actor<(), (), ()> for DriverActor<P> {
+    fn handle_data(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
+    fn handle_control(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
+    fn handle_management(&mut self, _: ()) -> HandlerResult {
+        Ok(())
+    }
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(ActorStatus::Idle)
+    }
+}
+
+// ActorTypes provides the message types without lifetime
+impl ActorTypes for DriverActor<Platform> {
+    type Data = ();
+    type Control = ();
+    type Management = ();
+}
+
+// TroupeActor just provides the constructor
+impl<'a, Dir: 'a> TroupeActor<'a, Dir> for DriverActor<Platform> {
+    fn new(_dir: &'a Dir) -> Self {
+        Self {
+            _platform: std::marker::PhantomData,
+        }
+    }
+}
+
+actor_scheduler::troupe! {
+    driver: DriverActor<Platform> [main],
+}
+
+fn main() {
+    // Success if this compiles
+    let _troupe = Troupe::new();
+}

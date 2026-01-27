@@ -1,3 +1,51 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:db63432ac1ad67eddeb66e2397f1531927f601f22a8926f39ae66245948534c0
-size 1103
+[package]
+name = "pixelflow-graphics"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[lib]
+bench = true
+
+[dependencies]
+# Core dependencies
+bitflags = "2.9"
+log = "0.4"
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+# SIMD library for optimized rendering
+pixelflow-core = { path = "../pixelflow-core" }
+pixelflow-macros = { path = "../pixelflow-macros" }
+
+# Actor system for async rendering
+actor-scheduler = { path = "../actor-scheduler" }
+
+# Optional FreeType for benchmarking comparisons
+freetype-rs = { version = "0.32", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Memory", "Win32_Foundation"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.4"
+tempfile = "3.10"
+pixelflow-macros = { path = "../pixelflow-macros" }
+
+[[bench]]
+name = "font_rendering"
+harness = false
+
+[[bench]]
+name = "kernel_bench"
+harness = false
+
+[features]
+default = []
+freetype = ["dep:freetype-rs"]
+serde = ["dep:serde"]

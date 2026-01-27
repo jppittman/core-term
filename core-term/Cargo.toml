@@ -1,3 +1,76 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:23ff8acf39ef3f14e91e39f61268015954f0e8d53c374bef2b911fd1bfb4fee3
-size 1809
+[package]
+name = "core-term"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+anyhow = "1.0"
+bitflags = { version = "2.9", features = ["serde"] }
+env_logger = { version = "0.11", default-features = false, features = ["color"] }
+libc = "0.2"
+log = "0.4"
+nix = { version = "0.30", features = ["term", "process", "fs", "ioctl", "signal"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+pprof = { version = "0.15", features = ["flamegraph", "criterion"], optional = true }
+
+[dependencies.pixelflow-core]
+path = "../pixelflow-core"
+
+[dependencies.pixelflow-graphics]
+path = "../pixelflow-graphics"
+features = ["serde"]
+
+[dependencies.actor-scheduler]
+path = "../actor-scheduler"
+
+# Platform-specific display driver selection
+[target.'cfg(target_os = "macos")'.dependencies.pixelflow-runtime]
+path = "../pixelflow-runtime"
+default-features = false
+features = ["display_cocoa"]
+
+[target.'cfg(target_os = "linux")'.dependencies.pixelflow-runtime]
+path = "../pixelflow-runtime"
+default-features = false
+features = ["display_x11"]
+
+[target.'cfg(target_os = "windows")'.dependencies.pixelflow-runtime]
+path = "../pixelflow-runtime"
+default-features = false
+# TODO: Add display_win32 when implemented
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[dev-dependencies]
+test-log = "0.2"
+rexpect = "0.6"
+criterion = "0.5"
+
+[[bench]]
+name = "ansi_parser"
+harness = false
+
+[[bench]]
+name = "keybinding_benchmark"
+harness = false
+
+[[bin]]
+name = "core-term"
+path = "src/main.rs"
+bench = false
+
+[features]
+# Manual override features (optional - platform auto-detects)
+display_cocoa = ["pixelflow-runtime/display_cocoa"]
+display_x11 = ["pixelflow-runtime/display_x11"]
+display_headless = ["pixelflow-runtime/display_headless"]
+default = []
+profiling = ["pprof"]
