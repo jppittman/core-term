@@ -159,14 +159,10 @@ impl StructEmitter {
         let field_names = &self.field_names;
         let ctor_params = &self.constructor_params;
 
-        // For AlgebraGeneric, we need to add __O to the generics
+        // For AlgebraGeneric: __O should NOT be in struct generics
+        // (struct fields are all f32), only in Manifold impl
         let (struct_generics, is_algebra_generic) = match &self.domain_config {
-            DomainConfig::AlgebraGeneric => {
-                let mut g = generics.clone();
-                let algebra_var = quote::format_ident!("__O");
-                g.push(algebra_var);
-                (g, true)
-            }
+            DomainConfig::AlgebraGeneric => (generics.clone(), true),
             _ => (generics.clone(), false),
         };
 
@@ -326,8 +322,9 @@ impl StructEmitter {
             DomainConfig::AlgebraGeneric => {
                 // Algebra-generic kernels work with any Computational algebra
                 // kernel!(|cx: f32, cy: f32| expr) becomes:
-                //   Kernel<__O> impl Manifold<(__O, __O, __O, __O), Output = __O>
+                //   Kernel impl Manifold<(__O, __O, __O, __O), Output = __O>
                 //   where __O: Computational
+                // Note: struct doesn't have __O as a type parameter, only the Manifold impl does
                 if self.fields.is_empty() {
                     // Unit struct: no scalar params
                     quote! {
@@ -348,22 +345,43 @@ impl StructEmitter {
                         }
                     }
                 } else {
-                    // Struct with fields: scalar params are stored
-                    // Domain generics include __O as the last parameter
-                    quote! {
-                        impl<#(#generics),* __O> ::pixelflow_core::Manifold<(__O, __O, __O, __O)> for #name<#(#generics),* __O>
-                        where
-                            __O: Copy + Send + Sync + ::pixelflow_core::Computational,
-                        {
-                            type Output = __O;
+                    // Struct with fields: scalar params are stored as f32
+                    // Only __O appears in Manifold impl, not in struct reference
+                    if generics.is_empty() {
+                        quote! {
+                            impl<__O> ::pixelflow_core::Manifold<(__O, __O, __O, __O)> for #name
+                            where
+                                __O: Copy + Send + Sync + ::pixelflow_core::Computational,
+                            {
+                                type Output = __O;
 
-                            #[inline(always)]
-                            fn eval(&self, __p: (__O, __O, __O, __O)) -> __O {
-                                #imports
-                                #peano_imports
-                                #pre_eval
-                                let __expr = { #expr };
-                                #binding
+                                #[inline(always)]
+                                fn eval(&self, __p: (__O, __O, __O, __O)) -> __O {
+                                    #imports
+                                    #peano_imports
+                                    #pre_eval
+                                    let __expr = { #expr };
+                                    #binding
+                                }
+                            }
+                        }
+                    } else {
+                        // Algebra-generic with manifold parameters (rare)
+                        quote! {
+                            impl<#(#generics),*, __O> ::pixelflow_core::Manifold<(__O, __O, __O, __O)> for #name<#(#generics),*>
+                            where
+                                __O: Copy + Send + Sync + ::pixelflow_core::Computational,
+                            {
+                                type Output = __O;
+
+                                #[inline(always)]
+                                fn eval(&self, __p: (__O, __O, __O, __O)) -> __O {
+                                    #imports
+                                    #peano_imports
+                                    #pre_eval
+                                    let __expr = { #expr };
+                                    #binding
+                                }
                             }
                         }
                     }

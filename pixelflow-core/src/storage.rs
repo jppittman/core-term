@@ -190,6 +190,37 @@ impl FieldStorage for u32 {
 }
 
 // ============================================================================
+// Storage Implementation for Sequential (Phantom Algebra)
+// ============================================================================
+//
+// Sequential uses the same f32 SIMD storage as `Field<f32>`, but the type
+// marker communicates the sequential guarantee to the optimizer.
+
+use crate::sequential::Sequential;
+
+impl FieldStorage for Sequential {
+    /// Sequential uses native f32 storage (same as `Field<f32>`).
+    /// The type parameter just provides a compile-time marker.
+    type Storage = NativeF32Storage;
+
+    #[inline(always)]
+    fn splat_storage(val: Self) -> Self::Storage {
+        // Convert phantom value to f32 (always 0.0) and splat
+        <Self::Storage as SimdOps>::splat(0.0)
+    }
+
+    #[inline(always)]
+    fn zero_storage() -> Self::Storage {
+        <Self::Storage as SimdOps>::splat(0.0)
+    }
+
+    #[inline(always)]
+    fn one_storage() -> Self::Storage {
+        <Self::Storage as SimdOps>::splat(1.0)
+    }
+}
+
+// ============================================================================
 // Storage Implementation for Dual<N, A> (Automatic Differentiation)
 // ============================================================================
 

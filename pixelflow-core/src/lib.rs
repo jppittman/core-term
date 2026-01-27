@@ -180,6 +180,9 @@ pub mod combinators;
 /// Fluent API extensions.
 pub mod ext;
 
+/// Sequential marker algebra for loop counters without gather instructions.
+pub mod sequential;
+
 // ============================================================================
 // Re-exports (The "Prelude")
 // ============================================================================
@@ -189,6 +192,7 @@ pub use backend::fastmath::FastMathGuard;
 pub use combinators::*;
 pub use dual::{Dual, Dual1, Dual2, Dual3};
 pub use mask::Mask;
+pub use sequential::Sequential;
 pub use storage::{FieldStorage, NativeMaskStorage};
 pub use domain::{Head, LetExtended, Spatial, Tail};
 pub use ext::*;
