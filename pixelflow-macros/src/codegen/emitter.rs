@@ -788,8 +788,15 @@ fn find_at_manifold_params_inner(
                     match self.analyzed.symbols.lookup(&name_str) {
                         Some(symbol) => match symbol.kind {
                             SymbolKind::Intrinsic => {
-                                // Intrinsics (X, Y, Z, W) emitted as-is
-                                quote! { #name }
+                                // Intrinsics (X, Y, Z, W) - wrap in ContextFree if context variables exist
+                                // to lift from Manifold<P> to Manifold<(Ctx, P)>
+                                if !self.param_indices.is_empty() || !self.collected_literals.is_empty() {
+                                    // Context-extended domain: wrap in ContextFree
+                                    quote! { ContextFree(#name) }
+                                } else {
+                                    // No context: emit as-is
+                                    quote! { #name }
+                                }
                             }
                             SymbolKind::ManifoldParam => {
                                 // Manifold params: wrap in ContextFree to lift from Manifold<P>
