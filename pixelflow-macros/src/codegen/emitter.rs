@@ -618,15 +618,32 @@ fn find_at_manifold_params_inner(
                 .with_fields(struct_fields, field_names, constructor_params);
 
             // Configure domain
-            if has_fixed_domain || manifold_count == 0 {
-                // Fixed domain: all scalar params, or explicit domain/return type
+            if has_fixed_domain {
+                // Explicit domain/output types (highest priority)
                 emitter = emitter.with_fixed_domain(
                     domain_type,
                     output_type,
                     trait_bounds,
                 );
+            } else if manifold_count == 0 {
+                // No manifold params, might have scalar params
+                if params.is_empty() {
+                    // No params at all: algebra-generic
+                    // kernel!(|| expr) becomes Kernel<__O> implementing
+                    // Manifold<(__O, __O, __O, __O), Output = __O> for any __O: Computational
+                    emitter = emitter.with_algebra_generic();
+                } else {
+                    // Scalar params exist: use fixed Field domain (backward compat)
+                    // kernel!(|r: f32| expr) becomes Kernel implementing
+                    // Manifold<Field4> for backward compatibility
+                    emitter = emitter.with_fixed_domain(
+                        quote! { (::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field, ::pixelflow_core::Field) },
+                        quote! { ::pixelflow_core::Field },
+                        vec![],
+                    );
+                }
             }
-            // else: generic domain (default in StructEmitter)
+            // else: generic domain (manifolds without explicit types)
 
             // Configure eval body
             emitter = emitter.with_eval_body(

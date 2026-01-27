@@ -57,6 +57,11 @@ pub enum DomainConfig {
     Generic {
         output_type: TokenStream,
     },
+    /// Algebra-generic: `impl<__O: Computational> Manifold<(__O, __O, __O, __O)> for Struct<__O>`
+    /// The struct has an extra type parameter __O that becomes the output type.
+    /// This is used when no domain/output types are specified, enabling the kernel to work
+    /// seamlessly with any algebra (Field, Jet2, Jet3, custom algebras, etc.)
+    AlgebraGeneric,
 }
 
 /// The eval function body.
@@ -121,6 +126,13 @@ impl StructEmitter {
         self
     }
 
+    /// Enable algebra-generic mode: domain = (O, O, O, O), output = O
+    /// where O is a type parameter on the struct.
+    pub fn with_algebra_generic(mut self) -> Self {
+        self.domain_config = DomainConfig::AlgebraGeneric;
+        self
+    }
+
     pub fn with_eval_body(
         mut self,
         imports: TokenStream,
@@ -147,12 +159,28 @@ impl StructEmitter {
         let field_names = &self.field_names;
         let ctor_params = &self.constructor_params;
 
+        // For AlgebraGeneric, we need to add __O to the generics
+        let (struct_generics, is_algebra_generic) = match &self.domain_config {
+            DomainConfig::AlgebraGeneric => {
+                let mut g = generics.clone();
+                let algebra_var = quote::format_ident!("__O");
+                g.push(algebra_var);
+                (g, true)
+            }
+            _ => (generics.clone(), false),
+        };
+
         // Build struct definition
         // All structs derive ManifoldExpr for composability
         let struct_def = if self.fields.is_empty() {
             // Unit struct
-            quote! { #[derive(Clone, Copy, ::pixelflow_macros::ManifoldExpr)] #vis struct #name; }
-        } else if generics.is_empty() {
+            if is_algebra_generic {
+                // Algebra-generic unit struct: still just ()
+                quote! { #[derive(Clone, Copy, ::pixelflow_macros::ManifoldExpr)] #vis struct #name; }
+            } else {
+                quote! { #[derive(Clone, Copy, ::pixelflow_macros::ManifoldExpr)] #vis struct #name; }
+            }
+        } else if struct_generics.is_empty() {
             // Non-generic struct
             match self.derives {
                 Derives::CloneCopy => quote! {
@@ -168,15 +196,15 @@ impl StructEmitter {
             // Generic struct - manual Clone/Copy impls, derive ManifoldExpr
             quote! {
                 #[derive(::pixelflow_macros::ManifoldExpr)]
-                #vis struct #name<#(#generics),*> { #(#fields),* }
+                #vis struct #name<#(#struct_generics),*> { #(#fields),* }
 
-                impl<#(#generics: Clone),*> Clone for #name<#(#generics),*> {
+                impl<#(#struct_generics: Clone),*> Clone for #name<#(#struct_generics),*> {
                     fn clone(&self) -> Self {
                         Self { #(#field_names: self.#field_names.clone()),* }
                     }
                 }
 
-                impl<#(#generics: Copy),*> Copy for #name<#(#generics),*> {}
+                impl<#(#struct_generics: Copy),*> Copy for #name<#(#struct_generics),*> {}
             }
         };
 
@@ -190,7 +218,7 @@ impl StructEmitter {
                     fn default() -> Self { Self::new() }
                 }
             }
-        } else if generics.is_empty() {
+        } else if struct_generics.is_empty() {
             quote! {
                 impl #name {
                     pub fn new(#(#ctor_params),*) -> Self {
@@ -200,7 +228,7 @@ impl StructEmitter {
             }
         } else {
             quote! {
-                impl<#(#generics),*> #name<#(#generics),*> {
+                impl<#(#struct_generics),*> #name<#(#struct_generics),*> {
                     pub fn new(#(#ctor_params),*) -> Self {
                         Self { #(#field_names),* }
                     }
@@ -284,6 +312,53 @@ impl StructEmitter {
 
                             #[inline(always)]
                             fn eval(&self, __p: __P) -> #output_type {
+                                #imports
+                                #peano_imports
+                                #pre_eval
+                                let __expr = { #expr };
+                                #binding
+                            }
+                        }
+                    }
+                }
+            }
+
+            DomainConfig::AlgebraGeneric => {
+                // Algebra-generic kernels work with any Computational algebra
+                // kernel!(|cx: f32, cy: f32| expr) becomes:
+                //   Kernel<__O> impl Manifold<(__O, __O, __O, __O), Output = __O>
+                //   where __O: Computational
+                if self.fields.is_empty() {
+                    // Unit struct: no scalar params
+                    quote! {
+                        impl<__O> ::pixelflow_core::Manifold<(__O, __O, __O, __O)> for #name
+                        where
+                            __O: Copy + Send + Sync + ::pixelflow_core::Computational,
+                        {
+                            type Output = __O;
+
+                            #[inline(always)]
+                            fn eval(&self, __p: (__O, __O, __O, __O)) -> __O {
+                                #imports
+                                #peano_imports
+                                #pre_eval
+                                let __expr = { #expr };
+                                #binding
+                            }
+                        }
+                    }
+                } else {
+                    // Struct with fields: scalar params are stored
+                    // Domain generics include __O as the last parameter
+                    quote! {
+                        impl<#(#generics),* __O> ::pixelflow_core::Manifold<(__O, __O, __O, __O)> for #name<#(#generics),* __O>
+                        where
+                            __O: Copy + Send + Sync + ::pixelflow_core::Computational,
+                        {
+                            type Output = __O;
+
+                            #[inline(always)]
+                            fn eval(&self, __p: (__O, __O, __O, __O)) -> __O {
                                 #imports
                                 #peano_imports
                                 #pre_eval
