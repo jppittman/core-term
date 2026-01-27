@@ -374,7 +374,8 @@ mod tests {
             ExprTree::var(1),
             ExprTree::var(2),
         );
-        assert_eq!(expr_tree_to_kernel_body(&tree), "(X).mul_add(Y, Z)");
+        // kernel! macro doesn't support mul_add method, so we emit expanded form
+        assert_eq!(expr_tree_to_kernel_body(&tree), "((X) * (Y) + (Z))");
     }
 
     #[test]
