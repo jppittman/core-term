@@ -575,4 +575,62 @@ mod tests {
             "Expected type Output = __O, got: {}", output_str
         );
     }
+
+    #[test]
+    fn emit_algebra_generic_named_kernel_with_scalar_params() {
+        // Named algebra-generic kernel WITH scalar params
+        // kernel!(|r: f32| expr) becomes struct K<__O> with field r: f32
+        // Implements Manifold<(__O, __O, __O, __O), Output = __O> where __O: Computational
+        // Scalar param is converted via __O::from_f32(self.r) in the expression
+        let input = quote! {
+            pub struct CircleSdf = |r: f32| {
+                (X * X + Y * Y).sqrt() - r
+            }
+        };
+        let output = compile(input);
+        let output_str = output.to_string();
+
+        eprintln!("Algebra-generic with scalar params output:\n{}", output_str);
+
+        // Should have struct name CircleSdf
+        assert!(
+            output_str.contains("struct CircleSdf"),
+            "Expected struct name CircleSdf"
+        );
+
+        // Should have field r: f32
+        assert!(
+            output_str.contains("pub r : f32"),
+            "Expected pub r: f32 field, got: {}", output_str
+        );
+
+        // Should have type parameter __O in struct definition
+        assert!(
+            output_str.contains("< __O >"),
+            "Expected type parameter __O in struct, got: {}", output_str
+        );
+
+        // Should implement Manifold<(__O, __O, __O, __O)> where __O: Computational
+        assert!(
+            output_str.contains("Manifold") && output_str.contains("(__O , __O , __O , __O)"),
+            "Expected Manifold<(__O, __O, __O, __O)> impl, got: {}", output_str
+        );
+
+        assert!(
+            output_str.contains("Computational"),
+            "Expected Computational bound, got: {}", output_str
+        );
+
+        // Output type should be __O
+        assert!(
+            output_str.contains("type Output = __O"),
+            "Expected type Output = __O, got: {}", output_str
+        );
+
+        // Should convert scalar param via __O::from_f32
+        assert!(
+            output_str.contains("__O :: from_f32 (self . r)"),
+            "Expected __O::from_f32(self.r) conversion, got: {}", output_str
+        );
+    }
 }
