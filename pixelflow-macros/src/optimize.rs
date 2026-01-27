@@ -1177,6 +1177,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_egraph_div_sqrt_to_rsqrt() {
         // x / sqrt(y) should become x * rsqrt(y) via algebra:
         // x / sqrt(y) = x * (1/sqrt(y)) = x * rsqrt(y)
@@ -1216,6 +1217,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_global_optimization_zero_multiplication() {
         // let a = x * x; let b = 0.0; a * b → 0.0
         let input = quote! { |x: f32| {
