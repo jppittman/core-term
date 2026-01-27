@@ -353,7 +353,7 @@ fn test_jet3_simple() {
     let expected = Jet3::constant(Field::from(7.0));
 
     // Compare the val component
-    let diff = (result.val - expected.val).abs();
+    let diff = (result.val() - expected.val()).abs();
     let eps = Field::from(0.001);
     assert!(
         Field::lt(diff.constant(), eps).all(),
@@ -381,7 +381,7 @@ fn test_jet3_sphere_sdf() {
     let expected_val = (29.0f32).sqrt() - 5.0;
     let expected = Jet3::constant(Field::from(expected_val));
 
-    let diff = (result.val - expected.val).abs();
+    let diff = (result.val() - expected.val()).abs();
     let eps = Field::from(0.01);
     assert!(
         Field::lt(diff.constant(), eps).all(),
@@ -561,7 +561,7 @@ fn test_jet3_with_literals() {
     // At (1, 0, 0): 1.0 / sqrt(1) = 1.0
     let result = k.eval(jet3_4(1.0, 0.0, 0.0, 0.0));
     let expected = Jet3::constant(Field::from(1.0));
-    let diff = (result.val - expected.val).abs();
+    let diff = (result.val() - expected.val()).abs();
     let eps = Field::from(0.01);
     assert!(
         Field::lt(diff.constant(), eps).all(),
@@ -571,7 +571,7 @@ fn test_jet3_with_literals() {
     // At (2, 0, 0): 1.0 / sqrt(4) = 0.5
     let result2 = k.eval(jet3_4(2.0, 0.0, 0.0, 0.0));
     let expected2 = Jet3::constant(Field::from(0.5));
-    let diff2 = (result2.val - expected2.val).abs();
+    let diff2 = (result2.val() - expected2.val()).abs();
     assert!(
         Field::lt(diff2.constant(), eps).all(),
         "1.0/sqrt(4) should be 0.5"
@@ -589,7 +589,7 @@ fn test_jet3_multiple_literals() {
     // At x=5: 2.0 * 5 + 3.0 = 13.0
     let result = k.eval(jet3_4(5.0, 0.0, 0.0, 0.0));
     let expected = Jet3::constant(Field::from(13.0));
-    let diff = (result.val - expected.val).abs();
+    let diff = (result.val() - expected.val()).abs();
     let eps = Field::from(0.01);
     assert!(
         Field::lt(diff.constant(), eps).all(),
@@ -608,7 +608,7 @@ fn test_jet3_literals_and_params() {
     // At x=3: 10.0 + 2.0*3 - 0.5 = 10.0 + 6.0 - 0.5 = 15.5
     let result = k.eval(jet3_4(3.0, 0.0, 0.0, 0.0));
     let expected = Jet3::constant(Field::from(15.5));
-    let diff = (result.val - expected.val).abs();
+    let diff = (result.val() - expected.val()).abs();
     let eps = Field::from(0.01);
     assert!(
         Field::lt(diff.constant(), eps).all(),

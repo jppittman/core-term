@@ -601,6 +601,8 @@ mod context_domain_tests {
     use crate::ext::ManifoldExt;
 
     type CtxDomain = (([Jet3; 3],), (Jet3, Jet3, Jet3, Jet3));
+    // Field-based context for tests that use comparison operators
+    type FieldCtxDomain = (([Field; 3],), (Field, Field, Field, Field));
 
     fn check_manifold<P: Copy + Send + Sync, M: Manifold<P>>(_m: &M) {}
 
@@ -639,21 +641,21 @@ mod context_domain_tests {
 
     #[test]
     fn test_comparison_in_context_domain() {
-        // CtxVar.gt(CtxVar) should work
+        // CtxVar.gt(CtxVar) should work with Field context (comparisons require Field types)
         let a = CtxVar::<A0, 0>::new();
         let b = CtxVar::<A0, 1>::new();
         let expr = a.gt(b);
-        check_manifold::<CtxDomain, _>(&expr);
+        check_manifold::<FieldCtxDomain, _>(&expr);
     }
 
     #[test]
     fn test_and_in_context_domain() {
-        // (a > b) & (a < c) should work
+        // (a > b) & (a < c) should work with Field context
         let a = CtxVar::<A0, 0>::new();
         let b = CtxVar::<A0, 1>::new();
         let c = CtxVar::<A0, 2>::new();
         let expr = And(a.gt(b), a.lt(c));
-        check_manifold::<CtxDomain, _>(&expr);
+        check_manifold::<FieldCtxDomain, _>(&expr);
     }
 
     // Test matching the GeometryMask kernel pattern
@@ -692,6 +694,7 @@ mod context_domain_tests {
     #[test]
     fn test_select_in_context_domain() {
         // Select requires branches with matching output types
+        // Using Field context since comparisons require Field types
         use crate::combinators::Select;
 
         // Simple case: Select<Field, CtxVar, CtxVar>
@@ -700,12 +703,13 @@ mod context_domain_tests {
         let false_branch = CtxVar::<A0, 2>::new();
 
         let select = Select { cond, if_true: true_branch, if_false: false_branch };
-        check_manifold::<CtxDomain, _>(&select);
+        check_manifold::<FieldCtxDomain, _>(&select);
     }
 
     #[test]
     fn test_select_with_valof_in_context_domain() {
         // More complex: Select with ValOf branches
+        // Using Field context since comparisons require Field types
         use crate::combinators::Select;
         use crate::ops::derivative::V;
 
@@ -714,7 +718,7 @@ mod context_domain_tests {
         let false_branch = V(X);  // Field output
 
         let select = Select { cond, if_true: true_branch, if_false: false_branch };
-        check_manifold::<CtxDomain, _>(&select);
+        check_manifold::<FieldCtxDomain, _>(&select);
     }
 
     #[test]

@@ -147,6 +147,9 @@ pub mod dual;
 /// Storage mapping for Field<A>.
 pub mod storage;
 
+/// Type-level derivative markers for egraph-based autodiff.
+pub mod derivative_markers;
+
 /// Native mask type (Field<bool>).
 pub mod mask;
 
@@ -805,22 +808,22 @@ impl Field<u32> {
 }
 
 // ============================================================================
-// Field<Dual<N>> — Automatic Differentiation Support
+// Field<Dual<N>> — Low-Level Dual Number Storage
+// ============================================================================
+//
+// Note: Field<Dual<N>> provides SIMD storage for dual numbers but lacks the
+// full trait implementations (Computational, Selectable, Numeric) needed for
+// manifold evaluation. For manifold-compatible automatic differentiation, use
+// the jet module types: Jet2, Jet3, Jet2H, PathJet.
+//
+// Field<Dual<N>> is useful for low-level operations where you need direct
+// access to the SoA storage layout.
 // ============================================================================
 
 use storage::DualStorage;
 
-/// Type alias for 2D automatic differentiation (value + ∂/∂x, ∂/∂y).
-///
-/// This is `Field<Dual<2>>` — a SIMD batch of dual numbers with 2 partials.
-/// Used for gradient-based antialiasing.
-pub type Jet2 = Field<Dual<2>>;
-
-/// Type alias for 3D automatic differentiation (value + ∂/∂x, ∂/∂y, ∂/∂z).
-///
-/// This is `Field<Dual<3>>` — a SIMD batch of dual numbers with 3 partials.
-/// Used for surface normal computation in 3D rendering.
-pub type Jet3 = Field<Dual<3>>;
+// Re-export working jet types from the jet module (have full trait support)
+pub use jet::{Jet2, Jet2H, Jet2HSqrt, Jet2Sqrt, Jet3, Jet3Sqrt, PathJet};
 
 impl<const N: usize> Field<Dual<N>>
 where
@@ -1105,115 +1108,75 @@ where
 // Transcendental Operations for Field<Dual<N>> (Automatic Differentiation)
 // ============================================================================
 
-/// Helper to apply Field operations on storage and return storage
-#[inline(always)]
-fn field_sqrt(storage: NativeSimd) -> NativeSimd {
-    Field(storage).sqrt().0
-}
-
-#[inline(always)]
-fn field_sin(storage: NativeSimd) -> NativeSimd {
-    Field(storage).sin().0
-}
-
-#[inline(always)]
-fn field_cos(storage: NativeSimd) -> NativeSimd {
-    Field(storage).cos().0
-}
-
-#[inline(always)]
-fn field_exp(storage: NativeSimd) -> NativeSimd {
-    Field(storage).exp().0
-}
-
-#[inline(always)]
-fn field_ln(storage: NativeSimd) -> NativeSimd {
-    Field(storage).ln().0
-}
-
-#[inline(always)]
-fn field_abs(storage: NativeSimd) -> NativeSimd {
-    Field(storage).abs().0
-}
-
-#[inline(always)]
-fn field_floor(storage: NativeSimd) -> NativeSimd {
-    Field(storage).floor().0
-}
-
-#[inline(always)]
-fn field_min(a: NativeSimd, b: NativeSimd) -> NativeSimd {
-    Field(a).min(Field(b)).0
-}
-
-#[inline(always)]
-fn field_max(a: NativeSimd, b: NativeSimd) -> NativeSimd {
-    Field(a).max(Field(b)).0
-}
-
 impl<const N: usize> Field<Dual<N>>
 where
     <f32 as FieldStorage>::Storage: Default + Copy,
 {
     /// Square root with chain rule: sqrt(f)' = f' / (2 * sqrt(f))
     #[inline(always)]
-    pub fn jet_sqrt(self) -> Self {
-        let sqrt_val = field_sqrt(self.0.val);
+    pub fn sqrt(self) -> Self {
+        let val: Field<f32> = Field(self.0.val);
+        let sqrt_val = val.sqrt();
         let two = NativeSimd::splat(2.0);
-        let denom = two * sqrt_val;
+        let denom = two * sqrt_val.0;
         Self(DualStorage {
-            val: sqrt_val,
+            val: sqrt_val.0,
             partials: core::array::from_fn(|i| self.0.partials[i] / denom),
         })
     }
 
     /// Sine with chain rule: sin(f)' = cos(f) * f'
     #[inline(always)]
-    pub fn jet_sin(self) -> Self {
-        let sin_val = field_sin(self.0.val);
-        let cos_val = field_cos(self.0.val);
+    pub fn sin(self) -> Self {
+        let val: Field<f32> = Field(self.0.val);
+        let sin_val = val.sin();
+        let cos_val = val.cos();
         Self(DualStorage {
-            val: sin_val,
-            partials: core::array::from_fn(|i| cos_val * self.0.partials[i]),
+            val: sin_val.0,
+            partials: core::array::from_fn(|i| cos_val.0 * self.0.partials[i]),
         })
     }
 
     /// Cosine with chain rule: cos(f)' = -sin(f) * f'
     #[inline(always)]
-    pub fn jet_cos(self) -> Self {
-        let sin_val = field_sin(self.0.val);
-        let cos_val = field_cos(self.0.val);
-        let neg_sin = -sin_val;
+    pub fn cos(self) -> Self {
+        let val: Field<f32> = Field(self.0.val);
+        let sin_val = val.sin();
+        let cos_val = val.cos();
+        let neg_sin = -sin_val.0;
         Self(DualStorage {
-            val: cos_val,
+            val: cos_val.0,
             partials: core::array::from_fn(|i| neg_sin * self.0.partials[i]),
         })
     }
 
     /// Exponential with chain rule: exp(f)' = exp(f) * f'
     #[inline(always)]
-    pub fn jet_exp(self) -> Self {
-        let exp_val = field_exp(self.0.val);
+    pub fn exp(self) -> Self {
+        let val: Field<f32> = Field(self.0.val);
+        let exp_val = val.exp();
         Self(DualStorage {
-            val: exp_val,
-            partials: core::array::from_fn(|i| exp_val * self.0.partials[i]),
+            val: exp_val.0,
+            partials: core::array::from_fn(|i| exp_val.0 * self.0.partials[i]),
         })
     }
 
     /// Natural log with chain rule: ln(f)' = f' / f
     #[inline(always)]
-    pub fn jet_ln(self) -> Self {
-        let ln_val = field_ln(self.0.val);
+    pub fn ln(self) -> Self {
+        let val: Field<f32> = Field(self.0.val);
+        let ln_val = val.ln();
         Self(DualStorage {
-            val: ln_val,
+            val: ln_val.0,
             partials: core::array::from_fn(|i| self.0.partials[i] / self.0.val),
         })
     }
 
     /// Absolute value with chain rule: |f|' = sign(f) * f'
     #[inline(always)]
-    pub fn jet_abs(self) -> Self {
-        let abs_val = field_abs(self.0.val);
+    pub fn abs(self) -> Self {
+        let val: Field<f32> = Field(self.0.val);
+        let abs_val = val.abs();
         let zero = NativeSimd::splat(0.0);
         let one = NativeSimd::splat(1.0);
         let neg_one = NativeSimd::splat(-1.0);
@@ -1221,26 +1184,29 @@ where
         let mask = self.0.val.cmp_ge(zero);
         let sign = NativeSimd::simd_select(mask, one, neg_one);
         Self(DualStorage {
-            val: abs_val,
+            val: abs_val.0,
             partials: core::array::from_fn(|i| sign * self.0.partials[i]),
         })
     }
 
     /// Floor function (derivative is 0 almost everywhere)
     #[inline(always)]
-    pub fn jet_floor(self) -> Self {
+    pub fn floor(self) -> Self {
+        let val: Field<f32> = Field(self.0.val);
         Self(DualStorage {
-            val: field_floor(self.0.val),
+            val: val.floor().0,
             partials: core::array::from_fn(|_| NativeSimd::splat(0.0)),
         })
     }
 
     /// Minimum of two jets: min(f, g) with derivative from the selected branch
     #[inline(always)]
-    pub fn jet_min(self, other: Self) -> Self {
+    pub fn min(self, other: Self) -> Self {
+        let self_val: Field<f32> = Field(self.0.val);
+        let other_val: Field<f32> = Field(other.0.val);
         let mask = self.0.val.cmp_lt(other.0.val);
         Self(DualStorage {
-            val: field_min(self.0.val, other.0.val),
+            val: self_val.min(other_val).0,
             partials: core::array::from_fn(|i| {
                 NativeSimd::simd_select(mask, self.0.partials[i], other.0.partials[i])
             }),
@@ -1249,10 +1215,12 @@ where
 
     /// Maximum of two jets: max(f, g) with derivative from the selected branch
     #[inline(always)]
-    pub fn jet_max(self, other: Self) -> Self {
+    pub fn max(self, other: Self) -> Self {
+        let self_val: Field<f32> = Field(self.0.val);
+        let other_val: Field<f32> = Field(other.0.val);
         let mask = self.0.val.cmp_gt(other.0.val);
         Self(DualStorage {
-            val: field_max(self.0.val, other.0.val),
+            val: self_val.max(other_val).0,
             partials: core::array::from_fn(|i| {
                 NativeSimd::simd_select(mask, self.0.partials[i], other.0.partials[i])
             }),
@@ -1528,6 +1496,744 @@ impl numeric::Numeric for Field {
 }
 
 // ============================================================================
+// Field<Dual<2>> Trait Implementations (Jet2-compatible)
+// ============================================================================
+//
+// These use explicit [a, b] array literals - no loops, no closures.
+// The compiler optimizes these identically to the jet module's Jet2.
+
+impl core::ops::BitAnd for Field<Dual<2>> {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        // Mask AND - derivatives become zero (step function)
+        Self(DualStorage {
+            val: self.0.val.bitand(rhs.0.val),
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+}
+
+impl core::ops::BitOr for Field<Dual<2>> {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(DualStorage {
+            val: self.0.val.bitor(rhs.0.val),
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+}
+
+impl core::ops::Not for Field<Dual<2>> {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self(DualStorage {
+            val: self.0.val.not(),
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+}
+
+impl numeric::Computational for Field<Dual<2>> {
+    #[inline(always)]
+    fn from_f32(val: f32) -> Self {
+        Self(DualStorage {
+            val: NativeSimd::splat(val),
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+
+    #[inline(always)]
+    fn sequential(start: f32) -> Self {
+        Self(DualStorage {
+            val: NativeSimd::sequential(start),
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+}
+
+impl numeric::Coordinate for Field<Dual<2>> {}
+
+impl numeric::Selectable for Field<Dual<2>> {
+    #[inline(always)]
+    fn select_raw(mask: Field, if_true: Self, if_false: Self) -> Self {
+        Self(DualStorage {
+            val: Field::select_raw(mask, Field(if_true.0.val), Field(if_false.0.val)).0,
+            partials: [
+                Field::select_raw(mask, Field(if_true.0.partials[0]), Field(if_false.0.partials[0])).0,
+                Field::select_raw(mask, Field(if_true.0.partials[1]), Field(if_false.0.partials[1])).0,
+            ],
+        })
+    }
+}
+
+impl numeric::Numeric for Field<Dual<2>> {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        // (√f)' = f' / (2√f) = f' * rsqrt / 2
+        let val = Field(self.0.val);
+        let rsqrt_val = <Field<f32>>::rsqrt(val);
+        let sqrt_val = numeric::Numeric::raw_mul(val, rsqrt_val);
+        let half_rsqrt = numeric::Numeric::raw_mul(rsqrt_val, Field::from(0.5));
+        Self(DualStorage {
+            val: sqrt_val.0,
+            partials: [
+                self.0.partials[0] * half_rsqrt.0,
+                self.0.partials[1] * half_rsqrt.0,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn abs(self) -> Self {
+        let val = Field(self.0.val);
+        let abs_val = <Field<f32>>::abs(val);
+        let sign = val.0 / abs_val.0;
+        Self(DualStorage {
+            val: abs_val.0,
+            partials: [
+                self.0.partials[0] * sign,
+                self.0.partials[1] * sign,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn min(self, rhs: Self) -> Self {
+        let mask = self.0.val.cmp_lt(rhs.0.val);
+        Self(DualStorage {
+            val: self.0.val.simd_min(rhs.0.val),
+            partials: [
+                NativeSimd::simd_select(mask, self.0.partials[0], rhs.0.partials[0]),
+                NativeSimd::simd_select(mask, self.0.partials[1], rhs.0.partials[1]),
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn max(self, rhs: Self) -> Self {
+        let mask = self.0.val.cmp_gt(rhs.0.val);
+        Self(DualStorage {
+            val: self.0.val.simd_max(rhs.0.val),
+            partials: [
+                NativeSimd::simd_select(mask, self.0.partials[0], rhs.0.partials[0]),
+                NativeSimd::simd_select(mask, self.0.partials[1], rhs.0.partials[1]),
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn lt(self, rhs: Self) -> Self {
+        Self::constant(Field(NativeSimd::mask_to_float(self.0.val.cmp_lt(rhs.0.val))))
+    }
+
+    #[inline(always)]
+    fn le(self, rhs: Self) -> Self {
+        Self::constant(Field(NativeSimd::mask_to_float(self.0.val.cmp_le(rhs.0.val))))
+    }
+
+    #[inline(always)]
+    fn gt(self, rhs: Self) -> Self {
+        Self::constant(Field(NativeSimd::mask_to_float(self.0.val.cmp_gt(rhs.0.val))))
+    }
+
+    #[inline(always)]
+    fn ge(self, rhs: Self) -> Self {
+        Self::constant(Field(NativeSimd::mask_to_float(self.0.val.cmp_ge(rhs.0.val))))
+    }
+
+    #[inline(always)]
+    fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
+        let val = Field(mask.0.val);
+        if <Field<f32>>::all(&val) { return if_true; }
+        if !<Field<f32>>::any(&val) { return if_false; }
+        <Self as numeric::Numeric>::select_raw(mask, if_true, if_false)
+    }
+
+    #[inline(always)]
+    fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
+        let m = mask.0.val.float_to_mask();
+        Self(DualStorage {
+            val: NativeSimd::simd_select(m, if_true.0.val, if_false.0.val),
+            partials: [
+                NativeSimd::simd_select(m, if_true.0.partials[0], if_false.0.partials[0]),
+                NativeSimd::simd_select(m, if_true.0.partials[1], if_false.0.partials[1]),
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn any(&self) -> bool {
+        <Field<f32>>::any(&Field(self.0.val))
+    }
+
+    #[inline(always)]
+    fn all(&self) -> bool {
+        <Field<f32>>::all(&Field(self.0.val))
+    }
+
+    #[inline(always)]
+    fn from_i32(val: i32) -> Self {
+        Self::from_f32(val as f32)
+    }
+
+    #[inline(always)]
+    fn from_field(field: Field) -> Self {
+        Self::constant(field)
+    }
+
+    #[inline(always)]
+    fn sin(self) -> Self {
+        let val = Field(self.0.val);
+        let sin_val = <Field<f32>>::sin(val);
+        let cos_val = <Field<f32>>::cos(val);
+        Self(DualStorage {
+            val: sin_val.0,
+            partials: [
+                self.0.partials[0] * cos_val.0,
+                self.0.partials[1] * cos_val.0,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn cos(self) -> Self {
+        let val = Field(self.0.val);
+        let cos_val = <Field<f32>>::cos(val);
+        let neg_sin = -<Field<f32>>::sin(val).0;
+        Self(DualStorage {
+            val: cos_val.0,
+            partials: [
+                self.0.partials[0] * neg_sin,
+                self.0.partials[1] * neg_sin,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn atan2(self, x: Self) -> Self {
+        let y_val = Field(self.0.val);
+        let x_val = Field(x.0.val);
+        let r_sq = numeric::Numeric::raw_add(
+            numeric::Numeric::raw_mul(y_val, y_val),
+            numeric::Numeric::raw_mul(x_val, x_val),
+        );
+        let inv_r_sq = numeric::Numeric::raw_div(Field::from(1.0), r_sq);
+        let dy_coeff = numeric::Numeric::raw_mul(x_val, inv_r_sq);
+        let dx_coeff = numeric::Numeric::raw_mul(-y_val, inv_r_sq);
+        Self(DualStorage {
+            val: <Field<f32>>::atan2(y_val, x_val).0,
+            partials: [
+                self.0.partials[0] * dy_coeff.0 + x.0.partials[0] * dx_coeff.0,
+                self.0.partials[1] * dy_coeff.0 + x.0.partials[1] * dx_coeff.0,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn pow(self, exp: Self) -> Self {
+        let base = Field(self.0.val);
+        let e = Field(exp.0.val);
+        let val = <Field<f32>>::pow(base, e);
+        let ln_base = <Field<f32>>::ln(base);
+        let inv_base = numeric::Numeric::raw_div(Field::from(1.0), base);
+        let coeff = numeric::Numeric::raw_mul(e, inv_base);
+        Self(DualStorage {
+            val: val.0,
+            partials: [
+                val.0 * (exp.0.partials[0] * ln_base.0 + coeff.0 * self.0.partials[0]),
+                val.0 * (exp.0.partials[1] * ln_base.0 + coeff.0 * self.0.partials[1]),
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn exp(self) -> Self {
+        let exp_val = <Field<f32>>::exp(Field(self.0.val));
+        Self(DualStorage {
+            val: exp_val.0,
+            partials: [
+                self.0.partials[0] * exp_val.0,
+                self.0.partials[1] * exp_val.0,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn log2(self) -> Self {
+        let val = Field(self.0.val);
+        let log2_e = NativeSimd::splat(1.4426950408889634);
+        let inv_val = numeric::Numeric::raw_div(Field::from(1.0), val);
+        let coeff = inv_val.0 * log2_e;
+        Self(DualStorage {
+            val: <Field<f32>>::log2(val).0,
+            partials: [
+                self.0.partials[0] * coeff,
+                self.0.partials[1] * coeff,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn exp2(self) -> Self {
+        let ln_2 = NativeSimd::splat(0.6931471805599453);
+        let exp2_val = <Field<f32>>::exp2(Field(self.0.val));
+        let coeff = exp2_val.0 * ln_2;
+        Self(DualStorage {
+            val: exp2_val.0,
+            partials: [
+                self.0.partials[0] * coeff,
+                self.0.partials[1] * coeff,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        Self(DualStorage {
+            val: <Field<f32>>::floor(Field(self.0.val)).0,
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+
+    #[inline(always)]
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        let a_val = Field(self.0.val);
+        let b_val = Field(b.0.val);
+        let c_val = Field(c.0.val);
+        Self(DualStorage {
+            val: <Field<f32>>::mul_add(a_val, b_val, c_val).0,
+            partials: [
+                self.0.partials[0] * b.0.val + self.0.val * b.0.partials[0] + c.0.partials[0],
+                self.0.partials[1] * b.0.val + self.0.val * b.0.partials[1] + c.0.partials[1],
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn recip(self) -> Self {
+        let inv = <Field<f32>>::recip(Field(self.0.val));
+        let neg_inv_sq = -inv.0 * inv.0;
+        Self(DualStorage {
+            val: inv.0,
+            partials: [
+                self.0.partials[0] * neg_inv_sq,
+                self.0.partials[1] * neg_inv_sq,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn rsqrt(self) -> Self {
+        let rsqrt_val = <Field<f32>>::rsqrt(Field(self.0.val));
+        let rsqrt_cubed = rsqrt_val.0 * rsqrt_val.0 * rsqrt_val.0;
+        let scale = NativeSimd::splat(-0.5) * rsqrt_cubed;
+        Self(DualStorage {
+            val: rsqrt_val.0,
+            partials: [
+                self.0.partials[0] * scale,
+                self.0.partials[1] * scale,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn raw_add(self, rhs: Self) -> Self {
+        self + rhs
+    }
+
+    #[inline(always)]
+    fn raw_sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
+
+    #[inline(always)]
+    fn raw_mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
+
+    #[inline(always)]
+    fn raw_div(self, rhs: Self) -> Self {
+        self / rhs
+    }
+}
+
+// ============================================================================
+// Field<Dual<3>> Trait Implementations (Jet3-compatible)
+// ============================================================================
+
+impl core::ops::BitAnd for Field<Dual<3>> {
+    type Output = Self;
+    #[inline(always)]
+    fn bitand(self, rhs: Self) -> Self {
+        Self(DualStorage {
+            val: self.0.val.bitand(rhs.0.val),
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+}
+
+impl core::ops::BitOr for Field<Dual<3>> {
+    type Output = Self;
+    #[inline(always)]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(DualStorage {
+            val: self.0.val.bitor(rhs.0.val),
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+}
+
+impl core::ops::Not for Field<Dual<3>> {
+    type Output = Self;
+    #[inline(always)]
+    fn not(self) -> Self {
+        Self(DualStorage {
+            val: self.0.val.not(),
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+}
+
+impl numeric::Computational for Field<Dual<3>> {
+    #[inline(always)]
+    fn from_f32(val: f32) -> Self {
+        Self(DualStorage {
+            val: NativeSimd::splat(val),
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+
+    #[inline(always)]
+    fn sequential(start: f32) -> Self {
+        Self(DualStorage {
+            val: NativeSimd::sequential(start),
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+}
+
+impl numeric::Coordinate for Field<Dual<3>> {}
+
+impl numeric::Selectable for Field<Dual<3>> {
+    #[inline(always)]
+    fn select_raw(mask: Field, if_true: Self, if_false: Self) -> Self {
+        Self(DualStorage {
+            val: Field::select_raw(mask, Field(if_true.0.val), Field(if_false.0.val)).0,
+            partials: [
+                Field::select_raw(mask, Field(if_true.0.partials[0]), Field(if_false.0.partials[0])).0,
+                Field::select_raw(mask, Field(if_true.0.partials[1]), Field(if_false.0.partials[1])).0,
+                Field::select_raw(mask, Field(if_true.0.partials[2]), Field(if_false.0.partials[2])).0,
+            ],
+        })
+    }
+}
+
+impl numeric::Numeric for Field<Dual<3>> {
+    #[inline(always)]
+    fn sqrt(self) -> Self {
+        let val = Field(self.0.val);
+        let rsqrt_val = <Field<f32>>::rsqrt(val);
+        let sqrt_val = numeric::Numeric::raw_mul(val, rsqrt_val);
+        let half_rsqrt = numeric::Numeric::raw_mul(rsqrt_val, Field::from(0.5));
+        Self(DualStorage {
+            val: sqrt_val.0,
+            partials: [
+                self.0.partials[0] * half_rsqrt.0,
+                self.0.partials[1] * half_rsqrt.0,
+                self.0.partials[2] * half_rsqrt.0,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn abs(self) -> Self {
+        let val = Field(self.0.val);
+        let abs_val = <Field<f32>>::abs(val);
+        let sign = val.0 / abs_val.0;
+        Self(DualStorage {
+            val: abs_val.0,
+            partials: [
+                self.0.partials[0] * sign,
+                self.0.partials[1] * sign,
+                self.0.partials[2] * sign,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn min(self, rhs: Self) -> Self {
+        let mask = self.0.val.cmp_lt(rhs.0.val);
+        Self(DualStorage {
+            val: self.0.val.simd_min(rhs.0.val),
+            partials: [
+                NativeSimd::simd_select(mask, self.0.partials[0], rhs.0.partials[0]),
+                NativeSimd::simd_select(mask, self.0.partials[1], rhs.0.partials[1]),
+                NativeSimd::simd_select(mask, self.0.partials[2], rhs.0.partials[2]),
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn max(self, rhs: Self) -> Self {
+        let mask = self.0.val.cmp_gt(rhs.0.val);
+        Self(DualStorage {
+            val: self.0.val.simd_max(rhs.0.val),
+            partials: [
+                NativeSimd::simd_select(mask, self.0.partials[0], rhs.0.partials[0]),
+                NativeSimd::simd_select(mask, self.0.partials[1], rhs.0.partials[1]),
+                NativeSimd::simd_select(mask, self.0.partials[2], rhs.0.partials[2]),
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn lt(self, rhs: Self) -> Self {
+        Self::constant(Field(NativeSimd::mask_to_float(self.0.val.cmp_lt(rhs.0.val))))
+    }
+
+    #[inline(always)]
+    fn le(self, rhs: Self) -> Self {
+        Self::constant(Field(NativeSimd::mask_to_float(self.0.val.cmp_le(rhs.0.val))))
+    }
+
+    #[inline(always)]
+    fn gt(self, rhs: Self) -> Self {
+        Self::constant(Field(NativeSimd::mask_to_float(self.0.val.cmp_gt(rhs.0.val))))
+    }
+
+    #[inline(always)]
+    fn ge(self, rhs: Self) -> Self {
+        Self::constant(Field(NativeSimd::mask_to_float(self.0.val.cmp_ge(rhs.0.val))))
+    }
+
+    #[inline(always)]
+    fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
+        let val = Field(mask.0.val);
+        if <Field<f32>>::all(&val) { return if_true; }
+        if !<Field<f32>>::any(&val) { return if_false; }
+        <Self as numeric::Numeric>::select_raw(mask, if_true, if_false)
+    }
+
+    #[inline(always)]
+    fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self {
+        let m = mask.0.val.float_to_mask();
+        Self(DualStorage {
+            val: NativeSimd::simd_select(m, if_true.0.val, if_false.0.val),
+            partials: [
+                NativeSimd::simd_select(m, if_true.0.partials[0], if_false.0.partials[0]),
+                NativeSimd::simd_select(m, if_true.0.partials[1], if_false.0.partials[1]),
+                NativeSimd::simd_select(m, if_true.0.partials[2], if_false.0.partials[2]),
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn any(&self) -> bool {
+        <Field<f32>>::any(&Field(self.0.val))
+    }
+
+    #[inline(always)]
+    fn all(&self) -> bool {
+        <Field<f32>>::all(&Field(self.0.val))
+    }
+
+    #[inline(always)]
+    fn from_i32(val: i32) -> Self {
+        Self::from_f32(val as f32)
+    }
+
+    #[inline(always)]
+    fn from_field(field: Field) -> Self {
+        Self::constant(field)
+    }
+
+    #[inline(always)]
+    fn sin(self) -> Self {
+        let val = Field(self.0.val);
+        let sin_val = <Field<f32>>::sin(val);
+        let cos_val = <Field<f32>>::cos(val);
+        Self(DualStorage {
+            val: sin_val.0,
+            partials: [
+                self.0.partials[0] * cos_val.0,
+                self.0.partials[1] * cos_val.0,
+                self.0.partials[2] * cos_val.0,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn cos(self) -> Self {
+        let val = Field(self.0.val);
+        let cos_val = <Field<f32>>::cos(val);
+        let neg_sin = -<Field<f32>>::sin(val).0;
+        Self(DualStorage {
+            val: cos_val.0,
+            partials: [
+                self.0.partials[0] * neg_sin,
+                self.0.partials[1] * neg_sin,
+                self.0.partials[2] * neg_sin,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn atan2(self, x: Self) -> Self {
+        let y_val = Field(self.0.val);
+        let x_val = Field(x.0.val);
+        let r_sq = numeric::Numeric::raw_add(numeric::Numeric::raw_mul(y_val, y_val), numeric::Numeric::raw_mul(x_val, x_val));
+        let inv_r_sq = numeric::Numeric::raw_div(Field::from(1.0), r_sq);
+        let dy_coeff = numeric::Numeric::raw_mul(x_val, inv_r_sq);
+        let dx_coeff = numeric::Numeric::raw_mul(-y_val, inv_r_sq);
+        Self(DualStorage {
+            val: <Field<f32>>::atan2(y_val, x_val).0,
+            partials: [
+                self.0.partials[0] * dy_coeff.0 + x.0.partials[0] * dx_coeff.0,
+                self.0.partials[1] * dy_coeff.0 + x.0.partials[1] * dx_coeff.0,
+                self.0.partials[2] * dy_coeff.0 + x.0.partials[2] * dx_coeff.0,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn pow(self, exp: Self) -> Self {
+        let base = Field(self.0.val);
+        let e = Field(exp.0.val);
+        let val = <Field<f32>>::pow(base, e);
+        let ln_base = <Field<f32>>::ln(base);
+        let inv_base = numeric::Numeric::raw_div(Field::from(1.0), base);
+        let coeff = numeric::Numeric::raw_mul(e, inv_base);
+        Self(DualStorage {
+            val: val.0,
+            partials: [
+                val.0 * (exp.0.partials[0] * ln_base.0 + coeff.0 * self.0.partials[0]),
+                val.0 * (exp.0.partials[1] * ln_base.0 + coeff.0 * self.0.partials[1]),
+                val.0 * (exp.0.partials[2] * ln_base.0 + coeff.0 * self.0.partials[2]),
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn exp(self) -> Self {
+        let exp_val = <Field<f32>>::exp(Field(self.0.val));
+        Self(DualStorage {
+            val: exp_val.0,
+            partials: [
+                self.0.partials[0] * exp_val.0,
+                self.0.partials[1] * exp_val.0,
+                self.0.partials[2] * exp_val.0,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn log2(self) -> Self {
+        let val = Field(self.0.val);
+        let log2_e = NativeSimd::splat(1.4426950408889634);
+        let inv_val = numeric::Numeric::raw_div(Field::from(1.0), val);
+        let coeff = inv_val.0 * log2_e;
+        Self(DualStorage {
+            val: <Field<f32>>::log2(val).0,
+            partials: [
+                self.0.partials[0] * coeff,
+                self.0.partials[1] * coeff,
+                self.0.partials[2] * coeff,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn exp2(self) -> Self {
+        let ln_2 = NativeSimd::splat(0.6931471805599453);
+        let exp2_val = <Field<f32>>::exp2(Field(self.0.val));
+        let coeff = exp2_val.0 * ln_2;
+        Self(DualStorage {
+            val: exp2_val.0,
+            partials: [
+                self.0.partials[0] * coeff,
+                self.0.partials[1] * coeff,
+                self.0.partials[2] * coeff,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        Self(DualStorage {
+            val: <Field<f32>>::floor(Field(self.0.val)).0,
+            partials: [NativeSimd::splat(0.0), NativeSimd::splat(0.0), NativeSimd::splat(0.0)],
+        })
+    }
+
+    #[inline(always)]
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        let a_val = Field(self.0.val);
+        let b_val = Field(b.0.val);
+        let c_val = Field(c.0.val);
+        Self(DualStorage {
+            val: <Field<f32>>::mul_add(a_val, b_val, c_val).0,
+            partials: [
+                self.0.partials[0] * b.0.val + self.0.val * b.0.partials[0] + c.0.partials[0],
+                self.0.partials[1] * b.0.val + self.0.val * b.0.partials[1] + c.0.partials[1],
+                self.0.partials[2] * b.0.val + self.0.val * b.0.partials[2] + c.0.partials[2],
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn recip(self) -> Self {
+        let inv = <Field<f32>>::recip(Field(self.0.val));
+        let neg_inv_sq = -inv.0 * inv.0;
+        Self(DualStorage {
+            val: inv.0,
+            partials: [
+                self.0.partials[0] * neg_inv_sq,
+                self.0.partials[1] * neg_inv_sq,
+                self.0.partials[2] * neg_inv_sq,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn rsqrt(self) -> Self {
+        let rsqrt_val = <Field<f32>>::rsqrt(Field(self.0.val));
+        let rsqrt_cubed = rsqrt_val.0 * rsqrt_val.0 * rsqrt_val.0;
+        let scale = NativeSimd::splat(-0.5) * rsqrt_cubed;
+        Self(DualStorage {
+            val: rsqrt_val.0,
+            partials: [
+                self.0.partials[0] * scale,
+                self.0.partials[1] * scale,
+                self.0.partials[2] * scale,
+            ],
+        })
+    }
+
+    #[inline(always)]
+    fn raw_add(self, rhs: Self) -> Self {
+        self + rhs
+    }
+
+    #[inline(always)]
+    fn raw_sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
+
+    #[inline(always)]
+    fn raw_mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
+
+    #[inline(always)]
+    fn raw_div(self, rhs: Self) -> Self {
+        self / rhs
+    }
+}
+
+// ============================================================================
 // From Implementations (the ONLY way to create Field from scalars)
 // ============================================================================
 
@@ -1542,6 +2248,47 @@ impl From<i32> for Field {
     #[inline(always)]
     fn from(val: i32) -> Self {
         Self(NativeSimd::splat(val as f32))
+    }
+}
+
+// ============================================================================
+// From Implementations for Jet2 = Field<Dual<2>>
+// ============================================================================
+//
+// Note: We only implement From<Field>, not From<f32>, to avoid ambiguity
+// when using `Field::from(5.0)` (which should default to Field<f32>).
+
+impl From<Field> for Field<Dual<2>> {
+    #[inline(always)]
+    fn from(val: Field) -> Self {
+        Self::constant(val)
+    }
+}
+
+impl From<Field<Dual<2>>> for Field {
+    /// Extract the value component from a Jet2, discarding derivatives.
+    #[inline(always)]
+    fn from(jet: Field<Dual<2>>) -> Self {
+        jet.val()
+    }
+}
+
+// ============================================================================
+// From Implementations for Jet3 = Field<Dual<3>>
+// ============================================================================
+
+impl From<Field> for Field<Dual<3>> {
+    #[inline(always)]
+    fn from(val: Field) -> Self {
+        Self::constant(val)
+    }
+}
+
+impl From<Field<Dual<3>>> for Field {
+    /// Extract the value component from a Jet3, discarding derivatives.
+    #[inline(always)]
+    fn from(jet: Field<Dual<3>>) -> Self {
+        jet.val()
     }
 }
 

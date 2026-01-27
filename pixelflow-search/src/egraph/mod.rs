@@ -16,6 +16,7 @@
 
 mod algebra;
 pub mod best_first;
+pub mod calculus;
 pub mod codegen;
 mod cost;
 mod deps;

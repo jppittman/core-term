@@ -430,8 +430,8 @@ impl Manifold<Jet3_4> for SubdivisionGeometry {
         // Step 3: Map to (u, v) centered on (center_x, center_z)
         let uv_scale = Field::from(self.uv_scale);
         let half = Field::from(0.5);
-        let u_val = ((hit_x.val - Field::from(self.center_x)) * uv_scale + half).constant();
-        let v_val = ((hit_z.val - Field::from(self.center_z)) * uv_scale + half).constant();
+        let u_val = ((hit_x.val() - Field::from(self.center_x)) * uv_scale + half).constant();
+        let v_val = ((hit_z.val() - Field::from(self.center_z)) * uv_scale + half).constant();
 
         // Bounds check: (u, v) must be in [0, 1]
         let zero = Field::from(0.0);
@@ -444,16 +444,18 @@ impl Manifold<Jet3_4> for SubdivisionGeometry {
         let p = self.eval_with_controls(u, v);
 
         // Use the Y component as height displacement
-        let surface_y = p[1].val;
+        let surface_y = p[1].val();
         let t_hit = Jet3::constant(surface_y) / ry;
 
         // Return valid t if in bounds, else negative (miss)
         let miss = Field::from(-1.0);
-        Jet3::new(
-            in_bounds.clone().select(t_hit.val, miss),
-            in_bounds.clone().select(t_hit.dx, miss),
-            in_bounds.clone().select(t_hit.dy, miss),
-            in_bounds.select(t_hit.dz, miss),
+        Jet3::from_parts(
+            in_bounds.clone().select(t_hit.val(), miss).constant(),
+            [
+                in_bounds.clone().select(t_hit.dx(), miss).constant(),
+                in_bounds.clone().select(t_hit.dy(), miss).constant(),
+                in_bounds.select(t_hit.dz(), miss).constant(),
+            ],
         )
     }
 }
@@ -499,9 +501,9 @@ f 1 2 3 4
         let p = patch.eval_limit(&mesh, u, v);
 
         // Extract values (collapse AST)
-        let x = p[0].val;
-        let y = p[1].val;
-        let z = p[2].val;
+        let _x = p[0].val();
+        let _y = p[1].val();
+        let _z = p[2].val();
 
         // For bilinear fallback, center should be roughly (0.5, 0.5, 0.0)
         // We can't easily check SIMD Field values in tests, so this is a smoke test

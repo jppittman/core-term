@@ -315,8 +315,8 @@ impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldG
         // Step 3: Map to (u, v) centered on (center_x, center_z)
         let uv_scale = Field::from(self.uv_scale);
         let half = Field::from(0.5);
-        let u = ((hit_x.val - Field::from(self.center_x)) * uv_scale + half).constant();
-        let v = ((hit_z.val - Field::from(self.center_z)) * uv_scale + half).constant();
+        let u = ((hit_x.val() - Field::from(self.center_x)) * uv_scale + half).constant();
+        let v = ((hit_z.val() - Field::from(self.center_z)) * uv_scale + half).constant();
 
         // Bounds check: (u, v) must be in [0, 1]
         let zero = Field::from(0.0);
@@ -333,11 +333,13 @@ impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldG
 
         // Return valid t if in bounds, else negative (miss)
         let miss = Field::from(-1.0);
-        Jet3::new(
-            in_bounds.select(t_hit.val, miss),
-            in_bounds.select(t_hit.dx, miss),
-            in_bounds.select(t_hit.dy, miss),
-            in_bounds.select(t_hit.dz, miss),
+        Jet3::from_parts(
+            in_bounds.clone().select(t_hit.val(), miss).constant(),
+            [
+                in_bounds.clone().select(t_hit.dx(), miss).constant(),
+                in_bounds.clone().select(t_hit.dy(), miss).constant(),
+                in_bounds.select(t_hit.dz(), miss).constant(),
+            ],
         )
     }
 }
@@ -582,8 +584,8 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
         let inv_p_len = one / p_len;
 
         // Extract tangent vectors (as scalars)
-        let tu = (x.dx, y.dx, z.dx);
-        let tv = (x.dy, y.dy, z.dy);
+        let tu = (x.dx(), y.dx(), z.dx());
+        let tv = (x.dy(), y.dy(), z.dy());
 
         // Cross product Tv × Tu for outward normal
         // Build expression tree, evaluate at Jet3 struct construction boundaries
@@ -605,9 +607,9 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
         let nz = (cross_z * inv_n_len).constant();
 
         // Incident direction (normalized hit point direction from origin)
-        let d_x = (x.val * inv_p_len.val).constant();
-        let d_y = (y.val * inv_p_len.val).constant();
-        let d_z = (z.val * inv_p_len.val).constant();
+        let d_x = (x.val() * inv_p_len.val()).constant();
+        let d_y = (y.val() * inv_p_len.val()).constant();
+        let d_z = (z.val() * inv_p_len.val()).constant();
 
         // D·N (cosine of incidence angle) for curvature scaling
         let d_dot_n_scalar = (d_x * nx + d_y * ny + d_z * nz).constant();
@@ -617,24 +619,21 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
         let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
         let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
 
-        let n_jet_x = Jet3 {
-            val: nx,
-            dx: (x.dx * curvature_scale).constant(),
-            dy: (x.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
-        let n_jet_y = Jet3 {
-            val: ny,
-            dx: (y.dx * curvature_scale).constant(),
-            dy: (y.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
-        let n_jet_z = Jet3 {
-            val: nz,
-            dx: (z.dx * curvature_scale).constant(),
-            dy: (z.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
+        let n_jet_x = Jet3::from_parts(nx, [
+            (x.dx() * curvature_scale).constant(),
+            (x.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
+        let n_jet_y = Jet3::from_parts(ny, [
+            (y.dx() * curvature_scale).constant(),
+            (y.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
+        let n_jet_z = Jet3::from_parts(nz, [
+            (z.dx() * curvature_scale).constant(),
+            (z.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
 
         // D as Jets (normalized P)
         let d_jet_x = x * inv_p_len;
@@ -672,8 +671,8 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
         let one = Jet3::constant(Field::from(1.0));
         let inv_p_len = one / p_len;
 
-        let tu = (x.dx, y.dx, z.dx);
-        let tv = (x.dy, y.dy, z.dy);
+        let tu = (x.dx(), y.dx(), z.dx());
+        let tv = (x.dy(), y.dy(), z.dy());
 
         // Cross product Tv × Tu for outward normal - build expression tree
         let cross_x = tv.1 * tu.2 - tv.2 * tu.1;
@@ -693,9 +692,9 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
         let nz = (cross_z * inv_n_len).constant();
 
         // Incident direction (normalized hit point direction from origin)
-        let d_x = (x.val * inv_p_len.val).constant();
-        let d_y = (y.val * inv_p_len.val).constant();
-        let d_z = (z.val * inv_p_len.val).constant();
+        let d_x = (x.val() * inv_p_len.val()).constant();
+        let d_y = (y.val() * inv_p_len.val()).constant();
+        let d_z = (z.val() * inv_p_len.val()).constant();
 
         // D·N (cosine of incidence angle) for curvature scaling
         let d_dot_n_scalar = (d_x * nx + d_y * ny + d_z * nz).constant();
@@ -705,24 +704,21 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
         let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
         let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
 
-        let n_jet_x = Jet3 {
-            val: nx,
-            dx: (x.dx * curvature_scale).constant(),
-            dy: (x.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
-        let n_jet_y = Jet3 {
-            val: ny,
-            dx: (y.dx * curvature_scale).constant(),
-            dy: (y.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
-        let n_jet_z = Jet3 {
-            val: nz,
-            dx: (z.dx * curvature_scale).constant(),
-            dy: (z.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
+        let n_jet_x = Jet3::from_parts(nx, [
+            (x.dx() * curvature_scale).constant(),
+            (x.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
+        let n_jet_y = Jet3::from_parts(ny, [
+            (y.dx() * curvature_scale).constant(),
+            (y.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
+        let n_jet_z = Jet3::from_parts(nz, [
+            (z.dx() * curvature_scale).constant(),
+            (z.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
 
         let d_jet_x = x * inv_p_len;
         let d_jet_y = y * inv_p_len;
@@ -780,8 +776,8 @@ where
 
         // Hit point P = (x.val, y.val, z.val) with screen derivatives
         // Tangent vectors: Tu = dP/dscreen_x, Tv = dP/dscreen_y
-        let tu = (x.val.dx, y.val.dx, z.val.dx);
-        let tv = (x.val.dy, y.val.dy, z.val.dy);
+        let tu = (x.val.dx(), y.val.dx(), z.val.dx());
+        let tv = (x.val.dy(), y.val.dy(), z.val.dy());
 
         // Normal = Tv × Tu (cross product, ordering for outward normal)
         let cross_x = tv.1 * tu.2 - tv.2 * tu.1;
@@ -815,30 +811,27 @@ where
         // ====================================================================
 
         // Compute D·N for curvature scaling
-        let d_dot_n_scalar = (dx.val * nx + dy.val * ny + dz.val * nz).constant();
+        let d_dot_n_scalar = (dx.val() * nx + dy.val() * ny + dz.val() * nz).constant();
         let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
         let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
 
         // Normal as Jet3 with scaled derivatives
         let fzero = Field::from(0.0);
-        let n_jet_x = Jet3 {
-            val: nx,
-            dx: (x.val.dx * curvature_scale).constant(),
-            dy: (x.val.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
-        let n_jet_y = Jet3 {
-            val: ny,
-            dx: (y.val.dx * curvature_scale).constant(),
-            dy: (y.val.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
-        let n_jet_z = Jet3 {
-            val: nz,
-            dx: (z.val.dx * curvature_scale).constant(),
-            dy: (z.val.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
+        let n_jet_x = Jet3::from_parts(nx, [
+            (x.val.dx() * curvature_scale).constant(),
+            (x.val.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
+        let n_jet_y = Jet3::from_parts(ny, [
+            (y.val.dx() * curvature_scale).constant(),
+            (y.val.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
+        let n_jet_z = Jet3::from_parts(nz, [
+            (z.val.dx() * curvature_scale).constant(),
+            (z.val.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
 
         // ====================================================================
         // 4. Householder reflection: R = D - 2(D·N)N
@@ -894,8 +887,8 @@ where
         // Same algorithm as Reflect<M> for PathJet<Jet3>
 
         // 1. Extract normal from tangent frame
-        let tu = (x.val.dx, y.val.dx, z.val.dx);
-        let tv = (x.val.dy, y.val.dy, z.val.dy);
+        let tu = (x.val.dx(), y.val.dx(), z.val.dx());
+        let tv = (x.val.dy(), y.val.dy(), z.val.dy());
 
         let cross_x = tv.1 * tu.2 - tv.2 * tu.1;
         let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
@@ -920,29 +913,26 @@ where
         let dz = z.dir * inv_d_len;
 
         // 3. Curvature scaling
-        let d_dot_n_scalar = (dx.val * nx + dy.val * ny + dz.val * nz).constant();
+        let d_dot_n_scalar = (dx.val() * nx + dy.val() * ny + dz.val() * nz).constant();
         let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
         let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
 
         let fzero = Field::from(0.0);
-        let n_jet_x = Jet3 {
-            val: nx,
-            dx: (x.val.dx * curvature_scale).constant(),
-            dy: (x.val.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
-        let n_jet_y = Jet3 {
-            val: ny,
-            dx: (y.val.dx * curvature_scale).constant(),
-            dy: (y.val.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
-        let n_jet_z = Jet3 {
-            val: nz,
-            dx: (z.val.dx * curvature_scale).constant(),
-            dy: (z.val.dy * curvature_scale).constant(),
-            dz: fzero,
-        };
+        let n_jet_x = Jet3::from_parts(nx, [
+            (x.val.dx() * curvature_scale).constant(),
+            (x.val.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
+        let n_jet_y = Jet3::from_parts(ny, [
+            (y.val.dx() * curvature_scale).constant(),
+            (y.val.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
+        let n_jet_z = Jet3::from_parts(nz, [
+            (z.val.dx() * curvature_scale).constant(),
+            (z.val.dy() * curvature_scale).constant(),
+            fzero,
+        ]);
 
         // 4. Householder reflection
         let d_dot_n = dx * n_jet_x + dy * n_jet_y + dz * n_jet_z;
@@ -1098,8 +1088,8 @@ impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorChec
         let (x, _y, z, _w) = p;
 
         // Extract Field values from Jet3
-        let x_val: Field = x.val;
-        let z_val: Field = z.val;
+        let x_val: Field = x.val();
+        let z_val: Field = z.val();
 
         // Which checker cell are we in?
         let cell_x = x_val.clone().floor();
@@ -1128,8 +1118,8 @@ impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorChec
         let dist_to_edge = (half.clone() - dx_edge).min(half - dz_edge).constant();
 
         // Gradient magnitude from Jet3 derivatives
-        let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt().constant();
-        let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt().constant();
+        let grad_x = (x.dx() * x.dx() + x.dy() * x.dy() + x.dz() * x.dz()).sqrt().constant();
+        let grad_z = (z.dx() * z.dx() + z.dy() * z.dy() + z.dz() * z.dz()).sqrt().constant();
         let pixel_size = (grad_x.max(grad_z) + Field::from(0.001)).constant();
 
         // Coverage: how much of the pixel is in this cell vs neighbor

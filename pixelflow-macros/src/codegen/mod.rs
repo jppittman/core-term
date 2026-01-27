@@ -51,9 +51,7 @@
 //! - `struct_emitter`: Builder pattern for struct generation
 //! - `emitter`: Core CodeEmitter logic
 
-mod binding;
 mod emitter;
-mod leveled;
 mod struct_emitter;
 mod util;
 

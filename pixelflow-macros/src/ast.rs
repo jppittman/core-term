@@ -118,6 +118,7 @@ pub enum Expr {
 #[derive(Debug, Clone)]
 pub struct TupleExpr {
     pub elems: Vec<Expr>,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -125,6 +126,7 @@ pub struct TupleExpr {
 #[derive(Debug, Clone)]
 pub struct IdentExpr {
     pub name: Ident,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -132,6 +134,7 @@ pub struct IdentExpr {
 #[derive(Debug, Clone)]
 pub struct LiteralExpr {
     pub lit: syn::Lit,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -161,6 +164,7 @@ pub struct BinaryExpr {
     pub op: BinaryOp,
     pub lhs: Box<Expr>,
     pub rhs: Box<Expr>,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -176,6 +180,7 @@ pub enum UnaryOp {
 pub struct UnaryExpr {
     pub op: UnaryOp,
     pub operand: Box<Expr>,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -188,6 +193,7 @@ pub struct MethodCallExpr {
     pub method: Ident,
     /// Method arguments (empty for sqrt, one arg for max, etc.).
     pub args: Vec<Expr>,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -198,6 +204,7 @@ pub struct CallExpr {
     pub func: Ident,
     /// Function arguments.
     pub args: Vec<Expr>,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -216,6 +223,7 @@ pub struct LetStmt {
     pub name: Ident,
     pub ty: Option<Type>,
     pub init: Expr,
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -225,6 +233,7 @@ pub struct BlockExpr {
     pub stmts: Vec<Stmt>,
     /// The final expression (if any).
     pub expr: Option<Box<Expr>>,
+    #[allow(dead_code)]
     pub span: Span,
 }
 

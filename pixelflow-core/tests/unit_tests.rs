@@ -487,9 +487,9 @@ mod jet2_tests {
 
         let result = expr.eval(coords);
 
-        assert_field_approx_eq(result.val, 28.0);
-        assert_field_approx_eq(result.dx, 10.0); // 2x
-        assert_field_approx_eq(result.dy, 1.0);  // 1
+        assert_field_approx_eq(result.val(), 28.0);
+        assert_field_approx_eq(result.dx(), 10.0); // 2x
+        assert_field_approx_eq(result.dy(), 1.0);  // 1
     }
 }
 

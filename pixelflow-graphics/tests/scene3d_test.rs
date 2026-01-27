@@ -187,7 +187,7 @@ fn test_sky_only() {
         fn eval(&self, p: Jet3_4) -> Field {
             let (_x, y, _z, _w) = p;
             // Same as Sky: gradient based on Y direction
-            let t = (y.val * Field::from(0.5) + Field::from(0.5))
+            let t = (y.val() * Field::from(0.5) + Field::from(0.5))
                 .max(Field::from(0.0))
                 .min(Field::from(1.0));
             (Field::from(0.1) + t * Field::from(0.8)).constant()
@@ -381,7 +381,7 @@ fn test_mullet_vs_3channel_comparison() {
         type Output = Field;
         fn eval(&self, p: Jet3_4) -> Field {
             let (_x, y, _z, _w) = p;
-            let t = y.val * Field::from(0.5) + Field::from(0.5);
+            let t = y.val() * Field::from(0.5) + Field::from(0.5);
             let t = t.max(Field::from(0.0)).min(Field::from(1.0)).constant();
             match self.channel {
                 0 => (Field::from(0.7) - t * Field::from(0.5)).constant(),
@@ -400,8 +400,8 @@ fn test_mullet_vs_3channel_comparison() {
         type Output = Field;
         fn eval(&self, p: Jet3_4) -> Field {
             let (x, _y, z, _w) = p;
-            let cell_x = x.val.floor().constant();
-            let cell_z = z.val.floor().constant();
+            let cell_x = x.val().floor().constant();
+            let cell_z = z.val().floor().constant();
             let sum = (cell_x + cell_z).constant();
             let half = (sum * Field::from(0.5)).constant();
             let fract_half = (half.clone() - half.floor()).constant();
@@ -417,14 +417,14 @@ fn test_mullet_vs_3channel_comparison() {
             let color_b = Field::from(b);
             let base_color = is_even.clone().select(color_a, color_b);
 
-            let fx = (x.val - cell_x).constant();
-            let fz = (z.val - cell_z).constant();
+            let fx = (x.val() - cell_x).constant();
+            let fz = (z.val() - cell_z).constant();
             let dx_edge = (fx - Field::from(0.5)).abs();
             let dz_edge = (fz - Field::from(0.5)).abs();
             let dist_to_edge = (Field::from(0.5) - dx_edge).min(Field::from(0.5) - dz_edge);
 
-            let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt().constant();
-            let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt().constant();
+            let grad_x = (x.dx() * x.dx() + x.dy() * x.dy() + x.dz() * x.dz()).sqrt().constant();
+            let grad_z = (z.dx() * z.dx() + z.dy() * z.dy() + z.dz() * z.dz()).sqrt().constant();
             let pixel_size = (grad_x.max(grad_z) + Field::from(0.001)).constant();
 
             let coverage = (dist_to_edge / pixel_size)

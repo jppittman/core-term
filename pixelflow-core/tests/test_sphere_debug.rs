@@ -44,7 +44,7 @@ fn test_simple_param() {
     // Result should be 42.0 - test using range check since Field doesn't have direct subtraction
     let low = Field::from(41.9);
     let high = Field::from(42.1);
-    let in_range = result.val.gt(low) & result.val.lt(high);
+    let in_range = result.val().gt(low) & result.val().lt(high);
     assert!(in_range.all(), "simple_return_param(42.0) should return ~42.0");
 }
 
@@ -62,7 +62,7 @@ fn test_x_plus_param() {
     // Result should be 15.0
     let low = Field::from(14.9);
     let high = Field::from(15.1);
-    let in_range = result.val.gt(low) & result.val.lt(high);
+    let in_range = result.val().gt(low) & result.val().lt(high);
     assert!(in_range.all(), "x_plus_param(10) with X=5 should return ~15.0");
 }
 
@@ -133,7 +133,7 @@ fn test_step1_d_dot_c() {
     // d_dot_c should be 4.0
     let low = Field::from(3.9);
     let high = Field::from(4.1);
-    let in_range = result.val.gt(low) & result.val.lt(high);
+    let in_range = result.val().gt(low) & result.val().lt(high);
     assert!(in_range.all(), "d_dot_c should be ~4.0");
 }
 
@@ -201,7 +201,7 @@ fn test_step3c_d_dot_c_sq() {
     // d_dot_c_sq = 4*4 = 16
     let low = Field::from(15.9);
     let high = Field::from(16.1);
-    let in_range = result.val.gt(low) & result.val.lt(high);
+    let in_range = result.val().gt(low) & result.val().lt(high);
     assert!(in_range.all(), "d_dot_c_sq should be ~16.0");
 }
 
@@ -218,7 +218,7 @@ fn test_step3_discriminant() {
     // discriminant should be 1.0
     let low = Field::from(0.9);
     let high = Field::from(1.1);
-    let in_range = result.val.gt(low) & result.val.lt(high);
+    let in_range = result.val().gt(low) & result.val().lt(high);
     assert!(in_range.all(), "discriminant should be ~1.0");
 }
 
@@ -243,14 +243,14 @@ fn test_sphere_hit() {
     let hundred = Field::from(100.0);
 
     // t > 0 (positive hit)
-    let is_positive = t.val.gt(zero);
+    let is_positive = t.val().gt(zero);
     assert!(is_positive.all(), "t should be positive");
 
     // t < 100 (reasonable distance)
-    let is_reasonable = t.val.lt(hundred);
+    let is_reasonable = t.val().lt(hundred);
     assert!(is_reasonable.all(), "t should be < 100");
 
     // t > 2 and t < 4 (should be ~3.0)
-    let in_range = t.val.gt(two) & t.val.lt(four);
+    let in_range = t.val().gt(two) & t.val().lt(four);
     assert!(in_range.all(), "t should be between 2 and 4 (expected ~3.0)");
 }

@@ -91,6 +91,55 @@ impl HasDerivatives for Field {
 }
 
 // ============================================================================
+// HasDerivatives impl for Jet2 = Field<Dual<2>>
+// ============================================================================
+
+impl HasDerivatives for crate::jet::Jet2 {
+    #[inline(always)]
+    fn val(&self) -> Field {
+        crate::jet::Jet2::val(self)
+    }
+
+    #[inline(always)]
+    fn dx(&self) -> Field {
+        crate::jet::Jet2::dx(self)
+    }
+
+    #[inline(always)]
+    fn dy(&self) -> Field {
+        crate::jet::Jet2::dy(self)
+    }
+}
+
+// ============================================================================
+// HasDerivatives and HasDz impl for Jet3 = Field<Dual<3>>
+// ============================================================================
+
+impl HasDerivatives for crate::jet::Jet3 {
+    #[inline(always)]
+    fn val(&self) -> Field {
+        crate::jet::Jet3::val(self)
+    }
+
+    #[inline(always)]
+    fn dx(&self) -> Field {
+        crate::jet::Jet3::dx(self)
+    }
+
+    #[inline(always)]
+    fn dy(&self) -> Field {
+        crate::jet::Jet3::dy(self)
+    }
+}
+
+impl HasDz for crate::jet::Jet3 {
+    #[inline(always)]
+    fn dz(&self) -> Field {
+        crate::jet::Jet3::dz(self)
+    }
+}
+
+// ============================================================================
 // Simple Accessor Combinator Structs
 // ============================================================================
 //

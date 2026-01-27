@@ -60,20 +60,20 @@ fn test_kernel_8_params_compiles() {
 fn test_jet_kernel_with_param() {
     use pixelflow_macros::kernel;
     use pixelflow_core::{Manifold, Y, jet::Jet3, Field};
-    
+
     type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
-    
+
     // Test that 1-parameter Jet kernel compiles and evaluates
     let k = kernel!(|h: f32| -> Jet3 { h / Y });
     let f = k(5.0);
-    
+
     let p: Jet3_4 = (
         Jet3::from(Field::from(1.0)),
         Jet3::from(Field::from(2.0)),
         Jet3::from(Field::from(3.0)),
         Jet3::from(Field::from(4.0)),
     );
-    
+
     let _result = f.eval(p);
     // If it compiles and evaluates, the test passes
 }

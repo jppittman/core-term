@@ -853,6 +853,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pixelflow-ir"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "serde",
+]
+
+[[package]]
 name = "pixelflow-macros"
 version = "0.1.0"
 dependencies = [

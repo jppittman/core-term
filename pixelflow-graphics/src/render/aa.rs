@@ -52,12 +52,12 @@ where
             .eval_raw(C::from(x), C::from(y), C::from(z), C::from(w));
 
         // Gradient magnitude = how many SDF units per pixel
-        let grad_mag = (result.dx * result.dx + result.dy * result.dy).sqrt();
+        let grad_mag = (result.dx() * result.dx() + result.dy() * result.dy()).sqrt();
 
         // Distance to edge in pixels = sdf / grad_mag
         // Coverage: 0.5 at edge, +0.5 adds 1.0, -0.5 subtracts 1.0
         // Linear ramp over 1 pixel centered on edge
-        let coverage = result.val / (grad_mag + Field::from(MIN_GRADIENT)) + Field::from(0.5);
+        let coverage = result.val() / (grad_mag + Field::from(MIN_GRADIENT)) + Field::from(0.5);
 
         // Clamp to [0, 1] - collapse AST to Field
         coverage.max(0.0f32).min(1.0f32).at(x, y, z, w).collapse()

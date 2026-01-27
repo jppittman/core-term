@@ -41,6 +41,67 @@ pub enum RewriteAction {
         b: EClassId,
         c: EClassId,
     },
+
+    // ========================================================================
+    // Calculus Actions
+    // ========================================================================
+
+    /// Binary op on two new nodes: result = lhs_node op rhs_node
+    BinaryOp {
+        op: &'static dyn Op,
+        lhs_node: ENode,
+        rhs_node: ENode,
+    },
+
+    /// Unary op on a new node: result = op(inner_node)
+    UnaryOp {
+        op: &'static dyn Op,
+        inner_node: ENode,
+    },
+
+    /// Product rule: D[f * g] → D[f] * g + f * D[g]
+    ProductRule {
+        diff_op: &'static dyn Op,
+        f: EClassId,
+        g: EClassId,
+    },
+
+    /// Quotient rule: D[f / g] → (D[f] * g - f * D[g]) / (g * g)
+    QuotientRule {
+        diff_op: &'static dyn Op,
+        f: EClassId,
+        g: EClassId,
+    },
+
+    /// Chain rule for sqrt: D[sqrt(f)] → D[f] / (2 * sqrt(f))
+    ChainSqrt {
+        diff_op: &'static dyn Op,
+        f: EClassId,
+    },
+
+    /// Chain rule for sin: D[sin(f)] → cos(f) * D[f]
+    ChainSin {
+        diff_op: &'static dyn Op,
+        f: EClassId,
+    },
+
+    /// Chain rule for cos: D[cos(f)] → -sin(f) * D[f]
+    ChainCos {
+        diff_op: &'static dyn Op,
+        f: EClassId,
+    },
+
+    /// Chain rule for exp: D[exp(f)] → exp(f) * D[f]
+    ChainExp {
+        diff_op: &'static dyn Op,
+        f: EClassId,
+    },
+
+    /// Chain rule for ln: D[ln(f)] → D[f] / f
+    ChainLn {
+        diff_op: &'static dyn Op,
+        f: EClassId,
+    },
 }
 
 /// A rewrite rule that can be applied to e-graph nodes.

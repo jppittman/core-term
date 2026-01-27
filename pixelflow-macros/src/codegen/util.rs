@@ -30,20 +30,6 @@ pub fn sort_by_index(indexed: impl IntoIterator<Item = (usize, TokenStream)>) ->
     pairs.into_iter().map(|(_, val)| val).collect()
 }
 
-/// Build a tuple expression from values, handling the single-element case.
-///
-/// Rust requires a trailing comma for single-element tuples: `(x,)` not `(x)`.
-pub fn build_tuple(values: &[TokenStream]) -> TokenStream {
-    match values.len() {
-        0 => quote! { () },
-        1 => {
-            let val = &values[0];
-            quote! { (#val,) }
-        }
-        _ => quote! { (#(#values),*) },
-    }
-}
-
 /// Build an array expression wrapped in a single-element tuple.
 ///
 /// Produces `([val0, val1, ...],)` - the format expected by WithContext

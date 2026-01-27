@@ -74,6 +74,16 @@ impl ENode {
             _ => None,
         }
     }
+
+    /// Get unary operand if this is a unary operation.
+    pub fn unary_operand(&self) -> Option<EClassId> {
+        match self {
+            ENode::Op { children, .. } if children.len() == 1 => {
+                Some(children[0])
+            }
+            _ => None,
+        }
+    }
 }
 
 // Implement PartialEq and Eq manually since we can't derive for dyn Op

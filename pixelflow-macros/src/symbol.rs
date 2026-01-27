@@ -54,12 +54,15 @@ pub enum SymbolKind {
 #[derive(Debug, Clone)]
 pub struct Symbol {
     /// The identifier name.
+    #[allow(dead_code)]
     pub name: Ident,
     /// What kind of symbol this is.
     pub kind: SymbolKind,
     /// The type (if known). Intrinsics have implicit types.
+    #[allow(dead_code)]
     pub ty: Option<Type>,
     /// Where the symbol was defined.
+    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -163,6 +166,7 @@ impl SymbolTable {
     }
 
     /// Check if a name is a captured parameter.
+    #[cfg(test)]
     pub fn is_parameter(&self, name: &str) -> bool {
         self.symbols
             .get(name)
@@ -170,6 +174,7 @@ impl SymbolTable {
     }
 
     /// Get all scalar parameter symbols (for struct generation).
+    #[allow(dead_code)]
     pub fn parameters(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols
             .values()
@@ -177,6 +182,7 @@ impl SymbolTable {
     }
 
     /// Check if a name is a manifold parameter.
+    #[allow(dead_code)]
     pub fn is_manifold_param(&self, name: &str) -> bool {
         self.symbols
             .get(name)
@@ -184,6 +190,7 @@ impl SymbolTable {
     }
 
     /// Get all manifold parameter symbols (for generic type generation).
+    #[allow(dead_code)]
     pub fn manifold_params(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols
             .values()

@@ -23,7 +23,7 @@
 //! ```
 
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
+    BinaryExpr, BinaryOp, BlockExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
     UnaryExpr, UnaryOp,
 };
 use crate::sema::AnalyzedKernel;

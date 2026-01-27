@@ -190,6 +190,8 @@ fn find_at_manifold_params_inner(
         manifold_indices: HashMap<String, usize>,
         /// Collected literals from annotation pass (for Let bindings in Jet mode).
         collected_literals: Vec<crate::annotate::CollectedLiteral>,
+        /// Whether scalar conversions need .into() (for non-Field return types like Jet3)
+        needs_into: bool,
     }
 
     impl<'a> CodeEmitter<'a> {
@@ -230,6 +232,7 @@ fn find_at_manifold_params_inner(
                 param_indices,
                 manifold_indices,
                 collected_literals: Vec::new(),
+                needs_into: false, // Set during emit based on return type
             }
         }
 
@@ -259,14 +262,17 @@ fn find_at_manifold_params_inner(
             let params = &self.analyzed.def.params;
             let std_imports = standard_imports();
 
-            // For closure kernels, use the return type if specified.
-            // The return type annotation is the user's explicit declaration of scalar type.
-            // This enables `kernel!(|h: f32| -> Jet3 { h / Y })` to work correctly.
-            // Default to Field if no return type is specified.
-            let scalar_type = match &self.analyzed.def.return_ty {
-                Some(ty) => quote! { #ty },
-                None => quote! { ::pixelflow_core::Field },
+            // Check if we need .into() conversion for scalars
+            // Only needed when return type is explicitly something other than Field
+            let needs_into = match &self.analyzed.def.return_ty {
+                Some(ty) => {
+                    let ty_str = quote! { #ty }.to_string();
+                    // If return type is Field (or pixelflow_core::Field), no .into() needed
+                    !ty_str.contains("Field") || ty_str.contains("Field<")
+                }
+                None => false, // No return type = defaults to Field, no .into() needed
             };
+            self.needs_into = needs_into;
 
             // Run annotation pass to collect literals and assign Var indices
             let annotation_ctx = AnnotationCtx::new();
@@ -330,10 +336,15 @@ fn find_at_manifold_params_inner(
             // A1..AN: Manifold params (only for non-ManifoldBind cases)
             let mut arrays: Vec<Vec<(usize, TokenStream)>> = vec![Vec::new(); 16]; // Max 16 arrays
 
-            // 1. Add Literals to A0 - use scalar_type for proper type lifting
+            // 1. Add Literals to A0 - convert to Field
+            // Use .into() only when return type needs conversion (e.g., Jet3)
             for c in &self.collected_literals {
                 let lit = &c.lit;
-                let val = quote! { #scalar_type::from(#lit) };
+                let val = if self.needs_into {
+                    quote! { ::pixelflow_core::Field::from(#lit).into() }
+                } else {
+                    quote! { ::pixelflow_core::Field::from(#lit) }
+                };
                 arrays[0].push((c.index, val));
             }
 
@@ -356,8 +367,13 @@ fn find_at_manifold_params_inner(
                             quote! { #name }
                         }
                     }
-                    // Scalar params use scalar_type for proper type lifting (e.g., Jet3::from)
-                    ParamKind::Scalar(_) => quote! { #scalar_type::from(#name) },
+                    // Scalar params: convert to Field
+                    // Use .into() only when return type needs conversion (e.g., Jet3)
+                    ParamKind::Scalar(_) => if self.needs_into {
+                        quote! { ::pixelflow_core::Field::from(#name).into() }
+                    } else {
+                        quote! { ::pixelflow_core::Field::from(#name) }
+                    },
                 };
 
                 if (array_id as usize) < arrays.len() {
@@ -507,8 +523,6 @@ fn find_at_manifold_params_inner(
             // Determine output type, domain type, and scalar type
             let (output_type, domain_type) = match (&self.analyzed.def.domain_ty, &self.analyzed.def.return_ty) {
                 (Some(domain), Some(output)) => {
-                    let type_str = quote!{ #domain }.to_string();
-                    // panic!("DEBUG: domain type is '{}'", type_str);
                     let domain_tokens = if let syn::Type::Tuple(_) = domain {
                         quote! { #domain }
                     } else {
@@ -530,17 +544,14 @@ fn find_at_manifold_params_inner(
             let has_fixed_domain = self.analyzed.def.domain_ty.is_some() || self.analyzed.def.return_ty.is_some();
 
             // Scan for manifold params used with .at() - these need ManifoldExt bound
-            // This must be computed BEFORE emit_unified_binding, which needs to skip pre-eval for these params
-            let at_manifold_params = find_at_manifold_params(&annotated_body, &self.analyzed.symbols);
+            let _at_manifold_params = find_at_manifold_params(&annotated_body, &self.analyzed.symbols);
 
             // Scan for manifold params that have derivative operations (DX, DY, DZ, V) applied
             // These need `Output: HasDerivatives` trait bound
             let derivative_manifold_params = find_derivative_manifold_params(&annotated_body, &self.analyzed.symbols);
 
-            // Generate the binding (passing at_manifold_params to skip pre-eval for .at() params)
-            // Always use Field for literals - it's the base scalar type that all others can be constructed from
-            let field_type = quote! { ::pixelflow_core::Field };
-            let (manifold_eval_stmts, at_binding) = self.emit_unified_binding(&at_manifold_params, &field_type);
+            // Generate the binding
+            let (manifold_eval_stmts, at_binding) = self.emit_unified_binding();
 
             // Build trait bounds for generic structs with fixed domain
             // All manifold params get domain-based bounds. The .at() combinator handles
@@ -640,42 +651,32 @@ fn find_at_manifold_params_inner(
         }
 
         /// Emit unified WithContext/CtxVar binding for params (and Let for literals).
-        ///
-        /// `at_manifold_params` contains names of manifold params that use `.at()`.
-        /// These are NOT pre-evaluated - they're accessed via `(&self.field).at(...)` lazily.
-        /// `scalar_type` is the type used for scalar/literal conversion (e.g., `Jet3::from` instead of `Field::from`).
-        /// This should be the domain's scalar type (from `Spatial::Coord`), not the output type.
-        fn emit_unified_binding(&self, at_manifold_params: &HashSet<String>, scalar_type: &TokenStream) -> (TokenStream, TokenStream) {
+        fn emit_unified_binding(&self) -> (TokenStream, TokenStream) {
             let params = &self.analyzed.def.params;
 
             if params.is_empty() && self.collected_literals.is_empty() {
                 return (quote! {}, quote! { __expr.eval(__p) });
             }
 
-            // Determine if we need to pre-evaluate manifold params
-            // Always pre-evaluate manifolds when:
-            // 1. There are multiple manifolds (need consistent evaluation order)
-            // 2. There are scalar params mixed with manifolds
-            let manifold_count = self.manifold_indices.len();
-            let has_scalar_params = params.iter().any(|p| matches!(p.kind, ParamKind::Scalar(_)));
-            let needs_pre_eval = manifold_count > 0 &&
-                (manifold_count > 1 || has_scalar_params);
-
             // NOTE: Manifold params are NO LONGER pre-evaluated.
             // They're accessed directly via (&self.name) in the expression tree.
             // This allows Rust to infer output types from usage context.
             // Only scalar params go into the context arrays now.
-            let pre_eval_stmts = Vec::<TokenStream>::new();
 
             // Group values into arrays by ArrayID
             // A0: Scalars (literals + scalar params)
             // A1..AN: Manifold params
             let mut arrays: Vec<Vec<(usize, TokenStream)>> = vec![Vec::new(); 16]; // Max 16 arrays
 
-            // 1. Add Literals to A0 - use scalar_type for proper type lifting
+            // 1. Add Literals to A0 - convert to Field
+            // Use .into() only when return type needs conversion (e.g., Jet3)
             for c in &self.collected_literals {
                 let lit = &c.lit;
-                let val = quote! { #scalar_type::from(#lit) };
+                let val = if self.needs_into {
+                    quote! { ::pixelflow_core::Field::from(#lit).into() }
+                } else {
+                    quote! { ::pixelflow_core::Field::from(#lit) }
+                };
                 arrays[0].push((c.index, val));
             }
 
@@ -692,8 +693,13 @@ fn find_at_manifold_params_inner(
                 }
 
                 let (array_id, idx) = self.param_indices[&name_str];
-                // Scalar params use scalar_type for proper type lifting (e.g., Jet3::from)
-                let param_value = quote! { #scalar_type::from(self.#name) };
+                // Scalar params: convert to Field
+                // Use .into() only when return type needs conversion (e.g., Jet3)
+                let param_value = if self.needs_into {
+                    quote! { ::pixelflow_core::Field::from(self.#name).into() }
+                } else {
+                    quote! { ::pixelflow_core::Field::from(self.#name) }
+                };
 
                 if (array_id as usize) < arrays.len() {
                     arrays[array_id as usize].push((idx, param_value));
@@ -742,16 +748,11 @@ fn find_at_manifold_params_inner(
             // NO - literals are now in A0! We don't use nested Let bindings anymore.
             // We use the array context exclusively.
             
-            let at_binding = quote! { 
+            let at_binding = quote! {
                 WithContext::new(#context_tuple, __expr).eval(__p)
             };
 
-            let stmts = if pre_eval_stmts.is_empty() {
-                quote! {}
-            } else {
-                quote! { #(#pre_eval_stmts)* }
-            };
-            (stmts, at_binding)
+            (quote! {}, at_binding)
         }
 
         /// Emit code for an annotated expression (pure, no mutation).
@@ -829,9 +830,13 @@ fn find_at_manifold_params_inner(
                         quote! { CtxVar::<A0, #var_idx>::new() }
                     } else {
                         // Fallback: no var_index assigned (shouldn't happen after annotation)
-                        // Emit as Field::from
+                        // Convert to Field
                         let l = &lit.lit;
-                        quote! { ::pixelflow_core::Field::from(#l) }
+                        if self.needs_into {
+                            quote! { ::pixelflow_core::Field::from(#l).into() }
+                        } else {
+                            quote! { ::pixelflow_core::Field::from(#l) }
+                        }
                     }
                 }
 

@@ -228,9 +228,9 @@ mod tests {
             Field::from(0.0),
         ));
 
-        let val = first_lane(result.val);
-        let dx = first_lane(result.dx);
-        let dy = first_lane(result.dy);
+        let val = first_lane(result.val());
+        let dx = first_lane(result.dx());
+        let dy = first_lane(result.dy());
 
         assert!((val - 5.0).abs() < 5e-4, "value should be 5.0, got {}", val);
         assert!((dx - 0.6).abs() < 5e-4, "dx should be 0.6, got {}", dx);
@@ -252,9 +252,9 @@ mod tests {
             Field::from(0.0),
         ));
 
-        let val = first_lane(result.val);
-        let dx = first_lane(result.dx);
-        let dy = first_lane(result.dy);
+        let val = first_lane(result.val());
+        let dx = first_lane(result.dx());
+        let dy = first_lane(result.dy());
 
         assert!((val - 13.0).abs() < 1e-5, "value should be 13.0, got {}", val);
         assert!((dx - 4.0).abs() < 1e-5, "dx should be 4.0, got {}", dx);
@@ -276,9 +276,9 @@ mod tests {
             Field::from(0.0),
         ));
 
-        let val = first_lane(result.val);
-        let dx = first_lane(result.dx);
-        let dy = first_lane(result.dy);
+        let val = first_lane(result.val());
+        let dx = first_lane(result.dx());
+        let dy = first_lane(result.dy());
 
         assert!((val - 15.0).abs() < 1e-5, "value should be 15.0, got {}", val);
         assert!((dx - 5.0).abs() < 1e-5, "dx should be y=5.0, got {}", dx);
@@ -302,10 +302,10 @@ mod tests {
             Field::from(0.0),
         ));
 
-        let val = first_lane(result.val);
-        let dx = first_lane(result.dx);
-        let dy = first_lane(result.dy);
-        let dz = first_lane(result.dz);
+        let val = first_lane(result.val());
+        let dx = first_lane(result.dx());
+        let dy = first_lane(result.dy());
+        let dz = first_lane(result.dz());
 
         assert!((val - 3.0).abs() < 1e-4, "value should be 3.0, got {}", val);
         assert!(
@@ -340,10 +340,10 @@ mod tests {
             Field::from(0.0),
         ));
 
-        let val = first_lane(result.val);
-        let dx = first_lane(result.dx);
-        let dy = first_lane(result.dy);
-        let dz = first_lane(result.dz);
+        let val = first_lane(result.val());
+        let dx = first_lane(result.dx());
+        let dy = first_lane(result.dy());
+        let dz = first_lane(result.dz());
 
         assert!((val - 24.0).abs() < 1e-5, "value should be 24.0, got {}", val);
         assert!((dx - 12.0).abs() < 1e-5, "dx should be yz=12.0, got {}", dx);
