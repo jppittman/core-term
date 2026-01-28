@@ -192,6 +192,9 @@ fn find_at_manifold_params_inner(
         collected_literals: Vec<crate::annotate::CollectedLiteral>,
         /// Whether scalar conversions need .into() (for non-Field return types like Jet3)
         needs_into: bool,
+        /// Whether this is a generic domain kernel with no manifold parameters.
+        /// When true, don't use context system - access fields directly.
+        is_generic_domain_only: bool,
     }
 
     impl<'a> CodeEmitter<'a> {
@@ -227,12 +230,18 @@ fn find_at_manifold_params_inner(
                 manifold_indices.insert(param.name.to_string(), i);
             }
 
+            // Determine if this is a generic domain kernel with no manifold parameters
+            let is_generic_domain_only = analyzed.def.domain_ty.is_none()
+                && analyzed.def.return_ty.is_none()
+                && manifold_indices.is_empty();
+
             CodeEmitter {
                 analyzed,
                 param_indices,
                 manifold_indices,
                 collected_literals: Vec::new(),
                 needs_into: false, // Set during emit based on return type
+                is_generic_domain_only,
             }
         }
 
@@ -625,14 +634,8 @@ fn find_at_manifold_params_inner(
                     output_type,
                     trait_bounds,
                 );
-            } else if manifold_count == 0 {
-                // No manifold params: enable algebra-generic
-                // kernel!(|| expr) or kernel!(|r: f32| expr) becomes Kernel or Kernel<__O>
-                // Both implement Manifold<(__O, __O, __O, __O), Output = __O> where __O: Computational
-                // Scalar params are converted via __O::from_f32(self.param)
-                emitter = emitter.with_algebra_generic();
             }
-            // else: generic domain (manifolds without explicit types)
+            // else: use default Generic domain with P::Coord output (set in StructEmitter::new)
 
             // Configure eval body
             emitter = emitter.with_eval_body(
@@ -664,11 +667,18 @@ fn find_at_manifold_params_inner(
                 return (quote! {}, quote! { __expr.eval(__p) });
             }
 
-            // Check if we're in algebra-generic mode
-            // This happens when: no explicit domain/output types, no manifold params
-            let is_algebra_generic = self.analyzed.def.domain_ty.is_none()
+            // For generic domain kernels with no manifold params, don't use WithContext.
+            // Let Rust infer types naturally by directly referencing field values.
+            // This is determined by: no explicit domain/output types, no manifold params.
+            let is_generic_domain_only = self.analyzed.def.domain_ty.is_none()
                 && self.analyzed.def.return_ty.is_none()
                 && self.manifold_indices.is_empty();
+
+            if is_generic_domain_only {
+                // No context system - just eval directly.
+                // Scalar params are accessed directly in the expression via &self.name
+                return (quote! {}, quote! { __expr.eval(__p) });
+            }
 
             // NOTE: Manifold params are NO LONGER pre-evaluated.
             // They're accessed directly via (&self.name) in the expression tree.
@@ -683,14 +693,11 @@ fn find_at_manifold_params_inner(
             // 1. Add Literals to A0
             for c in &self.collected_literals {
                 let lit = &c.lit;
-                let val = if is_algebra_generic {
-                    // Algebra-generic: convert literals to __O
-                    quote! { __O::from_f32(#lit) }
-                } else if self.needs_into {
+                let val = if self.needs_into {
                     // Fixed domain with non-Field return type (e.g., Jet3)
                     quote! { ::pixelflow_core::Field::from(#lit).into() }
                 } else {
-                    // Fixed Field domain
+                    // Generic domain: use Field, let Rust infer conversion to P::Coord
                     quote! { ::pixelflow_core::Field::from(#lit) }
                 };
                 arrays[0].push((c.index, val));
@@ -710,14 +717,11 @@ fn find_at_manifold_params_inner(
 
                 let (array_id, idx) = self.param_indices[&name_str];
                 // Scalar params: convert appropriately for the domain
-                let param_value = if is_algebra_generic {
-                    // Algebra-generic: convert via __O::from_f32
-                    quote! { __O::from_f32(self.#name) }
-                } else if self.needs_into {
+                let param_value = if self.needs_into {
                     // Fixed domain with non-Field return type (e.g., Jet3)
                     quote! { ::pixelflow_core::Field::from(self.#name).into() }
                 } else {
-                    // Fixed Field domain
+                    // Generic domain: use Field, let Rust infer conversion to P::Coord
                     quote! { ::pixelflow_core::Field::from(self.#name) }
                 };
 
@@ -788,9 +792,11 @@ fn find_at_manifold_params_inner(
                     match self.analyzed.symbols.lookup(&name_str) {
                         Some(symbol) => match symbol.kind {
                             SymbolKind::Intrinsic => {
-                                // Intrinsics (X, Y, Z, W) - wrap in ContextFree if context variables exist
-                                // to lift from Manifold<P> to Manifold<(Ctx, P)>
-                                if !self.param_indices.is_empty() || !self.collected_literals.is_empty() {
+                                // Intrinsics (X, Y, Z, W)
+                                if self.is_generic_domain_only {
+                                    // No context system: emit as-is
+                                    quote! { #name }
+                                } else if !self.param_indices.is_empty() || !self.collected_literals.is_empty() {
                                     // Context-extended domain: wrap in ContextFree
                                     quote! { ContextFree(#name) }
                                 } else {
@@ -810,8 +816,12 @@ fn find_at_manifold_params_inner(
                                 }
                             }
                             SymbolKind::Parameter => {
-                                // Scalar parameters use CtxVar::<Ax, INDEX>::new()
-                                if let Some(&(array_id, idx)) = self.param_indices.get(&name_str) {
+                                // For generic domain only kernels: convert to Field
+                                // Otherwise: use CtxVar::<Ax, INDEX>::new()
+                                if self.is_generic_domain_only {
+                                    // Convert to Field, rely on trait bounds for implicit conversion to P::Coord
+                                    quote! { ::pixelflow_core::Field::from(self.#name) }
+                                } else if let Some(&(array_id, idx)) = self.param_indices.get(&name_str) {
                                     let marker = match array_id {
                                         0 => quote! { A0 },
                                         1 => quote! { A1 },
@@ -849,20 +859,29 @@ fn find_at_manifold_params_inner(
                 }
 
                 AnnotatedExpr::Literal(lit) => {
-                    // Always emit literals as CtxVar references for ZST preservation
-                    // This ensures expression trees remain Copy (composed of ZST nodes)
-                    if let Some(var_idx) = lit.var_index {
-                        // Literals go at indices in the context array
-                        // Use array-based indexing: CtxVar::<A0, INDEX>::new()
-                        quote! { CtxVar::<A0, #var_idx>::new() }
-                    } else {
-                        // Fallback: no var_index assigned (shouldn't happen after annotation)
-                        // Convert to Field
-                        let l = &lit.lit;
+                    let l = &lit.lit;
+                    // For generic domain only kernels: convert directly, no CtxVar wrapping
+                    if self.is_generic_domain_only {
+                        // Direct conversion, will be implicitly converted to P::Coord
                         if self.needs_into {
                             quote! { ::pixelflow_core::Field::from(#l).into() }
                         } else {
                             quote! { ::pixelflow_core::Field::from(#l) }
+                        }
+                    } else {
+                        // Use CtxVar for ZST preservation in context-based kernels
+                        if let Some(var_idx) = lit.var_index {
+                            // Literals go at indices in the context array
+                            // Use array-based indexing: CtxVar::<A0, INDEX>::new()
+                            quote! { CtxVar::<A0, #var_idx>::new() }
+                        } else {
+                            // Fallback: no var_index assigned (shouldn't happen after annotation)
+                            // Convert to Field
+                            if self.needs_into {
+                                quote! { ::pixelflow_core::Field::from(#l).into() }
+                            } else {
+                                quote! { ::pixelflow_core::Field::from(#l) }
+                            }
                         }
                     }
                 }
