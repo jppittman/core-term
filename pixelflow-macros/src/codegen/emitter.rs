@@ -480,7 +480,17 @@ fn find_at_manifold_params_inner(
                 .map(|p| {
                     let field_name = &p.name;
                     match &p.kind {
-                        ParamKind::Scalar(ty) => quote! { pub #field_name: #ty },
+                        ParamKind::Scalar(_ty) => {
+                            // For generic domain kernels: wrap in F32Param for algebra conversion
+                            // For kernels with manifold params: use context system, so wrap in F32Param too
+                            // (F32Param works in both cases via Manifold impl)
+                            if self.is_generic_domain_only {
+                                quote! { pub #field_name: ::pixelflow_core::F32Param }
+                            } else {
+                                // Still use F32Param - simpler than context wrapping for scalar storage
+                                quote! { pub #field_name: ::pixelflow_core::F32Param }
+                            }
+                        }
                         ParamKind::Manifold => {
                             let idx = self.manifold_indices[&field_name.to_string()];
                             let generic_name = &generic_names[idx];
@@ -499,7 +509,10 @@ fn find_at_manifold_params_inner(
                 .map(|p| {
                     let field_name = &p.name;
                     match &p.kind {
-                        ParamKind::Scalar(ty) => quote! { #field_name: #ty },
+                        ParamKind::Scalar(_ty) => {
+                            // Constructor accepts f32, we'll wrap it in F32Param::new()
+                            quote! { #field_name: f32 }
+                        }
                         ParamKind::Manifold => {
                             let idx = self.manifold_indices[&field_name.to_string()];
                             let generic_name = &generic_names[idx];
@@ -816,11 +829,11 @@ fn find_at_manifold_params_inner(
                                 }
                             }
                             SymbolKind::Parameter => {
-                                // For generic domain only kernels: convert to Field
-                                // Otherwise: use CtxVar::<Ax, INDEX>::new()
+                                // Scalar parameters are now wrapped in F32Param, so just reference them
+                                // F32Param implements Manifold<P> for any P where P::Coord: Computational
                                 if self.is_generic_domain_only {
-                                    // Convert to Field, rely on trait bounds for implicit conversion to P::Coord
-                                    quote! { ::pixelflow_core::Field::from(self.#name) }
+                                    // Direct reference - F32Param implements Manifold
+                                    quote! { self.#name }
                                 } else if let Some(&(array_id, idx)) = self.param_indices.get(&name_str) {
                                     let marker = match array_id {
                                         0 => quote! { A0 },
@@ -860,14 +873,10 @@ fn find_at_manifold_params_inner(
 
                 AnnotatedExpr::Literal(lit) => {
                     let l = &lit.lit;
-                    // For generic domain only kernels: convert directly, no CtxVar wrapping
+                    // For generic domain only kernels: wrap in F32Param
                     if self.is_generic_domain_only {
-                        // Direct conversion, will be implicitly converted to P::Coord
-                        if self.needs_into {
-                            quote! { ::pixelflow_core::Field::from(#l).into() }
-                        } else {
-                            quote! { ::pixelflow_core::Field::from(#l) }
-                        }
+                        // Wrap literal in F32Param to work with any algebra
+                        quote! { ::pixelflow_core::F32Param::new(#l) }
                     } else {
                         // Use CtxVar for ZST preservation in context-based kernels
                         if let Some(var_idx) = lit.var_index {

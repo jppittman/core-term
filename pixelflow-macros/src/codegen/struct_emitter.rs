@@ -193,18 +193,50 @@ impl StructEmitter {
                 }
             }
         } else if struct_generics.is_empty() {
+            // Build field initializations, wrapping f32 params in F32Param::new()
+            let field_inits: Vec<TokenStream> = self.constructor_params
+                .iter()
+                .zip(self.field_names.iter())
+                .map(|(param_type, field_name)| {
+                    let param_str = param_type.to_string();
+                    if param_str.contains("f32") {
+                        // Scalar parameter: wrap in F32Param::new()
+                        quote! { #field_name: ::pixelflow_core::F32Param::new(#field_name) }
+                    } else {
+                        // Manifold parameter: use as-is
+                        quote! { #field_name }
+                    }
+                })
+                .collect();
+
             quote! {
                 impl #name {
                     pub fn new(#(#ctor_params),*) -> Self {
-                        Self { #(#field_names),* }
+                        Self { #(#field_inits),* }
                     }
                 }
             }
         } else {
+            // Build field initializations, wrapping f32 params in F32Param::new()
+            let field_inits: Vec<TokenStream> = self.constructor_params
+                .iter()
+                .zip(self.field_names.iter())
+                .map(|(param_type, field_name)| {
+                    let param_str = param_type.to_string();
+                    if param_str.contains("f32") {
+                        // Scalar parameter: wrap in F32Param::new()
+                        quote! { #field_name: ::pixelflow_core::F32Param::new(#field_name) }
+                    } else {
+                        // Manifold parameter: use as-is
+                        quote! { #field_name }
+                    }
+                })
+                .collect();
+
             quote! {
                 impl<#(#struct_generics),*> #name<#(#struct_generics),*> {
                     pub fn new(#(#ctor_params),*) -> Self {
-                        Self { #(#field_names),* }
+                        Self { #(#field_inits),* }
                     }
                 }
             }
@@ -262,7 +294,7 @@ impl StructEmitter {
                         impl<__P> ::pixelflow_core::Manifold<__P> for #name
                         where
                             __P: Copy + Send + Sync + ::pixelflow_core::Spatial,
-                            __P::Coord: Copy + Send + Sync + ::pixelflow_core::Computational,
+                            __P::Coord: Copy + Send + Sync + ::pixelflow_core::Computational + ::pixelflow_core::Numeric,
                         {
                             type Output = #output_type;
 
@@ -281,7 +313,7 @@ impl StructEmitter {
                         impl<#(#generics),*, __P> ::pixelflow_core::Manifold<__P> for #name<#(#generics),*>
                         where
                             __P: Copy + Send + Sync + ::pixelflow_core::Spatial,
-                            __P::Coord: Copy + Send + Sync + ::pixelflow_core::Computational,
+                            __P::Coord: Copy + Send + Sync + ::pixelflow_core::Computational + ::pixelflow_core::Numeric,
                             #(#generics: ::pixelflow_core::Manifold<__P, Output = #output_type>),*,
                         {
                             type Output = #output_type;
