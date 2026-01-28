@@ -1,3 +1,40 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:62cf195d6873d957eadfe20f57053901ecfb6ec17cbde2c4a9f64ba8ecf5889b
-size 1219
+[workspace]
+members = ["core-term", "pixelflow-core", "pixelflow-graphics", "pixelflow-ml", "pixelflow-macros", "xtask", "pixelflow-runtime", "actor-scheduler", "actor-scheduler-macros", "pixelflow-search", "pixelflow-nnue"]
+exclude = ["pixelflow-core/fuzz"]
+resolver = "2"
+
+# Dev profile - use opt-level=2 because deep Manifold recursion causes
+# stack overflow without aggressive inlining. opt-level=1 isn't enough.
+[profile.dev]
+opt-level = 1
+panic = "abort"
+
+# Workspace-wide lints - prevents swallowing errors with `let _ = `
+[workspace.lints.rust]
+# Treat unused Results as errors - forces explicit handling
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# Catches `let _ = expr` where expr is #[must_use] (Result, etc)
+let_underscore_must_use = "deny"
+# Warns about functions that should probably be #[must_use]
+must_use_candidate = "warn"
+
+# Normal release - fast compile, good perf
+[profile.release]
+opt-level = 3
+panic = "abort"
+
+# Benchmark profile - ensure LTO is used
+[profile.bench]
+lto = true
+codegen-units = 1
+
+# Distribution build - maximum optimization, slow compile
+# Usage: cargo build --profile dist
+[profile.dist]
+inherits = "release"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
