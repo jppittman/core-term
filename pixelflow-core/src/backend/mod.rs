@@ -112,6 +112,24 @@ pub trait SimdOps:
     /// Gather: load from slice at indices specified by self.
     fn gather(slice: &[f32], indices: Self) -> Self;
 
+    /// Sequential gather: load from slice with sequential indices [base, base+1, base+2, ...].
+    ///
+    /// Optimized variant when indices are known to be sequential. Backends can use
+    /// direct memory loads instead of gather instructions.
+    ///
+    /// The base index is truncated (clamped to valid range).
+    fn sequential_gather(slice: &[f32], base: f32) -> Self;
+
+    /// Helper: convert sequential base value to field for gather.
+    /// Used internally to support sequential gather operations.
+    fn sequential_indices(base: f32) -> Self {
+        let mut indices = [0.0f32; 16];
+        for i in 0..Self::LANES {
+            indices[i] = base + i as f32;
+        }
+        Self::from_slice(&indices)
+    }
+
     /// Floor (round toward negative infinity) (internal SIMD op).
     fn simd_floor(self) -> Self;
 
