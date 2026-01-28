@@ -21,7 +21,7 @@ use crate::Field;
 use crate::Manifold;
 use crate::backend::{MaskOps, SimdOps};
 use crate::numeric::Numeric;
-use crate::ops::compare::{Ge, Gt, Le, Lt};
+use crate::ops::compare::{Ge, Gt, Le, Lt, GeMask, GtMask, LeMask, LtMask};
 use crate::ops::logic::{And, BNot, Or};
 use pixelflow_macros::Element;
 
@@ -132,6 +132,66 @@ where
         let left = self.0.eval(p);
         let right = self.1.eval(p);
         left.0.cmp_ge(right.0)
+    }
+}
+
+// ============================================================================
+// FieldCondition for Mask-returning comparisons (zero-conversion path)
+// ============================================================================
+//
+// LtMask, GtMask, LeMask, GeMask return native Mask types, which directly
+// implement FieldCondition. This means Select can use them without ANY
+// float conversions on the hot path.
+
+impl<L, R> FieldCondition<Field4> for LtMask<L, R>
+where
+    L: Manifold<Field4, Output = Field>,
+    R: Manifold<Field4, Output = Field>,
+{
+    #[inline(always)]
+    fn eval_mask(&self, p: Field4) -> NativeMask {
+        let left = self.0.eval(p);
+        let right = self.1.eval(p);
+        left.0.cmp_lt(right.0)  // Direct native mask, zero conversions!
+    }
+}
+
+impl<L, R> FieldCondition<Field4> for GtMask<L, R>
+where
+    L: Manifold<Field4, Output = Field>,
+    R: Manifold<Field4, Output = Field>,
+{
+    #[inline(always)]
+    fn eval_mask(&self, p: Field4) -> NativeMask {
+        let left = self.0.eval(p);
+        let right = self.1.eval(p);
+        left.0.cmp_gt(right.0)  // Direct native mask, zero conversions!
+    }
+}
+
+impl<L, R> FieldCondition<Field4> for LeMask<L, R>
+where
+    L: Manifold<Field4, Output = Field>,
+    R: Manifold<Field4, Output = Field>,
+{
+    #[inline(always)]
+    fn eval_mask(&self, p: Field4) -> NativeMask {
+        let left = self.0.eval(p);
+        let right = self.1.eval(p);
+        left.0.cmp_le(right.0)  // Direct native mask, zero conversions!
+    }
+}
+
+impl<L, R> FieldCondition<Field4> for GeMask<L, R>
+where
+    L: Manifold<Field4, Output = Field>,
+    R: Manifold<Field4, Output = Field>,
+{
+    #[inline(always)]
+    fn eval_mask(&self, p: Field4) -> NativeMask {
+        let left = self.0.eval(p);
+        let right = self.1.eval(p);
+        left.0.cmp_ge(right.0)  // Direct native mask, zero conversions!
     }
 }
 

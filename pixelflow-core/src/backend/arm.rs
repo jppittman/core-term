@@ -241,6 +241,20 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
+    fn sequential_gather(slice: &[f32], base: f32) -> Self {
+        // Optimized path for sequential indices: [base, base+1, base+2, base+3]
+        // Can directly load from memory without computing each index separately.
+        let base_ix = (base as isize).clamp(0, slice.len() as isize - 1) as usize;
+        let len = slice.len();
+        let mut out = [0.0f32; 4];
+        for i in 0..4 {
+            let ix = (base_ix + i).clamp(0, len - 1);
+            out[i] = slice[ix];
+        }
+        Self::from_slice(&out)
+    }
+
+    #[inline(always)]
     fn simd_floor(self) -> Self {
         unsafe { Self(vrndmq_f32(self.0)) }
     }

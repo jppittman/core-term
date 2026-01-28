@@ -222,3 +222,108 @@ where
         false_val + mask_val * (true_val - false_val)
     }
 }
+
+// ============================================================================
+// Native Mask Comparisons (returns Mask, not Field)
+// ============================================================================
+//
+// These comparison types return native Mask instead of float-encoded Field.
+// Use these for hot-path select operations where you want to avoid the
+// expensive mask_to_float conversion on AVX-512.
+//
+// The benefit:
+// - Native masks use k-registers on AVX-512 (free parallelism with float ALU)
+// - No conversion overhead compared to Lt/Gt/Le/Ge which return Field
+// - Works with Select<LtMask, T, F> for zero-conversion conditional evaluation
+
+/// Less than returning native mask (no float conversion).
+#[derive(Clone, Debug, Element)]
+pub struct LtMask<L, R>(pub L, pub R);
+
+/// Greater than returning native mask (no float conversion).
+#[derive(Clone, Debug, Element)]
+pub struct GtMask<L, R>(pub L, pub R);
+
+/// Less than or equal returning native mask (no float conversion).
+#[derive(Clone, Debug, Element)]
+pub struct LeMask<L, R>(pub L, pub R);
+
+/// Greater than or equal returning native mask (no float conversion).
+#[derive(Clone, Debug, Element)]
+pub struct GeMask<L, R>(pub L, pub R);
+
+// ============================================================================
+// Manifold Implementations for Mask-Returning Comparisons (Field domains)
+// ============================================================================
+//
+// These implementations exist for Field domains to provide native masks.
+// The actual usage is through the FieldCondition trait in select.rs,
+// which automatically calls these methods for comparison types.
+
+impl<P, L, R, OL, OR> Manifold<P> for LtMask<L, R>
+where
+    P: Copy + Send + Sync,
+    L: Manifold<P, Output = OL>,
+    R: Manifold<P, Output = OR>,
+    OL: Into<crate::Field> + Copy,
+    OR: Into<crate::Field> + Copy,
+{
+    type Output = crate::Mask;
+    #[inline(always)]
+    fn eval(&self, p: P) -> crate::Mask {
+        let l: crate::Field = self.0.eval(p).into();
+        let r: crate::Field = self.1.eval(p).into();
+        l.lt_mask(r)  // Native mask, zero conversion!
+    }
+}
+
+impl<P, L, R, OL, OR> Manifold<P> for GtMask<L, R>
+where
+    P: Copy + Send + Sync,
+    L: Manifold<P, Output = OL>,
+    R: Manifold<P, Output = OR>,
+    OL: Into<crate::Field> + Copy,
+    OR: Into<crate::Field> + Copy,
+{
+    type Output = crate::Mask;
+    #[inline(always)]
+    fn eval(&self, p: P) -> crate::Mask {
+        let l: crate::Field = self.0.eval(p).into();
+        let r: crate::Field = self.1.eval(p).into();
+        l.gt_mask(r)  // Native mask, zero conversion!
+    }
+}
+
+impl<P, L, R, OL, OR> Manifold<P> for LeMask<L, R>
+where
+    P: Copy + Send + Sync,
+    L: Manifold<P, Output = OL>,
+    R: Manifold<P, Output = OR>,
+    OL: Into<crate::Field> + Copy,
+    OR: Into<crate::Field> + Copy,
+{
+    type Output = crate::Mask;
+    #[inline(always)]
+    fn eval(&self, p: P) -> crate::Mask {
+        let l: crate::Field = self.0.eval(p).into();
+        let r: crate::Field = self.1.eval(p).into();
+        l.le_mask(r)  // Native mask, zero conversion!
+    }
+}
+
+impl<P, L, R, OL, OR> Manifold<P> for GeMask<L, R>
+where
+    P: Copy + Send + Sync,
+    L: Manifold<P, Output = OL>,
+    R: Manifold<P, Output = OR>,
+    OL: Into<crate::Field> + Copy,
+    OR: Into<crate::Field> + Copy,
+{
+    type Output = crate::Mask;
+    #[inline(always)]
+    fn eval(&self, p: P) -> crate::Mask {
+        let l: crate::Field = self.0.eval(p).into();
+        let r: crate::Field = self.1.eval(p).into();
+        l.ge_mask(r)  // Native mask, zero conversion!
+    }
+}

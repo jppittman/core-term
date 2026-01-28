@@ -144,6 +144,13 @@ impl SimdOps for ScalarF32 {
     }
 
     #[inline(always)]
+    fn sequential_gather(slice: &[f32], base: f32) -> Self {
+        // Scalar: just load from the base index (same as regular gather with base)
+        let idx = (libm::floorf(base) as isize).clamp(0, slice.len() as isize - 1) as usize;
+        Self(slice[idx])
+    }
+
+    #[inline(always)]
     fn simd_floor(self) -> Self {
         Self(libm::floorf(self.0))
     }

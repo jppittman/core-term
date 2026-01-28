@@ -211,6 +211,20 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
+    fn sequential_gather(slice: &[f32], base: f32) -> Self {
+        // Optimized path for sequential indices: [base, base+1, base+2, base+3]
+        // Can directly load from memory without computing each index separately.
+        let base_ix = (base as isize).clamp(0, slice.len() as isize - 1) as usize;
+        let len = slice.len();
+        let mut out = [0.0f32; 4];
+        for i in 0..4 {
+            let ix = (base_ix + i).clamp(0, len - 1);
+            out[i] = slice[ix];
+        }
+        Self::from_slice(&out)
+    }
+
+    #[inline(always)]
     fn simd_floor(self) -> Self {
         unsafe {
             // SSE2 floor emulation:
@@ -793,6 +807,14 @@ impl SimdOps for F32x8 {
             let idx_i32 = _mm256_cvttps_epi32(indices.0);
             Self(_mm256_i32gather_ps::<4>(slice.as_ptr(), idx_i32))
         }
+    }
+
+    #[inline(always)]
+    fn sequential_gather(slice: &[f32], base: f32) -> Self {
+        // Optimized path for sequential indices: [base, base+1, base+2, ..., base+7]
+        // Can use gather with a pre-constructed sequential index vector.
+        let indices = Self::sequential(base);
+        Self::gather(slice, indices)
     }
 
     #[inline(always)]
@@ -1406,6 +1428,14 @@ impl SimdOps for F32x16 {
             // Gather 16 f32 values; scale=4 bytes per element
             Self(_mm512_i32gather_ps::<4>(idx_i32, slice.as_ptr()))
         }
+    }
+
+    #[inline(always)]
+    fn sequential_gather(slice: &[f32], base: f32) -> Self {
+        // Optimized path for sequential indices: [base, base+1, base+2, ..., base+15]
+        // Can use gather with a pre-constructed sequential index vector.
+        let indices = Self::sequential(base);
+        Self::gather(slice, indices)
     }
 
     #[inline(always)]
