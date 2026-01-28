@@ -28,7 +28,7 @@
 //! }
 //! ```
 
-use crate::{Manifold, Spatial, Computational, Numeric, ext::ManifoldExpr};
+use crate::{Manifold, Spatial, Computational, ext::ManifoldExpr};
 
 /// Wraps an f32 scalar parameter for use in generic domain kernels.
 ///
@@ -54,7 +54,7 @@ impl ManifoldExpr for F32Param {}
 impl<P> Manifold<P> for F32Param
 where
     P: Spatial + Copy + Send + Sync,
-    P::Coord: Computational + Numeric + Copy + Send + Sync,
+    P::Coord: Computational + Copy + Send + Sync,
 {
     type Output = P::Coord;
 
