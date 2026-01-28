@@ -183,6 +183,9 @@ pub mod ext;
 /// Sequential marker algebra for loop counters without gather instructions.
 pub mod sequential;
 
+/// Parameter wrapper for f32 scalars in generic domain kernels.
+pub mod param_wrapper;
+
 // ============================================================================
 // Re-exports (The "Prelude")
 // ============================================================================
@@ -193,12 +196,13 @@ pub use combinators::*;
 pub use dual::{Dual, Dual1, Dual2, Dual3};
 pub use mask::Mask;
 pub use sequential::Sequential;
+pub use param_wrapper::F32Param;
 pub use storage::{FieldStorage, NativeMaskStorage};
 pub use domain::{Head, LetExtended, Spatial, Tail};
 pub use ext::*;
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 pub use manifold::*;
-pub use numeric::{Computational, Coordinate, Selectable};
+pub use numeric::{Computational, Coordinate, Selectable, Numeric};
 pub use ops::binary::*;
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
 pub use ops::logic::*;

@@ -62,7 +62,7 @@ pub trait Selectable: Copy + Send + Sync {
 ///
 /// Extends `Computational` with methods users shouldn't call directly.
 /// These are used by the library's combinators (Sqrt, Select, etc.).
-pub(crate) trait Numeric: Computational {
+pub trait Numeric: Computational {
     /// Square root.
     fn sqrt(self) -> Self;
 
