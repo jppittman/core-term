@@ -204,7 +204,7 @@ pub use ext::*;
 pub use manifold::*;
 pub use numeric::{Computational, Coordinate, Selectable, Numeric};
 pub use ops::binary::*;
-pub use ops::compare::{Ge, Gt, Le, Lt, GeMask, GtMask, LeMask, LtMask, SoftGt, SoftLt, SoftSelect};
+pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
 pub use ops::logic::*;
 pub use ops::unary::*;
 pub use ops::derivative::{
@@ -491,33 +491,12 @@ impl Field {
         Self(NativeSimd::mask_to_float(self.0.cmp_lt(rhs.0)))
     }
 
-    /// Less than comparison returning native mask.
-    ///
-    /// Returns a Mask (native k-register on AVX-512) without float conversion.
-    /// Use this instead of `lt()` when you need the mask for select/early-exit,
-    /// as it avoids the expensive mask_to_float conversion.
-    ///
-    /// On AVX-512, k-registers run on a separate execution unit - essentially free!
-    #[inline(always)]
-    pub fn lt_mask(self, rhs: Self) -> crate::Mask {
-        crate::Mask(self.0.cmp_lt(rhs.0))
-    }
-
     /// Less than or equal (returns mask as Field).
     ///
     /// Returns a Field where each lane is all-1s (true) or all-0s (false).
     #[inline(always)]
     pub fn le(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_le(rhs.0)))
-    }
-
-    /// Less than or equal comparison returning native mask.
-    ///
-    /// Returns a Mask (native k-register on AVX-512) without float conversion.
-    /// Use this instead of `le()` when you need the mask for select/early-exit.
-    #[inline(always)]
-    pub fn le_mask(self, rhs: Self) -> crate::Mask {
-        crate::Mask(self.0.cmp_le(rhs.0))
     }
 
     /// Greater than comparison (returns mask as Field).
@@ -528,30 +507,12 @@ impl Field {
         Self(NativeSimd::mask_to_float(self.0.cmp_gt(rhs.0)))
     }
 
-    /// Greater than comparison returning native mask.
-    ///
-    /// Returns a Mask (native k-register on AVX-512) without float conversion.
-    /// Use this instead of `gt()` when you need the mask for select/early-exit.
-    #[inline(always)]
-    pub fn gt_mask(self, rhs: Self) -> crate::Mask {
-        crate::Mask(self.0.cmp_gt(rhs.0))
-    }
-
     /// Greater than or equal (returns mask as Field).
     ///
     /// Returns a Field where each lane is all-1s (true) or all-0s (false).
     #[inline(always)]
     pub fn ge(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_ge(rhs.0)))
-    }
-
-    /// Greater than or equal comparison returning native mask.
-    ///
-    /// Returns a Mask (native k-register on AVX-512) without float conversion.
-    /// Use this instead of `ge()` when you need the mask for select/early-exit.
-    #[inline(always)]
-    pub fn ge_mask(self, rhs: Self) -> crate::Mask {
-        crate::Mask(self.0.cmp_ge(rhs.0))
     }
 
     /// Square root.
