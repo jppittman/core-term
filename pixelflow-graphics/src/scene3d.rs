@@ -179,6 +179,7 @@ pub struct PlaneKernel {
 
 impl Manifold<Jet3_4> for PlaneKernel {
     type Output = Jet3;
+    #[inline(always)]
     fn eval(&self, p: Jet3_4) -> Jet3 {
         let h = Jet3::from(Field::from(self.h));
         h / p.1 // h / Y
@@ -664,7 +665,7 @@ pub struct ColorReflect<M> {
 impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorReflect<M> {
     type Output = Discrete;
 
-    #[inline]
+    #[inline(always)]
     fn eval(&self, p: Jet3_4) -> Discrete {
         let (x, y, z, w) = p;
         let p_len_sq = x * x + y * y + z * z;
