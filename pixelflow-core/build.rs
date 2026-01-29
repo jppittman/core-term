@@ -1,3 +1,25 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:71fcfd97cb4834f5afc7e6a09c1d9546f19139a1cb6696d948289f54c98db2dd
-size 833
+fn main() {
+    // Detect CPU features at build time and emit custom cfg flags.
+    // This allows us to use cfg(pixelflow_avx512f) instead of cfg(target_feature = "avx512f"),
+    // which doesn't work with target-cpu=native.
+
+    println!("cargo::rustc-check-cfg=cfg(pixelflow_avx512f)");
+    println!("cargo::rustc-check-cfg=cfg(pixelflow_avx2)");
+    println!("cargo::rustc-check-cfg=cfg(pixelflow_neon)");
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") {
+            println!("cargo:rustc-cfg=pixelflow_avx512f");
+        }
+        if is_x86_feature_detected!("avx2") {
+            println!("cargo:rustc-cfg=pixelflow_avx2");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM always has NEON on aarch64
+        println!("cargo:rustc-cfg=pixelflow_neon");
+    }
+}

@@ -1,3 +1,12 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:efdd8439ed28bb19032dfee3475d755f655da5c468f3410ddd8591c2c254f227
-size 422
+[alias]
+# Build and run the bundled macOS app (required for keyboard input on macOS)
+bundle-run = "run --package xtask --release -- bundle-run"
+# Bake eigenstructure binary to Rust consts
+bake-eigen = "run --package xtask --release -- bake-eigen"
+
+[build]
+# Relaxed FP math for faster SIMD - allows FMA contraction and unsafe FP opts
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "llvm-args=-fp-contract=fast",
+]

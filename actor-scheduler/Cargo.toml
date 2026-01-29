@@ -1,3 +1,28 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:1e197b49ed423a7901f7d14f0377d58822ed32fb91d86b95889c11af1dbf0339
-size 392
+[package]
+name = "actor-scheduler"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[lib]
+bench = false
+
+[dependencies]
+actor-scheduler-macros = { path = "../actor-scheduler-macros" }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "bench_latency"
+harness = false
+
+[[bench]]
+name = "bench_throughput"
+harness = false
+
+[[bench]]
+name = "bench_adversarial"
+harness = false

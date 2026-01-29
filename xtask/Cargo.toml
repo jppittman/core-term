@@ -1,3 +1,15 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:894637ad3374acc8c05f2cd0776322e27bc0dc2bb4ea5bdd62cbf74bae945903
-size 213
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+bench = false
+
+[dependencies]
+pixelflow-search = { path = "../pixelflow-search" }

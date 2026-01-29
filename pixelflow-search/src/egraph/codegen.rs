@@ -1,3 +1,407 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:23c8aa359372c413180e225e224895fb327dac44ebe4f350f69301ab9e45277b
-size 14321
+//! Code generation from ExprTree to kernel! macro code.
+//!
+//! This module converts extracted expression trees into Rust code strings
+//! that can be compiled and benchmarked using the kernel! macro.
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use pixelflow_search::egraph::{ExprTree, codegen};
+//!
+//! let tree = ExprTree::add(ExprTree::var(0), ExprTree::mul(ExprTree::var(1), ExprTree::constant(2.0)));
+//!
+//! let body = codegen::expr_tree_to_kernel_body(&tree);
+//! // Returns: "(X + (Y * 2.0))"
+//!
+//! let code = codegen::expr_tree_to_kernel_code(&tree, "my_kernel");
+//! // Returns: "let my_kernel = kernel!(|| (X + (Y * 2.0)));"
+//! ```
+
+use super::extract::{ExprTree, Leaf};
+
+/// Convert an ExprTree to a kernel! macro code string.
+///
+/// This generates a complete `let` statement with the kernel! macro.
+///
+/// # Arguments
+///
+/// * `tree` - The expression tree to convert
+/// * `name` - The variable name for the kernel
+///
+/// # Returns
+///
+/// A Rust code string like: `let my_kernel = kernel!(|| X + Y);`
+pub fn expr_tree_to_kernel_code(tree: &ExprTree, name: &str) -> String {
+    let body = expr_tree_to_kernel_body(tree);
+    format!("let {} = kernel!(|| {});", name, body)
+}
+
+/// Convert an ExprTree to the body of a kernel! macro.
+///
+/// This generates just the expression part, suitable for use inside kernel!.
+///
+/// # Arguments
+///
+/// * `tree` - The expression tree to convert
+///
+/// # Returns
+///
+/// A Rust expression string like: `(X + (Y * 2.0))`
+pub fn expr_tree_to_kernel_body(tree: &ExprTree) -> String {
+    match tree {
+        ExprTree::Leaf(Leaf::Var(0)) => "X".to_string(),
+        ExprTree::Leaf(Leaf::Var(1)) => "Y".to_string(),
+        ExprTree::Leaf(Leaf::Var(2)) => "Z".to_string(),
+        ExprTree::Leaf(Leaf::Var(3)) => "W".to_string(),
+        ExprTree::Leaf(Leaf::Var(i)) => format!("V{}", i),
+        ExprTree::Leaf(Leaf::Const(v)) => format_const(*v),
+
+        ExprTree::Op { op, children } => {
+            let name = op.name();
+            match (name, children.as_slice()) {
+                // Unary operations
+                ("neg", [a]) => format!("(-{})", expr_tree_to_kernel_body(a)),
+                ("recip", [a]) => format!("(1.0 / {})", expr_tree_to_kernel_body(a)),
+                ("sqrt", [a]) => format!("({}).sqrt()", expr_tree_to_kernel_body(a)),
+                ("rsqrt", [a]) => format!("({}).rsqrt()", expr_tree_to_kernel_body(a)),
+                ("abs", [a]) => format!("({}).abs()", expr_tree_to_kernel_body(a)),
+                ("floor", [a]) => format!("({}).floor()", expr_tree_to_kernel_body(a)),
+                ("ceil", [a]) => format!("({}).ceil()", expr_tree_to_kernel_body(a)),
+                ("round", [a]) => format!("({}).round()", expr_tree_to_kernel_body(a)),
+                ("fract", [a]) => format!("({}).fract()", expr_tree_to_kernel_body(a)),
+                ("sin", [a]) => format!("({}).sin()", expr_tree_to_kernel_body(a)),
+                ("cos", [a]) => format!("({}).cos()", expr_tree_to_kernel_body(a)),
+                ("tan", [a]) => format!("({}).tan()", expr_tree_to_kernel_body(a)),
+                ("asin", [a]) => format!("({}).asin()", expr_tree_to_kernel_body(a)),
+                ("acos", [a]) => format!("({}).acos()", expr_tree_to_kernel_body(a)),
+                ("atan", [a]) => format!("({}).atan()", expr_tree_to_kernel_body(a)),
+                ("exp", [a]) => format!("({}).exp()", expr_tree_to_kernel_body(a)),
+                ("exp2", [a]) => format!("({}).exp2()", expr_tree_to_kernel_body(a)),
+                ("ln", [a]) => format!("({}).ln()", expr_tree_to_kernel_body(a)),
+                ("log2", [a]) => format!("({}).log2()", expr_tree_to_kernel_body(a)),
+                ("log10", [a]) => format!("({}).log10()", expr_tree_to_kernel_body(a)),
+
+                // Binary operations - infix
+                ("add", [a, b]) => format!(
+                    "({} + {})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("sub", [a, b]) => format!(
+                    "({} - {})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("mul", [a, b]) => format!(
+                    "({} * {})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("div", [a, b]) => format!(
+                    "({} / {})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+
+                // Binary operations - method style
+                ("min", [a, b]) => format!(
+                    "({}).min({})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("max", [a, b]) => format!(
+                    "({}).max({})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("atan2", [a, b]) => format!(
+                    "({}).atan2({})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("pow", [a, b]) => format!(
+                    "({}).powf({})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("hypot", [a, b]) => format!(
+                    "({}).hypot({})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+
+                // Comparison operations
+                ("lt", [a, b]) => format!(
+                    "({}).lt({})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("le", [a, b]) => format!(
+                    "({}).le({})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("gt", [a, b]) => format!(
+                    "({}).gt({})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("ge", [a, b]) => format!(
+                    "({}).ge({})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("eq", [a, b]) => format!(
+                    "({}).eq({})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+                ("ne", [a, b]) => format!(
+                    "({}).ne({})",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b)
+                ),
+
+                // Ternary operations
+                // mul_add(a, b, c) = a * b + c, but kernel! doesn't support mul_add method
+                ("mul_add", [a, b, c]) => format!(
+                    "(({}) * ({}) + ({}))",
+                    expr_tree_to_kernel_body(a),
+                    expr_tree_to_kernel_body(b),
+                    expr_tree_to_kernel_body(c)
+                ),
+                ("select", [cond, then_val, else_val]) => format!(
+                    "({}).select({}, {})",
+                    expr_tree_to_kernel_body(cond),
+                    expr_tree_to_kernel_body(then_val),
+                    expr_tree_to_kernel_body(else_val)
+                ),
+                ("clamp", [val, min, max]) => format!(
+                    "({}).clamp({}, {})",
+                    expr_tree_to_kernel_body(val),
+                    expr_tree_to_kernel_body(min),
+                    expr_tree_to_kernel_body(max)
+                ),
+
+                // Tuple
+                ("tuple", elems) => {
+                    let parts: Vec<_> = elems.iter().map(expr_tree_to_kernel_body).collect();
+                    format!("({})", parts.join(", "))
+                }
+
+                // Unknown operation
+                (op_name, children) => {
+                    let args: Vec<_> = children.iter().map(expr_tree_to_kernel_body).collect();
+                    format!("{}({})", op_name, args.join(", "))
+                }
+            }
+        }
+    }
+}
+
+/// Format a constant value as Rust code.
+fn format_const(v: f32) -> String {
+    if v.is_nan() {
+        "f32::NAN".to_string()
+    } else if v.is_infinite() {
+        if v.is_sign_positive() {
+            "f32::INFINITY".to_string()
+        } else {
+            "f32::NEG_INFINITY".to_string()
+        }
+    } else if v == 0.0 {
+        "0.0".to_string()
+    } else if v == 1.0 {
+        "1.0".to_string()
+    } else if v == -1.0 {
+        "(-1.0)".to_string()
+    } else if v.fract() == 0.0 && v.abs() < 1000.0 {
+        // Integer-valued floats
+        format!("{:.1}", v)
+    } else {
+        format!("({:.6})", v)
+    }
+}
+
+/// Generate a complete benchmark file for a set of expression trees.
+///
+/// This creates a Criterion benchmark file that can measure the actual
+/// SIMD execution cost of each expression.
+///
+/// # Arguments
+///
+/// * `variants` - List of (name, tree) pairs to benchmark
+///
+/// # Returns
+///
+/// Complete Rust source code for a Criterion benchmark file.
+pub fn generate_benchmark_file(variants: &[(String, ExprTree)]) -> String {
+    let mut code = String::new();
+
+    // Header
+    code.push_str(
+        r#"//! Auto-generated kernels for NNUE cost model training.
+//!
+//! Generated by: cargo run -p pixelflow-ml --example gen_egraph_variants --features training
+//!
+//! DO NOT EDIT MANUALLY - regenerate with the command above.
+
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use pixelflow_core::{Field, Manifold};
+use pixelflow_macros::kernel_raw;
+
+fn bench_generated_kernels(c: &mut Criterion) {
+    let mut group = c.benchmark_group("generated_kernels");
+    group.sample_size(100);
+
+    let xf = Field::sequential(1.0);
+    let yf = Field::from(2.0);
+    let zf = Field::from(3.0);
+    let wf = Field::from(0.5);
+
+"#,
+    );
+
+    // Generate each kernel benchmark
+    for (name, tree) in variants {
+        let kernel_body = expr_tree_to_kernel_body(tree);
+        let node_count = tree.node_count();
+        let depth = tree.depth();
+
+        code.push_str(&format!(
+            r#"    // {name} - {node_count} nodes, depth {depth}
+    {{
+        let k = kernel_raw!(|| {kernel_body});
+        let m = k();
+        group.bench_function("{name}", |b| {{
+            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+        }});
+    }}
+
+"#
+        ));
+    }
+
+    // Footer
+    code.push_str(
+        r#"    group.finish();
+}
+
+criterion_group!(
+    name = generated;
+    config = Criterion::default().sample_size(100);
+    targets = bench_generated_kernels,
+);
+
+criterion_main!(generated);
+"#,
+    );
+
+    code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expr_tree_to_kernel_body_var() {
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(0)), "X");
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(1)), "Y");
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(2)), "Z");
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(3)), "W");
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(4)), "V4");
+    }
+
+    #[test]
+    fn test_expr_tree_to_kernel_body_const() {
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(0.0)), "0.0");
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(1.0)), "1.0");
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(-1.0)), "(-1.0)");
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(2.0)), "2.0");
+    }
+
+    #[test]
+    fn test_expr_tree_to_kernel_body_unary() {
+        let x = ExprTree::var(0);
+        assert_eq!(
+            expr_tree_to_kernel_body(&ExprTree::neg(x.clone())),
+            "(-X)"
+        );
+        assert_eq!(
+            expr_tree_to_kernel_body(&ExprTree::sqrt(x.clone())),
+            "(X).sqrt()"
+        );
+        assert_eq!(
+            expr_tree_to_kernel_body(&ExprTree::abs(x.clone())),
+            "(X).abs()"
+        );
+    }
+
+    #[test]
+    fn test_expr_tree_to_kernel_body_binary() {
+        let x = ExprTree::var(0);
+        let y = ExprTree::var(1);
+
+        assert_eq!(
+            expr_tree_to_kernel_body(&ExprTree::add(x.clone(), y.clone())),
+            "(X + Y)"
+        );
+        assert_eq!(
+            expr_tree_to_kernel_body(&ExprTree::mul(x.clone(), y.clone())),
+            "(X * Y)"
+        );
+        assert_eq!(
+            expr_tree_to_kernel_body(&ExprTree::min(x.clone(), y.clone())),
+            "(X).min(Y)"
+        );
+    }
+
+    #[test]
+    fn test_expr_tree_to_kernel_body_nested() {
+        // (X + Y) * Z
+        let tree = ExprTree::mul(
+            ExprTree::add(ExprTree::var(0), ExprTree::var(1)),
+            ExprTree::var(2),
+        );
+        assert_eq!(expr_tree_to_kernel_body(&tree), "((X + Y) * Z)");
+    }
+
+    #[test]
+    fn test_expr_tree_to_kernel_body_mul_add() {
+        let tree = ExprTree::mul_add(
+            ExprTree::var(0),
+            ExprTree::var(1),
+            ExprTree::var(2),
+        );
+        assert_eq!(expr_tree_to_kernel_body(&tree), "(X).mul_add(Y, Z)");
+    }
+
+    #[test]
+    fn test_expr_tree_to_kernel_code() {
+        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(1.0));
+        let code = expr_tree_to_kernel_code(&tree, "my_kernel");
+        assert_eq!(code, "let my_kernel = kernel!(|| (X + 1.0));");
+    }
+
+    #[test]
+    fn test_generate_benchmark_file() {
+        let variants = vec![
+            ("k0".to_string(), ExprTree::var(0)),
+            (
+                "k1".to_string(),
+                ExprTree::add(ExprTree::var(0), ExprTree::var(1)),
+            ),
+        ];
+
+        let code = generate_benchmark_file(&variants);
+
+        // Check key parts are present
+        assert!(code.contains("criterion_group!"));
+        assert!(code.contains("criterion_main!"));
+        assert!(code.contains("kernel_raw!(|| X)"));
+        assert!(code.contains("kernel_raw!(|| (X + Y))"));
+        assert!(code.contains(r#"group.bench_function("k0""#));
+        assert!(code.contains(r#"group.bench_function("k1""#));
+    }
+}

@@ -1,3 +1,21 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:8f7843be6c75d59316876c931b4de8bf53daa7c2bb20e02c8c49e89a7f20d086
-size 487
+//! # PixelFlow IR
+//!
+//! The shared Intermediate Representation (IR) and Backend abstraction.
+//!
+//! - **Traits**: `Op` trait defines behavior.
+//! - **Ops**: Unit structs (`Add`, `Mul`) implement `Op`.
+//! - **Kind**: `OpKind` enum unifies them for storage.
+//! - **Backend**: SIMD execution traits.
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+pub mod kind;
+pub mod traits;
+pub mod ops;
+pub mod expr;
+pub mod backend;
+
+pub use kind::OpKind;
+pub use traits::Op;

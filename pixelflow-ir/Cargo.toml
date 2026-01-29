@@ -1,3 +1,14 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:fbc8ae635010e5589fba679f66004b3fcb75be4a8436e1998ef0c21163458f6f
-size 256
+[package]
+name = "pixelflow-ir"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libm = "0.2"
+alloc = { version = "1.0", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[features]
+default = ["std"]
+std = ["alloc"]
+
