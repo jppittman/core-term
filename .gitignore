@@ -1,3 +1,9 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:4c5443cea6ced9398ed041aad6c7b2df60906661a392ea4557ededa1f6cf35bc
-size 74
+/target
+CoreTerm.app
+.DS_Store
+/vendor
+
+
+.gemini*/
+gha-creds-*.json
+*.ppm

@@ -1,3 +1,188 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:29e13c980c4b27f6d21adf42d91cb9ecff84e1caa070dd550699e1b0b3ad6037
-size 5022
+//! Backend trait and SIMD operations.
+//!
+//! This module defines the interface for SIMD backends.
+//! Implementations (AVX2, NEON, Wasm) are provided in submodules.
+
+use core::fmt::Debug;
+use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Shl, Shr, Sub};
+
+/// A backend provides the SIMD implementation for a specific platform.
+pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
+    /// Number of lanes in the SIMD vector.
+    const LANES: usize;
+
+    /// The SIMD vector type for f32.
+    type F32: SimdOps;
+
+    /// The SIMD vector type for u32 (for packed pixels).
+    type U32: SimdU32Ops;
+}
+
+/// Operations on native mask types.
+pub trait MaskOps:
+    Copy
+    + Clone
+    + Debug
+    + Default
+    + Send
+    + Sync
+    + BitAnd<Output = Self>
+    + BitOr<Output = Self>
+    + Not<Output = Self>
+{
+    /// Check if any lane is true (non-zero).
+    fn any(self) -> bool;
+
+    /// Check if all lanes are true (non-zero).
+    fn all(self) -> bool;
+}
+
+/// All SIMD operations for f32.
+pub trait SimdOps:
+    Copy
+    + Clone
+    + Debug
+    + Default
+    + Send
+    + Sync
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Mul<Output = Self>
+    + Div<Output = Self>
+    + BitAnd<Output = Self>
+    + BitOr<Output = Self>
+    + Not<Output = Self>
+{
+    /// Native mask type for this SIMD width.
+    type Mask: MaskOps;
+
+    /// Number of lanes.
+    const LANES: usize;
+
+    /// Splat a scalar across all lanes.
+    fn splat(val: f32) -> Self;
+
+    /// Create sequential values [start, start+1, ...].
+    fn sequential(start: f32) -> Self;
+
+    /// Store to a slice.
+    fn store(&self, out: &mut [f32]);
+
+    /// Less than comparison (returns native mask).
+    fn cmp_lt(self, rhs: Self) -> Self::Mask;
+    /// Less than or equal comparison (returns native mask).
+    fn cmp_le(self, rhs: Self) -> Self::Mask;
+    /// Greater than comparison (returns native mask).
+    fn cmp_gt(self, rhs: Self) -> Self::Mask;
+    /// Greater than or equal comparison (returns native mask).
+    fn cmp_ge(self, rhs: Self) -> Self::Mask;
+
+    /// Square root.
+    fn simd_sqrt(self) -> Self;
+    /// Absolute value.
+    fn simd_abs(self) -> Self;
+    /// Element-wise minimum.
+    fn simd_min(self, rhs: Self) -> Self;
+    /// Element-wise maximum.
+    fn simd_max(self, rhs: Self) -> Self;
+
+    /// Conditional select using native mask.
+    fn simd_select(mask: Self::Mask, if_true: Self, if_false: Self) -> Self;
+
+    /// Load from a slice.
+    fn from_slice(slice: &[f32]) -> Self;
+
+    /// Gather: load from slice at indices specified by self.
+    fn gather(slice: &[f32], indices: Self) -> Self;
+
+    /// Floor (round toward negative infinity).
+    fn simd_floor(self) -> Self;
+
+    /// Fused multiply-add: (self * b) + c
+    fn mul_add(self, b: Self, c: Self) -> Self;
+
+    /// Masked add using native mask: self + (mask ? val : 0)
+    fn add_masked(self, val: Self, mask: Self::Mask) -> Self;
+
+    /// Approximate reciprocal (1/x).
+    fn recip(self) -> Self;
+
+    /// Approximate reciprocal square root (1/sqrt(x)).
+    fn simd_rsqrt(self) -> Self;
+
+    // =========================================================================
+    // Mask Conversion
+    // =========================================================================
+
+    /// Convert native mask to float representation.
+    fn mask_to_float(mask: Self::Mask) -> Self;
+
+    /// Convert float representation to native mask.
+    fn float_to_mask(self) -> Self::Mask;
+
+    // =========================================================================
+    // Bit Manipulation (for transcendentals)
+    // =========================================================================
+
+    /// Splat u32 bit pattern as float (BITCAST).
+    fn from_u32_bits(bits: u32) -> Self;
+
+    /// Shift bits right treating as u32.
+    fn shr_u32(self, n: u32) -> Self;
+
+    /// Interpret bits as i32, convert to f32.
+    fn i32_to_f32(self) -> Self;
+
+    /// Base-2 logarithm.
+    fn log2(self) -> Self;
+
+    /// Base-2 exponential.
+    fn exp2(self) -> Self;
+
+    /// Natural exponential.
+    #[inline(always)]
+    fn exp(self) -> Self {
+        const LOG2_E: f32 = 1.4426950408889634;
+        (self * Self::splat(LOG2_E)).exp2()
+    }
+}
+
+/// SIMD operations for u32 (packed pixels).
+pub trait SimdU32Ops:
+    Copy
+    + Clone
+    + Debug
+    + Default
+    + Send
+    + Sync
+    + BitAnd<Output = Self>
+    + BitOr<Output = Self>
+    + Shl<u32, Output = Self>
+    + Shr<u32, Output = Self>
+{
+    /// Number of lanes.
+    const LANES: usize;
+
+    /// Splat a scalar across all lanes.
+    fn splat(val: u32) -> Self;
+
+    /// Store to a slice.
+    fn store(&self, out: &mut [u32]);
+
+    /// Convert from f32 SIMD (clamp, scale by 255, truncate).
+    fn from_f32_scaled<F: SimdOps>(f: F) -> Self;
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
+pub mod scalar;
+
+#[cfg(target_arch = "x86_64")]
+pub mod x86;
+
+#[cfg(target_arch = "aarch64")]
+pub mod arm;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
+pub mod fastmath;
