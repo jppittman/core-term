@@ -16,3 +16,4 @@
 *.dat filter=lfs diff=lfs merge=lfs -text
 *.jsonl filter=lfs diff=lfs merge=lfs -text
 *.sh filter=lfs diff=lfs merge=lfs -text
+pixelflow-graphics/tests/color_palette_test.rs !filter
