@@ -114,7 +114,8 @@ impl NixPty {
                 }
 
                 // Set controlling terminal
-                if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY, 0) == -1 {
+                // Cast to correct type for platform (u64 on macOS, etc.)
+                if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY as _, 0) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
 
