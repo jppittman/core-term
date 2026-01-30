@@ -44,7 +44,7 @@ fn render_reference(width: u32, height: u32) -> Frame<Rgba8> {
 }
 
 #[test]
-fn render_parallel_matches_single_threaded_output() {
+fn render_parallel_should_match_sequential_output_when_standard_workload() {
     let width = 100;
     let height = 100;
     let reference = render_reference(width, height);
@@ -59,7 +59,7 @@ fn render_parallel_matches_single_threaded_output() {
 }
 
 #[test]
-fn render_parallel_matches_single_threaded_output_odd_threads() {
+fn render_parallel_should_match_sequential_output_when_thread_count_is_odd() {
     let width = 100;
     let height = 100;
     let reference = render_reference(width, height);
@@ -73,7 +73,7 @@ fn render_parallel_matches_single_threaded_output_odd_threads() {
 }
 
 #[test]
-fn render_parallel_handles_small_height() {
+fn render_parallel_should_partition_correctly_when_rows_less_than_threads() {
     // Height < num_threads
     let width = 50;
     let height = 2;
@@ -88,7 +88,7 @@ fn render_parallel_handles_small_height() {
 }
 
 #[test]
-fn render_parallel_handles_height_one() {
+fn render_parallel_should_work_when_height_is_one() {
     // Height = 1
     let width = 50;
     let height = 1;
@@ -105,7 +105,31 @@ fn render_parallel_handles_height_one() {
 }
 
 #[test]
-fn render_work_stealing_matches_single_threaded_output() {
+fn render_parallel_should_partition_correctly_when_remainder_exists() {
+    // Specifically target the remainder logic:
+    // Height = 10, threads = 3.
+    // Partition: 10 / 3 = 3 remainder 1.
+    // Thread 0: 3 + 1 = 4 rows.
+    // Thread 1: 3 rows.
+    // Thread 2: 3 rows.
+    // Total = 10.
+    //
+    // If logic is flawed (e.g. i <= remainder), it might try to grab extra rows and panic or overlap.
+
+    let width = 20;
+    let height = 10;
+    let reference = render_reference(width, height);
+
+    let mut frame: Frame<Rgba8> = Frame::new(width, height);
+    let options = RenderOptions { num_threads: 3 };
+
+    render_parallel(&TestGradient, &mut frame, options);
+
+    assert_eq!(frame.data, reference.data, "render_parallel remainder partitioning mismatch");
+}
+
+#[test]
+fn render_work_stealing_should_match_sequential_output() {
     let width = 100;
     let height = 100;
     let reference = render_reference(width, height);
@@ -119,7 +143,7 @@ fn render_work_stealing_matches_single_threaded_output() {
 }
 
 #[test]
-fn render_work_stealing_handles_height_one() {
+fn render_work_stealing_should_work_when_height_is_one() {
     let width = 50;
     let height = 1;
     let reference = render_reference(width, height);
