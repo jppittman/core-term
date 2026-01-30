@@ -867,6 +867,7 @@ dependencies = [
  "criterion",
  "pixelflow-core",
  "pixelflow-ir",
+ "pixelflow-nnue",
  "pixelflow-search",
  "proc-macro2",
  "quote",

@@ -15,6 +15,7 @@ quote = "1"
 proc-macro2 = "1"
 pixelflow-ir = { path = "../pixelflow-ir", features = ["alloc"] }
 pixelflow-search = { path = "../pixelflow-search" }
+pixelflow-nnue = { path = "../pixelflow-nnue" }
 
 [dev-dependencies]
 pixelflow-core = { path = "../pixelflow-core" }
