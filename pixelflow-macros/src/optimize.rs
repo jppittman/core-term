@@ -57,6 +57,96 @@ fn unique_opaque_name(prefix: &str) -> String {
     format!("__{}{}", prefix, id)
 }
 
+/// Heuristic score for rewrite priority.
+///
+/// Higher scores = apply sooner (more promising rewrites).
+///
+/// Priority order:
+/// 1. **Identity/Annihilator** (x+0, x*1, x*0) - eliminate operations (highest)
+/// 2. **FMA fusion** (a*b+c) - enable SIMD instructions
+/// 3. **RecipSqrt** (1/sqrt(x)) - special instruction
+/// 4. **Canonicalization** (normalize forms) - enables other matches
+/// 5. **Fusion-enabling rewrites** (distribute, etc.)
+/// 6. **Everything else** (commutative, etc.) - apply last
+fn heuristic_score_rewrite(egraph: &EGraph, target: &pixelflow_search::egraph::RewriteTarget) -> i64 {
+    use pixelflow_search::egraph::RewriteTarget;
+
+    // Get the rule name
+    let rule_name = match egraph.rule(target.rule_idx) {
+        Some(rule) => rule.name(),
+        None => return 0,
+    };
+
+    // Priority scoring based on rule type
+    match rule_name {
+        // Tier 1: Eliminate operations (identity, annihilator)
+        "identity" | "annihilator" => 1000,
+
+        // Tier 2: Enable SIMD (FMA fusion)
+        "fma_fusion" => 800,
+
+        // Tier 3: Special instructions
+        "recip_sqrt" => 700,
+
+        // Tier 4: Canonicalization (enables other matches)
+        "canonicalize" => 600,
+
+        // Tier 5: Fusion-enabling
+        "distribute" | "factor" | "involution" | "cancellation" => 500,
+
+        // Tier 6: Everything else (commutativity, etc.)
+        _ => 100,
+    }
+}
+
+/// Priority-based E-graph saturation with fixed budget.
+///
+/// Applies rewrites in priority order (most promising first) until:
+/// - Budget exhausted, OR
+/// - E-graph saturated (no more rewrites possible)
+///
+/// Returns true if saturated (optimal), false if budget exhausted (best-effort).
+fn saturate_with_priority(egraph: &mut EGraph, budget: usize) -> bool {
+    use pixelflow_search::egraph::RewriteTarget;
+
+    for _ in 0..budget {
+        // Enumerate all possible rewrites
+        let targets = egraph.enumerate_rewrite_targets();
+
+        if targets.is_empty() {
+            return true; // Saturated - optimal!
+        }
+
+        // Score all targets
+        let mut scored: Vec<(RewriteTarget, i64)> = targets
+            .into_iter()
+            .map(|t| {
+                let score = heuristic_score_rewrite(egraph, &t);
+                (t, score)
+            })
+            .collect();
+
+        // Sort by score (descending)
+        scored.sort_by_key(|(_, score)| -score);
+
+        // Try rewrites in priority order until one succeeds
+        let mut applied = false;
+        for (target, _score) in scored {
+            if egraph.apply_single_rule(target.rule_idx, target.class_id, target.node_idx) {
+                applied = true;
+                break;
+            }
+        }
+
+        if !applied {
+            // No rewrites succeeded - saturated
+            return true;
+        }
+    }
+
+    false // Budget exhausted
+}
+
 /// Optimize an analyzed kernel using tree rewriting and e-graphs.
 pub fn optimize(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
     // 1. Structural optimization (catches things inside opaque nodes)
@@ -385,7 +475,10 @@ fn optimize_block_preserving_structure(mut block: BlockExpr, costs: &CostModel) 
 fn optimize_via_egraph(expr: &Expr, costs: &CostModel) -> Expr {
     let mut ctx = EGraphContext::new();
     let root = ctx.expr_to_egraph(expr);
-    ctx.egraph.saturate();
+
+    // Priority-based saturation (1000 rewrite budget)
+    saturate_with_priority(&mut ctx.egraph, 1000);
+
     let tree = ctx.egraph.extract_tree_with_costs(root, costs);
     ctx.tree_to_expr(&tree)
 }
@@ -411,8 +504,8 @@ fn optimize_via_ir(expr: &Expr, costs: &CostModel) -> Expr {
     let mut ctx = IRToEGraphContext::new();
     let root = ctx.ir_to_egraph(&ir);
 
-    // Optimize via E-graph saturation
-    ctx.egraph.saturate();
+    // Priority-based saturation (1000 rewrite budget)
+    saturate_with_priority(&mut ctx.egraph, 1000);
 
     // Extract optimized E-graph → ExprTree
     let tree = ctx.egraph.extract_tree_with_costs(root, costs);

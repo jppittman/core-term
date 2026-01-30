@@ -33,7 +33,7 @@ pub mod saturate;
 pub use cost::CostModel;
 pub use deps::{Deps, DepsAnalysis};
 pub use extract::{ExprTree, Leaf};
-pub use graph::EGraph;
+pub use graph::{EGraph, RewriteTarget};
 pub use guided::{GuidedAction, GuidedResult, GuidedState, GuidedStats, ActionRecord, GuidedConfig, GuidedMcts, guided_optimize};
 pub use node::{EClassId, ENode};
 pub use ops::Op;
