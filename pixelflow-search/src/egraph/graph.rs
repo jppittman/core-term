@@ -81,6 +81,10 @@ impl EGraph {
         // Identity rules: x + 0 = x, x * 1 = x
         rules.push(Identity::new(&ops::Add));
         rules.push(Identity::new(&ops::Mul));
+        // Annihilator rules: x * 0 = 0
+        rules.push(Annihilator::new(&ops::Mul));
+        // Special instructions
+        rules.push(Box::new(RecipSqrt));
 
         rules
     }
