@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use super::ops::Op;
 
 /// Identifier for an equivalence class in the e-graph.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EClassId(pub(crate) u32);
 
 impl EClassId {

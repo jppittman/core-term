@@ -11,7 +11,7 @@ use super::rewrite::{Rewrite, RewriteAction};
 use super::rules::{Annihilator, Commutative, Distributive, Factor, FmaFusion, Idempotent, Identity, RecipSqrt};
 
 /// A potential rewrite target: (rule, e-class, node within class).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RewriteTarget {
     /// Index into the e-graph's rule list
     pub rule_idx: usize,

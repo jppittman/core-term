@@ -105,33 +105,44 @@ fn heuristic_score_rewrite(egraph: &EGraph, target: &pixelflow_search::egraph::R
 /// - Budget exhausted, OR
 /// - E-graph saturated (no more rewrites possible)
 ///
+/// Uses priority queue to avoid rescoring old matches (only scores new ones).
+///
 /// Returns true if saturated (optimal), false if budget exhausted (best-effort).
 fn saturate_with_priority(egraph: &mut EGraph, budget: usize) -> bool {
     use pixelflow_search::egraph::RewriteTarget;
+    use std::collections::{BinaryHeap, HashSet};
+    use std::cmp::Reverse;
 
-    for _ in 0..budget {
-        // Find all actual matches (not just possible combinations)
-        let matches = egraph.find_rewrite_matches();
+    // Priority queue: (score, target)
+    // Using Reverse for max-heap (highest score first)
+    let mut queue: BinaryHeap<(i64, RewriteTarget)> = BinaryHeap::new();
+    let mut seen: HashSet<RewriteTarget> = HashSet::new();
 
-        if matches.is_empty() {
-            return true; // Saturated - optimal!
+    // Initial: find all matches and score once
+    for target in egraph.find_rewrite_matches() {
+        if seen.insert(target) {
+            let score = heuristic_score_rewrite(egraph, &target);
+            queue.push((score, target));
         }
+    }
 
-        // Score only the actual matches
-        let mut scored: Vec<(RewriteTarget, i64)> = matches
-            .into_iter()
-            .map(|t| {
-                let score = heuristic_score_rewrite(egraph, &t);
-                (t, score)
-            })
-            .collect();
+    // Greedy: always apply highest-scoring match
+    for _ in 0..budget {
+        let Some((_, best)) = queue.pop() else {
+            return true; // Queue empty = saturated!
+        };
 
-        // Sort by score (descending)
-        scored.sort_by_key(|(_, score)| -score);
-
-        // Apply highest-scoring match
-        let (best, _) = scored[0];
+        // Apply the rewrite
         egraph.apply_single_rule(best.rule_idx, best.class_id, best.node_idx);
+
+        // Find NEW matches unlocked by this rewrite
+        // (In practice, we re-scan for simplicity - could optimize further)
+        for target in egraph.find_rewrite_matches() {
+            if seen.insert(target) {
+                let score = heuristic_score_rewrite(egraph, &target);
+                queue.push((score, target));
+            }
+        }
     }
 
     false // Budget exhausted
