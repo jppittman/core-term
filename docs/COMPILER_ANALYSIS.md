@@ -74,12 +74,12 @@ The pipeline uses **three distinct AST/IR representations**:
 ### 1. 🔴 CRITICAL: IR Crate Not Integrated into Pipeline
 
 **Severity:** High
-**Effort:** High (requires architectural refactor)
-**Impact:** Foundational - enables other improvements
+**Effort:** Medium (macro changes only, search stays generic)
+**Impact:** Foundational - IR becomes canonical representation
 
 #### Problem
 
-The `pixelflow-ir` crate exists with a clean `Expr` type designed for optimization:
+The `pixelflow-ir` crate defines a clean `Expr` type:
 
 ```rust
 // pixelflow-ir/src/expr.rs
@@ -97,57 +97,73 @@ pub enum Expr {
 
 Current flow:
 ```
-Macro AST → EGraph (via custom conversion) → Optimized AST → Code
+Macro AST → ENode (pixelflow-search) → Optimized AST → Code
 ```
 
-IR is completely bypassed. The macro duplicates IR functionality in `ast.rs`.
+IR is completely bypassed. The macro duplicates IR functionality with a 263-line AST.
+
+#### Architecture Clarification
+
+**pixelflow-search is a GENERIC framework:**
+- E-graph + NNUE for optimization
+- Works with `ENode` which can represent any language
+- Should NOT depend on `pixelflow-ir`
+
+**pixelflow-ir is the LANGUAGE:**
+- Defines the specific IR for PixelFlow kernels
+- Just data structures (Expr, OpKind)
+
+**pixelflow-macros is the FRONTEND:**
+- Consumes BOTH search (framework) and IR (language)
+- Should compile: AST → IR → E-graph → IR → Code
 
 #### Why This Matters
 
-1. **Code Duplication:** Two AST definitions for the same purpose
-2. **Lost Opportunities:** IR could enable runtime expression building
-3. **Maintenance Burden:** Changes require updating multiple representations
-4. **No Runtime Optimization:** Can't optimize expressions at runtime
-5. **No REPL/JIT:** Can't dynamically compile kernels
+1. **Code Duplication:** Macro AST duplicates what IR should do
+2. **Lost Abstraction:** No canonical representation for kernel expressions
+3. **Maintenance Burden:** Changes require updating both AST and conversion code
+4. **No Reusability:** Can't build/optimize IR expressions outside macros
+5. **Missed Opportunity:** IR exists but is completely unused
 
 #### Recommended Fix
 
-Create a unified pipeline:
+Add `pixelflow-ir` to macro pipeline:
 
 ```rust
-// pixelflow-macros/src/ir_bridge.rs (NEW)
-pub fn ast_to_ir(ast: &ast::Expr) -> ir::Expr {
-    // Convert macro AST → IR
-}
+// pixelflow-macros/Cargo.toml
+[dependencies]
+pixelflow-ir = { path = "../pixelflow-ir" }
+pixelflow-search = { path = "../pixelflow-search" }
 
-pub fn ir_to_egraph(ir: &ir::Expr) -> EClassId {
-    // Convert IR → EGraph (replaces current AST → EGraph)
-}
+// pixelflow-macros/src/optimize.rs
+use pixelflow_ir::Expr as IR;
 
-pub fn egraph_to_ir(tree: &ExprTree) -> ir::Expr {
-    // Convert optimized EGraph → IR
-}
-
-pub fn ir_to_code(ir: &ir::Expr) -> TokenStream {
-    // Generate type-level AST from IR
-}
-```
-
-Then refactor `optimize.rs`:
-```rust
 pub fn optimize(analyzed: AnalyzedKernel) -> AnalyzedKernel {
+    // 1. Convert macro AST → IR (once)
     let ir = ast_to_ir(&analyzed.def.body);
-    let optimized_ir = optimize_ir(ir);  // Works on IR
-    analyzed.def.body = ir_to_ast(&optimized_ir);
+
+    // 2. Flatten IR tree → E-graph
+    let mut egraph = EGraph::new();
+    let root = ir_to_egraph(&ir, &mut egraph);
+
+    // 3. Optimize via E-graph saturation
+    egraph.saturate();
+
+    // 4. Extract optimized IR tree
+    let optimized_ir = egraph_to_ir(&egraph, root);
+
+    // 5. Generate code from IR
+    let code = ir_to_code(&optimized_ir);
+
     analyzed
 }
 ```
 
 **Benefits:**
-- Single source of truth for expression structure
-- Enables runtime expression building (future)
-- Cleaner separation: parsing → IR → optimization → codegen
-- IR becomes reusable across macro and runtime contexts
+- IR becomes the canonical representation
+- E-graph stays generic (no dependency on specific IR)
+- Can build/optimize IR expressions outside macros (future)
+- Cleaner separation: parsing (AST) → semantics (IR) → optimization (E-graph) → codegen
 
 ---
 
@@ -653,29 +669,62 @@ This analysis document is accompanied by implementations of:
 - 100x cost scaling for sub-nanosecond precision
 
 ### 🚧 Fix #1: IR Integration (IN PROGRESS)
-**Goal:** Make `pixelflow-ir` the single source of truth for all compilation stages.
+**Goal:** Make `pixelflow-ir::Expr` the canonical representation in the macro compiler.
 
-**Architecture Change:**
+**Correct Architecture:**
 ```
-Before (3 representations):
-  AST → ENode → ENode → AST → Code
-        ↑_______________↑
-       (optimization)
-
-After (1 representation):
-  AST → IR → EGraph<IR> → IR → Code
-       └────────────────────┘
-       IR is the truth
+┌─────────────────────────────────────┐
+│ pixelflow-search (GENERIC)          │
+│ - E-graph framework                 │
+│ - NNUE learning                     │
+│ - Works with any language via ENode │
+└─────────────────────────────────────┘
+         ↑
+         │ (used by)
+         │
+┌─────────────────────────────────────┐
+│ pixelflow-ir (LANGUAGE)             │
+│ - Expr definition                   │
+│ - OpKind enum                       │
+│ - No optimization logic             │
+└─────────────────────────────────────┘
+         ↑
+         │ (depends on both)
+         │
+┌─────────────────────────────────────┐
+│ pixelflow-macros (FRONTEND)        │
+│ - Compiles to IR using E-graph      │
+│ - AST → IR → EGraph → IR → Code    │
+└─────────────────────────────────────┘
 ```
 
-**Implementation Plan:**
-1. Make `pixelflow-search` depend on `pixelflow-ir`
-2. Define `Language` trait for E-graph genericity
-3. Replace `ENode` with `pixelflow_ir::Expr`
-4. Update macro pipeline to use `AST → IR → EGraph → IR → Codegen`
-5. Delete redundant conversions
+**Current Problem:**
+- `pixelflow-macros` has its own 263-line AST
+- Never uses `pixelflow-ir::Expr`
+- Directly converts AST → ENode, losing the IR abstraction
 
-**Status:** Refactoring in progress (see commits after this analysis).
+**Proposed Pipeline:**
+```
+Before:
+  Parse → AST → ENode → ENode → AST → Codegen
+                ↑_______________↑
+                (optimization)
+
+After:
+  Parse → AST → IR → ENode → IR → Codegen
+                     ↑______↑
+                  (optimization)
+```
+
+**Implementation:**
+1. Add `pixelflow-ir` dependency to `pixelflow-macros`
+2. Create `ast_to_ir()` converter
+3. Create `ir_to_enode()` flattener (tree → graph)
+4. Create `enode_to_ir()` extractor (graph → tree)
+5. Create `ir_to_code()` generator
+6. Update `optimize()` to use IR pipeline
+
+**Status:** Refactoring in progress.
 
 ---
 
