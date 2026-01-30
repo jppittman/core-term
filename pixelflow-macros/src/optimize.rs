@@ -26,6 +26,7 @@ use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
     UnaryExpr, UnaryOp,
 };
+use crate::ir_bridge::{ast_to_ir, egraph_to_ir, ir_to_code, IRToEGraphContext};
 use crate::sema::AnalyzedKernel;
 use pixelflow_search::egraph::{CostModel, EClassId, EGraph, ENode, ExprTree, Leaf, ops};
 use proc_macro2::Span;
@@ -101,8 +102,8 @@ fn optimize_expr_with_egraph(expr: Expr, costs: &CostModel) -> Expr {
             Expr::MethodCall(optimized_call)
         }
 
-        // Pure expressions: use full egraph optimization
-        _ => optimize_via_egraph(&expr, costs),
+        // Pure expressions: use IR-based optimization
+        _ => optimize_via_ir(&expr, costs),
     }
 }
 
@@ -366,7 +367,7 @@ fn optimize_block_preserving_structure(mut block: BlockExpr, costs: &CostModel) 
     Expr::Block(block)
 }
 
-/// Optimize an expression via the e-graph.
+/// Optimize an expression via the e-graph (AST-based, legacy).
 fn optimize_via_egraph(expr: &Expr, costs: &CostModel) -> Expr {
     let mut ctx = EGraphContext::new();
     let root = ctx.expr_to_egraph(expr);
@@ -375,8 +376,41 @@ fn optimize_via_egraph(expr: &Expr, costs: &CostModel) -> Expr {
     ctx.tree_to_expr(&tree)
 }
 
+/// Optimize an expression via the IR pipeline (NEW).
+///
+/// This uses the unified IR representation:
+/// AST → IR → E-graph → ExprTree → AST
+///
+/// Falls back to AST-based optimization if IR conversion fails.
+fn optimize_via_ir(expr: &Expr, costs: &CostModel) -> Expr {
+    // Try to convert AST → IR
+    let ir = match ast_to_ir(expr) {
+        Ok(ir) => ir,
+        Err(_) => {
+            // IR conversion failed (unsupported constructs like blocks, captured variables)
+            // Fall back to legacy AST-based optimization
+            return optimize_via_egraph(expr, costs);
+        }
+    };
+
+    // Flatten IR → E-graph
+    let mut ctx = IRToEGraphContext::new();
+    let root = ctx.ir_to_egraph(&ir);
+
+    // Optimize via E-graph saturation
+    ctx.egraph.saturate();
+
+    // Extract optimized E-graph → ExprTree
+    let tree = ctx.egraph.extract_tree_with_costs(root, costs);
+
+    // Convert ExprTree → AST using existing infrastructure
+    // We reuse the AST generation since it already knows how to emit method calls, etc.
+    let legacy_ctx = EGraphContext::new();
+    legacy_ctx.tree_to_expr(&tree)
+}
+
 // ============================================================================
-// E-Graph Integration
+// E-Graph Integration (Legacy AST-based)
 // ============================================================================
 
 /// Context for converting between AST and e-graph representations.
