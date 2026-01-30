@@ -263,24 +263,24 @@ fn e2e_render_using_builtin_shapes() {
     let unit_circle = circle(SOLID, EMPTY);
 
     // Evaluate the circle at the origin - should return SOLID (1.0)
-    let _at_origin = unit_circle.eval_raw(
+    let at_origin = unit_circle.eval_raw(
         Field::from(0.0),
         Field::from(0.0),
         Field::from(0.0),
         Field::from(0.0),
     );
+    // SOLID is 1.0, check if it's > 0.5 for all lanes
+    assert!(at_origin.gt(Field::from(0.5)).all(), "Origin should be SOLID (1.0)");
 
     // Evaluate outside the circle - should return EMPTY (0.0)
-    let _outside = unit_circle.eval_raw(
+    let outside = unit_circle.eval_raw(
         Field::from(2.0), // outside unit circle (x² = 4 > 1)
         Field::from(0.0),
         Field::from(0.0),
         Field::from(0.0),
     );
-
-    // This is a smoke test that shapes compile and the API works
-    // The actual pixel rendering is tested in e2e_render_circle
-    println!("Built-in shapes module works! Circle evaluates at origin and outside.");
+    // EMPTY is 0.0, check if it's < 0.5 for all lanes
+    assert!(outside.lt(Field::from(0.5)).all(), "Outside should be EMPTY (0.0)");
 }
 
 /// Test that Frame operations work correctly
@@ -317,6 +317,4 @@ fn e2e_frame_operations() {
     // Test as_bytes
     let bytes = frame.as_bytes();
     assert_eq!(bytes.len(), (SIZE * SIZE * 4) as usize); // 4 bytes per pixel
-
-    println!("Frame operations work correctly!");
 }
