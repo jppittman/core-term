@@ -58,7 +58,7 @@ fn determine_display_driver(target_os: &str) -> String {
 
     // Check target architecture to allow disabling web driver on non-wasm targets
     // even if the feature is enabled (e.g. via --all-features)
-    let is_wasm = std::env::var("CARGO_CFG_TARGET_ARCH").map_or(false, |a| a == "wasm32");
+    let is_wasm = std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|a| a == "wasm32");
 
     if has_web && is_wasm {
         return "web".to_string();
