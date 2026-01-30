@@ -89,48 +89,6 @@ fn find_font_path() -> std::path::PathBuf {
     workspace_path
 }
 
-#[cfg(test)]
-fn load_test_font() -> Arc<LoadedFont<MmapSource>> {
-    let font_path = find_font_path();
-    if font_path.exists() {
-        let source = MmapSource::open(&font_path).unwrap();
-        Arc::new(LoadedFont::new(source).expect("Failed to parse font"))
-    } else {
-        // In CI or environment where font is missing, we shouldn't panic.
-        // But LoadedFont requires a valid source.
-        // For unit tests that don't actually render but just setup the app,
-        // we might need a dummy if we can't load the real one.
-        // However, glyph_cache.warm_ascii uses loaded_font.font().
-
-        // Strategy: Panic with a descriptive message if in a test but file missing.
-        // But to pass CI, we skip creating the real font and cache if missing?
-        // No, `new_registered` needs them.
-
-        // Hack: Create a minimal valid TTF in memory? Too complex.
-        // Better: Skip the "warm_ascii" step if font load fails, or return a mock?
-        // LoadedFont wraps a source.
-
-        // If we really can't find the font, tests relying on it will fail.
-        // The issue in CI is likely the path.
-        // Let's print the current dir to help debug if it fails again,
-        // but for now, rely on `find_font_path` being correct or standard CI setup having assets.
-        // If the file is genuinely missing in the repo checkout, that's the root cause.
-
-        // Wait, the error is "Failed to parse font". That means it found the file but failed to parse?
-        // Or "Failed to open font file".
-        // The panic message in the log was "Failed to parse font", pointing to line 225.
-        // `let loaded_font = Arc::new(LoadedFont::new(source).expect("Failed to parse font"));`
-        // This means `MmapSource::open` succeeded! But `LoadedFont::new` failed.
-        // This implies the file at `../pixelflow-graphics/assets/NotoSansMono-Regular.ttf` might be empty or invalid (LFS issue?).
-
-        // If it's an LFS pointer file, it won't parse as a TTF.
-        // We can check the file size or content.
-
-        let source = MmapSource::open(&font_path).unwrap();
-        Arc::new(LoadedFont::new(source).expect("Failed to parse font (Is Git LFS pulled?)"))
-    }
-}
-
 /// Bounded glyph manifold (returns coverage in [0,1], 0 if out of bounds).
 /// Select<Cond, CachedGlyph, f32>
 type BoundedGlyph =
@@ -284,13 +242,13 @@ impl TerminalApp {
                         (loaded, cache)
                     }
                     None => {
-                        // Likely LFS pointer file. In production, this is fatal.
-                        // In tests, we might want to continue if we don't render.
                         #[cfg(test)]
                         {
-                            // Create a dummy loaded font? Not easily possible as LoadedFont wraps Read/Seek/Mmap.
-                            // We panic with a clear LFS message.
-                            panic!("Failed to parse font at {}. Ensure Git LFS is installed and `git lfs pull` has been run.", font_path.display());
+                            // In tests, if we fail to load the font (e.g. LFS issues), we can't properly warm the cache.
+                            // However, we still need a valid LoadedFont instance to satisfy the struct fields.
+                            // Since we can't easily mock LoadedFont, we must panic.
+                            // BUT, we can make the error message very explicit.
+                            panic!("Failed to parse font at {}. This usually means Git LFS files are not present. Run `git lfs pull`.", font_path.display());
                         }
                         #[cfg(not(test))]
                         panic!("Failed to parse font at {}. Ensure assets are valid.", font_path.display());
@@ -298,6 +256,9 @@ impl TerminalApp {
                 }
             },
             Err(e) => {
+                 #[cfg(test)]
+                 panic!("Failed to open font file at {}: {}. Run `git lfs pull`.", font_path.display(), e);
+                 #[cfg(not(test))]
                  panic!("Failed to open font file at {}: {}", font_path.display(), e);
             }
         };
