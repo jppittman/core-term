@@ -198,7 +198,7 @@ fn test_pty_read_write_interaction() {
 #[test]
 fn test_pty_resize_successful() {
     let config = PtyConfig {
-        command_executable: "/usr/bin/sleep",
+        command_executable: "sleep",
         args: &["0.1"], // Arg for sleep is just the duration
         initial_cols: DEFAULT_COLS,
         initial_rows: DEFAULT_ROWS,
@@ -235,7 +235,7 @@ fn test_pty_resize_successful() {
 #[test]
 fn test_pty_child_termination_on_drop() {
     let config = PtyConfig {
-        command_executable: "/usr/bin/sleep",
+        command_executable: "sleep",
         args: &["2"], // Arg for sleep is just the duration
         initial_cols: DEFAULT_COLS,
         initial_rows: DEFAULT_ROWS,

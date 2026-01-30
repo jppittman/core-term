@@ -69,3 +69,7 @@ required-features = ["egraph-training"]
 [[example]]
 name = "gen_egraph_variants"
 required-features = ["egraph-training"]
+
+[[example]]
+name = "collect_benchmark_costs"
+required-features = ["training"]

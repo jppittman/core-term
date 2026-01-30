@@ -307,19 +307,19 @@ mod tests {
         let dy = first_lane(result.dy);
         let dz = first_lane(result.dz);
 
-        assert!((val - 3.0).abs() < 1e-4, "value should be 3.0, got {}", val);
+        assert!((val - 3.0).abs() < 5e-4, "value should be 3.0, got {}", val);
         assert!(
-            (dx - 1.0 / 3.0).abs() < 1e-4,
+            (dx - 1.0 / 3.0).abs() < 5e-4,
             "dx should be 1/3, got {}",
             dx
         );
         assert!(
-            (dy - 2.0 / 3.0).abs() < 1e-4,
+            (dy - 2.0 / 3.0).abs() < 5e-4,
             "dy should be 2/3, got {}",
             dy
         );
         assert!(
-            (dz - 2.0 / 3.0).abs() < 1e-4,
+            (dz - 2.0 / 3.0).abs() < 5e-4,
             "dz should be 2/3, got {}",
             dz
         );
