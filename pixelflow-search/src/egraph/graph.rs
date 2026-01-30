@@ -10,6 +10,17 @@ use super::ops;
 use super::rewrite::{Rewrite, RewriteAction};
 use super::rules::{Annihilator, Commutative, Distributive, Factor, FmaFusion, Idempotent, Identity, RecipSqrt};
 
+/// A potential rewrite target: (rule, e-class, node within class).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RewriteTarget {
+    /// Index into the e-graph's rule list
+    pub rule_idx: usize,
+    /// The e-class to apply the rule to
+    pub class_id: EClassId,
+    /// The node within the e-class that the rule should try to match
+    pub node_idx: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EClass {
     pub(crate) nodes: Vec<ENode>,
@@ -280,6 +291,33 @@ impl EGraph {
     /// Get a rule by index.
     pub fn rule(&self, idx: usize) -> Option<&dyn Rewrite> {
         self.rules.get(idx).map(|r| r.as_ref())
+    }
+
+    /// Enumerate all possible rewrite targets: (rule_idx, class_id, node_idx).
+    ///
+    /// This returns all combinations that could potentially match.
+    /// Not all will actually apply (the rule may not match the node).
+    pub fn enumerate_rewrite_targets(&self) -> Vec<RewriteTarget> {
+        let mut targets = Vec::new();
+        let num_rules = self.rules.len();
+
+        for class_idx in 0..self.classes.len() {
+            let class_id = EClassId(class_idx as u32);
+            let class_id = self.find(class_id);
+            let nodes = &self.classes[class_id.index()].nodes;
+
+            for (node_idx, _node) in nodes.iter().enumerate() {
+                for rule_idx in 0..num_rules {
+                    targets.push(RewriteTarget {
+                        rule_idx,
+                        class_id,
+                        node_idx,
+                    });
+                }
+            }
+        }
+
+        targets
     }
 
     /// Apply a single rule to a specific (class, node) pair.
