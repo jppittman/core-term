@@ -201,8 +201,34 @@ impl GlyphCache {
             return Some(cached.clone());
         }
 
-        // Bake the glyph at the bucket size
-        let glyph = font.glyph_scaled(ch, bucket as f32)?;
+        // On miss, we need to bake. We look up the ID first to use the optimized path.
+        let id = font.cmap_lookup(ch)?;
+        self.get_with_id(font, ch, id, size)
+    }
+
+    /// Get or create a cached glyph using a pre-looked-up Glyph ID.
+    ///
+    /// This avoids a redundant CMAP lookup if the ID is already known (e.g. from shaping).
+    /// Note: The `ch` parameter is still required as the cache key.
+    pub fn get_with_id(
+        &mut self,
+        font: &Font,
+        ch: char,
+        id: u16,
+        size: f32,
+    ) -> Option<CachedGlyph> {
+        let bucket = size_bucket(size);
+        let key = CacheKey {
+            codepoint: ch as u32,
+            size_bucket: bucket,
+        };
+
+        if let Some(cached) = self.entries.get(&key) {
+            return Some(cached.clone());
+        }
+
+        // Bake using ID (no extra lookup)
+        let glyph = font.glyph_scaled_by_id(id, bucket as f32)?;
         let cached = CachedGlyph::new(&glyph, bucket);
         self.entries.insert(key, cached.clone());
         Some(cached)
@@ -310,8 +336,8 @@ impl CachedText {
                 cursor_x += font.kern_by_ids(prev, id) * inv_em;
             }
 
-            // Get cached glyph
-            if let Some(cached) = cache.get(font, ch, size) {
+            // Get cached glyph (using ID to avoid redundant lookup on miss)
+            if let Some(cached) = cache.get_with_id(font, ch, id, size) {
                 // Scale and translate to cursor position
                 // The cached glyph is at bucket size, so we need to scale it
                 let transform = [scale, 0.0, 0.0, scale, cursor_x, 0.0];
@@ -397,6 +423,22 @@ mod tests {
         let cached3 = cache.get(&font, 'A', 32.0);
         assert!(cached3.is_some());
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn test_glyph_cache_get_with_id() {
+        let font = Font::parse(FONT_DATA).unwrap();
+        let mut cache = GlyphCache::new();
+        let id = font.cmap_lookup('A').unwrap();
+
+        // Access with ID
+        let cached = cache.get_with_id(&font, 'A', id, 16.0);
+        assert!(cached.is_some());
+        assert_eq!(cache.len(), 1);
+
+        // Should be accessible via standard get too
+        let cached2 = cache.get(&font, 'A', 16.0);
+        assert!(cached2.is_some());
     }
 
     #[test]
