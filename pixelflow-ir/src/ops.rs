@@ -3,7 +3,7 @@
 //! Each struct represents a specific operation in the IR as a Zero-Sized Type.
 //! These implement the `Op` trait with type-level constants.
 
-use crate::traits::Op;
+use crate::traits::{Arity, Op};
 use crate::kind::OpKind;
 
 macro_rules! define_op {
@@ -11,9 +11,12 @@ macro_rules! define_op {
         #[doc = $str_name]
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub struct $name;
-        
-        impl Op for $name {
+
+        impl Arity for $name {
             const ARITY: usize = $arity;
+        }
+
+        impl Op for $name {
             const NAME: &'static str = $str_name;
             const KIND: OpKind = $kind;
         }

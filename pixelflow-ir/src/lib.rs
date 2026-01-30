@@ -19,3 +19,6 @@ pub mod backend;
 
 pub use kind::OpKind;
 pub use traits::Op;
+
+#[cfg(feature = "alloc")]
+pub use expr::Expr;

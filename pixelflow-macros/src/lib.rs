@@ -40,6 +40,7 @@ mod ast;
 mod codegen;
 mod element;
 mod fold;
+mod ir_bridge;
 mod lexer;
 mod manifold_expr;
 mod optimize;
