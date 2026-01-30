@@ -114,7 +114,14 @@ impl NixPty {
                 }
 
                 // Set controlling terminal
-                if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY, 0) == -1 {
+                // TIOCSCTTY is u32 on Linux but u64 (c_ulong) on macOS/BSD.
+                // We cast it to match what libc::ioctl expects for the request argument.
+                #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "dragonfly", target_os = "openbsd", target_os = "netbsd"))]
+                let request = libc::TIOCSCTTY as u64;
+                #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "dragonfly", target_os = "openbsd", target_os = "netbsd")))]
+                let request = libc::TIOCSCTTY;
+
+                if libc::ioctl(slave_raw_fd, request, 0) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
 

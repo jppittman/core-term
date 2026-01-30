@@ -218,16 +218,50 @@ impl TerminalApp {
     fn new_registered(params: TerminalAppParamsRegistered) -> Self {
         // Memory-map the font file from the appropriate location
         let font_path = find_font_path();
-        let source = MmapSource::open(&font_path).unwrap_or_else(|e| {
-            panic!("Failed to open font file at {}: {}", font_path.display(), e)
-        });
 
-        let loaded_font = Arc::new(LoadedFont::new(source).expect("Failed to parse font"));
+        // Attempt to load the font. In tests (especially CI with LFS issues), this might fail.
+        // We handle it by panicking with a helpful message, or (in a real app) fallback.
+        // For the purpose of fixing the CI panic "Failed to parse font", we should ensure
+        // we're getting a real font or handling the LFS pointer gracefully.
 
-        // Create glyph cache and pre-warm with ASCII
-        let cell_height = params.config.appearance.cell_height_px as f32;
-        let mut glyph_cache = GlyphCache::with_capacity(128);
-        glyph_cache.warm_ascii(&loaded_font.font(), cell_height);
+        // If we are in a test and can't load the font, we might want to bypass
+        // the glyph cache warming to avoid the panic, IF the test doesn't need rendering.
+        // But `TerminalApp` holds `loaded_font`.
+
+        let source_result = MmapSource::open(&font_path);
+
+        let (loaded_font, mut glyph_cache) = match source_result {
+            Ok(source) => {
+                match LoadedFont::new(source) {
+                    Some(font) => {
+                        let loaded = Arc::new(font);
+                        let mut cache = GlyphCache::with_capacity(128);
+                        // Create glyph cache and pre-warm with ASCII
+                        let cell_height = params.config.appearance.cell_height_px as f32;
+                        cache.warm_ascii(&loaded.font(), cell_height);
+                        (loaded, cache)
+                    }
+                    None => {
+                        #[cfg(test)]
+                        {
+                            // In tests, if we fail to load the font (e.g. LFS issues), we can't properly warm the cache.
+                            // However, we still need a valid LoadedFont instance to satisfy the struct fields.
+                            // Since we can't easily mock LoadedFont, we must panic.
+                            // BUT, we can make the error message very explicit.
+                            panic!("Failed to parse font at {}. This usually means Git LFS files are not present. Run `git lfs pull`.", font_path.display());
+                        }
+                        #[cfg(not(test))]
+                        panic!("Failed to parse font at {}. Ensure assets are valid.", font_path.display());
+                    }
+                }
+            },
+            Err(e) => {
+                 #[cfg(test)]
+                 panic!("Failed to open font file at {}: {}. Run `git lfs pull`.", font_path.display(), e);
+                 #[cfg(not(test))]
+                 panic!("Failed to open font file at {}: {}", font_path.display(), e);
+            }
+        };
 
         Self {
             emulator: params.emulator,
