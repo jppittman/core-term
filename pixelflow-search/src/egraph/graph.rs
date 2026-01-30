@@ -293,31 +293,33 @@ impl EGraph {
         self.rules.get(idx).map(|r| r.as_ref())
     }
 
-    /// Enumerate all possible rewrite targets: (rule_idx, class_id, node_idx).
+    /// Find all actual rewrite matches in the E-graph.
     ///
-    /// This returns all combinations that could potentially match.
-    /// Not all will actually apply (the rule may not match the node).
-    pub fn enumerate_rewrite_targets(&self) -> Vec<RewriteTarget> {
-        let mut targets = Vec::new();
-        let num_rules = self.rules.len();
+    /// Returns only targets where the rule actually matches (produces an action).
+    /// Much more efficient than enumerating all combinations - only scores real matches.
+    pub fn find_rewrite_matches(&self) -> Vec<RewriteTarget> {
+        let mut matches = Vec::new();
 
-        for class_idx in 0..self.classes.len() {
-            let class_id = EClassId(class_idx as u32);
-            let class_id = self.find(class_id);
-            let nodes = &self.classes[class_id.index()].nodes;
+        for (rule_idx, rule) in self.rules.iter().enumerate() {
+            for class_idx in 0..self.classes.len() {
+                let class_id = EClassId(class_idx as u32);
+                let class_id = self.find(class_id);
+                let nodes = &self.classes[class_id.index()].nodes;
 
-            for (node_idx, _node) in nodes.iter().enumerate() {
-                for rule_idx in 0..num_rules {
-                    targets.push(RewriteTarget {
-                        rule_idx,
-                        class_id,
-                        node_idx,
-                    });
+                for (node_idx, node) in nodes.iter().enumerate() {
+                    // Check if rule matches this node
+                    if rule.apply(self, class_id, node).is_some() {
+                        matches.push(RewriteTarget {
+                            rule_idx,
+                            class_id,
+                            node_idx,
+                        });
+                    }
                 }
             }
         }
 
-        targets
+        matches
     }
 
     /// Apply a single rule to a specific (class, node) pair.
