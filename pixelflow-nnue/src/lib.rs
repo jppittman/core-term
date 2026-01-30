@@ -111,11 +111,13 @@ impl OpType {
 
     /// Convert to index for feature encoding.
     #[inline]
+    #[must_use]
     pub fn index(self) -> usize {
         self as usize
     }
 
     /// Create from index.
+    #[must_use]
     pub fn from_index(idx: usize) -> Option<Self> {
         match idx {
             0 => Some(OpType::Var),
@@ -137,6 +139,7 @@ impl OpType {
     }
 
     /// Get the arity (number of children) for this operation.
+    #[must_use]
     pub fn arity(self) -> usize {
         match self {
             OpType::Var | OpType::Const => 0,
@@ -172,6 +175,7 @@ pub enum Expr {
 
 impl Expr {
     /// Get the operation type of this expression's root.
+    #[must_use]
     pub fn op_type(&self) -> OpType {
         match self {
             Expr::Var(_) => OpType::Var,
@@ -183,6 +187,7 @@ impl Expr {
     }
 
     /// Compute the depth of this expression tree.
+    #[must_use]
     pub fn depth(&self) -> usize {
         match self {
             Expr::Var(_) | Expr::Const(_) => 1,
@@ -193,6 +198,7 @@ impl Expr {
     }
 
     /// Count total nodes in the expression.
+    #[must_use]
     pub fn node_count(&self) -> usize {
         match self {
             Expr::Var(_) | Expr::Const(_) => 1,
@@ -203,6 +209,7 @@ impl Expr {
     }
 
     /// Evaluate the expression with given variable values.
+    #[must_use]
     pub fn eval(&self, vars: &[f32; 4]) -> f32 {
         match self {
             Expr::Var(i) => vars[*i as usize],
@@ -291,6 +298,7 @@ impl HalfEPFeature {
     pub const COUNT: usize = OpType::COUNT * OpType::COUNT * MAX_DEPTH * 256;
 
     /// Convert to a unique index for the feature vector.
+    #[must_use]
     pub fn to_index(self) -> usize {
         let p = self.perspective_op as usize;
         let d = self.descendant_op as usize;
@@ -301,6 +309,7 @@ impl HalfEPFeature {
     }
 
     /// Create from a unique index.
+    #[must_use]
     pub fn from_index(idx: usize) -> Self {
         let path = (idx % 256) as u8;
         let idx = idx / 256;
@@ -323,16 +332,16 @@ impl HalfEPFeature {
 /// For each node in the tree, we create features describing its descendants
 /// from that node's perspective (like HalfKP creates features from each
 /// king's perspective).
+#[must_use]
 pub fn extract_features(expr: &Expr) -> Vec<HalfEPFeature> {
     let mut features = Vec::new();
-    extract_features_recursive(expr, &mut features, 0, 0);
+    extract_features_recursive(expr, &mut features, 0);
     features
 }
 
 fn extract_features_recursive(
     expr: &Expr,
     features: &mut Vec<HalfEPFeature>,
-    path: u8,
     depth: u8,
 ) {
     let root_op = expr.op_type();
@@ -340,20 +349,20 @@ fn extract_features_recursive(
     // Add features for all descendants from this node's perspective
     add_descendant_features(expr, features, root_op.index() as u8, 0, 0);
 
-    // Recurse into children with updated path
+    // Recurse into children
     match expr {
         Expr::Var(_) | Expr::Const(_) => {}
         Expr::Unary(_, a) => {
-            extract_features_recursive(a, features, path, depth.saturating_add(1));
+            extract_features_recursive(a, features, depth.saturating_add(1));
         }
         Expr::Binary(_, a, b) => {
-            extract_features_recursive(a, features, path << 1, depth.saturating_add(1));
-            extract_features_recursive(b, features, (path << 1) | 1, depth.saturating_add(1));
+            extract_features_recursive(a, features, depth.saturating_add(1));
+            extract_features_recursive(b, features, depth.saturating_add(1));
         }
         Expr::Ternary(_, a, b, c) => {
-            extract_features_recursive(a, features, path, depth.saturating_add(1));
-            extract_features_recursive(b, features, path, depth.saturating_add(1));
-            extract_features_recursive(c, features, path, depth.saturating_add(1));
+            extract_features_recursive(a, features, depth.saturating_add(1));
+            extract_features_recursive(b, features, depth.saturating_add(1));
+            extract_features_recursive(c, features, depth.saturating_add(1));
         }
     }
 }
@@ -475,6 +484,7 @@ impl DenseFeatures {
 
     /// Get feature value by index
     #[inline]
+    #[must_use]
     pub fn get(&self, i: usize) -> i32 {
         self.values.get(i).copied().unwrap_or(0)
     }
@@ -489,6 +499,7 @@ impl DenseFeatures {
 }
 
 /// Extract dense features from an expression (ILP-aware).
+#[must_use]
 pub fn extract_dense_features(expr: &Expr) -> DenseFeatures {
     let mut features = DenseFeatures::default();
     let mut width_at_depth = Vec::new();
@@ -683,6 +694,7 @@ impl Default for NnueConfig {
 
 impl NnueConfig {
     /// Total size of combined layer (sparse L1 + dense branch)
+    #[must_use]
     pub fn combined_size(&self) -> usize {
         self.l1_size + self.dense_size
     }
@@ -741,6 +753,7 @@ pub struct Nnue {
 
 impl Nnue {
     /// Create a new uninitialized NNUE network.
+    #[must_use]
     pub fn new(config: NnueConfig) -> Self {
         let sparse_feature_count = HalfEPFeature::COUNT;
         let dense_feature_count = DenseFeatures::COUNT;
@@ -767,6 +780,7 @@ impl Nnue {
     }
 
     /// Create with default configuration.
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(NnueConfig::default())
     }
@@ -774,6 +788,7 @@ impl Nnue {
     /// Evaluate dense features through the dense branch.
     ///
     /// Returns the dense layer activations (before ReLU).
+    #[must_use]
     pub fn forward_dense(&self, features: &DenseFeatures) -> Vec<i32> {
         let dense_size = self.config.dense_size;
         let mut output = self.b_dense.clone();
@@ -784,8 +799,8 @@ impl Nnue {
                 continue; // Skip zeros
             }
             let offset = i * dense_size;
-            for j in 0..dense_size {
-                output[j] += (self.w_dense[offset + j] as i32) * feat_val;
+            for (j, item) in output.iter_mut().enumerate().take(dense_size) {
+                *item += (self.w_dense[offset + j] as i32) * feat_val;
             }
         }
 
@@ -809,6 +824,7 @@ pub struct Accumulator {
 
 impl Accumulator {
     /// Create a new accumulator initialized with biases.
+    #[must_use]
     pub fn new(nnue: &Nnue) -> Self {
         Self {
             values: nnue.b1.clone(),
@@ -848,6 +864,7 @@ impl Accumulator {
     /// Compute the full forward pass from the accumulator state (sparse only).
     ///
     /// Returns the predicted cost. Use `forward_hybrid` for full ILP-aware evaluation.
+    #[must_use]
     pub fn forward(&self, nnue: &Nnue) -> i32 {
         // Create dummy dense features (all zeros)
         let dummy_dense = DenseFeatures::default();
@@ -858,6 +875,7 @@ impl Accumulator {
     ///
     /// This is the main evaluation function for ILP-aware cost prediction.
     /// The dense features capture critical_path, max_width, etc.
+    #[must_use]
     pub fn forward_hybrid(&self, nnue: &Nnue, dense_features: &DenseFeatures) -> i32 {
         let l1_size = nnue.config.l1_size;
         let dense_size = nnue.config.dense_size;
@@ -874,26 +892,26 @@ impl Accumulator {
         // Sparse branch contribution
         for i in 0..l1_size {
             let a = (self.values[i] >> 6).clamp(0, 127) as i8;
-            for j in 0..l2_size {
-                l2[j] += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
+            for (j, item) in l2.iter_mut().enumerate().take(l2_size) {
+                *item += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
             }
         }
 
         // Dense branch contribution (offset by l1_size in W2)
-        for i in 0..dense_size {
-            let a = (dense_out[i] >> 6).clamp(0, 127) as i8;
+        for (i, &val) in dense_out.iter().enumerate().take(dense_size) {
+            let a = (val >> 6).clamp(0, 127) as i8;
             let w2_offset = (l1_size + i) * l2_size;
-            for j in 0..l2_size {
-                l2[j] += (a as i32) * (nnue.w2[w2_offset + j] as i32);
+            for (j, item) in l2.iter_mut().enumerate().take(l2_size) {
+                *item += (a as i32) * (nnue.w2[w2_offset + j] as i32);
             }
         }
 
         // L2 -> L3 with clipped ReLU
         let mut l3 = nnue.b3.clone();
-        for i in 0..l2_size {
-            let a = (l2[i] >> 6).clamp(0, 127) as i8;
-            for j in 0..l3_size {
-                l3[j] += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
+        for (i, &val) in l2.iter().enumerate().take(l2_size) {
+            let a = (val >> 6).clamp(0, 127) as i8;
+            for (j, item) in l3.iter_mut().enumerate().take(l3_size) {
+                *item += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
             }
         }
 
@@ -908,6 +926,7 @@ impl Accumulator {
     }
 
     /// Convenience method: evaluate an expression with both feature types.
+    #[must_use]
     pub fn evaluate_expr(&self, nnue: &Nnue, expr: &Expr) -> i32 {
         let dense_features = extract_dense_features(expr);
         self.forward_hybrid(nnue, &dense_features)
@@ -1209,6 +1228,7 @@ pub struct ExprGenerator {
 
 impl ExprGenerator {
     /// Create a new generator with the given seed.
+    #[must_use]
     pub fn new(seed: u64, config: ExprGenConfig) -> Self {
         Self { config, state: seed }
     }
@@ -1359,6 +1379,7 @@ impl RewriteRule {
     /// Try to apply this rule to an expression, returning the rewritten form.
     ///
     /// Returns None if the rule doesn't match.
+    #[must_use]
     pub fn try_apply(&self, expr: &Expr) -> Option<Expr> {
         match self {
             RewriteRule::AddZero => match expr {
@@ -1481,6 +1502,7 @@ fn exprs_equal(a: &Expr, b: &Expr) -> bool {
 /// Find all applicable rewrites for an expression (at any position).
 ///
 /// Returns (path_to_subexpr, rule, rewritten_expr) tuples.
+#[must_use]
 pub fn find_all_rewrites(expr: &Expr) -> Vec<(Vec<usize>, RewriteRule, Expr)> {
     let mut rewrites = Vec::new();
     find_rewrites_recursive(expr, &mut Vec::new(), &mut rewrites);
@@ -1533,6 +1555,7 @@ impl UnfuseRewrite {
     ///
     /// Unlike optimization rewrites that may fail to match, these always succeed
     /// for the appropriate expression types.
+    #[must_use]
     pub fn apply(&self, expr: &Expr) -> Option<Expr> {
         match self {
             UnfuseRewrite::UnfuseMulAdd => match expr {
@@ -1659,6 +1682,7 @@ pub struct BwdGenerator {
 
 impl BwdGenerator {
     /// Create a new backward generator with the given seed.
+    #[must_use]
     pub fn new(seed: u64, config: BwdGenConfig) -> Self {
         Self { config, state: seed }
     }
@@ -1871,6 +1895,7 @@ impl BwdGenerator {
 }
 
 /// Count fused operations in an expression.
+#[must_use]
 pub fn count_fused_ops(expr: &Expr) -> usize {
     match expr {
         Expr::Var(_) | Expr::Const(_) => 0,
