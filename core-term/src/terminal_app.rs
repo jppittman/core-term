@@ -89,6 +89,48 @@ fn find_font_path() -> std::path::PathBuf {
     workspace_path
 }
 
+#[cfg(test)]
+fn load_test_font() -> Arc<LoadedFont<MmapSource>> {
+    let font_path = find_font_path();
+    if font_path.exists() {
+        let source = MmapSource::open(&font_path).unwrap();
+        Arc::new(LoadedFont::new(source).expect("Failed to parse font"))
+    } else {
+        // In CI or environment where font is missing, we shouldn't panic.
+        // But LoadedFont requires a valid source.
+        // For unit tests that don't actually render but just setup the app,
+        // we might need a dummy if we can't load the real one.
+        // However, glyph_cache.warm_ascii uses loaded_font.font().
+
+        // Strategy: Panic with a descriptive message if in a test but file missing.
+        // But to pass CI, we skip creating the real font and cache if missing?
+        // No, `new_registered` needs them.
+
+        // Hack: Create a minimal valid TTF in memory? Too complex.
+        // Better: Skip the "warm_ascii" step if font load fails, or return a mock?
+        // LoadedFont wraps a source.
+
+        // If we really can't find the font, tests relying on it will fail.
+        // The issue in CI is likely the path.
+        // Let's print the current dir to help debug if it fails again,
+        // but for now, rely on `find_font_path` being correct or standard CI setup having assets.
+        // If the file is genuinely missing in the repo checkout, that's the root cause.
+
+        // Wait, the error is "Failed to parse font". That means it found the file but failed to parse?
+        // Or "Failed to open font file".
+        // The panic message in the log was "Failed to parse font", pointing to line 225.
+        // `let loaded_font = Arc::new(LoadedFont::new(source).expect("Failed to parse font"));`
+        // This means `MmapSource::open` succeeded! But `LoadedFont::new` failed.
+        // This implies the file at `../pixelflow-graphics/assets/NotoSansMono-Regular.ttf` might be empty or invalid (LFS issue?).
+
+        // If it's an LFS pointer file, it won't parse as a TTF.
+        // We can check the file size or content.
+
+        let source = MmapSource::open(&font_path).unwrap();
+        Arc::new(LoadedFont::new(source).expect("Failed to parse font (Is Git LFS pulled?)"))
+    }
+}
+
 /// Bounded glyph manifold (returns coverage in [0,1], 0 if out of bounds).
 /// Select<Cond, CachedGlyph, f32>
 type BoundedGlyph =
@@ -218,16 +260,47 @@ impl TerminalApp {
     fn new_registered(params: TerminalAppParamsRegistered) -> Self {
         // Memory-map the font file from the appropriate location
         let font_path = find_font_path();
-        let source = MmapSource::open(&font_path).unwrap_or_else(|e| {
-            panic!("Failed to open font file at {}: {}", font_path.display(), e)
-        });
 
-        let loaded_font = Arc::new(LoadedFont::new(source).expect("Failed to parse font"));
+        // Attempt to load the font. In tests (especially CI with LFS issues), this might fail.
+        // We handle it by panicking with a helpful message, or (in a real app) fallback.
+        // For the purpose of fixing the CI panic "Failed to parse font", we should ensure
+        // we're getting a real font or handling the LFS pointer gracefully.
 
-        // Create glyph cache and pre-warm with ASCII
-        let cell_height = params.config.appearance.cell_height_px as f32;
-        let mut glyph_cache = GlyphCache::with_capacity(128);
-        glyph_cache.warm_ascii(&loaded_font.font(), cell_height);
+        // If we are in a test and can't load the font, we might want to bypass
+        // the glyph cache warming to avoid the panic, IF the test doesn't need rendering.
+        // But `TerminalApp` holds `loaded_font`.
+
+        let source_result = MmapSource::open(&font_path);
+
+        let (loaded_font, mut glyph_cache) = match source_result {
+            Ok(source) => {
+                match LoadedFont::new(source) {
+                    Some(font) => {
+                        let loaded = Arc::new(font);
+                        let mut cache = GlyphCache::with_capacity(128);
+                        // Create glyph cache and pre-warm with ASCII
+                        let cell_height = params.config.appearance.cell_height_px as f32;
+                        cache.warm_ascii(&loaded.font(), cell_height);
+                        (loaded, cache)
+                    }
+                    None => {
+                        // Likely LFS pointer file. In production, this is fatal.
+                        // In tests, we might want to continue if we don't render.
+                        #[cfg(test)]
+                        {
+                            // Create a dummy loaded font? Not easily possible as LoadedFont wraps Read/Seek/Mmap.
+                            // We panic with a clear LFS message.
+                            panic!("Failed to parse font at {}. Ensure Git LFS is installed and `git lfs pull` has been run.", font_path.display());
+                        }
+                        #[cfg(not(test))]
+                        panic!("Failed to parse font at {}. Ensure assets are valid.", font_path.display());
+                    }
+                }
+            },
+            Err(e) => {
+                 panic!("Failed to open font file at {}: {}", font_path.display(), e);
+            }
+        };
 
         Self {
             emulator: params.emulator,
