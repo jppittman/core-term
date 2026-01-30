@@ -4,6 +4,23 @@ use crate::platform::macos::cocoa::{NSPoint, NSRect, NSSize, NSView, NSWindow};
 use crate::platform::macos::sys::{self, Id, BOOL, YES};
 use std::ffi::c_void;
 
+// Constants for NSWindowStyleMask
+const NS_WINDOW_STYLE_MASK_TITLED: usize = 1 << 0;
+const NS_WINDOW_STYLE_MASK_CLOSABLE: usize = 1 << 1;
+const NS_WINDOW_STYLE_MASK_MINIATURIZABLE: usize = 1 << 2;
+const NS_WINDOW_STYLE_MASK_RESIZABLE: usize = 1 << 3;
+
+const DEFAULT_STYLE_MASK: usize = NS_WINDOW_STYLE_MASK_TITLED
+    | NS_WINDOW_STYLE_MASK_CLOSABLE
+    | NS_WINDOW_STYLE_MASK_MINIATURIZABLE
+    | NS_WINDOW_STYLE_MASK_RESIZABLE;
+
+// Constants for NSBackingStoreType
+const NS_BACKING_STORE_BUFFERED: usize = 2;
+
+// Constants for MTLPixelFormat
+const MTL_PIXEL_FORMAT_RGBA8_UNORM: u64 = 70;
+
 pub struct MacWindow {
     pub(crate) window: NSWindow,
     pub(crate) view: NSView,
@@ -19,12 +36,12 @@ impl MacWindow {
             NSSize::new(desc.width as f64, desc.height as f64),
         );
 
-        // NSWindowStyleMask: Titled | Closable | Miniaturizable | Resizable
-        let style_mask = 1 | 2 | 4 | 8;
-        // NSBackingStoreBuffered = 2
-        let backing = 2;
-
-        let window = NSWindow::alloc().init_with_content_rect(rect, style_mask, backing, false);
+        let window = NSWindow::alloc().init_with_content_rect(
+            rect,
+            DEFAULT_STYLE_MASK,
+            NS_BACKING_STORE_BUFFERED,
+            false,
+        );
         window.set_title(&desc.title);
 
         let view = NSView::alloc().init_with_frame(rect);
@@ -47,8 +64,12 @@ impl MacWindow {
             }
             sys::send_1::<(), Id>(layer, sys::sel(b"setDevice:\0"), device);
 
-            // [layer setPixelFormat: 70 (RGBA8Unorm)]
-            sys::send_1::<(), u64>(layer, sys::sel(b"setPixelFormat:\0"), 70);
+            // [layer setPixelFormat: MTLPixelFormatRGBA8Unorm]
+            sys::send_1::<(), u64>(
+                layer,
+                sys::sel(b"setPixelFormat:\0"),
+                MTL_PIXEL_FORMAT_RGBA8_UNORM,
+            );
 
             // [layer setFramebufferOnly: YES] - optimization
             sys::send_1::<(), BOOL>(layer, sys::sel(b"setFramebufferOnly:\0"), YES);
@@ -246,12 +267,12 @@ mod tests {
             let layer = window.layer;
             assert!(!layer.is_null());
 
-            // Check pixel format (70 = BGRA8Unorm or 80 = RGBA8Unorm?)
-            // The code sets 70.
+            // Check pixel format
             let format: u64 = sys::send(layer, sys::sel(b"pixelFormat\0"));
             assert_eq!(
-                format, 70,
-                "Pixel format should be 70 (BGRA8Unorm_sRGB or similar)"
+                format, MTL_PIXEL_FORMAT_RGBA8_UNORM,
+                "Pixel format should be MTLPixelFormatRGBA8Unorm ({})",
+                MTL_PIXEL_FORMAT_RGBA8_UNORM
             );
 
             // Check device is attached
