@@ -22,10 +22,11 @@
 //!
 //! ```toml
 //! # Learned cost model from SIMD benchmarks (AVX-512)
-//! add = 4
-//! mul = 5
-//! mul_add = 5  # ← FMA detected!
-//! rsqrt = 4    # ← Native instruction
+//! # Costs are 100x scaled for sub-nanosecond precision
+//! add = 107
+//! mul = 117
+//! mul_add = 110  # ← FMA detected!
+//! rsqrt = 379    # ← 24% faster than recip+sqrt
 //! ```
 
 use pixelflow_core::{Field, PARALLELISM, ManifoldCompat};
@@ -226,7 +227,8 @@ fn save_toml(model: &CostModelData, path: &std::path::Path) -> std::io::Result<(
     writeln!(file, "# Learned cost model weights")?;
     writeln!(file, "# Generated from SIMD benchmark measurements")?;
     writeln!(file)?;
-    writeln!(file, "# Operation costs (relative to fastest operation)")?;
+    writeln!(file, "# Operation costs (100x scaled for precision)")?;
+    writeln!(file, "# Relative to fastest operation with 3-digit accuracy")?;
     writeln!(file, "add = {}", model.add)?;
     writeln!(file, "sub = {}", model.sub)?;
     writeln!(file, "mul = {}", model.mul)?;
@@ -248,8 +250,9 @@ fn save_toml(model: &CostModelData, path: &std::path::Path) -> std::io::Result<(
 }
 
 /// Normalize a measurement to an integer cost relative to base.
+/// Uses 100x scaling for 3-digit precision (e.g., 3.78 → 378).
 fn normalize(ns: f64, base: f64) -> usize {
-    ((ns / base).round() as usize).max(1)
+    ((ns / base * 100.0).round() as usize).max(1)
 }
 
 /// Get the platform-specific config directory.
