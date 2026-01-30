@@ -1,7 +1,6 @@
 //! WebAssembly SIMD128 backend (4 lanes for f32).
 
 use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
-#[cfg(target_arch = "wasm32")]
 use core::arch::wasm32::*;
 use core::fmt::{Debug, Formatter};
 use core::ops::*;
@@ -11,24 +10,20 @@ use core::ops::*;
 pub struct Wasm;
 
 /// 4-lane mask for WASM SIMD128.
-#[cfg(target_arch = "wasm32")]
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct Mask4(v128);
 
 /// 4-lane f32 SIMD vector for WASM SIMD128.
-#[cfg(target_arch = "wasm32")]
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct F32x4(v128);
 
 /// 4-lane u32 SIMD vector for WASM SIMD128.
-#[cfg(target_arch = "wasm32")]
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct U32x4(v128);
 
-#[cfg(target_arch = "wasm32")]
 impl Backend for Wasm {
     const LANES: usize = 4;
     type F32 = F32x4;
@@ -39,7 +34,6 @@ impl Backend for Wasm {
 // Mask4 - 4-lane mask for WASM SIMD128
 // ============================================================================
 
-#[cfg(target_arch = "wasm32")]
 impl Default for Mask4 {
     #[inline(always)]
     fn default() -> Self {
@@ -47,7 +41,6 @@ impl Default for Mask4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Debug for Mask4 {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let arr: [u32; 4] = unsafe { core::mem::transmute(self.0) };
@@ -59,7 +52,6 @@ impl Debug for Mask4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl MaskOps for Mask4 {
     #[inline(always)]
     fn any(self) -> bool {
@@ -73,7 +65,6 @@ impl MaskOps for Mask4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl BitAnd for Mask4 {
     type Output = Self;
     #[inline(always)]
@@ -82,7 +73,6 @@ impl BitAnd for Mask4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl BitOr for Mask4 {
     type Output = Self;
     #[inline(always)]
@@ -91,7 +81,6 @@ impl BitOr for Mask4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Not for Mask4 {
     type Output = Self;
     #[inline(always)]
@@ -104,7 +93,6 @@ impl Not for Mask4 {
 // F32x4 - 4-lane f32 for WASM SIMD128
 // ============================================================================
 
-#[cfg(target_arch = "wasm32")]
 impl Default for F32x4 {
     #[inline(always)]
     fn default() -> Self {
@@ -112,7 +100,6 @@ impl Default for F32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Debug for F32x4 {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let arr: [f32; 4] = unsafe { core::mem::transmute(self.0) };
@@ -120,7 +107,6 @@ impl Debug for F32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl F32x4 {
     #[inline(always)]
     fn to_array(self) -> [f32; 4] {
@@ -134,7 +120,6 @@ impl F32x4 {
 // SimdOps Implementation
 // ============================================================================
 
-#[cfg(target_arch = "wasm32")]
 impl SimdOps for F32x4 {
     type Mask = Mask4;
     const LANES: usize = 4;
@@ -279,25 +264,39 @@ impl SimdOps for F32x4 {
 
     #[inline(always)]
     fn log2(self) -> Self {
+        // Uses range [√2/2, √2] centered at 1 for better polynomial accuracy
         // log2(x) = exponent + log2(mantissa)
         let x_u32 = self.0;
 
         // Extract exponent: (bits >> 23) - 127
         let exp_bits = u32x4_shr(x_u32, 23);
         let bias = i32x4_splat(127);
-        let n = f32x4_convert_i32x4(i32x4_sub(exp_bits, bias));
+        let mut n = f32x4_convert_i32x4(i32x4_sub(exp_bits, bias));
 
         // Extract mantissa in [1, 2): (bits & 0x007FFFFF) | 0x3F800000
         let mant_mask = u32x4_splat(0x007FFFFF);
         let one_bits = u32x4_splat(0x3F800000);
-        let f = v128_or(v128_and(x_u32, mant_mask), one_bits);
+        let mut f = v128_or(v128_and(x_u32, mant_mask), one_bits);
 
-        // Polynomial approximation for log2(f), f ∈ [1, 2)
-        let c4 = f32x4_splat(-0.360674);
-        let c3 = f32x4_splat(1.9237);
-        let c2 = f32x4_splat(-4.3282);
-        let c1 = f32x4_splat(5.7708);
-        let c0 = f32x4_splat(-3.0056);
+        // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
+        // If f >= √2, divide by 2 and increment exponent
+        let sqrt2 = f32x4_splat(1.4142135624);
+        let mask = f32x4_ge(f, sqrt2);
+        let adjust = v128_and(mask, f32x4_splat(1.0));
+        n = f32x4_add(n, adjust);
+        f = v128_or(
+            v128_and(mask, f32x4_mul(f, f32x4_splat(0.5))),
+            v128_andnot(mask, f)
+        );
+
+        // Polynomial for log2(f) on [√2/2, √2]
+        // Fitted using least squares on Chebyshev nodes
+        // Max error: ~1e-4
+        let c4 = f32x4_splat(-0.3200435159);
+        let c3 = f32x4_splat(1.7974969154);
+        let c2 = f32x4_splat(-4.1988046176);
+        let c1 = f32x4_splat(5.7270231695);
+        let c0 = f32x4_splat(-3.0056146714);
 
         // Horner's method (no FMA)
         let poly = f32x4_add(f32x4_mul(c4, f), c3);
@@ -342,7 +341,6 @@ impl SimdOps for F32x4 {
 // Operator Implementations
 // ============================================================================
 
-#[cfg(target_arch = "wasm32")]
 impl Add for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -351,7 +349,6 @@ impl Add for F32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Sub for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -360,7 +357,6 @@ impl Sub for F32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Mul for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -369,7 +365,6 @@ impl Mul for F32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Div for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -378,7 +373,6 @@ impl Div for F32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl BitAnd for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -387,7 +381,6 @@ impl BitAnd for F32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl BitOr for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -396,7 +389,6 @@ impl BitOr for F32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Not for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -405,7 +397,6 @@ impl Not for F32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Neg for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -418,7 +409,6 @@ impl Neg for F32x4 {
 // U32x4 - 4-lane u32 SIMD for packed RGBA pixels
 // ============================================================================
 
-#[cfg(target_arch = "wasm32")]
 impl Default for U32x4 {
     #[inline(always)]
     fn default() -> Self {
@@ -426,7 +416,6 @@ impl Default for U32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Debug for U32x4 {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let arr: [u32; 4] = unsafe { core::mem::transmute(self.0) };
@@ -434,7 +423,6 @@ impl Debug for U32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl SimdU32Ops for U32x4 {
     const LANES: usize = 4;
 
@@ -455,7 +443,6 @@ impl SimdU32Ops for U32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl BitAnd for U32x4 {
     type Output = Self;
     #[inline(always)]
@@ -464,7 +451,6 @@ impl BitAnd for U32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl BitOr for U32x4 {
     type Output = Self;
     #[inline(always)]
@@ -473,7 +459,6 @@ impl BitOr for U32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Not for U32x4 {
     type Output = Self;
     #[inline(always)]
@@ -482,7 +467,6 @@ impl Not for U32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Shl<u32> for U32x4 {
     type Output = Self;
     #[inline(always)]
@@ -491,7 +475,6 @@ impl Shl<u32> for U32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl Shr<u32> for U32x4 {
     type Output = Self;
     #[inline(always)]
@@ -500,7 +483,6 @@ impl Shr<u32> for U32x4 {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 impl U32x4 {
     /// Pack 4 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]

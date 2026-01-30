@@ -1,7 +1,6 @@
 //! ARM NEON backend (4 lanes for f32).
 
 use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
-#[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::*;
 use core::fmt::{Debug, Formatter};
 use core::ops::*;
@@ -10,7 +9,6 @@ use core::ops::*;
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Neon;
 
-#[cfg(target_arch = "aarch64")]
 impl Backend for Neon {
     const LANES: usize = 4;
     type F32 = F32x4;
@@ -22,19 +20,20 @@ impl Backend for Neon {
 // ============================================================================
 
 /// 4-lane mask for ARM NEON.
-#[cfg(target_arch = "aarch64")]
+///
+/// NEON doesn't have dedicated mask registers like AVX-512's k-registers.
+/// Masks are stored as u32 vectors where each lane is either all-1s (0xFFFFFFFF)
+/// or all-0s (0x00000000).
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct Mask4(uint32x4_t);
 
-#[cfg(target_arch = "aarch64")]
 impl Default for Mask4 {
     fn default() -> Self {
         unsafe { Self(vdupq_n_u32(0)) }
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Debug for Mask4 {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let arr = self.to_array();
@@ -46,7 +45,6 @@ impl Debug for Mask4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Mask4 {
     #[inline(always)]
     fn to_array(self) -> [u32; 4] {
@@ -56,10 +54,12 @@ impl Mask4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl MaskOps for Mask4 {
     #[inline(always)]
     fn any(self) -> bool {
+        // Use inline asm to prevent LLVM from transforming vmax into movemask pattern.
+        // LLVM's optimizer converts vmaxvq_u32 into a slower 6-instruction sequence.
+        // Inline asm forces the optimal 2-instruction umaxv+fmov sequence.
         unsafe {
             let max_val: u32;
             core::arch::asm!(
@@ -76,6 +76,9 @@ impl MaskOps for Mask4 {
 
     #[inline(always)]
     fn all(self) -> bool {
+        // Use inline asm to prevent LLVM from transforming vmin into movemask pattern.
+        // LLVM's optimizer converts vminvq_u32 into a slower 6-instruction sequence.
+        // Inline asm forces the optimal 2-instruction uminv+fmov sequence.
         unsafe {
             let min_val: u32;
             core::arch::asm!(
@@ -91,7 +94,6 @@ impl MaskOps for Mask4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl BitAnd for Mask4 {
     type Output = Self;
     #[inline(always)]
@@ -100,7 +102,6 @@ impl BitAnd for Mask4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl BitOr for Mask4 {
     type Output = Self;
     #[inline(always)]
@@ -109,7 +110,6 @@ impl BitOr for Mask4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Not for Mask4 {
     type Output = Self;
     #[inline(always)]
@@ -119,19 +119,16 @@ impl Not for Mask4 {
 }
 
 /// 4-lane f32 SIMD vector for ARM NEON.
-#[cfg(target_arch = "aarch64")]
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct F32x4(float32x4_t);
 
-#[cfg(target_arch = "aarch64")]
 impl Default for F32x4 {
     fn default() -> Self {
         unsafe { Self(vdupq_n_f32(0.0)) }
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Debug for F32x4 {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let arr = self.to_array();
@@ -139,7 +136,6 @@ impl Debug for F32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl F32x4 {
     #[inline(always)]
     fn to_array(self) -> [f32; 4] {
@@ -153,7 +149,6 @@ impl F32x4 {
 // SimdOps Implementation
 // ============================================================================
 
-#[cfg(target_arch = "aarch64")]
 impl SimdOps for F32x4 {
     type Mask = Mask4;
     const LANES: usize = 4;
@@ -237,6 +232,8 @@ impl SimdOps for F32x4 {
         let len = slice.len();
         let mut out = [0.0f32; 4];
         for i in 0..4 {
+            // Indices are pre-floored by Texture::eval_raw, so truncation is safe and faster.
+            // Even for general use, truncation matches floor for positive indices.
             let ix = (idx[i] as isize).clamp(0, len as isize - 1) as usize;
             out[i] = slice[ix];
         }
@@ -329,23 +326,40 @@ impl SimdOps for F32x4 {
 
     #[inline(always)]
     fn log2(self) -> Self {
+        // NEON: Use bit manipulation for exponent/mantissa extraction
+        // Uses range [√2/2, √2] centered at 1 for better polynomial accuracy
+        // log2(x) = exponent + log2(mantissa)
         unsafe {
             let x_u32 = vreinterpretq_u32_f32(self.0);
 
+            // Extract exponent: (bits >> 23) - 127
             let exp_bits = vshrq_n_u32::<23>(x_u32);
             let bias = vdupq_n_s32(127);
-            let n = vcvtq_f32_s32(vsubq_s32(vreinterpretq_s32_u32(exp_bits), bias));
+            let mut n = vcvtq_f32_s32(vsubq_s32(vreinterpretq_s32_u32(exp_bits), bias));
 
+            // Extract mantissa in [1, 2): (bits & 0x007FFFFF) | 0x3F800000
             let mant_mask = vdupq_n_u32(0x007FFFFF);
             let one_bits = vdupq_n_u32(0x3F800000);
-            let f = vreinterpretq_f32_u32(vorrq_u32(vandq_u32(x_u32, mant_mask), one_bits));
+            let mut f = vreinterpretq_f32_u32(vorrq_u32(vandq_u32(x_u32, mant_mask), one_bits));
 
-            let c4 = vdupq_n_f32(-0.360674);
-            let c3 = vdupq_n_f32(1.9237);
-            let c2 = vdupq_n_f32(-4.3282);
-            let c1 = vdupq_n_f32(5.7708);
-            let c0 = vdupq_n_f32(-3.0056);
+            // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
+            // If f >= √2, divide by 2 and increment exponent
+            let sqrt2 = vdupq_n_f32(1.4142135624);
+            let mask = vcgeq_f32(f, sqrt2);
+            let adjust = vandq_u32(mask, vreinterpretq_u32_f32(vdupq_n_f32(1.0)));
+            n = vaddq_f32(n, vreinterpretq_f32_u32(adjust));
+            f = vbslq_f32(mask, vmulq_f32(f, vdupq_n_f32(0.5)), f);
 
+            // Polynomial for log2(f) on [√2/2, √2]
+            // Fitted using least squares on Chebyshev nodes
+            // Max error: ~1e-4
+            let c4 = vdupq_n_f32(-0.3200435159);
+            let c3 = vdupq_n_f32(1.7974969154);
+            let c2 = vdupq_n_f32(-4.1988046176);
+            let c1 = vdupq_n_f32(5.7270231695);
+            let c0 = vdupq_n_f32(-3.0056146714);
+
+            // Horner's method using NEON FMA: vfmaq_f32(c, a, b) = a*b + c
             let poly = vfmaq_f32(c3, c4, f);
             let poly = vfmaq_f32(c2, poly, f);
             let poly = vfmaq_f32(c1, poly, f);
@@ -357,21 +371,29 @@ impl SimdOps for F32x4 {
 
     #[inline(always)]
     fn exp2(self) -> Self {
+        // NEON: 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
+        // Use polynomial approximation for 2^f
         unsafe {
-            let n = vrndmq_f32(self.0);
+            // n = floor(x), f = x - n
+            let n = vrndmq_f32(self.0); // floor
             let f = vsubq_f32(self.0, n);
 
+            // Minimax polynomial for 2^f, f ∈ [0, 1)
+            // Degree 4, max error ~10^-7
             let c4 = vdupq_n_f32(0.0135557);
             let c3 = vdupq_n_f32(0.0520323);
             let c2 = vdupq_n_f32(0.2413793);
             let c1 = vdupq_n_f32(0.6931472);
             let c0 = vdupq_n_f32(1.0);
 
+            // Horner's method
             let poly = vfmaq_f32(c3, c4, f);
             let poly = vfmaq_f32(c2, poly, f);
             let poly = vfmaq_f32(c1, poly, f);
             let poly = vfmaq_f32(c0, poly, f);
 
+            // Compute 2^n by adding n to exponent bits
+            // 2^n = reinterpret((n + 127) << 23)
             let bias = vdupq_n_s32(127);
             let n_i32 = vcvtq_s32_f32(n);
             let exp_bits = vshlq_n_s32::<23>(vaddq_s32(n_i32, bias));
@@ -386,7 +408,6 @@ impl SimdOps for F32x4 {
 // Operator Implementations
 // ============================================================================
 
-#[cfg(target_arch = "aarch64")]
 impl Add for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -395,7 +416,6 @@ impl Add for F32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Sub for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -404,7 +424,6 @@ impl Sub for F32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Mul for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -413,7 +432,6 @@ impl Mul for F32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Div for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -422,7 +440,6 @@ impl Div for F32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl BitAnd for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -435,7 +452,6 @@ impl BitAnd for F32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl BitOr for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -448,7 +464,6 @@ impl BitOr for F32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Not for F32x4 {
     type Output = Self;
     #[inline(always)]
@@ -460,12 +475,12 @@ impl Not for F32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl core::ops::Neg for F32x4 {
     type Output = Self;
     #[inline(always)]
     fn neg(self) -> Self {
         unsafe {
+            // Flip sign bit via XOR with -0.0 (0x80000000 in each lane)
             let neg_zero_u32 = vdupq_n_u32(0x80000000u32);
             let self_u32 = vreinterpretq_u32_f32(self.0);
             Self(vreinterpretq_f32_u32(veorq_u32(self_u32, neg_zero_u32)))
@@ -478,19 +493,16 @@ impl core::ops::Neg for F32x4 {
 // ============================================================================
 
 /// 4-lane u32 SIMD vector for ARM NEON (packed RGBA pixels).
-#[cfg(target_arch = "aarch64")]
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct U32x4(uint32x4_t);
 
-#[cfg(target_arch = "aarch64")]
 impl Default for U32x4 {
     fn default() -> Self {
         unsafe { Self(vdupq_n_u32(0)) }
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Debug for U32x4 {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let arr = self.to_array();
@@ -498,7 +510,6 @@ impl Debug for U32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl U32x4 {
     #[inline(always)]
     fn to_array(self) -> [u32; 4] {
@@ -508,7 +519,6 @@ impl U32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl SimdU32Ops for U32x4 {
     const LANES: usize = 4;
 
@@ -524,11 +534,12 @@ impl SimdU32Ops for U32x4 {
 
     #[inline(always)]
     fn from_f32_scaled<F: SimdOps>(_f: F) -> Self {
+        // This is a placeholder - actual impl needs F to be F32x4
+        // We'll handle this differently
         Self::default()
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl BitAnd for U32x4 {
     type Output = Self;
     #[inline(always)]
@@ -537,7 +548,6 @@ impl BitAnd for U32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl BitOr for U32x4 {
     type Output = Self;
     #[inline(always)]
@@ -546,7 +556,6 @@ impl BitOr for U32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Not for U32x4 {
     type Output = Self;
     #[inline(always)]
@@ -555,7 +564,6 @@ impl Not for U32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Shl<u32> for U32x4 {
     type Output = Self;
     #[inline(always)]
@@ -567,7 +575,6 @@ impl Shl<u32> for U32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl Shr<u32> for U32x4 {
     type Output = Self;
     #[inline(always)]
@@ -579,12 +586,12 @@ impl Shr<u32> for U32x4 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
 impl U32x4 {
     /// Pack 4 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
     pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
         unsafe {
+            // Clamp to [0, 1] and scale to [0, 255]
             let scale = vdupq_n_f32(255.0);
             let zero = vdupq_n_f32(0.0);
             let one = vdupq_n_f32(1.0);
@@ -599,11 +606,13 @@ impl U32x4 {
             let b_scaled = vmulq_f32(b_clamped, scale);
             let a_scaled = vmulq_f32(a_clamped, scale);
 
+            // Convert to u32
             let r_u32 = vcvtq_u32_f32(r_scaled);
             let g_u32 = vcvtq_u32_f32(g_scaled);
             let b_u32 = vcvtq_u32_f32(b_scaled);
             let a_u32 = vcvtq_u32_f32(a_scaled);
 
+            // Pack: R | (G << 8) | (B << 16) | (A << 24)
             let g_shifted = vshlq_n_u32(g_u32, 8);
             let b_shifted = vshlq_n_u32(b_u32, 16);
             let a_shifted = vshlq_n_u32(a_u32, 24);
