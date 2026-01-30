@@ -114,7 +114,7 @@ impl NixPty {
                 }
 
                 // Set controlling terminal
-                if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY, 0) == -1 {
+                if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY.into(), 0) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
 
