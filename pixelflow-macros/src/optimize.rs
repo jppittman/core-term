@@ -110,15 +110,15 @@ fn saturate_with_priority(egraph: &mut EGraph, budget: usize) -> bool {
     use pixelflow_search::egraph::RewriteTarget;
 
     for _ in 0..budget {
-        // Enumerate all possible rewrites
-        let targets = egraph.enumerate_rewrite_targets();
+        // Find all actual matches (not just possible combinations)
+        let matches = egraph.find_rewrite_matches();
 
-        if targets.is_empty() {
+        if matches.is_empty() {
             return true; // Saturated - optimal!
         }
 
-        // Score all targets
-        let mut scored: Vec<(RewriteTarget, i64)> = targets
+        // Score only the actual matches
+        let mut scored: Vec<(RewriteTarget, i64)> = matches
             .into_iter()
             .map(|t| {
                 let score = heuristic_score_rewrite(egraph, &t);
@@ -129,19 +129,9 @@ fn saturate_with_priority(egraph: &mut EGraph, budget: usize) -> bool {
         // Sort by score (descending)
         scored.sort_by_key(|(_, score)| -score);
 
-        // Try rewrites in priority order until one succeeds
-        let mut applied = false;
-        for (target, _score) in scored {
-            if egraph.apply_single_rule(target.rule_idx, target.class_id, target.node_idx) {
-                applied = true;
-                break;
-            }
-        }
-
-        if !applied {
-            // No rewrites succeeded - saturated
-            return true;
-        }
+        // Apply highest-scoring match
+        let (best, _) = scored[0];
+        egraph.apply_single_rule(best.rule_idx, best.class_id, best.node_idx);
     }
 
     false // Budget exhausted
