@@ -327,27 +327,37 @@ impl SimdOps for F32x4 {
     #[inline(always)]
     fn log2(self) -> Self {
         // NEON: Use bit manipulation for exponent/mantissa extraction
-        // log2(x) = exponent + log2(mantissa) where mantissa ∈ [1, 2)
+        // Uses range [√2/2, √2] centered at 1 for better polynomial accuracy
+        // log2(x) = exponent + log2(mantissa)
         unsafe {
             let x_u32 = vreinterpretq_u32_f32(self.0);
 
             // Extract exponent: (bits >> 23) - 127
             let exp_bits = vshrq_n_u32::<23>(x_u32);
             let bias = vdupq_n_s32(127);
-            let n = vcvtq_f32_s32(vsubq_s32(vreinterpretq_s32_u32(exp_bits), bias));
+            let mut n = vcvtq_f32_s32(vsubq_s32(vreinterpretq_s32_u32(exp_bits), bias));
 
             // Extract mantissa in [1, 2): (bits & 0x007FFFFF) | 0x3F800000
             let mant_mask = vdupq_n_u32(0x007FFFFF);
             let one_bits = vdupq_n_u32(0x3F800000);
-            let f = vreinterpretq_f32_u32(vorrq_u32(vandq_u32(x_u32, mant_mask), one_bits));
+            let mut f = vreinterpretq_f32_u32(vorrq_u32(vandq_u32(x_u32, mant_mask), one_bits));
 
-            // Polynomial approximation for log2(f), f ∈ [1, 2)
-            // Derived from Taylor series of log2(1+x) transformed to f-basis
-            let c4 = vdupq_n_f32(-0.360674);
-            let c3 = vdupq_n_f32(1.9237);
-            let c2 = vdupq_n_f32(-4.3282);
-            let c1 = vdupq_n_f32(5.7708);
-            let c0 = vdupq_n_f32(-3.0056);
+            // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
+            // If f >= √2, divide by 2 and increment exponent
+            let sqrt2 = vdupq_n_f32(1.4142135624);
+            let mask = vcgeq_f32(f, sqrt2);
+            let adjust = vandq_u32(mask, vreinterpretq_u32_f32(vdupq_n_f32(1.0)));
+            n = vaddq_f32(n, vreinterpretq_f32_u32(adjust));
+            f = vbslq_f32(mask, vmulq_f32(f, vdupq_n_f32(0.5)), f);
+
+            // Polynomial for log2(f) on [√2/2, √2]
+            // Fitted using least squares on Chebyshev nodes
+            // Max error: ~1e-4
+            let c4 = vdupq_n_f32(-0.3200435159);
+            let c3 = vdupq_n_f32(1.7974969154);
+            let c2 = vdupq_n_f32(-4.1988046176);
+            let c1 = vdupq_n_f32(5.7270231695);
+            let c0 = vdupq_n_f32(-3.0056146714);
 
             // Horner's method using NEON FMA: vfmaq_f32(c, a, b) = a*b + c
             let poly = vfmaq_f32(c3, c4, f);

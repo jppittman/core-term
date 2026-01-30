@@ -299,7 +299,8 @@ impl SimdOps for F32x4 {
     #[inline(always)]
     fn log2(self) -> Self {
         // SSE2: Use bit manipulation for exponent/mantissa extraction
-        // log2(x) = exponent + log2(mantissa) where mantissa ∈ [1, 2)
+        // Uses range [√2/2, √2] centered at 1 for better polynomial accuracy
+        // log2(x) = exponent + log2(mantissa)
         unsafe {
             let x_i32 = _mm_castps_si128(self.0);
 
@@ -308,18 +309,31 @@ impl SimdOps for F32x4 {
             let raw_exp = _mm_and_si128(x_i32, exp_mask);
             let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
             let exp_f = _mm_castsi128_ps(_mm_or_si128(raw_exp, one_bits));
-            let n = _mm_sub_ps(exp_f, _mm_set1_ps(128.0));
+            let mut n = _mm_sub_ps(exp_f, _mm_set1_ps(128.0));
 
             // Extract mantissa in [1, 2)
             let mant_mask = _mm_set1_epi32(0x007FFFFF_u32 as i32);
-            let f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
+            let mut f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
-            // Polynomial for log2(f) on [1, 2)
-            let c4 = _mm_set1_ps(-0.360674);
-            let c3 = _mm_set1_ps(1.9237);
-            let c2 = _mm_set1_ps(-4.3282);
-            let c1 = _mm_set1_ps(5.7708);
-            let c0 = _mm_set1_ps(-3.0056);
+            // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
+            // If f >= √2, divide by 2 and increment exponent
+            let sqrt2 = _mm_set1_ps(1.4142135624);
+            let mask = _mm_cmpge_ps(f, sqrt2);
+            let adjust = _mm_and_ps(mask, _mm_set1_ps(1.0));
+            n = _mm_add_ps(n, adjust);
+            f = _mm_or_ps(
+                _mm_and_ps(mask, _mm_mul_ps(f, _mm_set1_ps(0.5))),
+                _mm_andnot_ps(mask, f)
+            );
+
+            // Polynomial for log2(f) on [√2/2, √2]
+            // Fitted using least squares on Chebyshev nodes
+            // Max error: ~1e-4
+            let c4 = _mm_set1_ps(-0.3200435159);
+            let c3 = _mm_set1_ps(1.7974969154);
+            let c2 = _mm_set1_ps(-4.1988046176);
+            let c1 = _mm_set1_ps(5.7270231695);
+            let c0 = _mm_set1_ps(-3.0056146714);
 
             // Horner's method (no FMA on base SSE2)
             let mut poly = _mm_add_ps(_mm_mul_ps(c4, f), c3);
@@ -875,21 +889,34 @@ impl SimdOps for F32x8 {
             let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
             let exp_f = _mm256_castsi256_ps(_mm256_or_si256(raw_exp, one_bits));
             // Subtract 128.0 to remove bias (127) and the 1.0 we added
-            let n = _mm256_sub_ps(exp_f, _mm256_set1_ps(128.0));
+            let mut n = _mm256_sub_ps(exp_f, _mm256_set1_ps(128.0));
 
             // Extract mantissa in [1, 2)
             let mant_mask = _mm256_set1_epi32(0x007FFFFF_u32 as i32);
-            let f = _mm256_castsi256_ps(_mm256_or_si256(
+            let mut f = _mm256_castsi256_ps(_mm256_or_si256(
                 _mm256_and_si256(x_i32, mant_mask),
                 one_bits,
             ));
 
-            // Polynomial for log2(f) on [1, 2)
-            let c4 = _mm256_set1_ps(-0.360674);
-            let c3 = _mm256_set1_ps(1.9237);
-            let c2 = _mm256_set1_ps(-4.3282);
-            let c1 = _mm256_set1_ps(5.7708);
-            let c0 = _mm256_set1_ps(-3.0056);
+            // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
+            // If f >= √2, divide by 2 and increment exponent
+            let sqrt2 = _mm256_set1_ps(1.4142135624);
+            let mask = _mm256_cmp_ps::<_CMP_GE_OQ>(f, sqrt2);
+            let adjust = _mm256_and_ps(mask, _mm256_set1_ps(1.0));
+            n = _mm256_add_ps(n, adjust);
+            f = _mm256_or_ps(
+                _mm256_and_ps(mask, _mm256_mul_ps(f, _mm256_set1_ps(0.5))),
+                _mm256_andnot_ps(mask, f)
+            );
+
+            // Polynomial for log2(f) on [√2/2, √2]
+            // Fitted using least squares on Chebyshev nodes
+            // Max error: ~1e-4
+            let c4 = _mm256_set1_ps(-0.3200435159);
+            let c3 = _mm256_set1_ps(1.7974969154);
+            let c2 = _mm256_set1_ps(-4.1988046176);
+            let c1 = _mm256_set1_ps(5.7270231695);
+            let c0 = _mm256_set1_ps(-3.0056146714);
 
             // Horner's method with FMA when available
             #[cfg(target_feature = "fma")]
@@ -1496,18 +1523,31 @@ impl SimdOps for F32x16 {
         unsafe {
             // Extract mantissa in [1, 2) - no exponent adjustment needed
             // Interval=0 (_MM_MANT_NORM_1_2), sign=0 (_MM_MANT_SIGN_src)
-            let f = _mm512_getmant_ps::<0, 0>(self.0);
+            let mut f = _mm512_getmant_ps::<0, 0>(self.0);
 
             // Extract exponent
-            let n = _mm512_getexp_ps(self.0);
+            let mut n = _mm512_getexp_ps(self.0);
 
-            // Polynomial for log2(f) on [1, 2)
-            // Same coefficients as SSE2/AVX2 versions
-            let c4 = _mm512_set1_ps(-0.360674);
-            let c3 = _mm512_set1_ps(1.9237);
-            let c2 = _mm512_set1_ps(-4.3282);
-            let c1 = _mm512_set1_ps(5.7708);
-            let c0 = _mm512_set1_ps(-3.0056);
+            // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
+            // If f >= √2, divide by 2 and increment exponent
+            let sqrt2 = _mm512_set1_ps(1.4142135624);
+            let mask = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(f, sqrt2);
+            let adjust = _mm512_mask_blend_ps(mask, _mm512_setzero_ps(), _mm512_set1_ps(1.0));
+            n = _mm512_add_ps(n, adjust);
+            f = _mm512_mask_blend_ps(
+                mask,
+                f,
+                _mm512_mul_ps(f, _mm512_set1_ps(0.5))
+            );
+
+            // Polynomial for log2(f) on [√2/2, √2]
+            // Fitted using least squares on Chebyshev nodes
+            // Max error: ~1e-4
+            let c4 = _mm512_set1_ps(-0.3200435159);
+            let c3 = _mm512_set1_ps(1.7974969154);
+            let c2 = _mm512_set1_ps(-4.1988046176);
+            let c1 = _mm512_set1_ps(5.7270231695);
+            let c0 = _mm512_set1_ps(-3.0056146714);
 
             // Horner's method with FMA
             let mut poly = _mm512_fmadd_ps(c4, f, c3);
