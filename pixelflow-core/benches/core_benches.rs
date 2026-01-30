@@ -92,6 +92,68 @@ fn bench_field_math(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_field_transcendental(c: &mut Criterion) {
+    let mut group = c.benchmark_group("field_transcendental");
+    group.throughput(Throughput::Elements(PARALLELISM as u64));
+
+    // Test across different ranges to measure average performance
+    let small = Field::sequential(0.1);  // [0.1, 0.1+PARALLELISM*step]
+    let mid = Field::sequential(1.0);    // [1.0, 1.0+PARALLELISM*step]
+    let large = Field::sequential(10.0); // [10.0, 10.0+PARALLELISM*step]
+
+    group.bench_function("log2_small", |bencher| {
+        bencher.iter(|| {
+            let val = black_box(small);
+            black_box(val.log2())
+        })
+    });
+
+    group.bench_function("log2_mid", |bencher| {
+        bencher.iter(|| {
+            let val = black_box(mid);
+            black_box(val.log2())
+        })
+    });
+
+    group.bench_function("log2_large", |bencher| {
+        bencher.iter(|| {
+            let val = black_box(large);
+            black_box(val.log2())
+        })
+    });
+
+    group.bench_function("exp2_small", |bencher| {
+        bencher.iter(|| {
+            let val = black_box(small);
+            black_box(val.exp2())
+        })
+    });
+
+    group.bench_function("exp2_mid", |bencher| {
+        bencher.iter(|| {
+            let val = black_box(mid);
+            black_box(val.exp2())
+        })
+    });
+
+    group.bench_function("exp2_large", |bencher| {
+        bencher.iter(|| {
+            let val = black_box(large);
+            black_box(val.exp2())
+        })
+    });
+
+    // Roundtrip to measure compounded cost
+    group.bench_function("log2_exp2_roundtrip", |bencher| {
+        bencher.iter(|| {
+            let val = black_box(mid);
+            black_box(val.log2().exp2())
+        })
+    });
+
+    group.finish();
+}
+
 fn bench_field_comparisons(c: &mut Criterion) {
     let mut group = c.benchmark_group("field_comparisons");
     group.throughput(Throughput::Elements(PARALLELISM as u64));
@@ -671,6 +733,7 @@ criterion_group!(
     bench_field_creation,
     bench_field_arithmetic,
     bench_field_math,
+    bench_field_transcendental,
     bench_field_comparisons,
     bench_field_select,
     bench_field_bitwise,
