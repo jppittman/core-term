@@ -5,18 +5,18 @@ use crate::platform::macos::sys::{self, Id, BOOL, YES};
 use std::ffi::c_void;
 
 // Constants for NSWindowStyleMask
-const NS_WINDOW_STYLE_MASK_TITLED: usize = 1 << 0;
-const NS_WINDOW_STYLE_MASK_CLOSABLE: usize = 1 << 1;
-const NS_WINDOW_STYLE_MASK_MINIATURIZABLE: usize = 1 << 2;
-const NS_WINDOW_STYLE_MASK_RESIZABLE: usize = 1 << 3;
+const NS_WINDOW_STYLE_MASK_TITLED: u64 = 1 << 0;
+const NS_WINDOW_STYLE_MASK_CLOSABLE: u64 = 1 << 1;
+const NS_WINDOW_STYLE_MASK_MINIATURIZABLE: u64 = 1 << 2;
+const NS_WINDOW_STYLE_MASK_RESIZABLE: u64 = 1 << 3;
 
-const DEFAULT_STYLE_MASK: usize = NS_WINDOW_STYLE_MASK_TITLED
+const DEFAULT_STYLE_MASK: u64 = NS_WINDOW_STYLE_MASK_TITLED
     | NS_WINDOW_STYLE_MASK_CLOSABLE
     | NS_WINDOW_STYLE_MASK_MINIATURIZABLE
     | NS_WINDOW_STYLE_MASK_RESIZABLE;
 
 // Constants for NSBackingStoreType
-const NS_BACKING_STORE_BUFFERED: usize = 2;
+const NS_BACKING_STORE_BUFFERED: u64 = 2;
 
 // Constants for MTLPixelFormat
 const MTL_PIXEL_FORMAT_RGBA8_UNORM: u64 = 70;

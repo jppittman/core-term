@@ -410,7 +410,7 @@ fn write_binpack(path: &PathBuf, samples: &[TrainingSample]) -> std::io::Result<
     for sample in samples {
         file.write_all(&(sample.features.len() as u16).to_le_bytes())?;
         for &f in &sample.features {
-            file.write_all(&f.to_le_bytes())?;
+            file.write_all(&(f.to_index() as u32).to_le_bytes())?;
         }
         file.write_all(&sample.cost.to_le_bytes())?;
         file.write_all(&sample.best_rewrite.to_le_bytes())?;
