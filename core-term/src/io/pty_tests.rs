@@ -119,9 +119,10 @@ fn read_from_pty_with_timeout(pty: &mut NixPty, expected_str: &str) -> Result<St
 
 #[test]
 fn test_pty_spawn_successful() {
+    // Use sh -c to be more robust across platforms and ensure output flushing
     let config = PtyConfig {
-        command_executable: "/bin/echo",
-        args: &["hello pty world"],
+        command_executable: "/bin/sh",
+        args: &["-c", "echo hello pty world"],
         initial_cols: DEFAULT_COLS,
         initial_rows: DEFAULT_ROWS,
     };
@@ -197,8 +198,9 @@ fn test_pty_read_write_interaction() {
 
 #[test]
 fn test_pty_resize_successful() {
+    // Use `sleep` from PATH to be cross-platform (macOS has /bin/sleep, Linux /usr/bin/sleep)
     let config = PtyConfig {
-        command_executable: "/usr/bin/sleep",
+        command_executable: "sleep",
         args: &["0.1"], // Arg for sleep is just the duration
         initial_cols: DEFAULT_COLS,
         initial_rows: DEFAULT_ROWS,
@@ -235,7 +237,7 @@ fn test_pty_resize_successful() {
 #[test]
 fn test_pty_child_termination_on_drop() {
     let config = PtyConfig {
-        command_executable: "/usr/bin/sleep",
+        command_executable: "sleep",
         args: &["2"], // Arg for sleep is just the duration
         initial_cols: DEFAULT_COLS,
         initial_rows: DEFAULT_ROWS,
