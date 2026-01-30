@@ -642,17 +642,40 @@ let kernel: Box<dyn Manifold> = compile_to_manifold(optimized);
 
 ---
 
-## Implementation Note: Fix #2 Selected
+## Implementation Note: Fixes Implemented
 
-This analysis document is accompanied by an implementation of **Fix #2: Cost Model Calibration**.
+This analysis document is accompanied by implementations of:
 
-The implementation includes:
-- `pixelflow-search/src/bin/calibrate_costs.rs` — Benchmark harness
-- Integration with existing `pixelflow-core/benches/core_benches.rs`
+### ✅ Fix #2: Cost Model Calibration (COMPLETED)
+- `pixelflow-core/src/bin/calibrate_costs.rs` — Benchmark harness
+- Measures actual SIMD operation latencies
 - Automatic TOML generation in `~/.config/pixelflow/cost_model.toml`
-- Documentation updates
+- 100x cost scaling for sub-nanosecond precision
 
-See commit message for details.
+### 🚧 Fix #1: IR Integration (IN PROGRESS)
+**Goal:** Make `pixelflow-ir` the single source of truth for all compilation stages.
+
+**Architecture Change:**
+```
+Before (3 representations):
+  AST → ENode → ENode → AST → Code
+        ↑_______________↑
+       (optimization)
+
+After (1 representation):
+  AST → IR → EGraph<IR> → IR → Code
+       └────────────────────┘
+       IR is the truth
+```
+
+**Implementation Plan:**
+1. Make `pixelflow-search` depend on `pixelflow-ir`
+2. Define `Language` trait for E-graph genericity
+3. Replace `ENode` with `pixelflow_ir::Expr`
+4. Update macro pipeline to use `AST → IR → EGraph → IR → Codegen`
+5. Delete redundant conversions
+
+**Status:** Refactoring in progress (see commits after this analysis).
 
 ---
 
