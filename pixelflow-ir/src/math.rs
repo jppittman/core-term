@@ -139,4 +139,74 @@ pub fn atan2<T: SimdOps>(y: T, x: T) -> T {
     T::simd_select(mask_neg_x, atan_signed - correction, atan_signed)
 }
 
-// TODO: Add asin, acos, pow, hypot implementations
+/// Chebyshev approximation for asin(x) on [-1, 1].
+///
+/// Uses the identity: for |x| > 0.5, asin(x) = π/2 - 2*asin(sqrt((1-x)/2))
+/// This improves accuracy near the boundaries where the derivative is steep.
+#[inline(always)]
+pub fn asin<T: SimdOps>(x: T) -> T {
+    let abs_x = x.simd_abs();
+
+    // For |x| <= 0.5, use direct polynomial approximation
+    // Coefficients for asin(x) ≈ x + c3*x³ + c5*x⁵ + c7*x⁷
+    let c3 = T::splat(0.166666666666667); // 1/6
+    let c5 = T::splat(0.075);             // 3/40
+    let c7 = T::splat(0.044642857);       // 15/336
+    let c9 = T::splat(0.030381944);       // 35/1152
+
+    let x2 = abs_x * abs_x;
+
+    // Horner's method for small |x|
+    let p_small = c9.mul_add(x2, c7);
+    let p_small = p_small.mul_add(x2, c5);
+    let p_small = p_small.mul_add(x2, c3);
+    let asin_small = abs_x.mul_add(p_small * x2, abs_x);
+
+    // For |x| > 0.5, use identity: asin(x) = π/2 - 2*asin(sqrt((1-x)/2))
+    let half = T::splat(0.5);
+    let one = T::splat(1.0);
+    let t = ((one - abs_x) * half).simd_sqrt();
+    let t2 = t * t;
+
+    let p_large = c9.mul_add(t2, c7);
+    let p_large = p_large.mul_add(t2, c5);
+    let p_large = p_large.mul_add(t2, c3);
+    let asin_t = t.mul_add(p_large * t2, t);
+    let asin_large = T::splat(FRAC_PI_2) - asin_t - asin_t;
+
+    // Select based on |x| > 0.5
+    let mask_large = abs_x.cmp_gt(half);
+    let result = T::simd_select(mask_large, asin_large, asin_small);
+
+    // Restore sign
+    let mask_neg = x.cmp_lt(T::splat(0.0));
+    T::simd_select(mask_neg, T::splat(0.0) - result, result)
+}
+
+/// Chebyshev approximation for acos(x) on [-1, 1].
+///
+/// Uses identity: acos(x) = π/2 - asin(x)
+#[inline(always)]
+pub fn acos<T: SimdOps>(x: T) -> T {
+    T::splat(FRAC_PI_2) - asin(x)
+}
+
+/// Power function: base^exp.
+///
+/// Computed as exp2(exp * log2(base)).
+/// For negative bases, returns NaN (consistent with IEEE 754).
+#[inline(always)]
+pub fn pow<T: SimdOps>(base: T, exp: T) -> T {
+    // pow(base, exp) = 2^(exp * log2(base))
+    // This handles positive bases correctly.
+    // For base <= 0, log2 returns NaN/undefined, which propagates.
+    (exp * base.log2()).exp2()
+}
+
+/// Hypotenuse: sqrt(x² + y²).
+///
+/// Computes the Euclidean distance from origin to (x, y).
+#[inline(always)]
+pub fn hypot<T: SimdOps>(x: T, y: T) -> T {
+    (x * x + y * y).simd_sqrt()
+}

@@ -60,6 +60,9 @@ pub struct TerminalEmulator {
     pub(super) cursor_wrap_next: bool,
     /// Layout manager - handles coordinate transformations and geometry
     pub(super) layout: Layout,
+    /// Viewport offset for scrollback navigation.
+    /// 0 means viewing the live screen, >0 means scrolled back into history.
+    viewport_offset: usize,
 }
 
 impl TerminalEmulator {
@@ -92,6 +95,7 @@ impl TerminalEmulator {
             active_charset_g_level: 0, // Default to G0
             cursor_wrap_next: false,
             layout,
+            viewport_offset: 0,
         }
     }
 
@@ -132,6 +136,8 @@ impl TerminalEmulator {
     pub fn interpret_input(&mut self, input: EmulatorInput) -> Option<EmulatorAction> {
         match input {
             EmulatorInput::Ansi(command) => {
+                // Reset viewport to live screen when receiving PTY output
+                self.viewport_offset = 0;
                 // Delegate to ANSI command handler
                 ansi_handler::process_ansi_command(self, command)
             }
@@ -144,6 +150,8 @@ impl TerminalEmulator {
                 input_handler::process_control_event(self, event)
             }
             EmulatorInput::RawChar(ch) => {
+                // Reset viewport to live screen when receiving PTY output
+                self.viewport_offset = 0;
                 // Delegate to raw character processor
                 self.print_char(ch);
                 None
@@ -157,6 +165,8 @@ impl TerminalEmulator {
     /// Uses Copy-on-Write: clones Arc references to row data (cheap).
     /// The terminal can continue mutating via Arc::make_mut while
     /// the snapshot holds immutable references to the old data.
+    ///
+    /// When viewport_offset > 0, displays lines from scrollback history.
     pub fn get_render_snapshot(&mut self) -> Option<TerminalSnapshot> {
         if self.dec_modes.synchronized_output {
             return None;
@@ -164,17 +174,43 @@ impl TerminalEmulator {
 
         let (width, height) = (self.screen.width, self.screen.height);
         let active_grid = self.screen.active_grid();
+        let scrollback_len = self.screen.scrollback.len();
+
+        // Clamp viewport_offset to available scrollback
+        let effective_offset = self.viewport_offset.min(scrollback_len);
 
         // Build lines by cloning Arc references (cheap ref count bump)
+        // When scrolled back, top lines come from scrollback, rest from active grid
         let lines: Vec<SnapshotLine> = (0..height)
             .map(|y_idx| {
-                let is_dirty = self.screen.dirty.get(y_idx).is_none_or(|&d| d != 0);
-                SnapshotLine::from_arc(active_grid[y_idx].clone(), is_dirty.into())
+                if y_idx < effective_offset {
+                    // This line comes from scrollback
+                    // scrollback is ordered oldest first, so we need to index from the end
+                    let scrollback_idx = scrollback_len - effective_offset + y_idx;
+                    // All scrollback lines are considered "dirty" when first viewed
+                    SnapshotLine::from_arc(self.screen.scrollback[scrollback_idx].clone(), true.into())
+                } else {
+                    // This line comes from active grid
+                    let grid_idx = y_idx - effective_offset;
+                    if grid_idx < active_grid.len() {
+                        let is_dirty = self.screen.dirty.get(grid_idx).is_none_or(|&d| d != 0);
+                        SnapshotLine::from_arc(active_grid[grid_idx].clone(), is_dirty.into())
+                    } else {
+                        // Beyond active grid, return empty line
+                        SnapshotLine::from_arc(
+                            std::sync::Arc::new(vec![
+                                crate::glyph::Glyph::Single(crate::glyph::ContentCell::default_space());
+                                width
+                            ]),
+                            true.into(),
+                        )
+                    }
+                }
             })
             .collect();
 
-        // Build cursor state
-        let cursor_state = if self.dec_modes.text_cursor_enable_mode {
+        // Build cursor state - only show cursor when viewing live screen (no scroll offset)
+        let cursor_state = if self.dec_modes.text_cursor_enable_mode && effective_offset == 0 {
             let (cursor_x, cursor_y) = self
                 .cursor_controller
                 .physical_screen_pos(&self.current_screen_context());
@@ -225,6 +261,55 @@ impl TerminalEmulator {
             cell_width_px: self.layout.cell_width_px,
             cell_height_px: self.layout.cell_height_px,
         })
+    }
+
+    // --- Scrollback Navigation Methods ---
+
+    /// Scroll the viewport by the given number of lines.
+    /// Positive values scroll up (into history), negative scroll down (toward live).
+    /// Returns true if the viewport actually changed.
+    pub fn scroll_viewport(&mut self, lines: i32) -> bool {
+        let old_offset = self.viewport_offset;
+        let max_offset = self.screen.scrollback.len();
+
+        if lines > 0 {
+            // Scroll up into history
+            self.viewport_offset = (self.viewport_offset + lines as usize).min(max_offset);
+        } else if lines < 0 {
+            // Scroll down toward live screen
+            let abs_lines = (-lines) as usize;
+            self.viewport_offset = self.viewport_offset.saturating_sub(abs_lines);
+        }
+
+        // Mark all lines dirty if viewport changed
+        if self.viewport_offset != old_offset {
+            self.screen.mark_all_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Reset viewport to show the live screen (scroll to bottom).
+    /// Returns true if the viewport was changed.
+    pub fn reset_viewport(&mut self) -> bool {
+        if self.viewport_offset > 0 {
+            self.viewport_offset = 0;
+            self.screen.mark_all_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns the current viewport offset (0 = live screen).
+    pub fn viewport_offset(&self) -> usize {
+        self.viewport_offset
+    }
+
+    /// Returns the maximum scrollback available.
+    pub fn scrollback_len(&self) -> usize {
+        self.screen.scrollback.len()
     }
 
     // --- Selection Handling Methods ---

@@ -592,13 +592,19 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
             EngineEventManagement::MouseScroll {
                 x: _,
                 y: _,
-                dx,
+                dx: _,
                 dy,
                 mods: _,
             } => {
-                log::trace!("Mouse scroll: delta=({}, {})", dx, dy);
-                // TODO: Implement scrollback navigation
-                // Should modify viewport offset and trigger redraw
+                log::trace!("Mouse scroll: delta dy={}", dy);
+                // Scrollback navigation: negative dy scrolls up (into history),
+                // positive dy scrolls down (toward live screen)
+                // Scale by 3 lines per scroll unit for better UX
+                let scroll_lines = -(dy as i32) * 3;
+                if self.emulator.scroll_viewport(scroll_lines) {
+                    // Viewport changed, send frame immediately for responsive scrolling
+                    self.send_frame();
+                }
             }
             EngineEventManagement::FocusGained => {
                 log::trace!("Focus gained");
