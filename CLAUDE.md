@@ -25,14 +25,18 @@
 
 ## Workspace Structure
 
-The repository is organized as a Cargo workspace with 8 member crates:
+The repository is organized as a Cargo workspace with 11 member crates:
 
 ```
 core-term/                  # Repository root
 ├── pixelflow-core/         # SIMD algebra (no_std)
 ├── pixelflow-graphics/     # Colors, fonts, rendering
 ├── pixelflow-ml/           # Experimental: ML as graphics
+├── pixelflow-macros/       # Proc macros: algebra → SIMD kernels
+├── pixelflow-search/       # E-graph optimization & scheduling
+├── pixelflow-nnue/         # NNUE neural network for instruction selection
 ├── pixelflow-runtime/      # Platform drivers and runtime
+├── pixelflow-ir/           # (WIP) Intermediate representation
 ├── actor-scheduler/        # Priority channels
 ├── actor-scheduler-macros/ # Proc macros for actors
 ├── core-term/              # Terminal application
@@ -61,8 +65,12 @@ These directories configure AI assistants to understand project conventions and 
 |-------|---------|
 | `pixelflow-core` | `no_std` SIMD algebra. `Field`, `Manifold`, coordinate variables. Multi-backend (AVX-512/SSE2/NEON/scalar). |
 | `pixelflow-graphics` | Font loading, colors (`Rgba8`, `Color`), rasterization, antialiasing. |
+| `pixelflow-macros` | Proc macros that compile algebraic expressions into optimized SIMD kernels. Uses e-graph rewriting. |
+| `pixelflow-search` | Generic graph search framework for algebraic optimization. E-graph saturation, best-first extraction. |
+| `pixelflow-nnue` | NNUE neural network for learned cost models in instruction selection. `no_std` compatible. |
 | `pixelflow-ml` | Experimental: Linear attention as spherical harmonics. Research on neural rendering. |
 | `pixelflow-runtime` | Display drivers (macOS Cocoa, X11, headless, Metal, Web WASM), input handling, vsync. |
+| `pixelflow-ir` | (WIP) Intermediate representation for pixelflow compilation pipeline. Not yet in workspace. |
 | `actor-scheduler` | Priority channels with `troupe!` macro for actor groups. Lock-free concurrency. |
 | `actor-scheduler-macros` | Procedural macros for actor system. |
 | `core-term` | Terminal application, PTY management, ANSI processing. First PixelFlow consumer. |
@@ -118,15 +126,18 @@ cargo xtask bundle-run --features profiling
 
 ### Build Profiles
 
-The workspace defines three build profiles:
+The workspace defines four build profiles:
 
-0. **dev** - Fastest Compiles. opt-level=1 because the project crawls at opt-level=0
-1. **release** - Fast compile, good performance (opt-level=3, LTO, codegen-units=1)
-2. **bench** - For benchmarking (LTO, codegen-units=1)
-3. **dist** - Maximum optimization for distribution (LTO, strip, panic=abort)
+| Profile | opt-level | LTO | panic | Notes |
+|---------|-----------|-----|-------|-------|
+| **dev** | 1 | no | abort | Fast compiles; opt-level=1 required (deep recursion overflow at 0) |
+| **release** | 3 | no | abort | Fast compile, good performance |
+| **bench** | 3 | yes | unwind | For benchmarking (codegen-units=1) |
+| **dist** | 3 | yes | abort | Maximum optimization (strip symbols, codegen-units=1) |
 
 ### Toolchain
 
+- **Rust stable** (1.85+) - Edition 2024 for newer crates
 - SIMD backend auto-detected at compile time via `build.rs` and target features
 - Platform features automatically selected based on OS (macOS Cocoa, Linux X11, Web WASM)
 
@@ -141,6 +152,7 @@ The repository includes several GitHub Actions workflows:
 
 2. **Gemini AI Integration** - Automated code review and triage
    - `gemini-dispatch.yml` - Routes tasks to appropriate workflows
+   - `gemini-invoke.yml` - Direct Gemini invocation for custom tasks
    - `gemini-review.yml` - AI-powered code review on PRs
    - `gemini-triage.yml` - Issue triage and labeling
    - `gemini-scheduled-triage.yml` - Periodic maintenance tasks
@@ -230,13 +242,27 @@ if status_code == 4 { ... }                 // Bad
 | `core-term/src/terminal_app.rs` | Top-level terminal application actor |
 | `core-term/src/surface/` | Terminal rendering surface |
 
+### Compiler & Optimization (New)
+
+| Path | Purpose |
+|------|---------|
+| `pixelflow-macros/src/lib.rs` | `#[kernel]` proc macro entry point |
+| `pixelflow-macros/src/parser.rs` | Parse algebraic expressions from Rust syntax |
+| `pixelflow-macros/src/optimize.rs` | E-graph based expression optimization |
+| `pixelflow-macros/src/sema.rs` | Semantic analysis and type inference |
+| `pixelflow-macros/src/codegen/` | SIMD code generation backends |
+| `pixelflow-search/src/egraph/` | E-graph implementation (saturation, extraction) |
+| `pixelflow-search/src/egraph/best_first.rs` | Best-first extraction algorithm |
+| `pixelflow-search/src/egraph/guided.rs` | NNUE-guided search |
+| `pixelflow-nnue/src/lib.rs` | NNUE neural network (80KB, single file) |
+
 ### Build & Development
 
 | Path | Purpose |
 |------|---------|
 | `xtask/src/main.rs` | Build tasks (bundle-run for macOS app packaging) |
 | `Cargo.toml` | Workspace definition and build profiles |
-| `rust-toolchain.toml` | Rust nightly pinning |
+| `rust-toolchain.toml` | Rust stable toolchain pinning |
 
 ## Architecture Documentation
 
@@ -363,6 +389,37 @@ See `pixelflow-core/src/backend/` for implementation details.
 - **Driver:** `pixelflow-runtime/src/display/drivers/headless.rs`
 - **Purpose:** CI/testing, benchmarking without display
 - **Usage:** Automatic in test environments
+
+## Compiler Pipeline: pixelflow-macros
+
+The `pixelflow-macros` crate provides a `#[kernel]` proc macro that compiles algebraic expressions into optimized SIMD kernels at compile time.
+
+### Architecture
+
+```
+Source → Parser → AST → Semantic Analysis → E-graph → Extraction → Codegen → SIMD
+```
+
+1. **Parser** (`parser.rs`): Converts Rust syntax into an internal AST
+2. **Semantic Analysis** (`sema.rs`): Type inference and validation
+3. **E-graph Optimization** (`optimize.rs`): Equality saturation with algebraic rewrites
+4. **Extraction** (`pixelflow-search`): Best-first extraction using NNUE cost model
+5. **Codegen** (`codegen/`): Generate Manifold implementations with fused SIMD
+
+### E-graph Optimization
+
+The compiler uses equality saturation to find optimal implementations:
+- Algebraic identities (associativity, distributivity, etc.)
+- SIMD-specific rewrites (FMA fusion, reciprocal approximations)
+- Cost model learned via NNUE neural network
+
+### NNUE Cost Model
+
+`pixelflow-nnue` provides a lightweight (~80KB) neural network for instruction selection:
+- Trained on actual hardware measurements
+- Predicts latency/throughput for SIMD instruction sequences
+- Guides extraction to minimize total cost
+- `no_std` compatible for embedded use
 
 ## Experimental: pixelflow-ml
 
@@ -492,6 +549,23 @@ pixelflow-core/src/
   combinators/        - Six eigenshaders
   jet/                - Automatic differentiation
 
+pixelflow-macros/src/
+  lib.rs              - #[kernel] proc macro entry
+  parser.rs           - Expression parser
+  optimize.rs         - E-graph optimization
+  sema.rs             - Semantic analysis
+  codegen/            - SIMD code generation
+
+pixelflow-search/src/
+  egraph/             - E-graph implementation
+    graph.rs          - Core e-graph data structure
+    best_first.rs     - Best-first extraction
+    guided.rs         - NNUE-guided search
+    rules.rs          - Rewrite rules
+
+pixelflow-nnue/src/
+  lib.rs              - NNUE neural network (single file)
+
 pixelflow-graphics/src/
   render/             - Rasterization engine
   fonts/              - Glyph loading & SDF
@@ -513,6 +587,9 @@ core-term/src/
 | Task | Tool/Approach |
 |------|---------------|
 | Add new rendering primitive | Implement `Manifold` trait or compose from eigenshaders |
+| Write a compute kernel | Use `#[kernel]` macro from `pixelflow-macros` |
+| Add algebraic rewrite rule | Add to `pixelflow-search/src/egraph/rules.rs` |
+| Tune cost model | Train NNUE in `pixelflow-nnue` with new measurements |
 | Change colors | Use `Color` enum, never modify PixelFlow internals |
 | Add terminal feature | Modify `core-term`, keep PixelFlow clean |
 | Optimize performance | Profile first, check `#[inline(always)]`, verify SIMD backend |
@@ -524,10 +601,11 @@ core-term/src/
 1. **NO terminal logic in PixelFlow** - Keep it general-purpose
 2. **Pull, not push** - Pixels sample, don't receive
 3. **Types are shaders** - Use type system for optimization
-    3a. Types are the AST
-    3b. Fields/Jets are the IR.
-    3c. variables.rs is the symbol table
+    - 3a. Types are the AST
+    - 3b. Fields/Jets are the IR
+    - 3c. variables.rs is the symbol table
 4. **Minimal public API** - Composition over exposure
 5. **Zero allocations** - No per-frame heap allocation
-6. **No copies of unknown sized types** pixelflow language types are copy iff they are provably zero sized 
-6. **Platform on main thread** - Especially macOS Cocoa
+6. **No copies of unknown sized types** - pixelflow language types are Copy iff provably zero-sized
+7. **Platform on main thread** - Especially macOS Cocoa
+8. **Handle Results explicitly** - Workspace lints deny `unused_must_use` and `let_underscore_must_use`
