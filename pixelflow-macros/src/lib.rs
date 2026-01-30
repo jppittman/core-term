@@ -38,6 +38,7 @@
 mod annotate;
 mod ast;
 mod codegen;
+mod cost_builder;
 mod element;
 mod fold;
 mod ir_bridge;

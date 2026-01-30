@@ -26,16 +26,30 @@ use crate::ast::{
     BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
     UnaryExpr, UnaryOp,
 };
+use crate::cost_builder;
 use crate::ir_bridge::{ast_to_ir, egraph_to_ir, ir_to_code, IRToEGraphContext};
 use crate::sema::AnalyzedKernel;
 use pixelflow_search::egraph::{CostModel, EClassId, EGraph, ENode, ExprTree, Leaf, ops};
 use proc_macro2::Span;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use syn::{Ident, Lit};
 
 /// Counter for generating unique opaque variable names.
 static OPAQUE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Cached cost model (computed once, reused for all kernel compilations).
+///
+/// Uses HCE (ILP-aware with 11 features: operation counts + critical path).
+static COST_MODEL: OnceLock<CostModel> = OnceLock::new();
+
+/// Get the cost model, initializing it lazily on first use.
+fn get_cost_model() -> &'static CostModel {
+    COST_MODEL.get_or_init(|| {
+        cost_builder::build_cost_model_with_hce()
+    })
+}
 
 /// Generate a unique name for an opaque expression (unknown method call, etc.)
 fn unique_opaque_name(prefix: &str) -> String {
@@ -49,8 +63,8 @@ pub fn optimize(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
     analyzed.def.body = optimize_expr(analyzed.def.body);
 
     // 2. E-Graph optimization (global rewriting & fusion)
-    // We assume fully optimized costs for this project (AVX-512 target implied)
-    optimize_with_egraph(analyzed, &CostModel::fully_optimized())
+    // Uses HCE-based cost model (ILP-aware with 11 features: operation counts + critical path)
+    optimize_with_egraph(analyzed, get_cost_model())
 }
 
 /// Optimize an analyzed kernel using e-graph equality saturation.
