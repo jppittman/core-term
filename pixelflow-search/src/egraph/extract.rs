@@ -3,11 +3,11 @@
 //! An e-graph compresses many equivalent expressions. Extraction picks
 //! the "best" one according to a cost model.
 
-use alloc::vec::Vec;
 use super::cost::CostModel;
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::ops::Op;
+use alloc::vec::Vec;
 
 /// A concrete expression tree extracted from an e-graph.
 ///
@@ -56,9 +56,7 @@ impl ExprTree {
     pub fn depth(&self) -> usize {
         match self {
             Self::Leaf(_) => 1,
-            Self::Op { children, .. } => {
-                1 + children.iter().map(|c| c.depth()).max().unwrap_or(0)
-            }
+            Self::Op { children, .. } => 1 + children.iter().map(|c| c.depth()).max().unwrap_or(0),
         }
     }
 
@@ -136,7 +134,7 @@ impl ExprTree {
     /// Compute the cost of this expression tree using the given cost model.
     pub fn cost(&self, costs: &CostModel) -> usize {
         match self {
-            Self::Leaf(_) => 0,  // Variables and constants are free
+            Self::Leaf(_) => 0, // Variables and constants are free
             Self::Op { op, children } => {
                 let op_cost = costs.cost_by_name(op.name());
                 let children_cost: usize = children.iter().map(|c| c.cost(costs)).sum();
@@ -155,9 +153,7 @@ impl ExprTree {
             Self::Op { op, children } => {
                 let name = op.name();
                 match name {
-                    "add" => {
-                        children.iter().map(|c| c.eval(env)).sum()
-                    }
+                    "add" => children.iter().map(|c| c.eval(env)).sum(),
                     "sub" => {
                         if children.len() == 2 {
                             children[0].eval(env) - children[1].eval(env)
@@ -165,9 +161,7 @@ impl ExprTree {
                             0.0
                         }
                     }
-                    "mul" => {
-                        children.iter().map(|c| c.eval(env)).product()
-                    }
+                    "mul" => children.iter().map(|c| c.eval(env)).product(),
                     "div" => {
                         if children.len() == 2 {
                             children[0].eval(env) / children[1].eval(env)
@@ -210,15 +204,19 @@ impl ExprTree {
                             0.0
                         }
                     }
-                    "min" => {
-                        children.iter().map(|c| c.eval(env)).fold(f32::INFINITY, f32::min)
-                    }
-                    "max" => {
-                        children.iter().map(|c| c.eval(env)).fold(f32::NEG_INFINITY, f32::max)
-                    }
+                    "min" => children
+                        .iter()
+                        .map(|c| c.eval(env))
+                        .fold(f32::INFINITY, f32::min),
+                    "max" => children
+                        .iter()
+                        .map(|c| c.eval(env))
+                        .fold(f32::NEG_INFINITY, f32::max),
                     "mul_add" => {
                         if children.len() == 3 {
-                            children[0].eval(env).mul_add(children[1].eval(env), children[2].eval(env))
+                            children[0]
+                                .eval(env)
+                                .mul_add(children[1].eval(env), children[2].eval(env))
                         } else {
                             0.0
                         }
@@ -325,7 +323,11 @@ pub fn extract(egraph: &EGraph, root: EClassId, costs: &CostModel) -> (ExprTree,
     // Use a stack of (class, partially_built_tree_slot)
     enum BuildTask {
         Visit(EClassId),
-        Complete { canonical: u32, op: &'static dyn super::ops::Op, num_children: usize },
+        Complete {
+            canonical: u32,
+            op: &'static dyn super::ops::Op,
+            num_children: usize,
+        },
     }
 
     let mut build_stack: Vec<BuildTask> = vec![BuildTask::Visit(root)];
@@ -368,17 +370,26 @@ pub fn extract(egraph: &EGraph, root: EClassId, costs: &CostModel) -> (ExprTree,
                     }
                 }
             }
-            BuildTask::Complete { canonical, op, num_children } => {
+            BuildTask::Complete {
+                canonical,
+                op,
+                num_children,
+            } => {
                 building.remove(&canonical);
                 // Pop children from result stack (they're in correct order now)
                 let start = result_stack.len().saturating_sub(num_children);
                 let child_trees: Vec<ExprTree> = result_stack.drain(start..).collect();
-                result_stack.push(ExprTree::Op { op, children: child_trees });
+                result_stack.push(ExprTree::Op {
+                    op,
+                    children: child_trees,
+                });
             }
         }
     }
 
-    let tree = result_stack.pop().unwrap_or_else(|| ExprTree::Leaf(Leaf::Const(0.0)));
+    let tree = result_stack
+        .pop()
+        .unwrap_or(ExprTree::Leaf(Leaf::Const(0.0)));
     (tree, total_cost)
 }
 

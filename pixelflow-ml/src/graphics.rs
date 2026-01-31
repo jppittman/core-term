@@ -9,7 +9,9 @@
 //! compress infinite/quadratic interactions into finite/linear operations.
 
 use alloc::vec::Vec;
-use pixelflow_core::{Field, ManifoldExt, ShCoeffs, SH_NORM, Sh2};
+use pixelflow_core::{Field, ManifoldExt, SH_NORM, ShCoeffs};
+#[cfg(test)]
+use pixelflow_core::Sh2;
 
 // ============================================================================
 // Feature Maps: The Bridge Between Attention and SH
@@ -70,6 +72,7 @@ pub struct RandomFourierFeature {
 
 impl RandomFourierFeature {
     /// Create new random Fourier features.
+    #[must_use]
     pub fn new(frequencies: Vec<f32>) -> Self {
         let num_features = frequencies.len() * 2;
         Self {
@@ -107,6 +110,7 @@ pub struct HarmonicAttention<const NUM_COEFFS: usize> {
 
 impl<const NUM_COEFFS: usize> HarmonicAttention<NUM_COEFFS> {
     /// Create a new harmonic attention layer.
+    #[must_use]
     pub fn new(value_dim: usize) -> Self {
         Self {
             accumulated: (0..value_dim).map(|_| ShCoeffs::zero()).collect(),
@@ -171,6 +175,7 @@ impl ShFeatureMap<9> {
     ///
     /// Returns the 9-coefficient SH vector for band 2.
     #[inline(always)]
+    #[must_use]
     pub fn project(x: Field, y: Field, z: Field) -> [Field; 9] {
         let _zero = Field::from(0.0);
 

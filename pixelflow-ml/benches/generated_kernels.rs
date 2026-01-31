@@ -19,55 +19,74 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0000v0 - 9 nodes, depth 5
     {
-        let k = kernel_raw!(|| (((Z) * ((1.0 / ((0.463049)).max((4.132745)))) + (X))).min(Z));
+        let k = kernel_raw!(|| ((Z) * (1.0 / (0.463049).max((4.132745))) + (X)).min(Z));
         let m = k();
         group.bench_function("eg0000v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0000v1 - 9 nodes, depth 5
     {
-        let k = kernel_raw!(|| (Z).min(((Z) * ((1.0 / ((0.463049)).max((4.132745)))) + (X))));
+        let k = kernel_raw!(|| (Z).min(((Z) * (1.0 / (0.463049).max((4.132745))) + (X))));
         let m = k();
         group.bench_function("eg0000v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0001v0 - 11 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((Z).abs()).rsqrt()).abs()).min((((W).sqrt()).abs() - X))).sqrt());
+        let k =
+            kernel_raw!(|| (((((Z).abs()).rsqrt()).abs()).min((((W).sqrt()).abs() - X))).sqrt());
         let m = k();
         group.bench_function("eg0001v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0002v0 - 16 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((Y + (-3.299775)) * (1.0 / W))).abs()).min(((-Z)).max(((X).abs()).abs())) - W));
+        let k = kernel_raw!(|| ((((Y + (-3.299775)) * (1.0 / W)).abs())
+            .min((-Z).max(((X).abs()).abs()))
+            - W));
         let m = k();
         group.bench_function("eg0002v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0002v1 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((Y + (-3.299775)) * (1.0 / W))).abs()).min(((-Z)).max(((X).abs()).abs())) + (-W)));
+        let k = kernel_raw!(|| ((((Y + (-3.299775)) * (1.0 / W)).abs())
+            .min((-Z).max(((X).abs()).abs()))
+            + (-W)));
         let m = k();
         group.bench_function("eg0002v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0002v2 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((-W) + ((((Y + (-3.299775)) * (1.0 / W))).abs()).min(((-Z)).max(((X).abs()).abs()))));
+        let k =
+            kernel_raw!(|| ((-W)
+                + (((Y + (-3.299775)) * (1.0 / W)).abs()).min((-Z).max(((X).abs()).abs()))));
         let m = k();
         group.bench_function("eg0002v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -76,7 +95,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((Z).sqrt() / Y));
         let m = k();
         group.bench_function("eg0003v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -85,7 +106,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((Z).sqrt() * (1.0 / Y)));
         let m = k();
         group.bench_function("eg0003v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -94,25 +117,31 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((1.0 / Y) * (Z).sqrt()));
         let m = k();
         group.bench_function("eg0003v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0004v0 - 8 nodes, depth 4
     {
-        let k = kernel_raw!(|| ((((-4.413206)) * ((1.0 / (-4.876235))) + ((-X))) * X));
+        let k = kernel_raw!(|| (((-4.413206) * (1.0 / (-4.876235)) + (-X)) * X));
         let m = k();
         group.bench_function("eg0004v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0004v1 - 8 nodes, depth 4
     {
-        let k = kernel_raw!(|| (X * (((-4.413206)) * ((1.0 / (-4.876235))) + ((-X)))));
+        let k = kernel_raw!(|| (X * ((-4.413206) * (1.0 / (-4.876235)) + (-X))));
         let m = k();
         group.bench_function("eg0004v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -121,7 +150,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((X * ((-4.413206) * (1.0 / (-4.876235)))) + (X * (-X))));
         let m = k();
         group.bench_function("eg0004v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -130,7 +161,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((X * ((-4.413206) * (1.0 / (-4.876235)))) - (X * X)));
         let m = k();
         group.bench_function("eg0004v3", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -139,79 +172,105 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((X * (-X)) + (X * ((-4.413206) * (1.0 / (-4.876235))))));
         let m = k();
         group.bench_function("eg0004v4", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0005v0 - 10 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((-1.493756)).min(((Z).min(Y) - X))).abs() * X));
+        let k = kernel_raw!(|| (((-1.493756).min(((Z).min(Y) - X))).abs() * X));
         let m = k();
         group.bench_function("eg0005v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0005v1 - 10 nodes, depth 6
     {
-        let k = kernel_raw!(|| (X * (((-1.493756)).min(((Z).min(Y) - X))).abs()));
+        let k = kernel_raw!(|| (X * ((-1.493756).min(((Z).min(Y) - X))).abs()));
         let m = k();
         group.bench_function("eg0005v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0007v0 - 16 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((W - (0.376130))).min((-2.407911))).abs()).min(((-0.669357) - (W * (Z).max(W)))) / Z));
+        let k = kernel_raw!(|| ((((W - (0.376130)).min((-2.407911))).abs())
+            .min(((-0.669357) - (W * (Z).max(W))))
+            / Z));
         let m = k();
         group.bench_function("eg0007v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0007v1 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((W - (0.376130))).min((-2.407911))).abs()).min(((-0.669357) - (W * (Z).max(W)))) * (1.0 / Z)));
+        let k = kernel_raw!(|| ((((W - (0.376130)).min((-2.407911))).abs())
+            .min(((-0.669357) - (W * (Z).max(W))))
+            * (1.0 / Z)));
         let m = k();
         group.bench_function("eg0007v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0007v2 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((1.0 / Z) * ((((W - (0.376130))).min((-2.407911))).abs()).min(((-0.669357) - (W * (Z).max(W))))));
+        let k = kernel_raw!(|| ((1.0 / Z)
+            * (((W - (0.376130)).min((-2.407911))).abs()).min(((-0.669357) - (W * (Z).max(W))))));
         let m = k();
         group.bench_function("eg0007v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0008v0 - 9 nodes, depth 5
     {
-        let k = kernel_raw!(|| ((W).max(Z) + ((((-2.249412) * (-0.873986))).rsqrt()).abs()));
+        let k = kernel_raw!(|| ((W).max(Z) + (((-2.249412) * (-0.873986)).rsqrt()).abs()));
         let m = k();
         group.bench_function("eg0008v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0008v1 - 9 nodes, depth 5
     {
-        let k = kernel_raw!(|| (((((-2.249412) * (-0.873986))).rsqrt()).abs() + (W).max(Z)));
+        let k = kernel_raw!(|| ((((-2.249412) * (-0.873986)).rsqrt()).abs() + (W).max(Z)));
         let m = k();
         group.bench_function("eg0008v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0010v0 - 15 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((((((4.414442)).max(Z)) * ((X).rsqrt()) + ((((-2.469024)).sqrt() * (1.0 / ((0.463910) - Y)))))).rsqrt()).abs());
+        let k = kernel_raw!(|| ((((4.414442).max(Z)) * ((X).rsqrt())
+            + ((-2.469024).sqrt() * (1.0 / ((0.463910) - Y))))
+            .rsqrt())
+        .abs());
         let m = k();
         group.bench_function("eg0010v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -220,7 +279,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (((Z).abs()).max(Z) * X));
         let m = k();
         group.bench_function("eg0011v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -229,106 +290,148 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (X * ((Z).abs()).max(Z)));
         let m = k();
         group.bench_function("eg0011v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0012v0 - 16 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((Z - (-2.113873)) + ((0.696703)).rsqrt())).max(X)).max((X).sqrt()) / ((-(0.276206)) + (1.593931))));
+        let k = kernel_raw!(
+            || ((((Z - (-2.113873)) + (0.696703).rsqrt()).max(X)).max((X).sqrt())
+                / ((-(0.276206)) + (1.593931)))
+        );
         let m = k();
         group.bench_function("eg0012v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0012v1 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((Z - (-2.113873)) + ((0.696703)).rsqrt())).max(X)).max((X).sqrt()) * (1.0 / ((-(0.276206)) + (1.593931)))));
+        let k = kernel_raw!(
+            || ((((Z - (-2.113873)) + (0.696703).rsqrt()).max(X)).max((X).sqrt())
+                * (1.0 / ((-(0.276206)) + (1.593931))))
+        );
         let m = k();
         group.bench_function("eg0012v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0012v2 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((1.0 / ((-(0.276206)) + (1.593931))) * ((((Z - (-2.113873)) + ((0.696703)).rsqrt())).max(X)).max((X).sqrt())));
+        let k = kernel_raw!(|| ((1.0 / ((-(0.276206)) + (1.593931)))
+            * (((Z - (-2.113873)) + (0.696703).rsqrt()).max(X)).max((X).sqrt())));
         let m = k();
         group.bench_function("eg0012v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0013v0 - 18 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((((0.115179)).abs()).abs()).max((((X * (1.0 / (2.183330)))).min((Y).rsqrt())).max(X))).min((((3.357519)) * (X) + ((-1.188712)))));
+        let k = kernel_raw!(|| ((((0.115179).abs()).abs())
+            .max(((X * (1.0 / (2.183330))).min((Y).rsqrt())).max(X)))
+        .min(((3.357519) * (X) + (-1.188712))));
         let m = k();
         group.bench_function("eg0013v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0013v1 - 18 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((((3.357519)) * (X) + ((-1.188712)))).min(((((0.115179)).abs()).abs()).max((((X * (1.0 / (2.183330)))).min((Y).rsqrt())).max(X))));
+        let k = kernel_raw!(|| ((3.357519) * (X) + (-1.188712)).min(
+            (((0.115179).abs()).abs()).max(((X * (1.0 / (2.183330))).min((Y).rsqrt())).max(X))
+        ));
         let m = k();
         group.bench_function("eg0013v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0015v0 - 24 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((((Y) * ((Z * Y)) + ((-(W + (Z).rsqrt()))))).min((((Y).max((-4.058643)) * ((-4.345415) * X)) * ((W).max(Y)).sqrt()))).sqrt());
+        let k = kernel_raw!(|| (((Y) * (Z * Y) + (-(W + (Z).rsqrt())))
+            .min((((Y).max((-4.058643)) * ((-4.345415) * X)) * ((W).max(Y)).sqrt())))
+        .sqrt());
         let m = k();
         group.bench_function("eg0015v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0016v0 - 26 nodes, depth 7
     {
-        let k = kernel_raw!(|| (W + (((((3.814243) * (1.0 / (4.360328)))).min((X).rsqrt()) * (1.0 / ((Z - X) - (W + W))))).min(((((2.863798)) * ((1.0 / Z)) + ((-W)))).rsqrt())));
+        let k = kernel_raw!(|| (W
+            + (((3.814243) * (1.0 / (4.360328))).min((X).rsqrt()) * (1.0 / ((Z - X) - (W + W))))
+                .min(((2.863798) * (1.0 / Z) + (-W)).rsqrt())));
         let m = k();
         group.bench_function("eg0016v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0016v1 - 26 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((((((3.814243) * (1.0 / (4.360328)))).min((X).rsqrt()) * (1.0 / ((Z - X) - (W + W))))).min(((((2.863798)) * ((1.0 / Z)) + ((-W)))).rsqrt()) + W));
+        let k = kernel_raw!(|| ((((3.814243) * (1.0 / (4.360328))).min((X).rsqrt())
+            * (1.0 / ((Z - X) - (W + W))))
+            .min(((2.863798) * (1.0 / Z) + (-W)).rsqrt())
+            + W));
         let m = k();
         group.bench_function("eg0016v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0017v0 - 6 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((-((-Z)).rsqrt())).abs()).abs());
+        let k = kernel_raw!(|| ((-(-Z).rsqrt()).abs()).abs());
         let m = k();
         group.bench_function("eg0017v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0018v0 - 13 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((-((-(W * Z))).sqrt())).max((((((4.898320)).sqrt()).sqrt() + X)).abs()));
+        let k = kernel_raw!(|| (-(-(W * Z)).sqrt()).max((((4.898320).sqrt()).sqrt() + X).abs()));
         let m = k();
         group.bench_function("eg0018v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0018v1 - 13 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((((4.898320)).sqrt()).sqrt() + X)).abs()).max((-((-(W * Z))).sqrt())));
+        let k = kernel_raw!(|| ((((4.898320).sqrt()).sqrt() + X).abs()).max((-(-(W * Z)).sqrt())));
         let m = k();
         group.bench_function("eg0018v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -337,7 +440,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (((Y).rsqrt()).min(X)).rsqrt());
         let m = k();
         group.bench_function("eg0019v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -346,7 +451,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (W).min(Z));
         let m = k();
         group.bench_function("eg0020v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -355,169 +462,229 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (Z).min(W));
         let m = k();
         group.bench_function("eg0020v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0022v0 - 7 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((Y - ((Y).sqrt()).sqrt())).rsqrt()).sqrt());
+        let k = kernel_raw!(|| ((Y - ((Y).sqrt()).sqrt()).rsqrt()).sqrt());
         let m = k();
         group.bench_function("eg0022v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0024v0 - 13 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((Y).rsqrt() - ((-2.860610) * (((-1.380568)).min(Z)).max(((2.505954) + X))))).abs());
+        let k = kernel_raw!(|| ((Y).rsqrt()
+            - ((-2.860610) * ((-1.380568).min(Z)).max(((2.505954) + X))))
+        .abs());
         let m = k();
         group.bench_function("eg0024v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0025v0 - 8 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((-Y)).rsqrt()).abs() * (1.0 / W))).rsqrt());
+        let k = kernel_raw!(|| (((-Y).rsqrt()).abs() * (1.0 / W)).rsqrt());
         let m = k();
         group.bench_function("eg0025v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0026v0 - 9 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((X - (W * (Y).max((Z).sqrt())))).rsqrt());
+        let k = kernel_raw!(|| (X - (W * (Y).max((Z).sqrt()))).rsqrt());
         let m = k();
         group.bench_function("eg0026v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0027v0 - 12 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((((4.850084)).min((0.966634))).abs() * (1.0 / (-Y))) * (0.160000)) / W));
+        let k = kernel_raw!(|| (((((4.850084).min((0.966634))).abs() * (1.0 / (-Y)))
+            * (0.160000))
+            / W));
         let m = k();
         group.bench_function("eg0027v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0027v1 - 13 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((((4.850084)).min((0.966634))).abs() * (1.0 / (-Y))) * (0.160000)) * (1.0 / W)));
+        let k = kernel_raw!(|| (((((4.850084).min((0.966634))).abs() * (1.0 / (-Y)))
+            * (0.160000))
+            * (1.0 / W)));
         let m = k();
         group.bench_function("eg0027v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0027v2 - 13 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((1.0 / W) * (((((4.850084)).min((0.966634))).abs() * (1.0 / (-Y))) * (0.160000))));
+        let k = kernel_raw!(
+            || ((1.0 / W) * ((((4.850084).min((0.966634))).abs() * (1.0 / (-Y))) * (0.160000)))
+        );
         let m = k();
         group.bench_function("eg0027v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0028v0 - 24 nodes, depth 7
     {
-        let k = kernel_raw!(|| (W / ((((W).sqrt()).sqrt()).min((-(W).rsqrt()))).min((((Y * (1.0 / Z))).sqrt() + (((-2.355042) * (1.0 / Z))).max((Y + Z))))));
+        let k = kernel_raw!(|| (W
+            / ((((W).sqrt()).sqrt()).min((-(W).rsqrt())))
+                .min(((Y * (1.0 / Z)).sqrt() + ((-2.355042) * (1.0 / Z)).max((Y + Z))))));
         let m = k();
         group.bench_function("eg0028v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0028v1 - 25 nodes, depth 8
     {
-        let k = kernel_raw!(|| (W * (1.0 / ((((W).sqrt()).sqrt()).min((-(W).rsqrt()))).min((((Y * (1.0 / Z))).sqrt() + (((-2.355042) * (1.0 / Z))).max((Y + Z)))))));
+        let k = kernel_raw!(|| (W
+            * (1.0
+                / ((((W).sqrt()).sqrt()).min((-(W).rsqrt())))
+                    .min(((Y * (1.0 / Z)).sqrt() + ((-2.355042) * (1.0 / Z)).max((Y + Z)))))));
         let m = k();
         group.bench_function("eg0028v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0028v2 - 25 nodes, depth 8
     {
-        let k = kernel_raw!(|| ((1.0 / ((((W).sqrt()).sqrt()).min((-(W).rsqrt()))).min((((Y * (1.0 / Z))).sqrt() + (((-2.355042) * (1.0 / Z))).max((Y + Z))))) * W));
+        let k = kernel_raw!(|| ((1.0
+            / ((((W).sqrt()).sqrt()).min((-(W).rsqrt())))
+                .min(((Y * (1.0 / Z)).sqrt() + ((-2.355042) * (1.0 / Z)).max((Y + Z)))))
+            * W));
         let m = k();
         group.bench_function("eg0028v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0029v0 - 19 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((((((2.866080) - X)) * ((Y * (1.0 / X))) + ((-((-4.777217)).min(Y)))) * (1.0 / (((Y).sqrt()).abs()).rsqrt()))).rsqrt());
+        let k = kernel_raw!(
+            || ((((2.866080) - X) * (Y * (1.0 / X)) + (-(-4.777217).min(Y)))
+                * (1.0 / (((Y).sqrt()).abs()).rsqrt()))
+            .rsqrt()
+        );
         let m = k();
         group.bench_function("eg0029v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0030v0 - 10 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((0.450864)).min((-((X).abs()).max(((-1.555010)).sqrt()))) * X));
+        let k = kernel_raw!(|| ((0.450864).min((-((X).abs()).max((-1.555010).sqrt()))) * X));
         let m = k();
         group.bench_function("eg0030v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0030v1 - 10 nodes, depth 6
     {
-        let k = kernel_raw!(|| (X * ((0.450864)).min((-((X).abs()).max(((-1.555010)).sqrt())))));
+        let k = kernel_raw!(|| (X * (0.450864).min((-((X).abs()).max((-1.555010).sqrt())))));
         let m = k();
         group.bench_function("eg0030v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0031v0 - 4 nodes, depth 3
     {
-        let k = kernel_raw!(|| ((-(-1.394359))).max((-2.447779)));
+        let k = kernel_raw!(|| (-(-1.394359)).max((-2.447779)));
         let m = k();
         group.bench_function("eg0031v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0031v1 - 4 nodes, depth 3
     {
-        let k = kernel_raw!(|| ((-2.447779)).max((-(-1.394359))));
+        let k = kernel_raw!(|| (-2.447779).max((-(-1.394359))));
         let m = k();
         group.bench_function("eg0031v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0035v0 - 11 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((((-0.968785)).sqrt()).abs()).max(Z) * (((-1.764029) + (0.654297))).rsqrt())).rsqrt());
+        let k = kernel_raw!(|| ((((-0.968785).sqrt()).abs()).max(Z)
+            * ((-1.764029) + (0.654297)).rsqrt())
+        .rsqrt());
         let m = k();
         group.bench_function("eg0035v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0036v0 - 11 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((Y * ((-Y) + (Z).max(Y)))).min((1.390809))).sqrt());
+        let k = kernel_raw!(|| ((Y * ((-Y) + (Z).max(Y))).min((1.390809))).sqrt());
         let m = k();
         group.bench_function("eg0036v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0037v0 - 9 nodes, depth 6
     {
-        let k = kernel_raw!(|| (-(((((0.812655)).min(W)).sqrt() + (2.685992)) * Z)));
+        let k = kernel_raw!(|| (-((((0.812655).min(W)).sqrt() + (2.685992)) * Z)));
         let m = k();
         group.bench_function("eg0037v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -526,43 +693,59 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (((Y).sqrt()).abs()).rsqrt());
         let m = k();
         group.bench_function("eg0038v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0039v0 - 22 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((((W).rsqrt()).max((-W))).min((-Z)) + (((W * (1.0 / Y))).min((4.599526)) - ((Z).max(W)).abs())) - Y));
+        let k = kernel_raw!(|| (((((W).rsqrt()).max((-W))).min((-Z))
+            + ((W * (1.0 / Y)).min((4.599526)) - ((Z).max(W)).abs()))
+            - Y));
         let m = k();
         group.bench_function("eg0039v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0039v1 - 23 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((((W).rsqrt()).max((-W))).min((-Z)) + (((W * (1.0 / Y))).min((4.599526)) - ((Z).max(W)).abs())) + (-Y)));
+        let k = kernel_raw!(|| (((((W).rsqrt()).max((-W))).min((-Z))
+            + ((W * (1.0 / Y)).min((4.599526)) - ((Z).max(W)).abs()))
+            + (-Y)));
         let m = k();
         group.bench_function("eg0039v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0039v2 - 23 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((-Y) + ((((W).rsqrt()).max((-W))).min((-Z)) + (((W * (1.0 / Y))).min((4.599526)) - ((Z).max(W)).abs()))));
+        let k = kernel_raw!(|| ((-Y)
+            + ((((W).rsqrt()).max((-W))).min((-Z))
+                + ((W * (1.0 / Y)).min((4.599526)) - ((Z).max(W)).abs()))));
         let m = k();
         group.bench_function("eg0039v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0040v0 - 4 nodes, depth 3
     {
-        let k = kernel_raw!(|| ((W - Y)).sqrt());
+        let k = kernel_raw!(|| (W - Y).sqrt());
         let m = k();
         group.bench_function("eg0040v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -571,7 +754,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (X - ((-W) + (X).min(((Z).min(W)).abs()))));
         let m = k();
         group.bench_function("eg0041v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -580,7 +765,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (X + (-((-W) + (X).min(((Z).min(W)).abs())))));
         let m = k();
         group.bench_function("eg0041v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -589,70 +776,105 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((-((-W) + (X).min(((Z).min(W)).abs()))) + X));
         let m = k();
         group.bench_function("eg0041v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0044v0 - 14 nodes, depth 6
     {
-        let k = kernel_raw!(|| (-(((((-0.083183)).rsqrt()).sqrt()).max(((Z).max(Z)).max((W).abs())) - (Z).rsqrt())));
+        let k = kernel_raw!(|| (-((((-0.083183).rsqrt()).sqrt())
+            .max(((Z).max(Z)).max((W).abs()))
+            - (Z).rsqrt())));
         let m = k();
         group.bench_function("eg0044v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0045v0 - 14 nodes, depth 6
     {
-        let k = kernel_raw!(|| (W + (((((-3.838527)).min(W) + Y)).max((-(X).min((-4.047178))))).max((4.334330))));
+        let k = kernel_raw!(
+            || (W + (((-3.838527).min(W) + Y).max((-(X).min((-4.047178))))).max((4.334330)))
+        );
         let m = k();
         group.bench_function("eg0045v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0045v1 - 14 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((((-3.838527)).min(W) + Y)).max((-(X).min((-4.047178))))).max((4.334330)) + W));
+        let k = kernel_raw!(|| ((((-3.838527).min(W) + Y).max((-(X).min((-4.047178)))))
+            .max((4.334330))
+            + W));
         let m = k();
         group.bench_function("eg0045v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0046v0 - 42 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((((-Y)).min(((-1.108746)).max(Y)) + ((X + Y)).min(Z)) * (X).min(((Y).max(X) - (1.979533))))).max(((((W).abs() * (1.0 / (W).rsqrt()))).min(X)).min((((X).sqrt()).max(((4.881055)).max(X)) * ((W).rsqrt()).max((X).abs())))));
+        let k = kernel_raw!(|| (((-Y).min((-1.108746).max(Y)) + (X + Y).min(Z))
+            * (X).min(((Y).max(X) - (1.979533))))
+        .max(
+            (((W).abs() * (1.0 / (W).rsqrt())).min(X))
+                .min((((X).sqrt()).max((4.881055).max(X)) * ((W).rsqrt()).max((X).abs())))
+        ));
         let m = k();
         group.bench_function("eg0046v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0046v1 - 42 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((((W).abs() * (1.0 / (W).rsqrt()))).min(X)).min((((X).sqrt()).max(((4.881055)).max(X)) * ((W).rsqrt()).max((X).abs())))).max(((((-Y)).min(((-1.108746)).max(Y)) + ((X + Y)).min(Z)) * (X).min(((Y).max(X) - (1.979533))))));
+        let k = kernel_raw!(|| ((((W).abs() * (1.0 / (W).rsqrt())).min(X))
+            .min((((X).sqrt()).max((4.881055).max(X)) * ((W).rsqrt()).max((X).abs()))))
+        .max(
+            (((-Y).min((-1.108746).max(Y)) + (X + Y).min(Z)) * (X).min(((Y).max(X) - (1.979533))))
+        ));
         let m = k();
         group.bench_function("eg0046v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0047v0 - 15 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((-(((-X) * (1.0 / (Z).rsqrt()))).sqrt())).min(((((-0.484264)).abs()).sqrt() * (1.0 / X))));
+        let k =
+            kernel_raw!(|| (-((-X) * (1.0 / (Z).rsqrt())).sqrt())
+                .min((((-0.484264).abs()).sqrt() * (1.0 / X))));
         let m = k();
         group.bench_function("eg0047v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0047v1 - 15 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((((-0.484264)).abs()).sqrt() * (1.0 / X))).min((-(((-X) * (1.0 / (Z).rsqrt()))).sqrt())));
+        let k =
+            kernel_raw!(|| (((-0.484264).abs()).sqrt() * (1.0 / X))
+                .min((-((-X) * (1.0 / (Z).rsqrt())).sqrt())));
         let m = k();
         group.bench_function("eg0047v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -661,7 +883,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (X * Z));
         let m = k();
         group.bench_function("eg0050v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -670,7 +894,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (Z * X));
         let m = k();
         group.bench_function("eg0050v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -679,7 +905,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (Z - (-(1.751854))));
         let m = k();
         group.bench_function("eg0051v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -688,7 +916,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (Z + (1.751854)));
         let m = k();
         group.bench_function("eg0051v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -697,7 +927,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((1.751854) + Z));
         let m = k();
         group.bench_function("eg0051v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -706,7 +938,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (Y + (3.503995)));
         let m = k();
         group.bench_function("eg0052v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -715,79 +949,106 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((3.503995) + Y));
         let m = k();
         group.bench_function("eg0052v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0053v0 - 12 nodes, depth 5
     {
-        let k = kernel_raw!(|| ((((-4.172336)).abs() * ((((-4.085493)).max(W)) * ((-W)) + (Z)))).min(W));
+        let k = kernel_raw!(|| ((-4.172336).abs() * (((-4.085493).max(W)) * (-W) + (Z))).min(W));
         let m = k();
         group.bench_function("eg0053v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0053v1 - 12 nodes, depth 5
     {
-        let k = kernel_raw!(|| (W).min((((-4.172336)).abs() * ((((-4.085493)).max(W)) * ((-W)) + (Z)))));
+        let k = kernel_raw!(|| (W).min(((-4.172336).abs() * (((-4.085493).max(W)) * (-W) + (Z)))));
         let m = k();
         group.bench_function("eg0053v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0054v0 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((((0.779439) + Z) + ((-0.829450)).max(Z)) * ((Z).min(X) * W)) * (1.0 / X))).abs());
+        let k = kernel_raw!(
+            || (((((0.779439) + Z) + (-0.829450).max(Z)) * ((Z).min(X) * W)) * (1.0 / X)).abs()
+        );
         let m = k();
         group.bench_function("eg0054v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0055v0 - 7 nodes, depth 4
     {
-        let k = kernel_raw!(|| (((-1.607657)).abs()).max(((-4.722191) * (1.0 / Y))));
+        let k = kernel_raw!(|| ((-1.607657).abs()).max(((-4.722191) * (1.0 / Y))));
         let m = k();
         group.bench_function("eg0055v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0055v1 - 7 nodes, depth 4
     {
-        let k = kernel_raw!(|| (((-4.722191) * (1.0 / Y))).max(((-1.607657)).abs()));
+        let k = kernel_raw!(|| ((-4.722191) * (1.0 / Y)).max((-1.607657).abs()));
         let m = k();
         group.bench_function("eg0055v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0057v0 - 6 nodes, depth 5
     {
-        let k = kernel_raw!(|| ((((-Z)).sqrt() * (-1.936550))).sqrt());
+        let k = kernel_raw!(|| ((-Z).sqrt() * (-1.936550)).sqrt());
         let m = k();
         group.bench_function("eg0057v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0058v0 - 26 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((((Z).rsqrt()).max((W).abs()) * (1.0 / ((Y).abs()).max(W))) * (1.0 / (((X).min(Y)).rsqrt() - (((-0.238544)).max((2.103622))).min(Z))))).max(((1.548060)).rsqrt()));
+        let k = kernel_raw!(
+            || ((((Z).rsqrt()).max((W).abs()) * (1.0 / ((Y).abs()).max(W)))
+                * (1.0 / (((X).min(Y)).rsqrt() - ((-0.238544).max((2.103622))).min(Z))))
+            .max((1.548060).rsqrt())
+        );
         let m = k();
         group.bench_function("eg0058v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0058v1 - 26 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((1.548060)).rsqrt()).max(((((Z).rsqrt()).max((W).abs()) * (1.0 / ((Y).abs()).max(W))) * (1.0 / (((X).min(Y)).rsqrt() - (((-0.238544)).max((2.103622))).min(Z))))));
+        let k = kernel_raw!(|| ((1.548060).rsqrt()).max(
+            ((((Z).rsqrt()).max((W).abs()) * (1.0 / ((Y).abs()).max(W)))
+                * (1.0 / (((X).min(Y)).rsqrt() - ((-0.238544).max((2.103622))).min(Z))))
+        ));
         let m = k();
         group.bench_function("eg0058v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -796,61 +1057,86 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (((Y).max(((W * (1.0 / Y)) * (-W)))).rsqrt()).rsqrt());
         let m = k();
         group.bench_function("eg0059v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0060v0 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((Y * X)).max((Z).sqrt()) * (W + (W).max((-2.671513)))) * (1.0 / X))).min(W));
+        let k = kernel_raw!(|| (((Y * X).max((Z).sqrt()) * (W + (W).max((-2.671513))))
+            * (1.0 / X))
+            .min(W));
         let m = k();
         group.bench_function("eg0060v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0060v1 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| (W).min(((((Y * X)).max((Z).sqrt()) * (W + (W).max((-2.671513)))) * (1.0 / X))));
+        let k = kernel_raw!(
+            || (W).min((((Y * X).max((Z).sqrt()) * (W + (W).max((-2.671513)))) * (1.0 / X)))
+        );
         let m = k();
         group.bench_function("eg0060v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0061v0 - 19 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((3.875062)) * ((1.0 / ((X).sqrt() * W))) + (((-(Z - (1.248661))) - ((X + X)).min((Y).rsqrt()))))).rsqrt());
+        let k = kernel_raw!(|| ((3.875062) * (1.0 / ((X).sqrt() * W))
+            + ((-(Z - (1.248661))) - (X + X).min((Y).rsqrt())))
+        .rsqrt());
         let m = k();
         group.bench_function("eg0061v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0062v0 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((-((Y * (Z - W))).max(Y)) - ((((Z).sqrt() + (-1.430496))).sqrt() * (1.0 / (-1.732366)))));
+        let k = kernel_raw!(|| ((-(Y * (Z - W)).max(Y))
+            - (((Z).sqrt() + (-1.430496)).sqrt() * (1.0 / (-1.732366)))));
         let m = k();
         group.bench_function("eg0062v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0062v1 - 18 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((-((Y * (Z - W))).max(Y)) + (-((((Z).sqrt() + (-1.430496))).sqrt() * (1.0 / (-1.732366))))));
+        let k = kernel_raw!(|| ((-(Y * (Z - W)).max(Y))
+            + (-(((Z).sqrt() + (-1.430496)).sqrt() * (1.0 / (-1.732366))))));
         let m = k();
         group.bench_function("eg0062v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0062v2 - 18 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((-((((Z).sqrt() + (-1.430496))).sqrt() * (1.0 / (-1.732366)))) + (-((Y * (Z - W))).max(Y))));
+        let k = kernel_raw!(
+            || ((-(((Z).sqrt() + (-1.430496)).sqrt() * (1.0 / (-1.732366))))
+                + (-(Y * (Z - W)).max(Y)))
+        );
         let m = k();
         group.bench_function("eg0062v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -859,7 +1145,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((W).sqrt() / W));
         let m = k();
         group.bench_function("eg0065v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -868,7 +1156,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((W).sqrt() * (1.0 / W)));
         let m = k();
         group.bench_function("eg0065v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -877,7 +1167,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((1.0 / W) * (W).sqrt()));
         let m = k();
         group.bench_function("eg0065v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -886,7 +1178,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (((Z).max(X)).sqrt() + (Y * (1.0 / (W).abs()))));
         let m = k();
         group.bench_function("eg0066v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -895,34 +1189,42 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((Y * (1.0 / (W).abs())) + ((Z).max(X)).sqrt()));
         let m = k();
         group.bench_function("eg0066v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0066v2 - 9 nodes, depth 4
     {
-        let k = kernel_raw!(|| ((Y) * ((1.0 / (W).abs())) + (((Z).max(X)).sqrt())));
+        let k = kernel_raw!(|| ((Y) * (1.0 / (W).abs()) + (((Z).max(X)).sqrt())));
         let m = k();
         group.bench_function("eg0066v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0068v0 - 9 nodes, depth 5
     {
-        let k = kernel_raw!(|| ((((-(-3.308053))).abs()).min(((0.0).sqrt() - Z))).rsqrt());
+        let k = kernel_raw!(|| (((-(-3.308053)).abs()).min(((0.0).sqrt() - Z))).rsqrt());
         let m = k();
         group.bench_function("eg0068v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0069v0 - 9 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((W).abs()).sqrt() + (1.755662)) * X)).max(X));
+        let k = kernel_raw!(|| ((((W).abs()).sqrt() + (1.755662)) * X).max(X));
         let m = k();
         group.bench_function("eg0069v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -931,124 +1233,177 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (X).max(((((W).abs()).sqrt() + (1.755662)) * X)));
         let m = k();
         group.bench_function("eg0069v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0070v0 - 22 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((X * ((-4.777982)).abs()) * (1.0 / (3.938332))) / ((Z).max((-(W * (1.0 / Z)))) + ((((0.166680)) * (X) + (((-3.625263)).rsqrt()))).sqrt())));
+        let k = kernel_raw!(|| (((X * (-4.777982).abs()) * (1.0 / (3.938332)))
+            / ((Z).max((-(W * (1.0 / Z)))) + ((0.166680) * (X) + ((-3.625263).rsqrt())).sqrt())));
         let m = k();
         group.bench_function("eg0070v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0070v1 - 23 nodes, depth 8
     {
-        let k = kernel_raw!(|| (((X * ((-4.777982)).abs()) * (1.0 / (3.938332))) * (1.0 / ((Z).max((-(W * (1.0 / Z)))) + ((((0.166680)) * (X) + (((-3.625263)).rsqrt()))).sqrt()))));
+        let k = kernel_raw!(|| (((X * (-4.777982).abs()) * (1.0 / (3.938332)))
+            * (1.0
+                / ((Z).max((-(W * (1.0 / Z))))
+                    + ((0.166680) * (X) + ((-3.625263).rsqrt())).sqrt()))));
         let m = k();
         group.bench_function("eg0070v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0070v2 - 23 nodes, depth 8
     {
-        let k = kernel_raw!(|| ((1.0 / ((Z).max((-(W * (1.0 / Z)))) + ((((0.166680)) * (X) + (((-3.625263)).rsqrt()))).sqrt())) * ((X * ((-4.777982)).abs()) * (1.0 / (3.938332)))));
+        let k = kernel_raw!(|| ((1.0
+            / ((Z).max((-(W * (1.0 / Z)))) + ((0.166680) * (X) + ((-3.625263).rsqrt())).sqrt()))
+            * ((X * (-4.777982).abs()) * (1.0 / (3.938332)))));
         let m = k();
         group.bench_function("eg0070v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0071v0 - 15 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((Z).rsqrt() * (1.0 / ((2.207699)).max(W)))) * (X) + (((-Y)).max((4.327874)))) / X));
+        let k = kernel_raw!(|| ((((Z).rsqrt() * (1.0 / (2.207699).max(W))) * (X)
+            + ((-Y).max((4.327874))))
+            / X));
         let m = k();
         group.bench_function("eg0071v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0071v1 - 16 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((Z).rsqrt() * (1.0 / ((2.207699)).max(W)))) * (X) + (((-Y)).max((4.327874)))) * (1.0 / X)));
+        let k = kernel_raw!(|| ((((Z).rsqrt() * (1.0 / (2.207699).max(W))) * (X)
+            + ((-Y).max((4.327874))))
+            * (1.0 / X)));
         let m = k();
         group.bench_function("eg0071v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0071v2 - 16 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((1.0 / X) * ((((Z).rsqrt() * (1.0 / ((2.207699)).max(W)))) * (X) + (((-Y)).max((4.327874))))));
+        let k = kernel_raw!(|| ((1.0 / X)
+            * (((Z).rsqrt() * (1.0 / (2.207699).max(W))) * (X) + ((-Y).max((4.327874))))));
         let m = k();
         group.bench_function("eg0071v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0071v3 - 20 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((1.0 / X) * (((Z).rsqrt() * (1.0 / ((2.207699)).max(W))) * X)) + ((1.0 / X) * ((-Y)).max((4.327874)))));
+        let k = kernel_raw!(
+            || (((1.0 / X) * (((Z).rsqrt() * (1.0 / (2.207699).max(W))) * X))
+                + ((1.0 / X) * (-Y).max((4.327874))))
+        );
         let m = k();
         group.bench_function("eg0071v3", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0071v4 - 20 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((1.0 / X) * ((-Y)).max((4.327874))) + ((1.0 / X) * (((Z).rsqrt() * (1.0 / ((2.207699)).max(W))) * X))));
+        let k = kernel_raw!(|| (((1.0 / X) * (-Y).max((4.327874)))
+            + ((1.0 / X) * (((Z).rsqrt() * (1.0 / (2.207699).max(W))) * X))));
         let m = k();
         group.bench_function("eg0071v4", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0072v0 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((-2.782262) / ((((X * (-3.545310))).rsqrt() * (-(Z - (-4.219768))))).min((W * ((X).abs()).rsqrt()))));
+        let k = kernel_raw!(|| ((-2.782262)
+            / ((X * (-3.545310)).rsqrt() * (-(Z - (-4.219768)))).min((W * ((X).abs()).rsqrt()))));
         let m = k();
         group.bench_function("eg0072v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0072v1 - 18 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((-2.782262) * (1.0 / ((((X * (-3.545310))).rsqrt() * (-(Z - (-4.219768))))).min((W * ((X).abs()).rsqrt())))));
+        let k = kernel_raw!(|| ((-2.782262)
+            * (1.0
+                / ((X * (-3.545310)).rsqrt() * (-(Z - (-4.219768))))
+                    .min((W * ((X).abs()).rsqrt())))));
         let m = k();
         group.bench_function("eg0072v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0072v2 - 18 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((1.0 / ((((X * (-3.545310))).rsqrt() * (-(Z - (-4.219768))))).min((W * ((X).abs()).rsqrt()))) * (-2.782262)));
+        let k = kernel_raw!(|| ((1.0
+            / ((X * (-3.545310)).rsqrt() * (-(Z - (-4.219768)))).min((W * ((X).abs()).rsqrt())))
+            * (-2.782262)));
         let m = k();
         group.bench_function("eg0072v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0073v0 - 15 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((0.380906)) * ((1.0 / Z)) + ((-Z))) + ((((X).max(Z)).abs()).sqrt() - (Z).sqrt())));
+        let k = kernel_raw!(
+            || (((0.380906) * (1.0 / Z) + (-Z)) + ((((X).max(Z)).abs()).sqrt() - (Z).sqrt()))
+        );
         let m = k();
         group.bench_function("eg0073v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0073v1 - 15 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((X).max(Z)).abs()).sqrt() - (Z).sqrt()) + (((0.380906)) * ((1.0 / Z)) + ((-Z)))));
+        let k = kernel_raw!(
+            || (((((X).max(Z)).abs()).sqrt() - (Z).sqrt()) + ((0.380906) * (1.0 / Z) + (-Z)))
+        );
         let m = k();
         group.bench_function("eg0073v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -1057,106 +1412,167 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((Z).rsqrt()).rsqrt());
         let m = k();
         group.bench_function("eg0075v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0076v0 - 28 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((-Z) * ((((Z + Z) + (-Y)) + (3.066941)) * (((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))).min(((W * (1.0 / Y))).min(X)))));
+        let k = kernel_raw!(|| ((-Z)
+            * ((((Z + Z) + (-Y)) + (3.066941))
+                * ((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))
+                    .min((W * (1.0 / Y)).min(X)))));
         let m = k();
         group.bench_function("eg0076v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0076v1 - 28 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((((Z + Z) + (-Y)) + (3.066941)) * (((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))).min(((W * (1.0 / Y))).min(X))) * (-Z)));
+        let k = kernel_raw!(|| (((((Z + Z) + (-Y)) + (3.066941))
+            * ((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958)))).min((W * (1.0 / Y)).min(X)))
+            * (-Z)));
         let m = k();
         group.bench_function("eg0076v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0076v2 - 48 nodes, depth 8
     {
-        let k = kernel_raw!(|| (((-Z) * ((((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))).min(((W * (1.0 / Y))).min(X)) * ((Z + Z) + (-Y)))) + ((-Z) * ((((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))).min(((W * (1.0 / Y))).min(X)) * (3.066941)))));
+        let k = kernel_raw!(|| (((-Z)
+            * (((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))
+                .min((W * (1.0 / Y)).min(X))
+                * ((Z + Z) + (-Y))))
+            + ((-Z)
+                * (((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))
+                    .min((W * (1.0 / Y)).min(X))
+                    * (3.066941)))));
         let m = k();
         group.bench_function("eg0076v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0076v3 - 48 nodes, depth 8
     {
-        let k = kernel_raw!(|| (((-Z) * ((((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))).min(((W * (1.0 / Y))).min(X)) * (3.066941))) + ((-Z) * ((((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))).min(((W * (1.0 / Y))).min(X)) * ((Z + Z) + (-Y))))));
+        let k = kernel_raw!(|| (((-Z)
+            * (((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))
+                .min((W * (1.0 / Y)).min(X))
+                * (3.066941)))
+            + ((-Z)
+                * (((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))
+                    .min((W * (1.0 / Y)).min(X))
+                    * ((Z + Z) + (-Y))))));
         let m = k();
         group.bench_function("eg0076v3", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0076v4 - 47 nodes, depth 8
     {
-        let k = kernel_raw!(|| (((-Z)) * (((((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))).min(((W * (1.0 / Y))).min(X)) * ((Z + Z) + (-Y)))) + (((-Z) * ((((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))).min(((W * (1.0 / Y))).min(X)) * (3.066941))))));
+        let k = kernel_raw!(|| ((-Z)
+            * (((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))
+                .min((W * (1.0 / Y)).min(X))
+                * ((Z + Z) + (-Y)))
+            + ((-Z)
+                * (((Y * (1.0 / (-2.231645))) * (1.0 / (Z * (2.981958))))
+                    .min((W * (1.0 / Y)).min(X))
+                    * (3.066941)))));
         let m = k();
         group.bench_function("eg0076v4", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0079v0 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((3.924374) * Y)).sqrt() * (((3.615732)).max((((1.106538)).max((0.626551))).min(((2.254666)).max(W))) * (1.0 / Z))));
+        let k = kernel_raw!(|| (((3.924374) * Y).sqrt()
+            * ((3.615732).max(((1.106538).max((0.626551))).min((2.254666).max(W))) * (1.0 / Z))));
         let m = k();
         group.bench_function("eg0079v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0079v1 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((3.615732)).max((((1.106538)).max((0.626551))).min(((2.254666)).max(W))) * (1.0 / Z)) * (((3.924374) * Y)).sqrt()));
+        let k = kernel_raw!(|| (((3.615732)
+            .max(((1.106538).max((0.626551))).min((2.254666).max(W)))
+            * (1.0 / Z))
+            * ((3.924374) * Y).sqrt()));
         let m = k();
         group.bench_function("eg0079v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0080v0 - 11 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((((X * (1.0 / (3.652619)))).rsqrt()).min(((4.132360)).sqrt())).min((3.544778))).abs());
+        let k = kernel_raw!(
+            || ((((X * (1.0 / (3.652619))).rsqrt()).min((4.132360).sqrt())).min((3.544778))).abs()
+        );
         let m = k();
         group.bench_function("eg0080v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0082v0 - 24 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((3.102927) - (Y - (Y).max((-3.892953)))) + (((Z + X) * ((2.670910)).sqrt())).max(((Y).max(W) * ((-0.848148)).sqrt())))).max((Z).abs()));
+        let k = kernel_raw!(|| (((3.102927) - (Y - (Y).max((-3.892953))))
+            + ((Z + X) * (2.670910).sqrt()).max(((Y).max(W) * (-0.848148).sqrt())))
+        .max((Z).abs()));
         let m = k();
         group.bench_function("eg0082v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0082v1 - 24 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((Z).abs()).max((((3.102927) - (Y - (Y).max((-3.892953)))) + (((Z + X) * ((2.670910)).sqrt())).max(((Y).max(W) * ((-0.848148)).sqrt())))));
+        let k = kernel_raw!(|| ((Z).abs()).max(
+            (((3.102927) - (Y - (Y).max((-3.892953))))
+                + ((Z + X) * (2.670910).sqrt()).max(((Y).max(W) * (-0.848148).sqrt())))
+        ));
         let m = k();
         group.bench_function("eg0082v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0083v0 - 10 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((-((Y).abs()).max(((-1.736270)).abs()))).max((-(3.044498)))).rsqrt());
+        let k = kernel_raw!(|| ((-((Y).abs()).max((-1.736270).abs())).max((-(3.044498)))).rsqrt());
         let m = k();
         group.bench_function("eg0083v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -1165,7 +1581,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((-3.402113) / (1.149682)));
         let m = k();
         group.bench_function("eg0085v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -1174,7 +1592,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((-3.402113) * (1.0 / (1.149682))));
         let m = k();
         group.bench_function("eg0085v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -1183,7 +1603,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((1.0 / (1.149682)) * (-3.402113)));
         let m = k();
         group.bench_function("eg0085v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -1192,7 +1614,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((4.590742) + X));
         let m = k();
         group.bench_function("eg0086v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -1201,133 +1625,190 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (X + (4.590742)));
         let m = k();
         group.bench_function("eg0086v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0087v0 - 7 nodes, depth 4
     {
-        let k = kernel_raw!(|| ((((-0.465047)).rsqrt()).rsqrt() * (-(Y).sqrt())));
+        let k = kernel_raw!(|| (((-0.465047).rsqrt()).rsqrt() * (-(Y).sqrt())));
         let m = k();
         group.bench_function("eg0087v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0087v1 - 7 nodes, depth 4
     {
-        let k = kernel_raw!(|| ((-(Y).sqrt()) * (((-0.465047)).rsqrt()).rsqrt()));
+        let k = kernel_raw!(|| ((-(Y).sqrt()) * ((-0.465047).rsqrt()).rsqrt()));
         let m = k();
         group.bench_function("eg0087v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0091v0 - 25 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((Z).abs()) * (Y) + ((((W).max(Y)) * ((1.0 / X)) + ((Y - (Y + Z)))))) - ((-2.818341) - (((Z).sqrt() - ((-1.200649) * X))).rsqrt())));
+        let k = kernel_raw!(
+            || ((((Z).abs()) * (Y) + (((W).max(Y)) * (1.0 / X) + (Y - (Y + Z))))
+                - ((-2.818341) - ((Z).sqrt() - ((-1.200649) * X)).rsqrt()))
+        );
         let m = k();
         group.bench_function("eg0091v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0091v1 - 26 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((((Z).abs()) * (Y) + ((((W).max(Y)) * ((1.0 / X)) + ((Y - (Y + Z)))))) + (-((-2.818341) - (((Z).sqrt() - ((-1.200649) * X))).rsqrt()))));
+        let k = kernel_raw!(
+            || ((((Z).abs()) * (Y) + (((W).max(Y)) * (1.0 / X) + (Y - (Y + Z))))
+                + (-((-2.818341) - ((Z).sqrt() - ((-1.200649) * X)).rsqrt())))
+        );
         let m = k();
         group.bench_function("eg0091v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0091v2 - 26 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((-((-2.818341) - (((Z).sqrt() - ((-1.200649) * X))).rsqrt())) + (((Z).abs()) * (Y) + ((((W).max(Y)) * ((1.0 / X)) + ((Y - (Y + Z))))))));
+        let k = kernel_raw!(
+            || ((-((-2.818341) - ((Z).sqrt() - ((-1.200649) * X)).rsqrt()))
+                + (((Z).abs()) * (Y) + (((W).max(Y)) * (1.0 / X) + (Y - (Y + Z)))))
+        );
         let m = k();
         group.bench_function("eg0091v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0093v0 - 20 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((W + (X).max(W)) * (1.0 / ((W) * ((W).rsqrt()) + ((((0.402964)).min((4.886038))).min((2.733693)))))) - (Z * Y)));
+        let k = kernel_raw!(|| (((W + (X).max(W))
+            * (1.0 / ((W) * ((W).rsqrt()) + (((0.402964).min((4.886038))).min((2.733693))))))
+            - (Z * Y)));
         let m = k();
         group.bench_function("eg0093v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0093v1 - 21 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((W + (X).max(W)) * (1.0 / ((W) * ((W).rsqrt()) + ((((0.402964)).min((4.886038))).min((2.733693)))))) + (-(Z * Y))));
+        let k = kernel_raw!(|| (((W + (X).max(W))
+            * (1.0 / ((W) * ((W).rsqrt()) + (((0.402964).min((4.886038))).min((2.733693))))))
+            + (-(Z * Y))));
         let m = k();
         group.bench_function("eg0093v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0093v2 - 21 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((-(Z * Y)) + ((W + (X).max(W)) * (1.0 / ((W) * ((W).rsqrt()) + ((((0.402964)).min((4.886038))).min((2.733693))))))));
+        let k = kernel_raw!(|| ((-(Z * Y))
+            + ((W + (X).max(W))
+                * (1.0 / ((W) * ((W).rsqrt()) + (((0.402964).min((4.886038))).min((2.733693))))))));
         let m = k();
         group.bench_function("eg0093v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0093v3 - 20 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((W + (X).max(W))) * ((1.0 / ((W) * ((W).rsqrt()) + ((((0.402964)).min((4.886038))).min((2.733693)))))) + ((-(Z * Y)))));
+        let k = kernel_raw!(|| ((W + (X).max(W))
+            * (1.0 / ((W) * ((W).rsqrt()) + (((0.402964).min((4.886038))).min((2.733693)))))
+            + (-(Z * Y))));
         let m = k();
         group.bench_function("eg0093v3", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0094v0 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((W) * ((X - Z)) + ((((4.381141)).rsqrt() + W))) + ((X * (1.0 / W))).sqrt()) * Y));
+        let k = kernel_raw!(|| ((((W) * (X - Z) + ((4.381141).rsqrt() + W))
+            + (X * (1.0 / W)).sqrt())
+            * Y));
         let m = k();
         group.bench_function("eg0094v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0094v1 - 17 nodes, depth 6
     {
-        let k = kernel_raw!(|| (Y * (((W) * ((X - Z)) + ((((4.381141)).rsqrt() + W))) + ((X * (1.0 / W))).sqrt())));
+        let k = kernel_raw!(
+            || (Y * (((W) * (X - Z) + ((4.381141).rsqrt() + W)) + (X * (1.0 / W)).sqrt()))
+        );
         let m = k();
         group.bench_function("eg0094v1", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0094v2 - 19 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((Y * ((W) * ((X - Z)) + ((((4.381141)).rsqrt() + W)))) + (Y * ((X * (1.0 / W))).sqrt())));
+        let k =
+            kernel_raw!(|| ((Y * ((W) * (X - Z) + ((4.381141).rsqrt() + W)))
+                + (Y * (X * (1.0 / W)).sqrt())));
         let m = k();
         group.bench_function("eg0094v2", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0094v3 - 19 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((Y * ((X * (1.0 / W))).sqrt()) + (Y * ((W) * ((X - Z)) + ((((4.381141)).rsqrt() + W))))));
+        let k =
+            kernel_raw!(|| ((Y * (X * (1.0 / W)).sqrt())
+                + (Y * ((W) * (X - Z) + ((4.381141).rsqrt() + W)))));
         let m = k();
         group.bench_function("eg0094v3", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0094v4 - 18 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((Y) * (((W) * ((X - Z)) + ((((4.381141)).rsqrt() + W)))) + ((Y * ((X * (1.0 / W))).sqrt()))));
+        let k =
+            kernel_raw!(|| ((Y) * ((W) * (X - Z) + ((4.381141).rsqrt() + W))
+                + (Y * (X * (1.0 / W)).sqrt())));
         let m = k();
         group.bench_function("eg0094v4", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
@@ -1336,25 +1817,31 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((W).sqrt()).abs());
         let m = k();
         group.bench_function("eg0096v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0097v0 - 4 nodes, depth 4
     {
-        let k = kernel_raw!(|| (-((-(-3.553692))).abs()));
+        let k = kernel_raw!(|| (-(-(-3.553692)).abs()));
         let m = k();
         group.bench_function("eg0097v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 
     // eg0099v0 - 11 nodes, depth 6
     {
-        let k = kernel_raw!(|| (-((((W).max((2.671139)) + (W).abs()) * (1.0 / X))).abs()));
+        let k = kernel_raw!(|| (-(((W).max((2.671139)) + (W).abs()) * (1.0 / X)).abs()));
         let m = k();
         group.bench_function("eg0099v0", |b| {
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
+            b.iter(|| {
+                black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf))))
+            })
         });
     }
 

@@ -8,10 +8,10 @@
 //! The depth penalty prevents compilation blowup by making deep type trees
 //! expensive, encouraging the extractor to prefer shallower forms or boxing.
 
+use super::node::ENode;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use super::node::ENode;
 
 /// Configurable cost model for operation costs and depth penalties.
 ///
@@ -121,20 +121,48 @@ impl CostModel {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_map(costs: &HashMap<String, usize>) -> Self {
         let mut model = Self::default();
-        if let Some(&c) = costs.get("add") { model.add = c; }
-        if let Some(&c) = costs.get("sub") { model.sub = c; }
-        if let Some(&c) = costs.get("mul") { model.mul = c; }
-        if let Some(&c) = costs.get("div") { model.div = c; }
-        if let Some(&c) = costs.get("neg") { model.neg = c; }
-        if let Some(&c) = costs.get("recip") { model.recip = c; }
-        if let Some(&c) = costs.get("sqrt") { model.sqrt = c; }
-        if let Some(&c) = costs.get("rsqrt") { model.rsqrt = c; }
-        if let Some(&c) = costs.get("abs") { model.abs = c; }
-        if let Some(&c) = costs.get("min") { model.min = c; }
-        if let Some(&c) = costs.get("max") { model.max = c; }
-        if let Some(&c) = costs.get("mul_add") { model.mul_add = c; }
-        if let Some(&c) = costs.get("depth_threshold") { model.depth_threshold = c; }
-        if let Some(&c) = costs.get("depth_penalty") { model.depth_penalty = c; }
+        if let Some(&c) = costs.get("add") {
+            model.add = c;
+        }
+        if let Some(&c) = costs.get("sub") {
+            model.sub = c;
+        }
+        if let Some(&c) = costs.get("mul") {
+            model.mul = c;
+        }
+        if let Some(&c) = costs.get("div") {
+            model.div = c;
+        }
+        if let Some(&c) = costs.get("neg") {
+            model.neg = c;
+        }
+        if let Some(&c) = costs.get("recip") {
+            model.recip = c;
+        }
+        if let Some(&c) = costs.get("sqrt") {
+            model.sqrt = c;
+        }
+        if let Some(&c) = costs.get("rsqrt") {
+            model.rsqrt = c;
+        }
+        if let Some(&c) = costs.get("abs") {
+            model.abs = c;
+        }
+        if let Some(&c) = costs.get("min") {
+            model.min = c;
+        }
+        if let Some(&c) = costs.get("max") {
+            model.max = c;
+        }
+        if let Some(&c) = costs.get("mul_add") {
+            model.mul_add = c;
+        }
+        if let Some(&c) = costs.get("depth_threshold") {
+            model.depth_threshold = c;
+        }
+        if let Some(&c) = costs.get("depth_penalty") {
+            model.depth_penalty = c;
+        }
         model
     }
 
@@ -212,10 +240,20 @@ mul_add = {}
 depth_threshold = {}
 depth_penalty = {}
 "#,
-            self.add, self.sub, self.mul, self.div, self.neg,
-            self.sqrt, self.recip, self.rsqrt, self.abs,
-            self.min, self.max, self.mul_add,
-            self.depth_threshold, self.depth_penalty,
+            self.add,
+            self.sub,
+            self.mul,
+            self.div,
+            self.neg,
+            self.sqrt,
+            self.recip,
+            self.rsqrt,
+            self.abs,
+            self.min,
+            self.max,
+            self.mul_add,
+            self.depth_threshold,
+            self.depth_penalty,
         );
         fs::write(path, contents)
     }
@@ -270,16 +308,14 @@ depth_penalty = {}
     /// 4. Falls back to `fully_optimized()`
     pub fn load_or_default() -> Self {
         // Check environment variable first
-        if let Ok(path) = std::env::var("PIXELFLOW_COST_MODEL") {
-            if let Ok(model) = Self::load_toml(&path) {
+        if let Ok(path) = std::env::var("PIXELFLOW_COST_MODEL")
+            && let Ok(model) = Self::load_toml(&path) {
                 return model;
             }
-        }
 
         // Try user config directory
         if let Some(home) = std::env::var_os("HOME") {
-            let config_path = Path::new(&home)
-                .join(".config/pixelflow/cost_model.toml");
+            let config_path = Path::new(&home).join(".config/pixelflow/cost_model.toml");
             if let Ok(model) = Self::load_toml(&config_path) {
                 return model;
             }

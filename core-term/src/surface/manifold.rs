@@ -27,7 +27,9 @@
 //! Uses `ColorManifold` from pixelflow-graphics for RGBA packing.
 //! Uses `Color` from pixelflow-graphics for solid color manifolds.
 
-use pixelflow_core::{Field, Lt, Manifold, ManifoldCompat, ManifoldExpr, ManifoldExt, Select, X, Y};
+use pixelflow_core::{
+    Field, Lt, Manifold, ManifoldCompat, ManifoldExpr, ManifoldExt, Select, X, Y,
+};
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);

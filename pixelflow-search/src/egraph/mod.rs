@@ -22,21 +22,24 @@ mod deps;
 mod extract;
 mod graph;
 pub mod guided;
-mod node;
 pub mod nnue_adapter;
+mod node;
 pub mod ops;
-pub mod rewrite;  // Made public for domain-specific rules in pixelflow-macros
+pub mod rewrite; // Made public for domain-specific rules in pixelflow-macros
 mod rules;
 pub mod saturate;
 
 // Re-export public API
+pub use best_first::{BestFirstConfig, BestFirstContext, BestFirstPlanner, BestFirstResult};
 pub use cost::CostModel;
 pub use deps::{Deps, DepsAnalysis};
 pub use extract::{ExprTree, Leaf};
 pub use graph::{EGraph, RewriteTarget};
-pub use guided::{GuidedAction, GuidedResult, GuidedState, GuidedStats, ActionRecord, GuidedConfig, GuidedMcts, guided_optimize};
+pub use guided::{
+    ActionRecord, GuidedAction, GuidedConfig, GuidedMcts, GuidedResult, GuidedState, GuidedStats,
+    guided_optimize,
+};
 pub use node::{EClassId, ENode};
 pub use ops::Op;
-pub use rewrite::{Rewrite, RewriteAction};  // Export for domain-specific rules
-pub use saturate::{SaturationResult, saturate_with_budget, achievable_cost_within_budget};
-pub use best_first::{BestFirstPlanner, BestFirstConfig, BestFirstResult, BestFirstContext};
+pub use rewrite::{Rewrite, RewriteAction}; // Export for domain-specific rules
+pub use saturate::{SaturationResult, achievable_cost_within_budget, saturate_with_budget};

@@ -2,13 +2,15 @@
 
 use std::collections::HashMap;
 
-use super::algebra::{AddNeg, MulRecip, Canonicalize, Cancellation, InverseAnnihilation, Involution};
+use super::algebra::{
+    AddNeg, Cancellation, Canonicalize, InverseAnnihilation, Involution, MulRecip,
+};
 use super::cost::CostModel;
 use super::extract::ExprTree;
 use super::node::{EClassId, ENode};
 use super::ops;
 use super::rewrite::{Rewrite, RewriteAction};
-use super::rules::{Annihilator, Commutative, Distributive, Factor, Idempotent, Identity};
+use super::rules::{Annihilator, Commutative, Distributive, Identity};
 
 /// A potential rewrite target: (rule, e-class, node within class).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -364,13 +366,28 @@ impl EGraph {
                     false
                 }
             }
-            RewriteAction::Distribute { outer, inner, a, b, c } => {
+            RewriteAction::Distribute {
+                outer,
+                inner,
+                a,
+                b,
+                c,
+            } => {
                 // A * (B + C) → A*B + A*C
-                let ab_node = ENode::Op { op: outer, children: vec![a, b] };
+                let ab_node = ENode::Op {
+                    op: outer,
+                    children: vec![a, b],
+                };
                 let ab_id = self.add(ab_node);
-                let ac_node = ENode::Op { op: outer, children: vec![a, c] };
+                let ac_node = ENode::Op {
+                    op: outer,
+                    children: vec![a, c],
+                };
                 let ac_id = self.add(ac_node);
-                let result_node = ENode::Op { op: inner, children: vec![ab_id, ac_id] };
+                let result_node = ENode::Op {
+                    op: inner,
+                    children: vec![ab_id, ac_id],
+                };
                 let result_id = self.add(result_node);
                 if self.find(class_id) != self.find(result_id) {
                     self.union(class_id, result_id);
@@ -379,11 +396,23 @@ impl EGraph {
                     false
                 }
             }
-            RewriteAction::Factor { outer, inner, common, unique_l, unique_r } => {
+            RewriteAction::Factor {
+                outer,
+                inner,
+                common,
+                unique_l,
+                unique_r,
+            } => {
                 // A*B + A*C → A * (B + C)
-                let sum_node = ENode::Op { op: outer, children: vec![unique_l, unique_r] };
+                let sum_node = ENode::Op {
+                    op: outer,
+                    children: vec![unique_l, unique_r],
+                };
                 let sum_id = self.add(sum_node);
-                let result_node = ENode::Op { op: inner, children: vec![common, sum_id] };
+                let result_node = ENode::Op {
+                    op: inner,
+                    children: vec![common, sum_id],
+                };
                 let result_id = self.add(result_node);
                 if self.find(class_id) != self.find(result_id) {
                     self.union(class_id, result_id);
@@ -392,11 +421,22 @@ impl EGraph {
                     false
                 }
             }
-            RewriteAction::Canonicalize { target, inverse, a, b } => {
+            RewriteAction::Canonicalize {
+                target,
+                inverse,
+                a,
+                b,
+            } => {
                 // a - b → a + neg(b)
-                let inv_node = ENode::Op { op: inverse, children: vec![b] };
+                let inv_node = ENode::Op {
+                    op: inverse,
+                    children: vec![b],
+                };
                 let inv_id = self.add(inv_node);
-                let target_node = ENode::Op { op: target, children: vec![a, inv_id] };
+                let target_node = ENode::Op {
+                    op: target,
+                    children: vec![a, inv_id],
+                };
                 let target_id = self.add(target_node);
                 if self.find(class_id) != self.find(target_id) {
                     self.union(class_id, target_id);
@@ -407,9 +447,15 @@ impl EGraph {
             }
             RewriteAction::Associate { op, a, b, c } => {
                 // (a op b) op c → a op (b op c)
-                let bc_node = ENode::Op { op, children: vec![b, c] };
+                let bc_node = ENode::Op {
+                    op,
+                    children: vec![b, c],
+                };
                 let bc_id = self.add(bc_node);
-                let result_node = ENode::Op { op, children: vec![a, bc_id] };
+                let result_node = ENode::Op {
+                    op,
+                    children: vec![a, bc_id],
+                };
                 let result_id = self.add(result_node);
                 if self.find(class_id) != self.find(result_id) {
                     self.union(class_id, result_id);
@@ -437,7 +483,9 @@ impl EGraph {
     pub fn saturate_with_limit(&mut self, max_iters: usize) {
         for _ in 0..max_iters {
             let unions = self.apply_rules();
-            if unions == 0 { break; }
+            if unions == 0 {
+                break;
+            }
         }
     }
 
@@ -462,7 +510,10 @@ impl EGraph {
                 for rule in self.rules.iter() {
                     if let Some(action) = rule.apply(self, class_id, node) {
                         updates.push((class_id, action));
-                        *self.match_counts.entry(rule.name().to_string()).or_insert(0) += 1;
+                        *self
+                            .match_counts
+                            .entry(rule.name().to_string())
+                            .or_insert(0) += 1;
                     }
                 }
             }
@@ -483,32 +534,70 @@ impl EGraph {
                         unions += 1;
                     }
                 }
-                RewriteAction::Distribute { outer, inner, a, b, c } => {
-                    let ab_node = ENode::Op { op: outer, children: vec![a, b] };
+                RewriteAction::Distribute {
+                    outer,
+                    inner,
+                    a,
+                    b,
+                    c,
+                } => {
+                    let ab_node = ENode::Op {
+                        op: outer,
+                        children: vec![a, b],
+                    };
                     let ab_id = self.add(ab_node);
-                    let ac_node = ENode::Op { op: outer, children: vec![a, c] };
+                    let ac_node = ENode::Op {
+                        op: outer,
+                        children: vec![a, c],
+                    };
                     let ac_id = self.add(ac_node);
-                    let result_node = ENode::Op { op: inner, children: vec![ab_id, ac_id] };
+                    let result_node = ENode::Op {
+                        op: inner,
+                        children: vec![ab_id, ac_id],
+                    };
                     let result_id = self.add(result_node);
                     if self.find(class_id) != self.find(result_id) {
                         self.union(class_id, result_id);
                         unions += 1;
                     }
                 }
-                RewriteAction::Factor { outer, inner, common, unique_l, unique_r } => {
-                    let sum_node = ENode::Op { op: outer, children: vec![unique_l, unique_r] };
+                RewriteAction::Factor {
+                    outer,
+                    inner,
+                    common,
+                    unique_l,
+                    unique_r,
+                } => {
+                    let sum_node = ENode::Op {
+                        op: outer,
+                        children: vec![unique_l, unique_r],
+                    };
                     let sum_id = self.add(sum_node);
-                    let result_node = ENode::Op { op: inner, children: vec![common, sum_id] };
+                    let result_node = ENode::Op {
+                        op: inner,
+                        children: vec![common, sum_id],
+                    };
                     let result_id = self.add(result_node);
                     if self.find(class_id) != self.find(result_id) {
                         self.union(class_id, result_id);
                         unions += 1;
                     }
                 }
-                RewriteAction::Canonicalize { target, inverse, a, b } => {
-                    let inv_node = ENode::Op { op: inverse, children: vec![b] };
+                RewriteAction::Canonicalize {
+                    target,
+                    inverse,
+                    a,
+                    b,
+                } => {
+                    let inv_node = ENode::Op {
+                        op: inverse,
+                        children: vec![b],
+                    };
                     let inv_id = self.add(inv_node);
-                    let target_node = ENode::Op { op: target, children: vec![a, inv_id] };
+                    let target_node = ENode::Op {
+                        op: target,
+                        children: vec![a, inv_id],
+                    };
                     let target_id = self.add(target_node);
                     if self.find(class_id) != self.find(target_id) {
                         self.union(class_id, target_id);
@@ -516,9 +605,15 @@ impl EGraph {
                     }
                 }
                 RewriteAction::Associate { op, a, b, c } => {
-                    let bc_node = ENode::Op { op, children: vec![b, c] };
+                    let bc_node = ENode::Op {
+                        op,
+                        children: vec![b, c],
+                    };
                     let bc_id = self.add(bc_node);
-                    let result_node = ENode::Op { op, children: vec![a, bc_id] };
+                    let result_node = ENode::Op {
+                        op,
+                        children: vec![a, bc_id],
+                    };
                     let result_id = self.add(result_node);
                     if self.find(class_id) != self.find(result_id) {
                         self.union(class_id, result_id);
@@ -549,18 +644,33 @@ impl EGraph {
                     }
                 }
             }
-            if !changed { break; }
+            if !changed {
+                break;
+            }
         }
-        cost_table.get(&root).map(|(_, node)| node.clone()).unwrap_or(ENode::Const(0))
+        cost_table
+            .get(&root)
+            .map(|(_, node)| node.clone())
+            .unwrap_or(ENode::Const(0))
     }
 
-    fn node_cost_with_model(&self, node: &ENode, cost_table: &HashMap<EClassId, (usize, ENode)>, costs: &CostModel) -> usize {
+    fn node_cost_with_model(
+        &self,
+        node: &ENode,
+        cost_table: &HashMap<EClassId, (usize, ENode)>,
+        costs: &CostModel,
+    ) -> usize {
         let get_child_cost = |id: EClassId| {
             let id = self.find(id);
-            cost_table.get(&id).map(|(c, _)| *c).unwrap_or(usize::MAX / 4)
+            cost_table
+                .get(&id)
+                .map(|(c, _)| *c)
+                .unwrap_or(usize::MAX / 4)
         };
         let op_cost = costs.node_op_cost(node);
-        let child_cost = node.children().iter()
+        let child_cost = node
+            .children()
+            .iter()
             .fold(0usize, |acc, &c| acc.saturating_add(get_child_cost(c)));
         child_cost.saturating_add(op_cost)
     }
@@ -650,8 +760,14 @@ mod tests {
     fn test_inverse_add() {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
-        let neg_x = eg.add(ENode::Op { op: &ops::Neg, children: vec![x] });
-        let sum = eg.add(ENode::Op { op: &ops::Add, children: vec![x, neg_x] });
+        let neg_x = eg.add(ENode::Op {
+            op: &ops::Neg,
+            children: vec![x],
+        });
+        let sum = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, neg_x],
+        });
         eg.saturate();
         let zero = eg.add(ENode::constant(0.0));
         assert_eq!(eg.find(sum), eg.find(zero));
@@ -661,8 +777,14 @@ mod tests {
     fn test_inverse_mul() {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
-        let recip_x = eg.add(ENode::Op { op: &ops::Recip, children: vec![x] });
-        let product = eg.add(ENode::Op { op: &ops::Mul, children: vec![x, recip_x] });
+        let recip_x = eg.add(ENode::Op {
+            op: &ops::Recip,
+            children: vec![x],
+        });
+        let product = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![x, recip_x],
+        });
         eg.saturate();
         let one = eg.add(ENode::constant(1.0));
         assert_eq!(eg.find(product), eg.find(one));
@@ -673,8 +795,14 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let five = eg.add(ENode::constant(5.0));
-        let prod = eg.add(ENode::Op { op: &ops::Mul, children: vec![x, five] });
-        let div = eg.add(ENode::Op { op: &ops::Div, children: vec![prod, x] });
+        let prod = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![x, five],
+        });
+        let div = eg.add(ENode::Op {
+            op: &ops::Div,
+            children: vec![prod, x],
+        });
         eg.saturate();
         assert_eq!(eg.find(div), eg.find(five));
     }
@@ -684,13 +812,19 @@ mod tests {
         // a - (b - c) should equal a - b + c
         // Test: 10 - (6 - 2) = 10 - 4 = 6
         let mut eg = EGraph::new();
-        let a = eg.add(ENode::constant(10.0));  // a = 10
-        let b = eg.add(ENode::constant(6.0));   // b = 6
-        let c = eg.add(ENode::constant(2.0));   // c = 2
+        let a = eg.add(ENode::constant(10.0)); // a = 10
+        let b = eg.add(ENode::constant(6.0)); // b = 6
+        let c = eg.add(ENode::constant(2.0)); // c = 2
 
         // Build a - (b - c)
-        let b_minus_c = eg.add(ENode::Op { op: &ops::Sub, children: vec![b, c] });   // 6 - 2 = 4
-        let result = eg.add(ENode::Op { op: &ops::Sub, children: vec![a, b_minus_c] });  // 10 - 4 = 6
+        let b_minus_c = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![b, c],
+        }); // 6 - 2 = 4
+        let result = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![a, b_minus_c],
+        }); // 10 - 4 = 6
 
         eg.saturate();
 
@@ -700,7 +834,11 @@ mod tests {
         let val = tree.eval(&[0.0; 4]);
 
         // Should be 6.0, not something else
-        assert!((val - 6.0).abs() < 0.001, "10 - (6 - 2) should be 6.0, got {}", val);
+        assert!(
+            (val - 6.0).abs() < 0.001,
+            "10 - (6 - 2) should be 6.0, got {}",
+            val
+        );
     }
 
     #[test]
@@ -714,11 +852,20 @@ mod tests {
         let r_sq = eg.add(ENode::constant(1.0));
 
         // d * d = 16
-        let d_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![d, d] });
+        let d_sq = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![d, d],
+        });
         // c_sq - r_sq = 15
-        let inner_sub = eg.add(ENode::Op { op: &ops::Sub, children: vec![c_sq, r_sq] });
+        let inner_sub = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![c_sq, r_sq],
+        });
         // d_sq - inner_sub = 16 - 15 = 1
-        let result = eg.add(ENode::Op { op: &ops::Sub, children: vec![d_sq, inner_sub] });
+        let result = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![d_sq, inner_sub],
+        });
 
         eg.saturate();
 
@@ -727,7 +874,11 @@ mod tests {
         eprintln!("Extracted tree: {:?}", tree);
         let val = tree.eval(&[0.0; 4]);
 
-        assert!((val - 1.0).abs() < 0.001, "16 - (16 - 1) should be 1.0, got {}", val);
+        assert!(
+            (val - 1.0).abs() < 0.001,
+            "16 - (16 - 1) should be 1.0, got {}",
+            val
+        );
     }
 
     #[test]
@@ -736,16 +887,25 @@ mod tests {
         // x*x - (y - z) where x=4, y=16, z=1
         // = 16 - (16 - 1) = 16 - 15 = 1
         let mut eg = EGraph::new();
-        let x = eg.add(ENode::Var(0));  // Will be 4
-        let y = eg.add(ENode::Var(1));  // Will be 16
-        let z = eg.add(ENode::Var(2));  // Will be 1
+        let x = eg.add(ENode::Var(0)); // Will be 4
+        let y = eg.add(ENode::Var(1)); // Will be 16
+        let z = eg.add(ENode::Var(2)); // Will be 1
 
         // x * x = 16
-        let x_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![x, x] });
+        let x_sq = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![x, x],
+        });
         // y - z = 15
-        let inner_sub = eg.add(ENode::Op { op: &ops::Sub, children: vec![y, z] });
+        let inner_sub = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![y, z],
+        });
         // x_sq - inner_sub = 16 - 15 = 1
-        let result = eg.add(ENode::Op { op: &ops::Sub, children: vec![x_sq, inner_sub] });
+        let result = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![x_sq, inner_sub],
+        });
 
         eg.saturate();
 
@@ -754,7 +914,11 @@ mod tests {
         eprintln!("Extracted tree with vars: {:?}", tree);
         let val = tree.eval(&[4.0, 16.0, 1.0, 0.0]);
 
-        assert!((val - 1.0).abs() < 0.001, "16 - (16 - 1) should be 1.0, got {}", val);
+        assert!(
+            (val - 1.0).abs() < 0.001,
+            "16 - (16 - 1) should be 1.0, got {}",
+            val
+        );
     }
 
     #[test]
@@ -763,16 +927,25 @@ mod tests {
         // x*x - (y - z) where x=4, y=16, z=1
         // = 16 - (16 - 1) = 16 - 15 = 1
         let mut eg = EGraph::new();
-        let x = eg.add(ENode::Var(0));  // Will be 4
-        let y = eg.add(ENode::Var(1));  // Will be 16
-        let z = eg.add(ENode::Var(2));  // Will be 1
+        let x = eg.add(ENode::Var(0)); // Will be 4
+        let y = eg.add(ENode::Var(1)); // Will be 16
+        let z = eg.add(ENode::Var(2)); // Will be 1
 
         // x * x = 16
-        let x_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![x, x] });
+        let x_sq = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![x, x],
+        });
         // y - z = 15
-        let inner_sub = eg.add(ENode::Op { op: &ops::Sub, children: vec![y, z] });
+        let inner_sub = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![y, z],
+        });
         // x_sq - inner_sub = 16 - 15 = 1
-        let result = eg.add(ENode::Op { op: &ops::Sub, children: vec![x_sq, inner_sub] });
+        let result = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![x_sq, inner_sub],
+        });
 
         eg.saturate();
 
@@ -782,7 +955,11 @@ mod tests {
         eprintln!("Extracted tree with FMA costs: {:?}", tree);
         let val = tree.eval(&[4.0, 16.0, 1.0, 0.0]);
 
-        assert!((val - 1.0).abs() < 0.001, "16 - (16 - 1) with FMA should be 1.0, got {}", val);
+        assert!(
+            (val - 1.0).abs() < 0.001,
+            "16 - (16 - 1) with FMA should be 1.0, got {}",
+            val
+        );
     }
 
     #[test]
@@ -796,27 +973,48 @@ mod tests {
         // r_sq = 1
         // discriminant = 16 - (16 - 1) = 16 - 15 = 1
         let mut eg = EGraph::new();
-        let d = eg.add(ENode::Var(0));  // d = 4
-        let a = eg.add(ENode::Var(1));  // a = 0
-        let b = eg.add(ENode::Var(2));  // b = 4
-        let r = eg.add(ENode::Var(3));  // r = 1
+        let d = eg.add(ENode::Var(0)); // d = 4
+        let a = eg.add(ENode::Var(1)); // a = 0
+        let b = eg.add(ENode::Var(2)); // b = 4
+        let r = eg.add(ENode::Var(3)); // r = 1
 
         // d_sq = d * d = 16
-        let d_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![d, d] });
+        let d_sq = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![d, d],
+        });
 
         // c_sq = a*a + b*b = 0 + 16 = 16
-        let a_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![a, a] });
-        let b_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![b, b] });
-        let c_sq = eg.add(ENode::Op { op: &ops::Add, children: vec![a_sq, b_sq] });
+        let a_sq = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![a, a],
+        });
+        let b_sq = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![b, b],
+        });
+        let c_sq = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![a_sq, b_sq],
+        });
 
         // r_sq = r * r = 1
-        let r_sq = eg.add(ENode::Op { op: &ops::Mul, children: vec![r, r] });
+        let r_sq = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![r, r],
+        });
 
         // inner = c_sq - r_sq = 15
-        let inner = eg.add(ENode::Op { op: &ops::Sub, children: vec![c_sq, r_sq] });
+        let inner = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![c_sq, r_sq],
+        });
 
         // result = d_sq - inner = 1
-        let result = eg.add(ENode::Op { op: &ops::Sub, children: vec![d_sq, inner] });
+        let result = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![d_sq, inner],
+        });
 
         eg.saturate();
 
@@ -827,7 +1025,11 @@ mod tests {
         let val = tree.eval(&[4.0, 0.0, 4.0, 1.0]);
         eprintln!("Discriminant value: {}", val);
 
-        assert!((val - 1.0).abs() < 0.001, "discriminant should be 1.0, got {}", val);
+        assert!(
+            (val - 1.0).abs() < 0.001,
+            "discriminant should be 1.0, got {}",
+            val
+        );
     }
 
     #[test]
@@ -867,7 +1069,10 @@ mod tests {
 
         let mut current = x;
         for _ in 0..10 {
-            current = eg.add(ENode::Op { op: &ops::Add, children: vec![current, one] });
+            current = eg.add(ENode::Op {
+                op: &ops::Add,
+                children: vec![current, one],
+            });
         }
 
         eg.saturate();
@@ -876,14 +1081,22 @@ mod tests {
         let default_costs = CostModel::default();
         let tree = eg.extract_tree_with_costs(current, &default_costs);
         let val = tree.eval(&[5.0, 0.0, 0.0, 0.0]);
-        assert!((val - 15.0).abs() < 0.001, "5 + 10*1 should be 15.0, got {}", val);
+        assert!(
+            (val - 15.0).abs() < 0.001,
+            "5 + 10*1 should be 15.0, got {}",
+            val
+        );
 
         // Extract with shallow costs (low threshold)
         // The result should still be mathematically correct
         let shallow_costs = CostModel::with_depth_limit(3, 1000);
         let tree2 = eg.extract_tree_with_costs(current, &shallow_costs);
         let val2 = tree2.eval(&[5.0, 0.0, 0.0, 0.0]);
-        assert!((val2 - 15.0).abs() < 0.001, "shallow extraction should still be 15.0, got {}", val2);
+        assert!(
+            (val2 - 15.0).abs() < 0.001,
+            "shallow extraction should still be 15.0, got {}",
+            val2
+        );
     }
 
     #[test]
@@ -892,7 +1105,10 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let zero = eg.add(ENode::constant(0.0));
-        let sum = eg.add(ENode::Op { op: &ops::Add, children: vec![x, zero] });
+        let sum = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, zero],
+        });
 
         eg.saturate();
 
@@ -910,7 +1126,9 @@ mod tests {
             assert!(
                 (val - expected).abs() < 0.001,
                 "Variant {} should evaluate to {}, got {}",
-                i, expected, val
+                i,
+                expected,
+                val
             );
         }
     }
@@ -921,7 +1139,10 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let one = eg.add(ENode::constant(1.0));
-        let prod = eg.add(ENode::Op { op: &ops::Mul, children: vec![x, one] });
+        let prod = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![x, one],
+        });
 
         eg.saturate();
 

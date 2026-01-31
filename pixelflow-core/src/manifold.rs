@@ -213,12 +213,7 @@ macro_rules! impl_constant_manifold {
     };
 }
 
-impl_constant_manifold!(
-    Field,
-    Discrete,
-    crate::jet::Jet2,
-    crate::jet::Jet3,
-);
+impl_constant_manifold!(Field, Discrete, crate::jet::Jet2, crate::jet::Jet3,);
 
 // ============================================================================
 // Smart Pointer Implementations

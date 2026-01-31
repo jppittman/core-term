@@ -11,11 +11,8 @@
 
 extern crate alloc;
 
+use crate::nnue::{Expr, HalfEPFeature, extract_features};
 use alloc::vec::Vec;
-use crate::nnue::{
-    Expr, HalfEPFeature,
-    extract_features,
-};
 use libm::logf;
 
 // ============================================================================
@@ -35,11 +32,10 @@ pub struct NnueSample {
 
 impl NnueSample {
     /// Create from an expression and measured cost.
+    #[must_use]
     pub fn from_expr(expr: &Expr, cost_ns: f32) -> Self {
         let features = extract_features(expr);
-        let mut indices: Vec<usize> = features.iter()
-            .map(|f| f.to_index())
-            .collect();
+        let mut indices: Vec<usize> = features.iter().map(|f| f.to_index()).collect();
         indices.sort_unstable();
         indices.dedup();
 
@@ -53,6 +49,7 @@ impl NnueSample {
     }
 
     /// Create from pre-computed feature indices.
+    #[must_use]
     pub fn from_features(feature_indices: Vec<usize>, cost_ns: f32) -> Self {
         let mut indices = feature_indices;
         indices.sort_unstable();
@@ -120,6 +117,7 @@ pub struct LinearNnue {
 
 impl LinearNnue {
     /// Create a new linear NNUE with zero weights.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             weights: alloc::vec![0.0; HalfEPFeature::COUNT],
@@ -128,6 +126,7 @@ impl LinearNnue {
     }
 
     /// Predict cost for a sample.
+    #[must_use]
     pub fn predict(&self, sample: &NnueSample) -> f32 {
         let mut sum = self.bias;
         for &idx in &sample.feature_indices {
@@ -163,6 +162,7 @@ pub struct NnueTrainer {
 
 impl NnueTrainer {
     /// Create a new trainer with default config.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             model: LinearNnue::new(),
@@ -173,6 +173,7 @@ impl NnueTrainer {
     }
 
     /// Create a new trainer with custom config.
+    #[must_use]
     pub fn with_config(train_config: TrainConfig) -> Self {
         Self {
             model: LinearNnue::new(),
@@ -196,7 +197,10 @@ impl NnueTrainer {
 
     /// Simple LCG random number generator.
     fn rand_f32(&mut self) -> f32 {
-        self.rng_state = self.rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        self.rng_state = self
+            .rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1);
         (self.rng_state >> 33) as f32 / (1u64 << 31) as f32
     }
 
@@ -230,9 +234,8 @@ impl NnueTrainer {
         let mut history = Vec::with_capacity(self.config.epochs);
 
         // Initialize bias to mean of targets
-        let mean_target: f32 = self.samples.iter()
-            .map(|s| self.get_target(s))
-            .sum::<f32>() / self.samples.len() as f32;
+        let mean_target: f32 = self.samples.iter().map(|s| self.get_target(s)).sum::<f32>()
+            / self.samples.len() as f32;
         self.model.bias = mean_target;
 
         for epoch in 0..self.config.epochs {
@@ -272,8 +275,13 @@ impl NnueTrainer {
 
             if self.config.print_every > 0 && (epoch + 1) % self.config.print_every == 0 {
                 let corr = self.spearman_correlation(&self.samples.clone());
-                eprintln!("Epoch {}/{}: loss = {:.4}, spearman = {:.4}",
-                    epoch + 1, self.config.epochs, epoch_loss, corr);
+                eprintln!(
+                    "Epoch {}/{}: loss = {:.4}, spearman = {:.4}",
+                    epoch + 1,
+                    self.config.epochs,
+                    epoch_loss,
+                    corr
+                );
             }
         }
 
@@ -283,6 +291,7 @@ impl NnueTrainer {
     /// Evaluate the model on a set of samples.
     ///
     /// Returns (predictions, targets) for correlation analysis.
+    #[must_use]
     pub fn evaluate(&self, samples: &[NnueSample]) -> (Vec<f32>, Vec<f32>) {
         let mut predictions = Vec::with_capacity(samples.len());
         let mut targets = Vec::with_capacity(samples.len());
@@ -296,6 +305,7 @@ impl NnueTrainer {
     }
 
     /// Compute Spearman rank correlation between predictions and targets.
+    #[must_use]
     pub fn spearman_correlation(&self, samples: &[NnueSample]) -> f32 {
         if samples.len() < 2 {
             return 0.0;
@@ -341,10 +351,7 @@ impl Default for NnueTrainer {
 /// Compute ranks for a vector of values.
 fn compute_ranks(values: &[f32]) -> Vec<f32> {
     let n = values.len();
-    let mut indexed: Vec<(usize, f32)> = values.iter()
-        .enumerate()
-        .map(|(i, &v)| (i, v))
-        .collect();
+    let mut indexed: Vec<(usize, f32)> = values.iter().enumerate().map(|(i, &v)| (i, v)).collect();
 
     indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal));
 
