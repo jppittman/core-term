@@ -1169,6 +1169,7 @@ impl Shr<u32> for U32x8 {
 impl U32x8 {
     /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
         unsafe {
             let scale = _mm256_set1_ps(255.0);
