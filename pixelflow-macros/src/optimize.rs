@@ -513,7 +513,15 @@ fn optimize_via_ir(expr: &Expr, costs: &CostModel) -> Expr {
 
     // Convert ExprTree → AST using existing infrastructure
     // We reuse the AST generation since it already knows how to emit method calls, etc.
-    let legacy_ctx = EGraphContext::new();
+    let mut legacy_ctx = EGraphContext::new();
+
+    // Sync variable mapping with ast_to_ir (X=0, Y=1, Z=2, W=3)
+    // This ensures that when tree_to_expr sees Var(3), it maps back to "W" instead of "__var3"
+    legacy_ctx.get_or_create_var("X");
+    legacy_ctx.get_or_create_var("Y");
+    legacy_ctx.get_or_create_var("Z");
+    legacy_ctx.get_or_create_var("W");
+
     legacy_ctx.tree_to_expr(&tree)
 }
 
