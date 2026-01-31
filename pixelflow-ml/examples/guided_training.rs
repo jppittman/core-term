@@ -30,7 +30,7 @@ use pixelflow_ml::training::egraph::{
 
 use pixelflow_search::egraph::{BestFirstPlanner, BestFirstConfig, BestFirstContext, CostModel};
 use pixelflow_ml::training::features::{extract_search_features, extract_tree_features};
-use pixelflow_ml::training::backprop::forward_with_state;
+use pixelflow_ml::training::backprop::{forward_with_state, forward_with_state_hybrid};
 use pixelflow_nnue::{Nnue, NnueConfig};
 
 // ============================================================================
@@ -201,11 +201,15 @@ fn main() {
 
     let cost_model = CostModel::load_or_default();
     println!("Cost model: add={}, mul={}, div={}, sqrt={}",
-             cost_model.add, cost_model.mul, cost_model.div, cost_model.sqrt);
+             cost_model.cost_by_name("add"),
+             cost_model.cost_by_name("mul"),
+             cost_model.cost_by_name("div"),
+             cost_model.cost_by_name("sqrt"));
     println!();
 
     // The Guide (being trained) - predicts optimization potential
-    let mut guide = Nnue::new(NnueConfig::default());
+    // Use random initialization - zero weights have zero gradients and never learn!
+    let mut guide = Nnue::new_random(NnueConfig::default(), config.seed + 100);
     let mut expr_gen = ExprGenerator::new(config.seed);
     let mut replay = ReplayBuffer::new(config.replay_buffer_size, config.seed + 1);
 
@@ -363,6 +367,99 @@ fn run_evaluation(workspace: &PathBuf) {
     }
 }
 
+/// Trace through forward pass to diagnose constant predictions.
+fn trace_forward_pass(judge: &Nnue, sample_idx: usize, sample: &pixelflow_ml::training::egraph::JudgeTrainingSample) {
+    let l1_size = judge.config.l1_size;
+    let dense_size = judge.config.dense_size;
+
+    println!("  --- Sample {} trace ---", sample_idx);
+    println!("    Features: {} active", sample.features.len());
+
+    // Sparse L1: accumulate bias + feature contributions
+    let mut l1_pre: Vec<i32> = judge.b1.clone();
+    for feature in &sample.features {
+        let idx = feature.to_index();
+        let offset = idx * l1_size;
+        for i in 0..l1_size {
+            l1_pre[i] += judge.w1[offset + i] as i32;
+        }
+    }
+
+    // Count active L1 neurons (post clipped-ReLU)
+    let l1_post: Vec<f32> = l1_pre.iter()
+        .map(|&x| (x >> 6).clamp(0, 127) as f32)
+        .collect();
+    let l1_active = l1_post.iter().filter(|&&x| x > 0.0).count();
+    let l1_sum: f32 = l1_post.iter().sum();
+    let l1_mean = l1_sum / l1_size as f32;
+
+    println!("    L1 pre-act: min={}, max={}, mean={:.1}",
+             l1_pre.iter().min().unwrap(), l1_pre.iter().max().unwrap(),
+             l1_pre.iter().map(|&x| x as f64).sum::<f64>() / l1_size as f64);
+    println!("    L1 post-act: {}/{} active, mean={:.2}", l1_active, l1_size, l1_mean);
+
+    // Dense branch
+    let mut dense_pre: Vec<i32> = judge.b_dense.clone();
+    for i in 0..pixelflow_nnue::DenseFeatures::COUNT {
+        let val = sample.dense.values[i];
+        if val != 0 {
+            for j in 0..dense_size {
+                dense_pre[j] += val * (judge.w_dense[i * dense_size + j] as i32);
+            }
+        }
+    }
+    let dense_post: Vec<f32> = dense_pre.iter()
+        .map(|&x| (x >> 6).clamp(0, 127) as f32)
+        .collect();
+    let dense_active = dense_post.iter().filter(|&&x| x > 0.0).count();
+    let dense_mean: f32 = dense_post.iter().sum::<f32>() / dense_size as f32;
+
+    println!("    Dense pre-act: min={}, max={}",
+             dense_pre.iter().min().unwrap(), dense_pre.iter().max().unwrap());
+    println!("    Dense post-act: {}/{} active, mean={:.2}", dense_active, dense_size, dense_mean);
+
+    // Final output
+    let (pred, _) = forward_with_state_hybrid(judge, &sample.features, &sample.dense);
+    println!("    Final prediction: {:.4}", pred);
+    println!();
+}
+
+/// Compute baseline: linear sum of op costs (no learning, just heuristics)
+fn compute_linear_baseline(samples: &[pixelflow_ml::training::egraph::JudgeTrainingSample]) -> f64 {
+    use pixelflow_nnue::DenseFeatures;
+
+    // Simple cycle costs per operation (typical modern CPU)
+    const COSTS: [i32; 12] = [
+        4,   // ADD
+        4,   // SUB
+        5,   // MUL
+        15,  // DIV
+        1,   // NEG
+        15,  // SQRT
+        5,   // RSQRT (fast approximation)
+        1,   // ABS
+        4,   // MIN
+        4,   // MAX
+        5,   // FMA
+        6,   // MUL_RSQRT
+    ];
+
+    let mut predictions = Vec::new();
+    let mut actuals = Vec::new();
+
+    for sample in samples {
+        // Sum up operation costs from dense features (indices 0-11 are op counts)
+        let mut cost_sum = 0i32;
+        for (i, &cost) in COSTS.iter().enumerate() {
+            cost_sum += sample.dense.values[i] * cost;
+        }
+        predictions.push(cost_sum as f64);
+        actuals.push(sample.cost_ns);
+    }
+
+    spearman_correlation(&actuals, &predictions)
+}
+
 /// Evaluate The Judge on benchmark data.
 fn evaluate_judge(judge: &Nnue, workspace: &PathBuf) {
     println!("=== The Judge: Cost Prediction Quality ===");
@@ -375,52 +472,105 @@ fn evaluate_judge(judge: &Nnue, workspace: &PathBuf) {
         return;
     }
 
-    let train_samples = prepare_judge_samples(&samples);
-    println!("  Samples: {}", train_samples.len());
+    let all_samples = prepare_judge_samples(&samples);
 
-    // Get predictions and actuals
-    let mut actuals = Vec::new();
-    let mut predictions = Vec::new();
-
-    for sample in &train_samples {
-        let (pred, _) = forward_with_state(judge, &sample.features);
-        predictions.push(pred as f64);
-        actuals.push(sample.cost_ns);
+    // Family-aware split: variants of same expression stay together
+    // Uses same logic as training to ensure consistency
+    use std::collections::HashMap;
+    let mut families: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, s) in samples.iter().enumerate() {
+        let family = s.name.split('v').next().unwrap_or(&s.name).to_string();
+        families.entry(family).or_default().push(i);
     }
 
-    // Normalize predictions to same scale as actuals (median scaling)
-    let mut sorted_actuals = actuals.clone();
-    sorted_actuals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median_actual = sorted_actuals.get(sorted_actuals.len() / 2).copied().unwrap_or(1.0);
+    // Deterministic shuffle with same seed as training
+    let mut family_keys: Vec<_> = families.keys().cloned().collect();
+    family_keys.sort(); // Deterministic order first
+    let mut rng_state = 42u64 + 999; // Same seed as training
+    for i in (1..family_keys.len()).rev() {
+        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let j = (rng_state as usize) % (i + 1);
+        family_keys.swap(i, j);
+    }
 
-    let mut sorted_preds = predictions.clone();
-    sorted_preds.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median_pred = sorted_preds.get(sorted_preds.len() / 2).copied().unwrap_or(1.0);
+    let split_idx = (family_keys.len() * 80) / 100;
+    let train_samples: Vec<_> = family_keys[..split_idx].iter()
+        .flat_map(|f| families.get(f).unwrap().iter())
+        .filter_map(|&i| all_samples.get(i).cloned())
+        .collect();
+    let test_samples: Vec<_> = family_keys[split_idx..].iter()
+        .flat_map(|f| families.get(f).unwrap().iter())
+        .filter_map(|&i| all_samples.get(i).cloned())
+        .collect();
 
-    let scale = if median_pred != 0.0 { median_actual / median_pred } else { 1.0 };
-    let scaled_predictions: Vec<f64> = predictions.iter().map(|p| p * scale).collect();
+    println!("  {} families: {} train ({} samples), {} test ({} samples)",
+             families.len(), split_idx, train_samples.len(),
+             family_keys.len() - split_idx, test_samples.len());
 
-    // Compute metrics
-    let r2 = r_squared(&actuals, &scaled_predictions);
-    let spearman = spearman_correlation(&actuals, &predictions);
-    let mae_val = mae(&actuals, &scaled_predictions);
-    let mape_val = mape(&actuals, &scaled_predictions);
+    // Compute linear baseline on BOTH sets
+    let baseline_train = compute_linear_baseline(&train_samples);
+    let baseline_test = compute_linear_baseline(&test_samples);
+    println!("  Linear baseline: train ρ={:.4}, test ρ={:.4}", baseline_train, baseline_test);
 
+    // Skip trace for now - focus on metrics
     println!();
-    println!("  Metrics:");
-    println!("    R²           = {:.4}  (1.0 = perfect fit)", r2);
-    println!("    Spearman ρ   = {:.4}  (1.0 = perfect ranking)", spearman);
-    println!("    MAE          = {:.2} ns", mae_val);
-    println!("    MAPE         = {:.1}%", mape_val);
-    println!();
 
-    // Interpretation
-    if spearman > 0.8 {
-        println!("  [GOOD] Strong rank correlation - Judge orders expressions correctly");
-    } else if spearman > 0.5 {
-        println!("  [OK] Moderate correlation - Judge has learned some cost patterns");
+    // Helper to compute metrics on a sample set
+    let compute_metrics = |samples: &[pixelflow_ml::training::egraph::JudgeTrainingSample], label: &str| {
+        let mut actuals = Vec::new();
+        let mut predictions = Vec::new();
+
+        for sample in samples {
+            let (pred, _) = forward_with_state_hybrid(judge, &sample.features, &sample.dense);
+            predictions.push(pred as f64);
+            actuals.push(sample.cost_ns);
+        }
+
+        let spearman = spearman_correlation(&actuals, &predictions);
+        println!("  {} Spearman ρ = {:.4}", label, spearman);
+        (spearman, actuals, predictions)
+    };
+
+    // CRITICAL: Evaluate on BOTH train and test to detect overfitting
+    let (train_spearman, train_actuals, train_preds) = compute_metrics(&train_samples, "TRAIN");
+    let (test_spearman, test_actuals, test_preds) = compute_metrics(&test_samples, "TEST ");
+
+    // Overfitting detection
+    let overfit_gap = train_spearman - test_spearman;
+    println!();
+    if overfit_gap > 0.1 {
+        println!("  [WARNING] Overfitting detected! Train-Test gap = {:.4}", overfit_gap);
     } else {
-        println!("  [WEAK] Low correlation - Judge needs more training data");
+        println!("  [OK] Train-Test gap = {:.4} (no significant overfitting)", overfit_gap);
+    }
+
+    // Error analysis: find worst predictions on test set
+    println!();
+    println!("  === Error Analysis (TEST set) ===");
+    let mut errors: Vec<(usize, f64, f64, f64)> = test_actuals.iter()
+        .zip(test_preds.iter())
+        .enumerate()
+        .map(|(i, (&actual, &pred))| {
+            let error = (pred - actual).abs() / actual.max(0.01);
+            (i, actual, pred, error)
+        })
+        .collect();
+    errors.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap());
+
+    println!("  Top 5 worst predictions (by relative error):");
+    for (i, actual, pred, error) in errors.iter().take(5) {
+        println!("    Sample {}: actual={:.3}ns pred={:.3} error={:.1}%",
+                 split_idx + i, actual, pred, error * 100.0);
+    }
+    println!();
+
+    // Interpretation (based on TEST performance, not train)
+    if test_spearman > 0.8 {
+        println!("  [GOOD] Strong TEST rank correlation - Judge generalizes well");
+    } else if test_spearman > 0.5 {
+        println!("  [OK] Moderate TEST correlation - more data may help");
+    } else {
+        println!("  [WEAK] Low TEST correlation - likely overfitting or need more data");
     }
 }
 

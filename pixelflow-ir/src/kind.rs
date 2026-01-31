@@ -68,6 +68,12 @@ impl OpKind {
     /// Total number of operations.
     pub const COUNT: usize = 42;
 
+    /// Convert to array index.
+    #[inline]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
     /// Convert index to OpKind.
     pub fn from_index(idx: usize) -> Option<Self> {
         if idx >= Self::COUNT {

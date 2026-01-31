@@ -10,9 +10,10 @@
 //! - [`rewrite`]: Rewrite rule infrastructure
 //! - [`algebra`]: Type-based algebraic relationships (InversePair)
 //! - [`rules`]: Concrete rewrite rules
-//! - [`extract`]: Expression tree for extracted results
+//! - [`extract`]: Expression tree extraction, including DAG-aware extraction
 //! - [`graph`]: The EGraph itself
 //! - [`deps`]: Dependency analysis for uniform hoisting
+//! - [`codegen`]: Code generation from extracted expressions (tree & DAG)
 
 mod algebra;
 pub mod best_first;
@@ -30,9 +31,9 @@ mod rules;
 pub mod saturate;
 
 // Re-export public API
-pub use cost::CostModel;
+pub use cost::{CostFunction, CostModel};
 pub use deps::{Deps, DepsAnalysis};
-pub use extract::{ExprTree, Leaf};
+pub use extract::{ExprTree, ExtractedDAG, Leaf, extract_dag};
 pub use graph::{EGraph, RewriteTarget};
 pub use guided::{GuidedAction, GuidedResult, GuidedState, GuidedStats, ActionRecord, GuidedConfig, GuidedMcts, guided_optimize};
 pub use node::{EClassId, ENode};

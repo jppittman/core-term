@@ -60,88 +60,15 @@ use alloc::boxed::Box;
 use libm::{sqrtf, fabsf};
 
 // ============================================================================
-// Operation Types (mirrors ENode from egraph.rs)
+// Operation Types - use pixelflow-ir's OpKind as the source of truth
 // ============================================================================
 
-/// Operation type enumeration for feature encoding.
-///
-/// This mirrors the `ENode` variants but as a compact enum for NNUE features.
-/// Each operation maps to a unique index for the feature vector.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum OpType {
-    /// Variable reference
-    Var = 0,
-    /// Constant value
-    Const = 1,
-    /// Addition
-    Add = 2,
-    /// Subtraction
-    Sub = 3,
-    /// Multiplication
-    Mul = 4,
-    /// Division
-    Div = 5,
-    /// Negation
-    Neg = 6,
-    /// Square root
-    Sqrt = 7,
-    /// Reciprocal square root
-    Rsqrt = 8,
-    /// Absolute value
-    Abs = 9,
-    /// Minimum
-    Min = 10,
-    /// Maximum
-    Max = 11,
-    /// Fused multiply-add
-    MulAdd = 12,
-    /// Fused multiply-rsqrt
-    MulRsqrt = 13,
-}
+/// Re-export OpKind from pixelflow-ir as our canonical operation type.
+/// This ensures consistent operation indices across all pixelflow crates.
+pub use pixelflow_ir::OpKind;
 
-impl OpType {
-    /// Number of distinct operation types.
-    pub const COUNT: usize = 14;
-
-    /// Convert to index for feature encoding.
-    #[inline]
-    pub fn index(self) -> usize {
-        self as usize
-    }
-
-    /// Create from index.
-    pub fn from_index(idx: usize) -> Option<Self> {
-        match idx {
-            0 => Some(OpType::Var),
-            1 => Some(OpType::Const),
-            2 => Some(OpType::Add),
-            3 => Some(OpType::Sub),
-            4 => Some(OpType::Mul),
-            5 => Some(OpType::Div),
-            6 => Some(OpType::Neg),
-            7 => Some(OpType::Sqrt),
-            8 => Some(OpType::Rsqrt),
-            9 => Some(OpType::Abs),
-            10 => Some(OpType::Min),
-            11 => Some(OpType::Max),
-            12 => Some(OpType::MulAdd),
-            13 => Some(OpType::MulRsqrt),
-            _ => None,
-        }
-    }
-
-    /// Get the arity (number of children) for this operation.
-    pub fn arity(self) -> usize {
-        match self {
-            OpType::Var | OpType::Const => 0,
-            OpType::Neg | OpType::Sqrt | OpType::Rsqrt | OpType::Abs => 1,
-            OpType::Add | OpType::Sub | OpType::Mul | OpType::Div
-            | OpType::Min | OpType::Max | OpType::MulRsqrt => 2,
-            OpType::MulAdd => 3,
-        }
-    }
-}
+/// Backwards compatibility alias - prefer OpKind in new code.
+pub type OpType = OpKind;
 
 // ============================================================================
 // Expression AST (for training data generation)

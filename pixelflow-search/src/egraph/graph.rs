@@ -576,6 +576,20 @@ impl EGraph {
         super::extract::extract(self, root, costs)
     }
 
+    /// Extract a DAG with sharing information from an e-class.
+    ///
+    /// Unlike `extract_tree_with_costs`, this tracks which e-classes are used
+    /// multiple times, enabling codegen to emit let-bindings for shared subexprs.
+    ///
+    /// # Example
+    ///
+    /// For `sin(X) * sin(X) + sin(X)`:
+    /// - Tree extraction would compute sin(X) three times
+    /// - DAG extraction marks sin(X) as shared, enabling: `let __0 = X.sin(); __0 * __0 + __0`
+    pub fn extract_dag_with_costs(&self, root: EClassId, costs: &CostModel) -> super::extract::ExtractedDAG {
+        super::extract::extract_dag(self, root, costs)
+    }
+
     /// Extract up to N different equivalent expressions from an e-class.
     ///
     /// This returns different structural representations of the same value,

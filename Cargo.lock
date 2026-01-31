@@ -881,6 +881,7 @@ dependencies = [
  "criterion",
  "libm",
  "pixelflow-core",
+ "pixelflow-ir",
  "pixelflow-macros",
  "pixelflow-nnue",
  "pixelflow-search",
@@ -894,6 +895,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "libm",
+ "pixelflow-ir",
 ]
 
 [[package]]
@@ -923,6 +925,7 @@ name = "pixelflow-search"
 version = "0.1.0"
 dependencies = [
  "libm",
+ "pixelflow-ir",
  "pixelflow-nnue",
  "rand 0.8.5",
 ]

@@ -8,6 +8,7 @@
 //! - [`features`]: Feature extraction from ExprTree (HalfEP, dense ILP features)
 //! - [`backprop`]: Forward/backward passes for NNUE training
 //! - [`egraph`]: E-graph specific training (The Judge, The Guide)
+//! - [`factored`]: **NEW** O(ops) factored embedding training
 //!
 //! ## Feature Flags
 //!
@@ -27,3 +28,7 @@ pub mod backprop;
 
 #[cfg(feature = "egraph-training")]
 pub mod egraph;
+
+// Factored embedding training (requires pixelflow-nnue)
+#[cfg(feature = "egraph-training")]
+pub mod factored;

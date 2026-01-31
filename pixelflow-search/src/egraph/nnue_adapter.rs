@@ -7,43 +7,48 @@ use crate::egraph::{EClassId, EGraph, ENode, ops};
 use crate::egraph::extract::{ExprTree, Leaf};
 use alloc::boxed::Box;
 use alloc::vec;
-use pixelflow_nnue::{Expr, OpType};
+use pixelflow_nnue::{Expr, OpKind};
 
-/// Convert e-graph `Op` to NNUE `OpType` by name.
-pub fn op_to_nnue(op: &dyn crate::egraph::ops::Op) -> OpType {
+/// Convert e-graph `Op` to NNUE `OpKind` by name.
+pub fn op_to_nnue(op: &dyn crate::egraph::ops::Op) -> OpKind {
     match op.name() {
-        "add" => OpType::Add,
-        "sub" => OpType::Sub,
-        "mul" => OpType::Mul,
-        "div" => OpType::Div,
-        "neg" => OpType::Neg,
-        "recip" => OpType::Div, // Recip = 1/x, map to Div
-        "min" => OpType::Min,
-        "max" => OpType::Max,
-        "sqrt" => OpType::Sqrt,
-        "rsqrt" => OpType::Rsqrt,
-        "abs" => OpType::Abs,
-        "mul_add" => OpType::MulAdd,
-        _ => OpType::Add, // Fallback for unsupported ops
+        "add" => OpKind::Add,
+        "sub" => OpKind::Sub,
+        "mul" => OpKind::Mul,
+        "div" => OpKind::Div,
+        "neg" => OpKind::Neg,
+        "recip" => OpKind::Div, // Recip = 1/x, map to Div
+        "min" => OpKind::Min,
+        "max" => OpKind::Max,
+        "sqrt" => OpKind::Sqrt,
+        "rsqrt" => OpKind::Rsqrt,
+        "abs" => OpKind::Abs,
+        "mul_add" => OpKind::MulAdd,
+        _ => OpKind::Add, // Fallback for unsupported ops
     }
 }
 
-/// Convert NNUE `OpType` to e-graph `Op` reference (where possible).
-pub fn nnue_to_op(op_type: OpType) -> Option<&'static dyn crate::egraph::ops::Op> {
+/// Convert NNUE `OpKind` to e-graph `Op` reference (where possible).
+pub fn nnue_to_op(op_type: OpKind) -> Option<&'static dyn crate::egraph::ops::Op> {
     match op_type {
-        OpType::Add => Some(&ops::Add),
-        OpType::Sub => Some(&ops::Sub),
-        OpType::Mul => Some(&ops::Mul),
-        OpType::Div => Some(&ops::Div),
-        OpType::Neg => Some(&ops::Neg),
-        OpType::Min => Some(&ops::Min),
-        OpType::Max => Some(&ops::Max),
-        OpType::Sqrt => Some(&ops::Sqrt),
-        OpType::Rsqrt => Some(&ops::Rsqrt),
-        OpType::Abs => Some(&ops::Abs),
-        OpType::MulAdd => Some(&ops::MulAdd),
-        OpType::MulRsqrt => None, // No direct equivalent in e-graph
-        OpType::Var | OpType::Const => None, // Not operations
+        OpKind::Add => Some(&ops::Add),
+        OpKind::Sub => Some(&ops::Sub),
+        OpKind::Mul => Some(&ops::Mul),
+        OpKind::Div => Some(&ops::Div),
+        OpKind::Neg => Some(&ops::Neg),
+        OpKind::Min => Some(&ops::Min),
+        OpKind::Max => Some(&ops::Max),
+        OpKind::Sqrt => Some(&ops::Sqrt),
+        OpKind::Rsqrt => Some(&ops::Rsqrt),
+        OpKind::Abs => Some(&ops::Abs),
+        OpKind::MulAdd => Some(&ops::MulAdd),
+        // Extended operations not yet in e-graph
+        OpKind::MulRsqrt | OpKind::Var | OpKind::Const |
+        OpKind::Recip | OpKind::Floor | OpKind::Ceil | OpKind::Round | OpKind::Fract |
+        OpKind::Sin | OpKind::Cos | OpKind::Tan | OpKind::Asin | OpKind::Acos | OpKind::Atan | OpKind::Atan2 |
+        OpKind::Exp | OpKind::Exp2 | OpKind::Ln | OpKind::Log2 | OpKind::Log10 | OpKind::Pow | OpKind::Hypot |
+        OpKind::Lt | OpKind::Le | OpKind::Gt | OpKind::Ge | OpKind::Eq | OpKind::Ne |
+        OpKind::Select | OpKind::Clamp | OpKind::Tuple => None,
     }
 }
 
@@ -115,13 +120,13 @@ pub fn expr_to_egraph(expr: &Expr, egraph: &mut EGraph) -> EClassId {
             let a_class = expr_to_egraph(a, egraph);
             let b_class = expr_to_egraph(b, egraph);
             let op_ref: &'static dyn crate::egraph::ops::Op = match op {
-                OpType::Add => &ops::Add,
-                OpType::Sub => &ops::Sub,
-                OpType::Mul => &ops::Mul,
-                OpType::Div => &ops::Div,
-                OpType::Min => &ops::Min,
-                OpType::Max => &ops::Max,
-                OpType::MulRsqrt => {
+                OpKind::Add => &ops::Add,
+                OpKind::Sub => &ops::Sub,
+                OpKind::Mul => &ops::Mul,
+                OpKind::Div => &ops::Div,
+                OpKind::Min => &ops::Min,
+                OpKind::Max => &ops::Max,
+                OpKind::MulRsqrt => {
                     // Decompose: mul_rsqrt(a, b) = a * rsqrt(b)
                     let rsqrt_b = egraph.add(ENode::Op {
                         op: &ops::Rsqrt,
@@ -142,10 +147,10 @@ pub fn expr_to_egraph(expr: &Expr, egraph: &mut EGraph) -> EClassId {
         Expr::Unary(op, a) => {
             let a_class = expr_to_egraph(a, egraph);
             let op_ref: &'static dyn crate::egraph::ops::Op = match op {
-                OpType::Neg => &ops::Neg,
-                OpType::Sqrt => &ops::Sqrt,
-                OpType::Rsqrt => &ops::Rsqrt,
-                OpType::Abs => &ops::Abs,
+                OpKind::Neg => &ops::Neg,
+                OpKind::Sqrt => &ops::Sqrt,
+                OpKind::Rsqrt => &ops::Rsqrt,
+                OpKind::Abs => &ops::Abs,
                 _ => panic!("Unsupported unary op type: {:?}", op),
             };
             egraph.add(ENode::Op {
@@ -158,13 +163,30 @@ pub fn expr_to_egraph(expr: &Expr, egraph: &mut EGraph) -> EClassId {
             let b_class = expr_to_egraph(b, egraph);
             let c_class = expr_to_egraph(c, egraph);
             let op_ref: &'static dyn crate::egraph::ops::Op = match op {
-                OpType::MulAdd => &ops::MulAdd,
+                OpKind::MulAdd => &ops::MulAdd,
                 _ => panic!("Unsupported ternary op type: {:?}", op),
             };
             egraph.add(ENode::Op {
                 op: op_ref,
                 children: vec![a_class, b_class, c_class],
             })
+        }
+        Expr::Nary(op, children) => {
+            let child_classes: Vec<_> = children.iter()
+                .map(|c| expr_to_egraph(c, egraph))
+                .collect();
+            // Currently only Tuple is supported as Nary
+            match op {
+                OpKind::Tuple => {
+                    // Tuple has no e-graph representation - flatten to first element or panic
+                    if child_classes.is_empty() {
+                        panic!("expr_to_egraph: empty Tuple not supported");
+                    }
+                    // For now, just return the first child (tuples aren't fully supported in e-graph yet)
+                    child_classes[0]
+                }
+                _ => panic!("Unsupported n-ary op type: {:?}", op),
+            }
         }
     }
 }
@@ -183,6 +205,10 @@ mod tests {
             }
             (Expr::Ternary(op1, a1, b1, c1), Expr::Ternary(op2, a2, b2, c2)) => {
                 op1 == op2 && expr_equals(a1, a2) && expr_equals(b1, b2) && expr_equals(c1, c2)
+            }
+            (Expr::Nary(op1, c1), Expr::Nary(op2, c2)) => {
+                op1 == op2 && c1.len() == c2.len() &&
+                c1.iter().zip(c2.iter()).all(|(x, y)| expr_equals(x, y))
             }
             _ => false,
         }
@@ -225,7 +251,7 @@ mod tests {
     #[test]
     fn test_roundtrip_simple() {
         let expr = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Var(0)),
             Box::new(Expr::Var(1)),
         );
@@ -242,9 +268,9 @@ mod tests {
     fn test_roundtrip_nested() {
         // (x * 2.0) + y
         let expr = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Binary(
-                OpType::Mul,
+                OpKind::Mul,
                 Box::new(Expr::Var(0)),
                 Box::new(Expr::Const(2.0)),
             )),

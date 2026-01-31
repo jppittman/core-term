@@ -754,9 +754,15 @@ fn print_cache_stats(cache: &BenchmarkCache, costs: &CostModel) {
     }
 
     // Show cost model info
+    let cost_map = costs.to_map();
     println!("\nCost model weights:");
-    println!("  add={}, mul={}, div={}", costs.add, costs.mul, costs.div);
-    println!("  mul_add={}, sqrt={}", costs.mul_add, costs.sqrt);
+    println!("  add={}, mul={}, div={}",
+        cost_map.get("add").unwrap_or(&0),
+        cost_map.get("mul").unwrap_or(&0),
+        cost_map.get("div").unwrap_or(&0));
+    println!("  mul_add={}, sqrt={}",
+        cost_map.get("mul_add").unwrap_or(&0),
+        cost_map.get("sqrt").unwrap_or(&0));
 }
 
 /// Find workspace root by looking for Cargo.toml with [workspace]

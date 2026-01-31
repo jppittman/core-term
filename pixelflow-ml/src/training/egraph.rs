@@ -16,7 +16,7 @@ use pixelflow_search::egraph::{
     BestFirstPlanner, BestFirstConfig, BestFirstContext, CostModel,
 };
 use pixelflow_nnue::{
-    Nnue, NnueConfig, HalfEPFeature, OpType, DenseFeatures,
+    Nnue, NnueConfig, HalfEPFeature, OpKind, DenseFeatures,
 };
 
 use super::features::{extract_tree_features, op_counts_to_dense};
@@ -94,14 +94,28 @@ impl ExprGenerator {
                 ExprTree::Leaf(Leaf::Const(constants[self.rng.gen_range(0..constants.len())]))
             }
         } else {
-            let op_type = self.rng.gen_range(0..6);
+            // Generate ops that ExprTree supports (10 ops available)
+            // Missing from ExprTree: rsqrt helper, mul_rsqrt
+            // These can still appear via e-graph rewriting
+            let op_type = self.rng.gen_range(0..10);
             match op_type {
+                // Binary ops (6)
                 0 => ExprTree::add(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
                 1 => ExprTree::sub(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
                 2 => ExprTree::mul(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
-                3 => ExprTree::neg(self.generate_inner(depth + 1)),
-                4 => ExprTree::sqrt(self.generate_inner(depth + 1)),
-                _ => ExprTree::abs(self.generate_inner(depth + 1)),
+                3 => ExprTree::div(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
+                4 => ExprTree::min(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
+                5 => ExprTree::max(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
+                // Unary ops (3)
+                6 => ExprTree::neg(self.generate_inner(depth + 1)),
+                7 => ExprTree::sqrt(self.generate_inner(depth + 1)),
+                8 => ExprTree::abs(self.generate_inner(depth + 1)),
+                // Fused op (1)
+                _ => ExprTree::mul_add(
+                    self.generate_inner(depth + 1),
+                    self.generate_inner(depth + 1),
+                    self.generate_inner(depth + 1),
+                ),
             }
         }
     }
@@ -115,14 +129,14 @@ impl ExprGenerator {
 #[derive(Debug, Clone, Deserialize)]
 pub struct BenchmarkSample {
     pub name: String,
-    #[allow(dead_code)]
     pub expression: String,
     pub cost_ns: Option<f64>,
-    #[allow(dead_code)]
     pub egraph_cost: Option<usize>,
     pub node_count: Option<usize>,
-    #[allow(dead_code)]
     pub depth: Option<usize>,
+    /// Precomputed HalfEP feature indices (packed as u32)
+    #[serde(default)]
+    pub features: Vec<u32>,
     #[serde(default)]
     pub op_counts: HashMap<String, usize>,
 }
@@ -175,36 +189,25 @@ pub fn prepare_judge_samples(samples: &[BenchmarkSample]) -> Vec<JudgeTrainingSa
     samples.iter()
         .filter_map(|s| {
             let cost_ns = s.cost_ns?;
-            let node_count = s.node_count.unwrap_or(10);
 
-            let mut features = Vec::new();
-            for (op_name, &count) in &s.op_counts {
-                let op_type = match op_name.as_str() {
-                    "add" => OpType::Add,
-                    "sub" => OpType::Sub,
-                    "mul" => OpType::Mul,
-                    "div" => OpType::Div,
-                    "neg" => OpType::Neg,
-                    "sqrt" => OpType::Sqrt,
-                    "rsqrt" => OpType::Rsqrt,
-                    "abs" => OpType::Abs,
-                    "min" => OpType::Min,
-                    "max" => OpType::Max,
-                    "mul_add" => OpType::MulAdd,
-                    "recip" => OpType::Div,
-                    _ => OpType::Add,
-                };
-                for _ in 0..count {
-                    features.push(HalfEPFeature {
-                        perspective_op: op_type.index() as u8,
-                        descendant_op: op_type.index() as u8,
-                        depth: 0,
-                        path: 0,
-                    });
-                }
-            }
+            // Use precomputed features - they have proper tree structure
+            assert!(
+                !s.features.is_empty(),
+                "Sample '{}' missing precomputed features - regenerate with collect_benchmark_costs",
+                s.name
+            );
 
-            let dense = op_counts_to_dense(&s.op_counts, node_count);
+            let features: Vec<HalfEPFeature> = s.features.iter()
+                .map(|&idx| HalfEPFeature::from_index(idx as usize))
+                .collect();
+
+            // Build dense features from available metadata
+            let mut dense = DenseFeatures::default();
+            dense.values[DenseFeatures::NODE_COUNT] = s.node_count.unwrap_or(0) as i32;
+            dense.values[DenseFeatures::DEPTH] = s.depth.unwrap_or(0) as i32;
+            // Use egraph_cost as a rough proxy for critical_path
+            dense.values[DenseFeatures::CRITICAL_PATH] = s.egraph_cost.unwrap_or(0) as i32;
+
             Some(JudgeTrainingSample { features, dense, cost_ns })
         })
         .collect()
@@ -247,8 +250,57 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
 
     println!("Loaded {} samples with benchmark data", samples.len());
 
-    let train_samples = prepare_judge_samples(&samples);
-    println!("Prepared {} training samples", train_samples.len());
+    let all_samples = prepare_judge_samples(&samples);
+
+    // Group samples by expression family (eg0000, eg0001, etc.)
+    // Variants of the same expression MUST be in the same split to avoid leakage
+    let mut families: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    for (i, sample) in samples.iter().enumerate() {
+        // Extract family from name like "eg0000v0" -> "eg0000"
+        let family = sample.name.chars()
+            .take_while(|c| !c.is_ascii_digit() || sample.name.matches(|x: char| x.is_ascii_digit()).count() > 4)
+            .take_while(|&c| c != 'v')
+            .collect::<String>();
+        let family = if family.is_empty() { sample.name.clone() } else { family };
+        families.entry(family).or_default().push(i);
+    }
+
+    // Shuffle families, then split 80/20
+    let mut family_keys: Vec<_> = families.keys().cloned().collect();
+    let mut rng = Rng::new(config.seed + 999);
+    for i in (1..family_keys.len()).rev() {
+        let j = rng.gen_range(0..i + 1);
+        family_keys.swap(i, j);
+    }
+
+    let split_idx = (family_keys.len() * 80) / 100;
+    let train_families: Vec<_> = family_keys[..split_idx].to_vec();
+    let test_families: Vec<_> = family_keys[split_idx..].to_vec();
+
+    // Collect samples by family assignment
+    let mut train_indices: Vec<usize> = train_families.iter()
+        .flat_map(|f| families.get(f).unwrap().iter().copied())
+        .collect();
+    let mut test_indices: Vec<usize> = test_families.iter()
+        .flat_map(|f| families.get(f).unwrap().iter().copied())
+        .collect();
+
+    // Shuffle within each set
+    for i in (1..train_indices.len()).rev() {
+        let j = rng.gen_range(0..i + 1);
+        train_indices.swap(i, j);
+    }
+
+    let train_samples: Vec<_> = train_indices.iter()
+        .filter_map(|&i| all_samples.get(i).cloned())
+        .collect();
+    let test_samples: Vec<_> = test_indices.iter()
+        .filter_map(|&i| all_samples.get(i).cloned())
+        .collect();
+
+    println!("Split {} families: {} train ({} samples) + {} test ({} samples)",
+             families.len(), train_families.len(), train_samples.len(),
+             test_families.len(), test_samples.len());
 
     let mut costs: Vec<f64> = train_samples.iter().map(|s| s.cost_ns).collect();
     costs.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -256,8 +308,28 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
     println!("Cost scale (median): {:.2} ns", cost_scale);
     println!();
 
-    let mut nnue = Nnue::new(NnueConfig::default());
+    // Use random initialization - critical for gradient flow!
+    let mut nnue = Nnue::new_random(NnueConfig::default(), config.seed);
     let mut rng = Rng::new(config.seed);
+
+    // Debug: check initial state BEFORE any training
+    {
+        let b1_mean: f64 = nnue.b1.iter().map(|&b| b as f64).sum::<f64>() / nnue.b1.len() as f64;
+        let b1_min = nnue.b1.iter().min().unwrap();
+        let b1_max = nnue.b1.iter().max().unwrap();
+
+        // Check initial prediction on first sample
+        let (pred, state) = super::backprop::forward_with_state_hybrid(
+            &nnue, &train_samples[0].features, &train_samples[0].dense);
+        let target = (train_samples[0].cost_ns / cost_scale) as f32;
+        let l1_active = state.l1_post.iter().filter(|&&x| x > 0.0).count();
+
+        println!("BEFORE TRAINING:");
+        println!("  B1: mean={:.0} min={} max={}", b1_mean, b1_min, b1_max);
+        println!("  First sample: pred={:.4} target={:.4} error={:.4}", pred, target, pred - target);
+        println!("  L1 active neurons: {}/256", l1_active);
+        println!();
+    }
 
     let start = Instant::now();
 
@@ -279,7 +351,14 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
 
         let avg_loss = epoch_loss / batches.max(1) as f32;
 
-        if epoch % 10 == 0 || epoch == config.epochs - 1 {
+        // Debug: track neuron health
+        if epoch == 0 || epoch == config.epochs - 1 {
+            let b1_mean: f64 = nnue.b1.iter().map(|&b| b as f64).sum::<f64>() / nnue.b1.len() as f64;
+            let b1_min = nnue.b1.iter().min().unwrap();
+            let b1_max = nnue.b1.iter().max().unwrap();
+            println!("Epoch {:3}: loss = {:.6}  B1 mean={:.0} min={} max={}",
+                     epoch, avg_loss, b1_mean, b1_min, b1_max);
+        } else if epoch % 10 == 0 {
             println!("Epoch {:3}: loss = {:.6}", epoch, avg_loss);
         }
     }

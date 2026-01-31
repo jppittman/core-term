@@ -30,12 +30,13 @@
 //! This uses fast rsqrt (~3 cycles) instead of sqrt (~12) + div (~12).
 
 use super::{
-    Abs, Add, AddMasked, Cos, Div, Floor, Max, Min, Mul, MulAdd, MulRecip, MulRsqrt, Rsqrt, Sin,
-    Sqrt, Sub,
+    Abs, Add, AddMasked, Cos, Div, Floor, Max, Min, Mul, MulAdd, MulRecip, MulRsqrt, Neg, Rsqrt,
+    Sin, Sqrt, Sub,
 };
 use crate::Field;
 use crate::combinators::Select;
 use crate::combinators::binding::Var;
+use crate::combinators::context::CtxVar;
 use crate::variables::{W, X, Y, Z};
 
 // ============================================================================
@@ -93,12 +94,20 @@ macro_rules! impl_binary_ops_for {
         impl_base_div!($ty, Rsqrt<DM>);
         impl_base_div!($ty, Sin<DM>);
         impl_base_div!($ty, Cos<DM>);
+        impl_base_div!($ty, Neg<DM>);
         impl_base_div!($ty, Select<DC, DT, DF>);
         impl_base_div!($ty, MulAdd<DA, DB, DC2>);
         impl_base_div!($ty, MulRecip<DM2>);
         impl_base_div!($ty, MulRsqrt<DL2, DR2>);
         impl_base_div!($ty, AddMasked<DAcc, DVal, DMask>);
         impl_base_div!($ty, Var<DN>);
+
+        // CtxVar (kernel! macro constants) - special case due to const generic
+        impl<__A, const __I: usize> core::ops::Div<CtxVar<__A, __I>> for $ty {
+            type Output = Div<$ty, CtxVar<__A, __I>>;
+            #[inline(always)]
+            fn div(self, rhs: CtxVar<__A, __I>) -> Self::Output { Div(self, rhs) }
+        }
 
         // Concrete divisor types
         impl_base_div_concrete!($ty, X);
@@ -254,6 +263,5 @@ impl_scalar_lhs_ops!(MulRsqrt<L, R>);
 impl_scalar_lhs_ops!(Select<C, T, F>);
 
 // Binding combinators (for kernel! macro)
-use crate::combinators::context::CtxVar;
 impl_scalar_lhs_ops!(Var<N>);
 impl_scalar_lhs_ops!(CtxVar);

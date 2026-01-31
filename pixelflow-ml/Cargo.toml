@@ -25,6 +25,7 @@ egraph-training = ["std", "dep:pixelflow-search", "dep:pixelflow-nnue", "dep:ser
 pixelflow-core = { path = "../pixelflow-core", optional = true }
 pixelflow-search = { path = "../pixelflow-search", optional = true }
 pixelflow-nnue = { path = "../pixelflow-nnue", optional = true }
+pixelflow-ir = { path = "../pixelflow-ir", default-features = false }
 libm = "0.2.15"
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
@@ -68,4 +69,12 @@ required-features = ["egraph-training"]
 
 [[example]]
 name = "gen_egraph_variants"
+required-features = ["egraph-training"]
+
+[[example]]
+name = "train_factored"
+required-features = ["egraph-training"]
+
+[[example]]
+name = "learn_hce"
 required-features = ["egraph-training"]

@@ -17,6 +17,7 @@ training = ["std"]
 
 [dependencies]
 libm = "0.2.15"
+pixelflow-ir = { path = "../pixelflow-ir", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 criterion = "0.5"

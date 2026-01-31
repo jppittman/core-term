@@ -75,20 +75,20 @@ pub fn critical_path_cost(expr: &Expr) -> i32 {
         Expr::Var(_) | Expr::Const(_) => 0,
         Expr::Unary(op, a) => {
             let op_cost = match op {
-                crate::nnue::OpType::Neg | crate::nnue::OpType::Abs => 1,
-                crate::nnue::OpType::Sqrt => 15,
-                crate::nnue::OpType::Rsqrt => 5,
+                crate::nnue::OpKind::Neg | crate::nnue::OpKind::Abs => 1,
+                crate::nnue::OpKind::Sqrt => 15,
+                crate::nnue::OpKind::Rsqrt => 5,
                 _ => 5,
             };
             op_cost + critical_path_cost(a)
         }
         Expr::Binary(op, a, b) => {
             let op_cost = match op {
-                crate::nnue::OpType::Add | crate::nnue::OpType::Sub => 4,
-                crate::nnue::OpType::Mul => 5,
-                crate::nnue::OpType::Div => 15,
-                crate::nnue::OpType::Min | crate::nnue::OpType::Max => 4,
-                crate::nnue::OpType::MulRsqrt => 6,
+                crate::nnue::OpKind::Add | crate::nnue::OpKind::Sub => 4,
+                crate::nnue::OpKind::Mul => 5,
+                crate::nnue::OpKind::Div => 15,
+                crate::nnue::OpKind::Min | crate::nnue::OpKind::Max => 4,
+                crate::nnue::OpKind::MulRsqrt => 6,
                 _ => 5,
             };
             // Critical path = max of children, not sum
@@ -96,7 +96,7 @@ pub fn critical_path_cost(expr: &Expr) -> i32 {
         }
         Expr::Ternary(op, a, b, c) => {
             let op_cost = match op {
-                crate::nnue::OpType::MulAdd => 5,
+                crate::nnue::OpKind::MulAdd => 5,
                 _ => 10,
             };
             op_cost + critical_path_cost(a)
@@ -283,15 +283,15 @@ pub struct Disagreement {
 mod tests {
     use super::*;
     use alloc::boxed::Box;
-    use crate::nnue::OpType;
+    use crate::nnue::OpKind;
 
     #[test]
     fn test_linear_vs_interaction_fma() {
         // Expression: a * b + c (could be FMA)
         let unfused = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Binary(
-                OpType::Mul,
+                OpKind::Mul,
                 Box::new(Expr::Var(0)),
                 Box::new(Expr::Var(1)),
             )),
@@ -300,7 +300,7 @@ mod tests {
 
         // Expression: FMA(a, b, c)
         let fused = Expr::Ternary(
-            OpType::MulAdd,
+            OpKind::MulAdd,
             Box::new(Expr::Var(0)),
             Box::new(Expr::Var(1)),
             Box::new(Expr::Var(2)),
@@ -333,14 +333,14 @@ mod tests {
         // Total cost: 4 + 4 + 4 = 12
         // Critical path: 4 + 4 = 8 (parallel adds)
         let wide = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Binary(
-                OpType::Add,
+                OpKind::Add,
                 Box::new(Expr::Var(0)),
                 Box::new(Expr::Var(1)),
             )),
             Box::new(Expr::Binary(
-                OpType::Add,
+                OpKind::Add,
                 Box::new(Expr::Var(2)),
                 Box::new(Expr::Var(3)),
             )),
@@ -350,11 +350,11 @@ mod tests {
         // Total cost: 4 + 4 + 4 = 12
         // Critical path: 4 + 4 + 4 = 12 (sequential)
         let deep = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Binary(
-                OpType::Add,
+                OpKind::Add,
                 Box::new(Expr::Binary(
-                    OpType::Add,
+                    OpKind::Add,
                     Box::new(Expr::Var(0)),
                     Box::new(Expr::Var(1)),
                 )),

@@ -363,12 +363,12 @@ fn compute_ranks(values: &[f32]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nnue::OpType;
+    use crate::nnue::OpKind;
 
     #[test]
     fn test_sample_creation() {
         let expr = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             alloc::boxed::Box::new(Expr::Var(0)),
             alloc::boxed::Box::new(Expr::Var(1)),
         );

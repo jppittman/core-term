@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use pixelflow_search::egraph::{ExprTree, Leaf, BestFirstContext};
-use pixelflow_nnue::{HalfEPFeature, OpType, DenseFeatures, Expr as NnueExpr};
+use pixelflow_nnue::{HalfEPFeature, OpKind, DenseFeatures, Expr as NnueExpr};
 
 /// Special feature indicating a back-reference to an already-seen subexpression.
 ///
@@ -21,36 +21,36 @@ use pixelflow_nnue::{HalfEPFeature, OpType, DenseFeatures, Expr as NnueExpr};
 /// - `let x = expensive(); x + x` -> [expensive, Add, BackRef] (cheap!)
 /// - `expensive() + expensive()` -> [expensive, Add, expensive] (expensive!)
 pub const BACKREF_FEATURE: HalfEPFeature = HalfEPFeature {
-    perspective_op: 15,  // Invalid OpType - signals special feature
+    perspective_op: 15,  // Invalid OpKind - signals special feature
     descendant_op: 15,
     depth: 0,
     path: 255,
 };
 
-/// Map ExprTree variant to OpType for feature encoding.
-pub fn expr_tree_to_op_type(tree: &ExprTree) -> OpType {
+/// Map ExprTree variant to OpKind for feature encoding.
+pub fn expr_tree_to_op_type(tree: &ExprTree) -> OpKind {
     match tree {
-        ExprTree::Leaf(Leaf::Var(_)) => OpType::Var,
-        ExprTree::Leaf(Leaf::Const(_)) => OpType::Const,
+        ExprTree::Leaf(Leaf::Var(_)) => OpKind::Var,
+        ExprTree::Leaf(Leaf::Const(_)) => OpKind::Const,
         ExprTree::Op { op, .. } => {
             match op.name() {
-                "add" => OpType::Add,
-                "sub" => OpType::Sub,
-                "mul" => OpType::Mul,
-                "div" => OpType::Div,
-                "neg" => OpType::Neg,
-                "sqrt" => OpType::Sqrt,
-                "rsqrt" => OpType::Rsqrt,
-                "abs" => OpType::Abs,
-                "min" => OpType::Min,
-                "max" => OpType::Max,
-                "mul_add" | "fma" => OpType::MulAdd,
-                "recip" => OpType::Div,
-                "floor" | "ceil" | "round" | "fract" => OpType::Abs,
+                "add" => OpKind::Add,
+                "sub" => OpKind::Sub,
+                "mul" => OpKind::Mul,
+                "div" => OpKind::Div,
+                "neg" => OpKind::Neg,
+                "sqrt" => OpKind::Sqrt,
+                "rsqrt" => OpKind::Rsqrt,
+                "abs" => OpKind::Abs,
+                "min" => OpKind::Min,
+                "max" => OpKind::Max,
+                "mul_add" | "fma" => OpKind::MulAdd,
+                "recip" => OpKind::Div,
+                "floor" | "ceil" | "round" | "fract" => OpKind::Abs,
                 "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
-                | "exp" | "exp2" | "ln" | "log2" | "log10" => OpType::Sqrt,
-                "atan2" | "pow" | "hypot" => OpType::MulRsqrt,
-                _ => OpType::Add,
+                | "exp" | "exp2" | "ln" | "log2" | "log10" => OpKind::Sqrt,
+                "atan2" | "pow" | "hypot" => OpKind::MulRsqrt,
+                _ => OpKind::Add,
             }
         }
     }
@@ -68,12 +68,12 @@ pub fn expr_tree_to_nnue_expr(tree: &ExprTree) -> NnueExpr {
                 1 => {
                     let a = Box::new(expr_tree_to_nnue_expr(&children[0]));
                     let op_type = match name {
-                        "neg" => OpType::Neg,
-                        "sqrt" => OpType::Sqrt,
-                        "rsqrt" => OpType::Rsqrt,
-                        "abs" => OpType::Abs,
-                        "recip" => OpType::Rsqrt,
-                        _ => OpType::Sqrt,
+                        "neg" => OpKind::Neg,
+                        "sqrt" => OpKind::Sqrt,
+                        "rsqrt" => OpKind::Rsqrt,
+                        "abs" => OpKind::Abs,
+                        "recip" => OpKind::Rsqrt,
+                        _ => OpKind::Sqrt,
                     };
                     NnueExpr::Unary(op_type, a)
                 }
@@ -81,14 +81,14 @@ pub fn expr_tree_to_nnue_expr(tree: &ExprTree) -> NnueExpr {
                     let a = Box::new(expr_tree_to_nnue_expr(&children[0]));
                     let b = Box::new(expr_tree_to_nnue_expr(&children[1]));
                     let op_type = match name {
-                        "add" => OpType::Add,
-                        "sub" => OpType::Sub,
-                        "mul" => OpType::Mul,
-                        "div" => OpType::Div,
-                        "min" => OpType::Min,
-                        "max" => OpType::Max,
-                        "atan2" | "pow" | "hypot" => OpType::MulRsqrt,
-                        _ => OpType::Add,
+                        "add" => OpKind::Add,
+                        "sub" => OpKind::Sub,
+                        "mul" => OpKind::Mul,
+                        "div" => OpKind::Div,
+                        "min" => OpKind::Min,
+                        "max" => OpKind::Max,
+                        "atan2" | "pow" | "hypot" => OpKind::MulRsqrt,
+                        _ => OpKind::Add,
                     };
                     NnueExpr::Binary(op_type, a, b)
                 }
@@ -96,7 +96,7 @@ pub fn expr_tree_to_nnue_expr(tree: &ExprTree) -> NnueExpr {
                     let a = Box::new(expr_tree_to_nnue_expr(&children[0]));
                     let b = Box::new(expr_tree_to_nnue_expr(&children[1]));
                     let c = Box::new(expr_tree_to_nnue_expr(&children[2]));
-                    NnueExpr::Ternary(OpType::MulAdd, a, b, c)
+                    NnueExpr::Ternary(OpKind::MulAdd, a, b, c)
                 }
             }
         }

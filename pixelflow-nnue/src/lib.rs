@@ -53,6 +53,17 @@
 //!
 //! This makes evaluation O(rewrite_size) instead of O(expression_size).
 
+//! ## Factored Embedding NNUE (New!)
+//!
+//! The [`factored`] module provides an O(ops) alternative to HalfEP:
+//!
+//! - **Edge-based accumulation**: For each parent→child edge, accumulate
+//!   learned embeddings into a fixed-size vector
+//! - **7K parameters** instead of ~1GB for weight matrices
+//! - **O(edges × K)** incremental updates instead of O(subtree²)
+//!
+//! See [`factored::FactoredNnue`] for the main API.
+
 #![cfg_attr(not(feature = "std"), no_std)]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
@@ -61,208 +72,22 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
+pub mod factored;
+
 use alloc::vec::Vec;
-use libm::{fabsf, sqrtf};
+use libm::fabsf;
 
 // ============================================================================
-// Operation Types (mirrors ENode from egraph.rs)
+// Re-exports from pixelflow-ir (canonical types)
 // ============================================================================
 
-/// Operation type enumeration for feature encoding.
-///
-/// This mirrors the `ENode` variants but as a compact enum for NNUE features.
-/// Each operation maps to a unique index for the feature vector.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum OpType {
-    /// Variable reference
-    Var = 0,
-    /// Constant value
-    Const = 1,
-    /// Addition
-    Add = 2,
-    /// Subtraction
-    Sub = 3,
-    /// Multiplication
-    Mul = 4,
-    /// Division
-    Div = 5,
-    /// Negation
-    Neg = 6,
-    /// Square root
-    Sqrt = 7,
-    /// Reciprocal square root
-    Rsqrt = 8,
-    /// Absolute value
-    Abs = 9,
-    /// Minimum
-    Min = 10,
-    /// Maximum
-    Max = 11,
-    /// Fused multiply-add
-    MulAdd = 12,
-    /// Fused multiply-rsqrt
-    MulRsqrt = 13,
-}
+/// Re-export OpKind from pixelflow-ir as our canonical operation type.
+/// This ensures all 42 operations are covered in the feature space.
+pub use pixelflow_ir::OpKind;
 
-impl OpType {
-    /// Number of distinct operation types.
-    pub const COUNT: usize = 14;
-
-    /// Convert to index for feature encoding.
-    #[inline]
-    #[must_use]
-    pub fn index(self) -> usize {
-        self as usize
-    }
-
-    /// Create from index.
-    #[must_use]
-    pub fn from_index(idx: usize) -> Option<Self> {
-        match idx {
-            0 => Some(OpType::Var),
-            1 => Some(OpType::Const),
-            2 => Some(OpType::Add),
-            3 => Some(OpType::Sub),
-            4 => Some(OpType::Mul),
-            5 => Some(OpType::Div),
-            6 => Some(OpType::Neg),
-            7 => Some(OpType::Sqrt),
-            8 => Some(OpType::Rsqrt),
-            9 => Some(OpType::Abs),
-            10 => Some(OpType::Min),
-            11 => Some(OpType::Max),
-            12 => Some(OpType::MulAdd),
-            13 => Some(OpType::MulRsqrt),
-            _ => None,
-        }
-    }
-
-    /// Get the arity (number of children) for this operation.
-    #[must_use]
-    pub fn arity(self) -> usize {
-        match self {
-            OpType::Var | OpType::Const => 0,
-            OpType::Neg | OpType::Sqrt | OpType::Rsqrt | OpType::Abs => 1,
-            OpType::Add | OpType::Sub | OpType::Mul | OpType::Div | OpType::Min | OpType::Max
-            | OpType::MulRsqrt => 2,
-            OpType::MulAdd => 3,
-        }
-    }
-}
-
-// ============================================================================
-// Expression AST (for training data generation)
-// ============================================================================
-
-/// A concrete expression tree for training data generation.
-///
-/// Unlike the e-graph's `ENode` (which references e-classes), this is a
-/// standalone AST that can be manipulated and benchmarked directly.
-#[derive(Clone, Debug)]
-pub enum Expr {
-    /// Variable by index (0=X, 1=Y, 2=Z, 3=W)
-    Var(u8),
-    /// Floating-point constant
-    Const(f32),
-    /// Binary operation
-    Binary(OpType, Box<Expr>, Box<Expr>),
-    /// Unary operation
-    Unary(OpType, Box<Expr>),
-    /// Ternary operation (MulAdd)
-    Ternary(OpType, Box<Expr>, Box<Expr>, Box<Expr>),
-}
-
-impl Expr {
-    /// Get the operation type of this expression's root.
-    #[must_use]
-    pub fn op_type(&self) -> OpType {
-        match self {
-            Expr::Var(_) => OpType::Var,
-            Expr::Const(_) => OpType::Const,
-            Expr::Binary(op, _, _) => *op,
-            Expr::Unary(op, _) => *op,
-            Expr::Ternary(op, _, _, _) => *op,
-        }
-    }
-
-    /// Compute the depth of this expression tree.
-    #[must_use]
-    pub fn depth(&self) -> usize {
-        match self {
-            Expr::Var(_) | Expr::Const(_) => 1,
-            Expr::Unary(_, a) => 1 + a.depth(),
-            Expr::Binary(_, a, b) => 1 + a.depth().max(b.depth()),
-            Expr::Ternary(_, a, b, c) => 1 + a.depth().max(b.depth()).max(c.depth()),
-        }
-    }
-
-    /// Count total nodes in the expression.
-    #[must_use]
-    pub fn node_count(&self) -> usize {
-        match self {
-            Expr::Var(_) | Expr::Const(_) => 1,
-            Expr::Unary(_, a) => 1 + a.node_count(),
-            Expr::Binary(_, a, b) => 1 + a.node_count() + b.node_count(),
-            Expr::Ternary(_, a, b, c) => 1 + a.node_count() + b.node_count() + c.node_count(),
-        }
-    }
-
-    /// Evaluate the expression with given variable values.
-    #[must_use]
-    pub fn eval(&self, vars: &[f32; 4]) -> f32 {
-        match self {
-            Expr::Var(i) => vars[*i as usize],
-            Expr::Const(c) => *c,
-            Expr::Unary(op, a) => {
-                let a = a.eval(vars);
-                match op {
-                    OpType::Neg => -a,
-                    OpType::Sqrt => sqrtf(a),
-                    OpType::Rsqrt => 1.0 / sqrtf(a),
-                    OpType::Abs => fabsf(a),
-                    _ => unreachable!(),
-                }
-            }
-            Expr::Binary(op, a, b) => {
-                let a = a.eval(vars);
-                let b = b.eval(vars);
-                match op {
-                    OpType::Add => a + b,
-                    OpType::Sub => a - b,
-                    OpType::Mul => a * b,
-                    OpType::Div => a / b,
-                    OpType::Min => {
-                        if a < b {
-                            a
-                        } else {
-                            b
-                        }
-                    }
-                    OpType::Max => {
-                        if a > b {
-                            a
-                        } else {
-                            b
-                        }
-                    }
-                    OpType::MulRsqrt => a / sqrtf(b),
-                    _ => unreachable!(),
-                }
-            }
-            Expr::Ternary(op, a, b, c) => {
-                let a = a.eval(vars);
-                let b = b.eval(vars);
-                let c = c.eval(vars);
-                match op {
-                    OpType::MulAdd => a * b + c,
-                    _ => unreachable!(),
-                }
-            }
-        }
-    }
-}
+/// Re-export Expr from pixelflow-ir as the canonical expression type.
+/// This unifies the expression representation across the compiler pipeline.
+pub use pixelflow_ir::Expr;
 
 // ============================================================================
 // HalfEP Features
@@ -296,7 +121,7 @@ impl HalfEPFeature {
     ///
     /// 14 perspective ops × 14 descendant ops × 8 depths × 256 paths = 401,408
     /// This is much smaller than HalfKP's ~10M, which is good for our use case.
-    pub const COUNT: usize = OpType::COUNT * OpType::COUNT * MAX_DEPTH * 256;
+    pub const COUNT: usize = OpKind::COUNT * OpKind::COUNT * MAX_DEPTH * 256;
 
     /// Convert to a unique index for the feature vector.
     #[must_use]
@@ -306,7 +131,7 @@ impl HalfEPFeature {
         let depth = self.depth as usize;
         let path = self.path as usize;
 
-        ((p * OpType::COUNT + d) * MAX_DEPTH + depth) * 256 + path
+        ((p * OpKind::COUNT + d) * MAX_DEPTH + depth) * 256 + path
     }
 
     /// Create from a unique index.
@@ -316,8 +141,8 @@ impl HalfEPFeature {
         let idx = idx / 256;
         let depth = (idx % MAX_DEPTH) as u8;
         let idx = idx / MAX_DEPTH;
-        let descendant_op = (idx % OpType::COUNT) as u8;
-        let perspective_op = (idx / OpType::COUNT) as u8;
+        let descendant_op = (idx % OpKind::COUNT) as u8;
+        let perspective_op = (idx / OpKind::COUNT) as u8;
 
         Self {
             perspective_op,
@@ -366,6 +191,12 @@ fn extract_features_recursive(
             extract_features_recursive(b, features, path, depth.saturating_add(1));
             extract_features_recursive(c, features, path, depth.saturating_add(1));
         }
+        Expr::Nary(_, children) => {
+            for (i, child) in children.iter().enumerate() {
+                let child_path = (path << 3) | (i as u8 & 0x7); // 3 bits per child index
+                extract_features_recursive(child, features, child_path, depth.saturating_add(1));
+            }
+        }
     }
 }
 
@@ -403,6 +234,13 @@ fn add_descendant_features(
             add_descendant_features(a, features, perspective_op, depth + 1, path << 2);
             add_descendant_features(b, features, perspective_op, depth + 1, (path << 2) | 1);
             add_descendant_features(c, features, perspective_op, depth + 1, (path << 2) | 2);
+        }
+        Expr::Nary(_, children) => {
+            // For n-ary, use 3 bits per child index
+            for (i, child) in children.iter().enumerate() {
+                let child_path = (path << 3) | (i as u8 & 0x7);
+                add_descendant_features(child, features, perspective_op, depth + 1, child_path);
+            }
         }
     }
 }
@@ -540,10 +378,10 @@ fn extract_dense_recursive(
         }
         Expr::Unary(op, a) => {
             let op_cost = match op {
-                OpType::Neg => { features.values[DenseFeatures::NEG] += 1; 1 }
-                OpType::Sqrt => { features.values[DenseFeatures::SQRT] += 1; 15 }
-                OpType::Rsqrt => { features.values[DenseFeatures::RSQRT] += 1; 5 }
-                OpType::Abs => { features.values[DenseFeatures::ABS] += 1; 1 }
+                OpKind::Neg => { features.values[DenseFeatures::NEG] += 1; 1 }
+                OpKind::Sqrt => { features.values[DenseFeatures::SQRT] += 1; 15 }
+                OpKind::Rsqrt => { features.values[DenseFeatures::RSQRT] += 1; 5 }
+                OpKind::Abs => { features.values[DenseFeatures::ABS] += 1; 1 }
                 _ => 5,
             };
             let child_critical = extract_dense_recursive(a, features, depth + 1, width_at_depth);
@@ -551,10 +389,10 @@ fn extract_dense_recursive(
         }
         Expr::Binary(op, a, b) => {
             let op_cost = match op {
-                OpType::Add => {
+                OpKind::Add => {
                     features.values[DenseFeatures::ADD] += 1;
                     // Check for fusable: if 'a' is a Mul, this is a*b+c pattern
-                    if matches!(a.as_ref(), Expr::Binary(OpType::Mul, _, _)) {
+                    if matches!(a.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
                         features.values[DenseFeatures::HAS_FUSABLE] += 1;
                     }
                     // Check for identity: x + 0
@@ -563,7 +401,7 @@ fn extract_dense_recursive(
                     }
                     4
                 }
-                OpType::Sub => {
+                OpKind::Sub => {
                     features.values[DenseFeatures::SUB] += 1;
                     // Check for self-cancel: x - x
                     if dense_exprs_equal(a, b) {
@@ -571,20 +409,20 @@ fn extract_dense_recursive(
                     }
                     4
                 }
-                OpType::Mul => {
+                OpKind::Mul => {
                     features.values[DenseFeatures::MUL] += 1;
                     // Check for identity: x * 1
                     if is_const_one(b) || is_const_one(a) {
                         features.values[DenseFeatures::HAS_IDENTITY] += 1;
                     }
                     // Check for fusable: x * rsqrt(y)
-                    if matches!(b.as_ref(), Expr::Unary(OpType::Rsqrt, _)) ||
-                       matches!(a.as_ref(), Expr::Unary(OpType::Rsqrt, _)) {
+                    if matches!(b.as_ref(), Expr::Unary(OpKind::Rsqrt, _)) ||
+                       matches!(a.as_ref(), Expr::Unary(OpKind::Rsqrt, _)) {
                         features.values[DenseFeatures::HAS_FUSABLE] += 1;
                     }
                     5
                 }
-                OpType::Div => {
+                OpKind::Div => {
                     features.values[DenseFeatures::DIV] += 1;
                     // Check for self-cancel: x / x
                     if dense_exprs_equal(a, b) {
@@ -592,9 +430,9 @@ fn extract_dense_recursive(
                     }
                     15
                 }
-                OpType::Min => { features.values[DenseFeatures::MIN] += 1; 4 }
-                OpType::Max => { features.values[DenseFeatures::MAX] += 1; 4 }
-                OpType::MulRsqrt => { features.values[DenseFeatures::MUL_RSQRT] += 1; 6 }
+                OpKind::Min => { features.values[DenseFeatures::MIN] += 1; 4 }
+                OpKind::Max => { features.values[DenseFeatures::MAX] += 1; 4 }
+                OpKind::MulRsqrt => { features.values[DenseFeatures::MUL_RSQRT] += 1; 6 }
                 _ => 5,
             };
             let crit_a = extract_dense_recursive(a, features, depth + 1, width_at_depth);
@@ -604,7 +442,7 @@ fn extract_dense_recursive(
         }
         Expr::Ternary(op, a, b, c) => {
             let op_cost = match op {
-                OpType::MulAdd => { features.values[DenseFeatures::FMA] += 1; 5 }
+                OpKind::MulAdd => { features.values[DenseFeatures::FMA] += 1; 5 }
                 _ => 10,
             };
             let crit_a = extract_dense_recursive(a, features, depth + 1, width_at_depth);
@@ -612,6 +450,19 @@ fn extract_dense_recursive(
             let crit_c = extract_dense_recursive(c, features, depth + 1, width_at_depth);
             // Critical path = max of all children + this op
             op_cost + crit_a.max(crit_b).max(crit_c)
+        }
+        Expr::Nary(op, children) => {
+            // Tuple and similar n-ary ops are typically free (structural)
+            let op_cost = match op {
+                OpKind::Tuple => 0,
+                _ => 5,
+            };
+            // Critical path = max of all children + this op
+            let max_child_crit = children.iter()
+                .map(|c| extract_dense_recursive(c, features, depth + 1, width_at_depth))
+                .max()
+                .unwrap_or(0);
+            op_cost + max_child_crit
         }
     }
 }
@@ -637,7 +488,13 @@ fn dense_exprs_equal(a: &Expr, b: &Expr) -> bool {
         (Expr::Ternary(op1, a1, a2, a3), Expr::Ternary(op2, b1, b2, b3)) => {
             op1 == op2 && dense_exprs_equal(a1, b1) && dense_exprs_equal(a2, b2) && dense_exprs_equal(a3, b3)
         }
-        _ => false,
+        (Expr::Nary(op1, c1), Expr::Nary(op2, c2)) => {
+            op1 == op2 && c1.len() == c2.len() &&
+            c1.iter().zip(c2.iter()).all(|(a, b)| dense_exprs_equal(a, b))
+        }
+        // Different variants are never equal
+        (Expr::Var(_), _) | (Expr::Const(_), _) | (Expr::Unary(_, _), _) |
+        (Expr::Binary(_, _, _), _) | (Expr::Ternary(_, _, _, _), _) | (Expr::Nary(_, _), _) => false,
     }
 }
 
@@ -785,6 +642,93 @@ impl Nnue {
     #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(NnueConfig::default())
+    }
+
+    /// Create a randomly initialized NNUE network.
+    ///
+    /// Uses He initialization scaled for quantized weights.
+    /// This is essential - zero-initialized networks have zero gradients
+    /// and never learn.
+    #[must_use]
+    pub fn new_random(config: NnueConfig, seed: u64) -> Self {
+        let mut nnue = Self::new(config);
+        nnue.randomize_weights(seed);
+        nnue
+    }
+
+    /// Randomize weights for training.
+    ///
+    /// Uses a simple LCG for no_std compatibility.
+    /// Weights are initialized to small random values that will
+    /// produce non-zero activations after clipped ReLU.
+    pub fn randomize_weights(&mut self, seed: u64) {
+        let mut rng_state = seed.wrapping_add(1);
+
+        // Inline LCG to avoid borrow issues
+        macro_rules! next_u64 {
+            () => {{
+                rng_state = rng_state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1);
+                rng_state
+            }};
+        }
+
+        // W1 (sparse): Small values since many features may be active
+        // NOTE: Must do modulo on u64 BEFORE casting to signed, or large u64
+        // values wrap to negative i64 and give biased results!
+        for w in &mut self.w1 {
+            let r = next_u64!();
+            *w = ((r % 129) as i16).wrapping_sub(64); // [-64, 64]
+        }
+
+        // B1: Small positive bias to start in active region of ReLU
+        // clipped_relu(x) = (x >> 6).clamp(0, 127)
+        // For output in [1, 100], need pre-activation in [64, 6400]
+        // Start near the middle of this range
+        for b in &mut self.b1 {
+            let r = next_u64!();
+            *b = (r % 1024) as i32 + 1024; // [1024, 2047]
+        }
+
+        // W_dense: Similar to W1
+        for w in &mut self.w_dense {
+            let r = next_u64!();
+            *w = ((r % 257) as i16).wrapping_sub(128); // [-128, 128]
+        }
+
+        // B_dense: Small positive bias
+        for b in &mut self.b_dense {
+            let r = next_u64!();
+            *b = (r % 1024) as i32 + 1024; // [1024, 2047]
+        }
+
+        // W2, W3: Larger values for smaller layers
+        for w in &mut self.w2 {
+            let r = next_u64!();
+            *w = ((r % 65) as i8).wrapping_sub(32); // [-32, 32]
+        }
+        for b in &mut self.b2 {
+            let r = next_u64!();
+            *b = (r % 512) as i32 + 512; // [512, 1023]
+        }
+
+        for w in &mut self.w3 {
+            let r = next_u64!();
+            *w = ((r % 65) as i8).wrapping_sub(32); // [-32, 32]
+        }
+        for b in &mut self.b3 {
+            let r = next_u64!();
+            *b = (r % 512) as i32 + 512; // [512, 1023]
+        }
+
+        // Output layer
+        for w in &mut self.w_out {
+            let r = next_u64!();
+            *w = ((r % 33) as i8).wrapping_sub(16); // [-16, 16]
+        }
+        // Output bias: start at 0, will learn the mean
+        self.b_out = 0;
     }
 
     /// Evaluate dense features through the dense branch.
@@ -1294,49 +1238,49 @@ impl ExprGenerator {
             match op_choice {
                 // Binary operations
                 0 => Expr::Binary(
-                    OpType::Add,
+                    OpKind::Add,
                     Box::new(self.generate_recursive(depth + 1)),
                     Box::new(self.generate_recursive(depth + 1)),
                 ),
                 1 => Expr::Binary(
-                    OpType::Sub,
+                    OpKind::Sub,
                     Box::new(self.generate_recursive(depth + 1)),
                     Box::new(self.generate_recursive(depth + 1)),
                 ),
                 2 => Expr::Binary(
-                    OpType::Mul,
+                    OpKind::Mul,
                     Box::new(self.generate_recursive(depth + 1)),
                     Box::new(self.generate_recursive(depth + 1)),
                 ),
                 3 => Expr::Binary(
-                    OpType::Div,
+                    OpKind::Div,
                     Box::new(self.generate_recursive(depth + 1)),
                     Box::new(self.generate_recursive(depth + 1)),
                 ),
                 4 => Expr::Binary(
-                    OpType::Min,
+                    OpKind::Min,
                     Box::new(self.generate_recursive(depth + 1)),
                     Box::new(self.generate_recursive(depth + 1)),
                 ),
                 5 => Expr::Binary(
-                    OpType::Max,
+                    OpKind::Max,
                     Box::new(self.generate_recursive(depth + 1)),
                     Box::new(self.generate_recursive(depth + 1)),
                 ),
                 // Unary operations
-                6 => Expr::Unary(OpType::Neg, Box::new(self.generate_recursive(depth + 1))),
-                7 => Expr::Unary(OpType::Sqrt, Box::new(self.generate_recursive(depth + 1))),
-                8 => Expr::Unary(OpType::Rsqrt, Box::new(self.generate_recursive(depth + 1))),
-                9 => Expr::Unary(OpType::Abs, Box::new(self.generate_recursive(depth + 1))),
+                6 => Expr::Unary(OpKind::Neg, Box::new(self.generate_recursive(depth + 1))),
+                7 => Expr::Unary(OpKind::Sqrt, Box::new(self.generate_recursive(depth + 1))),
+                8 => Expr::Unary(OpKind::Rsqrt, Box::new(self.generate_recursive(depth + 1))),
+                9 => Expr::Unary(OpKind::Abs, Box::new(self.generate_recursive(depth + 1))),
                 // Fused operations
                 10 => Expr::Ternary(
-                    OpType::MulAdd,
+                    OpKind::MulAdd,
                     Box::new(self.generate_recursive(depth + 1)),
                     Box::new(self.generate_recursive(depth + 1)),
                     Box::new(self.generate_recursive(depth + 1)),
                 ),
                 11 => Expr::Binary(
-                    OpType::MulRsqrt,
+                    OpKind::MulRsqrt,
                     Box::new(self.generate_recursive(depth + 1)),
                     Box::new(self.generate_recursive(depth + 1)),
                 ),
@@ -1403,7 +1347,7 @@ impl RewriteRule {
     pub fn try_apply(&self, expr: &Expr) -> Option<Expr> {
         match self {
             RewriteRule::AddZero => match expr {
-                Expr::Binary(OpType::Add, a, b) => {
+                Expr::Binary(OpKind::Add, a, b) => {
                     if matches!(b.as_ref(), Expr::Const(c) if *c == 0.0) {
                         Some(a.as_ref().clone())
                     } else if matches!(a.as_ref(), Expr::Const(c) if *c == 0.0) {
@@ -1415,7 +1359,7 @@ impl RewriteRule {
                 _ => None,
             },
             RewriteRule::MulOne => match expr {
-                Expr::Binary(OpType::Mul, a, b) => {
+                Expr::Binary(OpKind::Mul, a, b) => {
                     if matches!(b.as_ref(), Expr::Const(c) if *c == 1.0) {
                         Some(a.as_ref().clone())
                     } else if matches!(a.as_ref(), Expr::Const(c) if *c == 1.0) {
@@ -1427,12 +1371,12 @@ impl RewriteRule {
                 _ => None,
             },
             RewriteRule::MulZero => match expr {
-                Expr::Binary(OpType::Mul, _, b)
+                Expr::Binary(OpKind::Mul, _, b)
                     if matches!(b.as_ref(), Expr::Const(c) if *c == 0.0) =>
                 {
                     Some(Expr::Const(0.0))
                 }
-                Expr::Binary(OpType::Mul, a, _)
+                Expr::Binary(OpKind::Mul, a, _)
                     if matches!(a.as_ref(), Expr::Const(c) if *c == 0.0) =>
                 {
                     Some(Expr::Const(0.0))
@@ -1440,61 +1384,61 @@ impl RewriteRule {
                 _ => None,
             },
             RewriteRule::SubSelf => match expr {
-                Expr::Binary(OpType::Sub, a, b) if exprs_equal(a, b) => Some(Expr::Const(0.0)),
+                Expr::Binary(OpKind::Sub, a, b) if exprs_equal(a, b) => Some(Expr::Const(0.0)),
                 _ => None,
             },
             RewriteRule::DivSelf => match expr {
-                Expr::Binary(OpType::Div, a, b) if exprs_equal(a, b) => Some(Expr::Const(1.0)),
+                Expr::Binary(OpKind::Div, a, b) if exprs_equal(a, b) => Some(Expr::Const(1.0)),
                 _ => None,
             },
             RewriteRule::DoubleNeg => match expr {
-                Expr::Unary(OpType::Neg, inner) => match inner.as_ref() {
-                    Expr::Unary(OpType::Neg, x) => Some(x.as_ref().clone()),
+                Expr::Unary(OpKind::Neg, inner) => match inner.as_ref() {
+                    Expr::Unary(OpKind::Neg, x) => Some(x.as_ref().clone()),
                     _ => None,
                 },
                 _ => None,
             },
             RewriteRule::AddSelf => match expr {
-                Expr::Binary(OpType::Add, a, b) if exprs_equal(a, b) => Some(Expr::Binary(
-                    OpType::Mul,
+                Expr::Binary(OpKind::Add, a, b) if exprs_equal(a, b) => Some(Expr::Binary(
+                    OpKind::Mul,
                     Box::new(Expr::Const(2.0)),
                     a.clone(),
                 )),
                 _ => None,
             },
             RewriteRule::FuseToMulAdd => match expr {
-                Expr::Binary(OpType::Add, mul_expr, c) => match mul_expr.as_ref() {
-                    Expr::Binary(OpType::Mul, a, b) => {
-                        Some(Expr::Ternary(OpType::MulAdd, a.clone(), b.clone(), c.clone()))
+                Expr::Binary(OpKind::Add, mul_expr, c) => match mul_expr.as_ref() {
+                    Expr::Binary(OpKind::Mul, a, b) => {
+                        Some(Expr::Ternary(OpKind::MulAdd, a.clone(), b.clone(), c.clone()))
                     }
                     _ => None,
                 },
                 _ => None,
             },
             RewriteRule::FuseToMulRsqrt => match expr {
-                Expr::Binary(OpType::Mul, x, rsqrt_expr) => match rsqrt_expr.as_ref() {
-                    Expr::Unary(OpType::Rsqrt, y) => {
-                        Some(Expr::Binary(OpType::MulRsqrt, x.clone(), y.clone()))
+                Expr::Binary(OpKind::Mul, x, rsqrt_expr) => match rsqrt_expr.as_ref() {
+                    Expr::Unary(OpKind::Rsqrt, y) => {
+                        Some(Expr::Binary(OpKind::MulRsqrt, x.clone(), y.clone()))
                     }
                     _ => None,
                 },
                 _ => None,
             },
             RewriteRule::DivSqrtToMulRsqrt => match expr {
-                Expr::Binary(OpType::Div, x, sqrt_expr) => match sqrt_expr.as_ref() {
-                    Expr::Unary(OpType::Sqrt, y) => Some(Expr::Binary(
-                        OpType::Mul,
+                Expr::Binary(OpKind::Div, x, sqrt_expr) => match sqrt_expr.as_ref() {
+                    Expr::Unary(OpKind::Sqrt, y) => Some(Expr::Binary(
+                        OpKind::Mul,
                         x.clone(),
-                        Box::new(Expr::Unary(OpType::Rsqrt, y.clone())),
+                        Box::new(Expr::Unary(OpKind::Rsqrt, y.clone())),
                     )),
                     _ => None,
                 },
                 _ => None,
             },
             RewriteRule::UnfuseMulAdd => match expr {
-                Expr::Ternary(OpType::MulAdd, a, b, c) => Some(Expr::Binary(
-                    OpType::Add,
-                    Box::new(Expr::Binary(OpType::Mul, a.clone(), b.clone())),
+                Expr::Ternary(OpKind::MulAdd, a, b, c) => Some(Expr::Binary(
+                    OpKind::Add,
+                    Box::new(Expr::Binary(OpKind::Mul, a.clone(), b.clone())),
                     c.clone(),
                 )),
                 _ => None,
@@ -1515,7 +1459,13 @@ fn exprs_equal(a: &Expr, b: &Expr) -> bool {
         (Expr::Ternary(op1, a1, b1, c1), Expr::Ternary(op2, a2, b2, c2)) => {
             op1 == op2 && exprs_equal(a1, a2) && exprs_equal(b1, b2) && exprs_equal(c1, c2)
         }
-        _ => false,
+        (Expr::Nary(op1, c1), Expr::Nary(op2, c2)) => {
+            op1 == op2 && c1.len() == c2.len() &&
+            c1.iter().zip(c2.iter()).all(|(x, y)| exprs_equal(x, y))
+        }
+        // Different variants are never equal
+        (Expr::Var(_), _) | (Expr::Const(_), _) | (Expr::Unary(_, _), _) |
+        (Expr::Binary(_, _, _), _) | (Expr::Ternary(_, _, _, _), _) | (Expr::Nary(_, _), _) => false,
     }
 }
 
@@ -1579,33 +1529,33 @@ impl UnfuseRewrite {
     pub fn apply(&self, expr: &Expr) -> Option<Expr> {
         match self {
             UnfuseRewrite::UnfuseMulAdd => match expr {
-                Expr::Ternary(OpType::MulAdd, a, b, c) => Some(Expr::Binary(
-                    OpType::Add,
-                    Box::new(Expr::Binary(OpType::Mul, a.clone(), b.clone())),
+                Expr::Ternary(OpKind::MulAdd, a, b, c) => Some(Expr::Binary(
+                    OpKind::Add,
+                    Box::new(Expr::Binary(OpKind::Mul, a.clone(), b.clone())),
                     c.clone(),
                 )),
                 _ => None,
             },
             UnfuseRewrite::UnfuseMulRsqrt => match expr {
-                Expr::Binary(OpType::MulRsqrt, x, y) => Some(Expr::Binary(
-                    OpType::Mul,
+                Expr::Binary(OpKind::MulRsqrt, x, y) => Some(Expr::Binary(
+                    OpKind::Mul,
                     x.clone(),
-                    Box::new(Expr::Unary(OpType::Rsqrt, y.clone())),
+                    Box::new(Expr::Unary(OpKind::Rsqrt, y.clone())),
                 )),
                 _ => None,
             },
             UnfuseRewrite::MulRsqrtToDiv => match expr {
-                Expr::Binary(OpType::MulRsqrt, x, y) => Some(Expr::Binary(
-                    OpType::Div,
+                Expr::Binary(OpKind::MulRsqrt, x, y) => Some(Expr::Binary(
+                    OpKind::Div,
                     x.clone(),
-                    Box::new(Expr::Unary(OpType::Sqrt, y.clone())),
+                    Box::new(Expr::Unary(OpKind::Sqrt, y.clone())),
                 )),
                 _ => None,
             },
             UnfuseRewrite::AddIdentity => {
                 // x → x + 0
                 Some(Expr::Binary(
-                    OpType::Add,
+                    OpKind::Add,
                     Box::new(expr.clone()),
                     Box::new(Expr::Const(0.0)),
                 ))
@@ -1613,7 +1563,7 @@ impl UnfuseRewrite {
             UnfuseRewrite::MulIdentity => {
                 // x → x * 1
                 Some(Expr::Binary(
-                    OpType::Mul,
+                    OpKind::Mul,
                     Box::new(expr.clone()),
                     Box::new(Expr::Const(1.0)),
                 ))
@@ -1621,17 +1571,17 @@ impl UnfuseRewrite {
             UnfuseRewrite::DoubleNegate => {
                 // x → --x
                 Some(Expr::Unary(
-                    OpType::Neg,
-                    Box::new(Expr::Unary(OpType::Neg, Box::new(expr.clone()))),
+                    OpKind::Neg,
+                    Box::new(Expr::Unary(OpKind::Neg, Box::new(expr.clone()))),
                 ))
             }
             UnfuseRewrite::MulTwoToAddSelf => match expr {
-                Expr::Binary(OpType::Mul, a, b) => {
+                Expr::Binary(OpKind::Mul, a, b) => {
                     // Check if either operand is 2.0
                     if matches!(a.as_ref(), Expr::Const(c) if (*c - 2.0).abs() < 1e-6) {
-                        Some(Expr::Binary(OpType::Add, b.clone(), b.clone()))
+                        Some(Expr::Binary(OpKind::Add, b.clone(), b.clone()))
                     } else if matches!(b.as_ref(), Expr::Const(c) if (*c - 2.0).abs() < 1e-6) {
-                        Some(Expr::Binary(OpType::Add, a.clone(), a.clone()))
+                        Some(Expr::Binary(OpKind::Add, a.clone(), a.clone()))
                     } else {
                         None
                     }
@@ -1756,7 +1706,7 @@ impl BwdGenerator {
             if self.rand_f32() < 0.6 {
                 // MulAdd: a * b + c
                 Expr::Ternary(
-                    OpType::MulAdd,
+                    OpKind::MulAdd,
                     Box::new(self.generate_optimized(depth + 1)),
                     Box::new(self.generate_optimized(depth + 1)),
                     Box::new(self.generate_optimized(depth + 1)),
@@ -1764,7 +1714,7 @@ impl BwdGenerator {
             } else {
                 // MulRsqrt: x * rsqrt(y)
                 Expr::Binary(
-                    OpType::MulRsqrt,
+                    OpKind::MulRsqrt,
                     Box::new(self.generate_optimized(depth + 1)),
                     Box::new(self.generate_optimized(depth + 1)),
                 )
@@ -1791,33 +1741,33 @@ impl BwdGenerator {
         let choice = self.rand_usize(8);
         match choice {
             0 => Expr::Binary(
-                OpType::Add,
+                OpKind::Add,
                 Box::new(self.generate_optimized(depth + 1)),
                 Box::new(self.generate_optimized(depth + 1)),
             ),
             1 => Expr::Binary(
-                OpType::Sub,
+                OpKind::Sub,
                 Box::new(self.generate_optimized(depth + 1)),
                 Box::new(self.generate_optimized(depth + 1)),
             ),
             2 => Expr::Binary(
-                OpType::Mul,
+                OpKind::Mul,
                 Box::new(self.generate_optimized(depth + 1)),
                 Box::new(self.generate_optimized(depth + 1)),
             ),
             3 => Expr::Binary(
-                OpType::Min,
+                OpKind::Min,
                 Box::new(self.generate_optimized(depth + 1)),
                 Box::new(self.generate_optimized(depth + 1)),
             ),
             4 => Expr::Binary(
-                OpType::Max,
+                OpKind::Max,
                 Box::new(self.generate_optimized(depth + 1)),
                 Box::new(self.generate_optimized(depth + 1)),
             ),
-            5 => Expr::Unary(OpType::Neg, Box::new(self.generate_optimized(depth + 1))),
-            6 => Expr::Unary(OpType::Sqrt, Box::new(self.generate_optimized(depth + 1))),
-            7 => Expr::Unary(OpType::Abs, Box::new(self.generate_optimized(depth + 1))),
+            5 => Expr::Unary(OpKind::Neg, Box::new(self.generate_optimized(depth + 1))),
+            6 => Expr::Unary(OpKind::Sqrt, Box::new(self.generate_optimized(depth + 1))),
+            7 => Expr::Unary(OpKind::Abs, Box::new(self.generate_optimized(depth + 1))),
             _ => unreachable!(),
         }
     }
@@ -1875,6 +1825,12 @@ impl BwdGenerator {
                 let new_c = self.unfuse_recursive(c, applied);
                 Expr::Ternary(*op, Box::new(new_a), Box::new(new_b), Box::new(new_c))
             }
+            Expr::Nary(op, children) => {
+                let new_children: Vec<_> = children.iter()
+                    .map(|c| self.unfuse_recursive(c, applied))
+                    .collect();
+                Expr::Nary(*op, new_children)
+            }
         }
     }
 
@@ -1922,12 +1878,15 @@ pub fn count_fused_ops(expr: &Expr) -> usize {
         Expr::Var(_) | Expr::Const(_) => 0,
         Expr::Unary(_, a) => count_fused_ops(a),
         Expr::Binary(op, a, b) => {
-            let this = if *op == OpType::MulRsqrt { 1 } else { 0 };
+            let this = if *op == OpKind::MulRsqrt { 1 } else { 0 };
             this + count_fused_ops(a) + count_fused_ops(b)
         }
         Expr::Ternary(op, a, b, c) => {
-            let this = if *op == OpType::MulAdd { 1 } else { 0 };
+            let this = if *op == OpKind::MulAdd { 1 } else { 0 };
             this + count_fused_ops(a) + count_fused_ops(b) + count_fused_ops(c)
+        }
+        Expr::Nary(_, children) => {
+            children.iter().map(count_fused_ops).sum()
         }
     }
 }
@@ -1971,6 +1930,13 @@ fn find_rewrites_recursive(
             find_rewrites_recursive(c, path, rewrites);
             path.pop();
         }
+        Expr::Nary(_, children) => {
+            for (i, child) in children.iter().enumerate() {
+                path.push(i);
+                find_rewrites_recursive(child, path, rewrites);
+                path.pop();
+            }
+        }
     }
 }
 
@@ -1985,8 +1951,8 @@ mod tests {
 
     #[test]
     fn test_op_type_roundtrip() {
-        for i in 0..OpType::COUNT {
-            let op = OpType::from_index(i).unwrap();
+        for i in 0..OpKind::COUNT {
+            let op = OpKind::from_index(i).unwrap();
             assert_eq!(op.index(), i);
         }
     }
@@ -2008,7 +1974,7 @@ mod tests {
     fn test_expr_eval() {
         // x + y
         let expr = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Var(0)),
             Box::new(Expr::Var(1)),
         );
@@ -2029,7 +1995,7 @@ mod tests {
     #[test]
     fn test_feature_extraction() {
         let expr = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Var(0)),
             Box::new(Expr::Const(1.0)),
         );
@@ -2040,7 +2006,7 @@ mod tests {
     #[test]
     fn test_rewrite_add_zero() {
         let expr = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Var(0)),
             Box::new(Expr::Const(0.0)),
         );
@@ -2053,9 +2019,9 @@ mod tests {
     fn test_rewrite_fuse_muladd() {
         // a * b + c
         let expr = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Binary(
-                OpType::Mul,
+                OpKind::Mul,
                 Box::new(Expr::Var(0)),
                 Box::new(Expr::Var(1)),
             )),
@@ -2065,7 +2031,7 @@ mod tests {
         assert!(rewritten.is_some());
         assert!(matches!(
             rewritten.unwrap(),
-            Expr::Ternary(OpType::MulAdd, _, _, _)
+            Expr::Ternary(OpKind::MulAdd, _, _, _)
         ));
     }
 
@@ -2073,9 +2039,9 @@ mod tests {
     fn test_find_all_rewrites() {
         // (x + 0) + y - should find AddZero at path [0]
         let expr = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Binary(
-                OpType::Add,
+                OpKind::Add,
                 Box::new(Expr::Var(0)),
                 Box::new(Expr::Const(0.0)),
             )),
@@ -2122,7 +2088,7 @@ mod tests {
     fn test_unfuse_muladd() {
         // MulAdd(x, y, z) → x * y + z
         let expr = Expr::Ternary(
-            OpType::MulAdd,
+            OpKind::MulAdd,
             Box::new(Expr::Var(0)),
             Box::new(Expr::Var(1)),
             Box::new(Expr::Var(2)),
@@ -2133,7 +2099,7 @@ mod tests {
 
         let unoptimized = result.unwrap();
         // Should be Add(Mul(x, y), z)
-        assert!(matches!(unoptimized, Expr::Binary(OpType::Add, _, _)));
+        assert!(matches!(unoptimized, Expr::Binary(OpKind::Add, _, _)));
 
         // Verify semantic equivalence
         let vars = [2.0, 3.0, 4.0, 0.0];
@@ -2146,7 +2112,7 @@ mod tests {
     fn test_unfuse_mulrsqrt() {
         // MulRsqrt(x, y) → x * rsqrt(y)
         let expr = Expr::Binary(
-            OpType::MulRsqrt,
+            OpKind::MulRsqrt,
             Box::new(Expr::Var(0)),
             Box::new(Expr::Var(1)),
         );
@@ -2156,7 +2122,7 @@ mod tests {
 
         let unoptimized = result.unwrap();
         // Should be Mul(x, Rsqrt(y))
-        assert!(matches!(unoptimized, Expr::Binary(OpType::Mul, _, _)));
+        assert!(matches!(unoptimized, Expr::Binary(OpKind::Mul, _, _)));
 
         // Verify semantic equivalence
         let vars = [6.0, 4.0, 0.0, 0.0]; // x=6, y=4 → 6/sqrt(4) = 3
@@ -2173,7 +2139,7 @@ mod tests {
 
         let unoptimized = result.unwrap();
         // Should be x + 0
-        assert!(matches!(unoptimized, Expr::Binary(OpType::Add, _, _)));
+        assert!(matches!(unoptimized, Expr::Binary(OpKind::Add, _, _)));
 
         // Verify semantic equivalence
         let vars = [5.0, 0.0, 0.0, 0.0];
@@ -2241,9 +2207,9 @@ mod tests {
     fn test_count_fused_ops() {
         // Expression with MulAdd and MulRsqrt
         let expr = Expr::Ternary(
-            OpType::MulAdd,
+            OpKind::MulAdd,
             Box::new(Expr::Binary(
-                OpType::MulRsqrt,
+                OpKind::MulRsqrt,
                 Box::new(Expr::Var(0)),
                 Box::new(Expr::Var(1)),
             )),
@@ -2262,7 +2228,7 @@ mod tests {
     fn test_dense_features_simple_add() {
         // x + y
         let expr = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Var(0)),
             Box::new(Expr::Var(1)),
         );
@@ -2279,14 +2245,14 @@ mod tests {
         // Wide expression: (a + b) + (c + d)
         // Critical path: 4 + 4 = 8 (two adds in sequence, but children parallel)
         let wide = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Binary(
-                OpType::Add,
+                OpKind::Add,
                 Box::new(Expr::Var(0)),
                 Box::new(Expr::Var(1)),
             )),
             Box::new(Expr::Binary(
-                OpType::Add,
+                OpKind::Add,
                 Box::new(Expr::Var(2)),
                 Box::new(Expr::Var(3)),
             )),
@@ -2295,11 +2261,11 @@ mod tests {
         // Deep expression: ((a + b) + c) + d
         // Critical path: 4 + 4 + 4 = 12 (three sequential adds)
         let deep = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Binary(
-                OpType::Add,
+                OpKind::Add,
                 Box::new(Expr::Binary(
-                    OpType::Add,
+                    OpKind::Add,
                     Box::new(Expr::Var(0)),
                     Box::new(Expr::Var(1)),
                 )),
@@ -2329,14 +2295,14 @@ mod tests {
         // Wide expression: (a + b) + (c + d)
         // Max width = 4 (all vars at depth 2)
         let wide = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Binary(
-                OpType::Add,
+                OpKind::Add,
                 Box::new(Expr::Var(0)),
                 Box::new(Expr::Var(1)),
             )),
             Box::new(Expr::Binary(
-                OpType::Add,
+                OpKind::Add,
                 Box::new(Expr::Var(2)),
                 Box::new(Expr::Var(3)),
             )),
@@ -2350,7 +2316,7 @@ mod tests {
     fn test_dense_features_detect_identity() {
         // x * 1 - has identity
         let expr = Expr::Binary(
-            OpType::Mul,
+            OpKind::Mul,
             Box::new(Expr::Var(0)),
             Box::new(Expr::Const(1.0)),
         );
@@ -2362,9 +2328,9 @@ mod tests {
     fn test_dense_features_detect_fusable() {
         // (a * b) + c - fusable pattern
         let expr = Expr::Binary(
-            OpType::Add,
+            OpKind::Add,
             Box::new(Expr::Binary(
-                OpType::Mul,
+                OpKind::Mul,
                 Box::new(Expr::Var(0)),
                 Box::new(Expr::Var(1)),
             )),

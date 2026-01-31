@@ -8,7 +8,10 @@ use super::ops::Op;
 pub struct EClassId(pub(crate) u32);
 
 impl EClassId {
-    pub(crate) fn index(self) -> usize {
+    /// Get the index of this e-class ID.
+    ///
+    /// This is useful for using EClassId as a key in external data structures.
+    pub fn index(self) -> usize {
         self.0 as usize
     }
 }

@@ -9,12 +9,22 @@ use pixelflow_nnue::{Nnue, HalfEPFeature, DenseFeatures};
 
 /// Clipped ReLU activation: (x >> 6).clamp(0, 127)
 ///
-/// Returns both the output and the derivative (1.0 if in active region, else 0.0).
+/// Returns both the output and the derivative.
+/// Uses "leaky" gradient (0.01) for dead neurons to allow recovery during training.
+/// Full gradient (1.0) in active region [0, 127].
+/// Small gradient (0.1) in saturated region (>127) for soft clamping.
 #[inline]
 pub fn clipped_relu(x: i32) -> (f32, f32) {
     let shifted = x >> 6;
     let clamped = shifted.clamp(0, 127);
-    let deriv = if shifted > 0 && shifted < 127 { 1.0 } else { 0.0 };
+    // Leaky gradient allows dead neurons to recover
+    let deriv = if shifted <= 0 {
+        0.01  // Dead neuron - small gradient for recovery
+    } else if shifted >= 127 {
+        0.1   // Saturated - reduced but non-zero gradient
+    } else {
+        1.0   // Active region - full gradient
+    };
     (clamped as f32, deriv)
 }
 
@@ -35,6 +45,8 @@ pub struct ForwardState {
 pub struct HybridForwardState {
     pub l1_pre: Vec<i32>,
     pub l1_post: Vec<f32>,
+    pub dense_input: Vec<i32>,  // Input to dense branch (for W_dense gradients)
+    pub dense_pre: Vec<i32>,    // Pre-activation (for derivative)
     pub dense_post: Vec<f32>,
     pub l2_pre: Vec<i32>,
     pub l2_post: Vec<f32>,
@@ -155,13 +167,16 @@ pub fn forward_with_state_hybrid(
         l1_post.push(out);
     }
 
-    // Dense branch
+    // Dense branch - store inputs and pre-activations for backprop
+    let dense_input: Vec<i32> = dense.values.to_vec();
+    let mut dense_pre = Vec::with_capacity(dense_size);
     let mut dense_post = Vec::with_capacity(dense_size);
     for j in 0..dense_size {
         let mut sum = nnue.b_dense[j];
         for i in 0..DenseFeatures::COUNT {
             sum += dense.values[i] * (nnue.w_dense[i * dense_size + j] as i32);
         }
+        dense_pre.push(sum);
         let (out, _) = clipped_relu(sum);
         dense_post.push(out);
     }
@@ -214,6 +229,8 @@ pub fn forward_with_state_hybrid(
     let state = HybridForwardState {
         l1_pre,
         l1_post,
+        dense_input,
+        dense_pre,
         dense_post,
         l2_pre,
         l2_post,
@@ -257,7 +274,7 @@ pub fn backward(
     }
 
     for j in 0..l3_size {
-        nnue.b3[j] -= (d_l3_pre[j] * lr * 64.0) as i32;
+        nnue.b3[j] -= (d_l3_pre[j] * lr * 1.0) as i32;
     }
 
     let mut d_l2_post = vec![0.0f32; l2_size];
@@ -278,7 +295,7 @@ pub fn backward(
     }
 
     for j in 0..l2_size {
-        nnue.b2[j] -= (d_l2_pre[j] * lr * 64.0) as i32;
+        nnue.b2[j] -= (d_l2_pre[j] * lr * 1.0) as i32;
     }
 
     let mut d_l1_post = vec![0.0f32; l1_size];
@@ -299,7 +316,7 @@ pub fn backward(
     }
 
     for i in 0..l1_size {
-        nnue.b1[i] -= (d_l1_pre[i] * lr * 64.0) as i32;
+        nnue.b1[i] -= (d_l1_pre[i] * lr * 1.0) as i32;
     }
 
     // W1 sparse update
@@ -346,7 +363,7 @@ pub fn backward_hybrid(
     }
 
     for j in 0..l3_size {
-        nnue.b3[j] -= (d_l3_pre[j] * lr * 64.0) as i32;
+        nnue.b3[j] -= (d_l3_pre[j] * lr * 1.0) as i32;
     }
 
     let mut d_l2_post = vec![0.0f32; l2_size];
@@ -367,7 +384,7 @@ pub fn backward_hybrid(
     }
 
     for j in 0..l2_size {
-        nnue.b2[j] -= (d_l2_pre[j] * lr * 64.0) as i32;
+        nnue.b2[j] -= (d_l2_pre[j] * lr * 1.0) as i32;
     }
 
     // Gradient into sparse branch
@@ -401,7 +418,7 @@ pub fn backward_hybrid(
     }
 
     for i in 0..l1_size {
-        nnue.b1[i] -= (d_l1_pre[i] * lr * 64.0) as i32;
+        nnue.b1[i] -= (d_l1_pre[i] * lr * 1.0) as i32;
     }
 
     // W1 sparse update
@@ -414,10 +431,28 @@ pub fn backward_hybrid(
         }
     }
 
-    // Dense branch biases
+    // Dense branch: compute pre-activation gradients using leaky ReLU
+    let mut d_dense_pre = vec![0.0f32; dense_size];
     for j in 0..dense_size {
-        let deriv = if state.dense_post[j] > 0.0 { 1.0 } else { 0.0 };
-        let d_dense_pre = d_dense_post[j] * deriv;
-        nnue.b_dense[j] -= (d_dense_pre * lr * 64.0) as i32;
+        let (_, deriv) = clipped_relu(state.dense_pre[j]);
+        d_dense_pre[j] = d_dense_post[j] * deriv;
+    }
+
+    // Update dense biases
+    for j in 0..dense_size {
+        nnue.b_dense[j] -= (d_dense_pre[j] * lr * 1.0) as i32;
+    }
+
+    // Update W_dense weights: grad = d_dense_pre * dense_input
+    for i in 0..DenseFeatures::COUNT {
+        let input_val = state.dense_input[i] as f32;
+        if input_val == 0.0 {
+            continue; // Skip zero inputs for efficiency
+        }
+        for j in 0..dense_size {
+            let grad_w_dense = d_dense_pre[j] * input_val;
+            let update = (grad_w_dense * lr * 0.01).clamp(-32767.0, 32767.0) as i16;
+            nnue.w_dense[i * dense_size + j] = nnue.w_dense[i * dense_size + j].saturating_sub(update);
+        }
     }
 }

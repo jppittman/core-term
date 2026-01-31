@@ -440,7 +440,8 @@ fn write_binpack(path: &PathBuf, samples: &[TrainingSample]) -> std::io::Result<
     for sample in samples {
         file.write_all(&(sample.features.len() as u16).to_le_bytes())?;
         for &f in &sample.features {
-            file.write_all(&(f.to_index() as u16).to_le_bytes())?;
+            // Features are already packed as u32 indices
+            file.write_all(&(f as u16).to_le_bytes())?;
         }
         file.write_all(&sample.cost.to_le_bytes())?;
         // Note: TrainingSample doesn't have best_rewrite or cost_delta in struct definition above?
