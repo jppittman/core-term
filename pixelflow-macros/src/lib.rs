@@ -46,6 +46,7 @@ mod lexer;
 mod manifold_expr;
 mod optimize;
 mod parser;
+mod rewrite_rules;
 mod sema;
 mod symbol;
 

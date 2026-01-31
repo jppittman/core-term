@@ -25,7 +25,7 @@ pub mod guided;
 mod node;
 pub mod nnue_adapter;
 pub mod ops;
-mod rewrite;
+pub mod rewrite;  // Made public for domain-specific rules in pixelflow-macros
 mod rules;
 pub mod saturate;
 
@@ -37,5 +37,6 @@ pub use graph::{EGraph, RewriteTarget};
 pub use guided::{GuidedAction, GuidedResult, GuidedState, GuidedStats, ActionRecord, GuidedConfig, GuidedMcts, guided_optimize};
 pub use node::{EClassId, ENode};
 pub use ops::Op;
+pub use rewrite::{Rewrite, RewriteAction};  // Export for domain-specific rules
 pub use saturate::{SaturationResult, saturate_with_budget, achievable_cost_within_budget};
 pub use best_first::{BestFirstPlanner, BestFirstConfig, BestFirstResult, BestFirstContext};

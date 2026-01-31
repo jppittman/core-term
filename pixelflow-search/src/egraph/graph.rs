@@ -8,7 +8,7 @@ use super::extract::ExprTree;
 use super::node::{EClassId, ENode};
 use super::ops;
 use super::rewrite::{Rewrite, RewriteAction};
-use super::rules::{Annihilator, Commutative, Distributive, Factor, FmaFusion, Idempotent, Identity, RecipSqrt};
+use super::rules::{Annihilator, Commutative, Distributive, Factor, Idempotent, Identity};
 
 /// A potential rewrite target: (rule, e-class, node within class).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -88,14 +88,13 @@ impl EGraph {
         rules.push(Commutative::new(&ops::Max));
         rules.push(Distributive::new(&ops::Mul, &ops::Add));
         rules.push(Distributive::new(&ops::Mul, &ops::Sub));
-        rules.push(Box::new(FmaFusion));
+        // Domain-specific fusion rules (FmaFusion, RecipSqrt) should be added
+        // by the domain layer (pixelflow-macros) using add_rule(), not here.
         // Identity rules: x + 0 = x, x * 1 = x
         rules.push(Identity::new(&ops::Add));
         rules.push(Identity::new(&ops::Mul));
         // Annihilator rules: x * 0 = 0
         rules.push(Annihilator::new(&ops::Mul));
-        // Special instructions
-        rules.push(Box::new(RecipSqrt));
 
         rules
     }
