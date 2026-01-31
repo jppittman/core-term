@@ -11,6 +11,8 @@
 
 # Fonts
 *.ttf filter=lfs diff=lfs merge=lfs -text
+# Exception: Test fallback font embedded in test binary (checked into git, not LFS)
+pixelflow-graphics/assets/DejaVuSansMono-Fallback.ttf filter= diff= merge= -text
 *.otf filter=lfs diff=lfs merge=lfs -text
 *.woff filter=lfs diff=lfs merge=lfs -text
 *.woff2 filter=lfs diff=lfs merge=lfs -text
