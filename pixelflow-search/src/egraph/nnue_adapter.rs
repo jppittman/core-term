@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn test_op_to_nnue_roundtrip() {
+    fn op_to_nnue_roundtrips_correctly() {
         let ops_to_test: &[&dyn crate::egraph::ops::Op] = &[
             &ops::Add,
             &ops::Sub,
@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eclass_to_expr_leaf() {
+    fn eclass_to_expr_handles_leaf() {
         let mut egraph = EGraph::new();
         let var_class = egraph.add(ENode::Var(0));
         let expr = eclass_to_expr(&egraph, var_class);
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_simple() {
+    fn roundtrip_simple_expr_works() {
         let expr = Expr::Binary(
             OpType::Add,
             Box::new(Expr::Var(0)),
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_nested() {
+    fn roundtrip_nested_expr_works() {
         // (x * 2.0) + y
         let expr = Expr::Binary(
             OpType::Add,

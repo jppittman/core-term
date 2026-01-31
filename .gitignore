@@ -2,6 +2,7 @@
 CoreTerm.app
 .DS_Store
 /vendor
+mutants.out*
 
 
 .gemini*/
