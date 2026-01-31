@@ -317,13 +317,13 @@ impl SimdOps for F32x4 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm_set1_ps(1.414_213_5);
+            let sqrt2 = _mm_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm_cmpge_ps(f, sqrt2);
             let adjust = _mm_and_ps(mask, _mm_set1_ps(1.0));
             n = _mm_add_ps(n, adjust);
             f = _mm_or_ps(
                 _mm_and_ps(mask, _mm_mul_ps(f, _mm_set1_ps(0.5))),
-                _mm_andnot_ps(mask, f),
+                _mm_andnot_ps(mask, f)
             );
 
             // Polynomial for log2(f) on [√2/2, √2]
@@ -355,9 +355,9 @@ impl SimdOps for F32x4 {
 
             // Minimax polynomial for 2^f, f ∈ [0, 1)
             // Degree 4, max error ~10^-7
-            let c4 = _mm_set1_ps(0.0135557);
-            let c3 = _mm_set1_ps(0.0520323);
-            let c2 = _mm_set1_ps(0.2413793);
+            let c4 = _mm_set1_ps(0.013_555_7);
+            let c3 = _mm_set1_ps(0.052_032_3);
+            let c2 = _mm_set1_ps(0.241_379_3);
             let c1 = _mm_set1_ps(0.6931472);
             let c0 = _mm_set1_ps(1.0);
 
@@ -558,7 +558,6 @@ impl Shr<u32> for U32x4 {
 impl U32x4 {
     /// Pack 4 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
-    #[must_use]
     pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
         unsafe {
             // Clamp to [0, 1] and scale to [0, 255]
@@ -901,13 +900,13 @@ impl SimdOps for F32x8 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm256_set1_ps(1.414_213_5);
+            let sqrt2 = _mm256_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm256_cmp_ps::<_CMP_GE_OQ>(f, sqrt2);
             let adjust = _mm256_and_ps(mask, _mm256_set1_ps(1.0));
             n = _mm256_add_ps(n, adjust);
             f = _mm256_or_ps(
                 _mm256_and_ps(mask, _mm256_mul_ps(f, _mm256_set1_ps(0.5))),
-                _mm256_andnot_ps(mask, f),
+                _mm256_andnot_ps(mask, f)
             );
 
             // Polynomial for log2(f) on [√2/2, √2]
@@ -947,10 +946,10 @@ impl SimdOps for F32x8 {
             let f = _mm256_sub_ps(self.0, n);
 
             // Minimax polynomial for 2^f, f ∈ [0, 1)
-            let c4 = _mm256_set1_ps(0.0135557);
-            let c3 = _mm256_set1_ps(0.0520323);
-            let c2 = _mm256_set1_ps(0.2413793);
-            let c1 = _mm256_set1_ps(0.6931472);
+            let c4 = _mm256_set1_ps(0.013_555_7);
+            let c3 = _mm256_set1_ps(0.052_032_3);
+            let c2 = _mm256_set1_ps(0.241_379_3);
+            let c1 = _mm256_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm256_set1_ps(1.0);
 
             // Horner's method
@@ -1535,7 +1534,11 @@ impl SimdOps for F32x16 {
             let mask = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(f, sqrt2);
             let adjust = _mm512_mask_blend_ps(mask, _mm512_setzero_ps(), _mm512_set1_ps(1.0));
             n = _mm512_add_ps(n, adjust);
-            f = _mm512_mask_blend_ps(mask, f, _mm512_mul_ps(f, _mm512_set1_ps(0.5)));
+            f = _mm512_mask_blend_ps(
+                mask,
+                f,
+                _mm512_mul_ps(f, _mm512_set1_ps(0.5))
+            );
 
             // Polynomial for log2(f) on [√2/2, √2]
             // Fitted using least squares on Chebyshev nodes
@@ -1822,9 +1825,7 @@ mod tests {
             assert!(
                 (buf[0] - expected).abs() < 0.01,
                 "log2({}) = {}, expected {}",
-                val,
-                buf[0],
-                expected
+                val, buf[0], expected
             );
         }
     }

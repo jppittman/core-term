@@ -1,0 +1,570 @@
+warning: struct `Factor` is never constructed
+   --> pixelflow-search/src/egraph/rules.rs:130:12
+    |
+130 | pub struct Factor {
+    |            ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `new` is never used
+   --> pixelflow-search/src/egraph/rules.rs:136:12
+    |
+135 | impl Factor {
+    | ----------- associated function in this implementation
+136 |     pub fn new(outer: &'static dyn Op, inner: &'static dyn Op) -> Box<Self> {
+    |            ^^^
+
+warning: struct `Idempotent` is never constructed
+   --> pixelflow-search/src/egraph/rules.rs:261:12
+    |
+261 | pub struct Idempotent {
+    |            ^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> pixelflow-search/src/egraph/rules.rs:266:12
+    |
+265 | impl Idempotent {
+    | --------------- associated function in this implementation
+266 |     pub fn new(op: &'static dyn Op) -> Box<Self> {
+    |            ^^^
+
+warning: struct `RecipSqrt` is never constructed
+   --> pixelflow-search/src/egraph/rules.rs:295:12
+    |
+295 | pub struct RecipSqrt;
+    |            ^^^^^^^^^
+
+warning: struct `FmaFusion` is never constructed
+   --> pixelflow-search/src/egraph/rules.rs:329:12
+    |
+329 | pub struct FmaFusion;
+    |            ^^^^^^^^^
+
+warning: `pixelflow-search` (lib) generated 6 warnings
+   Compiling pixelflow-core v0.1.0 (/app/pixelflow-core)
+warning: unexpected `cfg` condition value: `nnue-eval`
+   --> pixelflow-macros/src/cost_builder.rs:288:7
+    |
+288 | #[cfg(feature = "nnue-eval")]
+    |       ^^^^^^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `nnue-eval` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: method `literal_count` is never used
+  --> pixelflow-macros/src/annotate.rs:40:12
+   |
+34 | impl AnnotationCtx {
+   | ------------------ method in this implementation
+...
+40 |     pub fn literal_count(&self) -> usize {
+   |            ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:65:9
+   |
+63 | pub struct AnnotatedTuple {
+   |            -------------- field in this struct
+64 |     pub elems: Vec<AnnotatedExpr>,
+65 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedTuple` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:72:9
+   |
+70 | pub struct AnnotatedLiteral {
+   |            ---------------- field in this struct
+71 |     pub lit: Lit,
+72 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedLiteral` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:83:9
+   |
+79 | pub struct AnnotatedBinary {
+   |            --------------- field in this struct
+...
+83 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedBinary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:90:9
+   |
+87 | pub struct AnnotatedUnary {
+   |            -------------- field in this struct
+...
+90 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedUnary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:98:9
+   |
+94 | pub struct AnnotatedMethodCall {
+   |            ------------------- field in this struct
+...
+98 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedMethodCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:106:9
+    |
+103 | pub struct AnnotatedCall {
+    |            ------------- field in this struct
+...
+106 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:113:9
+    |
+110 | pub struct AnnotatedBlock {
+    |            -------------- field in this struct
+...
+113 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedBlock` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:127:9
+    |
+123 | pub struct AnnotatedLet {
+    |            ------------ field in this struct
+...
+127 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedLet` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `AnnotationResult` is never constructed
+   --> pixelflow-macros/src/annotate.rs:138:12
+    |
+138 | pub struct AnnotationResult {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/ast.rs:128:9
+    |
+126 | pub struct IdentExpr {
+    |            --------- field in this struct
+127 |     pub name: Ident,
+128 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `IdentExpr` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: enum `BindingStrategy` is never used
+  --> pixelflow-macros/src/codegen/binding.rs:21:10
+   |
+21 | pub enum BindingStrategy {
+   |          ^^^^^^^^^^^^^^^
+
+warning: method `emit` is never used
+  --> pixelflow-macros/src/codegen/binding.rs:56:12
+   |
+52 | impl BindingStrategy {
+   | -------------------- method in this implementation
+...
+56 |     pub fn emit(self, expr: TokenStream) -> TokenStream {
+   |            ^^^^
+
+warning: enum `Deps` is never used
+  --> pixelflow-macros/src/codegen/leveled.rs:56:10
+   |
+56 | pub enum Deps {
+   |          ^^^^
+
+warning: methods `join` and `is_uniform` are never used
+  --> pixelflow-macros/src/codegen/leveled.rs:68:12
+   |
+65 | impl Deps {
+   | --------- methods in this implementation
+...
+68 |     pub fn join(self, other: Self) -> Self {
+   |            ^^^^
+...
+74 |     pub fn is_uniform(&self) -> bool {
+   |            ^^^^^^^^^^
+
+warning: struct `LeveledNode` is never constructed
+  --> pixelflow-macros/src/codegen/leveled.rs:81:12
+   |
+81 | pub struct LeveledNode {
+   |            ^^^^^^^^^^^
+
+warning: enum `LeveledNodeKind` is never used
+  --> pixelflow-macros/src/codegen/leveled.rs:88:10
+   |
+88 | pub enum LeveledNodeKind {
+   |          ^^^^^^^^^^^^^^^
+
+warning: struct `NodeRef` is never constructed
+   --> pixelflow-macros/src/codegen/leveled.rs:115:12
+    |
+115 | pub struct NodeRef {
+    |            ^^^^^^^
+
+warning: associated items `new` and `var_name` are never used
+   --> pixelflow-macros/src/codegen/leveled.rs:121:12
+    |
+120 | impl NodeRef {
+    | ------------ associated items in this implementation
+121 |     pub fn new(level: usize, index: usize) -> Self {
+    |            ^^^
+...
+126 |     pub fn var_name(&self) -> syn::Ident {
+    |            ^^^^^^^^
+
+warning: struct `LeveledExpr` is never constructed
+   --> pixelflow-macros/src/codegen/leveled.rs:132:12
+    |
+132 | pub struct LeveledExpr {
+    |            ^^^^^^^^^^^
+
+warning: struct `LevelBuilder` is never constructed
+   --> pixelflow-macros/src/codegen/leveled.rs:140:8
+    |
+140 | struct LevelBuilder<'a> {
+    |        ^^^^^^^^^^^^
+
+warning: associated items `new`, `build`, `compute_depths`, `compute_depth_recursive`, `assign_to_levels`, and `get_deps` are never used
+   --> pixelflow-macros/src/codegen/leveled.rs:149:8
+    |
+148 | impl<'a> LevelBuilder<'a> {
+    | ------------------------- associated items in this implementation
+149 |     fn new(analyzed: &'a AnalyzedKernel) -> Self {
+    |        ^^^
+...
+159 |     fn build(&mut self, expr: &AnnotatedExpr) -> NodeRef {
+    |        ^^^^^
+...
+172 |     fn compute_depths(&self, expr: &AnnotatedExpr) -> HashMap<usize, usize> {
+    |        ^^^^^^^^^^^^^^
+...
+178 |     fn compute_depth_recursive(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+255 |     fn assign_to_levels(
+    |        ^^^^^^^^^^^^^^^^
+...
+416 |     fn get_deps(&self, node_ref: NodeRef) -> Deps {
+    |        ^^^^^^^^
+
+warning: struct `DepsStats` is never constructed
+   --> pixelflow-macros/src/codegen/leveled.rs:423:12
+    |
+423 | pub struct DepsStats {
+    |            ^^^^^^^^^
+
+warning: method `hoisting_potential` is never used
+   --> pixelflow-macros/src/codegen/leveled.rs:433:12
+    |
+431 | impl DepsStats {
+    | -------------- method in this implementation
+432 |     /// Percentage of nodes that could potentially be hoisted
+433 |     pub fn hoisting_potential(&self) -> f64 {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: function `analyze_deps` is never used
+   --> pixelflow-macros/src/codegen/leveled.rs:444:8
+    |
+444 | pub fn analyze_deps(analyzed: &AnalyzedKernel, annotated: &AnnotatedExpr) -> DepsStats {
+    |        ^^^^^^^^^^^^
+
+warning: function `emit_leveled` is never used
+   --> pixelflow-macros/src/codegen/leveled.rs:500:8
+    |
+500 | pub fn emit_leveled(
+    |        ^^^^^^^^^^^^
+
+warning: function `emit_node` is never used
+   --> pixelflow-macros/src/codegen/leveled.rs:531:4
+    |
+531 | fn emit_node(node: &LeveledNode, use_jet_wrapper: bool) -> TokenStream {
+    |    ^^^^^^^^^
+
+warning: function `build_tuple` is never used
+  --> pixelflow-macros/src/codegen/util.rs:36:8
+   |
+36 | pub fn build_tuple(values: &[TokenStream]) -> TokenStream {
+   |        ^^^^^^^^^^^
+
+warning: trait `ExprFold` is never used
+  --> pixelflow-macros/src/fold.rs:40:11
+   |
+40 | pub trait ExprFold {
+   |           ^^^^^^^^
+
+warning: function `fold_expr` is never used
+   --> pixelflow-macros/src/fold.rs:106:8
+    |
+106 | pub fn fold_expr<F: ExprFold>(folder: &mut F, expr: &Expr) -> F::Output {
+    |        ^^^^^^^^^
+
+warning: function `egraph_to_ir` is never used
+   --> pixelflow-macros/src/ir_bridge.rs:211:8
+    |
+211 | pub fn egraph_to_ir(tree: &ExprTree) -> IR {
+    |        ^^^^^^^^^^^^
+
+warning: function `ir_to_code` is never used
+   --> pixelflow-macros/src/ir_bridge.rs:266:8
+    |
+266 | pub fn ir_to_code(ir: &IR) -> TokenStream {
+    |        ^^^^^^^^^^
+
+warning: enum `TokenClass` is never used
+  --> pixelflow-macros/src/lexer.rs:30:10
+   |
+30 | pub enum TokenClass {
+   |          ^^^^^^^^^^
+
+warning: function `classify_ident` is never used
+  --> pixelflow-macros/src/lexer.rs:46:8
+   |
+46 | pub fn classify_ident(name: &str) -> TokenClass {
+   |        ^^^^^^^^^^^^^^
+
+warning: function `lex` is never used
+  --> pixelflow-macros/src/lexer.rs:56:8
+   |
+56 | pub fn lex(input: TokenStream) -> TokenStream {
+   |        ^^^
+
+warning: struct `KernelParser` is never constructed
+  --> pixelflow-macros/src/parser.rs:43:8
+   |
+43 | struct KernelParser;
+   |        ^^^^^^^^^^^^
+
+warning: fields `name`, `ty`, and `span` are never read
+  --> pixelflow-macros/src/symbol.rs:57:9
+   |
+55 | pub struct Symbol {
+   |            ------ fields in this struct
+56 |     /// The identifier name.
+57 |     pub name: Ident,
+   |         ^^^^
+...
+61 |     pub ty: Option<Type>,
+   |         ^^
+62 |     /// Where the symbol was defined.
+63 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `Symbol` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: methods `is_parameter`, `parameters`, `is_manifold_param`, and `manifold_params` are never used
+   --> pixelflow-macros/src/symbol.rs:166:12
+    |
+ 75 | impl SymbolTable {
+    | ---------------- methods in this implementation
+...
+166 |     pub fn is_parameter(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^
+...
+173 |     pub fn parameters(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^
+...
+180 |     pub fn is_manifold_param(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^^^^^^
+...
+187 |     pub fn manifold_params(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^^^^^^
+
+warning: `pixelflow-macros` (lib) generated 39 warnings
+warning: unused macro definition: `impl_spatial_for_context`
+   --> pixelflow-core/src/combinators/context.rs:494:14
+    |
+494 | macro_rules! impl_spatial_for_context {
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_macros)]` (part of `#[warn(unused)]`) on by default
+
+warning: ambiguous glob re-exports
+   --> pixelflow-core/src/lib.rs:193:9
+    |
+193 | pub use manifold::*;
+    |         ^^^^^^^^^^^ the name `Scale` in the type namespace is first re-exported here
+194 | pub use numeric::{Computational, Coordinate, Selectable};
+195 | pub use ops::binary::*;
+    |         -------------- but the name `Scale` in the type namespace is also re-exported here
+    |
+    = note: `#[warn(ambiguous_glob_reexports)]` on by default
+
+warning: unused import: `crate::numeric::Numeric`
+  --> pixelflow-core/src/combinators/select.rs:23:5
+   |
+23 | use crate::numeric::Numeric;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `from_slice` is never used
+   --> pixelflow-core/src/lib.rs:717:8
+    |
+443 | impl Field {
+    | ---------- associated function in this implementation
+...
+717 |     fn from_slice(slice: &[f32]) -> Self {
+    |        ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `map_partials` is never used
+   --> pixelflow-core/src/dual.rs:110:8
+    |
+ 71 | impl<const N: usize, A: Algebra> Dual<N, A> {
+    | ------------------------------------------- method in this implementation
+...
+110 |     fn map_partials<F>(self, f: F) -> Self
+    |        ^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> pixelflow-core/src/numeric.rs:79:8
+    |
+ 65 | pub(crate) trait Numeric: Computational {
+    |                  ------- associated items in this trait
+...
+ 79 |     fn lt(self, rhs: Self) -> Self;
+    |        ^^
+...
+ 82 |     fn le(self, rhs: Self) -> Self;
+    |        ^^
+...
+ 85 |     fn gt(self, rhs: Self) -> Self;
+    |        ^^
+...
+ 88 |     fn ge(self, rhs: Self) -> Self;
+    |        ^^
+...
+ 93 |     fn select(mask: Self, if_true: Self, if_false: Self) -> Self;
+    |        ^^^^^^
+...
+ 97 |     fn select_raw(mask: Self, if_true: Self, if_false: Self) -> Self;
+    |        ^^^^^^^^^^
+...
+102 |     fn any(&self) -> bool;
+    |        ^^^
+...
+107 |     fn all(&self) -> bool;
+    |        ^^^
+...
+110 |     fn from_i32(val: i32) -> Self;
+    |        ^^^^^^^^
+...
+113 |     fn from_field(field: crate::Field) -> Self;
+    |        ^^^^^^^^^^
+...
+126 |     fn atan2(self, x: Self) -> Self;
+    |        ^^^^^
+...
+129 |     fn pow(self, exp: Self) -> Self;
+    |        ^^^
+...
+149 |     fn recip(self) -> Self;
+    |        ^^^^^
+
+warning: type alias `Field4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:513:6
+    |
+513 | type Field4 = (Field, Field, Field, Field);
+    |      ^^^^^^
+
+warning: type alias `Jet2_4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:514:6
+    |
+514 | type Jet2_4 = (Jet2, Jet2, Jet2, Jet2);
+    |      ^^^^^^
+
+warning: type alias `Jet3_4` is never used
+   --> pixelflow-core/src/ops/derivative.rs:515:6
+    |
+515 | type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
+    |      ^^^^^^
+
+warning: missing documentation for a type alias
+   --> pixelflow-core/src/storage.rs:104:1
+    |
+104 | pub type NativeMaskStorage = crate::backend::x86::Mask8;
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: the lint level is defined here
+   --> pixelflow-core/src/lib.rs:130:9
+    |
+130 | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/ops/mod.rs:2:1
+  |
+2 | pub mod compare;
+  | ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a module
+ --> pixelflow-core/src/ops/mod.rs:5:1
+  |
+5 | pub mod unary;
+  | ^^^^^^^^^^^^^
+
+warning: missing documentation for a trait
+   --> pixelflow-core/src/combinators/binding.rs:165:1
+    |
+165 | pub trait Pred {
+    | ^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated type
+   --> pixelflow-core/src/combinators/binding.rs:166:5
+    |
+166 |     type Output;
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/combinators/fix.rs:21:5
+   |
+21 |     pub seed: Seed,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/combinators/fix.rs:22:5
+   |
+22 |     pub step: Step,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/combinators/fix.rs:23:5
+   |
+23 |     pub done: Done,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> pixelflow-core/src/combinators/fix.rs:69:5
+   |
+69 |     pub coords: P,
+   |     ^^^^^^^^^^^^^
+
+warning: `pixelflow-core` (lib) generated 18 warnings
+error[E0606]: casting `&Log2<Field>` as `*const Field` is invalid
+  --> pixelflow-core/examples/repro_log2.rs:12:30
+   |
+12 |     let res_f32 = unsafe { *(&log_one as *const Field as *const f32) };
+   |                              ^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0606`.
+error: could not compile `pixelflow-core` (example "repro_log2") due to 1 previous error
