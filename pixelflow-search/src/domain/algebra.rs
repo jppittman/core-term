@@ -98,7 +98,7 @@ pub enum OpType {
     MulAdd = 12,
     /// Fused multiply-rsqrt
     MulRsqrt = 13,
-    
+
     // Extended set
     Recip = 14,
     Floor = 15,
@@ -153,21 +153,21 @@ impl OpType {
     pub fn arity(self) -> usize {
         match self {
             OpType::Var | OpType::Const => 0,
-            
+
             OpType::Neg | OpType::Sqrt | OpType::Rsqrt | OpType::Abs |
-            OpType::Recip | OpType::Floor | OpType::Ceil | OpType::Round | 
-            OpType::Fract | OpType::Sin | OpType::Cos | OpType::Tan | 
-            OpType::Asin | OpType::Acos | OpType::Atan | OpType::Exp | 
+            OpType::Recip | OpType::Floor | OpType::Ceil | OpType::Round |
+            OpType::Fract | OpType::Sin | OpType::Cos | OpType::Tan |
+            OpType::Asin | OpType::Acos | OpType::Atan | OpType::Exp |
             OpType::Exp2 | OpType::Ln | OpType::Log2 | OpType::Log10 => 1,
-            
+
             OpType::Add | OpType::Sub | OpType::Mul | OpType::Div |
             OpType::Min | OpType::Max | OpType::MulRsqrt |
             OpType::Atan2 | OpType::Pow | OpType::Hypot |
-            OpType::Lt | OpType::Le | OpType::Gt | OpType::Ge | 
+            OpType::Lt | OpType::Le | OpType::Gt | OpType::Ge |
             OpType::Eq | OpType::Ne => 2,
-            
+
             OpType::MulAdd | OpType::Select | OpType::Clamp => 3,
-            
+
             OpType::Tuple => 0, // Tuple is variadic, treat as 0 for static arity
         }
     }
