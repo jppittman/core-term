@@ -536,8 +536,14 @@ struct EGraphContext {
 
 impl EGraphContext {
     fn new() -> Self {
+        let mut egraph = EGraph::new();
+
+        // Add domain-specific rewrite rules (these belong in the compiler, not the generic e-graph)
+        egraph.add_rule(Box::new(crate::rewrite_rules::FmaFusion));
+        egraph.add_rule(Box::new(crate::rewrite_rules::RecipSqrt));
+
         Self {
-            egraph: EGraph::new(),
+            egraph,
             var_to_eclass: HashMap::new(),
             idx_to_name: Vec::new(),
             opaque_exprs: HashMap::new(),
