@@ -376,7 +376,8 @@ impl<S: FontSource> LoadedFont<S> {
 mod tests {
     use super::*;
 
-    const FONT_DATA: &[u8] = include_bytes!("../../assets/NotoSansMono-Regular.ttf");
+    // Use fallback font checked into git (LFS Noto Sans may not be available)
+    const FONT_DATA: &[u8] = include_bytes!("../../assets/DejaVuSansMono-Fallback.ttf");
 
     #[test]
     fn test_embedded_source() {
