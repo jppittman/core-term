@@ -63,6 +63,7 @@ impl ExprTree {
     }
 
     // Constructor helpers for common operations
+    #[allow(clippy::should_implement_trait)]
     pub fn add(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Add,
@@ -70,6 +71,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn sub(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Sub,
@@ -77,6 +79,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn mul(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Mul,
@@ -84,6 +87,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn div(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Div,
@@ -91,6 +95,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn neg(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Neg,
@@ -378,7 +383,7 @@ pub fn extract(egraph: &EGraph, root: EClassId, costs: &CostModel) -> (ExprTree,
         }
     }
 
-    let tree = result_stack.pop().unwrap_or_else(|| ExprTree::Leaf(Leaf::Const(0.0)));
+    let tree = result_stack.pop().unwrap_or(ExprTree::Leaf(Leaf::Const(0.0)));
     (tree, total_cost)
 }
 

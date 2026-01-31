@@ -368,16 +368,9 @@ mod tests {
         assert_eq!(size_bucket(17.0), 20);
     }
 
-    fn load_font() -> Option<Font<'static>> {
-        Font::parse(FONT_DATA).or_else(|| {
-            eprintln!("Skipping test: Font asset invalid or missing (LFS)");
-            None
-        })
-    }
-
     #[test]
     fn test_cached_glyph_creation() {
-        let Some(font) = load_font() else { return };
+        let font = Font::parse(FONT_DATA).unwrap();
         let glyph = font.glyph_scaled('A', 32.0).unwrap();
         let cached = CachedGlyph::new(&glyph, 32);
 
@@ -387,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_glyph_cache_get() {
-        let Some(font) = load_font() else { return };
+        let font = Font::parse(FONT_DATA).unwrap();
         let mut cache = GlyphCache::new();
 
         // First access should cache
@@ -408,7 +401,7 @@ mod tests {
 
     #[test]
     fn test_glyph_cache_warm() {
-        let Some(font) = load_font() else { return };
+        let font = Font::parse(FONT_DATA).unwrap();
         let mut cache = GlyphCache::new();
 
         cache.warm_ascii(&font, 16.0);
@@ -426,7 +419,7 @@ mod tests {
     fn test_cached_glyph_eval() {
         use pixelflow_core::Field;
 
-        let Some(font) = load_font() else { return };
+        let font = Font::parse(FONT_DATA).unwrap();
         let glyph = font.glyph_scaled('A', 32.0).unwrap();
         let cached = CachedGlyph::new(&glyph, 32);
 
@@ -447,7 +440,7 @@ mod tests {
     fn test_cached_text_creation() {
         use pixelflow_core::Field;
 
-        let Some(font) = load_font() else { return };
+        let font = Font::parse(FONT_DATA).unwrap();
         let mut cache = GlyphCache::new();
 
         let text = CachedText::new(&font, &mut cache, "Hello", 16.0);
@@ -470,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_cache_memory_usage() {
-        let Some(font) = load_font() else { return };
+        let font = Font::parse(FONT_DATA).unwrap();
         let mut cache = GlyphCache::new();
 
         cache.get(&font, 'A', 16.0); // 16x16 = 256 pixels * 4 bytes = 1024

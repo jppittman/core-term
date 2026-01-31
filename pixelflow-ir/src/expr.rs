@@ -46,7 +46,7 @@ impl Expr {
         match self {
             Self::Var(_) | Self::Const(_) => &[],
             Self::Unary(_, a) => core::slice::from_ref(a),
-            Self::Binary(_, _a, _b) => {
+            Self::Binary(_, a, b) => {
                 // This is unsafe/tricky to return slice from Box fields.
                 // We return Vec or iterator?
                 // For simplicity in this base IR, we might not provide a generic children() slice 

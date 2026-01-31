@@ -142,7 +142,7 @@ pub trait SimdOps:
     /// Natural exponential.
     #[inline(always)]
     fn exp(self) -> Self {
-        const LOG2_E: f32 = core::f32::consts::LOG2_E;
+        const LOG2_E: f32 = 1.4426950408889634;
         (self * Self::splat(LOG2_E)).exp2()
     }
 }

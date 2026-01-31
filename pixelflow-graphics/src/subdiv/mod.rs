@@ -61,6 +61,9 @@ use pixelflow_core::combinators::{At, Select};
 use pixelflow_core::ops::compare::Lt;
 use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
 
+/// Natural logarithm of 2, used for 2^x = exp(x * LN_2).
+const LN_2: f32 = 0.6931471805599453;
+
 // ============================================================================
 // Regular Patch (Valence 4) - Standard B-Spline
 // ============================================================================
@@ -164,6 +167,45 @@ fn bspline_axis(control_points: &[[f32; 4]; 4]) -> impl Manifold<Output = Field>
 /// - `Map` for log2/floor/pow operations on coordinates
 /// - Recursive `Select` tree for tile depth routing
 /// - Per-eigenbasis weighting (may require K separate bicubics, not combined)
+fn axis_patch(coeffs: [[f32; 16]; 3]) -> impl Manifold<Output = Field> {
+    // TODO(subdiv): Implement eigenvalue power weighting λᵢⁿ⁻¹
+    // TODO(subdiv): Implement recursive tiling for (u,v) < 0.5
+    // TODO(subdiv): Currently ONLY first tile - see docs above
+
+    // Each subpatch has different coordinate remapping
+    let sub0 = At {
+        inner: bicubic(coeffs[0]),
+        x: X * 2.0,
+        y: Y * 2.0,
+        z: 0.0f32,
+        w: 0.0f32,
+    };
+    let sub1 = At {
+        inner: bicubic(coeffs[1]),
+        x: X * 2.0 - 1.0,
+        y: Y * 2.0 - 1.0,
+        z: 0.0f32,
+        w: 0.0f32,
+    };
+    let sub2 = At {
+        inner: bicubic(coeffs[2]),
+        x: X * 2.0,
+        y: Y * 2.0 - 1.0,
+        z: 0.0f32,
+        w: 0.0f32,
+    };
+
+    // v < 0.5 → sub0, else (u < 0.5 → sub2, else sub1)
+    Select {
+        cond: Lt(Y, 0.5f32),
+        if_true: sub0,
+        if_false: Select {
+            cond: Lt(X, 0.5f32),
+            if_true: sub2,
+            if_false: sub1,
+        },
+    }
+}
 
 /// Compute the tile rescaling factor for recursive Stam evaluation.
 ///

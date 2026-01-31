@@ -163,8 +163,9 @@ pub fn expr_tree_to_kernel_body(tree: &ExprTree) -> String {
                 ),
 
                 // Ternary operations
+                // mul_add(a, b, c) = a * b + c, but kernel! doesn't support mul_add method
                 ("mul_add", [a, b, c]) => format!(
-                    "({}).mul_add({}, {})",
+                    "(({}) * ({}) + ({}))",
                     expr_tree_to_kernel_body(a),
                     expr_tree_to_kernel_body(b),
                     expr_tree_to_kernel_body(c)
@@ -304,7 +305,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn expr_tree_to_kernel_body_returns_correct_name_when_var() {
+    fn test_expr_tree_to_kernel_body_var() {
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(0)), "X");
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(1)), "Y");
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(2)), "Z");
@@ -313,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn expr_tree_to_kernel_body_formats_const_correctly() {
+    fn test_expr_tree_to_kernel_body_const() {
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(0.0)), "0.0");
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(1.0)), "1.0");
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(-1.0)), "(-1.0)");
@@ -321,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn expr_tree_to_kernel_body_formats_unary_ops_correctly() {
+    fn test_expr_tree_to_kernel_body_unary() {
         let x = ExprTree::var(0);
         assert_eq!(
             expr_tree_to_kernel_body(&ExprTree::neg(x.clone())),
@@ -338,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn expr_tree_to_kernel_body_formats_binary_ops_correctly() {
+    fn test_expr_tree_to_kernel_body_binary() {
         let x = ExprTree::var(0);
         let y = ExprTree::var(1);
 
@@ -357,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn expr_tree_to_kernel_body_handles_nested_exprs() {
+    fn test_expr_tree_to_kernel_body_nested() {
         // (X + Y) * Z
         let tree = ExprTree::mul(
             ExprTree::add(ExprTree::var(0), ExprTree::var(1)),
@@ -367,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn expr_tree_to_kernel_body_uses_mul_add_method() {
+    fn test_expr_tree_to_kernel_body_mul_add() {
         let tree = ExprTree::mul_add(
             ExprTree::var(0),
             ExprTree::var(1),
@@ -377,14 +378,14 @@ mod tests {
     }
 
     #[test]
-    fn expr_tree_to_kernel_code_generates_full_let_binding() {
+    fn test_expr_tree_to_kernel_code() {
         let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(1.0));
         let code = expr_tree_to_kernel_code(&tree, "my_kernel");
         assert_eq!(code, "let my_kernel = kernel!(|| (X + 1.0));");
     }
 
     #[test]
-    fn generate_benchmark_file_includes_criterion_boilerplate() {
+    fn test_generate_benchmark_file() {
         let variants = vec![
             ("k0".to_string(), ExprTree::var(0)),
             (

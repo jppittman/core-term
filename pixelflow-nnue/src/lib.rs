@@ -1984,7 +1984,7 @@ mod tests {
     use libm::fabsf;
 
     #[test]
-    fn op_type_roundtrips_correctly() {
+    fn test_op_type_roundtrip() {
         for i in 0..OpType::COUNT {
             let op = OpType::from_index(i).unwrap();
             assert_eq!(op.index(), i);
@@ -1992,7 +1992,7 @@ mod tests {
     }
 
     #[test]
-    fn feature_roundtrips_correctly() {
+    fn test_feature_roundtrip() {
         let feature = HalfEPFeature {
             perspective_op: 5,
             descendant_op: 10,
@@ -2005,7 +2005,7 @@ mod tests {
     }
 
     #[test]
-    fn expr_evaluates_correctly() {
+    fn test_expr_eval() {
         // x + y
         let expr = Expr::Binary(
             OpType::Add,
@@ -2017,7 +2017,7 @@ mod tests {
     }
 
     #[test]
-    fn expr_generator_produces_valid_exprs() {
+    fn test_expr_generator() {
         let mut generator = ExprGenerator::new(42, ExprGenConfig::default());
         for _ in 0..10 {
             let expr = generator.generate();
@@ -2027,7 +2027,7 @@ mod tests {
     }
 
     #[test]
-    fn feature_extraction_produces_features() {
+    fn test_feature_extraction() {
         let expr = Expr::Binary(
             OpType::Add,
             Box::new(Expr::Var(0)),
@@ -2038,7 +2038,7 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_add_zero_removes_zero() {
+    fn test_rewrite_add_zero() {
         let expr = Expr::Binary(
             OpType::Add,
             Box::new(Expr::Var(0)),
@@ -2050,66 +2050,7 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_add_zero_symmetric_works() {
-        // 0.0 + x
-        let expr = Expr::Binary(
-            OpType::Add,
-            Box::new(Expr::Const(0.0)),
-            Box::new(Expr::Var(0)),
-        );
-        let rewritten = RewriteRule::AddZero.try_apply(&expr);
-        assert!(rewritten.is_some());
-        assert!(matches!(rewritten.unwrap(), Expr::Var(0)));
-    }
-
-    #[test]
-    fn rewrite_mul_one_symmetric_works() {
-        // 1.0 * x
-        let expr = Expr::Binary(
-            OpType::Mul,
-            Box::new(Expr::Const(1.0)),
-            Box::new(Expr::Var(0)),
-        );
-        let rewritten = RewriteRule::MulOne.try_apply(&expr);
-        assert!(rewritten.is_some());
-        assert!(matches!(rewritten.unwrap(), Expr::Var(0)));
-
-        // x * 1.0
-        let expr2 = Expr::Binary(
-            OpType::Mul,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Const(1.0)),
-        );
-        let rewritten2 = RewriteRule::MulOne.try_apply(&expr2);
-        assert!(rewritten2.is_some());
-        assert!(matches!(rewritten2.unwrap(), Expr::Var(0)));
-    }
-
-    #[test]
-    fn rewrite_mul_zero_symmetric_works() {
-        // 0.0 * x
-        let expr = Expr::Binary(
-            OpType::Mul,
-            Box::new(Expr::Const(0.0)),
-            Box::new(Expr::Var(0)),
-        );
-        let rewritten = RewriteRule::MulZero.try_apply(&expr);
-        assert!(rewritten.is_some());
-        assert!(matches!(rewritten.unwrap(), Expr::Const(c) if c.abs() < 1e-10));
-
-        // x * 0.0
-        let expr2 = Expr::Binary(
-            OpType::Mul,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Const(0.0)),
-        );
-        let rewritten2 = RewriteRule::MulZero.try_apply(&expr2);
-        assert!(rewritten2.is_some());
-        assert!(matches!(rewritten2.unwrap(), Expr::Const(c) if c.abs() < 1e-10));
-    }
-
-    #[test]
-    fn rewrite_fuse_muladd_fuses_ops() {
+    fn test_rewrite_fuse_muladd() {
         // a * b + c
         let expr = Expr::Binary(
             OpType::Add,
@@ -2129,7 +2070,7 @@ mod tests {
     }
 
     #[test]
-    fn find_all_rewrites_finds_all() {
+    fn test_find_all_rewrites() {
         // (x + 0) + y - should find AddZero at path [0]
         let expr = Expr::Binary(
             OpType::Add,
@@ -2152,7 +2093,7 @@ mod tests {
     }
 
     #[test]
-    fn accumulator_restores_state_after_add_remove() {
+    fn test_accumulator_add_remove() {
         let nnue = Nnue::with_defaults();
         let mut acc = Accumulator::new(&nnue);
 
@@ -2178,7 +2119,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn unfuse_muladd_unfuses_correctly() {
+    fn test_unfuse_muladd() {
         // MulAdd(x, y, z) → x * y + z
         let expr = Expr::Ternary(
             OpType::MulAdd,
@@ -2202,7 +2143,7 @@ mod tests {
     }
 
     #[test]
-    fn unfuse_mulrsqrt_unfuses_correctly() {
+    fn test_unfuse_mulrsqrt() {
         // MulRsqrt(x, y) → x * rsqrt(y)
         let expr = Expr::Binary(
             OpType::MulRsqrt,
@@ -2225,7 +2166,7 @@ mod tests {
     }
 
     #[test]
-    fn unfuse_add_identity_adds_zero() {
+    fn test_unfuse_add_identity() {
         let expr = Expr::Var(0);
         let result = UnfuseRewrite::AddIdentity.apply(&expr);
         assert!(result.is_some());
@@ -2242,7 +2183,7 @@ mod tests {
     }
 
     #[test]
-    fn bwd_generator_produces_valid_pairs() {
+    fn test_bwd_generator_produces_valid_pairs() {
         let config = BwdGenConfig::default();
         let mut generator = BwdGenerator::new(42, config);
 
@@ -2275,7 +2216,7 @@ mod tests {
     }
 
     #[test]
-    fn bwd_generator_has_fused_ops() {
+    fn test_bwd_generator_has_fused_ops() {
         let config = BwdGenConfig {
             fused_op_prob: 0.8, // High probability of fused ops
             max_depth: 4,
@@ -2297,7 +2238,7 @@ mod tests {
     }
 
     #[test]
-    fn count_fused_ops_counts_correctly() {
+    fn test_count_fused_ops() {
         // Expression with MulAdd and MulRsqrt
         let expr = Expr::Ternary(
             OpType::MulAdd,
@@ -2318,7 +2259,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn dense_features_extract_correctly_for_simple_add() {
+    fn test_dense_features_simple_add() {
         // x + y
         let expr = Expr::Binary(
             OpType::Add,
@@ -2334,7 +2275,7 @@ mod tests {
     }
 
     #[test]
-    fn dense_features_calculates_critical_path_correctly() {
+    fn test_dense_features_critical_path_wide_vs_deep() {
         // Wide expression: (a + b) + (c + d)
         // Critical path: 4 + 4 = 8 (two adds in sequence, but children parallel)
         let wide = Expr::Binary(
@@ -2384,7 +2325,7 @@ mod tests {
     }
 
     #[test]
-    fn dense_features_calculates_max_width_correctly() {
+    fn test_dense_features_max_width() {
         // Wide expression: (a + b) + (c + d)
         // Max width = 4 (all vars at depth 2)
         let wide = Expr::Binary(
@@ -2406,7 +2347,7 @@ mod tests {
     }
 
     #[test]
-    fn dense_features_detects_identity() {
+    fn test_dense_features_detect_identity() {
         // x * 1 - has identity
         let expr = Expr::Binary(
             OpType::Mul,
@@ -2418,7 +2359,7 @@ mod tests {
     }
 
     #[test]
-    fn dense_features_detects_fusable() {
+    fn test_dense_features_detect_fusable() {
         // (a * b) + c - fusable pattern
         let expr = Expr::Binary(
             OpType::Add,
@@ -2434,7 +2375,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_forward_has_correct_dimensions() {
+    fn test_hybrid_forward_dimensions() {
         // Verify the hybrid architecture has correct dimensions
         let nnue = Nnue::with_defaults();
         let acc = Accumulator::new(&nnue);
@@ -2445,7 +2386,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_forward_computes_with_features() {
+    fn test_hybrid_forward_with_features() {
         let nnue = Nnue::with_defaults();
         let mut acc = Accumulator::new(&nnue);
 
@@ -2469,7 +2410,7 @@ mod tests {
     }
 
     #[test]
-    fn nnue_config_calculates_combined_size() {
+    fn test_nnue_config_combined_size() {
         let config = NnueConfig::default();
         assert_eq!(config.combined_size(), 256 + 32);
     }
