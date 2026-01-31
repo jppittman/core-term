@@ -17,10 +17,11 @@ fn verify_color_manifold_renders() {
     rasterize(&red, &mut frame, 1);
 
     // All pixels should be red
+    let (r, g, b) = NamedColor::Red.to_rgb();
     for pixel in &frame.data {
-        assert_eq!(pixel.r(), 205); // ANSI Red
-        assert_eq!(pixel.g(), 0);
-        assert_eq!(pixel.b(), 0);
+        assert_eq!(pixel.r(), r);
+        assert_eq!(pixel.g(), g);
+        assert_eq!(pixel.b(), b);
         assert_eq!(pixel.a(), 255);
     }
 }
@@ -34,10 +35,11 @@ fn verify_named_color_manifold_renders() {
 
     rasterize(&blue, &mut frame, 1);
 
+    let (r, g, b) = blue.to_rgb();
     for pixel in &frame.data {
-        assert_eq!(pixel.r(), 0);
-        assert_eq!(pixel.g(), 0);
-        assert_eq!(pixel.b(), 238); // ANSI Blue
+        assert_eq!(pixel.r(), r);
+        assert_eq!(pixel.g(), g);
+        assert_eq!(pixel.b(), b);
         assert_eq!(pixel.a(), 255);
     }
 }

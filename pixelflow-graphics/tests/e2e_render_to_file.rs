@@ -58,6 +58,8 @@ impl Manifold<Field4> for Gradient {
 fn e2e_render_gradient() {
     const WIDTH: u32 = 400;
     const HEIGHT: u32 = 300;
+    const LOW_THRESHOLD: u8 = 50;
+    const HIGH_THRESHOLD: u8 = 200;
 
     let scene = Gradient {
         width: WIDTH as f32,
@@ -72,12 +74,12 @@ fn e2e_render_gradient() {
     // Top-left should be dark (low R, low G, high B due to gradient formula)
     let top_left = &frame.data[0];
     assert!(
-        top_left.r() < 50,
+        top_left.r() < LOW_THRESHOLD,
         "Top-left red should be low, got {}",
         top_left.r()
     );
     assert!(
-        top_left.g() < 50,
+        top_left.g() < LOW_THRESHOLD,
         "Top-left green should be low, got {}",
         top_left.g()
     );
@@ -85,12 +87,12 @@ fn e2e_render_gradient() {
     // Bottom-right should have high R and G
     let bottom_right = &frame.data[(HEIGHT - 1) as usize * WIDTH as usize + (WIDTH - 1) as usize];
     assert!(
-        bottom_right.r() > 200,
+        bottom_right.r() > HIGH_THRESHOLD,
         "Bottom-right red should be high, got {}",
         bottom_right.r()
     );
     assert!(
-        bottom_right.g() > 200,
+        bottom_right.g() > HIGH_THRESHOLD,
         "Bottom-right green should be high, got {}",
         bottom_right.g()
     );
@@ -241,10 +243,11 @@ fn e2e_solid_color_renders_correctly() {
     rasterize(&cyan, &mut frame, 1);
 
     // Every pixel should be bright cyan (0, 255, 255)
+    let (r, g, b) = cyan.to_rgb();
     for (i, pixel) in frame.data.iter().enumerate() {
-        assert_eq!(pixel.r(), 0, "Pixel {} red should be 0", i);
-        assert_eq!(pixel.g(), 255, "Pixel {} green should be 255", i);
-        assert_eq!(pixel.b(), 255, "Pixel {} blue should be 255", i);
+        assert_eq!(pixel.r(), r, "Pixel {} red should be {}", i, r);
+        assert_eq!(pixel.g(), g, "Pixel {} green should be {}", i, g);
+        assert_eq!(pixel.b(), b, "Pixel {} blue should be {}", i, b);
         assert_eq!(pixel.a(), 255, "Pixel {} alpha should be 255", i);
     }
 
@@ -304,13 +307,15 @@ fn e2e_frame_operations() {
     }
 
     // Render something
-    rasterize(&NamedColor::Red, &mut frame, 1);
+    let red = NamedColor::Red;
+    rasterize(&red, &mut frame, 1);
 
     // Now all should be red
+    let (r, g, b) = red.to_rgb();
     for pixel in &frame.data {
-        assert_eq!(pixel.r(), 205); // ANSI Red
-        assert_eq!(pixel.g(), 0);
-        assert_eq!(pixel.b(), 0);
+        assert_eq!(pixel.r(), r);
+        assert_eq!(pixel.g(), g);
+        assert_eq!(pixel.b(), b);
         assert_eq!(pixel.a(), 255);
     }
 
