@@ -307,12 +307,37 @@ impl SimdOps for F32x4 {
             // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
             let exp_mask = _mm_set1_epi32(0x7F800000_u32 as i32);
             let raw_exp = _mm_and_si128(x_i32, exp_mask);
-            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm_castsi128_ps(_mm_or_si128(raw_exp, one_bits));
-            let mut n = _mm_sub_ps(exp_f, _mm_set1_ps(128.0));
+            // 0x3F800000 is 1.0 (bias 127). We want to shift the exponent to be 0 (bias 127).
+            // But raw_exp is already in the right position.
+            // Wait, we need to shift the exponent bits down or subtract bias directly?
+            // No, we want `n` to be the float value of the exponent.
+            // Efficient trick:
+            // 1. Construct float with exponent `e` and mantissa 0. This is `2^(e-127)`.
+            // 2. Not quite. We want `e-127` as a float.
+            // The approach here: construct `2^(e-127) * 1.0`? No.
+            // The code constructs `val = (raw_exp | 0x3F800000)`.
+            // If raw_exp is 0x7F800000 (exponent 255), this becomes 0x7F800000 (NaN/Inf?)
+            // No, `raw_exp` is just the exponent bits.
+            // If actual exponent is 127 (val 1.0), raw_exp is 0x3F800000.
+            // Then `exp_f` becomes 0x3F800000 | 0x3F800000 = 0x3F800000 (1.0).
+            // Then `n = 1.0 - 128.0 = -127.0`.
+            // But for input 1.0, exponent is 0. `n` should be 0.
+            // So `exp_f` needs to be `127.0` (as float).
+            // The "fast exponent extraction" trick usually relies on int-to-float conversion
+            // or magic constants.
+            // The code here does `_mm_sub_ps(exp_f, _mm_set1_ps(128.0))`.
+            // If input is 1.0, exp_f is 1.0. 1.0 - 128.0 = -127.0. ERROR!
+            // This explains the CI error `log2(1) = -126.99`.
+
+            // Correct approach for SSE2 without cvtepi32 (which is slow/unavailable on some older SSE? No, SSE2 has it):
+            // just shift and convert.
+            let e_int = _mm_srli_epi32(x_i32, 23);
+            let e_int = _mm_sub_epi32(e_int, _mm_set1_epi32(127));
+            let mut n = _mm_cvtepi32_ps(e_int);
 
             // Extract mantissa in [1, 2)
             let mant_mask = _mm_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
             let mut f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
@@ -882,17 +907,15 @@ impl SimdOps for F32x8 {
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            // Isolate exponent bits, OR with 1.0's bit pattern, reinterpret as float
-            let exp_mask = _mm256_set1_epi32(0x7F800000_u32 as i32);
-            let raw_exp = _mm256_and_si256(x_i32, exp_mask);
-            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm256_castsi256_ps(_mm256_or_si256(raw_exp, one_bits));
-            // Subtract 128.0 to remove bias (127) and the 1.0 we added
-            let mut n = _mm256_sub_ps(exp_f, _mm256_set1_ps(128.0));
+            // Extract exponent using shift and subtract
+            // Correct logic: e = (bits >> 23) - 127
+            let e_int = _mm256_srli_epi32(x_i32, 23);
+            let e_int = _mm256_sub_epi32(e_int, _mm256_set1_epi32(127));
+            let mut n = _mm256_cvtepi32_ps(e_int);
 
             // Extract mantissa in [1, 2)
             let mant_mask = _mm256_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
             let mut f = _mm256_castsi256_ps(_mm256_or_si256(
                 _mm256_and_si256(x_i32, mant_mask),
                 one_bits,
