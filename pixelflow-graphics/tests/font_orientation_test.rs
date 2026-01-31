@@ -44,6 +44,9 @@ fn letter_a_apex_is_at_top() {
     //
     // If the glyph is rendered upside-down, the wide part will be at the top.
 
+    if FONT_BYTES.starts_with(b"version https://git-lfs") {
+        return;
+    }
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     let glyph = text(&font, "A", 48.0);
     let color_manifold = Grayscale(glyph);
@@ -132,6 +135,9 @@ fn letter_a_has_crossbar() {
     // The letter 'A' has a horizontal crossbar connecting the two legs.
     // The crossbar should be filled across its width (high intensity).
 
+    if FONT_BYTES.starts_with(b"version https://git-lfs") {
+        return;
+    }
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     let glyph = text(&font, "A", 48.0);
     let color_manifold = Grayscale(glyph);
@@ -197,6 +203,9 @@ fn letter_v_point_is_at_bottom() {
     //
     // This is the opposite of 'A' and helps verify we didn't just invert everything.
 
+    if FONT_BYTES.starts_with(b"version https://git-lfs") {
+        return;
+    }
     let font = Font::parse(FONT_BYTES).expect("Failed to parse font");
     let glyph = text(&font, "V", 48.0);
     let color_manifold = Grayscale(glyph);
