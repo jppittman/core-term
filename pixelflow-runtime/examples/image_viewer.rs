@@ -21,7 +21,7 @@ const H: u32 = 1080;
 
 // Import scene3d types
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
+    plane, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
 use pixelflow_runtime::platform::ColorCube;
 
@@ -93,7 +93,9 @@ fn build_scene() -> impl Manifold<Output = Discrete> + Send + Sync + Clone {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: ColorReflect { inner: world.clone() },
+        material: ColorReflect {
+            inner: world.clone(),
+        },
         background: world,
     };
 

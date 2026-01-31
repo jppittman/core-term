@@ -103,18 +103,17 @@ impl ExprFeatures {
     /// Evaluate cost using HCE weights.
     fn evaluate(&self, weights: &HceWeights) -> i32 {
         // Linear combination of operation counts
-        let op_cost =
-            self.add_count * weights.add +
-            self.sub_count * weights.sub +
-            self.mul_count * weights.mul +
-            self.div_count * weights.div +
-            self.neg_count * weights.neg +
-            self.sqrt_count * weights.sqrt +
-            self.rsqrt_count * weights.rsqrt +
-            self.abs_count * weights.abs +
-            self.min_count * weights.min +
-            self.max_count * weights.max +
-            self.fma_count * weights.fma;
+        let op_cost = self.add_count * weights.add
+            + self.sub_count * weights.sub
+            + self.mul_count * weights.mul
+            + self.div_count * weights.div
+            + self.neg_count * weights.neg
+            + self.sqrt_count * weights.sqrt
+            + self.rsqrt_count * weights.rsqrt
+            + self.abs_count * weights.abs
+            + self.min_count * weights.min
+            + self.max_count * weights.max
+            + self.fma_count * weights.fma;
 
         // Critical path is the PRIMARY cost driver (captures ILP)
         // Operation counts are SECONDARY (captures instruction mix)
@@ -131,10 +130,22 @@ fn extract_features(expr: &Expr, features: &mut ExprFeatures) -> i32 {
 
         Expr::Unary(op, a) => {
             let op_cost = match op {
-                OpType::Neg => { features.neg_count += 1; 1 }
-                OpType::Sqrt => { features.sqrt_count += 1; 15 }
-                OpType::Rsqrt => { features.rsqrt_count += 1; 5 }
-                OpType::Abs => { features.abs_count += 1; 1 }
+                OpType::Neg => {
+                    features.neg_count += 1;
+                    1
+                }
+                OpType::Sqrt => {
+                    features.sqrt_count += 1;
+                    15
+                }
+                OpType::Rsqrt => {
+                    features.rsqrt_count += 1;
+                    5
+                }
+                OpType::Abs => {
+                    features.abs_count += 1;
+                    1
+                }
                 _ => 5,
             };
             let child_cost = extract_features(a, features);
@@ -143,13 +154,35 @@ fn extract_features(expr: &Expr, features: &mut ExprFeatures) -> i32 {
 
         Expr::Binary(op, a, b) => {
             let op_cost = match op {
-                OpType::Add => { features.add_count += 1; 4 }
-                OpType::Sub => { features.sub_count += 1; 4 }
-                OpType::Mul => { features.mul_count += 1; 5 }
-                OpType::Div => { features.div_count += 1; 15 }
-                OpType::Min => { features.min_count += 1; 4 }
-                OpType::Max => { features.max_count += 1; 4 }
-                OpType::MulRsqrt => { features.mul_count += 1; features.rsqrt_count += 1; 6 }
+                OpType::Add => {
+                    features.add_count += 1;
+                    4
+                }
+                OpType::Sub => {
+                    features.sub_count += 1;
+                    4
+                }
+                OpType::Mul => {
+                    features.mul_count += 1;
+                    5
+                }
+                OpType::Div => {
+                    features.div_count += 1;
+                    15
+                }
+                OpType::Min => {
+                    features.min_count += 1;
+                    4
+                }
+                OpType::Max => {
+                    features.max_count += 1;
+                    4
+                }
+                OpType::MulRsqrt => {
+                    features.mul_count += 1;
+                    features.rsqrt_count += 1;
+                    6
+                }
                 _ => 5,
             };
             let cost_a = extract_features(a, features);
@@ -160,7 +193,10 @@ fn extract_features(expr: &Expr, features: &mut ExprFeatures) -> i32 {
 
         Expr::Ternary(op, a, b, c) => {
             let op_cost = match op {
-                OpType::MulAdd => { features.fma_count += 1; 5 }
+                OpType::MulAdd => {
+                    features.fma_count += 1;
+                    5
+                }
                 _ => 10,
             };
             let cost_a = extract_features(a, features);
@@ -228,20 +264,13 @@ pub fn build_cost_model_with_hce() -> CostModel {
 
 /// Evaluate a unary operation: op(X)
 fn evaluate_unary(op: OpType) -> i32 {
-    let expr = Expr::Unary(
-        op,
-        Box::new(Expr::Var(0))
-    );
+    let expr = Expr::Unary(op, Box::new(Expr::Var(0)));
     evaluate_with_hce(&expr)
 }
 
 /// Evaluate a binary operation: X op Y
 fn evaluate_binary(op: OpType) -> i32 {
-    let expr = Expr::Binary(
-        op,
-        Box::new(Expr::Var(0)),
-        Box::new(Expr::Var(1))
-    );
+    let expr = Expr::Binary(op, Box::new(Expr::Var(0)), Box::new(Expr::Var(1)));
     evaluate_with_hce(&expr)
 }
 
@@ -251,7 +280,7 @@ fn evaluate_ternary(op: OpType) -> i32 {
         op,
         Box::new(Expr::Var(0)),
         Box::new(Expr::Var(1)),
-        Box::new(Expr::Var(2))
+        Box::new(Expr::Var(2)),
     );
     evaluate_with_hce(&expr)
 }
@@ -276,9 +305,18 @@ mod tests {
         let costs = build_cost_model_with_hce();
 
         // Sanity checks: expensive ops should cost more
-        assert!(costs.div > costs.add, "Division should be more expensive than addition");
-        assert!(costs.sqrt > costs.add, "Sqrt should be more expensive than addition");
-        assert!(costs.mul > costs.neg, "Multiply should be more expensive than negation");
+        assert!(
+            costs.div > costs.add,
+            "Division should be more expensive than addition"
+        );
+        assert!(
+            costs.sqrt > costs.add,
+            "Sqrt should be more expensive than addition"
+        );
+        assert!(
+            costs.mul > costs.neg,
+            "Multiply should be more expensive than negation"
+        );
     }
 
     #[test]
@@ -289,13 +327,13 @@ mod tests {
             Box::new(Expr::Binary(
                 OpType::Add,
                 Box::new(Expr::Var(0)),
-                Box::new(Expr::Var(1))
+                Box::new(Expr::Var(1)),
             )),
             Box::new(Expr::Binary(
                 OpType::Add,
                 Box::new(Expr::Var(2)),
-                Box::new(Expr::Var(3))
-            ))
+                Box::new(Expr::Var(3)),
+            )),
         );
 
         // Deep expression: (((X + Y) + Z) + W)
@@ -306,19 +344,22 @@ mod tests {
                 Box::new(Expr::Binary(
                     OpType::Add,
                     Box::new(Expr::Var(0)),
-                    Box::new(Expr::Var(1))
+                    Box::new(Expr::Var(1)),
                 )),
-                Box::new(Expr::Var(2))
+                Box::new(Expr::Var(2)),
             )),
-            Box::new(Expr::Var(3))
+            Box::new(Expr::Var(3)),
         );
 
         let wide_cost = evaluate_with_hce(&wide);
         let deep_cost = evaluate_with_hce(&deep);
 
         // Wide should be cheaper (shorter critical path, more ILP)
-        assert!(wide_cost < deep_cost,
+        assert!(
+            wide_cost < deep_cost,
             "Wide ({}) should be cheaper than deep ({}) due to ILP",
-            wide_cost, deep_cost);
+            wide_cost,
+            deep_cost
+        );
     }
 }

@@ -317,17 +317,17 @@ mod tests {
     fn test_expr_tree_to_kernel_body_const() {
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(0.0)), "0.0");
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(1.0)), "1.0");
-        assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(-1.0)), "(-1.0)");
+        assert_eq!(
+            expr_tree_to_kernel_body(&ExprTree::constant(-1.0)),
+            "(-1.0)"
+        );
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(2.0)), "2.0");
     }
 
     #[test]
     fn test_expr_tree_to_kernel_body_unary() {
         let x = ExprTree::var(0);
-        assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::neg(x.clone())),
-            "(-X)"
-        );
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::neg(x.clone())), "(-X)");
         assert_eq!(
             expr_tree_to_kernel_body(&ExprTree::sqrt(x.clone())),
             "(X).sqrt()"
@@ -369,11 +369,7 @@ mod tests {
 
     #[test]
     fn test_expr_tree_to_kernel_body_mul_add() {
-        let tree = ExprTree::mul_add(
-            ExprTree::var(0),
-            ExprTree::var(1),
-            ExprTree::var(2),
-        );
+        let tree = ExprTree::mul_add(ExprTree::var(0), ExprTree::var(1), ExprTree::var(2));
         assert_eq!(expr_tree_to_kernel_body(&tree), "(X).mul_add(Y, Z)");
     }
 

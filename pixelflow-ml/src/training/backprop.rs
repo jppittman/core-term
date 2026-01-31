@@ -5,16 +5,21 @@
 //! - Dense branch (ILP features -> L_dense)
 //! - Combined layers (L2 -> L3 -> Output)
 
-use pixelflow_nnue::{Nnue, HalfEPFeature, DenseFeatures};
+use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue};
 
 /// Clipped ReLU activation: (x >> 6).clamp(0, 127)
 ///
 /// Returns both the output and the derivative (1.0 if in active region, else 0.0).
 #[inline]
+#[must_use]
 pub fn clipped_relu(x: i32) -> (f32, f32) {
     let shifted = x >> 6;
     let clamped = shifted.clamp(0, 127);
-    let deriv = if shifted > 0 && shifted < 127 { 1.0 } else { 0.0 };
+    let deriv = if shifted > 0 && shifted < 127 {
+        1.0
+    } else {
+        0.0
+    };
     (clamped as f32, deriv)
 }
 
@@ -44,10 +49,8 @@ pub struct HybridForwardState {
 }
 
 /// Forward pass (sparse-only) that stores intermediate activations.
-pub fn forward_with_state(
-    nnue: &Nnue,
-    features: &[HalfEPFeature],
-) -> (f32, ForwardState) {
+#[must_use]
+pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, ForwardState) {
     let l1_size = nnue.config.l1_size;
     let l2_size = nnue.config.l2_size;
     let l3_size = nnue.config.l3_size;
@@ -124,6 +127,7 @@ pub fn forward_with_state(
 }
 
 /// Forward pass with hybrid architecture (sparse + dense ILP features).
+#[must_use]
 pub fn forward_with_state_hybrid(
     nnue: &Nnue,
     features: &[HalfEPFeature],
@@ -226,12 +230,7 @@ pub fn forward_with_state_hybrid(
 }
 
 /// Backward pass for sparse-only architecture.
-pub fn backward(
-    nnue: &mut Nnue,
-    state: &ForwardState,
-    error: f32,
-    lr: f32,
-) {
+pub fn backward(nnue: &mut Nnue, state: &ForwardState, error: f32, lr: f32) {
     let l1_size = nnue.config.l1_size;
     let l2_size = nnue.config.l2_size;
     let l3_size = nnue.config.l3_size;
@@ -314,12 +313,7 @@ pub fn backward(
 }
 
 /// Backward pass for hybrid architecture (sparse + dense).
-pub fn backward_hybrid(
-    nnue: &mut Nnue,
-    state: &HybridForwardState,
-    error: f32,
-    lr: f32,
-) {
+pub fn backward_hybrid(nnue: &mut Nnue, state: &HybridForwardState, error: f32, lr: f32) {
     let l1_size = nnue.config.l1_size;
     let dense_size = nnue.config.dense_size;
     let l2_size = nnue.config.l2_size;

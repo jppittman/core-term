@@ -11,16 +11,16 @@ use std::time::Instant;
 
 use serde::Deserialize;
 
+use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue, NnueConfig, OpType};
 use pixelflow_search::egraph::{
     ExprTree, Leaf,
-    BestFirstPlanner, BestFirstConfig, BestFirstContext, CostModel,
-};
-use pixelflow_nnue::{
-    Nnue, NnueConfig, HalfEPFeature, OpType, DenseFeatures,
 };
 
-use super::features::{extract_tree_features, op_counts_to_dense};
-use super::backprop::{forward_with_state, forward_with_state_hybrid, backward, backward_hybrid, ForwardState, HybridForwardState};
+use super::backprop::{
+    backward, backward_hybrid, forward_with_state,
+    forward_with_state_hybrid,
+};
+use super::features::op_counts_to_dense;
 
 // ============================================================================
 // Common Utilities
@@ -32,14 +32,15 @@ pub struct Rng {
 }
 
 impl Rng {
+    #[must_use]
     pub fn new(seed: u64) -> Self {
-        Self { state: seed.wrapping_add(1) }
+        Self {
+            state: seed.wrapping_add(1),
+        }
     }
 
     pub fn next_u64(&mut self) -> u64 {
-        self.state = self.state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
         self.state
     }
 
@@ -65,6 +66,7 @@ pub struct ExprGenerator {
 }
 
 impl ExprGenerator {
+    #[must_use]
     pub fn new(seed: u64) -> Self {
         Self {
             rng: Rng::new(seed),
@@ -91,14 +93,25 @@ impl ExprGenerator {
                 ExprTree::Leaf(Leaf::Var(self.rng.gen_range(0..self.num_vars) as u8))
             } else {
                 let constants = [0.0, 1.0, -1.0, 2.0, 0.5];
-                ExprTree::Leaf(Leaf::Const(constants[self.rng.gen_range(0..constants.len())]))
+                ExprTree::Leaf(Leaf::Const(
+                    constants[self.rng.gen_range(0..constants.len())],
+                ))
             }
         } else {
             let op_type = self.rng.gen_range(0..6);
             match op_type {
-                0 => ExprTree::add(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
-                1 => ExprTree::sub(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
-                2 => ExprTree::mul(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
+                0 => ExprTree::add(
+                    self.generate_inner(depth + 1),
+                    self.generate_inner(depth + 1),
+                ),
+                1 => ExprTree::sub(
+                    self.generate_inner(depth + 1),
+                    self.generate_inner(depth + 1),
+                ),
+                2 => ExprTree::mul(
+                    self.generate_inner(depth + 1),
+                    self.generate_inner(depth + 1),
+                ),
                 3 => ExprTree::neg(self.generate_inner(depth + 1)),
                 4 => ExprTree::sqrt(self.generate_inner(depth + 1)),
                 _ => ExprTree::abs(self.generate_inner(depth + 1)),
@@ -171,8 +184,10 @@ pub struct JudgeTrainingSample {
 }
 
 /// Prepare benchmark samples for training.
+#[must_use]
 pub fn prepare_judge_samples(samples: &[BenchmarkSample]) -> Vec<JudgeTrainingSample> {
-    samples.iter()
+    samples
+        .iter()
         .filter_map(|s| {
             let cost_ns = s.cost_ns?;
             let node_count = s.node_count.unwrap_or(10);
@@ -205,7 +220,11 @@ pub fn prepare_judge_samples(samples: &[BenchmarkSample]) -> Vec<JudgeTrainingSa
             }
 
             let dense = op_counts_to_dense(&s.op_counts, node_count);
-            Some(JudgeTrainingSample { features, dense, cost_ns })
+            Some(JudgeTrainingSample {
+                features,
+                dense,
+                cost_ns,
+            })
         })
         .collect()
 }
@@ -285,10 +304,14 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
     }
 
     println!();
-    println!("Training completed in {:.2}s", start.elapsed().as_secs_f64());
+    println!(
+        "Training completed in {:.2}s",
+        start.elapsed().as_secs_f64()
+    );
 
     // Save The Judge weights
-    let judge_path = cache_path.parent()
+    let judge_path = cache_path
+        .parent()
         .unwrap_or(Path::new("."))
         .join("nnue_judge_weights.bin");
     println!("Saving Judge weights to: {}", judge_path.display());
@@ -317,6 +340,7 @@ pub struct ReplayBuffer {
 }
 
 impl ReplayBuffer {
+    #[must_use]
     pub fn new(max_size: usize, seed: u64) -> Self {
         Self {
             samples: Vec::new(),
@@ -342,9 +366,13 @@ impl ReplayBuffer {
             indices.swap(i, j);
         }
 
-        indices[..n].iter().map(|&i| self.samples[i].clone()).collect()
+        indices[..n]
+            .iter()
+            .map(|&i| self.samples[i].clone())
+            .collect()
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.samples.len()
     }

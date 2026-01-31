@@ -188,7 +188,10 @@ impl TerminalEmulator {
                     // scrollback is ordered oldest first, so we need to index from the end
                     let scrollback_idx = scrollback_len - effective_offset + y_idx;
                     // All scrollback lines are considered "dirty" when first viewed
-                    SnapshotLine::from_arc(self.screen.scrollback[scrollback_idx].clone(), true.into())
+                    SnapshotLine::from_arc(
+                        self.screen.scrollback[scrollback_idx].clone(),
+                        true.into(),
+                    )
                 } else {
                     // This line comes from active grid
                     let grid_idx = y_idx - effective_offset;
@@ -199,7 +202,9 @@ impl TerminalEmulator {
                         // Beyond active grid, return empty line
                         SnapshotLine::from_arc(
                             std::sync::Arc::new(vec![
-                                crate::glyph::Glyph::Single(crate::glyph::ContentCell::default_space());
+                                crate::glyph::Glyph::Single(
+                                    crate::glyph::ContentCell::default_space()
+                                );
                                 width
                             ]),
                             true.into(),

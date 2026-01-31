@@ -1,7 +1,7 @@
 //! Core e-graph data structures: EClassId and ENode.
 
-use alloc::vec::Vec;
 use super::ops::Op;
+use alloc::vec::Vec;
 
 /// Identifier for an equivalence class in the e-graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -68,9 +68,7 @@ impl ENode {
     /// Get binary operands if this is a binary operation.
     pub fn binary_operands(&self) -> Option<(EClassId, EClassId)> {
         match self {
-            ENode::Op { children, .. } if children.len() == 2 => {
-                Some((children[0], children[1]))
-            }
+            ENode::Op { children, .. } if children.len() == 2 => Some((children[0], children[1])),
             _ => None,
         }
     }
@@ -82,7 +80,16 @@ impl PartialEq for ENode {
         match (self, other) {
             (ENode::Var(a), ENode::Var(b)) => a == b,
             (ENode::Const(a), ENode::Const(b)) => a == b,
-            (ENode::Op { op: op1, children: c1 }, ENode::Op { op: op2, children: c2 }) => {
+            (
+                ENode::Op {
+                    op: op1,
+                    children: c1,
+                },
+                ENode::Op {
+                    op: op2,
+                    children: c2,
+                },
+            ) => {
                 // Compare ops by name (they're static references)
                 op1.name() == op2.name() && c1 == c2
             }

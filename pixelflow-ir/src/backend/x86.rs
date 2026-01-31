@@ -304,14 +304,14 @@ impl SimdOps for F32x4 {
         unsafe {
             let x_i32 = _mm_castps_si128(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            let exp_mask = _mm_set1_epi32(0x7F800000_u32 as i32);
-            let raw_exp = _mm_and_si128(x_i32, exp_mask);
-            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm_castsi128_ps(_mm_or_si128(raw_exp, one_bits));
-            let mut n = _mm_sub_ps(exp_f, _mm_set1_ps(128.0));
+            // Extract exponent
+            let exp_i32 = _mm_srli_epi32(x_i32, 23);
+            let exp_i32 = _mm_and_si128(exp_i32, _mm_set1_epi32(0xFF));
+            let n_i32 = _mm_sub_epi32(exp_i32, _mm_set1_epi32(127));
+            let mut n = _mm_cvtepi32_ps(n_i32);
 
             // Extract mantissa in [1, 2)
+            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
             let mant_mask = _mm_set1_epi32(0x007FFFFF_u32 as i32);
             let mut f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
@@ -358,7 +358,7 @@ impl SimdOps for F32x4 {
             let c4 = _mm_set1_ps(0.0135557);
             let c3 = _mm_set1_ps(0.0520323);
             let c2 = _mm_set1_ps(0.2413793);
-            let c1 = _mm_set1_ps(0.6931472);
+            let c1 = _mm_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm_set1_ps(1.0);
 
             // Horner's method (no FMA on base SSE2)
@@ -882,16 +882,14 @@ impl SimdOps for F32x8 {
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            // Isolate exponent bits, OR with 1.0's bit pattern, reinterpret as float
-            let exp_mask = _mm256_set1_epi32(0x7F800000_u32 as i32);
-            let raw_exp = _mm256_and_si256(x_i32, exp_mask);
-            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm256_castsi256_ps(_mm256_or_si256(raw_exp, one_bits));
-            // Subtract 128.0 to remove bias (127) and the 1.0 we added
-            let mut n = _mm256_sub_ps(exp_f, _mm256_set1_ps(128.0));
+            // Extract exponent
+            let exp_i32 = _mm256_srli_epi32(x_i32, 23);
+            let exp_i32 = _mm256_and_si256(exp_i32, _mm256_set1_epi32(0xFF));
+            let n_i32 = _mm256_sub_epi32(exp_i32, _mm256_set1_epi32(127));
+            let mut n = _mm256_cvtepi32_ps(n_i32);
 
             // Extract mantissa in [1, 2)
+            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
             let mant_mask = _mm256_set1_epi32(0x007FFFFF_u32 as i32);
             let mut f = _mm256_castsi256_ps(_mm256_or_si256(
                 _mm256_and_si256(x_i32, mant_mask),
@@ -1167,40 +1165,7 @@ impl Shr<u32> for U32x8 {
 
 #[cfg(target_feature = "avx2")]
 impl U32x8 {
-    /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
-    #[inline(always)]
-    pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
-        unsafe {
-            let scale = _mm256_set1_ps(255.0);
-            let zero = _mm256_setzero_ps();
-            let one = _mm256_set1_ps(1.0);
-
-            let r_clamped = _mm256_min_ps(_mm256_max_ps(r.0, zero), one);
-            let g_clamped = _mm256_min_ps(_mm256_max_ps(g.0, zero), one);
-            let b_clamped = _mm256_min_ps(_mm256_max_ps(b.0, zero), one);
-            let a_clamped = _mm256_min_ps(_mm256_max_ps(a.0, zero), one);
-
-            let r_scaled = _mm256_mul_ps(r_clamped, scale);
-            let g_scaled = _mm256_mul_ps(g_clamped, scale);
-            let b_scaled = _mm256_mul_ps(b_clamped, scale);
-            let a_scaled = _mm256_mul_ps(a_clamped, scale);
-
-            let r_i32 = _mm256_cvttps_epi32(r_scaled);
-            let g_i32 = _mm256_cvttps_epi32(g_scaled);
-            let b_i32 = _mm256_cvttps_epi32(b_scaled);
-            let a_i32 = _mm256_cvttps_epi32(a_scaled);
-
-            let g_shifted = _mm256_slli_epi32(g_i32, 8);
-            let b_shifted = _mm256_slli_epi32(b_i32, 16);
-            let a_shifted = _mm256_slli_epi32(a_i32, 24);
-
-            let packed = _mm256_or_si256(
-                _mm256_or_si256(r_i32, g_shifted),
-                _mm256_or_si256(b_shifted, a_shifted),
-            );
-            Self(packed)
-        }
-    }
+    // pack_rgba removed: dead code
 }
 
 // ============================================================================
@@ -1530,7 +1495,7 @@ impl SimdOps for F32x16 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm512_set1_ps(1.4142135624);
+            let sqrt2 = _mm512_set1_ps(1.414_213_5);
             let mask = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(f, sqrt2);
             let adjust = _mm512_mask_blend_ps(mask, _mm512_setzero_ps(), _mm512_set1_ps(1.0));
             n = _mm512_add_ps(n, adjust);
@@ -1543,11 +1508,11 @@ impl SimdOps for F32x16 {
             // Polynomial for log2(f) on [√2/2, √2]
             // Fitted using least squares on Chebyshev nodes
             // Max error: ~1e-4
-            let c4 = _mm512_set1_ps(-0.3200435159);
-            let c3 = _mm512_set1_ps(1.7974969154);
-            let c2 = _mm512_set1_ps(-4.1988046176);
-            let c1 = _mm512_set1_ps(5.7270231695);
-            let c0 = _mm512_set1_ps(-3.0056146714);
+            let c4 = _mm512_set1_ps(-0.320_043_5);
+            let c3 = _mm512_set1_ps(1.797_496_9);
+            let c2 = _mm512_set1_ps(-4.198_805);
+            let c1 = _mm512_set1_ps(5.727_023);
+            let c0 = _mm512_set1_ps(-3.005_614_8);
 
             // Horner's method with FMA
             let mut poly = _mm512_fmadd_ps(c4, f, c3);
@@ -1573,7 +1538,7 @@ impl SimdOps for F32x16 {
             let c4 = _mm512_set1_ps(0.0135557);
             let c3 = _mm512_set1_ps(0.0520323);
             let c2 = _mm512_set1_ps(0.2413793);
-            let c1 = _mm512_set1_ps(0.6931472);
+            let c1 = _mm512_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm512_set1_ps(1.0);
 
             // Horner's method with FMA

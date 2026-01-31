@@ -81,19 +81,45 @@ impl OpKind {
     pub fn arity(self) -> usize {
         match self {
             Self::Var | Self::Const | Self::Tuple => 0,
-            
-            Self::Neg | Self::Sqrt | Self::Rsqrt | Self::Abs |
-            Self::Recip | Self::Floor | Self::Ceil | Self::Round | 
-            Self::Fract | Self::Sin | Self::Cos | Self::Tan | 
-            Self::Asin | Self::Acos | Self::Atan | Self::Exp | 
-            Self::Exp2 | Self::Ln | Self::Log2 | Self::Log10 => 1,
-            
-            Self::Add | Self::Sub | Self::Mul | Self::Div |
-            Self::Min | Self::Max | Self::MulRsqrt |
-            Self::Atan2 | Self::Pow | Self::Hypot |
-            Self::Lt | Self::Le | Self::Gt | Self::Ge | 
-            Self::Eq | Self::Ne => 2,
-            
+
+            Self::Neg
+            | Self::Sqrt
+            | Self::Rsqrt
+            | Self::Abs
+            | Self::Recip
+            | Self::Floor
+            | Self::Ceil
+            | Self::Round
+            | Self::Fract
+            | Self::Sin
+            | Self::Cos
+            | Self::Tan
+            | Self::Asin
+            | Self::Acos
+            | Self::Atan
+            | Self::Exp
+            | Self::Exp2
+            | Self::Ln
+            | Self::Log2
+            | Self::Log10 => 1,
+
+            Self::Add
+            | Self::Sub
+            | Self::Mul
+            | Self::Div
+            | Self::Min
+            | Self::Max
+            | Self::MulRsqrt
+            | Self::Atan2
+            | Self::Pow
+            | Self::Hypot
+            | Self::Lt
+            | Self::Le
+            | Self::Gt
+            | Self::Ge
+            | Self::Eq
+            | Self::Ne => 2,
+
             Self::MulAdd | Self::Select | Self::Clamp => 3,
         }
     }

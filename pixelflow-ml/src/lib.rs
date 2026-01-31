@@ -18,9 +18,9 @@
 extern crate alloc;
 
 // Core NNUE module - no pixelflow-core dependency
-pub mod nnue;
 pub mod evaluator;
 pub mod hce_extractor;
+pub mod nnue;
 pub mod nonlinear_eval;
 
 #[cfg(any(feature = "training", feature = "egraph-training"))]

@@ -17,11 +17,11 @@
 //! 2. **No Rollouts**: NNUE already knows that `a*(b+c)` beats `a*b+a*c`
 //! 3. **Easy Debugging**: Print the path, see why NNUE said cost was X
 
-use std::collections::{BinaryHeap, HashSet};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
 
-use super::{EGraph, EClassId, ExprTree, CostModel};
+use super::{CostModel, EClassId, EGraph, ExprTree};
 
 // ============================================================================
 // Search State Context (passed to evaluator)
@@ -172,7 +172,9 @@ impl Ord for SearchState {
     fn cmp(&self, other: &Self) -> Ordering {
         // Lower priority = better, so reverse the comparison
         // Tie-break by depth (prefer shallower for faster solutions)
-        other.priority.cmp(&self.priority)
+        other
+            .priority
+            .cmp(&self.priority)
             .then_with(|| other.depth.cmp(&self.depth))
     }
 }
@@ -258,13 +260,13 @@ struct Rng {
 
 impl Rng {
     fn new(seed: u64) -> Self {
-        Self { state: seed.wrapping_add(1) }
+        Self {
+            state: seed.wrapping_add(1),
+        }
     }
 
     fn gen_f64(&mut self) -> f64 {
-        self.state = self.state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
         (self.state >> 33) as f64 / (1u64 << 31) as f64
     }
 
@@ -413,7 +415,10 @@ impl BestFirstPlanner {
     /// Saturate the e-graph completely (for small kernels).
     fn run_saturation(&mut self) -> BestFirstResult {
         self.best_found.egraph.saturate();
-        let (tree, cost) = self.best_found.egraph.extract_best(self.best_found.root, &self.costs);
+        let (tree, cost) = self
+            .best_found
+            .egraph
+            .extract_best(self.best_found.root, &self.costs);
 
         BestFirstResult {
             best_tree: tree,
@@ -476,8 +481,7 @@ mod tests {
             ],
         };
 
-        let config = BestFirstConfig::default()
-            .with_saturation_threshold(100);
+        let config = BestFirstConfig::default().with_saturation_threshold(100);
 
         let mut planner = BestFirstPlanner::from_tree(&tree, config);
         let result = planner.run_default();

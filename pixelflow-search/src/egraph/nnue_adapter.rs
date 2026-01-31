@@ -3,8 +3,8 @@
 //! Bridges the gap between `pixelflow_search::egraph` types and `pixelflow_nnue` types
 //! for feature extraction and training data generation.
 
-use crate::egraph::{EClassId, EGraph, ENode, ops};
 use crate::egraph::extract::{ExprTree, Leaf};
+use crate::egraph::{EClassId, EGraph, ENode, ops};
 use alloc::boxed::Box;
 use alloc::vec;
 use pixelflow_nnue::{Expr, OpType};
@@ -209,7 +209,12 @@ mod tests {
             // Recip maps to Div, so skip that case
             if op.name() != "recip" {
                 assert!(back.is_some(), "Roundtrip failed for {}", op.name());
-                assert_eq!(back.unwrap().name(), op.name(), "Roundtrip failed for {}", op.name());
+                assert_eq!(
+                    back.unwrap().name(),
+                    op.name(),
+                    "Roundtrip failed for {}",
+                    op.name()
+                );
             }
         }
     }
@@ -224,11 +229,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_simple() {
-        let expr = Expr::Binary(
-            OpType::Add,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Var(1)),
-        );
+        let expr = Expr::Binary(OpType::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1)));
         let mut egraph = EGraph::new();
         let class = expr_to_egraph(&expr, &mut egraph);
         let recovered = eclass_to_expr(&egraph, class);

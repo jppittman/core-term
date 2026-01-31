@@ -145,7 +145,12 @@ impl OpType {
         match self {
             OpType::Var | OpType::Const => 0,
             OpType::Neg | OpType::Sqrt | OpType::Rsqrt | OpType::Abs => 1,
-            OpType::Add | OpType::Sub | OpType::Mul | OpType::Div | OpType::Min | OpType::Max
+            OpType::Add
+            | OpType::Sub
+            | OpType::Mul
+            | OpType::Div
+            | OpType::Min
+            | OpType::Max
             | OpType::MulRsqrt => 2,
             OpType::MulAdd => 3,
         }
@@ -340,12 +345,7 @@ pub fn extract_features(expr: &Expr) -> Vec<HalfEPFeature> {
     features
 }
 
-fn extract_features_recursive(
-    expr: &Expr,
-    features: &mut Vec<HalfEPFeature>,
-    path: u8,
-    depth: u8,
-) {
+fn extract_features_recursive(expr: &Expr, features: &mut Vec<HalfEPFeature>, path: u8, depth: u8) {
     let root_op = expr.op_type();
 
     // Add features for all descendants from this node's perspective
@@ -476,12 +476,27 @@ impl DenseFeatures {
 
     /// Feature names for debugging
     pub const NAMES: [&'static str; Self::COUNT] = [
-        "add", "sub", "mul", "div", "neg",
-        "sqrt", "rsqrt", "abs", "min", "max",
-        "fma", "mul_rsqrt",
-        "nodes", "depth", "vars", "consts",
-        "has_identity", "has_self_cancel", "has_fusable",
-        "critical_path", "max_width",
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "neg",
+        "sqrt",
+        "rsqrt",
+        "abs",
+        "min",
+        "max",
+        "fma",
+        "mul_rsqrt",
+        "nodes",
+        "depth",
+        "vars",
+        "consts",
+        "has_identity",
+        "has_self_cancel",
+        "has_fusable",
+        "critical_path",
+        "max_width",
     ];
 
     /// Get feature value by index
@@ -507,7 +522,10 @@ pub fn extract_dense_features(expr: &Expr) -> DenseFeatures {
     let mut width_at_depth = Vec::new();
     let critical_path = extract_dense_recursive(expr, &mut features, 0, &mut width_at_depth);
     features.set(DenseFeatures::CRITICAL_PATH, critical_path);
-    features.set(DenseFeatures::MAX_WIDTH, width_at_depth.iter().copied().max().unwrap_or(0));
+    features.set(
+        DenseFeatures::MAX_WIDTH,
+        width_at_depth.iter().copied().max().unwrap_or(0),
+    );
     features
 }
 
@@ -540,10 +558,22 @@ fn extract_dense_recursive(
         }
         Expr::Unary(op, a) => {
             let op_cost = match op {
-                OpType::Neg => { features.values[DenseFeatures::NEG] += 1; 1 }
-                OpType::Sqrt => { features.values[DenseFeatures::SQRT] += 1; 15 }
-                OpType::Rsqrt => { features.values[DenseFeatures::RSQRT] += 1; 5 }
-                OpType::Abs => { features.values[DenseFeatures::ABS] += 1; 1 }
+                OpType::Neg => {
+                    features.values[DenseFeatures::NEG] += 1;
+                    1
+                }
+                OpType::Sqrt => {
+                    features.values[DenseFeatures::SQRT] += 1;
+                    15
+                }
+                OpType::Rsqrt => {
+                    features.values[DenseFeatures::RSQRT] += 1;
+                    5
+                }
+                OpType::Abs => {
+                    features.values[DenseFeatures::ABS] += 1;
+                    1
+                }
                 _ => 5,
             };
             let child_critical = extract_dense_recursive(a, features, depth + 1, width_at_depth);
@@ -578,8 +608,9 @@ fn extract_dense_recursive(
                         features.values[DenseFeatures::HAS_IDENTITY] += 1;
                     }
                     // Check for fusable: x * rsqrt(y)
-                    if matches!(b.as_ref(), Expr::Unary(OpType::Rsqrt, _)) ||
-                       matches!(a.as_ref(), Expr::Unary(OpType::Rsqrt, _)) {
+                    if matches!(b.as_ref(), Expr::Unary(OpType::Rsqrt, _))
+                        || matches!(a.as_ref(), Expr::Unary(OpType::Rsqrt, _))
+                    {
                         features.values[DenseFeatures::HAS_FUSABLE] += 1;
                     }
                     5
@@ -592,9 +623,18 @@ fn extract_dense_recursive(
                     }
                     15
                 }
-                OpType::Min => { features.values[DenseFeatures::MIN] += 1; 4 }
-                OpType::Max => { features.values[DenseFeatures::MAX] += 1; 4 }
-                OpType::MulRsqrt => { features.values[DenseFeatures::MUL_RSQRT] += 1; 6 }
+                OpType::Min => {
+                    features.values[DenseFeatures::MIN] += 1;
+                    4
+                }
+                OpType::Max => {
+                    features.values[DenseFeatures::MAX] += 1;
+                    4
+                }
+                OpType::MulRsqrt => {
+                    features.values[DenseFeatures::MUL_RSQRT] += 1;
+                    6
+                }
                 _ => 5,
             };
             let crit_a = extract_dense_recursive(a, features, depth + 1, width_at_depth);
@@ -604,7 +644,10 @@ fn extract_dense_recursive(
         }
         Expr::Ternary(op, a, b, c) => {
             let op_cost = match op {
-                OpType::MulAdd => { features.values[DenseFeatures::FMA] += 1; 5 }
+                OpType::MulAdd => {
+                    features.values[DenseFeatures::FMA] += 1;
+                    5
+                }
                 _ => 10,
             };
             let crit_a = extract_dense_recursive(a, features, depth + 1, width_at_depth);
@@ -628,14 +671,15 @@ fn dense_exprs_equal(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Var(i), Expr::Var(j)) => i == j,
         (Expr::Const(x), Expr::Const(y)) => fabsf(x - y) < 1e-10,
-        (Expr::Unary(op1, a1), Expr::Unary(op2, b1)) => {
-            op1 == op2 && dense_exprs_equal(a1, b1)
-        }
+        (Expr::Unary(op1, a1), Expr::Unary(op2, b1)) => op1 == op2 && dense_exprs_equal(a1, b1),
         (Expr::Binary(op1, a1, a2), Expr::Binary(op2, b1, b2)) => {
             op1 == op2 && dense_exprs_equal(a1, b1) && dense_exprs_equal(a2, b2)
         }
         (Expr::Ternary(op1, a1, a2, a3), Expr::Ternary(op2, b1, b2, b3)) => {
-            op1 == op2 && dense_exprs_equal(a1, b1) && dense_exprs_equal(a2, b2) && dense_exprs_equal(a3, b3)
+            op1 == op2
+                && dense_exprs_equal(a1, b1)
+                && dense_exprs_equal(a2, b2)
+                && dense_exprs_equal(a3, b3)
         }
         _ => false,
     }
@@ -1180,7 +1224,8 @@ pub fn read_depth_limited_binpack(path: &str) -> std::io::Result<Vec<DepthLimite
         ));
     }
 
-    let count = u32::from_le_bytes([all_bytes[8], all_bytes[9], all_bytes[10], all_bytes[11]]) as usize;
+    let count =
+        u32::from_le_bytes([all_bytes[8], all_bytes[9], all_bytes[10], all_bytes[11]]) as usize;
 
     let mut samples = Vec::with_capacity(count);
     let mut offset = 12;
@@ -1249,15 +1294,15 @@ impl ExprGenerator {
     /// Create a new generator with the given seed.
     #[must_use]
     pub fn new(seed: u64, config: ExprGenConfig) -> Self {
-        Self { config, state: seed }
+        Self {
+            config,
+            state: seed,
+        }
     }
 
     /// Generate a random f32 in [0, 1).
     fn rand_f32(&mut self) -> f32 {
-        self.state = self
-            .state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
         (self.state >> 33) as f32 / (1u64 << 31) as f32
     }
 
@@ -1427,14 +1472,10 @@ impl RewriteRule {
                 _ => None,
             },
             RewriteRule::MulZero => match expr {
-                Expr::Binary(OpType::Mul, _, b)
-                    if matches!(b.as_ref(), Expr::Const(c) if *c == 0.0) =>
-                {
+                Expr::Binary(OpType::Mul, _, b) if matches!(b.as_ref(), Expr::Const(c) if *c == 0.0) => {
                     Some(Expr::Const(0.0))
                 }
-                Expr::Binary(OpType::Mul, a, _)
-                    if matches!(a.as_ref(), Expr::Const(c) if *c == 0.0) =>
-                {
+                Expr::Binary(OpType::Mul, a, _) if matches!(a.as_ref(), Expr::Const(c) if *c == 0.0) => {
                     Some(Expr::Const(0.0))
                 }
                 _ => None,
@@ -1464,9 +1505,12 @@ impl RewriteRule {
             },
             RewriteRule::FuseToMulAdd => match expr {
                 Expr::Binary(OpType::Add, mul_expr, c) => match mul_expr.as_ref() {
-                    Expr::Binary(OpType::Mul, a, b) => {
-                        Some(Expr::Ternary(OpType::MulAdd, a.clone(), b.clone(), c.clone()))
-                    }
+                    Expr::Binary(OpType::Mul, a, b) => Some(Expr::Ternary(
+                        OpType::MulAdd,
+                        a.clone(),
+                        b.clone(),
+                        c.clone(),
+                    )),
                     _ => None,
                 },
                 _ => None,
@@ -1704,15 +1748,15 @@ impl BwdGenerator {
     /// Create a new backward generator with the given seed.
     #[must_use]
     pub fn new(seed: u64, config: BwdGenConfig) -> Self {
-        Self { config, state: seed }
+        Self {
+            config,
+            state: seed,
+        }
     }
 
     /// Generate a random f32 in [0, 1).
     fn rand_f32(&mut self) -> f32 {
-        self.state = self
-            .state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
         (self.state >> 33) as f32 / (1u64 << 31) as f32
     }
 
@@ -2007,11 +2051,7 @@ mod tests {
     #[test]
     fn test_expr_eval() {
         // x + y
-        let expr = Expr::Binary(
-            OpType::Add,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Var(1)),
-        );
+        let expr = Expr::Binary(OpType::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1)));
         let result = expr.eval(&[3.0, 4.0, 0.0, 0.0]);
         assert!(fabsf(result - 7.0) < 1e-6);
     }
@@ -2261,11 +2301,7 @@ mod tests {
     #[test]
     fn test_dense_features_simple_add() {
         // x + y
-        let expr = Expr::Binary(
-            OpType::Add,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Var(1)),
-        );
+        let expr = Expr::Binary(OpType::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1)));
         let features = extract_dense_features(&expr);
 
         assert_eq!(features.values[DenseFeatures::ADD], 1);
@@ -2320,8 +2356,10 @@ mod tests {
         assert_eq!(deep_features.values[DenseFeatures::CRITICAL_PATH], 12);
 
         // Wide is better for ILP
-        assert!(wide_features.values[DenseFeatures::CRITICAL_PATH] <
-                deep_features.values[DenseFeatures::CRITICAL_PATH]);
+        assert!(
+            wide_features.values[DenseFeatures::CRITICAL_PATH]
+                < deep_features.values[DenseFeatures::CRITICAL_PATH]
+        );
     }
 
     #[test]

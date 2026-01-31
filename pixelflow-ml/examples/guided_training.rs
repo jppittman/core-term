@@ -23,15 +23,15 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use pixelflow_ml::training::egraph::{
-    BenchmarkConfig, CurriculumConfig, ExprGenerator, ReplayBuffer,
-    GuideTrainingSample, run_judge_training, train_guide_batch,
-    save_nnue_weights, load_nnue_weights, load_benchmark_cache, prepare_judge_samples,
+    BenchmarkConfig, CurriculumConfig, ExprGenerator, GuideTrainingSample, ReplayBuffer,
+    load_benchmark_cache, load_nnue_weights, prepare_judge_samples, run_judge_training,
+    save_nnue_weights, train_guide_batch,
 };
 
-use pixelflow_search::egraph::{BestFirstPlanner, BestFirstConfig, BestFirstContext, CostModel};
-use pixelflow_ml::training::features::{extract_search_features, extract_tree_features};
 use pixelflow_ml::training::backprop::forward_with_state;
+use pixelflow_ml::training::features::{extract_search_features, extract_tree_features};
 use pixelflow_nnue::{Nnue, NnueConfig};
+use pixelflow_search::egraph::{BestFirstConfig, BestFirstContext, BestFirstPlanner, CostModel};
 
 // ============================================================================
 // Evaluation Metrics
@@ -41,7 +41,9 @@ use pixelflow_nnue::{Nnue, NnueConfig};
 fn spearman_correlation(x: &[f64], y: &[f64]) -> f64 {
     assert_eq!(x.len(), y.len());
     let n = x.len();
-    if n < 2 { return 0.0; }
+    if n < 2 {
+        return 0.0;
+    }
 
     let rank = |vals: &[f64]| -> Vec<f64> {
         let mut indexed: Vec<_> = vals.iter().enumerate().collect();
@@ -72,7 +74,9 @@ fn spearman_correlation(x: &[f64], y: &[f64]) -> f64 {
         var_y += dy * dy;
     }
 
-    if var_x == 0.0 || var_y == 0.0 { return 0.0; }
+    if var_x == 0.0 || var_y == 0.0 {
+        return 0.0;
+    }
     cov / (var_x.sqrt() * var_y.sqrt())
 }
 
@@ -80,31 +84,50 @@ fn spearman_correlation(x: &[f64], y: &[f64]) -> f64 {
 fn r_squared(actual: &[f64], predicted: &[f64]) -> f64 {
     assert_eq!(actual.len(), predicted.len());
     let n = actual.len();
-    if n == 0 { return 0.0; }
+    if n == 0 {
+        return 0.0;
+    }
 
     let mean: f64 = actual.iter().sum::<f64>() / n as f64;
     let ss_tot: f64 = actual.iter().map(|y| (y - mean).powi(2)).sum();
-    let ss_res: f64 = actual.iter().zip(predicted).map(|(y, p)| (y - p).powi(2)).sum();
+    let ss_res: f64 = actual
+        .iter()
+        .zip(predicted)
+        .map(|(y, p)| (y - p).powi(2))
+        .sum();
 
-    if ss_tot == 0.0 { return 1.0; }
+    if ss_tot == 0.0 {
+        return 1.0;
+    }
     1.0 - (ss_res / ss_tot)
 }
 
 /// Compute mean absolute error.
 fn mae(actual: &[f64], predicted: &[f64]) -> f64 {
     assert_eq!(actual.len(), predicted.len());
-    if actual.is_empty() { return 0.0; }
-    actual.iter().zip(predicted).map(|(a, p)| (a - p).abs()).sum::<f64>() / actual.len() as f64
+    if actual.is_empty() {
+        return 0.0;
+    }
+    actual
+        .iter()
+        .zip(predicted)
+        .map(|(a, p)| (a - p).abs())
+        .sum::<f64>()
+        / actual.len() as f64
 }
 
 /// Compute mean absolute percentage error.
 fn mape(actual: &[f64], predicted: &[f64]) -> f64 {
     assert_eq!(actual.len(), predicted.len());
-    let valid: Vec<_> = actual.iter().zip(predicted)
+    let valid: Vec<_> = actual
+        .iter()
+        .zip(predicted)
         .filter(|(a, _)| **a != 0.0)
         .map(|(a, p)| ((a - p) / a).abs())
         .collect();
-    if valid.is_empty() { return 0.0; }
+    if valid.is_empty() {
+        return 0.0;
+    }
     valid.iter().sum::<f64>() / valid.len() as f64 * 100.0
 }
 
@@ -117,13 +140,19 @@ struct SearchResult {
 
 impl SearchResult {
     fn improvement(&self) -> f64 {
-        if self.initial_cost == 0 { 0.0 }
-        else { 1.0 - (self.final_cost as f64 / self.initial_cost as f64) }
+        if self.initial_cost == 0 {
+            0.0
+        } else {
+            1.0 - (self.final_cost as f64 / self.initial_cost as f64)
+        }
     }
 
     fn regret(&self, optimal: usize) -> f64 {
-        if optimal == 0 { 0.0 }
-        else { (self.final_cost as f64 - optimal as f64) / optimal as f64 }
+        if optimal == 0 {
+            0.0
+        } else {
+            (self.final_cost as f64 - optimal as f64) / optimal as f64
+        }
     }
 }
 
@@ -181,8 +210,12 @@ fn main() {
     };
 
     println!("=== The Guide: Curriculum Training ===");
-    if quick_mode { println!("(quick mode)"); }
-    if kindergarten_only { println!("(kindergarten only)"); }
+    if quick_mode {
+        println!("(quick mode)");
+    }
+    if kindergarten_only {
+        println!("(kindergarten only)");
+    }
     println!();
 
     // Load The Judge for cost evaluation (trained on benchmarks)
@@ -200,8 +233,10 @@ fn main() {
     };
 
     let cost_model = CostModel::load_or_default();
-    println!("Cost model: add={}, mul={}, div={}, sqrt={}",
-             cost_model.add, cost_model.mul, cost_model.div, cost_model.sqrt);
+    println!(
+        "Cost model: add={}, mul={}, div={}, sqrt={}",
+        cost_model.add, cost_model.mul, cost_model.div, cost_model.sqrt
+    );
     println!();
 
     // The Guide (being trained) - predicts optimization potential
@@ -220,15 +255,15 @@ fn main() {
         for _ in 0..config.kindergarten_samples {
             let tree = expr_gen.generate_small();
 
-            let bf_config = BestFirstConfig::default()
-                .with_max_expansions(100);
+            let bf_config = BestFirstConfig::default().with_max_expansions(100);
             let mut planner = BestFirstPlanner::from_tree(&tree, bf_config);
 
             // Use The Judge for cost evaluation if available, else use Guide for exploration
             let result = planner.run(|ctx: BestFirstContext<'_>| {
                 let features = extract_search_features(&ctx);
                 let evaluator = judge.as_ref().unwrap_or(&guide);
-                let (pred, _) = pixelflow_ml::training::backprop::forward_with_state(evaluator, &features);
+                let (pred, _) =
+                    pixelflow_ml::training::backprop::forward_with_state(evaluator, &features);
                 (pred * 1000.0) as i64
             });
 
@@ -238,7 +273,8 @@ fn main() {
                 total_improvement += improvement;
             }
 
-            let features = pixelflow_ml::training::features::extract_tree_features(&result.best_tree);
+            let features =
+                pixelflow_ml::training::features::extract_tree_features(&result.best_tree);
             replay.add(GuideTrainingSample {
                 features,
                 final_cost: result.best_cost,
@@ -252,15 +288,27 @@ fn main() {
         let batch = replay.sample_batch(config.batch_size);
         if !batch.is_empty() {
             let loss = train_guide_batch(&mut guide, &batch, config.learning_rate);
-            let avg_imp = if epoch_samples > 0 { total_improvement / epoch_samples as f64 } else { 0.0 };
-            println!("Epoch {}: samples={}, avg_improvement={:.2}%, loss={:.6}",
-                     epoch, epoch_samples, avg_imp * 100.0, loss);
+            let avg_imp = if epoch_samples > 0 {
+                total_improvement / epoch_samples as f64
+            } else {
+                0.0
+            };
+            println!(
+                "Epoch {}: samples={}, avg_improvement={:.2}%, loss={:.6}",
+                epoch,
+                epoch_samples,
+                avg_imp * 100.0,
+                loss
+            );
         }
     }
 
     if kindergarten_only {
         println!();
-        println!("Kindergarten complete in {:.2}s", start.elapsed().as_secs_f64());
+        println!(
+            "Kindergarten complete in {:.2}s",
+            start.elapsed().as_secs_f64()
+        );
         return;
     }
 
@@ -276,7 +324,7 @@ fn main() {
 
             let bf_config = BestFirstConfig::default()
                 .with_max_expansions(config.max_expansions)
-                .with_epsilon(config.epsilon as f64);  // ε-greedy exploration
+                .with_epsilon(config.epsilon as f64); // ε-greedy exploration
 
             let mut planner = BestFirstPlanner::from_tree(&tree, bf_config);
 
@@ -284,7 +332,8 @@ fn main() {
             let result = planner.run(|ctx: BestFirstContext<'_>| {
                 let features = extract_search_features(&ctx);
                 let evaluator = judge.as_ref().unwrap_or(&guide);
-                let (pred, _) = pixelflow_ml::training::backprop::forward_with_state(evaluator, &features);
+                let (pred, _) =
+                    pixelflow_ml::training::backprop::forward_with_state(evaluator, &features);
                 (pred * 1000.0) as i64
             });
 
@@ -293,7 +342,8 @@ fn main() {
                 total_improvement += improvement;
             }
 
-            let features = pixelflow_ml::training::features::extract_tree_features(&result.best_tree);
+            let features =
+                pixelflow_ml::training::features::extract_tree_features(&result.best_tree);
             replay.add(GuideTrainingSample {
                 features,
                 final_cost: result.best_cost,
@@ -307,9 +357,18 @@ fn main() {
         let batch = replay.sample_batch(config.batch_size);
         if !batch.is_empty() {
             let loss = train_guide_batch(&mut guide, &batch, config.learning_rate);
-            let avg_imp = if epoch_samples > 0 { total_improvement / epoch_samples as f64 } else { 0.0 };
-            println!("Epoch {}: samples={}, avg_improvement={:.2}%, loss={:.6}",
-                     epoch, epoch_samples, avg_imp * 100.0, loss);
+            let avg_imp = if epoch_samples > 0 {
+                total_improvement / epoch_samples as f64
+            } else {
+                0.0
+            };
+            println!(
+                "Epoch {}: samples={}, avg_improvement={:.2}%, loss={:.6}",
+                epoch,
+                epoch_samples,
+                avg_imp * 100.0,
+                loss
+            );
         }
     }
 
@@ -391,13 +450,23 @@ fn evaluate_judge(judge: &Nnue, workspace: &PathBuf) {
     // Normalize predictions to same scale as actuals (median scaling)
     let mut sorted_actuals = actuals.clone();
     sorted_actuals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median_actual = sorted_actuals.get(sorted_actuals.len() / 2).copied().unwrap_or(1.0);
+    let median_actual = sorted_actuals
+        .get(sorted_actuals.len() / 2)
+        .copied()
+        .unwrap_or(1.0);
 
     let mut sorted_preds = predictions.clone();
     sorted_preds.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median_pred = sorted_preds.get(sorted_preds.len() / 2).copied().unwrap_or(1.0);
+    let median_pred = sorted_preds
+        .get(sorted_preds.len() / 2)
+        .copied()
+        .unwrap_or(1.0);
 
-    let scale = if median_pred != 0.0 { median_actual / median_pred } else { 1.0 };
+    let scale = if median_pred != 0.0 {
+        median_actual / median_pred
+    } else {
+        1.0
+    };
     let scaled_predictions: Vec<f64> = predictions.iter().map(|p| p * scale).collect();
 
     // Compute metrics
@@ -409,7 +478,10 @@ fn evaluate_judge(judge: &Nnue, workspace: &PathBuf) {
     println!();
     println!("  Metrics:");
     println!("    R²           = {:.4}  (1.0 = perfect fit)", r2);
-    println!("    Spearman ρ   = {:.4}  (1.0 = perfect ranking)", spearman);
+    println!(
+        "    Spearman ρ   = {:.4}  (1.0 = perfect ranking)",
+        spearman
+    );
     println!("    MAE          = {:.2} ns", mae_val);
     println!("    MAPE         = {:.1}%", mape_val);
     println!();
@@ -430,11 +502,14 @@ fn evaluate_guide(guide: &Nnue, judge: Option<&Nnue>) {
     println!();
 
     let mut expr_gen = ExprGenerator::new(12345); // Fixed seed for reproducibility
-    let n_small = 50;  // Small kernels (can compute optimal via saturation)
-    let n_large = 30;  // Large kernels (compare strategies)
+    let n_small = 50; // Small kernels (can compute optimal via saturation)
+    let n_large = 30; // Large kernels (compare strategies)
 
     // Evaluate on small kernels (where we know optimal)
-    println!("  Small Kernels (n={}): Comparing to saturation optimal", n_small);
+    println!(
+        "  Small Kernels (n={}): Comparing to saturation optimal",
+        n_small
+    );
 
     let mut nnue_regrets = Vec::new();
     let mut random_regrets = Vec::new();
@@ -465,17 +540,30 @@ fn evaluate_guide(guide: &Nnue, judge: Option<&Nnue>) {
 
     let avg = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
 
-    println!("    NNUE-guided regret:  {:.2}%", avg(&nnue_regrets) * 100.0);
-    println!("    Random regret:       {:.2}%", avg(&random_regrets) * 100.0);
-    println!("    Greedy regret:       {:.2}%", avg(&greedy_regrets) * 100.0);
+    println!(
+        "    NNUE-guided regret:  {:.2}%",
+        avg(&nnue_regrets) * 100.0
+    );
+    println!(
+        "    Random regret:       {:.2}%",
+        avg(&random_regrets) * 100.0
+    );
+    println!(
+        "    Greedy regret:       {:.2}%",
+        avg(&greedy_regrets) * 100.0
+    );
 
     let nnue_vs_random = if avg(&random_regrets) > 0.0 {
         (avg(&random_regrets) - avg(&nnue_regrets)) / avg(&random_regrets) * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     let nnue_vs_greedy = if avg(&greedy_regrets) > 0.0 {
         (avg(&greedy_regrets) - avg(&nnue_regrets)) / avg(&greedy_regrets) * 100.0
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     println!();
     println!("    NNUE vs Random: {:.1}% better", nnue_vs_random);
@@ -483,7 +571,10 @@ fn evaluate_guide(guide: &Nnue, judge: Option<&Nnue>) {
 
     // Evaluate on large kernels (compare improvement achieved)
     println!();
-    println!("  Large Kernels (n={}): Comparing improvement achieved", n_large);
+    println!(
+        "  Large Kernels (n={}): Comparing improvement achieved",
+        n_large
+    );
 
     let mut nnue_improvements = Vec::new();
     let mut random_improvements = Vec::new();
@@ -502,9 +593,18 @@ fn evaluate_guide(guide: &Nnue, judge: Option<&Nnue>) {
         greedy_improvements.push(greedy_result.improvement());
     }
 
-    println!("    NNUE-guided improvement:  {:.2}%", avg(&nnue_improvements) * 100.0);
-    println!("    Random improvement:       {:.2}%", avg(&random_improvements) * 100.0);
-    println!("    Greedy improvement:       {:.2}%", avg(&greedy_improvements) * 100.0);
+    println!(
+        "    NNUE-guided improvement:  {:.2}%",
+        avg(&nnue_improvements) * 100.0
+    );
+    println!(
+        "    Random improvement:       {:.2}%",
+        avg(&random_improvements) * 100.0
+    );
+    println!(
+        "    Greedy improvement:       {:.2}%",
+        avg(&greedy_improvements) * 100.0
+    );
 
     println!();
 
@@ -534,8 +634,8 @@ fn run_search(
 ) -> SearchResult {
     let config = BestFirstConfig::default()
         .with_max_expansions(max_expansions)
-        .with_saturation_threshold(0)  // Disable saturation for fair comparison
-        .with_epsilon(0.0);  // Pure exploitation for evaluation
+        .with_saturation_threshold(0) // Disable saturation for fair comparison
+        .with_epsilon(0.0); // Pure exploitation for evaluation
 
     let mut planner = BestFirstPlanner::from_tree(tree, config);
     let mut rng_state = 42u64;

@@ -3,11 +3,11 @@
 //! This module defines the recursive Expression tree.
 //! It requires the `alloc` feature.
 
+use crate::kind::OpKind;
 #[cfg(feature = "alloc")]
 use alloc::boxed::Box;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
-use crate::kind::OpKind;
 
 /// A recursive expression tree.
 #[cfg(feature = "alloc")]
@@ -46,14 +46,14 @@ impl Expr {
         match self {
             Self::Var(_) | Self::Const(_) => &[],
             Self::Unary(_, a) => core::slice::from_ref(a),
-            Self::Binary(_, a, b) => {
+            Self::Binary(_, _a, _b) => {
                 // This is unsafe/tricky to return slice from Box fields.
                 // We return Vec or iterator?
-                // For simplicity in this base IR, we might not provide a generic children() slice 
+                // For simplicity in this base IR, we might not provide a generic children() slice
                 // without allocation or unsafe hacks.
                 // But Nary provides slice.
                 // Let's leave this out for now and let consumers match.
-                &[] 
+                &[]
             }
             Self::Nary(_, children) => children,
             _ => &[], // Todo: unify storage if generic traversal is needed
