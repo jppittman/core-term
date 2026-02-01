@@ -692,6 +692,17 @@ const ENCODING_UNICODE_2_0_FULL: u16 = 4;
 const FORMAT_SEGMENT_MAPPING: u16 = 4;
 const FORMAT_SEGMENTED_COVERAGE: u16 = 12;
 
+// TTF/OTF Glyph Component Flags
+const COMPONENT_ARG_1_AND_2_ARE_WORDS: u16 = 0x01;
+const COMPONENT_ARGS_ARE_XY_VALUES: u16 = 0x02;
+const COMPONENT_WE_HAVE_A_SCALE: u16 = 0x08;
+const COMPONENT_MORE_COMPONENTS: u16 = 0x20;
+const COMPONENT_WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x40;
+const COMPONENT_WE_HAVE_A_TWO_BY_TWO: u16 = 0x80;
+
+// TTF F2Dot14 Scale Factor (2.14 fixed point)
+const F2DOT14_SCALE: f32 = 16384.0;
+
 /// Normalization parameters for simple glyphs.
 struct Normalization {
     scale: f32,
@@ -1013,34 +1024,34 @@ impl<'a> Font<'a> {
         loop {
             let fl = r.u16()?;
             let id = r.u16()?;
-            let (dx, dy) = if fl & 2 != 0 {
-                if fl & 1 != 0 {
+            let (dx, dy) = if fl & COMPONENT_ARGS_ARE_XY_VALUES != 0 {
+                if fl & COMPONENT_ARG_1_AND_2_ARE_WORDS != 0 {
                     (r.i16()?, r.i16()?)
                 } else {
                     (r.i8()? as i16, r.i8()? as i16)
                 }
             } else {
-                r.skip(if fl & 1 != 0 { 4 } else { 2 })?;
+                r.skip(if fl & COMPONENT_ARG_1_AND_2_ARE_WORDS != 0 { 4 } else { 2 })?;
                 (0, 0)
             };
             let mut m = [1.0, 0.0, 0.0, 1.0, dx as f32, dy as f32];
-            if fl & 0x08 != 0 {
-                let s = r.i16()? as f32 / 16384.0;
+            if fl & COMPONENT_WE_HAVE_A_SCALE != 0 {
+                let s = r.i16()? as f32 / F2DOT14_SCALE;
                 m[0] = s;
                 m[3] = s;
-            } else if fl & 0x40 != 0 {
-                m[0] = r.i16()? as f32 / 16384.0;
-                m[3] = r.i16()? as f32 / 16384.0;
-            } else if fl & 0x80 != 0 {
-                m[0] = r.i16()? as f32 / 16384.0;
-                m[1] = r.i16()? as f32 / 16384.0;
-                m[2] = r.i16()? as f32 / 16384.0;
-                m[3] = r.i16()? as f32 / 16384.0;
+            } else if fl & COMPONENT_WE_HAVE_AN_X_AND_Y_SCALE != 0 {
+                m[0] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[3] = r.i16()? as f32 / F2DOT14_SCALE;
+            } else if fl & COMPONENT_WE_HAVE_A_TWO_BY_TWO != 0 {
+                m[0] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[1] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[2] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[3] = r.i16()? as f32 / F2DOT14_SCALE;
             }
             if let Some(g) = self.compile(id) {
                 kids.push(affine(g, m));
             }
-            if fl & 0x20 == 0 {
+            if fl & COMPONENT_MORE_COMPONENTS == 0 {
                 break;
             }
         }
