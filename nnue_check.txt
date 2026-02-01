@@ -1,0 +1,3 @@
+    Checking pixelflow-ir v0.1.0 (/app/pixelflow-ir)
+    Checking pixelflow-nnue v0.1.0 (/app/pixelflow-nnue)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2.89s
