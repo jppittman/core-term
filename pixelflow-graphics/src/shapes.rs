@@ -194,15 +194,85 @@ mod tests {
     }
 
     #[test]
-    fn circle_at_origin() {
-        // Point at origin should be inside
-        // Point at (2, 0) should be outside
+    fn circle_should_contain_origin_and_exclude_distant_point() {
+        let circle_shape = circle(SOLID, EMPTY);
+
+        // Point at origin should be inside (SOLID=1.0)
+        let val_origin = eval_scalar(&circle_shape, 0.0, 0.0);
+        assert!(
+            (val_origin - SOLID).abs() < 1e-4,
+            "Origin should be inside circle, expected {}, got {}",
+            SOLID,
+            val_origin
+        );
+
+        // Point at (2, 0) should be outside (EMPTY=0.0)
+        let val_outside = eval_scalar(&circle_shape, 2.0, 0.0);
+        assert!(
+            (val_outside - EMPTY).abs() < 1e-4,
+            "Point (2,0) should be outside circle, expected {}, got {}",
+            EMPTY,
+            val_outside
+        );
+
+        // Point at (0.5, 0.5) should be inside (0.5^2 + 0.5^2 = 0.5 < 1)
+        let val_inside = eval_scalar(&circle_shape, 0.5, 0.5);
+        assert!(
+            (val_inside - SOLID).abs() < 1e-4,
+            "Point (0.5, 0.5) should be inside circle, expected {}, got {}",
+            SOLID,
+            val_inside
+        );
     }
 
     #[test]
-    fn composition_works() {
+    fn square_should_mask_circle_outside_bounds() {
         // circle inside square
-        let _scene = square(circle(SOLID, 0.5f32), EMPTY);
+        // Square is [0,0] to [1,1]
+        // Circle is unit circle centered at origin (radius 1)
+        // We compose: square(circle(SOLID, 0.5), EMPTY)
+        // Inside square:
+        //    If inside circle (x^2+y^2 < 1) -> SOLID
+        //    If outside circle -> 0.5
+        // Outside square -> EMPTY
+
+        let val_bg_circle = 0.5f32;
+        let scene = square(circle(SOLID, val_bg_circle), EMPTY);
+
+        // 1. Inside square [0,1]x[0,1] AND Inside Circle
+        // (0.1, 0.1) -> dist_sq = 0.02 < 1 -> SOLID
+        let val_in_in = eval_scalar(&scene, 0.1, 0.1);
+        assert!(
+            (val_in_in - SOLID).abs() < 1e-4,
+            "Point (0.1, 0.1) should be SOLID, got {}",
+            val_in_in
+        );
+
+        // 2. Inside square BUT Outside Circle
+        // (0.9, 0.9) -> dist_sq = 0.81 + 0.81 = 1.62 > 1 -> val_bg_circle (0.5)
+        let val_in_out = eval_scalar(&scene, 0.9, 0.9);
+        assert!(
+            (val_in_out - val_bg_circle).abs() < 1e-4,
+            "Point (0.9, 0.9) should be val_bg_circle (0.5), got {}",
+            val_in_out
+        );
+
+        // 3. Outside square
+        // (-0.1, 0.1) -> Outside square X bounds -> EMPTY
+        let val_out_x = eval_scalar(&scene, -0.1, 0.1);
+        assert!(
+            (val_out_x - EMPTY).abs() < 1e-4,
+            "Point (-0.1, 0.1) should be EMPTY, got {}",
+            val_out_x
+        );
+
+        // (0.1, 1.1) -> Outside square Y bounds -> EMPTY
+        let val_out_y = eval_scalar(&scene, 0.1, 1.1);
+        assert!(
+            (val_out_y - EMPTY).abs() < 1e-4,
+            "Point (0.1, 1.1) should be EMPTY, got {}",
+            val_out_y
+        );
     }
 
     #[test]
