@@ -79,14 +79,17 @@ impl CountingActor {
         self.data_count.load(Ordering::SeqCst)
     }
 
+    #[allow(dead_code)]
     fn control_count(&self) -> usize {
         self.control_count.load(Ordering::SeqCst)
     }
 
+    #[allow(dead_code)]
     fn management_count(&self) -> usize {
         self.management_count.load(Ordering::SeqCst)
     }
 
+    #[allow(dead_code)]
     fn total(&self) -> usize {
         self.data_count() + self.control_count() + self.management_count()
     }
@@ -1188,6 +1191,7 @@ fn large_message_type_works() {
     // Test with a large message type
     #[derive(Clone)]
     struct LargeMessage {
+        #[allow(dead_code)]
         data: [u8; 4096],
     }
 

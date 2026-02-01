@@ -3,7 +3,7 @@
 //! Tests the effectiveness of the e-graph optimizer on complex algebraic expressions.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use pixelflow_core::{Field, ManifoldCompat, ManifoldExt, PARALLELISM, X, Y};
+use pixelflow_core::{Field, ManifoldCompat, PARALLELISM, X, Y};
 use pixelflow_macros::kernel;
 
 /// Complex polynomial: f(x, y) = x³ + 2x²y + 3xy² + y³

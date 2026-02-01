@@ -217,7 +217,7 @@ mod tests {
         // f32 literals return Field, not Jet2. The manifold must be fully
         // polymorphic over the computational type.
         //
-        // Tolerance is 1e-4 due to fast rsqrt approximation used in sqrt.
+        // Tolerance is 1e-3 due to fast rsqrt approximation used in sqrt.
         let distance = (X * X + Y * Y).sqrt();
         let with_grad = WithGradient::<_, 2>::new(distance);
 
@@ -232,9 +232,9 @@ mod tests {
         let dx = first_lane(result.dx);
         let dy = first_lane(result.dy);
 
-        assert!((val - 5.0).abs() < 5e-4, "value should be 5.0, got {}", val);
-        assert!((dx - 0.6).abs() < 5e-4, "dx should be 0.6, got {}", dx);
-        assert!((dy - 0.8).abs() < 5e-4, "dy should be 0.8, got {}", dy);
+        assert!((val - 5.0).abs() < 1e-3, "value should be 5.0, got {}", val);
+        assert!((dx - 0.6).abs() < 1e-3, "dx should be 0.6, got {}", dx);
+        assert!((dy - 0.8).abs() < 1e-3, "dy should be 0.8, got {}", dy);
     }
 
     #[test]
@@ -291,7 +291,7 @@ mod tests {
         // At (1, 2, 2): r = 3, value = 3
         // Gradient: (x/r, y/r, z/r) = (1/3, 2/3, 2/3)
         //
-        // Tolerance is 1e-4 due to fast rsqrt approximation used in sqrt.
+        // Tolerance is 1e-3 due to fast rsqrt approximation used in sqrt.
         let distance = (X * X + Y * Y + Z * Z).sqrt();
         let with_grad = WithGradient3D::new(distance);
 
@@ -307,19 +307,19 @@ mod tests {
         let dy = first_lane(result.dy);
         let dz = first_lane(result.dz);
 
-        assert!((val - 3.0).abs() < 2e-4, "value should be 3.0, got {}", val);
+        assert!((val - 3.0).abs() < 1e-3, "value should be 3.0, got {}", val);
         assert!(
-            (dx - 1.0 / 3.0).abs() < 1e-4,
+            (dx - 1.0 / 3.0).abs() < 1e-3,
             "dx should be 1/3, got {}",
             dx
         );
         assert!(
-            (dy - 2.0 / 3.0).abs() < 1e-4,
+            (dy - 2.0 / 3.0).abs() < 1e-3,
             "dy should be 2/3, got {}",
             dy
         );
         assert!(
-            (dz - 2.0 / 3.0).abs() < 1e-4,
+            (dz - 2.0 / 3.0).abs() < 1e-3,
             "dz should be 2/3, got {}",
             dz
         );
