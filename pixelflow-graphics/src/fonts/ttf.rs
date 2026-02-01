@@ -692,6 +692,24 @@ const ENCODING_UNICODE_2_0_FULL: u16 = 4;
 const FORMAT_SEGMENT_MAPPING: u16 = 4;
 const FORMAT_SEGMENTED_COVERAGE: u16 = 12;
 
+// TTF Composite Glyph Flags
+const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
+const ARGS_ARE_XY_VALUES: u16 = 0x0002;
+const WE_HAVE_A_SCALE: u16 = 0x0008;
+const MORE_COMPONENTS: u16 = 0x0020;
+const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
+const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
+
+// TTF Simple Glyph Flags
+const FLAG_ON_CURVE: u8 = 0x01;
+const FLAG_X_SHORT: u8 = 0x02;
+const FLAG_Y_SHORT: u8 = 0x04;
+const FLAG_REPEAT: u8 = 0x08;
+const FLAG_X_SAME: u8 = 0x10;
+const FLAG_Y_SAME: u8 = 0x20;
+
+const F2DOT14_SCALE: f32 = 16384.0;
+
 /// Normalization parameters for simple glyphs.
 struct Normalization {
     scale: f32,
@@ -956,7 +974,7 @@ impl<'a> Font<'a> {
         while fl.len() < np {
             let f = r.u8()?;
             fl.push(f);
-            if f & 8 != 0 {
+            if f & FLAG_REPEAT != 0 {
                 for _ in 0..r.u8()?.min((np - fl.len()) as u8) {
                     fl.push(f);
                 }
@@ -978,7 +996,10 @@ impl<'a> Font<'a> {
                 .map(|(_, v)| v)
         };
 
-        let (xs, ys) = (dec(r, 2, 16)?, dec(r, 4, 32)?);
+        let (xs, ys) = (
+            dec(r, FLAG_X_SHORT, FLAG_X_SAME)?,
+            dec(r, FLAG_Y_SHORT, FLAG_Y_SAME)?,
+        );
 
         // Normalize points immediately
         let pts: Vec<_> = (0..np)
@@ -986,7 +1007,7 @@ impl<'a> Font<'a> {
                 (
                     (xs[i] as f32) * norm.scale + norm.tx,
                     (ys[i] as f32) * norm.scale + norm.ty,
-                    fl[i] & 1 != 0,
+                    fl[i] & FLAG_ON_CURVE != 0,
                 )
             })
             .collect();
@@ -1013,34 +1034,38 @@ impl<'a> Font<'a> {
         loop {
             let fl = r.u16()?;
             let id = r.u16()?;
-            let (dx, dy) = if fl & 2 != 0 {
-                if fl & 1 != 0 {
+            let (dx, dy) = if fl & ARGS_ARE_XY_VALUES != 0 {
+                if fl & ARG_1_AND_2_ARE_WORDS != 0 {
                     (r.i16()?, r.i16()?)
                 } else {
                     (r.i8()? as i16, r.i8()? as i16)
                 }
             } else {
-                r.skip(if fl & 1 != 0 { 4 } else { 2 })?;
+                r.skip(if fl & ARG_1_AND_2_ARE_WORDS != 0 {
+                    4
+                } else {
+                    2
+                })?;
                 (0, 0)
             };
             let mut m = [1.0, 0.0, 0.0, 1.0, dx as f32, dy as f32];
-            if fl & 0x08 != 0 {
-                let s = r.i16()? as f32 / 16384.0;
+            if fl & WE_HAVE_A_SCALE != 0 {
+                let s = r.i16()? as f32 / F2DOT14_SCALE;
                 m[0] = s;
                 m[3] = s;
-            } else if fl & 0x40 != 0 {
-                m[0] = r.i16()? as f32 / 16384.0;
-                m[3] = r.i16()? as f32 / 16384.0;
-            } else if fl & 0x80 != 0 {
-                m[0] = r.i16()? as f32 / 16384.0;
-                m[1] = r.i16()? as f32 / 16384.0;
-                m[2] = r.i16()? as f32 / 16384.0;
-                m[3] = r.i16()? as f32 / 16384.0;
+            } else if fl & WE_HAVE_AN_X_AND_Y_SCALE != 0 {
+                m[0] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[3] = r.i16()? as f32 / F2DOT14_SCALE;
+            } else if fl & WE_HAVE_A_TWO_BY_TWO != 0 {
+                m[0] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[1] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[2] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[3] = r.i16()? as f32 / F2DOT14_SCALE;
             }
             if let Some(g) = self.compile(id) {
                 kids.push(affine(g, m));
             }
-            if fl & 0x20 == 0 {
+            if fl & MORE_COMPONENTS == 0 {
                 break;
             }
         }
