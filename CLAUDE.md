@@ -25,14 +25,18 @@
 
 ## Workspace Structure
 
-The repository is organized as a Cargo workspace with 8 member crates:
+The repository is organized as a Cargo workspace with 11 member crates:
 
 ```
 core-term/                  # Repository root
 ├── pixelflow-core/         # SIMD algebra (no_std)
 ├── pixelflow-graphics/     # Colors, fonts, rendering
+├── pixelflow-ir/           # Shared IR and backend abstraction
+├── pixelflow-macros/       # Proc-macro compiler frontend
 ├── pixelflow-ml/           # Experimental: ML as graphics
+├── pixelflow-nnue/         # NNUE neural network for instruction selection
 ├── pixelflow-runtime/      # Platform drivers and runtime
+├── pixelflow-search/       # E-graph optimization and rewrite search
 ├── actor-scheduler/        # Priority channels
 ├── actor-scheduler-macros/ # Proc macros for actors
 ├── core-term/              # Terminal application
@@ -60,9 +64,13 @@ These directories configure AI assistants to understand project conventions and 
 | Crate | Purpose |
 |-------|---------|
 | `pixelflow-core` | `no_std` SIMD algebra. `Field`, `Manifold`, coordinate variables. Multi-backend (AVX-512/SSE2/NEON/scalar). |
+| `pixelflow-ir` | Shared IR (intermediate representation) and backend abstraction. Op traits, OpKind enum, backend execution traits. |
+| `pixelflow-macros` | Proc-macro compiler frontend: `kernel!` macro, lexer, parser, semantic analysis, code generation. |
 | `pixelflow-graphics` | Font loading, colors (`Rgba8`, `Color`), rasterization, antialiasing. |
 | `pixelflow-ml` | Experimental: Linear attention as spherical harmonics. Research on neural rendering. |
+| `pixelflow-nnue` | NNUE neural network for instruction selection, inspired by Stockfish. HalfEP feature encoding. |
 | `pixelflow-runtime` | Display drivers (macOS Cocoa, X11, headless, Metal, Web WASM), input handling, vsync. |
+| `pixelflow-search` | E-graph optimization framework. Rewrite rules, saturation, cost extraction, NNUE-guided search. |
 | `actor-scheduler` | Priority channels with `troupe!` macro for actor groups. Lock-free concurrency. |
 | `actor-scheduler-macros` | Procedural macros for actor system. |
 | `core-term` | Terminal application, PTY management, ANSI processing. First PixelFlow consumer. |
@@ -118,12 +126,27 @@ cargo xtask bundle-run --features profiling
 
 ### Build Profiles
 
-The workspace defines three build profiles:
+The workspace defines four build profiles:
 
-0. **dev** - Fastest Compiles. opt-level=1 because the project crawls at opt-level=0
-1. **release** - Fast compile, good performance (opt-level=3, LTO, codegen-units=1)
+0. **dev** - Fastest compiles. opt-level=1 because deep Manifold recursion causes stack overflow without inlining. panic=abort.
+1. **release** - Fast compile, good performance (opt-level=3, panic=abort)
 2. **bench** - For benchmarking (LTO, codegen-units=1)
-3. **dist** - Maximum optimization for distribution (LTO, strip, panic=abort)
+3. **dist** - Maximum optimization for distribution (LTO, strip, codegen-units=1, panic=abort)
+
+### Workspace Lints
+
+The workspace enforces strict error handling:
+
+```toml
+[workspace.lints.rust]
+unused_must_use = "deny"  # Can't ignore Results with `let _ =`
+
+[workspace.lints.clippy]
+let_underscore_must_use = "deny"  # Catches `let _ = expr` on #[must_use]
+must_use_candidate = "warn"       # Suggests adding #[must_use]
+```
+
+This prevents silent failures - all errors must be explicitly handled.
 
 ### Toolchain
 
@@ -189,11 +212,27 @@ if status_code == 4 { ... }                 // Bad
 | `pixelflow-core/src/lib.rs` | Field, Manifold, SIMD type selection, re-exports |
 | `pixelflow-core/src/manifold.rs` | Core Manifold trait and dimensional hierarchy |
 | `pixelflow-core/src/ext.rs` | Manifold methods for ergonomic postfix notation |
-| `pixelflow-core/combinators/at.rs` | Struct version of contramap |
-| `pixelflow-core/combinators/select.rs` | struct version of conditional |
+| `pixelflow-core/src/combinators/at.rs` | Struct version of contramap |
+| `pixelflow-core/src/combinators/select.rs` | Struct version of conditional |
 | `pixelflow-core/src/backend/` | SIMD backend implementations (AVX-512, SSE2, NEON, scalar) |
 | `pixelflow-core/src/combinators/` | Six eigenshaders: Warp, Grade, Lerp, Select, Fix, Compute |
 | `pixelflow-core/src/jet/` | Automatic differentiation for antialiasing |
+
+### Compiler Stack (New)
+
+| Path | Purpose |
+|------|---------|
+| `pixelflow-macros/src/lib.rs` | `kernel!` and `kernel_raw!` proc-macros, compiler entry points |
+| `pixelflow-macros/src/lexer.rs` | Token stream processing (delegated to syn) |
+| `pixelflow-macros/src/parser.rs` | AST construction from closure syntax |
+| `pixelflow-macros/src/sema.rs` | Semantic analysis, symbol resolution, type validation |
+| `pixelflow-macros/src/optimize.rs` | AST optimization (constant folding, FMA fusion, algebraic simplification) |
+| `pixelflow-macros/src/codegen/` | Code generation: struct + Manifold impl emission |
+| `pixelflow-ir/src/lib.rs` | Shared IR: Op trait, OpKind enum, Expr tree |
+| `pixelflow-ir/src/backend/` | Backend-specific lowering (x86, ARM, WASM, scalar) |
+| `pixelflow-search/src/egraph/` | E-graph data structure, saturation, rewrite rules |
+| `pixelflow-search/src/egraph/extract.rs` | Cost-based extraction from saturated e-graphs |
+| `pixelflow-nnue/src/lib.rs` | NNUE network for cost estimation, HalfEP features |
 
 ### Graphics & Rendering
 
@@ -244,7 +283,7 @@ if status_code == 4 { ... }                 // Bad
 
 Detailed design docs in `docs/`:
 - `STYLE.md` - Coding style guide and conventions
-- `.claud/`  - Includes claude's auto generated repo TOC
+- `.claude/`  - Includes Claude's auto-generated repo TOC
 - `AUTODIFF_RENDERING.md` - Automatic differentiation for antialiasing
 - `MESSAGE_CUJ_COVERAGE.md` - Message passing critical user journeys
 - `gemini/` - Gemini AI integration documentation
@@ -288,6 +327,29 @@ Specialized context files for AI agents live in `.claude/agents/`. Each file pro
 These agents provide targeted context for specific domains. Consult the appropriate agent when working in their area of expertise.
 
 ## Common Patterns
+
+### Using the `kernel!` Macro
+
+The `kernel!` macro provides closure-like syntax for defining SIMD manifold kernels:
+
+```rust
+use pixelflow_macros::kernel;
+use pixelflow_core::{X, Y, Manifold, ManifoldExt};
+
+// Define a parameterized circle SDF
+let circle = kernel!(|cx: f32, cy: f32, r: f32| {
+    let dx = X - cx;
+    let dy = Y - cy;
+    (dx * dx + dy * dy).sqrt() - r
+});
+
+// Instantiate with concrete parameters
+let unit_circle = circle(0.0, 0.0, 1.0);
+```
+
+The compiler pipeline: Lexer → Parser → Semantic Analysis → Optimization → Codegen
+
+Use `kernel_raw!` to skip optimization (for benchmarking exact expression forms).
 
 ### Composing Manifolds
 
@@ -363,6 +425,48 @@ See `pixelflow-core/src/backend/` for implementation details.
 - **Driver:** `pixelflow-runtime/src/display/drivers/headless.rs`
 - **Purpose:** CI/testing, benchmarking without display
 - **Usage:** Automatic in test environments
+
+## Compiler Architecture
+
+The PixelFlow compiler transforms DSL expressions into optimized SIMD code at compile time.
+
+### Pipeline
+
+```
+Source → Lexer → Parser → Sema → Optimize → Codegen → Rust TokenStream
+                   ↓           ↓
+               Symbol Table  E-graph + NNUE
+```
+
+### Key Crates
+
+| Crate | Role |
+|-------|------|
+| `pixelflow-macros` | Compiler frontend: proc-macros, parser, semantic analysis |
+| `pixelflow-ir` | Intermediate representation: Op trait, OpKind, backend traits |
+| `pixelflow-search` | E-graph optimization: saturation, rewrite rules, cost extraction |
+| `pixelflow-nnue` | Neural cost model: NNUE-style network for instruction selection |
+
+### E-graph Optimization
+
+The compiler uses e-graphs (equality graphs) to find optimal instruction sequences:
+
+1. **Build e-graph** from expression AST
+2. **Saturate** by applying rewrite rules (associativity, FMA fusion, etc.)
+3. **Extract** minimum-cost implementation using NNUE-guided search
+
+### NNUE Cost Model
+
+Inspired by Stockfish's NNUE, uses HalfEP (Half-Expression-Position) features:
+
+| Chess (Stockfish) | Compiler (PixelFlow) |
+|-------------------|---------------------|
+| Position | Expression AST |
+| Legal move | Valid rewrite rule |
+| Evaluation (centipawns) | Cost (cycles) |
+| HalfKP features | HalfEP features |
+
+Incremental updates: only features for modified subtrees change, making evaluation O(rewrite_size).
 
 ## Experimental: pixelflow-ml
 
@@ -492,6 +596,28 @@ pixelflow-core/src/
   combinators/        - Six eigenshaders
   jet/                - Automatic differentiation
 
+pixelflow-macros/src/
+  lib.rs              - kernel! macro entry point
+  parser.rs           - AST construction
+  sema.rs             - Semantic analysis
+  optimize.rs         - AST optimization
+  codegen/            - Rust code emission
+
+pixelflow-ir/src/
+  lib.rs              - IR types and re-exports
+  ops.rs              - Operation unit structs
+  kind.rs             - OpKind enum
+  backend/            - Target-specific lowering
+
+pixelflow-search/src/
+  egraph/             - E-graph optimization
+    graph.rs          - Core e-graph structure
+    saturate.rs       - Rewrite saturation
+    extract.rs        - Cost-based extraction
+
+pixelflow-nnue/src/
+  lib.rs              - NNUE network, HalfEP features
+
 pixelflow-graphics/src/
   render/             - Rasterization engine
   fonts/              - Glyph loading & SDF
@@ -513,9 +639,12 @@ core-term/src/
 | Task | Tool/Approach |
 |------|---------------|
 | Add new rendering primitive | Implement `Manifold` trait or compose from eigenshaders |
+| Define parameterized shader | Use `kernel!` macro with closure syntax |
 | Change colors | Use `Color` enum, never modify PixelFlow internals |
 | Add terminal feature | Modify `core-term`, keep PixelFlow clean |
 | Optimize performance | Profile first, check `#[inline(always)]`, verify SIMD backend |
+| Add rewrite rule | Add to `pixelflow-search/src/egraph/rules.rs` |
+| Add new IR operation | Add to `pixelflow-ir/src/ops.rs`, implement `Op` trait |
 | Platform-specific code | Put in `pixelflow-runtime/src/platform/`, not in core |
 | New graphics abstraction | Add to `pixelflow-graphics`, use `pixelflow-core` types |
 

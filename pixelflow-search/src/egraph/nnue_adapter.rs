@@ -9,47 +9,20 @@ use alloc::boxed::Box;
 use alloc::vec;
 use pixelflow_nnue::{Expr, OpKind};
 
-/// Convert e-graph `Op` to NNUE `OpKind` by name.
+/// Convert e-graph `Op` to `OpKind`.
+///
+/// Uses the `Op::kind()` method which delegates to the canonical `OpKind`.
+#[inline]
 pub fn op_to_nnue(op: &dyn crate::egraph::ops::Op) -> OpKind {
-    match op.name() {
-        "add" => OpKind::Add,
-        "sub" => OpKind::Sub,
-        "mul" => OpKind::Mul,
-        "div" => OpKind::Div,
-        "neg" => OpKind::Neg,
-        "recip" => OpKind::Div, // Recip = 1/x, map to Div
-        "min" => OpKind::Min,
-        "max" => OpKind::Max,
-        "sqrt" => OpKind::Sqrt,
-        "rsqrt" => OpKind::Rsqrt,
-        "abs" => OpKind::Abs,
-        "mul_add" => OpKind::MulAdd,
-        _ => OpKind::Add, // Fallback for unsupported ops
-    }
+    op.kind()
 }
 
-/// Convert NNUE `OpKind` to e-graph `Op` reference (where possible).
-pub fn nnue_to_op(op_type: OpKind) -> Option<&'static dyn crate::egraph::ops::Op> {
-    match op_type {
-        OpKind::Add => Some(&ops::Add),
-        OpKind::Sub => Some(&ops::Sub),
-        OpKind::Mul => Some(&ops::Mul),
-        OpKind::Div => Some(&ops::Div),
-        OpKind::Neg => Some(&ops::Neg),
-        OpKind::Min => Some(&ops::Min),
-        OpKind::Max => Some(&ops::Max),
-        OpKind::Sqrt => Some(&ops::Sqrt),
-        OpKind::Rsqrt => Some(&ops::Rsqrt),
-        OpKind::Abs => Some(&ops::Abs),
-        OpKind::MulAdd => Some(&ops::MulAdd),
-        // Extended operations not yet in e-graph
-        OpKind::MulRsqrt | OpKind::Var | OpKind::Const |
-        OpKind::Recip | OpKind::Floor | OpKind::Ceil | OpKind::Round | OpKind::Fract |
-        OpKind::Sin | OpKind::Cos | OpKind::Tan | OpKind::Asin | OpKind::Acos | OpKind::Atan | OpKind::Atan2 |
-        OpKind::Exp | OpKind::Exp2 | OpKind::Ln | OpKind::Log2 | OpKind::Log10 | OpKind::Pow | OpKind::Hypot |
-        OpKind::Lt | OpKind::Le | OpKind::Gt | OpKind::Ge | OpKind::Eq | OpKind::Ne |
-        OpKind::Select | OpKind::Clamp | OpKind::Tuple => None,
-    }
+/// Convert `OpKind` to e-graph `Op` reference.
+///
+/// Delegates to `ops::op_from_kind`.
+#[inline]
+pub fn nnue_to_op(kind: OpKind) -> Option<&'static dyn crate::egraph::ops::Op> {
+    ops::op_from_kind(kind)
 }
 
 /// Extract a concrete `Expr` from an e-class.
@@ -61,16 +34,16 @@ pub fn eclass_to_expr(egraph: &EGraph, class: EClassId) -> Expr {
         ENode::Var(idx) => Expr::Var(*idx),
         ENode::Const(bits) => Expr::Const(f32::from_bits(*bits)),
         ENode::Op { op, children } => {
-            let op_type = op_to_nnue(*op);
+            let op_kind = op_to_nnue(*op);
             match children.len() {
-                1 => Expr::Unary(op_type, Box::new(eclass_to_expr(egraph, children[0]))),
+                1 => Expr::Unary(op_kind, Box::new(eclass_to_expr(egraph, children[0]))),
                 2 => Expr::Binary(
-                    op_type,
+                    op_kind,
                     Box::new(eclass_to_expr(egraph, children[0])),
                     Box::new(eclass_to_expr(egraph, children[1])),
                 ),
                 3 => Expr::Ternary(
-                    op_type,
+                    op_kind,
                     Box::new(eclass_to_expr(egraph, children[0])),
                     Box::new(eclass_to_expr(egraph, children[1])),
                     Box::new(eclass_to_expr(egraph, children[2])),
@@ -87,16 +60,16 @@ pub fn expr_tree_to_nnue(tree: &ExprTree) -> Expr {
         ExprTree::Leaf(Leaf::Var(i)) => Expr::Var(*i),
         ExprTree::Leaf(Leaf::Const(c)) => Expr::Const(*c),
         ExprTree::Op { op, children } => {
-            let op_type = op_to_nnue(*op);
+            let op_kind = op_to_nnue(*op);
             match children.len() {
-                1 => Expr::Unary(op_type, Box::new(expr_tree_to_nnue(&children[0]))),
+                1 => Expr::Unary(op_kind, Box::new(expr_tree_to_nnue(&children[0]))),
                 2 => Expr::Binary(
-                    op_type,
+                    op_kind,
                     Box::new(expr_tree_to_nnue(&children[0])),
                     Box::new(expr_tree_to_nnue(&children[1])),
                 ),
                 3 => Expr::Ternary(
-                    op_type,
+                    op_kind,
                     Box::new(expr_tree_to_nnue(&children[0])),
                     Box::new(expr_tree_to_nnue(&children[1])),
                     Box::new(expr_tree_to_nnue(&children[2])),
@@ -116,67 +89,55 @@ pub fn expr_to_egraph(expr: &Expr, egraph: &mut EGraph) -> EClassId {
     match expr {
         Expr::Var(idx) => egraph.add(ENode::Var(*idx)),
         Expr::Const(val) => egraph.add(ENode::Const(val.to_bits())),
-        Expr::Binary(op, a, b) => {
+        Expr::Binary(kind, a, b) => {
             let a_class = expr_to_egraph(a, egraph);
             let b_class = expr_to_egraph(b, egraph);
-            let op_ref: &'static dyn crate::egraph::ops::Op = match op {
-                OpKind::Add => &ops::Add,
-                OpKind::Sub => &ops::Sub,
-                OpKind::Mul => &ops::Mul,
-                OpKind::Div => &ops::Div,
-                OpKind::Min => &ops::Min,
-                OpKind::Max => &ops::Max,
-                OpKind::MulRsqrt => {
-                    // Decompose: mul_rsqrt(a, b) = a * rsqrt(b)
-                    let rsqrt_b = egraph.add(ENode::Op {
-                        op: &ops::Rsqrt,
-                        children: vec![b_class],
-                    });
-                    return egraph.add(ENode::Op {
-                        op: &ops::Mul,
-                        children: vec![a_class, rsqrt_b],
-                    });
-                }
-                _ => panic!("Unsupported binary op type: {:?}", op),
-            };
+
+            // Handle MulRsqrt decomposition
+            if *kind == OpKind::MulRsqrt {
+                let rsqrt_b = egraph.add(ENode::Op {
+                    op: &ops::Rsqrt,
+                    children: vec![b_class],
+                });
+                return egraph.add(ENode::Op {
+                    op: &ops::Mul,
+                    children: vec![a_class, rsqrt_b],
+                });
+            }
+
+            let op_ref = nnue_to_op(*kind)
+                .unwrap_or_else(|| panic!("Unsupported binary op: {:?}", kind));
             egraph.add(ENode::Op {
                 op: op_ref,
                 children: vec![a_class, b_class],
             })
         }
-        Expr::Unary(op, a) => {
+        Expr::Unary(kind, a) => {
             let a_class = expr_to_egraph(a, egraph);
-            let op_ref: &'static dyn crate::egraph::ops::Op = match op {
-                OpKind::Neg => &ops::Neg,
-                OpKind::Sqrt => &ops::Sqrt,
-                OpKind::Rsqrt => &ops::Rsqrt,
-                OpKind::Abs => &ops::Abs,
-                _ => panic!("Unsupported unary op type: {:?}", op),
-            };
+            let op_ref = nnue_to_op(*kind)
+                .unwrap_or_else(|| panic!("Unsupported unary op: {:?}", kind));
             egraph.add(ENode::Op {
                 op: op_ref,
                 children: vec![a_class],
             })
         }
-        Expr::Ternary(op, a, b, c) => {
+        Expr::Ternary(kind, a, b, c) => {
             let a_class = expr_to_egraph(a, egraph);
             let b_class = expr_to_egraph(b, egraph);
             let c_class = expr_to_egraph(c, egraph);
-            let op_ref: &'static dyn crate::egraph::ops::Op = match op {
-                OpKind::MulAdd => &ops::MulAdd,
-                _ => panic!("Unsupported ternary op type: {:?}", op),
-            };
+            let op_ref = nnue_to_op(*kind)
+                .unwrap_or_else(|| panic!("Unsupported ternary op: {:?}", kind));
             egraph.add(ENode::Op {
                 op: op_ref,
                 children: vec![a_class, b_class, c_class],
             })
         }
-        Expr::Nary(op, children) => {
+        Expr::Nary(kind, children) => {
             let child_classes: Vec<_> = children.iter()
                 .map(|c| expr_to_egraph(c, egraph))
                 .collect();
             // Currently only Tuple is supported as Nary
-            match op {
+            match kind {
                 OpKind::Tuple => {
                     // Tuple has no e-graph representation - flatten to first element or panic
                     if child_classes.is_empty() {
@@ -185,7 +146,7 @@ pub fn expr_to_egraph(expr: &Expr, egraph: &mut EGraph) -> EClassId {
                     // For now, just return the first child (tuples aren't fully supported in e-graph yet)
                     child_classes[0]
                 }
-                _ => panic!("Unsupported n-ary op type: {:?}", op),
+                _ => panic!("Unsupported n-ary op type: {:?}", kind),
             }
         }
     }
@@ -232,11 +193,8 @@ mod tests {
         for op in ops_to_test {
             let nnue_op = op_to_nnue(*op);
             let back = nnue_to_op(nnue_op);
-            // Recip maps to Div, so skip that case
-            if op.name() != "recip" {
-                assert!(back.is_some(), "Roundtrip failed for {}", op.name());
-                assert_eq!(back.unwrap().name(), op.name(), "Roundtrip failed for {}", op.name());
-            }
+            assert!(back.is_some(), "Roundtrip failed for {}", op.name());
+            assert_eq!(back.unwrap().name(), op.name(), "Roundtrip failed for {}", op.name());
         }
     }
 

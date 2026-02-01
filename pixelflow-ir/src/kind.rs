@@ -84,28 +84,28 @@ impl OpKind {
     }
 
     /// Get the arity of the operation.
-    pub fn arity(self) -> usize {
+    pub const fn arity(self) -> usize {
         match self {
             Self::Var | Self::Const | Self::Tuple => 0,
-            
+
             Self::Neg | Self::Sqrt | Self::Rsqrt | Self::Abs |
-            Self::Recip | Self::Floor | Self::Ceil | Self::Round | 
-            Self::Fract | Self::Sin | Self::Cos | Self::Tan | 
-            Self::Asin | Self::Acos | Self::Atan | Self::Exp | 
+            Self::Recip | Self::Floor | Self::Ceil | Self::Round |
+            Self::Fract | Self::Sin | Self::Cos | Self::Tan |
+            Self::Asin | Self::Acos | Self::Atan | Self::Exp |
             Self::Exp2 | Self::Ln | Self::Log2 | Self::Log10 => 1,
-            
+
             Self::Add | Self::Sub | Self::Mul | Self::Div |
             Self::Min | Self::Max | Self::MulRsqrt |
             Self::Atan2 | Self::Pow | Self::Hypot |
-            Self::Lt | Self::Le | Self::Gt | Self::Ge | 
+            Self::Lt | Self::Le | Self::Gt | Self::Ge |
             Self::Eq | Self::Ne => 2,
-            
+
             Self::MulAdd | Self::Select | Self::Clamp => 3,
         }
     }
 
     /// Get the display name of the operation.
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Var => "var",
             Self::Const => "const",
@@ -150,5 +150,103 @@ impl OpKind {
             Self::Clamp => "clamp",
             Self::Tuple => "tuple",
         }
+    }
+
+    /// Parse OpKind from its string name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "var" => Some(Self::Var),
+            "const" => Some(Self::Const),
+            "add" => Some(Self::Add),
+            "sub" => Some(Self::Sub),
+            "mul" => Some(Self::Mul),
+            "div" => Some(Self::Div),
+            "neg" => Some(Self::Neg),
+            "sqrt" => Some(Self::Sqrt),
+            "rsqrt" => Some(Self::Rsqrt),
+            "abs" => Some(Self::Abs),
+            "min" => Some(Self::Min),
+            "max" => Some(Self::Max),
+            "mul_add" => Some(Self::MulAdd),
+            "mul_rsqrt" => Some(Self::MulRsqrt),
+            "recip" => Some(Self::Recip),
+            "floor" => Some(Self::Floor),
+            "ceil" => Some(Self::Ceil),
+            "round" => Some(Self::Round),
+            "fract" => Some(Self::Fract),
+            "sin" => Some(Self::Sin),
+            "cos" => Some(Self::Cos),
+            "tan" => Some(Self::Tan),
+            "asin" => Some(Self::Asin),
+            "acos" => Some(Self::Acos),
+            "atan" => Some(Self::Atan),
+            "atan2" => Some(Self::Atan2),
+            "exp" => Some(Self::Exp),
+            "exp2" => Some(Self::Exp2),
+            "ln" => Some(Self::Ln),
+            "log2" => Some(Self::Log2),
+            "log10" => Some(Self::Log10),
+            "pow" => Some(Self::Pow),
+            "hypot" => Some(Self::Hypot),
+            "lt" => Some(Self::Lt),
+            "le" => Some(Self::Le),
+            "gt" => Some(Self::Gt),
+            "ge" => Some(Self::Ge),
+            "eq" => Some(Self::Eq),
+            "ne" => Some(Self::Ne),
+            "select" => Some(Self::Select),
+            "clamp" => Some(Self::Clamp),
+            "tuple" => Some(Self::Tuple),
+            _ => None,
+        }
+    }
+
+    /// Get the default cost estimate for this operation (in cycles).
+    pub const fn default_cost(self) -> usize {
+        match self {
+            Self::Var | Self::Const | Self::Tuple => 0,
+            Self::Neg | Self::Abs | Self::Floor | Self::Ceil |
+            Self::Round | Self::Fract => 1,
+            Self::Add | Self::Sub | Self::Min | Self::Max |
+            Self::Lt | Self::Le | Self::Gt | Self::Ge |
+            Self::Eq | Self::Ne | Self::Select | Self::Clamp => 4,
+            Self::Mul | Self::MulAdd | Self::MulRsqrt | Self::Recip | Self::Rsqrt => 5,
+            Self::Div | Self::Sqrt | Self::Sin | Self::Cos | Self::Tan |
+            Self::Asin | Self::Acos | Self::Atan | Self::Atan2 |
+            Self::Exp | Self::Exp2 | Self::Ln | Self::Log2 | Self::Log10 |
+            Self::Pow | Self::Hypot => 15,
+        }
+    }
+
+    /// Returns true if the operation is commutative (a op b == b op a).
+    pub const fn is_commutative(self) -> bool {
+        matches!(self, Self::Add | Self::Mul | Self::Min | Self::Max | Self::Eq | Self::Ne)
+    }
+
+    /// Returns true if the operation is associative ((a op b) op c == a op (b op c)).
+    pub const fn is_associative(self) -> bool {
+        matches!(self, Self::Add | Self::Mul | Self::Min | Self::Max)
+    }
+
+    /// Returns the identity element if one exists (a op identity == a).
+    pub const fn identity(self) -> Option<f32> {
+        match self {
+            Self::Add | Self::Sub => Some(0.0),
+            Self::Mul | Self::Div => Some(1.0),
+            _ => None,
+        }
+    }
+
+    /// Returns the annihilator element if one exists (a op annihilator == annihilator).
+    pub const fn annihilator(self) -> Option<f32> {
+        match self {
+            Self::Mul => Some(0.0),
+            _ => None,
+        }
+    }
+
+    /// Returns true if the operation is idempotent (a op a == a).
+    pub const fn is_idempotent(self) -> bool {
+        matches!(self, Self::Min | Self::Max | Self::Abs)
     }
 }
