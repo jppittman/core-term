@@ -339,6 +339,8 @@ impl<ArrayPos, const INDEX: usize, R> core::ops::Div<R> for CtxVar<ArrayPos, IND
 // WithContext Manifold Implementations
 // ============================================================================
 
+impl<Ctx, Body> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
+
 // Special case: empty context passes through without domain extension
 impl<P, B, Out> Manifold<P> for WithContext<(), B>
 where
