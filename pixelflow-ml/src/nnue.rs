@@ -60,6 +60,46 @@ use alloc::boxed::Box;
 use libm::{sqrtf, fabsf};
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/// LCG Multiplier for random number generation.
+const LCG_MULTIPLIER: u64 = 6364136223846793005;
+
+/// LCG Increment for random number generation.
+const LCG_INCREMENT: u64 = 1;
+
+/// Probability of choosing a variable over a constant in leaf nodes.
+const VAR_SELECTION_PROB: f32 = 0.7;
+
+/// Scale factor for random constant generation in ExprGenerator.
+const EXPR_CONST_SCALE: f32 = 10.0;
+
+/// Offset for random constant generation in ExprGenerator.
+const EXPR_CONST_OFFSET: f32 = 5.0;
+
+/// Scale factor for random constant generation in BwdGenerator.
+const BWD_CONST_SCALE: f32 = 4.0;
+
+/// Offset for random constant generation in BwdGenerator.
+const BWD_CONST_OFFSET: f32 = 2.0;
+
+/// Probability of choosing a fused MulAdd over MulRsqrt in optimized generation.
+const PROB_FUSED_MULADD: f32 = 0.6;
+
+/// Probability of adding an identity operation in unfusing pass.
+const PROB_UNFUSE_IDENTITY: f32 = 0.2;
+
+/// Number of operation choices when including fused ops in ExprGenerator.
+const NUM_GEN_OPS_FUSED: usize = 12;
+
+/// Number of operation choices when excluding fused ops in ExprGenerator.
+const NUM_GEN_OPS_NO_FUSED: usize = 10;
+
+/// Number of regular operation choices in BwdGenerator.
+const NUM_BWD_REGULAR_OPS: usize = 8;
+
+// ============================================================================
 // Operation Types - use pixelflow-ir's OpKind as the source of truth
 // ============================================================================
 
@@ -538,7 +578,7 @@ impl ExprGenerator {
 
     /// Generate a random f32 in [0, 1).
     fn rand_f32(&mut self) -> f32 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        self.state = self.state.wrapping_mul(LCG_MULTIPLIER).wrapping_add(LCG_INCREMENT);
         (self.state >> 33) as f32 / (1u64 << 31) as f32
     }
 
@@ -555,20 +595,20 @@ impl ExprGenerator {
     fn generate_recursive(&mut self, depth: usize) -> Expr {
         // Force leaf at max depth or with probability leaf_prob
         if depth >= self.config.max_depth || self.rand_f32() < self.config.leaf_prob {
-            if self.rand_f32() < 0.7 {
+            if self.rand_f32() < VAR_SELECTION_PROB {
                 // Variable
                 Expr::Var(self.rand_usize(self.config.num_vars) as u8)
             } else {
                 // Constant (small values to avoid overflow)
-                let val = self.rand_f32() * 10.0 - 5.0;
+                let val = self.rand_f32() * EXPR_CONST_SCALE - EXPR_CONST_OFFSET;
                 Expr::Const(val)
             }
         } else {
             // Generate an operation
             let op_choice = if self.config.include_fused {
-                self.rand_usize(12) // Include all ops
+                self.rand_usize(NUM_GEN_OPS_FUSED) // Include all ops
             } else {
-                self.rand_usize(10) // Exclude fused ops
+                self.rand_usize(NUM_GEN_OPS_NO_FUSED) // Exclude fused ops
             };
 
             match op_choice {
@@ -990,7 +1030,7 @@ impl BwdGenerator {
 
     /// Generate a random f32 in [0, 1).
     fn rand_f32(&mut self) -> f32 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        self.state = self.state.wrapping_mul(LCG_MULTIPLIER).wrapping_add(LCG_INCREMENT);
         (self.state >> 33) as f32 / (1u64 << 31) as f32
     }
 
@@ -1028,7 +1068,7 @@ impl BwdGenerator {
         // Decide: fused op or regular op
         if self.rand_f32() < self.config.fused_op_prob {
             // Generate a fused operation
-            if self.rand_f32() < 0.6 {
+            if self.rand_f32() < PROB_FUSED_MULADD {
                 // MulAdd: a * b + c
                 Expr::Ternary(
                     OpType::MulAdd,
@@ -1052,18 +1092,18 @@ impl BwdGenerator {
 
     /// Generate a leaf node (variable or constant).
     fn generate_leaf(&mut self) -> Expr {
-        if self.rand_f32() < 0.7 {
+        if self.rand_f32() < VAR_SELECTION_PROB {
             Expr::Var(self.rand_usize(self.config.num_vars) as u8)
         } else {
             // Constants: small range to avoid numerical issues
-            let val = self.rand_f32() * 4.0 - 2.0;
+            let val = self.rand_f32() * BWD_CONST_SCALE - BWD_CONST_OFFSET;
             Expr::Const(val)
         }
     }
 
     /// Generate a regular (non-fused) operation.
     fn generate_regular_op(&mut self, depth: usize) -> Expr {
-        let choice = self.rand_usize(8);
+        let choice = self.rand_usize(NUM_BWD_REGULAR_OPS);
         match choice {
             0 => Expr::Binary(
                 OpType::Add,
@@ -1172,7 +1212,7 @@ impl BwdGenerator {
         }
 
         // Occasionally add identity operations (bloat the expression)
-        if self.rand_f32() < 0.2 {
+        if self.rand_f32() < PROB_UNFUSE_IDENTITY {
             let identity_rewrites = [
                 UnfuseRewrite::AddIdentity,
                 UnfuseRewrite::MulIdentity,
