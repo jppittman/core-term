@@ -492,8 +492,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::LetExtended;
-    use crate::{Field, X, Y};
+
+    use crate::{Field, X};
 
     #[test]
     fn test_let_binding_new_style() {

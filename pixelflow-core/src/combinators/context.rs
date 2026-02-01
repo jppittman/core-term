@@ -724,8 +724,8 @@ mod context_domain_tests {
         // Replicate the Checker kernel pattern with 12 context elements
         // Uses Field coordinates since V() extracts the value component (Field)
         use crate::combinators::Select;
-        use crate::ops::derivative::{V, DX, DY, DZ};
-        use crate::ops::unary::{Floor, Abs, Sqrt};
+        use crate::ops::derivative::V;
+        use crate::ops::unary::{Floor, Abs};
         use crate::Z;
 
         type CheckerCtx = (([Field; 12],), (Field, Field, Field, Field));

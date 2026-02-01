@@ -1228,6 +1228,7 @@ impl U32x8 {
 pub struct Mask16(pub(crate) __mmask16);
 
 #[cfg(target_feature = "avx512f")]
+#[derive(Default)]
 impl Default for Mask16 {
     fn default() -> Self {
         Self(0)
@@ -1329,6 +1330,7 @@ impl F32x16 {
     }
 
     #[inline(always)]
+    #[allow(dead_code)]
     unsafe fn from_mask(mask: __mmask16) -> Self {
         unsafe {
             let all_ones = _mm512_castsi512_ps(_mm512_set1_epi32(-1));
