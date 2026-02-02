@@ -493,6 +493,13 @@ pub struct TrainingSample {
     pub features: Vec<HalfEPFeature>,
 }
 
+/// Constants for expression generation
+const GEN_OP_COUNT_ALL: usize = 12;
+const GEN_OP_COUNT_NO_FUSED: usize = 10;
+const VAR_VS_CONST_PROB: f32 = 0.7;
+const EXPR_GEN_CONST_RANGE: f32 = 10.0;
+const EXPR_GEN_CONST_OFFSET: f32 = 5.0;
+
 /// Configuration for random expression generation.
 #[derive(Clone, Debug)]
 pub struct ExprGenConfig {
@@ -555,20 +562,20 @@ impl ExprGenerator {
     fn generate_recursive(&mut self, depth: usize) -> Expr {
         // Force leaf at max depth or with probability leaf_prob
         if depth >= self.config.max_depth || self.rand_f32() < self.config.leaf_prob {
-            if self.rand_f32() < 0.7 {
+            if self.rand_f32() < VAR_VS_CONST_PROB {
                 // Variable
                 Expr::Var(self.rand_usize(self.config.num_vars) as u8)
             } else {
                 // Constant (small values to avoid overflow)
-                let val = self.rand_f32() * 10.0 - 5.0;
+                let val = self.rand_f32() * EXPR_GEN_CONST_RANGE - EXPR_GEN_CONST_OFFSET;
                 Expr::Const(val)
             }
         } else {
             // Generate an operation
             let op_choice = if self.config.include_fused {
-                self.rand_usize(12) // Include all ops
+                self.rand_usize(GEN_OP_COUNT_ALL) // Include all ops
             } else {
-                self.rand_usize(10) // Exclude fused ops
+                self.rand_usize(GEN_OP_COUNT_NO_FUSED) // Exclude fused ops
             };
 
             match op_choice {
@@ -1052,7 +1059,7 @@ impl BwdGenerator {
 
     /// Generate a leaf node (variable or constant).
     fn generate_leaf(&mut self) -> Expr {
-        if self.rand_f32() < 0.7 {
+        if self.rand_f32() < VAR_VS_CONST_PROB {
             Expr::Var(self.rand_usize(self.config.num_vars) as u8)
         } else {
             // Constants: small range to avoid numerical issues
