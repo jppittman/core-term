@@ -194,15 +194,64 @@ mod tests {
     }
 
     #[test]
-    fn circle_at_origin() {
-        // Point at origin should be inside
-        // Point at (2, 0) should be outside
+    fn circle_should_contain_origin() {
+        // circle(SOLID, EMPTY) means 1.0 inside, 0.0 outside
+        let c = circle(SOLID, EMPTY);
+        let val = eval_scalar(&c, 0.0, 0.0);
+        assert!((val - 1.0).abs() < 0.001, "Origin should be inside (1.0), got {}", val);
     }
 
     #[test]
-    fn composition_works() {
-        // circle inside square
-        let _scene = square(circle(SOLID, 0.5f32), EMPTY);
+    fn circle_should_exclude_outside() {
+        let c = circle(SOLID, EMPTY);
+        let val = eval_scalar(&c, 2.0, 0.0);
+        assert!(val.abs() < 0.001, "Point (2,0) should be outside (0.0), got {}", val);
+    }
+
+    #[test]
+    fn circle_should_exclude_boundary() {
+        // The implementation is (x^2 + y^2) < 1.0.
+        // At (1,0), distance^2 is 1.0. 1.0 < 1.0 is False.
+        // So it should be background (0.0).
+        let c = circle(SOLID, EMPTY);
+        let val = eval_scalar(&c, 1.0, 0.0);
+        assert!(val.abs() < 0.001, "Boundary point (1,0) should be outside (0.0), got {}", val);
+    }
+
+    #[test]
+    fn square_should_contain_center() {
+        // square is [0,1]x[0,1]
+        let s = square(SOLID, EMPTY);
+        let val = eval_scalar(&s, 0.5, 0.5);
+        assert!((val - 1.0).abs() < 0.001, "Center (0.5,0.5) should be inside, got {}", val);
+    }
+
+    #[test]
+    fn square_should_exclude_outside() {
+        let s = square(SOLID, EMPTY);
+        let val = eval_scalar(&s, -0.1, 0.5);
+        assert!(val.abs() < 0.001, "Left of square should be outside, got {}", val);
+
+        let val = eval_scalar(&s, 1.1, 0.5);
+        assert!(val.abs() < 0.001, "Right of square should be outside, got {}", val);
+    }
+
+    #[test]
+    fn square_boundary_conditions() {
+        // square is Ge(0) & Le(1), so inclusive.
+        let s = square(SOLID, EMPTY);
+
+        // (0,0)
+        let val = eval_scalar(&s, 0.0, 0.0);
+        assert!((val - 1.0).abs() < 0.001, "(0,0) should be inside, got {}", val);
+
+        // (1,1)
+        let val = eval_scalar(&s, 1.0, 1.0);
+        assert!((val - 1.0).abs() < 0.001, "(1,1) should be inside, got {}", val);
+
+        // (1,0)
+        let val = eval_scalar(&s, 1.0, 0.0);
+        assert!((val - 1.0).abs() < 0.001, "(1,0) should be inside, got {}", val);
     }
 
     #[test]
