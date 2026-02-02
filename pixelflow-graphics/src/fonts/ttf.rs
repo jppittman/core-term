@@ -692,6 +692,33 @@ const ENCODING_UNICODE_2_0_FULL: u16 = 4;
 const FORMAT_SEGMENT_MAPPING: u16 = 4;
 const FORMAT_SEGMENTED_COVERAGE: u16 = 12;
 
+/// F2DOT14 format (2.14 fixed point) scale factor
+const F2DOT14_SCALE: f32 = 16384.0;
+
+/// Flags for Simple Glyphs
+struct SimpleGlyphFlags;
+
+impl SimpleGlyphFlags {
+    const ON_CURVE_POINT: u8 = 0x01;
+    const X_SHORT_VECTOR: u8 = 0x02;
+    const Y_SHORT_VECTOR: u8 = 0x04;
+    const REPEAT_FLAG: u8 = 0x08;
+    const X_IS_SAME_OR_POSITIVE_X_SHORT_VECTOR: u8 = 0x10;
+    const Y_IS_SAME_OR_POSITIVE_Y_SHORT_VECTOR: u8 = 0x20;
+}
+
+/// Flags for Compound Glyphs
+struct CompoundGlyphFlags;
+
+impl CompoundGlyphFlags {
+    const ARG_1_AND_2_ARE_WORDS: u16 = 0x01;
+    const ARGS_ARE_XY_VALUES: u16 = 0x02;
+    const WE_HAVE_A_SCALE: u16 = 0x08;
+    const MORE_COMPONENTS: u16 = 0x20;
+    const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x40;
+    const WE_HAVE_A_TWO_BY_TWO: u16 = 0x80;
+}
+
 /// Normalization parameters for simple glyphs.
 struct Normalization {
     scale: f32,
@@ -956,7 +983,7 @@ impl<'a> Font<'a> {
         while fl.len() < np {
             let f = r.u8()?;
             fl.push(f);
-            if f & 8 != 0 {
+            if f & SimpleGlyphFlags::REPEAT_FLAG != 0 {
                 for _ in 0..r.u8()?.min((np - fl.len()) as u8) {
                     fl.push(f);
                 }
@@ -978,7 +1005,18 @@ impl<'a> Font<'a> {
                 .map(|(_, v)| v)
         };
 
-        let (xs, ys) = (dec(r, 2, 16)?, dec(r, 4, 32)?);
+        let (xs, ys) = (
+            dec(
+                r,
+                SimpleGlyphFlags::X_SHORT_VECTOR,
+                SimpleGlyphFlags::X_IS_SAME_OR_POSITIVE_X_SHORT_VECTOR,
+            )?,
+            dec(
+                r,
+                SimpleGlyphFlags::Y_SHORT_VECTOR,
+                SimpleGlyphFlags::Y_IS_SAME_OR_POSITIVE_Y_SHORT_VECTOR,
+            )?,
+        );
 
         // Normalize points immediately
         let pts: Vec<_> = (0..np)
@@ -986,7 +1024,7 @@ impl<'a> Font<'a> {
                 (
                     (xs[i] as f32) * norm.scale + norm.tx,
                     (ys[i] as f32) * norm.scale + norm.ty,
-                    fl[i] & 1 != 0,
+                    fl[i] & SimpleGlyphFlags::ON_CURVE_POINT != 0,
                 )
             })
             .collect();
@@ -1013,34 +1051,38 @@ impl<'a> Font<'a> {
         loop {
             let fl = r.u16()?;
             let id = r.u16()?;
-            let (dx, dy) = if fl & 2 != 0 {
-                if fl & 1 != 0 {
+            let (dx, dy) = if fl & CompoundGlyphFlags::ARGS_ARE_XY_VALUES != 0 {
+                if fl & CompoundGlyphFlags::ARG_1_AND_2_ARE_WORDS != 0 {
                     (r.i16()?, r.i16()?)
                 } else {
                     (r.i8()? as i16, r.i8()? as i16)
                 }
             } else {
-                r.skip(if fl & 1 != 0 { 4 } else { 2 })?;
+                r.skip(if fl & CompoundGlyphFlags::ARG_1_AND_2_ARE_WORDS != 0 {
+                    4
+                } else {
+                    2
+                })?;
                 (0, 0)
             };
             let mut m = [1.0, 0.0, 0.0, 1.0, dx as f32, dy as f32];
-            if fl & 0x08 != 0 {
-                let s = r.i16()? as f32 / 16384.0;
+            if fl & CompoundGlyphFlags::WE_HAVE_A_SCALE != 0 {
+                let s = r.i16()? as f32 / F2DOT14_SCALE;
                 m[0] = s;
                 m[3] = s;
-            } else if fl & 0x40 != 0 {
-                m[0] = r.i16()? as f32 / 16384.0;
-                m[3] = r.i16()? as f32 / 16384.0;
-            } else if fl & 0x80 != 0 {
-                m[0] = r.i16()? as f32 / 16384.0;
-                m[1] = r.i16()? as f32 / 16384.0;
-                m[2] = r.i16()? as f32 / 16384.0;
-                m[3] = r.i16()? as f32 / 16384.0;
+            } else if fl & CompoundGlyphFlags::WE_HAVE_AN_X_AND_Y_SCALE != 0 {
+                m[0] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[3] = r.i16()? as f32 / F2DOT14_SCALE;
+            } else if fl & CompoundGlyphFlags::WE_HAVE_A_TWO_BY_TWO != 0 {
+                m[0] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[1] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[2] = r.i16()? as f32 / F2DOT14_SCALE;
+                m[3] = r.i16()? as f32 / F2DOT14_SCALE;
             }
             if let Some(g) = self.compile(id) {
                 kids.push(affine(g, m));
             }
-            if fl & 0x20 == 0 {
+            if fl & CompoundGlyphFlags::MORE_COMPONENTS == 0 {
                 break;
             }
         }
