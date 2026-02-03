@@ -1819,12 +1819,8 @@ mod tests {
         let mut guide = DualMaskGuide::new_random(42);
 
         eprintln!("\n=== Resource-Asymmetric Training ===");
-        eprintln!("Oracle: 500 max_classes, 20 epochs");
+        eprintln!("Oracle: true saturation");
         eprintln!("Guide:  50 max_classes, 5 epochs");
-
-        // --- Oracle Configuration (abundant resources) ---
-        let oracle_max_classes = 500;
-        let oracle_max_epochs = 20;
 
         // --- Guide Configuration (constrained resources) ---
         let guide_max_classes = 50;
@@ -1857,24 +1853,14 @@ mod tests {
         };
         eprintln!("Initial (constrained): {} pairs, cost {}", initial_pairs, initial_cost);
 
-        // --- Get oracle target cost (what's achievable with abundant resources) ---
+        // --- Get oracle target cost via TRUE SATURATION ---
         let mut oracle_costs: Vec<i64> = Vec::new();
         for expr in &exprs {
             let mut egraph = EGraph::with_rules(all_rules());
             let root = egraph.add_expr(expr);
-            let mut search = GuidedSearch::new(egraph, root, oracle_max_epochs);
-
-            // Oracle: permissive, lots of space, exploration
-            let result = search.run_dual_mask_filtered(
-                &guide,
-                |tree: &ExprTree| tree.node_count() as i64,
-                &costs,
-                0.1,
-                oracle_max_classes,
-                0.5,
-                42,
-            );
-            oracle_costs.push(result.best_cost);
+            egraph.saturate(); // Full saturation - the true optimum
+            let (best, _cost) = egraph.extract_best(root, &costs);
+            oracle_costs.push(best.node_count() as i64);
         }
 
         // Training loop - collect samples under CONSTRAINED resources
