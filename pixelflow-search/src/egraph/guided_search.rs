@@ -824,16 +824,14 @@ impl GuidedSearch {
         self.extract_dual_mask_rule_features_with_resources(rule_idx, 1.0, 1.0)
     }
 
-    /// Extract features for a rule with resource context.
+    /// Extract features for a rule with resource context (Markovian).
     ///
-    /// Resource features let the guide learn to prioritize based on budget pressure:
-    /// - When space is tight, prefer rules that don't explode the graph
-    /// - When iterations are limited, prefer rules with high match probability
+    /// Just the raw budget fractions - network learns its own thresholds.
     fn extract_dual_mask_rule_features_with_resources(
         &self,
         rule_idx: usize,
-        space_remaining: f32,    // fraction of max e-graph space remaining
-        pairs_remaining: f32,    // fraction of pairs budget remaining this epoch
+        space_remaining: f32,
+        pairs_remaining: f32,
     ) -> [f32; crate::nnue::dual_mask::RULE_FEATURE_DIM] {
         let stats = &self.rule_stats[rule_idx];
         let num_rules = self.egraph.num_rules() as f32;
@@ -842,17 +840,12 @@ impl GuidedSearch {
             rule_idx as f32 / num_rules.max(1.0),  // 0: normalized rule index
             self.egraph.num_classes() as f32 / 100.0, // 1: current graph size
             self.egraph.node_count() as f32 / 500.0,  // 2: current node count
-            self.epoch as f32 / self.max_epochs as f32, // 3: time fraction used
+            self.epoch as f32 / self.max_epochs as f32, // 3: time used
             stats.match_rate(),                        // 4: historical match rate
             stats.epochs_since_match(self.epoch).min(20) as f32 / 20.0, // 5: staleness
-            (self.max_epochs - self.epoch) as f32 / self.max_epochs as f32, // 6: iterations remaining
-            // Resource features - these vary during training
-            space_remaining,                           // 7: e-graph space remaining
-            pairs_remaining,                           // 8: pairs budget remaining
-            // Derived pressure signals
-            if space_remaining < 0.2 { 1.0 } else { 0.0 },  // 9: space pressure flag
-            if pairs_remaining < 0.2 { 1.0 } else { 0.0 },  // 10: pairs pressure flag
-            if self.epoch as f32 / self.max_epochs as f32 > 0.8 { 1.0 } else { 0.0 }, // 11: time pressure flag
+            (self.max_epochs - self.epoch) as f32 / self.max_epochs as f32, // 6: time remaining
+            space_remaining,                           // 7: space remaining
+            pairs_remaining,                           // 8: pairs remaining
         ]
     }
 
