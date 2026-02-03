@@ -11,6 +11,7 @@
 
 extern crate alloc;
 
+pub mod dual_mask;
 pub mod factored;
 pub mod guide;
 
@@ -31,6 +32,9 @@ pub use factored::{EdgeAccumulator, OpEmbeddings, StructuralFeatures};
 
 /// Re-export GuideNnue for match probability prediction.
 pub use guide::GuideNnue;
+
+/// Re-export DualMaskGuide for factorized action selection.
+pub use dual_mask::{DualMaskGuide, ExprFeatures, RuleFeatures, EXPR_FEATURE_DIM, RULE_FEATURE_DIM};
 
 // ============================================================================
 // HalfEP Features (Legacy - being phased out in favor of Factored)
