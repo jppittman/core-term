@@ -43,8 +43,8 @@ use libm::sqrtf;
 /// Expression feature dimension (from e-class structural analysis).
 pub const EXPR_FEATURE_DIM: usize = 16;
 
-/// Rule feature dimension (rule characteristics + context).
-pub const RULE_FEATURE_DIM: usize = 12;
+/// Rule feature dimension (rule characteristics + resource budget).
+pub const RULE_FEATURE_DIM: usize = 9;
 
 /// Hidden layer dimension for both heads.
 pub const HIDDEN_DIM: usize = 32;
@@ -1109,9 +1109,13 @@ pub struct RuleFeatures {
 }
 
 impl RuleFeatures {
+    /// Number of static rule feature fields.
+    pub const SIZE: usize = 12;
+
     /// Convert to array for neural network input.
+    /// Note: This is static rule metadata, separate from runtime features.
     #[must_use]
-    pub fn to_array(&self) -> [f32; RULE_FEATURE_DIM] {
+    pub fn to_array(&self) -> [f32; Self::SIZE] {
         [
             self.match_rate,
             self.improvement_rate,
