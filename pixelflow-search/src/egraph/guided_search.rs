@@ -582,6 +582,168 @@ impl GuidedSearch {
         }
     }
 
+    /// Run with dual-mask FILTERING (only try approved pairs).
+    ///
+    /// This is the key difference from run_dual_mask: instead of trying all
+    /// (expr, rule) pairs egg-style, we ONLY try pairs the guide approves.
+    ///
+    /// This enables handling hundreds/thousands of rules without explosion.
+    ///
+    /// # Arguments
+    /// * `dual_mask` - The guide that filters which pairs to try
+    /// * `judge` - Cost function for extracted trees
+    /// * `costs` - Cost model for extraction
+    /// * `threshold` - Pairs with sigmoid(score) > threshold are approved
+    /// * `epsilon` - Exploration rate: with this probability, try random pairs
+    /// * `rng_seed` - Random seed for epsilon-greedy exploration
+    pub fn run_dual_mask_filtered<J, C>(
+        &mut self,
+        dual_mask: &crate::nnue::DualMaskGuide,
+        mut judge: J,
+        costs: &C,
+        threshold: f32,
+        epsilon: f32,
+        mut rng_seed: u64,
+    ) -> DualMaskSearchResult
+    where
+        J: FnMut(&ExprTree) -> i64,
+        C: CostFunction,
+    {
+        use crate::nnue::dual_mask::{EXPR_FEATURE_DIM, RULE_FEATURE_DIM};
+
+        let mut trajectory = Vec::new();
+        let num_rules = self.egraph.num_rules();
+
+        if num_rules == 0 {
+            let (tree, _) = self.egraph.extract_best(self.root, costs);
+            let cost = judge(&tree);
+            return DualMaskSearchResult {
+                best_tree: tree,
+                best_cost: cost,
+                epochs_used: 0,
+                pair_records: trajectory,
+                stop_reason: StopReason::NoRules,
+            };
+        }
+
+        // Initial extraction
+        let (initial_tree, _) = self.egraph.extract_best(self.root, costs);
+        self.best_cost = judge(&initial_tree);
+        self.best_tree = Some(initial_tree);
+
+        loop {
+            if self.epoch >= self.max_epochs {
+                return self.finish_dual_mask(StopReason::MaxEpochs, trajectory);
+            }
+
+            // Get current e-graph state
+            let num_classes = self.egraph.num_classes();
+
+            // Extract features for all e-classes
+            let expr_features: Vec<[f32; EXPR_FEATURE_DIM]> = (0..num_classes)
+                .map(|i| self.extract_expr_features(EClassId(i as u32)))
+                .collect();
+
+            // Extract features for all rules
+            let rule_features: Vec<[f32; RULE_FEATURE_DIM]> = (0..num_rules)
+                .map(|i| self.extract_dual_mask_rule_features(i))
+                .collect();
+
+            // All possible (expr, rule) pairs
+            let all_pairs: Vec<(usize, usize)> = (0..num_classes)
+                .flat_map(|e| (0..num_rules).map(move |r| (e, r)))
+                .collect();
+
+            // KEY DIFFERENCE: Filter to only approved pairs
+            let approved_pairs = dual_mask.get_approved_actions(
+                &expr_features,
+                &rule_features,
+                &all_pairs,
+                threshold,
+            );
+
+            // Epsilon-greedy: with probability epsilon, add some random pairs
+            let mut pairs_to_try = approved_pairs;
+            rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            if (rng_seed as f32 / u64::MAX as f32) < epsilon {
+                // Add some random pairs for exploration
+                let num_random = (num_classes * num_rules / 10).max(1).min(20);
+                for _ in 0..num_random {
+                    rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let e = (rng_seed as usize) % num_classes;
+                    rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let r = (rng_seed as usize) % num_rules;
+                    if !pairs_to_try.contains(&(e, r)) {
+                        pairs_to_try.push((e, r));
+                    }
+                }
+            }
+
+            // If no pairs approved (and no random exploration), we're done
+            if pairs_to_try.is_empty() {
+                return self.finish_dual_mask(StopReason::GuidePredictsNoMatch, trajectory);
+            }
+
+            // Apply only the approved pairs
+            let cost_before = self.best_cost;
+            let mut total_changes = 0;
+            let mut epoch_pairs = Vec::new();
+
+            for (class_idx, rule_idx) in &pairs_to_try {
+                let class_id = EClassId(*class_idx as u32);
+                let class_id = self.egraph.find(class_id);
+
+                // Try to apply this specific rule at this class
+                let nodes: Vec<_> = self.egraph.nodes(class_id).to_vec();
+                let mut pair_fired = false;
+
+                for (node_idx, _) in nodes.iter().enumerate() {
+                    if self.egraph.apply_single_rule(*rule_idx, class_id, node_idx) {
+                        pair_fired = true;
+                        total_changes += 1;
+                    }
+                }
+
+                // Record for training
+                epoch_pairs.push(PairRecord {
+                    expr_idx: *class_idx,
+                    rule_idx: *rule_idx,
+                    predicted_score: 0.0, // Could compute if needed
+                    fired: pair_fired,
+                    expr_features: expr_features[*class_idx],
+                    rule_features: rule_features[*rule_idx],
+                });
+            }
+
+            // Extract and evaluate
+            let cost_after = if total_changes > 0 {
+                let (tree, _) = self.egraph.extract_best(self.root, costs);
+                let cost = judge(&tree);
+                if cost < self.best_cost {
+                    self.best_cost = cost;
+                    self.best_tree = Some(tree);
+                }
+                self.best_cost
+            } else {
+                cost_before
+            };
+
+            trajectory.push(DualMaskEpochRecord {
+                epoch: self.epoch,
+                pairs: epoch_pairs,
+                cost_before,
+                cost_after,
+                total_changes,
+            });
+
+            if total_changes == 0 {
+                return self.finish_dual_mask(StopReason::Saturated, trajectory);
+            }
+
+            self.epoch += 1;
+        }
+    }
+
     /// Extract features for an e-class (for dual-mask expression head).
     fn extract_expr_features(&self, class_id: EClassId) -> [f32; crate::nnue::dual_mask::EXPR_FEATURE_DIM] {
         let class_id = self.egraph.find(class_id);
