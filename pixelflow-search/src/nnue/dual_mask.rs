@@ -53,6 +53,15 @@ pub const HIDDEN_DIM: usize = 32;
 /// This is the "covariance" dimension - how expr and rule interact.
 pub const EMBED_DIM: usize = 8;
 
+/// Penalty weight for false positives (predicting "fires" when it doesn't).
+/// Lower = okay to occasionally say "yes" wrongly.
+pub const FALSE_POSITIVE_WEIGHT: f32 = 1.0;
+
+/// Penalty weight for false negatives (predicting "no fire" when it does).
+/// Higher = we really want to catch the positives.
+/// With ~100:1 class imbalance, need ~100x weight to balance.
+pub const FALSE_NEGATIVE_WEIGHT: f32 = 100.0;
+
 /// Maximum number of rules we support.
 pub const MAX_RULES: usize = 64;
 
@@ -434,8 +443,18 @@ impl DualMaskGuide {
         let p = predicted.clamp(1e-7, 1.0 - 1e-7);
         let loss = -(target * p.ln() + (1.0 - target) * (1.0 - p).ln());
 
-        // Gradient of BCE w.r.t. score (through sigmoid)
-        let d_score = predicted - target;
+        // Asymmetric weighting based on error type (like GuideNnue)
+        let weight = if predicted > 0.5 && !improved {
+            FALSE_POSITIVE_WEIGHT  // Said "fires", was wrong
+        } else if predicted <= 0.5 && improved {
+            FALSE_NEGATIVE_WEIGHT  // Said "no fire", missed it
+        } else {
+            1.0  // Correct prediction
+        };
+
+        // Gradient of BCE w.r.t. score (through sigmoid), with asymmetric weight
+        // Clip BEFORE multiplying by embedding to preserve the weight's effect
+        let d_score = (weight * (predicted - target)).clamp(-10.0, 10.0);
 
         // Gradient flows through dot product:
         // d_loss/d_expr_embed[k] = d_score * rule_embed[k]
@@ -443,8 +462,8 @@ impl DualMaskGuide {
         let mut d_expr_embed = [0.0f32; EMBED_DIM];
         let mut d_rule_embed = [0.0f32; EMBED_DIM];
         for k in 0..EMBED_DIM {
-            d_expr_embed[k] = (d_score * rule_embed[k]).clamp(-1.0, 1.0);
-            d_rule_embed[k] = (d_score * expr_embed[k]).clamp(-1.0, 1.0);
+            d_expr_embed[k] = d_score * rule_embed[k];
+            d_rule_embed[k] = d_score * expr_embed[k];
         }
 
         // Update rule prior
@@ -1087,11 +1106,41 @@ mod tests {
         assert!(all_samples.len() > 50, "Should have collected training data, got {}", all_samples.len());
         assert!(positives > 0, "Should have some positive samples (fired=true)");
 
-        // Train for several epochs
+        // Check feature statistics for positive vs negative samples
+        let pos_samples: Vec<_> = all_samples.iter().filter(|s| s.3).collect();
+        let neg_samples: Vec<_> = all_samples.iter().filter(|s| !s.3).collect();
+
+        eprintln!("\n=== Feature analysis ===");
+        for feat_idx in 0..4 {
+            let pos_mean: f32 = pos_samples.iter().map(|s| s.0[feat_idx]).sum::<f32>() / pos_samples.len() as f32;
+            let neg_mean: f32 = neg_samples.iter().map(|s| s.0[feat_idx]).sum::<f32>() / neg_samples.len() as f32;
+            eprintln!("expr_feat[{}]: pos_mean={:.3}, neg_mean={:.3}, diff={:.3}",
+                feat_idx, pos_mean, neg_mean, pos_mean - neg_mean);
+        }
+        for feat_idx in 0..4 {
+            let pos_mean: f32 = pos_samples.iter().map(|s| s.1[feat_idx]).sum::<f32>() / pos_samples.len() as f32;
+            let neg_mean: f32 = neg_samples.iter().map(|s| s.1[feat_idx]).sum::<f32>() / neg_samples.len() as f32;
+            eprintln!("rule_feat[{}]: pos_mean={:.3}, neg_mean={:.3}, diff={:.3}",
+                feat_idx, pos_mean, neg_mean, pos_mean - neg_mean);
+        }
+
+        // Train for several epochs with balanced sampling
         let initial_eval = guide.evaluate(&all_samples);
 
-        for _ in 0..20 {
-            guide.train_batch(&all_samples, 0.01);
+        // Separate positive and negative samples
+        let pos: Vec<_> = all_samples.iter().filter(|s| s.3).cloned().collect();
+        let neg: Vec<_> = all_samples.iter().filter(|s| !s.3).cloned().collect();
+
+        let mut rng = 12345u64;
+        for _ in 0..100 {
+            // Create balanced batch: all positives + equal number of random negatives
+            let mut batch = pos.clone();
+            for _ in 0..pos.len() {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let idx = (rng as usize) % neg.len();
+                batch.push(neg[idx]);
+            }
+            guide.train_batch(&batch, 0.01);
         }
 
         let final_eval = guide.evaluate(&all_samples);
