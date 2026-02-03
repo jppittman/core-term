@@ -1223,16 +1223,9 @@ impl U32x8 {
 /// - `kand/kor/knot` for mask logic - ~0-1 cycles (mask unit)
 /// - `vblendmps` uses k-register directly - no conversion overhead
 #[cfg(target_feature = "avx512f")]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 #[repr(transparent)]
 pub struct Mask16(pub(crate) __mmask16);
-
-#[cfg(target_feature = "avx512f")]
-impl Default for Mask16 {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 
 #[cfg(target_feature = "avx512f")]
 impl Debug for Mask16 {
@@ -1329,6 +1322,7 @@ impl F32x16 {
     }
 
     #[inline(always)]
+    #[allow(dead_code)]
     unsafe fn from_mask(mask: __mmask16) -> Self {
         unsafe {
             let all_ones = _mm512_castsi512_ps(_mm512_set1_epi32(-1));
