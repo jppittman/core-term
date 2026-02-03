@@ -295,6 +295,7 @@ impl EdgeAccumulator {
     /// Build accumulator from an expression tree.
     ///
     /// Traverses the tree and accumulates edge contributions.
+    #[must_use]
     pub fn from_expr(expr: &Expr, emb: &OpEmbeddings) -> Self {
         let mut acc = Self::new();
         acc.add_expr_edges(expr, emb);
@@ -590,11 +591,10 @@ impl StructuralFeatures {
                 };
 
                 // Check for FMA pattern: Mul as left child and current is in Add context
-                if *op == OpKind::Add {
-                    if matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
+                if *op == OpKind::Add
+                    && matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
                         features.values[Self::HAS_FMA_PATTERN] = 1.0;
                     }
-                }
 
 
                 let left_cost = Self::collect_stats(left, features, depth + 1, width_at_depth, leaf_depths);
