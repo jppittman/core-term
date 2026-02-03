@@ -42,6 +42,18 @@ pub const NO: BOOL = 0;
 
 pub const NS_APP_DEFINED: u64 = 15;
 
+// NSWindowStyleMask
+pub const NS_WINDOW_STYLE_MASK_TITLED: u64 = 1 << 0;
+pub const NS_WINDOW_STYLE_MASK_CLOSABLE: u64 = 1 << 1;
+pub const NS_WINDOW_STYLE_MASK_MINIATURIZABLE: u64 = 1 << 2;
+pub const NS_WINDOW_STYLE_MASK_RESIZABLE: u64 = 1 << 3;
+
+// NSBackingStoreType
+pub const NS_BACKING_STORE_BUFFERED: u64 = 2;
+
+// MTLPixelFormat
+pub const MTL_PIXEL_FORMAT_RGBA8_UNORM: u64 = 70;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MTLOrigin {
