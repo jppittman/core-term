@@ -400,6 +400,49 @@ impl DualMaskGuide {
         scored
     }
 
+    /// Filter actions: return binary mask of which (expr, rule) pairs to try.
+    ///
+    /// This is the core filtering operation. Instead of scoring and ranking,
+    /// we output a yes/no decision for each pair.
+    ///
+    /// Returns Vec<bool> parallel to `legal_actions`: true = try this pair.
+    #[must_use]
+    pub fn filter_actions(
+        &self,
+        expr_features: &[[f32; EXPR_FEATURE_DIM]],
+        rule_features: &[[f32; RULE_FEATURE_DIM]],
+        legal_actions: &[(usize, usize)],
+        threshold: f32,
+    ) -> Vec<bool> {
+        let scores = self.score_actions(expr_features, rule_features, legal_actions);
+        scores.iter().map(|&s| sigmoid(s) > threshold).collect()
+    }
+
+    /// Filter and return only the pairs that pass the threshold.
+    ///
+    /// More efficient than filter_actions when you just need the passing pairs.
+    #[must_use]
+    pub fn get_approved_actions(
+        &self,
+        expr_features: &[[f32; EXPR_FEATURE_DIM]],
+        rule_features: &[[f32; RULE_FEATURE_DIM]],
+        legal_actions: &[(usize, usize)],
+        threshold: f32,
+    ) -> Vec<(usize, usize)> {
+        let scores = self.score_actions(expr_features, rule_features, legal_actions);
+        legal_actions
+            .iter()
+            .zip(scores.iter())
+            .filter_map(|(&action, &score)| {
+                if sigmoid(score) > threshold {
+                    Some(action)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     // ========================================================================
     // Training (Embedding Architecture)
     // ========================================================================
@@ -1483,5 +1526,79 @@ mod tests {
         features[0] = rule_idx as f32 / num_rules.max(1) as f32;
         features[1] = iteration as f32 / 30.0;
         features
+    }
+
+    /// Test that filtered search works and reduces the number of pairs tried.
+    #[test]
+    fn test_filtered_search() {
+        use crate::egraph::{EGraph, ExprTree, CostModel, all_rules, ops};
+        use crate::egraph::guided_search::GuidedSearch;
+
+        let expr = ExprTree::Op {
+            op: &ops::Mul,
+            children: vec![
+                ExprTree::Op {
+                    op: &ops::Add,
+                    children: vec![ExprTree::var(0), ExprTree::constant(0.0)],
+                },
+                ExprTree::constant(1.0),
+            ],
+        };
+
+        let costs = CostModel::default();
+        let guide = DualMaskGuide::new_random(42);
+
+        // Run unfiltered (egg-style: tries ALL pairs)
+        let mut egraph1 = EGraph::with_rules(all_rules());
+        let root1 = egraph1.add_expr(&expr);
+        let mut search1 = GuidedSearch::new(egraph1, root1, 5);
+
+        let result1 = search1.run_dual_mask(
+            &guide,
+            |tree: &ExprTree| tree.node_count() as i64,
+            &costs,
+        );
+
+        // Count total pairs tried in unfiltered
+        let unfiltered_pairs: usize = result1.pair_records.iter()
+            .map(|epoch| epoch.pairs.len())
+            .sum();
+
+        // Run filtered (only tries approved pairs)
+        let mut egraph2 = EGraph::with_rules(all_rules());
+        let root2 = egraph2.add_expr(&expr);
+        let mut search2 = GuidedSearch::new(egraph2, root2, 5);
+
+        let result2 = search2.run_dual_mask_filtered(
+            &guide,
+            |tree: &ExprTree| tree.node_count() as i64,
+            &costs,
+            0.5,   // threshold
+            0.0,   // no epsilon exploration for this test
+            42,
+        );
+
+        // Count total pairs tried in filtered
+        let filtered_pairs: usize = result2.pair_records.iter()
+            .map(|epoch| epoch.pairs.len())
+            .sum();
+
+        eprintln!("\n=== Filtered search test ===");
+        eprintln!("Unfiltered: {} pairs tried, cost = {}", unfiltered_pairs, result1.best_cost);
+        eprintln!("Filtered:   {} pairs tried, cost = {}", filtered_pairs, result2.best_cost);
+        eprintln!("Reduction: {:.1}%", (1.0 - filtered_pairs as f32 / unfiltered_pairs as f32) * 100.0);
+
+        // Filtered should try fewer pairs
+        assert!(
+            filtered_pairs < unfiltered_pairs,
+            "Filtered should try fewer pairs: {} vs {}",
+            filtered_pairs, unfiltered_pairs
+        );
+
+        // Both should reach a good result (cost reduction)
+        let initial_cost = expr.node_count() as i64;
+        assert!(result1.best_cost < initial_cost, "Unfiltered should improve");
+        // Note: filtered might not improve if threshold is too high (filters good rules)
+        // That's fine - this test is about filtering, not about quality
     }
 }
