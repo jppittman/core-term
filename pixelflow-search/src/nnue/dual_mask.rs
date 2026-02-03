@@ -1857,59 +1857,74 @@ mod tests {
         };
         eprintln!("Initial (constrained): {} pairs, cost {}", initial_pairs, initial_cost);
 
-        // --- Collect oracle samples ---
-        let mut oracle_cost_sum = 0i64;
-        let mut oracle_pairs_sum = 0;
+        // --- Get oracle target cost (what's achievable with abundant resources) ---
+        let mut oracle_costs: Vec<i64> = Vec::new();
+        for expr in &exprs {
+            let mut egraph = EGraph::with_rules(all_rules());
+            let root = egraph.add_expr(expr);
+            let mut search = GuidedSearch::new(egraph, root, oracle_max_epochs);
 
-        // Training loop
+            // Oracle: permissive, lots of space, exploration
+            let result = search.run_dual_mask_filtered(
+                &guide,
+                |tree: &ExprTree| tree.node_count() as i64,
+                &costs,
+                0.1,
+                oracle_max_classes,
+                0.5,
+                42,
+            );
+            oracle_costs.push(result.best_cost);
+        }
+
+        // Training loop - collect samples under CONSTRAINED resources
         for iteration in 0..30 {
             let mut positive_samples: Vec<([f32; EXPR_FEATURE_DIM], [f32; RULE_FEATURE_DIM], usize, f32)> = Vec::new();
             let mut negative_samples: Vec<([f32; EXPR_FEATURE_DIM], [f32; RULE_FEATURE_DIM], usize, f32)> = Vec::new();
             let rng_seed = iteration as u64 * 12345;
 
-            for expr in &exprs {
-                // Run ORACLE with abundant resources
+            for (expr_idx, expr) in exprs.iter().enumerate() {
+                let oracle_cost = oracle_costs[expr_idx];
+
+                // Run CONSTRAINED search with exploration
                 let mut egraph = EGraph::with_rules(all_rules());
                 let root = egraph.add_expr(expr);
-                let mut search = GuidedSearch::new(egraph, root, oracle_max_epochs);
+                let mut search = GuidedSearch::new(egraph, root, guide_max_epochs);
 
-                // Oracle uses permissive threshold, no guide filtering (tries everything)
                 let result = search.run_dual_mask_filtered(
                     &guide,
                     |tree: &ExprTree| tree.node_count() as i64,
                     &costs,
-                    0.1,                // very permissive = tries most pairs
-                    oracle_max_classes, // abundant space
-                    0.5,                // exploration to discover good pairs
+                    0.3,                // moderate threshold
+                    guide_max_classes,  // CONSTRAINED space - features match eval!
+                    0.5,                // exploration to try different pairs
                     rng_seed,
                 );
 
-                oracle_cost_sum = result.best_cost;
-                oracle_pairs_sum += result.pair_records.iter().map(|e| e.pairs.len()).sum::<usize>();
+                // Training signal: how close did we get to oracle?
+                let gap = result.best_cost - oracle_cost;
 
-                // Collect training signal from oracle's trajectory
-                // Positive: pairs that FIRED and LED TO IMPROVEMENT
-                // Negative: pairs that DIDN'T FIRE or DIDN'T HELP
+                // Collect from constrained trajectory
                 for epoch in &result.pair_records {
                     let epoch_improved = epoch.cost_after < epoch.cost_before;
                     let improvement = (epoch.cost_before - epoch.cost_after) as f32;
 
                     for pair in &epoch.pairs {
                         if pair.fired && epoch_improved {
-                            // This pair contributed to improvement
+                            // This pair helped under constraints - reward it
                             positive_samples.push((
                                 pair.expr_features,
                                 pair.rule_features,
                                 pair.rule_idx,
-                                improvement.max(1.0),  // positive reward
+                                improvement.max(1.0),
                             ));
-                        } else {
-                            // Either didn't fire or didn't help
+                        } else if !pair.fired || gap > 0 {
+                            // Didn't fire, or we didn't reach oracle - negative
                             negative_samples.push((
                                 pair.expr_features,
                                 pair.rule_features,
                                 pair.rule_idx,
-                                -1.0,  // negative reward
+                                -1.0,
                             ));
                         }
                     }
@@ -1963,8 +1978,9 @@ mod tests {
                     }
                     (total_pairs, total_cost)
                 };
+                let oracle_total: i64 = oracle_costs.iter().sum();
                 eprintln!("Iter {}: {} pairs, cost {} (oracle cost: {})",
-                    iteration, pairs, cost, oracle_cost_sum);
+                    iteration, pairs, cost, oracle_total);
             }
         }
 
@@ -1994,12 +2010,13 @@ mod tests {
             (total_pairs, total_cost)
         };
 
+        let oracle_total: i64 = oracle_costs.iter().sum();
         eprintln!("\n=== Results ===");
-        eprintln!("Oracle (abundant):    {} pairs, cost {}", oracle_pairs_sum, oracle_cost_sum);
+        eprintln!("Oracle target cost: {}", oracle_total);
         eprintln!("Initial (constrained): {} pairs, cost {}", initial_pairs, initial_cost);
         eprintln!("Final (constrained):   {} pairs, cost {}", final_pairs, final_cost);
         eprintln!("Cost improvement: {} -> {}", initial_cost, final_cost);
-        eprintln!("Guide matches oracle quality: {}", final_cost <= oracle_cost_sum);
+        eprintln!("Guide matches oracle quality: {}", final_cost <= oracle_total);
 
         // Guide should learn to achieve good cost with fewer resources
         // Either: cost improved OR pairs reduced (ideally both)
