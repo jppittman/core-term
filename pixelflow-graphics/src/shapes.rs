@@ -193,16 +193,102 @@ mod tests {
         tex.data()[0]
     }
 
+
     #[test]
-    fn circle_at_origin() {
-        // Point at origin should be inside
-        // Point at (2, 0) should be outside
+    fn circle_evaluates_to_solid_when_inside_radius() {
+        let shape = circle(SOLID, EMPTY);
+        // Origin
+        assert_eq!(
+            eval_scalar(&shape, 0.0, 0.0),
+            1.0,
+            "Origin should be solid"
+        );
+        // Near edge
+        assert_eq!(
+            eval_scalar(&shape, 0.9, 0.0),
+            1.0,
+            "(0.9, 0) should be solid"
+        );
     }
 
     #[test]
-    fn composition_works() {
-        // circle inside square
-        let _scene = square(circle(SOLID, 0.5f32), EMPTY);
+    fn circle_evaluates_to_empty_when_outside_radius() {
+        let shape = circle(SOLID, EMPTY);
+        // Outside
+        assert_eq!(
+            eval_scalar(&shape, 1.1, 0.0),
+            0.0,
+            "(1.1, 0) should be empty"
+        );
+    }
+
+    #[test]
+    fn circle_evaluates_to_empty_on_boundary() {
+        let shape = circle(SOLID, EMPTY);
+        // Boundary (exact 1.0)
+        // logic is lt(1.0), so 1.0 < 1.0 is false.
+        assert_eq!(
+            eval_scalar(&shape, 1.0, 0.0),
+            0.0,
+            "Boundary should be empty"
+        );
+    }
+
+    #[test]
+    fn square_evaluates_to_solid_when_inside_bounds() {
+        let shape = square(SOLID, EMPTY);
+        assert_eq!(eval_scalar(&shape, 0.0, 0.0), 1.0, "0.0 should be solid");
+        assert_eq!(eval_scalar(&shape, 0.5, 0.5), 1.0, "0.5 should be solid");
+        assert_eq!(eval_scalar(&shape, 1.0, 1.0), 1.0, "1.0 should be solid");
+    }
+
+    #[test]
+    fn square_evaluates_to_empty_when_outside_bounds() {
+        let shape = square(SOLID, EMPTY);
+        assert_eq!(eval_scalar(&shape, -0.1, 0.0), 0.0, "-0.1 x should be empty");
+        assert_eq!(eval_scalar(&shape, 1.1, 0.0), 0.0, "1.1 x should be empty");
+        assert_eq!(eval_scalar(&shape, 0.0, 1.1), 0.0, "1.1 y should be empty");
+    }
+
+    #[test]
+    fn rectangle_evaluates_to_solid_within_custom_bounds() {
+        let shape = rectangle(2.0, 3.0, SOLID, EMPTY);
+        // Inside
+        assert_eq!(eval_scalar(&shape, 0.0, 0.0), 1.0, "Origin should be solid");
+        assert_eq!(eval_scalar(&shape, 1.0, 1.5), 1.0, "Center should be solid");
+        assert_eq!(eval_scalar(&shape, 2.0, 3.0), 1.0, "Corner (max, max) should be solid");
+
+        // Outside
+        assert_eq!(eval_scalar(&shape, -0.1, 0.0), 0.0, "-0.1 x should be empty");
+        assert_eq!(eval_scalar(&shape, 2.1, 0.0), 0.0, "2.1 x should be empty");
+        assert_eq!(eval_scalar(&shape, 0.0, 3.1), 0.0, "3.1 y should be empty");
+    }
+
+    #[test]
+    fn ellipse_evaluates_to_solid_within_radii() {
+        let shape = ellipse(2.0, 1.0, SOLID, EMPTY);
+        // Inside
+        assert_eq!(eval_scalar(&shape, 0.0, 0.0), 1.0, "Origin should be solid");
+        assert_eq!(eval_scalar(&shape, 1.9, 0.0), 1.0, "(1.9, 0) should be solid");
+        assert_eq!(eval_scalar(&shape, 0.0, 0.9), 1.0, "(0, 0.9) should be solid");
+
+        // Outside
+        assert_eq!(eval_scalar(&shape, 2.1, 0.0), 0.0, "(2.1, 0) should be empty");
+        assert_eq!(eval_scalar(&shape, 0.0, 1.1), 0.0, "(0, 1.1) should be empty");
+    }
+
+    #[test]
+    fn annulus_evaluates_to_solid_between_radii() {
+        let shape = annulus(1.0, 2.0, SOLID, EMPTY);
+        // Inside ring
+        assert_eq!(eval_scalar(&shape, 1.5, 0.0), 1.0, "1.5 should be solid");
+        // On boundaries (inclusive)
+        assert_eq!(eval_scalar(&shape, 1.0, 0.0), 1.0, "Inner radius should be solid");
+        assert_eq!(eval_scalar(&shape, 2.0, 0.0), 1.0, "Outer radius should be solid");
+
+        // Outside ring
+        assert_eq!(eval_scalar(&shape, 0.5, 0.0), 0.0, "0.5 (hole) should be empty");
+        assert_eq!(eval_scalar(&shape, 2.5, 0.0), 0.0, "2.5 (outside) should be empty");
     }
 
     #[test]

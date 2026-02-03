@@ -341,6 +341,7 @@ fn propagate_embedding_gradients(
             propagate_embedding_gradients(b, d_acc, d_emb);
             propagate_embedding_gradients(c, d_acc, d_emb);
         }
+        Expr::Nary(_, _) => todo!("Gradients for Nary not implemented"),
     }
 }
 
