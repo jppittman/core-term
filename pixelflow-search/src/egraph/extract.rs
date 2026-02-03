@@ -63,6 +63,7 @@ impl ExprTree {
     }
 
     // Constructor helpers for common operations
+    #[allow(clippy::should_implement_trait)]
     pub fn add(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Add,
@@ -70,6 +71,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn sub(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Sub,
@@ -77,6 +79,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn mul(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Mul,
@@ -84,6 +87,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn div(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Div,
@@ -91,6 +95,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn neg(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Neg,
@@ -385,7 +390,7 @@ pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (
         }
     }
 
-    let tree = result_stack.pop().unwrap_or_else(|| ExprTree::Leaf(Leaf::Const(0.0)));
+    let tree = result_stack.pop().unwrap_or(ExprTree::Leaf(Leaf::Const(0.0)));
     (tree, total_cost)
 }
 
@@ -574,10 +579,11 @@ fn count_refs_recursive(
     ref_counts[canonical.0 as usize] += 1;
 
     // Only recurse on first visit to count true structural refs
-    if ref_counts[canonical.0 as usize] == 1 {
-        if let Some(node_idx) = best_node[canonical.0 as usize] {
-            let node = &egraph.nodes(canonical)[node_idx];
-            if let ENode::Op { children, .. } = node {
+    if ref_counts[canonical.0 as usize] == 1
+        && let Some(node_idx) = best_node[canonical.0 as usize]
+    {
+        let node = &egraph.nodes(canonical)[node_idx];
+        if let ENode::Op { children, .. } = node {
                 for &child in children {
                     count_refs_recursive(egraph, child, best_node, ref_counts);
                 }
@@ -602,6 +608,7 @@ fn toposort_dag(
     let mut visited: BTreeSet<u32> = BTreeSet::new();
     let mut result = Vec::new();
 
+    #[allow(clippy::too_many_arguments)]
     fn visit(
         egraph: &EGraph,
         class: EClassId,
@@ -636,7 +643,7 @@ fn toposort_dag(
 
     // Add root if not already included
     let root_canonical = egraph.find(root);
-    if !result.iter().any(|id| *id == root_canonical) {
+    if !result.contains(&root_canonical) {
         result.push(root_canonical);
     }
 
