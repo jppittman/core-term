@@ -203,23 +203,21 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
 
         // x ⊕ inv(x) → identity
         for node_b in egraph.nodes(b) {
-            if node_matches_op(node_b, T::inverse()) {
-                if let Some(&inner) = node_b.children().first() {
-                    if egraph.find(inner) == egraph.find(a) {
-                        return Some(RewriteAction::Create(ENode::constant(T::identity())));
-                    }
-                }
+            if node_matches_op(node_b, T::inverse())
+                && let Some(&inner) = node_b.children().first()
+                && egraph.find(inner) == egraph.find(a)
+            {
+                return Some(RewriteAction::Create(ENode::constant(T::identity())));
             }
         }
 
         // inv(x) ⊕ x → identity
         for node_a in egraph.nodes(a) {
-            if node_matches_op(node_a, T::inverse()) {
-                if let Some(&inner) = node_a.children().first() {
-                    if egraph.find(inner) == egraph.find(b) {
-                        return Some(RewriteAction::Create(ENode::constant(T::identity())));
-                    }
-                }
+            if node_matches_op(node_a, T::inverse())
+                && let Some(&inner) = node_a.children().first()
+                && egraph.find(inner) == egraph.find(b)
+            {
+                return Some(RewriteAction::Create(ENode::constant(T::identity())));
             }
         }
 
