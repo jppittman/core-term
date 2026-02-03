@@ -37,8 +37,8 @@ pub use guide::GuideNnue;
 /// Re-export DualMaskGuide for factorized action selection.
 pub use dual_mask::{DualMaskGuide, ExprFeatures, RuleFeatures, EXPR_FEATURE_DIM, RULE_FEATURE_DIM};
 
-/// Re-export training infrastructure.
-pub use training::{Trainer, TrainConfig, Metrics, train_synthetic};
+/// Re-export training utilities.
+pub use training::{Sample, Metrics, sanity_check};
 
 // ============================================================================
 // HalfEP Features (Legacy - being phased out in favor of Factored)

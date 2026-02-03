@@ -495,6 +495,80 @@ impl DualMaskGuide {
         }
     }
 
+    /// Train on a batch of samples.
+    ///
+    /// Each sample is (expr_features, rule_features, rule_idx, improved).
+    /// Returns average loss.
+    pub fn train_batch(
+        &mut self,
+        samples: &[([f32; EXPR_FEATURE_DIM], [f32; RULE_FEATURE_DIM], usize, bool)],
+        lr: f32,
+    ) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+
+        let mut total_loss = 0.0;
+        for (expr_f, rule_f, rule_idx, improved) in samples {
+            total_loss += self.train_step(expr_f, rule_f, *rule_idx, *improved, lr);
+        }
+
+        total_loss / samples.len() as f32
+    }
+
+    /// Evaluate accuracy on a set of samples.
+    ///
+    /// Returns (accuracy, false_positive_rate, false_negative_rate).
+    pub fn evaluate(
+        &self,
+        samples: &[([f32; EXPR_FEATURE_DIM], [f32; RULE_FEATURE_DIM], usize, bool)],
+    ) -> (f32, f32, f32) {
+        if samples.is_empty() {
+            return (1.0, 0.0, 0.0);
+        }
+
+        let mut correct = 0;
+        let mut false_positives = 0;
+        let mut false_negatives = 0;
+        let mut total_positives = 0;
+        let mut total_negatives = 0;
+
+        for (expr_f, rule_f, rule_idx, improved) in samples {
+            let score = self.score_expr(expr_f) * self.score_rule(rule_f, *rule_idx);
+            let predicted = sigmoid(score) > 0.5;
+
+            if *improved {
+                total_positives += 1;
+                if predicted {
+                    correct += 1;
+                } else {
+                    false_negatives += 1;
+                }
+            } else {
+                total_negatives += 1;
+                if predicted {
+                    false_positives += 1;
+                } else {
+                    correct += 1;
+                }
+            }
+        }
+
+        let accuracy = correct as f32 / samples.len() as f32;
+        let fp_rate = if total_negatives > 0 {
+            false_positives as f32 / total_negatives as f32
+        } else {
+            0.0
+        };
+        let fn_rate = if total_positives > 0 {
+            false_negatives as f32 / total_positives as f32
+        } else {
+            0.0
+        };
+
+        (accuracy, fp_rate, fn_rate)
+    }
+
     // ========================================================================
     // Serialization
     // ========================================================================
