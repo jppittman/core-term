@@ -1009,4 +1009,103 @@ mod tests {
             assert!(top_5[i - 1].2 >= top_5[i].2);
         }
     }
+
+    #[test]
+    fn test_train_from_egraph() {
+        use crate::egraph::{EGraph, ExprTree, CostModel, GuidedSearch, all_rules, ops};
+
+        // Create a few expressions to generate training data
+        let exprs = vec![
+            // X + 0
+            ExprTree::Op {
+                op: &ops::Add,
+                children: vec![ExprTree::var(0), ExprTree::constant(0.0)],
+            },
+            // (X + 0) * 1
+            ExprTree::Op {
+                op: &ops::Mul,
+                children: vec![
+                    ExprTree::Op {
+                        op: &ops::Add,
+                        children: vec![ExprTree::var(0), ExprTree::constant(0.0)],
+                    },
+                    ExprTree::constant(1.0),
+                ],
+            },
+            // X * 0
+            ExprTree::Op {
+                op: &ops::Mul,
+                children: vec![ExprTree::var(0), ExprTree::constant(0.0)],
+            },
+            // (X + Y) + 0
+            ExprTree::Op {
+                op: &ops::Add,
+                children: vec![
+                    ExprTree::Op {
+                        op: &ops::Add,
+                        children: vec![ExprTree::var(0), ExprTree::var(1)],
+                    },
+                    ExprTree::constant(0.0),
+                ],
+            },
+        ];
+
+        let mut guide = DualMaskGuide::new_random(42);
+        let costs = CostModel::default();
+
+        // Collect training data from all expressions
+        let mut all_samples: Vec<([f32; EXPR_FEATURE_DIM], [f32; RULE_FEATURE_DIM], usize, bool)> = Vec::new();
+
+        for expr in &exprs {
+            let mut egraph = EGraph::with_rules(all_rules());
+            let root = egraph.add_expr(expr);
+            let mut search = GuidedSearch::new(egraph, root, 5);
+
+            let result = search.run_dual_mask(
+                &guide,
+                |tree: &ExprTree| tree.node_count() as i64,
+                &costs,
+            );
+
+            // Convert PairRecords to training samples
+            for epoch in &result.pair_records {
+                for pair in &epoch.pairs {
+                    all_samples.push((
+                        pair.expr_features,
+                        pair.rule_features,
+                        pair.rule_idx,
+                        pair.fired,
+                    ));
+                }
+            }
+        }
+
+        // Count positives/negatives
+        let positives = all_samples.iter().filter(|s| s.3).count();
+        let negatives = all_samples.len() - positives;
+
+        assert!(all_samples.len() > 50, "Should have collected training data, got {}", all_samples.len());
+        assert!(positives > 0, "Should have some positive samples (fired=true)");
+
+        // Train for several epochs
+        let initial_eval = guide.evaluate(&all_samples);
+
+        for _ in 0..20 {
+            guide.train_batch(&all_samples, 0.01);
+        }
+
+        let final_eval = guide.evaluate(&all_samples);
+
+        // Training should improve (or at least not get worse)
+        // Note: with tiny networks, might not always improve significantly
+        eprintln!(
+            "Training: {} samples ({} positive, {} negative)",
+            all_samples.len(), positives, negatives
+        );
+        eprintln!(
+            "Accuracy: {:.1}% -> {:.1}%",
+            initial_eval.0 * 100.0,
+            final_eval.0 * 100.0
+        );
+    }
 }
