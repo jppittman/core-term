@@ -1819,7 +1819,7 @@ mod tests {
         let mut guide = DualMaskGuide::new_random(42);
 
         eprintln!("\n=== Resource-Asymmetric Training ===");
-        eprintln!("Oracle: true saturation");
+        eprintln!("Oracle: best-of-10 with same resources");
         eprintln!("Guide:  50 max_classes, 5 epochs");
 
         // --- Guide Configuration (constrained resources) ---
@@ -1853,15 +1853,32 @@ mod tests {
         };
         eprintln!("Initial (constrained): {} pairs, cost {}", initial_pairs, initial_cost);
 
-        // --- Get oracle target cost via TRUE SATURATION ---
+        // --- Get oracle target cost via BEST-OF-N ---
+        // Run constrained search N times with different seeds, take best.
+        // This is "what's achievable if you're lucky" - cheap, no feature mismatch.
+        let oracle_runs = 10;
         let mut oracle_costs: Vec<i64> = Vec::new();
         for expr in &exprs {
-            let mut egraph = EGraph::with_rules(all_rules());
-            let root = egraph.add_expr(expr);
-            egraph.saturate(); // Full saturation - the true optimum
-            let (best, _cost) = egraph.extract_best(root, &costs);
-            oracle_costs.push(best.node_count() as i64);
+            let mut best_cost = i64::MAX;
+            for seed in 0..oracle_runs {
+                let mut egraph = EGraph::with_rules(all_rules());
+                let root = egraph.add_expr(expr);
+                let mut search = GuidedSearch::new(egraph, root, guide_max_epochs);
+
+                let result = search.run_dual_mask_filtered(
+                    &guide,
+                    |tree: &ExprTree| tree.node_count() as i64,
+                    &costs,
+                    0.3,                // permissive threshold
+                    guide_max_classes,  // same resources as training
+                    0.8,                // high exploration to find good paths
+                    seed as u64 * 99991,
+                );
+                best_cost = best_cost.min(result.best_cost);
+            }
+            oracle_costs.push(best_cost);
         }
+        eprintln!("Oracle (best-of-{}): costs {:?}", oracle_runs, oracle_costs);
 
         // Training loop - collect samples under CONSTRAINED resources
         for iteration in 0..30 {
