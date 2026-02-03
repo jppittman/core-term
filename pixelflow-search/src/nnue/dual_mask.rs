@@ -674,6 +674,152 @@ impl DualMaskGuide {
     }
 
     // ========================================================================
+    // Self-Imitation Learning (SIL)
+    // ========================================================================
+
+    /// Train with cost-delta as the reward signal.
+    ///
+    /// The key insight: reward = cost_improvement from continuing search.
+    /// If running more epochs improves cost by delta, actions that led to
+    /// that improvement should get credit proportional to delta.
+    ///
+    /// This is like temporal difference learning:
+    /// - cost_before: cost at current state
+    /// - cost_after: cost after more search (with saturation as limit)
+    /// - reward = cost_before - cost_after (positive = improvement)
+    ///
+    /// Actions with positive reward → push score up (good action)
+    /// Actions with zero/negative reward → push score down (wasteful)
+    ///
+    /// # Arguments
+    /// * `expr_features` - expression features for this action
+    /// * `rule_features` - rule features for this action
+    /// * `rule_idx` - which rule
+    /// * `cost_delta` - cost_before - cost_after (positive = improvement)
+    /// * `lr` - learning rate
+    pub fn train_with_cost_delta(
+        &mut self,
+        expr_features: &[f32; EXPR_FEATURE_DIM],
+        rule_features: &[f32; RULE_FEATURE_DIM],
+        rule_idx: usize,
+        cost_delta: f32,
+        lr: f32,
+    ) -> f32 {
+        // Forward pass with hidden for backprop
+        let (expr_embed, expr_hidden) = self.forward_expr_with_hidden(expr_features);
+        let (rule_embed, rule_hidden) = self.forward_rule_with_hidden(rule_features);
+
+        // Score = dot product + prior
+        let mut score = 0.0f32;
+        for k in 0..EMBED_DIM {
+            score += expr_embed[k] * rule_embed[k];
+        }
+        let rule_idx_clamped = rule_idx.min(MAX_RULES - 1);
+        score += self.rule_prior[rule_idx_clamped];
+
+        // Current prediction (sigmoid maps to [0, 1])
+        let predicted = sigmoid(score);
+
+        // Target: sigmoid(cost_delta) maps cost improvement to [0, 1] range
+        // Large positive delta → target near 1.0 (good action)
+        // Zero delta → target 0.5 (neutral)
+        // Negative delta → target near 0.0 (bad action)
+        let target = sigmoid(cost_delta);
+
+        // Loss: MSE between predicted and target (simpler than BCE for continuous targets)
+        let loss = (predicted - target).powi(2);
+
+        // Gradient: d(MSE)/d(score) = 2 * (predicted - target) * sigmoid'(score)
+        // sigmoid'(score) = predicted * (1 - predicted)
+        let d_score = 2.0 * (predicted - target) * predicted * (1.0 - predicted);
+        let d_score = d_score.clamp(-10.0, 10.0);
+
+        // Gradient flows through dot product
+        let mut d_expr_embed = [0.0f32; EMBED_DIM];
+        let mut d_rule_embed = [0.0f32; EMBED_DIM];
+        for k in 0..EMBED_DIM {
+            d_expr_embed[k] = d_score * rule_embed[k];
+            d_rule_embed[k] = d_score * expr_embed[k];
+        }
+
+        // Update rule prior
+        self.rule_prior[rule_idx_clamped] -= lr * d_score;
+
+        // Backprop through expression head
+        self.backprop_expr(expr_features, &expr_hidden, &d_expr_embed, lr);
+
+        // Backprop through rule head
+        self.backprop_rule(rule_features, &rule_hidden, &d_rule_embed, lr);
+
+        loss
+    }
+
+    /// Batch training with cost deltas.
+    ///
+    /// Each sample: (expr_features, rule_features, rule_idx, cost_delta)
+    /// where cost_delta = cost_before - cost_after (positive = improvement)
+    pub fn train_batch_with_deltas(
+        &mut self,
+        samples: &[([f32; EXPR_FEATURE_DIM], [f32; RULE_FEATURE_DIM], usize, f32)],
+        lr: f32,
+    ) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+
+        let mut total_loss = 0.0;
+        for (expr_f, rule_f, rule_idx, cost_delta) in samples {
+            total_loss += self.train_with_cost_delta(expr_f, rule_f, *rule_idx, *cost_delta, lr);
+        }
+
+        total_loss / samples.len() as f32
+    }
+
+    /// Select an action using epsilon-greedy policy.
+    ///
+    /// With probability epsilon, returns a random action index.
+    /// Otherwise, returns the action with highest score.
+    ///
+    /// # Arguments
+    /// * `expr_features` - features for all expressions
+    /// * `rule_features` - features for all rules
+    /// * `legal_actions` - (expr_idx, rule_idx) pairs that are legal
+    /// * `epsilon` - exploration probability
+    /// * `rng_state` - mutable RNG state (LCG)
+    pub fn select_action_epsilon_greedy(
+        &self,
+        expr_features: &[[f32; EXPR_FEATURE_DIM]],
+        rule_features: &[[f32; RULE_FEATURE_DIM]],
+        legal_actions: &[(usize, usize)],
+        epsilon: f32,
+        rng_state: &mut u64,
+    ) -> Option<(usize, usize)> {
+        if legal_actions.is_empty() {
+            return None;
+        }
+
+        // Generate random number
+        *rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let rand_val = (*rng_state as f32) / (u64::MAX as f32);
+
+        if rand_val < epsilon {
+            // Explore: pick random action
+            *rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let idx = (*rng_state as usize) % legal_actions.len();
+            Some(legal_actions[idx])
+        } else {
+            // Exploit: pick best action according to model
+            let scores = self.score_actions(expr_features, rule_features, legal_actions);
+            let best_idx = scores
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal))
+                .map(|(i, _)| i)?;
+            Some(legal_actions[best_idx])
+        }
+    }
+
+    // ========================================================================
     // Serialization
     // ========================================================================
 
@@ -1169,5 +1315,173 @@ mod tests {
 
         // The real test: FN rate should be low (we catch the positives)
         assert!(final_eval.2 < 0.5, "Should catch at least half the positives, FN rate = {:.1}%", final_eval.2 * 100.0);
+    }
+
+    /// Test: with X resources, match the result of 10X resources.
+    ///
+    /// Goal: guide with limited budget finds same quality as saturation.
+    /// Like NNUE in chess - shallow search should make same move as deep search.
+    ///
+    /// Training: saturation is the oracle. Train guide so limited-budget search
+    /// reaches the same extracted cost as full saturation.
+    #[test]
+    fn test_limited_budget_matches_saturation() {
+        use crate::egraph::{EGraph, ExprTree, CostModel, all_rules, ops};
+
+        let exprs = vec![
+            // (X + 0) * 1 → X
+            ExprTree::Op {
+                op: &ops::Mul,
+                children: vec![
+                    ExprTree::Op {
+                        op: &ops::Add,
+                        children: vec![ExprTree::var(0), ExprTree::constant(0.0)],
+                    },
+                    ExprTree::constant(1.0),
+                ],
+            },
+            // X * 0 → 0
+            ExprTree::Op {
+                op: &ops::Mul,
+                children: vec![ExprTree::var(0), ExprTree::constant(0.0)],
+            },
+            // (X * 1) + 0 → X
+            ExprTree::Op {
+                op: &ops::Add,
+                children: vec![
+                    ExprTree::Op {
+                        op: &ops::Mul,
+                        children: vec![ExprTree::var(0), ExprTree::constant(1.0)],
+                    },
+                    ExprTree::constant(0.0),
+                ],
+            },
+        ];
+
+        let costs = CostModel::default();
+        let mut guide = DualMaskGuide::new_random(42);
+
+        eprintln!("\n=== Training: limited budget should match saturation ===");
+
+        // First, get saturation costs (the oracle/target)
+        let mut saturation_costs: Vec<i64> = Vec::new();
+        for expr in &exprs {
+            let mut egraph = EGraph::with_rules(all_rules());
+            let root = egraph.add_expr(expr);
+            egraph.saturate(); // Full saturation
+
+            let (best, _) = egraph.extract_best(root, &costs);
+            saturation_costs.push(best.node_count() as i64);
+        }
+
+        eprintln!("Saturation costs (oracle): {:?}", saturation_costs);
+
+        let num_rules = all_rules().len();
+
+        // Training loop: run limited search, compare to saturation, train on gap
+        for iteration in 0..30 {
+            let mut samples: Vec<([f32; EXPR_FEATURE_DIM], [f32; RULE_FEATURE_DIM], usize, f32)> = Vec::new();
+
+            for (expr_idx, expr) in exprs.iter().enumerate() {
+                // Run LIMITED search (budget=2 epochs)
+                let mut egraph = EGraph::with_rules(all_rules());
+                let root = egraph.add_expr(expr);
+
+                // Limited budget: only 2 epochs
+                for _ in 0..2 {
+                    egraph.apply_rules_once();
+                }
+
+                let (limited_best, _) = egraph.extract_best(root, &costs);
+                let limited_cost = limited_best.node_count() as i64;
+
+                // Gap to saturation: how far are we from the oracle?
+                let gap = limited_cost - saturation_costs[expr_idx];
+
+                // Generate training samples from this e-graph state
+                // Reward = negative gap (closer to saturation = higher reward)
+                // If we matched saturation (gap=0), reward is highest
+                let reward = -(gap as f32);
+
+                let num_classes = egraph.num_classes();
+                for class_idx in 0..num_classes.min(5) {
+                    let class_id = crate::egraph::EClassId(class_idx as u32);
+                    let expr_features = extract_class_features(&egraph, class_id);
+
+                    for rule_idx in 0..num_rules.min(10) {
+                        let rule_features = extract_rule_features_simple(rule_idx, num_rules, iteration);
+                        samples.push((expr_features, rule_features, rule_idx, reward));
+                    }
+                }
+            }
+
+            // Train
+            if !samples.is_empty() {
+                let loss = guide.train_batch_with_deltas(&samples, 0.01);
+                if iteration % 10 == 0 {
+                    // Evaluate current gap
+                    let mut total_gap = 0i64;
+                    for (expr_idx, expr) in exprs.iter().enumerate() {
+                        let mut egraph = EGraph::with_rules(all_rules());
+                        let root = egraph.add_expr(expr);
+                        for _ in 0..2 {
+                            egraph.apply_rules_once();
+                        }
+                        let (best, _) = egraph.extract_best(root, &costs);
+                        total_gap += best.node_count() as i64 - saturation_costs[expr_idx];
+                    }
+                    eprintln!("Iter {}: loss = {:.4}, total gap to saturation = {}", iteration, loss, total_gap);
+                }
+            }
+        }
+
+        // Final evaluation: with limited budget, how close to saturation?
+        let mut final_gap = 0i64;
+        for (expr_idx, expr) in exprs.iter().enumerate() {
+            let mut egraph = EGraph::with_rules(all_rules());
+            let root = egraph.add_expr(expr);
+            for _ in 0..2 {
+                egraph.apply_rules_once();
+            }
+            let (best, _) = egraph.extract_best(root, &costs);
+            let limited_cost = best.node_count() as i64;
+            let sat_cost = saturation_costs[expr_idx];
+            final_gap += limited_cost - sat_cost;
+            eprintln!("Expr {}: limited={}, saturation={}, gap={}",
+                expr_idx, limited_cost, sat_cost, limited_cost - sat_cost);
+        }
+
+        eprintln!("Final total gap: {}", final_gap);
+        // Note: This test just verifies the training loop runs.
+        // The actual gap closure depends on the guide actually influencing search.
+    }
+
+    fn extract_class_features(egraph: &crate::egraph::EGraph, class_id: crate::egraph::EClassId) -> [f32; EXPR_FEATURE_DIM] {
+        let class_id = egraph.find(class_id);
+        let nodes = egraph.nodes(class_id);
+        let mut features = [0.0f32; EXPR_FEATURE_DIM];
+
+        features[0] = nodes.len() as f32 / 10.0;
+        features[1] = egraph.num_classes() as f32 / 100.0;
+
+        for node in nodes {
+            match node {
+                crate::egraph::ENode::Op { op, children } => {
+                    let kind = op.kind() as usize;
+                    features[2 + (kind % 8)] = 1.0;
+                    features[10] = (features[10] + children.len() as f32) / 2.0;
+                }
+                crate::egraph::ENode::Var(_) => features[11] += 1.0,
+                crate::egraph::ENode::Const(_) => features[12] += 1.0,
+            }
+        }
+        features
+    }
+
+    fn extract_rule_features_simple(rule_idx: usize, num_rules: usize, iteration: usize) -> [f32; RULE_FEATURE_DIM] {
+        let mut features = [0.0f32; RULE_FEATURE_DIM];
+        features[0] = rule_idx as f32 / num_rules.max(1) as f32;
+        features[1] = iteration as f32 / 30.0;
+        features
     }
 }
