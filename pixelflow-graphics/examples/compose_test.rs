@@ -21,8 +21,19 @@ fn main() {
     // d is impl Manifold<Field4, Output=Field>
     
     // Using ManifoldExt to compose
-    let circle = d.map(|f| f - Field::from(0.5));  // radius 0.5
+    // d is WithContext<...>, we need to evaluate it to use it in map's closure
+    // but Manifold::map operates on the Manifold itself, not the Field result.
+    // The previous code `d.map(|f| ...)` tries to use `f` as `Field` but `d` is not a Field.
+    // We should use the arithmetic operator overload on the Manifold directly if possible,
+    // or correct the usage of `map`. Since `Manifold` implements Sub<f32> (via AST nodes usually),
+    // let's try direct subtraction if the trait is implemented, otherwise use the `Map` combinator properly.
     
+    // Actually, `ManifoldExt::map` takes a manifold as the second argument (the transformation).
+    // The transformation manifold receives the output of the first as its input (X).
+    // So we should construct a manifold that subtracts 0.5 from X.
+    use pixelflow_core::X;
+    let circle = d.map(X - Field::from(0.5));
+
     let p = field4(1.5, 2.0);
     let result = circle.eval(p);
     println!("circle at (1.5, 2.0): {:?}", result);
