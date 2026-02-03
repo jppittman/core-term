@@ -40,7 +40,10 @@ pub use ops::Op;
 pub use rewrite::{Rewrite, RewriteAction};
 pub use saturate::{SaturationResult, saturate_with_budget, achievable_cost_within_budget};
 pub use best_first::{BestFirstPlanner, BestFirstConfig, BestFirstResult, BestFirstContext, StopReason, TrajectoryStep, SearchTrajectory};
-pub use guided_search::{GuidedSearch, GuidedSearchResult, RuleFeatures, RuleStats, EpochRecord, RuleRecord};
+pub use guided_search::{
+    GuidedSearch, GuidedSearchResult, RuleFeatures, RuleStats, EpochRecord, RuleRecord,
+    DualMaskSearchResult, DualMaskEpochRecord, PairRecord,
+};
 
 // Re-export NNUE adapter types
 pub use nnue_adapter::{NnueCostAdapter, predict_tree_cost, predict_tree_priority};
