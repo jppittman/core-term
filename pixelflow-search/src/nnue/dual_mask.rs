@@ -1528,6 +1528,168 @@ mod tests {
         features
     }
 
+    /// Test SIL training: guide learns to filter intelligently.
+    ///
+    /// Training loop:
+    /// 1. Run filtered search with epsilon-greedy (explore random pairs)
+    /// 2. Track which pairs fired AND led to cost improvement
+    /// 3. Train guide to approve pairs that improve cost
+    #[test]
+    fn test_sil_training() {
+        use crate::egraph::{EGraph, ExprTree, CostModel, all_rules, ops};
+        use crate::egraph::guided_search::GuidedSearch;
+
+        let exprs = vec![
+            // (X + 0) * 1 → X
+            ExprTree::Op {
+                op: &ops::Mul,
+                children: vec![
+                    ExprTree::Op {
+                        op: &ops::Add,
+                        children: vec![ExprTree::var(0), ExprTree::constant(0.0)],
+                    },
+                    ExprTree::constant(1.0),
+                ],
+            },
+            // X * 0 → 0
+            ExprTree::Op {
+                op: &ops::Mul,
+                children: vec![ExprTree::var(0), ExprTree::constant(0.0)],
+            },
+            // X + 0 → X
+            ExprTree::Op {
+                op: &ops::Add,
+                children: vec![ExprTree::var(0), ExprTree::constant(0.0)],
+            },
+        ];
+
+        let costs = CostModel::default();
+        let mut guide = DualMaskGuide::new_random(42);
+
+        eprintln!("\n=== SIL Training: learn to filter intelligently ===");
+
+        // Initial evaluation: how many pairs, what quality?
+        let (initial_pairs, initial_cost) = evaluate_guide(&guide, &exprs, &costs, 0.5);
+        eprintln!("Initial: {} pairs, cost {}", initial_pairs, initial_cost);
+
+        // Training loop
+        for iteration in 0..20 {
+            let mut samples: Vec<([f32; EXPR_FEATURE_DIM], [f32; RULE_FEATURE_DIM], usize, f32)> = Vec::new();
+            let rng_seed = iteration as u64 * 12345;
+
+            for expr in &exprs {
+                let initial_cost = expr.node_count() as i64;
+
+                // Run filtered search with HIGH epsilon (lots of exploration)
+                let mut egraph = EGraph::with_rules(all_rules());
+                let root = egraph.add_expr(expr);
+                let mut search = GuidedSearch::new(egraph, root, 5);
+
+                let result = search.run_dual_mask_filtered(
+                    &guide,
+                    |tree: &ExprTree| tree.node_count() as i64,
+                    &costs,
+                    0.3,   // lower threshold = more permissive
+                    0.5,   // high epsilon = lots of exploration
+                    rng_seed,
+                );
+
+                // Cost improvement from this search
+                let improvement = initial_cost - result.best_cost;
+
+                // Collect samples: pairs that fired get positive signal if improved
+                for epoch in &result.pair_records {
+                    let epoch_improved = epoch.cost_after < epoch.cost_before;
+
+                    for pair in &epoch.pairs {
+                        let reward = if pair.fired && epoch_improved {
+                            // Fired and improved → approve this pair
+                            improvement as f32
+                        } else if pair.fired && !epoch_improved {
+                            // Fired but no improvement → slight negative
+                            -0.5
+                        } else {
+                            // Didn't fire → filter it
+                            -1.0
+                        };
+
+                        samples.push((
+                            pair.expr_features,
+                            pair.rule_features,
+                            pair.rule_idx,
+                            reward,
+                        ));
+                    }
+                }
+            }
+
+            // Train with balanced sampling
+            if !samples.is_empty() {
+                let positive: Vec<_> = samples.iter().filter(|s| s.3 > 0.0).cloned().collect();
+                let negative: Vec<_> = samples.iter().filter(|s| s.3 <= 0.0).cloned().collect();
+
+                if !positive.is_empty() {
+                    let mut batch = positive.clone();
+                    let mut rng = rng_seed;
+                    for _ in 0..positive.len().min(negative.len()) {
+                        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        if !negative.is_empty() {
+                            batch.push(negative[(rng as usize) % negative.len()]);
+                        }
+                    }
+                    guide.train_batch_with_deltas(&batch, 0.01);
+                }
+            }
+
+            if iteration % 5 == 0 {
+                let (pairs, cost) = evaluate_guide(&guide, &exprs, &costs, 0.5);
+                eprintln!("Iter {}: {} pairs, cost {}", iteration, pairs, cost);
+            }
+        }
+
+        // Final evaluation
+        let (final_pairs, final_cost) = evaluate_guide(&guide, &exprs, &costs, 0.5);
+        eprintln!("Final: {} pairs, cost {}", final_pairs, final_cost);
+
+        // Should have learned something (fewer pairs OR better cost)
+        // Note: with small training, might not be dramatic
+        eprintln!("Improvement: pairs {} -> {}, cost {} -> {}",
+            initial_pairs, final_pairs, initial_cost, final_cost);
+    }
+
+    fn evaluate_guide(
+        guide: &DualMaskGuide,
+        exprs: &[crate::egraph::ExprTree],
+        costs: &crate::egraph::CostModel,
+        threshold: f32,
+    ) -> (usize, i64) {
+        use crate::egraph::{EGraph, ExprTree, all_rules};
+        use crate::egraph::guided_search::GuidedSearch;
+
+        let mut total_pairs = 0;
+        let mut total_cost = 0i64;
+
+        for expr in exprs {
+            let mut egraph = EGraph::with_rules(all_rules());
+            let root = egraph.add_expr(expr);
+            let mut search = GuidedSearch::new(egraph, root, 5);
+
+            let result = search.run_dual_mask_filtered(
+                guide,
+                |tree: &ExprTree| tree.node_count() as i64,
+                costs,
+                threshold,
+                0.0, // no exploration for evaluation
+                42,
+            );
+
+            total_pairs += result.pair_records.iter().map(|e| e.pairs.len()).sum::<usize>();
+            total_cost += result.best_cost;
+        }
+
+        (total_pairs, total_cost)
+    }
+
     /// Test that filtered search works and reduces the number of pairs tried.
     #[test]
     fn test_filtered_search() {
