@@ -1,9 +1,59 @@
 //! Training utilities for DualMaskGuide.
 //!
-//! Simple helpers for Self-Imitation Learning (SIL) with the dual-mask architecture.
-//! The actual training loop lives in the search code - this just provides utilities.
+//! Self-Imitation Learning (SIL) with resource-asymmetric training:
+//! - Oracle runs with abundant resources (high max_classes, many epochs)
+//! - Guide runs with limited resources (low max_classes, few epochs)
+//! - Guide learns to match oracle quality with fewer resources
+//!
+//! The key insight: saturation is the limit case. An oracle with unlimited
+//! resources can explore freely. A resource-constrained guide must be selective.
 
 use super::dual_mask::{DualMaskGuide, EXPR_FEATURE_DIM, RULE_FEATURE_DIM};
+
+/// Resource configuration for search.
+#[derive(Clone, Debug)]
+pub struct ResourceConfig {
+    /// Maximum e-graph classes before stopping.
+    pub max_classes: usize,
+    /// Maximum epochs to run.
+    pub max_epochs: usize,
+    /// Filtering threshold (0.5 = balanced).
+    pub threshold: f32,
+    /// Exploration rate for epsilon-greedy.
+    pub epsilon: f32,
+}
+
+impl ResourceConfig {
+    /// Oracle config: abundant resources for near-saturation.
+    pub fn oracle() -> Self {
+        Self {
+            max_classes: 500,
+            max_epochs: 20,
+            threshold: 0.3,  // permissive
+            epsilon: 0.0,    // no exploration - oracle is the teacher
+        }
+    }
+
+    /// Constrained config: limited resources, must be selective.
+    pub fn constrained() -> Self {
+        Self {
+            max_classes: 50,
+            max_epochs: 5,
+            threshold: 0.5,  // balanced
+            epsilon: 0.3,    // exploration during training
+        }
+    }
+
+    /// Evaluation config: like constrained but no exploration.
+    pub fn evaluation() -> Self {
+        Self {
+            max_classes: 50,
+            max_epochs: 5,
+            threshold: 0.5,
+            epsilon: 0.0,  // no exploration for fair eval
+        }
+    }
+}
 
 /// A training sample for DualMaskGuide.
 pub type Sample = ([f32; EXPR_FEATURE_DIM], [f32; RULE_FEATURE_DIM], usize, bool);
@@ -29,6 +79,40 @@ impl Metrics {
 
     pub fn avg_loss(&self) -> f32 {
         if self.total == 0 { 0.0 } else { self.loss_sum / self.total as f32 }
+    }
+}
+
+/// Training result from resource-asymmetric training.
+#[derive(Clone, Debug)]
+pub struct TrainingResult {
+    /// Oracle's final cost (target quality).
+    pub oracle_cost: i64,
+    /// Guided search's initial cost (before training).
+    pub initial_guided_cost: i64,
+    /// Guided search's final cost (after training).
+    pub final_guided_cost: i64,
+    /// Oracle's pairs tried.
+    pub oracle_pairs: usize,
+    /// Guided search's initial pairs tried.
+    pub initial_guided_pairs: usize,
+    /// Guided search's final pairs tried.
+    pub final_guided_pairs: usize,
+}
+
+impl TrainingResult {
+    /// Did the guide learn to match oracle quality?
+    pub fn quality_achieved(&self) -> bool {
+        self.final_guided_cost <= self.oracle_cost
+    }
+
+    /// Resource efficiency: oracle_pairs / guided_pairs.
+    /// Higher = guide is more efficient.
+    pub fn efficiency_ratio(&self) -> f32 {
+        if self.final_guided_pairs == 0 {
+            0.0
+        } else {
+            self.oracle_pairs as f32 / self.final_guided_pairs as f32
+        }
     }
 }
 
