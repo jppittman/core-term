@@ -4,7 +4,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use pixelflow_core::{Field, ManifoldCompat, ManifoldExt, PARALLELISM, X, Y};
-use pixelflow_macros::kernel;
+use pixelflow_compiler::kernel;
 
 /// Complex polynomial: f(x, y) = x³ + 2x²y + 3xy² + y³
 /// Manual construction (no automatic fusion anymore)

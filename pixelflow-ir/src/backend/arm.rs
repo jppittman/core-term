@@ -402,6 +402,116 @@ impl SimdOps for F32x4 {
             Self(vmulq_f32(poly, scale))
         }
     }
+
+    #[inline(always)]
+    fn sin(self) -> Self {
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const TWO_PI: f32 = core::f32::consts::TAU;
+            const TWO_PI_INV: f32 = 1.0 / TWO_PI;
+            const PI_INV: f32 = 1.0 / PI;
+
+            // Range reduce to [-π, π]
+            let k = vrndmq_f32(vaddq_f32(
+                vmulq_f32(self.0, vdupq_n_f32(TWO_PI_INV)),
+                vdupq_n_f32(0.5),
+            ));
+            let x = vsubq_f32(self.0, vmulq_f32(k, vdupq_n_f32(TWO_PI)));
+            let t = vmulq_f32(x, vdupq_n_f32(PI_INV));
+
+            let c1 = vdupq_n_f32(1.6719970703125);
+            let c3 = vdupq_n_f32(-0.645963541666667);
+            let c5 = vdupq_n_f32(0.079689450);
+            let c7 = vdupq_n_f32(-0.0046817541);
+
+            let t2 = vmulq_f32(t, t);
+            let poly = vfmaq_f32(c5, c7, t2);
+            let poly = vfmaq_f32(c3, poly, t2);
+            let poly = vfmaq_f32(c1, poly, t2);
+            Self(vmulq_f32(poly, t))
+        }
+    }
+
+    #[inline(always)]
+    fn cos(self) -> Self {
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const TWO_PI: f32 = core::f32::consts::TAU;
+            const TWO_PI_INV: f32 = 1.0 / TWO_PI;
+            const PI_INV: f32 = 1.0 / PI;
+
+            let k = vrndmq_f32(vaddq_f32(
+                vmulq_f32(self.0, vdupq_n_f32(TWO_PI_INV)),
+                vdupq_n_f32(0.5),
+            ));
+            let x = vsubq_f32(self.0, vmulq_f32(k, vdupq_n_f32(TWO_PI)));
+            let t = vmulq_f32(x, vdupq_n_f32(PI_INV));
+
+            let c0 = vdupq_n_f32(1.5707963267948966);
+            let c2 = vdupq_n_f32(-2.467401341);
+            let c4 = vdupq_n_f32(0.609469381);
+            let c6 = vdupq_n_f32(-0.038854038);
+
+            let t2 = vmulq_f32(t, t);
+            let poly = vfmaq_f32(c4, c6, t2);
+            let poly = vfmaq_f32(c2, poly, t2);
+            Self(vfmaq_f32(c0, poly, t2))
+        }
+    }
+
+    #[inline(always)]
+    fn atan2(self, x: Self) -> Self {
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const PI_2: f32 = core::f32::consts::FRAC_PI_2;
+
+            let y = self.0;
+            let x_val = x.0;
+
+            let r = vdivq_f32(y, x_val);
+            let r_abs = vabsq_f32(r);
+
+            let c1 = vdupq_n_f32(0.999999999);
+            let c3 = vdupq_n_f32(-0.333333333);
+            let c5 = vdupq_n_f32(0.2);
+            let c7 = vdupq_n_f32(-0.142857143);
+
+            let t = r_abs;
+            let t2 = vmulq_f32(t, t);
+            let poly = vfmaq_f32(c5, c7, t2);
+            let poly = vfmaq_f32(c3, poly, t2);
+            let poly = vfmaq_f32(c1, poly, t2);
+            let atan_approx = vmulq_f32(poly, t);
+
+            let one = vdupq_n_f32(1.0);
+            let mask_large = vcgtq_f32(r_abs, one);
+            let recip_r = vdivq_f32(one, r_abs);
+            let atan_large = vsubq_f32(
+                vdupq_n_f32(PI_2),
+                vmulq_f32(recip_r, atan_approx),
+            );
+            let atan_val = vbslq_f32(mask_large, atan_large, atan_approx);
+
+            let y_abs = vabsq_f32(y);
+            let sign_y = vdivq_f32(y_abs, y);
+            let atan_signed = vmulq_f32(atan_val, sign_y);
+
+            let zero = vdupq_n_f32(0.0);
+            let mask_neg_x = vcltq_f32(x_val, zero);
+            let correction = vmulq_f32(vdupq_n_f32(PI), sign_y);
+            Self(vbslq_f32(mask_neg_x, vsubq_f32(atan_signed, correction), atan_signed))
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_eq(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(vceqq_f32(self.0, rhs.0)) }
+    }
+
+    #[inline(always)]
+    fn cmp_ne(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(vmvnq_u32(vceqq_f32(self.0, rhs.0))) }
+    }
 }
 
 // ============================================================================

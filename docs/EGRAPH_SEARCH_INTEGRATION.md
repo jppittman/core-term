@@ -71,7 +71,7 @@ where:
 
 ### Current Compiler Uses Only Saturation
 
-**File:** `pixelflow-macros/src/optimize.rs:388-415`
+**File:** `pixelflow-compiler/src/optimize.rs:388-415`
 
 ```rust
 fn optimize_via_egraph(expr: &Expr, costs: &CostModel) -> Expr {
@@ -243,7 +243,7 @@ impl SearchEvaluator for NnueEvaluator {
 | `pixelflow-search/src/egraph/saturate.rs` | Budget-limited saturation | ✅ Exists, not used |
 | `pixelflow-search/src/egraph/best_first.rs` | A* with NNUE heuristic | ✅ Exists, not used |
 | `pixelflow-search/src/egraph/guided.rs` | MCTS with NNUE priors | ✅ Exists, not used |
-| `pixelflow-macros/src/optimize.rs` | Compiler optimizer | ❌ Uses only saturate() |
+| `pixelflow-compiler/src/optimize.rs` | Compiler optimizer | ❌ Uses only saturate() |
 | `pixelflow-ml/src/nnue.rs` | NNUE network (401k features) | ✅ Exists, not integrated |
 
 ## Conclusion

@@ -20,7 +20,7 @@
 use crate::Manifold;
 use crate::jet::Jet3;
 use crate::Field;
-use pixelflow_macros::Element;
+use pixelflow_compiler::Element;
 
 /// Addition: L + R
 #[derive(Clone, Debug, Default, Element)]
@@ -226,6 +226,19 @@ where
 #[derive(Clone, Debug, Element)]
 pub struct MulRsqrt<L, R>(pub L, pub R);
 
+/// Two-argument arctangent: atan2(y, x).
+/// Returns the angle in radians between the positive x-axis and the point (x, y).
+#[derive(Clone, Debug, Element)]
+pub struct Atan2<Y, X>(pub Y, pub X);
+
+/// Power: base^exponent.
+#[derive(Clone, Debug, Element)]
+pub struct Pow<Base, Exp>(pub Base, pub Exp);
+
+/// Hypotenuse: sqrt(x² + y²).
+#[derive(Clone, Debug, Element)]
+pub struct Hypot<X, Y>(pub X, pub Y);
+
 impl<P, L, R, O> Manifold<P> for MulRsqrt<L, R>
 where
     P: Copy + Send + Sync,
@@ -238,5 +251,47 @@ where
     fn eval(&self, p: P) -> O {
         // L * rsqrt(R) = L / sqrt(R) but faster
         self.0.eval(p).raw_mul(self.1.eval(p).rsqrt())
+    }
+}
+
+impl<P, Y, X, O> Manifold<P> for Atan2<Y, X>
+where
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    Y: Manifold<P, Output = O>,
+    X: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).atan2(self.1.eval(p))
+    }
+}
+
+impl<P, Base, Exp, O> Manifold<P> for Pow<Base, Exp>
+where
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    Base: Manifold<P, Output = O>,
+    Exp: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).pow(self.1.eval(p))
+    }
+}
+
+impl<P, X, Y, O> Manifold<P> for Hypot<X, Y>
+where
+    P: Copy + Send + Sync,
+    O: crate::numeric::Numeric,
+    X: Manifold<P, Output = O>,
+    Y: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).hypot(self.1.eval(p))
     }
 }

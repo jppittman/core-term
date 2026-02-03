@@ -57,7 +57,7 @@ jet.rs            →  Jet2, Jet3 (automatic differentiation)
 backend/          →  SIMD abstraction (AVX-512, AVX2, SSE2, NEON, scalar)
 ```
 
-### 2. pixelflow-macros: The Compiler Frontend
+### 2. pixelflow-compiler: The Compiler Frontend
 
 ```
 Source Code (kernel! macro)
@@ -77,7 +77,7 @@ Monomorphized SIMD Kernel
 
 ## The Compiler Pipeline
 
-### Phase 1: Macro Frontend (pixelflow-macros)
+### Phase 1: Macro Frontend (pixelflow-compiler)
 
 The `kernel!` macro provides a closure-like syntax for defining parameterized graphics kernels:
 

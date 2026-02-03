@@ -1,0 +1,25 @@
+[package]
+name = "pixelflow-compiler"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Procedural macros for PixelFlow: express algebra, get SIMD"
+license = "Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "fold", "extra-traits", "parsing"] }
+quote = "1"
+proc-macro2 = "1"
+pixelflow-ir = { path = "../pixelflow-ir", features = ["alloc"] }
+pixelflow-search = { path = "../pixelflow-search" }
+
+[dev-dependencies]
+pixelflow-core = { path = "../pixelflow-core" }
+criterion = "0.5"
+
+[[bench]]
+name = "macro_bench"
+harness = false

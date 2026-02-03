@@ -15,7 +15,7 @@
 
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::*;
-use pixelflow_macros::{kernel, ManifoldExpr};
+use pixelflow_compiler::{kernel, ManifoldExpr};
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);

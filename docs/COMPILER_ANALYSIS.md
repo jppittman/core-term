@@ -15,15 +15,15 @@ PixelFlow uses a multi-stage compilation pipeline that transforms user code into
 ```
 User Code (kernel! macro)
     │
-    ▼ [pixelflow-macros] Lexer → Parser
+    ▼ [pixelflow-compiler] Lexer → Parser
 Source AST (ast.rs)
     ├─ BinaryExpr, MethodCallExpr, BlockExpr
     └─ Parameter binding analysis
     │
-    ▼ [pixelflow-macros] Semantic Analysis
+    ▼ [pixelflow-compiler] Semantic Analysis
 Analyzed AST + Symbol Table
     │
-    ▼ [pixelflow-macros] Optimization (optimize.rs)
+    ▼ [pixelflow-compiler] Optimization (optimize.rs)
     ├─ Pass 1: Structural (tree peephole)
     │   ├─ Constant folding: 1.0 + 2.0 → 3.0
     │   ├─ Identity removal: x + 0.0 → x
@@ -36,7 +36,7 @@ Analyzed AST + Symbol Table
         ├─ Algebraic identities (commutativity, associativity)
         └─ Cost-based extraction (minimal runtime cost)
     │
-    ▼ [pixelflow-macros] Code Generation (codegen/)
+    ▼ [pixelflow-compiler] Code Generation (codegen/)
 Type-Level AST (Rust code)
     ├─ Add<X, Y>, Mul<Z, W>, Sqrt<...>
     └─ WithContext for parameter binding
@@ -54,7 +54,7 @@ SIMD Assembly (5ns/pixel @ 1080p)
 
 The pipeline uses **three distinct AST/IR representations**:
 
-1. **Source AST** (`pixelflow-macros/src/ast.rs`)
+1. **Source AST** (`pixelflow-compiler/src/ast.rs`)
    - User-facing syntax tree
    - Preserves source structure (blocks, let bindings, method calls)
    - Example: `BinaryExpr { op: Add, lhs: X, rhs: Literal(1.0) }`
@@ -113,7 +113,7 @@ IR is completely bypassed. The macro duplicates IR functionality with a 263-line
 - Defines the specific IR for PixelFlow kernels
 - Just data structures (Expr, OpKind)
 
-**pixelflow-macros is the FRONTEND:**
+**pixelflow-compiler is the FRONTEND:**
 - Consumes BOTH search (framework) and IR (language)
 - Should compile: AST → IR → E-graph → IR → Code
 
@@ -130,12 +130,12 @@ IR is completely bypassed. The macro duplicates IR functionality with a 263-line
 Add `pixelflow-ir` to macro pipeline:
 
 ```rust
-// pixelflow-macros/Cargo.toml
+// pixelflow-compiler/Cargo.toml
 [dependencies]
 pixelflow-ir = { path = "../pixelflow-ir" }
 pixelflow-search = { path = "../pixelflow-search" }
 
-// pixelflow-macros/src/optimize.rs
+// pixelflow-compiler/src/optimize.rs
 use pixelflow_ir::Expr as IR;
 
 pub fn optimize(analyzed: AnalyzedKernel) -> AnalyzedKernel {
@@ -582,7 +582,7 @@ let kernel: Box<dyn Manifold> = compile_to_manifold(optimized);
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ pixelflow-macros                                           │
+│ pixelflow-compiler                                           │
 │                                                            │
 │  Source AST ─→ EGraph ─→ Optimized AST ─→ Type-Level Code │
 │       ↑          ↑                                         │
@@ -617,7 +617,7 @@ let kernel: Box<dyn Manifold> = compile_to_manifold(optimized);
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ pixelflow-macros                                           │
+│ pixelflow-compiler                                           │
 │                                                            │
 │  Source AST ─→ IR ─→ EGraph ─→ Opt IR ─→ Type-Level Code  │
 │       ↑        ↑                   ↑                       │
@@ -692,14 +692,14 @@ This analysis document is accompanied by implementations of:
          │ (depends on both)
          │
 ┌─────────────────────────────────────┐
-│ pixelflow-macros (FRONTEND)        │
+│ pixelflow-compiler (FRONTEND)        │
 │ - Compiles to IR using E-graph      │
 │ - AST → IR → EGraph → IR → Code    │
 └─────────────────────────────────────┘
 ```
 
 **Current Problem:**
-- `pixelflow-macros` has its own 263-line AST
+- `pixelflow-compiler` has its own 263-line AST
 - Never uses `pixelflow-ir::Expr`
 - Directly converts AST → ENode, losing the IR abstraction
 
@@ -717,7 +717,7 @@ After:
 ```
 
 **Implementation:**
-1. Add `pixelflow-ir` dependency to `pixelflow-macros`
+1. Add `pixelflow-ir` dependency to `pixelflow-compiler`
 2. Create `ast_to_ir()` converter
 3. Create `ir_to_enode()` flattener (tree → graph)
 4. Create `enode_to_ir()` extractor (graph → tree)

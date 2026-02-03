@@ -79,15 +79,16 @@ impl ENode {
     }
 }
 
-// Implement PartialEq and Eq manually since we can't derive for dyn Op
+// Implement PartialEq and Eq manually since we can't derive for dyn Op.
+// We use OpKind for comparison since ZST pointer addresses are unreliable.
 impl PartialEq for ENode {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (ENode::Var(a), ENode::Var(b)) => a == b,
             (ENode::Const(a), ENode::Const(b)) => a == b,
             (ENode::Op { op: op1, children: c1 }, ENode::Op { op: op2, children: c2 }) => {
-                // Compare ops by name (they're static references)
-                op1.name() == op2.name() && c1 == c2
+                // Compare by OpKind - ZST pointer addresses are unreliable
+                op1.kind() == op2.kind() && c1 == c2
             }
             _ => false,
         }
@@ -96,7 +97,7 @@ impl PartialEq for ENode {
 
 impl Eq for ENode {}
 
-// Implement Hash manually
+// Implement Hash manually using OpKind for ops.
 impl core::hash::Hash for ENode {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         match self {
@@ -110,7 +111,8 @@ impl core::hash::Hash for ENode {
             }
             ENode::Op { op, children } => {
                 2u8.hash(state);
-                op.name().hash(state);
+                // Hash by OpKind - ZST pointer addresses are unreliable
+                op.kind().hash(state);
                 children.hash(state);
             }
         }

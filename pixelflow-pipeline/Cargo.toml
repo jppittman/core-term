@@ -1,0 +1,79 @@
+[package]
+name = "pixelflow-pipeline"
+version = "0.1.0"
+edition = "2024"
+description = "Training and data generation pipeline for PixelFlow"
+
+[features]
+default = []
+training = ["pixelflow-search/std"]
+
+[dependencies]
+pixelflow-ir = { path = "../pixelflow-ir", features = ["alloc"] }
+pixelflow-search = { path = "../pixelflow-search", features = ["std", "nnue"] }
+pixelflow-core = { path = "../pixelflow-core" }
+pixelflow-compiler = { path = "../pixelflow-compiler" }
+libm = "0.2.15"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+criterion = "0.5"
+
+[dev-dependencies]
+criterion = "0.5"
+pixelflow-compiler = { path = "../pixelflow-compiler" }
+
+[[bench]]
+name = "nnue_training_suite"
+harness = false
+
+[[bench]]
+name = "generated_kernels"
+harness = false
+
+[[bin]]
+name = "collect_judge_data"
+path = "src/bin/collect_judge_data.rs"
+
+[[bin]]
+name = "train_judge"
+path = "src/bin/train_judge.rs"
+required-features = ["training"]
+
+[[bin]]
+name = "collect_search_data"
+path = "src/bin/collect_search_data.rs"
+
+[[bin]]
+name = "train_guide"
+path = "src/bin/train_guide.rs"
+
+[[bin]]
+name = "collect_guide_data"
+path = "src/bin/collect_guide_data.rs"
+required-features = ["training"]
+
+[[bin]]
+name = "eval_search"
+path = "src/bin/eval_search.rs"
+
+[[bin]]
+name = "demo_rewrites"
+path = "src/bin/demo_rewrites.rs"
+
+[[bin]]
+name = "demo_discovery"
+path = "src/bin/demo_discovery.rs"
+
+[[bin]]
+name = "demo_nnue"
+path = "src/bin/demo_nnue.rs"
+
+[[bin]]
+name = "fast_bench"
+path = "src/bin/fast_bench.rs"
+required-features = ["training"]
+
+[[bin]]
+name = "fast_kernels"
+path = "src/bin/fast_kernels.rs"

@@ -7,3 +7,4 @@ CoreTerm.app
 .gemini*/
 gha-creds-*.json
 *.ppm
+*.log

@@ -416,6 +416,118 @@ where
     }
 
     #[inline(always)]
+    fn ln(self) -> Self {
+        Self {
+            val: self.val.ln(),
+            dir: self.dir.ln(),
+        }
+    }
+
+    #[inline(always)]
+    fn log10(self) -> Self {
+        Self {
+            val: self.val.log10(),
+            dir: self.dir.log10(),
+        }
+    }
+
+    #[inline(always)]
+    fn tan(self) -> Self {
+        Self {
+            val: self.val.tan(),
+            dir: self.dir.tan(),
+        }
+    }
+
+    #[inline(always)]
+    fn asin(self) -> Self {
+        Self {
+            val: self.val.asin(),
+            dir: self.dir.asin(),
+        }
+    }
+
+    #[inline(always)]
+    fn acos(self) -> Self {
+        Self {
+            val: self.val.acos(),
+            dir: self.dir.acos(),
+        }
+    }
+
+    #[inline(always)]
+    fn atan(self) -> Self {
+        Self {
+            val: self.val.atan(),
+            dir: self.dir.atan(),
+        }
+    }
+
+    #[inline(always)]
+    fn ceil(self) -> Self {
+        Self {
+            val: self.val.ceil(),
+            dir: self.dir.ceil(),
+        }
+    }
+
+    #[inline(always)]
+    fn round(self) -> Self {
+        Self {
+            val: self.val.round(),
+            dir: self.dir.round(),
+        }
+    }
+
+    #[inline(always)]
+    fn fract(self) -> Self {
+        Self {
+            val: self.val.fract(),
+            dir: self.dir.fract(),
+        }
+    }
+
+    #[inline(always)]
+    fn hypot(self, y: Self) -> Self {
+        Self {
+            val: self.val.hypot(y.val),
+            dir: self.dir.hypot(y.dir),
+        }
+    }
+
+    #[inline(always)]
+    fn mul_rsqrt(self, other: Self) -> Self {
+        Self {
+            val: self.val.mul_rsqrt(other.val),
+            dir: self.dir.mul_rsqrt(other.dir),
+        }
+    }
+
+    #[inline(always)]
+    fn clamp(self, lo: Self, hi: Self) -> Self {
+        Self {
+            val: self.val.clamp(lo.val, hi.val),
+            dir: self.dir.clamp(lo.dir, hi.dir),
+        }
+    }
+
+    #[inline(always)]
+    fn eq(self, rhs: Self) -> Self {
+        Self {
+            val: self.val.eq(rhs.val),
+            dir: self.dir.eq(rhs.dir),
+        }
+    }
+
+    #[inline(always)]
+    fn ne(self, rhs: Self) -> Self {
+        Self {
+            val: self.val.ne(rhs.val),
+            dir: self.dir.ne(rhs.dir),
+        }
+    }
+
+    #[inline(always)]
     fn raw_add(self, rhs: Self) -> Self {
         self + rhs
     }
@@ -433,6 +545,14 @@ where
     #[inline(always)]
     fn raw_div(self, rhs: Self) -> Self {
         self / rhs
+    }
+
+    #[inline(always)]
+    fn raw_neg(self) -> Self {
+        Self {
+            val: self.val.raw_neg(),
+            dir: self.dir.raw_neg(),
+        }
     }
 }
 

@@ -10,7 +10,7 @@ use pixelflow_core::{
     Abs, At, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Select,
     W, X, Y, Z,
 };
-use pixelflow_macros::kernel;
+use pixelflow_compiler::kernel;
 use std::sync::Arc;
 
 // Import analytical curve kernels

@@ -137,8 +137,50 @@ pub(crate) trait Numeric: Computational {
     /// Base-2 exponential (2^x).
     fn exp2(self) -> Self;
 
+    /// Natural logarithm.
+    fn ln(self) -> Self;
+
+    /// Base-10 logarithm.
+    fn log10(self) -> Self;
+
+    /// Tangent.
+    fn tan(self) -> Self;
+
+    /// Arcsine.
+    fn asin(self) -> Self;
+
+    /// Arccosine.
+    fn acos(self) -> Self;
+
+    /// Arctangent.
+    fn atan(self) -> Self;
+
     /// Floor (round toward negative infinity).
     fn floor(self) -> Self;
+
+    /// Ceiling (round toward positive infinity).
+    fn ceil(self) -> Self;
+
+    /// Round to nearest integer.
+    fn round(self) -> Self;
+
+    /// Fractional part: x - floor(x).
+    fn fract(self) -> Self;
+
+    /// Hypotenuse: sqrt(x² + y²).
+    fn hypot(self, y: Self) -> Self;
+
+    /// Multiply by reciprocal square root: self * rsqrt(other) = self / sqrt(other).
+    fn mul_rsqrt(self, other: Self) -> Self;
+
+    /// Clamp to range [lo, hi].
+    fn clamp(self, lo: Self, hi: Self) -> Self;
+
+    /// Equality comparison (returns mask).
+    fn eq(self, rhs: Self) -> Self;
+
+    /// Inequality comparison (returns mask).
+    fn ne(self, rhs: Self) -> Self;
 
     /// Fused multiply-add: self * b + c
     /// Uses FMA instruction when available (single rounding).
@@ -171,6 +213,9 @@ pub(crate) trait Numeric: Computational {
 
     /// Raw division - direct SIMD operation, no AST building.
     fn raw_div(self, rhs: Self) -> Self;
+
+    /// Raw negation - direct SIMD operation, no AST building.
+    fn raw_neg(self) -> Self;
 
     /// Masked add: self + (mask ? val : 0)
     /// Optimized for winding accumulation patterns.

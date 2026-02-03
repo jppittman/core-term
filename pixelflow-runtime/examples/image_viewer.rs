@@ -9,7 +9,7 @@
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
-use pixelflow_macros::ManifoldExpr;
+use pixelflow_compiler::ManifoldExpr;
 use pixelflow_runtime::{api::public::AppData, EngineConfig, EngineTroupe, WindowConfig};
 use std::sync::Arc;
 

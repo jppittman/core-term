@@ -30,8 +30,8 @@
 //! This uses fast rsqrt (~3 cycles) instead of sqrt (~12) + div (~12).
 
 use super::{
-    Abs, Add, AddMasked, Cos, Div, Floor, Max, Min, Mul, MulAdd, MulRecip, MulRsqrt, Neg, Rsqrt,
-    Sin, Sqrt, Sub,
+    Abs, Acos, Add, AddMasked, Asin, Atan, Ceil, Cos, Div, Exp, Exp2, Floor, Fract, Ln, Log10,
+    Log2, Max, Min, Mul, MulAdd, MulRecip, MulRsqrt, Neg, Recip, Round, Rsqrt, Sin, Sqrt, Sub, Tan,
 };
 use crate::Field;
 use crate::combinators::Select;
@@ -83,18 +83,34 @@ macro_rules! impl_binary_ops_for {
         }
 
         // Enumerate all other divisor types to avoid conflict with Sqrt
+        // Binary ops
         impl_base_div!($ty, Add<DL, DR>);
         impl_base_div!($ty, Sub<DL, DR>);
         impl_base_div!($ty, Mul<DL, DR>);
         impl_base_div!($ty, Div<DL, DR>);
         impl_base_div!($ty, Max<DL, DR>);
         impl_base_div!($ty, Min<DL, DR>);
+        // Unary ops
         impl_base_div!($ty, Abs<DM>);
         impl_base_div!($ty, Floor<DM>);
+        impl_base_div!($ty, Ceil<DM>);
+        impl_base_div!($ty, Round<DM>);
+        impl_base_div!($ty, Fract<DM>);
         impl_base_div!($ty, Rsqrt<DM>);
         impl_base_div!($ty, Sin<DM>);
         impl_base_div!($ty, Cos<DM>);
+        impl_base_div!($ty, Tan<DM>);
+        impl_base_div!($ty, Asin<DM>);
+        impl_base_div!($ty, Acos<DM>);
+        impl_base_div!($ty, Atan<DM>);
         impl_base_div!($ty, Neg<DM>);
+        impl_base_div!($ty, Log2<DM>);
+        impl_base_div!($ty, Exp2<DM>);
+        impl_base_div!($ty, Exp<DM>);
+        impl_base_div!($ty, Ln<DM>);
+        impl_base_div!($ty, Log10<DM>);
+        impl_base_div!($ty, Recip<DM>);
+        // Ternary/compound ops
         impl_base_div!($ty, Select<DC, DT, DF>);
         impl_base_div!($ty, MulAdd<DA, DB, DC2>);
         impl_base_div!($ty, MulRecip<DM2>);

@@ -62,6 +62,69 @@ impl ExprTree {
         }
     }
 
+    /// Check if this expression has valid types.
+    ///
+    /// Returns `false` if comparison results are used in invalid contexts
+    /// (e.g., as operands to arithmetic operations).
+    ///
+    /// Type rules:
+    /// - Comparison ops (lt, le, gt, ge, eq, ne) return boolean
+    /// - Select's first arg must be boolean, returns numeric
+    /// - All other ops require numeric operands and return numeric
+    /// - Leaves (Var, Const) are numeric
+    pub fn is_type_valid(&self) -> bool {
+        self.check_type().is_some()
+    }
+
+    /// Returns Some(is_boolean) if valid, None if invalid.
+    fn check_type(&self) -> Option<bool> {
+        match self {
+            Self::Leaf(_) => Some(false), // Leaves are numeric
+
+            Self::Op { op, children } => {
+                let name = op.name();
+
+                // Comparison ops: require numeric children, return boolean
+                if matches!(name, "lt" | "le" | "gt" | "ge" | "eq" | "ne") {
+                    // All children must be numeric (not boolean)
+                    for child in children {
+                        match child.check_type() {
+                            Some(false) => {} // Numeric - OK
+                            _ => return None, // Boolean or invalid - ERROR
+                        }
+                    }
+                    return Some(true); // Return boolean
+                }
+
+                // Select: first child MUST be boolean (comparison result), others numeric
+                if name == "select" && children.len() == 3 {
+                    // Condition MUST be boolean (comparison result)
+                    match children[0].check_type() {
+                        Some(true) => {} // Boolean - OK
+                        _ => return None, // Numeric or invalid - ERROR
+                    }
+                    // Then/else branches must be numeric
+                    for child in &children[1..] {
+                        match child.check_type() {
+                            Some(false) => {} // Numeric - OK
+                            _ => return None,
+                        }
+                    }
+                    return Some(false); // Return numeric
+                }
+
+                // All other ops: require numeric children, return numeric
+                for child in children {
+                    match child.check_type() {
+                        Some(false) => {} // Numeric - OK
+                        _ => return None, // Boolean or invalid - ERROR
+                    }
+                }
+                Some(false) // Return numeric
+            }
+        }
+    }
+
     // Constructor helpers for common operations
     pub fn add(a: Self, b: Self) -> Self {
         Self::Op {
@@ -138,99 +201,14 @@ impl ExprTree {
         match self {
             Self::Leaf(_) => 0,  // Variables and constants are free
             Self::Op { op, children } => {
-                let op_cost = costs.cost_by_name(op.name());
+                // Use op.kind() at the boundary to convert to OpKind
+                let op_cost = costs.cost(op.kind());
                 let children_cost: usize = children.iter().map(|c| c.cost(costs)).sum();
                 op_cost + children_cost
             }
         }
     }
 
-    /// Evaluate the expression tree with given variable values.
-    ///
-    /// env[0] = X, env[1] = Y, env[2] = Z, env[3] = W
-    pub fn eval(&self, env: &[f32]) -> f32 {
-        match self {
-            Self::Leaf(Leaf::Var(idx)) => env.get(*idx as usize).copied().unwrap_or(0.0),
-            Self::Leaf(Leaf::Const(val)) => *val,
-            Self::Op { op, children } => {
-                let name = op.name();
-                match name {
-                    "add" => {
-                        children.iter().map(|c| c.eval(env)).sum()
-                    }
-                    "sub" => {
-                        if children.len() == 2 {
-                            children[0].eval(env) - children[1].eval(env)
-                        } else {
-                            0.0
-                        }
-                    }
-                    "mul" => {
-                        children.iter().map(|c| c.eval(env)).product()
-                    }
-                    "div" => {
-                        if children.len() == 2 {
-                            children[0].eval(env) / children[1].eval(env)
-                        } else {
-                            0.0
-                        }
-                    }
-                    "neg" => {
-                        if children.len() == 1 {
-                            -children[0].eval(env)
-                        } else {
-                            0.0
-                        }
-                    }
-                    "sqrt" => {
-                        if children.len() == 1 {
-                            children[0].eval(env).sqrt()
-                        } else {
-                            0.0
-                        }
-                    }
-                    "abs" => {
-                        if children.len() == 1 {
-                            children[0].eval(env).abs()
-                        } else {
-                            0.0
-                        }
-                    }
-                    "recip" => {
-                        if children.len() == 1 {
-                            1.0 / children[0].eval(env)
-                        } else {
-                            0.0
-                        }
-                    }
-                    "rsqrt" => {
-                        if children.len() == 1 {
-                            1.0 / children[0].eval(env).sqrt()
-                        } else {
-                            0.0
-                        }
-                    }
-                    "min" => {
-                        children.iter().map(|c| c.eval(env)).fold(f32::INFINITY, f32::min)
-                    }
-                    "max" => {
-                        children.iter().map(|c| c.eval(env)).fold(f32::NEG_INFINITY, f32::max)
-                    }
-                    "mul_add" => {
-                        if children.len() == 3 {
-                            children[0].eval(env).mul_add(children[1].eval(env), children[2].eval(env))
-                        } else {
-                            0.0
-                        }
-                    }
-                    _ => {
-                        // Unknown operation, return 0
-                        0.0
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// Extract the minimum-cost expression tree from an e-class.

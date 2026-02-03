@@ -1,5 +1,5 @@
 use pixelflow_core::{Field, Manifold, ManifoldExt};
-use pixelflow_macros::kernel;
+use pixelflow_compiler::kernel;
 
 type Field4 = (Field, Field, Field, Field);
 

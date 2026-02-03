@@ -1,6 +1,6 @@
 use crate::Manifold;
 use crate::numeric::{Computational, Numeric};
-use pixelflow_macros::Element;
+use pixelflow_compiler::Element;
 
 /// Square root.
 #[derive(Clone, Debug, Element)]
@@ -43,6 +43,46 @@ pub struct Exp2<M>(pub M);
 #[derive(Clone, Debug, Element)]
 pub struct Exp<M>(pub M);
 
+/// Reciprocal (1/x).
+#[derive(Clone, Debug, Element)]
+pub struct Recip<M>(pub M);
+
+/// Ceiling (round toward positive infinity).
+#[derive(Clone, Debug, Element)]
+pub struct Ceil<M>(pub M);
+
+/// Round to nearest integer.
+#[derive(Clone, Debug, Element)]
+pub struct Round<M>(pub M);
+
+/// Fractional part: x - floor(x).
+#[derive(Clone, Debug, Element)]
+pub struct Fract<M>(pub M);
+
+/// Tangent function.
+#[derive(Clone, Debug, Element)]
+pub struct Tan<M>(pub M);
+
+/// Arcsine function.
+#[derive(Clone, Debug, Element)]
+pub struct Asin<M>(pub M);
+
+/// Arccosine function.
+#[derive(Clone, Debug, Element)]
+pub struct Acos<M>(pub M);
+
+/// Arctangent function.
+#[derive(Clone, Debug, Element)]
+pub struct Atan<M>(pub M);
+
+/// Natural logarithm.
+#[derive(Clone, Debug, Element)]
+pub struct Ln<M>(pub M);
+
+/// Base-10 logarithm.
+#[derive(Clone, Debug, Element)]
+pub struct Log10<M>(pub M);
+
 /// Element-wise maximum.
 #[derive(Clone, Debug, Element)]
 pub struct Max<L, R>(pub L, pub R);
@@ -77,7 +117,7 @@ where
     type Output = O;
     #[inline(always)]
     fn eval(&self, p: P) -> O {
-        <O as Computational>::from_f32(0.0).raw_sub(self.0.eval(p))
+        self.0.eval(p).raw_neg()
     }
 }
 
@@ -182,6 +222,136 @@ where
     #[inline(always)]
     fn eval(&self, p: P) -> O {
         self.0.eval(p).exp()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Recip<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).recip()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Ceil<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).ceil()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Round<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).round()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Fract<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).fract()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Tan<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).tan()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Asin<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).asin()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Acos<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).acos()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Atan<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).atan()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Ln<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).ln()
+    }
+}
+
+impl<P, M, O> Manifold<P> for Log10<M>
+where
+    P: Copy + Send + Sync,
+    O: Numeric,
+    M: Manifold<P, Output = O>,
+{
+    type Output = O;
+    #[inline(always)]
+    fn eval(&self, p: P) -> O {
+        self.0.eval(p).log10()
     }
 }
 

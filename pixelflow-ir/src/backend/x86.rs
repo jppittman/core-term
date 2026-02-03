@@ -377,6 +377,143 @@ impl SimdOps for F32x4 {
             Self(_mm_mul_ps(poly, scale))
         }
     }
+
+    #[inline(always)]
+    fn sin(self) -> Self {
+        // Chebyshev approximation for sin(x).
+        // Range reduction to [-π, π], then polynomial.
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const TWO_PI: f32 = core::f32::consts::TAU;
+            const TWO_PI_INV: f32 = 1.0 / TWO_PI;
+            const PI_INV: f32 = 1.0 / PI;
+
+            // Range reduce to [-π, π]
+            let k = _mm_floor_ps(_mm_add_ps(
+                _mm_mul_ps(self.0, _mm_set1_ps(TWO_PI_INV)),
+                _mm_set1_ps(0.5),
+            ));
+            let x = _mm_sub_ps(self.0, _mm_mul_ps(k, _mm_set1_ps(TWO_PI)));
+
+            // Normalize to [-1, 1] for Chebyshev basis
+            let t = _mm_mul_ps(x, _mm_set1_ps(PI_INV));
+
+            // Chebyshev coefficients for sin
+            let c1 = _mm_set1_ps(1.6719970703125);
+            let c3 = _mm_set1_ps(-0.645963541666667);
+            let c5 = _mm_set1_ps(0.079689450);
+            let c7 = _mm_set1_ps(-0.0046817541);
+
+            // Horner's method: ((C7*t² + C5)*t² + C3)*t² + C1)*t
+            let t2 = _mm_mul_ps(t, t);
+            let mut poly = _mm_add_ps(_mm_mul_ps(c7, t2), c5);
+            poly = _mm_add_ps(_mm_mul_ps(poly, t2), c3);
+            poly = _mm_add_ps(_mm_mul_ps(poly, t2), c1);
+            Self(_mm_mul_ps(poly, t))
+        }
+    }
+
+    #[inline(always)]
+    fn cos(self) -> Self {
+        // Chebyshev approximation for cos(x).
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const TWO_PI: f32 = core::f32::consts::TAU;
+            const TWO_PI_INV: f32 = 1.0 / TWO_PI;
+            const PI_INV: f32 = 1.0 / PI;
+
+            // Range reduce to [-π, π]
+            let k = _mm_floor_ps(_mm_add_ps(
+                _mm_mul_ps(self.0, _mm_set1_ps(TWO_PI_INV)),
+                _mm_set1_ps(0.5),
+            ));
+            let x = _mm_sub_ps(self.0, _mm_mul_ps(k, _mm_set1_ps(TWO_PI)));
+
+            // Normalize to [-1, 1]
+            let t = _mm_mul_ps(x, _mm_set1_ps(PI_INV));
+
+            // Chebyshev coefficients for cos
+            let c0 = _mm_set1_ps(1.5707963267948966);
+            let c2 = _mm_set1_ps(-2.467401341);
+            let c4 = _mm_set1_ps(0.609469381);
+            let c6 = _mm_set1_ps(-0.038854038);
+
+            // Horner's method: ((C6*t² + C4)*t² + C2)*t² + C0
+            let t2 = _mm_mul_ps(t, t);
+            let mut poly = _mm_add_ps(_mm_mul_ps(c6, t2), c4);
+            poly = _mm_add_ps(_mm_mul_ps(poly, t2), c2);
+            Self(_mm_add_ps(_mm_mul_ps(poly, t2), c0))
+        }
+    }
+
+    #[inline(always)]
+    fn atan2(self, x: Self) -> Self {
+        // Chebyshev approximation for atan2(y, x).
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const PI_2: f32 = core::f32::consts::FRAC_PI_2;
+
+            let y = self.0;
+            let x_val = x.0;
+
+            // Compute ratio and absolute value
+            let r = _mm_div_ps(y, x_val);
+            let r_abs = _mm_and_ps(r, _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF)));
+
+            // Chebyshev coefficients for atan on [0, 1]
+            let c1 = _mm_set1_ps(0.999999999);
+            let c3 = _mm_set1_ps(-0.333333333);
+            let c5 = _mm_set1_ps(0.2);
+            let c7 = _mm_set1_ps(-0.142857143);
+
+            // Horner's method
+            let t = r_abs;
+            let t2 = _mm_mul_ps(t, t);
+            let mut poly = _mm_add_ps(_mm_mul_ps(c7, t2), c5);
+            poly = _mm_add_ps(_mm_mul_ps(poly, t2), c3);
+            poly = _mm_add_ps(_mm_mul_ps(poly, t2), c1);
+            let atan_approx = _mm_mul_ps(poly, t);
+
+            // Handle |r| > 1: atan(r) = π/2 - atan(1/r)
+            let one = _mm_set1_ps(1.0);
+            let mask_large = _mm_cmpgt_ps(r_abs, one);
+            let recip_r = _mm_div_ps(one, r_abs);
+            let atan_large = _mm_sub_ps(
+                _mm_set1_ps(PI_2),
+                _mm_mul_ps(recip_r, atan_approx),
+            );
+            let atan_val = _mm_or_ps(
+                _mm_and_ps(mask_large, atan_large),
+                _mm_andnot_ps(mask_large, atan_approx),
+            );
+
+            // Apply sign of y
+            let y_abs = _mm_and_ps(y, _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF)));
+            let sign_y = _mm_div_ps(y_abs, y);
+            let atan_signed = _mm_mul_ps(atan_val, sign_y);
+
+            // Handle negative x (quadrant correction)
+            let zero = _mm_setzero_ps();
+            let mask_neg_x = _mm_cmplt_ps(x_val, zero);
+            let correction = _mm_mul_ps(_mm_set1_ps(PI), sign_y);
+            let result = _mm_or_ps(
+                _mm_and_ps(mask_neg_x, _mm_sub_ps(atan_signed, correction)),
+                _mm_andnot_ps(mask_neg_x, atan_signed),
+            );
+
+            Self(result)
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_eq(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(_mm_cmpeq_ps(self.0, rhs.0)) }
+    }
+
+    #[inline(always)]
+    fn cmp_ne(self, rhs: Self) -> Mask4 {
+        unsafe { Mask4(_mm_cmpneq_ps(self.0, rhs.0)) }
+    }
 }
 
 // Operators for F32x4
@@ -984,6 +1121,146 @@ impl SimdOps for F32x8 {
             }
         }
     }
+
+    #[inline(always)]
+    fn sin(self) -> Self {
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const TWO_PI: f32 = core::f32::consts::TAU;
+            const TWO_PI_INV: f32 = 1.0 / TWO_PI;
+            const PI_INV: f32 = 1.0 / PI;
+
+            // Range reduce to [-π, π]
+            let k = _mm256_floor_ps(_mm256_add_ps(
+                _mm256_mul_ps(self.0, _mm256_set1_ps(TWO_PI_INV)),
+                _mm256_set1_ps(0.5),
+            ));
+            let x = _mm256_sub_ps(self.0, _mm256_mul_ps(k, _mm256_set1_ps(TWO_PI)));
+            let t = _mm256_mul_ps(x, _mm256_set1_ps(PI_INV));
+
+            let c1 = _mm256_set1_ps(1.6719970703125);
+            let c3 = _mm256_set1_ps(-0.645963541666667);
+            let c5 = _mm256_set1_ps(0.079689450);
+            let c7 = _mm256_set1_ps(-0.0046817541);
+
+            let t2 = _mm256_mul_ps(t, t);
+            #[cfg(target_feature = "fma")]
+            {
+                let mut poly = _mm256_fmadd_ps(c7, t2, c5);
+                poly = _mm256_fmadd_ps(poly, t2, c3);
+                poly = _mm256_fmadd_ps(poly, t2, c1);
+                Self(_mm256_mul_ps(poly, t))
+            }
+            #[cfg(not(target_feature = "fma"))]
+            {
+                let mut poly = _mm256_add_ps(_mm256_mul_ps(c7, t2), c5);
+                poly = _mm256_add_ps(_mm256_mul_ps(poly, t2), c3);
+                poly = _mm256_add_ps(_mm256_mul_ps(poly, t2), c1);
+                Self(_mm256_mul_ps(poly, t))
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn cos(self) -> Self {
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const TWO_PI: f32 = core::f32::consts::TAU;
+            const TWO_PI_INV: f32 = 1.0 / TWO_PI;
+            const PI_INV: f32 = 1.0 / PI;
+
+            let k = _mm256_floor_ps(_mm256_add_ps(
+                _mm256_mul_ps(self.0, _mm256_set1_ps(TWO_PI_INV)),
+                _mm256_set1_ps(0.5),
+            ));
+            let x = _mm256_sub_ps(self.0, _mm256_mul_ps(k, _mm256_set1_ps(TWO_PI)));
+            let t = _mm256_mul_ps(x, _mm256_set1_ps(PI_INV));
+
+            let c0 = _mm256_set1_ps(1.5707963267948966);
+            let c2 = _mm256_set1_ps(-2.467401341);
+            let c4 = _mm256_set1_ps(0.609469381);
+            let c6 = _mm256_set1_ps(-0.038854038);
+
+            let t2 = _mm256_mul_ps(t, t);
+            #[cfg(target_feature = "fma")]
+            {
+                let mut poly = _mm256_fmadd_ps(c6, t2, c4);
+                poly = _mm256_fmadd_ps(poly, t2, c2);
+                Self(_mm256_fmadd_ps(poly, t2, c0))
+            }
+            #[cfg(not(target_feature = "fma"))]
+            {
+                let mut poly = _mm256_add_ps(_mm256_mul_ps(c6, t2), c4);
+                poly = _mm256_add_ps(_mm256_mul_ps(poly, t2), c2);
+                Self(_mm256_add_ps(_mm256_mul_ps(poly, t2), c0))
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn atan2(self, x: Self) -> Self {
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const PI_2: f32 = core::f32::consts::FRAC_PI_2;
+
+            let y = self.0;
+            let x_val = x.0;
+
+            let r = _mm256_div_ps(y, x_val);
+            let r_abs = _mm256_and_ps(r, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
+
+            let c1 = _mm256_set1_ps(0.999999999);
+            let c3 = _mm256_set1_ps(-0.333333333);
+            let c5 = _mm256_set1_ps(0.2);
+            let c7 = _mm256_set1_ps(-0.142857143);
+
+            let t = r_abs;
+            let t2 = _mm256_mul_ps(t, t);
+
+            #[cfg(target_feature = "fma")]
+            let atan_approx = {
+                let mut poly = _mm256_fmadd_ps(c7, t2, c5);
+                poly = _mm256_fmadd_ps(poly, t2, c3);
+                poly = _mm256_fmadd_ps(poly, t2, c1);
+                _mm256_mul_ps(poly, t)
+            };
+            #[cfg(not(target_feature = "fma"))]
+            let atan_approx = {
+                let mut poly = _mm256_add_ps(_mm256_mul_ps(c7, t2), c5);
+                poly = _mm256_add_ps(_mm256_mul_ps(poly, t2), c3);
+                poly = _mm256_add_ps(_mm256_mul_ps(poly, t2), c1);
+                _mm256_mul_ps(poly, t)
+            };
+
+            let one = _mm256_set1_ps(1.0);
+            let mask_large = _mm256_cmp_ps::<_CMP_GT_OQ>(r_abs, one);
+            let recip_r = _mm256_div_ps(one, r_abs);
+            let atan_large = _mm256_sub_ps(
+                _mm256_set1_ps(PI_2),
+                _mm256_mul_ps(recip_r, atan_approx),
+            );
+            let atan_val = _mm256_blendv_ps(atan_approx, atan_large, mask_large);
+
+            let y_abs = _mm256_and_ps(y, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
+            let sign_y = _mm256_div_ps(y_abs, y);
+            let atan_signed = _mm256_mul_ps(atan_val, sign_y);
+
+            let zero = _mm256_setzero_ps();
+            let mask_neg_x = _mm256_cmp_ps::<_CMP_LT_OQ>(x_val, zero);
+            let correction = _mm256_mul_ps(_mm256_set1_ps(PI), sign_y);
+            Self(_mm256_blendv_ps(atan_signed, _mm256_sub_ps(atan_signed, correction), mask_neg_x))
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_eq(self, rhs: Self) -> Mask8 {
+        unsafe { Mask8(_mm256_cmp_ps(self.0, rhs.0, _CMP_EQ_OQ)) }
+    }
+
+    #[inline(always)]
+    fn cmp_ne(self, rhs: Self) -> Mask8 {
+        unsafe { Mask8(_mm256_cmp_ps(self.0, rhs.0, _CMP_NEQ_OQ)) }
+    }
 }
 
 #[cfg(target_feature = "avx2")]
@@ -1585,6 +1862,116 @@ impl SimdOps for F32x16 {
             // Use scalef: poly * 2^n
             Self(_mm512_scalef_ps(poly, n))
         }
+    }
+
+    #[inline(always)]
+    fn sin(self) -> Self {
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const TWO_PI: f32 = core::f32::consts::TAU;
+            const TWO_PI_INV: f32 = 1.0 / TWO_PI;
+            const PI_INV: f32 = 1.0 / PI;
+
+            // Range reduce to [-π, π]
+            let k = _mm512_roundscale_ps::<9>(_mm512_add_ps(
+                _mm512_mul_ps(self.0, _mm512_set1_ps(TWO_PI_INV)),
+                _mm512_set1_ps(0.5),
+            ));
+            let x = _mm512_sub_ps(self.0, _mm512_mul_ps(k, _mm512_set1_ps(TWO_PI)));
+            let t = _mm512_mul_ps(x, _mm512_set1_ps(PI_INV));
+
+            let c1 = _mm512_set1_ps(1.6719970703125);
+            let c3 = _mm512_set1_ps(-0.645963541666667);
+            let c5 = _mm512_set1_ps(0.079689450);
+            let c7 = _mm512_set1_ps(-0.0046817541);
+
+            let t2 = _mm512_mul_ps(t, t);
+            let mut poly = _mm512_fmadd_ps(c7, t2, c5);
+            poly = _mm512_fmadd_ps(poly, t2, c3);
+            poly = _mm512_fmadd_ps(poly, t2, c1);
+            Self(_mm512_mul_ps(poly, t))
+        }
+    }
+
+    #[inline(always)]
+    fn cos(self) -> Self {
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const TWO_PI: f32 = core::f32::consts::TAU;
+            const TWO_PI_INV: f32 = 1.0 / TWO_PI;
+            const PI_INV: f32 = 1.0 / PI;
+
+            let k = _mm512_roundscale_ps::<9>(_mm512_add_ps(
+                _mm512_mul_ps(self.0, _mm512_set1_ps(TWO_PI_INV)),
+                _mm512_set1_ps(0.5),
+            ));
+            let x = _mm512_sub_ps(self.0, _mm512_mul_ps(k, _mm512_set1_ps(TWO_PI)));
+            let t = _mm512_mul_ps(x, _mm512_set1_ps(PI_INV));
+
+            let c0 = _mm512_set1_ps(1.5707963267948966);
+            let c2 = _mm512_set1_ps(-2.467401341);
+            let c4 = _mm512_set1_ps(0.609469381);
+            let c6 = _mm512_set1_ps(-0.038854038);
+
+            let t2 = _mm512_mul_ps(t, t);
+            let mut poly = _mm512_fmadd_ps(c6, t2, c4);
+            poly = _mm512_fmadd_ps(poly, t2, c2);
+            Self(_mm512_fmadd_ps(poly, t2, c0))
+        }
+    }
+
+    #[inline(always)]
+    fn atan2(self, x: Self) -> Self {
+        unsafe {
+            const PI: f32 = core::f32::consts::PI;
+            const PI_2: f32 = core::f32::consts::FRAC_PI_2;
+
+            let y = self.0;
+            let x_val = x.0;
+
+            let r = _mm512_div_ps(y, x_val);
+            let r_abs = _mm512_abs_ps(r);
+
+            let c1 = _mm512_set1_ps(0.999999999);
+            let c3 = _mm512_set1_ps(-0.333333333);
+            let c5 = _mm512_set1_ps(0.2);
+            let c7 = _mm512_set1_ps(-0.142857143);
+
+            let t = r_abs;
+            let t2 = _mm512_mul_ps(t, t);
+            let mut poly = _mm512_fmadd_ps(c7, t2, c5);
+            poly = _mm512_fmadd_ps(poly, t2, c3);
+            poly = _mm512_fmadd_ps(poly, t2, c1);
+            let atan_approx = _mm512_mul_ps(poly, t);
+
+            let one = _mm512_set1_ps(1.0);
+            let mask_large = _mm512_cmp_ps_mask::<_CMP_GT_OQ>(r_abs, one);
+            let recip_r = _mm512_div_ps(one, r_abs);
+            let atan_large = _mm512_sub_ps(
+                _mm512_set1_ps(PI_2),
+                _mm512_mul_ps(recip_r, atan_approx),
+            );
+            let atan_val = _mm512_mask_blend_ps(mask_large, atan_approx, atan_large);
+
+            let y_abs = _mm512_abs_ps(y);
+            let sign_y = _mm512_div_ps(y_abs, y);
+            let atan_signed = _mm512_mul_ps(atan_val, sign_y);
+
+            let zero = _mm512_setzero_ps();
+            let mask_neg_x = _mm512_cmp_ps_mask::<_CMP_LT_OQ>(x_val, zero);
+            let correction = _mm512_mul_ps(_mm512_set1_ps(PI), sign_y);
+            Self(_mm512_mask_blend_ps(mask_neg_x, atan_signed, _mm512_sub_ps(atan_signed, correction)))
+        }
+    }
+
+    #[inline(always)]
+    fn cmp_eq(self, rhs: Self) -> Mask16 {
+        unsafe { Mask16(_mm512_cmp_ps_mask(self.0, rhs.0, _CMP_EQ_OQ)) }
+    }
+
+    #[inline(always)]
+    fn cmp_ne(self, rhs: Self) -> Mask16 {
+        unsafe { Mask16(_mm512_cmp_ps_mask(self.0, rhs.0, _CMP_NEQ_OQ)) }
     }
 }
 

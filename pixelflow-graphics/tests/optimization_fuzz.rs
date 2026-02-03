@@ -10,7 +10,7 @@
 //! 4. Assert kernel output matches reference within epsilon
 
 use pixelflow_core::{Field, Manifold};
-use pixelflow_macros::kernel;
+use pixelflow_compiler::kernel;
 use proptest::prelude::*;
 
 type Field4 = (Field, Field, Field, Field);

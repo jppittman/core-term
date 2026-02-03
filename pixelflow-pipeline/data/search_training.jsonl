@@ -1,0 +1,5 @@
+{"expression_idx":9,"step_idx":1,"tree_cost":579,"best_cost_so_far":579,"target_cost":579,"improvement_gap":0,"improvement_ratio":0.0,"num_classes":217}
+{"expression_idx":9,"step_idx":2,"tree_cost":727,"best_cost_so_far":579,"target_cost":579,"improvement_gap":0,"improvement_ratio":0.0,"num_classes":343}
+{"expression_idx":9,"step_idx":3,"tree_cost":727,"best_cost_so_far":579,"target_cost":579,"improvement_gap":0,"improvement_ratio":0.0,"num_classes":475}
+{"expression_idx":9,"step_idx":4,"tree_cost":727,"best_cost_so_far":579,"target_cost":579,"improvement_gap":0,"improvement_ratio":0.0,"num_classes":665}
+{"expression_idx":9,"step_idx":5,"tree_cost":727,"best_cost_so_far":579,"target_cost":579,"improvement_gap":0,"improvement_ratio":0.0,"num_classes":780}

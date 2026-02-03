@@ -2,7 +2,7 @@
 
 ## 1. The Problem
 We currently suffer from the **"Triple IR" problem**:
-1.  `pixelflow-macros`: Has a Syn-based AST.
+1.  `pixelflow-compiler`: Has a Syn-based AST.
 2.  `pixelflow-search`: Has `ExprTree` and `Op` traits.
 3.  `pixelflow-nnue`: Has `Expr` and `OpType` enums.
 
@@ -20,7 +20,7 @@ graph BT
     NNUE[pixelflow-nnue] --> IR
     SEARCH[pixelflow-search] --> IR
     CORE[pixelflow-core] --> IR
-    MACROS[pixelflow-macros] --> IR
+    MACROS[pixelflow-compiler] --> IR
     MACROS --> SEARCH
     MACROS --> NNUE
     
@@ -97,7 +97,7 @@ To add `Sinh`:
     *   Implement `sinh()` in backends (Avx, Neon, etc.).
 2.  **`pixelflow-core`**:
     *   Add `Field::sinh()` calling `self.0.sinh()`.
-3.  **`pixelflow-macros`**:
+3.  **`pixelflow-compiler`**:
     *   Map `sinh` token to `ir::Expr::Unary(OpType::Sinh, ...)`.
 
 **Result**: Strong compiler enforcement. If you add it to `OpType`, you must implement it in the Backend (trait obligation), and the Optimizer/NNUE immediately know about it (shared Enum).

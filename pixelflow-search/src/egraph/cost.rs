@@ -236,10 +236,12 @@ impl CostModel {
     }
 
     /// Get cost for an ENode.
+    ///
+    /// Uses `op.kind()` to convert at the boundary from `&dyn Op` to `OpKind`.
     pub fn node_op_cost(&self, node: &ENode) -> usize {
         match node {
             ENode::Var(_) | ENode::Const(_) => 0,
-            ENode::Op { op, .. } => self.cost_by_name(op.name()),
+            ENode::Op { op, .. } => self.cost(op.kind()),
         }
     }
 
@@ -334,17 +336,11 @@ impl CostModel {
                         model.depth_threshold = v;
                     } else if key == "depth_penalty" {
                         model.depth_penalty = v;
-                    } else {
-                        // Try to parse as OpKind name
-                        for i in 0..OpKind::COUNT {
-                            if let Some(op) = OpKind::from_index(i) {
-                                if op.name() == key {
-                                    model.costs[i] = v;
-                                    break;
-                                }
-                            }
-                        }
+                    } else if let Some(op) = OpKind::from_name(key) {
+                        // O(1) lookup via OpKind::from_name
+                        model.costs[op.index()] = v;
                     }
+                    // Unknown keys are silently ignored (external data format)
                 }
             }
         }
@@ -397,16 +393,11 @@ impl CostModel {
                 model.depth_threshold = value;
             } else if key == "depth_penalty" {
                 model.depth_penalty = value;
-            } else {
-                for i in 0..OpKind::COUNT {
-                    if let Some(op) = OpKind::from_index(i) {
-                        if op.name() == key {
-                            model.costs[i] = value;
-                            break;
-                        }
-                    }
-                }
+            } else if let Some(op) = OpKind::from_name(key) {
+                // O(1) lookup via OpKind::from_name
+                model.costs[op.index()] = value;
             }
+            // Unknown keys are silently ignored (external data format)
         }
         model
     }

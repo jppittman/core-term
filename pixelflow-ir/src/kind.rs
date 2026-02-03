@@ -3,6 +3,8 @@
 //! This enum provides a uniform representation of all operations.
 //! It is used for storage in the e-graph and as the base for feature indices.
 
+use crate::traits::EmitStyle;
+
 /// Unified enumeration of all IR operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -249,4 +251,103 @@ impl OpKind {
     pub const fn is_idempotent(self) -> bool {
         matches!(self, Self::Min | Self::Max | Self::Abs)
     }
+
+    /// Get the emit style for code generation.
+    pub const fn emit_style(self) -> EmitStyle {
+        match self {
+            // Special cases handled separately
+            Self::Var | Self::Const | Self::Tuple => EmitStyle::Special,
+
+            // Unary prefix: (-a)
+            Self::Neg => EmitStyle::UnaryPrefix,
+
+            // Unary method: (a).sqrt()
+            Self::Sqrt | Self::Rsqrt | Self::Abs | Self::Recip |
+            Self::Floor | Self::Ceil | Self::Round | Self::Fract |
+            Self::Sin | Self::Cos | Self::Tan | Self::Asin | Self::Acos | Self::Atan |
+            Self::Exp | Self::Exp2 | Self::Ln | Self::Log2 | Self::Log10 => EmitStyle::UnaryMethod,
+
+            // Binary infix: (a + b)
+            Self::Add => EmitStyle::BinaryInfix("+"),
+            Self::Sub => EmitStyle::BinaryInfix("-"),
+            Self::Mul => EmitStyle::BinaryInfix("*"),
+            Self::Div => EmitStyle::BinaryInfix("/"),
+
+            // Binary method: (a).min(b)
+            Self::Min | Self::Max | Self::Atan2 | Self::Hypot | Self::MulRsqrt | Self::Pow |
+            Self::Lt | Self::Le | Self::Gt | Self::Ge | Self::Eq | Self::Ne => EmitStyle::BinaryMethod,
+
+            // Ternary method: (a).mul_add(b, c)
+            Self::MulAdd | Self::Select | Self::Clamp => EmitStyle::TernaryMethod,
+        }
+    }
+
+    // NOTE: KNOWN_METHODS was removed - now derived from ALL_OPS via known_method_names()
+
+    /// Evaluate a unary operation on a constant argument.
+    ///
+    /// Returns `None` for non-unary operations or operations that can't be
+    /// evaluated at compile time.
+    pub fn eval_unary(self, x: f32) -> Option<f32> {
+        match self {
+            Self::Neg => Some(-x),
+            Self::Sqrt => Some(x.sqrt()),
+            Self::Rsqrt => Some(1.0 / x.sqrt()),
+            Self::Abs => Some(x.abs()),
+            Self::Recip => Some(1.0 / x),
+            Self::Floor => Some(x.floor()),
+            Self::Ceil => Some(x.ceil()),
+            Self::Round => Some(x.round()),
+            Self::Fract => Some(x.fract()),
+            Self::Sin => Some(x.sin()),
+            Self::Cos => Some(x.cos()),
+            Self::Tan => Some(x.tan()),
+            Self::Asin => Some(x.asin()),
+            Self::Acos => Some(x.acos()),
+            Self::Atan => Some(x.atan()),
+            Self::Exp => Some(x.exp()),
+            Self::Exp2 => Some(x.exp2()),
+            Self::Ln => Some(x.ln()),
+            Self::Log2 => Some(x.log2()),
+            Self::Log10 => Some(x.log10()),
+            _ => None,
+        }
+    }
+
+    /// Evaluate a binary operation on constant arguments.
+    ///
+    /// Returns `None` for non-binary operations.
+    pub fn eval_binary(self, x: f32, y: f32) -> Option<f32> {
+        match self {
+            Self::Add => Some(x + y),
+            Self::Sub => Some(x - y),
+            Self::Mul => Some(x * y),
+            Self::Div => Some(x / y),
+            Self::Min => Some(x.min(y)),
+            Self::Max => Some(x.max(y)),
+            Self::Atan2 => Some(x.atan2(y)),
+            Self::Pow => Some(x.powf(y)),
+            Self::Hypot => Some(x.hypot(y)),
+            Self::Lt => Some(if x < y { 1.0 } else { 0.0 }),
+            Self::Le => Some(if x <= y { 1.0 } else { 0.0 }),
+            Self::Gt => Some(if x > y { 1.0 } else { 0.0 }),
+            Self::Ge => Some(if x >= y { 1.0 } else { 0.0 }),
+            Self::Eq => Some(if (x - y).abs() < f32::EPSILON { 1.0 } else { 0.0 }),
+            Self::Ne => Some(if (x - y).abs() >= f32::EPSILON { 1.0 } else { 0.0 }),
+            Self::MulRsqrt => Some(x / y.sqrt()),
+            _ => None,
+        }
+    }
+
+    /// Evaluate a ternary operation on constant arguments.
+    pub fn eval_ternary(self, x: f32, y: f32, z: f32) -> Option<f32> {
+        match self {
+            Self::MulAdd => Some(x * y + z),
+            Self::Select => Some(if x != 0.0 { y } else { z }),
+            Self::Clamp => Some(x.clamp(y, z)),
+            _ => None,
+        }
+    }
 }
+
+// EmitStyle is imported from crate::traits - single source of truth

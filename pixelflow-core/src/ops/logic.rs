@@ -5,7 +5,7 @@
 use crate::Manifold;
 use crate::numeric::Numeric;
 use core::ops::{BitAnd, BitOr, Not};
-use pixelflow_macros::Element;
+use pixelflow_compiler::Element;
 
 /// Bitwise AND.
 #[derive(Clone, Debug, Element)]

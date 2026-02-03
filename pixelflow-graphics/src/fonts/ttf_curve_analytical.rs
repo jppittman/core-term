@@ -8,7 +8,7 @@
 //! accumulate fractional winding contributions for antialiased fill.
 
 use pixelflow_core::{Field, Manifold};
-use pixelflow_macros::kernel;
+use pixelflow_compiler::kernel;
 
 type Field4 = (Field, Field, Field, Field);
 

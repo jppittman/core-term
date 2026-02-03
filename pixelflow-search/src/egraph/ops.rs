@@ -3,7 +3,7 @@
 //! Each operation is a unit struct implementing the `Op` trait.
 //! Properties are delegated to `OpKind` - the single source of truth.
 
-use pixelflow_ir::OpKind;
+use pixelflow_ir::{EmitStyle, OpKind};
 
 /// Trait for operations in the e-graph.
 ///
@@ -16,6 +16,12 @@ pub trait Op: 'static + Send + Sync {
     #[inline]
     fn name(&self) -> &'static str {
         self.kind().name()
+    }
+
+    /// How to emit this operation in generated code.
+    #[inline]
+    fn emit_style(&self) -> EmitStyle {
+        self.kind().emit_style()
     }
 
     /// Default cost estimate (delegates to `OpKind::default_cost`).
@@ -93,6 +99,7 @@ define_op!(Abs);
 define_op!(Min);
 define_op!(Max);
 define_op!(MulAdd);
+define_op!(MulRsqrt);
 
 // === Rounding ===
 define_op!(Floor);
@@ -150,7 +157,7 @@ pub fn op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
         OpKind::Min => Some(&Min),
         OpKind::Max => Some(&Max),
         OpKind::MulAdd => Some(&MulAdd),
-        OpKind::MulRsqrt => None, // Not yet in e-graph
+        OpKind::MulRsqrt => Some(&MulRsqrt),
         OpKind::Floor => Some(&Floor),
         OpKind::Ceil => Some(&Ceil),
         OpKind::Round => Some(&Round),

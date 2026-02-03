@@ -14,6 +14,7 @@
 - **NO TERMINAL LOGIC GOES IN PIXELFLOW.** PixelFlow is a general-purpose graphics library being extracted to its own crate/repo. Keep it terminal-agnostic.
 - Exporting direct manipulation of fields from pixelflow-core is strictly forbidden. Construct compute kernels at load time and render them.
 - **NO PUBLIC raw_mul, raw_select, raw_add ETC USAGE** NONE. ZERO. Do not perform raw operations on fields/jets without explicit direction. ALWAYS construct the ast, then uses the nested contramap pattern to evaluate it.
+- Delete, don't deprecate. We're not currently public/prod. We want to delete old junk before anybody uses it and we have to support it.
 
 ### Philosophy
 
@@ -29,11 +30,11 @@ The repository is organized as a Cargo workspace with 11 member crates:
 
 ```
 core-term/                  # Repository root
-├── pixelflow-core/         # SIMD algebra (no_std)
-├── pixelflow-graphics/     # Colors, fonts, rendering
-├── pixelflow-ir/           # Shared IR and backend abstraction
-├── pixelflow-macros/       # Proc-macro compiler frontend
-├── pixelflow-ml/           # Experimental: ML as graphics
+33-├── pixelflow-core/         # SIMD algebra (no_std)
+34-├── pixelflow-graphics/     # Colors, fonts, rendering
+35-├── pixelflow-ir/           # Shared IR and backend abstraction
+36-├── pixelflow-compiler/     # Proc-macro compiler frontend
+37-├── pixelflow-ml/           # Experimental: ML as graphics
 ├── pixelflow-nnue/         # NNUE neural network for instruction selection
 ├── pixelflow-runtime/      # Platform drivers and runtime
 ├── pixelflow-search/       # E-graph optimization and rewrite search
@@ -65,7 +66,7 @@ These directories configure AI assistants to understand project conventions and 
 |-------|---------|
 | `pixelflow-core` | `no_std` SIMD algebra. `Field`, `Manifold`, coordinate variables. Multi-backend (AVX-512/SSE2/NEON/scalar). |
 | `pixelflow-ir` | Shared IR (intermediate representation) and backend abstraction. Op traits, OpKind enum, backend execution traits. |
-| `pixelflow-macros` | Proc-macro compiler frontend: `kernel!` macro, lexer, parser, semantic analysis, code generation. |
+| `pixelflow-compiler` | Proc-macro compiler frontend: `kernel!` macro, lexer, parser, semantic analysis, code generation. |
 | `pixelflow-graphics` | Font loading, colors (`Rgba8`, `Color`), rasterization, antialiasing. |
 | `pixelflow-ml` | Experimental: Linear attention as spherical harmonics. Research on neural rendering. |
 | `pixelflow-nnue` | NNUE neural network for instruction selection, inspired by Stockfish. HalfEP feature encoding. |
@@ -80,7 +81,7 @@ These directories configure AI assistants to understand project conventions and 
 
 ### The Manifold Abstraction
 
-Everything is a `kernel` - the pixelflow-macros compiler uses this to generate profunctors from coordinates to values or a morphism on manifolds:
+Everything is a `kernel` - the pixelflow-compiler compiler uses this to generate profunctors from coordinates to values or a morphism on manifolds:
 dimap is broken up into covariant `map` and contramap `at`
 conditionals are performed using Select or postfix (ManifoldExt) `.select`
 
@@ -222,12 +223,12 @@ if status_code == 4 { ... }                 // Bad
 
 | Path | Purpose |
 |------|---------|
-| `pixelflow-macros/src/lib.rs` | `kernel!` and `kernel_raw!` proc-macros, compiler entry points |
-| `pixelflow-macros/src/lexer.rs` | Token stream processing (delegated to syn) |
-| `pixelflow-macros/src/parser.rs` | AST construction from closure syntax |
-| `pixelflow-macros/src/sema.rs` | Semantic analysis, symbol resolution, type validation |
-| `pixelflow-macros/src/optimize.rs` | AST optimization (constant folding, FMA fusion, algebraic simplification) |
-| `pixelflow-macros/src/codegen/` | Code generation: struct + Manifold impl emission |
+| `pixelflow-compiler/src/lib.rs` | `kernel!` and `kernel_raw!` proc-macros, compiler entry points |
+| `pixelflow-compiler/src/lexer.rs` | Token stream processing (delegated to syn) |
+| `pixelflow-compiler/src/parser.rs` | AST construction from closure syntax |
+| `pixelflow-compiler/src/sema.rs` | Semantic analysis, symbol resolution, type validation |
+| `pixelflow-compiler/src/optimize.rs` | AST optimization (constant folding, FMA fusion, algebraic simplification) |
+| `pixelflow-compiler/src/codegen/` | Code generation: struct + Manifold impl emission |
 | `pixelflow-ir/src/lib.rs` | Shared IR: Op trait, OpKind enum, Expr tree |
 | `pixelflow-ir/src/backend/` | Backend-specific lowering (x86, ARM, WASM, scalar) |
 | `pixelflow-search/src/egraph/` | E-graph data structure, saturation, rewrite rules |
@@ -442,7 +443,7 @@ Source → Lexer → Parser → Sema → Optimize → Codegen → Rust TokenStre
 
 | Crate | Role |
 |-------|------|
-| `pixelflow-macros` | Compiler frontend: proc-macros, parser, semantic analysis |
+| `pixelflow-compiler` | Compiler frontend: proc-macros, parser, semantic analysis |
 | `pixelflow-ir` | Intermediate representation: Op trait, OpKind, backend traits |
 | `pixelflow-search` | E-graph optimization: saturation, rewrite rules, cost extraction |
 | `pixelflow-nnue` | Neural cost model: NNUE-style network for instruction selection |
@@ -596,7 +597,7 @@ pixelflow-core/src/
   combinators/        - Six eigenshaders
   jet/                - Automatic differentiation
 
-pixelflow-macros/src/
+pixelflow-compiler/src/
   lib.rs              - kernel! macro entry point
   parser.rs           - AST construction
   sema.rs             - Semantic analysis

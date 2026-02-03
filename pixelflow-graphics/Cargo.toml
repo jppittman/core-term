@@ -17,7 +17,7 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 
 # SIMD library for optimized rendering
 pixelflow-core = { path = "../pixelflow-core" }
-pixelflow-macros = { path = "../pixelflow-macros" }
+pixelflow-compiler = { path = "../pixelflow-compiler" }
 
 # Actor system for async rendering
 actor-scheduler = { path = "../actor-scheduler" }
@@ -35,7 +35,7 @@ windows-sys = { version = "0.59", features = ["Win32_System_Memory", "Win32_Foun
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1.4"
 tempfile = "3.10"
-pixelflow-macros = { path = "../pixelflow-macros" }
+pixelflow-compiler = { path = "../pixelflow-compiler" }
 
 [[bench]]
 name = "font_rendering"

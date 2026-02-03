@@ -205,6 +205,31 @@ impl SimdOps for ScalarF32 {
     fn exp2(self) -> Self {
         Self(libm::exp2f(self.0))
     }
+
+    #[inline(always)]
+    fn sin(self) -> Self {
+        Self(libm::sinf(self.0))
+    }
+
+    #[inline(always)]
+    fn cos(self) -> Self {
+        Self(libm::cosf(self.0))
+    }
+
+    #[inline(always)]
+    fn atan2(self, x: Self) -> Self {
+        Self(libm::atan2f(self.0, x.0))
+    }
+
+    #[inline(always)]
+    fn cmp_eq(self, rhs: Self) -> MaskScalar {
+        MaskScalar(self.0 == rhs.0)
+    }
+
+    #[inline(always)]
+    fn cmp_ne(self, rhs: Self) -> MaskScalar {
+        MaskScalar(self.0 != rhs.0)
+    }
 }
 
 // ============================================================================

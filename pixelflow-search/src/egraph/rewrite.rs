@@ -41,6 +41,57 @@ pub enum RewriteAction {
         b: EClassId,
         c: EClassId,
     },
+    /// OddParity: Op(neg(x)) -> neg(Op(x))
+    /// Creates Op(inner), then wraps in Neg.
+    OddParity {
+        func: &'static dyn Op,
+        inner: EClassId,
+    },
+    /// AngleAddition: sin(a+b) -> sin(a)cos(b) + cos(a)sin(b)
+    /// or cos(a+b) -> cos(a)cos(b) - sin(a)sin(b)
+    AngleAddition {
+        term1_op1: &'static dyn Op,
+        term1_op2: &'static dyn Op,
+        term2_op1: &'static dyn Op,
+        term2_op2: &'static dyn Op,
+        term2_sign: crate::math::trig::Sign,
+        a: EClassId,
+        b: EClassId,
+    },
+    /// Homomorphism: f(a ⊕ b) -> f(a) ⊗ f(b)
+    /// e.g., exp(a + b) -> exp(a) * exp(b)
+    Homomorphism {
+        func: &'static dyn Op,
+        target_op: &'static dyn Op,
+        a: EClassId,
+        b: EClassId,
+    },
+    /// PowerCombine: x^a * x^b -> x^(a+b)
+    PowerCombine {
+        base: EClassId,
+        exp_a: EClassId,
+        exp_b: EClassId,
+    },
+    /// ReverseAngleAddition: sin(a)cos(b) + cos(a)sin(b) -> sin(a + b)
+    /// (The inverse of angle addition, enables double angle discovery)
+    ReverseAngleAddition {
+        trig_op: &'static dyn Op,
+        a: EClassId,
+        b: EClassId,
+    },
+    /// HalfAngleProduct: sin(x) * cos(x) -> sin(x + x) / 2
+    /// Derived from sin(2x) = 2*sin(x)*cos(x)
+    HalfAngleProduct {
+        x: EClassId,
+    },
+    /// Doubling: a + a -> 2 * a
+    Doubling {
+        a: EClassId,
+    },
+    /// Halving: 2 * a -> a + a (reverse of doubling)
+    Halving {
+        a: EClassId,
+    },
 }
 
 /// A rewrite rule that can be applied to e-graph nodes.

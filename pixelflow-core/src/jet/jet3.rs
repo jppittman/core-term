@@ -648,10 +648,11 @@ impl Numeric for Jet3 {
 
     #[inline(always)]
     fn pow(self, exp: Self) -> Self {
-        let val = self.val.pow(exp.val);
+        use crate::numeric::Numeric as _;
+        let val = Numeric::pow(self.val, exp.val);
         let ln_base = self.val.ln();
-        let inv_self = Field::from(1.0) / self.val;
-        let coeff = exp.val.clone() * inv_self;
+        let inv_self = Field::from(1.0).raw_div(self.val);
+        let coeff = exp.val.raw_mul(inv_self);
         Self::new(
             val,
             val * (exp.dx * ln_base + coeff.clone() * self.dx),
@@ -741,6 +742,169 @@ impl Numeric for Jet3 {
     }
 
     #[inline(always)]
+    fn ln(self) -> Self {
+        // Chain rule: (ln f)' = f' / f
+        let inv_val = Field::from(1.0) / self.val;
+        Self::new(
+            self.val.ln(),
+            self.dx * inv_val.clone(),
+            self.dy * inv_val.clone(),
+            self.dz * inv_val,
+        )
+    }
+
+    #[inline(always)]
+    fn log10(self) -> Self {
+        // Chain rule: (log10 f)' = f' / (f * ln(10))
+        let log10_e = Field::from(0.4342944819032518);
+        let inv_val = Field::from(1.0) / self.val;
+        let deriv_coeff = inv_val * log10_e;
+        Self::new(
+            self.val.log10(),
+            self.dx * deriv_coeff.clone(),
+            self.dy * deriv_coeff.clone(),
+            self.dz * deriv_coeff,
+        )
+    }
+
+    #[inline(always)]
+    fn tan(self) -> Self {
+        // Chain rule: (tan f)' = f' * sec²(f)
+        let tan_val = self.val.tan();
+        let cos_val = self.val.cos();
+        let sec_sq = Field::from(1.0) / (cos_val * cos_val);
+        Self::new(
+            tan_val,
+            self.dx * sec_sq.clone(),
+            self.dy * sec_sq.clone(),
+            self.dz * sec_sq,
+        )
+    }
+
+    #[inline(always)]
+    fn asin(self) -> Self {
+        // Chain rule: (asin f)' = f' / sqrt(1 - f²)
+        let one = Field::from(1.0);
+        let one_minus_sq = one - self.val * self.val;
+        let inv_sqrt = one_minus_sq.rsqrt();
+        Self::new(
+            self.val.asin(),
+            self.dx * inv_sqrt.clone(),
+            self.dy * inv_sqrt.clone(),
+            self.dz * inv_sqrt,
+        )
+    }
+
+    #[inline(always)]
+    fn acos(self) -> Self {
+        // Chain rule: (acos f)' = -f' / sqrt(1 - f²)
+        let one = Field::from(1.0);
+        let one_minus_sq = one - self.val * self.val;
+        let neg_inv_sqrt = Field::from(0.0) - one_minus_sq.rsqrt();
+        Self::new(
+            self.val.acos(),
+            self.dx * neg_inv_sqrt.clone(),
+            self.dy * neg_inv_sqrt.clone(),
+            self.dz * neg_inv_sqrt,
+        )
+    }
+
+    #[inline(always)]
+    fn atan(self) -> Self {
+        // Chain rule: (atan f)' = f' / (1 + f²)
+        let one = Field::from(1.0);
+        let one_plus_sq = one + self.val * self.val;
+        let inv = Field::from(1.0) / one_plus_sq;
+        Self::new(
+            self.val.atan(),
+            self.dx * inv.clone(),
+            self.dy * inv.clone(),
+            self.dz * inv,
+        )
+    }
+
+    #[inline(always)]
+    fn ceil(self) -> Self {
+        Self::constant(self.val.ceil())
+    }
+
+    #[inline(always)]
+    fn round(self) -> Self {
+        Self::constant(self.val.round())
+    }
+
+    #[inline(always)]
+    fn fract(self) -> Self {
+        // fract(f) = f - floor(f), derivative = f'
+        Self::new(self.val.fract(), self.dx, self.dy, self.dz)
+    }
+
+    #[inline(always)]
+    fn hypot(self, y: Self) -> Self {
+        // hypot(x, y) = sqrt(x² + y²)
+        let h = self.val.hypot(y.val);
+        let inv_h = Field::from(1.0) / h;
+        let dx_coeff = self.val * inv_h.clone();
+        let dy_coeff = y.val * inv_h;
+        Self::new(
+            h,
+            self.dx * dx_coeff.clone() + y.dx * dy_coeff.clone(),
+            self.dy * dx_coeff.clone() + y.dy * dy_coeff.clone(),
+            self.dz * dx_coeff + y.dz * dy_coeff,
+        )
+    }
+
+    #[inline(always)]
+    fn mul_rsqrt(self, other: Self) -> Self {
+        // mul_rsqrt(a, b) = a * rsqrt(b) = a * b^(-1/2)
+        use crate::numeric::Numeric as _;
+        let rsqrt_b = other.val.rsqrt();
+        let result = self.val.raw_mul(rsqrt_b);
+        let half_inv_b = rsqrt_b.raw_mul(other.val.recip()).raw_mul(Field::from(0.5));
+        let da_coeff = rsqrt_b;
+        let db_coeff = result.raw_mul(half_inv_b);
+        Self::new(
+            result,
+            self.dx.raw_mul(da_coeff).raw_sub(other.dx.raw_mul(db_coeff)),
+            self.dy.raw_mul(da_coeff).raw_sub(other.dy.raw_mul(db_coeff)),
+            self.dz.raw_mul(da_coeff).raw_sub(other.dz.raw_mul(db_coeff)),
+        )
+    }
+
+    #[inline(always)]
+    fn clamp(self, lo: Self, hi: Self) -> Self {
+        let mask_low = self.val.lt(lo.val);
+        let mask_high = self.val.gt(hi.val);
+        let clamped = self.val.clamp(lo.val, hi.val);
+        let dx = Field::select_raw(
+            mask_low,
+            lo.dx,
+            Field::select_raw(mask_high, hi.dx, self.dx),
+        );
+        let dy = Field::select_raw(
+            mask_low,
+            lo.dy,
+            Field::select_raw(mask_high, hi.dy, self.dy),
+        );
+        let dz = Field::select_raw(
+            mask_low,
+            lo.dz,
+            Field::select_raw(mask_high, hi.dz, self.dz),
+        );
+        Self { val: clamped, dx, dy, dz }
+    }
+
+    #[inline(always)]
+    fn eq(self, rhs: Self) -> Self {
+        Self::constant(self.val.eq(rhs.val))
+    }
+
+    #[inline(always)]
+    fn ne(self, rhs: Self) -> Self {
+        Self::constant(self.val.ne(rhs.val))
+    }
+
+    #[inline(always)]
     fn add_masked(self, val: Self, mask: Self) -> Self {
         Self {
             val: self.val.add_masked(val.val, mask.val),
@@ -768,6 +932,11 @@ impl Numeric for Jet3 {
     #[inline(always)]
     fn raw_div(self, rhs: Self) -> Self {
         self / rhs
+    }
+
+    #[inline(always)]
+    fn raw_neg(self) -> Self {
+        Self::new(-self.val, -self.dx, -self.dy, -self.dz)
     }
 }
 

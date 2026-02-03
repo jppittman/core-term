@@ -23,7 +23,7 @@
 //! No scanline rendering. No iteration. Pure analytical evaluation.
 
 use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y, Z, W};
-use pixelflow_macros::kernel;
+use pixelflow_compiler::kernel;
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);

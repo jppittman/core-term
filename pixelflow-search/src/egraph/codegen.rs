@@ -48,6 +48,7 @@ use alloc::format;
 use super::extract::{ExprTree, ExtractedDAG, Leaf};
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
+use pixelflow_ir::EmitStyle;
 
 /// Convert an ExprTree to a kernel! macro code string.
 ///
@@ -87,144 +88,46 @@ pub fn expr_tree_to_kernel_body(tree: &ExprTree) -> String {
         ExprTree::Leaf(Leaf::Const(v)) => format_const(*v),
 
         ExprTree::Op { op, children } => {
-            let name = op.name();
-            match (name, children.as_slice()) {
-                // Unary operations
-                ("neg", [a]) => format!("(-{})", expr_tree_to_kernel_body(a)),
-                ("recip", [a]) => format!("(1.0 / {})", expr_tree_to_kernel_body(a)),
-                ("sqrt", [a]) => format!("({}).sqrt()", expr_tree_to_kernel_body(a)),
-                ("rsqrt", [a]) => format!("({}).rsqrt()", expr_tree_to_kernel_body(a)),
-                ("abs", [a]) => format!("({}).abs()", expr_tree_to_kernel_body(a)),
-                ("floor", [a]) => format!("({}).floor()", expr_tree_to_kernel_body(a)),
-                ("ceil", [a]) => format!("({}).ceil()", expr_tree_to_kernel_body(a)),
-                ("round", [a]) => format!("({}).round()", expr_tree_to_kernel_body(a)),
-                ("fract", [a]) => format!("({}).fract()", expr_tree_to_kernel_body(a)),
-                ("sin", [a]) => format!("({}).sin()", expr_tree_to_kernel_body(a)),
-                ("cos", [a]) => format!("({}).cos()", expr_tree_to_kernel_body(a)),
-                ("tan", [a]) => format!("({}).tan()", expr_tree_to_kernel_body(a)),
-                ("asin", [a]) => format!("({}).asin()", expr_tree_to_kernel_body(a)),
-                ("acos", [a]) => format!("({}).acos()", expr_tree_to_kernel_body(a)),
-                ("atan", [a]) => format!("({}).atan()", expr_tree_to_kernel_body(a)),
-                ("exp", [a]) => format!("({}).exp()", expr_tree_to_kernel_body(a)),
-                ("exp2", [a]) => format!("({}).exp2()", expr_tree_to_kernel_body(a)),
-                ("ln", [a]) => format!("({}).ln()", expr_tree_to_kernel_body(a)),
-                ("log2", [a]) => format!("({}).log2()", expr_tree_to_kernel_body(a)),
-                ("log10", [a]) => format!("({}).log10()", expr_tree_to_kernel_body(a)),
+            emit_op(*op, children)
+        }
+    }
+}
 
-                // Binary operations - infix
-                ("add", [a, b]) => format!(
-                    "({} + {})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("sub", [a, b]) => format!(
-                    "({} - {})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("mul", [a, b]) => format!(
-                    "({} * {})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("div", [a, b]) => format!(
-                    "({} / {})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
+/// Emit code for an operation using Op's emit_style.
+fn emit_op(op: &dyn super::ops::Op, children: &[ExprTree]) -> String {
+    use EmitStyle::*;
 
-                // Binary operations - method style
-                ("min", [a, b]) => format!(
-                    "({}).min({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("max", [a, b]) => format!(
-                    "({}).max({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("atan2", [a, b]) => format!(
-                    "({}).atan2({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("pow", [a, b]) => format!(
-                    "({}).powf({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("hypot", [a, b]) => format!(
-                    "({}).hypot({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
+    let name = op.name();
+    let style = op.emit_style();
 
-                // Comparison operations
-                ("lt", [a, b]) => format!(
-                    "({}).lt({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("le", [a, b]) => format!(
-                    "({}).le({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("gt", [a, b]) => format!(
-                    "({}).gt({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("ge", [a, b]) => format!(
-                    "({}).ge({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("eq", [a, b]) => format!(
-                    "({}).eq({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("ne", [a, b]) => format!(
-                    "({}).ne({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
+    // Recursively emit children
+    let args: Vec<String> = children.iter().map(expr_tree_to_kernel_body).collect();
 
-                // Ternary operations
-                // mul_add(a, b, c) = a * b + c, kernel! supports mul_add method
-                ("mul_add", [a, b, c]) => format!(
-                    "({}).mul_add({}, {})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b),
-                    expr_tree_to_kernel_body(c)
-                ),
-                ("select", [cond, then_val, else_val]) => format!(
-                    "({}).select({}, {})",
-                    expr_tree_to_kernel_body(cond),
-                    expr_tree_to_kernel_body(then_val),
-                    expr_tree_to_kernel_body(else_val)
-                ),
-                ("clamp", [val, min, max]) => format!(
-                    "({}).clamp({}, {})",
-                    expr_tree_to_kernel_body(val),
-                    expr_tree_to_kernel_body(min),
-                    expr_tree_to_kernel_body(max)
-                ),
+    // Special cases that don't fit the standard patterns
+    match name {
+        // Recip is emitted as division for clarity
+        "recip" if args.len() == 1 => {
+            return format!("(1.0 / {})", args[0]);
+        }
+        // Tuple needs special formatting (variadic, no emit_style)
+        "tuple" => {
+            return format!("({})", args.join(", "));
+        }
+        _ => {}
+    }
 
-                // Tuple
-                ("tuple", elems) => {
-                    let parts: Vec<_> = elems.iter().map(expr_tree_to_kernel_body).collect();
-                    format!("({})", parts.join(", "))
-                }
+    // Use the emit_style from the Op
+    match (style, args.as_slice()) {
+        (UnaryPrefix, [a]) => format!("(-{})", a),
+        (UnaryMethod, [a]) => format!("({}).{}()", a, name),
+        (BinaryInfix(sym), [a, b]) => format!("({} {} {})", a, sym, b),
+        (BinaryMethod, [a, b]) => format!("({}).{}({})", a, name, b),
+        (BinaryMethodNamed(method_name), [a, b]) => format!("({}).{}({})", a, method_name, b),
+        (TernaryMethod, [a, b, c]) => format!("({}).{}({}, {})", a, name, b, c),
 
-                // Unknown operation
-                (op_name, children) => {
-                    let args: Vec<_> = children.iter().map(expr_tree_to_kernel_body).collect();
-                    format!("{}({})", op_name, args.join(", "))
-                }
-            }
+        // Fallback for mismatched arity or special types
+        (Special, _) | (_, _) => {
+            format!("{}({})", name, args.join(", "))
         }
     }
 }
@@ -277,8 +180,8 @@ pub fn generate_benchmark_file(variants: &[(String, ExprTree)]) -> String {
 //! DO NOT EDIT MANUALLY - regenerate with the command above.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use pixelflow_core::{Field, Manifold};
-use pixelflow_macros::kernel_raw;
+use pixelflow_core::{Field, Manifold, ManifoldExt};
+use pixelflow_compiler::kernel_raw;
 
 fn bench_generated_kernels(c: &mut Criterion) {
     let mut group = c.benchmark_group("generated_kernels");
@@ -328,6 +231,137 @@ criterion_group!(
 
 criterion_main!(generated);
 "#,
+    );
+
+    code
+}
+
+/// Generate a fast benchmark binary without criterion overhead.
+///
+/// This creates a simple timing loop that measures all kernels quickly,
+/// outputting timing results directly to a JSONL file.
+///
+/// Key differences from criterion:
+/// - Single shared warmup phase
+/// - Direct Instant::now() timing
+/// - No statistical analysis overhead
+/// - Results written during execution
+///
+/// # Arguments
+///
+/// * `variants` - List of (name, tree) pairs to benchmark
+///
+/// # Returns
+///
+/// Complete Rust source code for a fast benchmark binary.
+pub fn generate_fast_benchmark_file(variants: &[(String, ExprTree)]) -> String {
+    let mut code = String::new();
+
+    // Header
+    code.push_str(
+        r#"//! Fast bulk benchmarking without criterion overhead.
+//!
+//! Generated by: cargo run -p pixelflow-pipeline --example gen_egraph_variants
+//!
+//! DO NOT EDIT MANUALLY - regenerate with the command above.
+//!
+//! Usage:
+//!   cargo run -p pixelflow-pipeline --bin fast_kernels --release
+//!
+//! Output: pixelflow-pipeline/data/fast_timings.jsonl
+
+use pixelflow_core::{Field, Manifold};
+use pixelflow_compiler::kernel_raw;
+use std::fs::File;
+use std::io::Write;
+use std::time::Instant;
+
+const WARMUP_ITERS: usize = 50_000;
+const TIMED_ITERS: usize = 2_000_000;
+
+fn main() {
+    let xf = Field::sequential(1.0);
+    let yf = Field::from(2.0);
+    let zf = Field::from(3.0);
+    let wf = Field::from(0.5);
+
+    // Compile all kernels upfront
+    println!("Compiling kernels...");
+    let kernels: Vec<(&str, Box<dyn Fn() -> f64>)> = vec![
+"#,
+    );
+
+    // Generate kernel entries
+    // Each entry is (name, warmup_fn, bench_fn) - warmup called once, bench called RUNS_PER_KERNEL times
+    for (name, tree) in variants {
+        let kernel_body = expr_tree_to_kernel_body(tree);
+        let node_count = tree.node_count();
+        let depth = tree.depth();
+
+        code.push_str(&format!(
+            r#"        // {name} - {node_count} nodes, depth {depth}
+        ("{name}", {{
+            let k = kernel_raw!(|| {kernel_body});
+            let m = k();
+            Box::new(move || {{
+                // Warmup
+                for _ in 0..WARMUP_ITERS {{
+                    std::hint::black_box(m.eval((
+                        std::hint::black_box(xf),
+                        std::hint::black_box(yf),
+                        std::hint::black_box(zf),
+                        std::hint::black_box(wf),
+                    )));
+                }}
+                // Timed
+                let start = Instant::now();
+                for _ in 0..TIMED_ITERS {{
+                    std::hint::black_box(m.eval((
+                        std::hint::black_box(xf),
+                        std::hint::black_box(yf),
+                        std::hint::black_box(zf),
+                        std::hint::black_box(wf),
+                    )));
+                }}
+                start.elapsed().as_nanos() as f64 / TIMED_ITERS as f64
+            }}) as Box<dyn Fn() -> f64>
+        }}),
+"#
+        ));
+    }
+
+    // Footer
+    code.push_str(
+        r##"    ];
+
+    println!("Benchmarking {} kernels ({} warmup + {} timed iters each)...\n",
+        kernels.len(), WARMUP_ITERS, TIMED_ITERS);
+
+    // Open output file
+    let mut out = File::create("pixelflow-pipeline/data/fast_timings.jsonl")
+        .expect("Failed to create output file");
+
+    let total_start = Instant::now();
+    for (i, (name, bench_fn)) in kernels.iter().enumerate() {
+        let timing_ns = bench_fn();
+
+        writeln!(out, r#"{{"name":"{}","timing_ns":{:.6}}}"#, name, timing_ns)
+            .expect("Failed to write timing");
+
+        if (i + 1) % 50 == 0 || i + 1 == kernels.len() {
+            let elapsed = total_start.elapsed().as_secs_f64();
+            let rate = (i + 1) as f64 / elapsed;
+            println!("  [{:4}/{}] {:.1}/s - {} = {:.2} ns",
+                i + 1, kernels.len(), rate, name, timing_ns);
+        }
+    }
+
+    let total_time = total_start.elapsed().as_secs_f64();
+    println!("\nBenchmarked {} kernels in {:.1}s ({:.1}/s)",
+        kernels.len(), total_time, kernels.len() as f64 / total_time);
+    println!("Results: pixelflow-pipeline/data/fast_timings.jsonl");
+}
+"##
     );
 
     code
@@ -436,74 +470,39 @@ fn eclass_to_code(
         ENode::Var(i) => format!("V{}", i),
         ENode::Const(bits) => format_const(f32::from_bits(*bits)),
         ENode::Op { op, children } => {
-            let name = op.name();
             let child_codes: Vec<String> = children.iter()
                 .map(|&c| eclass_to_code(egraph, c, dag, names))
                 .collect();
 
-            emit_op_code(name, &child_codes)
+            emit_op_with_args(*op, &child_codes)
         }
     }
 }
 
-/// Emit code for an operation with the given children.
-fn emit_op_code(op_name: &str, children: &[String]) -> String {
-    match (op_name, children) {
-        // Unary operations
-        ("neg", [a]) => format!("(-{})", a),
-        ("recip", [a]) => format!("(1.0 / {})", a),
-        ("sqrt", [a]) => format!("({}).sqrt()", a),
-        ("rsqrt", [a]) => format!("({}).rsqrt()", a),
-        ("abs", [a]) => format!("({}).abs()", a),
-        ("floor", [a]) => format!("({}).floor()", a),
-        ("ceil", [a]) => format!("({}).ceil()", a),
-        ("round", [a]) => format!("({}).round()", a),
-        ("fract", [a]) => format!("({}).fract()", a),
-        ("sin", [a]) => format!("({}).sin()", a),
-        ("cos", [a]) => format!("({}).cos()", a),
-        ("tan", [a]) => format!("({}).tan()", a),
-        ("asin", [a]) => format!("({}).asin()", a),
-        ("acos", [a]) => format!("({}).acos()", a),
-        ("atan", [a]) => format!("({}).atan()", a),
-        ("exp", [a]) => format!("({}).exp()", a),
-        ("exp2", [a]) => format!("({}).exp2()", a),
-        ("ln", [a]) => format!("({}).ln()", a),
-        ("log2", [a]) => format!("({}).log2()", a),
-        ("log10", [a]) => format!("({}).log10()", a),
+/// Emit code for an operation with pre-computed child strings.
+fn emit_op_with_args(op: &dyn super::ops::Op, args: &[String]) -> String {
+    use EmitStyle::*;
 
-        // Binary operations - infix
-        ("add", [a, b]) => format!("({} + {})", a, b),
-        ("sub", [a, b]) => format!("({} - {})", a, b),
-        ("mul", [a, b]) => format!("({} * {})", a, b),
-        ("div", [a, b]) => format!("({} / {})", a, b),
+    let name = op.name();
+    let style = op.emit_style();
 
-        // Binary operations - method style
-        ("min", [a, b]) => format!("({}).min({})", a, b),
-        ("max", [a, b]) => format!("({}).max({})", a, b),
-        ("atan2", [a, b]) => format!("({}).atan2({})", a, b),
-        ("pow", [a, b]) => format!("({}).powf({})", a, b),
-        ("hypot", [a, b]) => format!("({}).hypot({})", a, b),
+    // Special cases
+    match name {
+        "recip" if args.len() == 1 => return format!("(1.0 / {})", args[0]),
+        "mul_add" if args.len() == 3 => return format!("(({} * {}) + {})", args[0], args[1], args[2]),
+        "tuple" => return format!("({})", args.join(", ")),
+        _ => {}
+    }
 
-        // Comparison operations
-        ("lt", [a, b]) => format!("({}).lt({})", a, b),
-        ("le", [a, b]) => format!("({}).le({})", a, b),
-        ("gt", [a, b]) => format!("({}).gt({})", a, b),
-        ("ge", [a, b]) => format!("({}).ge({})", a, b),
-        ("eq", [a, b]) => format!("({}).eq({})", a, b),
-        ("ne", [a, b]) => format!("({}).ne({})", a, b),
-
-        // Ternary operations
-        ("mul_add", [a, b, c]) => format!("({}).mul_add({}, {})", a, b, c),
-        ("select", [cond, then_val, else_val]) => {
-            format!("({}).select({}, {})", cond, then_val, else_val)
-        }
-        ("clamp", [val, min, max]) => format!("({}).clamp({}, {})", val, min, max),
-
-        // Tuple
-        ("tuple", elems) => format!("({})", elems.join(", ")),
-
-        // Unknown operation - emit as function call
-        (name, args) => format!("{}({})", name, args.join(", ")),
+    // Use emit_style
+    match (style, args) {
+        (UnaryPrefix, [a]) => format!("(-{})", a),
+        (UnaryMethod, [a]) => format!("({}).{}()", a, name),
+        (BinaryInfix(sym), [a, b]) => format!("({} {} {})", a, sym, b),
+        (BinaryMethod, [a, b]) => format!("({}).{}({})", a, name, b),
+        (BinaryMethodNamed(method_name), [a, b]) => format!("({}).{}({})", a, method_name, b),
+        (TernaryMethod, [a, b, c]) => format!("({}).{}({}, {})", a, name, b, c),
+        (Special, _) | (_, _) => format!("{}({})", name, args.join(", ")),
     }
 }
 
@@ -536,8 +535,8 @@ pub fn generate_dag_benchmark_file(
 //! DO NOT EDIT MANUALLY - regenerate with the command above.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use pixelflow_core::{Field, Manifold};
-use pixelflow_macros::kernel_raw;
+use pixelflow_core::{Field, Manifold, ManifoldExt};
+use pixelflow_compiler::kernel_raw;
 
 fn bench_dag_kernels(c: &mut Criterion) {
     let mut group = c.benchmark_group("dag_kernels");

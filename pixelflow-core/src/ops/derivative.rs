@@ -28,7 +28,7 @@ use crate::combinators::binding::{Let, Var, N0, N1, N2};
 use crate::ext::ManifoldExt;
 use crate::Field;
 use crate::Manifold;
-use pixelflow_macros::Element;
+use pixelflow_compiler::Element;
 
 // ============================================================================
 // Traits for Derivative Access
