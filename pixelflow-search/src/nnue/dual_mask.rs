@@ -2,42 +2,36 @@
 //!
 //! # Architecture
 //!
-//! The action space for e-graph rewriting is `|expressions| × |rules|`, but most
-//! (expr, rule) pairs are illegal (rule doesn't match). Instead of learning a full
-//! matrix, we factorize into two independent masks:
+//! A "lite transformer" style architecture where expression and rule heads
+//! produce embedding vectors that interact via dot product (like attention):
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │                     DualMaskGuide                           │
 //! │                                                             │
-//! │  Expression Features ──► ExprHead ──► ExprMask [E floats]   │
-//! │                              │                              │
-//! │                              ├─────────────────┐            │
-//! │                              │                 │            │
-//! │  Rule Features ──────► RuleHead ──► RuleMask [R floats]     │
-//! │                                                             │
-//! │                                                             │
-//! │  Actions = (ExprMask ⊗ RuleMask) ∩ Legal                    │
-//! │                                                             │
-//! │  score(e, r) = expr_mask[e] * rule_mask[r]                  │
-//! │              + interaction[e, r]  (optional sparse term)    │
+//! │  Expr Features ──► Hidden(ReLU) ──► expr_embed [EMBED_DIM]  │
+//! │                                            │                │
+//! │                                      dot product ──► score  │
+//! │                                            │                │
+//! │  Rule Features ──► Hidden(ReLU) ──► rule_embed [EMBED_DIM]  │
+//! │                                   + rule_prior[idx]         │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
+//!
+//! The dot product between embeddings provides EMBED_DIM learned interaction
+//! terms instead of just 1, making this more expressive while still O(E + R).
 //!
 //! # Benefits
 //!
 //! 1. **Parameter efficient**: O(E + R) instead of O(E × R)
-//! 2. **Generalizes**: Expression features transfer across rules
-//! 3. **Sparse evaluation**: Only score legal (matching) pairs
-//! 4. **Interpretable**: Can inspect "promising locations" vs "promising rules" separately
+//! 2. **Rich interaction**: EMBED_DIM interaction terms via dot product
+//! 3. **Generalizes**: Expression features transfer across rules
+//! 4. **Interpretable**: Embedding space learns meaningful directions
 //!
 //! # Training
 //!
-//! Each head is trained independently:
-//! - ExprHead: "Did applying ANY rule here lead to improvement?"
-//! - RuleHead: "Did this rule lead to improvement when it matched?"
-//!
-//! The combined score is trained end-to-end on actual (expr, rule, outcome) tuples.
+//! End-to-end on (expr_features, rule_features, rule_idx, improved) tuples.
+//! Gradients flow through both heads via the dot product.
 
 use alloc::vec::Vec;
 use libm::sqrtf;
@@ -55,6 +49,10 @@ pub const RULE_FEATURE_DIM: usize = 12;
 /// Hidden layer dimension for both heads.
 pub const HIDDEN_DIM: usize = 32;
 
+/// Embedding dimension for dot-product interaction.
+/// This is the "covariance" dimension - how expr and rule interact.
+pub const EMBED_DIM: usize = 8;
+
 /// Maximum number of rules we support.
 pub const MAX_RULES: usize = 64;
 
@@ -62,13 +60,10 @@ pub const MAX_RULES: usize = 64;
 // DualMaskGuide
 // ============================================================================
 
-/// Dual-mask guide for factorized action selection.
+/// Dual-mask guide with dot-product embedding architecture.
 ///
-/// Produces two masks:
-/// - `expr_mask`: Score for each e-class (where to focus)
-/// - `rule_mask`: Score for each rule (what to try)
-///
-/// Final action scores are the outer product, filtered by legality.
+/// Each head produces an embedding vector, and the score is their dot product.
+/// This gives EMBED_DIM learned interaction terms instead of just 1.
 #[derive(Clone)]
 pub struct DualMaskGuide {
     // ===== Expression Head =====
@@ -76,23 +71,23 @@ pub struct DualMaskGuide {
     pub expr_w1: [[f32; HIDDEN_DIM]; EXPR_FEATURE_DIM],
     /// First layer bias
     pub expr_b1: [f32; HIDDEN_DIM],
-    /// Output layer: [HIDDEN_DIM] → scalar
-    pub expr_w2: [f32; HIDDEN_DIM],
-    /// Output bias
-    pub expr_b2: f32,
+    /// Output layer: [HIDDEN_DIM][EMBED_DIM] → embedding vector
+    pub expr_w2: [[f32; EMBED_DIM]; HIDDEN_DIM],
+    /// Output bias (one per embedding dimension)
+    pub expr_b2: [f32; EMBED_DIM],
 
     // ===== Rule Head =====
     /// First layer: [RULE_FEATURE_DIM][HIDDEN_DIM]
     pub rule_w1: [[f32; HIDDEN_DIM]; RULE_FEATURE_DIM],
     /// First layer bias
     pub rule_b1: [f32; HIDDEN_DIM],
-    /// Output layer: [HIDDEN_DIM] → scalar
-    pub rule_w2: [f32; HIDDEN_DIM],
-    /// Output bias
-    pub rule_b2: f32,
+    /// Output layer: [HIDDEN_DIM][EMBED_DIM] → embedding vector
+    pub rule_w2: [[f32; EMBED_DIM]; HIDDEN_DIM],
+    /// Output bias (one per embedding dimension)
+    pub rule_b2: [f32; EMBED_DIM],
 
     // ===== Rule Embeddings (learned rule priors) =====
-    /// Per-rule learned bias (how promising is this rule in general?)
+    /// Per-rule learned bias (added to score, not embedding)
     pub rule_prior: [f32; MAX_RULES],
 }
 
@@ -109,13 +104,13 @@ impl DualMaskGuide {
         Self {
             expr_w1: [[0.0; HIDDEN_DIM]; EXPR_FEATURE_DIM],
             expr_b1: [0.0; HIDDEN_DIM],
-            expr_w2: [0.0; HIDDEN_DIM],
-            expr_b2: 0.0,
+            expr_w2: [[0.0; EMBED_DIM]; HIDDEN_DIM],
+            expr_b2: [0.0; EMBED_DIM],
 
             rule_w1: [[0.0; HIDDEN_DIM]; RULE_FEATURE_DIM],
             rule_b1: [0.0; HIDDEN_DIM],
-            rule_w2: [0.0; HIDDEN_DIM],
-            rule_b2: 0.0,
+            rule_w2: [[0.0; EMBED_DIM]; HIDDEN_DIM],
+            rule_b2: [0.0; EMBED_DIM],
 
             rule_prior: [0.0; MAX_RULES],
         }
@@ -149,9 +144,13 @@ impl DualMaskGuide {
         }
         for j in 0..HIDDEN_DIM {
             self.expr_b1[j] = 0.0;
-            self.expr_w2[j] = next_random() * scale_expr2;
+            for k in 0..EMBED_DIM {
+                self.expr_w2[j][k] = next_random() * scale_expr2;
+            }
         }
-        self.expr_b2 = 0.0;
+        for k in 0..EMBED_DIM {
+            self.expr_b2[k] = 0.0;
+        }
 
         // Rule head
         let scale_rule1 = sqrtf(2.0 / RULE_FEATURE_DIM as f32);
@@ -164,9 +163,13 @@ impl DualMaskGuide {
         }
         for j in 0..HIDDEN_DIM {
             self.rule_b1[j] = 0.0;
-            self.rule_w2[j] = next_random() * scale_rule2;
+            for k in 0..EMBED_DIM {
+                self.rule_w2[j][k] = next_random() * scale_rule2;
+            }
         }
-        self.rule_b2 = 0.0;
+        for k in 0..EMBED_DIM {
+            self.rule_b2[k] = 0.0;
+        }
 
         // Rule priors start at zero (no bias)
         for r in 0..MAX_RULES {
@@ -175,14 +178,14 @@ impl DualMaskGuide {
     }
 
     // ========================================================================
-    // Forward Pass
+    // Forward Pass - Embedding Architecture
     // ========================================================================
 
-    /// Compute expression score for a single e-class.
+    /// Compute expression embedding.
     ///
-    /// Higher score = more promising location to apply rewrites.
+    /// Returns an [EMBED_DIM] vector representing this expression's "query".
     #[must_use]
-    pub fn score_expr(&self, features: &[f32; EXPR_FEATURE_DIM]) -> f32 {
+    pub fn embed_expr(&self, features: &[f32; EXPR_FEATURE_DIM]) -> [f32; EMBED_DIM] {
         // Hidden layer with ReLU
         let mut hidden = [0.0f32; HIDDEN_DIM];
         for j in 0..HIDDEN_DIM {
@@ -193,19 +196,22 @@ impl DualMaskGuide {
             hidden[j] = if sum > 0.0 { sum } else { 0.0 };
         }
 
-        // Output (no activation - raw score)
-        let mut score = self.expr_b2;
-        for j in 0..HIDDEN_DIM {
-            score += self.expr_w2[j] * hidden[j];
+        // Output embedding (no activation - linear projection)
+        let mut embed = [0.0f32; EMBED_DIM];
+        for k in 0..EMBED_DIM {
+            embed[k] = self.expr_b2[k];
+            for j in 0..HIDDEN_DIM {
+                embed[k] += self.expr_w2[j][k] * hidden[j];
+            }
         }
-        score
+        embed
     }
 
-    /// Compute rule score given rule features and rule index.
+    /// Compute rule embedding.
     ///
-    /// Higher score = more promising rule to try.
+    /// Returns an [EMBED_DIM] vector representing this rule's "key".
     #[must_use]
-    pub fn score_rule(&self, features: &[f32; RULE_FEATURE_DIM], rule_idx: usize) -> f32 {
+    pub fn embed_rule(&self, features: &[f32; RULE_FEATURE_DIM]) -> [f32; EMBED_DIM] {
         // Hidden layer with ReLU
         let mut hidden = [0.0f32; HIDDEN_DIM];
         for j in 0..HIDDEN_DIM {
@@ -216,13 +222,37 @@ impl DualMaskGuide {
             hidden[j] = if sum > 0.0 { sum } else { 0.0 };
         }
 
-        // Output + rule prior
-        let mut score = self.rule_b2;
-        for j in 0..HIDDEN_DIM {
-            score += self.rule_w2[j] * hidden[j];
+        // Output embedding (no activation - linear projection)
+        let mut embed = [0.0f32; EMBED_DIM];
+        for k in 0..EMBED_DIM {
+            embed[k] = self.rule_b2[k];
+            for j in 0..HIDDEN_DIM {
+                embed[k] += self.rule_w2[j][k] * hidden[j];
+            }
+        }
+        embed
+    }
+
+    /// Compute score for a single (expr, rule) pair.
+    ///
+    /// Score = dot(expr_embed, rule_embed) + rule_prior[idx]
+    #[must_use]
+    pub fn score_action(
+        &self,
+        expr_features: &[f32; EXPR_FEATURE_DIM],
+        rule_features: &[f32; RULE_FEATURE_DIM],
+        rule_idx: usize,
+    ) -> f32 {
+        let expr_embed = self.embed_expr(expr_features);
+        let rule_embed = self.embed_rule(rule_features);
+
+        // Dot product
+        let mut score = 0.0;
+        for k in 0..EMBED_DIM {
+            score += expr_embed[k] * rule_embed[k];
         }
 
-        // Add learned rule prior
+        // Add rule prior
         if rule_idx < MAX_RULES {
             score += self.rule_prior[rule_idx];
         }
@@ -230,27 +260,39 @@ impl DualMaskGuide {
         score
     }
 
-    /// Compute expression mask for multiple e-classes.
-    ///
-    /// Returns scores for each e-class (higher = more promising).
+    /// Legacy: compute expression "score" (sum of embedding).
+    /// For backward compatibility with code expecting scalar.
     #[must_use]
-    pub fn expr_mask(&self, expr_features: &[[f32; EXPR_FEATURE_DIM]]) -> Vec<f32> {
-        expr_features.iter().map(|f| self.score_expr(f)).collect()
+    pub fn score_expr(&self, features: &[f32; EXPR_FEATURE_DIM]) -> f32 {
+        let embed = self.embed_expr(features);
+        embed.iter().sum()
     }
 
-    /// Compute rule mask for all rules given current context.
-    ///
-    /// Returns scores for each rule (higher = more promising).
+    /// Legacy: compute rule "score" (sum of embedding + prior).
+    /// For backward compatibility with code expecting scalar.
     #[must_use]
-    pub fn rule_mask(&self, rule_features: &[[f32; RULE_FEATURE_DIM]]) -> Vec<f32> {
-        rule_features
-            .iter()
-            .enumerate()
-            .map(|(idx, f)| self.score_rule(f, idx))
-            .collect()
+    pub fn score_rule(&self, features: &[f32; RULE_FEATURE_DIM], rule_idx: usize) -> f32 {
+        let embed = self.embed_rule(features);
+        let mut score: f32 = embed.iter().sum();
+        if rule_idx < MAX_RULES {
+            score += self.rule_prior[rule_idx];
+        }
+        score
     }
 
-    /// Score all legal (expr, rule) actions.
+    /// Compute expression embeddings for multiple e-classes.
+    #[must_use]
+    pub fn expr_embeddings(&self, expr_features: &[[f32; EXPR_FEATURE_DIM]]) -> Vec<[f32; EMBED_DIM]> {
+        expr_features.iter().map(|f| self.embed_expr(f)).collect()
+    }
+
+    /// Compute rule embeddings for all rules.
+    #[must_use]
+    pub fn rule_embeddings(&self, rule_features: &[[f32; RULE_FEATURE_DIM]]) -> Vec<[f32; EMBED_DIM]> {
+        rule_features.iter().map(|f| self.embed_rule(f)).collect()
+    }
+
+    /// Score all legal (expr, rule) actions using dot-product of embeddings.
     ///
     /// Takes:
     /// - `expr_features`: Features for each candidate expression
@@ -265,17 +307,30 @@ impl DualMaskGuide {
         rule_features: &[[f32; RULE_FEATURE_DIM]],
         legal_actions: &[(usize, usize)],
     ) -> Vec<f32> {
-        // Compute masks once
-        let expr_mask = self.expr_mask(expr_features);
-        let rule_mask = self.rule_mask(rule_features);
+        // Compute embeddings once
+        let expr_embeds = self.expr_embeddings(expr_features);
+        let rule_embeds = self.rule_embeddings(rule_features);
 
-        // Score each legal action
+        // Score each legal action via dot product
         legal_actions
             .iter()
             .map(|&(e, r)| {
-                let expr_score = expr_mask.get(e).copied().unwrap_or(0.0);
-                let rule_score = rule_mask.get(r).copied().unwrap_or(0.0);
-                expr_score * rule_score
+                let expr_e = expr_embeds.get(e);
+                let rule_e = rule_embeds.get(r);
+
+                match (expr_e, rule_e) {
+                    (Some(ee), Some(re)) => {
+                        let mut score = 0.0;
+                        for k in 0..EMBED_DIM {
+                            score += ee[k] * re[k];
+                        }
+                        if r < MAX_RULES {
+                            score += self.rule_prior[r];
+                        }
+                        score
+                    }
+                    _ => 0.0,
+                }
             })
             .collect()
     }
@@ -337,10 +392,12 @@ impl DualMaskGuide {
     }
 
     // ========================================================================
-    // Training
+    // Training (Embedding Architecture)
     // ========================================================================
 
     /// Train on a single (expr, rule, outcome) sample.
+    ///
+    /// Backprop through: score = dot(expr_embed, rule_embed) + rule_prior
     ///
     /// - `expr_features`: Features for the expression where rule was applied
     /// - `rule_features`: Features for the rule
@@ -357,46 +414,56 @@ impl DualMaskGuide {
         improved: bool,
         lr: f32,
     ) -> f32 {
-        // Forward pass with hidden activations
-        let (expr_score, expr_hidden) = self.forward_expr_with_hidden(expr_features);
-        let (rule_score, rule_hidden) = self.forward_rule_with_hidden(rule_features, rule_idx);
+        // Forward pass - compute embeddings and hidden activations
+        let (expr_embed, expr_hidden) = self.forward_expr_with_hidden(expr_features);
+        let (rule_embed, rule_hidden) = self.forward_rule_with_hidden(rule_features);
 
-        // Combined score (product)
-        let combined_score = expr_score * rule_score;
+        // Compute score = dot(expr_embed, rule_embed) + rule_prior
+        let mut score = 0.0;
+        for k in 0..EMBED_DIM {
+            score += expr_embed[k] * rule_embed[k];
+        }
+        if rule_idx < MAX_RULES {
+            score += self.rule_prior[rule_idx];
+        }
 
-        // Target: 1.0 if improved, 0.0 otherwise
-        // Use sigmoid + BCE for training stability
-        let predicted = sigmoid(combined_score);
+        // Sigmoid + BCE loss
+        let predicted = sigmoid(score);
         let target = if improved { 1.0 } else { 0.0 };
 
-        // BCE loss
         let p = predicted.clamp(1e-7, 1.0 - 1e-7);
         let loss = -(target * p.ln() + (1.0 - target) * (1.0 - p).ln());
 
-        // Gradient of BCE w.r.t. combined_score (through sigmoid)
-        let d_combined = predicted - target;
+        // Gradient of BCE w.r.t. score (through sigmoid)
+        let d_score = predicted - target;
 
-        // Gradient flows to both heads via product rule:
-        // d_loss/d_expr_score = d_loss/d_combined * d_combined/d_expr_score
-        //                     = d_combined * rule_score
-        let d_expr_score = d_combined * rule_score;
-        let d_rule_score = d_combined * expr_score;
+        // Gradient flows through dot product:
+        // d_loss/d_expr_embed[k] = d_score * rule_embed[k]
+        // d_loss/d_rule_embed[k] = d_score * expr_embed[k]
+        let mut d_expr_embed = [0.0f32; EMBED_DIM];
+        let mut d_rule_embed = [0.0f32; EMBED_DIM];
+        for k in 0..EMBED_DIM {
+            d_expr_embed[k] = (d_score * rule_embed[k]).clamp(-1.0, 1.0);
+            d_rule_embed[k] = (d_score * expr_embed[k]).clamp(-1.0, 1.0);
+        }
 
-        // Clip gradients
-        let d_expr_score = d_expr_score.clamp(-1.0, 1.0);
-        let d_rule_score = d_rule_score.clamp(-1.0, 1.0);
+        // Update rule prior
+        if rule_idx < MAX_RULES {
+            self.rule_prior[rule_idx] -= lr * d_score.clamp(-1.0, 1.0);
+        }
 
         // Backprop through expression head
-        self.backprop_expr(expr_features, &expr_hidden, d_expr_score, lr);
+        self.backprop_expr(expr_features, &expr_hidden, &d_expr_embed, lr);
 
         // Backprop through rule head
-        self.backprop_rule(rule_features, &rule_hidden, rule_idx, d_rule_score, lr);
+        self.backprop_rule(rule_features, &rule_hidden, &d_rule_embed, lr);
 
         loss
     }
 
-    /// Forward pass for expression head, returning hidden activations.
-    fn forward_expr_with_hidden(&self, features: &[f32; EXPR_FEATURE_DIM]) -> (f32, [f32; HIDDEN_DIM]) {
+    /// Forward pass for expression head, returning embedding and hidden activations.
+    fn forward_expr_with_hidden(&self, features: &[f32; EXPR_FEATURE_DIM]) -> ([f32; EMBED_DIM], [f32; HIDDEN_DIM]) {
+        // Hidden layer with ReLU
         let mut hidden = [0.0f32; HIDDEN_DIM];
         for j in 0..HIDDEN_DIM {
             let mut sum = self.expr_b1[j];
@@ -406,16 +473,21 @@ impl DualMaskGuide {
             hidden[j] = if sum > 0.0 { sum } else { 0.0 };
         }
 
-        let mut score = self.expr_b2;
-        for j in 0..HIDDEN_DIM {
-            score += self.expr_w2[j] * hidden[j];
+        // Output embedding
+        let mut embed = [0.0f32; EMBED_DIM];
+        for k in 0..EMBED_DIM {
+            embed[k] = self.expr_b2[k];
+            for j in 0..HIDDEN_DIM {
+                embed[k] += self.expr_w2[j][k] * hidden[j];
+            }
         }
 
-        (score, hidden)
+        (embed, hidden)
     }
 
-    /// Forward pass for rule head, returning hidden activations.
-    fn forward_rule_with_hidden(&self, features: &[f32; RULE_FEATURE_DIM], rule_idx: usize) -> (f32, [f32; HIDDEN_DIM]) {
+    /// Forward pass for rule head, returning embedding and hidden activations.
+    fn forward_rule_with_hidden(&self, features: &[f32; RULE_FEATURE_DIM]) -> ([f32; EMBED_DIM], [f32; HIDDEN_DIM]) {
+        // Hidden layer with ReLU
         let mut hidden = [0.0f32; HIDDEN_DIM];
         for j in 0..HIDDEN_DIM {
             let mut sum = self.rule_b1[j];
@@ -425,35 +497,45 @@ impl DualMaskGuide {
             hidden[j] = if sum > 0.0 { sum } else { 0.0 };
         }
 
-        let mut score = self.rule_b2;
-        for j in 0..HIDDEN_DIM {
-            score += self.rule_w2[j] * hidden[j];
+        // Output embedding
+        let mut embed = [0.0f32; EMBED_DIM];
+        for k in 0..EMBED_DIM {
+            embed[k] = self.rule_b2[k];
+            for j in 0..HIDDEN_DIM {
+                embed[k] += self.rule_w2[j][k] * hidden[j];
+            }
         }
 
-        if rule_idx < MAX_RULES {
-            score += self.rule_prior[rule_idx];
-        }
-
-        (score, hidden)
+        (embed, hidden)
     }
 
-    /// Backprop through expression head.
+    /// Backprop through expression head given gradient w.r.t. embedding.
     fn backprop_expr(
         &mut self,
         features: &[f32; EXPR_FEATURE_DIM],
         hidden: &[f32; HIDDEN_DIM],
-        d_output: f32,
+        d_embed: &[f32; EMBED_DIM],
         lr: f32,
     ) {
-        // Output layer
-        self.expr_b2 -= lr * d_output;
-        for j in 0..HIDDEN_DIM {
-            self.expr_w2[j] -= lr * d_output * hidden[j];
+        // Output layer: embed[k] = b2[k] + sum_j(w2[j][k] * hidden[j])
+        for k in 0..EMBED_DIM {
+            self.expr_b2[k] -= lr * d_embed[k];
+            for j in 0..HIDDEN_DIM {
+                self.expr_w2[j][k] -= lr * d_embed[k] * hidden[j];
+            }
         }
 
         // Hidden layer (through ReLU)
         for j in 0..HIDDEN_DIM {
-            let d_hidden = if hidden[j] > 0.0 { d_output * self.expr_w2[j] } else { 0.0 };
+            if hidden[j] <= 0.0 {
+                continue; // ReLU gradient is 0
+            }
+
+            // d_loss/d_hidden[j] = sum_k(d_embed[k] * w2[j][k])
+            let mut d_hidden = 0.0;
+            for k in 0..EMBED_DIM {
+                d_hidden += d_embed[k] * self.expr_w2[j][k];
+            }
             let d_hidden = d_hidden.clamp(-1.0, 1.0);
 
             self.expr_b1[j] -= lr * d_hidden;
@@ -463,29 +545,32 @@ impl DualMaskGuide {
         }
     }
 
-    /// Backprop through rule head.
+    /// Backprop through rule head given gradient w.r.t. embedding.
     fn backprop_rule(
         &mut self,
         features: &[f32; RULE_FEATURE_DIM],
         hidden: &[f32; HIDDEN_DIM],
-        rule_idx: usize,
-        d_output: f32,
+        d_embed: &[f32; EMBED_DIM],
         lr: f32,
     ) {
         // Output layer
-        self.rule_b2 -= lr * d_output;
-        for j in 0..HIDDEN_DIM {
-            self.rule_w2[j] -= lr * d_output * hidden[j];
-        }
-
-        // Rule prior
-        if rule_idx < MAX_RULES {
-            self.rule_prior[rule_idx] -= lr * d_output;
+        for k in 0..EMBED_DIM {
+            self.rule_b2[k] -= lr * d_embed[k];
+            for j in 0..HIDDEN_DIM {
+                self.rule_w2[j][k] -= lr * d_embed[k] * hidden[j];
+            }
         }
 
         // Hidden layer (through ReLU)
         for j in 0..HIDDEN_DIM {
-            let d_hidden = if hidden[j] > 0.0 { d_output * self.rule_w2[j] } else { 0.0 };
+            if hidden[j] <= 0.0 {
+                continue;
+            }
+
+            let mut d_hidden = 0.0;
+            for k in 0..EMBED_DIM {
+                d_hidden += d_embed[k] * self.rule_w2[j][k];
+            }
             let d_hidden = d_hidden.clamp(-1.0, 1.0);
 
             self.rule_b1[j] -= lr * d_hidden;
@@ -534,7 +619,7 @@ impl DualMaskGuide {
         let mut total_negatives = 0;
 
         for (expr_f, rule_f, rule_idx, improved) in samples {
-            let score = self.score_expr(expr_f) * self.score_rule(rule_f, *rule_idx);
+            let score = self.score_action(expr_f, rule_f, *rule_idx);
             let predicted = sigmoid(score) > 0.5;
 
             if *improved {
@@ -576,10 +661,10 @@ impl DualMaskGuide {
     /// Total number of parameters.
     #[must_use]
     pub fn param_count(&self) -> usize {
-        // Expression head
-        let expr_params = EXPR_FEATURE_DIM * HIDDEN_DIM + HIDDEN_DIM + HIDDEN_DIM + 1;
-        // Rule head
-        let rule_params = RULE_FEATURE_DIM * HIDDEN_DIM + HIDDEN_DIM + HIDDEN_DIM + 1;
+        // Expression head: w1[EXPR_FEATURE_DIM][HIDDEN_DIM] + b1[HIDDEN_DIM] + w2[HIDDEN_DIM][EMBED_DIM] + b2[EMBED_DIM]
+        let expr_params = EXPR_FEATURE_DIM * HIDDEN_DIM + HIDDEN_DIM + HIDDEN_DIM * EMBED_DIM + EMBED_DIM;
+        // Rule head: w1[RULE_FEATURE_DIM][HIDDEN_DIM] + b1[HIDDEN_DIM] + w2[HIDDEN_DIM][EMBED_DIM] + b2[EMBED_DIM]
+        let rule_params = RULE_FEATURE_DIM * HIDDEN_DIM + HIDDEN_DIM + HIDDEN_DIM * EMBED_DIM + EMBED_DIM;
         // Rule priors
         let prior_params = MAX_RULES;
 
@@ -600,10 +685,14 @@ impl DualMaskGuide {
         for &v in &self.expr_b1 {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
-        for &v in &self.expr_w2 {
+        for row in &self.expr_w2 {
+            for &v in row {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for &v in &self.expr_b2 {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
-        bytes.extend_from_slice(&self.expr_b2.to_le_bytes());
 
         // Rule head
         for row in &self.rule_w1 {
@@ -614,10 +703,14 @@ impl DualMaskGuide {
         for &v in &self.rule_b1 {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
-        for &v in &self.rule_w2 {
+        for row in &self.rule_w2 {
+            for &v in row {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for &v in &self.rule_b2 {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
-        bytes.extend_from_slice(&self.rule_b2.to_le_bytes());
 
         // Rule priors
         for &v in &self.rule_prior {
@@ -630,8 +723,8 @@ impl DualMaskGuide {
     /// Deserialize from bytes.
     #[must_use]
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        let expected = (EXPR_FEATURE_DIM * HIDDEN_DIM + HIDDEN_DIM + HIDDEN_DIM + 1
-            + RULE_FEATURE_DIM * HIDDEN_DIM + HIDDEN_DIM + HIDDEN_DIM + 1
+        let expected = (EXPR_FEATURE_DIM * HIDDEN_DIM + HIDDEN_DIM + HIDDEN_DIM * EMBED_DIM + EMBED_DIM
+            + RULE_FEATURE_DIM * HIDDEN_DIM + HIDDEN_DIM + HIDDEN_DIM * EMBED_DIM + EMBED_DIM
             + MAX_RULES) * 4;
 
         if bytes.len() != expected {
@@ -661,10 +754,14 @@ impl DualMaskGuide {
         for v in &mut guide.expr_b1 {
             *v = read_f32();
         }
-        for v in &mut guide.expr_w2 {
+        for row in &mut guide.expr_w2 {
+            for v in row.iter_mut() {
+                *v = read_f32();
+            }
+        }
+        for v in &mut guide.expr_b2 {
             *v = read_f32();
         }
-        guide.expr_b2 = read_f32();
 
         // Rule head
         for row in &mut guide.rule_w1 {
@@ -675,10 +772,14 @@ impl DualMaskGuide {
         for v in &mut guide.rule_b1 {
             *v = read_f32();
         }
-        for v in &mut guide.rule_w2 {
+        for row in &mut guide.rule_w2 {
+            for v in row.iter_mut() {
+                *v = read_f32();
+            }
+        }
+        for v in &mut guide.rule_b2 {
             *v = read_f32();
         }
-        guide.rule_b2 = read_f32();
 
         // Rule priors
         for v in &mut guide.rule_prior {
@@ -886,7 +987,8 @@ mod tests {
 
         // Check some weights match
         assert!((guide.expr_w1[0][0] - loaded.expr_w1[0][0]).abs() < 1e-6);
-        assert!((guide.rule_b2 - loaded.rule_b2).abs() < 1e-6);
+        assert!((guide.rule_b2[0] - loaded.rule_b2[0]).abs() < 1e-6);
+        assert!((guide.expr_w2[0][0] - loaded.expr_w2[0][0]).abs() < 1e-6);
     }
 
     #[test]

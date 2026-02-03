@@ -35,7 +35,7 @@ pub use factored::{EdgeAccumulator, OpEmbeddings, StructuralFeatures};
 pub use guide::GuideNnue;
 
 /// Re-export DualMaskGuide for factorized action selection.
-pub use dual_mask::{DualMaskGuide, ExprFeatures, RuleFeatures, EXPR_FEATURE_DIM, RULE_FEATURE_DIM};
+pub use dual_mask::{DualMaskGuide, ExprFeatures, RuleFeatures, EXPR_FEATURE_DIM, RULE_FEATURE_DIM, EMBED_DIM};
 
 /// Re-export training utilities.
 pub use training::{Sample, Metrics, sanity_check};
