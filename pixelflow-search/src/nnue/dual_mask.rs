@@ -1107,5 +1107,18 @@ mod tests {
             initial_eval.0 * 100.0,
             final_eval.0 * 100.0
         );
+        eprintln!(
+            "FP rate: {:.1}% -> {:.1}%",
+            initial_eval.1 * 100.0,
+            final_eval.1 * 100.0
+        );
+        eprintln!(
+            "FN rate: {:.1}% -> {:.1}%  (catching positives?)",
+            initial_eval.2 * 100.0,
+            final_eval.2 * 100.0
+        );
+
+        // The real test: FN rate should be low (we catch the positives)
+        assert!(final_eval.2 < 0.5, "Should catch at least half the positives, FN rate = {:.1}%", final_eval.2 * 100.0);
     }
 }
