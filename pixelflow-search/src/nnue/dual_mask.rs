@@ -1590,6 +1590,7 @@ mod tests {
                     |tree: &ExprTree| tree.node_count() as i64,
                     &costs,
                     0.3,   // lower threshold = more permissive
+                    100,   // max_classes (space limit)
                     0.5,   // high epsilon = lots of exploration
                     rng_seed,
                 );
@@ -1679,6 +1680,7 @@ mod tests {
                 |tree: &ExprTree| tree.node_count() as i64,
                 costs,
                 threshold,
+                100, // max_classes
                 0.0, // no exploration for evaluation
                 42,
             );
@@ -1736,6 +1738,7 @@ mod tests {
             |tree: &ExprTree| tree.node_count() as i64,
             &costs,
             0.5,   // threshold
+            100,   // max_classes (space limit)
             0.0,   // no epsilon exploration for this test
             42,
         );
@@ -1762,5 +1765,247 @@ mod tests {
         assert!(result1.best_cost < initial_cost, "Unfiltered should improve");
         // Note: filtered might not improve if threshold is too high (filters good rules)
         // That's fine - this test is about filtering, not about quality
+    }
+
+    /// Test resource-asymmetric training: guide learns to match oracle quality with fewer resources.
+    ///
+    /// Strategy:
+    /// 1. Oracle: Run with abundant resources (saturation-like)
+    /// 2. Collect pairs that fired AND improved cost
+    /// 3. Train guide to approve those pairs
+    /// 4. Evaluate guide with constrained resources
+    /// 5. Goal: guide achieves oracle-like cost with fewer resources
+    #[test]
+    fn test_resource_asymmetric_training() {
+        use crate::egraph::{EGraph, ExprTree, CostModel, all_rules, ops};
+        use crate::egraph::guided_search::GuidedSearch;
+
+        // Test expressions
+        let exprs = vec![
+            // (X + 0) * 1 → X
+            ExprTree::Op {
+                op: &ops::Mul,
+                children: vec![
+                    ExprTree::Op {
+                        op: &ops::Add,
+                        children: vec![ExprTree::var(0), ExprTree::constant(0.0)],
+                    },
+                    ExprTree::constant(1.0),
+                ],
+            },
+            // (X * 1) + 0 → X
+            ExprTree::Op {
+                op: &ops::Add,
+                children: vec![
+                    ExprTree::Op {
+                        op: &ops::Mul,
+                        children: vec![ExprTree::var(0), ExprTree::constant(1.0)],
+                    },
+                    ExprTree::constant(0.0),
+                ],
+            },
+            // X * 0 → 0
+            ExprTree::Op {
+                op: &ops::Mul,
+                children: vec![ExprTree::var(0), ExprTree::constant(0.0)],
+            },
+        ];
+
+        let costs = CostModel::default();
+        let mut guide = DualMaskGuide::new_random(42);
+
+        eprintln!("\n=== Resource-Asymmetric Training ===");
+        eprintln!("Oracle: 500 max_classes, 20 epochs");
+        eprintln!("Guide:  50 max_classes, 5 epochs");
+
+        // --- Oracle Configuration (abundant resources) ---
+        let oracle_max_classes = 500;
+        let oracle_max_epochs = 20;
+
+        // --- Guide Configuration (constrained resources) ---
+        let guide_max_classes = 50;
+        let guide_max_epochs = 5;
+
+        // --- Initial evaluation (guide with constrained resources) ---
+        let (initial_pairs, initial_cost) = {
+            let mut total_pairs = 0;
+            let mut total_cost = 0i64;
+
+            for expr in &exprs {
+                let mut egraph = EGraph::with_rules(all_rules());
+                let root = egraph.add_expr(expr);
+                let mut search = GuidedSearch::new(egraph, root, guide_max_epochs);
+
+                let result = search.run_dual_mask_filtered(
+                    &guide,
+                    |tree: &ExprTree| tree.node_count() as i64,
+                    &costs,
+                    0.5,                // threshold
+                    guide_max_classes,  // constrained space
+                    0.0,                // no exploration for eval
+                    42,
+                );
+
+                total_pairs += result.pair_records.iter().map(|e| e.pairs.len()).sum::<usize>();
+                total_cost += result.best_cost;
+            }
+            (total_pairs, total_cost)
+        };
+        eprintln!("Initial (constrained): {} pairs, cost {}", initial_pairs, initial_cost);
+
+        // --- Collect oracle samples ---
+        let mut oracle_cost_sum = 0i64;
+        let mut oracle_pairs_sum = 0;
+
+        // Training loop
+        for iteration in 0..30 {
+            let mut positive_samples: Vec<([f32; EXPR_FEATURE_DIM], [f32; RULE_FEATURE_DIM], usize, f32)> = Vec::new();
+            let mut negative_samples: Vec<([f32; EXPR_FEATURE_DIM], [f32; RULE_FEATURE_DIM], usize, f32)> = Vec::new();
+            let rng_seed = iteration as u64 * 12345;
+
+            for expr in &exprs {
+                // Run ORACLE with abundant resources
+                let mut egraph = EGraph::with_rules(all_rules());
+                let root = egraph.add_expr(expr);
+                let mut search = GuidedSearch::new(egraph, root, oracle_max_epochs);
+
+                // Oracle uses permissive threshold, no guide filtering (tries everything)
+                let result = search.run_dual_mask_filtered(
+                    &guide,
+                    |tree: &ExprTree| tree.node_count() as i64,
+                    &costs,
+                    0.1,                // very permissive = tries most pairs
+                    oracle_max_classes, // abundant space
+                    0.5,                // exploration to discover good pairs
+                    rng_seed,
+                );
+
+                oracle_cost_sum = result.best_cost;
+                oracle_pairs_sum += result.pair_records.iter().map(|e| e.pairs.len()).sum::<usize>();
+
+                // Collect training signal from oracle's trajectory
+                // Positive: pairs that FIRED and LED TO IMPROVEMENT
+                // Negative: pairs that DIDN'T FIRE or DIDN'T HELP
+                for epoch in &result.pair_records {
+                    let epoch_improved = epoch.cost_after < epoch.cost_before;
+                    let improvement = (epoch.cost_before - epoch.cost_after) as f32;
+
+                    for pair in &epoch.pairs {
+                        if pair.fired && epoch_improved {
+                            // This pair contributed to improvement
+                            positive_samples.push((
+                                pair.expr_features,
+                                pair.rule_features,
+                                pair.rule_idx,
+                                improvement.max(1.0),  // positive reward
+                            ));
+                        } else {
+                            // Either didn't fire or didn't help
+                            negative_samples.push((
+                                pair.expr_features,
+                                pair.rule_features,
+                                pair.rule_idx,
+                                -1.0,  // negative reward
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // Train guide with balanced sampling
+            // Goal: approve what oracle found useful, reject the rest
+            if !positive_samples.is_empty() {
+                let mut batch = Vec::new();
+
+                // All positives
+                batch.extend(positive_samples.iter().cloned());
+
+                // Equal number of negatives (balanced)
+                let mut rng = rng_seed;
+                for _ in 0..positive_samples.len() {
+                    if !negative_samples.is_empty() {
+                        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let idx = (rng as usize) % negative_samples.len();
+                        batch.push(negative_samples[idx]);
+                    }
+                }
+
+                guide.train_batch_with_deltas(&batch, 0.02);
+            }
+
+            // Periodic evaluation
+            if iteration % 10 == 0 || iteration == 29 {
+                let (pairs, cost) = {
+                    let mut total_pairs = 0;
+                    let mut total_cost = 0i64;
+
+                    for expr in &exprs {
+                        let mut egraph = EGraph::with_rules(all_rules());
+                        let root = egraph.add_expr(expr);
+                        let mut search = GuidedSearch::new(egraph, root, guide_max_epochs);
+
+                        let result = search.run_dual_mask_filtered(
+                            &guide,
+                            |tree: &ExprTree| tree.node_count() as i64,
+                            &costs,
+                            0.5,                // balanced threshold
+                            guide_max_classes,  // constrained space!
+                            0.0,                // no exploration for eval
+                            42,
+                        );
+
+                        total_pairs += result.pair_records.iter().map(|e| e.pairs.len()).sum::<usize>();
+                        total_cost += result.best_cost;
+                    }
+                    (total_pairs, total_cost)
+                };
+                eprintln!("Iter {}: {} pairs, cost {} (oracle cost: {})",
+                    iteration, pairs, cost, oracle_cost_sum);
+            }
+        }
+
+        // --- Final evaluation ---
+        let (final_pairs, final_cost) = {
+            let mut total_pairs = 0;
+            let mut total_cost = 0i64;
+
+            for expr in &exprs {
+                let mut egraph = EGraph::with_rules(all_rules());
+                let root = egraph.add_expr(expr);
+                let mut search = GuidedSearch::new(egraph, root, guide_max_epochs);
+
+                let result = search.run_dual_mask_filtered(
+                    &guide,
+                    |tree: &ExprTree| tree.node_count() as i64,
+                    &costs,
+                    0.5,
+                    guide_max_classes,
+                    0.0,
+                    42,
+                );
+
+                total_pairs += result.pair_records.iter().map(|e| e.pairs.len()).sum::<usize>();
+                total_cost += result.best_cost;
+            }
+            (total_pairs, total_cost)
+        };
+
+        eprintln!("\n=== Results ===");
+        eprintln!("Oracle (abundant):    {} pairs, cost {}", oracle_pairs_sum, oracle_cost_sum);
+        eprintln!("Initial (constrained): {} pairs, cost {}", initial_pairs, initial_cost);
+        eprintln!("Final (constrained):   {} pairs, cost {}", final_pairs, final_cost);
+        eprintln!("Cost improvement: {} -> {}", initial_cost, final_cost);
+        eprintln!("Guide matches oracle quality: {}", final_cost <= oracle_cost_sum);
+
+        // Guide should learn to achieve good cost with fewer resources
+        // Either: cost improved OR pairs reduced (ideally both)
+        let cost_improved = final_cost < initial_cost;
+        let pairs_reduced = final_pairs < initial_pairs;
+
+        assert!(
+            cost_improved || pairs_reduced,
+            "Guide should learn something: cost {} -> {}, pairs {} -> {}",
+            initial_cost, final_cost, initial_pairs, final_pairs
+        );
     }
 }

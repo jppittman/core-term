@@ -594,7 +594,7 @@ impl GuidedSearch {
     /// * `judge` - Cost function for extracted trees
     /// * `costs` - Cost model for extraction
     /// * `threshold` - Pairs with sigmoid(score) > threshold are approved
-    /// * `pairs_budget` - Max pairs to try per epoch (resource constraint)
+    /// * `max_classes` - E-graph space limit (resource constraint)
     /// * `epsilon` - Exploration rate: with this probability, try random pairs
     /// * `rng_seed` - Random seed for epsilon-greedy exploration
     pub fn run_dual_mask_filtered<J, C>(
@@ -603,7 +603,7 @@ impl GuidedSearch {
         mut judge: J,
         costs: &C,
         threshold: f32,
-        pairs_budget: usize,
+        max_classes: usize,
         epsilon: f32,
         mut rng_seed: u64,
     ) -> DualMaskSearchResult
@@ -641,14 +641,25 @@ impl GuidedSearch {
             // Get current e-graph state
             let num_classes = self.egraph.num_classes();
 
+            // Check space constraint
+            let space_remaining = 1.0 - (num_classes as f32 / max_classes as f32);
+            if num_classes >= max_classes {
+                // Out of space - guide filled graph with junk
+                return self.finish_dual_mask(StopReason::MaxEpochs, trajectory); // TODO: add OutOfSpace reason
+            }
+
             // Extract features for all e-classes
             let expr_features: Vec<[f32; EXPR_FEATURE_DIM]> = (0..num_classes)
                 .map(|i| self.extract_expr_features(EClassId(i as u32)))
                 .collect();
 
-            // Extract features for all rules
+            // Extract features for all rules WITH resource context
             let rule_features: Vec<[f32; RULE_FEATURE_DIM]> = (0..num_rules)
-                .map(|i| self.extract_dual_mask_rule_features(i))
+                .map(|i| self.extract_dual_mask_rule_features_with_resources(
+                    i,
+                    space_remaining,
+                    1.0, // pairs_remaining not used as hard constraint
+                ))
                 .collect();
 
             // All possible (expr, rule) pairs
@@ -656,36 +667,24 @@ impl GuidedSearch {
                 .flat_map(|e| (0..num_rules).map(move |r| (e, r)))
                 .collect();
 
-            // RESOURCE CONSTRAINT: Only try top `pairs_budget` pairs by score
-            // This forces the guide to be selective - can't just approve everything
-            let top_pairs = dual_mask.top_k_actions(
+            // Filter to approved pairs (guide decides what to try)
+            let approved_pairs = dual_mask.get_approved_actions(
                 &expr_features,
                 &rule_features,
                 &all_pairs,
-                pairs_budget,
+                threshold,
             );
 
-            // Filter by threshold from the top pairs
-            let mut pairs_to_try: Vec<(usize, usize)> = top_pairs
-                .into_iter()
-                .filter(|(_, _, score)| crate::nnue::dual_mask::sigmoid(*score) > threshold)
-                .map(|(e, r, _)| (e, r))
-                .collect();
-
-            // Epsilon-greedy: with probability epsilon, replace some with random
+            // Epsilon-greedy: with probability epsilon, add random pairs for exploration
+            let mut pairs_to_try = approved_pairs;
             rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
             if (rng_seed as f32 / u64::MAX as f32) < epsilon && !all_pairs.is_empty() {
-                // Replace up to 20% of budget with random exploration
-                let num_random = (pairs_budget / 5).max(1).min(pairs_to_try.len().max(1));
+                let num_random = (all_pairs.len() / 10).max(1).min(20);
                 for _ in 0..num_random {
                     rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                     let idx = (rng_seed as usize) % all_pairs.len();
                     let random_pair = all_pairs[idx];
                     if !pairs_to_try.contains(&random_pair) {
-                        if pairs_to_try.len() >= pairs_budget {
-                            // Replace last one
-                            pairs_to_try.pop();
-                        }
                         pairs_to_try.push(random_pair);
                     }
                 }
@@ -822,19 +821,38 @@ impl GuidedSearch {
 
     /// Extract features for a rule (for dual-mask rule head).
     fn extract_dual_mask_rule_features(&self, rule_idx: usize) -> [f32; crate::nnue::dual_mask::RULE_FEATURE_DIM] {
+        self.extract_dual_mask_rule_features_with_resources(rule_idx, 1.0, 1.0)
+    }
+
+    /// Extract features for a rule with resource context.
+    ///
+    /// Resource features let the guide learn to prioritize based on budget pressure:
+    /// - When space is tight, prefer rules that don't explode the graph
+    /// - When iterations are limited, prefer rules with high match probability
+    fn extract_dual_mask_rule_features_with_resources(
+        &self,
+        rule_idx: usize,
+        space_remaining: f32,    // fraction of max e-graph space remaining
+        pairs_remaining: f32,    // fraction of pairs budget remaining this epoch
+    ) -> [f32; crate::nnue::dual_mask::RULE_FEATURE_DIM] {
         let stats = &self.rule_stats[rule_idx];
         let num_rules = self.egraph.num_rules() as f32;
 
         [
-            rule_idx as f32 / num_rules.max(1.0),  // normalized rule index
-            self.egraph.num_classes() as f32 / 100.0,
-            self.egraph.node_count() as f32 / 500.0,
-            self.epoch as f32 / self.max_epochs as f32,
-            stats.match_rate(),
-            stats.epochs_since_match(self.epoch).min(20) as f32 / 20.0,
-            (self.max_epochs - self.epoch) as f32 / self.max_epochs as f32, // budget remaining
-            // Rule structural features (would need rule metadata)
-            0.0, 0.0, 0.0, 0.0, 0.0, // placeholders
+            rule_idx as f32 / num_rules.max(1.0),  // 0: normalized rule index
+            self.egraph.num_classes() as f32 / 100.0, // 1: current graph size
+            self.egraph.node_count() as f32 / 500.0,  // 2: current node count
+            self.epoch as f32 / self.max_epochs as f32, // 3: time fraction used
+            stats.match_rate(),                        // 4: historical match rate
+            stats.epochs_since_match(self.epoch).min(20) as f32 / 20.0, // 5: staleness
+            (self.max_epochs - self.epoch) as f32 / self.max_epochs as f32, // 6: iterations remaining
+            // Resource features - these vary during training
+            space_remaining,                           // 7: e-graph space remaining
+            pairs_remaining,                           // 8: pairs budget remaining
+            // Derived pressure signals
+            if space_remaining < 0.2 { 1.0 } else { 0.0 },  // 9: space pressure flag
+            if pairs_remaining < 0.2 { 1.0 } else { 0.0 },  // 10: pairs pressure flag
+            if self.epoch as f32 / self.max_epochs as f32 > 0.8 { 1.0 } else { 0.0 }, // 11: time pressure flag
         ]
     }
 
