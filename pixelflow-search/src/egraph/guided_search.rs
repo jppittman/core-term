@@ -594,6 +594,7 @@ impl GuidedSearch {
     /// * `judge` - Cost function for extracted trees
     /// * `costs` - Cost model for extraction
     /// * `threshold` - Pairs with sigmoid(score) > threshold are approved
+    /// * `pairs_budget` - Max pairs to try per epoch (resource constraint)
     /// * `epsilon` - Exploration rate: with this probability, try random pairs
     /// * `rng_seed` - Random seed for epsilon-greedy exploration
     pub fn run_dual_mask_filtered<J, C>(
@@ -602,6 +603,7 @@ impl GuidedSearch {
         mut judge: J,
         costs: &C,
         threshold: f32,
+        pairs_budget: usize,
         epsilon: f32,
         mut rng_seed: u64,
     ) -> DualMaskSearchResult
@@ -654,32 +656,42 @@ impl GuidedSearch {
                 .flat_map(|e| (0..num_rules).map(move |r| (e, r)))
                 .collect();
 
-            // KEY DIFFERENCE: Filter to only approved pairs
-            let approved_pairs = dual_mask.get_approved_actions(
+            // RESOURCE CONSTRAINT: Only try top `pairs_budget` pairs by score
+            // This forces the guide to be selective - can't just approve everything
+            let top_pairs = dual_mask.top_k_actions(
                 &expr_features,
                 &rule_features,
                 &all_pairs,
-                threshold,
+                pairs_budget,
             );
 
-            // Epsilon-greedy: with probability epsilon, add some random pairs
-            let mut pairs_to_try = approved_pairs;
+            // Filter by threshold from the top pairs
+            let mut pairs_to_try: Vec<(usize, usize)> = top_pairs
+                .into_iter()
+                .filter(|(_, _, score)| crate::nnue::dual_mask::sigmoid(*score) > threshold)
+                .map(|(e, r, _)| (e, r))
+                .collect();
+
+            // Epsilon-greedy: with probability epsilon, replace some with random
             rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-            if (rng_seed as f32 / u64::MAX as f32) < epsilon {
-                // Add some random pairs for exploration
-                let num_random = (num_classes * num_rules / 10).max(1).min(20);
+            if (rng_seed as f32 / u64::MAX as f32) < epsilon && !all_pairs.is_empty() {
+                // Replace up to 20% of budget with random exploration
+                let num_random = (pairs_budget / 5).max(1).min(pairs_to_try.len().max(1));
                 for _ in 0..num_random {
                     rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-                    let e = (rng_seed as usize) % num_classes;
-                    rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-                    let r = (rng_seed as usize) % num_rules;
-                    if !pairs_to_try.contains(&(e, r)) {
-                        pairs_to_try.push((e, r));
+                    let idx = (rng_seed as usize) % all_pairs.len();
+                    let random_pair = all_pairs[idx];
+                    if !pairs_to_try.contains(&random_pair) {
+                        if pairs_to_try.len() >= pairs_budget {
+                            // Replace last one
+                            pairs_to_try.pop();
+                        }
+                        pairs_to_try.push(random_pair);
                     }
                 }
             }
 
-            // If no pairs approved (and no random exploration), we're done
+            // If no pairs to try, we're done
             if pairs_to_try.is_empty() {
                 return self.finish_dual_mask(StopReason::GuidePredictsNoMatch, trajectory);
             }
