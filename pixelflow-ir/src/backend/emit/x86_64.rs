@@ -87,6 +87,11 @@ pub fn emit_movaps_store(code: &mut Vec<u8>, src: Reg, offset: u16) {
     }
 }
 
+/// MOVAPS xmm, xmm - Register-to-register copy
+pub fn emit_movaps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit_sse_rr(code, None, &[0x0F, 0x28], dst, src);
+}
+
 // =============================================================================
 // Arithmetic (SSE)
 // =============================================================================
