@@ -196,13 +196,37 @@ mod tests {
     #[test]
     fn circle_at_origin() {
         // Point at origin should be inside
+        let c = circle(SOLID, EMPTY);
+        let inside = eval_scalar(&c, 0.0, 0.0);
+        assert_eq!(inside, 1.0, "Origin should be inside circle");
+
         // Point at (2, 0) should be outside
+        let outside = eval_scalar(&c, 2.0, 0.0);
+        assert_eq!(outside, 0.0, "Point (2,0) should be outside circle");
     }
 
     #[test]
     fn composition_works() {
         // circle inside square
-        let _scene = square(circle(SOLID, 0.5f32), EMPTY);
+        let scene = square(circle(SOLID, 0.5f32), EMPTY);
+
+        // Inside circle (and square) -> SOLID (1.0)
+        // (0,0) is in both [0,1]x[0,1] and unit circle
+        let inside_both = eval_scalar(&scene, 0.0, 0.0);
+        assert_eq!(inside_both, 1.0, "Origin should be inside circle and square");
+
+        // Outside circle, inside square -> 0.5
+        // (0.8, 0.8) is in [0,1]x[0,1]
+        // 0.8^2 + 0.8^2 = 1.28 > 1.0, so outside circle
+        let inside_square_only = eval_scalar(&scene, 0.8, 0.8);
+        assert_eq!(
+            inside_square_only, 0.5,
+            "Point (0.8, 0.8) should be in square but outside circle"
+        );
+
+        // Outside square -> EMPTY (0.0)
+        let outside_both = eval_scalar(&scene, 2.0, 2.0);
+        assert_eq!(outside_both, 0.0, "Point (2,2) should be outside square");
     }
 
     #[test]
