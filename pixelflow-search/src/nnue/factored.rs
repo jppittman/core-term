@@ -62,6 +62,11 @@ pub const INPUT_DIM: usize = 2 * K + STRUCTURAL_FEATURE_COUNT;
 /// Hidden layer size.
 pub const HIDDEN_DIM: usize = 64;
 
+/// Rule feature input dimension (for policy head).
+/// Features: rule_idx, graph_size, node_count, time_used, match_rate,
+///           staleness, time_remaining, space_remaining, pairs_remaining
+pub const RULE_INPUT_DIM: usize = 9;
+
 // ============================================================================
 // Operation Embeddings
 // ============================================================================
@@ -1011,7 +1016,7 @@ fn extract_edges_recursive(expr: &Expr, edges: &mut Vec<Edge>) {
 /// Total parameters: ~6,914 (~28KB)
 #[derive(Clone)]
 pub struct DualHeadNnue {
-    // ========== SHARED ==========
+    // ========== SHARED (Expression Backbone) ==========
     /// Learned embeddings for each operation (42 × 32 = 1,344 params)
     pub embeddings: OpEmbeddings,
 
@@ -1028,7 +1033,15 @@ pub struct DualHeadNnue {
     /// Value head bias (1 param)
     pub value_b: f32,
 
-    // ========== SEARCH HEAD (The Guide) ==========
+    // ========== RULE HEAD (For Policy) ==========
+    /// Rule input dimension (rule features)
+    /// Rule first layer: [RULE_INPUT_DIM][HIDDEN_DIM]
+    pub rule_w1: [[f32; HIDDEN_DIM]; RULE_INPUT_DIM],
+
+    /// Rule first layer bias
+    pub rule_b1: [f32; HIDDEN_DIM],
+
+    // ========== SEARCH HEAD (Legacy - scalar priority) ==========
     /// Search head weights: [HIDDEN_DIM] (64 params)
     pub search_w: [f32; HIDDEN_DIM],
 
@@ -1052,6 +1065,8 @@ impl DualHeadNnue {
             b1: [0.0; HIDDEN_DIM],
             value_w: [0.0; HIDDEN_DIM],
             value_b: 0.0,
+            rule_w1: [[0.0; HIDDEN_DIM]; RULE_INPUT_DIM],
+            rule_b1: [0.0; HIDDEN_DIM],
             search_w: [0.0; HIDDEN_DIM],
             search_b: 0.0,
         }
@@ -1081,7 +1096,7 @@ impl DualHeadNnue {
     /// Convert from single-head FactoredNnue (reuse trained embeddings).
     ///
     /// The value head inherits the original output weights.
-    /// The search head starts at zero (needs training).
+    /// The rule head and search head start at zero (need training).
     #[must_use]
     pub fn from_factored(factored: &FactoredNnue) -> Self {
         Self {
@@ -1091,6 +1106,9 @@ impl DualHeadNnue {
             // Value head inherits the original output
             value_w: factored.w2,
             value_b: factored.b2,
+            // Rule head starts fresh (needs training)
+            rule_w1: [[0.0; HIDDEN_DIM]; RULE_INPUT_DIM],
+            rule_b1: [0.0; HIDDEN_DIM],
             // Search head starts fresh (needs training)
             search_w: [0.0; HIDDEN_DIM],
             search_b: 0.0,
@@ -1127,7 +1145,18 @@ impl DualHeadNnue {
         }
         self.value_b = 5.0; // Start near typical log-cost
 
-        // Search head
+        // Rule head (for policy)
+        let scale_rule = sqrtf(2.0 / RULE_INPUT_DIM as f32);
+        for row in 0..RULE_INPUT_DIM {
+            for col in 0..HIDDEN_DIM {
+                self.rule_w1[row][col] = next_f32() * scale_rule;
+            }
+        }
+        for b in &mut self.rule_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+
+        // Search head (legacy)
         for w in &mut self.search_w {
             *w = next_f32() * scale_head;
         }
@@ -1229,9 +1258,81 @@ impl DualHeadNnue {
         (score * 1000.0) as i64
     }
 
+    // ========================================================================
+    // Policy Head: (expr, rule) → approve/reject
+    // ========================================================================
+
+    /// Compute rule embedding from rule features.
+    ///
+    /// Returns hidden activations [HIDDEN_DIM] that can be dotted with expr hidden.
+    #[must_use]
+    pub fn embed_rule(&self, rule_features: &[f32; RULE_INPUT_DIM]) -> [f32; HIDDEN_DIM] {
+        let mut hidden = self.rule_b1;
+
+        for i in 0..RULE_INPUT_DIM {
+            for j in 0..HIDDEN_DIM {
+                hidden[j] += rule_features[i] * self.rule_w1[i][j];
+            }
+        }
+
+        // ReLU
+        for h in &mut hidden {
+            *h = h.max(0.0);
+        }
+
+        hidden
+    }
+
+    /// Policy: score an (expr, rule) pair.
+    ///
+    /// Score = dot(expr_hidden, rule_hidden)
+    /// High score → likely to fire and improve
+    #[must_use]
+    pub fn score_policy(&self, expr: &Expr, rule_features: &[f32; RULE_INPUT_DIM]) -> f32 {
+        let acc = EdgeAccumulator::from_expr(expr, &self.embeddings);
+        let structural = StructuralFeatures::from_expr(expr);
+        let expr_hidden = self.forward_shared(&acc, &structural);
+        let rule_hidden = self.embed_rule(rule_features);
+        dot(&expr_hidden, &rule_hidden)
+    }
+
+    /// Policy with pre-computed expression features.
+    #[must_use]
+    pub fn score_policy_with_features(
+        &self,
+        acc: &EdgeAccumulator,
+        structural: &StructuralFeatures,
+        rule_features: &[f32; RULE_INPUT_DIM],
+    ) -> f32 {
+        let expr_hidden = self.forward_shared(acc, structural);
+        let rule_hidden = self.embed_rule(rule_features);
+        dot(&expr_hidden, &rule_hidden)
+    }
+
+    /// Batch score: evaluate multiple (expr, rule) pairs efficiently.
+    ///
+    /// Returns scores for each pair in `rule_features`.
+    pub fn score_policy_batch(
+        &self,
+        expr: &Expr,
+        rule_features_batch: &[[f32; RULE_INPUT_DIM]],
+    ) -> Vec<f32> {
+        let acc = EdgeAccumulator::from_expr(expr, &self.embeddings);
+        let structural = StructuralFeatures::from_expr(expr);
+        let expr_hidden = self.forward_shared(&acc, &structural);
+
+        rule_features_batch
+            .iter()
+            .map(|rule_feat| {
+                let rule_hidden = self.embed_rule(rule_feat);
+                dot(&expr_hidden, &rule_hidden)
+            })
+            .collect()
+    }
+
     /// Total parameter count.
     ///
-    /// ~6,914 parameters (~28KB)
+    /// Parameter count including rule head.
     #[must_use]
     pub const fn param_count() -> usize {
         OpEmbeddings::param_count()           // embeddings: 42 * 32 = 1,344
@@ -1239,9 +1340,11 @@ impl DualHeadNnue {
             + HIDDEN_DIM                      // b1: 64
             + HIDDEN_DIM                      // value_w: 64
             + 1                               // value_b: 1
+            + RULE_INPUT_DIM * HIDDEN_DIM     // rule_w1: 9 * 64 = 576
+            + HIDDEN_DIM                      // rule_b1: 64
             + HIDDEN_DIM                      // search_w: 64
             + 1                               // search_b: 1
-        // Total: 6,978 parameters
+        // Total: ~7,618 parameters (~30KB)
     }
 
     /// Memory size in bytes (f32 weights).
@@ -1703,6 +1806,8 @@ mod tests {
             + 64             // b1: HIDDEN_DIM
             + 64             // value_w: HIDDEN_DIM
             + 1              // value_b
+            + 9 * 64         // rule_w1: RULE_INPUT_DIM * HIDDEN_DIM
+            + 64             // rule_b1: HIDDEN_DIM
             + 64             // search_w: HIDDEN_DIM
             + 1              // search_b
         );
@@ -1832,5 +1937,44 @@ mod tests {
         let expr = Expr::Var(0);
         let cost = net.predict_cost(&expr);
         assert!(cost.is_finite(), "Prediction should be finite");
+    }
+
+    #[test]
+    fn test_policy_scoring() {
+        let net = DualHeadNnue::new_random(42);
+        let expr = make_fma_pattern();
+
+        // Create some rule features
+        let rule_features: [f32; RULE_INPUT_DIM] = [
+            0.5,  // rule_idx normalized
+            0.3,  // graph_size
+            0.2,  // node_count
+            0.1,  // time_used
+            0.8,  // match_rate
+            0.0,  // staleness
+            0.9,  // time_remaining
+            0.7,  // space_remaining
+            0.6,  // pairs_remaining
+        ];
+
+        // Score should be finite
+        let score = net.score_policy(&expr, &rule_features);
+        assert!(score.is_finite(), "Policy score should be finite: {}", score);
+
+        // Different rules should get different scores
+        let mut other_rule = rule_features;
+        other_rule[0] = 0.9; // different rule
+        other_rule[4] = 0.1; // different match rate
+        let other_score = net.score_policy(&expr, &other_rule);
+        assert!(
+            (score - other_score).abs() > 1e-6,
+            "Different rules should get different scores: {} vs {}",
+            score, other_score
+        );
+
+        // Batch scoring should match individual
+        let batch_scores = net.score_policy_batch(&expr, &[rule_features, other_rule]);
+        assert!((batch_scores[0] - score).abs() < 1e-6);
+        assert!((batch_scores[1] - other_score).abs() < 1e-6);
     }
 }
