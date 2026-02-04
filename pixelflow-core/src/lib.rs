@@ -671,7 +671,19 @@ impl Field {
     /// Much faster than `sqrt` followed by division (~8 vs ~25 cycles).
     #[inline(always)]
     pub(crate) fn rsqrt(self) -> Self {
-        Self(self.0.simd_rsqrt())
+        // Initial approximation (~12 bits)
+        let y0 = self.0.simd_rsqrt();
+
+        // Newton-Raphson refinement: y1 = y0 * (1.5 - 0.5 * x * y0^2)
+        let half = NativeSimd::splat(0.5);
+        let one_point_five = NativeSimd::splat(1.5);
+
+        // x * 0.5 * y0 * y0
+        // Use native SIMD ops (Mul, Sub)
+        let term = self.0 * half * y0 * y0;
+        let factor = one_point_five - term;
+
+        Self(y0 * factor)
     }
 
     /// Masked add: self + (mask ? val : 0)
@@ -1107,8 +1119,8 @@ where
 
 /// Helper to apply Field operations on storage and return storage
 #[inline(always)]
-fn field_sqrt(storage: NativeSimd) -> NativeSimd {
-    Field(storage).sqrt().0
+fn field_rsqrt(storage: NativeSimd) -> NativeSimd {
+    Field(storage).rsqrt().0
 }
 
 #[inline(always)]
@@ -1156,14 +1168,35 @@ where
     <f32 as FieldStorage>::Storage: Default + Copy,
 {
     /// Square root with chain rule: sqrt(f)' = f' / (2 * sqrt(f))
+    /// Optimized: f' * 0.5 * rsqrt(f)
     #[inline(always)]
     pub fn jet_sqrt(self) -> Self {
-        let sqrt_val = field_sqrt(self.0.val);
-        let two = NativeSimd::splat(2.0);
-        let denom = two * sqrt_val;
+        let val_simd = self.0.val;
+
+        // Compute rsqrt directly
+        let rsqrt_simd = field_rsqrt(val_simd);
+
+        // Compute sqrt = val * rsqrt
+        // Using native SIMD multiplication
+        let sqrt_simd = val_simd * rsqrt_simd;
+
+        // Handle 0 or negative case (same as Field::sqrt_fast)
+        // Select zero where val <= 0
+        let zero_field = Field::from(0.0);
+        let val_field = Field(val_simd);
+        let is_zero_or_neg = val_field.le(zero_field);
+        let safe_sqrt_field = Field::select_raw(is_zero_or_neg, zero_field, Field(sqrt_simd));
+        let sqrt_val = safe_sqrt_field.0;
+
+        // Derivatives: f' * 0.5 * rsqrt(val)
+        // Replaces expensive division with multiplication.
+        // Note: At x=0, this produces NaN (0 * Inf in NR step), whereas division produced Inf.
+        let half = NativeSimd::splat(0.5);
+        let half_rsqrt = rsqrt_simd * half;
+
         Self(DualStorage {
             val: sqrt_val,
-            partials: core::array::from_fn(|i| self.0.partials[i] / denom),
+            partials: core::array::from_fn(|i| self.0.partials[i] * half_rsqrt),
         })
     }
 
