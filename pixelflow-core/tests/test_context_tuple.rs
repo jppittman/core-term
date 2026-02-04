@@ -23,7 +23,7 @@ fn test_with_context_5_params_compiles() {
     let v4 = X / 2.0f32;
 
     // For now, body is just a constant (CtxVar arithmetic needs more impls)
-    let body = X;  // Placeholder body
+    let body = X; // Placeholder body
 
     let _kernel = WithContext::new((v0, v1, v2, v3, v4), body);
 
@@ -41,4 +41,3 @@ fn test_with_context_constructs() {
     let _kernel = WithContext::new((v0, v1), body);
     // Type is: WithContext<(X, Y), X> - flat structure!
 }
-

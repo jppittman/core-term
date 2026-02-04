@@ -403,12 +403,7 @@ impl Jet3 {
     /// via operator overloads, not call raw SIMD operations directly.
     #[inline(always)]
     pub(crate) fn scale(self, s: Field) -> Jet3 {
-        Jet3::new(
-            self.val * s,
-            self.dx * s,
-            self.dy * s,
-            self.dz * s,
-        )
+        Jet3::new(self.val * s, self.dx * s, self.dy * s, self.dz * s)
     }
 }
 

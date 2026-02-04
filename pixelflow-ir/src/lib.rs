@@ -11,11 +11,11 @@
 
 extern crate alloc;
 
-pub mod kind;
-pub mod traits;
-pub mod ops;
-pub mod expr;
 pub mod backend;
+pub mod expr;
+pub mod kind;
+pub mod ops;
+pub mod traits;
 
 pub use kind::OpKind;
 pub use traits::Op;

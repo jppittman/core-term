@@ -20,7 +20,6 @@
 use crate::Field;
 use crate::Manifold;
 use crate::backend::{MaskOps, SimdOps};
-use crate::numeric::Numeric;
 use crate::ops::compare::{Ge, Gt, Le, Lt};
 use crate::ops::logic::{And, BNot, Or};
 use pixelflow_macros::Element;
@@ -352,7 +351,8 @@ where
 }
 
 /// Generic Select impl for 6-element tuple domains (needed for antialiased line rendering)
-impl<V0, V1, V2, V3, V4, V5, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5), P)> for Select<C, T, F>
+impl<V0, V1, V2, V3, V4, V5, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5), P)>
+    for Select<C, T, F>
 where
     V0: Copy + Send + Sync,
     V1: Copy + Send + Sync,
@@ -384,7 +384,8 @@ where
 }
 
 /// Generic Select impl for 8-element tuple domains
-impl<V0, V1, V2, V3, V4, V5, V6, V7, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)> for Select<C, T, F>
+impl<V0, V1, V2, V3, V4, V5, V6, V7, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7), P)>
+    for Select<C, T, F>
 where
     V0: Copy + Send + Sync,
     V1: Copy + Send + Sync,
@@ -418,7 +419,8 @@ where
 }
 
 /// Generic Select impl for 9-element tuple domains (for font quadratic curves with dy/dt)
-impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P, C, T, F, O> Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>
+impl<V0, V1, V2, V3, V4, V5, V6, V7, V8, P, C, T, F, O>
+    Manifold<((V0, V1, V2, V3, V4, V5, V6, V7, V8), P)> for Select<C, T, F>
 where
     V0: Copy + Send + Sync,
     V1: Copy + Send + Sync,
@@ -491,8 +493,12 @@ impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10]);
 impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11]);
 impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12]);
 impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13]);
-impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14]);
-impl_select_for_ctx!([V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15]);
+impl_select_for_ctx!([
+    V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14
+]);
+impl_select_for_ctx!([
+    V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15
+]);
 
 // ============================================================================
 // Select Implementations for Array-Based Context Domains
@@ -588,21 +594,8 @@ where
 }
 
 /// Select impl for four array context domains
-impl<
-        T0,
-        T1,
-        T2,
-        T3,
-        const N: usize,
-        const M: usize,
-        const K: usize,
-        const L: usize,
-        P,
-        C,
-        Tr,
-        F,
-        O,
-    > Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for Select<C, Tr, F>
+impl<T0, T1, T2, T3, const N: usize, const M: usize, const K: usize, const L: usize, P, C, Tr, F, O>
+    Manifold<(([T0; N], [T1; M], [T2; K], [T3; L]), P)> for Select<C, Tr, F>
 where
     T0: Copy + Send + Sync,
     T1: Copy + Send + Sync,

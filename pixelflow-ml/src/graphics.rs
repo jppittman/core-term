@@ -9,7 +9,7 @@
 //! compress infinite/quadratic interactions into finite/linear operations.
 
 use alloc::vec::Vec;
-use pixelflow_core::{Field, ManifoldExt, ShCoeffs, SH_NORM, Sh2};
+use pixelflow_core::{Field, ManifoldExt, SH_NORM, ShCoeffs};
 
 // ============================================================================
 // Feature Maps: The Bridge Between Attention and SH
@@ -291,6 +291,7 @@ impl HarmonicAttentionIsGlobalIllumination {
 mod tests {
     use super::*;
     use alloc::vec;
+    use pixelflow_core::Sh2;
 
     #[test]
     fn test_elu_feature_positive() {
