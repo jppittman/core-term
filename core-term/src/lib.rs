@@ -2,6 +2,10 @@
 //!
 //! This exposes the internal modules for testing and library usage.
 
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 pub mod ansi;
 pub mod color;
 pub mod config;

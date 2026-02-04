@@ -160,6 +160,10 @@
 //! - With automatic differentiation (antialiasing via `Jet2`)
 //! - On any hardware target (via `Field` abstraction)
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 pub mod animation;
 pub mod baked;
 pub mod fonts;

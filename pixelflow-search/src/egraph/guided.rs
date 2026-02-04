@@ -32,6 +32,8 @@
 //! - n(a) = visits to action a
 //! - c = exploration constant (sqrt(2) by default)
 
+#![allow(clippy::collapsible_if)]
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 

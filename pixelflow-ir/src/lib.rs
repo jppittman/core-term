@@ -8,6 +8,9 @@
 //! - **Backend**: SIMD execution traits.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
 
 extern crate alloc;
 
