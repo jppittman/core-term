@@ -8,7 +8,7 @@ use super::extract::ExprTree;
 use super::node::{EClassId, ENode};
 use super::ops;
 use super::rewrite::{Rewrite, RewriteAction};
-use super::rules::{Annihilator, Commutative, Distributive, Factor, Idempotent, Identity};
+use super::rules::{Annihilator, Commutative, Distributive, Identity};
 
 /// A potential rewrite target: (rule, e-class, node within class).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -70,6 +70,7 @@ impl EGraph {
     }
 
     /// Create the standard algebraic rewrite rules.
+    #[allow(clippy::vec_init_then_push)]
     fn create_algebraic_rules() -> Vec<Box<dyn Rewrite>> {
         let mut rules: Vec<Box<dyn Rewrite>> = Vec::new();
 

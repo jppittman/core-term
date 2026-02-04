@@ -35,6 +35,23 @@
 //! This mirrors the layered contramap pattern: parameters are fixed when you
 //! call the kernel constructor, coordinates are fixed when `eval_raw` is called.
 
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::unnecessary_filter_map)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::needless_update)]
+#![allow(clippy::collapsible_match)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::cmp_owned)]
+#![allow(clippy::clone_on_copy)]
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 mod annotate;
 mod ast;
 mod codegen;

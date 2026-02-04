@@ -69,6 +69,8 @@
 #![warn(missing_docs)]
 #![allow(dead_code)] // Prototype code
 #![allow(clippy::only_used_in_recursion)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
 
 extern crate alloc;
 

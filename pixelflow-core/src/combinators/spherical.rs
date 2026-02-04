@@ -210,6 +210,7 @@ impl<const NUM_COEFFS: usize> ShCoeffs<NUM_COEFFS> {
 
     /// Get coefficient index for (l, m).
     #[inline(always)]
+    #[must_use]
     pub const fn index(l: usize, m: i32) -> usize {
         (l * l) + l + (m as usize)
     }
@@ -218,6 +219,7 @@ impl<const NUM_COEFFS: usize> ShCoeffs<NUM_COEFFS> {
     ///
     /// This is the key operation: irradiance = light_sh · transfer_sh
     #[inline(always)]
+    #[must_use]
     pub fn dot(&self, other: &Self) -> f32 {
         let mut sum = 0.0;
         for i in 0..NUM_COEFFS {
@@ -446,6 +448,7 @@ pub static SH2_PRODUCT_TABLE: &[(usize, usize, usize, f32)] = &[
 ///   (f·g)_k = Σ_{i,j} C_{ijk} f_i g_j
 ///
 /// where C_{ijk} are the Clebsch-Gordan coefficients (or Gaunt coefficients).
+#[must_use]
 pub fn sh2_multiply(a: &Sh2, b: &Sh2) -> Sh2 {
     let mut result = [0.0f32; 9];
     for &(i, j, k, weight) in SH2_PRODUCT_TABLE {
@@ -460,6 +463,7 @@ pub fn sh2_multiply(a: &Sh2, b: &Sh2) -> Sh2 {
 /// Σ c_i Y_i(direction).
 impl Sh2 {
     /// Evaluate the SH representation at a direction.
+    #[must_use]
     pub fn eval_const(&self, dir: (Field, Field, Field)) -> Field {
         let basis = sh2_basis_at(dir);
         // Build full expression, eval once at end
@@ -479,6 +483,7 @@ impl Sh2 {
 /// Evaluate all 9 SH2 basis functions at a direction.
 ///
 /// Returns [Y00, Y1-1, Y10, Y11, Y2-2, Y2-1, Y20, Y21, Y22] evaluated at dir.
+#[must_use]
 pub fn sh2_basis_at(dir: (Field, Field, Field)) -> [Field; 9] {
     let (x, y, z) = dir;
 
@@ -524,6 +529,7 @@ pub struct Sh2Field {
 
 impl Sh2Field {
     /// Create from constant coefficients.
+    #[must_use]
     pub fn from_sh2(sh: &Sh2) -> Self {
         Self {
             coeffs: [
@@ -541,6 +547,7 @@ impl Sh2Field {
     }
 
     /// Create zeroed SH2Field.
+    #[must_use]
     pub fn zero() -> Self {
         Self {
             coeffs: [Field::from(0.0); 9],
@@ -548,6 +555,7 @@ impl Sh2Field {
     }
 
     /// Evaluate at a direction.
+    #[must_use]
     pub fn eval_const(&self, dir: (Field, Field, Field)) -> Field {
         let basis = sh2_basis_at(dir);
         // Build full expression, eval once at end
@@ -565,6 +573,7 @@ impl Sh2Field {
     }
 
     /// Extract L0 coefficient (the "DC term" / hemisphere average).
+    #[must_use]
     pub fn l0(&self) -> Field {
         self.coeffs[0]
     }
@@ -573,6 +582,7 @@ impl Sh2Field {
 /// Multiply Sh2 (static) × Sh2Field (runtime) → Sh2Field.
 ///
 /// Used when multiplying static environment lighting by per-pixel visibility.
+#[must_use]
 pub fn sh2_multiply_static_field(a: &Sh2, b: &Sh2Field) -> Sh2Field {
     let mut result = [Field::from(0.0); 9];
     for &(i, j, k, weight) in SH2_PRODUCT_TABLE {
@@ -586,6 +596,7 @@ pub fn sh2_multiply_static_field(a: &Sh2, b: &Sh2Field) -> Sh2Field {
 /// Multiply two Sh2Field (both runtime) → Sh2Field.
 ///
 /// Used when both SH representations vary per-pixel.
+#[must_use]
 pub fn sh2_multiply_field(a: &Sh2Field, b: &Sh2Field) -> Sh2Field {
     let mut result = [Field::from(0.0); 9];
     for &(i, j, k, weight) in SH2_PRODUCT_TABLE {
@@ -599,6 +610,7 @@ pub fn sh2_multiply_field(a: &Sh2Field, b: &Sh2Field) -> Sh2Field {
 ///
 /// Given a surface normal, returns the SH coefficients of the cosine-weighted
 /// hemisphere integral kernel. Dot product with environment SH gives irradiance.
+#[must_use]
 pub fn cosine_lobe_sh2(n: (Field, Field, Field)) -> Sh2Field {
     // Zonal harmonics coefficients for clamped cosine lobe
     // From Ramamoorthi & Hanrahan "An Efficient Representation for Irradiance..."
