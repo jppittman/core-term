@@ -14,6 +14,30 @@ use std::thread;
 use std::time::Duration;
 
 // =============================================================================
+// Constants
+// =============================================================================
+
+const CHANNEL_SIZE_SMALL: usize = 10;
+const CHANNEL_SIZE_MEDIUM: usize = 64;
+const CHANNEL_SIZE_LARGE: usize = 100;
+const CHANNEL_SIZE_XLARGE: usize = 128;
+const CHANNEL_SIZE_HUGE: usize = 1000;
+
+const DELAY_TINY: Duration = Duration::from_micros(100);
+const DELAY_SHORT: Duration = Duration::from_millis(10);
+const DELAY_MEDIUM: Duration = Duration::from_millis(50);
+const DELAY_LONG: Duration = Duration::from_millis(100);
+const DELAY_XLONG: Duration = Duration::from_millis(200);
+
+const TEST_BATCH_SIZE: usize = 1024;
+const TEST_NUM_BATCHES: usize = 100;
+
+const C0_BEL: u8 = 0x07;
+const C0_LF: u8 = 0x0A;
+const C0_CR: u8 = 0x0D;
+const ESC: u8 = 0x1b;
+
+// =============================================================================
 // Real Parser Actor Implementation
 // =============================================================================
 
@@ -53,10 +77,11 @@ impl Actor<Vec<u8>, (), ()> for RealParserActor {
 #[test]
 fn cuj_pty02_real_parser_simple_text() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
+    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(CHANNEL_SIZE_LARGE);
     let bytes_processed = Arc::new(AtomicUsize::new(0));
 
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
+    let (parser_tx, mut parser_rx) =
+        ActorScheduler::<Vec<u8>, (), ()>::new(CHANNEL_SIZE_SMALL, CHANNEL_SIZE_MEDIUM);
 
     let bytes_clone = bytes_processed.clone();
     let parser_handle = thread::spawn(move || {
@@ -72,7 +97,7 @@ fn cuj_pty02_real_parser_simple_text() {
     let text = b"Hello".to_vec();
     parser_tx.send(Message::Data(text)).unwrap();
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(DELAY_MEDIUM);
     drop(parser_tx);
     parser_handle.join().unwrap();
 
@@ -97,10 +122,11 @@ fn cuj_pty02_real_parser_simple_text() {
 #[test]
 fn cuj_pty02_real_parser_escape_sequence() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
+    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(CHANNEL_SIZE_LARGE);
     let bytes_processed = Arc::new(AtomicUsize::new(0));
 
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
+    let (parser_tx, mut parser_rx) =
+        ActorScheduler::<Vec<u8>, (), ()>::new(CHANNEL_SIZE_SMALL, CHANNEL_SIZE_MEDIUM);
 
     let bytes_clone = bytes_processed.clone();
     let parser_handle = thread::spawn(move || {
@@ -114,10 +140,10 @@ fn cuj_pty02_real_parser_escape_sequence() {
 
     // When: Cursor position escape sequence is sent
     // ESC [ H = cursor to home (1,1)
-    let escape_seq = b"\x1b[H".to_vec();
+    let escape_seq = vec![ESC, b'[', b'H'];
     parser_tx.send(Message::Data(escape_seq)).unwrap();
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(DELAY_MEDIUM);
     drop(parser_tx);
     parser_handle.join().unwrap();
 
@@ -143,10 +169,11 @@ fn cuj_pty02_real_parser_escape_sequence() {
 #[test]
 fn cuj_pty02_real_parser_sgr_color() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
+    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(CHANNEL_SIZE_LARGE);
     let bytes_processed = Arc::new(AtomicUsize::new(0));
 
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
+    let (parser_tx, mut parser_rx) =
+        ActorScheduler::<Vec<u8>, (), ()>::new(CHANNEL_SIZE_SMALL, CHANNEL_SIZE_MEDIUM);
 
     let bytes_clone = bytes_processed.clone();
     let parser_handle = thread::spawn(move || {
@@ -160,10 +187,10 @@ fn cuj_pty02_real_parser_sgr_color() {
 
     // When: SGR (Set Graphics Rendition) for red foreground is sent
     // ESC [ 31 m = set foreground to red
-    let sgr_red = b"\x1b[31m".to_vec();
+    let sgr_red = vec![ESC, b'[', b'3', b'1', b'm'];
     parser_tx.send(Message::Data(sgr_red)).unwrap();
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(DELAY_MEDIUM);
     drop(parser_tx);
     parser_handle.join().unwrap();
 
@@ -187,10 +214,11 @@ fn cuj_pty02_real_parser_sgr_color() {
 #[test]
 fn cuj_pty02_real_parser_mixed_text_and_escapes() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
+    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(CHANNEL_SIZE_LARGE);
     let bytes_processed = Arc::new(AtomicUsize::new(0));
 
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
+    let (parser_tx, mut parser_rx) =
+        ActorScheduler::<Vec<u8>, (), ()>::new(CHANNEL_SIZE_SMALL, CHANNEL_SIZE_MEDIUM);
 
     let bytes_clone = bytes_processed.clone();
     let parser_handle = thread::spawn(move || {
@@ -204,10 +232,10 @@ fn cuj_pty02_real_parser_mixed_text_and_escapes() {
 
     // When: Mixed content is sent
     // "Hi" + cursor home + "!"
-    let mixed = b"Hi\x1b[H!".to_vec();
+    let mixed = vec![b'H', b'i', ESC, b'[', b'H', b'!'];
     parser_tx.send(Message::Data(mixed)).unwrap();
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(DELAY_MEDIUM);
     drop(parser_tx);
     parser_handle.join().unwrap();
 
@@ -225,10 +253,11 @@ fn cuj_pty02_real_parser_mixed_text_and_escapes() {
 #[test]
 fn cuj_pty02_real_parser_incremental_escape() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
+    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(CHANNEL_SIZE_LARGE);
     let bytes_processed = Arc::new(AtomicUsize::new(0));
 
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
+    let (parser_tx, mut parser_rx) =
+        ActorScheduler::<Vec<u8>, (), ()>::new(CHANNEL_SIZE_SMALL, CHANNEL_SIZE_MEDIUM);
 
     let bytes_clone = bytes_processed.clone();
     let parser_handle = thread::spawn(move || {
@@ -242,17 +271,17 @@ fn cuj_pty02_real_parser_incremental_escape() {
 
     // When: Escape sequence arrives in pieces (simulating network fragmentation)
     // First just ESC
-    parser_tx.send(Message::Data(vec![0x1b])).unwrap();
-    thread::sleep(Duration::from_millis(10));
+    parser_tx.send(Message::Data(vec![ESC])).unwrap();
+    thread::sleep(DELAY_SHORT);
 
     // Then [
     parser_tx.send(Message::Data(vec![b'['])).unwrap();
-    thread::sleep(Duration::from_millis(10));
+    thread::sleep(DELAY_SHORT);
 
     // Then H
     parser_tx.send(Message::Data(vec![b'H'])).unwrap();
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(DELAY_MEDIUM);
     drop(parser_tx);
     parser_handle.join().unwrap();
 
@@ -276,10 +305,11 @@ fn cuj_pty02_real_parser_incremental_escape() {
 #[test]
 fn cuj_pty02_real_parser_c0_control() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
+    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(CHANNEL_SIZE_LARGE);
     let bytes_processed = Arc::new(AtomicUsize::new(0));
 
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
+    let (parser_tx, mut parser_rx) =
+        ActorScheduler::<Vec<u8>, (), ()>::new(CHANNEL_SIZE_SMALL, CHANNEL_SIZE_MEDIUM);
 
     let bytes_clone = bytes_processed.clone();
     let parser_handle = thread::spawn(move || {
@@ -293,10 +323,10 @@ fn cuj_pty02_real_parser_c0_control() {
 
     // When: C0 control characters are sent
     // BEL (0x07), LF (0x0A), CR (0x0D)
-    let controls = vec![0x07, 0x0A, 0x0D];
+    let controls = vec![C0_BEL, C0_LF, C0_CR];
     parser_tx.send(Message::Data(controls)).unwrap();
 
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(DELAY_MEDIUM);
     drop(parser_tx);
     parser_handle.join().unwrap();
 
@@ -317,10 +347,11 @@ fn cuj_pty02_real_parser_c0_control() {
 #[test]
 fn cuj_pty02_real_parser_high_throughput() {
     // Given: A real parser actor
-    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(1000);
+    let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(CHANNEL_SIZE_HUGE);
     let bytes_processed = Arc::new(AtomicUsize::new(0));
 
-    let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(100, 128);
+    let (parser_tx, mut parser_rx) =
+        ActorScheduler::<Vec<u8>, (), ()>::new(CHANNEL_SIZE_LARGE, CHANNEL_SIZE_XLARGE);
 
     let bytes_clone = bytes_processed.clone();
     let parser_handle = thread::spawn(move || {
@@ -333,22 +364,22 @@ fn cuj_pty02_real_parser_high_throughput() {
     });
 
     // When: Large volume of data is sent
-    const NUM_BATCHES: usize = 100;
-    const BATCH_SIZE: usize = 1024;
 
-    for _ in 0..NUM_BATCHES {
-        let data: Vec<u8> = (0..BATCH_SIZE).map(|i| b'A' + (i % 26) as u8).collect();
+    for _ in 0..TEST_NUM_BATCHES {
+        let data: Vec<u8> = (0..TEST_BATCH_SIZE)
+            .map(|i| b'A' + (i % 26) as u8)
+            .collect();
         parser_tx.send(Message::Data(data)).unwrap();
     }
 
-    thread::sleep(Duration::from_millis(200));
+    thread::sleep(DELAY_XLONG);
     drop(parser_tx);
     parser_handle.join().unwrap();
 
     // Then: All bytes should be processed
     assert_eq!(
         bytes_processed.load(Ordering::SeqCst),
-        NUM_BATCHES * BATCH_SIZE,
+        TEST_NUM_BATCHES * TEST_BATCH_SIZE,
         "All bytes should be processed"
     );
 
@@ -359,7 +390,7 @@ fn cuj_pty02_real_parser_high_throughput() {
     }
     assert_eq!(
         total_commands,
-        NUM_BATCHES * BATCH_SIZE,
+        TEST_NUM_BATCHES * TEST_BATCH_SIZE,
         "Should produce one Print command per byte"
     );
 }
@@ -382,10 +413,11 @@ impl TerminalMessageChain {
         let commands_clone = commands_received.clone();
 
         // Parser → App channel
-        let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(100);
+        let (cmd_tx, cmd_rx) = sync_channel::<Vec<AnsiCommand>>(CHANNEL_SIZE_LARGE);
 
         // ReadThread → Parser channel (actor scheduler)
-        let (parser_tx, mut parser_rx) = ActorScheduler::<Vec<u8>, (), ()>::new(10, 64);
+        let (parser_tx, mut parser_rx) =
+            ActorScheduler::<Vec<u8>, (), ()>::new(CHANNEL_SIZE_SMALL, CHANNEL_SIZE_MEDIUM);
 
         // Spawn parser thread
         let parser_handle = thread::spawn(move || {
@@ -440,11 +472,11 @@ fn cuj_e2e_complete_message_chain() {
 
     // When: Terminal output is sent through the chain
     // Simulate: clear screen, move cursor, print text
-    chain.send_bytes(b"\x1b[2J".to_vec()); // Clear screen
-    chain.send_bytes(b"\x1b[1;1H".to_vec()); // Move to 1,1
+    chain.send_bytes(vec![ESC, b'[', b'2', b'J']); // Clear screen
+    chain.send_bytes(vec![ESC, b'[', b'1', b';', b'1', b'H']); // Move to 1,1
     chain.send_bytes(b"Hello, Terminal!".to_vec()); // Print text
 
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(DELAY_LONG);
     chain.shutdown();
 
     // Then: All commands should be received by app
@@ -459,10 +491,10 @@ fn cuj_e2e_rapid_small_writes() {
     // When: Many small writes (simulating character-by-character echo)
     for c in b"typing rapidly...".iter() {
         chain.send_bytes(vec![*c]);
-        thread::sleep(Duration::from_micros(100)); // Simulate typing delay
+        thread::sleep(DELAY_TINY); // Simulate typing delay
     }
 
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(DELAY_LONG);
     let commands = chain.get_commands();
     chain.shutdown();
 
