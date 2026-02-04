@@ -377,7 +377,7 @@ mod tests {
     use super::*;
 
     // Use fallback font checked into git (LFS Noto Sans may not be available)
-    const FONT_DATA: &[u8] = include_bytes!("../../assets/DejaVuSansMono-Fallback.ttf");
+    const FONT_DATA: &[u8] = include_bytes!("../../assets/DejaVuSansMono.ttf");
 
     #[test]
     fn test_embedded_source() {

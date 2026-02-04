@@ -356,7 +356,7 @@ impl Manifold<Field4> for CachedText {
 mod tests {
     use super::*;
 
-    const FONT_DATA: &[u8] = include_bytes!("../../assets/DejaVuSansMono-Fallback.ttf");
+    const FONT_DATA: &[u8] = include_bytes!("../../assets/DejaVuSansMono.ttf");
 
     #[test]
     fn test_size_bucket() {
