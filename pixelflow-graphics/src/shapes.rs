@@ -194,15 +194,39 @@ mod tests {
     }
 
     #[test]
-    fn circle_at_origin() {
+    fn circle_should_contain_origin() {
         // Point at origin should be inside
+        let circle = circle(SOLID, EMPTY);
+        let val_in = eval_scalar(&circle, 0.0, 0.0);
+        assert_eq!(val_in, 1.0, "Origin should be inside (SOLID)");
+
         // Point at (2, 0) should be outside
+        let val_out = eval_scalar(&circle, 2.0, 0.0);
+        assert_eq!(val_out, 0.0, "Point (2,0) should be outside (EMPTY)");
     }
 
     #[test]
-    fn composition_works() {
+    fn composition_should_combine_shape_logics() {
         // circle inside square
-        let _scene = square(circle(SOLID, 0.5f32), EMPTY);
+        let scene = square(circle(SOLID, 0.5f32), EMPTY);
+
+        // Center: Inside square AND inside circle -> SOLID (1.0)
+        assert_eq!(eval_scalar(&scene, 0.0, 0.0), 1.0, "Center should be SOLID");
+
+        // (0.9, 0.9): Inside square but outside circle -> 0.5
+        // 0.9^2 + 0.9^2 = 1.62 > 1.0
+        assert_eq!(
+            eval_scalar(&scene, 0.9, 0.9),
+            0.5,
+            "Inside square, outside circle should be 0.5"
+        );
+
+        // (2.0, 2.0): Outside square -> EMPTY (0.0)
+        assert_eq!(
+            eval_scalar(&scene, 2.0, 2.0),
+            0.0,
+            "Outside square should be EMPTY"
+        );
     }
 
     #[test]
@@ -263,6 +287,132 @@ mod tests {
             outside.abs() < 0.001,
             "Point (2,0) should be outside (0.0), got {}",
             outside
+        );
+    }
+
+    #[test]
+    fn rectangle_should_contain_points_within_dims() {
+        let width = 2.0;
+        let height = 1.0;
+        let rect = rectangle(width, height, SOLID, EMPTY);
+
+        // Inside (1.0, 0.5) - center of 2x1 rectangle
+        assert_eq!(
+            eval_scalar(&rect, 1.0, 0.5),
+            1.0,
+            "Center (1.0, 0.5) should be inside 2x1 rectangle"
+        );
+
+        // On boundary (0.0, 0.0)
+        assert_eq!(
+            eval_scalar(&rect, 0.0, 0.0),
+            1.0,
+            "Origin (0,0) should be inside"
+        );
+
+        // On boundary (width, height)
+        assert_eq!(
+            eval_scalar(&rect, width, height),
+            1.0,
+            "Corner (width, height) should be inside"
+        );
+
+        // Outside X (2.1, 0.5)
+        assert_eq!(
+            eval_scalar(&rect, 2.1, 0.5),
+            0.0,
+            "Point (2.1, 0.5) should be outside width 2.0"
+        );
+
+        // Outside Y (1.0, 1.1)
+        assert_eq!(
+            eval_scalar(&rect, 1.0, 1.1),
+            0.0,
+            "Point (1.0, 1.1) should be outside height 1.0"
+        );
+
+        // Negative coordinates
+        assert_eq!(
+            eval_scalar(&rect, -0.1, 0.0),
+            0.0,
+            "Negative X should be outside"
+        );
+    }
+
+    #[test]
+    fn ellipse_should_respect_axes() {
+        let rx = 2.0;
+        let ry = 1.0;
+        let ell = ellipse(rx, ry, SOLID, EMPTY);
+
+        // Center
+        assert_eq!(eval_scalar(&ell, 0.0, 0.0), 1.0, "Center should be inside");
+
+        // Along X axis (1.5, 0) -> (1.5/2)^2 + 0 < 1
+        assert_eq!(
+            eval_scalar(&ell, 1.5, 0.0),
+            1.0,
+            "Point (1.5, 0) should be inside"
+        );
+
+        // Along X axis (2.1, 0) -> (2.1/2)^2 > 1
+        assert_eq!(
+            eval_scalar(&ell, 2.1, 0.0),
+            0.0,
+            "Point (2.1, 0) should be outside"
+        );
+
+        // Along Y axis (0, 0.9) -> 0 + (0.9/1)^2 < 1
+        assert_eq!(
+            eval_scalar(&ell, 0.0, 0.9),
+            1.0,
+            "Point (0, 0.9) should be inside"
+        );
+
+        // Along Y axis (0, 1.1) -> 0 + (1.1/1)^2 > 1
+        assert_eq!(
+            eval_scalar(&ell, 0.0, 1.1),
+            0.0,
+            "Point (0, 1.1) should be outside"
+        );
+    }
+
+    #[test]
+    fn annulus_should_define_ring() {
+        let r_inner = 1.0;
+        let r_outer = 2.0;
+        let ring = annulus(r_inner, r_outer, SOLID, EMPTY);
+
+        // Origin (hole)
+        assert_eq!(eval_scalar(&ring, 0.0, 0.0), 0.0, "Origin should be in the hole");
+
+        // Inner radius boundary (1.0, 0.0) -> r=1.0 -> inside
+        // Annulus uses `ge(r_inner_sq)` and `le(r_outer_sq)`. Inclusive.
+        assert_eq!(
+            eval_scalar(&ring, 1.0, 0.0),
+            1.0,
+            "Inner boundary should be inside"
+        );
+
+        // Middle of ring (1.5, 0.0)
+        assert_eq!(
+            eval_scalar(&ring, 1.5, 0.0),
+            1.0,
+            "Middle of ring should be inside"
+        );
+
+        // Outer radius boundary (2.0, 0.0)
+        assert_eq!(
+            eval_scalar(&ring, 2.0, 0.0),
+            1.0,
+            "Outer boundary should be inside"
+        );
+
+        // Outside (2.1, 0.0)
+        assert_eq!(
+            eval_scalar(&ring, 2.1, 0.0),
+            0.0,
+            "Outside ring should be empty"
         );
     }
 }
