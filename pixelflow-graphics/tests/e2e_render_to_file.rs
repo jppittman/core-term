@@ -4,8 +4,8 @@
 //! through rasterization to file output.
 
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, ManifoldExt, X, Y};
-use pixelflow_macros::kernel;
 use pixelflow_graphics::render::color::{Grayscale, NamedColor, Rgba8};
+use pixelflow_macros::kernel;
 
 type Field4 = (Field, Field, Field, Field);
 use pixelflow_graphics::render::frame::Frame;

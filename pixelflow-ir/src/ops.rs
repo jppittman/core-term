@@ -3,8 +3,8 @@
 //! Each struct represents a specific operation in the IR as a Zero-Sized Type.
 //! These implement the `Op` trait with type-level constants.
 
-use crate::traits::{Arity, Op};
 use crate::kind::OpKind;
+use crate::traits::{Arity, Op};
 
 macro_rules! define_op {
     ($name:ident, $str_name:expr, $arity:expr, $kind:expr) => {

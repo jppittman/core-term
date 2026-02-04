@@ -40,11 +40,10 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use alloc::string::String;
 
 use crate::nnue::{
-    Expr, ExprGenConfig, ExprGenerator, HalfEPFeature, OpType, RewriteRule,
-    extract_features, find_all_rewrites,
+    Expr, ExprGenConfig, ExprGenerator, HalfEPFeature, OpType, extract_features,
+    find_all_rewrites,
 };
 
 // ============================================================================
@@ -142,12 +141,14 @@ pub fn benchmark_expr(expr: &Expr, config: &BenchConfig) -> BenchResult {
     let min_ns = times[0];
     let max_ns = times[times.len() - 1];
 
-    let variance = times.iter()
+    let variance = times
+        .iter()
         .map(|&t| {
             let diff = t as i64 - mean_ns as i64;
             (diff * diff) as u64
         })
-        .sum::<u64>() / times.len() as u64;
+        .sum::<u64>()
+        / times.len() as u64;
     let std_ns = (variance as f64).sqrt() as u64;
 
     BenchResult {
@@ -216,9 +217,7 @@ pub struct TrainingSample {
 impl TrainingSample {
     /// Create a new training sample.
     pub fn new(features: Vec<HalfEPFeature>, cost: u64) -> Self {
-        let mut packed: Vec<u32> = features.iter()
-            .map(|f| f.to_index() as u32)
-            .collect();
+        let mut packed: Vec<u32> = features.iter().map(|f| f.to_index() as u32).collect();
         packed.sort_unstable();
         packed.dedup();
 
@@ -519,13 +518,9 @@ impl DatasetStats {
         let total_features: usize = samples.iter().map(|s| s.features.len()).sum();
         let total_cost: u64 = samples.iter().map(|s| s.cost).sum();
 
-        let improving: Vec<_> = samples.iter()
-            .filter(|s| s.cost_delta < 0)
-            .collect();
+        let improving: Vec<_> = samples.iter().filter(|s| s.cost_delta < 0).collect();
 
-        let total_improvement: i64 = improving.iter()
-            .map(|s| -s.cost_delta)
-            .sum();
+        let total_improvement: i64 = improving.iter().map(|s| -s.cost_delta).sum();
 
         Self {
             sample_count: samples.len(),
@@ -574,9 +569,24 @@ mod tests {
     #[test]
     fn test_training_sample_dedup() {
         let features = vec![
-            HalfEPFeature { perspective_op: 0, descendant_op: 1, depth: 0, path: 0 },
-            HalfEPFeature { perspective_op: 0, descendant_op: 1, depth: 0, path: 0 }, // duplicate
-            HalfEPFeature { perspective_op: 0, descendant_op: 2, depth: 0, path: 0 },
+            HalfEPFeature {
+                perspective_op: 0,
+                descendant_op: 1,
+                depth: 0,
+                path: 0,
+            },
+            HalfEPFeature {
+                perspective_op: 0,
+                descendant_op: 1,
+                depth: 0,
+                path: 0,
+            }, // duplicate
+            HalfEPFeature {
+                perspective_op: 0,
+                descendant_op: 2,
+                depth: 0,
+                path: 0,
+            },
         ];
         let sample = TrainingSample::new(features, 100);
         assert_eq!(sample.features.len(), 2); // Duplicates removed

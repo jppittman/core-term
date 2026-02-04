@@ -184,24 +184,45 @@ pub mod ext;
 pub use algebra::{Algebra, Transcendental};
 pub use backend::fastmath::FastMathGuard;
 pub use combinators::*;
+pub use domain::{Head, LetExtended, Spatial, Tail};
 pub use dual::{Dual, Dual1, Dual2, Dual3};
+pub use ext::*;
 pub use mask::Mask;
 pub use storage::{FieldStorage, NativeMaskStorage};
-pub use domain::{Head, LetExtended, Spatial, Tail};
-pub use ext::*;
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 pub use manifold::*;
 pub use numeric::{Computational, Coordinate, Selectable};
 pub use ops::binary::*;
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
+pub use ops::derivative::{
+    Antialias2D,
+    Antialias3D,
+    Curvature2D,
+    DX,
+    DXX,
+    DXY,
+    DY,
+    DYY,
+    DZ,
+    // Simple accessor combinators and convenience functions
+    DxOf,
+    DxxOf,
+    DxyOf,
+    DyOf,
+    DyyOf,
+    DzOf,
+    GradientMag2D,
+    GradientMag3D,
+    HasDerivatives,
+    HasDz,
+    HasHessian,
+    Normalized2D,
+    Normalized3D,
+    V,
+    ValOf,
+};
 pub use ops::logic::*;
 pub use ops::unary::*;
-pub use ops::derivative::{
-    Antialias2D, Antialias3D, Curvature2D, GradientMag2D, GradientMag3D, HasDerivatives, HasDz,
-    HasHessian, Normalized2D, Normalized3D,
-    // Simple accessor combinators and convenience functions
-    DxOf, DxxOf, DxyOf, DyOf, DyyOf, DzOf, ValOf, DX, DXX, DXY, DY, DYY, DZ, V,
-};
 pub use variables::*;
 pub use zst::Zst;
 
@@ -685,6 +706,7 @@ impl Field {
     /// Apply a unary function to each lane.
     /// Load from a slice.
     #[inline(always)]
+    #[allow(dead_code)]
     fn from_slice(slice: &[f32]) -> Self {
         Self(NativeSimd::from_slice(slice))
     }
@@ -959,7 +981,8 @@ where
 
 impl<const N: usize> core::ops::Add for Field<Dual<N>>
 where
-    <f32 as FieldStorage>::Storage: Default + core::ops::Add<Output = <f32 as FieldStorage>::Storage>,
+    <f32 as FieldStorage>::Storage:
+        Default + core::ops::Add<Output = <f32 as FieldStorage>::Storage>,
 {
     type Output = Self;
     #[inline(always)]
@@ -974,7 +997,8 @@ where
 
 impl<const N: usize> core::ops::Sub for Field<Dual<N>>
 where
-    <f32 as FieldStorage>::Storage: Default + core::ops::Sub<Output = <f32 as FieldStorage>::Storage>,
+    <f32 as FieldStorage>::Storage:
+        Default + core::ops::Sub<Output = <f32 as FieldStorage>::Storage>,
 {
     type Output = Self;
     #[inline(always)]
@@ -1009,7 +1033,8 @@ where
 
 impl<const N: usize> core::ops::Neg for Field<Dual<N>>
 where
-    <f32 as FieldStorage>::Storage: Default + core::ops::Neg<Output = <f32 as FieldStorage>::Storage>,
+    <f32 as FieldStorage>::Storage:
+        Default + core::ops::Neg<Output = <f32 as FieldStorage>::Storage>,
 {
     type Output = Self;
     #[inline(always)]

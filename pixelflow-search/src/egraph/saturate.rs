@@ -183,14 +183,17 @@ pub fn achievable_cost_within_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::egraph::{ENode, CostModel, ops};
+    use crate::egraph::{CostModel, ENode, ops};
 
     #[test]
     fn test_saturate_with_budget_simple() {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let zero = eg.add(ENode::constant(0.0));
-        let _sum = eg.add(ENode::Op { op: &ops::Add, children: vec![x, zero] });
+        let _sum = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, zero],
+        });
 
         let result = saturate_with_budget(&mut eg, 10);
 
@@ -205,9 +208,18 @@ mod tests {
         // Create a moderately complex expression
         let x = eg.add(ENode::Var(0));
         let y = eg.add(ENode::Var(1));
-        let mul = eg.add(ENode::Op { op: &ops::Mul, children: vec![x, y] });
-        let add = eg.add(ENode::Op { op: &ops::Add, children: vec![mul, x] });
-        let _sub = eg.add(ENode::Op { op: &ops::Sub, children: vec![add, y] });
+        let mul = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: vec![x, y],
+        });
+        let add = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![mul, x],
+        });
+        let _sub = eg.add(ENode::Op {
+            op: &ops::Sub,
+            children: vec![add, y],
+        });
 
         // Very small budget - may not saturate
         let result = saturate_with_budget(&mut eg, 1);
@@ -221,7 +233,10 @@ mod tests {
         let mut eg = EGraph::new();
         let x = eg.add(ENode::Var(0));
         let zero = eg.add(ENode::constant(0.0));
-        let sum = eg.add(ENode::Op { op: &ops::Add, children: vec![x, zero] });
+        let sum = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: vec![x, zero],
+        });
 
         let costs = CostModel::fully_optimized();
         let (cost, result) = achievable_cost_within_budget(&mut eg, sum, 10, &costs);

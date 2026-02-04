@@ -53,7 +53,7 @@ mod symbol;
 use proc_macro::TokenStream;
 use quote::format_ident;
 use syn::parse::{Parse, ParseStream};
-use syn::{parse_macro_input, LitInt};
+use syn::{LitInt, parse_macro_input};
 
 /// Derive macro for the `Element` trait.
 ///

@@ -238,7 +238,10 @@ impl<N: crate::Zst> crate::Zst for crate::combinators::Var<N> {}
 // RecFix and Recurse
 impl crate::Zst for crate::combinators::Recurse {}
 // RecDomain is NOT a ZST (contains P)
-impl<N: crate::Zst, S: crate::Zst, B: crate::Zst> crate::Zst for crate::combinators::RecFix<N, S, B> {}
+impl<N: crate::Zst, S: crate::Zst, B: crate::Zst> crate::Zst
+    for crate::combinators::RecFix<N, S, B>
+{
+}
 
 // Context array position markers
 impl crate::Zst for crate::combinators::A0 {}

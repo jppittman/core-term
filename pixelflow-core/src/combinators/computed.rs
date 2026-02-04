@@ -28,8 +28,8 @@
 //! // ManifoldBind<M, WithContext<...>> carries M in its type, helping inference.
 //! ```
 
-use crate::Manifold;
 use crate::Field;
+use crate::Manifold;
 
 type Field4 = (Field, Field, Field, Field);
 
@@ -110,7 +110,8 @@ impl<M: Copy, Body: Copy> Copy for ManifoldBind<M, Body> {}
 
 // ManifoldBind with single-array WithContext: M evaluates to Field,
 // body receives (([T; N], [Field; 1]), P) - combined scalar context with manifold result
-impl<T, const N: usize, M, Body> Manifold<Field4> for ManifoldBind<M, super::context::WithContext<([T; N],), Body>>
+impl<T, const N: usize, M, Body> Manifold<Field4>
+    for ManifoldBind<M, super::context::WithContext<([T; N],), Body>>
 where
     T: Copy + Send + Sync,
     M: Manifold<Field4, Output = Field>,
@@ -152,11 +153,14 @@ mod tests {
     fn test_computed_basic() {
         // Use an expression tree (X) that gets evaluated
         let expr = X;
-        let computed = Computed::new(move |p: Field4| -> Field {
-            expr.eval(p)
-        });
+        let computed = Computed::new(move |p: Field4| -> Field { expr.eval(p) });
 
-        let p = (Field::from(3.0), Field::from(4.0), Field::from(0.0), Field::from(0.0));
+        let p = (
+            Field::from(3.0),
+            Field::from(4.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
         let result: Field = computed.eval(p);
 
         // X extracts the first component = 3.0
@@ -170,11 +174,14 @@ mod tests {
         let scale = 2.0f32;
         // Use expression tree X * scale
         let expr = X * scale;
-        let computed = Computed::new(move |p: Field4| -> Field {
-            expr.eval(p)
-        });
+        let computed = Computed::new(move |p: Field4| -> Field { expr.eval(p) });
 
-        let p = (Field::from(5.0), Field::from(0.0), Field::from(0.0), Field::from(0.0));
+        let p = (
+            Field::from(5.0),
+            Field::from(0.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
         let result: Field = computed.eval(p);
 
         // X * 2 = 5 * 2 = 10

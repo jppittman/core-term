@@ -213,12 +213,7 @@ macro_rules! impl_constant_manifold {
     };
 }
 
-impl_constant_manifold!(
-    Field,
-    Discrete,
-    crate::jet::Jet2,
-    crate::jet::Jet3,
-);
+impl_constant_manifold!(Field, Discrete, crate::jet::Jet2, crate::jet::Jet3,);
 
 // ============================================================================
 // Smart Pointer Implementations
@@ -308,7 +303,7 @@ where
 /// This is purely compositional - uses At with coordinate manifolds.
 ///
 /// Type alias for `At<Mul<Field, X>, Mul<Field, Y>, Z, W, M>`.
-pub type Scale<M> = crate::combinators::At<
+pub type UniformScale<M> = crate::combinators::At<
     crate::ops::Mul<Field, crate::X>,
     crate::ops::Mul<Field, crate::Y>,
     crate::Z,
@@ -319,7 +314,7 @@ pub type Scale<M> = crate::combinators::At<
 /// Create a Scale combinator with uniform scaling.
 ///
 /// Uses fast reciprocal instruction for the 1/scale computation.
-pub fn scale<M>(inner: M, scale_factor: f64) -> Scale<M> {
+pub fn scale<M>(inner: M, scale_factor: f64) -> UniformScale<M> {
     // Use fast reciprocal - this is a bespoke SIMD instruction
     let inv_scale = Field::from(scale_factor as f32).recip();
     crate::combinators::At {
