@@ -10,6 +10,9 @@ use super::ops;
 use super::rewrite::{Rewrite, RewriteAction};
 use super::rules::{Annihilator, Commutative, Distributive, Identity};
 
+#[allow(unused_imports)]
+use super::rules::{Factor, Idempotent};
+
 /// A potential rewrite target: (rule, e-class, node within class).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RewriteTarget {
