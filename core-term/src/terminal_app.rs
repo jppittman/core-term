@@ -10,9 +10,7 @@ use actor_scheduler::{
     Actor, ActorHandle, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_core::{
-    And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Select, Sub, W, X, Y, Z,
-};
+use pixelflow_core::{And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Select, Sub, W, X, Y, Z};
 
 /// Adapter to send PTY commands to TerminalApp actor.
 pub struct TerminalAppSender {
@@ -20,6 +18,7 @@ pub struct TerminalAppSender {
 }
 
 impl TerminalAppSender {
+    #[must_use]
     pub fn new(
         handle: ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
     ) -> Self {
@@ -97,7 +96,6 @@ type BoundedGlyph =
 /// Positioned glyph manifold
 type PositionedGlyph = At<Sub<X, f32>, Sub<Y, f32>, Z, W, BoundedGlyph>;
 
-
 /// Layout parameters for a terminal cell.
 #[derive(Clone, Copy)]
 struct CellLayout {
@@ -172,14 +170,12 @@ impl TerminalApp {
         let lerp = X + Z * (Y - X);
 
         // Helper to blend a single channel
-        let blend_channel = |bg: f32, fg: f32, coverage: &PositionedGlyph| {
-            At {
-                inner: lerp,
-                x: bg,
-                y: fg,
-                z: coverage.clone(),
-                w: 0.0,
-            }
+        let blend_channel = |bg: f32, fg: f32, coverage: &PositionedGlyph| At {
+            inner: lerp,
+            x: bg,
+            y: fg,
+            z: coverage.clone(),
+            w: 0.0,
         };
 
         let r = blend_channel(colors.bg[0], colors.fg[0], &positioned);
@@ -480,10 +476,10 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 if let Some(action) = self.emulator.interpret_input(input) {
                     if let EmulatorAction::ResizePty { cols, rows } = action {
                         // Send resize command to PTY write thread
-                        if let Err(e) = self.pty_tx.send(PtyCommand::Resize(crate::io::Resize {
-                            cols,
-                            rows,
-                        })) {
+                        if let Err(e) = self
+                            .pty_tx
+                            .send(PtyCommand::Resize(crate::io::Resize { cols, rows }))
+                        {
                             log::warn!("Failed to send PTY resize command: {}", e);
                         }
                     }
@@ -551,10 +547,10 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                         }
                         EmulatorAction::ResizePty { cols, rows } => {
                             // Send resize command to PTY write thread
-                            if let Err(e) = self.pty_tx.send(PtyCommand::Resize(crate::io::Resize {
-                                cols,
-                                rows,
-                            })) {
+                            if let Err(e) = self
+                                .pty_tx
+                                .send(PtyCommand::Resize(crate::io::Resize { cols, rows }))
+                            {
                                 log::warn!("Failed to send PTY resize command: {}", e);
                             }
                         }
@@ -754,7 +750,10 @@ mod tests {
         // Check font availability to avoid panic if LFS not present
         let font_path = find_font_path();
         if !font_path.exists() {
-            eprintln!("Test skipped: Font file not found at {}", font_path.display());
+            eprintln!(
+                "Test skipped: Font file not found at {}",
+                font_path.display()
+            );
             return None;
         }
         if let Ok(metadata) = std::fs::metadata(&font_path) {

@@ -124,8 +124,7 @@ impl FieldStorage for bool {
         // MaskOps doesn't have splat, so we use bitwise ops
         if val {
             // All bits set
-            !<Self::Storage as Default>::default()
-                | <Self::Storage as Default>::default()
+            !<Self::Storage as Default>::default() | <Self::Storage as Default>::default()
         } else {
             <Self::Storage as Default>::default()
         }

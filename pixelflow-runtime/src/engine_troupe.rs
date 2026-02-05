@@ -449,7 +449,7 @@ impl EngineHandler {
         let send_time = t1.elapsed();
 
         self.frame_number += 1;
-        if self.frame_number % 60 == 0 {
+        if self.frame_number.is_multiple_of(60) {
             log::info!(
                 "Frame {}: render={:?}, send={:?}",
                 self.frame_number,
@@ -793,6 +793,7 @@ impl Troupe {
     ///
     /// You must call `register()` on this handle before you can use the engine.
     /// This ensures proper initialization (app registration + window creation).
+    #[must_use]
     pub fn engine_handle(&self) -> crate::api::public::UnregisteredEngineHandle {
         crate::api::public::UnregisteredEngineHandle::new(self.directory().engine.clone())
     }
@@ -813,6 +814,7 @@ impl Troupe {
     /// let unregistered = troupe.engine_handle();
     /// unregistered.register(Arc::new(app), window)?;
     /// ```
+    #[must_use]
     pub fn raw_engine_handle(&self) -> crate::api::private::EngineActorHandle {
         self.directory().engine.clone()
     }

@@ -95,6 +95,7 @@ impl<L> SpatialBSP<L> {
     ///
     /// Items are split recursively on the larger dimension until each
     /// region contains a single leaf.
+    #[must_use]
     pub fn from_positioned(items: Vec<Positioned<L>>) -> Self {
         if items.is_empty() {
             return Self {
@@ -212,11 +213,13 @@ impl<L> SpatialBSP<L> {
     }
 
     /// Number of interior nodes.
+    #[must_use]
     pub fn interior_count(&self) -> usize {
         self.interiors.len()
     }
 
     /// Number of leaf nodes.
+    #[must_use]
     pub fn leaf_count(&self) -> usize {
         self.leaves.len()
     }
@@ -283,7 +286,12 @@ where
         let right_val = self.eval_child(node.right, x, y, z, w);
 
         // Blend using Select combinator
-        Select { cond: mask, if_true: left_val, if_false: right_val }.eval((x, y, z, w))
+        Select {
+            cond: mask,
+            if_true: left_val,
+            if_false: right_val,
+        }
+        .eval((x, y, z, w))
     }
 
     /// Evaluate a child node (either interior or leaf).

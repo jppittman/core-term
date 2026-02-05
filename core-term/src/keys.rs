@@ -10,6 +10,7 @@ pub use pixelflow_runtime::input::{KeySymbol, Modifiers};
 /// It performs an O(1) lookup in `config.keybindings.lookup`.
 /// If a match is found, it returns a clone of the corresponding `UserInputAction`.
 /// Otherwise, it returns `None`.
+#[must_use]
 pub fn map_key_event_to_action(
     key_symbol: KeySymbol,
     modifiers: Modifiers,

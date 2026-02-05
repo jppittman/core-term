@@ -3,8 +3,8 @@
 //! These rules encode knowledge about CPU instruction sets and performance.
 //! They are NOT generic algebraic rules - those belong in pixelflow-search.
 
-use pixelflow_search::egraph::{EClassId, EGraph, ENode, ops};
 use pixelflow_search::egraph::rewrite::{Rewrite, RewriteAction};
+use pixelflow_search::egraph::{EClassId, EGraph, ENode, ops};
 
 /// FmaFusion: a * b + c → MulAdd(a, b, c)
 ///
@@ -17,7 +17,9 @@ use pixelflow_search::egraph::rewrite::{Rewrite, RewriteAction};
 pub struct FmaFusion;
 
 impl Rewrite for FmaFusion {
-    fn name(&self) -> &str { "fma-fusion" }
+    fn name(&self) -> &str {
+        "fma-fusion"
+    }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match Add(Mul(a, b), c) → MulAdd(a, b, c)
@@ -28,7 +30,11 @@ impl Rewrite for FmaFusion {
 
                 // Check if left is a Mul
                 for left_node in egraph.nodes(left) {
-                    if let ENode::Op { op: left_op, children: left_children } = left_node {
+                    if let ENode::Op {
+                        op: left_op,
+                        children: left_children,
+                    } = left_node
+                    {
                         if left_op.name() == "mul" && left_children.len() == 2 {
                             let a = left_children[0];
                             let b = left_children[1];
@@ -42,7 +48,11 @@ impl Rewrite for FmaFusion {
 
                 // Check if right is a Mul (commutativity)
                 for right_node in egraph.nodes(right) {
-                    if let ENode::Op { op: right_op, children: right_children } = right_node {
+                    if let ENode::Op {
+                        op: right_op,
+                        children: right_children,
+                    } = right_node
+                    {
                         if right_op.name() == "mul" && right_children.len() == 2 {
                             let a = right_children[0];
                             let b = right_children[1];
@@ -66,14 +76,20 @@ impl Rewrite for FmaFusion {
 pub struct RecipSqrt;
 
 impl Rewrite for RecipSqrt {
-    fn name(&self) -> &str { "recip-sqrt" }
+    fn name(&self) -> &str {
+        "recip-sqrt"
+    }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         if let ENode::Op { op, children } = node {
             if op.name() == "recip" && children.len() == 1 {
                 let a = children[0];
                 for child in egraph.nodes(a) {
-                    if let ENode::Op { op: child_op, children: child_children } = child {
+                    if let ENode::Op {
+                        op: child_op,
+                        children: child_children,
+                    } = child
+                    {
                         if child_op.name() == "sqrt" && child_children.len() == 1 {
                             let inner = child_children[0];
                             return Some(RewriteAction::Create(ENode::Op {

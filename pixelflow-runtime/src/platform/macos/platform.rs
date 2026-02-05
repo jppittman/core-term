@@ -272,11 +272,7 @@ impl Drop for MetalOps {
     fn drop(&mut self) {
         unsafe {
             // [NSApp terminate:nil]
-            sys::send_1::<(), sys::Id>(
-                self.app.0,
-                sys::sel(b"terminate:\0"),
-                std::ptr::null_mut(),
-            );
+            sys::send_1::<(), sys::Id>(self.app.0, sys::sel(b"terminate:\0"), std::ptr::null_mut());
         }
     }
 }

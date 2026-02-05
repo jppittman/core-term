@@ -175,7 +175,7 @@ pub trait SimdOps:
     #[inline(always)]
     fn exp(self) -> Self {
         // log2(e) = 1/ln(2)
-        const LOG2_E: f32 = 1.4426950408889634;
+        const LOG2_E: f32 = 1.442_695;
         (self * Self::splat(LOG2_E)).exp2()
     }
 }

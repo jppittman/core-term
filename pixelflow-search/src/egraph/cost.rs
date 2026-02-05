@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use pixelflow_ir::OpKind;
 use super::node::ENode;
+use pixelflow_ir::OpKind;
 
 // ============================================================================
 // Cost Function Trait
@@ -337,11 +337,11 @@ impl CostModel {
                     } else {
                         // Try to parse as OpKind name
                         for i in 0..OpKind::COUNT {
-                            if let Some(op) = OpKind::from_index(i) {
-                                if op.name() == key {
-                                    model.costs[i] = v;
-                                    break;
-                                }
+                            if let Some(op) = OpKind::from_index(i)
+                                && op.name() == key
+                            {
+                                model.costs[i] = v;
+                                break;
                             }
                         }
                     }
@@ -355,16 +355,15 @@ impl CostModel {
     /// Try to load from a standard location, falling back to fully_optimized.
     pub fn load_or_default() -> Self {
         // Check environment variable first
-        if let Ok(path) = std::env::var("PIXELFLOW_COST_MODEL") {
-            if let Ok(model) = Self::load_toml(&path) {
-                return model;
-            }
+        if let Ok(path) = std::env::var("PIXELFLOW_COST_MODEL")
+            && let Ok(model) = Self::load_toml(&path)
+        {
+            return model;
         }
 
         // Try user config directory
         if let Some(home) = std::env::var_os("HOME") {
-            let config_path = Path::new(&home)
-                .join(".config/pixelflow/cost_model.toml");
+            let config_path = Path::new(&home).join(".config/pixelflow/cost_model.toml");
             if let Ok(model) = Self::load_toml(&config_path) {
                 return model;
             }
@@ -399,11 +398,11 @@ impl CostModel {
                 model.depth_penalty = value;
             } else {
                 for i in 0..OpKind::COUNT {
-                    if let Some(op) = OpKind::from_index(i) {
-                        if op.name() == key {
-                            model.costs[i] = value;
-                            break;
-                        }
+                    if let Some(op) = OpKind::from_index(i)
+                        && op.name() == key
+                    {
+                        model.costs[i] = value;
+                        break;
                     }
                 }
             }
