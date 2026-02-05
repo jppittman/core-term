@@ -61,35 +61,35 @@ impl ExprTree {
     }
 
     // Constructor helpers for common operations
-    pub fn add(a: Self, b: Self) -> Self {
+    pub fn make_add(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Add,
             children: alloc::vec![a, b],
         }
     }
 
-    pub fn sub(a: Self, b: Self) -> Self {
+    pub fn make_sub(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Sub,
             children: alloc::vec![a, b],
         }
     }
 
-    pub fn mul(a: Self, b: Self) -> Self {
+    pub fn make_mul(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Mul,
             children: alloc::vec![a, b],
         }
     }
 
-    pub fn div(a: Self, b: Self) -> Self {
+    pub fn make_div(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Div,
             children: alloc::vec![a, b],
         }
     }
 
-    pub fn neg(a: Self) -> Self {
+    pub fn make_neg(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Neg,
             children: alloc::vec![a],
@@ -615,44 +615,46 @@ fn toposort_dag(
     let mut visited: BTreeSet<u32> = BTreeSet::new();
     let mut result = Vec::new();
 
-    fn visit(
-        egraph: &EGraph,
-        class: EClassId,
-        best_node: &[Option<usize>],
-        shared_set: &BTreeSet<u32>,
-        visited: &mut BTreeSet<u32>,
-        result: &mut Vec<EClassId>,
-    ) {
-        let canonical = egraph.find(class);
-        if !visited.insert(canonical.0) {
+    struct ToposortContext<'a> {
+        egraph: &'a EGraph,
+        best_node: &'a [Option<usize>],
+        shared_set: &'a BTreeSet<u32>,
+        visited: &'a mut BTreeSet<u32>,
+        result: &'a mut Vec<EClassId>,
+    }
+
+    fn visit(ctx: &mut ToposortContext, class: EClassId) {
+        let canonical = ctx.egraph.find(class);
+        if !ctx.visited.insert(canonical.0) {
             return;
         }
 
         // Visit children first (post-order)
-        if let Some(node_idx) = best_node.get(canonical.0 as usize).and_then(|o| *o) {
-            let node = &egraph.nodes(canonical)[node_idx];
+        if let Some(node_idx) = ctx.best_node.get(canonical.0 as usize).and_then(|o| *o) {
+            let node = &ctx.egraph.nodes(canonical)[node_idx];
             if let ENode::Op { children, .. } = node {
                 for &child in children {
-                    visit(egraph, child, best_node, shared_set, visited, result);
+                    visit(ctx, child);
                 }
             }
         }
 
         // Add shared e-classes to the schedule (they need let-bindings)
         // Leaves and non-shared nodes don't need explicit scheduling
-        if shared_set.contains(&canonical.0) {
-            result.push(canonical);
+        if ctx.shared_set.contains(&canonical.0) {
+            ctx.result.push(canonical);
         }
     }
 
-    visit(
+    let mut ctx = ToposortContext {
         egraph,
-        root,
         best_node,
-        &shared_set,
-        &mut visited,
-        &mut result,
-    );
+        shared_set: &shared_set,
+        visited: &mut visited,
+        result: &mut result,
+    };
+
+    visit(&mut ctx, root);
 
     // Add root if not already included
     let root_canonical = egraph.find(root);
@@ -672,7 +674,7 @@ mod tests {
         let x = ExprTree::var(0);
         assert_eq!(x.node_count(), 1);
 
-        let sum = ExprTree::add(ExprTree::var(0), ExprTree::var(1));
+        let sum = ExprTree::make_add(ExprTree::var(0), ExprTree::var(1));
         assert_eq!(sum.node_count(), 3); // Add + X + Y
     }
 
@@ -681,11 +683,11 @@ mod tests {
         let x = ExprTree::var(0);
         assert_eq!(x.depth(), 1);
 
-        let sum = ExprTree::add(ExprTree::var(0), ExprTree::var(1));
+        let sum = ExprTree::make_add(ExprTree::var(0), ExprTree::var(1));
         assert_eq!(sum.depth(), 2);
 
         // (X + Y) * Z
-        let nested = ExprTree::mul(sum, ExprTree::var(2));
+        let nested = ExprTree::make_mul(sum, ExprTree::var(2));
         assert_eq!(nested.depth(), 3);
     }
 

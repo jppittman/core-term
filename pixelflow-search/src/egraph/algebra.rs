@@ -27,7 +27,7 @@ use super::rewrite::{Rewrite, RewriteAction};
 /// - Involution: inv(inv(x)) → x
 /// - Cancellation: (x ⊕ a) ⊖ a → x
 /// - InverseAnnihilation: x ⊕ inv(x) → identity
-pub trait InversePair {
+pub trait InversePair: Send + Sync {
     /// The base operation (Add, Mul)
     fn base() -> &'static dyn Op;
     /// The inverse operation (Neg, Recip)
