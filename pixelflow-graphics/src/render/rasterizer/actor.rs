@@ -45,6 +45,13 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
+/// Maximum number of data messages to process in a burst.
+const DATA_BURST_LIMIT: usize = 64;
+/// Size of the data message buffer (backpressure threshold).
+const DATA_BUFFER_SIZE: usize = 16;
+/// Capacity of the setup channel (one-shot handshake).
+const SETUP_CHANNEL_CAPACITY: usize = 1;
+
 /// Rasterizer actor for parallel frame rendering.
 ///
 /// This actor manages a pool of worker threads for rendering frames via
@@ -96,7 +103,7 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
     /// ```
     pub fn spawn_with_setup(num_threads: usize) -> (RasterizerSetupHandle<P>, JoinHandle<()>) {
         // Create the setup channel (buffer=1, only one setup message ever)
-        let (setup_tx, setup_rx) = mpsc::sync_channel::<RasterSetup<P>>(1);
+        let (setup_tx, setup_rx) = mpsc::sync_channel::<RasterSetup<P>>(SETUP_CHANNEL_CAPACITY);
 
         // Spawn the actor thread
         let join_handle = thread::spawn(move || {
@@ -111,7 +118,10 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
 
             // PHASE 2: Create the actor scheduler
             let (handle, mut scheduler) =
-                ActorScheduler::<RenderRequest<P>, RasterControl, RasterManagement>::new(64, 16);
+                ActorScheduler::<RenderRequest<P>, RasterControl, RasterManagement>::new(
+                    DATA_BURST_LIMIT,
+                    DATA_BUFFER_SIZE,
+                );
 
             // Send the full handle back to the caller
             reply_tx
