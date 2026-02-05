@@ -279,8 +279,12 @@ where
             materialize_discrete_fields(manifold, xs, ys, &mut packed);
 
             // Copy to target
-            for i in 0..PARALLELISM {
-                target[row_offset + x + i] = P::from_u32(packed[i]);
+            // Optimization: Use slice iterators to eliminate bounds checks in the loop
+            // and allow better auto-vectorization/unrolling by LLVM.
+            let dest_start = row_offset + x;
+            let dest_slice = &mut target[dest_start..dest_start + PARALLELISM];
+            for (d, &s) in dest_slice.iter_mut().zip(&packed) {
+                *d = P::from_u32(s);
             }
 
             x += PARALLELISM;
