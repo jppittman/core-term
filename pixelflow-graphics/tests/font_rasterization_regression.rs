@@ -14,7 +14,7 @@ use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use std::sync::Arc;
 
-const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
+const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
 // =============================================================================
 // Regression: SIMD mask AND must use `&` not `*`
