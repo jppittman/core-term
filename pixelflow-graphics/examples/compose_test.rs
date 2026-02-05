@@ -1,5 +1,5 @@
 //! Testing kernel composition patterns
-use pixelflow_core::{Field, Manifold, ManifoldExt};
+use pixelflow_core::{Field, Manifold, ManifoldExt, X};
 use pixelflow_macros::kernel;
 
 type Field4 = (Field, Field, Field, Field);
@@ -21,7 +21,9 @@ fn main() {
     // d is impl Manifold<Field4, Output=Field>
     
     // Using ManifoldExt to compose
-    let circle = d.map(|f| f - Field::from(0.5));  // radius 0.5
+    // Map takes a manifold that operates on the output of the previous one (Field)
+    // We use X to refer to that input value
+    let circle = d.map(X - Field::from(0.5));  // radius 0.5
     
     let p = field4(1.5, 2.0);
     let result = circle.eval(p);
