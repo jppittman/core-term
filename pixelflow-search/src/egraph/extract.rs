@@ -63,35 +63,35 @@ impl ExprTree {
     }
 
     // Constructor helpers for common operations
-    pub fn add(a: Self, b: Self) -> Self {
+    pub fn make_add(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Add,
             children: alloc::vec![a, b],
         }
     }
 
-    pub fn sub(a: Self, b: Self) -> Self {
+    pub fn make_sub(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Sub,
             children: alloc::vec![a, b],
         }
     }
 
-    pub fn mul(a: Self, b: Self) -> Self {
+    pub fn make_mul(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Mul,
             children: alloc::vec![a, b],
         }
     }
 
-    pub fn div(a: Self, b: Self) -> Self {
+    pub fn make_div(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Div,
             children: alloc::vec![a, b],
         }
     }
 
-    pub fn neg(a: Self) -> Self {
+    pub fn make_neg(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Neg,
             children: alloc::vec![a],
@@ -385,7 +385,7 @@ pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (
         }
     }
 
-    let tree = result_stack.pop().unwrap_or_else(|| ExprTree::Leaf(Leaf::Const(0.0)));
+    let tree = result_stack.pop().unwrap_or(ExprTree::Leaf(Leaf::Const(0.0)));
     (tree, total_cost)
 }
 
@@ -574,13 +574,13 @@ fn count_refs_recursive(
     ref_counts[canonical.0 as usize] += 1;
 
     // Only recurse on first visit to count true structural refs
-    if ref_counts[canonical.0 as usize] == 1 {
-        if let Some(node_idx) = best_node[canonical.0 as usize] {
-            let node = &egraph.nodes(canonical)[node_idx];
-            if let ENode::Op { children, .. } = node {
-                for &child in children {
-                    count_refs_recursive(egraph, child, best_node, ref_counts);
-                }
+    if ref_counts[canonical.0 as usize] == 1
+        && let Some(node_idx) = best_node[canonical.0 as usize]
+    {
+        let node = &egraph.nodes(canonical)[node_idx];
+        if let ENode::Op { children, .. } = node {
+            for &child in children {
+                count_refs_recursive(egraph, child, best_node, ref_counts);
             }
         }
     }
@@ -602,6 +602,7 @@ fn toposort_dag(
     let mut visited: BTreeSet<u32> = BTreeSet::new();
     let mut result = Vec::new();
 
+    #[allow(clippy::too_many_arguments)]
     fn visit(
         egraph: &EGraph,
         class: EClassId,
@@ -636,7 +637,7 @@ fn toposort_dag(
 
     // Add root if not already included
     let root_canonical = egraph.find(root);
-    if !result.iter().any(|id| *id == root_canonical) {
+    if !result.contains(&root_canonical) {
         result.push(root_canonical);
     }
 
@@ -652,7 +653,7 @@ mod tests {
         let x = ExprTree::var(0);
         assert_eq!(x.node_count(), 1);
 
-        let sum = ExprTree::add(ExprTree::var(0), ExprTree::var(1));
+        let sum = ExprTree::make_add(ExprTree::var(0), ExprTree::var(1));
         assert_eq!(sum.node_count(), 3); // Add + X + Y
     }
 
@@ -661,11 +662,11 @@ mod tests {
         let x = ExprTree::var(0);
         assert_eq!(x.depth(), 1);
 
-        let sum = ExprTree::add(ExprTree::var(0), ExprTree::var(1));
+        let sum = ExprTree::make_add(ExprTree::var(0), ExprTree::var(1));
         assert_eq!(sum.depth(), 2);
 
         // (X + Y) * Z
-        let nested = ExprTree::mul(sum, ExprTree::var(2));
+        let nested = ExprTree::make_mul(sum, ExprTree::var(2));
         assert_eq!(nested.depth(), 3);
     }
 

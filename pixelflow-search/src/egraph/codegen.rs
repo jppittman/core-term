@@ -620,7 +620,7 @@ mod tests {
     fn test_expr_tree_to_kernel_body_unary() {
         let x = ExprTree::var(0);
         assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::neg(x.clone())),
+            expr_tree_to_kernel_body(&ExprTree::make_neg(x.clone())),
             "(-X)"
         );
         assert_eq!(
@@ -639,11 +639,11 @@ mod tests {
         let y = ExprTree::var(1);
 
         assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::add(x.clone(), y.clone())),
+            expr_tree_to_kernel_body(&ExprTree::make_add(x.clone(), y.clone())),
             "(X + Y)"
         );
         assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::mul(x.clone(), y.clone())),
+            expr_tree_to_kernel_body(&ExprTree::make_mul(x.clone(), y.clone())),
             "(X * Y)"
         );
         assert_eq!(
@@ -655,8 +655,8 @@ mod tests {
     #[test]
     fn test_expr_tree_to_kernel_body_nested() {
         // (X + Y) * Z
-        let tree = ExprTree::mul(
-            ExprTree::add(ExprTree::var(0), ExprTree::var(1)),
+        let tree = ExprTree::make_mul(
+            ExprTree::make_add(ExprTree::var(0), ExprTree::var(1)),
             ExprTree::var(2),
         );
         assert_eq!(expr_tree_to_kernel_body(&tree), "((X + Y) * Z)");
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn test_expr_tree_to_kernel_code() {
-        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(1.0));
+        let tree = ExprTree::make_add(ExprTree::var(0), ExprTree::constant(1.0));
         let code = expr_tree_to_kernel_code(&tree, "my_kernel");
         assert_eq!(code, "let my_kernel = kernel!(|| (X + 1.0));");
     }
@@ -685,7 +685,7 @@ mod tests {
             ("k0".to_string(), ExprTree::var(0)),
             (
                 "k1".to_string(),
-                ExprTree::add(ExprTree::var(0), ExprTree::var(1)),
+                ExprTree::make_add(ExprTree::var(0), ExprTree::var(1)),
             ),
         ];
 

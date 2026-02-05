@@ -27,7 +27,7 @@ use super::rewrite::{Rewrite, RewriteAction};
 /// - Involution: inv(inv(x)) → x
 /// - Cancellation: (x ⊕ a) ⊖ a → x
 /// - InverseAnnihilation: x ⊕ inv(x) → identity
-pub trait InversePair {
+pub trait InversePair: Send + Sync {
     /// The base operation (Add, Mul)
     fn base() -> &'static dyn Op;
     /// The inverse operation (Neg, Recip)
@@ -215,10 +215,10 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
         // inv(x) ⊕ x → identity
         for node_a in egraph.nodes(a) {
             if node_matches_op(node_a, T::inverse()) {
-                if let Some(&inner) = node_a.children().first() {
-                    if egraph.find(inner) == egraph.find(b) {
-                        return Some(RewriteAction::Create(ENode::constant(T::identity())));
-                    }
+                if let Some(&inner) = node_a.children().first()
+                    && egraph.find(inner) == egraph.find(b)
+                {
+                    return Some(RewriteAction::Create(ENode::constant(T::identity())));
                 }
             }
         }
