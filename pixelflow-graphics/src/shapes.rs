@@ -194,15 +194,93 @@ mod tests {
     }
 
     #[test]
-    fn circle_at_origin() {
-        // Point at origin should be inside
-        // Point at (2, 0) should be outside
+    fn circle_should_contain_origin() {
+        let c = circle(SOLID, EMPTY);
+        let res = eval_scalar(&c, 0.0, 0.0);
+        assert_eq!(res, 1.0, "Origin should be inside circle");
     }
 
     #[test]
-    fn composition_works() {
-        // circle inside square
-        let _scene = square(circle(SOLID, 0.5f32), EMPTY);
+    fn circle_should_exclude_outside_points() {
+        let c = circle(SOLID, EMPTY);
+        let res = eval_scalar(&c, 1.1, 0.0);
+        assert_eq!(res, 0.0, "Point (1.1, 0) should be outside circle");
+    }
+
+    #[test]
+    fn circle_should_exclude_boundary() {
+        // circle is strict < 1.0
+        let c = circle(SOLID, EMPTY);
+        let res = eval_scalar(&c, 1.0, 0.0);
+        assert_eq!(res, 0.0, "Boundary point (1.0, 0) should be outside circle (strict inequality)");
+    }
+
+    #[test]
+    fn square_should_include_boundaries() {
+        let s = square(SOLID, EMPTY);
+        // Test corners
+        assert_eq!(eval_scalar(&s, 0.0, 0.0), 1.0, "Top-left (0,0) inside");
+        assert_eq!(eval_scalar(&s, 1.0, 0.0), 1.0, "Top-right (1,0) inside");
+        assert_eq!(eval_scalar(&s, 0.0, 1.0), 1.0, "Bottom-left (0,1) inside");
+        assert_eq!(eval_scalar(&s, 1.0, 1.0), 1.0, "Bottom-right (1,1) inside");
+    }
+
+    #[test]
+    fn square_should_exclude_outside() {
+        let s = square(SOLID, EMPTY);
+        assert_eq!(eval_scalar(&s, -0.001, 0.5), 0.0, "Left of 0.0 should be outside");
+        assert_eq!(eval_scalar(&s, 1.001, 0.5), 0.0, "Right of 1.0 should be outside");
+        assert_eq!(eval_scalar(&s, 0.5, -0.001), 0.0, "Above 0.0 should be outside");
+        assert_eq!(eval_scalar(&s, 0.5, 1.001), 0.0, "Below 1.0 should be outside");
+    }
+
+    #[test]
+    fn rectangle_should_respect_dimensions() {
+        let width = 2.0;
+        let height = 3.0;
+        let r = rectangle(width, height, SOLID, EMPTY);
+
+        assert_eq!(eval_scalar(&r, 0.0, 0.0), 1.0, "Origin inside");
+        assert_eq!(eval_scalar(&r, width, height), 1.0, "Corner inside");
+        assert_eq!(eval_scalar(&r, width + 0.1, 1.0), 0.0, "Outside width");
+        assert_eq!(eval_scalar(&r, 1.0, height + 0.1), 0.0, "Outside height");
+    }
+
+    #[test]
+    fn annulus_should_include_boundaries() {
+        let inner = 0.5;
+        let outer = 1.0;
+        let a = annulus(inner, outer, SOLID, EMPTY);
+
+        assert_eq!(eval_scalar(&a, 0.5, 0.0), 1.0, "Inner radius inclusive");
+        assert_eq!(eval_scalar(&a, 1.0, 0.0), 1.0, "Outer radius inclusive");
+        assert_eq!(eval_scalar(&a, 0.49, 0.0), 0.0, "Inside hole exclusive");
+        assert_eq!(eval_scalar(&a, 1.01, 0.0), 0.0, "Outside ring exclusive");
+    }
+
+    #[test]
+    fn composition_should_combine_shape_logics() {
+        // circle inside square.
+        // circle is radius 1, centered at origin.
+        // square is [0,0] to [1,1].
+        // Overlap is the quarter circle in the first quadrant.
+
+        // Define: Square containing (Circle containing 1.0 else 0.5) else 0.0
+        // If inside square:
+        //    If inside circle: 1.0
+        //    Else: 0.5
+        // Else: 0.0
+
+        let scene = square(circle(SOLID, Field::from(0.5)), EMPTY);
+
+        // Point inside both (0.1, 0.1) -> 1.0
+        assert_eq!(eval_scalar(&scene, 0.1, 0.1), 1.0, "Inside both");
+
+        // Point inside square, outside circle (0.9, 0.9) -> 0.9^2 + 0.9^2 = 0.81 + 0.81 = 1.62 > 1 -> 0.5
+        assert_eq!(eval_scalar(&scene, 0.9, 0.9), 0.5, "Inside square, outside circle");
+
+        // Point outside square, inside circle (-0.1, 0.1) -> 0.0
+        assert_eq!(eval_scalar(&scene, -0.1, 0.1), 0.0, "Outside square");
     }
 
     #[test]
