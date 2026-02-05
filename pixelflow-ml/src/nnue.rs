@@ -55,9 +55,9 @@
 
 #![allow(dead_code)] // Prototype code
 
-use alloc::vec::Vec;
 use alloc::boxed::Box;
-use libm::{sqrtf, fabsf};
+use alloc::vec::Vec;
+use libm::{fabsf, sqrtf};
 
 // ============================================================================
 // Operation Types - use pixelflow-ir's OpKind as the source of truth
@@ -94,6 +94,7 @@ pub enum Expr {
 
 impl Expr {
     /// Get the operation type of this expression's root.
+    #[must_use]
     pub fn op_type(&self) -> OpType {
         match self {
             Expr::Var(_) => OpType::Var,
@@ -105,6 +106,7 @@ impl Expr {
     }
 
     /// Compute the depth of this expression tree.
+    #[must_use]
     pub fn depth(&self) -> usize {
         match self {
             Expr::Var(_) | Expr::Const(_) => 1,
@@ -115,6 +117,7 @@ impl Expr {
     }
 
     /// Count total nodes in the expression.
+    #[must_use]
     pub fn node_count(&self) -> usize {
         match self {
             Expr::Var(_) | Expr::Const(_) => 1,
@@ -125,6 +128,7 @@ impl Expr {
     }
 
     /// Evaluate the expression with given variable values.
+    #[must_use]
     pub fn eval(&self, vars: &[f32; 4]) -> f32 {
         match self {
             Expr::Var(i) => vars[*i as usize],
@@ -147,8 +151,20 @@ impl Expr {
                     OpType::Sub => a - b,
                     OpType::Mul => a * b,
                     OpType::Div => a / b,
-                    OpType::Min => if a < b { a } else { b },
-                    OpType::Max => if a > b { a } else { b },
+                    OpType::Min => {
+                        if a < b {
+                            a
+                        } else {
+                            b
+                        }
+                    }
+                    OpType::Max => {
+                        if a > b {
+                            a
+                        } else {
+                            b
+                        }
+                    }
                     OpType::MulRsqrt => a / sqrtf(b),
                     _ => unreachable!(),
                 }
@@ -201,6 +217,7 @@ impl HalfEPFeature {
     pub const COUNT: usize = OpType::COUNT * OpType::COUNT * MAX_DEPTH * 256;
 
     /// Convert to a unique index for the feature vector.
+    #[must_use]
     pub fn to_index(self) -> usize {
         let p = self.perspective_op as usize;
         let d = self.descendant_op as usize;
@@ -211,6 +228,7 @@ impl HalfEPFeature {
     }
 
     /// Create from a unique index.
+    #[must_use]
     pub fn from_index(idx: usize) -> Self {
         let path = (idx % 256) as u8;
         let idx = idx / 256;
@@ -233,18 +251,14 @@ impl HalfEPFeature {
 /// For each node in the tree, we create features describing its descendants
 /// from that node's perspective (like HalfKP creates features from each
 /// king's perspective).
+#[must_use]
 pub fn extract_features(expr: &Expr) -> Vec<HalfEPFeature> {
     let mut features = Vec::new();
     extract_features_recursive(expr, &mut features, 0, 0);
     features
 }
 
-fn extract_features_recursive(
-    expr: &Expr,
-    features: &mut Vec<HalfEPFeature>,
-    path: u8,
-    depth: u8,
-) {
+fn extract_features_recursive(expr: &Expr, features: &mut Vec<HalfEPFeature>, path: u8, depth: u8) {
     let root_op = expr.op_type();
 
     // Add features for all descendants from this node's perspective
@@ -369,6 +383,7 @@ pub struct Nnue {
 
 impl Nnue {
     /// Create a new uninitialized NNUE network.
+    #[must_use]
     pub fn new(config: NnueConfig) -> Self {
         let feature_count = HalfEPFeature::COUNT;
 
@@ -386,6 +401,7 @@ impl Nnue {
     }
 
     /// Create with default configuration.
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(NnueConfig::default())
     }
@@ -404,6 +420,7 @@ pub struct Accumulator {
 
 impl Accumulator {
     /// Create a new accumulator initialized with biases.
+    #[must_use]
     pub fn new(nnue: &Nnue) -> Self {
         Self {
             values: nnue.b1.clone(),
@@ -443,6 +460,7 @@ impl Accumulator {
     /// Compute the full forward pass from the accumulator state.
     ///
     /// Returns the predicted cost in centipawns (will need to be scaled).
+    #[must_use]
     pub fn forward(&self, nnue: &Nnue) -> i32 {
         let l1_size = nnue.config.l1_size;
         let l2_size = nnue.config.l2_size;
@@ -529,6 +547,7 @@ pub struct ExprGenerator {
 
 impl ExprGenerator {
     /// Create a new generator with the given seed.
+    #[must_use]
     pub fn new(seed: u64, config: ExprGenConfig) -> Self {
         Self {
             config,
@@ -679,6 +698,7 @@ impl RewriteRule {
     /// Try to apply this rule to an expression, returning the rewritten form.
     ///
     /// Returns None if the rule doesn't match.
+    #[must_use]
     pub fn try_apply(&self, expr: &Expr) -> Option<Expr> {
         match self {
             RewriteRule::AddZero => match expr {
@@ -715,15 +735,11 @@ impl RewriteRule {
                 _ => None,
             },
             RewriteRule::SubSelf => match expr {
-                Expr::Binary(OpType::Sub, a, b) if exprs_equal(a, b) => {
-                    Some(Expr::Const(0.0))
-                }
+                Expr::Binary(OpType::Sub, a, b) if exprs_equal(a, b) => Some(Expr::Const(0.0)),
                 _ => None,
             },
             RewriteRule::DivSelf => match expr {
-                Expr::Binary(OpType::Div, a, b) if exprs_equal(a, b) => {
-                    Some(Expr::Const(1.0))
-                }
+                Expr::Binary(OpType::Div, a, b) if exprs_equal(a, b) => Some(Expr::Const(1.0)),
                 _ => None,
             },
             RewriteRule::DoubleNeg => match expr {
@@ -734,13 +750,11 @@ impl RewriteRule {
                 _ => None,
             },
             RewriteRule::AddSelf => match expr {
-                Expr::Binary(OpType::Add, a, b) if exprs_equal(a, b) => {
-                    Some(Expr::Binary(
-                        OpType::Mul,
-                        Box::new(Expr::Const(2.0)),
-                        a.clone(),
-                    ))
-                }
+                Expr::Binary(OpType::Add, a, b) if exprs_equal(a, b) => Some(Expr::Binary(
+                    OpType::Mul,
+                    Box::new(Expr::Const(2.0)),
+                    a.clone(),
+                )),
                 _ => None,
             },
             RewriteRule::FuseToMulAdd => match expr {
@@ -806,6 +820,7 @@ fn exprs_equal(a: &Expr, b: &Expr) -> bool {
 /// Find all applicable rewrites for an expression (at any position).
 ///
 /// Returns (path_to_subexpr, rule, rewritten_expr) tuples.
+#[must_use]
 pub fn find_all_rewrites(expr: &Expr) -> Vec<(Vec<usize>, RewriteRule, Expr)> {
     let mut rewrites = Vec::new();
     find_rewrites_recursive(expr, &mut Vec::new(), &mut rewrites);
@@ -858,6 +873,7 @@ impl UnfuseRewrite {
     ///
     /// Unlike optimization rewrites that may fail to match, these always succeed
     /// for the appropriate expression types.
+    #[must_use]
     pub fn apply(&self, expr: &Expr) -> Option<Expr> {
         match self {
             UnfuseRewrite::UnfuseMulAdd => match expr {
@@ -891,7 +907,7 @@ impl UnfuseRewrite {
                     Box::new(expr.clone()),
                     Box::new(Expr::Const(0.0)),
                 ))
-            },
+            }
             UnfuseRewrite::MulIdentity => {
                 // x → x * 1
                 Some(Expr::Binary(
@@ -899,14 +915,14 @@ impl UnfuseRewrite {
                     Box::new(expr.clone()),
                     Box::new(Expr::Const(1.0)),
                 ))
-            },
+            }
             UnfuseRewrite::DoubleNegate => {
                 // x → --x
                 Some(Expr::Unary(
                     OpType::Neg,
                     Box::new(Expr::Unary(OpType::Neg, Box::new(expr.clone()))),
                 ))
-            },
+            }
             UnfuseRewrite::MulTwoToAddSelf => match expr {
                 Expr::Binary(OpType::Mul, a, b) => {
                     // Check if either operand is 2.0
@@ -984,8 +1000,12 @@ pub struct BwdGenerator {
 
 impl BwdGenerator {
     /// Create a new backward generator with the given seed.
+    #[must_use]
     pub fn new(seed: u64, config: BwdGenConfig) -> Self {
-        Self { config, state: seed }
+        Self {
+            config,
+            state: seed,
+        }
     }
 
     /// Generate a random f32 in [0, 1).
@@ -996,7 +1016,9 @@ impl BwdGenerator {
 
     /// Generate a random usize in [0, max).
     fn rand_usize(&mut self, max: usize) -> usize {
-        if max == 0 { return 0; }
+        if max == 0 {
+            return 0;
+        }
         (self.rand_f32() * max as f32) as usize
     }
 
@@ -1191,6 +1213,7 @@ impl BwdGenerator {
 }
 
 /// Count fused operations in an expression.
+#[must_use]
 pub fn count_fused_ops(expr: &Expr) -> usize {
     match expr {
         Expr::Var(_) | Expr::Const(_) => 0,
@@ -1281,11 +1304,7 @@ mod tests {
     #[test]
     fn test_expr_eval() {
         // x + y
-        let expr = Expr::Binary(
-            OpType::Add,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Var(1)),
-        );
+        let expr = Expr::Binary(OpType::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1)));
         let result = expr.eval(&[3.0, 4.0, 0.0, 0.0]);
         assert!(fabsf(result - 7.0) < 1e-6);
     }
@@ -1337,7 +1356,10 @@ mod tests {
         );
         let rewritten = RewriteRule::FuseToMulAdd.try_apply(&expr);
         assert!(rewritten.is_some());
-        assert!(matches!(rewritten.unwrap(), Expr::Ternary(OpType::MulAdd, _, _, _)));
+        assert!(matches!(
+            rewritten.unwrap(),
+            Expr::Ternary(OpType::MulAdd, _, _, _)
+        ));
     }
 
     #[test]
@@ -1378,7 +1400,10 @@ mod tests {
 
         // Should be back to bias values
         for (i, &val) in acc.values.iter().enumerate() {
-            assert_eq!(val, nnue.b1[i], "Accumulator should return to bias after add/remove");
+            assert_eq!(
+                val, nnue.b1[i],
+                "Accumulator should return to bias after add/remove"
+            );
         }
     }
 
@@ -1499,7 +1524,10 @@ mod tests {
         }
 
         // With 80% fused op probability, we should see some fused ops
-        assert!(total_fused > 0, "Expected some fused operations in generated expressions");
+        assert!(
+            total_fused > 0,
+            "Expected some fused operations in generated expressions"
+        );
     }
 
     #[test]

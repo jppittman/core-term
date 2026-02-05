@@ -18,7 +18,7 @@ use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
 use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
+    plane, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
 use pixelflow_macros::ManifoldExpr;
 use pixelflow_runtime::api::private::EngineData;
@@ -143,7 +143,9 @@ fn build_scene_at_time(
 
     let scene = ColorSurface {
         geometry: sphere,
-        material: ColorReflect { inner: world.clone() },
+        material: ColorReflect {
+            inner: world.clone(),
+        },
         background: world,
     };
 
@@ -204,14 +206,18 @@ impl Application for AnimatedSphereApp {
             }
             // Handle resize events
             EngineEvent::Control(EngineEventControl::Resized {
-                width_px, height_px, ..
+                width_px,
+                height_px,
+                ..
             }) => {
                 log::info!("App: Window resized to {}x{}", width_px, height_px);
                 self.width.store(width_px, Ordering::Relaxed);
                 self.height.store(height_px, Ordering::Relaxed);
             }
             EngineEvent::Control(EngineEventControl::WindowCreated {
-                width_px, height_px, ..
+                width_px,
+                height_px,
+                ..
             }) => {
                 log::info!("App: Window created {}x{}", width_px, height_px);
                 self.width.store(width_px, Ordering::Relaxed);

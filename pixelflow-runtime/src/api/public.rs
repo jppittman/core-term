@@ -574,6 +574,7 @@ impl EngineHandle {
     ///
     /// This bypasses the registration API for testing purposes only.
     #[doc(hidden)]
+    #[must_use]
     pub fn new_for_test(
         inner: actor_scheduler::ActorHandle<
             crate::api::private::EngineData,

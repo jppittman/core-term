@@ -92,8 +92,8 @@ impl NixPty {
 
         // Configure slave PTY attributes (in the parent, operating on the slave FD).
         // This is safe because slave_fd refers to the same underlying PTY.
-        let mut termios_attrs = termios::tcgetattr(&slave_fd)
-            .with_context(|| "Failed to get terminal attributes")?;
+        let mut termios_attrs =
+            termios::tcgetattr(&slave_fd).with_context(|| "Failed to get terminal attributes")?;
         termios::cfmakeraw(&mut termios_attrs);
         termios_attrs.local_flags |= termios::LocalFlags::ISIG;
         termios_attrs.input_flags |= termios::InputFlags::ICRNL;
@@ -114,7 +114,7 @@ impl NixPty {
                 }
 
                 // Set controlling terminal
-                if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY.into(), 0) == -1 {
+                if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY, 0) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
 
