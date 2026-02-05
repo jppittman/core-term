@@ -1107,11 +1107,6 @@ where
 
 /// Helper to apply Field operations on storage and return storage
 #[inline(always)]
-fn field_sqrt(storage: NativeSimd) -> NativeSimd {
-    Field(storage).sqrt().0
-}
-
-#[inline(always)]
 fn field_sin(storage: NativeSimd) -> NativeSimd {
     Field(storage).sin().0
 }
@@ -1158,12 +1153,37 @@ where
     /// Square root with chain rule: sqrt(f)' = f' / (2 * sqrt(f))
     #[inline(always)]
     pub fn jet_sqrt(self) -> Self {
-        let sqrt_val = field_sqrt(self.0.val);
-        let two = NativeSimd::splat(2.0);
-        let denom = two * sqrt_val;
+        // Use rsqrt (4 cycles) instead of sqrt (20-30 cycles)
+        // sqrt(x) = x * rsqrt(x)
+        // d(sqrt(x))/dx = rsqrt(x) / 2
+        // Use SimdOps directly to avoid Mask <-> Float roundtrips (crucial for AVX512)
+        use crate::backend::SimdOps;
+
+        let val_s = self.0.val;
+        let rsqrt_approx = val_s.simd_rsqrt();
+
+        // Newton-Raphson refinement: y1 = y0 * (1.5 - 0.5 * x * y0 * y0)
+        let half_s = NativeSimd::splat(0.5);
+        let three_halves = NativeSimd::splat(1.5);
+        let rsqrt_sq = rsqrt_approx * rsqrt_approx;
+        let term = val_s * rsqrt_sq * half_s;
+        let rsqrt_s = rsqrt_approx * (three_halves - term);
+
+        let sqrt_s = val_s * rsqrt_s;
+
+        // Handle val <= 0: rsqrt(0) = Inf, 0 * Inf = NaN. We want 0.
+        // And mask derivatives to 0 to avoid NaNs from 0 * Inf.
+        let zero_s = NativeSimd::splat(0.0);
+        let mask = val_s.cmp_le(zero_s);
+
+        let safe_sqrt_s = NativeSimd::simd_select(mask, zero_s, sqrt_s);
+
+        let scale_s = rsqrt_s * half_s;
+        let safe_scale_s = NativeSimd::simd_select(mask, zero_s, scale_s);
+
         Self(DualStorage {
-            val: sqrt_val,
-            partials: core::array::from_fn(|i| self.0.partials[i] / denom),
+            val: safe_sqrt_s,
+            partials: core::array::from_fn(|i| self.0.partials[i] * safe_scale_s),
         })
     }
 
