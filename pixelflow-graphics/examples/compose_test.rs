@@ -21,7 +21,8 @@ fn main() {
     // d is impl Manifold<Field4, Output=Field>
     
     // Using ManifoldExt to compose
-    let circle = d.lift(|f| f - Field::from(0.5));  // radius 0.5
+    // lift is for covariant mapping (output -> output)
+    let circle = d.lift(|f: Field| -> Field { (f - Field::from(0.5)).eval((f, f, f, f)) });  // radius 0.5 - evaluate immediately to get Field
     
     let p = field4(1.5, 2.0);
     let result = circle.eval(p);
