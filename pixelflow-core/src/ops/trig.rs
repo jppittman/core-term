@@ -72,22 +72,25 @@ pub(crate) fn cheby_sin(x: Field) -> Field {
     // Normalize to [-1, 1] for Chebyshev basis
     let t = x * Field::from(PI_INV);
 
-    // Chebyshev coefficients for sin on [-1,1]
-    // T_1(t) through T_7(t)
-    const C1: f32 = 1.6719970703125f32;
-    const C3: f32 = -0.645963541666667f32;
-    const C5: f32 = 0.079689450f32;
-    const C7: f32 = -0.0046817541f32;
+    // Coefficients for sin(πt) on [-1,1] (Taylor expansion scaled by π)
+    const C1: f32 = 3.1415927f32;
+    const C3: f32 = -5.1677127f32;
+    const C5: f32 = 2.550164f32;
+    const C7: f32 = -0.5992645f32;
+    const C9: f32 = 0.08214588f32;
 
     // Horner's method: accumulate from highest degree down
-    // p(t) = C1*t + C3*t^3 + C5*t^5 + C7*t^7
-    // Rewrite as: ((C7*t^2 + C5)*t^2 + C3)*t^2 + C1)*t
+    // p(t) = C1*t + C3*t^3 + C5*t^5 + C7*t^7 + C9*t^9
+    // Rewrite as: ((((C9*t^2 + C7)*t^2 + C5)*t^2 + C3)*t^2 + C1)*t
     // AST building enables FMA fusion
     let t2 = t.clone() * t.clone();
-    let result =
-        (((Field::from(C7) * t2.clone() + Field::from(C5)) * t2.clone() + Field::from(C3)) * t2
-            + Field::from(C1))
-            * t;
+    let result = ((((Field::from(C9) * t2.clone() + Field::from(C7)) * t2.clone()
+        + Field::from(C5))
+        * t2.clone()
+        + Field::from(C3))
+        * t2
+        + Field::from(C1))
+        * t;
 
     eval(result)
 }
@@ -103,19 +106,25 @@ pub(crate) fn cheby_cos(x: Field) -> Field {
     // Normalize to [-1, 1] for Chebyshev basis
     let t = x * Field::from(PI_INV);
 
-    // Chebyshev coefficients for cos on [-1,1]
-    // T_0(t) through T_6(t)
-    const C0: f32 = 1.5707963267948966f32;
-    const C2: f32 = -2.467401341f32;
-    const C4: f32 = 0.609469381f32;
-    const C6: f32 = -0.038854038f32;
+    // Coefficients for cos(πt) on [-1,1] (Taylor expansion scaled by π)
+    const C0: f32 = 1.0f32;
+    const C2: f32 = -4.934802f32;
+    const C4: f32 = 4.058712f32;
+    const C6: f32 = -1.33526f32;
+    const C8: f32 = 0.2353306f32;
+    const C10: f32 = -0.02580689f32;
 
     // Horner's method for even polynomial
-    // p(t) = C0 + C2*t^2 + C4*t^4 + C6*t^6
-    // Rewrite as: ((C6*t^2 + C4)*t^2 + C2)*t^2 + C0
+    // p(t) = C0 + C2*t^2 + C4*t^4 + C6*t^6 + C8*t^8 + C10*t^10
+    // Rewrite as: ((((C10*t^2 + C8)*t^2 + C6)*t^2 + C4)*t^2 + C2)*t^2 + C0
     // AST building enables FMA fusion
     let t2 = t.clone() * t;
-    let result = ((Field::from(C6) * t2.clone() + Field::from(C4)) * t2.clone() + Field::from(C2))
+    let result = ((((Field::from(C10) * t2.clone() + Field::from(C8)) * t2.clone()
+        + Field::from(C6))
+        * t2.clone()
+        + Field::from(C4))
+        * t2.clone()
+        + Field::from(C2))
         * t2
         + Field::from(C0);
 
