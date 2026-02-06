@@ -356,7 +356,7 @@ impl Manifold<Field4> for CachedText {
 mod tests {
     use super::*;
 
-    const FONT_DATA: &[u8] = include_bytes!("../../assets/NotoSansMono-Regular.ttf");
+    const FONT_DATA: &[u8] = include_bytes!("../../../assets/font/Noto_Sans_Mono/static/NotoSansMono-Regular.ttf");
 
     #[test]
     fn test_size_bucket() {
