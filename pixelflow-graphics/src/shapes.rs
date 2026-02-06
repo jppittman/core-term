@@ -196,13 +196,54 @@ mod tests {
     #[test]
     fn circle_at_origin() {
         // Point at origin should be inside
+        let c = circle(SOLID, EMPTY);
+        let inside = eval_scalar(&c, 0.0, 0.0);
+        assert!(
+            (inside - 1.0).abs() < 0.001,
+            "Origin should be inside (1.0), got {}",
+            inside
+        );
+
         // Point at (2, 0) should be outside
+        let outside = eval_scalar(&c, 2.0, 0.0);
+        assert!(
+            outside.abs() < 0.001,
+            "Point (2,0) should be outside (0.0), got {}",
+            outside
+        );
     }
 
     #[test]
     fn composition_works() {
         // circle inside square
-        let _scene = square(circle(SOLID, 0.5f32), EMPTY);
+        let scene = square(circle(SOLID, Field::from(0.5f32)), EMPTY);
+
+        // Point inside both (e.g. 0.5, 0.5). 0.5^2 + 0.5^2 = 0.5 < 1.0
+        let inside_both = eval_scalar(&scene, 0.5, 0.5);
+        assert!(
+            (inside_both - 1.0).abs() < 0.001,
+            "Inside both should be 1.0, got {}",
+            inside_both
+        );
+
+        // Point inside square, outside circle?
+        // Need x,y in [0,1] such that x^2+y^2 >= 1.
+        // (0.9, 0.9) -> 0.81+0.81 = 1.62 > 1.
+        let inside_sq_outside_circ = eval_scalar(&scene, 0.9, 0.9);
+        assert!(
+            (inside_sq_outside_circ - 0.5).abs() < 0.001,
+            "Inside square, outside circle should be 0.5, got {}",
+            inside_sq_outside_circ
+        );
+
+        // Point outside square
+        // (-0.1, 0.5) -> 0.0
+        let outside_sq = eval_scalar(&scene, -0.1, 0.5);
+        assert!(
+            outside_sq.abs() < 0.001,
+            "Outside square should be 0.0, got {}",
+            outside_sq
+        );
     }
 
     #[test]
