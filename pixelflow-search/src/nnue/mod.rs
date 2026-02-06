@@ -11,7 +11,6 @@
 
 extern crate alloc;
 
-pub mod dual_mask;
 pub mod factored;
 pub mod guide;
 pub mod training;
@@ -31,14 +30,17 @@ pub use factored::DualHeadNnue;
 /// Re-export key types from factored module.
 pub use factored::{EdgeAccumulator, OpEmbeddings, StructuralFeatures};
 
+/// Re-export unified mask architecture constants and types.
+pub use factored::{
+    EMBED_DIM, MLP_HIDDEN, RULE_FEATURE_DIM, MASK_MAX_RULES, RULE_CONCAT_DIM,
+    RuleFeatures, RuleTemplates,
+};
+
 /// Re-export GuideNnue for match probability prediction.
 pub use guide::GuideNnue;
 
-/// Re-export DualMaskGuide for factorized action selection.
-pub use dual_mask::{DualMaskGuide, ExprFeatures, RuleFeatures, EXPR_FEATURE_DIM, RULE_FEATURE_DIM, EMBED_DIM};
-
 /// Re-export training utilities.
-pub use training::{Sample, Metrics, sanity_check};
+pub use training::{Metrics, ResourceConfig, TrainingResult};
 
 // ============================================================================
 // HalfEP Features (Legacy - being phased out in favor of Factored)

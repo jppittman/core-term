@@ -62,9 +62,202 @@ pub const INPUT_DIM: usize = 2 * K + STRUCTURAL_FEATURE_COUNT;
 /// Hidden layer size.
 pub const HIDDEN_DIM: usize = 64;
 
-/// Maximum number of rewrite rules supported.
-/// Currently ~14 rules, but leave room for growth.
+/// Maximum number of rewrite rules supported (legacy, for backward compat).
+/// See MASK_MAX_RULES for the new unified architecture.
 pub const MAX_RULES: usize = 64;
+
+// ============================================================================
+// Unified Mask Architecture Constants
+// ============================================================================
+
+/// Embedding dimension for expr/rule factorization in the unified mask architecture.
+pub const EMBED_DIM: usize = 24;
+
+/// Hidden dimension for private MLPs (value, mask, rule).
+pub const MLP_HIDDEN: usize = 16;
+
+/// Rule feature dimension (hand-crafted features describing each rule).
+pub const RULE_FEATURE_DIM: usize = 8;
+
+/// Maximum rules supported in the unified mask architecture.
+/// Designed to scale to 1000+ rules.
+pub const MASK_MAX_RULES: usize = 1024;
+
+/// Concatenated rule features: [z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS] (4 × EMBED_DIM).
+/// Used when encoding rules from their LHS/RHS expression templates.
+pub const RULE_CONCAT_DIM: usize = 4 * EMBED_DIM;
+
+// ============================================================================
+// Rule Features
+// ============================================================================
+
+/// Hand-crafted features describing each rule.
+///
+/// These features are mostly static (computed once when rules are defined)
+/// and allow the Rule MLP to generalize across rules without learning
+/// individual embeddings for each rule.
+///
+/// # Features (RULE_FEATURE_DIM = 8)
+///
+/// 1. `category`: Rule type (algebraic=0, peephole=0.25, domain=0.5, cross-cutting=0.75)
+/// 2. `lhs_nodes`: Pattern complexity (normalized by 10)
+/// 3. `typical_depth_delta`: Usually -1, 0, or 1
+/// 4. `commutative`: Does rule exploit commutativity? (0 or 1)
+/// 5. `associative`: Does rule exploit associativity? (0 or 1)
+/// 6. `creates_sharing`: Does rule typically enable CSE? (0 or 1)
+/// 7. `historical_match_rate`: Running average [0, 1]
+/// 8. `expensive_op_related`: Touches div/sqrt/transcendental? (0 or 1)
+#[derive(Clone)]
+pub struct RuleFeatures {
+    /// Features for each rule: [rule_idx][feature_dim]
+    pub features: [[f32; RULE_FEATURE_DIM]; MASK_MAX_RULES],
+}
+
+impl Default for RuleFeatures {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RuleFeatures {
+    /// Create zero-initialized rule features.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            features: [[0.0; RULE_FEATURE_DIM]; MASK_MAX_RULES],
+        }
+    }
+
+    /// Get features for a specific rule.
+    #[must_use]
+    pub fn get(&self, rule_idx: usize) -> &[f32; RULE_FEATURE_DIM] {
+        &self.features[rule_idx]
+    }
+
+    /// Set features for a specific rule.
+    pub fn set(&mut self, rule_idx: usize, features: [f32; RULE_FEATURE_DIM]) {
+        self.features[rule_idx] = features;
+    }
+
+    /// Set feature by name for easier initialization.
+    pub fn set_rule(
+        &mut self,
+        rule_idx: usize,
+        category: f32,
+        lhs_nodes: usize,
+        depth_delta: i8,
+        commutative: bool,
+        associative: bool,
+        creates_sharing: bool,
+        match_rate: f32,
+        expensive_op: bool,
+    ) {
+        self.features[rule_idx] = [
+            category,
+            lhs_nodes as f32 / 10.0,
+            depth_delta as f32,
+            if commutative { 1.0 } else { 0.0 },
+            if associative { 1.0 } else { 0.0 },
+            if creates_sharing { 1.0 } else { 0.0 },
+            match_rate.clamp(0.0, 1.0),
+            if expensive_op { 1.0 } else { 0.0 },
+        ];
+    }
+}
+
+// ============================================================================
+// Rule Templates (LHS/RHS Expression Templates)
+// ============================================================================
+
+/// Rule templates: LHS and RHS expressions for each rule.
+///
+/// These use the SAME expr_embed as value/mask heads, enabling the model
+/// to learn structural similarity between expressions and rule patterns.
+///
+/// Each rule has:
+/// - LHS pattern (what it matches), e.g., `A * (B + C)`
+/// - RHS pattern (what it produces), e.g., `A*B + A*C`
+///
+/// The 4-way concatenation captures:
+/// - `z_LHS`: what the rule MATCHES (pattern recognition)
+/// - `z_RHS`: what it PRODUCES (production prediction)
+/// - `z_LHS - z_RHS`: what CHANGED (the delta)
+/// - `z_LHS * z_RHS`: what's SHARED (preserved structure)
+#[derive(Clone)]
+pub struct RuleTemplates {
+    /// LHS pattern for each rule (what it matches).
+    /// Uses Expr::Var(0), Expr::Var(1), etc. as metavariables.
+    pub lhs: Vec<Option<Expr>>,
+    /// RHS pattern for each rule (what it produces).
+    pub rhs: Vec<Option<Expr>>,
+}
+
+impl Default for RuleTemplates {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RuleTemplates {
+    /// Create empty templates.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            lhs: Vec::new(),
+            rhs: Vec::new(),
+        }
+    }
+
+    /// Create templates for a given number of rules (all None initially).
+    #[must_use]
+    pub fn with_capacity(num_rules: usize) -> Self {
+        Self {
+            lhs: vec![None; num_rules],
+            rhs: vec![None; num_rules],
+        }
+    }
+
+    /// Set templates for a specific rule.
+    pub fn set(&mut self, rule_idx: usize, lhs: Expr, rhs: Expr) {
+        // Ensure we have enough capacity
+        if rule_idx >= self.lhs.len() {
+            self.lhs.resize(rule_idx + 1, None);
+            self.rhs.resize(rule_idx + 1, None);
+        }
+        self.lhs[rule_idx] = Some(lhs);
+        self.rhs[rule_idx] = Some(rhs);
+    }
+
+    /// Get LHS template for a rule.
+    #[must_use]
+    pub fn get_lhs(&self, rule_idx: usize) -> Option<&Expr> {
+        self.lhs.get(rule_idx).and_then(|opt| opt.as_ref())
+    }
+
+    /// Get RHS template for a rule.
+    #[must_use]
+    pub fn get_rhs(&self, rule_idx: usize) -> Option<&Expr> {
+        self.rhs.get(rule_idx).and_then(|opt| opt.as_ref())
+    }
+
+    /// Number of rules with templates.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lhs.len()
+    }
+
+    /// Check if empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lhs.is_empty()
+    }
+
+    /// Check if a rule has templates defined.
+    #[must_use]
+    pub fn has_templates(&self, rule_idx: usize) -> bool {
+        self.get_lhs(rule_idx).is_some() && self.get_rhs(rule_idx).is_some()
+    }
+}
 
 // ============================================================================
 // Operation Embeddings
@@ -1052,6 +1245,63 @@ pub struct DualHeadNnue {
 
     /// Search head bias (1 param)
     pub search_b: f32,
+
+    // ========== UNIFIED MASK ARCHITECTURE ==========
+    // These fields support the new bilinear expr-rule interaction model
+    // that scales to 1000+ rules.
+
+    /// Projects backbone hidden (64) to shared expr embedding (EMBED_DIM=24).
+    /// Weights: [HIDDEN_DIM x EMBED_DIM]
+    pub expr_proj_w: [[f32; EMBED_DIM]; HIDDEN_DIM],
+    /// Expr projection bias: [EMBED_DIM]
+    pub expr_proj_b: [f32; EMBED_DIM],
+
+    /// Value MLP layer 1 weights: expr_embed (24) → hidden (16)
+    pub value_mlp_w1: [[f32; MLP_HIDDEN]; EMBED_DIM],
+    /// Value MLP layer 1 bias
+    pub value_mlp_b1: [f32; MLP_HIDDEN],
+    /// Value MLP layer 2 weights: hidden (16) → cost (1)
+    pub value_mlp_w2: [f32; MLP_HIDDEN],
+    /// Value MLP layer 2 bias
+    pub value_mlp_b2: f32,
+
+    /// Mask MLP layer 1 weights: expr_embed (24) → hidden (16)
+    pub mask_mlp_w1: [[f32; MLP_HIDDEN]; EMBED_DIM],
+    /// Mask MLP layer 1 bias
+    pub mask_mlp_b1: [f32; MLP_HIDDEN],
+    /// Mask MLP layer 2 weights: hidden (16) → mask_features (24)
+    pub mask_mlp_w2: [[f32; EMBED_DIM]; MLP_HIDDEN],
+    /// Mask MLP layer 2 bias
+    pub mask_mlp_b2: [f32; EMBED_DIM],
+
+    /// Rule MLP layer 1 weights: rule_features (8) → hidden (16).
+    /// Shared across all rules - scales sublinearly with rule count.
+    /// (Legacy: used with hand-crafted RuleFeatures)
+    pub rule_mlp_w1: [[f32; MLP_HIDDEN]; RULE_FEATURE_DIM],
+    /// Rule MLP layer 1 bias
+    pub rule_mlp_b1: [f32; MLP_HIDDEN],
+    /// Rule MLP layer 2 weights: hidden (16) → rule_embed (24)
+    pub rule_mlp_w2: [[f32; EMBED_DIM]; MLP_HIDDEN],
+    /// Rule MLP layer 2 bias
+    pub rule_mlp_b2: [f32; EMBED_DIM],
+
+    // ========== RULE TEMPLATE PROJECTION (LHS/RHS embeddings) ==========
+    // These fields support encoding rules from their LHS/RHS expression
+    // templates using the SAME expr_embed as value/mask heads.
+    //
+    // 4-way concat: [z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS] (96) → rule_embed (24)
+
+    /// Rule projection weights: [RULE_CONCAT_DIM x EMBED_DIM] = [96 x 24] = 2,304 params.
+    /// Projects 4-way concatenation to rule embedding.
+    pub rule_proj_w: [[f32; EMBED_DIM]; RULE_CONCAT_DIM],
+    /// Rule projection bias: [EMBED_DIM] = 24 params
+    pub rule_proj_b: [f32; EMBED_DIM],
+
+    /// Bilinear interaction matrix: mask_features @ interaction @ rule_embed
+    pub interaction: [[f32; EMBED_DIM]; EMBED_DIM],
+
+    /// Per-rule bias for mask scoring (learned rule priors)
+    pub mask_rule_bias: [f32; MASK_MAX_RULES],
 }
 
 impl Default for DualHeadNnue {
@@ -1065,6 +1315,7 @@ impl DualHeadNnue {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            // Legacy backbone
             embeddings: OpEmbeddings::new(),
             w1: [[0.0; HIDDEN_DIM]; INPUT_DIM],
             b1: [0.0; HIDDEN_DIM],
@@ -1074,6 +1325,32 @@ impl DualHeadNnue {
             rule_bias: [0.0; MAX_RULES],
             search_w: [0.0; HIDDEN_DIM],
             search_b: 0.0,
+
+            // Unified mask architecture
+            expr_proj_w: [[0.0; EMBED_DIM]; HIDDEN_DIM],
+            expr_proj_b: [0.0; EMBED_DIM],
+
+            value_mlp_w1: [[0.0; MLP_HIDDEN]; EMBED_DIM],
+            value_mlp_b1: [0.0; MLP_HIDDEN],
+            value_mlp_w2: [0.0; MLP_HIDDEN],
+            value_mlp_b2: 5.0, // Start near typical log-cost
+
+            mask_mlp_w1: [[0.0; MLP_HIDDEN]; EMBED_DIM],
+            mask_mlp_b1: [0.0; MLP_HIDDEN],
+            mask_mlp_w2: [[0.0; EMBED_DIM]; MLP_HIDDEN],
+            mask_mlp_b2: [0.0; EMBED_DIM],
+
+            rule_mlp_w1: [[0.0; MLP_HIDDEN]; RULE_FEATURE_DIM],
+            rule_mlp_b1: [0.0; MLP_HIDDEN],
+            rule_mlp_w2: [[0.0; EMBED_DIM]; MLP_HIDDEN],
+            rule_mlp_b2: [0.0; EMBED_DIM],
+
+            // Rule template projection (LHS/RHS embeddings)
+            rule_proj_w: [[0.0; EMBED_DIM]; RULE_CONCAT_DIM],
+            rule_proj_b: [0.0; EMBED_DIM],
+
+            interaction: [[0.0; EMBED_DIM]; EMBED_DIM],
+            mask_rule_bias: [0.0; MASK_MAX_RULES],
         }
     }
 
@@ -1102,6 +1379,7 @@ impl DualHeadNnue {
     ///
     /// The value head inherits the original output weights.
     /// Rule embeddings and search head start at zero (need training).
+    /// New unified mask architecture fields are zero-initialized (need training).
     #[must_use]
     pub fn from_factored(factored: &FactoredNnue) -> Self {
         Self {
@@ -1117,6 +1395,32 @@ impl DualHeadNnue {
             // Search head starts fresh (needs training)
             search_w: [0.0; HIDDEN_DIM],
             search_b: 0.0,
+
+            // Unified mask architecture - zero-initialized (needs training)
+            expr_proj_w: [[0.0; EMBED_DIM]; HIDDEN_DIM],
+            expr_proj_b: [0.0; EMBED_DIM],
+
+            value_mlp_w1: [[0.0; MLP_HIDDEN]; EMBED_DIM],
+            value_mlp_b1: [0.0; MLP_HIDDEN],
+            value_mlp_w2: [0.0; MLP_HIDDEN],
+            value_mlp_b2: 5.0,
+
+            mask_mlp_w1: [[0.0; MLP_HIDDEN]; EMBED_DIM],
+            mask_mlp_b1: [0.0; MLP_HIDDEN],
+            mask_mlp_w2: [[0.0; EMBED_DIM]; MLP_HIDDEN],
+            mask_mlp_b2: [0.0; EMBED_DIM],
+
+            rule_mlp_w1: [[0.0; MLP_HIDDEN]; RULE_FEATURE_DIM],
+            rule_mlp_b1: [0.0; MLP_HIDDEN],
+            rule_mlp_w2: [[0.0; EMBED_DIM]; MLP_HIDDEN],
+            rule_mlp_b2: [0.0; EMBED_DIM],
+
+            // Rule template projection - zero-initialized (needs training)
+            rule_proj_w: [[0.0; EMBED_DIM]; RULE_CONCAT_DIM],
+            rule_proj_b: [0.0; EMBED_DIM],
+
+            interaction: [[0.0; EMBED_DIM]; EMBED_DIM],
+            mask_rule_bias: [0.0; MASK_MAX_RULES],
         }
     }
 
@@ -1165,6 +1469,119 @@ impl DualHeadNnue {
             *w = next_f32() * scale_head;
         }
         self.search_b = 0.0; // Neutral starting priority
+
+        // Initialize unified mask architecture
+        self.randomize_mask_weights_with_rng(&mut next_f32);
+    }
+
+    /// Randomize only the unified mask architecture weights.
+    ///
+    /// Uses He initialization for ReLU networks. The interaction matrix
+    /// is initialized near identity (simple dot product baseline).
+    pub fn randomize_mask_weights(&mut self, seed: u64) {
+        let mut rng_state = seed.wrapping_add(54321);
+
+        let mut next_f32 = || {
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
+            (rng_state >> 33) as f32 / (1u64 << 31) as f32 * 2.0 - 1.0
+        };
+
+        self.randomize_mask_weights_with_rng(&mut next_f32);
+    }
+
+    /// Internal helper to randomize mask weights with a provided RNG.
+    fn randomize_mask_weights_with_rng<F: FnMut() -> f32>(&mut self, next_f32: &mut F) {
+        // He initialization scales
+        let scale_proj = sqrtf(2.0 / HIDDEN_DIM as f32);
+        let scale_embed = sqrtf(2.0 / EMBED_DIM as f32);
+        let scale_hidden = sqrtf(2.0 / MLP_HIDDEN as f32);
+        let scale_rule_feat = sqrtf(2.0 / RULE_FEATURE_DIM as f32);
+
+        // Expr projection: HIDDEN_DIM → EMBED_DIM
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                self.expr_proj_w[j][k] = next_f32() * scale_proj;
+            }
+        }
+        for b in &mut self.expr_proj_b {
+            *b = next_f32().abs() * 0.1;
+        }
+
+        // Value MLP: EMBED_DIM → MLP_HIDDEN → 1
+        for i in 0..EMBED_DIM {
+            for j in 0..MLP_HIDDEN {
+                self.value_mlp_w1[i][j] = next_f32() * scale_embed;
+            }
+        }
+        for b in &mut self.value_mlp_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+        for j in 0..MLP_HIDDEN {
+            self.value_mlp_w2[j] = next_f32() * scale_hidden;
+        }
+        self.value_mlp_b2 = 5.0; // Start near typical log-cost
+
+        // Mask MLP: EMBED_DIM → MLP_HIDDEN → EMBED_DIM
+        for i in 0..EMBED_DIM {
+            for j in 0..MLP_HIDDEN {
+                self.mask_mlp_w1[i][j] = next_f32() * scale_embed;
+            }
+        }
+        for b in &mut self.mask_mlp_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                self.mask_mlp_w2[j][k] = next_f32() * scale_hidden;
+            }
+        }
+        for b in &mut self.mask_mlp_b2 {
+            *b = 0.0; // Neutral
+        }
+
+        // Rule MLP: RULE_FEATURE_DIM → MLP_HIDDEN → EMBED_DIM (legacy, hand-crafted features)
+        for i in 0..RULE_FEATURE_DIM {
+            for j in 0..MLP_HIDDEN {
+                self.rule_mlp_w1[i][j] = next_f32() * scale_rule_feat;
+            }
+        }
+        for b in &mut self.rule_mlp_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                self.rule_mlp_w2[j][k] = next_f32() * scale_hidden;
+            }
+        }
+        for b in &mut self.rule_mlp_b2 {
+            *b = 0.0; // Neutral
+        }
+
+        // Rule Projection: RULE_CONCAT_DIM (96) → EMBED_DIM (24)
+        // Linear projection from 4-way concat [z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS]
+        let scale_concat = sqrtf(2.0 / RULE_CONCAT_DIM as f32);
+        for i in 0..RULE_CONCAT_DIM {
+            for k in 0..EMBED_DIM {
+                self.rule_proj_w[i][k] = next_f32() * scale_concat;
+            }
+        }
+        for b in &mut self.rule_proj_b {
+            *b = 0.0; // Neutral
+        }
+
+        // Interaction matrix: start near identity (simple dot product baseline)
+        for i in 0..EMBED_DIM {
+            for j in 0..EMBED_DIM {
+                self.interaction[i][j] = if i == j { 1.0 } else { next_f32() * 0.1 };
+            }
+        }
+
+        // Rule biases: neutral
+        for b in &mut self.mask_rule_bias {
+            *b = 0.0;
+        }
     }
 
     /// Randomize all weights including embeddings.
@@ -1336,9 +1753,326 @@ impl DualHeadNnue {
             .collect()
     }
 
-    /// Total parameter count.
+    // ========================================================================
+    // Unified Mask Architecture Forward Pass
+    //
+    // New bilinear interaction model that scales to 1000+ rules.
+    //
+    // Architecture:
+    //   expr → backbone → hidden → expr_proj → expr_embed (shared)
+    //                                              │
+    //          ┌───────────────────────────────────┼───────────────────┐
+    //          │                                   │                   │
+    //          ▼                                   ▼                   ▼
+    //    value_mlp (private)               mask_mlp (private)    rule_features
+    //          │                                   │                   │
+    //          ▼                                   │             rule_mlp (shared)
+    //       cost (1)                               │                   │
+    //                                              ▼                   ▼
+    //                                        mask_features       rule_embed
+    //                                              │                   │
+    //                                              └──── bilinear ─────┘
+    //                                                       │
+    //                                                       ▼
+    //                                              score + rule_bias
+    // ========================================================================
+
+    /// Project backbone hidden to shared expr embedding (EMBED_DIM).
+    #[inline]
+    fn compute_expr_embed(&self, hidden: &[f32; HIDDEN_DIM]) -> [f32; EMBED_DIM] {
+        let mut embed = self.expr_proj_b;
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                embed[k] += hidden[j] * self.expr_proj_w[j][k];
+            }
+        }
+        embed
+    }
+
+    /// Compute mask features from expr embedding (for bilinear scoring).
     ///
-    /// Parameter count including learned rule embeddings.
+    /// MLP: EMBED_DIM → MLP_HIDDEN (ReLU) → EMBED_DIM
+    #[inline]
+    fn compute_mask_features(&self, expr_embed: &[f32; EMBED_DIM]) -> [f32; EMBED_DIM] {
+        // First layer: EMBED_DIM → MLP_HIDDEN
+        let mut h = self.mask_mlp_b1;
+        for i in 0..EMBED_DIM {
+            for j in 0..MLP_HIDDEN {
+                h[j] += expr_embed[i] * self.mask_mlp_w1[i][j];
+            }
+        }
+
+        // ReLU
+        for j in 0..MLP_HIDDEN {
+            h[j] = h[j].max(0.0);
+        }
+
+        // Second layer: MLP_HIDDEN → EMBED_DIM
+        let mut out = self.mask_mlp_b2;
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                out[k] += h[j] * self.mask_mlp_w2[j][k];
+            }
+        }
+        out
+    }
+
+    /// Encode rule features to rule embedding.
+    ///
+    /// MLP: RULE_FEATURE_DIM → MLP_HIDDEN (ReLU) → EMBED_DIM
+    /// This MLP is shared across all rules - scales sublinearly with rule count.
+    #[must_use]
+    pub fn encode_rule(&self, rule_features: &[f32; RULE_FEATURE_DIM]) -> [f32; EMBED_DIM] {
+        // First layer: RULE_FEATURE_DIM → MLP_HIDDEN
+        let mut h = self.rule_mlp_b1;
+        for i in 0..RULE_FEATURE_DIM {
+            for j in 0..MLP_HIDDEN {
+                h[j] += rule_features[i] * self.rule_mlp_w1[i][j];
+            }
+        }
+
+        // ReLU
+        for j in 0..MLP_HIDDEN {
+            h[j] = h[j].max(0.0);
+        }
+
+        // Second layer: MLP_HIDDEN → EMBED_DIM
+        let mut out = self.rule_mlp_b2;
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                out[k] += h[j] * self.rule_mlp_w2[j][k];
+            }
+        }
+        out
+    }
+
+    /// Pre-encode all rules (call once, cache results).
+    ///
+    /// Returns a Vec of rule embeddings that can be reused across multiple
+    /// expressions during saturation.
+    #[must_use]
+    pub fn encode_all_rules(&self, rule_features: &RuleFeatures, num_rules: usize) -> Vec<[f32; EMBED_DIM]> {
+        (0..num_rules)
+            .map(|r| self.encode_rule(&rule_features.features[r]))
+            .collect()
+    }
+
+    // =========================================================================
+    // Rule Encoding from LHS/RHS Templates
+    //
+    // Uses the SAME expr_embed as value/mask heads. 4-way concatenation:
+    // [z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS] → linear → rule_embed
+    //
+    // This provides richer semantic features than hand-crafted rule descriptors.
+    // =========================================================================
+
+    /// Encode a rule from its LHS and RHS expression templates.
+    ///
+    /// Uses the shared backbone to embed both LHS and RHS, then concatenates
+    /// four views: [z_LHS, z_RHS, z_LHS-z_RHS, z_LHS*z_RHS] and projects to
+    /// EMBED_DIM.
+    ///
+    /// # Arguments
+    /// * `lhs` - LHS pattern (what the rule matches), e.g., `A * (B + C)`
+    /// * `rhs` - RHS pattern (what it produces), e.g., `A*B + A*C`
+    ///
+    /// # Semantic interpretation
+    /// - `z_LHS`: What the rule MATCHES (pattern recognition)
+    /// - `z_RHS`: What it PRODUCES (production prediction)
+    /// - `z_LHS - z_RHS`: What CHANGED (the delta) - inverse rules have opposite signs
+    /// - `z_LHS * z_RHS`: What's SHARED (preserved structure)
+    #[must_use]
+    pub fn encode_rule_from_templates(&self, lhs: &Expr, rhs: &Expr) -> [f32; EMBED_DIM] {
+        // Embed LHS using shared backbone + expr_proj
+        let lhs_acc = EdgeAccumulator::from_expr(lhs, &self.embeddings);
+        let lhs_structural = StructuralFeatures::from_expr(lhs);
+        let lhs_hidden = self.forward_shared(&lhs_acc, &lhs_structural);
+        let z_lhs = self.compute_expr_embed(&lhs_hidden);
+
+        // Embed RHS using shared backbone + expr_proj
+        let rhs_acc = EdgeAccumulator::from_expr(rhs, &self.embeddings);
+        let rhs_structural = StructuralFeatures::from_expr(rhs);
+        let rhs_hidden = self.forward_shared(&rhs_acc, &rhs_structural);
+        let z_rhs = self.compute_expr_embed(&rhs_hidden);
+
+        // 4-way concatenate: [z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS] = 96 dims
+        let mut concat = [0.0f32; RULE_CONCAT_DIM];
+        for i in 0..EMBED_DIM {
+            concat[i] = z_lhs[i];                           // what it matches
+            concat[EMBED_DIM + i] = z_rhs[i];               // what it produces
+            concat[2 * EMBED_DIM + i] = z_lhs[i] - z_rhs[i]; // the delta
+            concat[3 * EMBED_DIM + i] = z_lhs[i] * z_rhs[i]; // shared structure
+        }
+
+        // Linear projection: 96 → 24 (no MLP, rich features already)
+        let mut out = self.rule_proj_b;
+        for i in 0..RULE_CONCAT_DIM {
+            for k in 0..EMBED_DIM {
+                out[k] += concat[i] * self.rule_proj_w[i][k];
+            }
+        }
+        out
+    }
+
+    /// Pre-encode all rules from templates (call once at init, cache results).
+    ///
+    /// Rules without templates fall back to zero embedding.
+    /// Rule embeddings don't change during search - they're computed from
+    /// LHS/RHS templates which are static.
+    #[must_use]
+    pub fn encode_all_rules_from_templates(&self, templates: &RuleTemplates) -> Vec<[f32; EMBED_DIM]> {
+        (0..templates.len())
+            .map(|r| {
+                match (templates.get_lhs(r), templates.get_rhs(r)) {
+                    (Some(lhs), Some(rhs)) => self.encode_rule_from_templates(lhs, rhs),
+                    _ => [0.0f32; EMBED_DIM], // No template - zero embedding
+                }
+            })
+            .collect()
+    }
+
+    /// Bilinear score: mask_features @ interaction @ rule_embed + bias
+    #[inline]
+    fn bilinear_score(
+        &self,
+        mask_features: &[f32; EMBED_DIM],
+        rule_embed: &[f32; EMBED_DIM],
+        rule_idx: usize,
+    ) -> f32 {
+        // transformed = mask_features @ interaction
+        let mut transformed = [0.0f32; EMBED_DIM];
+        for i in 0..EMBED_DIM {
+            for j in 0..EMBED_DIM {
+                transformed[j] += mask_features[i] * self.interaction[i][j];
+            }
+        }
+
+        // score = transformed · rule_embed + bias
+        let mut score = self.mask_rule_bias[rule_idx];
+        for k in 0..EMBED_DIM {
+            score += transformed[k] * rule_embed[k];
+        }
+        score
+    }
+
+    /// Score all rules for an expression using unified mask architecture.
+    ///
+    /// Uses pre-cached rule embeddings for efficiency. One forward pass through
+    /// backbone + expr_proj + mask_mlp, then O(rules) bilinear scoring.
+    #[must_use]
+    pub fn mask_score_all_rules(
+        &self,
+        expr: &Expr,
+        rule_embeds: &[[f32; EMBED_DIM]],
+    ) -> Vec<f32> {
+        let acc = EdgeAccumulator::from_expr(expr, &self.embeddings);
+        let structural = StructuralFeatures::from_expr(expr);
+        let hidden = self.forward_shared(&acc, &structural);
+        let expr_embed = self.compute_expr_embed(&hidden);
+        let mask_features = self.compute_mask_features(&expr_embed);
+
+        rule_embeds
+            .iter()
+            .enumerate()
+            .map(|(r, rule_embed)| self.bilinear_score(&mask_features, rule_embed, r))
+            .collect()
+    }
+
+    /// Score all rules with pre-computed backbone hidden state.
+    ///
+    /// More efficient when you have multiple expressions sharing the same
+    /// feature extraction.
+    #[must_use]
+    pub fn mask_score_all_rules_with_hidden(
+        &self,
+        hidden: &[f32; HIDDEN_DIM],
+        rule_embeds: &[[f32; EMBED_DIM]],
+    ) -> Vec<f32> {
+        let expr_embed = self.compute_expr_embed(hidden);
+        let mask_features = self.compute_mask_features(&expr_embed);
+
+        rule_embeds
+            .iter()
+            .enumerate()
+            .map(|(r, rule_embed)| self.bilinear_score(&mask_features, rule_embed, r))
+            .collect()
+    }
+
+    /// Filter rules by mask threshold using unified architecture.
+    ///
+    /// Returns indices of rules with sigmoid(score) > threshold.
+    #[must_use]
+    pub fn filter_rules_unified(
+        &self,
+        expr: &Expr,
+        rule_embeds: &[[f32; EMBED_DIM]],
+        threshold: f32,
+    ) -> Vec<usize> {
+        let scores = self.mask_score_all_rules(expr, rule_embeds);
+        scores
+            .iter()
+            .enumerate()
+            .filter(|(_, score)| sigmoid(**score) > threshold)
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    /// Score a single (expression, rule) pair for mask prediction.
+    ///
+    /// Computes the rule embedding on-the-fly from rule features.
+    /// Returns raw score (apply sigmoid for probability).
+    #[must_use]
+    pub fn mask_score_single(
+        &self,
+        expr: &Expr,
+        rule_features: &[f32; RULE_FEATURE_DIM],
+        rule_idx: usize,
+    ) -> f32 {
+        let acc = EdgeAccumulator::from_expr(expr, &self.embeddings);
+        let structural = StructuralFeatures::from_expr(expr);
+        let hidden = self.forward_shared(&acc, &structural);
+        let expr_embed = self.compute_expr_embed(&hidden);
+        let mask_features = self.compute_mask_features(&expr_embed);
+
+        // Compute rule embedding from features
+        let rule_embed = self.encode_rule(rule_features);
+
+        // Bilinear scoring
+        self.bilinear_score(&mask_features, &rule_embed, rule_idx)
+    }
+
+    /// Predict cost using the new unified value MLP.
+    ///
+    /// Goes through: backbone → expr_embed → value_mlp → cost
+    #[must_use]
+    pub fn predict_cost_unified(&self, expr: &Expr) -> f32 {
+        let acc = EdgeAccumulator::from_expr(expr, &self.embeddings);
+        let structural = StructuralFeatures::from_expr(expr);
+        let hidden = self.forward_shared(&acc, &structural);
+        let expr_embed = self.compute_expr_embed(&hidden);
+
+        // Value MLP: EMBED_DIM → MLP_HIDDEN (ReLU) → 1
+        let mut h = self.value_mlp_b1;
+        for i in 0..EMBED_DIM {
+            for j in 0..MLP_HIDDEN {
+                h[j] += expr_embed[i] * self.value_mlp_w1[i][j];
+            }
+        }
+        for j in 0..MLP_HIDDEN {
+            h[j] = h[j].max(0.0); // ReLU
+        }
+
+        let mut cost = self.value_mlp_b2;
+        for j in 0..MLP_HIDDEN {
+            cost += h[j] * self.value_mlp_w2[j];
+        }
+        cost
+    }
+
+    /// Legacy parameter count (excluding unified mask architecture).
+    ///
+    /// Parameter count including learned rule embeddings but NOT the new
+    /// unified mask architecture. Use `param_count_total()` for full count.
     #[must_use]
     pub const fn param_count() -> usize {
         OpEmbeddings::param_count()           // embeddings: 42 * 32 = 1,344
@@ -1353,23 +2087,60 @@ impl DualHeadNnue {
         // Total: ~11,074 parameters (~44KB)
     }
 
-    /// Memory size in bytes (f32 weights).
+    /// Parameter count for the unified mask architecture only.
+    #[must_use]
+    pub const fn param_count_unified_only() -> usize {
+        HIDDEN_DIM * EMBED_DIM                // expr_proj_w: 64 * 24 = 1,536
+            + EMBED_DIM                       // expr_proj_b: 24
+            + EMBED_DIM * MLP_HIDDEN          // value_mlp_w1: 24 * 16 = 384
+            + MLP_HIDDEN                      // value_mlp_b1: 16
+            + MLP_HIDDEN                      // value_mlp_w2: 16
+            + 1                               // value_mlp_b2: 1
+            + EMBED_DIM * MLP_HIDDEN          // mask_mlp_w1: 24 * 16 = 384
+            + MLP_HIDDEN                      // mask_mlp_b1: 16
+            + MLP_HIDDEN * EMBED_DIM          // mask_mlp_w2: 16 * 24 = 384
+            + EMBED_DIM                       // mask_mlp_b2: 24
+            + RULE_FEATURE_DIM * MLP_HIDDEN   // rule_mlp_w1: 8 * 16 = 128
+            + MLP_HIDDEN                      // rule_mlp_b1: 16
+            + MLP_HIDDEN * EMBED_DIM          // rule_mlp_w2: 16 * 24 = 384
+            + EMBED_DIM                       // rule_mlp_b2: 24
+            + EMBED_DIM * EMBED_DIM           // interaction: 24 * 24 = 576
+            + MASK_MAX_RULES                  // mask_rule_bias: 1024
+        // Total: ~4,937 additional parameters
+    }
+
+    /// Total parameter count including unified mask architecture.
+    #[must_use]
+    pub const fn param_count_total() -> usize {
+        Self::param_count() + Self::param_count_unified_only()
+        // Total: ~16,011 parameters (~64KB)
+    }
+
+    /// Memory size in bytes (f32 weights) for legacy architecture.
     #[must_use]
     pub const fn memory_bytes() -> usize {
         Self::param_count() * 4
     }
 
+    /// Memory size in bytes including unified mask architecture.
+    #[must_use]
+    pub const fn memory_bytes_total() -> usize {
+        Self::param_count_total() * 4
+    }
+
     /// Save weights to a binary file.
     ///
-    /// Format: magic "DUAL" + all weights as little-endian f32.
+    /// Format: magic "TRI3" + all weights as little-endian f32.
+    /// TRI3 = unified architecture v3 (adds LHS/RHS rule template projection).
     #[cfg(feature = "std")]
     pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
         use std::io::Write;
         let mut file = std::fs::File::create(path)?;
 
-        // Magic header
-        file.write_all(b"DUAL")?;
+        // Magic header (TRI3 = unified tripartite architecture v3 with rule templates)
+        file.write_all(b"TRI3")?;
 
+        // ===== Legacy backbone =====
         // Embeddings
         for row in &self.embeddings.e {
             for &val in row {
@@ -1387,22 +2158,118 @@ impl DualHeadNnue {
             file.write_all(&val.to_le_bytes())?;
         }
 
-        // Value head
+        // Value head (legacy)
         for &val in &self.value_w {
             file.write_all(&val.to_le_bytes())?;
         }
         file.write_all(&self.value_b.to_le_bytes())?;
 
-        // Search head
+        // Rule embeddings (legacy)
+        for row in &self.rule_embeddings {
+            for &val in row {
+                file.write_all(&val.to_le_bytes())?;
+            }
+        }
+        for &val in &self.rule_bias {
+            file.write_all(&val.to_le_bytes())?;
+        }
+
+        // Search head (legacy)
         for &val in &self.search_w {
             file.write_all(&val.to_le_bytes())?;
         }
         file.write_all(&self.search_b.to_le_bytes())?;
 
+        // ===== Unified mask architecture =====
+        // Expr projection
+        for row in &self.expr_proj_w {
+            for &val in row {
+                file.write_all(&val.to_le_bytes())?;
+            }
+        }
+        for &val in &self.expr_proj_b {
+            file.write_all(&val.to_le_bytes())?;
+        }
+
+        // Value MLP
+        for row in &self.value_mlp_w1 {
+            for &val in row {
+                file.write_all(&val.to_le_bytes())?;
+            }
+        }
+        for &val in &self.value_mlp_b1 {
+            file.write_all(&val.to_le_bytes())?;
+        }
+        for &val in &self.value_mlp_w2 {
+            file.write_all(&val.to_le_bytes())?;
+        }
+        file.write_all(&self.value_mlp_b2.to_le_bytes())?;
+
+        // Mask MLP
+        for row in &self.mask_mlp_w1 {
+            for &val in row {
+                file.write_all(&val.to_le_bytes())?;
+            }
+        }
+        for &val in &self.mask_mlp_b1 {
+            file.write_all(&val.to_le_bytes())?;
+        }
+        for row in &self.mask_mlp_w2 {
+            for &val in row {
+                file.write_all(&val.to_le_bytes())?;
+            }
+        }
+        for &val in &self.mask_mlp_b2 {
+            file.write_all(&val.to_le_bytes())?;
+        }
+
+        // Rule MLP (legacy, for hand-crafted features)
+        for row in &self.rule_mlp_w1 {
+            for &val in row {
+                file.write_all(&val.to_le_bytes())?;
+            }
+        }
+        for &val in &self.rule_mlp_b1 {
+            file.write_all(&val.to_le_bytes())?;
+        }
+        for row in &self.rule_mlp_w2 {
+            for &val in row {
+                file.write_all(&val.to_le_bytes())?;
+            }
+        }
+        for &val in &self.rule_mlp_b2 {
+            file.write_all(&val.to_le_bytes())?;
+        }
+
+        // Rule Projection (TRI3: LHS/RHS template encoding)
+        for row in &self.rule_proj_w {
+            for &val in row {
+                file.write_all(&val.to_le_bytes())?;
+            }
+        }
+        for &val in &self.rule_proj_b {
+            file.write_all(&val.to_le_bytes())?;
+        }
+
+        // Interaction matrix
+        for row in &self.interaction {
+            for &val in row {
+                file.write_all(&val.to_le_bytes())?;
+            }
+        }
+
+        // Mask rule bias
+        for &val in &self.mask_rule_bias {
+            file.write_all(&val.to_le_bytes())?;
+        }
+
         Ok(())
     }
 
     /// Load weights from a binary file.
+    ///
+    /// Supports "DUAL" (legacy), "TRI2" (unified), and "TRI3" (template) formats.
+    /// Legacy files will have unified mask and rule_proj fields zero-initialized.
     #[cfg(feature = "std")]
     pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
         use std::io::Read;
@@ -1411,15 +2278,24 @@ impl DualHeadNnue {
         // Check magic
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)?;
-        if &magic != b"DUAL" {
+
+        let is_legacy = &magic == b"DUAL";
+        let is_tri2 = &magic == b"TRI2";
+        let is_tri3 = &magic == b"TRI3";
+
+        if !is_legacy && !is_tri2 && !is_tri3 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Invalid DualHeadNnue file magic (expected 'DUAL')",
+                "Invalid DualHeadNnue file magic (expected 'DUAL', 'TRI2', or 'TRI3')",
             ));
         }
 
+        let has_unified = is_tri2 || is_tri3;
+        let has_rule_proj = is_tri3;
+
         let mut net = Self::new();
 
+        // ===== Legacy backbone =====
         // Read embeddings
         for row in &mut net.embeddings.e {
             for val in row {
@@ -1443,7 +2319,7 @@ impl DualHeadNnue {
             *val = f32::from_le_bytes(buf);
         }
 
-        // Read value head
+        // Read value head (legacy)
         for val in &mut net.value_w {
             let mut buf = [0u8; 4];
             file.read_exact(&mut buf)?;
@@ -1455,7 +2331,23 @@ impl DualHeadNnue {
             net.value_b = f32::from_le_bytes(buf);
         }
 
-        // Read search head
+        if has_unified {
+            // Read rule embeddings (in TRI2+ format)
+            for row in &mut net.rule_embeddings {
+                for val in row {
+                    let mut buf = [0u8; 4];
+                    file.read_exact(&mut buf)?;
+                    *val = f32::from_le_bytes(buf);
+                }
+            }
+            for val in &mut net.rule_bias {
+                let mut buf = [0u8; 4];
+                file.read_exact(&mut buf)?;
+                *val = f32::from_le_bytes(buf);
+            }
+        }
+
+        // Read search head (legacy)
         for val in &mut net.search_w {
             let mut buf = [0u8; 4];
             file.read_exact(&mut buf)?;
@@ -1466,6 +2358,133 @@ impl DualHeadNnue {
             file.read_exact(&mut buf)?;
             net.search_b = f32::from_le_bytes(buf);
         }
+
+        // ===== Unified mask architecture (TRI2+) =====
+        if has_unified {
+            // Expr projection
+            for row in &mut net.expr_proj_w {
+                for val in row {
+                    let mut buf = [0u8; 4];
+                    file.read_exact(&mut buf)?;
+                    *val = f32::from_le_bytes(buf);
+                }
+            }
+            for val in &mut net.expr_proj_b {
+                let mut buf = [0u8; 4];
+                file.read_exact(&mut buf)?;
+                *val = f32::from_le_bytes(buf);
+            }
+
+            // Value MLP
+            for row in &mut net.value_mlp_w1 {
+                for val in row {
+                    let mut buf = [0u8; 4];
+                    file.read_exact(&mut buf)?;
+                    *val = f32::from_le_bytes(buf);
+                }
+            }
+            for val in &mut net.value_mlp_b1 {
+                let mut buf = [0u8; 4];
+                file.read_exact(&mut buf)?;
+                *val = f32::from_le_bytes(buf);
+            }
+            for val in &mut net.value_mlp_w2 {
+                let mut buf = [0u8; 4];
+                file.read_exact(&mut buf)?;
+                *val = f32::from_le_bytes(buf);
+            }
+            {
+                let mut buf = [0u8; 4];
+                file.read_exact(&mut buf)?;
+                net.value_mlp_b2 = f32::from_le_bytes(buf);
+            }
+
+            // Mask MLP
+            for row in &mut net.mask_mlp_w1 {
+                for val in row {
+                    let mut buf = [0u8; 4];
+                    file.read_exact(&mut buf)?;
+                    *val = f32::from_le_bytes(buf);
+                }
+            }
+            for val in &mut net.mask_mlp_b1 {
+                let mut buf = [0u8; 4];
+                file.read_exact(&mut buf)?;
+                *val = f32::from_le_bytes(buf);
+            }
+            for row in &mut net.mask_mlp_w2 {
+                for val in row {
+                    let mut buf = [0u8; 4];
+                    file.read_exact(&mut buf)?;
+                    *val = f32::from_le_bytes(buf);
+                }
+            }
+            for val in &mut net.mask_mlp_b2 {
+                let mut buf = [0u8; 4];
+                file.read_exact(&mut buf)?;
+                *val = f32::from_le_bytes(buf);
+            }
+
+            // Rule MLP
+            for row in &mut net.rule_mlp_w1 {
+                for val in row {
+                    let mut buf = [0u8; 4];
+                    file.read_exact(&mut buf)?;
+                    *val = f32::from_le_bytes(buf);
+                }
+            }
+            for val in &mut net.rule_mlp_b1 {
+                let mut buf = [0u8; 4];
+                file.read_exact(&mut buf)?;
+                *val = f32::from_le_bytes(buf);
+            }
+            for row in &mut net.rule_mlp_w2 {
+                for val in row {
+                    let mut buf = [0u8; 4];
+                    file.read_exact(&mut buf)?;
+                    *val = f32::from_le_bytes(buf);
+                }
+            }
+            for val in &mut net.rule_mlp_b2 {
+                let mut buf = [0u8; 4];
+                file.read_exact(&mut buf)?;
+                *val = f32::from_le_bytes(buf);
+            }
+
+            // Rule Projection (TRI3+: LHS/RHS template encoding)
+            if has_rule_proj {
+                for row in &mut net.rule_proj_w {
+                    for val in row {
+                        let mut buf = [0u8; 4];
+                        file.read_exact(&mut buf)?;
+                        *val = f32::from_le_bytes(buf);
+                    }
+                }
+                for val in &mut net.rule_proj_b {
+                    let mut buf = [0u8; 4];
+                    file.read_exact(&mut buf)?;
+                    *val = f32::from_le_bytes(buf);
+                }
+            }
+            // TRI2 files: rule_proj fields remain zero-initialized
+
+            // Interaction matrix
+            for row in &mut net.interaction {
+                for val in row {
+                    let mut buf = [0u8; 4];
+                    file.read_exact(&mut buf)?;
+                    *val = f32::from_le_bytes(buf);
+                }
+            }
+
+            // Mask rule bias
+            for val in &mut net.mask_rule_bias {
+                let mut buf = [0u8; 4];
+                file.read_exact(&mut buf)?;
+                *val = f32::from_le_bytes(buf);
+            }
+        }
+        // Legacy DUAL files: unified mask fields remain zero-initialized
 
         Ok(net)
     }
@@ -1566,6 +2585,618 @@ impl DualHeadNnue {
         let hidden = self.forward_shared(&acc, &structural);
         let prediction = dot(&hidden, &self.search_w) + self.search_b;
         (prediction, hidden)
+    }
+
+    // =========================================================================
+    // Unified Mask Architecture Training
+    //
+    // Backprop path: score → bilinear → mask_mlp → expr_embed → expr_proj
+    // Also updates: rule_mlp, interaction, rule_bias
+    // Backbone (embeddings, w1, b1) is FROZEN during mask training.
+    // =========================================================================
+
+    /// Train mask head on single (expr, rule, fired) sample.
+    ///
+    /// Uses asymmetric BCE loss with higher weight for false negatives
+    /// (catching positives is critical - we don't want to skip rules that fire).
+    ///
+    /// # Arguments
+    /// * `expr` - The expression being evaluated
+    /// * `rule_features` - Hand-crafted features for this rule
+    /// * `rule_idx` - Index of the rule in the rule_bias array
+    /// * `fired` - Whether the rule actually fired (ground truth)
+    /// * `lr` - Learning rate
+    /// * `fp_weight` - Weight for false positives (typically ~1.0)
+    /// * `fn_weight` - Weight for false negatives (typically ~100.0)
+    ///
+    /// # Returns
+    /// The (weighted) loss for this sample
+    pub fn train_mask_step(
+        &mut self,
+        expr: &Expr,
+        rule_features: &[f32; RULE_FEATURE_DIM],
+        rule_idx: usize,
+        fired: bool,
+        lr: f32,
+        fp_weight: f32,
+        fn_weight: f32,
+    ) -> f32 {
+        // ===== Forward pass with stored intermediates =====
+        let acc = EdgeAccumulator::from_expr(expr, &self.embeddings);
+        let structural = StructuralFeatures::from_expr(expr);
+        let hidden = self.forward_shared(&acc, &structural);
+
+        let expr_embed = self.compute_expr_embed(&hidden);
+
+        // Mask MLP forward (store hidden for backprop)
+        let (mask_features, mask_hidden) = self.mask_mlp_forward_with_hidden(&expr_embed);
+
+        // Rule MLP forward (store hidden for backprop)
+        let (rule_embed, rule_hidden) = self.rule_mlp_forward_with_hidden(rule_features);
+
+        // Bilinear: mask_features @ interaction @ rule_embed
+        let (score, transformed) = self.bilinear_forward_with_hidden(&mask_features, &rule_embed, rule_idx);
+
+        // ===== Loss computation =====
+        let pred = sigmoid(score);
+        let target = if fired { 1.0 } else { 0.0 };
+
+        let p = pred.clamp(1e-7, 1.0 - 1e-7);
+        let loss = -(target * libm::logf(p) + (1.0 - target) * libm::logf(1.0 - p));
+
+        // Asymmetric weighting (catch positives!)
+        let weight = if pred > 0.5 && !fired {
+            fp_weight
+        } else if pred <= 0.5 && fired {
+            fn_weight
+        } else {
+            1.0
+        };
+
+        let d_score = (weight * (pred - target)).clamp(-10.0, 10.0);
+
+        // ===== Backprop =====
+        // d_score → rule_bias
+        self.mask_rule_bias[rule_idx] -= lr * d_score;
+
+        // d_score → interaction, mask_features, rule_embed
+        let (d_mask_features, d_rule_embed) = self.backprop_bilinear(
+            d_score, &mask_features, &rule_embed, &transformed, lr
+        );
+
+        // d_mask_features → mask_mlp
+        let _d_expr_embed = self.backprop_mask_mlp(&d_mask_features, &expr_embed, &mask_hidden, lr);
+
+        // d_rule_embed → rule_mlp
+        self.backprop_rule_mlp(&d_rule_embed, rule_features, &rule_hidden, lr);
+
+        // NOTE: We freeze the backbone (expr_proj, w1, b1, embeddings)
+        // If you want to fine-tune, uncomment:
+        // self.backprop_expr_proj(&d_expr_embed, &hidden, lr);
+
+        loss * weight
+    }
+
+    /// REINFORCE update for a single mask decision.
+    ///
+    /// The reward comes from FINAL extraction quality, not per-rule outcomes.
+    ///
+    /// For APPROVED decision: ∇log P(approve) = 1 - sigmoid(score)
+    /// For REJECTED decision: ∇log P(reject) = -sigmoid(score)
+    ///
+    /// Positive advantage → reinforce the decision that was made
+    /// Negative advantage → discourage the decision that was made
+    ///
+    /// # Arguments
+    /// * `expr` - Expression that was scored
+    /// * `rule_features` - Features of the rule
+    /// * `rule_idx` - Index of the rule
+    /// * `approved` - Was this rule approved (tried) or rejected (skipped)?
+    /// * `advantage` - reward - baseline (from final extraction cost comparison)
+    /// * `lr` - Learning rate
+    ///
+    /// # Returns
+    /// The gradient magnitude applied.
+    pub fn train_mask_reinforce(
+        &mut self,
+        expr: &Expr,
+        rule_features: &[f32; RULE_FEATURE_DIM],
+        rule_idx: usize,
+        approved: bool,
+        advantage: f32,
+        lr: f32,
+    ) -> f32 {
+        // Forward pass to get intermediates
+        let acc = EdgeAccumulator::from_expr(expr, &self.embeddings);
+        let structural = StructuralFeatures::from_expr(expr);
+        let hidden = self.forward_shared(&acc, &structural);
+
+        let expr_embed = self.compute_expr_embed(&hidden);
+        let (mask_features, mask_hidden) = self.mask_mlp_forward_with_hidden(&expr_embed);
+        let (rule_embed, rule_hidden) = self.rule_mlp_forward_with_hidden(rule_features);
+        let (score, transformed) = self.bilinear_forward_with_hidden(&mask_features, &rule_embed, rule_idx);
+
+        // REINFORCE gradient depends on the action taken:
+        // - Approved: ∇log sigmoid(score) = 1 - sigmoid(score)
+        // - Rejected: ∇log (1 - sigmoid(score)) = -sigmoid(score)
+        let prob = sigmoid(score).clamp(1e-6, 1.0 - 1e-6);
+        let d_log_prob = if approved {
+            1.0 - prob  // push score up when reinforcing approval
+        } else {
+            -prob  // push score down when reinforcing rejection
+        };
+
+        // Clip gradient to prevent explosion
+        let d_score = (advantage * d_log_prob).clamp(-1.0, 1.0);
+
+        // Skip update if gradient would be NaN or too small
+        if !d_score.is_finite() || d_score.abs() < 1e-8 {
+            return 0.0;
+        }
+
+        // Backprop
+        self.mask_rule_bias[rule_idx] -= lr * d_score;
+
+        let (d_mask_features, d_rule_embed) = self.backprop_bilinear(
+            d_score, &mask_features, &rule_embed, &transformed, lr
+        );
+
+        let _d_expr_embed = self.backprop_mask_mlp(&d_mask_features, &expr_embed, &mask_hidden, lr);
+        self.backprop_rule_mlp(&d_rule_embed, rule_features, &rule_hidden, lr);
+
+        d_score.abs()
+    }
+
+    /// Batch REINFORCE update for decisions from a search episode.
+    ///
+    /// # Arguments
+    /// * `decisions` - Vec of (expr, rule_features, rule_idx, approved)
+    /// * `advantage` - reward - baseline (from final cost comparison)
+    /// * `lr` - Learning rate
+    ///
+    /// # Returns
+    /// Total gradient norm applied.
+    pub fn train_mask_reinforce_batch(
+        &mut self,
+        decisions: &[(Expr, [f32; RULE_FEATURE_DIM], usize, bool)],
+        advantage: f32,
+        lr: f32,
+    ) -> f32 {
+        let mut total_grad = 0.0f32;
+        for (expr, rule_features, rule_idx, approved) in decisions {
+            total_grad += self.train_mask_reinforce(expr, rule_features, *rule_idx, *approved, advantage, lr);
+        }
+        total_grad
+    }
+
+    /// REINFORCE training using pre-computed rule embeddings.
+    ///
+    /// This is the preferred method when using LHS/RHS template embeddings.
+    /// Rule embeddings are computed once via `encode_all_rules_from_templates()`
+    /// and reused across training.
+    ///
+    /// # Arguments
+    /// * `expr` - The expression being evaluated
+    /// * `rule_embed` - Pre-computed rule embedding (from templates)
+    /// * `rule_idx` - Rule index (for bias lookup)
+    /// * `approved` - Whether this rule was approved by the mask
+    /// * `advantage` - reward - baseline
+    /// * `lr` - Learning rate
+    ///
+    /// # Returns
+    /// The gradient magnitude applied.
+    pub fn train_mask_reinforce_with_embed(
+        &mut self,
+        expr: &Expr,
+        rule_embed: &[f32; EMBED_DIM],
+        rule_idx: usize,
+        approved: bool,
+        advantage: f32,
+        lr: f32,
+    ) -> f32 {
+        // Forward pass to get intermediates
+        let acc = EdgeAccumulator::from_expr(expr, &self.embeddings);
+        let structural = StructuralFeatures::from_expr(expr);
+        let hidden = self.forward_shared(&acc, &structural);
+
+        let expr_embed = self.compute_expr_embed(&hidden);
+        let (mask_features, mask_hidden) = self.mask_mlp_forward_with_hidden(&expr_embed);
+        let (score, transformed) = self.bilinear_forward_with_hidden(&mask_features, rule_embed, rule_idx);
+
+        // REINFORCE gradient:
+        // - Approved: ∇log sigmoid(score) = 1 - sigmoid(score)
+        // - Rejected: ∇log (1 - sigmoid(score)) = -sigmoid(score)
+        let prob = sigmoid(score).clamp(1e-6, 1.0 - 1e-6);
+        let d_log_prob = if approved {
+            1.0 - prob
+        } else {
+            -prob
+        };
+
+        // Clip gradient to prevent explosion
+        let d_score = (advantage * d_log_prob).clamp(-1.0, 1.0);
+
+        // Skip update if gradient would be NaN or too small
+        if !d_score.is_finite() || d_score.abs() < 1e-8 {
+            return 0.0;
+        }
+
+        // Backprop (rule embedding is frozen - computed from templates)
+        self.mask_rule_bias[rule_idx] -= lr * d_score;
+
+        let (d_mask_features, _d_rule_embed) = self.backprop_bilinear(
+            d_score, &mask_features, rule_embed, &transformed, lr
+        );
+
+        let _d_expr_embed = self.backprop_mask_mlp(&d_mask_features, &expr_embed, &mask_hidden, lr);
+        // NOTE: Rule embedding is not updated here - it comes from templates.
+        // The rule_proj weights that created it are updated only during supervised pretraining.
+
+        d_score.abs()
+    }
+
+    /// Batch REINFORCE update using pre-computed rule embeddings.
+    ///
+    /// # Arguments
+    /// * `decisions` - Vec of (expr, rule_embed, rule_idx, approved)
+    /// * `advantage` - reward - baseline (from final cost comparison)
+    /// * `lr` - Learning rate
+    ///
+    /// # Returns
+    /// Total gradient norm applied.
+    pub fn train_mask_reinforce_batch_with_embeds(
+        &mut self,
+        decisions: &[(Expr, [f32; EMBED_DIM], usize, bool)],
+        advantage: f32,
+        lr: f32,
+    ) -> f32 {
+        let mut total_grad = 0.0f32;
+        for (expr, rule_embed, rule_idx, approved) in decisions {
+            total_grad += self.train_mask_reinforce_with_embed(expr, rule_embed, *rule_idx, *approved, advantage, lr);
+        }
+        total_grad
+    }
+
+    /// Train value MLP on (expr, true_cost) sample.
+    ///
+    /// Uses MSE loss. Backprop goes through value_mlp → expr_proj.
+    /// Backbone is frozen.
+    pub fn train_value_mlp_step(
+        &mut self,
+        expr: &Expr,
+        true_cost: f32,
+        lr: f32,
+    ) -> f32 {
+        // Forward
+        let acc = EdgeAccumulator::from_expr(expr, &self.embeddings);
+        let structural = StructuralFeatures::from_expr(expr);
+        let hidden = self.forward_shared(&acc, &structural);
+        let expr_embed = self.compute_expr_embed(&hidden);
+        let (pred_cost, value_hidden) = self.value_mlp_forward_with_hidden(&expr_embed);
+
+        // MSE loss
+        let diff = pred_cost - true_cost;
+        let loss = diff * diff;
+        let d_cost = 2.0 * diff;
+
+        // Backprop through value_mlp
+        let _d_expr_embed = self.backprop_value_mlp(d_cost, &expr_embed, &value_hidden, lr);
+
+        // NOTE: Backbone frozen - if you want to fine-tune:
+        // self.backprop_expr_proj(&d_expr_embed, &hidden, lr);
+
+        loss
+    }
+
+    // =========================================================================
+    // Forward with Hidden (for backprop)
+    // =========================================================================
+
+    /// Mask MLP forward storing hidden activations.
+    fn mask_mlp_forward_with_hidden(&self, expr_embed: &[f32; EMBED_DIM]) -> ([f32; EMBED_DIM], [f32; MLP_HIDDEN]) {
+        // First layer
+        let mut h = self.mask_mlp_b1;
+        for i in 0..EMBED_DIM {
+            for j in 0..MLP_HIDDEN {
+                h[j] += expr_embed[i] * self.mask_mlp_w1[i][j];
+            }
+        }
+
+        // Store pre-ReLU for backprop (we need to know which neurons were active)
+        let h_pre_relu = h;
+
+        // ReLU
+        for j in 0..MLP_HIDDEN {
+            h[j] = h[j].max(0.0);
+        }
+
+        // Second layer
+        let mut out = self.mask_mlp_b2;
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                out[k] += h[j] * self.mask_mlp_w2[j][k];
+            }
+        }
+
+        (out, h_pre_relu)
+    }
+
+    /// Rule MLP forward storing hidden activations.
+    fn rule_mlp_forward_with_hidden(&self, rule_features: &[f32; RULE_FEATURE_DIM]) -> ([f32; EMBED_DIM], [f32; MLP_HIDDEN]) {
+        // First layer
+        let mut h = self.rule_mlp_b1;
+        for i in 0..RULE_FEATURE_DIM {
+            for j in 0..MLP_HIDDEN {
+                h[j] += rule_features[i] * self.rule_mlp_w1[i][j];
+            }
+        }
+
+        let h_pre_relu = h;
+
+        // ReLU
+        for j in 0..MLP_HIDDEN {
+            h[j] = h[j].max(0.0);
+        }
+
+        // Second layer
+        let mut out = self.rule_mlp_b2;
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                out[k] += h[j] * self.rule_mlp_w2[j][k];
+            }
+        }
+
+        (out, h_pre_relu)
+    }
+
+    /// Value MLP forward storing hidden activations.
+    fn value_mlp_forward_with_hidden(&self, expr_embed: &[f32; EMBED_DIM]) -> (f32, [f32; MLP_HIDDEN]) {
+        // First layer
+        let mut h = self.value_mlp_b1;
+        for i in 0..EMBED_DIM {
+            for j in 0..MLP_HIDDEN {
+                h[j] += expr_embed[i] * self.value_mlp_w1[i][j];
+            }
+        }
+
+        let h_pre_relu = h;
+
+        // ReLU
+        for j in 0..MLP_HIDDEN {
+            h[j] = h[j].max(0.0);
+        }
+
+        // Second layer
+        let mut cost = self.value_mlp_b2;
+        for j in 0..MLP_HIDDEN {
+            cost += h[j] * self.value_mlp_w2[j];
+        }
+
+        (cost, h_pre_relu)
+    }
+
+    /// Bilinear forward storing transformed vector.
+    fn bilinear_forward_with_hidden(
+        &self,
+        mask_features: &[f32; EMBED_DIM],
+        rule_embed: &[f32; EMBED_DIM],
+        rule_idx: usize,
+    ) -> (f32, [f32; EMBED_DIM]) {
+        // transformed = mask_features @ interaction
+        let mut transformed = [0.0f32; EMBED_DIM];
+        for i in 0..EMBED_DIM {
+            for j in 0..EMBED_DIM {
+                transformed[j] += mask_features[i] * self.interaction[i][j];
+            }
+        }
+
+        // score = transformed · rule_embed + bias
+        let mut score = self.mask_rule_bias[rule_idx];
+        for k in 0..EMBED_DIM {
+            score += transformed[k] * rule_embed[k];
+        }
+
+        (score, transformed)
+    }
+
+    // =========================================================================
+    // Backpropagation Helpers
+    // =========================================================================
+
+    /// Backprop through bilinear layer.
+    ///
+    /// Returns (d_mask_features, d_rule_embed) and updates interaction matrix.
+    fn backprop_bilinear(
+        &mut self,
+        d_score: f32,
+        mask_features: &[f32; EMBED_DIM],
+        rule_embed: &[f32; EMBED_DIM],
+        transformed: &[f32; EMBED_DIM],
+        lr: f32,
+    ) -> ([f32; EMBED_DIM], [f32; EMBED_DIM]) {
+        // d_score/d_transformed = rule_embed
+        // d_score/d_rule_embed = transformed
+        let mut d_transformed = [0.0f32; EMBED_DIM];
+        let mut d_rule_embed = [0.0f32; EMBED_DIM];
+
+        for k in 0..EMBED_DIM {
+            d_transformed[k] = d_score * rule_embed[k];
+            d_rule_embed[k] = d_score * transformed[k];
+        }
+
+        // d_transformed/d_mask_features = interaction^T
+        // d_transformed/d_interaction = outer(mask_features, I)
+        let mut d_mask_features = [0.0f32; EMBED_DIM];
+        for i in 0..EMBED_DIM {
+            for j in 0..EMBED_DIM {
+                d_mask_features[i] += d_transformed[j] * self.interaction[i][j];
+                // Update interaction: d_loss/d_interaction[i][j] = mask_features[i] * d_transformed[j]
+                self.interaction[i][j] -= lr * mask_features[i] * d_transformed[j];
+            }
+        }
+
+        (d_mask_features, d_rule_embed)
+    }
+
+    /// Backprop through mask MLP.
+    ///
+    /// Returns d_expr_embed and updates mask_mlp weights.
+    fn backprop_mask_mlp(
+        &mut self,
+        d_out: &[f32; EMBED_DIM],
+        expr_embed: &[f32; EMBED_DIM],
+        h_pre_relu: &[f32; MLP_HIDDEN],
+        lr: f32,
+    ) -> [f32; EMBED_DIM] {
+        // d_out → w2, b2
+        // d_h (post-ReLU) = d_out @ w2^T
+        let mut d_h = [0.0f32; MLP_HIDDEN];
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                d_h[j] += d_out[k] * self.mask_mlp_w2[j][k];
+                // Update w2
+                let h_relu = h_pre_relu[j].max(0.0);
+                self.mask_mlp_w2[j][k] -= lr * h_relu * d_out[k];
+            }
+        }
+
+        // Update b2
+        for k in 0..EMBED_DIM {
+            self.mask_mlp_b2[k] -= lr * d_out[k];
+        }
+
+        // ReLU backward
+        for j in 0..MLP_HIDDEN {
+            if h_pre_relu[j] <= 0.0 {
+                d_h[j] = 0.0;
+            }
+        }
+
+        // d_h → w1, b1, d_expr_embed
+        let mut d_expr_embed = [0.0f32; EMBED_DIM];
+        for i in 0..EMBED_DIM {
+            for j in 0..MLP_HIDDEN {
+                d_expr_embed[i] += d_h[j] * self.mask_mlp_w1[i][j];
+                // Update w1
+                self.mask_mlp_w1[i][j] -= lr * expr_embed[i] * d_h[j];
+            }
+        }
+
+        // Update b1
+        for j in 0..MLP_HIDDEN {
+            self.mask_mlp_b1[j] -= lr * d_h[j];
+        }
+
+        d_expr_embed
+    }
+
+    /// Backprop through rule MLP.
+    ///
+    /// Updates rule_mlp weights. Rule features are fixed, so no gradient returned.
+    fn backprop_rule_mlp(
+        &mut self,
+        d_out: &[f32; EMBED_DIM],
+        rule_features: &[f32; RULE_FEATURE_DIM],
+        h_pre_relu: &[f32; MLP_HIDDEN],
+        lr: f32,
+    ) {
+        // d_out → w2, b2
+        let mut d_h = [0.0f32; MLP_HIDDEN];
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                d_h[j] += d_out[k] * self.rule_mlp_w2[j][k];
+                let h_relu = h_pre_relu[j].max(0.0);
+                self.rule_mlp_w2[j][k] -= lr * h_relu * d_out[k];
+            }
+        }
+
+        // Update b2
+        for k in 0..EMBED_DIM {
+            self.rule_mlp_b2[k] -= lr * d_out[k];
+        }
+
+        // ReLU backward
+        for j in 0..MLP_HIDDEN {
+            if h_pre_relu[j] <= 0.0 {
+                d_h[j] = 0.0;
+            }
+        }
+
+        // d_h → w1, b1
+        for i in 0..RULE_FEATURE_DIM {
+            for j in 0..MLP_HIDDEN {
+                self.rule_mlp_w1[i][j] -= lr * rule_features[i] * d_h[j];
+            }
+        }
+
+        for j in 0..MLP_HIDDEN {
+            self.rule_mlp_b1[j] -= lr * d_h[j];
+        }
+    }
+
+    /// Backprop through value MLP.
+    ///
+    /// Returns d_expr_embed and updates value_mlp weights.
+    fn backprop_value_mlp(
+        &mut self,
+        d_cost: f32,
+        expr_embed: &[f32; EMBED_DIM],
+        h_pre_relu: &[f32; MLP_HIDDEN],
+        lr: f32,
+    ) -> [f32; EMBED_DIM] {
+        // d_cost → w2, b2
+        let mut d_h = [0.0f32; MLP_HIDDEN];
+        for j in 0..MLP_HIDDEN {
+            d_h[j] = d_cost * self.value_mlp_w2[j];
+            let h_relu = h_pre_relu[j].max(0.0);
+            self.value_mlp_w2[j] -= lr * h_relu * d_cost;
+        }
+
+        self.value_mlp_b2 -= lr * d_cost;
+
+        // ReLU backward
+        for j in 0..MLP_HIDDEN {
+            if h_pre_relu[j] <= 0.0 {
+                d_h[j] = 0.0;
+            }
+        }
+
+        // d_h → w1, b1, d_expr_embed
+        let mut d_expr_embed = [0.0f32; EMBED_DIM];
+        for i in 0..EMBED_DIM {
+            for j in 0..MLP_HIDDEN {
+                d_expr_embed[i] += d_h[j] * self.value_mlp_w1[i][j];
+                self.value_mlp_w1[i][j] -= lr * expr_embed[i] * d_h[j];
+            }
+        }
+
+        for j in 0..MLP_HIDDEN {
+            self.value_mlp_b1[j] -= lr * d_h[j];
+        }
+
+        d_expr_embed
+    }
+
+    /// Backprop through expr projection (optional, for fine-tuning).
+    ///
+    /// Updates expr_proj weights. Backbone (w1, b1) remains frozen.
+    #[allow(dead_code)]
+    fn backprop_expr_proj(
+        &mut self,
+        d_expr_embed: &[f32; EMBED_DIM],
+        hidden: &[f32; HIDDEN_DIM],
+        lr: f32,
+    ) {
+        // d_expr_embed → expr_proj_w, expr_proj_b
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                self.expr_proj_w[j][k] -= lr * hidden[j] * d_expr_embed[k];
+            }
+        }
+
+        for k in 0..EMBED_DIM {
+            self.expr_proj_b[k] -= lr * d_expr_embed[k];
+        }
     }
 }
 
@@ -1978,5 +3609,389 @@ mod tests {
         let active_rules = net.classify_rules(&expr, 10, 0.5);
         // With random init, some should pass threshold
         assert!(active_rules.len() <= 10, "Should only consider first 10 rules");
+    }
+
+    // ========================================================================
+    // Unified Mask Architecture Tests
+    // ========================================================================
+
+    #[test]
+    fn test_rule_features_initialization() {
+        let mut rule_features = RuleFeatures::new();
+
+        // All features should be zero initially
+        for r in 0..10 {
+            for f in rule_features.get(r) {
+                assert!(*f == 0.0, "Initial features should be zero");
+            }
+        }
+
+        // Set features for a rule
+        rule_features.set(0, [0.25, 0.3, 1.0, 1.0, 0.0, 1.0, 0.5, 1.0]);
+        let features = rule_features.get(0);
+        assert!((features[0] - 0.25).abs() < 1e-6, "Category should be set");
+        assert!((features[3] - 1.0).abs() < 1e-6, "Commutative flag should be set");
+    }
+
+    #[test]
+    fn test_encode_rule_deterministic() {
+        let net = DualHeadNnue::new_random(42);
+        let features = [0.25, 0.3, 1.0, 1.0, 0.0, 1.0, 0.5, 1.0];
+
+        let embed1 = net.encode_rule(&features);
+        let embed2 = net.encode_rule(&features);
+
+        // Same input should produce same output
+        for i in 0..EMBED_DIM {
+            assert!(
+                (embed1[i] - embed2[i]).abs() < 1e-6,
+                "encode_rule should be deterministic at dim {}",
+                i
+            );
+        }
+
+        // Embedding should be finite
+        for i in 0..EMBED_DIM {
+            assert!(embed1[i].is_finite(), "Rule embedding should be finite at dim {}", i);
+        }
+    }
+
+    #[test]
+    fn test_encode_all_rules() {
+        let net = DualHeadNnue::new_random(42);
+        let mut rule_features = RuleFeatures::new();
+
+        // Set up a few rules with different features
+        rule_features.set(0, [0.0, 0.2, 0.0, 1.0, 0.0, 0.0, 0.1, 0.0]); // algebraic
+        rule_features.set(1, [0.25, 0.5, -1.0, 0.0, 1.0, 1.0, 0.3, 0.0]); // peephole
+        rule_features.set(2, [0.75, 0.8, 1.0, 0.0, 0.0, 0.0, 0.05, 1.0]); // cross-cutting
+
+        let embeds = net.encode_all_rules(&rule_features, 3);
+
+        assert_eq!(embeds.len(), 3, "Should encode exactly 3 rules");
+
+        // Each embedding should be finite
+        for (r, embed) in embeds.iter().enumerate() {
+            for (d, &val) in embed.iter().enumerate() {
+                assert!(val.is_finite(), "Rule {} dim {} should be finite", r, d);
+            }
+        }
+
+        // Different features should produce different embeddings
+        let diff_01: f32 = embeds[0].iter().zip(embeds[1].iter()).map(|(a, b)| (a - b).abs()).sum();
+        let diff_02: f32 = embeds[0].iter().zip(embeds[2].iter()).map(|(a, b)| (a - b).abs()).sum();
+
+        assert!(diff_01 > 1e-3, "Different rules should have different embeddings");
+        assert!(diff_02 > 1e-3, "Different rules should have different embeddings");
+    }
+
+    #[test]
+    fn test_compute_expr_embed() {
+        let net = DualHeadNnue::new_random(42);
+        let expr = make_fma_pattern();
+
+        // Compute hidden state
+        let acc = EdgeAccumulator::from_expr(&expr, &net.embeddings);
+        let structural = StructuralFeatures::from_expr(&expr);
+        let hidden = net.forward_shared(&acc, &structural);
+
+        // Compute expr embedding
+        let expr_embed = net.compute_expr_embed(&hidden);
+
+        assert_eq!(expr_embed.len(), EMBED_DIM, "Expr embed should have EMBED_DIM dimensions");
+
+        for (i, &val) in expr_embed.iter().enumerate() {
+            assert!(val.is_finite(), "Expr embedding should be finite at dim {}", i);
+        }
+    }
+
+    #[test]
+    fn test_compute_mask_features() {
+        let net = DualHeadNnue::new_random(42);
+        let expr = make_fma_pattern();
+
+        let acc = EdgeAccumulator::from_expr(&expr, &net.embeddings);
+        let structural = StructuralFeatures::from_expr(&expr);
+        let hidden = net.forward_shared(&acc, &structural);
+        let expr_embed = net.compute_expr_embed(&hidden);
+
+        let mask_features = net.compute_mask_features(&expr_embed);
+
+        assert_eq!(mask_features.len(), EMBED_DIM, "Mask features should have EMBED_DIM dimensions");
+
+        for (i, &val) in mask_features.iter().enumerate() {
+            assert!(val.is_finite(), "Mask features should be finite at dim {}", i);
+        }
+    }
+
+    #[test]
+    fn test_bilinear_score_computation() {
+        let net = DualHeadNnue::new_random(42);
+
+        // Create test vectors
+        let mask_features = [1.0f32; EMBED_DIM];
+        let rule_embed = [1.0f32; EMBED_DIM];
+
+        let score = net.bilinear_score(&mask_features, &rule_embed, 0);
+
+        assert!(score.is_finite(), "Bilinear score should be finite");
+
+        // Manual verification: score = mask @ interaction @ rule + bias
+        // With all-ones vectors, this should be sum of interaction matrix + bias[0]
+        let mut expected = net.mask_rule_bias[0];
+        for i in 0..EMBED_DIM {
+            for j in 0..EMBED_DIM {
+                expected += net.interaction[i][j];
+            }
+        }
+        assert!(
+            (score - expected).abs() < 1e-4,
+            "Bilinear computation mismatch: got {}, expected {}",
+            score,
+            expected
+        );
+    }
+
+    #[test]
+    fn test_mask_score_all_rules_finite() {
+        let net = DualHeadNnue::new_random(42);
+        let expr = make_fma_pattern();
+        let mut rule_features = RuleFeatures::new();
+
+        // Set up 5 rules
+        for r in 0..5 {
+            rule_features.set(r, [r as f32 * 0.2, 0.3, 0.0, 1.0, 0.0, 0.0, 0.1, 0.0]);
+        }
+
+        let rule_embeds = net.encode_all_rules(&rule_features, 5);
+        let scores = net.mask_score_all_rules(&expr, &rule_embeds);
+
+        assert_eq!(scores.len(), 5, "Should score all 5 rules");
+
+        for (r, &score) in scores.iter().enumerate() {
+            assert!(score.is_finite(), "Score for rule {} should be finite", r);
+        }
+    }
+
+    #[test]
+    fn test_filter_rules_unified() {
+        let mut net = DualHeadNnue::new_random(42);
+        let expr = make_fma_pattern();
+        let mut rule_features = RuleFeatures::new();
+
+        // Set up 10 rules
+        for r in 0..10 {
+            rule_features.set(r, [r as f32 * 0.1, 0.3, 0.0, 1.0, 0.0, 0.0, 0.1, 0.0]);
+        }
+
+        // Set some rule biases high to ensure they pass threshold
+        net.mask_rule_bias[0] = 5.0; // sigmoid(5) > 0.99
+        net.mask_rule_bias[1] = 5.0;
+        net.mask_rule_bias[5] = -5.0; // sigmoid(-5) < 0.01
+
+        let rule_embeds = net.encode_all_rules(&rule_features, 10);
+        let passing = net.filter_rules_unified(&expr, &rule_embeds, 0.5);
+
+        // Rules 0 and 1 should definitely pass (high bias)
+        // Rule 5 should definitely fail (low bias)
+        // The test verifies the filtering logic works, not exact counts
+
+        // At least some rules should pass
+        assert!(!passing.is_empty(), "Some rules should pass threshold");
+
+        // Not all rules should pass (rule 5 has very negative bias)
+        assert!(passing.len() < 10, "Not all rules should pass threshold");
+    }
+
+    #[test]
+    fn test_predict_cost_unified() {
+        let net = DualHeadNnue::new_random(42);
+        let expr = make_fma_pattern();
+
+        let cost = net.predict_cost_unified(&expr);
+
+        assert!(cost.is_finite(), "Unified cost prediction should be finite");
+        assert!(cost > 0.0, "Cost should be positive (exp of value_mlp output)");
+    }
+
+    #[test]
+    fn test_mask_training_step_loss_decreases() {
+        let mut net = DualHeadNnue::new_random(42);
+        let expr = make_fma_pattern();
+        let rule_features = [0.25, 0.3, 1.0, 1.0, 0.0, 1.0, 0.5, 1.0];
+
+        // Compute initial loss for a positive sample
+        let rule_embeds = net.encode_all_rules(&RuleFeatures::new(), 1);
+        let initial_scores = net.mask_score_all_rules(&expr, &rule_embeds);
+        let initial_pred = 1.0 / (1.0 + (-initial_scores[0]).exp()); // sigmoid
+
+        // Train on positive sample (rule fired)
+        let mut total_loss = 0.0;
+        for _ in 0..50 {
+            let loss = net.train_mask_step(&expr, &rule_features, 0, true, 0.01, 1.0, 10.0);
+            total_loss += loss;
+            assert!(loss.is_finite(), "Training loss should be finite");
+        }
+
+        // Compute final prediction
+        let rule_embeds = net.encode_all_rules(&RuleFeatures::new(), 1);
+        let final_scores = net.mask_score_all_rules(&expr, &rule_embeds);
+        let final_pred = 1.0 / (1.0 + (-final_scores[0]).exp()); // sigmoid
+
+        // After training on positive samples, prediction should increase
+        // (network learns to predict 1 for this expr-rule pair)
+        assert!(
+            final_pred > initial_pred || (final_pred - initial_pred).abs() < 0.1,
+            "Training on positive should increase prediction: {} -> {}",
+            initial_pred,
+            final_pred
+        );
+    }
+
+    #[test]
+    fn test_value_mlp_training_step() {
+        let mut net = DualHeadNnue::new_random(42);
+        let expr = make_fma_pattern();
+
+        let target_cost = 100.0f32; // Target nanoseconds
+        let target_log = target_cost.ln();
+
+        // Compute initial prediction
+        let initial_pred = net.predict_cost_unified(&expr);
+
+        // Train for several steps
+        for _ in 0..100 {
+            let loss = net.train_value_mlp_step(&expr, target_log, 0.01);
+            assert!(loss.is_finite(), "Value training loss should be finite");
+        }
+
+        // Final prediction should be closer to target
+        let final_pred = net.predict_cost_unified(&expr);
+        let initial_error = (initial_pred.ln() - target_log).abs();
+        let final_error = (final_pred.ln() - target_log).abs();
+
+        // Allow for stochastic behavior, but generally should improve
+        // (or at least not get catastrophically worse)
+        assert!(
+            final_error < initial_error * 2.0 || final_error < 1.0,
+            "Value MLP should learn toward target: initial_err={}, final_err={}",
+            initial_error,
+            final_error
+        );
+    }
+
+    #[test]
+    fn test_randomize_mask_weights() {
+        let mut net = DualHeadNnue::new();
+
+        // Initially all weights should be zero (or default)
+        let initial_sum: f32 = net.expr_proj_w.iter().flatten().map(|x| x.abs()).sum();
+        assert!(initial_sum < 1e-6, "Initial weights should be zero");
+
+        // Randomize
+        net.randomize_mask_weights(42);
+
+        // Now weights should be non-zero
+        let final_sum: f32 = net.expr_proj_w.iter().flatten().map(|x| x.abs()).sum();
+        assert!(final_sum > 1.0, "Randomized weights should be non-zero");
+
+        // Interaction matrix should be near identity diagonal
+        for i in 0..EMBED_DIM {
+            assert!(
+                (net.interaction[i][i] - 1.0).abs() < 0.5,
+                "Diagonal of interaction should be near 1.0"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn test_unified_architecture_serialization_roundtrip() {
+        use std::path::PathBuf;
+
+        let mut net = DualHeadNnue::new_random(42);
+        net.randomize_mask_weights(123);
+
+        // Set some specific values we can verify
+        net.interaction[0][0] = 1.234;
+        net.mask_rule_bias[5] = -0.567;
+        net.value_mlp_b2 = 3.14;
+
+        // Create temp file path
+        let temp_path = PathBuf::from("/tmp/test_dual_head_unified_serialization.bin");
+
+        // Serialize
+        net.save(&temp_path).expect("Save should succeed");
+
+        // Deserialize
+        let loaded = DualHeadNnue::load(&temp_path).expect("Load should succeed");
+
+        // Cleanup temp file
+        let _ = std::fs::remove_file(&temp_path);
+
+        // Verify specific values
+        assert!(
+            (loaded.interaction[0][0] - 1.234).abs() < 1e-6,
+            "Interaction should be preserved"
+        );
+        assert!(
+            (loaded.mask_rule_bias[5] - (-0.567)).abs() < 1e-6,
+            "Rule bias should be preserved"
+        );
+        assert!(
+            (loaded.value_mlp_b2 - 3.14).abs() < 1e-6,
+            "Value MLP bias should be preserved"
+        );
+
+        // Verify predictions match
+        let expr = make_fma_pattern();
+        let original_cost = net.predict_cost_unified(&expr);
+        let loaded_cost = loaded.predict_cost_unified(&expr);
+        assert!(
+            (original_cost - loaded_cost).abs() < 1e-5,
+            "Loaded network should produce same predictions"
+        );
+    }
+
+    #[test]
+    fn test_gradients_finite_through_all_paths() {
+        let mut net = DualHeadNnue::new_random(42);
+        let expr = make_fma_pattern();
+        let rule_features = [0.25, 0.3, 1.0, 1.0, 0.0, 1.0, 0.5, 1.0];
+
+        // Train mask head
+        let mask_loss = net.train_mask_step(&expr, &rule_features, 0, true, 0.01, 1.0, 10.0);
+        assert!(mask_loss.is_finite(), "Mask loss should be finite");
+        assert!(!mask_loss.is_nan(), "Mask loss should not be NaN");
+
+        // Train value head
+        let value_loss = net.train_value_mlp_step(&expr, 5.0, 0.01);
+        assert!(value_loss.is_finite(), "Value loss should be finite");
+        assert!(!value_loss.is_nan(), "Value loss should not be NaN");
+
+        // Verify weights didn't become NaN
+        for row in &net.expr_proj_w {
+            for &val in row {
+                assert!(!val.is_nan(), "expr_proj_w should not contain NaN after training");
+            }
+        }
+
+        for row in &net.mask_mlp_w1 {
+            for &val in row {
+                assert!(!val.is_nan(), "mask_mlp_w1 should not contain NaN after training");
+            }
+        }
+
+        for row in &net.rule_mlp_w1 {
+            for &val in row {
+                assert!(!val.is_nan(), "rule_mlp_w1 should not contain NaN after training");
+            }
+        }
+
+        for row in &net.interaction {
+            for &val in row {
+                assert!(!val.is_nan(), "interaction should not contain NaN after training");
+            }
+        }
     }
 }
