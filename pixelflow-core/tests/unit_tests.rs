@@ -85,19 +85,19 @@ mod field_tests {
     use super::*;
 
     #[test]
-    fn field_from_f32_should_broadcast_value() {
+    fn from_f32_should_broadcast_scalar_to_all_lanes() {
         let f: Field = 42.0f32.into();
         assert_field_approx_eq(f, 42.0);
     }
 
     #[test]
-    fn field_from_i32_should_broadcast_value() {
+    fn from_i32_should_broadcast_scalar_to_all_lanes() {
         let f: Field = 42i32.into();
         assert_field_approx_eq(f, 42.0);
     }
 
     #[test]
-    fn field_arithmetic_should_compute_correctly() {
+    fn arithmetic_ops_should_compute_lanewise_result() {
         let a: Field = 2.0f32.into();
         let b: Field = 3.0f32.into();
         let zero = Field::from(0.0);
@@ -110,7 +110,7 @@ mod field_tests {
     }
 
     #[test]
-    fn field_bitwise_should_compute_correctly() {
+    fn bitwise_and_should_compute_lanewise() {
         let a: Field = 1.0f32.into();
         let b: Field = 2.0f32.into();
 
@@ -119,7 +119,7 @@ mod field_tests {
     }
 
     #[test]
-    fn field_min_max_should_select_extremes() {
+    fn min_max_should_select_extremes_lanewise() {
         let a: Field = 5.0f32.into();
         let b: Field = 3.0f32.into();
         // min/max return Min/Max combinators - eval them to get Field
@@ -131,7 +131,7 @@ mod field_tests {
 
     // Robustness tests
     #[test]
-    fn field_sqrt_should_handle_zero() {
+    fn sqrt_should_return_zero_when_input_is_zero() {
         // sqrt(0) -> NaN if not handled carefully when using rsqrt * self.
         // Field::sqrt returns Field directly (internal method exposed via pub fn sqrt)
         // Wait, unit_tests.rs checks `X.sqrt()`. That uses ManifoldExt which creates AST.
@@ -145,7 +145,7 @@ mod field_tests {
     }
 
     #[test]
-    fn field_sqrt_should_handle_negative() {
+    fn sqrt_should_return_zero_when_input_is_negative() {
         let expr = Field::from(-1.0).sqrt();
         let zero = Field::from(0.0);
         let coords = (zero, zero, zero, zero);
@@ -162,7 +162,7 @@ mod variable_tests {
     use super::*;
 
     #[test]
-    fn coordinate_variables_should_evaluate_to_inputs() {
+    fn coords_should_evaluate_to_respective_inputs() {
         let coords = (
             Field::from(5.0),
             Field::from(3.0),
@@ -182,7 +182,7 @@ mod variable_tests {
     }
 
     #[test]
-    fn axis_enums_should_be_distinct() {
+    fn axis_equality_should_distinguish_variants() {
         assert_eq!(Axis::X, Axis::X);
         assert_ne!(Axis::X, Axis::Y);
     }
@@ -196,7 +196,7 @@ mod manifold_tests {
     use super::*;
 
     #[test]
-    fn constant_types_should_eval_to_constant() {
+    fn constant_manifold_should_evaluate_to_value_ignoring_coords() {
         let zero = Field::from(0.0);
         let coords = (zero, zero, zero, zero);
 
@@ -208,7 +208,7 @@ mod manifold_tests {
     }
 
     #[test]
-    fn scale_combinator_should_scale_coordinates() {
+    fn scale_should_transform_input_coordinates() {
         // scale(X, 2.0) evals X at x/2.0
         let scaled = scale(X, 2.0);
         let x = Field::from(10.0);
@@ -227,7 +227,7 @@ mod binary_ops_tests {
     use super::*;
 
     #[test]
-    fn manifold_operators_should_compute_correctly() {
+    fn manifold_arithmetic_should_compose_operations() {
         let x = Field::from(10.0);
         let y = Field::from(2.0);
         let zero = Field::from(0.0);
@@ -248,7 +248,7 @@ mod unary_ops_tests {
     use super::*;
 
     #[test]
-    fn unary_operators_should_compute_correctly() {
+    fn unary_ops_should_transform_values() {
         let x = Field::from(4.0);
         let neg_x = Field::from(-4.0);
         let y = Field::from(5.0);
@@ -273,7 +273,7 @@ mod select_tests {
     use super::*;
 
     #[test]
-    fn select_should_choose_based_on_condition() {
+    fn select_should_choose_branch_based_on_condition() {
         let coords_pos = (Field::from(5.0), Field::from(10.0), Field::from(20.0), Field::from(0.0));
         let coords_neg = (Field::from(-1.0), Field::from(10.0), Field::from(20.0), Field::from(0.0));
 
@@ -311,7 +311,7 @@ mod select_tests {
     }
 
     #[test]
-    fn select_should_short_circuit_true_branch() {
+    fn select_should_not_eval_false_branch_when_all_lanes_true() {
         let select = Select {
             cond: X.gt(X), // Always false
             if_true: Panics,
@@ -323,7 +323,7 @@ mod select_tests {
     }
 
     #[test]
-    fn select_should_short_circuit_false_branch() {
+    fn select_should_not_eval_true_branch_when_all_lanes_false() {
         let select = Select {
             cond: X.ge(X), // Always true
             if_true: Safe(42.0),
@@ -335,7 +335,7 @@ mod select_tests {
     }
 
     #[test]
-    fn select_should_blend_mixed_mask() {
+    fn select_should_blend_branches_when_mask_is_mixed() {
         if PARALLELISM < 2 { return; }
 
         // X = sequential(0.0) -> [0, 1, 2, 3...]
@@ -375,7 +375,7 @@ mod select_tests {
     }
 
     #[test]
-    fn select_comparisons_should_respect_equality_boundary() {
+    fn comparisons_should_handle_equality_boundaries_correctly() {
         let zero = Field::from(0.0);
         let coords = (zero, zero, zero, zero);
 
@@ -421,7 +421,7 @@ mod map_tests {
     use super::*;
 
     #[test]
-    fn map_should_transform_coordinates() {
+    fn map_should_transform_coordinates_before_evaluation() {
         // Substitute X with X+X
         let doubled = Map::new(X, X + X);
         let x = Field::from(5.0);
@@ -433,7 +433,7 @@ mod map_tests {
     }
 
     #[test]
-    fn map_clamp_should_restrict_range() {
+    fn map_composed_with_clamp_should_restrict_output_range() {
          let clamped = X.map(X.max(0.0f32).min(1.0f32));
          let zero = Field::from(0.0);
 
@@ -455,7 +455,7 @@ mod fix_tests {
     use super::*;
 
     #[test]
-    fn fix_combinator_should_iterate() {
+    fn fix_should_iterate_until_condition_met() {
         // Iterate: start at 0, add 1 each step, stop at 5
         let fix = Fix {
             seed: 0.0f32,
@@ -476,7 +476,7 @@ mod jet2_tests {
     use super::*;
 
     #[test]
-    fn jet2_derivatives_should_be_correct() {
+    fn jet2_should_compute_partial_derivatives() {
         // Test x^2 + y
         let expr = X * X + Y;
 
@@ -501,7 +501,7 @@ mod complex_expr_tests {
     use super::*;
 
     #[test]
-    fn circle_sdf_should_compute_distance() {
+    fn complex_expression_should_compute_correct_result() {
         let dist = (X * X + Y * Y).sqrt();
         let x = Field::from(3.0);
         let y = Field::from(4.0);
@@ -520,7 +520,7 @@ mod default_tests {
     use super::*;
 
     #[test]
-    fn field_default_should_be_zero() {
+    fn default_should_return_zero_field() {
         let f: Field = Default::default();
         assert_field_approx_eq(f, 0.0);
     }
@@ -534,14 +534,14 @@ mod clone_copy_tests {
     use super::*;
 
     #[test]
-    fn field_copy_should_work() {
+    fn copy_should_replicate_field() {
         let a = Field::from(1.0);
         let b = a; // Copy
         assert_field_approx_eq(b, 1.0);
     }
 
     #[test]
-    fn axis_clone_should_work() {
+    fn clone_should_replicate_axis() {
         let axis = Axis::X;
         let axis2 = axis.clone();
         assert_eq!(axis, axis2);
@@ -557,10 +557,10 @@ mod debug_tests {
     use std::fmt::Write;
 
     #[test]
-    fn field_debug_should_produce_output() {
+    fn debug_fmt_should_produce_non_empty_string() {
         let f = Field::from(42.0);
         let mut s = String::new();
-        write!(s, "{:?}", f).unwrap();
+        write!(s, "{:?}", f).expect("formatting failed");
         assert!(!s.is_empty());
     }
 }
@@ -574,7 +574,7 @@ mod hash_tests {
     use std::collections::HashSet;
 
     #[test]
-    fn axis_should_be_hashable() {
+    fn hash_should_support_collections() {
         let mut set = HashSet::new();
         set.insert(Axis::X);
         assert!(set.contains(&Axis::X));
@@ -590,7 +590,7 @@ mod bnot_tests {
     use pixelflow_core::ops::logic::BNot;
 
     #[test]
-    fn bnot_should_invert_logic() {
+    fn bnot_should_invert_boolean_mask() {
         let not_x = BNot(X.gt(0.0f32));
 
         let x = Field::from(5.0);
@@ -610,5 +610,99 @@ mod bnot_tests {
         // Use select to verify mask logic
         let sel = Select { cond: not_x, if_true: Field::from(1.0), if_false: Field::from(0.0) };
         assert_field_approx_eq(sel.eval(coords_neg), 1.0);
+    }
+}
+
+// ============================================================================
+// Missing Ops Tests
+// ============================================================================
+
+mod missing_ops_tests {
+    use super::*;
+    use core::ops::{BitOr, BitAnd, Not, Neg};
+
+    #[test]
+    fn bitwise_or_should_compute_lanewise() {
+        // Field::from(1) -> 1.0f32.
+        // Field implements BitOr.
+        let a = Field::from(0.0);
+        let b = Field::from(0.0);
+        let result = a | b;
+        assert_field_approx_eq(result, 0.0);
+    }
+
+    #[test]
+    fn bitwise_not_should_invert_bits() {
+        // We can test double negation: !!x == x (bitwise).
+        let x = Field::from(42.0);
+        let not_x = !x;
+        let not_not_x = !not_x;
+        assert_field_approx_eq(not_not_x, 42.0);
+    }
+
+    #[test]
+    fn neg_should_negate_values() {
+        let x = Field::from(42.0);
+        assert_field_approx_eq(-x, -42.0);
+    }
+
+    #[test]
+    fn floor_should_round_down_to_nearest_integer() {
+        let zero = Field::from(0.0);
+        let coords = (zero, zero, zero, zero);
+
+        let x = Field::from(2.7);
+        assert_field_approx_eq(x.floor().eval(coords), 2.0);
+
+        let y = Field::from(-2.3);
+        assert_field_approx_eq(y.floor().eval(coords), -3.0);
+    }
+
+    #[test]
+    fn mul_add_should_compute_fused_multiply_add() {
+        let zero = Field::from(0.0);
+        let coords = (zero, zero, zero, zero);
+
+        let a = Field::from(2.0);
+        let b = Field::from(3.0);
+        let c = Field::from(4.0);
+        // 2*3 + 4 = 10
+        assert_field_approx_eq(a.mul_add(b, c).eval(coords), 10.0);
+    }
+
+    #[test]
+    fn sin_should_compute_sine() {
+        let zero = Field::from(0.0);
+        let coords = (zero, zero, zero, zero);
+
+        let x = Field::from(0.0);
+        assert_field_approx_eq(x.sin().eval(coords), 0.0);
+
+        let pi_2 = Field::from(std::f32::consts::FRAC_PI_2);
+        assert_field_approx_eq(pi_2.sin().eval(coords), 1.0);
+    }
+
+    #[test]
+    fn cos_should_compute_cosine() {
+        let zero = Field::from(0.0);
+        let coords = (zero, zero, zero, zero);
+
+        let x = Field::from(0.0);
+        assert_field_approx_eq(x.cos().eval(coords), 1.0);
+
+        let pi = Field::from(std::f32::consts::PI);
+        assert_field_approx_eq(pi.cos().eval(coords), -1.0);
+    }
+
+    #[test]
+    fn exp_should_compute_exponential() {
+        let zero = Field::from(0.0);
+        let coords = (zero, zero, zero, zero);
+
+        let x = Field::from(1.0);
+        assert_field_approx_eq(x.exp().eval(coords), std::f32::consts::E);
+
+        let zero_f = Field::from(0.0);
+        assert_field_approx_eq(zero_f.exp().eval(coords), 1.0);
     }
 }
