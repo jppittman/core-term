@@ -318,12 +318,11 @@ pub trait ManifoldExt: Sized {
         Map::new(self, transform)
     }
 
-    /// Lift this manifold's output to ray space via a covariant map.
+    /// Lift this manifold's output via a closure (covariant map).
+    ///
+    /// Supports `Field -> Field` and `Field -> PathJet`.
     #[inline(always)]
-    fn lift<F>(self, func: F) -> ClosureMap<Self, F>
-    where
-        F: Fn(crate::Field) -> crate::jet::PathJet<crate::Field> + Send + Sync,
-    {
+    fn lift<F>(self, func: F) -> ClosureMap<Self, F> {
         ClosureMap::new(self, func)
     }
 
