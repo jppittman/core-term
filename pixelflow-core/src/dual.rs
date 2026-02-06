@@ -107,6 +107,7 @@ impl<const N: usize, A: Algebra> Dual<N, A> {
 
     /// Map a function over the partials array.
     #[inline(always)]
+    #[allow(dead_code)]
     fn map_partials<F>(self, f: F) -> Self
     where
         F: Fn(A) -> A,

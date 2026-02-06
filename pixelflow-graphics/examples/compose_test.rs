@@ -21,7 +21,12 @@ fn main() {
     // d is impl Manifold<Field4, Output=Field>
     
     // Using ManifoldExt to compose
-    let circle = d.map(|f| f - Field::from(0.5));  // radius 0.5
+    // lift is for covariant mapping (output -> output)
+    let circle = d.lift(|f: Field| -> Field {
+        // Evaluate the expression immediately to get a concrete Field value
+        // The domain here is dummy because f is a constant Field
+        (f - Field::from(0.5)).eval((f, f, f, f))
+    });
     
     let p = field4(1.5, 2.0);
     let result = circle.eval(p);

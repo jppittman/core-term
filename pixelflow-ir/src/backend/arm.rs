@@ -344,7 +344,7 @@ impl SimdOps for F32x4 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = vdupq_n_f32(1.4142135624);
+            let sqrt2 = vdupq_n_f32(core::f32::consts::SQRT_2);
             let mask = vcgeq_f32(f, sqrt2);
             let adjust = vandq_u32(mask, vreinterpretq_u32_f32(vdupq_n_f32(1.0)));
             n = vaddq_f32(n, vreinterpretq_f32_u32(adjust));
@@ -353,11 +353,11 @@ impl SimdOps for F32x4 {
             // Polynomial for log2(f) on [√2/2, √2]
             // Fitted using least squares on Chebyshev nodes
             // Max error: ~1e-4
-            let c4 = vdupq_n_f32(-0.3200435159);
-            let c3 = vdupq_n_f32(1.7974969154);
-            let c2 = vdupq_n_f32(-4.1988046176);
-            let c1 = vdupq_n_f32(5.7270231695);
-            let c0 = vdupq_n_f32(-3.0056146714);
+            let c4 = vdupq_n_f32(-0.320_043_5);
+            let c3 = vdupq_n_f32(1.797_497);
+            let c2 = vdupq_n_f32(-4.198_805);
+            let c1 = vdupq_n_f32(5.727_023);
+            let c0 = vdupq_n_f32(-3.005_615);
 
             // Horner's method using NEON FMA: vfmaq_f32(c, a, b) = a*b + c
             let poly = vfmaq_f32(c3, c4, f);
@@ -383,7 +383,7 @@ impl SimdOps for F32x4 {
             let c4 = vdupq_n_f32(0.0135557);
             let c3 = vdupq_n_f32(0.0520323);
             let c2 = vdupq_n_f32(0.2413793);
-            let c1 = vdupq_n_f32(0.6931472);
+            let c1 = vdupq_n_f32(core::f32::consts::LN_2);
             let c0 = vdupq_n_f32(1.0);
 
             // Horner's method

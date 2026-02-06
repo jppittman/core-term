@@ -685,6 +685,7 @@ impl Field {
     /// Apply a unary function to each lane.
     /// Load from a slice.
     #[inline(always)]
+    #[allow(dead_code)]
     fn from_slice(slice: &[f32]) -> Self {
         Self(NativeSimd::from_slice(slice))
     }
