@@ -804,8 +804,8 @@ impl Accumulator {
         let offset = feature_idx * l1_size;
 
         // Add the column of W1 corresponding to this feature
-        for i in 0..l1_size {
-            self.values[i] += nnue.w1[offset + i] as i32;
+        for (acc_val, &w_val) in self.values.iter_mut().zip(&nnue.w1[offset..offset + l1_size]) {
+            *acc_val += w_val as i32;
         }
     }
 
@@ -815,8 +815,8 @@ impl Accumulator {
         let l1_size = nnue.config.l1_size;
         let offset = feature_idx * l1_size;
 
-        for i in 0..l1_size {
-            self.values[i] -= nnue.w1[offset + i] as i32;
+        for (acc_val, &w_val) in self.values.iter_mut().zip(&nnue.w1[offset..offset + l1_size]) {
+            *acc_val -= w_val as i32;
         }
     }
 
@@ -831,9 +831,9 @@ impl Accumulator {
 
         // L1 -> L2 with clipped ReLU
         let mut l2 = nnue.b2.clone();
-        for i in 0..l1_size {
+        for (i, &val) in self.values.iter().enumerate().take(l1_size) {
             // Clipped ReLU: clamp to [0, RELU_MAX] then scale
-            let a = (self.values[i] >> QUANTIZATION_SHIFT).clamp(0, RELU_MAX) as i8;
+            let a = (val >> QUANTIZATION_SHIFT).clamp(0, RELU_MAX) as i8;
             for (j, l2_val) in l2.iter_mut().enumerate().take(l2_size) {
                 *l2_val += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
             }

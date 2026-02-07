@@ -189,8 +189,8 @@ impl OpEmbeddings {
         let scale = sqrtf(2.0 / K as f32);
         let mut rng_state = seed.wrapping_add(1);
 
-        for op_idx in 0..OpKind::COUNT {
-            for dim in 0..K {
+        for embedding in &mut self.e {
+            for val in embedding.iter_mut() {
                 // LCG for no_std compatibility
                 rng_state = rng_state
                     .wrapping_mul(6364136223846793005)
@@ -199,7 +199,7 @@ impl OpEmbeddings {
                 // Convert to [-1, 1] and scale
                 let uniform = (rng_state >> 33) as f32 / (1u64 << 31) as f32;
                 let centered = uniform * 2.0 - 1.0;
-                self.e[op_idx][dim] = centered * scale;
+                *val = centered * scale;
             }
         }
     }
@@ -484,11 +484,12 @@ impl StructuralFeatures {
 
         if total_nodes > 0.0 {
             features.values[Self::LEAF_RATIO] = leaf_count / total_nodes;
-            let non_leaf = total_nodes - leaf_count;
-            if non_leaf > 0.0 {
-                let edge_count = features.values[Self::EDGE_COUNT];
-                features.values[Self::BRANCHING_FACTOR] = edge_count / non_leaf;
-            }
+        }
+
+        let non_leaf = total_nodes - leaf_count;
+        if non_leaf > 0.0 {
+            let edge_count = features.values[Self::EDGE_COUNT];
+            features.values[Self::BRANCHING_FACTOR] = edge_count / non_leaf;
         }
 
         // Expensive operation ratio
