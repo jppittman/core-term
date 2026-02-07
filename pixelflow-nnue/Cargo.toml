@@ -12,7 +12,7 @@ bench = false
 
 [features]
 default = ["std"]
-std = []
+std = ["pixelflow-ir/std"]
 training = ["std"]
 
 [dependencies]

@@ -21,7 +21,9 @@ fn main() {
     // d is impl Manifold<Field4, Output=Field>
     
     // Using ManifoldExt to compose
-    let circle = d.map(|f| f - Field::from(0.5));  // radius 0.5
+    // d.map() requires the transform to be a Manifold.
+    // X refers to the output of `d` in this context.
+    let circle = d.map(pixelflow_core::X - pixelflow_core::Field::from(0.5));  // radius 0.5
     
     let p = field4(1.5, 2.0);
     let result = circle.eval(p);

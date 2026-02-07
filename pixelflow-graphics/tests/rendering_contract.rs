@@ -7,7 +7,7 @@ use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 
 #[test]
-fn verify_color_manifold_renders() {
+fn color_manifold_should_render_solid_color() {
     use pixelflow_graphics::render::{Color, NamedColor};
     // A solid red color manifold
     let red = Color::Named(NamedColor::Red);
@@ -26,7 +26,7 @@ fn verify_color_manifold_renders() {
 }
 
 #[test]
-fn verify_named_color_manifold_renders() {
+fn named_color_manifold_should_render_correct_values() {
     use pixelflow_graphics::render::NamedColor;
     let blue = NamedColor::Blue;
 
