@@ -560,7 +560,7 @@ impl U32x4 {
     /// Pack 4 f32 Fields (RGBA) into packed u32 pixels.
     #[allow(dead_code)]
     #[inline(always)]
-    pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
+    pub(crate) fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
         unsafe {
             // Clamp to [0, 1] and scale to [0, 255]
             let scale = _mm_set1_ps(255.0);
@@ -1170,6 +1170,7 @@ impl Shr<u32> for U32x8 {
 #[cfg(target_feature = "avx2")]
 impl U32x8 {
     /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
+    #[allow(dead_code)]
     #[inline(always)]
     pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
         unsafe {
