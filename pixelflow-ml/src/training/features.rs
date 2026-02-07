@@ -12,8 +12,8 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
-use pixelflow_search::egraph::{ExprTree, Leaf, BestFirstContext};
-use pixelflow_nnue::{HalfEPFeature, OpKind, DenseFeatures, Expr as NnueExpr};
+use pixelflow_nnue::{DenseFeatures, Expr as NnueExpr, HalfEPFeature, OpKind};
+use pixelflow_search::egraph::{BestFirstContext, ExprTree, Leaf};
 
 /// Special feature indicating a back-reference to an already-seen subexpression.
 ///
@@ -21,7 +21,7 @@ use pixelflow_nnue::{HalfEPFeature, OpKind, DenseFeatures, Expr as NnueExpr};
 /// - `let x = expensive(); x + x` -> [expensive, Add, BackRef] (cheap!)
 /// - `expensive() + expensive()` -> [expensive, Add, expensive] (expensive!)
 pub const BACKREF_FEATURE: HalfEPFeature = HalfEPFeature {
-    perspective_op: 15,  // Invalid OpKind - signals special feature
+    perspective_op: 15, // Invalid OpKind - signals special feature
     descendant_op: 15,
     depth: 0,
     path: 255,
@@ -32,27 +32,25 @@ pub fn expr_tree_to_op_type(tree: &ExprTree) -> OpKind {
     match tree {
         ExprTree::Leaf(Leaf::Var(_)) => OpKind::Var,
         ExprTree::Leaf(Leaf::Const(_)) => OpKind::Const,
-        ExprTree::Op { op, .. } => {
-            match op.name() {
-                "add" => OpKind::Add,
-                "sub" => OpKind::Sub,
-                "mul" => OpKind::Mul,
-                "div" => OpKind::Div,
-                "neg" => OpKind::Neg,
-                "sqrt" => OpKind::Sqrt,
-                "rsqrt" => OpKind::Rsqrt,
-                "abs" => OpKind::Abs,
-                "min" => OpKind::Min,
-                "max" => OpKind::Max,
-                "mul_add" | "fma" => OpKind::MulAdd,
-                "recip" => OpKind::Div,
-                "floor" | "ceil" | "round" | "fract" => OpKind::Abs,
-                "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
-                | "exp" | "exp2" | "ln" | "log2" | "log10" => OpKind::Sqrt,
-                "atan2" | "pow" | "hypot" => OpKind::MulRsqrt,
-                _ => OpKind::Add,
-            }
-        }
+        ExprTree::Op { op, .. } => match op.name() {
+            "add" => OpKind::Add,
+            "sub" => OpKind::Sub,
+            "mul" => OpKind::Mul,
+            "div" => OpKind::Div,
+            "neg" => OpKind::Neg,
+            "sqrt" => OpKind::Sqrt,
+            "rsqrt" => OpKind::Rsqrt,
+            "abs" => OpKind::Abs,
+            "min" => OpKind::Min,
+            "max" => OpKind::Max,
+            "mul_add" | "fma" => OpKind::MulAdd,
+            "recip" => OpKind::Div,
+            "floor" | "ceil" | "round" | "fract" => OpKind::Abs,
+            "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "exp" | "exp2" | "ln" | "log2"
+            | "log10" => OpKind::Sqrt,
+            "atan2" | "pow" | "hypot" => OpKind::MulRsqrt,
+            _ => OpKind::Add,
+        },
     }
 }
 
@@ -189,28 +187,68 @@ fn add_tree_descendant_features(
 
     match tree {
         ExprTree::Leaf(_) => {}
-        ExprTree::Op { children, .. } => {
-            match children.len() {
-                1 => {
-                    add_tree_descendant_features(&children[0], features, perspective_op, depth + 1, path << 1);
-                }
-                2 => {
-                    add_tree_descendant_features(&children[0], features, perspective_op, depth + 1, path << 1);
-                    add_tree_descendant_features(&children[1], features, perspective_op, depth + 1, (path << 1) | 1);
-                }
-                3 => {
-                    add_tree_descendant_features(&children[0], features, perspective_op, depth + 1, path << 2);
-                    add_tree_descendant_features(&children[1], features, perspective_op, depth + 1, (path << 2) | 1);
-                    add_tree_descendant_features(&children[2], features, perspective_op, depth + 1, (path << 2) | 2);
-                }
-                _ => {
-                    for (i, child) in children.iter().enumerate() {
-                        let child_path = path.wrapping_shl(4) | (i as u8 & 0x0F);
-                        add_tree_descendant_features(child, features, perspective_op, depth + 1, child_path);
-                    }
+        ExprTree::Op { children, .. } => match children.len() {
+            1 => {
+                add_tree_descendant_features(
+                    &children[0],
+                    features,
+                    perspective_op,
+                    depth + 1,
+                    path << 1,
+                );
+            }
+            2 => {
+                add_tree_descendant_features(
+                    &children[0],
+                    features,
+                    perspective_op,
+                    depth + 1,
+                    path << 1,
+                );
+                add_tree_descendant_features(
+                    &children[1],
+                    features,
+                    perspective_op,
+                    depth + 1,
+                    (path << 1) | 1,
+                );
+            }
+            3 => {
+                add_tree_descendant_features(
+                    &children[0],
+                    features,
+                    perspective_op,
+                    depth + 1,
+                    path << 2,
+                );
+                add_tree_descendant_features(
+                    &children[1],
+                    features,
+                    perspective_op,
+                    depth + 1,
+                    (path << 2) | 1,
+                );
+                add_tree_descendant_features(
+                    &children[2],
+                    features,
+                    perspective_op,
+                    depth + 1,
+                    (path << 2) | 2,
+                );
+            }
+            _ => {
+                for (i, child) in children.iter().enumerate() {
+                    let child_path = path.wrapping_shl(4) | (i as u8 & 0x0F);
+                    add_tree_descendant_features(
+                        child,
+                        features,
+                        perspective_op,
+                        depth + 1,
+                        child_path,
+                    );
                 }
             }
-        }
+        },
     }
 }
 
@@ -268,29 +306,23 @@ pub fn extract_search_features(ctx: &BestFirstContext<'_>) -> Vec<HalfEPFeature>
     features.extend([
         // Slot 0: Cost bucket - how expensive is this candidate?
         search_feature(0, bucket_linear(ctx.tree_cost, 10, 13), 0),
-
         // Slot 1: Depth bucket - how deep in the search tree?
         search_feature(1, bucket_linear(ctx.depth, 1, 13), 0),
-
         // Slot 2: Expansion progress - fraction of budget used
         // (Note: caller should pass max_expansions if available)
         search_feature(2, bucket_linear(ctx.expansions, 50, 13), 0),
-
         // Slot 3: Improvement ratio - how much better than initial?
         search_feature(3, bucket_ratio(ctx.improvement_ratio(), 13), 0),
-
         // Slot 4: Frontier size bucket - queue pressure
         search_feature(4, bucket_linear(ctx.frontier_size, 100, 13), 0),
-
         // Slot 5: Visited count bucket - exploration breadth
         search_feature(5, bucket_linear(ctx.visited_count, 100, 13), 0),
-
         // Slot 6: Cost vs best - is this candidate competitive?
-        search_feature(6, bucket_linear(
-            ctx.tree_cost.saturating_sub(ctx.best_cost),
-            5,
-            13
-        ), 0),
+        search_feature(
+            6,
+            bucket_linear(ctx.tree_cost.saturating_sub(ctx.best_cost), 5, 13),
+            0,
+        ),
     ]);
 
     features
@@ -312,11 +344,11 @@ pub fn extract_search_features_with_budget(
         search_feature(3, bucket_ratio(ctx.improvement_ratio(), 13), 0),
         search_feature(4, bucket_linear(ctx.frontier_size, 100, 13), 0),
         search_feature(5, bucket_linear(ctx.visited_count, 100, 13), 0),
-        search_feature(6, bucket_linear(
-            ctx.tree_cost.saturating_sub(ctx.best_cost),
-            5,
-            13
-        ), 0),
+        search_feature(
+            6,
+            bucket_linear(ctx.tree_cost.saturating_sub(ctx.best_cost), 5, 13),
+            0,
+        ),
     ]);
 
     features

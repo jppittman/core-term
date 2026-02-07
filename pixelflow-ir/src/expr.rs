@@ -6,11 +6,11 @@
 //! This is the **canonical** Expr type used across the compiler pipeline.
 //! Other crates (pixelflow-nnue, pixelflow-search) should re-export this type.
 
+use crate::kind::OpKind;
 #[cfg(feature = "alloc")]
 use alloc::boxed::Box;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
-use crate::kind::OpKind;
 
 /// A recursive expression tree.
 ///
@@ -65,9 +65,7 @@ impl Expr {
             Self::Unary(_, a) => 1 + a.depth(),
             Self::Binary(_, a, b) => 1 + a.depth().max(b.depth()),
             Self::Ternary(_, a, b, c) => 1 + a.depth().max(b.depth()).max(c.depth()),
-            Self::Nary(_, children) => {
-                1 + children.iter().map(|c| c.depth()).max().unwrap_or(0)
-            }
+            Self::Nary(_, children) => 1 + children.iter().map(|c| c.depth()).max().unwrap_or(0),
         }
     }
 
@@ -79,9 +77,7 @@ impl Expr {
             Self::Unary(_, a) => 1 + a.node_count(),
             Self::Binary(_, a, b) => 1 + a.node_count() + b.node_count(),
             Self::Ternary(_, a, b, c) => 1 + a.node_count() + b.node_count() + c.node_count(),
-            Self::Nary(_, children) => {
-                1 + children.iter().map(|c| c.node_count()).sum::<usize>()
-            }
+            Self::Nary(_, children) => 1 + children.iter().map(|c| c.node_count()).sum::<usize>(),
         }
     }
 
@@ -136,12 +132,48 @@ impl Expr {
                     OpKind::Pow => a.powf(b),
                     OpKind::Hypot => a.hypot(b),
                     OpKind::Atan2 => a.atan2(b),
-                    OpKind::Lt => if a < b { 1.0 } else { 0.0 },
-                    OpKind::Le => if a <= b { 1.0 } else { 0.0 },
-                    OpKind::Gt => if a > b { 1.0 } else { 0.0 },
-                    OpKind::Ge => if a >= b { 1.0 } else { 0.0 },
-                    OpKind::Eq => if (a - b).abs() < 1e-10 { 1.0 } else { 0.0 },
-                    OpKind::Ne => if (a - b).abs() >= 1e-10 { 1.0 } else { 0.0 },
+                    OpKind::Lt => {
+                        if a < b {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    OpKind::Le => {
+                        if a <= b {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    OpKind::Gt => {
+                        if a > b {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    OpKind::Ge => {
+                        if a >= b {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    OpKind::Eq => {
+                        if (a - b).abs() < 1e-10 {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    OpKind::Ne => {
+                        if (a - b).abs() >= 1e-10 {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
                     other => panic!("Expr::eval: {:?} is not a binary operation", other),
                 }
             }
@@ -151,7 +183,13 @@ impl Expr {
                 let c = c.eval(vars);
                 match op {
                     OpKind::MulAdd => a.mul_add(b, c),
-                    OpKind::Select => if a != 0.0 { b } else { c },
+                    OpKind::Select => {
+                        if a != 0.0 {
+                            b
+                        } else {
+                            c
+                        }
+                    }
                     OpKind::Clamp => a.clamp(b, c),
                     other => panic!("Expr::eval: {:?} is not a ternary operation", other),
                 }
@@ -160,7 +198,8 @@ impl Expr {
                 match op {
                     OpKind::Tuple => {
                         // Tuple evaluates to its first element
-                        children.first()
+                        children
+                            .first()
                             .map(|c| c.eval(vars))
                             .expect("Expr::eval: Tuple with no children")
                     }
