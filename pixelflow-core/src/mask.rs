@@ -22,9 +22,9 @@
 //! let back = Mask::from_field(field_mask);
 //! ```
 
+use crate::Field;
 use crate::backend::{MaskOps, SimdOps};
 use crate::storage::NativeMaskStorage;
-use crate::Field;
 use core::ops::{BitAnd, BitOr, Not};
 
 // Re-import NativeSimd for conversions

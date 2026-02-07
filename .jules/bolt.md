@@ -13,3 +13,7 @@
 ## 2025-12-28 - Rasterizer Inner Loop Hoisting
 **Learning:** The inner loop of `execute_stripe` was re-evaluating `Field::sequential(start)` on every iteration, which involves multiple SIMD instructions (broadcast/load + add).
 **Action:** Hoisted the initialization of `xs` out of the loop and updated it incrementally using a pre-computed `step` vector. This reduced the inner loop overhead significantly, yielding a ~34% improvement in rasterization throughput.
+
+## 2025-12-28 - Conditional Manifold Evaluation requires Manual Implementation
+**Learning:** The `kernel!` macro evaluates all `let` bindings eagerly before the final expression. To implement early-exit logic like `mask.any() { ... }`, one must manually implement the `Manifold` trait.
+**Action:** When optimizing for sparse workloads (like ray tracing hits), replace `kernel!` definitions with manual implementations that check masks before evaluating expensive branches.

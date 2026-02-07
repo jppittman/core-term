@@ -99,15 +99,22 @@ impl Manifold<Field4> for AnalyticalLine {
 #[derive(Clone)]
 pub struct AnalyticalQuad {
     // Barycentric coordinate coefficients: u = u_x*X + u_y*Y + u_c
-    u_x: f32, u_y: f32, u_c: f32,
-    v_x: f32, v_y: f32, v_c: f32,
-    w_x: f32, w_y: f32, w_c: f32,
+    u_x: f32,
+    u_y: f32,
+    u_c: f32,
+    v_x: f32,
+    v_y: f32,
+    v_c: f32,
+    w_x: f32,
+    w_y: f32,
+    w_c: f32,
     // Bounding box for early rejection (and correct finite segment rendering)
-    y_min: f32, y_max: f32,
+    y_min: f32,
+    y_max: f32,
     // Curve classification
     is_linear: bool,
     // For winding: need to know curve orientation
-    orientation: f32,  // +1 or -1
+    orientation: f32, // +1 or -1
 }
 
 impl AnalyticalQuad {
@@ -132,10 +139,17 @@ impl AnalyticalQuad {
             if len < 1e-6 {
                 // Completely degenerate
                 return Self {
-                    u_x: 0.0, u_y: 0.0, u_c: 1.0,
-                    v_x: 0.0, v_y: 0.0, v_c: 0.0,
-                    w_x: 0.0, w_y: 0.0, w_c: 0.0,
-                    y_min, y_max,
+                    u_x: 0.0,
+                    u_y: 0.0,
+                    u_c: 1.0,
+                    v_x: 0.0,
+                    v_y: 0.0,
+                    v_c: 0.0,
+                    w_x: 0.0,
+                    w_y: 0.0,
+                    w_c: 0.0,
+                    y_min,
+                    y_max,
                     is_linear: true,
                     orientation: 1.0,
                 };
@@ -147,10 +161,17 @@ impl AnalyticalQuad {
             let c = -(a * x0 + b * y0);
 
             Self {
-                u_x: a, u_y: b, u_c: c,
-                v_x: 0.0, v_y: 0.0, v_c: 0.0,
-                w_x: 0.0, w_y: 0.0, w_c: 0.0,
-                y_min, y_max,
+                u_x: a,
+                u_y: b,
+                u_c: c,
+                v_x: 0.0,
+                v_y: 0.0,
+                v_c: 0.0,
+                w_x: 0.0,
+                w_y: 0.0,
+                w_c: 0.0,
+                y_min,
+                y_max,
                 is_linear: true,
                 orientation: if dy > 0.0 { -1.0 } else { 1.0 },
             }
@@ -167,15 +188,22 @@ impl AnalyticalQuad {
             // We have 3 constraints from the 3 control points
             // Build system: [x,y,1] * M = [u,v,w]
 
-            let det = x0*(y1 - y2) - y0*(x1 - x2) + (x1*y2 - x2*y1);
+            let det = x0 * (y1 - y2) - y0 * (x1 - x2) + (x1 * y2 - x2 * y1);
 
             if det.abs() < 1e-10 {
                 // Numerically unstable - fallback to linear
                 return Self {
-                    u_x: 0.0, u_y: 0.0, u_c: 1.0,
-                    v_x: 0.0, v_y: 0.0, v_c: 0.0,
-                    w_x: 0.0, w_y: 0.0, w_c: 0.0,
-                    y_min, y_max,
+                    u_x: 0.0,
+                    u_y: 0.0,
+                    u_c: 1.0,
+                    v_x: 0.0,
+                    v_y: 0.0,
+                    v_c: 0.0,
+                    w_x: 0.0,
+                    w_y: 0.0,
+                    w_c: 0.0,
+                    y_min,
+                    y_max,
                     is_linear: true,
                     orientation: 1.0,
                 };
@@ -185,18 +213,18 @@ impl AnalyticalQuad {
 
             // Solve for u coefficients: u(P0)=0, u(P1)=0.5, u(P2)=1
             // Using Cramer's rule on the system
-            let u_x = inv_det * ((0.5 - 0.0)*(y2 - y0) + (1.0 - 0.5)*(y0 - y1));
-            let u_y = inv_det * ((0.0 - 0.5)*(x2 - x0) + (0.5 - 1.0)*(x0 - x1));
+            let u_x = inv_det * ((0.5 - 0.0) * (y2 - y0) + (1.0 - 0.5) * (y0 - y1));
+            let u_y = inv_det * ((0.0 - 0.5) * (x2 - x0) + (0.5 - 1.0) * (x0 - x1));
             let u_c = 0.0 - u_x * x0 - u_y * y0;
 
             // Solve for v coefficients: v(P0)=1, v(P1)=0, v(P2)=0
-            let v_x = inv_det * ((0.0 - 1.0)*(y2 - y0) + (0.0 - 0.0)*(y0 - y1));
-            let v_y = inv_det * ((1.0 - 0.0)*(x2 - x0) + (0.0 - 0.0)*(x0 - x1));
+            let v_x = inv_det * ((0.0 - 1.0) * (y2 - y0) + (0.0 - 0.0) * (y0 - y1));
+            let v_y = inv_det * ((1.0 - 0.0) * (x2 - x0) + (0.0 - 0.0) * (x0 - x1));
             let v_c = 1.0 - v_x * x0 - v_y * y0;
 
             // Solve for w coefficients: w(P0)=0, w(P1)=0, w(P2)=1
-            let w_x = inv_det * ((0.0 - 0.0)*(y2 - y0) + (1.0 - 0.0)*(y0 - y1));
-            let w_y = inv_det * ((0.0 - 0.0)*(x2 - x0) + (0.0 - 1.0)*(x0 - x1));
+            let w_x = inv_det * ((0.0 - 0.0) * (y2 - y0) + (1.0 - 0.0) * (y0 - y1));
+            let w_y = inv_det * ((0.0 - 0.0) * (x2 - x0) + (0.0 - 1.0) * (x0 - x1));
             let w_c = 0.0 - w_x * x0 - w_y * y0;
 
             // Determine orientation for winding
@@ -204,10 +232,17 @@ impl AnalyticalQuad {
             let orientation = if cross > 0.0 { -1.0 } else { 1.0 };
 
             Self {
-                u_x, u_y, u_c,
-                v_x, v_y, v_c,
-                w_x, w_y, w_c,
-                y_min, y_max,
+                u_x,
+                u_y,
+                u_c,
+                v_x,
+                v_y,
+                v_c,
+                w_x,
+                w_y,
+                w_c,
+                y_min,
+                y_max,
                 is_linear: false,
                 orientation,
             }
@@ -222,7 +257,12 @@ impl Manifold<Field4> for AnalyticalQuad {
     fn eval(&self, p: Field4) -> Field {
         if self.is_linear {
             // Linear case: f = u (signed distance)
-            let k = kernel!(|u_x: f32, u_y: f32, u_c: f32, orientation: f32, y_min: f32, y_max: f32| {
+            let k = kernel!(|u_x: f32,
+                             u_y: f32,
+                             u_c: f32,
+                             orientation: f32,
+                             y_min: f32,
+                             y_max: f32| {
                 // Early rejection
                 let in_y_range = (Y >= y_min) & (Y < y_max);
                 let f = X * u_x + Y * u_y + u_c;
@@ -231,47 +271,65 @@ impl Manifold<Field4> for AnalyticalQuad {
                 let winding = orientation * coverage;
                 in_y_range.select(winding, 0.0)
             });
-            k(self.u_x, self.u_y, self.u_c, self.orientation, self.y_min, self.y_max).eval(p)
+            k(
+                self.u_x,
+                self.u_y,
+                self.u_c,
+                self.orientation,
+                self.y_min,
+                self.y_max,
+            )
+            .eval(p)
         } else {
             // Quadratic Loop-Blinn case using kernel! for optimization
-            let k = kernel!(
-                |ux: f32, uy: f32, uc: f32,
-                 vx: f32, vy: f32, vc: f32,
-                 wx: f32, wy: f32, wc: f32,
-                 orientation: f32|
-                {
-                    // Barycentric coords
-                    let u = X * ux + Y * uy + uc;
-                    let v = X * vx + Y * vy + vc;
-                    let w = X * wx + Y * wy + wc;
+            let k = kernel!(|ux: f32,
+                             uy: f32,
+                             uc: f32,
+                             vx: f32,
+                             vy: f32,
+                             vc: f32,
+                             wx: f32,
+                             wy: f32,
+                             wc: f32,
+                             orientation: f32| {
+                // Barycentric coords
+                let u = X * ux + Y * uy + uc;
+                let v = X * vx + Y * vy + vc;
+                let w = X * wx + Y * wy + wc;
 
-                    // Implicit function: f = u² - vw
-                    let f = u * u - v * w;
+                // Implicit function: f = u² - vw
+                let f = u * u - v * w;
 
-                    // Analytical gradient components
-                    // ∇f = 2u∇u - v∇w - w∇v
-                    let gx = u * (2.0 * ux) - v * wx - w * vx;
-                    let gy = u * (2.0 * uy) - v * wy - w * vy;
-                    
-                    // Gradient magnitude
-                    let gmag = (gx * gx + gy * gy).sqrt();
+                // Analytical gradient components
+                // ∇f = 2u∇u - v∇w - w∇v
+                let gx = u * (2.0 * ux) - v * wx - w * vx;
+                let gy = u * (2.0 * uy) - v * wy - w * vy;
 
-                    // Coverage from signed distance
-                    // Safe divide by max(gmag, epsilon)
-                    let scaled_f = f / gmag.max(1e-6);
-                    let coverage = (scaled_f * -1.0 + 0.5).max(0.0).min(1.0);
+                // Gradient magnitude
+                let gmag = (gx * gx + gy * gy).sqrt();
 
-                    // Apply orientation for winding
-                    coverage * orientation
-                }
-            );
+                // Coverage from signed distance
+                // Safe divide by max(gmag, epsilon)
+                let scaled_f = f / gmag.max(1e-6);
+                let coverage = (scaled_f * -1.0 + 0.5).max(0.0).min(1.0);
+
+                // Apply orientation for winding
+                coverage * orientation
+            });
 
             k(
-                self.u_x, self.u_y, self.u_c,
-                self.v_x, self.v_y, self.v_c,
-                self.w_x, self.w_y, self.w_c,
-                self.orientation
-            ).eval(p)
+                self.u_x,
+                self.u_y,
+                self.u_c,
+                self.v_x,
+                self.v_y,
+                self.v_c,
+                self.w_x,
+                self.w_y,
+                self.w_c,
+                self.orientation,
+            )
+            .eval(p)
         }
     }
 }
