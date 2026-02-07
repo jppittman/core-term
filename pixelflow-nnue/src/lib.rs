@@ -90,6 +90,19 @@ pub use pixelflow_ir::OpKind;
 pub use pixelflow_ir::Expr;
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/// Quantization shift for fixed-point arithmetic.
+pub const QUANTIZATION_SHIFT: i32 = 6;
+
+/// Maximum value for clipped ReLU activation.
+pub const RELU_MAX: i32 = 127;
+
+/// Output scaling factor for cost prediction.
+pub const OUTPUT_SCALE: f32 = 1000.0;
+
+// ============================================================================
 // HalfEP Features
 // ============================================================================
 
@@ -812,9 +825,37 @@ impl Accumulator {
     /// Returns the predicted cost. Use `forward_hybrid` for full ILP-aware evaluation.
     #[must_use]
     pub fn forward(&self, nnue: &Nnue) -> i32 {
-        // Create dummy dense features (all zeros)
-        let dummy_dense = DenseFeatures::default();
-        self.forward_hybrid(nnue, &dummy_dense)
+        let l1_size = nnue.config.l1_size;
+        let l2_size = nnue.config.l2_size;
+        let l3_size = nnue.config.l3_size;
+
+        // L1 -> L2 with clipped ReLU
+        let mut l2 = nnue.b2.clone();
+        for i in 0..l1_size {
+            // Clipped ReLU: clamp to [0, RELU_MAX] then scale
+            let a = (self.values[i] >> QUANTIZATION_SHIFT).clamp(0, RELU_MAX) as i8;
+            for j in 0..l2_size {
+                l2[j] += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
+            }
+        }
+
+        // L2 -> L3 with clipped ReLU
+        let mut l3 = nnue.b3.clone();
+        for i in 0..l2_size {
+            let a = (l2[i] >> QUANTIZATION_SHIFT).clamp(0, RELU_MAX) as i8;
+            for j in 0..l3_size {
+                l3[j] += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
+            }
+        }
+
+        // L3 -> output
+        let mut output = nnue.b_out;
+        for i in 0..l3_size {
+            let a = (l3[i] >> QUANTIZATION_SHIFT).clamp(0, RELU_MAX) as i8;
+            output += (a as i32) * (nnue.w_out[i] as i32);
+        }
+
+        output
     }
 
     /// Compute hybrid forward pass with both sparse accumulator and dense features.
