@@ -729,8 +729,8 @@ mod tests {
 
     // Define a DummyPixel struct for testing
     #[derive(Debug, Clone, Copy, Default, PartialEq)]
-    struct DummyPixel;
-    impl pixelflow_graphics::render::Pixel for DummyPixel {
+    struct _DummyPixel;
+    impl pixelflow_graphics::render::Pixel for _DummyPixel {
         fn from_u32(_: u32) -> Self {
             Self
         }
