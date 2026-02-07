@@ -507,7 +507,7 @@ impl Field {
     /// Square root.
     #[inline(always)]
     pub(crate) fn sqrt(self) -> Self {
-        self.sqrt_fast()
+        Self(self.0.simd_sqrt())
     }
 
     /// Fast square root using rsqrt + Newton iteration.
@@ -520,6 +520,7 @@ impl Field {
     ///
     /// Handles x=0 correctly (returns 0, not NaN from 0 * ∞).
     #[inline(always)]
+    #[allow(dead_code)]
     pub(crate) fn sqrt_fast(self) -> Self {
         let rsqrt = self.rsqrt();
         // sqrt(x) = x * (1/sqrt(x))

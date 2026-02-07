@@ -169,9 +169,9 @@ impl OpEmbeddings {
         let mut rng_state = seed.wrapping_add(1);
         let small_scale = 0.1; // Small noise for other dimensions
 
-        for op_idx in 0..OpKind::COUNT {
+        for (op_idx, latency) in latencies.iter().enumerate().take(OpKind::COUNT) {
             // Dimension 0: latency prior
-            self.e[op_idx][0] = latencies[op_idx];
+            self.e[op_idx][0] = *latency;
 
             // Dimensions 1..K: small random for learning interactions
             for dim in 1..K {
@@ -189,8 +189,8 @@ impl OpEmbeddings {
         let scale = sqrtf(2.0 / K as f32);
         let mut rng_state = seed.wrapping_add(1);
 
-        for op_idx in 0..OpKind::COUNT {
-            for dim in 0..K {
+        for embedding in &mut self.e {
+            for val in embedding.iter_mut() {
                 // LCG for no_std compatibility
                 rng_state = rng_state
                     .wrapping_mul(6364136223846793005)
@@ -199,7 +199,7 @@ impl OpEmbeddings {
                 // Convert to [-1, 1] and scale
                 let uniform = (rng_state >> 33) as f32 / (1u64 << 31) as f32;
                 let centered = uniform * 2.0 - 1.0;
-                self.e[op_idx][dim] = centered * scale;
+                *val = centered * scale;
             }
         }
     }
@@ -295,6 +295,7 @@ impl EdgeAccumulator {
     /// Build accumulator from an expression tree.
     ///
     /// Traverses the tree and accumulates edge contributions.
+    #[must_use]
     pub fn from_expr(expr: &Expr, emb: &OpEmbeddings) -> Self {
         let mut acc = Self::new();
         acc.add_expr_edges(expr, emb);
@@ -483,11 +484,12 @@ impl StructuralFeatures {
 
         if total_nodes > 0.0 {
             features.values[Self::LEAF_RATIO] = leaf_count / total_nodes;
-            let non_leaf = total_nodes - leaf_count;
-            if non_leaf > 0.0 {
-                let edge_count = features.values[Self::EDGE_COUNT];
-                features.values[Self::BRANCHING_FACTOR] = edge_count / non_leaf;
-            }
+        }
+
+        let non_leaf = total_nodes - leaf_count;
+        if non_leaf > 0.0 {
+            let edge_count = features.values[Self::EDGE_COUNT];
+            features.values[Self::BRANCHING_FACTOR] = edge_count / non_leaf;
         }
 
         // Expensive operation ratio
@@ -590,10 +592,8 @@ impl StructuralFeatures {
                 };
 
                 // Check for FMA pattern: Mul as left child and current is in Add context
-                if *op == OpKind::Add {
-                    if matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
-                        features.values[Self::HAS_FMA_PATTERN] = 1.0;
-                    }
+                if *op == OpKind::Add && matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
+                    features.values[Self::HAS_FMA_PATTERN] = 1.0;
                 }
 
 
@@ -1021,7 +1021,7 @@ mod tests {
 
         // Add→Mul (Mul under Add, same ops but different structure)
         let add_mul = make_add_mul_pattern();
-        let acc_add_mul = EdgeAccumulator::from_expr(&add_mul, &emb);
+        let _acc_add_mul = EdgeAccumulator::from_expr(&add_mul, &emb);
 
         // The accumulators should be different because:
         // - FMA has Add→Mul, Add→Var edges
