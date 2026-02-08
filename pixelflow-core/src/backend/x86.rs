@@ -1151,16 +1151,9 @@ impl U32x8 {
 // AVX512
 // ============================================================================
 #[cfg(target_feature = "avx512f")]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 #[repr(transparent)]
 pub struct Mask16(pub(crate) __mmask16);
-
-#[cfg(target_feature = "avx512f")]
-impl Default for Mask16 {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 
 #[cfg(target_feature = "avx512f")]
 impl Debug for Mask16 {
@@ -1249,6 +1242,7 @@ impl F32x16 {
         arr
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     unsafe fn from_mask(mask: __mmask16) -> Self {
         unsafe {
