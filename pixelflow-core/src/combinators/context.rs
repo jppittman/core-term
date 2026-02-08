@@ -281,6 +281,9 @@ impl<Ctx, Body> WithContext<Ctx, Body> {
     }
 }
 
+// Ensure WithContext implements ManifoldExpr marker trait
+impl<Ctx, Body> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
+
 // ============================================================================
 // CtxVar - Array-Indexed Variable Reference
 // ============================================================================
