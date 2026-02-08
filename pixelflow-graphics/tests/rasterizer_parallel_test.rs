@@ -4,12 +4,35 @@
 //! to single-threaded execution, and handle edge cases (small height, odd dimensions).
 
 use pixelflow_core::{Field, Manifold};
+use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::parallel::{
     render_parallel, render_work_stealing, RenderOptions,
 };
 use pixelflow_graphics::render::rasterizer::rasterize;
-use pixelflow_graphics::render::color::Rgba8;
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+const TEST_WIDTH: u32 = 100;
+const TEST_HEIGHT: u32 = 100;
+const SMALL_WIDTH: u32 = 50;
+const SMALL_HEIGHT: u32 = 2;
+const HEIGHT_ONE: u32 = 1;
+
+const DEFAULT_THREADS: usize = 4;
+const ODD_THREADS: usize = 3;
+
+// Gradient configuration
+const GRADIENT_SCALE: f32 = 0.1;
+const GREEN_SCALE: f32 = 0.5;
+const BLUE_SCALE: f32 = 0.2;
+const ALPHA_OPAQUE: f32 = 1.0;
+
+// ============================================================================
+// Test Setup
+// ============================================================================
 
 // A simple test manifold: Gradient X + Y
 #[derive(Copy, Clone)]
@@ -23,16 +46,21 @@ impl Manifold<(Field, Field, Field, Field)> for TestGradient {
         // Evaluate AST to get Field values
         // Note: Field ops return AST nodes, so we must call .eval() to get the result.
         // Since operands are concrete Fields, we can pass dummy coordinates.
-        let dummy: (Field, Field, Field, Field) = (Field::default(), Field::default(), Field::default(), Field::default());
+        let dummy: (Field, Field, Field, Field) = (
+            Field::default(),
+            Field::default(),
+            Field::default(),
+            Field::default(),
+        );
 
         // Simple gradient: (x + y) * 0.1
-        let val = ((x + y) * Field::from(0.1)).eval(dummy);
+        let val = ((x + y) * Field::from(GRADIENT_SCALE)).eval(dummy);
 
         let r = val;
-        let g = (val * Field::from(0.5)).eval(dummy);
-        let b = (val * Field::from(0.2)).eval(dummy);
+        let g = (val * Field::from(GREEN_SCALE)).eval(dummy);
+        let b = (val * Field::from(BLUE_SCALE)).eval(dummy);
 
-        pixelflow_core::Discrete::pack(r, g, b, Field::from(1.0))
+        pixelflow_core::Discrete::pack(r, g, b, Field::from(ALPHA_OPAQUE))
     }
 }
 
@@ -43,14 +71,18 @@ fn render_reference(width: u32, height: u32) -> Frame<Rgba8> {
     frame
 }
 
+// ============================================================================
+// Tests
+// ============================================================================
+
 #[test]
 fn render_parallel_matches_single_threaded_output() {
-    let width = 100;
-    let height = 100;
-    let reference = render_reference(width, height);
+    let reference = render_reference(TEST_WIDTH, TEST_HEIGHT);
 
-    let mut frame: Frame<Rgba8> = Frame::new(width, height);
-    let options = RenderOptions { num_threads: 4 };
+    let mut frame: Frame<Rgba8> = Frame::new(TEST_WIDTH, TEST_HEIGHT);
+    let options = RenderOptions {
+        num_threads: DEFAULT_THREADS,
+    };
 
     // Target: render_parallel
     render_parallel(&TestGradient, &mut frame, options);
@@ -60,74 +92,89 @@ fn render_parallel_matches_single_threaded_output() {
 
 #[test]
 fn render_parallel_matches_single_threaded_output_odd_threads() {
-    let width = 100;
-    let height = 100;
-    let reference = render_reference(width, height);
+    let reference = render_reference(TEST_WIDTH, TEST_HEIGHT);
 
-    let mut frame: Frame<Rgba8> = Frame::new(width, height);
-    let options = RenderOptions { num_threads: 3 };
+    let mut frame: Frame<Rgba8> = Frame::new(TEST_WIDTH, TEST_HEIGHT);
+    let options = RenderOptions {
+        num_threads: ODD_THREADS,
+    };
 
     render_parallel(&TestGradient, &mut frame, options);
 
-    assert_eq!(frame.data, reference.data, "render_parallel (3 threads) output mismatch");
+    assert_eq!(
+        frame.data, reference.data,
+        "render_parallel (3 threads) output mismatch"
+    );
 }
 
 #[test]
 fn render_parallel_handles_small_height() {
     // Height < num_threads
-    let width = 50;
-    let height = 2;
-    let reference = render_reference(width, height);
+    let reference = render_reference(SMALL_WIDTH, SMALL_HEIGHT);
 
-    let mut frame: Frame<Rgba8> = Frame::new(width, height);
-    let options = RenderOptions { num_threads: 4 };
+    let mut frame: Frame<Rgba8> = Frame::new(SMALL_WIDTH, SMALL_HEIGHT);
+    let options = RenderOptions {
+        num_threads: DEFAULT_THREADS,
+    };
 
     render_parallel(&TestGradient, &mut frame, options);
 
-    assert_eq!(frame.data, reference.data, "render_parallel small height mismatch");
+    assert_eq!(
+        frame.data, reference.data,
+        "render_parallel small height mismatch"
+    );
 }
 
 #[test]
 fn render_parallel_handles_height_one() {
     // Height = 1
-    let width = 50;
-    let height = 1;
-    let reference = render_reference(width, height);
+    let reference = render_reference(SMALL_WIDTH, HEIGHT_ONE);
 
-    let mut frame: Frame<Rgba8> = Frame::new(width, height);
-    let options = RenderOptions { num_threads: 4 };
+    let mut frame: Frame<Rgba8> = Frame::new(SMALL_WIDTH, HEIGHT_ONE);
+    let options = RenderOptions {
+        num_threads: DEFAULT_THREADS,
+    };
 
     // Note: implementation might fallback to single threaded if height=1
     // but we test the interface contract.
     render_parallel(&TestGradient, &mut frame, options);
 
-    assert_eq!(frame.data, reference.data, "render_parallel height=1 mismatch");
+    assert_eq!(
+        frame.data, reference.data,
+        "render_parallel height=1 mismatch"
+    );
 }
 
 #[test]
 fn render_work_stealing_matches_single_threaded_output() {
-    let width = 100;
-    let height = 100;
-    let reference = render_reference(width, height);
+    let reference = render_reference(TEST_WIDTH, TEST_HEIGHT);
 
-    let mut frame: Frame<Rgba8> = Frame::new(width, height);
-    let options = RenderOptions { num_threads: 4 };
+    let mut frame: Frame<Rgba8> = Frame::new(TEST_WIDTH, TEST_HEIGHT);
+    let options = RenderOptions {
+        num_threads: DEFAULT_THREADS,
+    };
 
     render_work_stealing(&TestGradient, &mut frame, options);
 
-    assert_eq!(frame.data, reference.data, "render_work_stealing output mismatch");
+    assert_eq!(
+        frame.data, reference.data,
+        "render_work_stealing output mismatch"
+    );
 }
 
 #[test]
 fn render_work_stealing_handles_height_one() {
-    let width = 50;
-    let height = 1;
-    let reference = render_reference(width, height);
+    let reference = render_reference(SMALL_WIDTH, HEIGHT_ONE);
 
-    let mut frame: Frame<Rgba8> = Frame::new(width, height);
-    let options = RenderOptions { num_threads: 4 };
+    let mut frame: Frame<Rgba8> = Frame::new(SMALL_WIDTH, HEIGHT_ONE);
+    let options = RenderOptions {
+        num_threads: DEFAULT_THREADS,
+    };
 
     render_work_stealing(&TestGradient, &mut frame, options);
 
-    assert_eq!(frame.data, reference.data, "render_work_stealing height=1 mismatch");
+    assert_eq!(
+        frame.data, reference.data,
+        "render_work_stealing height=1 mismatch"
+    );
 }
