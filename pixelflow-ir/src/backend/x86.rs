@@ -558,6 +558,7 @@ impl Shr<u32> for U32x4 {
 impl U32x4 {
     /// Pack 4 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
         unsafe {
             // Clamp to [0, 1] and scale to [0, 255]
@@ -1170,6 +1171,7 @@ impl U32x8 {
     /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
     #[allow(dead_code)]
+    #[allow(dead_code)]
     pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
         unsafe {
             let scale = _mm256_set1_ps(255.0);
@@ -1775,6 +1777,7 @@ impl Shr<u32> for U32x16 {
 impl U32x16 {
     /// Pack 16 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     #[allow(dead_code)]
     pub(crate) fn pack_rgba(r: F32x16, g: F32x16, b: F32x16, a: F32x16) -> Self {
         unsafe {
