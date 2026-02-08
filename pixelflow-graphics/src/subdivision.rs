@@ -465,7 +465,7 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn test_regular_patch() {
+    fn single_quad_patch_is_extraordinary() {
         let obj = "
 v 0.0 0.0 0.0
 v 1.0 0.0 0.0
@@ -481,8 +481,49 @@ f 1 2 3 4
         assert!(patch.is_extraordinary()); // Valence 1 is extraordinary
     }
 
+    #[derive(Clone, Copy)]
+    struct Vec4 {
+        x: Field,
+        y: Field,
+        z: Field,
+        w: Field,
+    }
+
+    impl pixelflow_core::ops::Vector for Vec4 {
+        type Component = Field;
+        fn get(&self, axis: pixelflow_core::variables::Axis) -> Field {
+            match axis {
+                pixelflow_core::variables::Axis::X => self.x,
+                pixelflow_core::variables::Axis::Y => self.y,
+                pixelflow_core::variables::Axis::Z => self.z,
+                pixelflow_core::variables::Axis::W => self.w,
+            }
+        }
+    }
+
+    struct FieldTester(Field);
+    impl Manifold<(Field, Field, Field, Field)> for FieldTester {
+        type Output = Vec4;
+        fn eval(&self, _: (Field, Field, Field, Field)) -> Vec4 {
+            let zero = Field::from(0.0);
+            Vec4 {
+                x: self.0,
+                y: zero,
+                z: zero,
+                w: zero,
+            }
+        }
+    }
+
+    fn check_scalar(f: Field, expected: f32) {
+        let mut buf = [0.0f32; pixelflow_core::PARALLELISM * 4];
+        pixelflow_core::materialize(&FieldTester(f), 0.0, 0.0, &mut buf);
+        // Check first X component (index 0)
+        assert!((buf[0] - expected).abs() < 1e-4, "Expected {}, got {}", expected, buf[0]);
+    }
+
     #[test]
-    fn test_limit_eval() {
+    fn eval_limit_at_center_returns_correct_coordinates() {
         let obj = "
 v 0.0 0.0 0.0
 v 1.0 0.0 0.0
@@ -503,13 +544,14 @@ f 1 2 3 4
         let y = p[1].val;
         let z = p[2].val;
 
-        // For bilinear fallback, center should be roughly (0.5, 0.5, 0.0)
-        // We can't easily check SIMD Field values in tests, so this is a smoke test
-        assert_eq!(patch.is_extraordinary(), true);
+        // For bilinear fallback on a flat square, center should be (0.5, 0.5, 0.0)
+        check_scalar(x, 0.5);
+        check_scalar(y, 0.5);
+        check_scalar(z, 0.0);
     }
 
     #[test]
-    fn test_surface_stats() {
+    fn surface_from_two_face_mesh_has_two_patches() {
         let obj = "
 v 0.0 0.0 0.0
 v 1.0 0.0 0.0
