@@ -255,6 +255,7 @@ where
 }
 
 /// Render a specific row range into the target buffer (internal).
+#[inline(always)]
 pub(crate) fn execute_stripe<P, M>(manifold: &M, target: &mut [P], stripe: Stripe)
 where
     P: Pixel,
@@ -278,9 +279,48 @@ where
             // Use materialize_discrete_fields to evaluate and store
             materialize_discrete_fields(manifold, xs, ys, &mut packed);
 
-            // Copy to target
-            for i in 0..PARALLELISM {
-                target[row_offset + x + i] = P::from_u32(packed[i]);
+            // Copy to target - optimize bounds checks and unroll
+            let dest = &mut target[row_offset + x..][..PARALLELISM];
+            match PARALLELISM {
+                4 => {
+                    dest[0] = P::from_u32(packed[0]);
+                    dest[1] = P::from_u32(packed[1]);
+                    dest[2] = P::from_u32(packed[2]);
+                    dest[3] = P::from_u32(packed[3]);
+                }
+                8 => {
+                    dest[0] = P::from_u32(packed[0]);
+                    dest[1] = P::from_u32(packed[1]);
+                    dest[2] = P::from_u32(packed[2]);
+                    dest[3] = P::from_u32(packed[3]);
+                    dest[4] = P::from_u32(packed[4]);
+                    dest[5] = P::from_u32(packed[5]);
+                    dest[6] = P::from_u32(packed[6]);
+                    dest[7] = P::from_u32(packed[7]);
+                }
+                16 => {
+                    dest[0] = P::from_u32(packed[0]);
+                    dest[1] = P::from_u32(packed[1]);
+                    dest[2] = P::from_u32(packed[2]);
+                    dest[3] = P::from_u32(packed[3]);
+                    dest[4] = P::from_u32(packed[4]);
+                    dest[5] = P::from_u32(packed[5]);
+                    dest[6] = P::from_u32(packed[6]);
+                    dest[7] = P::from_u32(packed[7]);
+                    dest[8] = P::from_u32(packed[8]);
+                    dest[9] = P::from_u32(packed[9]);
+                    dest[10] = P::from_u32(packed[10]);
+                    dest[11] = P::from_u32(packed[11]);
+                    dest[12] = P::from_u32(packed[12]);
+                    dest[13] = P::from_u32(packed[13]);
+                    dest[14] = P::from_u32(packed[14]);
+                    dest[15] = P::from_u32(packed[15]);
+                }
+                _ => {
+                    for i in 0..PARALLELISM {
+                        dest[i] = P::from_u32(packed[i]);
+                    }
+                }
             }
 
             x += PARALLELISM;

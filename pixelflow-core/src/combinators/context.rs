@@ -39,7 +39,7 @@ pub trait ContextShape: Copy + Send + Sync {}
 // ArrayAccess: Element Access for CtxVar
 // ============================================================================
 
-/// Access an element from a context tuple at array position `Pos` and index `I`.
+/// Access an element from a context tuple at array position `Pos`, index `I`.
 ///
 /// This trait enables a single generic `CtxVar` Manifold impl instead of
 /// separate impls for each (arity, position) combination.
@@ -280,6 +280,9 @@ impl<Ctx, Body> WithContext<Ctx, Body> {
         Self { ctx, body }
     }
 }
+
+// Allow WithContext to be part of manifold expressions (e.g. .map())
+impl<Ctx, Body> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
 
 // ============================================================================
 // CtxVar - Array-Indexed Variable Reference
