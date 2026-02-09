@@ -3,11 +3,11 @@
 //! An e-graph compresses many equivalent expressions. Extraction picks
 //! the "best" one according to a cost model.
 
-use alloc::vec::Vec;
 use super::cost::{CostFunction, CostModel};
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::ops::Op;
+use alloc::vec::Vec;
 
 /// A concrete expression tree extracted from an e-graph.
 ///
@@ -56,9 +56,7 @@ impl ExprTree {
     pub fn depth(&self) -> usize {
         match self {
             Self::Leaf(_) => 1,
-            Self::Op { children, .. } => {
-                1 + children.iter().map(|c| c.depth()).max().unwrap_or(0)
-            }
+            Self::Op { children, .. } => 1 + children.iter().map(|c| c.depth()).max().unwrap_or(0),
         }
     }
 
@@ -136,7 +134,7 @@ impl ExprTree {
     /// Compute the cost of this expression tree using the given cost model.
     pub fn cost(&self, costs: &CostModel) -> usize {
         match self {
-            Self::Leaf(_) => 0,  // Variables and constants are free
+            Self::Leaf(_) => 0, // Variables and constants are free
             Self::Op { op, children } => {
                 let op_cost = costs.cost_by_name(op.name());
                 let children_cost: usize = children.iter().map(|c| c.cost(costs)).sum();
@@ -155,9 +153,7 @@ impl ExprTree {
             Self::Op { op, children } => {
                 let name = op.name();
                 match name {
-                    "add" => {
-                        children.iter().map(|c| c.eval(env)).sum()
-                    }
+                    "add" => children.iter().map(|c| c.eval(env)).sum(),
                     "sub" => {
                         if children.len() == 2 {
                             children[0].eval(env) - children[1].eval(env)
@@ -165,9 +161,7 @@ impl ExprTree {
                             0.0
                         }
                     }
-                    "mul" => {
-                        children.iter().map(|c| c.eval(env)).product()
-                    }
+                    "mul" => children.iter().map(|c| c.eval(env)).product(),
                     "div" => {
                         if children.len() == 2 {
                             children[0].eval(env) / children[1].eval(env)
@@ -210,15 +204,19 @@ impl ExprTree {
                             0.0
                         }
                     }
-                    "min" => {
-                        children.iter().map(|c| c.eval(env)).fold(f32::INFINITY, f32::min)
-                    }
-                    "max" => {
-                        children.iter().map(|c| c.eval(env)).fold(f32::NEG_INFINITY, f32::max)
-                    }
+                    "min" => children
+                        .iter()
+                        .map(|c| c.eval(env))
+                        .fold(f32::INFINITY, f32::min),
+                    "max" => children
+                        .iter()
+                        .map(|c| c.eval(env))
+                        .fold(f32::NEG_INFINITY, f32::max),
                     "mul_add" => {
                         if children.len() == 3 {
-                            children[0].eval(env).mul_add(children[1].eval(env), children[2].eval(env))
+                            children[0]
+                                .eval(env)
+                                .mul_add(children[1].eval(env), children[2].eval(env))
                         } else {
                             0.0
                         }
@@ -332,7 +330,11 @@ pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (
     // Use a stack of (class, partially_built_tree_slot)
     enum BuildTask {
         Visit(EClassId),
-        Complete { canonical: u32, op: &'static dyn super::ops::Op, num_children: usize },
+        Complete {
+            canonical: u32,
+            op: &'static dyn super::ops::Op,
+            num_children: usize,
+        },
     }
 
     let mut build_stack: Vec<BuildTask> = vec![BuildTask::Visit(root)];
@@ -375,17 +377,26 @@ pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (
                     }
                 }
             }
-            BuildTask::Complete { canonical, op, num_children } => {
+            BuildTask::Complete {
+                canonical,
+                op,
+                num_children,
+            } => {
                 building.remove(&canonical);
                 // Pop children from result stack (they're in correct order now)
                 let start = result_stack.len().saturating_sub(num_children);
                 let child_trees: Vec<ExprTree> = result_stack.drain(start..).collect();
-                result_stack.push(ExprTree::Op { op, children: child_trees });
+                result_stack.push(ExprTree::Op {
+                    op,
+                    children: child_trees,
+                });
             }
         }
     }
 
-    let tree = result_stack.pop().unwrap_or_else(|| ExprTree::Leaf(Leaf::Const(0.0)));
+    let tree = result_stack
+        .pop()
+        .unwrap_or_else(|| ExprTree::Leaf(Leaf::Const(0.0)));
     (tree, total_cost)
 }
 
@@ -434,7 +445,8 @@ impl ExtractedDAG {
 
     /// Get the use count for an e-class.
     pub fn use_count(&self, class: EClassId) -> usize {
-        self.shared.iter()
+        self.shared
+            .iter()
             .find(|(id, _)| *id == class)
             .map(|(_, count)| *count)
             .unwrap_or(1)
@@ -545,7 +557,8 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
     count_refs_recursive(egraph, root, &best_node, &mut ref_counts);
 
     // Phase 3: Identify shared e-classes (count > 1)
-    let shared: Vec<(EClassId, usize)> = ref_counts.iter()
+    let shared: Vec<(EClassId, usize)> = ref_counts
+        .iter()
         .enumerate()
         .filter(|(_, count)| **count > 1)
         .map(|(idx, count)| (EClassId(idx as u32), *count))
@@ -632,7 +645,14 @@ fn toposort_dag(
         }
     }
 
-    visit(egraph, root, best_node, &shared_set, &mut visited, &mut result);
+    visit(
+        egraph,
+        root,
+        best_node,
+        &shared_set,
+        &mut visited,
+        &mut result,
+    );
 
     // Add root if not already included
     let root_canonical = egraph.find(root);
@@ -716,7 +736,10 @@ mod tests {
         let costs = CostModel::default();
         let dag = extract_dag(&egraph, sum, &costs);
 
-        assert!(dag.shared.is_empty(), "X + Y should have no shared subexprs");
+        assert!(
+            dag.shared.is_empty(),
+            "X + Y should have no shared subexprs"
+        );
         assert_eq!(dag.root, egraph.find(sum));
     }
 
@@ -763,7 +786,10 @@ mod tests {
         let dag = extract_dag(&egraph, result, &costs);
 
         // sin_x should be shared (used 3 times: twice in Mul, once in Add)
-        assert!(dag.is_shared(sin_x), "sqrt(X) should be shared (used 3 times)");
+        assert!(
+            dag.is_shared(sin_x),
+            "sqrt(X) should be shared (used 3 times)"
+        );
         assert_eq!(dag.use_count(sin_x), 3);
 
         // Schedule should have sin_x before the operations that use it
