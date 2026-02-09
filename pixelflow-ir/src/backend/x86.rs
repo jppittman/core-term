@@ -1228,11 +1228,7 @@ impl U32x8 {
 pub struct Mask16(pub(crate) __mmask16);
 
 #[cfg(target_feature = "avx512f")]
-impl Default for Mask16 {
-    fn default() -> Self {
-        Self(0)
-    }
-}
+#[derive(Default)]
 
 #[cfg(target_feature = "avx512f")]
 impl Debug for Mask16 {
@@ -1329,6 +1325,7 @@ impl F32x16 {
     }
 
     #[inline(always)]
+    #[allow(dead_code)]
     unsafe fn from_mask(mask: __mmask16) -> Self {
         unsafe {
             let all_ones = _mm512_castsi512_ps(_mm512_set1_epi32(-1));
@@ -1775,6 +1772,7 @@ impl Shr<u32> for U32x16 {
 impl U32x16 {
     /// Pack 16 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub(crate) fn pack_rgba(r: F32x16, g: F32x16, b: F32x16, a: F32x16) -> Self {
         unsafe {
             let scale = _mm512_set1_ps(255.0);
