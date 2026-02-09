@@ -40,8 +40,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use libm::sqrtf;
 
-use crate::Expr;
 pub use crate::OpKind;
+use crate::Expr;
 
 // ============================================================================
 // Constants
@@ -122,60 +122,62 @@ impl OpEmbeddings {
         // Known latencies (cycles) - these are approximate and can be refined
         // Dimension 0 = latency, normalized to [0, 1] range (divide by max ~20)
         let latencies: [f32; OpKind::COUNT] = [
-            0.0,  // Var - free
-            0.0,  // Const - free
-            0.2,  // Add - 4 cycles
-            0.2,  // Sub - 4 cycles
-            0.25, // Mul - 5 cycles
-            0.75, // Div - 15 cycles
-            0.05, // Neg - 1 cycle
-            0.75, // Sqrt - 15 cycles
-            0.25, // Rsqrt - 5 cycles (fast approximation)
-            0.05, // Abs - 1 cycle
-            0.2,  // Min - 4 cycles
-            0.2,  // Max - 4 cycles
-            0.25, // MulAdd - 5 cycles (fused)
-            0.3,  // MulRsqrt - 6 cycles
-            0.5,  // Recip - 10 cycles
-            0.2,  // Floor - 4 cycles
-            0.2,  // Ceil - 4 cycles
-            0.2,  // Round - 4 cycles
-            0.2,  // Fract - 4 cycles
-            0.5,  // Sin - 10 cycles
-            0.5,  // Cos - 10 cycles
-            0.5,  // Tan - 10 cycles
-            0.5,  // Asin - 10 cycles
-            0.5,  // Acos - 10 cycles
-            0.5,  // Atan - 10 cycles
-            0.5,  // Exp - 10 cycles
-            0.5,  // Exp2 - 10 cycles
-            0.5,  // Ln - 10 cycles
-            0.5,  // Log2 - 10 cycles
-            0.5,  // Log10 - 10 cycles
-            0.5,  // Atan2 - 10 cycles
-            0.6,  // Pow - 12 cycles
-            0.4,  // Hypot - 8 cycles
-            0.15, // Lt - 3 cycles
-            0.15, // Le - 3 cycles
-            0.15, // Gt - 3 cycles
-            0.15, // Ge - 3 cycles
-            0.15, // Eq - 3 cycles
-            0.15, // Ne - 3 cycles
-            0.2,  // Select - 4 cycles
-            0.3,  // Clamp - 6 cycles (2x compare + select)
-            0.0,  // Tuple - free (structural)
+            0.0,   // Var - free
+            0.0,   // Const - free
+            0.2,   // Add - 4 cycles
+            0.2,   // Sub - 4 cycles
+            0.25,  // Mul - 5 cycles
+            0.75,  // Div - 15 cycles
+            0.05,  // Neg - 1 cycle
+            0.75,  // Sqrt - 15 cycles
+            0.25,  // Rsqrt - 5 cycles (fast approximation)
+            0.05,  // Abs - 1 cycle
+            0.2,   // Min - 4 cycles
+            0.2,   // Max - 4 cycles
+            0.25,  // MulAdd - 5 cycles (fused)
+            0.3,   // MulRsqrt - 6 cycles
+            0.5,   // Recip - 10 cycles
+            0.2,   // Floor - 4 cycles
+            0.2,   // Ceil - 4 cycles
+            0.2,   // Round - 4 cycles
+            0.2,   // Fract - 4 cycles
+            0.5,   // Sin - 10 cycles
+            0.5,   // Cos - 10 cycles
+            0.5,   // Tan - 10 cycles
+            0.5,   // Asin - 10 cycles
+            0.5,   // Acos - 10 cycles
+            0.5,   // Atan - 10 cycles
+            0.5,   // Exp - 10 cycles
+            0.5,   // Exp2 - 10 cycles
+            0.5,   // Ln - 10 cycles
+            0.5,   // Log2 - 10 cycles
+            0.5,   // Log10 - 10 cycles
+            0.5,   // Atan2 - 10 cycles
+            0.6,   // Pow - 12 cycles
+            0.4,   // Hypot - 8 cycles
+            0.15,  // Lt - 3 cycles
+            0.15,  // Le - 3 cycles
+            0.15,  // Gt - 3 cycles
+            0.15,  // Ge - 3 cycles
+            0.15,  // Eq - 3 cycles
+            0.15,  // Ne - 3 cycles
+            0.2,   // Select - 4 cycles
+            0.3,   // Clamp - 6 cycles (2x compare + select)
+            0.0,   // Tuple - free (structural)
         ];
 
         let mut rng_state = seed.wrapping_add(1);
         let small_scale = 0.1; // Small noise for other dimensions
 
-        for op_idx in 0..OpKind::COUNT {
+        for (op_idx, &latency) in latencies.iter().enumerate() {
             // Dimension 0: latency prior
-            self.e[op_idx][0] = latencies[op_idx];
+            self.e[op_idx][0] = latency;
 
             // Dimensions 1..K: small random for learning interactions
             for dim in 1..K {
-                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng_state = rng_state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1);
                 let uniform = (rng_state >> 33) as f32 / (1u64 << 31) as f32;
                 self.e[op_idx][dim] = (uniform * 2.0 - 1.0) * small_scale;
             }
@@ -190,7 +192,9 @@ impl OpEmbeddings {
         for op_idx in 0..OpKind::COUNT {
             for dim in 0..K {
                 // LCG for no_std compatibility
-                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng_state = rng_state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1);
 
                 // Convert to [-1, 1] and scale
                 let uniform = (rng_state >> 33) as f32 / (1u64 << 31) as f32;
@@ -291,6 +295,7 @@ impl EdgeAccumulator {
     /// Build accumulator from an expression tree.
     ///
     /// Traverses the tree and accumulates edge contributions.
+    #[must_use]
     pub fn from_expr(expr: &Expr, emb: &OpEmbeddings) -> Self {
         let mut acc = Self::new();
         acc.add_expr_edges(expr, emb);
@@ -494,7 +499,8 @@ impl StructuralFeatures {
 
         // Leaf depth variance (measure of tree balance)
         if !leaf_depths.is_empty() {
-            let mean_depth: f32 = leaf_depths.iter().sum::<u32>() as f32 / leaf_depths.len() as f32;
+            let mean_depth: f32 =
+                leaf_depths.iter().sum::<u32>() as f32 / leaf_depths.len() as f32;
             let variance: f32 = leaf_depths
                 .iter()
                 .map(|&d| {
@@ -559,8 +565,8 @@ impl StructuralFeatures {
                     _ => 5, // Default for extended math ops
                 };
 
-                let child_cost =
-                    Self::collect_stats(child, features, depth + 1, width_at_depth, leaf_depths);
+
+                let child_cost = Self::collect_stats(child, features, depth + 1, width_at_depth, leaf_depths);
                 op_cost + child_cost
             }
             Expr::Binary(op, left, right) => {
@@ -585,16 +591,13 @@ impl StructuralFeatures {
                 };
 
                 // Check for FMA pattern: Mul as left child and current is in Add context
-                if *op == OpKind::Add {
-                    if matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
-                        features.values[Self::HAS_FMA_PATTERN] = 1.0;
-                    }
+                if *op == OpKind::Add && matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
+                    features.values[Self::HAS_FMA_PATTERN] = 1.0;
                 }
 
-                let left_cost =
-                    Self::collect_stats(left, features, depth + 1, width_at_depth, leaf_depths);
-                let right_cost =
-                    Self::collect_stats(right, features, depth + 1, width_at_depth, leaf_depths);
+
+                let left_cost = Self::collect_stats(left, features, depth + 1, width_at_depth, leaf_depths);
+                let right_cost = Self::collect_stats(right, features, depth + 1, width_at_depth, leaf_depths);
 
                 // Critical path: max of parallel children + this op
                 op_cost + left_cost.max(right_cost)
@@ -611,12 +614,10 @@ impl StructuralFeatures {
                     _ => 10,
                 };
 
-                let a_cost =
-                    Self::collect_stats(a, features, depth + 1, width_at_depth, leaf_depths);
-                let b_cost =
-                    Self::collect_stats(b, features, depth + 1, width_at_depth, leaf_depths);
-                let c_cost =
-                    Self::collect_stats(c, features, depth + 1, width_at_depth, leaf_depths);
+
+                let a_cost = Self::collect_stats(a, features, depth + 1, width_at_depth, leaf_depths);
+                let b_cost = Self::collect_stats(b, features, depth + 1, width_at_depth, leaf_depths);
+                let c_cost = Self::collect_stats(c, features, depth + 1, width_at_depth, leaf_depths);
 
                 op_cost + a_cost.max(b_cost).max(c_cost)
             }
@@ -629,11 +630,8 @@ impl StructuralFeatures {
                     _ => 5,
                 };
 
-                let max_child_cost = children
-                    .iter()
-                    .map(|c| {
-                        Self::collect_stats(c, features, depth + 1, width_at_depth, leaf_depths)
-                    })
+                let max_child_cost = children.iter()
+                    .map(|c| Self::collect_stats(c, features, depth + 1, width_at_depth, leaf_depths))
                     .max()
                     .unwrap_or(0);
 
@@ -736,7 +734,9 @@ impl FactoredNnue {
         let mut rng_state = seed.wrapping_add(12345);
 
         let mut next_f32 = || {
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
             (rng_state >> 33) as f32 / (1u64 << 31) as f32 * 2.0 - 1.0
         };
 
@@ -767,7 +767,9 @@ impl FactoredNnue {
 
         // Helper for random generation
         let mut next_f32 = || {
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
             (rng_state >> 33) as f32 / (1u64 << 31) as f32 * 2.0 - 1.0
         };
 
@@ -854,7 +856,7 @@ impl FactoredNnue {
             + INPUT_DIM * HIDDEN_DIM          // w1: 84 * 64 = 5,376
             + HIDDEN_DIM                      // b1: 64
             + HIDDEN_DIM                      // w2: 64
-            + 1 // b2: 1
+            + 1                               // b2: 1
         // Total: 6,849 parameters
     }
 
@@ -950,7 +952,11 @@ mod tests {
 
     /// Create a simple expression: x + y
     fn make_add_xy() -> Expr {
-        Expr::Binary(OpKind::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1)))
+        Expr::Binary(
+            OpKind::Add,
+            Box::new(Expr::Var(0)),
+            Box::new(Expr::Var(1)),
+        )
     }
 
     /// Create FMA-eligible expression: a*b + c
@@ -1000,9 +1006,7 @@ mod tests {
         assert_eq!(edges.len(), 4);
 
         // Check that Add→Mul exists (the FMA-critical edge)
-        let has_add_mul = edges
-            .iter()
-            .any(|e| e.parent == OpKind::Add && e.child == OpKind::Mul);
+        let has_add_mul = edges.iter().any(|e| e.parent == OpKind::Add && e.child == OpKind::Mul);
         assert!(has_add_mul, "Should have Add→Mul edge for FMA pattern");
     }
 
@@ -1051,10 +1055,7 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .sum();
 
-        assert!(
-            diff > 0.1,
-            "Asymmetric patterns should produce different accumulators"
-        );
+        assert!(diff > 0.1, "Asymmetric patterns should produce different accumulators");
     }
 
     #[test]
@@ -1080,10 +1081,7 @@ mod tests {
         // Remove and verify we get back to zero
         acc_inc.remove_expr_edges(&expr, &emb);
         for &v in &acc_inc.values {
-            assert!(
-                v.abs() < 1e-6,
-                "After removing all edges, accumulator should be zero"
-            );
+            assert!(v.abs() < 1e-6, "After removing all edges, accumulator should be zero");
         }
     }
 
@@ -1128,7 +1126,7 @@ mod tests {
             + 84 * 64        // w1
             + 64             // b1
             + 64             // w2
-            + 1 // b2
+            + 1              // b2
         );
 
         // Should be much smaller than HalfEP
