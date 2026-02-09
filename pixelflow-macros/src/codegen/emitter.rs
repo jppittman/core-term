@@ -527,7 +527,7 @@ impl<'a> CodeEmitter<'a> {
             &self.analyzed.def.return_ty,
         ) {
             (Some(domain), Some(output)) => {
-                let type_str = quote! { #domain }.to_string();
+                let _type_str = quote! { #domain }.to_string();
                 // panic!("DEBUG: domain type is '{}'", type_str);
                 let domain_tokens = if let syn::Type::Tuple(_) = domain {
                     quote! { #domain }
@@ -666,7 +666,7 @@ impl<'a> CodeEmitter<'a> {
     /// This should be the domain's scalar type (from `Spatial::Coord`), not the output type.
     fn emit_unified_binding(
         &self,
-        at_manifold_params: &HashSet<String>,
+        __at_manifold_params: at_manifold_params: &HashSet<String>HashSet<String>,
         scalar_type: &TokenStream,
     ) -> (TokenStream, TokenStream) {
         let params = &self.analyzed.def.params;
@@ -683,7 +683,7 @@ impl<'a> CodeEmitter<'a> {
         let has_scalar_params = params
             .iter()
             .any(|p| matches!(p.kind, ParamKind::Scalar(_)));
-        let needs_pre_eval = manifold_count > 0 && (manifold_count > 1 || has_scalar_params);
+        let _needs_pre_eval = manifold_count > 0 && (manifold_count > 1 || has_scalar_params);
 
         // NOTE: Manifold params are NO LONGER pre-evaluated.
         // They're accessed directly via (&self.name) in the expression tree.

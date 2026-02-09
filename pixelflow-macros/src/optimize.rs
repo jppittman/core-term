@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 //! # AST Optimization
 //!
 //! Performs algebraic simplification and constant folding on the AST.
@@ -23,11 +24,11 @@
 //! ```
 
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LetStmt, LiteralExpr,
+    BinaryExpr, BinaryOp, BlockExpr, Expr, IdentExpr, LetStmt, LiteralExpr,
     MethodCallExpr, Stmt, UnaryExpr, UnaryOp,
 };
 use crate::cost_builder;
-use crate::ir_bridge::{IRToEGraphContext, ast_to_ir, egraph_to_ir, ir_to_code};
+use crate::ir_bridge::{IRToEGraphContext, ast_to_ir};
 use crate::sema::AnalyzedKernel;
 use pixelflow_search::egraph::{
     CostModel, EClassId, EGraph, ENode, ExprTree, ExtractedDAG, Leaf, ops,
@@ -48,7 +49,7 @@ static COST_MODEL: OnceLock<CostModel> = OnceLock::new();
 
 /// Get the cost model, initializing it lazily on first use.
 fn get_cost_model() -> &'static CostModel {
-    COST_MODEL.get_or_init(|| cost_builder::build_cost_model_with_hce())
+    COST_MODEL.get_or_init(cost_builder::build_cost_model_with_hce)
 }
 
 /// Generate a unique name for an opaque expression (unknown method call, etc.)
@@ -72,7 +73,7 @@ fn heuristic_score_rewrite(
     egraph: &EGraph,
     target: &pixelflow_search::egraph::RewriteTarget,
 ) -> i64 {
-    use pixelflow_search::egraph::RewriteTarget;
+
 
     // Get the rule name
     let rule_name = match egraph.rule(target.rule_idx) {
@@ -113,7 +114,7 @@ fn heuristic_score_rewrite(
 /// Returns true if saturated (optimal), false if budget exhausted (best-effort).
 fn saturate_with_priority(egraph: &mut EGraph, budget: usize) -> bool {
     use pixelflow_search::egraph::RewriteTarget;
-    use std::cmp::Reverse;
+
     use std::collections::{BinaryHeap, HashSet};
 
     // Priority queue: (score, target)
@@ -269,15 +270,14 @@ fn expr_has_opaque_refs(expr: &Expr, local_names: &std::collections::HashSet<Str
             // Check if the receiver is opaque (Verbatim) and args reference locals
             // This catches patterns like: ColorCube::default().at(red, green, blue, 1.0)
             // where ColorCube::default() is Verbatim and red/green/blue are locals
-            if matches!(call.receiver.as_ref(), Expr::Verbatim(_)) {
-                if call
+            if matches!(call.receiver.as_ref(), Expr::Verbatim(_))
+                && call
                     .args
                     .iter()
                     .any(|arg| expr_references_any(arg, local_names))
                 {
                     return true;
                 }
-            }
             // Check if this is a method on a captured variable (not X, Y, Z, W)
             if let Expr::Ident(ident) = call.receiver.as_ref() {
                 let name = ident.name.to_string();
@@ -337,7 +337,7 @@ fn expr_has_opaque_refs(expr: &Expr, local_names: &std::collections::HashSet<Str
             }) || b
                 .expr
                 .as_ref()
-                .map_or(false, |e| expr_has_opaque_refs(e, local_names))
+                .is_some_and(|e| expr_has_opaque_refs(e, local_names))
         }
 
         Expr::Ident(_) | Expr::Literal(_) => false,
@@ -370,7 +370,7 @@ fn expr_references_any(expr: &Expr, names: &std::collections::HashSet<String>) -
             }) || b
                 .expr
                 .as_ref()
-                .map_or(false, |e| expr_references_any(e, names))
+                .is_some_and(|e| expr_references_any(e, names))
         }
         Expr::Literal(_) => false,
 
@@ -451,7 +451,7 @@ fn syn_expr_references_any(expr: &syn::Expr, names: &std::collections::HashSet<S
             syn::Stmt::Local(local) => local
                 .init
                 .as_ref()
-                .map_or(false, |init| syn_expr_references_any(&init.expr, names)),
+                .is_some_and(|init| syn_expr_references_any(&init.expr, names)),
             syn::Stmt::Expr(expr, _) => syn_expr_references_any(expr, names),
             _ => false,
         }),
@@ -468,7 +468,7 @@ fn syn_expr_references_any(expr: &syn::Expr, names: &std::collections::HashSet<S
                 || if_expr
                     .else_branch
                     .as_ref()
-                    .map_or(false, |(_, else_expr)| {
+                    .is_some_and(|(_, else_expr)| {
                         syn_expr_references_any(else_expr, names)
                     })
         }

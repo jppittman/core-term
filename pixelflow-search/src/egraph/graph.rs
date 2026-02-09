@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 //! The E-Graph data structure and operations.
 
 use std::collections::HashMap;
@@ -10,7 +11,7 @@ use super::extract::ExprTree;
 use super::node::{EClassId, ENode};
 use super::ops;
 use super::rewrite::{Rewrite, RewriteAction};
-use super::rules::{Annihilator, Commutative, Distributive, Factor, Idempotent, Identity};
+use super::rules::{Annihilator, Commutative, Distributive, Identity};
 
 /// A potential rewrite target: (rule, e-class, node within class).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -34,7 +35,7 @@ pub struct EGraph {
     memo: HashMap<ENode, EClassId>,
     worklist: Vec<EClassId>,
     /// Rules are shared via Arc so EGraph can be cloned for search branching.
-    rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
+    rules: std::rc::Rc<Vec<Box<dyn Rewrite>>>,
     pub match_counts: HashMap<String, usize>,
 }
 
@@ -51,7 +52,7 @@ impl Clone for EGraph {
             parent: self.parent.clone(),
             memo: self.memo.clone(),
             worklist: self.worklist.clone(),
-            rules: self.rules.clone(), // Arc clone - cheap, shares rules
+            rules: self.rules.clone(), // Rc clone - cheap, shares rules
             match_counts: self.match_counts.clone(),
         }
     }
@@ -59,53 +60,51 @@ impl Clone for EGraph {
 
 impl EGraph {
     pub fn new() -> Self {
-        // Build rules first, then wrap in Arc
+        // Build rules first, then wrap in Rc
         let rules = Self::create_algebraic_rules();
         Self {
             classes: Vec::new(),
             parent: Vec::new(),
             memo: HashMap::new(),
             worklist: Vec::new(),
-            rules: std::sync::Arc::new(rules),
+            rules: std::rc::Rc::new(rules),
             match_counts: HashMap::new(),
         }
     }
 
     /// Create the standard algebraic rewrite rules.
     fn create_algebraic_rules() -> Vec<Box<dyn Rewrite>> {
-        let mut rules: Vec<Box<dyn Rewrite>> = Vec::new();
-
         // TEST: Adding remaining rules
-        rules.push(Canonicalize::<AddNeg>::new());
-        rules.push(Involution::<AddNeg>::new());
-        rules.push(Cancellation::<AddNeg>::new());
-        rules.push(InverseAnnihilation::<AddNeg>::new());
-        rules.push(Canonicalize::<MulRecip>::new());
-        rules.push(Involution::<MulRecip>::new());
-        rules.push(Cancellation::<MulRecip>::new());
-        rules.push(InverseAnnihilation::<MulRecip>::new());
-        rules.push(Commutative::new(&ops::Add));
-        rules.push(Commutative::new(&ops::Mul));
-        rules.push(Commutative::new(&ops::Min));
-        rules.push(Commutative::new(&ops::Max));
-        rules.push(Distributive::new(&ops::Mul, &ops::Add));
-        rules.push(Distributive::new(&ops::Mul, &ops::Sub));
-        // Domain-specific fusion rules (FmaFusion, RecipSqrt) should be added
-        // by the domain layer (pixelflow-macros) using add_rule(), not here.
-        // Identity rules: x + 0 = x, x * 1 = x
-        rules.push(Identity::new(&ops::Add));
-        rules.push(Identity::new(&ops::Mul));
-        // Annihilator rules: x * 0 = 0
-        rules.push(Annihilator::new(&ops::Mul));
-
-        rules
+        vec![
+            Canonicalize::<AddNeg>::new(),
+            Involution::<AddNeg>::new(),
+            Cancellation::<AddNeg>::new(),
+            InverseAnnihilation::<AddNeg>::new(),
+            Canonicalize::<MulRecip>::new(),
+            Involution::<MulRecip>::new(),
+            Cancellation::<MulRecip>::new(),
+            InverseAnnihilation::<MulRecip>::new(),
+            Commutative::new(&ops::Add),
+            Commutative::new(&ops::Mul),
+            Commutative::new(&ops::Min),
+            Commutative::new(&ops::Max),
+            Distributive::new(&ops::Mul, &ops::Add),
+            Distributive::new(&ops::Mul, &ops::Sub),
+            // Domain-specific fusion rules (FmaFusion, RecipSqrt) should be added
+            // by the domain layer (pixelflow-macros) using add_rule(), not here.
+            // Identity rules: x + 0 = x, x * 1 = x
+            Identity::new(&ops::Add),
+            Identity::new(&ops::Mul),
+            // Annihilator rules: x * 0 = 0
+            Annihilator::new(&ops::Mul),
+        ]
     }
 
     /// Add a custom rule (only works before cloning).
     ///
     /// Note: This will panic if the EGraph has been cloned.
     pub fn add_rule(&mut self, rule: Box<dyn Rewrite>) {
-        std::sync::Arc::get_mut(&mut self.rules)
+        std::rc::Rc::get_mut(&mut self.rules)
             .expect("Cannot add rules after EGraph has been cloned")
             .push(rule);
     }

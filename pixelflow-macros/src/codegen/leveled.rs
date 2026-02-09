@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! # Leveled (BFS) Code Generation
 //!
 //! Emits code by evaluating expression trees level-by-level (breadth-first).
@@ -287,7 +288,7 @@ impl<'a> LevelBuilder<'a> {
                                 .def
                                 .params
                                 .iter()
-                                .find(|p| p.name.to_string() == name)
+                                .find(|p| p.name == name)
                                 .map(|p| p.kind.clone())
                                 .unwrap_or(ParamKind::Scalar(syn::parse_quote!(f32)));
                             // Scalar parameters are Const (captured at kernel creation)
@@ -335,7 +336,7 @@ impl<'a> LevelBuilder<'a> {
                 let operand_deps = self.get_deps(operand);
                 (
                     LeveledNodeKind::Unary {
-                        op: unary.op.clone(),
+                        op: unary.op,
                         operand,
                     },
                     operand_deps,
@@ -348,7 +349,7 @@ impl<'a> LevelBuilder<'a> {
                 let deps = self.get_deps(left).join(self.get_deps(right));
                 (
                     LeveledNodeKind::Binary {
-                        op: binary.op.clone(),
+                        op: binary.op,
                         left,
                         right,
                     },
@@ -444,7 +445,7 @@ impl DepsStats {
 pub fn analyze_deps(analyzed: &AnalyzedKernel, annotated: &AnnotatedExpr) -> DepsStats {
     let mut builder = LevelBuilder::new(analyzed);
     let root = builder.build(annotated);
-    let root_deps = builder.get_deps(root);
+    let _root_deps = builder.get_deps(root);
 
     let mut stats = DepsStats::default();
 

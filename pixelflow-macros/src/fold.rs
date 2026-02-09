@@ -24,8 +24,7 @@
 //! methods take `&mut self`.
 
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
-    UnaryExpr, UnaryOp,
+    BinaryOp, Expr, Stmt, UnaryOp,
 };
 use syn::Ident;
 
@@ -104,6 +103,7 @@ pub trait ExprFold {
 /// Perform a fold over an expression tree.
 ///
 /// This drives the recursion, calling the appropriate trait methods.
+#[allow(clippy::unnecessary_filter_map)]
 pub fn fold_expr<F: ExprFold>(folder: &mut F, expr: &Expr) -> F::Output {
     match expr {
         Expr::Ident(ident) => folder.fold_ident(&ident.name),

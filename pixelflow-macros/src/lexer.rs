@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! # Lexer
 //!
 //! Tokenization for the kernel DSL.
