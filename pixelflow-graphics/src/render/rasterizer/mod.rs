@@ -278,9 +278,12 @@ where
             // Use materialize_discrete_fields to evaluate and store
             materialize_discrete_fields(manifold, xs, ys, &mut packed);
 
-            // Copy to target
+            // Copy to target with bounds check hoisting
+            // Creating a fixed-size slice allows the compiler to unroll the loop
+            // and eliminate bounds checks for each element access.
+            let dest = &mut target[row_offset + x..][..PARALLELISM];
             for i in 0..PARALLELISM {
-                target[row_offset + x + i] = P::from_u32(packed[i]);
+                dest[i] = P::from_u32(packed[i]);
             }
 
             x += PARALLELISM;
