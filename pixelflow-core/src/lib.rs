@@ -128,6 +128,8 @@
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
+#![allow(clippy::must_use_candidate)]
+#![allow(clippy::suspicious_arithmetic_impl)]
 
 extern crate alloc;
 
