@@ -5,9 +5,9 @@
 //!
 //! Run with: cargo bench -p pixelflow-ml --bench expr_perf
 
-use criterion::{Criterion, BenchmarkId, Throughput, black_box, criterion_group, criterion_main};
-use pixelflow_ml::nnue::{Expr, OpType, ExprGenerator, ExprGenConfig};
-use pixelflow_ml::evaluator::{extract_expr_features, default_expr_weights};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use pixelflow_ml::evaluator::{default_expr_weights, extract_expr_features};
+use pixelflow_ml::nnue::{Expr, ExprGenConfig, ExprGenerator, OpType};
 
 /// Generate expressions with specific structural properties
 fn generate_wide_tree(depth: usize, width: usize) -> Expr {
@@ -95,7 +95,7 @@ fn bench_expr_eval_throughput(c: &mut Criterion) {
     for (i, &target_size) in [20, 50, 100, 200].iter().enumerate() {
         let config = ExprGenConfig {
             max_depth: 12,
-            leaf_prob: 0.1 + (i as f32) * 0.05,  // Vary leaf_prob to get different sizes
+            leaf_prob: 0.1 + (i as f32) * 0.05, // Vary leaf_prob to get different sizes
             num_vars: 4,
             include_fused: false,
         };
@@ -105,11 +105,7 @@ fn bench_expr_eval_throughput(c: &mut Criterion) {
         let mut expr = expr_gen.generate();
         let mut attempts = 0;
         while expr.node_count() < target_size && attempts < 50 {
-            expr = Expr::Binary(
-                OpType::Add,
-                Box::new(expr),
-                Box::new(expr_gen.generate()),
-            );
+            expr = Expr::Binary(OpType::Add, Box::new(expr), Box::new(expr_gen.generate()));
             attempts += 1;
         }
 
@@ -119,9 +115,7 @@ fn bench_expr_eval_throughput(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("nodes", format!("~{}", target_size)),
             &expr,
-            |b, expr| {
-                b.iter(|| black_box(expr.eval(black_box(&vars))))
-            },
+            |b, expr| b.iter(|| black_box(expr.eval(black_box(&vars)))),
         );
     }
 
@@ -157,10 +151,14 @@ fn bench_wide_vs_deep(c: &mut Criterion) {
         let deep_hce = hce.evaluate_linear(&deep_features);
 
         println!("\n=== Target ~{} nodes ===", target_nodes);
-        println!("Wide: {} nodes, HCE={}, critical_path={}, depth={}",
-            wide_size, wide_hce, wide_features.critical_path, wide_features.depth);
-        println!("Deep: {} nodes, HCE={}, critical_path={}, depth={}",
-            deep_size, deep_hce, deep_features.critical_path, deep_features.depth);
+        println!(
+            "Wide: {} nodes, HCE={}, critical_path={}, depth={}",
+            wide_size, wide_hce, wide_features.critical_path, wide_features.depth
+        );
+        println!(
+            "Deep: {} nodes, HCE={}, critical_path={}, depth={}",
+            deep_size, deep_hce, deep_features.critical_path, deep_features.depth
+        );
 
         group.bench_with_input(
             BenchmarkId::new(format!("wide_n{}", i), wide_size),
@@ -212,18 +210,26 @@ fn bench_hce_ranking_validation(c: &mut Criterion) {
 
     // Benchmark each expression
     println!("\n=== HCE Ranking Validation ===");
-    println!("Benchmarking {} expressions sorted by HCE cost...", expressions.len());
+    println!(
+        "Benchmarking {} expressions sorted by HCE cost...",
+        expressions.len()
+    );
 
     for (rank, (idx, hce_cost, expr)) in with_hce.iter().enumerate().take(10) {
         let features = extract_expr_features(expr);
         group.bench_with_input(
-            BenchmarkId::new(format!("rank{:02}_hce{}", rank, hce_cost), expr.node_count()),
+            BenchmarkId::new(
+                format!("rank{:02}_hce{}", rank, hce_cost),
+                expr.node_count(),
+            ),
             expr,
             |b, expr| b.iter(|| black_box(expr.eval(black_box(&vars)))),
         );
 
-        println!("  Rank {}: HCE={}, nodes={}, depth={}, critical_path={}",
-            rank, hce_cost, features.node_count, features.depth, features.critical_path);
+        println!(
+            "  Rank {}: HCE={}, nodes={}, depth={}, critical_path={}",
+            rank, hce_cost, features.node_count, features.depth, features.critical_path
+        );
     }
 
     group.finish();
@@ -239,9 +245,13 @@ fn bench_expensive_ops(c: &mut Criterion) {
         let expr = generate_with_expensive_ops(50, expensive_frac);
         let features = extract_expr_features(&expr);
 
-        println!("\n{}% expensive ops: sqrt_count={}, div_count={}, critical_path={}",
+        println!(
+            "\n{}% expensive ops: sqrt_count={}, div_count={}, critical_path={}",
             (expensive_frac * 100.0) as i32,
-            features.sqrt_count, features.div_count, features.critical_path);
+            features.sqrt_count,
+            features.div_count,
+            features.critical_path
+        );
 
         group.bench_with_input(
             BenchmarkId::new("sqrt_fraction", format!("{:.0}%", expensive_frac * 100.0)),

@@ -19,7 +19,7 @@
 //! `Var<N>` references bound via `Let`. The annotation pass assigns each
 //! literal its Var index.
 
-use crate::ast::{BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, Stmt, UnaryOp};
+use crate::ast::{BinaryOp, BlockExpr, Expr, IdentExpr, Stmt, UnaryOp};
 use proc_macro2::Span;
 use syn::{Ident, Lit, Type};
 
@@ -37,6 +37,7 @@ impl AnnotationCtx {
     }
 
     /// Total number of literals collected.
+    #[allow(dead_code)]
     pub fn literal_count(&self) -> usize {
         self.next_literal
     }
@@ -115,7 +116,7 @@ pub struct AnnotatedBlock {
 
 #[derive(Debug, Clone)]
 pub enum AnnotatedStmt {
-    Let(AnnotatedLet),
+    Let(Box<AnnotatedLet>),
     Expr(AnnotatedExpr),
 }
 
@@ -143,7 +144,10 @@ pub struct AnnotationResult {
 /// Annotate an expression tree, resolving literal Var indices.
 ///
 /// This is a pure function - context flows through return values.
-pub fn annotate(expr: &Expr, ctx: AnnotationCtx) -> (AnnotatedExpr, AnnotationCtx, Vec<CollectedLiteral>) {
+pub fn annotate(
+    expr: &Expr,
+    ctx: AnnotationCtx,
+) -> (AnnotatedExpr, AnnotationCtx, Vec<CollectedLiteral>) {
     let mut literals = Vec::new();
     let (annotated, final_ctx) = annotate_expr(expr, ctx, &mut literals);
     (annotated, final_ctx, literals)
@@ -174,7 +178,7 @@ fn annotate_expr(
             });
             let new_ctx = AnnotationCtx {
                 next_literal: ctx.next_literal + 1,
-                ..ctx
+
             };
             (
                 AnnotatedExpr::Literal(AnnotatedLiteral {

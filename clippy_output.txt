@@ -1,0 +1,523 @@
+warning: struct `Factor` is never constructed
+   --> pixelflow-search/src/egraph/rules.rs:130:12
+    |
+130 | pub struct Factor {
+    |            ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `new` is never used
+   --> pixelflow-search/src/egraph/rules.rs:136:12
+    |
+135 | impl Factor {
+    | ----------- associated function in this implementation
+136 |     pub fn new(outer: &'static dyn Op, inner: &'static dyn Op) -> Box<Self> {
+    |            ^^^
+
+warning: struct `Idempotent` is never constructed
+   --> pixelflow-search/src/egraph/rules.rs:261:12
+    |
+261 | pub struct Idempotent {
+    |            ^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> pixelflow-search/src/egraph/rules.rs:266:12
+    |
+265 | impl Idempotent {
+    | --------------- associated function in this implementation
+266 |     pub fn new(op: &'static dyn Op) -> Box<Self> {
+    |            ^^^
+
+warning: struct `RecipSqrt` is never constructed
+   --> pixelflow-search/src/egraph/rules.rs:295:12
+    |
+295 | pub struct RecipSqrt;
+    |            ^^^^^^^^^
+
+warning: struct `FmaFusion` is never constructed
+   --> pixelflow-search/src/egraph/rules.rs:331:12
+    |
+331 | pub struct FmaFusion;
+    |            ^^^^^^^^^
+
+warning: `pixelflow-search` (lib) generated 6 warnings
+warning: method `literal_count` is never used
+  --> pixelflow-macros/src/annotate.rs:40:12
+   |
+34 | impl AnnotationCtx {
+   | ------------------ method in this implementation
+...
+40 |     pub fn literal_count(&self) -> usize {
+   |            ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:65:9
+   |
+63 | pub struct AnnotatedTuple {
+   |            -------------- field in this struct
+64 |     pub elems: Vec<AnnotatedExpr>,
+65 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedTuple` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:72:9
+   |
+70 | pub struct AnnotatedLiteral {
+   |            ---------------- field in this struct
+71 |     pub lit: Lit,
+72 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedLiteral` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:83:9
+   |
+79 | pub struct AnnotatedBinary {
+   |            --------------- field in this struct
+...
+83 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedBinary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:90:9
+   |
+87 | pub struct AnnotatedUnary {
+   |            -------------- field in this struct
+...
+90 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedUnary` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+  --> pixelflow-macros/src/annotate.rs:98:9
+   |
+94 | pub struct AnnotatedMethodCall {
+   |            ------------------- field in this struct
+...
+98 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `AnnotatedMethodCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:106:9
+    |
+103 | pub struct AnnotatedCall {
+    |            ------------- field in this struct
+...
+106 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:113:9
+    |
+110 | pub struct AnnotatedBlock {
+    |            -------------- field in this struct
+...
+113 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedBlock` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/annotate.rs:127:9
+    |
+123 | pub struct AnnotatedLet {
+    |            ------------ field in this struct
+...
+127 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `AnnotatedLet` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `AnnotationResult` is never constructed
+   --> pixelflow-macros/src/annotate.rs:138:12
+    |
+138 | pub struct AnnotationResult {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: field `span` is never read
+   --> pixelflow-macros/src/ast.rs:128:9
+    |
+126 | pub struct IdentExpr {
+    |            --------- field in this struct
+127 |     pub name: Ident,
+128 |     pub span: Span,
+    |         ^^^^
+    |
+    = note: `IdentExpr` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: enum `BindingStrategy` is never used
+  --> pixelflow-macros/src/codegen/binding.rs:21:10
+   |
+21 | pub enum BindingStrategy {
+   |          ^^^^^^^^^^^^^^^
+
+warning: method `emit` is never used
+  --> pixelflow-macros/src/codegen/binding.rs:56:12
+   |
+52 | impl BindingStrategy {
+   | -------------------- method in this implementation
+...
+56 |     pub fn emit(self, expr: TokenStream) -> TokenStream {
+   |            ^^^^
+
+warning: enum `Deps` is never used
+  --> pixelflow-macros/src/codegen/leveled.rs:56:10
+   |
+56 | pub enum Deps {
+   |          ^^^^
+
+warning: methods `join` and `is_uniform` are never used
+  --> pixelflow-macros/src/codegen/leveled.rs:68:12
+   |
+65 | impl Deps {
+   | --------- methods in this implementation
+...
+68 |     pub fn join(self, other: Self) -> Self {
+   |            ^^^^
+...
+74 |     pub fn is_uniform(&self) -> bool {
+   |            ^^^^^^^^^^
+
+warning: struct `LeveledNode` is never constructed
+  --> pixelflow-macros/src/codegen/leveled.rs:81:12
+   |
+81 | pub struct LeveledNode {
+   |            ^^^^^^^^^^^
+
+warning: enum `LeveledNodeKind` is never used
+  --> pixelflow-macros/src/codegen/leveled.rs:88:10
+   |
+88 | pub enum LeveledNodeKind {
+   |          ^^^^^^^^^^^^^^^
+
+warning: struct `NodeRef` is never constructed
+   --> pixelflow-macros/src/codegen/leveled.rs:115:12
+    |
+115 | pub struct NodeRef {
+    |            ^^^^^^^
+
+warning: associated items `new` and `var_name` are never used
+   --> pixelflow-macros/src/codegen/leveled.rs:121:12
+    |
+120 | impl NodeRef {
+    | ------------ associated items in this implementation
+121 |     pub fn new(level: usize, index: usize) -> Self {
+    |            ^^^
+...
+126 |     pub fn var_name(&self) -> syn::Ident {
+    |            ^^^^^^^^
+
+warning: struct `LeveledExpr` is never constructed
+   --> pixelflow-macros/src/codegen/leveled.rs:132:12
+    |
+132 | pub struct LeveledExpr {
+    |            ^^^^^^^^^^^
+
+warning: struct `LevelBuilder` is never constructed
+   --> pixelflow-macros/src/codegen/leveled.rs:140:8
+    |
+140 | struct LevelBuilder<'a> {
+    |        ^^^^^^^^^^^^
+
+warning: associated items `new`, `build`, `compute_depths`, `compute_depth_recursive`, `assign_to_levels`, and `get_deps` are never used
+   --> pixelflow-macros/src/codegen/leveled.rs:149:8
+    |
+148 | impl<'a> LevelBuilder<'a> {
+    | ------------------------- associated items in this implementation
+149 |     fn new(analyzed: &'a AnalyzedKernel) -> Self {
+    |        ^^^
+...
+159 |     fn build(&mut self, expr: &AnnotatedExpr) -> NodeRef {
+    |        ^^^^^
+...
+172 |     fn compute_depths(&self, expr: &AnnotatedExpr) -> HashMap<usize, usize> {
+    |        ^^^^^^^^^^^^^^
+...
+178 |     fn compute_depth_recursive(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+255 |     fn assign_to_levels(
+    |        ^^^^^^^^^^^^^^^^
+...
+416 |     fn get_deps(&self, node_ref: NodeRef) -> Deps {
+    |        ^^^^^^^^
+
+warning: struct `DepsStats` is never constructed
+   --> pixelflow-macros/src/codegen/leveled.rs:423:12
+    |
+423 | pub struct DepsStats {
+    |            ^^^^^^^^^
+
+warning: method `hoisting_potential` is never used
+   --> pixelflow-macros/src/codegen/leveled.rs:433:12
+    |
+431 | impl DepsStats {
+    | -------------- method in this implementation
+432 |     /// Percentage of nodes that could potentially be hoisted
+433 |     pub fn hoisting_potential(&self) -> f64 {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: function `analyze_deps` is never used
+   --> pixelflow-macros/src/codegen/leveled.rs:444:8
+    |
+444 | pub fn analyze_deps(analyzed: &AnalyzedKernel, annotated: &AnnotatedExpr) -> DepsStats {
+    |        ^^^^^^^^^^^^
+
+warning: function `emit_leveled` is never used
+   --> pixelflow-macros/src/codegen/leveled.rs:500:8
+    |
+500 | pub fn emit_leveled(
+    |        ^^^^^^^^^^^^
+
+warning: function `emit_node` is never used
+   --> pixelflow-macros/src/codegen/leveled.rs:531:4
+    |
+531 | fn emit_node(node: &LeveledNode, use_jet_wrapper: bool) -> TokenStream {
+    |    ^^^^^^^^^
+
+warning: function `build_tuple` is never used
+  --> pixelflow-macros/src/codegen/util.rs:36:8
+   |
+36 | pub fn build_tuple(values: &[TokenStream]) -> TokenStream {
+   |        ^^^^^^^^^^^
+
+warning: trait `ExprFold` is never used
+  --> pixelflow-macros/src/fold.rs:40:11
+   |
+40 | pub trait ExprFold {
+   |           ^^^^^^^^
+
+warning: function `fold_expr` is never used
+   --> pixelflow-macros/src/fold.rs:106:8
+    |
+106 | pub fn fold_expr<F: ExprFold>(folder: &mut F, expr: &Expr) -> F::Output {
+    |        ^^^^^^^^^
+
+warning: function `egraph_to_ir` is never used
+   --> pixelflow-macros/src/ir_bridge.rs:211:8
+    |
+211 | pub fn egraph_to_ir(tree: &ExprTree) -> IR {
+    |        ^^^^^^^^^^^^
+
+warning: function `ir_to_code` is never used
+   --> pixelflow-macros/src/ir_bridge.rs:266:8
+    |
+266 | pub fn ir_to_code(ir: &IR) -> TokenStream {
+    |        ^^^^^^^^^^
+
+warning: enum `TokenClass` is never used
+  --> pixelflow-macros/src/lexer.rs:30:10
+   |
+30 | pub enum TokenClass {
+   |          ^^^^^^^^^^
+
+warning: function `classify_ident` is never used
+  --> pixelflow-macros/src/lexer.rs:46:8
+   |
+46 | pub fn classify_ident(name: &str) -> TokenClass {
+   |        ^^^^^^^^^^^^^^
+
+warning: function `lex` is never used
+  --> pixelflow-macros/src/lexer.rs:56:8
+   |
+56 | pub fn lex(input: TokenStream) -> TokenStream {
+   |        ^^^
+
+warning: struct `KernelParser` is never constructed
+  --> pixelflow-macros/src/parser.rs:43:8
+   |
+43 | struct KernelParser;
+   |        ^^^^^^^^^^^^
+
+warning: fields `name`, `ty`, and `span` are never read
+  --> pixelflow-macros/src/symbol.rs:57:9
+   |
+55 | pub struct Symbol {
+   |            ------ fields in this struct
+56 |     /// The identifier name.
+57 |     pub name: Ident,
+   |         ^^^^
+...
+61 |     pub ty: Option<Type>,
+   |         ^^
+62 |     /// Where the symbol was defined.
+63 |     pub span: Span,
+   |         ^^^^
+   |
+   = note: `Symbol` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: methods `is_parameter`, `parameters`, `is_manifold_param`, and `manifold_params` are never used
+   --> pixelflow-macros/src/symbol.rs:166:12
+    |
+ 75 | impl SymbolTable {
+    | ---------------- methods in this implementation
+...
+166 |     pub fn is_parameter(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^
+...
+173 |     pub fn parameters(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^
+...
+180 |     pub fn is_manifold_param(&self, name: &str) -> bool {
+    |            ^^^^^^^^^^^^^^^^^
+...
+187 |     pub fn manifold_params(&self) -> impl Iterator<Item = &Symbol> {
+    |            ^^^^^^^^^^^^^^^
+
+warning: large size difference between variants
+   --> pixelflow-macros/src/annotate.rs:117:1
+    |
+117 | / pub enum AnnotatedStmt {
+118 | |     Let(AnnotatedLet),
+    | |     ----------------- the largest variant contains at least 432 bytes
+119 | |     Expr(AnnotatedExpr),
+    | |     ------------------- the second-largest variant contains at least 176 bytes
+120 | | }
+    | |_^ the entire enum is at least 432 bytes
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#large_enum_variant
+    = note: `#[warn(clippy::large_enum_variant)]` on by default
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    |
+118 -     Let(AnnotatedLet),
+118 +     Let(Box<AnnotatedLet>),
+    |
+
+warning: struct update has no effect, all the fields in the struct have already been specified
+   --> pixelflow-macros/src/annotate.rs:180:19
+    |
+180 |                 ..ctx
+    |                   ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_update
+    = note: `#[warn(clippy::needless_update)]` on by default
+
+warning: large size difference between variants
+  --> pixelflow-macros/src/ast.rs:65:1
+   |
+65 | / pub enum ParamKind {
+66 | |     /// Scalar parameter - use Let/Var binding with concrete type.
+67 | |     /// Example: `r: f32` → struct field, bound via Let::new(self.r, ...)
+68 | |     Scalar(Type),
+   | |     ------------ the largest variant contains at least 224 bytes
+...  |
+71 | |     Manifold,
+   | |     -------- the second-largest variant carries no data at all
+72 | | }
+   | |_^ the entire enum is at least 224 bytes
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#large_enum_variant
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+68 -     Scalar(Type),
+68 +     Scalar(Box<Type>),
+   |
+
+warning: large size difference between variants
+   --> pixelflow-macros/src/ast.rs:206:1
+    |
+206 | / pub enum Stmt {
+207 | |     /// A let binding: `let dx = X - cx;`
+208 | |     Let(LetStmt),
+    | |     ------------ the largest variant contains at least 432 bytes
+209 | |     /// An expression statement: `foo();`
+210 | |     Expr(Expr),
+    | |     ---------- the second-largest variant contains at least 176 bytes
+211 | | }
+    | |_^ the entire enum is at least 432 bytes
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#large_enum_variant
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    |
+208 -     Let(LetStmt),
+208 +     Let(Box<LetStmt>),
+    |
+
+warning: this `if let` can be collapsed into the outer `if let`
+  --> pixelflow-macros/src/codegen/emitter.rs:55:21
+   |
+55 | /                     if let AnnotatedExpr::Ident(ident_expr) = arg {
+56 | |                         let name_str = ident_expr.name.to_string();
+57 | |                         // Local bound to manifold param (e.g., `let t = geometry;`)
+58 | |                         if let Some(manifold_name) = locals_to_manifolds.get(&name_str) {
+...  |
+66 | |                     }
+   | |_____________________^
+   |
+help: the outer pattern can be modified to include the inner pattern
+  --> pixelflow-macros/src/codegen/emitter.rs:53:29
+   |
+53 |                 if let Some(arg) = call.args.first() {
+   |                             ^^^ replace this binding
+54 |                     // Check if the argument is a manifold param or a local bound to one
+55 |                     if let AnnotatedExpr::Ident(ident_expr) = arg {
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ with this pattern
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#collapsible_match
+   = note: `#[warn(clippy::collapsible_match)]` on by default
+
+warning: this `if` has identical blocks
+   --> pixelflow-macros/src/codegen/emitter.rs:618:44
+    |
+618 |           let derives = if params.is_empty() {
+    |  ____________________________________________^
+619 | |             Derives::CloneCopy
+620 | |         } else if manifold_count == 0 && params.len() == 1 {
+    | |_________^
+    |
+note: same as this
+   --> pixelflow-macros/src/codegen/emitter.rs:620:60
+    |
+620 |           } else if manifold_count == 0 && params.len() == 1 {
+    |  ____________________________________________________________^
+621 | |             Derives::CloneCopy
+622 | |         } else {
+    | |_________^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#if_same_then_else
+    = note: `#[warn(clippy::if_same_then_else)]` on by default
+
+warning: this function has too many arguments (6/5)
+   --> pixelflow-macros/src/codegen/struct_emitter.rs:122:5
+    |
+122 | /     pub fn with_eval_body(
+123 | |         mut self,
+124 | |         imports: TokenStream,
+125 | |         peano_imports: TokenStream,
+...   |
+128 | |         binding: TokenStream,
+129 | |     ) -> Self {
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: this `.filter_map(..)` can be written more simply using `.map(..)`
+   --> pixelflow-macros/src/fold.rs:133:33
+    |
+133 |               let stmts: Vec<_> = block
+    |  _________________________________^
+134 | |                 .stmts
+135 | |                 .iter()
+136 | |                 .filter_map(|stmt| match stmt {
+...   |
+141 | |                     Stmt::Expr(e) => Some(fold_expr(folder, e)),
+142 | |                 })
+    | |__________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#unnecessary_filter_map
+    = note: `#[warn(clippy::unnecessary_filter_map)]` on by default
+
+warning: `pixelflow-search` (lib) generated 6 warnings (6 duplicates)
+warning: `pixelflow-macros` (lib) generated 46 warnings
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.17s

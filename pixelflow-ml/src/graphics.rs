@@ -9,7 +9,7 @@
 //! compress infinite/quadratic interactions into finite/linear operations.
 
 use alloc::vec::Vec;
-use pixelflow_core::{Field, ManifoldExt, ShCoeffs, SH_NORM, Sh2};
+use pixelflow_core::{Field, ManifoldExt, SH_NORM, Sh2, ShCoeffs};
 
 // ============================================================================
 // Feature Maps: The Bridge Between Attention and SH
