@@ -1,22 +1,25 @@
-//! Tests for parallel rasterization.
+//! Tests for parallel rasterization public API.
 
 use pixelflow_graphics::render::color::{Color, NamedColor, Rgba8};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 
+const WIDTH: u32 = 100;
+const HEIGHT: u32 = 100;
+const THREADS_SEQ: usize = 1;
+const THREADS_PAR: usize = 4;
+
 #[test]
-fn test_parallel_rasterization_matches_sequential() {
-    let width = 100;
-    let height = 100;
+fn rasterize_multithreaded_produces_identical_output_to_singlethreaded() {
     let color = Color::Named(NamedColor::Green);
 
     // Sequential rendering
-    let mut seq_frame = Frame::<Rgba8>::new(width as u32, height as u32);
-    rasterize(&color, &mut seq_frame, 1);
+    let mut seq_frame = Frame::<Rgba8>::new(WIDTH, HEIGHT);
+    rasterize(&color, &mut seq_frame, THREADS_SEQ);
 
-    // Parallel rendering with 4 threads
-    let mut par_frame = Frame::<Rgba8>::new(width as u32, height as u32);
-    rasterize(&color, &mut par_frame, 4);
+    // Parallel rendering
+    let mut par_frame = Frame::<Rgba8>::new(WIDTH, HEIGHT);
+    rasterize(&color, &mut par_frame, THREADS_PAR);
 
     // Results should be identical
     assert_eq!(seq_frame.data, par_frame.data);
