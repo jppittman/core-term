@@ -8,7 +8,7 @@ use super::extract::ExprTree;
 use super::node::{EClassId, ENode};
 use super::ops;
 use super::rewrite::{Rewrite, RewriteAction};
-use super::rules::{Annihilator, Commutative, Distributive, Factor, Idempotent, Identity};
+use super::rules::{Annihilator, Commutative, Distributive, Identity};
 
 /// A potential rewrite target: (rule, e-class, node within class).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -143,8 +143,8 @@ impl EGraph {
 
         // BINARY SEARCH: Second subdivision - disable Idempotent and Distributive
         // Idempotence
-        // self.add_rule(Idempotent::new(&ops::Min));
-        // self.add_rule(Idempotent::new(&ops::Max));
+        // self.add_rule(super::rules::Idempotent::new(&ops::Min));
+        // self.add_rule(super::rules::Idempotent::new(&ops::Max));
 
         // Distributivity
         // self.add_rule(Distributive::new(&ops::Mul, &ops::Add));
@@ -152,13 +152,13 @@ impl EGraph {
 
         // BINARY SEARCH: Third subdivision - disable Factor
         // Factoring
-        // self.add_rule(Factor::new(&ops::Add, &ops::Mul));
-        // self.add_rule(Factor::new(&ops::Sub, &ops::Mul));
+        // self.add_rule(super::rules::Factor::new(&ops::Add, &ops::Mul));
+        // self.add_rule(super::rules::Factor::new(&ops::Sub, &ops::Mul));
 
         // BINARY SEARCH: Disable all rules to test baseline
         // Structural / Fusion
-        // self.add_rule(Box::new(RecipSqrt)); // 1/sqrt(x) → rsqrt(x)
-        // self.add_rule(Box::new(FmaFusion)); // a * b + c → mul_add(a, b, c)
+        // self.add_rule(Box::new(super::rules::RecipSqrt)); // 1/sqrt(x) → rsqrt(x)
+        // self.add_rule(Box::new(super::rules::FmaFusion)); // a * b + c → mul_add(a, b, c)
     }
 
     pub fn find(&self, id: EClassId) -> EClassId {

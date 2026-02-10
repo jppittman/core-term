@@ -98,35 +98,35 @@ impl ExprTree {
         }
     }
 
-    pub fn sqrt(a: Self) -> Self {
+    pub fn make_sqrt(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Sqrt,
             children: alloc::vec![a],
         }
     }
 
-    pub fn abs(a: Self) -> Self {
+    pub fn make_abs(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Abs,
             children: alloc::vec![a],
         }
     }
 
-    pub fn min(a: Self, b: Self) -> Self {
+    pub fn make_min(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Min,
             children: alloc::vec![a, b],
         }
     }
 
-    pub fn max(a: Self, b: Self) -> Self {
+    pub fn make_max(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Max,
             children: alloc::vec![a, b],
         }
     }
 
-    pub fn mul_add(a: Self, b: Self, c: Self) -> Self {
+    pub fn make_mul_add(a: Self, b: Self, c: Self) -> Self {
         Self::Op {
             op: &super::ops::MulAdd,
             children: alloc::vec![a, b, c],
