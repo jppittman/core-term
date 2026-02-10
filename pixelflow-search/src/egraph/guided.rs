@@ -585,16 +585,16 @@ impl GuidedMcts {
 
         loop {
             // Check termination conditions
-            if let Some(timeout) = self.config.timeout {
-                if start.elapsed() >= timeout {
-                    break;
-                }
+            if let Some(timeout) = self.config.timeout
+                && start.elapsed() >= timeout
+            {
+                break;
             }
 
-            if let Some(max_iter) = self.config.max_iterations {
-                if self.total_iterations >= max_iter {
-                    break;
-                }
+            if let Some(max_iter) = self.config.max_iterations
+                && self.total_iterations >= max_iter
+            {
+                break;
             }
 
             // Run one iteration
@@ -668,7 +668,7 @@ mod tests {
     #[test]
     fn test_guided_state_creation() {
         // Create a simple tree: X + 0
-        let tree = ExprTree::add(
+        let tree = ExprTree::make_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -683,7 +683,7 @@ mod tests {
 
     #[test]
     fn test_available_actions() {
-        let tree = ExprTree::add(
+        let tree = ExprTree::make_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -699,7 +699,7 @@ mod tests {
     #[test]
     fn test_apply_action_improves() {
         // X + 0 should simplify to X
-        let tree = ExprTree::add(
+        let tree = ExprTree::make_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -728,7 +728,7 @@ mod tests {
 
     #[test]
     fn test_guided_stats() {
-        let tree = ExprTree::mul(
+        let tree = ExprTree::make_mul(
             ExprTree::var(0),
             ExprTree::constant(1.0),
         );
@@ -777,7 +777,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_creation() {
-        let tree = ExprTree::add(
+        let tree = ExprTree::make_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -791,7 +791,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_iterate() {
-        let tree = ExprTree::add(
+        let tree = ExprTree::make_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -819,7 +819,7 @@ mod tests {
     #[test]
     fn test_guided_mcts_run() {
         // x * 1 should simplify to x
-        let tree = ExprTree::mul(
+        let tree = ExprTree::make_mul(
             ExprTree::var(0),
             ExprTree::constant(1.0),
         );
@@ -837,15 +837,15 @@ mod tests {
     #[test]
     fn test_guided_mcts_complex_expr() {
         // (x + 0) * 1 + (y * 0) should simplify to x
-        let tree = ExprTree::add(
-            ExprTree::mul(
-                ExprTree::add(
+        let tree = ExprTree::make_add(
+            ExprTree::make_mul(
+                ExprTree::make_add(
                     ExprTree::var(0),
                     ExprTree::constant(0.0),
                 ),
                 ExprTree::constant(1.0),
             ),
-            ExprTree::mul(
+            ExprTree::make_mul(
                 ExprTree::var(1),
                 ExprTree::constant(0.0),
             ),
@@ -864,7 +864,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_epsilon_greedy() {
-        let tree = ExprTree::add(
+        let tree = ExprTree::make_add(
             ExprTree::var(0),
             ExprTree::var(1),
         );
@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_training_mode() {
-        let tree = ExprTree::add(
+        let tree = ExprTree::make_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -908,8 +908,8 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_timeout() {
-        let tree = ExprTree::add(
-            ExprTree::mul(
+        let tree = ExprTree::make_add(
+            ExprTree::make_mul(
                 ExprTree::var(0),
                 ExprTree::var(1),
             ),

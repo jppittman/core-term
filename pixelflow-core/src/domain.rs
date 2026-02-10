@@ -179,6 +179,28 @@ impl<I: Copy> Spatial for (I, I, I, I) {
     }
 }
 
+// 1D Scalar domain (Field): X acts as Identity
+impl Spatial for crate::Field {
+    type Coord = crate::Field;
+    type Scalar = crate::Field;
+    #[inline(always)]
+    fn x(&self) -> crate::Field {
+        *self
+    }
+    #[inline(always)]
+    fn y(&self) -> crate::Field {
+        crate::Field::from(0.0)
+    }
+    #[inline(always)]
+    fn z(&self) -> crate::Field {
+        crate::Field::from(0.0)
+    }
+    #[inline(always)]
+    fn w(&self) -> crate::Field {
+        crate::Field::from(0.0)
+    }
+}
+
 // ============================================================================
 // Head/Tail Implementations for Tuple Stacks
 // ============================================================================
