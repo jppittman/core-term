@@ -71,32 +71,30 @@ impl EGraph {
 
     /// Create the standard algebraic rewrite rules.
     fn create_algebraic_rules() -> Vec<Box<dyn Rewrite>> {
-        let mut rules: Vec<Box<dyn Rewrite>> = Vec::new();
-
-        // TEST: Adding remaining rules
-        rules.push(Canonicalize::<AddNeg>::new());
-        rules.push(Involution::<AddNeg>::new());
-        rules.push(Cancellation::<AddNeg>::new());
-        rules.push(InverseAnnihilation::<AddNeg>::new());
-        rules.push(Canonicalize::<MulRecip>::new());
-        rules.push(Involution::<MulRecip>::new());
-        rules.push(Cancellation::<MulRecip>::new());
-        rules.push(InverseAnnihilation::<MulRecip>::new());
-        rules.push(Commutative::new(&ops::Add));
-        rules.push(Commutative::new(&ops::Mul));
-        rules.push(Commutative::new(&ops::Min));
-        rules.push(Commutative::new(&ops::Max));
-        rules.push(Distributive::new(&ops::Mul, &ops::Add));
-        rules.push(Distributive::new(&ops::Mul, &ops::Sub));
-        // Domain-specific fusion rules (FmaFusion, RecipSqrt) should be added
-        // by the domain layer (pixelflow-macros) using add_rule(), not here.
-        // Identity rules: x + 0 = x, x * 1 = x
-        rules.push(Identity::new(&ops::Add));
-        rules.push(Identity::new(&ops::Mul));
-        // Annihilator rules: x * 0 = 0
-        rules.push(Annihilator::new(&ops::Mul));
-
-        rules
+        vec![
+            // TEST: Adding remaining rules
+            Canonicalize::<AddNeg>::new(),
+            Involution::<AddNeg>::new(),
+            Cancellation::<AddNeg>::new(),
+            InverseAnnihilation::<AddNeg>::new(),
+            Canonicalize::<MulRecip>::new(),
+            Involution::<MulRecip>::new(),
+            Cancellation::<MulRecip>::new(),
+            InverseAnnihilation::<MulRecip>::new(),
+            Commutative::new(&ops::Add),
+            Commutative::new(&ops::Mul),
+            Commutative::new(&ops::Min),
+            Commutative::new(&ops::Max),
+            Distributive::new(&ops::Mul, &ops::Add),
+            Distributive::new(&ops::Mul, &ops::Sub),
+            // Domain-specific fusion rules (FmaFusion, RecipSqrt) should be added
+            // by the domain layer (pixelflow-macros) using add_rule(), not here.
+            // Identity rules: x + 0 = x, x * 1 = x
+            Identity::new(&ops::Add),
+            Identity::new(&ops::Mul),
+            // Annihilator rules: x * 0 = 0
+            Annihilator::new(&ops::Mul),
+        ]
     }
 
     /// Add a custom rule (only works before cloning).
