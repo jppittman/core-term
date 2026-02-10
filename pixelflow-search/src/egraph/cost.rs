@@ -337,11 +337,9 @@ impl CostModel {
                     } else {
                         // Try to parse as OpKind name
                         for i in 0..OpKind::COUNT {
-                            if let Some(op) = OpKind::from_index(i) {
-                                if op.name() == key {
-                                    model.costs[i] = v;
-                                    break;
-                                }
+                            if OpKind::from_index(i).map_or(false, |op| op.name() == key) {
+                                model.costs[i] = v;
+                                break;
                             }
                         }
                     }
@@ -399,11 +397,9 @@ impl CostModel {
                 model.depth_penalty = value;
             } else {
                 for i in 0..OpKind::COUNT {
-                    if let Some(op) = OpKind::from_index(i) {
-                        if op.name() == key {
-                            model.costs[i] = value;
-                            break;
-                        }
+                    if OpKind::from_index(i).map_or(false, |op| op.name() == key) {
+                        model.costs[i] = value;
+                        break;
                     }
                 }
             }

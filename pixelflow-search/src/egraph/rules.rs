@@ -31,15 +31,16 @@ impl Rewrite for Associative {
 
         for child in egraph.nodes(left) {
             if let Some(child_op) = child.op() {
-                if child_op.name() == self.op.name() {
-                    if let Some((a, b)) = child.binary_operands() {
-                        return Some(RewriteAction::Associate {
-                            op: self.op,
-                            a,
-                            b,
-                            c: right,
-                        });
-                    }
+                if child_op.name() != self.op.name() {
+                    continue;
+                }
+                if let Some((a, b)) = child.binary_operands() {
+                    return Some(RewriteAction::Associate {
+                        op: self.op,
+                        a,
+                        b,
+                        c: right,
+                    });
                 }
             }
         }
@@ -99,16 +100,17 @@ impl Rewrite for Distributive {
 
         for child_node in egraph.nodes(other) {
             if let Some(child_op) = child_node.op() {
-                if child_op.name() == self.inner.name() {
-                    if let Some((b, c)) = child_node.binary_operands() {
-                        return Some(RewriteAction::Distribute {
-                            outer: self.outer,
-                            inner: self.inner,
-                            a,
-                            b,
-                            c,
-                        });
-                    }
+                if child_op.name() != self.inner.name() {
+                    continue;
+                }
+                if let Some((b, c)) = child_node.binary_operands() {
+                    return Some(RewriteAction::Distribute {
+                        outer: self.outer,
+                        inner: self.inner,
+                        a,
+                        b,
+                        c,
+                    });
                 }
             }
         }
@@ -117,12 +119,14 @@ impl Rewrite for Distributive {
 }
 
 /// Factoring: A*B + A*C → A * (B + C)
+#[allow(dead_code)]
 pub struct Factor {
     outer: &'static dyn Op,
     inner: &'static dyn Op,
 }
 
 impl Factor {
+    #[allow(dead_code)]
     pub fn new(outer: &'static dyn Op, inner: &'static dyn Op) -> Box<Self> {
         Box::new(Self { outer, inner })
     }
@@ -232,11 +236,13 @@ impl Rewrite for Annihilator {
 }
 
 /// Idempotence: x op x → x
+#[allow(dead_code)]
 pub struct Idempotent {
     op: &'static dyn Op,
 }
 
 impl Idempotent {
+    #[allow(dead_code)]
     pub fn new(op: &'static dyn Op) -> Box<Self> {
         Box::new(Self { op })
     }
@@ -260,6 +266,7 @@ impl Rewrite for Idempotent {
 }
 
 /// RecipSqrt: 1/sqrt(x) → rsqrt(x)
+#[allow(dead_code)]
 pub struct RecipSqrt;
 
 impl Rewrite for RecipSqrt {
@@ -267,17 +274,22 @@ impl Rewrite for RecipSqrt {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         if let ENode::Op { op, children } = node {
-            if op.name() == "recip" && children.len() == 1 {
-                let a = children[0];
-                for child in egraph.nodes(a) {
-                    if let ENode::Op { op: child_op, children: child_children } = child {
-                        if child_op.name() == "sqrt" && child_children.len() == 1 {
-                            let inner = child_children[0];
-                            return Some(RewriteAction::Create(ENode::Op {
-                                op: &ops::Rsqrt,
-                                children: vec![inner],
-                            }));
-                        }
+            if op.name() != "recip" || children.len() != 1 {
+                return None;
+            }
+            let a = children[0];
+            for child in egraph.nodes(a) {
+                if let ENode::Op {
+                    op: child_op,
+                    children: child_children,
+                } = child
+                {
+                    if child_op.name() == "sqrt" && child_children.len() == 1 {
+                        let inner = child_children[0];
+                        return Some(RewriteAction::Create(ENode::Op {
+                            op: &ops::Rsqrt,
+                            children: vec![inner],
+                        }));
                     }
                 }
             }
@@ -291,6 +303,7 @@ impl Rewrite for RecipSqrt {
 /// Fused multiply-add is typically a single instruction on modern CPUs.
 /// This rule adds the fused form to the e-graph; extraction cost model
 /// determines whether it's actually used.
+#[allow(dead_code)]
 pub struct FmaFusion;
 
 impl Rewrite for FmaFusion {
@@ -305,7 +318,11 @@ impl Rewrite for FmaFusion {
 
                 // Check if left is a Mul
                 for left_node in egraph.nodes(left) {
-                    if let ENode::Op { op: left_op, children: left_children } = left_node {
+                    if let ENode::Op {
+                        op: left_op,
+                        children: left_children,
+                    } = left_node
+                    {
                         if left_op.name() == "mul" && left_children.len() == 2 {
                             let a = left_children[0];
                             let b = left_children[1];
@@ -319,7 +336,11 @@ impl Rewrite for FmaFusion {
 
                 // Check if right is a Mul (commutativity)
                 for right_node in egraph.nodes(right) {
-                    if let ENode::Op { op: right_op, children: right_children } = right_node {
+                    if let ENode::Op {
+                        op: right_op,
+                        children: right_children,
+                    } = right_node
+                    {
                         if right_op.name() == "mul" && right_children.len() == 2 {
                             let a = right_children[0];
                             let b = right_children[1];
