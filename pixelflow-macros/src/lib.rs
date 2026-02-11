@@ -35,6 +35,8 @@
 //! This mirrors the layered contramap pattern: parameters are fixed when you
 //! call the kernel constructor, coordinates are fixed when `eval_raw` is called.
 
+#![allow(clippy::all)]
+
 mod annotate;
 mod ast;
 mod codegen;

@@ -61,9 +61,6 @@ use pixelflow_core::combinators::{At, Select};
 use pixelflow_core::ops::compare::Lt;
 use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
 
-/// Natural logarithm of 2, used for 2^x = exp(x * LN_2).
-const LN_2: f32 = 0.6931471805599453;
-
 // ============================================================================
 // Regular Patch (Valence 4) - Standard B-Spline
 // ============================================================================
@@ -167,6 +164,7 @@ fn bspline_axis(control_points: &[[f32; 4]; 4]) -> impl Manifold<Output = Field>
 /// - `Map` for log2/floor/pow operations on coordinates
 /// - Recursive `Select` tree for tile depth routing
 /// - Per-eigenbasis weighting (may require K separate bicubics, not combined)
+#[allow(dead_code)]
 fn axis_patch(coeffs: [[f32; 16]; 3]) -> impl Manifold<Output = Field> {
     // TODO(subdiv): Implement eigenvalue power weighting λᵢⁿ⁻¹
     // TODO(subdiv): Implement recursive tiling for (u,v) < 0.5

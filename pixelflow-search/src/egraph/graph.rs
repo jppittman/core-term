@@ -8,6 +8,7 @@ use super::extract::ExprTree;
 use super::node::{EClassId, ENode};
 use super::ops;
 use super::rewrite::{Rewrite, RewriteAction};
+#[allow(unused_imports)]
 use super::rules::{Annihilator, Commutative, Distributive, Factor, Idempotent, Identity};
 
 /// A potential rewrite target: (rule, e-class, node within class).

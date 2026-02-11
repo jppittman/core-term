@@ -105,18 +105,6 @@ impl<const N: usize, A: Algebra> Dual<N, A> {
         Self { val, partials }
     }
 
-    /// Map a function over the partials array.
-    #[inline(always)]
-    fn map_partials<F>(self, f: F) -> Self
-    where
-        F: Fn(A) -> A,
-    {
-        Self {
-            val: self.val,
-            partials: core::array::from_fn(|i| f(self.partials[i])),
-        }
-    }
-
     /// Zip two partials arrays with a binary function.
     #[inline(always)]
     fn zip_partials<F>(self, other: Self, f: F) -> [A; N]
