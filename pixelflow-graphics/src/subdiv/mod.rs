@@ -167,6 +167,7 @@ fn bspline_axis(control_points: &[[f32; 4]; 4]) -> impl Manifold<Output = Field>
 /// - `Map` for log2/floor/pow operations on coordinates
 /// - Recursive `Select` tree for tile depth routing
 /// - Per-eigenbasis weighting (may require K separate bicubics, not combined)
+#[allow(dead_code)]
 fn axis_patch(coeffs: [[f32; 16]; 3]) -> impl Manifold<Output = Field> {
     // TODO(subdiv): Implement eigenvalue power weighting λᵢⁿ⁻¹
     // TODO(subdiv): Implement recursive tiling for (u,v) < 0.5
