@@ -490,31 +490,6 @@ where
 // Spatial Implementations for Context-Extended Domains
 // ============================================================================
 
-// Macro to generate Spatial impls for context-extended domains.
-// These can't use a blanket impl due to overlap with base domain (I, I) impls.
-macro_rules! impl_spatial_for_context {
-    ($($shape:ty),+ $(,)?) => {
-        $(
-            impl<P: Spatial> Spatial for ($shape, P) {
-                type Coord = P::Coord;
-                type Scalar = P::Scalar;
-
-                #[inline(always)]
-                fn x(&self) -> Self::Coord { self.1.x() }
-
-                #[inline(always)]
-                fn y(&self) -> Self::Coord { self.1.y() }
-
-                #[inline(always)]
-                fn z(&self) -> Self::Coord { self.1.z() }
-
-                #[inline(always)]
-                fn w(&self) -> Self::Coord { self.1.w() }
-            }
-        )+
-    };
-}
-
 // Generate Spatial impls for each context shape.
 // Note: The type parameters must be concrete for each invocation.
 impl<T: Copy + Send + Sync, const N: usize, P: Spatial> Spatial for (([T; N],), P) {

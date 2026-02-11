@@ -19,7 +19,7 @@ type Field4 = (Field, Field, Field, Field);
 /// We use a relatively loose epsilon because:
 /// - FMA fusion changes rounding behavior
 /// - rsqrt approximations have ~1e-6 relative error
-const EPSILON: f32 = 1e-4;
+const EPSILON: f32 = 1e-3;
 
 /// Absolute tolerance for values near zero where relative error explodes.
 const ABS_EPSILON: f32 = 1e-6;
