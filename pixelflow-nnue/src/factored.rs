@@ -169,6 +169,7 @@ impl OpEmbeddings {
         let mut rng_state = seed.wrapping_add(1);
         let small_scale = 0.1; // Small noise for other dimensions
 
+        #[allow(clippy::needless_range_loop)]
         for op_idx in 0..OpKind::COUNT {
             // Dimension 0: latency prior
             self.e[op_idx][0] = latencies[op_idx];
@@ -295,6 +296,7 @@ impl EdgeAccumulator {
     /// Build accumulator from an expression tree.
     ///
     /// Traverses the tree and accumulates edge contributions.
+    #[must_use]
     pub fn from_expr(expr: &Expr, emb: &OpEmbeddings) -> Self {
         let mut acc = Self::new();
         acc.add_expr_edges(expr, emb);
@@ -590,10 +592,10 @@ impl StructuralFeatures {
                 };
 
                 // Check for FMA pattern: Mul as left child and current is in Add context
-                if *op == OpKind::Add {
-                    if matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
-                        features.values[Self::HAS_FMA_PATTERN] = 1.0;
-                    }
+                if *op == OpKind::Add
+                    && matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _))
+                {
+                    features.values[Self::HAS_FMA_PATTERN] = 1.0;
                 }
 
 
