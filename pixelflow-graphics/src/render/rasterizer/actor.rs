@@ -61,6 +61,15 @@ pub struct RasterizerActor<P: Pixel> {
     response_tx: Sender<RenderResponse<P>>,
 }
 
+/// Maximum number of data messages to process per wake cycle.
+const DATA_BURST_LIMIT: usize = 64;
+
+/// Size of the data channel buffer (backpressure threshold).
+const DATA_BUFFER_SIZE: usize = 16;
+
+/// Size of the setup channel buffer (only one message ever sent).
+const SETUP_BUFFER_SIZE: usize = 1;
+
 impl<P: Pixel + Send + 'static> ActorTypes for RasterizerActor<P> {
     type Data = RenderRequest<P>;
     type Control = RasterControl;
@@ -96,7 +105,7 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
     /// ```
     pub fn spawn_with_setup(num_threads: usize) -> (RasterizerSetupHandle<P>, JoinHandle<()>) {
         // Create the setup channel (buffer=1, only one setup message ever)
-        let (setup_tx, setup_rx) = mpsc::sync_channel::<RasterSetup<P>>(1);
+        let (setup_tx, setup_rx) = mpsc::sync_channel::<RasterSetup<P>>(SETUP_BUFFER_SIZE);
 
         // Spawn the actor thread
         let join_handle = thread::spawn(move || {
@@ -111,7 +120,10 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
 
             // PHASE 2: Create the actor scheduler
             let (handle, mut scheduler) =
-                ActorScheduler::<RenderRequest<P>, RasterControl, RasterManagement>::new(64, 16);
+                ActorScheduler::<RenderRequest<P>, RasterControl, RasterManagement>::new(
+                    DATA_BURST_LIMIT,
+                    DATA_BUFFER_SIZE,
+                );
 
             // Send the full handle back to the caller
             reply_tx
