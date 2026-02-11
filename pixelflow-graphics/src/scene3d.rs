@@ -55,6 +55,7 @@ impl<M: ManifoldCompat<Field> + Send + Sync> Manifold<Jet3_4> for Lift<M> {
 /// Wraps a Field mask to implement Manifold<Jet3> for use as a Select condition.
 /// This is needed because Select<C, T, F> for Jet3 requires C: ManifoldCompat<Jet3, Output = Jet3>.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 struct FieldMask(Field);
 
 impl Manifold<Jet3_4> for FieldMask {
@@ -355,56 +356,139 @@ impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldG
 ///
 /// Evaluates geometry to get t, computes hit point P = ray * t, then selects
 /// between material (at P) and background based on hit validity.
-kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Field {
-    // 1. Get distance t from geometry
-    let t = geometry;
+#[derive(Clone, Copy, ManifoldExpr)]
+pub struct Surface<G, M, B> {
+    pub geometry: G,
+    pub material: M,
+    pub background: B,
+}
 
-    // 2. Validate hit: t > 0, t < max, derivatives reasonable
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
-    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+impl<G, M, B> Manifold<Jet3_4> for Surface<G, M, B>
+where
+    G: ManifoldCompat<Jet3, Output = Jet3>,
+    M: ManifoldCompat<Jet3, Output = Field>,
+    B: ManifoldCompat<Jet3, Output = Field>,
+{
+    type Output = Field;
 
-    // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
-    let hx = X * t;
-    let hy = Y * t;
-    let hz = Z * t;
+    #[inline]
+    fn eval(&self, p: Jet3_4) -> Field {
+        let (rx, ry, rz, w) = p;
 
-    // 4. Sample material at hit point, background at ray direction
-    let mat_val = material.at(hx, hy, hz, W);
-    let bg_val = background;
+        // 1. Get distance t from geometry
+        let t_jet = self.geometry.eval_raw(rx, ry, rz, w);
+        let t = t_jet.val;
 
-    // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
-    mask.select(mat_val, bg_val)
-});
+        // 2. Validate hit: t > 0, t < max, derivatives reasonable
+        let t_max = Field::from(1000000.0);
+        // deriv_max = 10000.0, so deriv_max_sq = 10000.0^2
+        let deriv_max_sq = Field::from(10000.0 * 10000.0);
+        let zero = Field::from(0.0);
+
+        let valid_t = t.gt(zero) & t.lt(t_max);
+
+        // Compute magnitude squared using Jet3 wrapper to avoid AST composition
+        let dx_jet = Jet3::constant(t_jet.dx);
+        let dy_jet = Jet3::constant(t_jet.dy);
+        let dz_jet = Jet3::constant(t_jet.dz);
+        let mag_sq = dx_jet * dx_jet + dy_jet * dy_jet + dz_jet * dz_jet;
+        let deriv_mag_sq = mag_sq.val;
+
+        let valid_deriv = deriv_mag_sq.lt(deriv_max_sq);
+
+        let mask = valid_t & valid_deriv;
+
+        // 3. Early Exit: All Miss (Background only)
+        if !mask.any() {
+            // Only evaluate background (at ray direction)
+            return self.background.eval_raw(rx, ry, rz, w);
+        }
+
+        // 4. Hit point: P = ray * t (needed for material)
+        let hx = rx * t_jet;
+        let hy = ry * t_jet;
+        let hz = rz * t_jet;
+
+        // 5. Early Exit: All Hit (Material only)
+        if mask.all() {
+            // Only evaluate material (at hit point)
+            return self.material.eval_raw(hx, hy, hz, w);
+        }
+
+        // 6. Mixed case: evaluate both and blend
+        let mat_val = self.material.eval_raw(hx, hy, hz, w);
+        let bg_val = self.background.eval_raw(rx, ry, rz, w);
+
+        <Field as Selectable>::select_raw(mask, mat_val, bg_val)
+    }
+}
 
 /// Color Surface: geometry + material + background, outputs Discrete.
-kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Discrete {
-    // 1. Get distance t from geometry
-    let t = geometry;
+///
+/// Identical to Surface but for Discrete output.
+#[derive(Clone, Copy, ManifoldExpr)]
+pub struct ColorSurface<G, M, B> {
+    pub geometry: G,
+    pub material: M,
+    pub background: B,
+}
 
-    // 2. Validate hit: t > 0, t < max, derivatives reasonable
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
-    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+impl<G, M, B> Manifold<Jet3_4> for ColorSurface<G, M, B>
+where
+    G: ManifoldCompat<Jet3, Output = Jet3>,
+    M: ManifoldCompat<Jet3, Output = Discrete>,
+    B: ManifoldCompat<Jet3, Output = Discrete>,
+{
+    type Output = Discrete;
 
-    // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
-    let hx = X * t;
-    let hy = Y * t;
-    let hz = Z * t;
+    #[inline]
+    fn eval(&self, p: Jet3_4) -> Discrete {
+        let (rx, ry, rz, w) = p;
 
-    // 4. Sample material at hit point, background at ray direction
-    let mat_val = material.at(hx, hy, hz, W);
-    let bg_val = background;
+        // 1. Get distance t from geometry
+        let t_jet = self.geometry.eval_raw(rx, ry, rz, w);
+        let t = t_jet.val;
 
-    // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
-    mask.select(mat_val, bg_val)
-});
+        // 2. Validate hit
+        let t_max = Field::from(1000000.0);
+        let deriv_max_sq = Field::from(10000.0 * 10000.0);
+        let zero = Field::from(0.0);
+
+        let valid_t = t.gt(zero) & t.lt(t_max);
+
+        // Compute magnitude squared using Jet3 wrapper
+        let dx_jet = Jet3::constant(t_jet.dx);
+        let dy_jet = Jet3::constant(t_jet.dy);
+        let dz_jet = Jet3::constant(t_jet.dz);
+        let mag_sq = dx_jet * dx_jet + dy_jet * dy_jet + dz_jet * dz_jet;
+        let deriv_mag_sq = mag_sq.val;
+
+        let valid_deriv = deriv_mag_sq.lt(deriv_max_sq);
+
+        let mask = valid_t & valid_deriv;
+
+        // 3. Early Exit: All Miss
+        if !mask.any() {
+            return self.background.eval_raw(rx, ry, rz, w);
+        }
+
+        // 4. Hit point
+        let hx = rx * t_jet;
+        let hy = ry * t_jet;
+        let hz = rz * t_jet;
+
+        // 5. Early Exit: All Hit
+        if mask.all() {
+            return self.material.eval_raw(hx, hy, hz, w);
+        }
+
+        // 6. Mixed
+        let mat_val = self.material.eval_raw(hx, hy, hz, w);
+        let bg_val = self.background.eval_raw(rx, ry, rz, w);
+
+        Discrete::select(mask, mat_val, bg_val)
+    }
+}
 
 // ... SCENE COMPOSITION ...
 
@@ -457,12 +541,37 @@ where
         let c2 = self.second.color();
 
         let mask1 = m1.eval_raw(rx, ry, rz, w);
+        // Optimization: if mask1.all(), return c1 immediately?
+        // But mask is Field, not bool. We can check mask1.any() / all() ?
+        // mask in Scene Composition is "evaluates to positive".
+        // It's not a boolean mask yet.
+        // It's usually `valid_t & valid_deriv` from GeometryMask which IS a boolean mask (0.0 or 1.0).
+        // Let's assume it is.
+
+        if mask1.all() {
+             return c1.eval_raw(rx, ry, rz, w);
+        }
+
+        // We can't easily skip mask2 eval if mask1 is partially true, unless we do complex branching.
+        // But if !mask1.any(), we can skip c1.
+
         let mask2 = m2.eval_raw(rx, ry, rz, w);
 
         // Inner select: S2 vs background
-        let color2 = c2.eval_raw(rx, ry, rz, w);
-        let bg_color = self.background.eval_raw(rx, ry, rz, w);
-        let inner = Discrete::select(mask2, color2, bg_color);
+        // Optimize inner select too?
+        let inner = if mask2.all() {
+             c2.eval_raw(rx, ry, rz, w)
+        } else if !mask2.any() {
+             self.background.eval_raw(rx, ry, rz, w)
+        } else {
+             let color2 = c2.eval_raw(rx, ry, rz, w);
+             let bg_color = self.background.eval_raw(rx, ry, rz, w);
+             Discrete::select(mask2, color2, bg_color)
+        };
+
+        if !mask1.any() {
+             return inner;
+        }
 
         // Outer select: S1 vs inner
         let color1 = c1.eval_raw(rx, ry, rz, w);
@@ -510,18 +619,41 @@ where
 }
 
 /// Mask manifold for geometry hit detection.
-kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
-    let t = geometry;
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
+#[derive(Clone, Copy, ManifoldExpr)]
+pub struct GeometryMask<G> {
+    pub geometry: G,
+}
 
-    // Valid if: t > 0, t < max, derivatives reasonable
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
-    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+impl<G> Manifold<Jet3_4> for GeometryMask<G>
+where
+    G: ManifoldCompat<Jet3, Output = Jet3>,
+{
+    type Output = Field;
 
-    valid_t & valid_deriv
-});
+    #[inline]
+    fn eval(&self, p: Jet3_4) -> Field {
+        let (rx, ry, rz, w) = p;
+        let t_jet = self.geometry.eval_raw(rx, ry, rz, w);
+        let t = t_jet.val;
+
+        let t_max = Field::from(1000000.0);
+        let deriv_max_sq = Field::from(10000.0 * 10000.0);
+        let zero = Field::from(0.0);
+
+        // Valid if: t > 0, t < max, derivatives reasonable
+        let valid_t = t.gt(zero) & t.lt(t_max);
+
+        let dx_jet = Jet3::constant(t_jet.dx);
+        let dy_jet = Jet3::constant(t_jet.dy);
+        let dz_jet = Jet3::constant(t_jet.dz);
+        let mag_sq = dx_jet * dx_jet + dy_jet * dy_jet + dz_jet * dz_jet;
+        let deriv_mag_sq = mag_sq.val;
+
+        let valid_deriv = deriv_mag_sq.lt(deriv_max_sq);
+
+        valid_t & valid_deriv
+    }
+}
 
 impl<G, M> Scene for SceneObject<G, M>
 where
@@ -681,8 +813,7 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
         let cross_y = tv.2 * tu.0 - tv.0 * tu.2;
         let cross_z = tv.0 * tu.1 - tv.1 * tu.0;
 
-        // Build normalized normal as expression tree, evaluate at boundaries
-        let fzero = Field::from(0.0);
+        // Build normalized normal as expression tree, clone for reuse
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
@@ -706,6 +837,7 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
         let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
         let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
 
+        let fzero = Field::from(0.0);
         let n_jet_x = Jet3 {
             val: nx,
             dx: (x.dx * curvature_scale).constant(),
