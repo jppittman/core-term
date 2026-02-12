@@ -11,6 +11,7 @@
 //! - NEON: `Mask4(uint32x4_t)` - integer mask
 //! - Scalar: `MaskScalar(bool)`
 
+use core::f32::consts::LOG2_E;
 use core::fmt::Debug;
 use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Shl, Shr, Sub};
 
@@ -175,7 +176,6 @@ pub trait SimdOps:
     #[inline(always)]
     fn exp(self) -> Self {
         // log2(e) = 1/ln(2)
-        const LOG2_E: f32 = 1.4426950408889634;
         (self * Self::splat(LOG2_E)).exp2()
     }
 }

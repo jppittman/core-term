@@ -671,7 +671,17 @@ impl Field {
     /// Much faster than `sqrt` followed by division (~8 vs ~25 cycles).
     #[inline(always)]
     pub(crate) fn rsqrt(self) -> Self {
-        Self(self.0.simd_rsqrt())
+        use crate::numeric::Numeric;
+        let approx = Self(self.0.simd_rsqrt());
+        let half = Self::from(0.5);
+        let three_halfs = Self::from(1.5);
+
+        // NR step: y = y * (1.5 - 0.5 * x * y * y)
+        let x_half = self.raw_mul(half);
+        let y_sq = approx.raw_mul(approx);
+        let term = x_half.raw_mul(y_sq);
+        let factor = three_halfs.raw_sub(term);
+        approx.raw_mul(factor)
     }
 
     /// Masked add: self + (mask ? val : 0)
