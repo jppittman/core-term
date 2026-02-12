@@ -671,7 +671,24 @@ impl Field {
     /// Much faster than `sqrt` followed by division (~8 vs ~25 cycles).
     #[inline(always)]
     pub(crate) fn rsqrt(self) -> Self {
-        Self(self.0.simd_rsqrt())
+        // Initial estimate y0 = rsqrt(x) (~12 bits precision)
+        let y0 = self.0.simd_rsqrt();
+
+        // Newton-Raphson iteration: y1 = y0 * (1.5 - 0.5 * x * y0 * y0)
+        let half = NativeSimd::splat(0.5);
+        let one_point_five = NativeSimd::splat(1.5);
+
+        // x * 0.5
+        let x_half = self.0 * half;
+        // y0 * y0
+        let y0_sq = y0 * y0;
+        // (x * 0.5) * (y0 * y0)
+        let term = x_half * y0_sq;
+        // 1.5 - term
+        let factor = one_point_five - term;
+
+        // y1 = y0 * factor
+        Self(y0 * factor)
     }
 
     /// Masked add: self + (mask ? val : 0)
