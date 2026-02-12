@@ -279,8 +279,10 @@ where
             materialize_discrete_fields(manifold, xs, ys, &mut packed);
 
             // Copy to target
+            // Hoist slice check to eliminate bounds checks in the loop
+            let out_slice = &mut target[row_offset + x..][..PARALLELISM];
             for i in 0..PARALLELISM {
-                target[row_offset + x + i] = P::from_u32(packed[i]);
+                out_slice[i] = P::from_u32(packed[i]);
             }
 
             x += PARALLELISM;
