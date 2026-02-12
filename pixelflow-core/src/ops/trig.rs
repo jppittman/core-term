@@ -105,7 +105,7 @@ pub(crate) fn cheby_cos(x: Field) -> Field {
 
     // Chebyshev coefficients for cos on [-1,1]
     // T_0(t) through T_6(t)
-    const C0: f32 = 1.5707963267948966f32;
+    const C0: f32 = core::f32::consts::FRAC_PI_2;
     const C2: f32 = -2.467401341f32;
     const C4: f32 = 0.609469381f32;
     const C6: f32 = -0.038854038f32;
