@@ -719,14 +719,15 @@ struct TerminalAppParamsRegistered {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ansi::commands::AnsiCommand;
+    // use crate::ansi::commands::AnsiCommand;
     use crate::io::PtyCommand;
-    use crate::term::{EmulatorInput, TerminalEmulator, UserInputAction};
-    use actor_scheduler::{Actor, ActorStatus};
+    use crate::term::TerminalEmulator; // EmulatorInput, UserInputAction unused
+    use actor_scheduler::Actor; // ActorStatus unused
     use pixelflow_runtime::input::{KeySymbol, Modifiers};
     use pixelflow_runtime::{EngineEventControl, EngineEventManagement, WindowId};
-    use std::sync::mpsc::{Receiver, SyncSender};
+    use std::sync::mpsc::Receiver; // SyncSender unused
 
+    /*
     // Define a DummyPixel struct for testing
     #[derive(Debug, Clone, Copy, Default, PartialEq)]
     struct DummyPixel;
@@ -741,6 +742,7 @@ mod tests {
             Self
         }
     }
+    */
 
     // Helper to create a test instance
     // Returns scheduler to keep doorbell channel alive during test
@@ -793,7 +795,7 @@ mod tests {
         };
 
         // Initial size is 80x24
-        use crate::term::TerminalInterface;
+        // use crate::term::TerminalInterface;
         let snapshot_initial = app.emulator.get_render_snapshot().expect("Snapshot");
         assert_eq!(snapshot_initial.dimensions, (80, 24));
 

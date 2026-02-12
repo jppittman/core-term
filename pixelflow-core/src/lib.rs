@@ -665,10 +665,8 @@ impl Field {
         Self(self.0.recip())
     }
 
-    /// Fast reciprocal square root (1/sqrt(x)) with Newton-Raphson refinement.
-    ///
-    /// Uses SIMD rsqrt + one NR iteration for near-full f32 precision.
-    /// Much faster than `sqrt` followed by division (~8 vs ~25 cycles).
+    /// Fast reciprocal square root (1/sqrt(x)).
+    /// Uses SIMD rsqrt instruction (~12-14 bits accuracy).
     #[inline(always)]
     pub(crate) fn rsqrt(self) -> Self {
         Self(self.0.simd_rsqrt())

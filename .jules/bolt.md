@@ -13,3 +13,7 @@
 ## 2025-12-28 - Rasterizer Inner Loop Hoisting
 **Learning:** The inner loop of `execute_stripe` was re-evaluating `Field::sequential(start)` on every iteration, which involves multiple SIMD instructions (broadcast/load + add).
 **Action:** Hoisted the initialization of `xs` out of the loop and updated it incrementally using a pre-computed `step` vector. This reduced the inner loop overhead significantly, yielding a ~34% improvement in rasterization throughput.
+
+## 2024-05-24 - [Hoisting Slice Checks in Hot Loops]
+**Learning:** Even with `0..CONST` loops, the Rust compiler sometimes fails to eliminate bounds checks if the slice indexing is complex (`target[offset + x + i]`). Explicitly hoisting the slice creation (`&mut target[offset+x..][..CONST]`) acts as a "proof" to the compiler, enabling better auto-vectorization.
+**Action:** When optimizing hot loops with fixed strides, always prefer creating a fixed-size sub-slice outside the inner loop over direct indexing.
