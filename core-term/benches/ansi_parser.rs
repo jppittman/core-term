@@ -15,6 +15,7 @@ fn ascii_text(size: usize) -> Vec<u8> {
 }
 
 /// Mixed printable with newlines
+#[allow(dead_code)]
 fn ascii_with_newlines(size: usize) -> Vec<u8> {
     "Hello, World!\r\n".bytes().cycle().take(size).collect()
 }
