@@ -23,6 +23,9 @@ use std::sync::mpsc::{self, Sender, SyncSender};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Size of the handshake reply channel.
+const HANDSHAKE_BUFFER_SIZE: usize = 1;
+
 /// Frame rendering request (Data lane - high throughput, backpressure).
 ///
 /// The Data lane is designed for high-volume work items and will block
@@ -129,7 +132,7 @@ impl<P: Pixel> RasterizerSetupHandle<P> {
     /// Panics if the rasterizer thread has died before completing setup.
     pub fn register(self, response_tx: Sender<RenderResponse<P>>) -> RasterizerHandle<P> {
         // Create reply channel for this handshake
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let (reply_tx, reply_rx) = mpsc::sync_channel(HANDSHAKE_BUFFER_SIZE);
 
         // Build the setup message
         let setup = RasterSetup {
