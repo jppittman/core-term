@@ -266,6 +266,7 @@ enum TestEngineManagement {
 #[derive(Debug, Clone, PartialEq)]
 enum TestEngineData {
     FrameRequest,
+    Block(Duration),
 }
 
 struct TestTerminalAppActor {
@@ -280,6 +281,9 @@ impl Actor<TestEngineData, TestEngineControl, TestEngineManagement> for TestTerm
         match data {
             TestEngineData::FrameRequest => {
                 self.frame_count.fetch_add(1, Ordering::SeqCst);
+            }
+            TestEngineData::Block(duration) => {
+                thread::sleep(duration);
             }
         }
         Ok(())
@@ -515,30 +519,42 @@ fn terminal_app_roundtrip_priority_ordering() {
         rx.run(&mut actor);
     });
 
-    // Send in reverse priority order
-    tx.send(Message::Data(TestEngineData::FrameRequest))
-        .unwrap();
-    tx.send(Message::Management(TestEngineManagement::KeyPress('x')))
-        .unwrap();
-    tx.send(Message::Control(TestEngineControl::Resize(800, 600)))
-        .unwrap();
+    // Strategy: Send a blocking Data message first.
+    // While the actor is blocked processing it, send lower-priority (Data) and higher-priority (Mgmt/Control) messages.
+    // The scheduler queues them. When actor unblocks, it should pick the highest priority one (Control).
 
-    thread::sleep(Duration::from_millis(100));
+    // 1. Block the actor (Data lane)
+    tx.send(Message::Data(TestEngineData::Block(Duration::from_millis(200)))).unwrap();
+
+    // 2. Queue messages in reverse priority (but they arrive while actor is busy)
+    // Send another Data (lowest)
+    tx.send(Message::Data(TestEngineData::FrameRequest)).unwrap();
+    // Send Mgmt (medium)
+    tx.send(Message::Management(TestEngineManagement::KeyPress('x'))).unwrap();
+    // Send Control (highest)
+    tx.send(Message::Control(TestEngineControl::Resize(800, 600))).unwrap();
+
+    thread::sleep(Duration::from_millis(400));
     drop(tx);
     handle.join().unwrap();
 
-    // Verify all processed
+    // Verify counts
     assert_eq!(resize_count.load(Ordering::SeqCst), 1);
     assert_eq!(keypress_count.load(Ordering::SeqCst), 1);
     assert_eq!(frame_count.load(Ordering::SeqCst), 1);
 
-    // Control should be processed first (resize)
+    // Verify ordering
+    // Note: The Block message produces NO output.
+    // So the first output we receive should be from the highest priority message queued: Resize.
     let first = pty_rx.recv_timeout(Duration::from_millis(100)).unwrap();
-    assert_eq!(first, b"RESIZE:800x600");
+    assert_eq!(first, b"RESIZE:800x600", "Control message should be prioritized");
 
-    // Then management (keypress)
+    // Second should be Management (KeyPress)
     let second = pty_rx.recv_timeout(Duration::from_millis(100)).unwrap();
-    assert_eq!(second, vec![b'x']);
+    assert_eq!(second, vec![b'x'], "Management message should come second");
+
+    // Third should be the FrameRequest (Data) - which produces no output in TestTerminalAppActor but increments count.
+    // Since FrameRequest produces no output, we can't check pty_rx for it, but the counts verified it ran.
 }
 
 // =============================================================================
