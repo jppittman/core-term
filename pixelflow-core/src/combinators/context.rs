@@ -281,6 +281,40 @@ impl<Ctx, Body> WithContext<Ctx, Body> {
     }
 }
 
+impl<Ctx, Body> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
+
+// ============================================================================
+// Operator Implementations for WithContext
+// ============================================================================
+
+impl<Ctx, Body, R> core::ops::Add<R> for WithContext<Ctx, Body> {
+    type Output = crate::ops::Add<Self, R>;
+    fn add(self, rhs: R) -> Self::Output {
+        crate::ops::Add(self, rhs)
+    }
+}
+
+impl<Ctx, Body, R> core::ops::Sub<R> for WithContext<Ctx, Body> {
+    type Output = crate::ops::Sub<Self, R>;
+    fn sub(self, rhs: R) -> Self::Output {
+        crate::ops::Sub(self, rhs)
+    }
+}
+
+impl<Ctx, Body, R> core::ops::Mul<R> for WithContext<Ctx, Body> {
+    type Output = crate::ops::Mul<Self, R>;
+    fn mul(self, rhs: R) -> Self::Output {
+        crate::ops::Mul(self, rhs)
+    }
+}
+
+impl<Ctx, Body, R> core::ops::Div<R> for WithContext<Ctx, Body> {
+    type Output = crate::ops::Div<Self, R>;
+    fn div(self, rhs: R) -> Self::Output {
+        crate::ops::Div(self, rhs)
+    }
+}
+
 // ============================================================================
 // CtxVar - Array-Indexed Variable Reference
 // ============================================================================
