@@ -61,23 +61,24 @@ fn range_reduce_pi(x: Field) -> Field {
     eval(x - k * Field::from(TWO_PI))
 }
 
-/// Chebyshev approximation for sin(x) on [-π, π].
+/// Taylor series approximation for sin(x) on [-π, π].
 ///
-/// Uses 7-term Chebyshev polynomial with Horner's method.
-/// Coefficients optimized for ~8 digits accuracy.
+/// Uses 7th-degree Taylor polynomial of sin(π*t) where t = x/π is in [-1, 1].
+///
+/// Note: Previous implementation used Chebyshev polynomials but had incorrect coefficients.
 #[inline(always)]
 pub(crate) fn cheby_sin(x: Field) -> Field {
     let x = range_reduce_pi(x);
 
-    // Normalize to [-1, 1] for Chebyshev basis
+    // Normalize to [-1, 1]
     let t = x * Field::from(PI_INV);
 
-    // Chebyshev coefficients for sin on [-1,1]
-    // T_1(t) through T_7(t)
-    const C1: f32 = 1.6719970703125f32;
-    const C3: f32 = -0.645963541666667f32;
-    const C5: f32 = 0.079689450f32;
-    const C7: f32 = -0.0046817541f32;
+    // Taylor coefficients for sin(pi*t) on [-1,1]
+    // Coefficients for t^1, t^3, t^5, t^7
+    const C1: f32 = 3.1415927; // pi
+    const C3: f32 = -5.1677127; // -pi^3/6
+    const C5: f32 = 2.550164; // pi^5/120
+    const C7: f32 = -0.5992645; // -pi^7/5040
 
     // Horner's method: accumulate from highest degree down
     // p(t) = C1*t + C3*t^3 + C5*t^5 + C7*t^7
@@ -92,23 +93,22 @@ pub(crate) fn cheby_sin(x: Field) -> Field {
     eval(result)
 }
 
-/// Chebyshev approximation for cos(x) on [-π, π].
+/// Taylor series approximation for cos(x) on [-π, π].
 ///
-/// Uses 7-term Chebyshev polynomial with Horner's method.
-/// Coefficients optimized for ~8 digits accuracy.
+/// Uses 6th-degree Taylor polynomial of cos(π*t) where t = x/π is in [-1, 1].
 #[inline(always)]
 pub(crate) fn cheby_cos(x: Field) -> Field {
     let x = range_reduce_pi(x);
 
-    // Normalize to [-1, 1] for Chebyshev basis
+    // Normalize to [-1, 1]
     let t = x * Field::from(PI_INV);
 
-    // Chebyshev coefficients for cos on [-1,1]
-    // T_0(t) through T_6(t)
-    const C0: f32 = 1.5707963267948966f32;
-    const C2: f32 = -2.467401341f32;
-    const C4: f32 = 0.609469381f32;
-    const C6: f32 = -0.038854038f32;
+    // Taylor coefficients for cos(pi*t) on [-1,1]
+    // Coefficients for t^0, t^2, t^4, t^6
+    const C0: f32 = 1.0; // 1
+    const C2: f32 = -4.934802; // -pi^2/2
+    const C4: f32 = 4.058712; // pi^4/24
+    const C6: f32 = -1.335263; // -pi^6/720
 
     // Horner's method for even polynomial
     // p(t) = C0 + C2*t^2 + C4*t^4 + C6*t^6
