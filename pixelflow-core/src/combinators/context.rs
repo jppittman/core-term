@@ -281,6 +281,9 @@ impl<Ctx, Body> WithContext<Ctx, Body> {
     }
 }
 
+// Enable .map(), .at(), etc. on WithContext
+impl<Ctx, Body> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
+
 // ============================================================================
 // CtxVar - Array-Indexed Variable Reference
 // ============================================================================

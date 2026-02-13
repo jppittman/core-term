@@ -355,56 +355,112 @@ impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldG
 ///
 /// Evaluates geometry to get t, computes hit point P = ray * t, then selects
 /// between material (at P) and background based on hit validity.
-kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Field {
-    // 1. Get distance t from geometry
-    let t = geometry;
+#[derive(Clone, Copy, ManifoldExpr)]
+pub struct Surface<G, M, B> {
+    pub geometry: G,
+    pub material: M,
+    pub background: B,
+}
 
-    // 2. Validate hit: t > 0, t < max, derivatives reasonable
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
-    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+impl<G, M, B> Manifold<Jet3_4> for Surface<G, M, B>
+where
+    G: ManifoldCompat<Jet3, Output = Jet3>,
+    M: ManifoldCompat<Jet3, Output = Field>,
+    B: ManifoldCompat<Jet3, Output = Field>,
+{
+    type Output = Field;
 
-    // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
-    let hx = X * t;
-    let hy = Y * t;
-    let hz = Z * t;
+    #[inline(always)]
+    fn eval(&self, p: Jet3_4) -> Field {
+        let (rx, ry, rz, w) = p;
 
-    // 4. Sample material at hit point, background at ray direction
-    let mat_val = material.at(hx, hy, hz, W);
-    let bg_val = background;
+        // 1. Get distance t from geometry
+        let t = self.geometry.eval_raw(rx, ry, rz, w);
 
-    // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
-    mask.select(mat_val, bg_val)
-});
+        // 2. Validate hit: t > 0, t < max, derivatives reasonable
+        let t_max = Field::from(1000000.0);
+        let deriv_max = Field::from(10000.0);
+
+        let valid_t = (t.val.gt(Field::from(0.0)) & t.val.lt(t_max)).eval(());
+
+        let mut mat_val = Field::from(0.0);
+        let mut mask = Field::from(0.0);
+
+        if valid_t.any() {
+            let deriv_mag_sq = t.dx * t.dx + t.dy * t.dy + t.dz * t.dz;
+            let valid_deriv = deriv_mag_sq.lt(deriv_max * deriv_max).eval(());
+            mask = (valid_t & valid_deriv).eval(());
+
+            if mask.any() {
+                let hx = rx * t;
+                let hy = ry * t;
+                let hz = rz * t;
+                mat_val = self.material.eval_raw(hx, hy, hz, w);
+            }
+        }
+
+        let mut bg_val = Field::from(0.0);
+        if !mask.all() {
+            bg_val = self.background.eval_raw(rx, ry, rz, w);
+        }
+
+        Field::select_raw(mask, mat_val, bg_val)
+    }
+}
 
 /// Color Surface: geometry + material + background, outputs Discrete.
-kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Discrete {
-    // 1. Get distance t from geometry
-    let t = geometry;
+#[derive(Clone, Copy, ManifoldExpr)]
+pub struct ColorSurface<G, M, B> {
+    pub geometry: G,
+    pub material: M,
+    pub background: B,
+}
 
-    // 2. Validate hit: t > 0, t < max, derivatives reasonable
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
-    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+impl<G, M, B> Manifold<Jet3_4> for ColorSurface<G, M, B>
+where
+    G: ManifoldCompat<Jet3, Output = Jet3>,
+    M: ManifoldCompat<Jet3, Output = Discrete>,
+    B: ManifoldCompat<Jet3, Output = Discrete>,
+{
+    type Output = Discrete;
 
-    // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
-    let hx = X * t;
-    let hy = Y * t;
-    let hz = Z * t;
+    #[inline(always)]
+    fn eval(&self, p: Jet3_4) -> Discrete {
+        let (rx, ry, rz, w) = p;
 
-    // 4. Sample material at hit point, background at ray direction
-    let mat_val = material.at(hx, hy, hz, W);
-    let bg_val = background;
+        // 1. Get distance t from geometry
+        let t = self.geometry.eval_raw(rx, ry, rz, w);
 
-    // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
-    mask.select(mat_val, bg_val)
-});
+        // 2. Validate hit: t > 0, t < max, derivatives reasonable
+        let t_max = Field::from(1000000.0);
+        let deriv_max = Field::from(10000.0);
+
+        let valid_t = (t.val.gt(Field::from(0.0)) & t.val.lt(t_max)).eval(());
+
+        let mut mat_val = <Discrete as Computational>::from_f32(0.0);
+        let mut mask = Field::from(0.0);
+
+        if valid_t.any() {
+            let deriv_mag_sq = t.dx * t.dx + t.dy * t.dy + t.dz * t.dz;
+            let valid_deriv = deriv_mag_sq.lt(deriv_max * deriv_max).eval(());
+            mask = (valid_t & valid_deriv).eval(());
+
+            if mask.any() {
+                let hx = rx * t;
+                let hy = ry * t;
+                let hz = rz * t;
+                mat_val = self.material.eval_raw(hx, hy, hz, w);
+            }
+        }
+
+        let mut bg_val = <Discrete as Computational>::from_f32(0.0);
+        if !mask.all() {
+            bg_val = self.background.eval_raw(rx, ry, rz, w);
+        }
+
+        Discrete::select(mask, mat_val, bg_val)
+    }
+}
 
 // ... SCENE COMPOSITION ...
 
