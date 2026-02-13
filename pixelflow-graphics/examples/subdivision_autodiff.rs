@@ -12,7 +12,7 @@ use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::scene3d::{
     ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
-use pixelflow_graphics::subdivision::{SubdivisionGeometry, SubdivisionPatch};
+use pixelflow_graphics::subdivision::{SubdivisionConfig, SubdivisionGeometry, SubdivisionPatch};
 use pixelflow_graphics::{Frame, Rgba8};
 
 fn main() {
@@ -32,10 +32,14 @@ fn main() {
     println!("  Extraordinary: {}", patch.is_extraordinary());
 
     let geometry = SubdivisionGeometry::new(
-        patch, &mesh, -1.0, // base_height (intersection plane)
-        1.0,  // uv_scale
-        0.0,  // center_x
-        0.0,  // center_z
+        patch,
+        &mesh,
+        SubdivisionConfig {
+            base_height: -1.0, // base_height (intersection plane)
+            uv_scale: 1.0,     // uv_scale
+            center_x: 0.0,     // center_x
+            center_z: 0.0,     // center_z
+        },
     );
 
     // Build scene: subdivision surface with checker floor and sky
