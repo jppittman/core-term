@@ -115,7 +115,16 @@ macro_rules! impl_binary_ops_for {
         impl_base_div_concrete!($ty, Z);
         impl_base_div_concrete!($ty, W);
         impl_base_div_concrete!($ty, Field);
-        impl_base_div_concrete!($ty, f32);
+
+        // Optimized division by constant float: X / c → X * (1/c)
+        impl core::ops::Div<f32> for $ty {
+            type Output = MulRecip<$ty>;
+            #[inline(always)]
+            fn div(self, rhs: f32) -> Self::Output {
+                MulRecip { inner: self, recip: 1.0 / rhs }
+            }
+        }
+
         impl_base_div_concrete!($ty, i32);
     };
 }
