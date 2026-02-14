@@ -2,7 +2,7 @@
 //!
 //! Provides composable coordinate warping using the `At` combinator.
 
-use pixelflow_core::ops::{Div, Sub};
+use pixelflow_core::ops::{MulRecip, Sub};
 use pixelflow_core::{At, Field, Manifold, X, Y, Z, W};
 
 /// The standard 4D Field domain type.
@@ -13,7 +13,7 @@ type Field4 = (Field, Field, Field, Field);
 // =============================================================================
 
 /// Alias for the scaled manifold type.
-pub type Scaled<M> = At<Div<X, f32>, Div<Y, f32>, Z, W, M>;
+pub type Scaled<M> = At<MulRecip<X>, MulRecip<Y>, Z, W, M>;
 
 /// Uniform scaling of the manifold domain.
 ///
