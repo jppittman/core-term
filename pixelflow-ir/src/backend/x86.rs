@@ -7,6 +7,19 @@ use core::fmt::{Debug, Formatter};
 use core::ops::*;
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/// Exponent mask for f32 (0x7F800000).
+const EXP_MASK: i32 = 0x7F800000;
+/// Exponent bits for 1.0f32 (0x3F800000).
+const ONE_EXP_BITS: i32 = 0x3F800000;
+/// Mantissa mask for f32 (0x007FFFFF).
+const MANTISSA_MASK: i32 = 0x007FFFFF;
+/// Absolute value mask (clears sign bit) (0x7FFFFFFF).
+const ABS_MASK: i32 = 0x7FFFFFFF;
+
+// ============================================================================
 // SSE2 Backend
 // ============================================================================
 
@@ -163,7 +176,7 @@ impl SimdOps for F32x4 {
     fn simd_abs(self) -> Self {
         unsafe {
             // Mask off sign bit (bit 31)
-            let mask = _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF));
+            let mask = _mm_castsi128_ps(_mm_set1_epi32(ABS_MASK));
             Self(_mm_and_ps(self.0, mask))
         }
     }
@@ -305,14 +318,14 @@ impl SimdOps for F32x4 {
             let x_i32 = _mm_castps_si128(self.0);
 
             // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            let exp_mask = _mm_set1_epi32(0x7F800000_u32 as i32);
+            let exp_mask = _mm_set1_epi32(EXP_MASK);
             let raw_exp = _mm_and_si128(x_i32, exp_mask);
-            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
+            let one_bits = _mm_set1_epi32(ONE_EXP_BITS);
             let exp_f = _mm_castsi128_ps(_mm_or_si128(raw_exp, one_bits));
             let mut n = _mm_sub_ps(exp_f, _mm_set1_ps(128.0));
 
             // Extract mantissa in [1, 2)
-            let mant_mask = _mm_set1_epi32(0x007FFFFF_u32 as i32);
+            let mant_mask = _mm_set1_epi32(MANTISSA_MASK);
             let mut f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
@@ -775,7 +788,7 @@ impl SimdOps for F32x8 {
     #[inline(always)]
     fn simd_abs(self) -> Self {
         unsafe {
-            let mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
+            let mask = _mm256_castsi256_ps(_mm256_set1_epi32(ABS_MASK));
             Self(_mm256_and_ps(self.0, mask))
         }
     }
@@ -884,15 +897,15 @@ impl SimdOps for F32x8 {
 
             // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
             // Isolate exponent bits, OR with 1.0's bit pattern, reinterpret as float
-            let exp_mask = _mm256_set1_epi32(0x7F800000_u32 as i32);
+            let exp_mask = _mm256_set1_epi32(EXP_MASK);
             let raw_exp = _mm256_and_si256(x_i32, exp_mask);
-            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
+            let one_bits = _mm256_set1_epi32(ONE_EXP_BITS);
             let exp_f = _mm256_castsi256_ps(_mm256_or_si256(raw_exp, one_bits));
             // Subtract 128.0 to remove bias (127) and the 1.0 we added
             let mut n = _mm256_sub_ps(exp_f, _mm256_set1_ps(128.0));
 
             // Extract mantissa in [1, 2)
-            let mant_mask = _mm256_set1_epi32(0x007FFFFF_u32 as i32);
+            let mant_mask = _mm256_set1_epi32(MANTISSA_MASK);
             let mut f = _mm256_castsi256_ps(_mm256_or_si256(
                 _mm256_and_si256(x_i32, mant_mask),
                 one_bits,
@@ -1395,7 +1408,7 @@ impl SimdOps for F32x16 {
     #[inline(always)]
     fn simd_abs(self) -> Self {
         unsafe {
-            let abs_mask = _mm512_castsi512_ps(_mm512_set1_epi32(0x7FFFFFFF));
+            let abs_mask = _mm512_castsi512_ps(_mm512_set1_epi32(ABS_MASK));
             Self(_mm512_and_ps(self.0, abs_mask))
         }
     }
