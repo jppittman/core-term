@@ -298,26 +298,24 @@ impl SimdOps for F32x4 {
 
     #[inline(always)]
     fn log2(self) -> Self {
-        // SSE2: Use bit manipulation for exponent/mantissa extraction
+        // SSE2: Use integer arithmetic for exponent extraction (correct and standard)
         // Uses range [√2/2, √2] centered at 1 for better polynomial accuracy
         // log2(x) = exponent + log2(mantissa)
         unsafe {
             let x_i32 = _mm_castps_si128(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            let exp_mask = _mm_set1_epi32(0x7F800000_u32 as i32);
-            let raw_exp = _mm_and_si128(x_i32, exp_mask);
-            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm_castsi128_ps(_mm_or_si128(raw_exp, one_bits));
-            let mut n = _mm_sub_ps(exp_f, _mm_set1_ps(128.0));
+            // Extract exponent: (x >> 23) - 127
+            let exp_i32 = _mm_sub_epi32(_mm_srli_epi32(x_i32, 23), _mm_set1_epi32(127));
+            let mut n = _mm_cvtepi32_ps(exp_i32);
 
-            // Extract mantissa in [1, 2)
+            // Extract mantissa in [1, 2) by setting exponent bits to 0 (which is 1.0 in float)
             let mant_mask = _mm_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32); // 1.0f32
             let mut f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm_set1_ps(1.4142135624);
+            let sqrt2 = _mm_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm_cmpge_ps(f, sqrt2);
             let adjust = _mm_and_ps(mask, _mm_set1_ps(1.0));
             n = _mm_add_ps(n, adjust);
@@ -329,11 +327,11 @@ impl SimdOps for F32x4 {
             // Polynomial for log2(f) on [√2/2, √2]
             // Fitted using least squares on Chebyshev nodes
             // Max error: ~1e-4
-            let c4 = _mm_set1_ps(-0.3200435159);
-            let c3 = _mm_set1_ps(1.7974969154);
-            let c2 = _mm_set1_ps(-4.1988046176);
-            let c1 = _mm_set1_ps(5.7270231695);
-            let c0 = _mm_set1_ps(-3.0056146714);
+            let c4 = _mm_set1_ps(-0.3200435);
+            let c3 = _mm_set1_ps(1.7974969);
+            let c2 = _mm_set1_ps(-4.1988046);
+            let c1 = _mm_set1_ps(5.727023);
+            let c0 = _mm_set1_ps(-3.0056147);
 
             // Horner's method (no FMA on base SSE2)
             let mut poly = _mm_add_ps(_mm_mul_ps(c4, f), c3);
@@ -358,7 +356,7 @@ impl SimdOps for F32x4 {
             let c4 = _mm_set1_ps(0.0135557);
             let c3 = _mm_set1_ps(0.0520323);
             let c2 = _mm_set1_ps(0.2413793);
-            let c1 = _mm_set1_ps(0.6931472);
+            let c1 = _mm_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm_set1_ps(1.0);
 
             // Horner's method (no FMA on base SSE2)
@@ -882,17 +880,14 @@ impl SimdOps for F32x8 {
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            // Isolate exponent bits, OR with 1.0's bit pattern, reinterpret as float
-            let exp_mask = _mm256_set1_epi32(0x7F800000_u32 as i32);
-            let raw_exp = _mm256_and_si256(x_i32, exp_mask);
-            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm256_castsi256_ps(_mm256_or_si256(raw_exp, one_bits));
-            // Subtract 128.0 to remove bias (127) and the 1.0 we added
-            let mut n = _mm256_sub_ps(exp_f, _mm256_set1_ps(128.0));
+            // Extract exponent: (x >> 23) - 127
+            // Use AVX2 integer subtraction
+            let exp_i32 = _mm256_sub_epi32(_mm256_srli_epi32(x_i32, 23), _mm256_set1_epi32(127));
+            let mut n = _mm256_cvtepi32_ps(exp_i32);
 
             // Extract mantissa in [1, 2)
             let mant_mask = _mm256_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
             let mut f = _mm256_castsi256_ps(_mm256_or_si256(
                 _mm256_and_si256(x_i32, mant_mask),
                 one_bits,
@@ -900,7 +895,7 @@ impl SimdOps for F32x8 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm256_set1_ps(1.4142135624);
+            let sqrt2 = _mm256_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm256_cmp_ps::<_CMP_GE_OQ>(f, sqrt2);
             let adjust = _mm256_and_ps(mask, _mm256_set1_ps(1.0));
             n = _mm256_add_ps(n, adjust);
@@ -912,11 +907,11 @@ impl SimdOps for F32x8 {
             // Polynomial for log2(f) on [√2/2, √2]
             // Fitted using least squares on Chebyshev nodes
             // Max error: ~1e-4
-            let c4 = _mm256_set1_ps(-0.3200435159);
-            let c3 = _mm256_set1_ps(1.7974969154);
-            let c2 = _mm256_set1_ps(-4.1988046176);
-            let c1 = _mm256_set1_ps(5.7270231695);
-            let c0 = _mm256_set1_ps(-3.0056146714);
+            let c4 = _mm256_set1_ps(-0.3200435);
+            let c3 = _mm256_set1_ps(1.7974969);
+            let c2 = _mm256_set1_ps(-4.1988046);
+            let c1 = _mm256_set1_ps(5.727023);
+            let c0 = _mm256_set1_ps(-3.0056147);
 
             // Horner's method with FMA when available
             #[cfg(target_feature = "fma")]
@@ -949,7 +944,7 @@ impl SimdOps for F32x8 {
             let c4 = _mm256_set1_ps(0.0135557);
             let c3 = _mm256_set1_ps(0.0520323);
             let c2 = _mm256_set1_ps(0.2413793);
-            let c1 = _mm256_set1_ps(0.6931472);
+            let c1 = _mm256_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm256_set1_ps(1.0);
 
             // Horner's method
@@ -1169,6 +1164,7 @@ impl Shr<u32> for U32x8 {
 impl U32x8 {
     /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
         unsafe {
             let scale = _mm256_set1_ps(255.0);
@@ -1530,7 +1526,7 @@ impl SimdOps for F32x16 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm512_set1_ps(1.4142135624);
+            let sqrt2 = _mm512_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(f, sqrt2);
             let adjust = _mm512_mask_blend_ps(mask, _mm512_setzero_ps(), _mm512_set1_ps(1.0));
             n = _mm512_add_ps(n, adjust);
@@ -1543,11 +1539,11 @@ impl SimdOps for F32x16 {
             // Polynomial for log2(f) on [√2/2, √2]
             // Fitted using least squares on Chebyshev nodes
             // Max error: ~1e-4
-            let c4 = _mm512_set1_ps(-0.3200435159);
-            let c3 = _mm512_set1_ps(1.7974969154);
-            let c2 = _mm512_set1_ps(-4.1988046176);
-            let c1 = _mm512_set1_ps(5.7270231695);
-            let c0 = _mm512_set1_ps(-3.0056146714);
+            let c4 = _mm512_set1_ps(-0.3200435);
+            let c3 = _mm512_set1_ps(1.7974969);
+            let c2 = _mm512_set1_ps(-4.1988046);
+            let c1 = _mm512_set1_ps(5.727023);
+            let c0 = _mm512_set1_ps(-3.0056147);
 
             // Horner's method with FMA
             let mut poly = _mm512_fmadd_ps(c4, f, c3);
@@ -1573,7 +1569,7 @@ impl SimdOps for F32x16 {
             let c4 = _mm512_set1_ps(0.0135557);
             let c3 = _mm512_set1_ps(0.0520323);
             let c2 = _mm512_set1_ps(0.2413793);
-            let c1 = _mm512_set1_ps(0.6931472);
+            let c1 = _mm512_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm512_set1_ps(1.0);
 
             // Horner's method with FMA
@@ -1774,6 +1770,7 @@ impl Shr<u32> for U32x16 {
 impl U32x16 {
     /// Pack 16 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub(crate) fn pack_rgba(r: F32x16, g: F32x16, b: F32x16, a: F32x16) -> Self {
         unsafe {
             let scale = _mm512_set1_ps(255.0);
@@ -1810,6 +1807,7 @@ impl U32x16 {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]
