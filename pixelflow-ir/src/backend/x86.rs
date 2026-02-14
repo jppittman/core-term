@@ -310,6 +310,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn log2(self) -> Self {
         // SSE2: Use bit manipulation for exponent/mantissa extraction
         // Uses range [√2/2, √2] centered at 1 for better polynomial accuracy
@@ -330,7 +331,7 @@ impl SimdOps for F32x4 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm_set1_ps(1.4142135624);
+            let sqrt2 = _mm_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm_cmpge_ps(f, sqrt2);
             let adjust = _mm_and_ps(mask, _mm_set1_ps(1.0));
             n = _mm_add_ps(n, adjust);
@@ -359,6 +360,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn exp2(self) -> Self {
         // SSE2: 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
         unsafe {
@@ -371,7 +373,7 @@ impl SimdOps for F32x4 {
             let c4 = _mm_set1_ps(0.0135557);
             let c3 = _mm_set1_ps(0.0520323);
             let c2 = _mm_set1_ps(0.2413793);
-            let c1 = _mm_set1_ps(0.6931472);
+            let c1 = _mm_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm_set1_ps(1.0);
 
             // Horner's method (no FMA on base SSE2)
@@ -571,6 +573,7 @@ impl Shr<u32> for U32x4 {
 impl U32x4 {
     /// Pack 4 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
         unsafe {
             // Clamp to [0, 1] and scale to [0, 255]
@@ -891,6 +894,7 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn log2(self) -> Self {
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
@@ -913,7 +917,7 @@ impl SimdOps for F32x8 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm256_set1_ps(1.4142135624);
+            let sqrt2 = _mm256_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm256_cmp_ps::<_CMP_GE_OQ>(f, sqrt2);
             let adjust = _mm256_and_ps(mask, _mm256_set1_ps(1.0));
             n = _mm256_add_ps(n, adjust);
@@ -952,6 +956,7 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn exp2(self) -> Self {
         unsafe {
             // n = floor(x), f = x - n
@@ -962,7 +967,7 @@ impl SimdOps for F32x8 {
             let c4 = _mm256_set1_ps(0.0135557);
             let c3 = _mm256_set1_ps(0.0520323);
             let c2 = _mm256_set1_ps(0.2413793);
-            let c1 = _mm256_set1_ps(0.6931472);
+            let c1 = _mm256_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm256_set1_ps(1.0);
 
             // Horner's method
@@ -1182,6 +1187,7 @@ impl Shr<u32> for U32x8 {
 impl U32x8 {
     /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
         unsafe {
             let scale = _mm256_set1_ps(255.0);
@@ -1532,6 +1538,7 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn log2(self) -> Self {
         unsafe {
             // Extract mantissa in [1, 2) - no exponent adjustment needed
@@ -1543,7 +1550,7 @@ impl SimdOps for F32x16 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm512_set1_ps(1.4142135624);
+            let sqrt2 = _mm512_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(f, sqrt2);
             let adjust = _mm512_mask_blend_ps(mask, _mm512_setzero_ps(), _mm512_set1_ps(1.0));
             n = _mm512_add_ps(n, adjust);
@@ -1573,6 +1580,7 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn exp2(self) -> Self {
         // AVX-512: Use scalef for efficient 2^n computation
         // 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
@@ -1586,7 +1594,7 @@ impl SimdOps for F32x16 {
             let c4 = _mm512_set1_ps(0.0135557);
             let c3 = _mm512_set1_ps(0.0520323);
             let c2 = _mm512_set1_ps(0.2413793);
-            let c1 = _mm512_set1_ps(0.6931472);
+            let c1 = _mm512_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm512_set1_ps(1.0);
 
             // Horner's method with FMA
@@ -1787,6 +1795,7 @@ impl Shr<u32> for U32x16 {
 impl U32x16 {
     /// Pack 16 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub(crate) fn pack_rgba(r: F32x16, g: F32x16, b: F32x16, a: F32x16) -> Self {
         unsafe {
             let scale = _mm512_set1_ps(255.0);
@@ -1823,6 +1832,7 @@ impl U32x16 {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]
