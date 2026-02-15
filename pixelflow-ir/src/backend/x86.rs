@@ -297,6 +297,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn log2(self) -> Self {
         // SSE2: Use bit manipulation for exponent/mantissa extraction
         // Uses range [√2/2, √2] centered at 1 for better polynomial accuracy
@@ -304,20 +305,21 @@ impl SimdOps for F32x4 {
         unsafe {
             let x_i32 = _mm_castps_si128(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            let exp_mask = _mm_set1_epi32(0x7F800000_u32 as i32);
-            let raw_exp = _mm_and_si128(x_i32, exp_mask);
-            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm_castsi128_ps(_mm_or_si128(raw_exp, one_bits));
-            let mut n = _mm_sub_ps(exp_f, _mm_set1_ps(128.0));
+            // Extract exponent: n = ((x >> 23) & 0xFF) - 127
+            // Use integer arithmetic + float conversion (standard fast-log2 approach)
+            let exp_bits = _mm_srli_epi32(x_i32, 23);
+            let exp_biased = _mm_and_si128(exp_bits, _mm_set1_epi32(0xFF));
+            let exp_unbiased = _mm_sub_epi32(exp_biased, _mm_set1_epi32(127));
+            let mut n = _mm_cvtepi32_ps(exp_unbiased);
 
-            // Extract mantissa in [1, 2)
+            // Extract mantissa in [1, 2): f = (x & 0x007FFFFF) | 1.0_bits
             let mant_mask = _mm_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
             let mut f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm_set1_ps(1.4142135624);
+            let sqrt2 = _mm_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm_cmpge_ps(f, sqrt2);
             let adjust = _mm_and_ps(mask, _mm_set1_ps(1.0));
             n = _mm_add_ps(n, adjust);
@@ -346,6 +348,7 @@ impl SimdOps for F32x4 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn exp2(self) -> Self {
         // SSE2: 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
         unsafe {
@@ -358,7 +361,7 @@ impl SimdOps for F32x4 {
             let c4 = _mm_set1_ps(0.0135557);
             let c3 = _mm_set1_ps(0.0520323);
             let c2 = _mm_set1_ps(0.2413793);
-            let c1 = _mm_set1_ps(0.6931472);
+            let c1 = _mm_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm_set1_ps(1.0);
 
             // Horner's method (no FMA on base SSE2)
@@ -878,21 +881,20 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn log2(self) -> Self {
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            // Isolate exponent bits, OR with 1.0's bit pattern, reinterpret as float
-            let exp_mask = _mm256_set1_epi32(0x7F800000_u32 as i32);
-            let raw_exp = _mm256_and_si256(x_i32, exp_mask);
-            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm256_castsi256_ps(_mm256_or_si256(raw_exp, one_bits));
-            // Subtract 128.0 to remove bias (127) and the 1.0 we added
-            let mut n = _mm256_sub_ps(exp_f, _mm256_set1_ps(128.0));
+            // Extract exponent: n = ((x >> 23) & 0xFF) - 127
+            let exp_bits = _mm256_srli_epi32(x_i32, 23);
+            let exp_biased = _mm256_and_si256(exp_bits, _mm256_set1_epi32(0xFF));
+            let exp_unbiased = _mm256_sub_epi32(exp_biased, _mm256_set1_epi32(127));
+            let mut n = _mm256_cvtepi32_ps(exp_unbiased);
 
             // Extract mantissa in [1, 2)
             let mant_mask = _mm256_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
             let mut f = _mm256_castsi256_ps(_mm256_or_si256(
                 _mm256_and_si256(x_i32, mant_mask),
                 one_bits,
@@ -900,7 +902,7 @@ impl SimdOps for F32x8 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm256_set1_ps(1.4142135624);
+            let sqrt2 = _mm256_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm256_cmp_ps::<_CMP_GE_OQ>(f, sqrt2);
             let adjust = _mm256_and_ps(mask, _mm256_set1_ps(1.0));
             n = _mm256_add_ps(n, adjust);
@@ -939,6 +941,7 @@ impl SimdOps for F32x8 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn exp2(self) -> Self {
         unsafe {
             // n = floor(x), f = x - n
@@ -949,7 +952,7 @@ impl SimdOps for F32x8 {
             let c4 = _mm256_set1_ps(0.0135557);
             let c3 = _mm256_set1_ps(0.0520323);
             let c2 = _mm256_set1_ps(0.2413793);
-            let c1 = _mm256_set1_ps(0.6931472);
+            let c1 = _mm256_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm256_set1_ps(1.0);
 
             // Horner's method
@@ -1169,6 +1172,7 @@ impl Shr<u32> for U32x8 {
 impl U32x8 {
     /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
         unsafe {
             let scale = _mm256_set1_ps(255.0);
@@ -1519,18 +1523,20 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn log2(self) -> Self {
         unsafe {
-            // Extract mantissa in [1, 2) - no exponent adjustment needed
-            // Interval=0 (_MM_MANT_NORM_1_2), sign=0 (_MM_MANT_SIGN_src)
-            let mut f = _mm512_getmant_ps::<0, 0>(self.0);
+            // AVX-512 has dedicated getmant/getexp instructions which are precise
+            // Interval=0 (_MM_MANT_NORM_1_2) -> returns values in [1, 2)
+            // sign=0 (_MM_MANT_SIGN_src) -> keeps sign
+            let mut f = _mm512_getmant_ps(self.0, _MM_MANT_NORM_1_2, _MM_MANT_SIGN_src);
 
-            // Extract exponent
+            // getexp returns exponent as float directly (unbiased)
             let mut n = _mm512_getexp_ps(self.0);
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm512_set1_ps(1.4142135624);
+            let sqrt2 = _mm512_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(f, sqrt2);
             let adjust = _mm512_mask_blend_ps(mask, _mm512_setzero_ps(), _mm512_set1_ps(1.0));
             n = _mm512_add_ps(n, adjust);
@@ -1560,6 +1566,7 @@ impl SimdOps for F32x16 {
     }
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn exp2(self) -> Self {
         // AVX-512: Use scalef for efficient 2^n computation
         // 2^x = 2^n * 2^f where n = floor(x), f = frac(x) ∈ [0, 1)
@@ -1573,7 +1580,7 @@ impl SimdOps for F32x16 {
             let c4 = _mm512_set1_ps(0.0135557);
             let c3 = _mm512_set1_ps(0.0520323);
             let c2 = _mm512_set1_ps(0.2413793);
-            let c1 = _mm512_set1_ps(0.6931472);
+            let c1 = _mm512_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm512_set1_ps(1.0);
 
             // Horner's method with FMA
@@ -1774,6 +1781,7 @@ impl Shr<u32> for U32x16 {
 impl U32x16 {
     /// Pack 16 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub(crate) fn pack_rgba(r: F32x16, g: F32x16, b: F32x16, a: F32x16) -> Self {
         unsafe {
             let scale = _mm512_set1_ps(255.0);
