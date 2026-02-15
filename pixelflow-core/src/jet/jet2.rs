@@ -2,6 +2,7 @@
 
 use crate::Field;
 use crate::Manifold;
+use crate::ManifoldExt;
 use crate::ext;
 use crate::numeric::{Computational, Numeric, Selectable};
 
@@ -313,10 +314,11 @@ impl core::ops::Mul for Jet2 {
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
         // Product rule: (f * g)' = f' * g + f * g'
+        // FMA: dx * val_b + val_a * dx_b -> dx.mul_add(val_b, val_a * dx_b)
         Self::new(
             self.val * rhs.val,
-            self.dx * rhs.val + self.val * rhs.dx,
-            self.dy * rhs.val + self.val * rhs.dy,
+            self.dx.mul_add(rhs.val, (self.val * rhs.dx).constant()),
+            self.dy.mul_add(rhs.val, (self.val * rhs.dy).constant()),
         )
     }
 }
@@ -543,12 +545,12 @@ impl Numeric for Jet2 {
         // ∂/∂x = -y / (x² + y²)
         let r_sq = self.val * self.val + x.val * x.val;
         let inv_r_sq = Field::from(1.0) / r_sq;
-        let dy_darg = x.val.clone() * inv_r_sq.clone();
-        let dx_darg = (-self.val).clone() * inv_r_sq;
+        let dy_darg = (x.val.clone() * inv_r_sq.clone()).constant();
+        let dx_darg = ((-self.val).clone() * inv_r_sq).constant();
         Self::new(
             self.val.atan2(x.val),
-            self.dx * dy_darg.clone() + x.dx * dx_darg.clone(),
-            self.dy * dy_darg + x.dy * dx_darg,
+            self.dx.mul_add(dy_darg.clone(), (x.dx * dx_darg.clone()).constant()),
+            self.dy.mul_add(dy_darg, (x.dy * dx_darg).constant()),
         )
     }
 
@@ -558,11 +560,11 @@ impl Numeric for Jet2 {
         let val = self.val.pow(exp.val);
         let ln_base = self.val.ln();
         let inv_self = Field::from(1.0) / self.val;
-        let coeff = exp.val.clone() * inv_self;
+        let coeff = (exp.val.clone() * inv_self).constant();
         Self::new(
             val,
-            val * (exp.dx * ln_base + coeff.clone() * self.dx),
-            val * (exp.dy * ln_base + coeff * self.dy),
+            val * exp.dx.mul_add(ln_base, (coeff.clone() * self.dx).constant()).constant(),
+            val * exp.dy.mul_add(ln_base, (coeff * self.dy).constant()).constant(),
         )
     }
 
@@ -614,10 +616,12 @@ impl Numeric for Jet2 {
     #[inline(always)]
     fn mul_add(self, b: Self, c: Self) -> Self {
         // (a * b + c)' where a, b, c are jets
+        // a' * b + a * b' + c'
+        // FMA: a'.mul_add(b, a.mul_add(b', c'))
         Self::new(
             self.val.mul_add(b.val, c.val),
-            self.dx * b.val + self.val * b.dx + c.dx,
-            self.dy * b.val + self.val * b.dy + c.dy,
+            self.dx.mul_add(b.val, self.val.mul_add(b.dx, c.dx)),
+            self.dy.mul_add(b.val, self.val.mul_add(b.dy, c.dy)),
         )
     }
 
