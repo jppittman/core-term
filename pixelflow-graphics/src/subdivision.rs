@@ -313,6 +313,19 @@ pub struct SurfaceStats {
 // Geometry for Raytracing
 // ============================================================================
 
+/// Configuration for subdivision geometry.
+#[derive(Clone, Copy, Debug)]
+pub struct SubdivisionConfig {
+    /// Base height for intersection plane
+    pub base_height: f32,
+    /// UV scale (maps world coords to [0,1] parameter space)
+    pub uv_scale: f32,
+    /// Center X in world space
+    pub center_x: f32,
+    /// Center Z in world space
+    pub center_z: f32,
+}
+
 /// Subdivision surface geometry for raytracing.
 ///
 /// Evaluates ray-patch intersection using Newton iteration on the limit surface.
@@ -324,26 +337,13 @@ pub struct SubdivisionGeometry {
     /// Reference to mesh (via index - will be resolved at eval time)
     /// For now, we store the patch control points directly
     control_points: [[f32; 3]; 4],
-    /// Base height for intersection plane
-    pub base_height: f32,
-    /// UV scale (maps world coords to [0,1] parameter space)
-    pub uv_scale: f32,
-    /// Center X in world space
-    pub center_x: f32,
-    /// Center Z in world space
-    pub center_z: f32,
+    /// Spatial configuration
+    pub config: SubdivisionConfig,
 }
 
 impl SubdivisionGeometry {
     /// Create geometry from a patch and mesh.
-    pub fn new(
-        patch: SubdivisionPatch,
-        mesh: &QuadMesh,
-        base_height: f32,
-        uv_scale: f32,
-        center_x: f32,
-        center_z: f32,
-    ) -> Self {
+    pub fn new(patch: SubdivisionPatch, mesh: &QuadMesh, config: SubdivisionConfig) -> Self {
         let control_points = [
             [
                 mesh.vertices[patch.corners[0]].x,
@@ -370,10 +370,7 @@ impl SubdivisionGeometry {
         Self {
             patch,
             control_points,
-            base_height,
-            uv_scale,
-            center_x,
-            center_z,
+            config,
         }
     }
 
@@ -421,17 +418,17 @@ impl Manifold<Jet3_4> for SubdivisionGeometry {
         // Similar to HeightFieldGeometry pattern
 
         // Step 1: Hit base plane at y = base_height
-        let t_plane = Jet3::constant(Field::from(self.base_height)) / ry;
+        let t_plane = Jet3::constant(Field::from(self.config.base_height)) / ry;
 
         // Step 2: Get (x, z) world coords at plane hit
         let hit_x = rx * t_plane;
         let hit_z = rz * t_plane;
 
         // Step 3: Map to (u, v) centered on (center_x, center_z)
-        let uv_scale = Field::from(self.uv_scale);
+        let uv_scale = Field::from(self.config.uv_scale);
         let half = Field::from(0.5);
-        let u_val = ((hit_x.val - Field::from(self.center_x)) * uv_scale + half).constant();
-        let v_val = ((hit_z.val - Field::from(self.center_z)) * uv_scale + half).constant();
+        let u_val = ((hit_x.val - Field::from(self.config.center_x)) * uv_scale + half).constant();
+        let v_val = ((hit_z.val - Field::from(self.config.center_z)) * uv_scale + half).constant();
 
         // Bounds check: (u, v) must be in [0, 1]
         let zero = Field::from(0.0);
