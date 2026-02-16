@@ -303,6 +303,9 @@ impl<ArrayPos, const INDEX: usize> CtxVar<ArrayPos, INDEX> {
 
 impl<ArrayPos, const INDEX: usize> crate::ext::ManifoldExpr for CtxVar<ArrayPos, INDEX> {}
 
+// WithContext is a manifold expression (can be used in fluent API)
+impl<Ctx, Body> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
+
 // ============================================================================
 // Operator Implementations for CtxVar
 // ============================================================================
