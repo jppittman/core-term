@@ -45,6 +45,13 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
+/// Buffer size for the setup channel (one-shot handshake).
+const SETUP_BUFFER_SIZE: usize = 1;
+/// Maximum number of data messages (render requests) to process in a single burst before yielding to higher priority lanes.
+const DATA_BURST_LIMIT: usize = 64;
+/// Capacity of the data lane buffer (provides backpressure when full).
+const DATA_BUFFER_SIZE: usize = 16;
+
 /// Rasterizer actor for parallel frame rendering.
 ///
 /// This actor manages a pool of worker threads for rendering frames via
@@ -96,11 +103,10 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
     /// ```
     pub fn spawn_with_setup(num_threads: usize) -> (RasterizerSetupHandle<P>, JoinHandle<()>) {
         // Create the setup channel (buffer=1, only one setup message ever)
-        let (setup_tx, setup_rx) = mpsc::sync_channel::<RasterSetup<P>>(1);
+        let (setup_tx, setup_rx) = mpsc::sync_channel::<RasterSetup<P>>(SETUP_BUFFER_SIZE);
 
         // Spawn the actor thread
         let join_handle = thread::spawn(move || {
-            // PHASE 1: Wait for setup message (blocks until register() is called)
             let setup = setup_rx
                 .recv()
                 .expect("Setup handle dropped without calling register()");
@@ -109,16 +115,17 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
             let response_tx = setup.response_tx;
             let reply_tx = setup.reply_tx;
 
-            // PHASE 2: Create the actor scheduler
-            let (handle, mut scheduler) =
-                ActorScheduler::<RenderRequest<P>, RasterControl, RasterManagement>::new(64, 16);
+            let (handle, mut scheduler) = ActorScheduler::<
+                RenderRequest<P>,
+                RasterControl,
+                RasterManagement,
+            >::new(DATA_BURST_LIMIT, DATA_BUFFER_SIZE);
 
             // Send the full handle back to the caller
             reply_tx
                 .send(handle)
                 .expect("Setup caller dropped reply channel");
 
-            // PHASE 3: Create actor and run
             let mut actor = RasterizerActor {
                 num_threads: num_threads.max(1),
                 paused: false,
