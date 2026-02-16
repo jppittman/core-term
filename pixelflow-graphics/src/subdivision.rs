@@ -309,6 +309,19 @@ pub struct SurfaceStats {
     pub max_valence: usize,
 }
 
+/// Configuration for subdivision surface geometry.
+#[derive(Clone, Copy, Debug)]
+pub struct SubdivisionConfig {
+    /// Base height for intersection plane
+    pub base_height: f32,
+    /// UV scale (maps world coords to [0,1] parameter space)
+    pub uv_scale: f32,
+    /// Center X in world space
+    pub center_x: f32,
+    /// Center Z in world space
+    pub center_z: f32,
+}
+
 // ============================================================================
 // Geometry for Raytracing
 // ============================================================================
@@ -339,10 +352,7 @@ impl SubdivisionGeometry {
     pub fn new(
         patch: SubdivisionPatch,
         mesh: &QuadMesh,
-        base_height: f32,
-        uv_scale: f32,
-        center_x: f32,
-        center_z: f32,
+        config: SubdivisionConfig,
     ) -> Self {
         let control_points = [
             [
@@ -370,10 +380,10 @@ impl SubdivisionGeometry {
         Self {
             patch,
             control_points,
-            base_height,
-            uv_scale,
-            center_x,
-            center_z,
+            base_height: config.base_height,
+            uv_scale: config.uv_scale,
+            center_x: config.center_x,
+            center_z: config.center_z,
         }
     }
 
@@ -499,9 +509,9 @@ f 1 2 3 4
         let p = patch.eval_limit(&mesh, u, v);
 
         // Extract values (collapse AST)
-        let x = p[0].val;
-        let y = p[1].val;
-        let z = p[2].val;
+        let _x = p[0].val;
+        let _y = p[1].val;
+        let _z = p[2].val;
 
         // For bilinear fallback, center should be roughly (0.5, 0.5, 0.0)
         // We can't easily check SIMD Field values in tests, so this is a smoke test
