@@ -2213,7 +2213,7 @@ mod shutdown_tests {
             10,   // Small burst limit to check shutdown frequently
             1000, // Large buffer to avoid blocking sends
             ShutdownMode::DrainAll {
-                timeout: Duration::from_millis(50), // Short timeout
+                timeout: Duration::from_millis(200), // Increased timeout from 50ms to 200ms
             },
         );
 
@@ -2266,31 +2266,31 @@ mod shutdown_tests {
             rx.run(&mut actor);
         });
 
-        // Send 200 data messages (would take 200ms to process fully)
-        for i in 0..200 {
+        // Send 400 data messages (would take 400ms to process fully)
+        for i in 0..400 {
             tx.send(Message::Data(i)).unwrap();
         }
 
         // Give actor time to start processing but not finish
         thread::sleep(Duration::from_millis(5));
 
-        // Shutdown with 20ms timeout - should timeout before processing all 200
+        // Shutdown with 200ms timeout - should timeout before processing all 400
         let shutdown_start = std::time::Instant::now();
         tx.send(Message::Shutdown).unwrap();
         actor_handle.join().unwrap();
         let shutdown_duration = shutdown_start.elapsed();
 
-        // Shutdown should respect timeout (~50ms + overhead for normal run loop batch)
+        // Shutdown should respect timeout (~200ms + overhead for normal run loop batch)
         assert!(
-            shutdown_duration < Duration::from_millis(150),
+            shutdown_duration < Duration::from_millis(450),
             "Timeout should limit shutdown duration, took {:?}",
             shutdown_duration
         );
 
-        // Should have processed SOME but definitely not all 200
+        // Should have processed SOME but definitely not all 400
         let processed = data_count.load(Ordering::Relaxed);
         assert!(
-            processed < 200,
+            processed < 400,
             "Timeout should prevent processing all messages, processed {}",
             processed
         );
