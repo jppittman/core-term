@@ -84,6 +84,9 @@ pub struct RasterConfig {
 // Bootstrap Types - Type-level enforcement of initialization order
 // ============================================================================
 
+/// Buffer size for the handshake channel.
+const HANDSHAKE_BUFFER_SIZE: usize = 1;
+
 /// Setup message sent during bootstrap to register the response channel.
 ///
 /// This message is sent through a dedicated setup channel, separate from
@@ -129,7 +132,7 @@ impl<P: Pixel> RasterizerSetupHandle<P> {
     /// Panics if the rasterizer thread has died before completing setup.
     pub fn register(self, response_tx: Sender<RenderResponse<P>>) -> RasterizerHandle<P> {
         // Create reply channel for this handshake
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let (reply_tx, reply_rx) = mpsc::sync_channel(HANDSHAKE_BUFFER_SIZE);
 
         // Build the setup message
         let setup = RasterSetup {
