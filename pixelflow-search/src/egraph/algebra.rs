@@ -108,7 +108,7 @@ impl<T: InversePair> Canonicalize<T> {
     }
 }
 
-impl<T: InversePair> Rewrite for Canonicalize<T> {
+impl<T: InversePair + Send + Sync> Rewrite for Canonicalize<T> {
     fn name(&self) -> &str {
         "canonicalize"
     }
@@ -141,7 +141,7 @@ impl<T: InversePair> Involution<T> {
     }
 }
 
-impl<T: InversePair> Rewrite for Involution<T> {
+impl<T: InversePair + Send + Sync> Rewrite for Involution<T> {
     fn name(&self) -> &str {
         "involution"
     }
@@ -182,7 +182,7 @@ impl<T: InversePair> Cancellation<T> {
     }
 }
 
-impl<T: InversePair> Rewrite for Cancellation<T> {
+impl<T: InversePair + Send + Sync> Rewrite for Cancellation<T> {
     fn name(&self) -> &str {
         "cancellation"
     }
@@ -196,12 +196,12 @@ impl<T: InversePair> Rewrite for Cancellation<T> {
         for inner_node in egraph.nodes(numerator) {
             if node_matches_op(inner_node, T::base()) {
                 if let Some((a, b)) = inner_node.binary_operands() {
-                    // (a ⊕ b) ⊖ b → a
-                    if egraph.find(b) == egraph.find(canceller) {
+                    let b_match = egraph.find(b) == egraph.find(canceller);
+                    if b_match {
                         return Some(RewriteAction::Union(a));
                     }
-                    // (b ⊕ a) ⊖ b → a (if BASE is commutative)
-                    if T::base().is_commutative() && egraph.find(a) == egraph.find(canceller) {
+                    let a_match = egraph.find(a) == egraph.find(canceller);
+                    if T::base().is_commutative() && a_match {
                         return Some(RewriteAction::Union(b));
                     }
                 }
@@ -224,7 +224,7 @@ impl<T: InversePair> InverseAnnihilation<T> {
     }
 }
 
-impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
+impl<T: InversePair + Send + Sync> Rewrite for InverseAnnihilation<T> {
     fn name(&self) -> &str {
         "inverse-annihilation"
     }

@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_available_actions() {
-        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
 
         let costs = CostModel::default();
         let state = GuidedState::from_tree(&tree, costs);
@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn test_apply_action_improves() {
         // X + 0 should simplify to X
-        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
 
         let costs = CostModel::default();
         let mut state = GuidedState::from_tree(&tree, costs);
@@ -721,7 +721,7 @@ mod tests {
 
     #[test]
     fn test_guided_stats() {
-        let tree = ExprTree::mul(ExprTree::var(0), ExprTree::constant(1.0));
+        let tree = ExprTree::op_mul(ExprTree::var(0), ExprTree::constant(1.0));
 
         let costs = CostModel::default();
         let mut state = GuidedState::from_tree(&tree, costs);
@@ -767,7 +767,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_creation() {
-        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
 
         let config = GuidedConfig::default().with_iterations(10);
         let mcts = GuidedMcts::from_tree(&tree, config);
@@ -778,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_iterate() {
-        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
 
         let config = GuidedConfig::default().with_iterations(100).with_seed(42);
         let mut mcts = GuidedMcts::from_tree(&tree, config);
@@ -801,7 +801,7 @@ mod tests {
     #[test]
     fn test_guided_mcts_run() {
         // x * 1 should simplify to x
-        let tree = ExprTree::mul(ExprTree::var(0), ExprTree::constant(1.0));
+        let tree = ExprTree::op_mul(ExprTree::var(0), ExprTree::constant(1.0));
 
         let config = GuidedConfig::default().with_iterations(100).with_seed(42);
 
@@ -853,7 +853,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_training_mode() {
-        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
 
         let config = GuidedConfig::default()
             .training_mode()
@@ -871,8 +871,8 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_timeout() {
-        let tree = ExprTree::add(
-            ExprTree::mul(ExprTree::var(0), ExprTree::var(1)),
+        let tree = ExprTree::op_add(
+            ExprTree::op_mul(ExprTree::var(0), ExprTree::var(1)),
             ExprTree::var(2),
         );
 

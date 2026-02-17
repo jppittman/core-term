@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn test_expr_tree_to_kernel_body_unary() {
         let x = ExprTree::var(0);
-        assert_eq!(expr_tree_to_kernel_body(&ExprTree::neg(x.clone())), "(-X)");
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::op_neg(x.clone())), "(-X)");
         assert_eq!(
             expr_tree_to_kernel_body(&ExprTree::sqrt(x.clone())),
             "(X).sqrt()"
@@ -643,7 +643,7 @@ mod tests {
             "(X + Y)"
         );
         assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::mul(x.clone(), y.clone())),
+            expr_tree_to_kernel_body(&ExprTree::op_mul(x.clone(), y.clone())),
             "(X * Y)"
         );
         assert_eq!(

@@ -1,0 +1,133 @@
+pixelflow-search/README.md:let tree = ExprTree::Mul(
+pixelflow-search/README.md:    Box::new(ExprTree::Add(
+pixelflow-search/README.md:        Box::new(ExprTree::Var(0)),
+pixelflow-search/README.md:        Box::new(ExprTree::Const(0.0)),
+pixelflow-search/README.md:    Box::new(ExprTree::Const(1.0)),
+pixelflow-search/src/egraph/codegen.rs://! let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::op_mul(ExprTree::var(1), ExprTree::constant(2.0)));
+pixelflow-search/src/egraph/codegen.rs:        ExprTree::Leaf(Leaf::Var(0)) => "X".to_string(),
+pixelflow-search/src/egraph/codegen.rs:        ExprTree::Leaf(Leaf::Var(1)) => "Y".to_string(),
+pixelflow-search/src/egraph/codegen.rs:        ExprTree::Leaf(Leaf::Var(2)) => "Z".to_string(),
+pixelflow-search/src/egraph/codegen.rs:        ExprTree::Leaf(Leaf::Var(3)) => "W".to_string(),
+pixelflow-search/src/egraph/codegen.rs:        ExprTree::Leaf(Leaf::Var(i)) => format!("V{}", i),
+pixelflow-search/src/egraph/codegen.rs:        ExprTree::Leaf(Leaf::Const(v)) => format_const(*v),
+pixelflow-search/src/egraph/codegen.rs:        ExprTree::Op { op, children } => {
+pixelflow-search/src/egraph/codegen.rs:        assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(0)), "X");
+pixelflow-search/src/egraph/codegen.rs:        assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(1)), "Y");
+pixelflow-search/src/egraph/codegen.rs:        assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(2)), "Z");
+pixelflow-search/src/egraph/codegen.rs:        assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(3)), "W");
+pixelflow-search/src/egraph/codegen.rs:        assert_eq!(expr_tree_to_kernel_body(&ExprTree::var(4)), "V4");
+pixelflow-search/src/egraph/codegen.rs:        assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(0.0)), "0.0");
+pixelflow-search/src/egraph/codegen.rs:        assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(1.0)), "1.0");
+pixelflow-search/src/egraph/codegen.rs:            expr_tree_to_kernel_body(&ExprTree::constant(-1.0)),
+pixelflow-search/src/egraph/codegen.rs:        assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(2.0)), "2.0");
+pixelflow-search/src/egraph/codegen.rs:        let x = ExprTree::var(0);
+pixelflow-search/src/egraph/codegen.rs:        assert_eq!(expr_tree_to_kernel_body(&ExprTree::neg(x.clone())), "(-X)");
+pixelflow-search/src/egraph/codegen.rs:            expr_tree_to_kernel_body(&ExprTree::sqrt(x.clone())),
+pixelflow-search/src/egraph/codegen.rs:            expr_tree_to_kernel_body(&ExprTree::abs(x.clone())),
+pixelflow-search/src/egraph/codegen.rs:        let x = ExprTree::var(0);
+pixelflow-search/src/egraph/codegen.rs:        let y = ExprTree::var(1);
+pixelflow-search/src/egraph/codegen.rs:            expr_tree_to_kernel_body(&ExprTree::op_add(x.clone(), y.clone())),
+pixelflow-search/src/egraph/codegen.rs:            expr_tree_to_kernel_body(&ExprTree::mul(x.clone(), y.clone())),
+pixelflow-search/src/egraph/codegen.rs:            expr_tree_to_kernel_body(&ExprTree::min(x.clone(), y.clone())),
+pixelflow-search/src/egraph/codegen.rs:        let tree = ExprTree::op_mul(
+pixelflow-search/src/egraph/codegen.rs:            ExprTree::op_add(ExprTree::var(0), ExprTree::var(1)),
+pixelflow-search/src/egraph/codegen.rs:            ExprTree::var(2),
+pixelflow-search/src/egraph/codegen.rs:        let tree = ExprTree::mul_add(ExprTree::var(0), ExprTree::var(1), ExprTree::var(2));
+pixelflow-search/src/egraph/codegen.rs:        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(1.0));
+pixelflow-search/src/egraph/codegen.rs:            ("k0".to_string(), ExprTree::var(0)),
+pixelflow-search/src/egraph/codegen.rs:                ExprTree::op_add(ExprTree::var(0), ExprTree::var(1)),
+pixelflow-search/src/egraph/nnue_adapter.rs:        ExprTree::Leaf(Leaf::Var(i)) => Expr::Var(*i),
+pixelflow-search/src/egraph/nnue_adapter.rs:        ExprTree::Leaf(Leaf::Const(c)) => Expr::Const(*c),
+pixelflow-search/src/egraph/nnue_adapter.rs:        ExprTree::Op { op, children } => {
+pixelflow-search/src/egraph/guided.rs:            ExprTree::Leaf(Leaf::Var(v)) => egraph.add(ENode::Var(*v)),
+pixelflow-search/src/egraph/guided.rs:            ExprTree::Leaf(Leaf::Const(c)) => egraph.add(ENode::constant(*c)),
+pixelflow-search/src/egraph/guided.rs:            ExprTree::Op { op, children } => {
+pixelflow-search/src/egraph/guided.rs:        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
+pixelflow-search/src/egraph/guided.rs:        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+pixelflow-search/src/egraph/guided.rs:        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+pixelflow-search/src/egraph/guided.rs:        let tree = ExprTree::mul(ExprTree::var(0), ExprTree::constant(1.0));
+pixelflow-search/src/egraph/guided.rs:        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+pixelflow-search/src/egraph/guided.rs:        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+pixelflow-search/src/egraph/guided.rs:        let tree = ExprTree::mul(ExprTree::var(0), ExprTree::constant(1.0));
+pixelflow-search/src/egraph/guided.rs:        let tree = ExprTree::op_add(
+pixelflow-search/src/egraph/guided.rs:            ExprTree::op_mul(
+pixelflow-search/src/egraph/guided.rs:                ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0)),
+pixelflow-search/src/egraph/guided.rs:                ExprTree::constant(1.0),
+pixelflow-search/src/egraph/guided.rs:            ExprTree::op_mul(ExprTree::var(1), ExprTree::constant(0.0)),
+pixelflow-search/src/egraph/guided.rs:        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::var(1));
+pixelflow-search/src/egraph/guided.rs:        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+pixelflow-search/src/egraph/guided.rs:        let tree = ExprTree::add(
+pixelflow-search/src/egraph/guided.rs:            ExprTree::mul(ExprTree::var(0), ExprTree::var(1)),
+pixelflow-search/src/egraph/guided.rs:            ExprTree::var(2),
+pixelflow-search/src/egraph/graph.rs:            ExprTree::Leaf(Leaf::Var(v)) => self.add(ENode::Var(*v)),
+pixelflow-search/src/egraph/graph.rs:            ExprTree::Leaf(Leaf::Const(c)) => self.add(ENode::constant(*c)),
+pixelflow-search/src/egraph/graph.rs:            ExprTree::Op { op, children } => {
+pixelflow-search/src/egraph/graph.rs:            ENode::Var(v) => ExprTree::Leaf(Leaf::Var(*v)),
+pixelflow-search/src/egraph/graph.rs:            ENode::Const(bits) => ExprTree::Leaf(Leaf::Const(f32::from_bits(*bits))),
+pixelflow-search/src/egraph/graph.rs:                ExprTree::Op {
+pixelflow-search/src/egraph/extract.rs:                    result_stack.push(ExprTree::Leaf(Leaf::Const(0.0)));
+pixelflow-search/src/egraph/extract.rs:                        result_stack.push(ExprTree::Leaf(Leaf::Var(*idx)));
+pixelflow-search/src/egraph/extract.rs:                        result_stack.push(ExprTree::Leaf(Leaf::Const(f32::from_bits(*bits))));
+pixelflow-search/src/egraph/extract.rs:                result_stack.push(ExprTree::Op {
+pixelflow-search/src/egraph/extract.rs:        .unwrap_or(ExprTree::Leaf(Leaf::Const(0.0)));
+pixelflow-search/src/egraph/extract.rs:        let x = ExprTree::var(0);
+pixelflow-search/src/egraph/extract.rs:        let sum = ExprTree::op_add(ExprTree::var(0), ExprTree::var(1));
+pixelflow-search/src/egraph/extract.rs:        let x = ExprTree::var(0);
+pixelflow-search/src/egraph/extract.rs:        let sum = ExprTree::op_add(ExprTree::var(0), ExprTree::var(1));
+pixelflow-search/src/egraph/extract.rs:        let nested = ExprTree::op_mul(sum, ExprTree::var(2));
+pixelflow-search/src/egraph/extract.rs:        assert!(matches!(tree, ExprTree::Leaf(Leaf::Var(0))));
+pixelflow-search/src/egraph/extract.rs:        assert!(matches!(tree, ExprTree::Op { .. }));
+pixelflow-search/src/egraph/best_first.rs:        let tree = ExprTree::Op {
+pixelflow-search/src/egraph/best_first.rs:                ExprTree::Leaf(Leaf::Var(0)),
+pixelflow-search/src/egraph/best_first.rs:                ExprTree::Leaf(Leaf::Const(0.0)),
+pixelflow-search/src/egraph/best_first.rs:        assert!(matches!(result.best_tree, ExprTree::Leaf(Leaf::Var(0))));
+pixelflow-search/src/egraph/best_first.rs:        let tree = ExprTree::Op {
+pixelflow-search/src/egraph/best_first.rs:                ExprTree::Leaf(Leaf::Var(0)),
+pixelflow-search/src/egraph/best_first.rs:                ExprTree::Leaf(Leaf::Const(1.0)),
+pixelflow-search/src/egraph/best_first.rs:        let x = eg.add_expr(&ExprTree::Leaf(Leaf::Var(0)));
+pixelflow-ml/examples/gen_egraph_variants.rs:        ExprTree::Leaf(_) => {}
+pixelflow-ml/examples/gen_egraph_variants.rs:        ExprTree::Op { op, children } => {
+pixelflow-ml/examples/gen_egraph_variants.rs:        Expr::Var(i) => ExprTree::var(*i),
+pixelflow-ml/examples/gen_egraph_variants.rs:        Expr::Const(v) => ExprTree::constant(*v),
+pixelflow-ml/examples/gen_egraph_variants.rs:                OpType::Neg => ExprTree::op_neg(a_tree),
+pixelflow-ml/examples/gen_egraph_variants.rs:                OpType::Sqrt => ExprTree::sqrt(a_tree),
+pixelflow-ml/examples/gen_egraph_variants.rs:                OpType::Rsqrt => ExprTree::Op {
+pixelflow-ml/examples/gen_egraph_variants.rs:                OpType::Abs => ExprTree::abs(a_tree),
+pixelflow-ml/examples/gen_egraph_variants.rs:                _ => ExprTree::var(0), // Fallback for unexpected ops
+pixelflow-ml/examples/gen_egraph_variants.rs:                OpType::Add => ExprTree::op_add(a_tree, b_tree),
+pixelflow-ml/examples/gen_egraph_variants.rs:                OpType::Sub => ExprTree::op_sub(a_tree, b_tree),
+pixelflow-ml/examples/gen_egraph_variants.rs:                OpType::Mul => ExprTree::op_mul(a_tree, b_tree),
+pixelflow-ml/examples/gen_egraph_variants.rs:                OpType::Div => ExprTree::op_div(a_tree, b_tree),
+pixelflow-ml/examples/gen_egraph_variants.rs:                OpType::Min => ExprTree::min(a_tree, b_tree),
+pixelflow-ml/examples/gen_egraph_variants.rs:                OpType::Max => ExprTree::max(a_tree, b_tree),
+pixelflow-ml/examples/gen_egraph_variants.rs:                _ => ExprTree::var(0), // Fallback
+pixelflow-ml/examples/gen_egraph_variants.rs:                OpType::MulAdd => ExprTree::mul_add(a_tree, b_tree, c_tree),
+pixelflow-ml/examples/gen_egraph_variants.rs:                _ => ExprTree::var(0), // Fallback
+pixelflow-ml/examples/gen_egraph_variants.rs:        ExprTree::Leaf(Leaf::Var(i)) => Expr::Var(*i),
+pixelflow-ml/examples/gen_egraph_variants.rs:        ExprTree::Leaf(Leaf::Const(v)) => Expr::Const(*v),
+pixelflow-ml/examples/gen_egraph_variants.rs:        ExprTree::Op { op, children } => {
+pixelflow-ml/src/training/egraph.rs:                ExprTree::Leaf(Leaf::Var(self.rng.gen_range(0..self.num_vars) as u8))
+pixelflow-ml/src/training/egraph.rs:                ExprTree::Leaf(Leaf::Const(
+pixelflow-ml/src/training/egraph.rs:                0 => ExprTree::op_add(
+pixelflow-ml/src/training/egraph.rs:                1 => ExprTree::op_sub(
+pixelflow-ml/src/training/egraph.rs:                2 => ExprTree::op_mul(
+pixelflow-ml/src/training/egraph.rs:                3 => ExprTree::op_div(
+pixelflow-ml/src/training/egraph.rs:                4 => ExprTree::min(
+pixelflow-ml/src/training/egraph.rs:                5 => ExprTree::max(
+pixelflow-ml/src/training/egraph.rs:                6 => ExprTree::op_neg(self.generate_inner(depth + 1)),
+pixelflow-ml/src/training/egraph.rs:                7 => ExprTree::sqrt(self.generate_inner(depth + 1)),
+pixelflow-ml/src/training/egraph.rs:                8 => ExprTree::abs(self.generate_inner(depth + 1)),
+pixelflow-ml/src/training/egraph.rs:                _ => ExprTree::mul_add(
+pixelflow-ml/src/training/features.rs:        ExprTree::Leaf(Leaf::Var(_)) => OpKind::Var,
+pixelflow-ml/src/training/features.rs:        ExprTree::Leaf(Leaf::Const(_)) => OpKind::Const,
+pixelflow-ml/src/training/features.rs:        ExprTree::Op { op, .. } => match op.name() {
+pixelflow-ml/src/training/features.rs:        ExprTree::Leaf(Leaf::Var(i)) => NnueExpr::Var(*i),
+pixelflow-ml/src/training/features.rs:        ExprTree::Leaf(Leaf::Const(c)) => NnueExpr::Const(*c),
+pixelflow-ml/src/training/features.rs:        ExprTree::Op { op, children } => {
+pixelflow-ml/src/training/features.rs:        ExprTree::Leaf(Leaf::Var(v)) => {
+pixelflow-ml/src/training/features.rs:        ExprTree::Leaf(Leaf::Const(c)) => {
+pixelflow-ml/src/training/features.rs:        ExprTree::Op { op, children } => {
+pixelflow-ml/src/training/features.rs:        ExprTree::Leaf(_) => {}
+pixelflow-ml/src/training/features.rs:        ExprTree::Op { children, .. } => {
+pixelflow-ml/src/training/features.rs:        ExprTree::Leaf(_) => {}
+pixelflow-ml/src/training/features.rs:        ExprTree::Op { children, .. } => match children.len() {

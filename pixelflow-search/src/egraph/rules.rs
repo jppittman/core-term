@@ -4,7 +4,7 @@
 
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
-use super::ops::{self, Op};
+use super::ops::Op;
 use super::rewrite::{Rewrite, RewriteAction};
 
 /// Commutativity: a op b → b op a

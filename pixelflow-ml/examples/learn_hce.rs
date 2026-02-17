@@ -36,6 +36,9 @@ fn to_nnue_expr(expr: &Expr) -> pixelflow_nnue::Expr {
             Box::new(to_nnue_expr(b)),
             Box::new(to_nnue_expr(c)),
         ),
+        Expr::Nary(op, children) => {
+            pixelflow_nnue::Expr::Nary(*op, children.iter().map(to_nnue_expr).collect())
+        }
     }
 }
 
@@ -403,6 +406,15 @@ fn format_expr(expr: &Expr) -> String {
             format_expr(a),
             format_expr(b),
             format_expr(c)
+        ),
+        Expr::Nary(op, children) => format!(
+            "{}({})",
+            op_name(*op),
+            children
+                .iter()
+                .map(|c| format_expr(c))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     }
 }
