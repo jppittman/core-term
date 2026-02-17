@@ -1,0 +1,60 @@
+   Compiling pixelflow-ir v0.1.0 (/app/pixelflow-ir)
+    Checking actor-scheduler v0.1.0 (/app/actor-scheduler)
+   Compiling core-term v0.1.0 (/app/core-term)
+    Checking pixelflow-nnue v0.1.0 (/app/pixelflow-nnue)
+error: the loop variable `op_idx` is used to index `latencies`
+   --> pixelflow-nnue/src/factored.rs:172:23
+    |
+172 |         for op_idx in 0..OpKind::COUNT {
+    |                       ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+    = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator and enumerate()
+    |
+172 -         for op_idx in 0..OpKind::COUNT {
+172 +         for (op_idx, <item>) in latencies.iter().enumerate().take(OpKind::COUNT) {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-nnue/src/factored.rs:294:12
+    |
+294 |     pub fn from_expr(expr: &Expr, emb: &OpEmbeddings) -> Self {
+    |            ^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+    = note: `-D clippy::must-use-candidate` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::must_use_candidate)]`
+help: add the attribute
+    |
+294 ~     #[must_use]
+295 ~     pub fn from_expr(expr: &Expr, emb: &OpEmbeddings) -> Self {
+    |
+
+error: this `if` statement can be collapsed
+   --> pixelflow-nnue/src/factored.rs:588:17
+    |
+588 | /                 if *op == OpKind::Add {
+589 | |                     if matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
+590 | |                         features.values[Self::HAS_FMA_PATTERN] = 1.0;
+591 | |                     }
+592 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+588 ~                 if *op == OpKind::Add
+589 ~                     && matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
+590 |                         features.values[Self::HAS_FMA_PATTERN] = 1.0;
+591 ~                     }
+    |
+
+warning: core-term@0.1.0: Building with Cocoa display driver
+error: could not compile `pixelflow-nnue` (lib) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `pixelflow-nnue` (lib) due to 3 previous errors
+error: could not compile `pixelflow-nnue` (lib) due to 3 previous errors

@@ -142,7 +142,7 @@ pub trait SimdOps:
     /// Natural exponential.
     #[inline(always)]
     fn exp(self) -> Self {
-        const LOG2_E: f32 = 1.4426950408889634;
+        const LOG2_E: f32 = std::f32::consts::LOG2_E;
         (self * Self::splat(LOG2_E)).exp2()
     }
 }
@@ -173,7 +173,11 @@ pub trait SimdU32Ops:
     fn from_f32_scaled<F: SimdOps>(f: F) -> Self;
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "wasm32"
+)))]
 pub mod scalar;
 
 #[cfg(target_arch = "x86_64")]

@@ -1,0 +1,7 @@
+pixelflow-ir/src/backend/scalar.rs:    pub fn pack_rgba(r: ScalarF32, g: ScalarF32, b: ScalarF32, a: ScalarF32) -> Self {
+pixelflow-ir/src/backend/arm.rs:    pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
+pixelflow-ir/src/backend/x86.rs:        // Placeholder - actual packing is done via pack_rgba
+pixelflow-ir/src/backend/x86.rs:    pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
+pixelflow-ir/src/backend/x86.rs:    pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
+pixelflow-ir/src/backend/x86.rs:    pub(crate) fn pack_rgba(r: F32x16, g: F32x16, b: F32x16, a: F32x16) -> Self {
+pixelflow-ir/src/backend/wasm.rs:    pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {

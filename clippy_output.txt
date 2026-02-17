@@ -1,0 +1,237 @@
+   Compiling pixelflow-ir v0.1.0 (/app/pixelflow-ir)
+   Compiling actor-scheduler-macros v0.1.0 (/app/actor-scheduler-macros)
+    Checking freetype-sys v0.17.0
+   Compiling pixelflow-runtime v0.1.0 (/app/pixelflow-runtime)
+    Checking freetype-rs v0.32.0
+error: associated function `pack_rgba` is never used
+    --> pixelflow-ir/src/backend/x86.rs:1172:19
+     |
+1169 | impl U32x8 {
+     | ---------- associated function in this implementation
+...
+1172 |     pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
+     |                   ^^^^^^^^^
+     |
+     = note: `-D dead-code` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(dead_code)]`
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/mod.rs:145:29
+    |
+145 |         const LOG2_E: f32 = 1.4426950408889634;
+    |                             ^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+    = note: `-D clippy::excessive-precision` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::excessive_precision)]`
+help: consider changing the type or truncating it to
+    |
+145 -         const LOG2_E: f32 = 1.4426950408889634;
+145 +         const LOG2_E: f32 = 1.442_695;
+    |
+
+error: approximate value of `f{32, 64}::consts::LOG2_E` found
+   --> pixelflow-ir/src/backend/mod.rs:145:29
+    |
+145 |         const LOG2_E: f32 = 1.4426950408889634;
+    |                             ^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using the constant directly
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#approx_constant
+    = note: `#[deny(clippy::approx_constant)]` on by default
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:320:37
+    |
+320 |             let sqrt2 = _mm_set1_ps(1.4142135624);
+    |                                     ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+320 -             let sqrt2 = _mm_set1_ps(1.4142135624);
+320 +             let sqrt2 = _mm_set1_ps(1.414_213_5);
+    |
+
+error: approximate value of `f{32, 64}::consts::SQRT_2` found
+   --> pixelflow-ir/src/backend/x86.rs:320:37
+    |
+320 |             let sqrt2 = _mm_set1_ps(1.4142135624);
+    |                                     ^^^^^^^^^^^^
+    |
+    = help: consider using the constant directly
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#approx_constant
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:332:35
+    |
+332 |             let c4 = _mm_set1_ps(-0.3200435159);
+    |                                   ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+332 -             let c4 = _mm_set1_ps(-0.3200435159);
+332 +             let c4 = _mm_set1_ps(-0.320_043_5);
+    |
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:333:34
+    |
+333 |             let c3 = _mm_set1_ps(1.7974969154);
+    |                                  ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+333 -             let c3 = _mm_set1_ps(1.7974969154);
+333 +             let c3 = _mm_set1_ps(1.797_496_9);
+    |
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:334:35
+    |
+334 |             let c2 = _mm_set1_ps(-4.1988046176);
+    |                                   ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+334 -             let c2 = _mm_set1_ps(-4.1988046176);
+334 +             let c2 = _mm_set1_ps(-4.198_805);
+    |
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:335:34
+    |
+335 |             let c1 = _mm_set1_ps(5.7270231695);
+    |                                  ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+335 -             let c1 = _mm_set1_ps(5.7270231695);
+335 +             let c1 = _mm_set1_ps(5.727_023);
+    |
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:336:35
+    |
+336 |             let c0 = _mm_set1_ps(-3.0056146714);
+    |                                   ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+336 -             let c0 = _mm_set1_ps(-3.0056146714);
+336 +             let c0 = _mm_set1_ps(-3.005_614_8);
+    |
+
+error: approximate value of `f{32, 64}::consts::LN_2` found
+   --> pixelflow-ir/src/backend/x86.rs:361:34
+    |
+361 |             let c1 = _mm_set1_ps(0.6931472);
+    |                                  ^^^^^^^^^
+    |
+    = help: consider using the constant directly
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#approx_constant
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:903:40
+    |
+903 |             let sqrt2 = _mm256_set1_ps(1.4142135624);
+    |                                        ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+903 -             let sqrt2 = _mm256_set1_ps(1.4142135624);
+903 +             let sqrt2 = _mm256_set1_ps(1.414_213_5);
+    |
+
+error: approximate value of `f{32, 64}::consts::SQRT_2` found
+   --> pixelflow-ir/src/backend/x86.rs:903:40
+    |
+903 |             let sqrt2 = _mm256_set1_ps(1.4142135624);
+    |                                        ^^^^^^^^^^^^
+    |
+    = help: consider using the constant directly
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#approx_constant
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:915:38
+    |
+915 |             let c4 = _mm256_set1_ps(-0.3200435159);
+    |                                      ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+915 -             let c4 = _mm256_set1_ps(-0.3200435159);
+915 +             let c4 = _mm256_set1_ps(-0.320_043_5);
+    |
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:916:37
+    |
+916 |             let c3 = _mm256_set1_ps(1.7974969154);
+    |                                     ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+916 -             let c3 = _mm256_set1_ps(1.7974969154);
+916 +             let c3 = _mm256_set1_ps(1.797_496_9);
+    |
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:917:38
+    |
+917 |             let c2 = _mm256_set1_ps(-4.1988046176);
+    |                                      ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+917 -             let c2 = _mm256_set1_ps(-4.1988046176);
+917 +             let c2 = _mm256_set1_ps(-4.198_805);
+    |
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:918:37
+    |
+918 |             let c1 = _mm256_set1_ps(5.7270231695);
+    |                                     ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+918 -             let c1 = _mm256_set1_ps(5.7270231695);
+918 +             let c1 = _mm256_set1_ps(5.727_023);
+    |
+
+error: float has excessive precision
+   --> pixelflow-ir/src/backend/x86.rs:919:38
+    |
+919 |             let c0 = _mm256_set1_ps(-3.0056146714);
+    |                                      ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#excessive_precision
+help: consider changing the type or truncating it to
+    |
+919 -             let c0 = _mm256_set1_ps(-3.0056146714);
+919 +             let c0 = _mm256_set1_ps(-3.005_614_8);
+    |
+
+error: approximate value of `f{32, 64}::consts::LN_2` found
+   --> pixelflow-ir/src/backend/x86.rs:952:37
+    |
+952 |             let c1 = _mm256_set1_ps(0.6931472);
+    |                                     ^^^^^^^^^
+    |
+    = help: consider using the constant directly
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#approx_constant
+
+error: could not compile `pixelflow-ir` (lib) due to 19 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `pixelflow-ir` (lib) due to 19 previous errors

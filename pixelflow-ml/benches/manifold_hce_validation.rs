@@ -5,10 +5,10 @@
 //!
 //! Run with: cargo bench -p pixelflow-ml --bench manifold_hce_validation
 
-use criterion::{Criterion, BenchmarkId, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use pixelflow_core::{Field, Manifold, ManifoldCompat, ManifoldExt, X, Y, Z};
+use pixelflow_ml::evaluator::{LinearFeatures, default_expr_weights, extract_expr_features};
 use pixelflow_ml::nnue::{Expr, OpType};
-use pixelflow_ml::evaluator::{extract_expr_features, default_expr_weights, LinearFeatures};
 
 // ============================================================================
 // Kernel Definitions: Manifold (compiled) + Expr (for HCE)
@@ -32,8 +32,16 @@ mod circle_sdf {
                 OpType::Sqrt,
                 Box::new(Expr::Binary(
                     OpType::Add,
-                    Box::new(Expr::Binary(OpType::Mul, Box::new(Expr::Var(0)), Box::new(Expr::Var(0)))),
-                    Box::new(Expr::Binary(OpType::Mul, Box::new(Expr::Var(1)), Box::new(Expr::Var(1)))),
+                    Box::new(Expr::Binary(
+                        OpType::Mul,
+                        Box::new(Expr::Var(0)),
+                        Box::new(Expr::Var(0)),
+                    )),
+                    Box::new(Expr::Binary(
+                        OpType::Mul,
+                        Box::new(Expr::Var(1)),
+                        Box::new(Expr::Var(1)),
+                    )),
                 )),
             )),
             Box::new(Expr::Const(r)),
@@ -57,10 +65,22 @@ mod distance_3d {
                 OpType::Add,
                 Box::new(Expr::Binary(
                     OpType::Add,
-                    Box::new(Expr::Binary(OpType::Mul, Box::new(Expr::Var(0)), Box::new(Expr::Var(0)))),
-                    Box::new(Expr::Binary(OpType::Mul, Box::new(Expr::Var(1)), Box::new(Expr::Var(1)))),
+                    Box::new(Expr::Binary(
+                        OpType::Mul,
+                        Box::new(Expr::Var(0)),
+                        Box::new(Expr::Var(0)),
+                    )),
+                    Box::new(Expr::Binary(
+                        OpType::Mul,
+                        Box::new(Expr::Var(1)),
+                        Box::new(Expr::Var(1)),
+                    )),
                 )),
-                Box::new(Expr::Binary(OpType::Mul, Box::new(Expr::Var(2)), Box::new(Expr::Var(2)))),
+                Box::new(Expr::Binary(
+                    OpType::Mul,
+                    Box::new(Expr::Var(2)),
+                    Box::new(Expr::Var(2)),
+                )),
             )),
         )
     }
@@ -112,8 +132,16 @@ mod normalize {
                 OpType::Sqrt,
                 Box::new(Expr::Binary(
                     OpType::Add,
-                    Box::new(Expr::Binary(OpType::Mul, Box::new(Expr::Var(0)), Box::new(Expr::Var(0)))),
-                    Box::new(Expr::Binary(OpType::Mul, Box::new(Expr::Var(1)), Box::new(Expr::Var(1)))),
+                    Box::new(Expr::Binary(
+                        OpType::Mul,
+                        Box::new(Expr::Var(0)),
+                        Box::new(Expr::Var(0)),
+                    )),
+                    Box::new(Expr::Binary(
+                        OpType::Mul,
+                        Box::new(Expr::Var(1)),
+                        Box::new(Expr::Var(1)),
+                    )),
                 )),
             )),
         )
@@ -239,8 +267,13 @@ fn bench_manifold_kernels(c: &mut Criterion) {
     let kernel_data = collect_kernel_data();
     println!("\n=== HCE Predictions ===");
     for kd in &kernel_data {
-        println!("  {}: HCE={}, critical_path={}, nodes={}",
-            kd.name, kd.hce_cost, kd.critical_path, kd.expr.node_count());
+        println!(
+            "  {}: HCE={}, critical_path={}, nodes={}",
+            kd.name,
+            kd.hce_cost,
+            kd.critical_path,
+            kd.expr.node_count()
+        );
     }
     println!();
 

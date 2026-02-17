@@ -27,7 +27,7 @@ use super::rewrite::{Rewrite, RewriteAction};
 /// - Involution: inv(inv(x)) → x
 /// - Cancellation: (x ⊕ a) ⊖ a → x
 /// - InverseAnnihilation: x ⊕ inv(x) → identity
-pub trait InversePair {
+pub trait InversePair: Send + Sync {
     /// The base operation (Add, Mul)
     fn base() -> &'static dyn Op;
     /// The inverse operation (Neg, Recip)
@@ -45,10 +45,18 @@ pub trait InversePair {
 /// - (x + a) - a = x
 pub struct AddNeg;
 impl InversePair for AddNeg {
-    fn base() -> &'static dyn Op { &ops::Add }
-    fn inverse() -> &'static dyn Op { &ops::Neg }
-    fn derived() -> &'static dyn Op { &ops::Sub }
-    fn identity() -> f32 { 0.0 }
+    fn base() -> &'static dyn Op {
+        &ops::Add
+    }
+    fn inverse() -> &'static dyn Op {
+        &ops::Neg
+    }
+    fn derived() -> &'static dyn Op {
+        &ops::Sub
+    }
+    fn identity() -> f32 {
+        0.0
+    }
 }
 
 /// Multiplication and Reciprocal are inverses.
@@ -58,10 +66,18 @@ impl InversePair for AddNeg {
 /// - (x * a) / a = x
 pub struct MulRecip;
 impl InversePair for MulRecip {
-    fn base() -> &'static dyn Op { &ops::Mul }
-    fn inverse() -> &'static dyn Op { &ops::Recip }
-    fn derived() -> &'static dyn Op { &ops::Div }
-    fn identity() -> f32 { 1.0 }
+    fn base() -> &'static dyn Op {
+        &ops::Mul
+    }
+    fn inverse() -> &'static dyn Op {
+        &ops::Recip
+    }
+    fn derived() -> &'static dyn Op {
+        &ops::Div
+    }
+    fn identity() -> f32 {
+        1.0
+    }
 }
 
 // ============================================================================
@@ -93,10 +109,14 @@ impl<T: InversePair> Canonicalize<T> {
 }
 
 impl<T: InversePair> Rewrite for Canonicalize<T> {
-    fn name(&self) -> &str { "canonicalize" }
+    fn name(&self) -> &str {
+        "canonicalize"
+    }
 
     fn apply(&self, _egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if !node_matches_op(node, T::derived()) { return None; }
+        if !node_matches_op(node, T::derived()) {
+            return None;
+        }
         let (a, b) = node.binary_operands()?;
 
         Some(RewriteAction::Canonicalize {
@@ -122,13 +142,19 @@ impl<T: InversePair> Involution<T> {
 }
 
 impl<T: InversePair> Rewrite for Involution<T> {
-    fn name(&self) -> &str { "involution" }
+    fn name(&self) -> &str {
+        "involution"
+    }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if !node_matches_op(node, T::inverse()) { return None; }
+        if !node_matches_op(node, T::inverse()) {
+            return None;
+        }
 
         let children = node.children();
-        if children.len() != 1 { return None; }
+        if children.len() != 1 {
+            return None;
+        }
         let inner_id = children[0];
 
         for inner_node in egraph.nodes(inner_id) {
@@ -157,10 +183,14 @@ impl<T: InversePair> Cancellation<T> {
 }
 
 impl<T: InversePair> Rewrite for Cancellation<T> {
-    fn name(&self) -> &str { "cancellation" }
+    fn name(&self) -> &str {
+        "cancellation"
+    }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if !node_matches_op(node, T::derived()) { return None; }
+        if !node_matches_op(node, T::derived()) {
+            return None;
+        }
         let (numerator, canceller) = node.binary_operands()?;
 
         for inner_node in egraph.nodes(numerator) {
@@ -195,10 +225,14 @@ impl<T: InversePair> InverseAnnihilation<T> {
 }
 
 impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
-    fn name(&self) -> &str { "inverse-annihilation" }
+    fn name(&self) -> &str {
+        "inverse-annihilation"
+    }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if !node_matches_op(node, T::base()) { return None; }
+        if !node_matches_op(node, T::base()) {
+            return None;
+        }
         let (a, b) = node.binary_operands()?;
 
         // x ⊕ inv(x) → identity

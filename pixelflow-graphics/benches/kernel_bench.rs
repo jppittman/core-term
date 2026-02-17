@@ -17,9 +17,7 @@ pub fn manual_poly(x: Field, y: Field) -> Field {
 /// Same polynomial using kernel! (optimized by e-graph)
 #[inline(never)]
 pub fn kernel_poly(x: Field, y: Field) -> Field {
-    let k = kernel!(|| {
-        X * X * X + X * X * Y * 2.0 + X * Y * Y * 3.0 + Y * Y * Y
-    });
+    let k = kernel!(|| { X * X * X + X * X * Y * 2.0 + X * Y * Y * 3.0 + Y * Y * Y });
     k().eval_raw(x, y, Field::from(0.0), Field::from(0.0))
 }
 

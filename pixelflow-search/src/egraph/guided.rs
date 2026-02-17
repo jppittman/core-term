@@ -221,11 +221,9 @@ impl GuidedState {
         let cost_before = self.best_cost;
 
         // Try to apply the rule
-        let changed = self.egraph.apply_single_rule(
-            action.rule_idx,
-            action.target_class,
-            action.node_idx,
-        );
+        let changed =
+            self.egraph
+                .apply_single_rule(action.rule_idx, action.target_class, action.node_idx);
 
         if !changed {
             return false;
@@ -260,7 +258,11 @@ impl GuidedState {
         GuidedStats {
             total_actions,
             successful_improvements: improvements,
-            initial_cost: self.history.first().map(|r| r.cost_before).unwrap_or(self.best_cost),
+            initial_cost: self
+                .history
+                .first()
+                .map(|r| r.cost_before)
+                .unwrap_or(self.best_cost),
             final_cost: self.best_cost,
             num_classes: self.num_classes(),
         }
@@ -345,8 +347,8 @@ impl ActionStats {
             f64::INFINITY
         } else {
             let exploit = self.average_reward();
-            let explore = exploration_constant
-                * ((parent_visits as f64).ln() / self.visits as f64).sqrt();
+            let explore =
+                exploration_constant * ((parent_visits as f64).ln() / self.visits as f64).sqrt();
             exploit + explore
         }
     }
@@ -500,7 +502,7 @@ impl GuidedMcts {
             // Blend prior with empirical estimate
             let empirical_q = stats.average_reward();
             let blended_q = if stats.visits == 0 {
-                prior_q  // Use prior only for unvisited actions
+                prior_q // Use prior only for unvisited actions
             } else {
                 // Weighted blend: more weight to empirical as visits increase
                 let weight = (stats.visits as f64).min(10.0) / 10.0;
@@ -509,7 +511,7 @@ impl GuidedMcts {
 
             // UCB1 with blended Q-value
             let exploration = if stats.visits == 0 {
-                f64::INFINITY  // Always explore unvisited at least once
+                f64::INFINITY // Always explore unvisited at least once
             } else {
                 self.config.exploration_constant
                     * ((self.total_iterations.max(1) as f64).ln() / stats.visits as f64).sqrt()
@@ -668,10 +670,7 @@ mod tests {
     #[test]
     fn test_guided_state_creation() {
         // Create a simple tree: X + 0
-        let tree = ExprTree::add(
-            ExprTree::var(0),
-            ExprTree::constant(0.0),
-        );
+        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
 
         let costs = CostModel::default();
         let state = GuidedState::from_tree(&tree, costs);
@@ -683,10 +682,7 @@ mod tests {
 
     #[test]
     fn test_available_actions() {
-        let tree = ExprTree::add(
-            ExprTree::var(0),
-            ExprTree::constant(0.0),
-        );
+        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
 
         let costs = CostModel::default();
         let state = GuidedState::from_tree(&tree, costs);
@@ -699,10 +695,7 @@ mod tests {
     #[test]
     fn test_apply_action_improves() {
         // X + 0 should simplify to X
-        let tree = ExprTree::add(
-            ExprTree::var(0),
-            ExprTree::constant(0.0),
-        );
+        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
 
         let costs = CostModel::default();
         let mut state = GuidedState::from_tree(&tree, costs);
@@ -728,10 +721,7 @@ mod tests {
 
     #[test]
     fn test_guided_stats() {
-        let tree = ExprTree::mul(
-            ExprTree::var(0),
-            ExprTree::constant(1.0),
-        );
+        let tree = ExprTree::mul(ExprTree::var(0), ExprTree::constant(1.0));
 
         let costs = CostModel::default();
         let mut state = GuidedState::from_tree(&tree, costs);
@@ -777,10 +767,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_creation() {
-        let tree = ExprTree::add(
-            ExprTree::var(0),
-            ExprTree::constant(0.0),
-        );
+        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
 
         let config = GuidedConfig::default().with_iterations(10);
         let mcts = GuidedMcts::from_tree(&tree, config);
@@ -791,14 +778,9 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_iterate() {
-        let tree = ExprTree::add(
-            ExprTree::var(0),
-            ExprTree::constant(0.0),
-        );
+        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
 
-        let config = GuidedConfig::default()
-            .with_iterations(100)
-            .with_seed(42);
+        let config = GuidedConfig::default().with_iterations(100).with_seed(42);
         let mut mcts = GuidedMcts::from_tree(&tree, config);
 
         let initial_cost = mcts.best_cost();
@@ -819,14 +801,9 @@ mod tests {
     #[test]
     fn test_guided_mcts_run() {
         // x * 1 should simplify to x
-        let tree = ExprTree::mul(
-            ExprTree::var(0),
-            ExprTree::constant(1.0),
-        );
+        let tree = ExprTree::mul(ExprTree::var(0), ExprTree::constant(1.0));
 
-        let config = GuidedConfig::default()
-            .with_iterations(100)
-            .with_seed(42);
+        let config = GuidedConfig::default().with_iterations(100).with_seed(42);
 
         let result = guided_optimize(&tree, config);
 
@@ -837,23 +814,15 @@ mod tests {
     #[test]
     fn test_guided_mcts_complex_expr() {
         // (x + 0) * 1 + (y * 0) should simplify to x
-        let tree = ExprTree::add(
-            ExprTree::mul(
-                ExprTree::add(
-                    ExprTree::var(0),
-                    ExprTree::constant(0.0),
-                ),
+        let tree = ExprTree::op_add(
+            ExprTree::op_mul(
+                ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0)),
                 ExprTree::constant(1.0),
             ),
-            ExprTree::mul(
-                ExprTree::var(1),
-                ExprTree::constant(0.0),
-            ),
+            ExprTree::op_mul(ExprTree::var(1), ExprTree::constant(0.0)),
         );
 
-        let config = GuidedConfig::default()
-            .with_iterations(500)
-            .with_seed(42);
+        let config = GuidedConfig::default().with_iterations(500).with_seed(42);
 
         let result = guided_optimize(&tree, config);
 
@@ -864,10 +833,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_epsilon_greedy() {
-        let tree = ExprTree::add(
-            ExprTree::var(0),
-            ExprTree::var(1),
-        );
+        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::var(1));
 
         // Test with epsilon = 1.0 (pure random)
         let config = GuidedConfig::default()
@@ -887,10 +853,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_training_mode() {
-        let tree = ExprTree::add(
-            ExprTree::var(0),
-            ExprTree::constant(0.0),
-        );
+        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
 
         let config = GuidedConfig::default()
             .training_mode()
@@ -909,10 +872,7 @@ mod tests {
     #[test]
     fn test_guided_mcts_timeout() {
         let tree = ExprTree::add(
-            ExprTree::mul(
-                ExprTree::var(0),
-                ExprTree::var(1),
-            ),
+            ExprTree::mul(ExprTree::var(0), ExprTree::var(1)),
             ExprTree::var(2),
         );
 
