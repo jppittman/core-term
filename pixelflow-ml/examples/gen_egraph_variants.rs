@@ -34,8 +34,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pixelflow_ml::nnue::{Expr, ExprGenConfig, ExprGenerator, HalfEPFeature, OpType, extract_features};
-use pixelflow_search::egraph::{EGraph, ExprTree, Leaf, CostModel, codegen, ops};
+use pixelflow_ml::nnue::{
+    Expr, ExprGenConfig, ExprGenerator, HalfEPFeature, OpType, extract_features,
+};
+use pixelflow_search::egraph::{CostModel, EGraph, ExprTree, Leaf, codegen, ops};
 
 /// Cached benchmark result for an expression.
 #[derive(Debug, Clone)]
@@ -114,7 +116,9 @@ impl CacheEntry {
         format!(
             r#"{{"expression":"{}","cost_ns":{},"timestamp":{},"name":"{}","egraph_cost":{},"node_count":{},"depth":{},"features":[{}],"op_counts":{}}}"#,
             escape_json(&self.expression),
-            self.cost_ns.map(|c| c.to_string()).unwrap_or_else(|| "null".to_string()),
+            self.cost_ns
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "null".to_string()),
             self.timestamp,
             self.name,
             self.egraph_cost,
@@ -200,7 +204,9 @@ fn extract_json_number(json: &str, key: &str) -> Option<f64> {
     if rest.starts_with("null") {
         return None;
     }
-    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-' && c != 'e' && c != 'E' && c != '+')?;
+    let end = rest.find(|c: char| {
+        !c.is_ascii_digit() && c != '.' && c != '-' && c != 'e' && c != 'E' && c != '+'
+    })?;
     rest[..end].parse().ok()
 }
 
@@ -225,7 +231,7 @@ fn extract_json_array(json: &str, key: &str) -> Option<Vec<u16>> {
         array_content
             .split(',')
             .filter_map(|s| s.trim().parse().ok())
-            .collect()
+            .collect(),
     )
 }
 
@@ -294,7 +300,11 @@ impl BenchmarkCache {
         let expression = entry.expression.clone();
 
         // Append to file
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&self.path) {
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
             if let Err(e) = writeln!(file, "{}", json) {
                 eprintln!("Warning: failed to write cache entry: {}", e);
             }
@@ -305,7 +315,10 @@ impl BenchmarkCache {
 
     /// Get entries that are pending benchmark (have cost_ns = None).
     fn pending_entries(&self) -> Vec<&CacheEntry> {
-        self.entries.values().filter(|e| e.cost_ns.is_none()).collect()
+        self.entries
+            .values()
+            .filter(|e| e.cost_ns.is_none())
+            .collect()
     }
 
     /// Update an entry with benchmark results.
@@ -319,7 +332,11 @@ impl BenchmarkCache {
     fn flush(&self) {
         if let Ok(mut file) = File::create(&self.path) {
             writeln!(file, "# Benchmark cache - JSONL format").ok();
-            writeln!(file, "# Each line is a JSON object with expression, cost_ns, etc.").ok();
+            writeln!(
+                file,
+                "# Each line is a JSON object with expression, cost_ns, etc."
+            )
+            .ok();
             for entry in self.entries.values() {
                 writeln!(file, "{}", entry.to_json()).ok();
             }
@@ -328,7 +345,10 @@ impl BenchmarkCache {
 
     /// Count entries with actual benchmark results.
     fn benchmarked_count(&self) -> usize {
-        self.entries.values().filter(|e| e.cost_ns.is_some()).count()
+        self.entries
+            .values()
+            .filter(|e| e.cost_ns.is_some())
+            .count()
     }
 }
 
@@ -505,8 +525,11 @@ fn main() {
 
     if pending_benchmarks.is_empty() {
         println!("\nAll variants already cached. No benchmarking needed.");
-        println!("Cache contains {} entries ({} with benchmark data)",
-            cache.entries.len(), cache.benchmarked_count());
+        println!(
+            "Cache contains {} entries ({} with benchmark data)",
+            cache.entries.len(),
+            cache.benchmarked_count()
+        );
         return;
     }
 
@@ -516,7 +539,11 @@ fn main() {
     bench_file
         .write_all(bench_code.as_bytes())
         .expect("Failed to write benchmark");
-    println!("Wrote {} benchmarks to {}", pending_benchmarks.len(), bench_path.display());
+    println!(
+        "Wrote {} benchmarks to {}",
+        pending_benchmarks.len(),
+        bench_path.display()
+    );
 
     // Also write variant data file (for all entries including cached)
     write_variants_file(&cache, &variants_path);
@@ -526,18 +553,19 @@ fn main() {
 
     println!("\nNext steps:");
     println!("  1. Run benchmarks: cargo bench -p pixelflow-ml --bench generated_kernels");
-    println!("  2. Update cache:   cargo run -p pixelflow-ml --example collect_benchmark_costs --features training");
-    println!("\nThe cache will grow with each run. Current: {} entries ({} benchmarked)",
-        cache.entries.len(), cache.benchmarked_count());
+    println!(
+        "  2. Update cache:   cargo run -p pixelflow-ml --example collect_benchmark_costs --features training"
+    );
+    println!(
+        "\nThe cache will grow with each run. Current: {} entries ({} benchmarked)",
+        cache.entries.len(),
+        cache.benchmarked_count()
+    );
 }
 
 fn write_variants_file(cache: &BenchmarkCache, path: &PathBuf) {
     let mut data_file = File::create(path).expect("Failed to create data file");
-    writeln!(
-        data_file,
-        "# E-Graph Variants - Generated Training Data"
-    )
-    .unwrap();
+    writeln!(data_file, "# E-Graph Variants - Generated Training Data").unwrap();
     writeln!(
         data_file,
         "# Format: name|seed_idx|variant_idx|node_count|depth|cost|features..."
@@ -586,7 +614,7 @@ fn nnue_expr_to_tree(expr: &Expr) -> ExprTree {
         Expr::Unary(op, a) => {
             let a_tree = nnue_expr_to_tree(a);
             match op {
-                OpType::Neg => ExprTree::neg(a_tree),
+                OpType::Neg => ExprTree::op_neg(a_tree),
                 OpType::Sqrt => ExprTree::sqrt(a_tree),
                 OpType::Rsqrt => ExprTree::Op {
                     op: &ops::Rsqrt,
@@ -600,10 +628,10 @@ fn nnue_expr_to_tree(expr: &Expr) -> ExprTree {
             let a_tree = nnue_expr_to_tree(a);
             let b_tree = nnue_expr_to_tree(b);
             match op {
-                OpType::Add => ExprTree::add(a_tree, b_tree),
-                OpType::Sub => ExprTree::sub(a_tree, b_tree),
-                OpType::Mul => ExprTree::mul(a_tree, b_tree),
-                OpType::Div => ExprTree::div(a_tree, b_tree),
+                OpType::Add => ExprTree::op_add(a_tree, b_tree),
+                OpType::Sub => ExprTree::op_sub(a_tree, b_tree),
+                OpType::Mul => ExprTree::op_mul(a_tree, b_tree),
+                OpType::Div => ExprTree::op_div(a_tree, b_tree),
                 OpType::Min => ExprTree::min(a_tree, b_tree),
                 OpType::Max => ExprTree::max(a_tree, b_tree),
                 _ => ExprTree::var(0), // Fallback
@@ -638,7 +666,9 @@ fn tree_to_nnue_expr(tree: &ExprTree) -> Expr {
                 // Unary ops
                 ("neg", 1) => Expr::Unary(OpType::Neg, Box::new(tree_to_nnue_expr(&children[0]))),
                 ("sqrt", 1) => Expr::Unary(OpType::Sqrt, Box::new(tree_to_nnue_expr(&children[0]))),
-                ("rsqrt", 1) => Expr::Unary(OpType::Rsqrt, Box::new(tree_to_nnue_expr(&children[0]))),
+                ("rsqrt", 1) => {
+                    Expr::Unary(OpType::Rsqrt, Box::new(tree_to_nnue_expr(&children[0])))
+                }
                 ("abs", 1) => Expr::Unary(OpType::Abs, Box::new(tree_to_nnue_expr(&children[0]))),
                 ("recip", 1) => Expr::Binary(
                     OpType::Div,
@@ -738,7 +768,11 @@ fn print_cache_stats(cache: &BenchmarkCache, costs: &CostModel) {
 
     println!("\nCache Statistics:");
     println!("  Total entries: {}", entries.len());
-    println!("  Benchmarked: {} ({:.1}%)", benchmarked.len(), 100.0 * benchmarked.len() as f64 / entries.len() as f64);
+    println!(
+        "  Benchmarked: {} ({:.1}%)",
+        benchmarked.len(),
+        100.0 * benchmarked.len() as f64 / entries.len() as f64
+    );
     println!("  Pending benchmark: {}", pending);
     println!("  Average node count: {:.1}", avg_nodes);
     println!("  Average depth: {:.1}", avg_depth);
@@ -756,13 +790,17 @@ fn print_cache_stats(cache: &BenchmarkCache, costs: &CostModel) {
     // Show cost model info
     let cost_map = costs.to_map();
     println!("\nCost model weights:");
-    println!("  add={}, mul={}, div={}",
+    println!(
+        "  add={}, mul={}, div={}",
         cost_map.get("add").unwrap_or(&0),
         cost_map.get("mul").unwrap_or(&0),
-        cost_map.get("div").unwrap_or(&0));
-    println!("  mul_add={}, sqrt={}",
+        cost_map.get("div").unwrap_or(&0)
+    );
+    println!(
+        "  mul_add={}, sqrt={}",
         cost_map.get("mul_add").unwrap_or(&0),
-        cost_map.get("sqrt").unwrap_or(&0));
+        cost_map.get("sqrt").unwrap_or(&0)
+    );
 }
 
 /// Find workspace root by looking for Cargo.toml with [workspace]

@@ -170,6 +170,7 @@ impl SymbolTable {
     }
 
     /// Get all scalar parameter symbols (for struct generation).
+    #[allow(dead_code)]
     pub fn parameters(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols
             .values()
@@ -177,6 +178,7 @@ impl SymbolTable {
     }
 
     /// Check if a name is a manifold parameter.
+    #[allow(dead_code)]
     pub fn is_manifold_param(&self, name: &str) -> bool {
         self.symbols
             .get(name)
@@ -184,6 +186,7 @@ impl SymbolTable {
     }
 
     /// Get all manifold parameter symbols (for generic type generation).
+    #[allow(dead_code)]
     pub fn manifold_params(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols
             .values()

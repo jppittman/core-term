@@ -230,8 +230,8 @@ impl DepsAnalysis {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::ops;
+    use super::*;
 
     #[test]
     fn test_deps_lattice() {

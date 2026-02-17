@@ -1136,7 +1136,10 @@ impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorChec
         // Coverage: how much of the pixel is in this cell vs neighbor
         let zero = Field::from(0.0);
         let one = Field::from(1.0);
-        let coverage = (dist_to_edge / pixel_size).min(one.clone()).max(zero).constant();
+        let coverage = (dist_to_edge / pixel_size)
+            .min(one.clone())
+            .max(zero)
+            .constant();
 
         // Select and blend colors
         let r_base = is_even.clone().select(ra.clone(), rb.clone());

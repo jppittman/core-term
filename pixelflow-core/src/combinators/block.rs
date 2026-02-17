@@ -86,7 +86,12 @@ mod tests {
         let inner = X + Y;
         let blocked = Block::new(inner);
 
-        let p = (Field::from(3.0), Field::from(4.0), Field::from(0.0), Field::from(0.0));
+        let p = (
+            Field::from(3.0),
+            Field::from(4.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
 
         // Just verify it runs without panic
         let _direct = inner.eval(p);
@@ -99,7 +104,12 @@ mod tests {
         let inner = X * Y;
         let blocked = Block::new(Block::new(inner));
 
-        let p = (Field::from(3.0), Field::from(4.0), Field::from(0.0), Field::from(0.0));
+        let p = (
+            Field::from(3.0),
+            Field::from(4.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
         let _result = blocked.eval(p);
     }
 
@@ -109,7 +119,12 @@ mod tests {
         let expr = (X + Y) * (X - Y);
         let blocked = Block::new(expr);
 
-        let p = (Field::from(5.0), Field::from(3.0), Field::from(0.0), Field::from(0.0));
+        let p = (
+            Field::from(5.0),
+            Field::from(3.0),
+            Field::from(0.0),
+            Field::from(0.0),
+        );
         let _result = blocked.eval(p);
         // (5+3) * (5-3) = 8 * 2 = 16
     }

@@ -481,9 +481,7 @@ impl<const N: usize, A: Transcendental> Transcendental for Dual<N, A> {
         let mask = self.val.lt(rhs.val);
         Self {
             val: self.val.min(rhs.val),
-            partials: core::array::from_fn(|i| {
-                A::select(mask, self.partials[i], rhs.partials[i])
-            }),
+            partials: core::array::from_fn(|i| A::select(mask, self.partials[i], rhs.partials[i])),
         }
     }
 
@@ -493,9 +491,7 @@ impl<const N: usize, A: Transcendental> Transcendental for Dual<N, A> {
         let mask = self.val.gt(rhs.val);
         Self {
             val: self.val.max(rhs.val),
-            partials: core::array::from_fn(|i| {
-                A::select(mask, self.partials[i], rhs.partials[i])
-            }),
+            partials: core::array::from_fn(|i| A::select(mask, self.partials[i], rhs.partials[i])),
         }
     }
 

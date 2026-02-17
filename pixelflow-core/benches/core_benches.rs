@@ -97,8 +97,8 @@ fn bench_field_transcendental(c: &mut Criterion) {
     group.throughput(Throughput::Elements(PARALLELISM as u64));
 
     // Test across different ranges to measure average performance
-    let small = Field::sequential(0.1);  // [0.1, 0.1+PARALLELISM*step]
-    let mid = Field::sequential(1.0);    // [1.0, 1.0+PARALLELISM*step]
+    let small = Field::sequential(0.1); // [0.1, 0.1+PARALLELISM*step]
+    let mid = Field::sequential(1.0); // [1.0, 1.0+PARALLELISM*step]
     let large = Field::sequential(10.0); // [10.0, 10.0+PARALLELISM*step]
 
     group.bench_function("log2_small", |bencher| {

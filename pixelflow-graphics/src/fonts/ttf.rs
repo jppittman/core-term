@@ -7,8 +7,7 @@
 
 use crate::shapes::{square, Bounded};
 use pixelflow_core::{
-    Abs, At, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Select,
-    W, X, Y, Z,
+    Abs, At, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Select, W, X, Y, Z,
 };
 use pixelflow_macros::kernel;
 use std::sync::Arc;
@@ -18,7 +17,6 @@ use super::ttf_curve_analytical::{AnalyticalLine, AnalyticalQuad};
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Type Aliases for Concrete Kernel Types
@@ -91,7 +89,6 @@ impl<M: Manifold<Field4, Output = Field>> Manifold<Field4> for Sum<M> {
         })
     }
 }
-
 
 /// Threshold combinator - converts winding number to inside/outside (0 or 1).
 ///
@@ -268,7 +265,6 @@ impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Line<K> {
     }
 }
 
-
 impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Quad<K> {
     type Output = Field;
 
@@ -278,7 +274,6 @@ impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Quad<K> {
         self.kernel.eval_raw(x, y, z, w)
     }
 }
-
 
 // Old Quad implementation using quadratic formula (for benchmarking Curve<3>)
 // Uses layered contramap pattern: build AST with ZST variables, inject values via .at()
@@ -417,7 +412,6 @@ impl<L: Manifold<Field4, Output = Field>, Q: Manifold<Field4, Output = Field>> M
     }
 }
 
-
 /// A simple glyph: segments in unit space, bounded, then transformed.
 ///
 /// The composition is: Affine<Select<UnitSquare, Geometry, 0.0>>
@@ -504,7 +498,6 @@ where
         }
     }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Reader
@@ -768,11 +761,9 @@ impl<'a> Font<'a> {
                         ENCODING_WINDOWS_UNICODE_FULL,
                         FORMAT_SEGMENTED_COVERAGE,
                     )
-                    | (
-                        PLATFORM_UNICODE,
-                        ENCODING_UNICODE_2_0_FULL,
-                        FORMAT_SEGMENTED_COVERAGE,
-                    ) => Some((2, o, f)),
+                    | (PLATFORM_UNICODE, ENCODING_UNICODE_2_0_FULL, FORMAT_SEGMENTED_COVERAGE) => {
+                        Some((2, o, f))
+                    }
 
                     (PLATFORM_WINDOWS, ENCODING_WINDOWS_UNICODE_BMP, FORMAT_SEGMENT_MAPPING)
                     | (PLATFORM_UNICODE, ENCODING_UNICODE_2_0_BMP, FORMAT_SEGMENT_MAPPING) => {
@@ -804,10 +795,7 @@ impl<'a> Font<'a> {
 
     /// Get glyph by pre-looked-up glyph ID (avoids redundant CMAP lookup).
     #[inline]
-    pub fn glyph_by_id(
-        &self,
-        id: u16,
-    ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
+    pub fn glyph_by_id(&self, id: u16) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         self.compile(id)
     }
 

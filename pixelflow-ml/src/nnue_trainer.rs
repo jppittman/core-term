@@ -11,11 +11,8 @@
 
 extern crate alloc;
 
+use crate::nnue::{Expr, HalfEPFeature, extract_features};
 use alloc::vec::Vec;
-use crate::nnue::{
-    Expr, HalfEPFeature,
-    extract_features,
-};
 use libm::logf;
 
 // ============================================================================
@@ -37,9 +34,7 @@ impl NnueSample {
     /// Create from an expression and measured cost.
     pub fn from_expr(expr: &Expr, cost_ns: f32) -> Self {
         let features = extract_features(expr);
-        let mut indices: Vec<usize> = features.iter()
-            .map(|f| f.to_index())
-            .collect();
+        let mut indices: Vec<usize> = features.iter().map(|f| f.to_index()).collect();
         indices.sort_unstable();
         indices.dedup();
 
@@ -196,7 +191,10 @@ impl NnueTrainer {
 
     /// Simple LCG random number generator.
     fn rand_f32(&mut self) -> f32 {
-        self.rng_state = self.rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        self.rng_state = self
+            .rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1);
         (self.rng_state >> 33) as f32 / (1u64 << 31) as f32
     }
 
@@ -230,9 +228,8 @@ impl NnueTrainer {
         let mut history = Vec::with_capacity(self.config.epochs);
 
         // Initialize bias to mean of targets
-        let mean_target: f32 = self.samples.iter()
-            .map(|s| self.get_target(s))
-            .sum::<f32>() / self.samples.len() as f32;
+        let mean_target: f32 = self.samples.iter().map(|s| self.get_target(s)).sum::<f32>()
+            / self.samples.len() as f32;
         self.model.bias = mean_target;
 
         for epoch in 0..self.config.epochs {
@@ -272,8 +269,13 @@ impl NnueTrainer {
 
             if self.config.print_every > 0 && (epoch + 1) % self.config.print_every == 0 {
                 let corr = self.spearman_correlation(&self.samples.clone());
-                eprintln!("Epoch {}/{}: loss = {:.4}, spearman = {:.4}",
-                    epoch + 1, self.config.epochs, epoch_loss, corr);
+                eprintln!(
+                    "Epoch {}/{}: loss = {:.4}, spearman = {:.4}",
+                    epoch + 1,
+                    self.config.epochs,
+                    epoch_loss,
+                    corr
+                );
             }
         }
 
@@ -341,10 +343,7 @@ impl Default for NnueTrainer {
 /// Compute ranks for a vector of values.
 fn compute_ranks(values: &[f32]) -> Vec<f32> {
     let n = values.len();
-    let mut indexed: Vec<(usize, f32)> = values.iter()
-        .enumerate()
-        .map(|(i, &v)| (i, v))
-        .collect();
+    let mut indexed: Vec<(usize, f32)> = values.iter().enumerate().map(|(i, &v)| (i, v)).collect();
 
     indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal));
 

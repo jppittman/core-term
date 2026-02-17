@@ -66,14 +66,22 @@ fn determine_display_driver(target_os: &str) -> String {
 
     // Prioritize OS-specific drivers when multiple features are enabled
     if target_os == "macos" {
-        if has_cocoa { return "cocoa".to_string(); }
-        if has_headless { return "headless".to_string(); }
+        if has_cocoa {
+            return "cocoa".to_string();
+        }
+        if has_headless {
+            return "headless".to_string();
+        }
         return "cocoa".to_string();
     }
 
     if target_os == "linux" {
-        if has_x11 { return "x11".to_string(); }
-        if has_headless { return "headless".to_string(); }
+        if has_x11 {
+            return "x11".to_string();
+        }
+        if has_headless {
+            return "headless".to_string();
+        }
         return "x11".to_string();
     }
 
