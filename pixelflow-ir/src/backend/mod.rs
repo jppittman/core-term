@@ -142,6 +142,7 @@ pub trait SimdOps:
     /// Natural exponential.
     #[inline(always)]
     fn exp(self) -> Self {
+        #[allow(clippy::excessive_precision, clippy::approx_constant)]
         const LOG2_E: f32 = 1.4426950408889634;
         (self * Self::splat(LOG2_E)).exp2()
     }
