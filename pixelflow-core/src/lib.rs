@@ -633,8 +633,7 @@ impl Field {
     /// Computed as log2(x) * ln(2).
     #[inline(always)]
     pub(crate) fn ln(self) -> Self {
-        const LN_2: f32 = 0.6931471805599453;
-        Self(self.0.log2() * NativeSimd::splat(LN_2))
+        Self(self.0.log2() * NativeSimd::splat(core::f32::consts::LN_2))
     }
 
     /// Base-2 exponential (2^x).
