@@ -1,3 +1,0 @@
-                if let Some((a, b)) = inner_node.binary_operands() {
-                if let Some(&inner) = node_b.children().first() {
-                if let Some(&inner) = node_a.children().first() {

@@ -68,8 +68,8 @@ impl Rewrite for Distributive {
         let (a, other) = node.binary_operands()?;
 
         for child_node in egraph.nodes(other) {
-            if let Some(child_op) = child_node.op() {
-                if child_op.name() == self.inner.name() {
+            match child_node.op() {
+                Some(child_op) if child_op.name() == self.inner.name() => {
                     if let Some((b, c)) = child_node.binary_operands() {
                         return Some(RewriteAction::Distribute {
                             outer: self.outer,
@@ -80,6 +80,7 @@ impl Rewrite for Distributive {
                         });
                     }
                 }
+                _ => {}
             }
         }
         None

@@ -162,6 +162,7 @@ mod tests {
     use super::*;
 
     /// A fold that counts nodes (for testing the traversal).
+    #[allow(dead_code)]
     struct NodeCounter {
         count: usize,
     }

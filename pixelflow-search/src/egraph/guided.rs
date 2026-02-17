@@ -587,16 +587,14 @@ impl GuidedMcts {
 
         loop {
             // Check termination conditions
-            if let Some(timeout) = self.config.timeout {
-                if start.elapsed() >= timeout {
-                    break;
-                }
+            match self.config.timeout {
+                Some(timeout) if start.elapsed() >= timeout => break,
+                _ => {}
             }
 
-            if let Some(max_iter) = self.config.max_iterations {
-                if self.total_iterations >= max_iter {
-                    break;
-                }
+            match self.config.max_iterations {
+                Some(max_iter) if self.total_iterations >= max_iter => break,
+                _ => {}
             }
 
             // Run one iteration

@@ -195,15 +195,18 @@ impl<T: InversePair + Send + Sync> Rewrite for Cancellation<T> {
 
         for inner_node in egraph.nodes(numerator) {
             if node_matches_op(inner_node, T::base()) {
-                if let Some((a, b)) = inner_node.binary_operands() {
-                    let b_match = egraph.find(b) == egraph.find(canceller);
-                    if b_match {
-                        return Some(RewriteAction::Union(a));
+                match inner_node.binary_operands() {
+                    Some((a, b)) => {
+                        let b_match = egraph.find(b) == egraph.find(canceller);
+                        if b_match {
+                            return Some(RewriteAction::Union(a));
+                        }
+                        let a_match = egraph.find(a) == egraph.find(canceller);
+                        if T::base().is_commutative() && a_match {
+                            return Some(RewriteAction::Union(b));
+                        }
                     }
-                    let a_match = egraph.find(a) == egraph.find(canceller);
-                    if T::base().is_commutative() && a_match {
-                        return Some(RewriteAction::Union(b));
-                    }
+                    None => {}
                 }
             }
         }
@@ -238,10 +241,13 @@ impl<T: InversePair + Send + Sync> Rewrite for InverseAnnihilation<T> {
         // x ⊕ inv(x) → identity
         for node_b in egraph.nodes(b) {
             if node_matches_op(node_b, T::inverse()) {
-                if let Some(&inner) = node_b.children().first() {
-                    if egraph.find(inner) == egraph.find(a) {
-                        return Some(RewriteAction::Create(ENode::constant(T::identity())));
+                match node_b.children().first() {
+                    Some(&inner) => {
+                        if egraph.find(inner) == egraph.find(a) {
+                            return Some(RewriteAction::Create(ENode::constant(T::identity())));
+                        }
                     }
+                    None => {}
                 }
             }
         }
@@ -249,10 +255,13 @@ impl<T: InversePair + Send + Sync> Rewrite for InverseAnnihilation<T> {
         // inv(x) ⊕ x → identity
         for node_a in egraph.nodes(a) {
             if node_matches_op(node_a, T::inverse()) {
-                if let Some(&inner) = node_a.children().first() {
-                    if egraph.find(inner) == egraph.find(b) {
-                        return Some(RewriteAction::Create(ENode::constant(T::identity())));
+                match node_a.children().first() {
+                    Some(&inner) => {
+                        if egraph.find(inner) == egraph.find(b) {
+                            return Some(RewriteAction::Create(ENode::constant(T::identity())));
+                        }
                     }
+                    None => {}
                 }
             }
         }

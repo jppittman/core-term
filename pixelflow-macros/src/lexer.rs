@@ -33,10 +33,13 @@ pub enum TokenClass {
     /// User-defined identifier.
     Ident,
     /// Numeric literal.
+    #[allow(dead_code)]
     Literal,
     /// Operator (+, -, etc.).
+    #[allow(dead_code)]
     Operator,
     /// Punctuation.
+    #[allow(dead_code)]
     Punct,
     /// Keyword (let).
     Keyword,

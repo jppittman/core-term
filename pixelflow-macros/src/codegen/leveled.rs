@@ -101,8 +101,10 @@ pub enum LeveledNodeKind {
         right: NodeRef,
     },
     /// Unary operation referencing one prior node
+    #[allow(dead_code)]
     Unary { op: UnaryOp, operand: NodeRef },
     /// Method call on a node
+    #[allow(dead_code)]
     Method {
         receiver: NodeRef,
         method: String,
