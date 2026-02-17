@@ -63,6 +63,7 @@ impl ExprTree {
     }
 
     // Constructor helpers for common operations
+    #[allow(clippy::should_implement_trait)]
     pub fn add(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Add,
@@ -70,6 +71,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn sub(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Sub,
@@ -77,6 +79,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn mul(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Mul,
@@ -84,6 +87,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn div(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Div,
@@ -91,6 +95,7 @@ impl ExprTree {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn neg(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Neg,
@@ -339,41 +344,53 @@ pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (
     let mut result_stack: Vec<ExprTree> = Vec::new();
     let mut building: BTreeSet<u32> = BTreeSet::new();
 
+    #[allow(clippy::too_many_arguments)]
+    fn visit(
+        egraph: &EGraph,
+        class: EClassId,
+        best_node: &[Option<usize>],
+        result_stack: &mut Vec<ExprTree>,
+        building: &mut BTreeSet<u32>,
+        build_stack: &mut Vec<BuildTask>,
+    ) {
+        let canonical = egraph.find(class);
+
+        // Cycle detection
+        if !building.insert(canonical.0) {
+            result_stack.push(ExprTree::Leaf(Leaf::Const(0.0)));
+            return;
+        }
+
+        let node_idx = best_node[canonical.0 as usize].unwrap_or(0);
+        let node = &egraph.nodes(canonical)[node_idx];
+
+        match node {
+            ENode::Var(idx) => {
+                building.remove(&canonical.0);
+                result_stack.push(ExprTree::Leaf(Leaf::Var(*idx)));
+            }
+            ENode::Const(bits) => {
+                building.remove(&canonical.0);
+                result_stack.push(ExprTree::Leaf(Leaf::Const(f32::from_bits(*bits))));
+            }
+            ENode::Op { op, children } => {
+                // Push completion task, then visit children in reverse order
+                build_stack.push(BuildTask::Complete {
+                    canonical: canonical.0,
+                    op: *op,
+                    num_children: children.len(),
+                });
+                for &child in children.iter().rev() {
+                    build_stack.push(BuildTask::Visit(child));
+                }
+            }
+        }
+    }
+
     while let Some(task) = build_stack.pop() {
         match task {
             BuildTask::Visit(class) => {
-                let canonical = egraph.find(class);
-
-                // Cycle detection
-                if !building.insert(canonical.0) {
-                    result_stack.push(ExprTree::Leaf(Leaf::Const(0.0)));
-                    continue;
-                }
-
-                let node_idx = best_node[canonical.0 as usize].unwrap_or(0);
-                let node = &egraph.nodes(canonical)[node_idx];
-
-                match node {
-                    ENode::Var(idx) => {
-                        building.remove(&canonical.0);
-                        result_stack.push(ExprTree::Leaf(Leaf::Var(*idx)));
-                    }
-                    ENode::Const(bits) => {
-                        building.remove(&canonical.0);
-                        result_stack.push(ExprTree::Leaf(Leaf::Const(f32::from_bits(*bits))));
-                    }
-                    ENode::Op { op, children } => {
-                        // Push completion task, then visit children in reverse order
-                        build_stack.push(BuildTask::Complete {
-                            canonical: canonical.0,
-                            op: *op,
-                            num_children: children.len(),
-                        });
-                        for &child in children.iter().rev() {
-                            build_stack.push(BuildTask::Visit(child));
-                        }
-                    }
-                }
+                visit(egraph, class, &best_node, &mut result_stack, &mut building, &mut build_stack);
             }
             BuildTask::Complete { canonical, op, num_children } => {
                 building.remove(&canonical);
@@ -385,7 +402,7 @@ pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (
         }
     }
 
-    let tree = result_stack.pop().unwrap_or_else(|| ExprTree::Leaf(Leaf::Const(0.0)));
+    let tree = result_stack.pop().unwrap_or(ExprTree::Leaf(Leaf::Const(0.0)));
     (tree, total_cost)
 }
 
@@ -574,13 +591,13 @@ fn count_refs_recursive(
     ref_counts[canonical.0 as usize] += 1;
 
     // Only recurse on first visit to count true structural refs
-    if ref_counts[canonical.0 as usize] == 1 {
-        if let Some(node_idx) = best_node[canonical.0 as usize] {
-            let node = &egraph.nodes(canonical)[node_idx];
-            if let ENode::Op { children, .. } = node {
-                for &child in children {
-                    count_refs_recursive(egraph, child, best_node, ref_counts);
-                }
+    if ref_counts[canonical.0 as usize] == 1
+        && let Some(node_idx) = best_node[canonical.0 as usize]
+    {
+        let node = &egraph.nodes(canonical)[node_idx];
+        if let ENode::Op { children, .. } = node {
+            for &child in children {
+                count_refs_recursive(egraph, child, best_node, ref_counts);
             }
         }
     }
@@ -636,6 +653,7 @@ fn toposort_dag(
 
     // Add root if not already included
     let root_canonical = egraph.find(root);
+    #[allow(clippy::manual_contains)]
     if !result.iter().any(|id| *id == root_canonical) {
         result.push(root_canonical);
     }

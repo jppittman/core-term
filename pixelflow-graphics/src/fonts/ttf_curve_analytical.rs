@@ -238,8 +238,12 @@ impl Manifold<Field4> for AnalyticalQuad {
                 |ux: f32, uy: f32, uc: f32,
                  vx: f32, vy: f32, vc: f32,
                  wx: f32, wy: f32, wc: f32,
-                 orientation: f32|
+                 orientation: f32,
+                 y_min: f32, y_max: f32|
                 {
+                    // Early rejection
+                    let in_y_range = (Y >= y_min) & (Y < y_max);
+
                     // Barycentric coords
                     let u = X * ux + Y * uy + uc;
                     let v = X * vx + Y * vy + vc;
@@ -252,7 +256,7 @@ impl Manifold<Field4> for AnalyticalQuad {
                     // ∇f = 2u∇u - v∇w - w∇v
                     let gx = u * (2.0 * ux) - v * wx - w * vx;
                     let gy = u * (2.0 * uy) - v * wy - w * vy;
-                    
+
                     // Gradient magnitude
                     let gmag = (gx * gx + gy * gy).sqrt();
 
@@ -262,7 +266,9 @@ impl Manifold<Field4> for AnalyticalQuad {
                     let coverage = (scaled_f * -1.0 + 0.5).max(0.0).min(1.0);
 
                     // Apply orientation for winding
-                    coverage * orientation
+                    let winding = coverage * orientation;
+
+                    in_y_range.select(winding, 0.0)
                 }
             );
 
@@ -270,7 +276,8 @@ impl Manifold<Field4> for AnalyticalQuad {
                 self.u_x, self.u_y, self.u_c,
                 self.v_x, self.v_y, self.v_c,
                 self.w_x, self.w_y, self.w_c,
-                self.orientation
+                self.orientation,
+                self.y_min, self.y_max
             ).eval(p)
         }
     }
