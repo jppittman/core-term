@@ -365,6 +365,8 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     let valid_t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    // Optimization: Material/bg evaluation is expensive, so we must be branchless but careful
+    // However, for kernel! macro, we rely on compiler to inline/eliminate dead code
     let mask = valid_t & valid_deriv;
 
     // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)

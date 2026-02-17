@@ -792,3 +792,5 @@ mod context_domain_tests {
         check_manifold::<CheckerCtx, _>(&result);
     }
 }
+
+impl<Ctx, Body> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
