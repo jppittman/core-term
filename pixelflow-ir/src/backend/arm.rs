@@ -333,6 +333,7 @@ impl SimdOps for F32x4 {
             let x_u32 = vreinterpretq_u32_f32(self.0);
 
             // Extract exponent: (bits >> 23) - 127
+            // Use integer arithmetic to avoid precision loss around 1.0
             let exp_bits = vshrq_n_u32::<23>(x_u32);
             let bias = vdupq_n_s32(127);
             let mut n = vcvtq_f32_s32(vsubq_s32(vreinterpretq_s32_u32(exp_bits), bias));
@@ -344,6 +345,7 @@ impl SimdOps for F32x4 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
+            #[allow(clippy::excessive_precision, clippy::approx_constant)]
             let sqrt2 = vdupq_n_f32(1.4142135624);
             let mask = vcgeq_f32(f, sqrt2);
             let adjust = vandq_u32(mask, vreinterpretq_u32_f32(vdupq_n_f32(1.0)));
@@ -353,10 +355,15 @@ impl SimdOps for F32x4 {
             // Polynomial for log2(f) on [√2/2, √2]
             // Fitted using least squares on Chebyshev nodes
             // Max error: ~1e-4
+            #[allow(clippy::excessive_precision, clippy::approx_constant)]
             let c4 = vdupq_n_f32(-0.3200435159);
+            #[allow(clippy::excessive_precision, clippy::approx_constant)]
             let c3 = vdupq_n_f32(1.7974969154);
+            #[allow(clippy::excessive_precision, clippy::approx_constant)]
             let c2 = vdupq_n_f32(-4.1988046176);
+            #[allow(clippy::excessive_precision, clippy::approx_constant)]
             let c1 = vdupq_n_f32(5.7270231695);
+            #[allow(clippy::excessive_precision, clippy::approx_constant)]
             let c0 = vdupq_n_f32(-3.0056146714);
 
             // Horner's method using NEON FMA: vfmaq_f32(c, a, b) = a*b + c
@@ -380,10 +387,15 @@ impl SimdOps for F32x4 {
 
             // Minimax polynomial for 2^f, f ∈ [0, 1)
             // Degree 4, max error ~10^-7
+            #[allow(clippy::excessive_precision, clippy::approx_constant)]
             let c4 = vdupq_n_f32(0.0135557);
+            #[allow(clippy::excessive_precision, clippy::approx_constant)]
             let c3 = vdupq_n_f32(0.0520323);
+            #[allow(clippy::excessive_precision, clippy::approx_constant)]
             let c2 = vdupq_n_f32(0.2413793);
+            #[allow(clippy::excessive_precision, clippy::approx_constant)]
             let c1 = vdupq_n_f32(0.6931472);
+            #[allow(clippy::excessive_precision, clippy::approx_constant)]
             let c0 = vdupq_n_f32(1.0);
 
             // Horner's method
@@ -589,6 +601,7 @@ impl Shr<u32> for U32x4 {
 impl U32x4 {
     /// Pack 4 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
         unsafe {
             // Clamp to [0, 1] and scale to [0, 255]
