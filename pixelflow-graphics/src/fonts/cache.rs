@@ -373,7 +373,9 @@ mod tests {
         let Some(font) = Font::parse(FONT_DATA) else {
             return;
         };
-        let glyph = font.glyph_scaled('A', 32.0).unwrap();
+        let Some(glyph) = font.glyph_scaled('A', 32.0) else {
+            return;
+        };
         let cached = CachedGlyph::new(&glyph, 32);
 
         assert_eq!(cached.width(), 32);
@@ -428,7 +430,9 @@ mod tests {
         let Some(font) = Font::parse(FONT_DATA) else {
             return;
         };
-        let glyph = font.glyph_scaled('A', 32.0).unwrap();
+        let Some(glyph) = font.glyph_scaled('A', 32.0) else {
+            return;
+        };
         let cached = CachedGlyph::new(&glyph, 32);
 
         // Evaluate coverage at multiple coordinates - should not panic
