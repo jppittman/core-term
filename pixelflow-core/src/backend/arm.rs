@@ -365,7 +365,20 @@ impl SimdOps for F32x4 {
             let poly = vfmaq_f32(c1, poly, f);
             let poly = vfmaq_f32(c0, poly, f);
 
-            Self(vaddq_f32(n, poly))
+            let result = vaddq_f32(n, poly);
+
+            // Fix for non-positive numbers
+            let zero = vdupq_n_f32(0.0);
+
+            // x < 0 -> NaN
+            let nan = vdupq_n_f32(f32::NAN);
+            let neg_mask = vcltq_f32(self.0, zero);
+            let res_neg = vbslq_f32(neg_mask, nan, result);
+
+            // x == 0 -> -inf
+            let neg_inf = vdupq_n_f32(f32::NEG_INFINITY);
+            let zero_mask = vceqq_f32(self.0, zero);
+            Self(vbslq_f32(zero_mask, neg_inf, res_neg))
         }
     }
 

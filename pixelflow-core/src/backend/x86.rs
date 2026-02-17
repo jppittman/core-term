@@ -341,7 +341,22 @@ impl SimdOps for F32x4 {
             poly = _mm_add_ps(_mm_mul_ps(poly, f), c1);
             poly = _mm_add_ps(_mm_mul_ps(poly, f), c0);
 
-            Self(_mm_add_ps(n, poly))
+            let result = _mm_add_ps(n, poly);
+
+            // Fix for non-positive numbers
+            let zero = _mm_setzero_ps();
+            // x < 0 -> NaN
+            let nan = _mm_set1_ps(f32::NAN);
+            let neg_mask = _mm_cmplt_ps(self.0, zero);
+            let res_neg = _mm_or_ps(_mm_and_ps(neg_mask, nan), _mm_andnot_ps(neg_mask, result));
+
+            // x == 0 -> -inf
+            let neg_inf = _mm_set1_ps(f32::NEG_INFINITY);
+            let zero_mask = _mm_cmpeq_ps(self.0, zero);
+            Self(_mm_or_ps(
+                _mm_and_ps(zero_mask, neg_inf),
+                _mm_andnot_ps(zero_mask, res_neg),
+            ))
         }
     }
 
@@ -919,13 +934,14 @@ impl SimdOps for F32x8 {
             let c0 = _mm256_set1_ps(-3.0056146714);
 
             // Horner's method with FMA when available
+            let result;
             #[cfg(target_feature = "fma")]
             {
                 let mut poly = _mm256_fmadd_ps(c4, f, c3);
                 poly = _mm256_fmadd_ps(poly, f, c2);
                 poly = _mm256_fmadd_ps(poly, f, c1);
                 poly = _mm256_fmadd_ps(poly, f, c0);
-                Self(_mm256_add_ps(n, poly))
+                result = _mm256_add_ps(n, poly);
             }
             #[cfg(not(target_feature = "fma"))]
             {
@@ -933,8 +949,24 @@ impl SimdOps for F32x8 {
                 poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c2);
                 poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c1);
                 poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c0);
-                Self(_mm256_add_ps(n, poly))
+                result = _mm256_add_ps(n, poly);
             }
+
+            // Fix for non-positive numbers
+            let zero = _mm256_setzero_ps();
+            let nan = _mm256_set1_ps(f32::NAN);
+            let neg_mask = _mm256_cmp_ps(self.0, zero, _CMP_LT_OQ);
+            let res_neg = _mm256_or_ps(
+                _mm256_and_ps(neg_mask, nan),
+                _mm256_andnot_ps(neg_mask, result),
+            );
+
+            let neg_inf = _mm256_set1_ps(f32::NEG_INFINITY);
+            let zero_mask = _mm256_cmp_ps(self.0, zero, _CMP_EQ_OQ);
+            Self(_mm256_or_ps(
+                _mm256_and_ps(zero_mask, neg_inf),
+                _mm256_andnot_ps(zero_mask, res_neg),
+            ))
         }
     }
 
@@ -1555,7 +1587,20 @@ impl SimdOps for F32x16 {
             poly = _mm512_fmadd_ps(poly, f, c1);
             poly = _mm512_fmadd_ps(poly, f, c0);
 
-            Self(_mm512_add_ps(n, poly))
+            let result = _mm512_add_ps(n, poly);
+
+            // Fix for non-positive numbers
+            let zero = _mm512_setzero_ps();
+            // x < 0 -> NaN
+            let neg_mask = _mm512_cmp_ps_mask(self.0, zero, _CMP_LT_OQ);
+            let nan = _mm512_set1_ps(f32::NAN);
+            // mask_blend(k, a, b): if k { b } else { a }
+            let res_neg = _mm512_mask_blend_ps(neg_mask, result, nan);
+
+            // x == 0 -> -inf
+            let zero_mask = _mm512_cmp_ps_mask(self.0, zero, _CMP_EQ_OQ);
+            let neg_inf = _mm512_set1_ps(f32::NEG_INFINITY);
+            Self(_mm512_mask_blend_ps(zero_mask, res_neg, neg_inf))
         }
     }
 

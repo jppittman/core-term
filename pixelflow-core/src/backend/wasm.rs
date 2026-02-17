@@ -304,7 +304,20 @@ impl SimdOps for F32x4 {
         let poly = f32x4_add(f32x4_mul(poly, f), c1);
         let poly = f32x4_add(f32x4_mul(poly, f), c0);
 
-        Self(f32x4_add(n, poly))
+        let result = f32x4_add(n, poly);
+
+        // Fix for non-positive numbers
+        let zero = f32x4_splat(0.0);
+
+        // x < 0 -> NaN
+        let nan = f32x4_splat(f32::NAN);
+        let neg_mask = f32x4_lt(self.0, zero);
+        let res_neg = v128_bitselect(nan, result, neg_mask);
+
+        // x == 0 -> -inf
+        let neg_inf = f32x4_splat(f32::NEG_INFINITY);
+        let zero_mask = f32x4_eq(self.0, zero);
+        Self(v128_bitselect(neg_inf, res_neg, zero_mask))
     }
 
     #[inline(always)]
