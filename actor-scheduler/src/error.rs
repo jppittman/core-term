@@ -95,7 +95,7 @@ pub type HandlerResult = Result<(), HandlerError>;
 
 /// Result of draining messages from a channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DrainStatus {
+pub enum DrainStatus {
     /// Channel empty, all messages processed
     Empty,
     /// Hit burst limit, more messages may be available
