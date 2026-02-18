@@ -93,9 +93,11 @@
 //! ```
 
 mod error;
+mod params;
 
 use error::DrainStatus;
 pub use error::{HandlerError, HandlerResult, SendError};
+pub use params::SchedulerParams;
 
 // Re-export macros from the proc-macro crate
 pub use actor_scheduler_macros::{actor_impl, troupe};
@@ -463,7 +465,7 @@ pub fn create_actor<D, C, M>(
     wake_handler: Option<Arc<dyn WakeHandler>>,
 ) -> (ActorHandle<D, C, M>, ActorScheduler<D, C, M>) {
     ActorScheduler::new_with_wake_handler(
-        1024, // Default data burst limit
+        SchedulerParams::DEFAULT.default_data_burst_limit,
         data_buffer_size,
         wake_handler,
     )
@@ -483,39 +485,16 @@ pub trait WakeHandler: Send + Sync {
     fn wake(&self);
 }
 
-/// Maximum capacity for Control and Management lanes
-/// Smaller buffer forces faster detection of overload scenarios
-const CONTROL_MGMT_BUFFER_SIZE: usize = 32;
-
-/// Minimum backoff duration when control/management channels are full
-/// High enough to prevent oscillation where senders retry faster than receiver can drain
-const MIN_BACKOFF: Duration = Duration::from_millis(1);
-
-/// Maximum backoff duration when control/management channels are full
-/// Large enough to guarantee the control channel can be fully drained (10x buffer size)
-/// At ~1µs per message, 320 messages = ~320µs, so 5s is extremely generous
-const MAX_BACKOFF: Duration = Duration::from_secs(5);
+/// Fibonacci hash constant for jitter calculation.
+const JITTER_HASH_CONSTANT: u64 = 0x9e3779b97f4a7c15;
 
 /// Calculate exponential backoff with jitter.
 ///
 /// Uses a simple exponential backoff strategy with added jitter to prevent
 /// thundering herd problems when multiple actors wake simultaneously.
-///
-/// # Arguments
-/// * `attempt` - The backoff attempt count (0 = first backoff)
-///
-/// # Returns
-/// A duration to sleep, with exponential growth and random jitter
-/// Fibonacci hash constant for jitter calculation.
-const JITTER_HASH_CONSTANT: u64 = 0x9e3779b97f4a7c15;
-/// Minimum jitter percentage (50%).
-const JITTER_MIN_PCT: u64 = 50;
-/// Jitter range (50-99%).
-const JITTER_RANGE: u64 = 50;
-
-fn backoff_with_jitter(attempt: u32) -> Result<Duration, SendError> {
-    let base_micros = MIN_BACKOFF.as_micros() as u64;
-    let max_micros = MAX_BACKOFF.as_micros() as u64;
+fn backoff_with_jitter(attempt: u32, params: &SchedulerParams) -> Result<Duration, SendError> {
+    let base_micros = params.min_backoff.as_micros() as u64;
+    let max_micros = params.max_backoff.as_micros() as u64;
 
     let multiplier = 2u64.saturating_pow(attempt);
     let backoff_micros = base_micros.saturating_mul(multiplier);
@@ -523,7 +502,7 @@ fn backoff_with_jitter(attempt: u32) -> Result<Duration, SendError> {
         return Err(SendError::Timeout);
     }
 
-    // Add jitter: random value between [0.5 * backoff, 1.0 * backoff]
+    // Add jitter: random value between [min_pct%, (min_pct+range_pct)%] of backoff
     // Use wall clock time for actual randomness (prevents thundering herd)
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -533,7 +512,7 @@ fn backoff_with_jitter(attempt: u32) -> Result<Duration, SendError> {
     let hash = (now.as_nanos() as u64 ^ (attempt as u64).wrapping_mul(0x517cc1b727220a95))
         .wrapping_mul(JITTER_HASH_CONSTANT);
 
-    let jitter_pct = JITTER_MIN_PCT + (hash % JITTER_RANGE);
+    let jitter_pct = params.jitter_min_pct + (hash % params.jitter_range_pct);
     let jittered_micros = (backoff_micros * jitter_pct) / 100;
 
     Ok(Duration::from_micros(jittered_micros))
@@ -558,6 +537,8 @@ pub struct ActorHandle<D, C, M> {
     tx_mgmt: SyncSender<M>,
     // Optional custom wake handler for platform-specific wake mechanisms
     wake_handler: Option<Arc<dyn WakeHandler>>,
+    // Tunable parameters for backoff/retry behavior
+    params: SchedulerParams,
 }
 
 // Manual Debug implementation - wake_handler is opaque (trait object)
@@ -579,31 +560,28 @@ impl<D, C, M> Clone for ActorHandle<D, C, M> {
             tx_control: self.tx_control.clone(),
             tx_mgmt: self.tx_mgmt.clone(),
             wake_handler: self.wake_handler.clone(),
+            params: self.params,
         }
     }
 }
 
-/// Number of immediate retries (spin) before yielding
-/// At ~10-20ns per spin, 100 spins = ~1-2µs (less than context switch cost)
-const SPIN_ATTEMPTS: u32 = 100;
-
-/// Number of yield attempts before escalating to sleep
-/// After hot spinning, cooperatively yield to let receiver process
-const YIELD_ATTEMPTS: u32 = 20;
-
 /// Send with retry and exponential backoff + jitter for fairness.
 ///
 /// Backoff strategy:
-/// 1. Spin (immediate retry) for first few attempts
-/// 2. Yield (cooperative) for next few attempts
+/// 1. Spin (immediate retry) for first `params.spin_attempts`
+/// 2. Yield (cooperative) for next `params.yield_attempts`
 /// 3. Sleep (blocking) with exponential backoff for remaining attempts
 ///
 /// Used for control and management lanes to prevent thundering herd when
 /// multiple senders compete for buffer space.
-fn send_with_backoff<T>(tx: &SyncSender<T>, mut msg: T) -> Result<(), SendError> {
+fn send_with_backoff<T>(
+    tx: &SyncSender<T>,
+    mut msg: T,
+    params: &SchedulerParams,
+) -> Result<(), SendError> {
     use std::sync::mpsc::TrySendError;
 
-    let mut attempt = 0;
+    let mut attempt = 0u32;
     loop {
         match tx.try_send(msg) {
             Ok(()) => return Ok(()),
@@ -612,10 +590,10 @@ fn send_with_backoff<T>(tx: &SyncSender<T>, mut msg: T) -> Result<(), SendError>
                 msg = returned_msg;
 
                 // Backoff strategy: spin → yield → sleep
-                if attempt < SPIN_ATTEMPTS {
+                if attempt < params.spin_attempts {
                     // Phase 1: Spin (immediate retry, hot loop)
                     // No sleep/yield - just retry immediately
-                } else if attempt < SPIN_ATTEMPTS + YIELD_ATTEMPTS {
+                } else if attempt < params.spin_attempts + params.yield_attempts {
                     // Phase 2: Yield (cooperative, let other threads run)
                     std::thread::yield_now();
                 } else {
@@ -628,8 +606,8 @@ fn send_with_backoff<T>(tx: &SyncSender<T>, mut msg: T) -> Result<(), SendError>
                         );
                     }
 
-                    let sleep_attempt = attempt - (SPIN_ATTEMPTS + YIELD_ATTEMPTS);
-                    let backoff = backoff_with_jitter(sleep_attempt)?;
+                    let sleep_attempt = attempt - (params.spin_attempts + params.yield_attempts);
+                    let backoff = backoff_with_jitter(sleep_attempt, params)?;
                     std::thread::sleep(backoff);
                 }
 
@@ -682,12 +660,12 @@ impl<D, C, M> ActorHandle<D, C, M> {
             }
             Message::Control(ctrl_msg) => {
                 // Control lane: retry with backoff for fairness
-                send_with_backoff(&self.tx_control, ctrl_msg)?;
+                send_with_backoff(&self.tx_control, ctrl_msg, &self.params)?;
                 self.wake();
             }
             Message::Management(m) => {
                 // Management lane: retry with backoff for fairness
-                send_with_backoff(&self.tx_mgmt, m)?;
+                send_with_backoff(&self.tx_mgmt, m, &self.params)?;
                 self.wake();
             }
             Message::Shutdown => {
@@ -946,16 +924,32 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
     #[must_use]
     pub fn new(data_burst_limit: usize, data_buffer_size: usize) -> (ActorHandle<D, C, M>, Self) {
+        Self::new_with_params(data_burst_limit, data_buffer_size, SchedulerParams::DEFAULT)
+    }
+
+    /// Create a new scheduler channel with explicit tuning parameters.
+    ///
+    /// Use this to test alternative configurations found by optimization.
+    ///
+    /// # Panics
+    /// Panics if `data_buffer_size` is 0 or if params fail validation.
+    #[must_use]
+    pub fn new_with_params(
+        data_burst_limit: usize,
+        data_buffer_size: usize,
+        params: SchedulerParams,
+    ) -> (ActorHandle<D, C, M>, Self) {
         assert!(
             data_buffer_size > 0,
             "data_buffer_size must be >= 1, got {}",
             data_buffer_size
         );
+        params.validate();
 
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
+        let (tx_control, rx_control) = mpsc::sync_channel(params.control_mgmt_buffer_size);
+        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(params.control_mgmt_buffer_size);
 
         let sender = ActorHandle {
             tx_doorbell,
@@ -963,6 +957,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             tx_control,
             tx_mgmt,
             wake_handler: None,
+            params,
         };
 
         let receiver = ActorScheduler {
@@ -971,8 +966,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             rx_control,
             rx_mgmt,
             data_burst_limit,
-            management_burst_limit: CONTROL_MGMT_BUFFER_SIZE,
-            control_burst_limit: CONTROL_MGMT_BUFFER_SIZE * 10,
+            management_burst_limit: params.management_burst_limit(),
+            control_burst_limit: params.control_burst_limit(),
             shutdown_mode: ShutdownMode::default(),
         };
 
@@ -1001,6 +996,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         data_buffer_size: usize,
         wake_handler: Option<Arc<dyn WakeHandler>>,
     ) -> (ActorHandle<D, C, M>, Self) {
+        let params = SchedulerParams::DEFAULT;
         assert!(
             data_buffer_size > 0,
             "data_buffer_size must be >= 1, got {}",
@@ -1009,8 +1005,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
+        let (tx_control, rx_control) = mpsc::sync_channel(params.control_mgmt_buffer_size);
+        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(params.control_mgmt_buffer_size);
 
         let sender = ActorHandle {
             tx_doorbell,
@@ -1018,6 +1014,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             tx_control,
             tx_mgmt,
             wake_handler,
+            params,
         };
 
         let receiver = ActorScheduler {
@@ -1026,8 +1023,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             rx_control,
             rx_mgmt,
             data_burst_limit,
-            management_burst_limit: CONTROL_MGMT_BUFFER_SIZE,
-            control_burst_limit: CONTROL_MGMT_BUFFER_SIZE * 10,
+            management_burst_limit: params.management_burst_limit(),
+            control_burst_limit: params.control_burst_limit(),
             shutdown_mode: ShutdownMode::default(),
         };
 
@@ -1058,6 +1055,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         data_buffer_size: usize,
         shutdown_mode: ShutdownMode,
     ) -> (ActorHandle<D, C, M>, Self) {
+        let params = SchedulerParams::DEFAULT;
         assert!(
             data_buffer_size > 0,
             "data_buffer_size must be >= 1, got {}",
@@ -1066,8 +1064,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
         let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
         let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(CONTROL_MGMT_BUFFER_SIZE);
+        let (tx_control, rx_control) = mpsc::sync_channel(params.control_mgmt_buffer_size);
+        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(params.control_mgmt_buffer_size);
 
         let sender = ActorHandle {
             tx_doorbell,
@@ -1075,6 +1073,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             tx_control,
             tx_mgmt,
             wake_handler: None,
+            params,
         };
 
         let receiver = ActorScheduler {
@@ -1083,8 +1082,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             rx_control,
             rx_mgmt,
             data_burst_limit,
-            management_burst_limit: CONTROL_MGMT_BUFFER_SIZE,
-            control_burst_limit: CONTROL_MGMT_BUFFER_SIZE * 10,
+            management_burst_limit: params.management_burst_limit(),
+            control_burst_limit: params.control_burst_limit(),
             shutdown_mode,
         };
 

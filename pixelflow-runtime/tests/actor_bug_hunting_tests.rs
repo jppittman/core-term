@@ -33,7 +33,7 @@ fn backoff_does_not_overflow_on_large_attempts() {
     let (tx, mut rx) = ActorScheduler::<(), (), ()>::new(10, 1);
 
     // Fill up the control lane to trigger backoff
-    // Note: Control lane size is 128 (CONTROL_MGMT_BUFFER_SIZE)
+    // Note: Control lane size is SchedulerParams::DEFAULT.control_mgmt_buffer_size
     let tx_clone = tx.clone();
 
     let sender = thread::spawn(move || {
@@ -669,14 +669,15 @@ fn instant_arithmetic_is_safe() {
 
 #[test]
 fn control_lane_timeout_returns_error() {
-    let test_timeout = Duration::from_secs(20); // 3 * MAX_BACKOFF, ensure we don't deadlock
+    let test_timeout = Duration::from_secs(120); // Well above MAX_BACKOFF, ensure we don't deadlock
     let test_thread = thread::spawn(|| {
+        let params = actor_scheduler::SchedulerParams::DEFAULT;
         let (tx, rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
 
         // Don't run the receiver - just let messages pile up
 
-        // Fill the control lane (CONTROL_MGMT_BUFFER_SIZE = 32)
-        for _ in 0..32 {
+        // Fill the control lane (params.control_mgmt_buffer_size)
+        for _ in 0..params.control_mgmt_buffer_size {
             tx.send(Message::Control(0)).unwrap();
         }
 
