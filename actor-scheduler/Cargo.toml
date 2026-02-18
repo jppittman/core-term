@@ -34,3 +34,7 @@ harness = false
 [[bench]]
 name = "bench_spsc_vs_mpsc"
 harness = false
+
+[[bench]]
+name = "bench_optimize_spsc"
+harness = false
