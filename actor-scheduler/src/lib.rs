@@ -94,6 +94,8 @@
 
 mod error;
 mod params;
+pub mod sharded;
+pub mod spsc;
 
 use error::DrainStatus;
 pub use error::{HandlerError, HandlerResult, SendError};

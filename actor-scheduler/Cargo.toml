@@ -30,3 +30,7 @@ harness = false
 [[bench]]
 name = "bench_optimize"
 harness = false
+
+[[bench]]
+name = "bench_spsc_vs_mpsc"
+harness = false
