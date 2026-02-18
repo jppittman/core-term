@@ -285,7 +285,7 @@ impl<M: Manifold<Field4, Output = (Field, Field, Field)>> Manifold<Field4> for S
         let y11 = eval_const(Field::from(SH_NORM[1][1]) * nx);
 
         // l=2
-        let y2m2 = eval_const(Field::from(SH_NORM[2][2]) * nx * ny);
+        let y2m2 = eval_const(Field::from(SH_NORM[2][1]) * nx * ny);
         let y2m1 = eval_const(Field::from(SH_NORM[2][1]) * ny * nz);
         let y20 = eval_const(
             Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0)),
@@ -495,7 +495,7 @@ pub fn sh2_basis_at(dir: (Field, Field, Field)) -> [Field; 9] {
         eval_const(Field::from(SH_NORM[1][1]) * ny.clone()),
         eval_const(Field::from(SH_NORM[1][0]) * nz.clone()),
         eval_const(Field::from(SH_NORM[1][1]) * nx.clone()),
-        eval_const(Field::from(SH_NORM[2][2]) * nx.clone() * ny.clone()),
+        eval_const(Field::from(SH_NORM[2][1]) * nx.clone() * ny.clone()),
         eval_const(Field::from(SH_NORM[2][1]) * ny.clone() * nz.clone()),
         eval_const(
             Field::from(SH_NORM[2][0])
@@ -634,7 +634,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sh_orthonormality() {
+    fn sh_should_be_orthonormal_at_reference_point() {
         // Y_0^0 should be constant = 1/(2√π) ≈ 0.282
         let y00 = SphericalHarmonic::<0, 0>;
         let val = y00.eval((
@@ -649,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sh_coeffs_dot() {
+    fn dot_product_should_accumulate_coefficients() {
         let a = Sh2 {
             coeffs: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
