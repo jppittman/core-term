@@ -25,6 +25,10 @@
 //! - `|cx: f32, cy: f32|` → `struct __Kernel { cx: f32, cy: f32 }`
 //! - References in the body become `self.cx`, `self.cy`
 
+// Symbol fields (name, ty, span) and accessor methods are retained for future
+// use in error diagnostics and semantic analysis passes.
+#![allow(dead_code)]
+
 use proc_macro2::Span;
 use std::collections::HashMap;
 use syn::{Ident, Type};

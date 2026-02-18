@@ -55,6 +55,7 @@ impl<M: ManifoldCompat<Field> + Send + Sync> Manifold<Jet3_4> for Lift<M> {
 /// Wraps a Field mask to implement Manifold<Jet3> for use as a Select condition.
 /// This is needed because Select<C, T, F> for Jet3 requires C: ManifoldCompat<Jet3, Output = Jet3>.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 struct FieldMask(Field);
 
 impl Manifold<Jet3_4> for FieldMask {
@@ -347,14 +348,14 @@ impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldG
 // LAYER 2: Surface (The Warp)
 // ============================================================================
 
-/// The Glue. Combines Geometry, Material, and Background.
-///
-/// Performs **The Warp**: `P = ray * t`.
-/// Because `t` carries derivatives from Layer 1, and `ray` carries derivatives
-/// from Root, `P` automatically contains the Surface Tangent Frame via the Chain Rule.
-///
-/// Evaluates geometry to get t, computes hit point P = ray * t, then selects
-/// between material (at P) and background based on hit validity.
+// The Glue. Combines Geometry, Material, and Background.
+//
+// Performs The Warp: P = ray * t.
+// Because t carries derivatives from Layer 1, and ray carries derivatives
+// from Root, P automatically contains the Surface Tangent Frame via the Chain Rule.
+//
+// Evaluates geometry to get t, computes hit point P = ray * t, then selects
+// between material (at P) and background based on hit validity.
 kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Field {
     // 1. Get distance t from geometry
     let t = geometry;
@@ -380,7 +381,7 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     mask.select(mat_val, bg_val)
 });
 
-/// Color Surface: geometry + material + background, outputs Discrete.
+// Color Surface: geometry + material + background, outputs Discrete.
 kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Discrete {
     // 1. Get distance t from geometry
     let t = geometry;
@@ -509,7 +510,7 @@ where
     }
 }
 
-/// Mask manifold for geometry hit detection.
+// Mask manifold for geometry hit detection.
 kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
     let t = geometry;
     let t_max = 1000000.0;
@@ -977,8 +978,8 @@ where
     }
 }
 
-/// Checkerboard pattern based on X/Z coordinates.
-/// Uses Jet3 derivatives for automatic antialiasing at edges.
+// Checkerboard pattern based on X/Z coordinates.
+// Uses Jet3 derivatives for automatic antialiasing at edges.
 kernel!(pub struct Checker = || Jet3 -> Field {
     // Which checker cell are we in?
     let cell_x = V(X).floor();
