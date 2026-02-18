@@ -26,3 +26,7 @@ harness = false
 [[bench]]
 name = "bench_adversarial"
 harness = false
+
+[[bench]]
+name = "bench_optimize"
+harness = false
