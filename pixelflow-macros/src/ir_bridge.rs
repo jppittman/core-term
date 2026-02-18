@@ -8,13 +8,12 @@
 //!
 //! The IR becomes the canonical representation, with AST only used during parsing.
 
-use crate::ast::{BinaryExpr, BinaryOp, Expr, LiteralExpr, UnaryOp};
+use crate::ast::{BinaryOp, Expr, UnaryOp};
 use pixelflow_ir::{Expr as IR, OpKind};
 use pixelflow_search::egraph::{EClassId, EGraph, ENode, ExprTree, Leaf, ops};
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use std::collections::HashMap;
-use syn::{Ident, Lit};
+use syn::Lit;
 
 // ============================================================================
 // AST → IR Conversion
@@ -209,6 +208,7 @@ fn opkind_to_op(kind: OpKind) -> &'static dyn ops::Op {
 // ============================================================================
 
 /// Convert an extracted ExprTree back to IR.
+#[allow(dead_code)]
 pub fn egraph_to_ir(tree: &ExprTree) -> IR {
     match tree {
         ExprTree::Leaf(Leaf::Var(idx)) => IR::Var(*idx),
@@ -264,6 +264,7 @@ pub fn egraph_to_ir(tree: &ExprTree) -> IR {
 /// Generate type-level code from IR.
 ///
 /// This emits the type-level AST that will be monomorphized by rustc.
+#[allow(dead_code)]
 pub fn ir_to_code(ir: &IR) -> TokenStream {
     match ir {
         IR::Var(idx) => {

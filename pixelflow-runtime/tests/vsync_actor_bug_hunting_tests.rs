@@ -330,10 +330,11 @@ fn clock_thread_stops_when_channel_closed() {
     // We can't easily test the real clock thread, but we can verify
     // the pattern works with our mock.
 
-    let mut builder = ActorBuilder::<RenderedResponse, VsyncCommand, VsyncManagement>::new(100, None);
-    let tx = builder.add_producer();
-    let clock_tx = builder.add_producer();
-    let mut rx = builder.build_with_burst(10, actor_scheduler::ShutdownMode::default());
+    let (tx, rx) =
+        ActorScheduler::<RenderedResponse, VsyncCommand, VsyncManagement>::new(10, 100);
+
+    // Simulate clock thread behavior in a thread
+    let clock_tx = tx.clone();
     let clock_handle = thread::spawn(move || {
         let interval = Duration::from_millis(10);
         let mut ticks_sent = 0;

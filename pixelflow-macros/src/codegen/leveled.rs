@@ -39,6 +39,8 @@
 //!
 //! Uniform expressions like `(W * 0.7).sin()` can be hoisted out of the pixel loop.
 
+#![allow(dead_code, unused_imports)]
+
 use std::collections::HashMap;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -397,7 +399,7 @@ pub fn analyze_deps(
 ) -> DepsStats {
     let mut builder = LevelBuilder::new(analyzed);
     let root = builder.build(annotated);
-    let root_deps = builder.get_deps(root);
+    let _root_deps = builder.get_deps(root);
 
     let mut stats = DepsStats::default();
 

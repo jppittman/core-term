@@ -1348,7 +1348,6 @@ mod selection_logic_tests {
 #[cfg(test)]
 mod get_selected_text_tests {
     use super::*;
-    use crate::term::snapshot::{Point, SelectionRange};
 
     #[test]
     fn test_get_selected_text_no_selection() {

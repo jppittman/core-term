@@ -3,7 +3,8 @@
 use pixelflow_core::{Field, ManifoldCompat};
 use pixelflow_graphics::fonts::Font;
 
-const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
+// NotoSansMono-Regular.ttf is a stub in CI; use the fallback which has real TTF data.
+const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 
 #[test]
 fn parse_font_and_get_glyph() {

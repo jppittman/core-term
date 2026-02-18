@@ -30,6 +30,7 @@ pub fn sort_by_index(indexed: impl IntoIterator<Item = (usize, TokenStream)>) ->
     pairs.into_iter().map(|(_, val)| val).collect()
 }
 
+#[allow(dead_code)]
 /// Build a tuple expression from values, handling the single-element case.
 ///
 /// Rust requires a trailing comma for single-element tuples: `(x,)` not `(x)`.

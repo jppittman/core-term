@@ -125,6 +125,8 @@ pub struct TupleExpr {
 #[derive(Debug, Clone)]
 pub struct IdentExpr {
     pub name: Ident,
+    // Retained for future error reporting and diagnostics.
+    #[allow(dead_code)]
     pub span: Span,
 }
 

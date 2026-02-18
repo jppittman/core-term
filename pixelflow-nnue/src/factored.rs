@@ -1021,7 +1021,7 @@ mod tests {
 
         // Add→Mul (Mul under Add, same ops but different structure)
         let add_mul = make_add_mul_pattern();
-        let acc_add_mul = EdgeAccumulator::from_expr(&add_mul, &emb);
+        let _acc_add_mul = EdgeAccumulator::from_expr(&add_mul, &emb);
 
         // The accumulators should be different because:
         // - FMA has Add→Mul, Add→Var edges

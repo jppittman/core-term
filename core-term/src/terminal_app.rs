@@ -737,6 +737,22 @@ mod tests {
     use pixelflow_runtime::{EngineEventControl, EngineEventManagement, WindowId};
     use std::sync::mpsc::Receiver;
 
+    // Define a DummyPixel struct for testing
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq)]
+    struct DummyPixel;
+    impl pixelflow_graphics::render::Pixel for DummyPixel {
+        fn from_u32(_: u32) -> Self {
+            Self
+        }
+        fn to_u32(self) -> u32 {
+            0
+        }
+        fn from_rgba(_r: f32, _g: f32, _b: f32, _a: f32) -> Self {
+            Self
+        }
+    }
+
     // Helper to create a test instance
     // Returns scheduler to keep doorbell channel alive during test
     // Returns None if font is missing/invalid (e.g. LFS pointer), skipping the test.

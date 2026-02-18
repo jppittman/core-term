@@ -2,10 +2,7 @@
 //!
 //! This is the key test - the old nested Let approach failed with >4 params.
 
-use pixelflow_core::{Field, Manifold};
 use pixelflow_macros::kernel;
-
-type Field4 = (Field, Field, Field, Field);
 
 #[test]
 fn test_kernel_5_params_compiles() {
@@ -59,7 +56,7 @@ fn test_kernel_8_params_compiles() {
 #[test]
 fn test_jet_kernel_with_param() {
     use pixelflow_macros::kernel;
-    use pixelflow_core::{Manifold, Y, jet::Jet3, Field};
+    use pixelflow_core::{Manifold, jet::Jet3, Field};
     
     type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
     

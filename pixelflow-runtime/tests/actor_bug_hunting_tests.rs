@@ -13,7 +13,7 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
     SendError, ShutdownMode, SystemStatus,
 };
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -30,7 +30,7 @@ fn backoff_does_not_overflow_on_large_attempts() {
     // The backoff uses 2^attempt, and with attempt=63, 2^63 would overflow.
     // The code should cap at MAX_BACKOFF (500ms) before overflow.
 
-    let (tx, mut rx) = ActorScheduler::<(), (), ()>::new(10, 1);
+    let (tx, rx) = ActorScheduler::<(), (), ()>::new(10, 1);
 
     // Fill up the control lane to trigger backoff
     // Note: Control lane size is SchedulerParams::DEFAULT.control_mgmt_buffer_size

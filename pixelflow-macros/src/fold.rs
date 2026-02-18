@@ -23,6 +23,8 @@
 //! For phases that need state (like sema's symbol table), the trait
 //! methods take `&mut self`.
 
+#![allow(dead_code, unused_imports)]
+
 use crate::ast::{BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt, UnaryExpr, UnaryOp};
 use syn::Ident;
 
