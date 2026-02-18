@@ -371,6 +371,9 @@ where
 // Copy impl for all WithContext types
 impl<Ctx: Copy, B: Copy> Copy for WithContext<Ctx, B> {}
 
+// Implement ManifoldExpr to support extension methods (map, etc.)
+impl<Ctx, Body> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
+
 // ============================================================================
 // CtxVar Manifold Implementation (Generic)
 // ============================================================================
