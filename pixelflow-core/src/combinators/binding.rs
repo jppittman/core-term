@@ -161,7 +161,9 @@ impl<N> Default for Var<N> {
 // Maps each positive number to its predecessor.
 // Uses a helper trait to avoid impl conflicts.
 
+/// Predecessor in the type-level natural number chain (N → N-1).
 pub trait Pred {
+    /// The predecessor type.
     type Output;
 }
 
@@ -492,8 +494,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::LetExtended;
-    use crate::{Field, X, Y};
+    use crate::{Field, X};
 
     #[test]
     fn test_let_binding_new_style() {

@@ -23,6 +23,8 @@
 //! | Punct      | (, ), {, }, ;, :      | Delimiters and separators       |
 //! | Keyword    | let                   | Binding introduction            |
 
+#![allow(dead_code)]
+
 use proc_macro2::TokenStream;
 
 /// Token classification for semantic purposes.

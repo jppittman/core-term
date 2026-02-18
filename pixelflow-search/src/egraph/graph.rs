@@ -8,7 +8,7 @@ use super::extract::ExprTree;
 use super::node::{EClassId, ENode};
 use super::ops;
 use super::rewrite::{Rewrite, RewriteAction};
-use super::rules::{Annihilator, Commutative, Distributive, Factor, Idempotent, Identity};
+use super::rules::{Annihilator, Commutative, Distributive, Identity};
 
 /// A potential rewrite target: (rule, e-class, node within class).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
