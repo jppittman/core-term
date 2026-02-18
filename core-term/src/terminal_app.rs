@@ -719,15 +719,15 @@ struct TerminalAppParamsRegistered {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ansi::commands::AnsiCommand;
     use crate::io::PtyCommand;
-    use crate::term::{EmulatorInput, TerminalEmulator, UserInputAction};
-    use actor_scheduler::{Actor, ActorStatus};
+    use crate::term::TerminalEmulator;
+    use actor_scheduler::Actor;
     use pixelflow_runtime::input::{KeySymbol, Modifiers};
     use pixelflow_runtime::{EngineEventControl, EngineEventManagement, WindowId};
-    use std::sync::mpsc::{Receiver, SyncSender};
+    use std::sync::mpsc::Receiver;
 
     // Define a DummyPixel struct for testing
+    #[allow(dead_code)]
     #[derive(Debug, Clone, Copy, Default, PartialEq)]
     struct DummyPixel;
     impl pixelflow_graphics::render::Pixel for DummyPixel {
@@ -793,7 +793,6 @@ mod tests {
         };
 
         // Initial size is 80x24
-        use crate::term::TerminalInterface;
         let snapshot_initial = app.emulator.get_render_snapshot().expect("Snapshot");
         assert_eq!(snapshot_initial.dimensions, (80, 24));
 

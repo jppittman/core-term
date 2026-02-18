@@ -330,7 +330,7 @@ fn clock_thread_stops_when_channel_closed() {
     // We can't easily test the real clock thread, but we can verify
     // the pattern works with our mock.
 
-    let (tx, mut rx) =
+    let (tx, rx) =
         ActorScheduler::<RenderedResponse, VsyncCommand, VsyncManagement>::new(10, 100);
 
     // Simulate clock thread behavior in a thread

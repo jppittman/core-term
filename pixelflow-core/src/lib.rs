@@ -192,7 +192,7 @@ pub use ext::*;
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 pub use manifold::*;
 pub use numeric::{Computational, Coordinate, Selectable};
-pub use ops::binary::*;
+pub use ops::binary::{Add, AddMasked, Div, Mul, MulAdd, MulRecip, MulRsqrt, Sub};
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
 pub use ops::logic::*;
 pub use ops::unary::*;
@@ -684,6 +684,7 @@ impl Field {
 
     /// Apply a unary function to each lane.
     /// Load from a slice.
+    #[allow(dead_code)]
     #[inline(always)]
     fn from_slice(slice: &[f32]) -> Self {
         Self(NativeSimd::from_slice(slice))

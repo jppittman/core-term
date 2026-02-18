@@ -1,3 +1,5 @@
+//! Unary operations: sqrt, abs, floor, ceil, round, sin, cos, exp, log2, recip.
+
 use crate::Manifold;
 use crate::numeric::{Computational, Numeric};
 use pixelflow_macros::Element;

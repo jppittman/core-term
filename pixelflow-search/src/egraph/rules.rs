@@ -117,11 +117,14 @@ impl Rewrite for Distributive {
 }
 
 /// Factoring: A*B + A*C → A * (B + C)
+// Temporarily disabled in graph.rs while debugging rewrite ordering.
+#[allow(dead_code)]
 pub struct Factor {
     outer: &'static dyn Op,
     inner: &'static dyn Op,
 }
 
+#[allow(dead_code)]
 impl Factor {
     pub fn new(outer: &'static dyn Op, inner: &'static dyn Op) -> Box<Self> {
         Box::new(Self { outer, inner })
@@ -232,10 +235,13 @@ impl Rewrite for Annihilator {
 }
 
 /// Idempotence: x op x → x
+// Temporarily disabled in graph.rs while debugging rewrite ordering.
+#[allow(dead_code)]
 pub struct Idempotent {
     op: &'static dyn Op,
 }
 
+#[allow(dead_code)]
 impl Idempotent {
     pub fn new(op: &'static dyn Op) -> Box<Self> {
         Box::new(Self { op })
@@ -260,6 +266,8 @@ impl Rewrite for Idempotent {
 }
 
 /// RecipSqrt: 1/sqrt(x) → rsqrt(x)
+// Temporarily disabled in graph.rs while debugging rewrite ordering.
+#[allow(dead_code)]
 pub struct RecipSqrt;
 
 impl Rewrite for RecipSqrt {
@@ -291,6 +299,8 @@ impl Rewrite for RecipSqrt {
 /// Fused multiply-add is typically a single instruction on modern CPUs.
 /// This rule adds the fused form to the e-graph; extraction cost model
 /// determines whether it's actually used.
+// Temporarily disabled in graph.rs while debugging rewrite ordering.
+#[allow(dead_code)]
 pub struct FmaFusion;
 
 impl Rewrite for FmaFusion {

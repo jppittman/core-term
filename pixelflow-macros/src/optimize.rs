@@ -23,11 +23,11 @@
 //! ```
 
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LetStmt, LiteralExpr, MethodCallExpr, Stmt,
+    BinaryExpr, BinaryOp, BlockExpr, Expr, IdentExpr, LetStmt, LiteralExpr, MethodCallExpr, Stmt,
     UnaryExpr, UnaryOp,
 };
 use crate::cost_builder;
-use crate::ir_bridge::{ast_to_ir, egraph_to_ir, ir_to_code, IRToEGraphContext};
+use crate::ir_bridge::{ast_to_ir, IRToEGraphContext};
 use crate::sema::AnalyzedKernel;
 use pixelflow_search::egraph::{CostModel, EClassId, EGraph, ENode, ExprTree, ExtractedDAG, Leaf, ops};
 use proc_macro2::Span;
@@ -69,8 +69,6 @@ fn unique_opaque_name(prefix: &str) -> String {
 /// 5. **Fusion-enabling rewrites** (distribute, etc.)
 /// 6. **Everything else** (commutative, etc.) - apply last
 fn heuristic_score_rewrite(egraph: &EGraph, target: &pixelflow_search::egraph::RewriteTarget) -> i64 {
-    use pixelflow_search::egraph::RewriteTarget;
-
     // Get the rule name
     let rule_name = match egraph.rule(target.rule_idx) {
         Some(rule) => rule.name(),
@@ -111,10 +109,8 @@ fn heuristic_score_rewrite(egraph: &EGraph, target: &pixelflow_search::egraph::R
 fn saturate_with_priority(egraph: &mut EGraph, budget: usize) -> bool {
     use pixelflow_search::egraph::RewriteTarget;
     use std::collections::{BinaryHeap, HashSet};
-    use std::cmp::Reverse;
 
-    // Priority queue: (score, target)
-    // Using Reverse for max-heap (highest score first)
+    // Priority queue: (score, target) — BinaryHeap is a max-heap by default
     let mut queue: BinaryHeap<(i64, RewriteTarget)> = BinaryHeap::new();
     let mut seen: HashSet<RewriteTarget> = HashSet::new();
 

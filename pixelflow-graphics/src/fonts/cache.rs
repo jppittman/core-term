@@ -356,7 +356,8 @@ impl Manifold<Field4> for CachedText {
 mod tests {
     use super::*;
 
-    const FONT_DATA: &[u8] = include_bytes!("../../assets/NotoSansMono-Regular.ttf");
+    // NotoSansMono-Regular.ttf is a stub file in CI; use the fallback which has real TTF data.
+    const FONT_DATA: &[u8] = include_bytes!("../../assets/DejaVuSansMono-Fallback.ttf");
 
     #[test]
     fn test_size_bucket() {

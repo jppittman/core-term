@@ -147,9 +147,13 @@ pub fn compare_costs(expr: &Expr) -> CostComparison {
 /// Result of comparing cost models.
 #[derive(Clone, Debug)]
 pub struct CostComparison {
+    /// Cost using only linear (first-order) terms.
     pub linear: i32,
+    /// Cost including pairwise interaction terms.
     pub interaction: i32,
+    /// Cost along the longest dependency chain.
     pub critical_path: i32,
+    /// Combined total cost estimate.
     pub total: i32,
 }
 
@@ -268,10 +272,15 @@ pub fn find_disagreements(exprs: &[Expr]) -> Vec<Disagreement> {
 /// A case where cost models disagree.
 #[derive(Clone, Debug)]
 pub struct Disagreement {
+    /// Index of the first expression in the comparison.
     pub expr_a: usize,
+    /// Index of the second expression in the comparison.
     pub expr_b: usize,
+    /// Difference in linear cost estimates.
     pub linear_diff: i32,
+    /// Difference in interaction cost estimates.
     pub interaction_diff: i32,
+    /// Human-readable description of why the models disagree.
     pub reason: &'static str,
 }
 

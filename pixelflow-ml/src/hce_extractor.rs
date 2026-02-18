@@ -958,7 +958,7 @@ mod tests {
 
         // Loss function: distance from target [4, 4, 5, 15, 1]
         let target = [4.0, 4.0, 5.0, 15.0, 1.0];
-        let initial_loss = tuner.best_loss;
+        let _initial_loss = tuner.best_loss;
 
         let (final_weights, final_loss, iters) = tuner.optimize(|w| {
             w.iter()

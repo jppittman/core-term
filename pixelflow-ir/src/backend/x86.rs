@@ -1168,6 +1168,7 @@ impl Shr<u32> for U32x8 {
 #[cfg(target_feature = "avx2")]
 impl U32x8 {
     /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
+    #[allow(dead_code)]
     #[inline(always)]
     pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
         unsafe {
@@ -1327,6 +1328,7 @@ impl F32x16 {
         arr
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     unsafe fn from_mask(mask: __mmask16) -> Self {
         unsafe {
@@ -1773,6 +1775,7 @@ impl Shr<u32> for U32x16 {
 #[cfg(target_feature = "avx512f")]
 impl U32x16 {
     /// Pack 16 f32 Fields (RGBA) into packed u32 pixels.
+    #[allow(dead_code)]
     #[inline(always)]
     pub(crate) fn pack_rgba(r: F32x16, g: F32x16, b: F32x16, a: F32x16) -> Self {
         unsafe {

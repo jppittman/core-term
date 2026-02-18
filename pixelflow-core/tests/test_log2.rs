@@ -326,6 +326,7 @@ fn test_polynomial_coefficients_range() {
 
 #[cfg(test)]
 mod analysis {
+    #[allow(unused_imports)]
     use super::*;
 
     /// Print detailed error analysis for current polynomial

@@ -498,10 +498,11 @@ f 1 2 3 4
         let v = Jet3::constant(Field::from(0.5));
         let p = patch.eval_limit(&mesh, u, v);
 
-        // Extract values (collapse AST)
-        let x = p[0].val;
-        let y = p[1].val;
-        let z = p[2].val;
+        // Extract values (collapse AST) - prefixed with _ since SIMD Fields
+        // can't be inspected in tests without scalar extraction infrastructure.
+        let _x = p[0].val;
+        let _y = p[1].val;
+        let _z = p[2].val;
 
         // For bilinear fallback, center should be roughly (0.5, 0.5, 0.0)
         // We can't easily check SIMD Field values in tests, so this is a smoke test

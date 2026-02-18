@@ -20,7 +20,6 @@
 use crate::Field;
 use crate::Manifold;
 use crate::backend::{MaskOps, SimdOps};
-use crate::numeric::Numeric;
 use crate::ops::compare::{Ge, Gt, Le, Lt};
 use crate::ops::logic::{And, BNot, Or};
 use pixelflow_macros::Element;
