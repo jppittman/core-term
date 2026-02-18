@@ -19,6 +19,9 @@ const XC_ARROW: u32 = 2;
 const XC_HAND2: u32 = 60;
 const XC_XTERM: u32 = 152;
 
+// Standard DPI
+const DEFAULT_DPI: f64 = 96.0;
+
 #[derive(Debug, Clone, Copy)]
 pub struct SelectionAtoms {
     pub clipboard: xlib::Atom,
@@ -180,8 +183,8 @@ impl X11Window {
             {
                 if let Ok(dpi_str) = CStr::from_ptr(value_return.addr as *const c_char).to_str() {
                     if let Ok(dpi) = dpi_str.parse::<f64>() {
-                        info!("X11: Xft.dpi = {}, scale = {:.2}", dpi, dpi / 96.0);
-                        return dpi / 96.0;
+                        info!("X11: Xft.dpi = {}, scale = {:.2}", dpi, dpi / DEFAULT_DPI);
+                        return dpi / DEFAULT_DPI;
                     }
                 }
             }
