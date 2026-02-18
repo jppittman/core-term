@@ -281,6 +281,10 @@ impl<Ctx, Body> WithContext<Ctx, Body> {
     }
 }
 
+// Allow `WithContext` to be used in method chains (map, sub, etc)
+// by implementing ManifoldExpr.
+impl<Ctx, Body: crate::ext::ManifoldExpr> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
+
 // ============================================================================
 // CtxVar - Array-Indexed Variable Reference
 // ============================================================================
