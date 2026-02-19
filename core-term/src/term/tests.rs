@@ -789,6 +789,7 @@ fn test_snapshot_with_selection() {
     let default_glyph = Glyph::Single(ContentCell {
         c: ' ',
         attr: Attributes::default(),
+        combining: None,
     });
 
     let lines = vec![

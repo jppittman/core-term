@@ -11,6 +11,56 @@ use crate::{
 use log::{trace, warn};
 
 impl TerminalEmulator {
+    /// Attaches a combining (zero-width) character to the most recently written cell.
+    ///
+    /// The cursor is already past the base character, so the target cell is at
+    /// cursor position − 1 on the current row, or the last column of the previous
+    /// row when the cursor is at column 0.
+    fn attach_combining_char(&mut self, combining: char) {
+        let screen_ctx = self.current_screen_context();
+        let (cursor_x, cursor_y) = self.cursor_controller.physical_screen_pos(&screen_ctx);
+
+        // Determine the position of the base character cell.
+        let (base_x, base_y) = if cursor_x > 0 {
+            (cursor_x - 1, cursor_y)
+        } else if cursor_y > 0 {
+            (screen_ctx.width.saturating_sub(1), cursor_y - 1)
+        } else {
+            // Cursor is at (0, 0) — no previous cell to attach to.
+            trace!("attach_combining_char: no previous cell at origin, discarding '{}'", combining);
+            return;
+        };
+
+        if base_y >= self.screen.height || base_x >= self.screen.width {
+            return;
+        }
+
+        let updated = match self.screen.active_grid()[base_y][base_x] {
+            Glyph::Single(mut cc) => {
+                cc.combining = Some(combining);
+                Glyph::Single(cc)
+            }
+            Glyph::WidePrimary(mut cc) => {
+                cc.combining = Some(combining);
+                Glyph::WidePrimary(cc)
+            }
+            Glyph::WideSpacer => {
+                // For a wide-char spacer, walk back one more column to reach WidePrimary.
+                if base_x > 0 {
+                    if let Glyph::WidePrimary(mut cc) = self.screen.active_grid()[base_y][base_x - 1] {
+                        cc.combining = Some(combining);
+                        self.screen.set_glyph(base_x - 1, base_y, Glyph::WidePrimary(cc));
+                        self.screen.mark_line_dirty(base_y);
+                    }
+                }
+                return;
+            }
+        };
+
+        self.screen.set_glyph(base_x, base_y, updated);
+        self.screen.mark_line_dirty(base_y);
+    }
+
     /// Maps a character to its equivalent in the currently active G0/G1/G2/G3 character set.
     // This is a helper for print_char, so it can be private to this impl block.
     #[inline]
@@ -44,14 +94,14 @@ impl TerminalEmulator {
         let ch_to_print = self.map_char_to_active_charset(ch);
         let char_width = get_char_display_width(ch_to_print);
 
-        // Zero-width characters are complex. For now, if wcwidth reports 0, skip for cursor advancement.
+        // Zero-width characters (combining marks, diacritics) do not advance the cursor.
+        // Attach them to the base character in the most recently written cell.
         if char_width == 0 {
             trace!(
-                "print_char: Encountered zero-width char '{}'. No cursor advancement.",
+                "print_char: combining char '{}' — attaching to previous cell",
                 ch_to_print
             );
-            // TODO: Potentially handle combining characters by placing them in the current cell
-            // without advancing, if the renderer and font support it.
+            self.attach_combining_char(ch_to_print);
             return;
         }
 
@@ -136,6 +186,7 @@ impl TerminalEmulator {
                     Glyph::WidePrimary(ContentCell {
                         c: ch_to_print,
                         attr: glyph_attrs,
+                        combining: None,
                     }),
                 );
 
@@ -160,6 +211,7 @@ impl TerminalEmulator {
                     Glyph::Single(ContentCell {
                         c: ch_to_print,
                         attr: glyph_attrs,
+                        combining: None,
                     }),
                 );
             }
