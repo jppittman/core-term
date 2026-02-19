@@ -10,6 +10,7 @@ use core_term::term::{EmulatorInput, TerminalEmulator, TerminalSnapshot};
 /// Minimal test harness for ANSI→Grid testing
 pub struct MinimalTestHarness {
     pub emulator: TerminalEmulator,
+    #[allow(dead_code)]
     pub config: Config,
 }
 

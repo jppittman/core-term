@@ -303,6 +303,8 @@ impl<ArrayPos, const INDEX: usize> CtxVar<ArrayPos, INDEX> {
 
 impl<ArrayPos, const INDEX: usize> crate::ext::ManifoldExpr for CtxVar<ArrayPos, INDEX> {}
 
+impl<Ctx, Body> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
+
 // ============================================================================
 // Operator Implementations for CtxVar
 // ============================================================================
@@ -490,6 +492,7 @@ where
 
 // Macro to generate Spatial impls for context-extended domains.
 // These can't use a blanket impl due to overlap with base domain (I, I) impls.
+#[allow(unused_macros)]
 macro_rules! impl_spatial_for_context {
     ($($shape:ty),+ $(,)?) => {
         $(

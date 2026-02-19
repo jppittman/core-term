@@ -318,6 +318,15 @@ pub trait ManifoldExt: Sized {
         Map::new(self, transform)
     }
 
+    /// Transform the output using a closure.
+    #[inline(always)]
+    fn map_fn<F>(self, func: F) -> ClosureMap<Self, F>
+    where
+        F: Fn(crate::Field) -> crate::Field + Send + Sync,
+    {
+        ClosureMap::new(self, func)
+    }
+
     /// Lift this manifold's output to ray space via a covariant map.
     #[inline(always)]
     fn lift<F>(self, func: F) -> ClosureMap<Self, F>
