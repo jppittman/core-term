@@ -608,13 +608,23 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
             }
             EngineEventManagement::FocusGained => {
                 log::trace!("Focus gained");
-                // Some applications care about focus for bracketed paste mode
-                // Could send \x1b[I if bracketed paste is enabled
+                use crate::term::{EmulatorAction, EmulatorInput, UserInputAction};
+                let input = EmulatorInput::User(UserInputAction::FocusGained);
+                if let Some(EmulatorAction::WritePty(bytes)) = self.emulator.interpret_input(input) {
+                    if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
+                        log::warn!("Failed to send focus-in sequence to PTY: {}", e);
+                    }
+                }
             }
             EngineEventManagement::FocusLost => {
                 log::trace!("Focus lost");
-                // Some applications care about focus for bracketed paste mode
-                // Could send \x1b[O if bracketed paste is enabled
+                use crate::term::{EmulatorAction, EmulatorInput, UserInputAction};
+                let input = EmulatorInput::User(UserInputAction::FocusLost);
+                if let Some(EmulatorAction::WritePty(bytes)) = self.emulator.interpret_input(input) {
+                    if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
+                        log::warn!("Failed to send focus-out sequence to PTY: {}", e);
+                    }
+                }
             }
             EngineEventManagement::Paste(text) => {
                 log::trace!("Paste: {} bytes", text.len());

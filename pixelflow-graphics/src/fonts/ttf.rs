@@ -158,6 +158,103 @@ impl<K> Line<K> {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Optimized Geometry with Precomputed Reciprocals
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Line segment optimized with precomputed division reciprocal.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub struct OptLine {
+    x0: f32,
+    y0: f32,
+    y_min: f32,
+    y_max: f32,
+    dx_over_dy: f32, // Precomputed dx/dy
+    dir: f32,        // +1 or -1
+}
+
+impl OptLine {
+    /// Create from two points. Returns None for horizontal lines.
+    #[inline(always)]
+    pub fn new([x0, y0]: [f32; 2], [x1, y1]: [f32; 2]) -> Option<Self> {
+        let dy = y1 - y0;
+        if dy.abs() < 1e-6 {
+            return None;
+        }
+        let dx = x1 - x0;
+        Some(Self {
+            x0,
+            y0,
+            y_min: y0.min(y1),
+            y_max: y0.max(y1),
+            dx_over_dy: dx / dy, // Division at construction, not evaluation
+            dir: if dy > 0.0 { 1.0 } else { -1.0 },
+        })
+    }
+}
+
+/// Quadratic curve optimized with precomputed reciprocals.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub struct OptQuad {
+    // Bezier coefficients
+    ax: f32,
+    bx: f32,
+    cx: f32,
+    ay: f32,
+    by: f32,
+    cy: f32,
+    two_ay: f32,
+    // Precomputed reciprocals (0.0 if degenerate)
+    inv_by: f32,  // 1/by for linear Y case
+    inv_2ay: f32, // 1/(2*ay) for quadratic case
+    // Precomputed quadratic formula values
+    neg_by: f32,
+    by_sq: f32,
+    four_ay: f32,
+    // Flag for which case we're in
+    is_linear: bool,
+    is_degenerate: bool,
+}
+
+impl OptQuad {
+    /// Create from three control points.
+    #[inline(always)]
+    pub fn new([[x0, y0], [x1, y1], [x2, y2]]: [[f32; 2]; 3]) -> Self {
+        let ay = y0 - 2.0 * y1 + y2;
+        let by = 2.0 * (y1 - y0);
+        let cy = y0;
+        let ax = x0 - 2.0 * x1 + x2;
+        let bx = 2.0 * (x1 - x0);
+        let cx = x0;
+
+        let is_linear = ay.abs() < 1e-6;
+        let is_degenerate = is_linear && by.abs() < 1e-6;
+
+        Self {
+            ax,
+            bx,
+            cx,
+            ay,
+            by,
+            cy,
+            two_ay: 2.0 * ay,
+            inv_by: if !is_linear || is_degenerate {
+                0.0
+            } else {
+                1.0 / by
+            },
+            inv_2ay: if is_linear { 0.0 } else { 1.0 / (2.0 * ay) },
+            neg_by: -by,
+            by_sq: by * by,
+            four_ay: 4.0 * ay,
+            is_linear,
+            is_degenerate,
+        }
+    }
+}
+
 // ─── Field Implementation (Winding Number Coverage) ────────────────────────
 
 impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Line<K> {
