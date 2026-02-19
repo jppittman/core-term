@@ -147,9 +147,10 @@ pub struct Line<K> {
 }
 
 /// Create a line with analytical kernel from control points.
+/// Returns None for horizontal or degenerate lines (they don't contribute to winding).
 #[inline(always)]
 pub fn make_line(points: [[f32; 2]; 2]) -> Option<Line<LineKernel>> {
-    let kernel = AnalyticalLine::new(points[0], points[1])?;
+    let kernel = AnalyticalLine::from_points(points[0], points[1])?;
     Some(Line { kernel })
 }
 
