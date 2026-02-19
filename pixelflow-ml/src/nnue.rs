@@ -176,6 +176,21 @@ pub const MAX_DEPTH: usize = 8;
 /// Maximum child index (for position encoding).
 pub const MAX_CHILD_INDEX: usize = 8;
 
+/// Probability of choosing a variable when generating a leaf node.
+pub const PROB_VAR_GIVEN_LEAF: f32 = 0.7;
+
+/// Range for constant generation in forward generator (+/- half this value).
+pub const GEN_CONST_RANGE: f32 = 10.0;
+
+/// Range for constant generation in backward generator (+/- half this value).
+pub const BWD_CONST_RANGE: f32 = 4.0;
+
+/// Probability of generating a MulAdd fused op in backward generator.
+pub const FUSED_MUL_ADD_PROB: f32 = 0.6;
+
+/// Probability of applying an identity unfuse rewrite (e.g., +0, *1).
+pub const IDENTITY_UNFUSE_PROB: f32 = 0.2;
+
 /// A HalfEP feature: (perspective_op, descendant_op, depth, child_path).
 ///
 /// This is analogous to HalfKP in chess:
@@ -248,7 +263,15 @@ fn extract_features_recursive(
     let root_op = expr.op_type();
 
     // Add features for all descendants from this node's perspective
-    add_descendant_features(expr, features, root_op.index() as u8, 0, 0);
+    add_descendant_features(
+        expr,
+        features,
+        TraversalState {
+            perspective_op: root_op.index() as u8,
+            depth: 0,
+            path: 0,
+        },
+    );
 
     // Recurse into children with updated path
     match expr {
@@ -268,40 +291,92 @@ fn extract_features_recursive(
     }
 }
 
-fn add_descendant_features(
-    expr: &Expr,
-    features: &mut Vec<HalfEPFeature>,
+struct TraversalState {
     perspective_op: u8,
     depth: u8,
     path: u8,
+}
+
+fn add_descendant_features(
+    expr: &Expr,
+    features: &mut Vec<HalfEPFeature>,
+    state: TraversalState,
 ) {
-    if depth as usize >= MAX_DEPTH {
+    if state.depth as usize >= MAX_DEPTH {
         return;
     }
 
     // Add feature for this node
     features.push(HalfEPFeature {
-        perspective_op,
+        perspective_op: state.perspective_op,
         descendant_op: expr.op_type().index() as u8,
-        depth,
-        path,
+        depth: state.depth,
+        path: state.path,
     });
 
     // Recurse into children
     match expr {
         Expr::Var(_) | Expr::Const(_) => {}
         Expr::Unary(_, a) => {
-            add_descendant_features(a, features, perspective_op, depth + 1, path << 1);
+            add_descendant_features(
+                a,
+                features,
+                TraversalState {
+                    perspective_op: state.perspective_op,
+                    depth: state.depth + 1,
+                    path: state.path << 1,
+                },
+            );
         }
         Expr::Binary(_, a, b) => {
-            add_descendant_features(a, features, perspective_op, depth + 1, path << 1);
-            add_descendant_features(b, features, perspective_op, depth + 1, (path << 1) | 1);
+            add_descendant_features(
+                a,
+                features,
+                TraversalState {
+                    perspective_op: state.perspective_op,
+                    depth: state.depth + 1,
+                    path: state.path << 1,
+                },
+            );
+            add_descendant_features(
+                b,
+                features,
+                TraversalState {
+                    perspective_op: state.perspective_op,
+                    depth: state.depth + 1,
+                    path: (state.path << 1) | 1,
+                },
+            );
         }
         Expr::Ternary(_, a, b, c) => {
             // For ternary, use bits 0, 1, 2 for the three children
-            add_descendant_features(a, features, perspective_op, depth + 1, path << 2);
-            add_descendant_features(b, features, perspective_op, depth + 1, (path << 2) | 1);
-            add_descendant_features(c, features, perspective_op, depth + 1, (path << 2) | 2);
+            add_descendant_features(
+                a,
+                features,
+                TraversalState {
+                    perspective_op: state.perspective_op,
+                    depth: state.depth + 1,
+                    path: state.path << 2,
+                },
+            );
+            add_descendant_features(
+                b,
+                features,
+                TraversalState {
+                    perspective_op: state.perspective_op,
+                    depth: state.depth + 1,
+                    path: (state.path << 2) | 1,
+                },
+            );
+            add_descendant_features(
+                c,
+                features,
+                TraversalState {
+                    perspective_op: state.perspective_op,
+                    depth: state.depth + 1,
+                    path: (state.path << 2) | 2,
+                },
+            );
         }
     }
 }
@@ -555,12 +630,12 @@ impl ExprGenerator {
     fn generate_recursive(&mut self, depth: usize) -> Expr {
         // Force leaf at max depth or with probability leaf_prob
         if depth >= self.config.max_depth || self.rand_f32() < self.config.leaf_prob {
-            if self.rand_f32() < 0.7 {
+            if self.rand_f32() < PROB_VAR_GIVEN_LEAF {
                 // Variable
                 Expr::Var(self.rand_usize(self.config.num_vars) as u8)
             } else {
                 // Constant (small values to avoid overflow)
-                let val = self.rand_f32() * 10.0 - 5.0;
+                let val = self.rand_f32() * GEN_CONST_RANGE - (GEN_CONST_RANGE / 2.0);
                 Expr::Const(val)
             }
         } else {
@@ -1028,7 +1103,7 @@ impl BwdGenerator {
         // Decide: fused op or regular op
         if self.rand_f32() < self.config.fused_op_prob {
             // Generate a fused operation
-            if self.rand_f32() < 0.6 {
+            if self.rand_f32() < FUSED_MUL_ADD_PROB {
                 // MulAdd: a * b + c
                 Expr::Ternary(
                     OpType::MulAdd,
@@ -1052,11 +1127,11 @@ impl BwdGenerator {
 
     /// Generate a leaf node (variable or constant).
     fn generate_leaf(&mut self) -> Expr {
-        if self.rand_f32() < 0.7 {
+        if self.rand_f32() < PROB_VAR_GIVEN_LEAF {
             Expr::Var(self.rand_usize(self.config.num_vars) as u8)
         } else {
             // Constants: small range to avoid numerical issues
-            let val = self.rand_f32() * 4.0 - 2.0;
+            let val = self.rand_f32() * BWD_CONST_RANGE - (BWD_CONST_RANGE / 2.0);
             Expr::Const(val)
         }
     }
@@ -1172,7 +1247,7 @@ impl BwdGenerator {
         }
 
         // Occasionally add identity operations (bloat the expression)
-        if self.rand_f32() < 0.2 {
+        if self.rand_f32() < IDENTITY_UNFUSE_PROB {
             let identity_rewrites = [
                 UnfuseRewrite::AddIdentity,
                 UnfuseRewrite::MulIdentity,
