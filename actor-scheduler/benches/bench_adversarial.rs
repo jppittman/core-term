@@ -1,5 +1,6 @@
 use actor_scheduler::{
-    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    SystemStatus,
 };
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::sync::{
@@ -43,7 +44,11 @@ fn bench_control_flood_impact(c: &mut Criterion) {
             let data_count = Arc::new(AtomicUsize::new(0));
             let control_count = Arc::new(AtomicUsize::new(0));
 
-            let (tx, mut rx) = ActorScheduler::new(1024, 1000);
+            let mut builder = ActorBuilder::<i32, (), ()>::new(1000, None);
+            let tx = builder.add_producer();
+            let tx_control = builder.add_producer();
+            let tx_data = builder.add_producer();
+            let mut rx = builder.build();
 
             let actor_data = data_count.clone();
             let actor_control = control_count.clone();
@@ -58,7 +63,6 @@ fn bench_control_flood_impact(c: &mut Criterion) {
 
             // Start continuous control flooder
             let stop_flooding = Arc::new(AtomicBool::new(false));
-            let tx_control = tx.clone();
             let stop_flag = stop_flooding.clone();
             let control_flooder = thread::spawn(move || {
                 let mut sent = 0;
@@ -74,7 +78,6 @@ fn bench_control_flood_impact(c: &mut Criterion) {
             thread::sleep(Duration::from_millis(10));
 
             // Now send data messages while control is flooding
-            let tx_data = tx.clone();
             let data_sender = thread::spawn(move || {
                 for i in 0..1000 {
                     let _ = tx_data.send(Message::Data(i));
@@ -144,7 +147,11 @@ fn bench_multiple_control_flooders(c: &mut Criterion) {
             let data_count = Arc::new(AtomicUsize::new(0));
             let control_count = Arc::new(AtomicUsize::new(0));
 
-            let (tx, mut rx) = ActorScheduler::new(1024, 1000);
+            let mut builder = ActorBuilder::<i32, (), ()>::new(1000, None);
+            let tx = builder.add_producer();
+            let flooder_txs: Vec<_> = (0..4).map(|_| builder.add_producer()).collect();
+            let tx_data = builder.add_producer();
+            let mut rx = builder.build();
 
             let actor_data = data_count.clone();
             let actor_control = control_count.clone();
@@ -161,8 +168,7 @@ fn bench_multiple_control_flooders(c: &mut Criterion) {
             let stop_flooding = Arc::new(AtomicBool::new(false));
             let mut flooders = vec![];
 
-            for _ in 0..4 {
-                let tx_control = tx.clone();
+            for tx_control in flooder_txs {
                 let stop_flag = stop_flooding.clone();
                 let flooder = thread::spawn(move || {
                     let mut sent = 0;
@@ -180,7 +186,6 @@ fn bench_multiple_control_flooders(c: &mut Criterion) {
             thread::sleep(Duration::from_millis(10));
 
             // Send data while control is being flooded by 4 threads
-            let tx_data = tx.clone();
             let data_sender = thread::spawn(move || {
                 for i in 0..500 {
                     let _ = tx_data.send(Message::Data(i));

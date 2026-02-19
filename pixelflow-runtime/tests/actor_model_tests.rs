@@ -12,8 +12,8 @@
 //! Following STYLE.md: tests focus on public API contracts, not implementation details.
 
 use actor_scheduler::{
-    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SendError,
-    SystemStatus,
+    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    SendError, SystemStatus,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -524,7 +524,10 @@ fn management_burst_limit_prevents_starvation() {
 #[test]
 fn data_lane_blocks_when_buffer_full() {
     // Very small buffer to trigger backpressure
-    let (tx, mut rx) = ActorScheduler::new(10, 2);
+    let mut builder = ActorBuilder::<String, String, String>::new(2, None);
+    let tx = builder.add_producer();
+    let tx_clone = builder.add_producer();
+    let mut rx = builder.build_with_burst(10, actor_scheduler::ShutdownMode::default());
     let processed = Arc::new(Mutex::new(Vec::new()));
     let processed_clone = processed.clone();
     let send_complete = Arc::new(AtomicBool::new(false));
@@ -541,7 +544,6 @@ fn data_lane_blocks_when_buffer_full() {
     });
 
     // Sender thread
-    let tx_clone = tx.clone();
     let sender = thread::spawn(move || {
         for i in 0..5 {
             tx_clone.send(Message::Data(format!("{}", i))).unwrap();
@@ -563,7 +565,15 @@ fn data_lane_blocks_when_buffer_full() {
 
 #[test]
 fn multiple_senders_all_messages_delivered() {
-    let (tx, mut rx) = ActorScheduler::new(100, 1000);
+    let num_senders = 10;
+    let msgs_per_sender = 100;
+
+    let mut builder = ActorBuilder::<i32, i32, i32>::new(1000, None);
+    // Create one producer per sender thread, plus one "original" to drop at the end
+    let sender_handles: Vec<_> = (0..num_senders).map(|_| builder.add_producer()).collect();
+    let tx = builder.add_producer();
+    let mut rx = builder.build_with_burst(100, actor_scheduler::ShutdownMode::default());
+
     let actor = Arc::new(CountingActor::new());
 
     // Clone actor reference for handler
@@ -594,13 +604,11 @@ fn multiple_senders_all_messages_delivered() {
         rx.run(&mut wrapper);
     });
 
-    let num_senders = 10;
-    let msgs_per_sender = 100;
     let barrier = Arc::new(Barrier::new(num_senders));
 
-    let senders: Vec<_> = (0..num_senders)
-        .map(|_| {
-            let tx = tx.clone();
+    let senders: Vec<_> = sender_handles
+        .into_iter()
+        .map(|tx| {
             let barrier = barrier.clone();
             thread::spawn(move || {
                 barrier.wait();
@@ -672,8 +680,10 @@ fn actor_run_exits_when_all_senders_dropped() {
 
 #[test]
 fn cloned_handle_works_after_original_dropped() {
-    let (tx, mut rx) = ActorScheduler::new(10, 100);
-    let tx2 = tx.clone();
+    let mut builder = ActorBuilder::<i32, i32, i32>::new(100, None);
+    let tx = builder.add_producer();
+    let tx2 = builder.add_producer();
+    let mut rx = builder.build_with_burst(10, actor_scheduler::ShutdownMode::default());
 
     let count = Arc::new(AtomicUsize::new(0));
     let count_clone = count.clone();
@@ -879,9 +889,11 @@ fn different_message_types_per_lane() {
 
 #[test]
 fn handle_clone_is_independent() {
-    let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
-    let tx2 = tx.clone();
-    let tx3 = tx2.clone();
+    let mut builder = ActorBuilder::<i32, i32, i32>::new(100, None);
+    let tx = builder.add_producer();
+    let tx2 = builder.add_producer();
+    let tx3 = builder.add_producer();
+    let mut rx = builder.build_with_burst(10, actor_scheduler::ShutdownMode::default());
 
     let count = Arc::new(AtomicUsize::new(0));
     let count_clone = count.clone();
@@ -980,7 +992,14 @@ fn high_throughput_single_sender() {
 
 #[test]
 fn concurrent_senders_stress_test() {
-    let (tx, mut rx) = ActorScheduler::new(100, 1000);
+    let num_senders = 20;
+    let msgs_per_sender = 1000;
+
+    let mut builder = ActorBuilder::<i32, i32, i32>::new(1000, None);
+    let sender_handles: Vec<_> = (0..num_senders).map(|_| builder.add_producer()).collect();
+    let tx = builder.add_producer();
+    let mut rx = builder.build_with_burst(100, actor_scheduler::ShutdownMode::default());
+
     let count = Arc::new(AtomicUsize::new(0));
     let count_clone = count.clone();
 
@@ -1006,13 +1025,12 @@ fn concurrent_senders_stress_test() {
         rx.run(&mut Counter(count_clone));
     });
 
-    let num_senders = 20;
-    let msgs_per_sender = 1000;
     let barrier = Arc::new(Barrier::new(num_senders));
 
-    let senders: Vec<_> = (0..num_senders)
-        .map(|sender_id| {
-            let tx = tx.clone();
+    let senders: Vec<_> = sender_handles
+        .into_iter()
+        .enumerate()
+        .map(|(sender_id, tx)| {
             let barrier = barrier.clone();
             thread::spawn(move || {
                 barrier.wait();

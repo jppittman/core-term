@@ -124,7 +124,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     // Phase 1: Create the troupe
-    let troupe = EngineTroupe::with_config(config)?;
+    let mut troupe = EngineTroupe::with_config(config)?;
 
     // Phase 2: Get unregistered engine handle
     let unregistered_handle = troupe.engine_handle();

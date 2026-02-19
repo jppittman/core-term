@@ -18,8 +18,8 @@
 //! Run with: `cargo bench -p actor-scheduler --bench bench_optimize`
 
 use actor_scheduler::{
-    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SchedulerParams,
-    SystemStatus,
+    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    SchedulerParams, SystemStatus,
 };
 use std::io::Write;
 use std::sync::{
@@ -399,10 +399,12 @@ fn measure_fairness_under_flood(params: &SchedulerParams) -> f64 {
     let data_target = 100i32;
     let (dc, _, _, mut actor) = new_counting();
     let stop = Arc::new(AtomicBool::new(false));
-    let (tx, mut rx) = ActorScheduler::new_with_params(params.default_data_burst_limit, 128, *params);
+    let mut builder = ActorBuilder::<i32, (), ()>::new(128, None);
+    let tx = builder.add_producer();
+    let tx_f = builder.add_producer();
+    let mut rx = builder.build_with_burst(params.default_data_burst_limit, actor_scheduler::ShutdownMode::default());
     let h = thread::spawn(move || rx.run(&mut actor));
 
-    let tx_f = tx.clone();
     let sf = stop.clone();
     let flooder = thread::spawn(move || { while !sf.load(Ordering::Relaxed) { let _ = tx_f.send(Message::Control(())); } });
 
@@ -451,14 +453,16 @@ fn measure_latency_under_load(params: &SchedulerParams) -> f64 {
         }
     }
 
-    let (tx, mut rx) = ActorScheduler::new_with_params(params.default_data_burst_limit, 256, *params);
+    let mut builder = ActorBuilder::<i32, (), ()>::new(256, None);
+    let tx = builder.add_producer();
+    let tx_data = builder.add_producer();
+    let mut rx = builder.build_with_burst(params.default_data_burst_limit, actor_scheduler::ShutdownMode::default());
     let h = thread::spawn(move || {
         let mut a = LoadedLatencyActor { response_tx, data_count: dc };
         rx.run(&mut a);
     });
 
     // Start continuous data sender
-    let tx_data = tx.clone();
     let data_sender = thread::spawn(move || {
         let mut i = 0i32;
         while !sf.load(Ordering::Relaxed) {

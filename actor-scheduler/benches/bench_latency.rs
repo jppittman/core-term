@@ -1,5 +1,6 @@
 use actor_scheduler::{
-    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    SystemStatus,
 };
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use std::sync::{
@@ -81,7 +82,10 @@ fn bench_control_latency_under_load(c: &mut Criterion) {
     c.bench_function("control_latency_under_data_flood", |b| {
         // Spawn actor thread ONCE
         let (response_tx, response_rx) = mpsc::channel();
-        let (tx, mut rx) = ActorScheduler::new(1024, 100);
+        let mut builder = ActorBuilder::<(), (), ()>::new(100, None);
+        let tx = builder.add_producer();
+        let tx_data = builder.add_producer();
+        let mut rx = builder.build();
 
         let actor_handle = thread::spawn(move || {
             let mut actor = LatencyActor { response_tx };
@@ -91,7 +95,6 @@ fn bench_control_latency_under_load(c: &mut Criterion) {
         thread::sleep(Duration::from_millis(1));
 
         // Start continuous data flooder
-        let tx_data = tx.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_clone = stop.clone();
         let flooder = thread::spawn(move || {
@@ -161,7 +164,10 @@ fn bench_management_latency_under_load(c: &mut Criterion) {
     c.bench_function("management_latency_under_control_flood", |b| {
         // Spawn actor thread ONCE
         let (response_tx, response_rx) = mpsc::channel();
-        let (tx, mut rx) = ActorScheduler::new(1024, 100);
+        let mut builder = ActorBuilder::<(), (), ()>::new(100, None);
+        let tx = builder.add_producer();
+        let tx_control = builder.add_producer();
+        let mut rx = builder.build();
 
         let actor_handle = thread::spawn(move || {
             let mut actor = LatencyActor { response_tx };
@@ -171,7 +177,6 @@ fn bench_management_latency_under_load(c: &mut Criterion) {
         thread::sleep(Duration::from_millis(1));
 
         // Start continuous control flooder
-        let tx_control = tx.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_clone = stop.clone();
         let flooder = thread::spawn(move || {

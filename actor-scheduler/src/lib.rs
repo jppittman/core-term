@@ -104,9 +104,11 @@ pub use params::SchedulerParams;
 // Re-export macros from the proc-macro crate
 pub use actor_scheduler_macros::{actor_impl, troupe};
 
+use sharded::{InboxBuilder, ShardedInbox};
+use spsc::SpscSender;
 use std::sync::{
     Arc,
-    mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
+    mpsc::{self, Receiver, SyncSender},
 };
 use std::time::Duration;
 
@@ -439,7 +441,7 @@ pub trait ActorTypes {
 ///     fn park(&mut self, status: SystemStatus) -> ActorStatus { ActorStatus::Idle }
 /// }
 /// ```
-pub trait TroupeActor<'a, Dir>:
+pub trait TroupeActor<Dir>:
     Sized
     + ActorTypes
     + Actor<
@@ -447,16 +449,19 @@ pub trait TroupeActor<'a, Dir>:
         <Self as ActorTypes>::Control,
         <Self as ActorTypes>::Management,
     >
-where
-    Dir: 'a,
 {
-    /// Create a new actor with a reference to the directory.
-    fn new(dir: &'a Dir) -> Self;
+    /// Create a new actor from its directory of handles.
+    ///
+    /// With SPSC channels, each actor OWNS its directory instance.
+    /// The directory contains dedicated SPSC handles to every other actor.
+    fn new(dir: Dir) -> Self;
 }
 
-/// Create a new actor with the given configuration.
+/// Create a new actor with one producer handle.
 ///
-/// Convenience function for creating an actor scheduler and handle.
+/// Convenience function for single-producer actors. For multi-producer setups
+/// (e.g., troupe actors where multiple peers send to the same target), use
+/// [`ActorBuilder`] directly.
 ///
 /// # Arguments
 /// * `data_buffer_size` - Size of bounded data buffer
@@ -471,6 +476,122 @@ pub fn create_actor<D, C, M>(
         data_buffer_size,
         wake_handler,
     )
+}
+
+/// Builder for multi-producer actor channels.
+///
+/// Each call to [`add_producer`](ActorBuilder::add_producer) creates a dedicated
+/// SPSC channel per lane. Call [`build`](ActorBuilder::build) to seal the registry
+/// and get the [`ActorScheduler`].
+///
+/// # Lifecycle
+///
+/// ```text
+/// 1. ActorBuilder::new(buffer_size, waker)
+/// 2. builder.add_producer()  → ActorHandle  (repeat N times)
+/// 3. builder.build()         → ActorScheduler (seals registry)
+/// ```
+///
+/// # Example
+///
+/// ```ignore
+/// let mut builder = ActorBuilder::<Data, Control, Mgmt>::new(1024, None);
+/// let handle_a = builder.add_producer();  // Actor A's dedicated channels
+/// let handle_b = builder.add_producer();  // Actor B's dedicated channels
+/// let mut scheduler = builder.build();    // Seals — no more producers
+/// ```
+pub struct ActorBuilder<D, C, M> {
+    tx_doorbell: SyncSender<System>,
+    rx_doorbell: Option<Receiver<System>>,
+    data_inbox: InboxBuilder<D>,
+    control_inbox: InboxBuilder<C>,
+    mgmt_inbox: InboxBuilder<M>,
+    wake_handler: Option<Arc<dyn WakeHandler>>,
+    params: SchedulerParams,
+}
+
+impl<D, C, M> ActorBuilder<D, C, M> {
+    /// Create a new builder with default scheduler parameters.
+    ///
+    /// # Arguments
+    /// * `data_buffer_size` - Per-producer SPSC buffer size for the data lane
+    /// * `wake_handler` - Optional platform wake handler (e.g., macOS Cocoa waker)
+    pub fn new(
+        data_buffer_size: usize,
+        wake_handler: Option<Arc<dyn WakeHandler>>,
+    ) -> Self {
+        Self::new_with_params(data_buffer_size, wake_handler, SchedulerParams::DEFAULT)
+    }
+
+    /// Create a new builder with explicit tuning parameters.
+    pub fn new_with_params(
+        data_buffer_size: usize,
+        wake_handler: Option<Arc<dyn WakeHandler>>,
+        params: SchedulerParams,
+    ) -> Self {
+        assert!(
+            data_buffer_size > 0,
+            "data_buffer_size must be >= 1, got {}",
+            data_buffer_size
+        );
+        params.validate();
+
+        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
+
+        Self {
+            tx_doorbell,
+            rx_doorbell: Some(rx_doorbell),
+            data_inbox: InboxBuilder::new(data_buffer_size),
+            control_inbox: InboxBuilder::new(params.control_mgmt_buffer_size),
+            mgmt_inbox: InboxBuilder::new(params.control_mgmt_buffer_size),
+            wake_handler,
+            params,
+        }
+    }
+
+    /// Register a new producer. Returns a unique [`ActorHandle`] with dedicated
+    /// SPSC channels to this actor's three priority lanes.
+    ///
+    /// Call this once per producer during initialization, before [`build`](Self::build).
+    pub fn add_producer(&mut self) -> ActorHandle<D, C, M> {
+        ActorHandle {
+            tx_doorbell: self.tx_doorbell.clone(),
+            tx_data: self.data_inbox.add_producer(),
+            tx_control: self.control_inbox.add_producer(),
+            tx_mgmt: self.mgmt_inbox.add_producer(),
+            wake_handler: self.wake_handler.clone(),
+            params: self.params,
+        }
+    }
+
+    /// Seal the registry and return the scheduler.
+    ///
+    /// Uses default burst limits from [`SchedulerParams`].
+    /// No more producers can be added after this call.
+    pub fn build(self) -> ActorScheduler<D, C, M> {
+        let burst = self.params.default_data_burst_limit;
+        self.build_with_burst(burst, ShutdownMode::default())
+    }
+
+    /// Seal the registry with explicit burst limit and shutdown mode.
+    pub fn build_with_burst(
+        self,
+        data_burst_limit: usize,
+        shutdown_mode: ShutdownMode,
+    ) -> ActorScheduler<D, C, M> {
+        ActorScheduler {
+            rx_doorbell: self
+                .rx_doorbell
+                .expect("ActorBuilder::build called twice"),
+            rx_data: self.data_inbox.build(),
+            rx_control: self.control_inbox.build(),
+            rx_mgmt: self.mgmt_inbox.build(),
+            data_burst_limit,
+            management_burst_limit: self.params.management_burst_limit(),
+            control_burst_limit: self.params.control_burst_limit(),
+            shutdown_mode,
+        }
+    }
 }
 
 /// Trait for waking a blocked actor scheduler.
@@ -530,13 +651,17 @@ enum System {
 }
 
 /// A unified sender handle that routes messages to the scheduler with priority lanes.
+///
+/// Each handle owns dedicated SPSC channels (one per lane) to the target actor.
+/// Not `Clone` — use [`ActorBuilder::add_producer`] to create additional handles.
+/// This eliminates all send-side contention: each producer gets its own wait-free path.
 pub struct ActorHandle<D, C, M> {
-    // Doorbell channel (buffer: 1) - wake and shutdown signals
+    // Doorbell channel (buffer: 1) - wake and shutdown signals (MPSC, shared)
     tx_doorbell: SyncSender<System>,
-    // All lanes are bounded for backpressure
-    tx_data: SyncSender<D>,
-    tx_control: SyncSender<C>,
-    tx_mgmt: SyncSender<M>,
+    // Each lane is a dedicated SPSC channel (one producer per handle)
+    tx_data: SpscSender<D>,
+    tx_control: SpscSender<C>,
+    tx_mgmt: SpscSender<M>,
     // Optional custom wake handler for platform-specific wake mechanisms
     wake_handler: Option<Arc<dyn WakeHandler>>,
     // Tunable parameters for backoff/retry behavior
@@ -552,21 +677,6 @@ impl<D, C, M> std::fmt::Debug for ActorHandle<D, C, M> {
     }
 }
 
-// Manual Clone implementation - we don't require D, C, M to be Clone
-// because we're just cloning the channel senders, not the messages.
-impl<D, C, M> Clone for ActorHandle<D, C, M> {
-    fn clone(&self) -> Self {
-        Self {
-            tx_doorbell: self.tx_doorbell.clone(),
-            tx_data: self.tx_data.clone(),
-            tx_control: self.tx_control.clone(),
-            tx_mgmt: self.tx_mgmt.clone(),
-            wake_handler: self.wake_handler.clone(),
-            params: self.params,
-        }
-    }
-}
-
 /// Send with retry and exponential backoff + jitter for fairness.
 ///
 /// Backoff strategy:
@@ -577,17 +687,15 @@ impl<D, C, M> Clone for ActorHandle<D, C, M> {
 /// Used for control and management lanes to prevent thundering herd when
 /// multiple senders compete for buffer space.
 fn send_with_backoff<T>(
-    tx: &SyncSender<T>,
+    tx: &SpscSender<T>,
     mut msg: T,
     params: &SchedulerParams,
 ) -> Result<(), SendError> {
-    use std::sync::mpsc::TrySendError;
-
     let mut attempt = 0u32;
     loop {
         match tx.try_send(msg) {
             Ok(()) => return Ok(()),
-            Err(TrySendError::Full(returned_msg)) => {
+            Err(spsc::TrySendError::Full(returned_msg)) => {
                 // Restore message for retry
                 msg = returned_msg;
 
@@ -615,9 +723,8 @@ fn send_with_backoff<T>(
 
                 attempt = attempt.saturating_add(1);
             }
-            Err(err) => {
-                // Disconnected - convert to our error type
-                return Err(err.into());
+            Err(spsc::TrySendError::Disconnected(_)) => {
+                return Err(SendError::Disconnected);
             }
         }
     }
@@ -647,16 +754,19 @@ impl<D, C, M> ActorHandle<D, C, M> {
 
     fn send_message(&self, msg: Message<D, C, M>) -> Result<(), SendError> {
         match msg {
-            Message::Data(d) => {
-                // Data lane: regular blocking send
-                // Try send first to avoid blocking if possible
-                if let Err(std::sync::mpsc::TrySendError::Full(returned_d)) =
-                    self.tx_data.try_send(d)
-                {
-                    #[cfg(debug_assertions)]
-                    eprintln!("[ActorScheduler] Data channel full, blocking send...");
-
-                    self.tx_data.send(returned_d)?;
+            Message::Data(mut d) => {
+                // Data lane: spin-yield until space available (backpressure)
+                loop {
+                    match self.tx_data.try_send(d) {
+                        Ok(()) => break,
+                        Err(spsc::TrySendError::Full(returned_d)) => {
+                            d = returned_d;
+                            std::thread::yield_now();
+                        }
+                        Err(spsc::TrySendError::Disconnected(_)) => {
+                            return Err(SendError::Disconnected);
+                        }
+                    }
                 }
                 self.wake();
             }
@@ -697,10 +807,10 @@ impl<D, C, M> ActorHandle<D, C, M> {
         }
         match self.tx_doorbell.try_send(System::Wake) {
             Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
+            Err(mpsc::TrySendError::Full(_)) => {
                 // Doorbell is bounded(1) - if full, a wake is already pending
             }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(mpsc::TrySendError::Disconnected(_)) => {
                 panic!("Doorbell receiver disconnected - scheduler dropped unexpectedly");
             }
         }
@@ -708,11 +818,15 @@ impl<D, C, M> ActorHandle<D, C, M> {
 }
 
 /// The receiver side that implements the priority scheduling logic.
+///
+/// Internally uses [`ShardedInbox`] per lane: each registered producer has
+/// a dedicated SPSC ring buffer, and the scheduler drains all shards with
+/// round-robin fairness. The MPSC doorbell channel is kept for wake/shutdown signals.
 pub struct ActorScheduler<D, C, M> {
-    rx_doorbell: Receiver<System>, // Wake and shutdown signals
-    rx_data: Receiver<D>,
-    rx_control: Receiver<C>,
-    rx_mgmt: Receiver<M>,
+    rx_doorbell: Receiver<System>, // Wake and shutdown signals (MPSC)
+    rx_data: ShardedInbox<D>,
+    rx_control: ShardedInbox<C>,
+    rx_mgmt: ShardedInbox<M>,
     data_burst_limit: usize,
     management_burst_limit: usize,
     control_burst_limit: usize,
@@ -728,40 +842,6 @@ enum SchedulerLoopStatus {
 }
 
 impl<D, C, M> ActorScheduler<D, C, M> {
-    /// Drain a channel up to a limit, applying a handler to each message.
-    ///
-    /// Returns:
-    /// - `Ok(DrainStatus::Empty)` - Channel drained, no more messages
-    /// - `Ok(DrainStatus::More)` - Hit burst limit, more messages may exist
-    /// - `Ok(DrainStatus::Disconnected)` - Channel disconnected (normal shutdown)
-    /// - `Err(HandlerError)` - Handler failed, propagate error up
-    fn drain_channel<T>(
-        rx: &Receiver<T>,
-        limit: usize,
-        mut handler: impl FnMut(T) -> HandlerResult,
-    ) -> Result<DrainStatus, HandlerError> {
-        let mut count = 0;
-
-        loop {
-            if count >= limit {
-                return Ok(DrainStatus::More);
-            }
-
-            match rx.try_recv() {
-                Ok(msg) => {
-                    handler(msg)?;
-                    count += 1;
-                }
-                Err(TryRecvError::Empty) => {
-                    return Ok(DrainStatus::Empty);
-                }
-                Err(TryRecvError::Disconnected) => {
-                    return Ok(DrainStatus::Disconnected);
-                }
-            }
-        }
-    }
-
     /// Drain control and management channels without limit, ignoring data.
     ///
     /// Used for `ShutdownMode::DrainControl` to process critical cleanup messages
@@ -771,14 +851,16 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         A: Actor<D, C, M>,
     {
         // Drain control completely
-        while let DrainStatus::More = Self::drain_channel(&self.rx_control, usize::MAX, |msg| {
-            actor.handle_control(msg)
-        })? {}
+        while let DrainStatus::More =
+            self.rx_control
+                .drain(usize::MAX, |msg| actor.handle_control(msg))?
+        {}
 
         // Drain management completely
-        while let DrainStatus::More = Self::drain_channel(&self.rx_mgmt, usize::MAX, |msg| {
-            actor.handle_management(msg)
-        })? {}
+        while let DrainStatus::More = self
+            .rx_mgmt
+            .drain(usize::MAX, |msg| actor.handle_management(msg))?
+        {}
 
         Ok(())
     }
@@ -801,22 +883,23 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         let batch_size = 10;
 
         loop {
-            let control_status = Self::drain_channel(&self.rx_control, batch_size, |msg| {
-                actor.handle_control(msg)
-            })?;
+            let control_status = self
+                .rx_control
+                .drain(batch_size, |msg| actor.handle_control(msg))?;
             if Instant::now() >= deadline {
                 return Ok(());
             }
 
-            let mgmt_status = Self::drain_channel(&self.rx_mgmt, batch_size, |msg| {
-                actor.handle_management(msg)
-            })?;
+            let mgmt_status = self
+                .rx_mgmt
+                .drain(batch_size, |msg| actor.handle_management(msg))?;
             if Instant::now() >= deadline {
                 return Ok(());
             }
 
-            let data_status =
-                Self::drain_channel(&self.rx_data, batch_size, |msg| actor.handle_data(msg))?;
+            let data_status = self
+                .rx_data
+                .drain(batch_size, |msg| actor.handle_data(msg))?;
             if Instant::now() >= deadline {
                 return Ok(());
             }
@@ -847,21 +930,23 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         // Control budget is split evenly between the two control runs to prevent double priority
         let half_control = self.control_burst_limit / 2;
 
-        let control1 = Self::drain_channel(&self.rx_control, half_control, |msg| {
-            actor.handle_control(msg)
-        })?;
+        let control1 = self
+            .rx_control
+            .drain(half_control, |msg| actor.handle_control(msg))?;
 
-        let mgmt = Self::drain_channel(&self.rx_mgmt, self.management_burst_limit, |msg| {
-            actor.handle_management(msg)
-        })?;
+        let mgmt = self
+            .rx_mgmt
+            .drain(self.management_burst_limit, |msg| {
+                actor.handle_management(msg)
+            })?;
 
-        let control2 = Self::drain_channel(&self.rx_control, half_control, |msg| {
-            actor.handle_control(msg)
-        })?;
+        let control2 = self
+            .rx_control
+            .drain(half_control, |msg| actor.handle_control(msg))?;
 
-        let data = Self::drain_channel(&self.rx_data, self.data_burst_limit, |msg| {
-            actor.handle_data(msg)
-        })?;
+        let data = self
+            .rx_data
+            .drain(self.data_burst_limit, |msg| actor.handle_data(msg))?;
 
         // All disconnected = normal shutdown
         if matches!(
@@ -911,185 +996,59 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         }
     }
 
-    /// Create a new scheduler channel with priority lanes.
+    /// Create a new scheduler with a single producer.
+    ///
+    /// Convenience method for the common case of one sender. Returns
+    /// `(handle, scheduler)`. For multiple producers, use [`ActorBuilder`].
     ///
     /// # Arguments
     /// * `data_burst_limit` - Maximum data messages to process per wake cycle
     /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold).
-    ///   Must be >= 1. A buffer of 0 creates a rendezvous channel that will deadlock
-    ///   if the receiver isn't actively receiving.
     ///
     /// # Panics
     /// Panics if `data_buffer_size` is 0.
-    ///
-    /// # Returns
-    /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
     #[must_use]
     pub fn new(data_burst_limit: usize, data_buffer_size: usize) -> (ActorHandle<D, C, M>, Self) {
         Self::new_with_params(data_burst_limit, data_buffer_size, SchedulerParams::DEFAULT)
     }
 
-    /// Create a new scheduler channel with explicit tuning parameters.
-    ///
-    /// Use this to test alternative configurations found by optimization.
-    ///
-    /// # Panics
-    /// Panics if `data_buffer_size` is 0 or if params fail validation.
+    /// Create a new scheduler with explicit tuning parameters and a single producer.
     #[must_use]
     pub fn new_with_params(
         data_burst_limit: usize,
         data_buffer_size: usize,
         params: SchedulerParams,
     ) -> (ActorHandle<D, C, M>, Self) {
-        assert!(
-            data_buffer_size > 0,
-            "data_buffer_size must be >= 1, got {}",
-            data_buffer_size
-        );
-        params.validate();
-
-        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
-        let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(params.control_mgmt_buffer_size);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(params.control_mgmt_buffer_size);
-
-        let sender = ActorHandle {
-            tx_doorbell,
-            tx_data,
-            tx_control,
-            tx_mgmt,
-            wake_handler: None,
-            params,
-        };
-
-        let receiver = ActorScheduler {
-            rx_doorbell,
-            rx_data,
-            rx_control,
-            rx_mgmt,
-            data_burst_limit,
-            management_burst_limit: params.management_burst_limit(),
-            control_burst_limit: params.control_burst_limit(),
-            shutdown_mode: ShutdownMode::default(),
-        };
-
-        (sender, receiver)
+        let mut builder = ActorBuilder::new_with_params(data_buffer_size, None, params);
+        let handle = builder.add_producer();
+        let scheduler = builder.build_with_burst(data_burst_limit, ShutdownMode::default());
+        (handle, scheduler)
     }
 
-    /// Create a new scheduler channel with priority lanes and a custom wake actor.
-    ///
-    /// This variant allows platform-specific wake mechanisms (e.g., NSEvent on macOS)
-    /// to be used in addition to the default control channel wake signal.
-    ///
-    /// # Arguments
-    /// * `data_burst_limit` - Maximum data messages to process per wake cycle
-    /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold).
-    ///   Must be >= 1.
-    /// * `wake_handler` - Optional custom wake handler for platform event loops
-    ///
-    /// # Panics
-    /// Panics if `data_buffer_size` is 0.
-    ///
-    /// # Returns
-    /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
+    /// Create a new scheduler with a custom wake handler and a single producer.
     #[must_use]
     pub fn new_with_wake_handler(
         data_burst_limit: usize,
         data_buffer_size: usize,
         wake_handler: Option<Arc<dyn WakeHandler>>,
     ) -> (ActorHandle<D, C, M>, Self) {
-        let params = SchedulerParams::DEFAULT;
-        assert!(
-            data_buffer_size > 0,
-            "data_buffer_size must be >= 1, got {}",
-            data_buffer_size
-        );
-
-        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
-        let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(params.control_mgmt_buffer_size);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(params.control_mgmt_buffer_size);
-
-        let sender = ActorHandle {
-            tx_doorbell,
-            tx_data,
-            tx_control,
-            tx_mgmt,
-            wake_handler,
-            params,
-        };
-
-        let receiver = ActorScheduler {
-            rx_doorbell,
-            rx_data,
-            rx_control,
-            rx_mgmt,
-            data_burst_limit,
-            management_burst_limit: params.management_burst_limit(),
-            control_burst_limit: params.control_burst_limit(),
-            shutdown_mode: ShutdownMode::default(),
-        };
-
-        (sender, receiver)
+        let mut builder = ActorBuilder::new(data_buffer_size, wake_handler);
+        let handle = builder.add_producer();
+        let scheduler = builder.build_with_burst(data_burst_limit, ShutdownMode::default());
+        (handle, scheduler)
     }
 
-    /// Create a new scheduler channel with configurable shutdown behavior.
-    ///
-    /// This variant allows specifying how the actor should behave on shutdown:
-    /// - `Immediate`: Drop all pending messages (default)
-    /// - `DrainControl`: Process control+management, drop data
-    /// - `DrainAll`: Process all messages with timeout fallback
-    ///
-    /// # Arguments
-    /// * `data_burst_limit` - Maximum data messages to process per wake cycle
-    /// * `data_buffer_size` - Size of bounded data buffer (backpressure threshold).
-    ///   Must be >= 1.
-    /// * `shutdown_mode` - Shutdown behavior (see `ShutdownMode`)
-    ///
-    /// # Panics
-    /// Panics if `data_buffer_size` is 0.
-    ///
-    /// # Returns
-    /// Returns `(sender, receiver)` tuple. The sender can be cloned and shared.
+    /// Create a new scheduler with configurable shutdown behavior and a single producer.
     #[must_use]
     pub fn new_with_shutdown_mode(
         data_burst_limit: usize,
         data_buffer_size: usize,
         shutdown_mode: ShutdownMode,
     ) -> (ActorHandle<D, C, M>, Self) {
-        let params = SchedulerParams::DEFAULT;
-        assert!(
-            data_buffer_size > 0,
-            "data_buffer_size must be >= 1, got {}",
-            data_buffer_size
-        );
-
-        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
-        let (tx_data, rx_data) = mpsc::sync_channel(data_buffer_size);
-        let (tx_control, rx_control) = mpsc::sync_channel(params.control_mgmt_buffer_size);
-        let (tx_mgmt, rx_mgmt) = mpsc::sync_channel(params.control_mgmt_buffer_size);
-
-        let sender = ActorHandle {
-            tx_doorbell,
-            tx_data,
-            tx_control,
-            tx_mgmt,
-            wake_handler: None,
-            params,
-        };
-
-        let receiver = ActorScheduler {
-            rx_doorbell,
-            rx_data,
-            rx_control,
-            rx_mgmt,
-            data_burst_limit,
-            management_burst_limit: params.management_burst_limit(),
-            control_burst_limit: params.control_burst_limit(),
-            shutdown_mode,
-        };
-
-        (sender, receiver)
+        let mut builder = ActorBuilder::new(data_buffer_size, None);
+        let handle = builder.add_producer();
+        let scheduler = builder.build_with_burst(data_burst_limit, shutdown_mode);
+        (handle, scheduler)
     }
 
     /// The Main Scheduler Loop.
@@ -1149,7 +1108,17 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                         None => return Ok(()), // All channels disconnected
                     }
                 }
-                Err(TryRecvError::Disconnected) => return Ok(()),
+                Err(TryRecvError::Disconnected) => {
+                    // Doorbell disconnected — all handles dropped.
+                    // SPSC shards may still have buffered messages.
+                    // Drain until all shards report Disconnected.
+                    loop {
+                        match self.handle_wake(actor)? {
+                            Some(_) => {} // keep draining
+                            None => return Ok(()),
+                        }
+                    }
+                }
             }
         }
     }
@@ -1187,7 +1156,7 @@ mod tests {
 
     #[test]
     fn verify_data_lane_backpressure_contract() {
-        let (tx, mut rx) = ActorScheduler::new(2, 1); // Buffer size 1, burst limit 2
+        let (tx, mut rx) = ActorScheduler::new(2, 1);
         let log = Arc::new(Mutex::new(Vec::new()));
         let log_clone = log.clone();
 
@@ -1196,18 +1165,15 @@ mod tests {
             rx.run(&mut handler);
         });
 
-        let tx_clone = tx.clone();
+        // Send from this thread — the 3rd message may spin-yield on backpressure
         let send_thread = thread::spawn(move || {
-            tx_clone.send(Message::Data("1".to_string())).unwrap();
-            tx_clone.send(Message::Data("2".to_string())).unwrap(); // Should block
-            tx_clone.send(Message::Data("3".to_string())).unwrap();
+            tx.send(Message::Data("1".to_string())).unwrap();
+            tx.send(Message::Data("2".to_string())).unwrap();
+            tx.send(Message::Data("3".to_string())).unwrap();
         });
 
-        thread::sleep(Duration::from_millis(100));
-        drop(tx);
         send_thread.join().unwrap();
-
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(100));
         let messages = log.lock().unwrap();
         assert_eq!(messages.len(), 3, "All messages should be processed");
     }
@@ -1371,9 +1337,8 @@ mod troupe_tests {
         type Management = EngineManagement;
     }
 
-    #[allow(clippy::needless_lifetimes)]
-    impl<'__dir, __Dir: '__dir> TroupeActor<'__dir, __Dir> for EngineActor<'__dir> {
-        fn new(_dir: &'__dir __Dir) -> Self {
+    impl<'a> TroupeActor<&'a Directory> for EngineActor<'a> {
+        fn new(_dir: &'a Directory) -> Self {
             panic!("use new_with_counter instead")
         }
     }
@@ -1417,62 +1382,72 @@ mod troupe_tests {
         type Management = DisplayManagement;
     }
 
-    #[allow(clippy::needless_lifetimes)]
-    impl<'__dir, __Dir: '__dir> TroupeActor<'__dir, __Dir> for DisplayActor<'__dir> {
-        fn new(_dir: &'__dir __Dir) -> Self {
+    impl<'a> TroupeActor<&'a Directory> for DisplayActor<'a> {
+        fn new(_dir: &'a Directory) -> Self {
             panic!("use new_with_counter instead")
         }
     }
 
-    // === Manual Directory (what troupe! would generate) ===
+    // === Per-actor Directory (what troupe! generates with SPSC) ===
+    // Each actor gets its OWN Directory with dedicated SPSC handles.
 
     pub struct Directory {
         pub engine: ActorHandle<EngineData, EngineControl, EngineManagement>,
         pub display: ActorHandle<DisplayData, DisplayControl, DisplayManagement>,
     }
 
-    /// Test that the two-phase initialization pattern compiles and works.
-    /// This demonstrates the Directory pattern where actors get handles upfront.
+    /// Test the SPSC-based directory pattern: each actor gets its own Directory
+    /// with dedicated SPSC handles to every other actor.
     #[test]
     fn test_troupe_directory_pattern() {
-        // Phase 1: Create all handles and schedulers upfront
-        let (engine_h, _engine_s) =
-            create_actor::<EngineData, EngineControl, EngineManagement>(1024, None);
-        let (display_h, _display_s) =
-            create_actor::<DisplayData, DisplayControl, DisplayManagement>(1024, None);
+        // Create builders for each actor
+        let mut engine_builder =
+            ActorBuilder::<EngineData, EngineControl, EngineManagement>::new(1024, None);
+        let mut display_builder =
+            ActorBuilder::<DisplayData, DisplayControl, DisplayManagement>::new(1024, None);
 
-        // Build directory - everyone can send to everyone
-        let dir = Directory {
-            engine: engine_h.clone(),
-            display: display_h.clone(),
+        // Each "producer" (actor + external caller) gets dedicated SPSC handles
+        // Directory for the test caller:
+        let test_dir = Directory {
+            engine: engine_builder.add_producer(),
+            display: display_builder.add_producer(),
         };
 
+        // An additional producer handle (e.g. for exposed handles)
+        let extra_engine_handle = engine_builder.add_producer();
+
+        // Build schedulers (seals builders — no more producers after this)
+        let _engine_s = engine_builder.build();
+        let _display_s = display_builder.build();
+
         // Verify cross-actor messaging works via directory
-        // Engine can send to display
-        dir.display
+        test_dir
+            .display
             .send(Message::Control(DisplayControl::Render))
             .unwrap();
-
-        // Display can send to engine
-        dir.engine
+        test_dir
+            .engine
             .send(Message::Control(EngineControl::Tick))
             .unwrap();
 
-        // Verify handles are independent (cloning works)
-        let engine_h2 = dir.engine.clone();
-        engine_h2
+        // Multiple handles are independent (each is a separate SPSC channel)
+        extra_engine_handle
             .send(Message::Control(EngineControl::Tick))
             .unwrap();
     }
 
     /// Adversarial test: Malicious control sender trying to starve data lane
-    /// Uses CONTINUOUS flooding to ensure burst limiting works during active attack
+    /// Uses CONTINUOUS flooding to ensure burst limiting works during active attack.
+    /// With SPSC, each producer has its own channel — no send-side contention.
     #[test]
     fn adversarial_control_flood_vs_data() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::thread;
 
-        let (tx, mut rx) = ActorScheduler::<i32, (), ()>::new(100, 100);
+        let mut builder = ActorBuilder::<i32, (), ()>::new(100, None);
+        let tx_flood = builder.add_producer();
+        let tx_data = builder.add_producer();
+        let mut rx = builder.build_with_burst(100, ShutdownMode::default());
 
         let control_processed = Arc::new(AtomicUsize::new(0));
         let data_processed = Arc::new(AtomicUsize::new(0));
@@ -1481,7 +1456,6 @@ mod troupe_tests {
         let cp = control_processed.clone();
         let dp = data_processed.clone();
 
-        // Receiver thread
         let receiver_handle = thread::spawn(move || {
             struct TestActor {
                 control_count: Arc<AtomicUsize>,
@@ -1500,10 +1474,9 @@ mod troupe_tests {
                     Ok(())
                 }
                 fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                    Ok(ActorStatus::Busy) // Keep spinning to maximize throughput
+                    Ok(ActorStatus::Busy)
                 }
             }
-
             let mut actor = TestActor {
                 control_count: cp,
                 data_count: dp,
@@ -1511,24 +1484,21 @@ mod troupe_tests {
             rx.run(&mut actor);
         });
 
-        // Malicious control sender: CONTINUOUS flood
-        let tx_control = tx.clone();
+        // Malicious control sender: CONTINUOUS flood via dedicated SPSC
         let stop_flag = stop_flooding.clone();
         let control_sender = thread::spawn(move || {
             let mut sent = 0;
             while !stop_flag.load(Ordering::Relaxed) {
-                if tx_control.send(Message::Control(())).is_ok() {
+                if tx_flood.send(Message::Control(())).is_ok() {
                     sent += 1;
                 }
             }
             sent
         });
 
-        // Give flooder time to start
         thread::sleep(Duration::from_millis(20));
 
-        // Well-behaved data sender sends DURING the flood
-        let tx_data = tx.clone();
+        // Well-behaved data sender via its own dedicated SPSC
         let data_sender = thread::spawn(move || {
             for i in 0..100 {
                 let _ = tx_data.send(Message::Data(i));
@@ -1536,17 +1506,13 @@ mod troupe_tests {
         });
 
         data_sender.join().unwrap();
-
-        // Let it run a bit more
         thread::sleep(Duration::from_millis(50));
 
-        // Stop the flood
         stop_flooding.store(true, Ordering::Relaxed);
         let control_sent = control_sender.join().unwrap();
 
-        // Give receiver time to drain
+        // All handles dropped → scheduler exits
         thread::sleep(Duration::from_millis(50));
-        drop(tx);
         receiver_handle.join().unwrap();
 
         let control_count = control_processed.load(Ordering::Relaxed);
@@ -1557,13 +1523,10 @@ mod troupe_tests {
             control_sent, control_count, data_count
         );
 
-        // CRITICAL: Data must get through DURING continuous control flood
         assert!(
             data_count > 0,
             "Data lane was completely starved during continuous control flood"
         );
-
-        // With burst limiting, we should process a good portion of data
         assert!(
             data_count > 50,
             "Burst limiting too weak - only {}/100 data processed during flood",
@@ -1571,14 +1534,19 @@ mod troupe_tests {
         );
     }
 
-    /// Adversarial test: Multiple bad actors teaming up to flood control
-    /// Uses CONTINUOUS flooding from multiple threads to test collusion resistance
+    /// Adversarial test: Multiple bad actors teaming up to flood control.
+    /// With SPSC, each flooder has its own channel — the scheduler still needs
+    /// burst limiting to prevent consumer-side starvation.
     #[test]
     fn adversarial_multiple_control_flooders() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::thread;
 
-        let (tx, mut rx) = ActorScheduler::<i32, (), ()>::new(100, 100);
+        let mut builder = ActorBuilder::<i32, (), ()>::new(100, None);
+        // 5 flood producers + 1 data producer
+        let flood_handles: Vec<_> = (0..5).map(|_| builder.add_producer()).collect();
+        let tx_data = builder.add_producer();
+        let mut rx = builder.build_with_burst(100, ShutdownMode::default());
 
         let control_processed = Arc::new(AtomicUsize::new(0));
         let data_processed = Arc::new(AtomicUsize::new(0));
@@ -1587,7 +1555,6 @@ mod troupe_tests {
         let cp = control_processed.clone();
         let dp = data_processed.clone();
 
-        // Receiver thread
         let receiver_handle = thread::spawn(move || {
             struct TestActor {
                 control_count: Arc<AtomicUsize>,
@@ -1609,7 +1576,6 @@ mod troupe_tests {
                     Ok(ActorStatus::Busy)
                 }
             }
-
             let mut actor = TestActor {
                 control_count: cp,
                 data_count: dp,
@@ -1617,28 +1583,24 @@ mod troupe_tests {
             rx.run(&mut actor);
         });
 
-        // Spawn 5 malicious control senders - CONTINUOUS flooding
-        let mut control_handles = vec![];
-        for _ in 0..5 {
-            let tx_clone = tx.clone();
+        // Each flooder has its own SPSC channel
+        let mut control_threads = vec![];
+        for tx_flood in flood_handles {
             let stop_flag = stop_flooding.clone();
             let handle = thread::spawn(move || {
                 let mut sent = 0;
                 while !stop_flag.load(Ordering::Relaxed) {
-                    if tx_clone.send(Message::Control(())).is_ok() {
+                    if tx_flood.send(Message::Control(())).is_ok() {
                         sent += 1;
                     }
                 }
                 sent
             });
-            control_handles.push(handle);
+            control_threads.push(handle);
         }
 
-        // Give flooders time to start
         thread::sleep(Duration::from_millis(20));
 
-        // Well-behaved data sender sends DURING the coordinated attack
-        let tx_data = tx.clone();
         let data_sender = thread::spawn(move || {
             for i in 0..100 {
                 let _ = tx_data.send(Message::Data(i));
@@ -1646,20 +1608,15 @@ mod troupe_tests {
         });
 
         data_sender.join().unwrap();
-
-        // Let it run a bit more
         thread::sleep(Duration::from_millis(50));
 
-        // Stop all flooders
         stop_flooding.store(true, Ordering::Relaxed);
         let mut total_control_sent = 0;
-        for handle in control_handles {
+        for handle in control_threads {
             total_control_sent += handle.join().unwrap();
         }
 
-        // Give receiver time to drain
         thread::sleep(Duration::from_millis(50));
-        drop(tx);
         receiver_handle.join().unwrap();
 
         let control_count = control_processed.load(Ordering::Relaxed);
@@ -1670,13 +1627,10 @@ mod troupe_tests {
             total_control_sent, control_count, data_count
         );
 
-        // CRITICAL: Even with 5 coordinated attackers, data must get through
         assert!(
             data_count > 0,
             "Data lane completely starved by coordinated control attack"
         );
-
-        // With burst limiting, we should process a good portion despite 5 attackers
         assert!(
             data_count > 50,
             "Burst limiting too weak against coordinated attack - only {}/100 data processed",
@@ -1685,13 +1639,15 @@ mod troupe_tests {
     }
 
     /// Adversarial test: Continuous control flood with concurrent data
-    /// Validates that burst limiting allows data through DURING active control flooding
     #[test]
     fn adversarial_continuous_control_flood() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::thread;
 
-        let (tx, mut rx) = ActorScheduler::<i32, (), ()>::new(100, 100);
+        let mut builder = ActorBuilder::<i32, (), ()>::new(100, None);
+        let tx_flood = builder.add_producer();
+        let tx_data = builder.add_producer();
+        let mut rx = builder.build_with_burst(100, ShutdownMode::default());
 
         let control_processed = Arc::new(AtomicUsize::new(0));
         let data_processed = Arc::new(AtomicUsize::new(0));
@@ -1700,7 +1656,6 @@ mod troupe_tests {
         let cp = control_processed.clone();
         let dp = data_processed.clone();
 
-        // Receiver thread
         let receiver_handle = thread::spawn(move || {
             struct TestActor {
                 control_count: Arc<AtomicUsize>,
@@ -1722,7 +1677,6 @@ mod troupe_tests {
                     Ok(ActorStatus::Busy)
                 }
             }
-
             let mut actor = TestActor {
                 control_count: cp,
                 data_count: dp,
@@ -1730,43 +1684,32 @@ mod troupe_tests {
             rx.run(&mut actor);
         });
 
-        // Continuous control flooder - doesn't stop until flag is set
-        let tx_control = tx.clone();
         let stop_flag = stop_flooding.clone();
         let control_flooder = thread::spawn(move || {
             let mut sent = 0;
             while !stop_flag.load(Ordering::Relaxed) {
-                if tx_control.send(Message::Control(())).is_ok() {
+                if tx_flood.send(Message::Control(())).is_ok() {
                     sent += 1;
                 }
             }
             sent
         });
 
-        // Give flooder time to start flooding
         thread::sleep(Duration::from_millis(50));
 
-        // Now send data messages WHILE control is flooding
-        let tx_data = tx.clone();
         let data_sender = thread::spawn(move || {
             for i in 0..100 {
                 let _ = tx_data.send(Message::Data(i));
             }
         });
 
-        // Wait for data to be sent
         data_sender.join().unwrap();
-
-        // Let receiver process for a bit more
         thread::sleep(Duration::from_millis(100));
 
-        // Stop the flooder
         stop_flooding.store(true, Ordering::Relaxed);
         let control_sent = control_flooder.join().unwrap();
 
-        // Give receiver time to drain
         thread::sleep(Duration::from_millis(50));
-        drop(tx);
         receiver_handle.join().unwrap();
 
         let control_count = control_processed.load(Ordering::Relaxed);
@@ -1777,14 +1720,10 @@ mod troupe_tests {
             control_sent, control_count, data_count
         );
 
-        // CRITICAL: Data must get through even during continuous control flooding
-        // This proves burst limiting prevents control monopolization
         assert!(
             data_count > 0,
             "Burst limiting FAILED - data was starved during continuous control flood"
         );
-
-        // We should process a significant portion of data despite the flood
         assert!(
             data_count > 50,
             "Burst limiting is too weak - only {}/100 data messages processed",
@@ -1792,15 +1731,16 @@ mod troupe_tests {
         );
     }
 
-    /// Adversarial test: Slow receiver with many aggressive senders
-    /// Validates that backoff system prevents message loss even under heavy load
+    /// Adversarial test: Slow receiver with multiple aggressive senders.
+    /// Each sender has its own SPSC channels — backoff is per-producer.
     #[test]
     fn adversarial_slow_receiver_resilience() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::thread;
 
-        // Small buffers to trigger backpressure
-        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 10);
+        let mut builder = ActorBuilder::<i32, i32, i32>::new(10, None);
+        let senders: Vec<_> = (0..3).map(|_| builder.add_producer()).collect();
+        let mut rx = builder.build_with_burst(10, ShutdownMode::default());
 
         let control_processed = Arc::new(AtomicUsize::new(0));
         let mgmt_processed = Arc::new(AtomicUsize::new(0));
@@ -1810,7 +1750,6 @@ mod troupe_tests {
         let mp = mgmt_processed.clone();
         let dp = data_processed.clone();
 
-        // Slow receiver that processes steadily
         let receiver_handle = thread::spawn(move || {
             struct SlowActor {
                 control_count: Arc<AtomicUsize>,
@@ -1837,7 +1776,6 @@ mod troupe_tests {
                     Ok(ActorStatus::Busy)
                 }
             }
-
             let mut actor = SlowActor {
                 control_count: cp,
                 mgmt_count: mp,
@@ -1846,16 +1784,14 @@ mod troupe_tests {
             rx.run(&mut actor);
         });
 
-        // Spawn multiple aggressive senders
+        // Each sender has its own SPSC channels
         let mut sender_handles = vec![];
-        for sender_id in 0..3 {
-            let tx_clone = tx.clone();
+        for (sender_id, tx) in senders.into_iter().enumerate() {
             let handle = thread::spawn(move || {
                 for i in 0..100 {
-                    let msg_val = sender_id * 1000 + i;
-                    // Flood all lanes - backoff should prevent loss
-                    let _ = tx_clone.send(Message::Control(msg_val));
-                    let _ = tx_clone.send(Message::Management(msg_val));
+                    let msg_val = (sender_id * 1000 + i) as i32;
+                    let _ = tx.send(Message::Control(msg_val));
+                    let _ = tx.send(Message::Management(msg_val));
                 }
             });
             sender_handles.push(handle);
@@ -1865,22 +1801,19 @@ mod troupe_tests {
             handle.join().unwrap();
         }
 
-        // Give receiver time to drain
         thread::sleep(Duration::from_millis(1000));
-        drop(tx);
         receiver_handle.join().unwrap();
 
         let control_count = control_processed.load(Ordering::Relaxed);
         let mgmt_count = mgmt_processed.load(Ordering::Relaxed);
-        let data_count = data_processed.load(Ordering::Relaxed);
 
         println!(
             "Slow receiver resilience - Control: {}, Mgmt: {}, Data: {}",
-            control_count, mgmt_count, data_count
+            control_count,
+            mgmt_count,
+            data_processed.load(Ordering::Relaxed)
         );
 
-        // Backoff system should allow all messages to eventually get through
-        // 3 senders * 100 messages each = 300 per lane
         assert_eq!(
             control_count, 300,
             "Backoff should allow all control messages through"
@@ -1892,7 +1825,7 @@ mod troupe_tests {
     }
 }
 
-/// Test module for troupe nesting pattern
+/// Test module for troupe nesting pattern (SPSC-based)
 #[cfg(test)]
 mod troupe_nesting_tests {
     #![allow(dead_code)]
@@ -1936,13 +1869,13 @@ mod troupe_nesting_tests {
         type Management = WorkerManagement;
     }
 
-    impl<'a, Dir: 'a> TroupeActor<'a, Dir> for WorkerActor<'a> {
-        fn new(_dir: &'a Dir) -> Self {
+    impl<'a> TroupeActor<&'a WorkerDirectory> for WorkerActor<'a> {
+        fn new(_dir: &'a WorkerDirectory) -> Self {
             panic!("test only")
         }
     }
 
-    // Manual directory for worker troupe
+    // Manual directory for worker troupe (per-actor owned)
     pub struct WorkerDirectory {
         pub worker: ActorHandle<WorkerData, WorkerControl, WorkerManagement>,
     }
@@ -1952,25 +1885,35 @@ mod troupe_nesting_tests {
         pub worker: ActorHandle<WorkerData, WorkerControl, WorkerManagement>,
     }
 
-    // Manual Troupe struct for worker
+    // Manual Troupe struct for worker - stores builder (not scheduler) until play()
     pub struct WorkerTroupe {
-        pub directory: WorkerDirectory,
-        worker_scheduler: ActorScheduler<WorkerData, WorkerControl, WorkerManagement>,
+        // Builder stays alive until play() so exposed() can add producers
+        worker_builder: ActorBuilder<WorkerData, WorkerControl, WorkerManagement>,
+        // Pre-created directory for the worker actor itself
+        pub worker_dir: WorkerDirectory,
     }
 
     impl WorkerTroupe {
         pub fn new() -> Self {
-            let (worker_h, worker_s) =
-                create_actor::<WorkerData, WorkerControl, WorkerManagement>(1024, None);
+            let mut builder =
+                ActorBuilder::<WorkerData, WorkerControl, WorkerManagement>::new(1024, None);
+
+            // Worker's own handle to itself (self-loop)
+            let worker_dir = WorkerDirectory {
+                worker: builder.add_producer(),
+            };
+
             Self {
-                directory: WorkerDirectory { worker: worker_h },
-                worker_scheduler: worker_s,
+                worker_builder: builder,
+                worker_dir,
             }
         }
 
-        pub fn exposed(&self) -> WorkerExposedHandles {
+        /// Create exposed handles by adding new producers to the builder.
+        /// Must be called before play() since play() consumes the builder.
+        pub fn exposed(&mut self) -> WorkerExposedHandles {
             WorkerExposedHandles {
-                worker: self.directory.worker.clone(),
+                worker: self.worker_builder.add_producer(),
             }
         }
     }
@@ -1979,13 +1922,12 @@ mod troupe_nesting_tests {
     #[test]
     fn test_troupe_two_phase_pattern() {
         // Phase 1: Create child troupe (no threads yet)
-        let child = WorkerTroupe::new();
+        let mut child = WorkerTroupe::new();
 
-        // Phase 2: Parent grabs exposed handles
+        // Phase 2: Parent grabs exposed handles (each call creates new SPSC channels)
         let exposed = child.exposed();
 
         // Parent can now send to child even before child.play()
-        // Messages will queue until child starts processing
         exposed
             .worker
             .send(Message::Control(WorkerControl::Process))
@@ -1995,9 +1937,10 @@ mod troupe_nesting_tests {
             .send(Message::Data(WorkerData("hello".to_string())))
             .unwrap();
 
-        // Verify we can clone handles from exposed
-        let worker_h2 = exposed.worker.clone();
-        worker_h2
+        // Multiple exposed() calls create independent handles
+        let exposed2 = child.exposed();
+        exposed2
+            .worker
             .send(Message::Control(WorkerControl::Process))
             .unwrap();
 
@@ -2005,21 +1948,16 @@ mod troupe_nesting_tests {
         // The test verifies the two-phase construction pattern works.
     }
 
-    /// Test that ExposedHandles can be sent to parent scope
+    /// Test that ExposedHandles can outlive the Troupe struct
     #[test]
     fn test_exposed_handles_outlive_troupe_struct() {
         let exposed = {
-            // Create troupe in inner scope
-            let child = WorkerTroupe::new();
+            let mut child = WorkerTroupe::new();
             child.exposed() // ExposedHandles escapes
         };
-        // Troupe struct dropped, but handles still valid (channels still open)
-
-        // Can still send - messages queue (will never be processed since
-        // scheduler was dropped, but channel is still open from handle side)
-        // Actually this will fail because receiver side dropped!
-        // This test shows the handles can outlive the Troupe struct,
-        // but in practice you'd call play() to keep channels open.
+        // Troupe struct dropped, but handles still valid (SPSC channels still open
+        // until both sides drop). Builder was not consumed by build(), so receiver
+        // side is also dropped — handles become disconnected.
 
         // Just verify the type works
         let _: WorkerExposedHandles = exposed;

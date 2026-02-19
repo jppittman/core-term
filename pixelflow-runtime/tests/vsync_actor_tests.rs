@@ -11,7 +11,8 @@
 //! we test through the public message interface rather than internal state.
 
 use actor_scheduler::{
-    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    SystemStatus,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -488,17 +489,19 @@ fn set_config_auto_starts_actor() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let log_clone = log.clone();
 
-    let (tx, mut rx) =
-        ActorScheduler::<RenderedResponse, VsyncCommand, VsyncManagement>::new(10, 100);
+    // Use ActorBuilder to create two producers (tx + self_handle)
+    let mut builder =
+        ActorBuilder::<RenderedResponse, VsyncCommand, VsyncManagement>::new(100, None);
+    let tx = builder.add_producer();
+    let self_handle = builder.add_producer();
+    let mut rx = builder.build();
 
-    // We need dummy handles for SetConfig - create them but they won't be used
+    // We need a dummy engine handle for SetConfig - create but won't be used
     let (engine_handle, _) = actor_scheduler::ActorScheduler::<
         pixelflow_runtime::api::private::EngineData,
         pixelflow_runtime::api::private::EngineControl,
         pixelflow_runtime::api::public::AppManagement,
     >::new(10, 100);
-
-    let self_handle = tx.clone();
 
     let handle = thread::spawn(move || {
         let mut actor = MockVsyncActor::new(log_clone);
@@ -617,18 +620,19 @@ fn multiple_senders_to_vsync_actor() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let log_clone = log.clone();
 
-    let (tx, mut rx) =
-        ActorScheduler::<RenderedResponse, VsyncCommand, VsyncManagement>::new(10, 100);
+    // Use ActorBuilder for multiple SPSC producers
+    let mut builder =
+        ActorBuilder::<RenderedResponse, VsyncCommand, VsyncManagement>::new(100, None);
+    let tx = builder.add_producer();
+    let tx1 = builder.add_producer();
+    let tx2 = builder.add_producer();
+    let tx3 = builder.add_producer();
+    let mut rx = builder.build();
 
     let handle = thread::spawn(move || {
         let mut actor = MockVsyncActor::new(log_clone);
         rx.run(&mut actor);
     });
-
-    // Multiple senders
-    let tx1 = tx.clone();
-    let tx2 = tx.clone();
-    let tx3 = tx.clone();
 
     let s1 = thread::spawn(move || {
         tx1.send(Message::Control(VsyncCommand::Start)).unwrap();
