@@ -22,22 +22,25 @@ type Field4 = (Field, Field, Field, Field);
 // Winding number contribution via horizontal ray intersection:
 // 1. Check if Y is within the segment's vertical extent
 // 2. Compute x_intersection where the segment crosses y = Y
-// 3. Coverage = smooth_step(X - x_intersection)
+// 3. Coverage = gradient-weighted smooth step based on perpendicular distance
 // 4. Multiply by winding direction
+//
+// inv_grad_mag = |dy| / |direction| = 1 / sqrt(dx_over_dy^2 + 1)
+// Scales the horizontal distance to perpendicular distance, so the AA
+// transition is exactly 1 pixel wide regardless of the line's angle.
 kernel!(
     pub struct AnalyticalLine = |x0: f32, y0: f32, dx_over_dy: f32,
-                                  dir: f32, y_min: f32, y_max: f32| {
+                                  dir: f32, y_min: f32, y_max: f32,
+                                  inv_grad_mag: f32| {
         // Early rejection: only contributes when Y is in segment's vertical range
         let in_y = (Y >= y_min) & (Y < y_max);
 
         // X-coordinate where line segment crosses the horizontal scanline at Y
         let x_int = (Y - y0) * dx_over_dy + x0;
 
-        // Coverage: smooth step based on distance from intersection
-        // X > x_int -> coverage = 1 (point is right of crossing)
-        // X < x_int -> coverage = 0 (point is left of crossing)
-        // Transition region of ~1 pixel for antialiasing
-        let coverage = (X - x_int + 0.5).max(0.0).min(1.0);
+        // Gradient-weighted coverage: normalizes AA width to 1 pixel perpendicular
+        // to the line, regardless of the line's angle.
+        let coverage = ((X - x_int) * inv_grad_mag + 0.5).max(0.0).min(1.0);
 
         in_y.select(coverage * dir, 0.0)
     }
@@ -51,13 +54,18 @@ impl AnalyticalLine {
             return None;
         }
         let dx = x1 - x0;
+        let dx_over_dy = dx / dy;
+        // 1 / sqrt(dx_over_dy^2 + 1): converts horizontal pixel distance to
+        // perpendicular distance, making the AA transition angle-independent.
+        let inv_grad_mag = 1.0 / (dx_over_dy * dx_over_dy + 1.0).sqrt();
         Some(Self::new(
             x0,
             y0,
-            dx / dy,
+            dx_over_dy,
             if dy > 0.0 { -1.0 } else { 1.0 },
             y0.min(y1),
             y0.max(y1),
+            inv_grad_mag,
         ))
     }
 }
@@ -165,33 +173,40 @@ impl Manifold<Field4> for AnalyticalQuad {
             let sqrt_disc = disc.clone().max(0.0).sqrt();
 
             // Two roots: t = (-by +/- sqrt(disc)) / (2*ay)
-            let t_plus = sqrt_disc.clone() * inv_2a + neg_b_2a;
-            let t_minus = sqrt_disc * -inv_2a + neg_b_2a;
+            let t_plus  = sqrt_disc.clone() *  inv_2a + neg_b_2a;
+            let t_minus = sqrt_disc          * -inv_2a + neg_b_2a;
 
             // X-coordinates at intersection points
-            let x_plus = t_plus.clone() * t_plus.clone() * ax + t_plus.clone() * bx + cx;
+            let x_plus  = t_plus.clone()  * t_plus.clone()  * ax + t_plus.clone()  * bx + cx;
             let x_minus = t_minus.clone() * t_minus.clone() * ax + t_minus.clone() * bx + cx;
 
-            // Tangent dy/dt at each root for winding direction and AA
-            let dy_plus = t_plus.clone() * (2.0 * ay) + by;
+            // Tangent vectors (dx/dt, dy/dt) at each root
+            let dx_plus  = t_plus.clone()  * (2.0 * ax) + bx;
+            let dx_minus = t_minus.clone() * (2.0 * ax) + bx;
+            let dy_plus  = t_plus.clone()  * (2.0 * ay) + by;
             let dy_minus = t_minus.clone() * (2.0 * ay) + by;
 
-            // Coverage from distance to each intersection
-            let dist_plus = X - x_plus;
+            // Gradient-weighted coverage: dist * |dy| / |tangent|
+            // Normalizes AA width to 1 pixel perpendicular to the curve.
+            let dist_plus  = X - x_plus;
             let dist_minus = X - x_minus;
-            let coverage_plus = (dist_plus + 0.5).max(0.0).min(1.0);
-            let coverage_minus = (dist_minus + 0.5).max(0.0).min(1.0);
+            let dy_plus_abs  = dy_plus.clone().abs();
+            let dy_minus_abs = dy_minus.clone().abs();
+            let grad_sq_plus  = dx_plus.clone()  * dx_plus  + dy_plus_abs.clone()  * dy_plus_abs.clone();
+            let grad_sq_minus = dx_minus.clone() * dx_minus + dy_minus_abs.clone() * dy_minus_abs.clone();
+            let coverage_plus  = (dist_plus  * dy_plus_abs  * grad_sq_plus.max(1e-12).rsqrt()  + 0.5).max(0.0).min(1.0);
+            let coverage_minus = (dist_minus * dy_minus_abs * grad_sq_minus.max(1e-12).rsqrt() + 0.5).max(0.0).min(1.0);
 
             // Validity: only count roots with t in [0, 1]
-            let valid_plus = t_plus.ge(0.0) & t_plus.le(1.0);
+            let valid_plus  = t_plus.ge(0.0)  & t_plus.le(1.0);
             let valid_minus = t_minus.ge(0.0) & t_minus.le(1.0);
 
             // Winding sign from tangent direction
-            let sign_plus = dy_plus.gt(0.0).select(-1.0, 1.0);
+            let sign_plus  = dy_plus.gt(0.0).select(-1.0,  1.0);
             let sign_minus = dy_minus.gt(0.0).select(-1.0, 1.0);
 
             // Combine: valid roots contribute signed coverage, masked by discriminant
-            let contrib_plus = valid_plus.select(coverage_plus * sign_plus, 0.0);
+            let contrib_plus  = valid_plus.select(coverage_plus  * sign_plus,  0.0);
             let contrib_minus = valid_minus.select(coverage_minus * sign_minus, 0.0);
             disc.ge(0.0).select(contrib_plus + contrib_minus, 0.0)
         });
