@@ -197,11 +197,16 @@ impl Jet2Sqrt {
         let rsqrt_val = self.0.val.rsqrt();
         let sqrt_val = self.0.val * rsqrt_val;
         let half_rsqrt = rsqrt_val * Field::from(0.5);
-        Jet2::new(
+        let result = Jet2::new(
             sqrt_val,
             self.0.dx * half_rsqrt.clone(),
             self.0.dy * half_rsqrt,
-        )
+        );
+
+        // Fix edge case: sqrt(0) = 0, not NaN
+        let zero = Field::from(0.0);
+        let mask = Jet2::constant(self.0.val.le(zero));
+        Jet2::select_raw(mask, Jet2::constant(zero), result)
     }
 }
 
