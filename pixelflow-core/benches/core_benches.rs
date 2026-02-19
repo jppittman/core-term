@@ -5,7 +5,8 @@
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use pixelflow_core::{
     FastMathGuard, Field, Manifold, ManifoldCompat, ManifoldExt, PARALLELISM, X, Y, Z,
-    combinators::Fix, jet::Jet2,
+    combinators::Fix,
+    jet::{Jet2, Jet3},
 };
 
 // ============================================================================
@@ -517,6 +518,36 @@ fn bench_jet2_gradient(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Jet3 Auto-Differentiation Benchmarks
+// ============================================================================
+
+fn bench_jet3_arithmetic(c: &mut Criterion) {
+    let mut group = c.benchmark_group("jet3_arithmetic");
+    group.throughput(Throughput::Elements(PARALLELISM as u64));
+
+    let x = Jet3::x(Field::sequential(1.0));
+    let y = Jet3::y(Field::from(2.0));
+
+    group.bench_function("add", |bencher| {
+        bencher.iter(|| black_box(black_box(x) + black_box(y)))
+    });
+
+    group.bench_function("sub", |bencher| {
+        bencher.iter(|| black_box(black_box(x) - black_box(y)))
+    });
+
+    group.bench_function("mul", |bencher| {
+        bencher.iter(|| black_box(black_box(x) * black_box(y)))
+    });
+
+    group.bench_function("div", |bencher| {
+        bencher.iter(|| black_box(black_box(x) / black_box(y)))
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // Fix Combinator Benchmarks
 // ============================================================================
 
@@ -756,6 +787,8 @@ criterion_group!(
     bench_jet2_gradient,
 );
 
+criterion_group!(jet3_benches, bench_jet3_arithmetic,);
+
 criterion_group!(fix_benches, bench_fix_iteration,);
 
 criterion_group!(throughput_benches, bench_evaluation_throughput,);
@@ -766,6 +799,7 @@ criterion_main!(
     field_benches,
     manifold_benches,
     jet2_benches,
+    jet3_benches,
     fix_benches,
     throughput_benches,
     fastmath_benches
