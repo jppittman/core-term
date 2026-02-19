@@ -304,15 +304,16 @@ impl SimdOps for F32x4 {
         unsafe {
             let x_i32 = _mm_castps_si128(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            let exp_mask = _mm_set1_epi32(0x7F800000_u32 as i32);
-            let raw_exp = _mm_and_si128(x_i32, exp_mask);
-            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm_castsi128_ps(_mm_or_si128(raw_exp, one_bits));
-            let mut n = _mm_sub_ps(exp_f, _mm_set1_ps(128.0));
+            // Extract exponent: (bits >> 23) - 127
+            // Use logical shift to avoid sign extension (though x > 0 for log2)
+            let exp_bits = _mm_srli_epi32(x_i32, 23);
+            let exp_int = _mm_sub_epi32(exp_bits, _mm_set1_epi32(127));
+            let mut n = _mm_cvtepi32_ps(exp_int);
 
             // Extract mantissa in [1, 2)
+            // (bits & 0x007FFFFF) | 0x3F800000
             let mant_mask = _mm_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
             let mut f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
@@ -329,11 +330,16 @@ impl SimdOps for F32x4 {
             // Polynomial for log2(f) on [√2/2, √2]
             // Fitted using least squares on Chebyshev nodes
             // Max error: ~1e-4
-            let c4 = _mm_set1_ps(-0.320_043_5);
-            let c3 = _mm_set1_ps(1.797_496_9);
-            let c2 = _mm_set1_ps(-4.198_805);
-            let c1 = _mm_set1_ps(5.727_023);
-            let c0 = _mm_set1_ps(-3.005_614_8);
+            #[allow(clippy::excessive_precision)]
+            let c4 = _mm_set1_ps(-0.3200435159);
+            #[allow(clippy::excessive_precision)]
+            let c3 = _mm_set1_ps(1.7974969154);
+            #[allow(clippy::excessive_precision)]
+            let c2 = _mm_set1_ps(-4.1988046176);
+            #[allow(clippy::excessive_precision)]
+            let c1 = _mm_set1_ps(5.7270231695);
+            #[allow(clippy::excessive_precision)]
+            let c0 = _mm_set1_ps(-3.0056146714);
 
             // Horner's method (no FMA on base SSE2)
             let mut poly = _mm_add_ps(_mm_mul_ps(c4, f), c3);
@@ -882,17 +888,14 @@ impl SimdOps for F32x8 {
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            // Isolate exponent bits, OR with 1.0's bit pattern, reinterpret as float
-            let exp_mask = _mm256_set1_epi32(0x7F800000_u32 as i32);
-            let raw_exp = _mm256_and_si256(x_i32, exp_mask);
-            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm256_castsi256_ps(_mm256_or_si256(raw_exp, one_bits));
-            // Subtract 128.0 to remove bias (127) and the 1.0 we added
-            let mut n = _mm256_sub_ps(exp_f, _mm256_set1_ps(128.0));
+            // Extract exponent: (bits >> 23) - 127
+            let exp_bits = _mm256_srli_epi32(x_i32, 23);
+            let exp_int = _mm256_sub_epi32(exp_bits, _mm256_set1_epi32(127));
+            let mut n = _mm256_cvtepi32_ps(exp_int);
 
             // Extract mantissa in [1, 2)
             let mant_mask = _mm256_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
             let mut f = _mm256_castsi256_ps(_mm256_or_si256(
                 _mm256_and_si256(x_i32, mant_mask),
                 one_bits,
@@ -912,11 +915,16 @@ impl SimdOps for F32x8 {
             // Polynomial for log2(f) on [√2/2, √2]
             // Fitted using least squares on Chebyshev nodes
             // Max error: ~1e-4
-            let c4 = _mm256_set1_ps(-0.320_043_5);
-            let c3 = _mm256_set1_ps(1.797_496_9);
-            let c2 = _mm256_set1_ps(-4.198_805);
-            let c1 = _mm256_set1_ps(5.727_023);
-            let c0 = _mm256_set1_ps(-3.005_614_8);
+            #[allow(clippy::excessive_precision)]
+            let c4 = _mm256_set1_ps(-0.3200435159);
+            #[allow(clippy::excessive_precision)]
+            let c3 = _mm256_set1_ps(1.7974969154);
+            #[allow(clippy::excessive_precision)]
+            let c2 = _mm256_set1_ps(-4.1988046176);
+            #[allow(clippy::excessive_precision)]
+            let c1 = _mm256_set1_ps(5.7270231695);
+            #[allow(clippy::excessive_precision)]
+            let c0 = _mm256_set1_ps(-3.0056146714);
 
             // Horner's method with FMA when available
             #[cfg(target_feature = "fma")]
