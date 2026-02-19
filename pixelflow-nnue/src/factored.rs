@@ -295,6 +295,7 @@ impl EdgeAccumulator {
     /// Build accumulator from an expression tree.
     ///
     /// Traverses the tree and accumulates edge contributions.
+    #[must_use]
     pub fn from_expr(expr: &Expr, emb: &OpEmbeddings) -> Self {
         let mut acc = Self::new();
         acc.add_expr_edges(expr, emb);

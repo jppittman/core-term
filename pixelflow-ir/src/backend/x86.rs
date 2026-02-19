@@ -882,17 +882,14 @@ impl SimdOps for F32x8 {
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            // Isolate exponent bits, OR with 1.0's bit pattern, reinterpret as float
-            let exp_mask = _mm256_set1_epi32(0x7F800000_u32 as i32);
-            let raw_exp = _mm256_and_si256(x_i32, exp_mask);
-            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm256_castsi256_ps(_mm256_or_si256(raw_exp, one_bits));
-            // Subtract 128.0 to remove bias (127) and the 1.0 we added
-            let mut n = _mm256_sub_ps(exp_f, _mm256_set1_ps(128.0));
+            // Correct exponent extraction: (x >> 23) - 127
+            let exp_shifted = _mm256_srli_epi32(x_i32, 23);
+            let exponent_int = _mm256_sub_epi32(exp_shifted, _mm256_set1_epi32(127));
+            let mut n = _mm256_cvtepi32_ps(exponent_int);
 
             // Extract mantissa in [1, 2)
             let mant_mask = _mm256_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
             let mut f = _mm256_castsi256_ps(_mm256_or_si256(
                 _mm256_and_si256(x_i32, mant_mask),
                 one_bits,
