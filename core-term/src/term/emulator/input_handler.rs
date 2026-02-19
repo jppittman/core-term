@@ -26,11 +26,19 @@ pub(super) fn process_user_input_action(
     match action {
         UserInputAction::FocusLost => {
             emulator.focus_state = FocusState::Unfocused;
-            None
+            if emulator.dec_modes.focus_event_mode {
+                Some(EmulatorAction::WritePty(b"\x1b[O".to_vec()))
+            } else {
+                None
+            }
         }
         UserInputAction::FocusGained => {
             emulator.focus_state = FocusState::Focused;
-            None
+            if emulator.dec_modes.focus_event_mode {
+                Some(EmulatorAction::WritePty(b"\x1b[I".to_vec()))
+            } else {
+                None
+            }
         }
         UserInputAction::KeyInput {
             symbol,
@@ -198,9 +206,72 @@ pub(super) fn process_control_event(
 mod tests {
     use super::*;
     use crate::term::emulator::TerminalEmulator;
+    use crate::term::modes::{Mode, ModeAction};
 
     fn create_test_emu_for_input() -> TerminalEmulator {
         TerminalEmulator::new(80, 24)
+    }
+
+    #[test]
+    fn test_focus_gained_sends_sequence_when_mode_enabled() {
+        let mut emu = create_test_emu_for_input();
+        emu.handle_set_mode(Mode::DecPrivate(1004), ModeAction::Enable);
+
+        let result = process_user_input_action(&mut emu, UserInputAction::FocusGained);
+
+        assert_eq!(
+            result,
+            Some(EmulatorAction::WritePty(b"\x1b[I".to_vec())),
+            "FocusGained with focus_event_mode=true should send CSI I"
+        );
+        assert!(
+            matches!(emu.focus_state, FocusState::Focused),
+            "focus_state should be Focused after FocusGained"
+        );
+    }
+
+    #[test]
+    fn test_focus_lost_sends_sequence_when_mode_enabled() {
+        let mut emu = create_test_emu_for_input();
+        emu.handle_set_mode(Mode::DecPrivate(1004), ModeAction::Enable);
+
+        let result = process_user_input_action(&mut emu, UserInputAction::FocusLost);
+
+        assert_eq!(
+            result,
+            Some(EmulatorAction::WritePty(b"\x1b[O".to_vec())),
+            "FocusLost with focus_event_mode=true should send CSI O"
+        );
+        assert!(
+            matches!(emu.focus_state, FocusState::Unfocused),
+            "focus_state should be Unfocused after FocusLost"
+        );
+    }
+
+    #[test]
+    fn test_focus_gained_returns_none_when_mode_disabled() {
+        let mut emu = create_test_emu_for_input();
+        assert!(!emu.dec_modes.focus_event_mode);
+
+        let result = process_user_input_action(&mut emu, UserInputAction::FocusGained);
+
+        assert_eq!(
+            result, None,
+            "FocusGained with focus_event_mode=false should return None"
+        );
+    }
+
+    #[test]
+    fn test_focus_lost_returns_none_when_mode_disabled() {
+        let mut emu = create_test_emu_for_input();
+        assert!(!emu.dec_modes.focus_event_mode);
+
+        let result = process_user_input_action(&mut emu, UserInputAction::FocusLost);
+
+        assert_eq!(
+            result, None,
+            "FocusLost with focus_event_mode=false should return None"
+        );
     }
 
     #[test]
