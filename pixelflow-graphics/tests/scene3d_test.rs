@@ -91,6 +91,34 @@ impl<M: ManifoldCompat<Field, Output = Field> + ManifoldExt> Manifold<Field4> fo
     }
 }
 
+/// ScreenRemap but for Discrete output
+struct ColorScreenRemap<M> {
+    inner: M,
+    width: f32,
+    height: f32,
+}
+
+impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
+    type Output = Discrete;
+
+    fn eval(&self, p: Field4) -> Discrete {
+        let (px, py, z, w) = p;
+        let width = Field::from(self.width);
+        let height = Field::from(self.height);
+        let scale = Field::from(2.0) / height;
+        let x = (px - width * Field::from(0.5)) * scale.clone();
+        let y = (height * Field::from(0.5) - py) * scale;
+        At {
+            inner: &self.inner,
+            x,
+            y,
+            z,
+            w,
+        }
+        .collapse()
+    }
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -295,33 +323,6 @@ fn test_color_chrome_sphere() {
         background: world,
     };
 
-    // ScreenRemap but for Discrete output
-    struct ColorScreenRemap<M> {
-        inner: M,
-        width: f32,
-        height: f32,
-    }
-
-    impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
-        type Output = Discrete;
-
-        fn eval(&self, p: Field4) -> Discrete {
-            let (px, py, z, w) = p;
-            let width = Field::from(self.width);
-            let height = Field::from(self.height);
-            let scale = Field::from(2.0) / height;
-            let x = (px - width * Field::from(0.5)) * scale.clone();
-            let y = (height * Field::from(0.5) - py) * scale;
-            At {
-                inner: &self.inner,
-                x,
-                y,
-                z,
-                w,
-            }
-            .collapse()
-        }
-    }
 
     let renderable = ColorScreenRemap {
         inner: ColorScreenToDir { inner: scene },
@@ -495,30 +496,6 @@ fn test_mullet_vs_3channel_comparison() {
     // NEW APPROACH: Mullet architecture (geometry once, Discrete colors)
     // ============================================================
 
-    struct ColorScreenRemap<M> {
-        inner: M,
-        width: f32,
-        height: f32,
-    }
-    impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
-        type Output = Discrete;
-        fn eval(&self, p: Field4) -> Discrete {
-            let (px, py, z, w) = p;
-            let width = Field::from(self.width);
-            let height = Field::from(self.height);
-            let scale = Field::from(2.0) / height;
-            let x = (px - width * Field::from(0.5)) * scale.clone();
-            let y = (height * Field::from(0.5) - py) * scale;
-            At {
-                inner: &self.inner,
-                x,
-                y,
-                z,
-                w,
-            }
-            .collapse()
-        }
-    }
 
     let world = ColorSurface {
         geometry: plane(-1.0),
@@ -620,30 +597,6 @@ fn test_work_stealing_benchmark() {
         background: world,
     };
 
-    struct ColorScreenRemap<M> {
-        inner: M,
-        width: f32,
-        height: f32,
-    }
-    impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScreenRemap<M> {
-        type Output = Discrete;
-        fn eval(&self, p: Field4) -> Discrete {
-            let (px, py, z, w) = p;
-            let width = Field::from(self.width);
-            let height = Field::from(self.height);
-            let scale = Field::from(2.0) / height;
-            let x = (px - width * Field::from(0.5)) * scale.clone();
-            let y = (height * Field::from(0.5) - py) * scale;
-            At {
-                inner: &self.inner,
-                x,
-                y,
-                z,
-                w,
-            }
-            .collapse()
-        }
-    }
 
     let renderable = ColorScreenRemap {
         inner: ColorScreenToDir { inner: scene },

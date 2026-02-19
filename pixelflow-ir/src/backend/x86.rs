@@ -1,5 +1,7 @@
 //! x86_64 backend.
 
+#![allow(clippy::excessive_precision, clippy::approx_constant)]
+
 use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
@@ -304,15 +306,17 @@ impl SimdOps for F32x4 {
         unsafe {
             let x_i32 = _mm_castps_si128(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
+            // Extract exponent as float using integer arithmetic
             let exp_mask = _mm_set1_epi32(0x7F800000_u32 as i32);
             let raw_exp = _mm_and_si128(x_i32, exp_mask);
-            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm_castsi128_ps(_mm_or_si128(raw_exp, one_bits));
-            let mut n = _mm_sub_ps(exp_f, _mm_set1_ps(128.0));
+            let exp_shifted = _mm_srli_epi32(raw_exp, 23);
+            let bias = _mm_set1_epi32(127);
+            let exp_int = _mm_sub_epi32(exp_shifted, bias);
+            let mut n = _mm_cvtepi32_ps(exp_int);
 
             // Extract mantissa in [1, 2)
             let mant_mask = _mm_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32); // 1.0 in float
             let mut f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
@@ -558,6 +562,7 @@ impl Shr<u32> for U32x4 {
 impl U32x4 {
     /// Pack 4 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn pack_rgba(r: F32x4, g: F32x4, b: F32x4, a: F32x4) -> Self {
         unsafe {
             // Clamp to [0, 1] and scale to [0, 255]
@@ -882,17 +887,17 @@ impl SimdOps for F32x8 {
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            // Isolate exponent bits, OR with 1.0's bit pattern, reinterpret as float
+            // Extract exponent as float using integer arithmetic
             let exp_mask = _mm256_set1_epi32(0x7F800000_u32 as i32);
             let raw_exp = _mm256_and_si256(x_i32, exp_mask);
-            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm256_castsi256_ps(_mm256_or_si256(raw_exp, one_bits));
-            // Subtract 128.0 to remove bias (127) and the 1.0 we added
-            let mut n = _mm256_sub_ps(exp_f, _mm256_set1_ps(128.0));
+            let exp_shifted = _mm256_srli_epi32(raw_exp, 23);
+            let bias = _mm256_set1_epi32(127);
+            let exp_int = _mm256_sub_epi32(exp_shifted, bias);
+            let mut n = _mm256_cvtepi32_ps(exp_int);
 
             // Extract mantissa in [1, 2)
             let mant_mask = _mm256_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
             let mut f = _mm256_castsi256_ps(_mm256_or_si256(
                 _mm256_and_si256(x_i32, mant_mask),
                 one_bits,
@@ -1169,6 +1174,7 @@ impl Shr<u32> for U32x8 {
 impl U32x8 {
     /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
     #[inline(always)]
+    #[allow(dead_code)]
     pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
         unsafe {
             let scale = _mm256_set1_ps(255.0);
