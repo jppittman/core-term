@@ -387,11 +387,12 @@ impl core::ops::Mul for Jet3 {
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
         // Product rule: (f * g)' = f' * g + f * g'
+        // self.dx * rhs.val + self.val * rhs.dx
         Self::new(
             self.val * rhs.val,
-            self.dx * rhs.val + self.val * rhs.dx,
-            self.dy * rhs.val + self.val * rhs.dy,
-            self.dz * rhs.val + self.val * rhs.dz,
+            self.dx.mul_add(rhs.val, self.val.raw_mul(rhs.dx)),
+            self.dy.mul_add(rhs.val, self.val.raw_mul(rhs.dy)),
+            self.dz.mul_add(rhs.val, self.val.raw_mul(rhs.dz)),
         )
     }
 }
@@ -707,11 +708,12 @@ impl Numeric for Jet3 {
     #[inline(always)]
     fn mul_add(self, b: Self, c: Self) -> Self {
         // (a * b + c)' where a, b, c are jets
+        // a' * b + a * b' + c'
         Self::new(
             self.val.mul_add(b.val, c.val),
-            self.dx * b.val + self.val * b.dx + c.dx,
-            self.dy * b.val + self.val * b.dy + c.dy,
-            self.dz * b.val + self.val * b.dz + c.dz,
+            self.dx.mul_add(b.val, self.val.mul_add(b.dx, c.dx)),
+            self.dy.mul_add(b.val, self.val.mul_add(b.dy, c.dy)),
+            self.dz.mul_add(b.val, self.val.mul_add(b.dz, c.dz)),
         )
     }
 
