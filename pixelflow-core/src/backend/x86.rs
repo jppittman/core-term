@@ -304,15 +304,20 @@ impl SimdOps for F32x4 {
         unsafe {
             let x_i32 = _mm_castps_si128(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
+            // Extract exponent directly as integer
+            // Bias is 127. If we extract exponent bits and shift down, we get (n + 127).
+            // To get n as float, we subtract 127 using integer sub then convert.
+            // But doing it all in float domain (like before) failed for 1.0 (got -127).
+            // Let's use standard integer extraction which is robust.
             let exp_mask = _mm_set1_epi32(0x7F800000_u32 as i32);
             let raw_exp = _mm_and_si128(x_i32, exp_mask);
-            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm_castsi128_ps(_mm_or_si128(raw_exp, one_bits));
-            let mut n = _mm_sub_ps(exp_f, _mm_set1_ps(128.0));
+            let exp_shifted = _mm_srli_epi32(raw_exp, 23);
+            let exp_unbiased = _mm_sub_epi32(exp_shifted, _mm_set1_epi32(127));
+            let mut n = _mm_cvtepi32_ps(exp_unbiased);
 
-            // Extract mantissa in [1, 2)
+            // Extract mantissa in [1, 2) by forcing exponent to 127 (1.0)
             let mant_mask = _mm_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm_set1_epi32(0x3F800000_u32 as i32);
             let mut f = _mm_castsi128_ps(_mm_or_si128(_mm_and_si128(x_i32, mant_mask), one_bits));
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
@@ -882,17 +887,16 @@ impl SimdOps for F32x8 {
         unsafe {
             let x_i32 = _mm256_castps_si256(self.0);
 
-            // Extract exponent as float WITHOUT cvtepi32 (stays in float pipes)
-            // Isolate exponent bits, OR with 1.0's bit pattern, reinterpret as float
+            // Extract exponent directly as integer
             let exp_mask = _mm256_set1_epi32(0x7F800000_u32 as i32);
             let raw_exp = _mm256_and_si256(x_i32, exp_mask);
-            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
-            let exp_f = _mm256_castsi256_ps(_mm256_or_si256(raw_exp, one_bits));
-            // Subtract 128.0 to remove bias (127) and the 1.0 we added
-            let mut n = _mm256_sub_ps(exp_f, _mm256_set1_ps(128.0));
+            let exp_shifted = _mm256_srli_epi32(raw_exp, 23);
+            let exp_unbiased = _mm256_sub_epi32(exp_shifted, _mm256_set1_epi32(127));
+            let mut n = _mm256_cvtepi32_ps(exp_unbiased);
 
             // Extract mantissa in [1, 2)
             let mant_mask = _mm256_set1_epi32(0x007FFFFF_u32 as i32);
+            let one_bits = _mm256_set1_epi32(0x3F800000_u32 as i32);
             let mut f = _mm256_castsi256_ps(_mm256_or_si256(
                 _mm256_and_si256(x_i32, mant_mask),
                 one_bits,

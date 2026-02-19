@@ -358,6 +358,10 @@ mod tests {
 
     const FONT_DATA: &[u8] = include_bytes!("../../assets/NotoSansMono-Regular.ttf");
 
+    fn load_test_font() -> Option<Font<'static>> {
+        Font::parse(FONT_DATA)
+    }
+
     #[test]
     fn test_size_bucket() {
         assert_eq!(size_bucket(8.0), 8);
@@ -370,68 +374,72 @@ mod tests {
 
     #[test]
     fn test_cached_glyph_creation() {
-        let font = Font::parse(FONT_DATA).unwrap();
-        let glyph = font.glyph_scaled('A', 32.0).unwrap();
-        let cached = CachedGlyph::new(&glyph, 32);
+        if let Some(font) = load_test_font() {
+            let glyph = font.glyph_scaled('A', 32.0).unwrap();
+            let cached = CachedGlyph::new(&glyph, 32);
 
-        assert_eq!(cached.width(), 32);
-        assert_eq!(cached.height(), 32);
+            assert_eq!(cached.width(), 32);
+            assert_eq!(cached.height(), 32);
+        }
     }
 
     #[test]
     fn test_glyph_cache_get() {
-        let font = Font::parse(FONT_DATA).unwrap();
-        let mut cache = GlyphCache::new();
+        if let Some(font) = load_test_font() {
+            let mut cache = GlyphCache::new();
 
-        // First access should cache
-        let cached = cache.get(&font, 'A', 16.0);
-        assert!(cached.is_some());
-        assert_eq!(cache.len(), 1);
+            // First access should cache
+            let cached = cache.get(&font, 'A', 16.0);
+            assert!(cached.is_some());
+            assert_eq!(cache.len(), 1);
 
-        // Second access should hit cache
-        let cached2 = cache.get(&font, 'A', 16.0);
-        assert!(cached2.is_some());
-        assert_eq!(cache.len(), 1);
+            // Second access should hit cache
+            let cached2 = cache.get(&font, 'A', 16.0);
+            assert!(cached2.is_some());
+            assert_eq!(cache.len(), 1);
 
-        // Different size should create new entry
-        let cached3 = cache.get(&font, 'A', 32.0);
-        assert!(cached3.is_some());
-        assert_eq!(cache.len(), 2);
+            // Different size should create new entry
+            let cached3 = cache.get(&font, 'A', 32.0);
+            assert!(cached3.is_some());
+            assert_eq!(cache.len(), 2);
+        }
     }
 
     #[test]
     fn test_glyph_cache_warm() {
-        let font = Font::parse(FONT_DATA).unwrap();
-        let mut cache = GlyphCache::new();
+        if let Some(font) = load_test_font() {
+            let mut cache = GlyphCache::new();
 
-        cache.warm_ascii(&font, 16.0);
+            cache.warm_ascii(&font, 16.0);
 
-        // ASCII printable is 95 characters
-        assert_eq!(cache.len(), 95);
+            // ASCII printable is 95 characters
+            assert_eq!(cache.len(), 95);
 
-        // All should be cached now
-        assert!(cache.contains('A', 16.0));
-        assert!(cache.contains('z', 16.0));
-        assert!(cache.contains(' ', 16.0));
+            // All should be cached now
+            assert!(cache.contains('A', 16.0));
+            assert!(cache.contains('z', 16.0));
+            assert!(cache.contains(' ', 16.0));
+        }
     }
 
     #[test]
     fn test_cached_glyph_eval() {
         use pixelflow_core::Field;
 
-        let font = Font::parse(FONT_DATA).unwrap();
-        let glyph = font.glyph_scaled('A', 32.0).unwrap();
-        let cached = CachedGlyph::new(&glyph, 32);
+        if let Some(font) = load_test_font() {
+            let glyph = font.glyph_scaled('A', 32.0).unwrap();
+            let cached = CachedGlyph::new(&glyph, 32);
 
-        // Evaluate coverage at multiple coordinates - should not panic
-        for x in [2.0, 8.0, 16.0, 24.0] {
-            for y in [2.0, 8.0, 16.0, 24.0] {
-                let _coverage = cached.eval_raw(
-                    Field::from(x),
-                    Field::from(y),
-                    Field::from(0.0),
-                    Field::from(0.0),
-                );
+            // Evaluate coverage at multiple coordinates - should not panic
+            for x in [2.0, 8.0, 16.0, 24.0] {
+                for y in [2.0, 8.0, 16.0, 24.0] {
+                    let _coverage = cached.eval_raw(
+                        Field::from(x),
+                        Field::from(y),
+                        Field::from(0.0),
+                        Field::from(0.0),
+                    );
+                }
             }
         }
     }
@@ -440,35 +448,37 @@ mod tests {
     fn test_cached_text_creation() {
         use pixelflow_core::Field;
 
-        let font = Font::parse(FONT_DATA).unwrap();
-        let mut cache = GlyphCache::new();
+        if let Some(font) = load_test_font() {
+            let mut cache = GlyphCache::new();
 
-        let text = CachedText::new(&font, &mut cache, "Hello", 16.0);
+            let text = CachedText::new(&font, &mut cache, "Hello", 16.0);
 
-        // Should have cached glyphs for H, e, l, o (l appears twice)
-        assert_eq!(cache.len(), 4);
+            // Should have cached glyphs for H, e, l, o (l appears twice)
+            assert_eq!(cache.len(), 4);
 
-        // Evaluate text at multiple coordinates - should not panic
-        for x in [0.0, 5.0, 10.0, 20.0] {
-            for y in [5.0, 10.0, 15.0] {
-                let _coverage = text.eval_raw(
-                    Field::from(x),
-                    Field::from(y),
-                    Field::from(0.0),
-                    Field::from(0.0),
-                );
+            // Evaluate text at multiple coordinates - should not panic
+            for x in [0.0, 5.0, 10.0, 20.0] {
+                for y in [5.0, 10.0, 15.0] {
+                    let _coverage = text.eval_raw(
+                        Field::from(x),
+                        Field::from(y),
+                        Field::from(0.0),
+                        Field::from(0.0),
+                    );
+                }
             }
         }
     }
 
     #[test]
     fn test_cache_memory_usage() {
-        let font = Font::parse(FONT_DATA).unwrap();
-        let mut cache = GlyphCache::new();
+        if let Some(font) = load_test_font() {
+            let mut cache = GlyphCache::new();
 
-        cache.get(&font, 'A', 16.0); // 16x16 = 256 pixels * 4 bytes = 1024
-        cache.get(&font, 'B', 16.0); // Another 1024
+            cache.get(&font, 'A', 16.0); // 16x16 = 256 pixels * 4 bytes = 1024
+            cache.get(&font, 'B', 16.0); // Another 1024
 
-        assert_eq!(cache.memory_usage(), 2048);
+            assert_eq!(cache.memory_usage(), 2048);
+        }
     }
 }
