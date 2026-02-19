@@ -26,20 +26,18 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf"
 /// This test creates a simple square and verifies that points inside
 /// have high coverage and points outside have low coverage.
 /// Note: With analytical AA, coverage is smooth 0.0-1.0, not hard 0/1.
-// Known issue: the winding number accumulation in Geometry currently returns
-// 0 coverage for all interior points. The SIMD mask AND (`&` vs `*`) bug this
-// tests may have been re-introduced in the rasterizer. Ignored until fixed.
 #[test]
-#[ignore = "winding number calculation returns 0 for interior points; rasterizer bug to fix"]
 fn regression_mask_and_not_multiply() {
     // Create a 400x400 square from (100,100) to (500,500)
     // Use Geometry with lines (which now produce smooth AA coverage)
-    let lines: Vec<Line<LineKernel>> = vec![
-        make_line([[100.0, 100.0], [500.0, 100.0]]).unwrap(), // bottom
-        make_line([[500.0, 100.0], [500.0, 500.0]]).unwrap(), // right
-        make_line([[500.0, 500.0], [100.0, 500.0]]).unwrap(), // top
-        make_line([[100.0, 500.0], [100.0, 100.0]]).unwrap(), // left
-    ];
+    // Horizontal lines (dy≈0) return None from make_line — they never cross
+    // horizontal scanlines so they correctly contribute zero winding.
+    let lines: Vec<Line<LineKernel>> = [
+        [[100.0, 100.0], [500.0, 100.0]],  // bottom (horizontal, skipped)
+        [[500.0, 100.0], [500.0, 500.0]],  // right
+        [[500.0, 500.0], [100.0, 500.0]],  // top (horizontal, skipped)
+        [[100.0, 500.0], [100.0, 100.0]],  // left
+    ].into_iter().filter_map(|pts| make_line(pts)).collect();
     let geo: Geometry<Line<LineKernel>, Quad<QuadKernel>> = Geometry {
         lines: Arc::from(lines),
         quads: Arc::from(vec![]),
@@ -97,35 +95,54 @@ fn regression_mask_and_not_multiply() {
     );
 }
 
-/// Test that line segment winding calculation correctly handles the x < x_intersection test.
+/// Test that ray-crossing winding correctly distinguishes inside from outside.
+/// Uses a closed vertical strip (two parallel lines) to validate x-intersection math.
 /// Note: With analytical AA, we get smooth coverage rather than hard 0/1.
 #[test]
 fn regression_line_x_intersection_test() {
-    // Vertical line at x=500, going from (500,100) to (500,500)
-    let line = make_line([[500.0, 100.0], [500.0, 500.0]]).unwrap();
+    // Two vertical lines forming a closed strip from x=400 to x=500:
+    // - Right edge goes down (dir=-1): (500,100) → (500,500)
+    // - Left edge goes up (dir=+1):    (400,500) → (400,100)
+    let lines: Vec<Line<LineKernel>> = [
+        [[500.0, 100.0], [500.0, 500.0]], // right edge, downward
+        [[400.0, 500.0], [400.0, 100.0]], // left edge, upward
+    ]
+    .into_iter()
+    .filter_map(|pts| make_line(pts))
+    .collect();
     let geo: Geometry<Line<LineKernel>, Quad<QuadKernel>> = Geometry {
-        lines: Arc::from(vec![line]),
+        lines: Arc::from(lines),
         quads: Arc::from(vec![]),
     };
     let lifted = Grayscale(geo);
 
-    // Points to the left (x < 500) should contribute winding (high coverage)
+    // Interior point (x=450) should have high winding coverage
+    let mut inside_pixels = [0u32; PARALLELISM];
+    materialize_discrete(&lifted, 450.0, 300.0, &mut inside_pixels);
+    let inside_value = inside_pixels[0] & 0xFF;
+    assert!(
+        inside_value > 200,
+        "Point inside strip should get high coverage, got {}",
+        inside_value
+    );
+
+    // Point to the left (x=100) should have low coverage
     let mut left_pixels = [0u32; PARALLELISM];
     materialize_discrete(&lifted, 100.0, 300.0, &mut left_pixels);
     let left_value = left_pixels[0] & 0xFF;
     assert!(
-        left_value > 200,
-        "Point left of line should get high contribution, got {}",
+        left_value < 50,
+        "Point left of strip should get low coverage, got {}",
         left_value
     );
 
-    // Points well to the right (x >= 500) should have low contribution
+    // Point to the right (x=600) should have low coverage
     let mut right_pixels = [0u32; PARALLELISM];
     materialize_discrete(&lifted, 600.0, 300.0, &mut right_pixels);
     let right_value = right_pixels[0] & 0xFF;
     assert!(
         right_value < 50,
-        "Point right of line should get low contribution, got {}",
+        "Point right of strip should get low coverage, got {}",
         right_value
     );
 }
