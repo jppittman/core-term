@@ -19,6 +19,7 @@ use std::time::Duration;
 
 /// Mock ANSI command for testing (simplified version of the real AnsiCommand)
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 enum MockAnsiCommand {
     Print(char),
     Newline,
@@ -67,10 +68,12 @@ impl Actor<Vec<u8>, (), ()> for MockParserActor {
 }
 
 /// App actor that receives parsed commands
+#[allow(dead_code)]
 struct MockAppActor {
     commands_received: Arc<Mutex<Vec<Vec<MockAnsiCommand>>>>,
 }
 
+#[allow(dead_code)]
 impl MockAppActor {
     fn new() -> (Self, Arc<Mutex<Vec<Vec<MockAnsiCommand>>>>) {
         let commands = Arc::new(Mutex::new(Vec::new()));

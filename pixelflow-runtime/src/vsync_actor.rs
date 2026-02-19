@@ -21,6 +21,12 @@ use std::time::{Duration, Instant};
 /// This is separate from FPS measurement (which counts actual rasterization).
 static VSYNC_TOKEN_BUCKET: AtomicU32 = AtomicU32::new(MAX_TOKENS);
 
+const MAX_TOKENS: u32 = 100;
+const DEFAULT_REFRESH_RATE: f64 = 60.0;
+const VSYNC_CHANNEL_CAPACITY: usize = 1024;
+const LOG_WARN_FREQUENCY: u32 = 100;
+const MILLIS_PER_SEC: f64 = 1000.0;
+
 /// Try to consume a VSync token. Returns true if token was available.
 #[inline]
 pub(crate) fn try_consume_vsync_token() -> bool {
@@ -49,7 +55,7 @@ pub(crate) fn return_vsync_token() {
     // Rate-limit warning to 1% of calls to avoid log spam
     if prev.is_err() {
         static WARN_COUNTER: AtomicU32 = AtomicU32::new(0);
-        if WARN_COUNTER.fetch_add(1, Ordering::Relaxed) % 100 == 0 {
+        if WARN_COUNTER.fetch_add(1, Ordering::Relaxed) % LOG_WARN_FREQUENCY == 0 {
             log::warn!("VSync token bucket already at max capacity");
         }
     }
@@ -69,7 +75,9 @@ pub struct VsyncConfig {
 
 impl Default for VsyncConfig {
     fn default() -> Self {
-        Self { refresh_rate: 60.0 }
+        Self {
+            refresh_rate: DEFAULT_REFRESH_RATE,
+        }
     }
 }
 
@@ -142,15 +150,13 @@ pub struct VsyncActor {
     clock_control: Option<Sender<ClockCommand>>,
 }
 
-const MAX_TOKENS: u32 = 100;
-
 impl VsyncActor {
     /// Create empty VsyncActor for troupe pattern - configured via SetConfig management message.
     pub fn new_empty() -> Self {
         Self {
             engine_handle: None,
-            refresh_rate: 60.0,
-            interval: Duration::from_secs_f64(1.0 / 60.0),
+            refresh_rate: DEFAULT_REFRESH_RATE,
+            interval: Duration::from_secs_f64(1.0 / DEFAULT_REFRESH_RATE),
             running: false,
             next_vsync: Instant::now(),
             frame_count: 0,
@@ -171,7 +177,7 @@ impl VsyncActor {
         info!(
             "VsyncActor: Started with refresh rate {:.2} Hz ({:.2}ms interval), token bucket max: {}",
             refresh_rate,
-            interval.as_secs_f64() * 1000.0,
+            interval.as_secs_f64() * MILLIS_PER_SEC,
             MAX_TOKENS
         );
 
@@ -219,8 +225,10 @@ impl VsyncActor {
         refresh_rate: f64,
         engine_handle: crate::api::private::EngineActorHandle,
     ) -> ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement> {
-        let mut builder =
-            ActorBuilder::<RenderedResponse, VsyncCommand, VsyncManagement>::new(1024, None);
+        let mut builder = ActorBuilder::<RenderedResponse, VsyncCommand, VsyncManagement>::new(
+            VSYNC_CHANNEL_CAPACITY,
+            None,
+        );
         let handle = builder.add_producer(); // For the caller
         let clock_handle = builder.add_producer(); // For the clock thread (self-handle)
         let mut scheduler = builder.build();
@@ -324,7 +332,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 info!(
                     "VsyncActor: Updated refresh rate to {:.2} Hz ({:.2}ms interval)",
                     self.refresh_rate,
-                    self.interval.as_secs_f64() * 1000.0
+                    self.interval.as_secs_f64() * MILLIS_PER_SEC
                 );
 
                 // Update clock thread

@@ -1,4 +1,4 @@
-use pixelflow_core::{Field, Manifold, ManifoldExt};
+use pixelflow_core::{Field, Manifold};
 use pixelflow_macros::kernel;
 
 type Field4 = (Field, Field, Field, Field);
