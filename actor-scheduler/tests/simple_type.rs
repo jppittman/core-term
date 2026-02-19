@@ -26,8 +26,8 @@ impl ActorTypes for SimpleActor {
     type Management = ();
 }
 
-impl<'a, Dir: 'a> TroupeActor<'a, Dir> for SimpleActor {
-    fn new(_dir: &'a Dir) -> Self {
+impl<Dir> TroupeActor<Dir> for SimpleActor {
+    fn new(_dir: Dir) -> Self {
         Self
     }
 }

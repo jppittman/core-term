@@ -4,7 +4,8 @@
 //! Each test covers a specific CUJ identified in MESSAGE_CUJ_COVERAGE.md.
 
 use actor_scheduler::{
-    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    SystemStatus,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
@@ -758,7 +759,12 @@ fn cuj_concurrent_senders_all_messages_delivered() {
         }
     }
 
-    let (tx, mut rx) = ActorScheduler::<usize, (), ()>::new(10, 256);
+    // ActorHandle is not Clone — use ActorBuilder to create one handle per sender
+    let mut builder = ActorBuilder::<usize, (), ()>::new(256, None);
+    let mut sender_handles_vec: Vec<_> = (0..NUM_SENDERS)
+        .map(|_| builder.add_producer())
+        .collect();
+    let mut rx = builder.build_with_burst(10, actor_scheduler::ShutdownMode::default());
     let count_clone = received_count.clone();
 
     let receiver_handle = thread::spawn(move || {
@@ -766,14 +772,12 @@ fn cuj_concurrent_senders_all_messages_delivered() {
         rx.run(&mut actor);
     });
 
-    // Spawn multiple senders
+    // Spawn multiple senders, each with its own dedicated SPSC handle
     let mut sender_handles = Vec::new();
-    for sender_id in 0..NUM_SENDERS {
-        let tx_clone = tx.clone();
+    for (sender_id, tx) in sender_handles_vec.drain(..).enumerate() {
         let handle = thread::spawn(move || {
             for msg_id in 0..MESSAGES_PER_SENDER {
-                tx_clone
-                    .send(Message::Data(sender_id * 1000 + msg_id))
+                tx.send(Message::Data(sender_id * 1000 + msg_id))
                     .unwrap();
             }
         });
@@ -786,7 +790,6 @@ fn cuj_concurrent_senders_all_messages_delivered() {
     }
 
     thread::sleep(Duration::from_millis(100));
-    drop(tx);
     receiver_handle.join().unwrap();
 
     // Verify all messages received

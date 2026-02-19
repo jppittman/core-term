@@ -19,7 +19,7 @@
 //! - A slot is only read when `head != tail` (not empty)
 //! - Slots are `ptr::write` / `ptr::read` (no double-drop)
 
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -122,16 +122,22 @@ impl<T> Drop for RingBuffer<T> {
 }
 
 /// Producer end of an SPSC channel. Not Clone — one producer per channel.
+///
+/// Uses `Cell<usize>` for cached indices so that `try_send` takes `&self`
+/// instead of `&mut self`. This allows `ActorHandle::send(&self)` to work
+/// with an immutable reference (the handle is stored in a shared Directory).
+/// `Cell` is `!Sync`, which is correct — only one thread may use a sender.
 pub struct SpscSender<T> {
     ring: Arc<RingBuffer<T>>,
     /// Cached copy of tail. Only this thread writes tail.
-    cached_tail: usize,
+    cached_tail: Cell<usize>,
     /// Cached copy of head (may be stale — always conservative).
-    cached_head: usize,
+    cached_head: Cell<usize>,
 }
 
 // Safety: SpscSender<T> can be sent to the producer thread.
 // Only one SpscSender exists per channel (not Clone).
+// Note: SpscSender is !Sync (because of Cell), which is correct for SPSC.
 unsafe impl<T: Send> Send for SpscSender<T> {}
 
 /// Consumer end of an SPSC channel. Not Clone — one consumer per channel.
@@ -156,8 +162,8 @@ pub fn spsc_channel<T>(min_capacity: usize) -> (SpscSender<T>, SpscReceiver<T>) 
 
     let sender = SpscSender {
         ring: Arc::clone(&ring),
-        cached_tail: 0,
-        cached_head: 0,
+        cached_tail: Cell::new(0),
+        cached_head: Cell::new(0),
     };
 
     let receiver = SpscReceiver {
@@ -172,22 +178,28 @@ pub fn spsc_channel<T>(min_capacity: usize) -> (SpscSender<T>, SpscReceiver<T>) 
 impl<T> SpscSender<T> {
     /// Try to send a message. Wait-free: at most one atomic store.
     ///
+    /// Takes `&self` (not `&mut self`) thanks to `Cell` for cached indices.
+    /// This allows the sender to live behind a shared reference (e.g., in a
+    /// Directory struct shared across scoped threads). The `Cell` is `!Sync`,
+    /// ensuring only one thread can use the sender at a time.
+    ///
     /// Returns `Ok(())` on success, `Err(TrySendError::Full(msg))` if the
     /// buffer is full, or `Err(TrySendError::Disconnected(msg))` if the
     /// consumer has been dropped.
-    pub fn try_send(&mut self, msg: T) -> Result<(), TrySendError<T>> {
+    pub fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
         // Early disconnect check (relaxed load — cheap, may be slightly stale)
         if Arc::strong_count(&self.ring) == 1 {
             return Err(TrySendError::Disconnected(msg));
         }
 
-        let tail = self.cached_tail;
+        let tail = self.cached_tail.get();
 
         // Check if buffer is full using cached head
-        if tail - self.cached_head >= self.ring.cap {
+        if tail - self.cached_head.get() >= self.ring.cap {
             // Refresh head from the consumer's atomic
-            self.cached_head = self.ring.head.value.load(Ordering::Acquire);
-            if tail - self.cached_head >= self.ring.cap {
+            self.cached_head
+                .set(self.ring.head.value.load(Ordering::Acquire));
+            if tail - self.cached_head.get() >= self.ring.cap {
                 // Check if consumer is gone
                 if Arc::strong_count(&self.ring) == 1 {
                     return Err(TrySendError::Disconnected(msg));
@@ -205,8 +217,11 @@ impl<T> SpscSender<T> {
         }
 
         // Publish: make the write visible to the consumer
-        self.cached_tail = tail + 1;
-        self.ring.tail.value.store(self.cached_tail, Ordering::Release);
+        self.cached_tail.set(tail + 1);
+        self.ring
+            .tail
+            .value
+            .store(self.cached_tail.get(), Ordering::Release);
 
         Ok(())
     }
@@ -292,7 +307,7 @@ mod tests {
 
     #[test]
     fn send_recv_basic() {
-        let (mut tx, mut rx) = spsc_channel::<u32>(4);
+        let (tx, mut rx) = spsc_channel::<u32>(4);
         tx.try_send(1).unwrap();
         tx.try_send(2).unwrap();
         tx.try_send(3).unwrap();
@@ -305,7 +320,7 @@ mod tests {
 
     #[test]
     fn full_then_drain() {
-        let (mut tx, mut rx) = spsc_channel::<u32>(2);
+        let (tx, mut rx) = spsc_channel::<u32>(2);
         // Capacity rounds up to 2
         tx.try_send(10).unwrap();
         tx.try_send(20).unwrap();
@@ -331,7 +346,7 @@ mod tests {
 
     #[test]
     fn consumer_disconnect() {
-        let (mut tx, rx) = spsc_channel::<u32>(4);
+        let (tx, rx) = spsc_channel::<u32>(4);
         drop(rx);
         assert!(matches!(
             tx.try_send(1),
@@ -341,7 +356,7 @@ mod tests {
 
     #[test]
     fn drain_after_producer_disconnect() {
-        let (mut tx, mut rx) = spsc_channel::<u32>(4);
+        let (tx, mut rx) = spsc_channel::<u32>(4);
         tx.try_send(1).unwrap();
         tx.try_send(2).unwrap();
         drop(tx);
@@ -355,7 +370,7 @@ mod tests {
 
     #[test]
     fn cross_thread_throughput() {
-        let (mut tx, mut rx) = spsc_channel::<u64>(1024);
+        let (tx, mut rx) = spsc_channel::<u64>(1024);
         let count = 100_000u64;
 
         let producer = std::thread::spawn(move || {
@@ -398,7 +413,7 @@ mod tests {
     #[test]
     fn power_of_two_rounding() {
         // Capacity 3 should round up to 4
-        let (mut tx, mut rx) = spsc_channel::<u32>(3);
+        let (tx, mut rx) = spsc_channel::<u32>(3);
         tx.try_send(1).unwrap();
         tx.try_send(2).unwrap();
         tx.try_send(3).unwrap();
@@ -414,7 +429,7 @@ mod tests {
     #[test]
     fn wrapping_indices() {
         // Small buffer, many messages — tests index wrapping
-        let (mut tx, mut rx) = spsc_channel::<u32>(2);
+        let (tx, mut rx) = spsc_channel::<u32>(2);
         for i in 0..1000 {
             tx.try_send(i).unwrap();
             assert_eq!(rx.try_recv().unwrap(), i);
@@ -437,7 +452,7 @@ mod tests {
 
         DROP_COUNT.store(0, Ordering::Relaxed);
 
-        let (mut tx, rx) = spsc_channel::<Counted>(4);
+        let (tx, rx) = spsc_channel::<Counted>(4);
         tx.try_send(Counted(1)).unwrap();
         tx.try_send(Counted(2)).unwrap();
         tx.try_send(Counted(3)).unwrap();

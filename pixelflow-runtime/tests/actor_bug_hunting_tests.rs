@@ -10,8 +10,8 @@
 //! Each test documents the bug it's hunting for.
 
 use actor_scheduler::{
-    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SendError,
-    SystemStatus,
+    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    SendError, ShutdownMode, SystemStatus,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -34,7 +34,6 @@ fn backoff_does_not_overflow_on_large_attempts() {
 
     // Fill up the control lane to trigger backoff
     // Note: Control lane size is SchedulerParams::DEFAULT.control_mgmt_buffer_size
-    let tx_clone = tx.clone();
 
     let sender = thread::spawn(move || {
         // Keep trying to send - this should eventually hit the timeout error
@@ -43,7 +42,7 @@ fn backoff_does_not_overflow_on_large_attempts() {
         let mut error_count = 0;
 
         for _ in 0..1000 {
-            match tx_clone.send(Message::Control(())) {
+            match tx.send(Message::Control(())) {
                 Ok(()) => {}
                 Err(SendError::Timeout) => {
                     error_count += 1;
@@ -140,7 +139,14 @@ fn zero_burst_limit_does_not_cause_infinite_loop() {
 
 #[test]
 fn mass_sender_drop_does_not_cause_race() {
-    let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(100, 1000);
+    let mut builder = ActorBuilder::<i32, i32, i32>::new(1000, None);
+
+    // Create 100 producers for the sender threads + 1 for the original tx
+    let senders: Vec<_> = (0..100).map(|_| builder.add_producer()).collect();
+    let tx = builder.add_producer();
+
+    let mut rx = builder.build_with_burst(100, ShutdownMode::default());
+
     let count = Arc::new(AtomicUsize::new(0));
     let count_clone = count.clone();
 
@@ -164,19 +170,16 @@ fn mass_sender_drop_does_not_cause_race() {
         rx.run(&mut Counter(count_clone));
     });
 
-    // Create many senders
-    let senders: Vec<_> = (0..100).map(|_| tx.clone()).collect();
-
     // Send from all senders
     let barrier = Arc::new(Barrier::new(100));
     let handles: Vec<_> = senders
         .into_iter()
-        .map(|tx| {
+        .map(|sender| {
             let barrier = barrier.clone();
             thread::spawn(move || {
                 barrier.wait();
                 for i in 0..10 {
-                    let _ = tx.send(Message::Data(i));
+                    let _ = sender.send(Message::Data(i));
                 }
                 // Sender dropped here - all 100 at roughly the same time
             })
@@ -371,7 +374,11 @@ fn park_poll_does_not_spin_indefinitely() {
 #[test]
 fn slow_handler_backpressure_works() {
     // Small buffer to trigger backpressure quickly
-    let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 2);
+    let mut builder = ActorBuilder::<i32, i32, i32>::new(2, None);
+    let tx_sender = builder.add_producer();
+    let tx = builder.add_producer();
+    let mut rx = builder.build_with_burst(10, ShutdownMode::default());
+
     let processed = Arc::new(AtomicUsize::new(0));
     let processed_clone = processed.clone();
 
@@ -397,12 +404,11 @@ fn slow_handler_backpressure_works() {
     });
 
     let sender_start = Instant::now();
-    let tx_clone = tx.clone();
 
     // Sender thread - will block on backpressure
     let sender = thread::spawn(move || {
         for i in 0..10 {
-            tx_clone.send(Message::Data(i)).unwrap();
+            tx_sender.send(Message::Data(i)).unwrap();
         }
         sender_start.elapsed()
     });
@@ -525,7 +531,14 @@ fn rapid_channel_creation_does_not_leak() {
 
 #[test]
 fn concurrent_send_during_processing() {
-    let (tx, mut rx) = ActorScheduler::new(5, 100); // Small burst limit
+    let mut builder = ActorBuilder::<i32, i32, i32>::new(100, None); // Small burst limit
+
+    // 10 producers for sender threads + 1 to keep the scheduler alive until drop
+    let senders: Vec<_> = (0..10).map(|_| builder.add_producer()).collect();
+    let tx = builder.add_producer();
+
+    let mut rx = builder.build_with_burst(5, ShutdownMode::default());
+
     let total_received = Arc::new(AtomicUsize::new(0));
     let total_received_clone = total_received.clone();
 
@@ -552,12 +565,12 @@ fn concurrent_send_during_processing() {
     });
 
     // Multiple senders sending concurrently
-    let handles: Vec<_> = (0..10)
-        .map(|_| {
-            let tx = tx.clone();
+    let handles: Vec<_> = senders
+        .into_iter()
+        .map(|sender| {
             thread::spawn(move || {
                 for i in 0..100 {
-                    tx.send(Message::Data(i)).unwrap();
+                    sender.send(Message::Data(i)).unwrap();
                 }
             })
         })
@@ -585,7 +598,14 @@ fn concurrent_send_during_processing() {
 
 #[test]
 fn doorbell_saturation_does_not_lose_messages() {
-    let (tx, mut rx) = ActorScheduler::new(100, 1000);
+    let mut builder = ActorBuilder::<i32, i32, i32>::new(1000, None);
+
+    // 50 producers for sender threads + 1 to keep the scheduler alive until drop
+    let senders: Vec<_> = (0..50).map(|_| builder.add_producer()).collect();
+    let tx = builder.add_producer();
+
+    let mut rx = builder.build_with_burst(100, ShutdownMode::default());
+
     let count = Arc::new(AtomicUsize::new(0));
     let count_clone = count.clone();
 
@@ -611,14 +631,14 @@ fn doorbell_saturation_does_not_lose_messages() {
 
     // Rapid-fire sends from many threads to saturate doorbell
     let barrier = Arc::new(Barrier::new(50));
-    let handles: Vec<_> = (0..50)
-        .map(|_| {
-            let tx = tx.clone();
+    let handles: Vec<_> = senders
+        .into_iter()
+        .map(|sender| {
             let barrier = barrier.clone();
             thread::spawn(move || {
                 barrier.wait();
                 for i in 0..100 {
-                    tx.send(Message::Data(i)).unwrap();
+                    sender.send(Message::Data(i)).unwrap();
                 }
             })
         })
@@ -676,8 +696,10 @@ fn control_lane_timeout_returns_error() {
 
         // Don't run the receiver - just let messages pile up
 
-        // Fill the control lane (params.control_mgmt_buffer_size)
-        for _ in 0..params.control_mgmt_buffer_size {
+        // Fill the control lane. SPSC rounds up to next power of 2, so
+        // the actual capacity is >= params.control_mgmt_buffer_size.
+        let actual_capacity = params.control_mgmt_buffer_size.max(2).next_power_of_two();
+        for _ in 0..actual_capacity {
             tx.send(Message::Control(0)).unwrap();
         }
 
@@ -764,7 +786,10 @@ fn large_queue_does_not_cause_issues() {
 #[test]
 fn shutdown_race_does_not_panic() {
     for _ in 0..100 {
-        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
+        let mut builder = ActorBuilder::<i32, i32, i32>::new(100, None);
+        let tx = builder.add_producer();
+        let tx2 = builder.add_producer();
+        let mut rx = builder.build_with_burst(10, ShutdownMode::default());
 
         let handle = thread::spawn(move || {
             struct NoopActor;
@@ -786,7 +811,6 @@ fn shutdown_race_does_not_panic() {
         });
 
         // Race: send and drop nearly simultaneously
-        let tx2 = tx.clone();
         thread::spawn(move || {
             for i in 0..10 {
                 let _ = tx2.send(Message::Data(i));

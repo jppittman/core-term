@@ -165,8 +165,8 @@ mod tests {
     #[test]
     fn basic_sharded_drain() {
         let mut builder = InboxBuilder::new(16);
-        let mut tx1 = builder.add_producer();
-        let mut tx2 = builder.add_producer();
+        let tx1 = builder.add_producer();
+        let tx2 = builder.add_producer();
         let mut inbox = builder.build();
 
         tx1.try_send(1).unwrap();
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn burst_limit_respected() {
         let mut builder = InboxBuilder::new(64);
-        let mut tx = builder.add_producer();
+        let tx = builder.add_producer();
         let mut inbox = builder.build();
 
         for i in 0..50 {
@@ -214,8 +214,8 @@ mod tests {
     #[test]
     fn round_robin_fairness() {
         let mut builder = InboxBuilder::new(64);
-        let mut tx1 = builder.add_producer();
-        let mut tx2 = builder.add_producer();
+        let tx1 = builder.add_producer();
+        let tx2 = builder.add_producer();
         let mut inbox = builder.build();
 
         // Producer 1 floods, producer 2 sends one
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn drain_buffered_after_disconnect() {
         let mut builder = InboxBuilder::new(16);
-        let mut tx = builder.add_producer();
+        let tx = builder.add_producer();
         let mut inbox = builder.build();
 
         tx.try_send(42).unwrap();
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn handler_error_propagates() {
         let mut builder = InboxBuilder::new(16);
-        let mut tx = builder.add_producer();
+        let tx = builder.add_producer();
         let mut inbox = builder.build();
 
         tx.try_send(1).unwrap();

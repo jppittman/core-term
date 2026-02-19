@@ -2,9 +2,13 @@
 //!
 //! These tests verify the scheduler behaves correctly under heavy load,
 //! concurrent access, and various edge conditions.
+//!
+//! With SPSC-sharded channels, each producer has its own dedicated ring buffer.
+//! Multi-producer tests use ActorBuilder to create separate handles.
 
 use actor_scheduler::{
-    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    ShutdownMode, SystemStatus,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -79,7 +83,7 @@ impl Actor<(), (), ()> for NoOpHandler {
 }
 
 // ============================================================================
-// High Contention Tests
+// High Contention Tests (SPSC: each sender has dedicated channels)
 // ============================================================================
 
 #[test]
@@ -87,7 +91,10 @@ fn high_contention_all_messages_delivered() {
     const NUM_SENDERS: usize = 10;
     const MESSAGES_PER_SENDER: usize = 100;
 
-    let (tx, mut rx) = ActorScheduler::new(1024, 1024);
+    let mut builder = ActorBuilder::<u64, u64, u64>::new(1024, None);
+    let senders: Vec<_> = (0..NUM_SENDERS).map(|_| builder.add_producer()).collect();
+    let mut rx = builder.build_with_burst(1024, ShutdownMode::default());
+
     let data_count = Arc::new(AtomicUsize::new(0));
     let ctrl_count = Arc::new(AtomicUsize::new(0));
     let mgmt_count = Arc::new(AtomicUsize::new(0));
@@ -104,16 +111,15 @@ fn high_contention_all_messages_delivered() {
         rx.run(&mut h);
     });
 
-    // Spawn multiple senders
+    // Spawn multiple senders — each with its own SPSC channel
     let mut sender_handles = Vec::new();
-    for _ in 0..NUM_SENDERS {
-        let tx_clone = tx.clone();
+    for tx in senders {
         let handle = thread::spawn(move || {
             for i in 0..MESSAGES_PER_SENDER {
                 match i % 3 {
-                    0 => tx_clone.send(Message::Data(i as u64)).unwrap(),
-                    1 => tx_clone.send(Message::Control(i as u64)).unwrap(),
-                    _ => tx_clone.send(Message::Management(i as u64)).unwrap(),
+                    0 => tx.send(Message::Data(i as u64)).unwrap(),
+                    1 => tx.send(Message::Control(i as u64)).unwrap(),
+                    _ => tx.send(Message::Management(i as u64)).unwrap(),
                 }
             }
         });
@@ -125,11 +131,8 @@ fn high_contention_all_messages_delivered() {
         handle.join().unwrap();
     }
 
-    // Give time for processing
+    // Give time for processing, then all handles are dropped → scheduler exits
     thread::sleep(Duration::from_millis(100));
-
-    // Drop sender to terminate receiver
-    drop(tx);
     receiver_handle.join().unwrap();
 
     // Verify all messages were delivered
@@ -146,11 +149,13 @@ fn high_contention_all_messages_delivered() {
 
 #[test]
 fn high_contention_fairness() {
-    // Multiple senders competing for control lane should all eventually succeed
     const NUM_SENDERS: usize = 5;
     const MESSAGES_PER_SENDER: usize = 50;
 
-    let (tx, mut rx) = ActorScheduler::new(10, 100);
+    let mut builder = ActorBuilder::<u64, u64, u64>::new(100, None);
+    let senders: Vec<_> = (0..NUM_SENDERS).map(|_| builder.add_producer()).collect();
+    let mut rx = builder.build_with_burst(10, ShutdownMode::default());
+
     let ctrl_count = Arc::new(AtomicUsize::new(0));
 
     let handler = CountingHandler {
@@ -165,11 +170,10 @@ fn high_contention_fairness() {
     });
 
     let mut sender_handles = Vec::new();
-    for _ in 0..NUM_SENDERS {
-        let tx_clone = tx.clone();
+    for tx in senders {
         let handle = thread::spawn(move || {
             for i in 0..MESSAGES_PER_SENDER {
-                tx_clone.send(Message::Control(i as u64)).unwrap();
+                tx.send(Message::Control(i as u64)).unwrap();
             }
         });
         sender_handles.push(handle);
@@ -180,7 +184,6 @@ fn high_contention_fairness() {
     }
 
     thread::sleep(Duration::from_millis(100));
-    drop(tx);
     receiver_handle.join().unwrap();
 
     assert_eq!(
@@ -208,16 +211,15 @@ fn rapid_channel_creation_does_not_leak() {
 }
 
 #[test]
-fn rapid_sender_clone_drop() {
-    // Use a large enough buffer to avoid blocking during this test
-    let (tx, _rx) = ActorScheduler::<u64, u64, u64>::new(10, 2000);
-
-    // Clone and drop handles rapidly - messages will queue but not block
-    for _ in 0..1000 {
-        let cloned = tx.clone();
-        cloned.send(Message::Data(42)).ok();
-        drop(cloned);
+fn rapid_producer_creation() {
+    // Create and drop many producers rapidly
+    let mut builder = ActorBuilder::<u64, u64, u64>::new(100, None);
+    for _ in 0..100 {
+        let tx = builder.add_producer();
+        tx.send(Message::Data(42)).ok();
+        drop(tx);
     }
+    let _rx = builder.build();
 }
 
 // ============================================================================
@@ -240,19 +242,15 @@ fn backpressure_with_slow_consumer() {
         rx.run(&mut h);
     });
 
-    // Send many messages - should block when buffer is full
-    let sender_handle = {
-        let tx_clone = tx.clone();
-        thread::spawn(move || {
-            for i in 0..50 {
-                tx_clone.send(Message::Data(i)).unwrap();
-            }
-        })
-    };
+    // Send many messages — spin-yield backpressure when buffer full
+    let sender_handle = thread::spawn(move || {
+        for i in 0..50 {
+            tx.send(Message::Data(i)).unwrap();
+        }
+    });
 
     sender_handle.join().unwrap();
     thread::sleep(Duration::from_millis(100));
-    drop(tx);
     receiver_handle.join().unwrap();
 
     assert_eq!(
@@ -360,14 +358,21 @@ fn burst_limit_prevents_data_starvation() {
 // ============================================================================
 
 #[test]
-fn handle_is_send_and_sync() {
-    fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<actor_scheduler::ActorHandle<u64, u64, u64>>();
+fn handle_is_send() {
+    // ActorHandle is Send (can be moved to another thread) but NOT Sync
+    // (Cell<usize> in SpscSender prevents shared references across threads).
+    // This is correct: SPSC = one producer per channel.
+    fn assert_send<T: Send>() {}
+    assert_send::<actor_scheduler::ActorHandle<u64, u64, u64>>();
 }
 
 #[test]
-fn concurrent_clone_and_send() {
-    let (tx, mut rx) = ActorScheduler::new(10, 1000);
+fn multi_producer_send() {
+    // Multiple producers each with their own SPSC channel
+    let mut builder = ActorBuilder::<u64, u64, u64>::new(1000, None);
+    let senders: Vec<_> = (0..10).map(|_| builder.add_producer()).collect();
+    let mut rx = builder.build_with_burst(10, ShutdownMode::default());
+
     let count = Arc::new(AtomicUsize::new(0));
     let count_clone = count.clone();
 
@@ -396,13 +401,12 @@ fn concurrent_clone_and_send() {
         rx.run(&mut h);
     });
 
-    // Many threads clone the handle and send concurrently
+    // Each thread gets its own handle (no cloning, no contention)
     let mut handles = Vec::new();
-    for _ in 0..10 {
-        let tx_clone = tx.clone();
+    for tx in senders {
         handles.push(thread::spawn(move || {
             for i in 0..100 {
-                tx_clone.send(Message::Data(i)).unwrap();
+                tx.send(Message::Data(i)).unwrap();
             }
         }));
     }
@@ -412,7 +416,6 @@ fn concurrent_clone_and_send() {
     }
 
     thread::sleep(Duration::from_millis(100));
-    drop(tx);
     receiver_handle.join().unwrap();
 
     assert_eq!(count.load(Ordering::SeqCst), 1000);

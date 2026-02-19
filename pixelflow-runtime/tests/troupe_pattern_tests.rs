@@ -13,8 +13,8 @@
 //! generates code that's hard to test in isolation.
 
 use actor_scheduler::{
-    Actor, ActorHandle, ActorScheduler, ActorStatus, ActorTypes, HandlerError, HandlerResult,
-    Message, SystemStatus, TroupeActor,
+    Actor, ActorBuilder, ActorHandle, ActorScheduler, ActorStatus, ActorTypes, HandlerError,
+    HandlerResult, Message, SystemStatus, TroupeActor,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -75,8 +75,8 @@ impl ActorTypes for AlphaActor<'_> {
     type Management = AlphaManagement;
 }
 
-impl<'a, Dir: 'a> TroupeActor<'a, Dir> for AlphaActor<'a> {
-    fn new(_dir: &'a Dir) -> Self {
+impl<'a> TroupeActor<&'a TestDirectory> for AlphaActor<'a> {
+    fn new(_dir: &'a TestDirectory) -> Self {
         panic!("use new_with_log instead")
     }
 }
@@ -124,8 +124,8 @@ impl ActorTypes for BetaActor<'_> {
     type Management = BetaManagement;
 }
 
-impl<'a, Dir: 'a> TroupeActor<'a, Dir> for BetaActor<'a> {
-    fn new(_dir: &'a Dir) -> Self {
+impl<'a> TroupeActor<&'a TestDirectory> for BetaActor<'a> {
+    fn new(_dir: &'a TestDirectory) -> Self {
         panic!("use new_with_log instead")
     }
 }
@@ -183,38 +183,43 @@ impl Actor<BetaData, BetaControl, BetaManagement> for BetaActor<'_> {
 fn directory_allows_cross_actor_messaging() {
     let log = Arc::new(Mutex::new(Vec::new()));
 
-    // Phase 1: Create handles and schedulers
-    let (alpha_h, mut alpha_s) =
-        ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
-    let (beta_h, mut beta_s) =
-        ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
+    // Phase 1: Create builders for each actor
+    let mut alpha_builder =
+        ActorBuilder::<AlphaData, AlphaControl, AlphaManagement>::new(1024, None);
+    let mut beta_builder =
+        ActorBuilder::<BetaData, BetaControl, BetaManagement>::new(1024, None);
 
-    // Phase 2: Build directory
-    let dir = Arc::new(TestDirectory {
-        alpha: alpha_h.clone(),
-        beta: beta_h.clone(),
-    });
+    // Phase 2: Create per-actor directories with dedicated SPSC handles
+    let alpha_dir = TestDirectory {
+        alpha: alpha_builder.add_producer(),
+        beta: beta_builder.add_producer(),
+    };
+    let beta_dir = TestDirectory {
+        alpha: alpha_builder.add_producer(),
+        beta: beta_builder.add_producer(),
+    };
 
-    // Phase 3: Spawn actors with directory reference
+    // External handles for sending from this thread
+    let alpha_h = alpha_builder.add_producer();
+
+    // Build schedulers (seals all producers)
+    let mut alpha_s = alpha_builder.build();
+    let mut beta_s = beta_builder.build();
+
+    // Phase 3: Spawn actors — each owns its directory
     let log_alpha = log.clone();
-    let dir_alpha = dir.clone();
     thread::spawn(move || {
-        // Safety: dir lives in Arc, accessible throughout thread lifetime
-        let dir_ref: &TestDirectory =
-            unsafe { &*(Arc::as_ptr(&dir_alpha) as *const TestDirectory) };
         let mut actor = AlphaActor {
-            dir: dir_ref,
+            dir: &alpha_dir,
             log: log_alpha,
         };
         alpha_s.run(&mut actor);
     });
 
     let log_beta = log.clone();
-    let dir_beta = dir.clone();
     thread::spawn(move || {
-        let dir_ref: &TestDirectory = unsafe { &*(Arc::as_ptr(&dir_beta) as *const TestDirectory) };
         let mut actor = BetaActor {
-            dir: dir_ref,
+            dir: &beta_dir,
             log: log_beta,
         };
         beta_s.run(&mut actor);
@@ -251,11 +256,12 @@ fn directory_allows_cross_actor_messaging() {
 // Two-Phase Initialization Tests
 // ============================================================================
 
-/// Simulates the Troupe struct that troupe! would generate
+/// Simulates the Troupe struct that troupe! would generate (SPSC pattern)
 struct TestTroupe {
-    directory: TestDirectory,
-    alpha_scheduler: ActorScheduler<AlphaData, AlphaControl, AlphaManagement>,
-    beta_scheduler: ActorScheduler<BetaData, BetaControl, BetaManagement>,
+    alpha_builder: ActorBuilder<AlphaData, AlphaControl, AlphaManagement>,
+    beta_builder: ActorBuilder<BetaData, BetaControl, BetaManagement>,
+    alpha_dir: TestDirectory,
+    beta_dir: TestDirectory,
 }
 
 struct TestExposedHandles {
@@ -264,24 +270,32 @@ struct TestExposedHandles {
 
 impl TestTroupe {
     fn new() -> Self {
-        let (alpha_h, alpha_s) =
-            ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
-        let (beta_h, beta_s) =
-            ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1024);
+        let mut alpha_builder =
+            ActorBuilder::<AlphaData, AlphaControl, AlphaManagement>::new(1024, None);
+        let mut beta_builder =
+            ActorBuilder::<BetaData, BetaControl, BetaManagement>::new(1024, None);
+
+        // Each actor gets its own directory with dedicated SPSC handles
+        let alpha_dir = TestDirectory {
+            alpha: alpha_builder.add_producer(),
+            beta: beta_builder.add_producer(),
+        };
+        let beta_dir = TestDirectory {
+            alpha: alpha_builder.add_producer(),
+            beta: beta_builder.add_producer(),
+        };
 
         Self {
-            directory: TestDirectory {
-                alpha: alpha_h,
-                beta: beta_h,
-            },
-            alpha_scheduler: alpha_s,
-            beta_scheduler: beta_s,
+            alpha_builder,
+            beta_builder,
+            alpha_dir,
+            beta_dir,
         }
     }
 
-    fn exposed(&self) -> TestExposedHandles {
+    fn exposed(&mut self) -> TestExposedHandles {
         TestExposedHandles {
-            alpha: self.directory.alpha.clone(),
+            alpha: self.alpha_builder.add_producer(),
         }
     }
 }
@@ -289,9 +303,9 @@ impl TestTroupe {
 #[test]
 fn two_phase_initialization_queues_messages_before_play() {
     // Phase 1: Create troupe
-    let troupe = TestTroupe::new();
+    let mut troupe = TestTroupe::new();
 
-    // Phase 2: Get exposed handles
+    // Phase 2: Get exposed handles (each call creates new SPSC channels)
     let exposed = troupe.exposed();
 
     // Phase 3: Send messages BEFORE play() - they should queue
@@ -477,18 +491,26 @@ fn actor_thread_panic_isolated() {
 /// circular handle references (see directory_allows_cross_actor_messaging).
 #[test]
 fn circular_messaging_does_not_deadlock() {
-    let (alpha_h, mut alpha_s) =
-        ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1000);
-    let (beta_h, mut beta_s) =
-        ActorScheduler::<BetaData, BetaControl, BetaManagement>::new(100, 1000);
+    // Create builders for each actor
+    let mut alpha_builder =
+        ActorBuilder::<AlphaData, AlphaControl, AlphaManagement>::new(1000, None);
+    let mut beta_builder =
+        ActorBuilder::<BetaData, BetaControl, BetaManagement>::new(1000, None);
+
+    // Each actor gets a dedicated handle to the other
+    let ping_beta_h = beta_builder.add_producer();
+    let pong_alpha_h = alpha_builder.add_producer();
+
+    // External handle for kick-starting the ping-pong
+    let alpha_h = alpha_builder.add_producer();
+
+    let mut alpha_s = alpha_builder.build();
+    let mut beta_s = beta_builder.build();
 
     let ping_count = Arc::new(AtomicUsize::new(0));
     let pong_count = Arc::new(AtomicUsize::new(0));
 
-    let dir = Arc::new((alpha_h.clone(), beta_h.clone()));
-
     let ping_clone = ping_count.clone();
-    let dir_alpha = dir.clone();
     thread::spawn(move || {
         struct PingActor {
             beta_h: ActorHandle<BetaData, BetaControl, BetaManagement>,
@@ -516,14 +538,13 @@ fn circular_messaging_does_not_deadlock() {
             }
         }
         alpha_s.run(&mut PingActor {
-            beta_h: dir_alpha.1.clone(),
+            beta_h: ping_beta_h,
             count: ping_clone,
             max: 100,
         });
     });
 
     let pong_clone = pong_count.clone();
-    let dir_beta = dir.clone();
     thread::spawn(move || {
         struct PongActor {
             alpha_h: ActorHandle<AlphaData, AlphaControl, AlphaManagement>,
@@ -551,7 +572,7 @@ fn circular_messaging_does_not_deadlock() {
             }
         }
         beta_s.run(&mut PongActor {
-            alpha_h: dir_beta.0.clone(),
+            alpha_h: pong_alpha_h,
             count: pong_clone,
             max: 100,
         });
@@ -573,21 +594,26 @@ fn circular_messaging_does_not_deadlock() {
         thread::sleep(Duration::from_millis(10));
     }
 
-    // Success! Don't try to join threads due to circular handle references.
-    // Note: counts may exceed 100 slightly due to race conditions in the ping-pong.
-    // One actor may increment before the other checks its own count.
     assert!(ping_count.load(Ordering::SeqCst) >= 100);
     assert!(pong_count.load(Ordering::SeqCst) >= 100);
 }
 
 // ============================================================================
-// Handle Cloning Tests
+// Multiple Producer Tests (SPSC: each producer has dedicated channels)
 // ============================================================================
 
 #[test]
-fn cloned_directory_handles_work_independently() {
-    let (alpha_h, mut alpha_s) =
-        ActorScheduler::<AlphaData, AlphaControl, AlphaManagement>::new(100, 1024);
+fn multiple_producers_work_independently() {
+    let mut builder =
+        ActorBuilder::<AlphaData, AlphaControl, AlphaManagement>::new(1024, None);
+
+    // Create multiple producers (each gets dedicated SPSC channels)
+    let h1 = builder.add_producer();
+    let h2 = builder.add_producer();
+    let h3 = builder.add_producer();
+    let h4 = builder.add_producer();
+
+    let mut alpha_s = builder.build();
 
     let count = Arc::new(AtomicUsize::new(0));
     let count_clone = count.clone();
@@ -612,30 +638,23 @@ fn cloned_directory_handles_work_independently() {
         alpha_s.run(&mut CountActor(count_clone));
     });
 
-    // Clone handle multiple times (simulating multiple actors holding it)
-    let h1 = alpha_h.clone();
-    let h2 = alpha_h.clone();
-    let h3 = alpha_h.clone();
-
-    // Send from all
+    // Send from all producers
     h1.send(Message::Data(AlphaData("1".to_string()))).unwrap();
     h2.send(Message::Data(AlphaData("2".to_string()))).unwrap();
     h3.send(Message::Data(AlphaData("3".to_string()))).unwrap();
 
-    // Drop some clones
+    // Drop some producers
     drop(h1);
     drop(h2);
 
-    // Original still works
-    alpha_h
-        .send(Message::Data(AlphaData("4".to_string())))
-        .unwrap();
+    // Remaining producers still work
+    h4.send(Message::Data(AlphaData("4".to_string()))).unwrap();
 
     thread::sleep(Duration::from_millis(50));
 
     // Drop all
     drop(h3);
-    drop(alpha_h);
+    drop(h4);
     handle.join().unwrap();
 
     assert_eq!(count.load(Ordering::SeqCst), 4);

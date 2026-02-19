@@ -37,6 +37,15 @@ impl<T> From<mpsc::TrySendError<T>> for SendError {
     }
 }
 
+impl<T> From<crate::spsc::TrySendError<T>> for SendError {
+    fn from(err: crate::spsc::TrySendError<T>) -> Self {
+        match err {
+            crate::spsc::TrySendError::Full(_) => SendError::Timeout,
+            crate::spsc::TrySendError::Disconnected(_) => SendError::Disconnected,
+        }
+    }
+}
+
 /// Error from an actor handler indicating failure severity.
 ///
 /// # Severity Levels

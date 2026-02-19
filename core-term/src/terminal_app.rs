@@ -7,7 +7,7 @@ use crate::io::PtyCommand;
 use crate::messages::TerminalData;
 use crate::term::TerminalEmulator;
 use actor_scheduler::{
-    Actor, ActorHandle, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    Actor, ActorBuilder, ActorHandle, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
 use pixelflow_core::{
@@ -643,19 +643,28 @@ pub fn spawn_terminal_app(
     params: TerminalAppParams,
 ) -> std::io::Result<(
     actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
     std::thread::JoinHandle<()>,
 )> {
-    // Create app actor's channel
-    let (app_handle, mut app_rx) =
-        ActorScheduler::<TerminalData, EngineEventControl, EngineEventManagement>::new(10, 128);
+    // Create app actor's channels using ActorBuilder (SPSC - each producer is unique)
+    // ActorHandle is not Clone; each consumer needs its own dedicated handle.
+    let mut builder =
+        ActorBuilder::<TerminalData, EngineEventControl, EngineEventManagement>::new(128, None);
+    let app_handle = builder.add_producer(); // For the caller (returns to main, keep-alive)
+    let pty_handle = builder.add_producer(); // For the PTY sender (TerminalAppSender)
+    let adapter_handle = builder.add_producer(); // For TerminalAppAdapter (engine→app)
+    let mut app_rx = builder.build_with_burst(10, actor_scheduler::ShutdownMode::default());
 
     // Register with engine (sends RegisterApp + CreateWindow atomically)
     use pixelflow_runtime::api::public::{Application, EngineEvent};
     use pixelflow_runtime::WindowDescriptor;
 
     struct TerminalAppAdapter {
-        handle:
+        // Mutex satisfies Sync for Arc<dyn Application + Send + Sync>.
+        // No contention — only the engine actor thread calls send().
+        handle: std::sync::Mutex<
             actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+        >,
     }
 
     impl Application for TerminalAppAdapter {
@@ -666,6 +675,8 @@ pub fn spawn_terminal_app(
                 EngineEvent::Management(m) => Message::Management(m),
             };
             self.handle
+                .lock()
+                .unwrap()
                 .send(msg)
                 .map_err(|e| pixelflow_runtime::error::RuntimeError::EventSendError(e.to_string()))
         }
@@ -679,7 +690,7 @@ pub fn spawn_terminal_app(
     };
 
     let app_arc = std::sync::Arc::new(TerminalAppAdapter {
-        handle: app_handle.clone(),
+        handle: std::sync::Mutex::new(adapter_handle),
     });
     let engine_tx = params
         .unregistered_engine
@@ -705,7 +716,7 @@ pub fn spawn_terminal_app(
             app_rx.run(&mut app);
         })?;
 
-    Ok((app_handle, handle))
+    Ok((app_handle, pty_handle, handle))
 }
 
 /// Parameters after registration (internal use).
@@ -719,28 +730,12 @@ struct TerminalAppParamsRegistered {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ansi::commands::AnsiCommand;
     use crate::io::PtyCommand;
-    use crate::term::{EmulatorInput, TerminalEmulator, UserInputAction};
-    use actor_scheduler::{Actor, ActorStatus};
+    use crate::term::TerminalEmulator;
+    use actor_scheduler::Actor;
     use pixelflow_runtime::input::{KeySymbol, Modifiers};
     use pixelflow_runtime::{EngineEventControl, EngineEventManagement, WindowId};
-    use std::sync::mpsc::{Receiver, SyncSender};
-
-    // Define a DummyPixel struct for testing
-    #[derive(Debug, Clone, Copy, Default, PartialEq)]
-    struct DummyPixel;
-    impl pixelflow_graphics::render::Pixel for DummyPixel {
-        fn from_u32(_: u32) -> Self {
-            Self
-        }
-        fn to_u32(self) -> u32 {
-            0
-        }
-        fn from_rgba(_r: f32, _g: f32, _b: f32, _a: f32) -> Self {
-            Self
-        }
-    }
+    use std::sync::mpsc::Receiver;
 
     // Helper to create a test instance
     // Returns scheduler to keep doorbell channel alive during test
@@ -770,15 +765,22 @@ mod tests {
         let emulator = TerminalEmulator::new(80, 24);
         let (pty_tx, pty_rx) = std::sync::mpsc::sync_channel(128);
 
-        // Create engine handle - keep scheduler alive to prevent doorbell disconnect
-        let (engine_tx, engine_scheduler) = actor_scheduler::ActorScheduler::new(10, 10);
+        // Create engine handles with ActorBuilder (SPSC - each producer is unique)
+        let mut engine_builder = actor_scheduler::ActorBuilder::<
+            pixelflow_runtime::api::private::EngineData,
+            pixelflow_runtime::api::private::EngineControl,
+            pixelflow_runtime::api::public::AppManagement,
+        >::new(10, None);
+        let engine_tx = engine_builder.add_producer(); // For test inspection
+        let engine_tx_for_test = engine_builder.add_producer(); // For EngineHandle
+        let engine_scheduler = engine_builder.build_with_burst(10, actor_scheduler::ShutdownMode::default());
 
         let config = Config::default();
         let params = TerminalAppParamsRegistered {
             emulator,
             pty_tx,
             config,
-            engine_tx: EngineHandle::new_for_test(engine_tx.clone()),
+            engine_tx: EngineHandle::new_for_test(engine_tx_for_test),
         };
         let app = TerminalApp::new_registered(params);
 
@@ -793,7 +795,6 @@ mod tests {
         };
 
         // Initial size is 80x24
-        use crate::term::TerminalInterface;
         let snapshot_initial = app.emulator.get_render_snapshot().expect("Snapshot");
         assert_eq!(snapshot_initial.dimensions, (80, 24));
 
