@@ -40,6 +40,12 @@ pub struct ContentCell {
     pub c: char,
     /// The visual attributes of the character (foreground/background color, flags).
     pub attr: Attributes,
+    /// An optional Unicode combining character layered on top of the base character.
+    ///
+    /// Zero-width combining marks (e.g. accents, diacritics) do not advance the cursor.
+    /// Instead they are stored here and rendered on top of `c` by the font shaper.
+    /// `None` for ordinary cells with no combining overlay.
+    pub combining: Option<char>,
 }
 
 /// Placeholder character used by `Glyph::display_char()` for `WideSpacer` variants.
@@ -82,6 +88,7 @@ impl ContentCell {
         ContentCell {
             c: ' ',
             attr: Attributes::default(),
+            combining: None,
         }
     }
 }
