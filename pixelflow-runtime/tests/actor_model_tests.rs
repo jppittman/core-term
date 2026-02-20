@@ -12,8 +12,8 @@
 //! Following STYLE.md: tests focus on public API contracts, not implementation details.
 
 use actor_scheduler::{
-    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
-    SystemStatus,
+    Actor, ActorBuilder, ActorHandle, ActorScheduler, ActorStatus, HandlerError, HandlerResult,
+    Message, SystemStatus,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -611,7 +611,7 @@ fn multiple_senders_all_messages_delivered() {
 
     let senders: Vec<_> = sender_handles
         .into_iter()
-        .map(|tx| {
+        .map(|tx: ActorHandle<i32, i32, i32>| {
             let barrier = barrier.clone();
             thread::spawn(move || {
                 barrier.wait();
@@ -1033,7 +1033,7 @@ fn concurrent_senders_stress_test() {
     let senders: Vec<_> = sender_handles
         .into_iter()
         .enumerate()
-        .map(|(sender_id, tx)| {
+        .map(|(sender_id, tx): (usize, ActorHandle<i32, i32, i32>)| {
             let barrier = barrier.clone();
             thread::spawn(move || {
                 barrier.wait();
