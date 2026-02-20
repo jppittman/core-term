@@ -130,6 +130,33 @@ where
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// ManualStopHandler — for actors bootstrapped outside spawn_managed
+// ────────────────────────────────────────────────────────────────────────────
+
+/// `PodHandler` for actors that cannot be restarted (bootstrap-dependent actors).
+///
+/// Used by [`KubeletBuilder::add_manual_pod`] to provide Kubelet lifecycle
+/// monitoring without restart support. Calls a caller-supplied stop function on
+/// pod exit and panics if `restart()` is ever invoked (which it should not be,
+/// because `add_manual_pod` enforces `RestartPolicy::Never`).
+struct ManualStopHandler {
+    stop_fn: Box<dyn FnMut() + Send>,
+}
+
+impl PodHandler for ManualStopHandler {
+    fn restart(&mut self) -> Receiver<PodPhase> {
+        panic!(
+            "ManualStopHandler does not support restart; \
+             use spawn_managed for restartable pods"
+        )
+    }
+
+    fn stop(&mut self) {
+        (self.stop_fn)();
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // SpawnedPod — public bootstrap helper
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -337,6 +364,40 @@ impl KubeletBuilder {
             window_start: Instant::now(),
             max_restarts,
             restart_window,
+        });
+        self
+    }
+
+    /// Register a manually-bootstrapped pod for Kubelet lifecycle monitoring.
+    ///
+    /// Unlike [`add_pod`], this variant does not support restart — it is
+    /// intended for actors whose handles cannot be recreated after bootstrap
+    /// (e.g. actors that register with an external engine at startup time).
+    ///
+    /// `RestartPolicy::Never` is enforced: the pod is stopped once it exits,
+    /// then removed from the Kubelet. `stop_fn` is called when that happens.
+    ///
+    /// # Arguments
+    ///
+    /// * `exit_rx` — exit notification channel; the pod thread sends
+    ///   [`PodPhase`] here when it finishes.
+    /// * `stop_fn` — called once on pod exit; use for cleanup / logging.
+    #[must_use]
+    pub fn add_manual_pod(
+        mut self,
+        exit_rx: Receiver<PodPhase>,
+        stop_fn: impl FnMut() + Send + 'static,
+    ) -> Self {
+        self.pods.push(ManagedPod {
+            exit_rx,
+            restart_policy: RestartPolicy::Never,
+            handler: Box::new(ManualStopHandler {
+                stop_fn: Box::new(stop_fn),
+            }),
+            restart_count: 0,
+            window_start: Instant::now(),
+            max_restarts: 0,
+            restart_window: DEFAULT_RESTART_WINDOW,
         });
         self
     }
