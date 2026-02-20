@@ -95,6 +95,7 @@
 mod error;
 mod lifecycle;
 mod params;
+pub mod kubelet;
 pub mod registry;
 pub mod service;
 pub mod sharded;
@@ -102,6 +103,7 @@ pub mod spsc;
 
 use error::DrainStatus;
 pub use error::{HandlerError, HandlerResult, SendError};
+pub use kubelet::{KubeletBuilder, SpawnedPod, spawn_managed, Kubelet};
 pub use lifecycle::{PodPhase, RestartPolicy};
 pub use params::SchedulerParams;
 pub use registry::{PodGone, PodSlot};
