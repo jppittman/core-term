@@ -68,6 +68,7 @@ impl ExprTree {
 
     // Constructor helpers for common operations
     #[must_use] 
+    #[allow(clippy::should_implement_trait)]
     pub fn add(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Add,
@@ -76,6 +77,7 @@ impl ExprTree {
     }
 
     #[must_use] 
+    #[allow(clippy::should_implement_trait)]
     pub fn sub(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Sub,
@@ -84,6 +86,7 @@ impl ExprTree {
     }
 
     #[must_use] 
+    #[allow(clippy::should_implement_trait)]
     pub fn mul(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Mul,
@@ -92,6 +95,7 @@ impl ExprTree {
     }
 
     #[must_use] 
+    #[allow(clippy::should_implement_trait)]
     pub fn div(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Div,
@@ -100,6 +104,7 @@ impl ExprTree {
     }
 
     #[must_use] 
+    #[allow(clippy::should_implement_trait)]
     pub fn neg(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Neg,
@@ -619,6 +624,7 @@ fn toposort_dag(
     let mut visited: BTreeSet<u32> = BTreeSet::new();
     let mut result = Vec::new();
 
+    #[allow(clippy::too_many_arguments)]
     fn visit(
         egraph: &EGraph,
         class: EClassId,
