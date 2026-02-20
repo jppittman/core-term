@@ -258,12 +258,14 @@ fn directory_allows_cross_actor_messaging() {
 
 /// Simulates the Troupe struct that troupe! would generate (SPSC pattern)
 struct TestTroupe {
-    directory: TestDirectory,
-    // Schedulers run the actors when dropped; they're held here for that purpose.
-    #[allow(dead_code)]
-    alpha_scheduler: ActorScheduler<AlphaData, AlphaControl, AlphaManagement>,
-    #[allow(dead_code)]
-    beta_scheduler: ActorScheduler<BetaData, BetaControl, BetaManagement>,
+    // Builders allowing pre-play connection
+    alpha_builder: ActorBuilder<AlphaData, AlphaControl, AlphaManagement>,
+    beta_builder: ActorBuilder<BetaData, BetaControl, BetaManagement>,
+
+    // Directory is usually built during play(), but for this test we might need
+    // to access it or its handles.
+    // In real troupe pattern, the directory is shared with actors when they are spawned.
+    // Here we just keep track of things for testing.
 }
 
 struct TestExposedHandles {
@@ -272,26 +274,14 @@ struct TestExposedHandles {
 
 impl TestTroupe {
     fn new() -> Self {
-        let mut alpha_builder =
+        let alpha_builder =
             ActorBuilder::<AlphaData, AlphaControl, AlphaManagement>::new(1024, None);
-        let mut beta_builder =
+        let beta_builder =
             ActorBuilder::<BetaData, BetaControl, BetaManagement>::new(1024, None);
-
-        // Each actor gets its own directory with dedicated SPSC handles
-        let alpha_dir = TestDirectory {
-            alpha: alpha_builder.add_producer(),
-            beta: beta_builder.add_producer(),
-        };
-        let beta_dir = TestDirectory {
-            alpha: alpha_builder.add_producer(),
-            beta: beta_builder.add_producer(),
-        };
 
         Self {
             alpha_builder,
             beta_builder,
-            alpha_dir,
-            beta_dir,
         }
     }
 
