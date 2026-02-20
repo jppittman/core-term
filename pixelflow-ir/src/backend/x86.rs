@@ -1,5 +1,7 @@
 //! x86_64 backend.
 
+#![allow(clippy::excessive_precision, clippy::approx_constant)]
+
 use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
@@ -1812,6 +1814,7 @@ impl U32x16 {
 }
 
 #[cfg(test)]
+#[allow(unused_imports)]
 mod tests {
     use super::*;
 
