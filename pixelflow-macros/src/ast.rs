@@ -138,7 +138,7 @@ pub struct LiteralExpr {
 }
 
 /// Binary operators we recognize.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -167,7 +167,7 @@ pub struct BinaryExpr {
 }
 
 /// Unary operators.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     Neg,
     Not,

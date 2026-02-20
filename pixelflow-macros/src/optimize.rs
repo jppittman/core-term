@@ -1414,6 +1414,40 @@ fn fold_unary(op: UnaryOp, val: f64) -> Option<f64> {
     }
 }
 
+fn are_exprs_equivalent(a: &Expr, b: &Expr) -> bool {
+    let a = unwrap_parens(a);
+    let b = unwrap_parens(b);
+
+    match (a, b) {
+        (Expr::Ident(ia), Expr::Ident(ib)) => ia.name == ib.name,
+        (Expr::Literal(la), Expr::Literal(lb)) => la.lit == lb.lit,
+        (Expr::Binary(ba), Expr::Binary(bb)) => {
+            ba.op == bb.op
+                && are_exprs_equivalent(&ba.lhs, &bb.lhs)
+                && are_exprs_equivalent(&ba.rhs, &bb.rhs)
+        }
+        (Expr::Unary(ua), Expr::Unary(ub)) => {
+            ua.op == ub.op && are_exprs_equivalent(&ua.operand, &ub.operand)
+        }
+        (Expr::MethodCall(ma), Expr::MethodCall(mb)) => {
+            ma.method == mb.method
+                && ma.args.len() == mb.args.len()
+                && are_exprs_equivalent(&ma.receiver, &mb.receiver)
+                && ma.args.iter().zip(&mb.args).all(|(x, y)| are_exprs_equivalent(x, y))
+        }
+        // Conservatively return false for other types or mismatched types
+        _ => false,
+    }
+}
+
+fn unwrap_parens(expr: &Expr) -> &Expr {
+    if let Expr::Paren(inner) = expr {
+        unwrap_parens(inner)
+    } else {
+        expr
+    }
+}
+
 fn simplify_algebraic(binary: &BinaryExpr) -> Option<Expr> {
     let lhs_val = extract_f64(&binary.lhs);
     let rhs_val = extract_f64(&binary.rhs);
@@ -1433,6 +1467,10 @@ fn simplify_algebraic(binary: &BinaryExpr) -> Option<Expr> {
             // x - 0 = x
             if is_zero(rhs_val) {
                 return Some(*binary.lhs.clone());
+            }
+            // x - x = 0
+            if are_exprs_equivalent(&binary.lhs, &binary.rhs) {
+                return Some(make_literal(0.0, binary.span));
             }
         }
         BinaryOp::Mul => {
@@ -1506,6 +1544,16 @@ mod tests {
         assert!(debug.contains("3.0"));
         assert!(!debug.contains("1.0"));
         assert!(!debug.contains("2.0"));
+    }
+
+    #[test]
+    fn test_sub_self_complex() {
+        // (x * y) - (x * y) should simplify to 0.0
+        let input = quote! { |x: f32, y: f32| (x * y) - (x * y) };
+        let debug = optimize_code(input);
+        assert!(debug.contains("LiteralExpr"));
+        assert!(debug.contains("0.0"));
+        assert!(!debug.contains("Sub"));
     }
 
     #[test]
