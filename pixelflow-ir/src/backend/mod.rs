@@ -1,3 +1,4 @@
+#![allow(clippy::excessive_precision, clippy::approx_constant)]
 //! Backend trait and SIMD operations.
 //!
 //! This module defines the interface for SIMD backends.
