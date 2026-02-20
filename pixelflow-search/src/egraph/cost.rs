@@ -337,12 +337,11 @@ impl CostModel {
                     } else {
                         // Try to parse as OpKind name
                         for i in 0..OpKind::COUNT {
-                            if let Some(op) = OpKind::from_index(i) {
-                                if op.name() == key {
+                            if let Some(op) = OpKind::from_index(i)
+                                && op.name() == key {
                                     model.costs[i] = v;
                                     break;
                                 }
-                            }
                         }
                     }
                 }
@@ -355,11 +354,10 @@ impl CostModel {
     /// Try to load from a standard location, falling back to fully_optimized.
     pub fn load_or_default() -> Self {
         // Check environment variable first
-        if let Ok(path) = std::env::var("PIXELFLOW_COST_MODEL") {
-            if let Ok(model) = Self::load_toml(&path) {
+        if let Ok(path) = std::env::var("PIXELFLOW_COST_MODEL")
+            && let Ok(model) = Self::load_toml(&path) {
                 return model;
             }
-        }
 
         // Try user config directory
         if let Some(home) = std::env::var_os("HOME") {
@@ -399,12 +397,11 @@ impl CostModel {
                 model.depth_penalty = value;
             } else {
                 for i in 0..OpKind::COUNT {
-                    if let Some(op) = OpKind::from_index(i) {
-                        if op.name() == key {
+                    if let Some(op) = OpKind::from_index(i)
+                        && op.name() == key {
                             model.costs[i] = value;
                             break;
                         }
-                    }
                 }
             }
         }

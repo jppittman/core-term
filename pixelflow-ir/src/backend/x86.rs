@@ -1,3 +1,4 @@
+#![allow(clippy::excessive_precision, clippy::approx_constant)]
 //! x86_64 backend.
 
 use super::{Backend, MaskOps, SimdOps, SimdU32Ops};

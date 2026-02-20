@@ -157,6 +157,7 @@ unsafe impl<T: Send> Send for SpscReceiver<T> {}
 ///
 /// Capacity is rounded up to the next power of 2 (minimum 2).
 /// Returns `(sender, receiver)`.
+#[must_use]
 pub fn spsc_channel<T>(min_capacity: usize) -> (SpscSender<T>, SpscReceiver<T>) {
     let ring = Arc::new(RingBuffer::new(min_capacity));
 
@@ -227,6 +228,7 @@ impl<T> SpscSender<T> {
     }
 
     /// Returns true if the consumer has been dropped.
+    #[must_use]
     pub fn is_disconnected(&self) -> bool {
         Arc::strong_count(&self.ring) == 1
     }
@@ -268,6 +270,7 @@ impl<T> SpscReceiver<T> {
     }
 
     /// Returns true if the producer has been dropped.
+    #[must_use]
     pub fn is_disconnected(&self) -> bool {
         Arc::strong_count(&self.ring) == 1
     }
@@ -275,6 +278,7 @@ impl<T> SpscReceiver<T> {
     /// Returns the number of messages currently in the buffer.
     ///
     /// This is approximate — the producer may be writing concurrently.
+    #[must_use]
     pub fn len(&self) -> usize {
         let tail = self.ring.tail.value.load(Ordering::Acquire);
         let head = self.cached_head;
@@ -282,6 +286,7 @@ impl<T> SpscReceiver<T> {
     }
 
     /// Returns true if the buffer is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
