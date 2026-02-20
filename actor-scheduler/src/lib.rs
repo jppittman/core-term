@@ -93,13 +93,19 @@
 //! ```
 
 mod error;
+mod lifecycle;
 mod params;
+pub mod registry;
+pub mod service;
 pub mod sharded;
 pub mod spsc;
 
 use error::DrainStatus;
 pub use error::{HandlerError, HandlerResult, SendError};
+pub use lifecycle::{PodPhase, RestartPolicy};
 pub use params::SchedulerParams;
+pub use registry::{PodGone, PodSlot};
+pub use service::{ServiceError, ServiceHandle};
 
 // Re-export macros from the proc-macro crate
 pub use actor_scheduler_macros::{actor_impl, troupe};
@@ -1051,28 +1057,84 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         (handle, scheduler)
     }
 
-    /// The Main Scheduler Loop.
-    /// Blocks on the Doorbell channel. Prioritizes Shutdown > Control > Management > Data.
+    /// The main scheduler loop.
     ///
-    /// # Arguments
-    /// * `actor` - Implementation of `Actor` trait
+    /// Blocks on the doorbell channel. Drains priority lanes in order:
+    /// Shutdown > Control > Management > Data.
     ///
-    /// # Exit conditions
-    /// - `Shutdown` message received → drains per shutdown_mode, returns
-    /// - All senders dropped → returns
-    /// - Handler returns `Recoverable` error → returns (supervisor can restart)
-    /// - Handler returns `Fatal` error → panics
-    pub fn run<A>(&mut self, actor: &mut A)
+    /// Returns a [`PodPhase`] describing why the scheduler exited, so a
+    /// supervisor can decide whether to restart the pod:
+    ///
+    /// | Exit reason | Returned phase |
+    /// |-------------|----------------|
+    /// | `Message::Shutdown` received | `PodPhase::Completed` |
+    /// | All sender handles dropped | `PodPhase::Completed` |
+    /// | `HandlerError::Recoverable` | `PodPhase::Failed(msg)` |
+    /// | `HandlerError::Fatal` | panics — never returns |
+    ///
+    /// The return value is intentionally not `#[must_use]` so existing call
+    /// sites that don't supervise actors don't need to change. Supervisors
+    /// should inspect it via [`RestartPolicy::should_restart`].
+    pub fn run<A>(&mut self, actor: &mut A) -> PodPhase
     where
         A: Actor<D, C, M>,
     {
-        if let Err(e) = self.run_inner(actor) {
-            match e {
-                HandlerError::Recoverable(_) => {
-                    // Return normally - supervisor can restart
+        match self.run_inner(actor) {
+            Ok(()) => PodPhase::Completed,
+            Err(HandlerError::Recoverable(msg)) => PodPhase::Failed(msg),
+            Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
+        }
+    }
+
+    /// Single non-blocking drain cycle for cooperative scheduling.
+    ///
+    /// Intended for actors running on a shared Kubelet thread rather than a
+    /// dedicated OS thread. The Kubelet calls `poll_once()` on each cooperative
+    /// pod in round-robin during its controller loop.
+    ///
+    /// Unlike [`run`], `poll_once()` never blocks:
+    /// - If the doorbell is empty, it still attempts one drain pass (the actor
+    ///   may have work from a previous `Working` state).
+    /// - Returns `Some(phase)` when the pod should stop; `None` to keep polling.
+    ///
+    /// # Caller responsibility
+    ///
+    /// The Kubelet must continue calling `poll_once()` after a `Disconnected`
+    /// doorbell until `Some` is returned — buffered SPSC messages need draining.
+    pub fn poll_once<A>(&mut self, actor: &mut A) -> Option<PodPhase>
+    where
+        A: Actor<D, C, M>,
+    {
+        use std::sync::mpsc::TryRecvError;
+
+        let signal = self.rx_doorbell.try_recv();
+
+        match signal {
+            Ok(System::Shutdown) => {
+                let phase = match self.handle_shutdown(actor) {
+                    Ok(()) => PodPhase::Completed,
+                    Err(HandlerError::Recoverable(msg)) => PodPhase::Failed(msg),
+                    Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
+                };
+                Some(phase)
+            }
+
+            Ok(System::Wake) | Err(TryRecvError::Empty) => {
+                match self.handle_wake(actor) {
+                    Ok(Some(_)) => None, // still running
+                    Ok(None) => Some(PodPhase::Completed), // all disconnected
+                    Err(HandlerError::Recoverable(msg)) => Some(PodPhase::Failed(msg)),
+                    Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
                 }
-                HandlerError::Fatal(msg) => {
-                    panic!("Actor fatal error: {}", msg);
+            }
+
+            Err(TryRecvError::Disconnected) => {
+                // All handles dropped — drain one batch, report done when empty
+                match self.handle_wake(actor) {
+                    Ok(Some(_)) => None, // more buffered work; caller polls again
+                    Ok(None) => Some(PodPhase::Completed),
+                    Err(HandlerError::Recoverable(msg)) => Some(PodPhase::Failed(msg)),
+                    Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
                 }
             }
         }
@@ -1269,6 +1331,126 @@ mod tests {
         // Should exit quickly
         handle.join().unwrap();
         assert!(exited.load(Ordering::SeqCst), "should have exited");
+    }
+}
+
+#[cfg(test)]
+mod poll_once_tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    struct CountActor {
+        data: usize,
+        ctrl: usize,
+    }
+
+    impl Actor<i32, i32, i32> for CountActor {
+        fn handle_data(&mut self, _: i32) -> HandlerResult {
+            self.data += 1;
+            Ok(())
+        }
+        fn handle_control(&mut self, _: i32) -> HandlerResult {
+            self.ctrl += 1;
+            Ok(())
+        }
+        fn handle_management(&mut self, _: i32) -> HandlerResult {
+            Ok(())
+        }
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
+        }
+    }
+
+    #[test]
+    fn poll_once_returns_none_when_still_running() {
+        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
+        let mut actor = CountActor { data: 0, ctrl: 0 };
+
+        // No messages yet — doorbell empty, poll_once drains nothing, returns None
+        let result = rx.poll_once(&mut actor);
+        assert_eq!(result, None);
+        drop(tx);
+    }
+
+    #[test]
+    fn poll_once_drains_messages_and_returns_none() {
+        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(100, 100);
+        let mut actor = CountActor { data: 0, ctrl: 0 };
+
+        tx.send(Message::Control(1)).unwrap();
+        tx.send(Message::Data(2)).unwrap();
+
+        // Give messages time to arrive
+        thread::sleep(Duration::from_millis(5));
+
+        let result = rx.poll_once(&mut actor);
+        assert_eq!(result, None); // still connected
+        assert!(actor.ctrl >= 1, "control message should have been drained");
+
+        drop(tx);
+    }
+
+    #[test]
+    fn poll_once_returns_completed_after_all_handles_dropped() {
+        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
+        let mut actor = CountActor { data: 0, ctrl: 0 };
+
+        drop(tx);
+
+        // Keep polling until Completed
+        let phase = loop {
+            if let Some(p) = rx.poll_once(&mut actor) {
+                break p;
+            }
+        };
+        assert_eq!(phase, PodPhase::Completed);
+    }
+
+    #[test]
+    fn poll_once_returns_failed_on_recoverable_error() {
+        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
+
+        struct FailOnData;
+        impl Actor<i32, i32, i32> for FailOnData {
+            fn handle_data(&mut self, _: i32) -> HandlerResult {
+                Err(HandlerError::recoverable("injected failure"))
+            }
+            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
+            }
+        }
+
+        tx.send(Message::Data(1)).unwrap();
+        thread::sleep(Duration::from_millis(5));
+
+        let mut actor = FailOnData;
+        let phase = loop {
+            if let Some(p) = rx.poll_once(&mut actor) {
+                break p;
+            }
+        };
+
+        assert!(phase.is_failed());
+        drop(tx);
+    }
+
+    #[test]
+    fn poll_once_returns_completed_on_shutdown_message() {
+        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
+        let mut actor = CountActor { data: 0, ctrl: 0 };
+
+        tx.send(Message::Shutdown).unwrap();
+        thread::sleep(Duration::from_millis(5));
+
+        let phase = loop {
+            if let Some(p) = rx.poll_once(&mut actor) {
+                break p;
+            }
+        };
+        assert_eq!(phase, PodPhase::Completed);
     }
 }
 
