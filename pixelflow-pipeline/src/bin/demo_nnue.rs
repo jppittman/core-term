@@ -1,12 +1,12 @@
 //! Demo: NNUE-based cost extraction.
 //!
-//! Shows how the DualHeadNnue (Judge) works with e-graph extraction.
+//! Shows how the ExprNnue (Judge) works with e-graph extraction.
 //! Uses `extract_beam` which calls `predict_log_cost()` on full trees,
 //! capturing ILP, critical path, and structural features.
 
 use pixelflow_search::egraph::{EGraph, ExprTree, Leaf, ops};
 use pixelflow_search::egraph::{extract_beam, predict_tree_cost, expr_tree_to_nnue, CostModel};
-use pixelflow_search::nnue::DualHeadNnue;
+use pixelflow_search::nnue::ExprNnue;
 use pixelflow_search::math::all_math_rules;
 use std::path::Path;
 
@@ -21,13 +21,13 @@ fn main() {
     println!("Using TRAINED Judge with beam search extraction\n");
 
     // Load the trained Judge - fail loudly if missing
-    let nnue = DualHeadNnue::load(Path::new(JUDGE_WEIGHTS))
+    let nnue = ExprNnue::load(Path::new(JUDGE_WEIGHTS))
         .unwrap_or_else(|e| panic!("Failed to load trained Judge from {}: {}", JUDGE_WEIGHTS, e));
     println!("Loaded trained Judge from {}", JUDGE_WEIGHTS);
 
-    println!("DualHeadNnue Parameters: {} (~{} KB)",
-             DualHeadNnue::param_count(),
-             DualHeadNnue::memory_bytes() / 1024);
+    println!("ExprNnue Parameters: {} (~{} KB)",
+             ExprNnue::param_count(),
+             ExprNnue::memory_bytes() / 1024);
 
     // Demo 1: Show structural features matter
     demo_ilp_awareness(&nnue);
@@ -44,7 +44,7 @@ fn main() {
     println!("\n=== NNUE Demo Complete ===");
 }
 
-fn demo_ilp_awareness(nnue: &DualHeadNnue) {
+fn demo_ilp_awareness(nnue: &ExprNnue) {
     println!("━━━ Demo 1: ILP Awareness ━━━");
     println!("The Judge sees structural features, not just op counts.\n");
 
@@ -94,7 +94,7 @@ fn demo_ilp_awareness(nnue: &DualHeadNnue) {
     println!();
 }
 
-fn demo_optimization(nnue: &DualHeadNnue) {
+fn demo_optimization(nnue: &ExprNnue) {
     println!("━━━ Demo 2: Beam Search Optimization ━━━");
     println!("Input: exp(ln(x) + ln(y))");
     println!("Using extract_beam() with beam_width={}.\n", BEAM_WIDTH);
@@ -141,7 +141,7 @@ fn demo_optimization(nnue: &DualHeadNnue) {
     println!("Form: {}\n", format_expr(&best_expr));
 }
 
-fn demo_extraction_comparison(nnue: &DualHeadNnue) {
+fn demo_extraction_comparison(nnue: &ExprNnue) {
     println!("━━━ Demo 3: Beam Search vs Additive Extraction ━━━");
     println!("Comparing extract_beam() vs standard extract().\n");
 
@@ -184,7 +184,7 @@ fn demo_extraction_comparison(nnue: &DualHeadNnue) {
     println!("    Form: {}\n", format_expr(&beam_tree));
 }
 
-fn demo_trig_neural(nnue: &DualHeadNnue) {
+fn demo_trig_neural(nnue: &ExprNnue) {
     println!("━━━ Demo 4: Trig Identity with Beam Search ━━━");
     println!("Input: sin(x)*cos(x) + cos(x)*sin(x)");
     println!("Beam search (k={}) evaluates full trees.\n", BEAM_WIDTH);

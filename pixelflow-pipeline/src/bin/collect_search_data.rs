@@ -23,7 +23,7 @@ use pixelflow_search::egraph::{
     BestFirstPlanner, BestFirstConfig, CostModel, EGraph, all_rules,
     SearchTrajectory, TrajectoryStep,
 };
-use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator, DualHeadNnue, Expr, OpKind};
+use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator, ExprNnue, Expr, OpKind};
 
 /// Collect search trajectories for Guide training.
 #[derive(Parser, Debug)]
@@ -80,7 +80,7 @@ fn main() {
     // Load Judge model if provided
     let judge = if let Some(judge_path) = &args.judge_model {
         let path = workspace_root.join(judge_path);
-        match DualHeadNnue::load(&path) {
+        match ExprNnue::load(&path) {
             Ok(model) => {
                 println!("  Loaded Judge model from: {}", path.display());
                 Some(model)

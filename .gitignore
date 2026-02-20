@@ -8,3 +8,4 @@ CoreTerm.app
 gha-creds-*.json
 *.ppm
 *.log
+*.db

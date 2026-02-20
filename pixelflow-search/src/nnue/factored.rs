@@ -87,6 +87,13 @@ pub const MASK_MAX_RULES: usize = 1024;
 /// Used when encoding rules from their LHS/RHS expression templates.
 pub const RULE_CONCAT_DIM: usize = 4 * EMBED_DIM;
 
+/// Mask MLP input dimension: expr_embed (24) + value_pred (1) = 25.
+/// The mask/policy uses value prediction to learn: "Given this costs X, should I try rule R?"
+pub const MASK_INPUT_DIM: usize = EMBED_DIM + 1;
+
+// NOTE: SEARCH_INPUT_DIM removed - mask IS the policy.
+// See plan: "Idea 4B: Mask IS the search/policy ✅ CHOSEN"
+
 // ============================================================================
 // Rule Features
 // ============================================================================
@@ -883,7 +890,7 @@ impl StructuralFeatures {
 ///
 /// Total parameters: ~7K (vs ~1GB for HalfEP)
 #[derive(Clone)]
-pub struct FactoredNnue {
+pub struct ExprNnue {
     /// Learned embeddings for each operation.
     pub embeddings: OpEmbeddings,
 
@@ -900,13 +907,13 @@ pub struct FactoredNnue {
     pub b2: f32,
 }
 
-impl Default for FactoredNnue {
+impl Default for ExprNnue {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl FactoredNnue {
+impl ExprNnue {
     /// Create a zero-initialized network.
     #[must_use]
     pub fn new() -> Self {
@@ -1213,7 +1220,7 @@ fn extract_edges_recursive(expr: &Expr, edges: &mut Vec<Edge>) {
 ///           rule_embeddings [64][64] (keys) ────┴─→ dot → logits [64] (Policy)
 /// ```
 #[derive(Clone)]
-pub struct DualHeadNnue {
+pub struct ExprNnue {
     // ========== SHARED (Expression Backbone) ==========
     /// Learned embeddings for each operation (42 × 32 = 1,344 params)
     pub embeddings: OpEmbeddings,
@@ -1265,8 +1272,9 @@ pub struct DualHeadNnue {
     /// Value MLP layer 2 bias
     pub value_mlp_b2: f32,
 
-    /// Mask MLP layer 1 weights: expr_embed (24) → hidden (16)
-    pub mask_mlp_w1: [[f32; MLP_HIDDEN]; EMBED_DIM],
+    /// Mask MLP layer 1 weights: [expr_embed (24), value_pred (1)] → hidden (16)
+    /// The mask sees value prediction as input: "Given this costs X, should I try rule R?"
+    pub mask_mlp_w1: [[f32; MLP_HIDDEN]; MASK_INPUT_DIM],
     /// Mask MLP layer 1 bias
     pub mask_mlp_b1: [f32; MLP_HIDDEN],
     /// Mask MLP layer 2 weights: hidden (16) → mask_features (24)
@@ -1302,15 +1310,19 @@ pub struct DualHeadNnue {
 
     /// Per-rule bias for mask scoring (learned rule priors)
     pub mask_rule_bias: [f32; MASK_MAX_RULES],
+
+    // NOTE: The search head has been removed.
+    // "Mask IS the policy" - the bilinear mask scoring IS the search/policy head.
+    // See plan: "Idea 4B: Mask IS the search/policy ✅ CHOSEN"
 }
 
-impl Default for DualHeadNnue {
+impl Default for ExprNnue {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DualHeadNnue {
+impl ExprNnue {
     /// Create a zero-initialized dual-head network.
     #[must_use]
     pub fn new() -> Self {
@@ -1335,7 +1347,7 @@ impl DualHeadNnue {
             value_mlp_w2: [0.0; MLP_HIDDEN],
             value_mlp_b2: 5.0, // Start near typical log-cost
 
-            mask_mlp_w1: [[0.0; MLP_HIDDEN]; EMBED_DIM],
+            mask_mlp_w1: [[0.0; MLP_HIDDEN]; MASK_INPUT_DIM],  // 25 × 16 (value-aware)
             mask_mlp_b1: [0.0; MLP_HIDDEN],
             mask_mlp_w2: [[0.0; EMBED_DIM]; MLP_HIDDEN],
             mask_mlp_b2: [0.0; EMBED_DIM],
@@ -1351,6 +1363,7 @@ impl DualHeadNnue {
 
             interaction: [[0.0; EMBED_DIM]; EMBED_DIM],
             mask_rule_bias: [0.0; MASK_MAX_RULES],
+            // NOTE: search_mlp fields removed - mask IS the policy
         }
     }
 
@@ -1375,13 +1388,13 @@ impl DualHeadNnue {
         net
     }
 
-    /// Convert from single-head FactoredNnue (reuse trained embeddings).
+    /// Convert from single-head ExprNnue (reuse trained embeddings).
     ///
     /// The value head inherits the original output weights.
     /// Rule embeddings and search head start at zero (need training).
     /// New unified mask architecture fields are zero-initialized (need training).
     #[must_use]
-    pub fn from_factored(factored: &FactoredNnue) -> Self {
+    pub fn from_factored(factored: &ExprNnue) -> Self {
         Self {
             embeddings: factored.embeddings.clone(),
             w1: factored.w1,
@@ -1405,7 +1418,7 @@ impl DualHeadNnue {
             value_mlp_w2: [0.0; MLP_HIDDEN],
             value_mlp_b2: 5.0,
 
-            mask_mlp_w1: [[0.0; MLP_HIDDEN]; EMBED_DIM],
+            mask_mlp_w1: [[0.0; MLP_HIDDEN]; MASK_INPUT_DIM],  // 25 × 16 (value-aware)
             mask_mlp_b1: [0.0; MLP_HIDDEN],
             mask_mlp_w2: [[0.0; EMBED_DIM]; MLP_HIDDEN],
             mask_mlp_b2: [0.0; EMBED_DIM],
@@ -1421,6 +1434,7 @@ impl DualHeadNnue {
 
             interaction: [[0.0; EMBED_DIM]; EMBED_DIM],
             mask_rule_bias: [0.0; MASK_MAX_RULES],
+            // NOTE: search_mlp fields removed - mask IS the policy
         }
     }
 
@@ -1470,29 +1484,15 @@ impl DualHeadNnue {
         }
         self.search_b = 0.0; // Neutral starting priority
 
-        // Initialize unified mask architecture
-        self.randomize_mask_weights_with_rng(&mut next_f32);
+        // Initialize unified mask architecture (full init - includes shared projection + value mlp)
+        self.randomize_unified_arch_with_rng(&mut next_f32);
     }
 
-    /// Randomize only the unified mask architecture weights.
+    /// Internal helper to randomize ALL unified architecture weights.
     ///
-    /// Uses He initialization for ReLU networks. The interaction matrix
-    /// is initialized near identity (simple dot product baseline).
-    pub fn randomize_mask_weights(&mut self, seed: u64) {
-        let mut rng_state = seed.wrapping_add(54321);
-
-        let mut next_f32 = || {
-            rng_state = rng_state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1);
-            (rng_state >> 33) as f32 / (1u64 << 31) as f32 * 2.0 - 1.0
-        };
-
-        self.randomize_mask_weights_with_rng(&mut next_f32);
-    }
-
-    /// Internal helper to randomize mask weights with a provided RNG.
-    fn randomize_mask_weights_with_rng<F: FnMut() -> f32>(&mut self, next_f32: &mut F) {
+    /// ONLY used during full random init (randomize_weights_only).
+    /// Do NOT call this when bootstrapping from judge - use randomize_mask_only instead.
+    fn randomize_unified_arch_with_rng<F: FnMut() -> f32>(&mut self, next_f32: &mut F) {
         // He initialization scales
         let scale_proj = sqrtf(2.0 / HIDDEN_DIM as f32);
         let scale_embed = sqrtf(2.0 / EMBED_DIM as f32);
@@ -1523,10 +1523,12 @@ impl DualHeadNnue {
         }
         self.value_mlp_b2 = 5.0; // Start near typical log-cost
 
-        // Mask MLP: EMBED_DIM → MLP_HIDDEN → EMBED_DIM
-        for i in 0..EMBED_DIM {
+        // Mask MLP: MASK_INPUT_DIM (25) → MLP_HIDDEN → EMBED_DIM
+        // Input is [expr_embed (24), value_pred (1)]
+        let scale_mask_input = sqrtf(2.0 / MASK_INPUT_DIM as f32);
+        for i in 0..MASK_INPUT_DIM {
             for j in 0..MLP_HIDDEN {
-                self.mask_mlp_w1[i][j] = next_f32() * scale_embed;
+                self.mask_mlp_w1[i][j] = next_f32() * scale_mask_input;
             }
         }
         for b in &mut self.mask_mlp_b1 {
@@ -1582,12 +1584,112 @@ impl DualHeadNnue {
         for b in &mut self.mask_rule_bias {
             *b = 0.0;
         }
+
+        // NOTE: search_mlp randomization removed - mask IS the policy
     }
 
     /// Randomize all weights including embeddings.
     pub fn randomize(&mut self, seed: u64) {
         self.embeddings.randomize(seed);
         self.randomize_weights_only(seed);
+    }
+
+    /// Create a copy with trained backbone but randomized mask weights.
+    ///
+    /// This is the key method for embedding sharing: load a trained judge,
+    /// then create a new model that:
+    /// - Keeps: embeddings, w1, b1, value_w, value_b (trained backbone)
+    /// - Keeps: expr_proj_w, expr_proj_b (shared projection - trained with judge)
+    /// - Keeps: value_mlp_* (unified value head - trained with judge)
+    /// - Randomizes: mask_mlp, rule_mlp, rule_proj, interaction, mask_rule_bias (mask-specific)
+    ///
+    /// Use this when bootstrapping mask training from a pre-trained judge.
+    #[must_use]
+    pub fn with_randomized_mask_weights(&self, seed: u64) -> Self {
+        let mut model = self.clone();
+        model.randomize_mask_only(seed);
+        model
+    }
+
+    /// Randomize ONLY mask-specific weights, preserving shared backbone and value head.
+    ///
+    /// Randomizes: mask_mlp, rule_mlp, rule_proj, interaction, mask_rule_bias
+    /// Preserves: embeddings, w1, b1, value_w, value_b, expr_proj, value_mlp
+    pub fn randomize_mask_only(&mut self, seed: u64) {
+        let mut rng_state = seed.wrapping_add(54321);
+
+        let mut next_f32 = || {
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
+            (rng_state >> 33) as f32 / (1u64 << 31) as f32 * 2.0 - 1.0
+        };
+
+        // He initialization scales
+        let scale_embed = sqrtf(2.0 / EMBED_DIM as f32);
+        let scale_mask_input = sqrtf(2.0 / MASK_INPUT_DIM as f32);  // 25 dims
+        let scale_hidden = sqrtf(2.0 / MLP_HIDDEN as f32);
+        let scale_rule_feat = sqrtf(2.0 / RULE_FEATURE_DIM as f32);
+        let scale_concat = sqrtf(2.0 / RULE_CONCAT_DIM as f32);
+
+        // Mask MLP: MASK_INPUT_DIM (25) → MLP_HIDDEN → EMBED_DIM
+        // Input is [expr_embed (24), value_pred (1)]
+        for i in 0..MASK_INPUT_DIM {
+            for j in 0..MLP_HIDDEN {
+                self.mask_mlp_w1[i][j] = next_f32() * scale_mask_input;
+            }
+        }
+        for b in &mut self.mask_mlp_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                self.mask_mlp_w2[j][k] = next_f32() * scale_hidden;
+            }
+        }
+        for b in &mut self.mask_mlp_b2 {
+            *b = 0.0;
+        }
+
+        // Rule MLP: RULE_FEATURE_DIM → MLP_HIDDEN → EMBED_DIM (legacy)
+        for i in 0..RULE_FEATURE_DIM {
+            for j in 0..MLP_HIDDEN {
+                self.rule_mlp_w1[i][j] = next_f32() * scale_rule_feat;
+            }
+        }
+        for b in &mut self.rule_mlp_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                self.rule_mlp_w2[j][k] = next_f32() * scale_hidden;
+            }
+        }
+        for b in &mut self.rule_mlp_b2 {
+            *b = 0.0;
+        }
+
+        // Rule Projection: RULE_CONCAT_DIM (96) → EMBED_DIM (24)
+        for i in 0..RULE_CONCAT_DIM {
+            for k in 0..EMBED_DIM {
+                self.rule_proj_w[i][k] = next_f32() * scale_concat;
+            }
+        }
+        for b in &mut self.rule_proj_b {
+            *b = 0.0;
+        }
+
+        // Interaction matrix: start near identity
+        for i in 0..EMBED_DIM {
+            for j in 0..EMBED_DIM {
+                self.interaction[i][j] = if i == j { 1.0 } else { next_f32() * 0.1 };
+            }
+        }
+
+        // Mask rule biases: neutral
+        for b in &mut self.mask_rule_bias {
+            *b = 0.0;
+        }
     }
 
     /// Shared forward pass through embeddings + hidden layer.
@@ -1789,17 +1891,33 @@ impl DualHeadNnue {
         embed
     }
 
-    /// Compute mask features from expr embedding (for bilinear scoring).
+    /// Compute mask features from expr embedding and value prediction (for bilinear scoring).
     ///
-    /// MLP: EMBED_DIM → MLP_HIDDEN (ReLU) → EMBED_DIM
+    /// The mask sees the value prediction as context:
+    /// "Given this expression costs X, should I try rule R?"
+    ///
+    /// Input: [expr_embed (24), value_pred (1)] = 25 dims
+    /// MLP: MASK_INPUT_DIM (25) → MLP_HIDDEN (ReLU) → EMBED_DIM (24)
     #[inline]
-    fn compute_mask_features(&self, expr_embed: &[f32; EMBED_DIM]) -> [f32; EMBED_DIM] {
-        // First layer: EMBED_DIM → MLP_HIDDEN
+    fn compute_mask_features(
+        &self,
+        expr_embed: &[f32; EMBED_DIM],
+        value_pred: f32,
+    ) -> [f32; EMBED_DIM] {
+        // Build input: [expr_embed (24), value_pred (1)] = 25 dims
+        // First layer: MASK_INPUT_DIM → MLP_HIDDEN
         let mut h = self.mask_mlp_b1;
+
+        // Process expr_embed (first 24 dims)
         for i in 0..EMBED_DIM {
             for j in 0..MLP_HIDDEN {
                 h[j] += expr_embed[i] * self.mask_mlp_w1[i][j];
             }
+        }
+
+        // Process value_pred (25th dim)
+        for j in 0..MLP_HIDDEN {
+            h[j] += value_pred * self.mask_mlp_w1[EMBED_DIM][j];
         }
 
         // ReLU
@@ -1815,6 +1933,33 @@ impl DualHeadNnue {
             }
         }
         out
+    }
+
+    /// Forward pass through value MLP from expr embedding.
+    ///
+    /// MLP: EMBED_DIM (24) → MLP_HIDDEN (16, ReLU) → 1
+    /// Returns the predicted cost for this expression.
+    #[inline]
+    fn value_mlp_forward(&self, expr_embed: &[f32; EMBED_DIM]) -> f32 {
+        // First layer: EMBED_DIM → MLP_HIDDEN
+        let mut h = self.value_mlp_b1;
+        for i in 0..EMBED_DIM {
+            for j in 0..MLP_HIDDEN {
+                h[j] += expr_embed[i] * self.value_mlp_w1[i][j];
+            }
+        }
+
+        // ReLU
+        for j in 0..MLP_HIDDEN {
+            h[j] = h[j].max(0.0);
+        }
+
+        // Second layer: MLP_HIDDEN → 1
+        let mut cost = self.value_mlp_b2;
+        for j in 0..MLP_HIDDEN {
+            cost += h[j] * self.value_mlp_w2[j];
+        }
+        cost
     }
 
     /// Encode rule features to rule embedding.
@@ -1931,9 +2076,12 @@ impl DualHeadNnue {
             .collect()
     }
 
-    /// Bilinear score: mask_features @ interaction @ rule_embed + bias
+    /// Bilinear score: mask_features @ interaction @ rule_embed + bias.
+    ///
+    /// Used by NnueCache for efficient O(1) scoring with cached mask_features.
     #[inline]
-    fn bilinear_score(
+    #[must_use]
+    pub fn bilinear_score(
         &self,
         mask_features: &[f32; EMBED_DIM],
         rule_embed: &[f32; EMBED_DIM],
@@ -1969,7 +2117,12 @@ impl DualHeadNnue {
         let structural = StructuralFeatures::from_expr(expr);
         let hidden = self.forward_shared(&acc, &structural);
         let expr_embed = self.compute_expr_embed(&hidden);
-        let mask_features = self.compute_mask_features(&expr_embed);
+
+        // Compute value prediction first (shared computation)
+        let value_pred = self.value_mlp_forward(&expr_embed);
+
+        // Mask sees value as context: "Given this costs X, should I try rule R?"
+        let mask_features = self.compute_mask_features(&expr_embed, value_pred);
 
         rule_embeds
             .iter()
@@ -1989,7 +2142,12 @@ impl DualHeadNnue {
         rule_embeds: &[[f32; EMBED_DIM]],
     ) -> Vec<f32> {
         let expr_embed = self.compute_expr_embed(hidden);
-        let mask_features = self.compute_mask_features(&expr_embed);
+
+        // Compute value prediction first
+        let value_pred = self.value_mlp_forward(&expr_embed);
+
+        // Mask sees value as context
+        let mask_features = self.compute_mask_features(&expr_embed, value_pred);
 
         rule_embeds
             .iter()
@@ -2032,7 +2190,12 @@ impl DualHeadNnue {
         let structural = StructuralFeatures::from_expr(expr);
         let hidden = self.forward_shared(&acc, &structural);
         let expr_embed = self.compute_expr_embed(&hidden);
-        let mask_features = self.compute_mask_features(&expr_embed);
+
+        // Compute value prediction first
+        let value_pred = self.value_mlp_forward(&expr_embed);
+
+        // Mask sees value as context
+        let mask_features = self.compute_mask_features(&expr_embed, value_pred);
 
         // Compute rule embedding from features
         let rule_embed = self.encode_rule(rule_features);
@@ -2067,6 +2230,37 @@ impl DualHeadNnue {
             cost += h[j] * self.value_mlp_w2[j];
         }
         cost
+    }
+
+    /// Compute full NNUE metadata for an expression.
+    ///
+    /// Returns (expr_embed, value_pred, mask_features) tuple.
+    /// Used by NnueCache to precompute and store e-node metadata.
+    ///
+    /// The data flow is:
+    /// ```text
+    /// expr → backbone → expr_embed (24) → value_mlp → value_pred (1)
+    ///                                          ↓
+    ///                               [expr_embed, value_pred] (25)
+    ///                                          ↓
+    ///                                      mask_mlp
+    ///                                          ↓
+    ///                                   mask_features (24)
+    /// ```
+    #[must_use]
+    pub fn compute_metadata(&self, expr: &Expr) -> ([f32; EMBED_DIM], f32, [f32; EMBED_DIM]) {
+        let acc = EdgeAccumulator::from_expr(expr, &self.embeddings);
+        let structural = StructuralFeatures::from_expr(expr);
+        let hidden = self.forward_shared(&acc, &structural);
+        let expr_embed = self.compute_expr_embed(&hidden);
+
+        // Compute value prediction
+        let value_pred = self.value_mlp_forward(&expr_embed);
+
+        // Compute mask features with value as context
+        let mask_features = self.compute_mask_features(&expr_embed, value_pred);
+
+        (expr_embed, value_pred, mask_features)
     }
 
     /// Legacy parameter count (excluding unified mask architecture).
@@ -2126,6 +2320,177 @@ impl DualHeadNnue {
     #[must_use]
     pub const fn memory_bytes_total() -> usize {
         Self::param_count_total() * 4
+    }
+
+    // ========================================================================
+    // MCTS Support: Accumulator-based Evaluation
+    //
+    // These methods enable cheap MCTS simulation without e-graph cloning.
+    // The accumulator can be incrementally updated as rules are applied.
+    // ========================================================================
+
+    /// Predict cost directly from accumulator (for MCTS evaluation).
+    ///
+    /// Skips expr parsing - just forward pass through backbone + value head.
+    /// Use this for fast MCTS rollout evaluation.
+    #[must_use]
+    pub fn predict_cost_from_accumulator(&self, acc: &EdgeAccumulator) -> f32 {
+        let structural = StructuralFeatures::default();
+        let hidden = self.forward_shared(acc, &structural);
+        let expr_embed = self.compute_expr_embed(&hidden);
+
+        // Value MLP: EMBED_DIM → MLP_HIDDEN (ReLU) → 1
+        let mut h = self.value_mlp_b1;
+        for i in 0..EMBED_DIM {
+            for j in 0..MLP_HIDDEN {
+                h[j] += expr_embed[i] * self.value_mlp_w1[i][j];
+            }
+        }
+        for j in 0..MLP_HIDDEN {
+            h[j] = h[j].max(0.0); // ReLU
+        }
+
+        let mut cost = self.value_mlp_b2;
+        for j in 0..MLP_HIDDEN {
+            cost += h[j] * self.value_mlp_w2[j];
+        }
+        cost
+    }
+
+    /// Predict cost with pre-computed structural features (for MCTS).
+    ///
+    /// More accurate than `predict_cost_from_accumulator` when you have
+    /// structural information from the real e-graph.
+    #[must_use]
+    pub fn predict_cost_from_features(
+        &self,
+        acc: &EdgeAccumulator,
+        structural: &StructuralFeatures,
+    ) -> f32 {
+        let hidden = self.forward_shared(acc, structural);
+        let expr_embed = self.compute_expr_embed(&hidden);
+
+        // Value MLP: EMBED_DIM → MLP_HIDDEN (ReLU) → 1
+        let mut h = self.value_mlp_b1;
+        for i in 0..EMBED_DIM {
+            for j in 0..MLP_HIDDEN {
+                h[j] += expr_embed[i] * self.value_mlp_w1[i][j];
+            }
+        }
+        for j in 0..MLP_HIDDEN {
+            h[j] = h[j].max(0.0); // ReLU
+        }
+
+        let mut cost = self.value_mlp_b2;
+        for j in 0..MLP_HIDDEN {
+            cost += h[j] * self.value_mlp_w2[j];
+        }
+        cost
+    }
+
+    /// Get policy logits from accumulator (for MCTS prior).
+    ///
+    /// Returns scores for all rules. Use softmax to get probabilities.
+    /// This is the MCTS policy prior P(s, a) for UCB.
+    #[must_use]
+    pub fn policy_from_accumulator(
+        &self,
+        acc: &EdgeAccumulator,
+        rule_embeds: &[[f32; EMBED_DIM]],
+    ) -> Vec<f32> {
+        let structural = StructuralFeatures::default();
+        let hidden = self.forward_shared(acc, &structural);
+        let expr_embed = self.compute_expr_embed(&hidden);
+
+        // Compute value prediction first
+        let value_pred = self.value_mlp_forward(&expr_embed);
+
+        // Mask sees value as context
+        let mask_features = self.compute_mask_features(&expr_embed, value_pred);
+
+        rule_embeds
+            .iter()
+            .enumerate()
+            .map(|(r, rule_embed)| self.bilinear_score(&mask_features, rule_embed, r))
+            .collect()
+    }
+
+    /// Get policy logits with pre-computed structural features.
+    #[must_use]
+    pub fn policy_from_features(
+        &self,
+        acc: &EdgeAccumulator,
+        structural: &StructuralFeatures,
+        rule_embeds: &[[f32; EMBED_DIM]],
+    ) -> Vec<f32> {
+        let hidden = self.forward_shared(acc, structural);
+        let expr_embed = self.compute_expr_embed(&hidden);
+
+        // Compute value prediction first
+        let value_pred = self.value_mlp_forward(&expr_embed);
+
+        // Mask sees value as context
+        let mask_features = self.compute_mask_features(&expr_embed, value_pred);
+
+        rule_embeds
+            .iter()
+            .enumerate()
+            .map(|(r, rule_embed)| self.bilinear_score(&mask_features, rule_embed, r))
+            .collect()
+    }
+
+    /// Get Bernoulli policy probabilities: P(apply) = sigmoid(logit / temp).
+    ///
+    /// Each rule is an independent binary decision (Bernoulli trial).
+    /// Use these to stochastically decide: `if random() < prob[rule] { apply(rule) }`.
+    ///
+    /// Note: softmax on binary [logit, 0] = sigmoid(logit), so this IS the
+    /// correct softmax formulation for independent apply/don't-apply decisions.
+    ///
+    /// Temperature controls exploration:
+    /// - temp → 0: deterministic (prob → 0 or 1)
+    /// - temp = 1: standard sigmoid
+    /// - temp > 1: more exploration (probs pushed toward 0.5)
+    #[must_use]
+    pub fn bernoulli_policy_from_accumulator(
+        &self,
+        acc: &EdgeAccumulator,
+        rule_embeds: &[[f32; EMBED_DIM]],
+        temperature: f32,
+    ) -> Vec<f32> {
+        let logits = self.policy_from_accumulator(acc, rule_embeds);
+        let temp = temperature.max(0.01);
+        logits.iter().map(|&x| sigmoid(x / temp)).collect()
+    }
+
+    /// Stochastically sample which rules to apply using Bernoulli policy.
+    ///
+    /// For each rule independently: apply if `random() < sigmoid(logit / temp)`.
+    /// Returns indices of rules to apply.
+    ///
+    /// This is the correct exploration strategy for independent rule decisions.
+    /// Each rule is sampled according to its own probability - rules don't compete.
+    #[must_use]
+    pub fn sample_rules_bernoulli(
+        &self,
+        acc: &EdgeAccumulator,
+        rule_embeds: &[[f32; EMBED_DIM]],
+        temperature: f32,
+        rng_state: &mut u64,
+    ) -> Vec<usize> {
+        let probs = self.bernoulli_policy_from_accumulator(acc, rule_embeds, temperature);
+
+        probs
+            .iter()
+            .enumerate()
+            .filter(|&(_, prob)| {
+                // Simple LCG for random number
+                *rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let random = (*rng_state >> 33) as f32 / (1u64 << 31) as f32;
+                random < *prob
+            })
+            .map(|(idx, _)| idx)
+            .collect()
     }
 
     /// Save weights to a binary file.
@@ -2286,7 +2651,7 @@ impl DualHeadNnue {
         if !is_legacy && !is_tri2 && !is_tri3 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Invalid DualHeadNnue file magic (expected 'DUAL', 'TRI2', or 'TRI3')",
+                "Invalid ExprNnue file magic (expected 'DUAL', 'TRI2', or 'TRI3')",
             ));
         }
 
@@ -3216,6 +3581,33 @@ fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + libm::expf(-x))
 }
 
+/// Softmax with temperature scaling.
+///
+/// `softmax(x_i / temp)` - higher temperature = more uniform distribution.
+#[must_use]
+fn softmax_with_temperature(logits: &[f32], temperature: f32) -> Vec<f32> {
+    if logits.is_empty() {
+        return Vec::new();
+    }
+
+    let temp = temperature.max(0.01); // Avoid division by zero
+
+    // Scale by temperature
+    let scaled: Vec<f32> = logits.iter().map(|&x| x / temp).collect();
+
+    // Numerical stability: subtract max
+    let max_val = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let exps: Vec<f32> = scaled.iter().map(|&x| libm::expf(x - max_val)).collect();
+    let sum: f32 = exps.iter().sum();
+
+    if sum < 1e-10 {
+        // Uniform fallback
+        vec![1.0 / logits.len() as f32; logits.len()]
+    } else {
+        exps.iter().map(|&e| e / sum).collect()
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -3383,7 +3775,7 @@ mod tests {
 
     #[test]
     fn test_forward_pass() {
-        let net = FactoredNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
 
         let cost = net.evaluate(&expr);
@@ -3397,7 +3789,7 @@ mod tests {
         // Verify our parameter count calculation
         // INPUT_DIM = 2*K + STRUCTURAL_FEATURE_COUNT = 2*32 + 21 = 85
         assert_eq!(
-            FactoredNnue::param_count(),
+            ExprNnue::param_count(),
             42 * 32          // embeddings: OpKind::COUNT * K
             + 85 * 64        // w1: INPUT_DIM * HIDDEN_DIM
             + 64             // b1: HIDDEN_DIM
@@ -3407,14 +3799,14 @@ mod tests {
 
         // Should be much smaller than HalfEP
         assert!(
-            FactoredNnue::memory_bytes() < 100_000,
+            ExprNnue::memory_bytes() < 100_000,
             "Factored NNUE should use < 100KB"
         );
     }
 
     #[test]
     fn test_different_expressions_different_costs() {
-        let net = FactoredNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
 
         let simple = Expr::Var(0);
         let complex = Expr::Binary(
@@ -3435,7 +3827,7 @@ mod tests {
     }
 
     // ========================================================================
-    // DualHeadNnue Tests
+    // ExprNnue Tests
     // ========================================================================
 
     #[test]
@@ -3443,7 +3835,7 @@ mod tests {
         // Verify our parameter count calculation
         // INPUT_DIM = 2*K + STRUCTURAL_FEATURE_COUNT = 2*32 + 21 = 85
         assert_eq!(
-            DualHeadNnue::param_count(),
+            ExprNnue::param_count(),
             42 * 32          // embeddings: OpKind::COUNT * K
             + 85 * 64        // w1: INPUT_DIM * HIDDEN_DIM
             + 64             // b1: HIDDEN_DIM
@@ -3457,20 +3849,20 @@ mod tests {
 
         // Should be slightly larger than single-head
         assert!(
-            DualHeadNnue::param_count() > FactoredNnue::param_count(),
+            ExprNnue::param_count() > ExprNnue::param_count(),
             "Dual-head should have more params than single-head"
         );
 
         // But still under 100KB
         assert!(
-            DualHeadNnue::memory_bytes() < 100_000,
+            ExprNnue::memory_bytes() < 100_000,
             "Dual-head NNUE should use < 100KB"
         );
     }
 
     #[test]
     fn test_dual_head_value_prediction() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
 
         let log_cost = net.predict_log_cost(&expr);
@@ -3489,7 +3881,7 @@ mod tests {
 
     #[test]
     fn test_dual_head_search_prediction() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
 
         let priority = net.predict_priority(&expr);
@@ -3503,7 +3895,7 @@ mod tests {
 
     #[test]
     fn test_dual_head_two_heads_differ() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
 
         let log_cost = net.predict_log_cost(&expr);
@@ -3519,13 +3911,13 @@ mod tests {
 
     #[test]
     fn test_dual_head_from_factored() {
-        let factored = FactoredNnue::new_random(42);
+        let factored = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
 
         let factored_cost = factored.evaluate(&expr);
 
         // Convert to dual-head
-        let dual = DualHeadNnue::from_factored(&factored);
+        let dual = ExprNnue::from_factored(&factored);
         let dual_cost = dual.predict_log_cost(&expr);
 
         // Value head should match original output
@@ -3550,7 +3942,7 @@ mod tests {
         // Test that latency priors are correctly set in embeddings.
         // Note: Random network weights can overwhelm these priors - this test
         // verifies initialization, not that untrained predictions are correct.
-        let net = DualHeadNnue::new_with_latency_prior(42);
+        let net = ExprNnue::new_with_latency_prior(42);
 
         // Check that expensive ops have higher latency values in dim 0
         let var_latency = net.embeddings.get(OpKind::Var)[0];
@@ -3584,7 +3976,7 @@ mod tests {
 
     #[test]
     fn test_policy_scoring() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
 
         // Create some rule features
@@ -3635,7 +4027,7 @@ mod tests {
 
     #[test]
     fn test_encode_rule_deterministic() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let features = [0.25, 0.3, 1.0, 1.0, 0.0, 1.0, 0.5, 1.0];
 
         let embed1 = net.encode_rule(&features);
@@ -3658,7 +4050,7 @@ mod tests {
 
     #[test]
     fn test_encode_all_rules() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let mut rule_features = RuleFeatures::new();
 
         // Set up a few rules with different features
@@ -3687,7 +4079,7 @@ mod tests {
 
     #[test]
     fn test_compute_expr_embed() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
 
         // Compute hidden state
@@ -3707,7 +4099,7 @@ mod tests {
 
     #[test]
     fn test_compute_mask_features() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
 
         let acc = EdgeAccumulator::from_expr(&expr, &net.embeddings);
@@ -3715,7 +4107,10 @@ mod tests {
         let hidden = net.forward_shared(&acc, &structural);
         let expr_embed = net.compute_expr_embed(&hidden);
 
-        let mask_features = net.compute_mask_features(&expr_embed);
+        // Compute value prediction first (required for value-aware mask)
+        let value_pred = net.value_mlp_forward(&expr_embed);
+
+        let mask_features = net.compute_mask_features(&expr_embed, value_pred);
 
         assert_eq!(mask_features.len(), EMBED_DIM, "Mask features should have EMBED_DIM dimensions");
 
@@ -3726,7 +4121,7 @@ mod tests {
 
     #[test]
     fn test_bilinear_score_computation() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
 
         // Create test vectors
         let mask_features = [1.0f32; EMBED_DIM];
@@ -3754,7 +4149,7 @@ mod tests {
 
     #[test]
     fn test_mask_score_all_rules_finite() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
         let mut rule_features = RuleFeatures::new();
 
@@ -3775,7 +4170,7 @@ mod tests {
 
     #[test]
     fn test_filter_rules_unified() {
-        let mut net = DualHeadNnue::new_random(42);
+        let mut net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
         let mut rule_features = RuleFeatures::new();
 
@@ -3805,7 +4200,7 @@ mod tests {
 
     #[test]
     fn test_predict_cost_unified() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
 
         let cost = net.predict_cost_unified(&expr);
@@ -3816,7 +4211,7 @@ mod tests {
 
     #[test]
     fn test_mask_training_step_loss_decreases() {
-        let mut net = DualHeadNnue::new_random(42);
+        let mut net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
         let rule_features = [0.25, 0.3, 1.0, 1.0, 0.0, 1.0, 0.5, 1.0];
 
@@ -3850,7 +4245,7 @@ mod tests {
 
     #[test]
     fn test_value_mlp_training_step() {
-        let mut net = DualHeadNnue::new_random(42);
+        let mut net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
 
         let target_cost = 100.0f32; // Target nanoseconds
@@ -3881,19 +4276,31 @@ mod tests {
     }
 
     #[test]
-    fn test_randomize_mask_weights() {
-        let mut net = DualHeadNnue::new();
+    fn test_randomize_mask_only() {
+        let mut net = ExprNnue::new();
 
-        // Initially all weights should be zero (or default)
-        let initial_sum: f32 = net.expr_proj_w.iter().flatten().map(|x| x.abs()).sum();
-        assert!(initial_sum < 1e-6, "Initial weights should be zero");
+        // Set some backbone values that should be preserved
+        net.embeddings.e[0][0] = 1.234;
+        net.w1[0][0] = 5.678;
+        net.b1[0] = 0.999;
+        net.expr_proj_w[0][0] = 2.345;  // shared projection - should be preserved
 
-        // Randomize
-        net.randomize_mask_weights(42);
+        // Initially mask-specific weights should be zero
+        let initial_mask_sum: f32 = net.mask_mlp_w1.iter().flatten().map(|x| x.abs()).sum();
+        assert!(initial_mask_sum < 1e-6, "Initial mask weights should be zero");
 
-        // Now weights should be non-zero
-        let final_sum: f32 = net.expr_proj_w.iter().flatten().map(|x| x.abs()).sum();
-        assert!(final_sum > 1.0, "Randomized weights should be non-zero");
+        // Randomize mask-only
+        net.randomize_mask_only(42);
+
+        // Backbone should be PRESERVED
+        assert!((net.embeddings.e[0][0] - 1.234).abs() < 1e-6, "Embeddings should be preserved");
+        assert!((net.w1[0][0] - 5.678).abs() < 1e-6, "w1 should be preserved");
+        assert!((net.b1[0] - 0.999).abs() < 1e-6, "b1 should be preserved");
+        assert!((net.expr_proj_w[0][0] - 2.345).abs() < 1e-6, "expr_proj should be preserved");
+
+        // Mask-specific weights should now be non-zero
+        let final_mask_sum: f32 = net.mask_mlp_w1.iter().flatten().map(|x| x.abs()).sum();
+        assert!(final_mask_sum > 1.0, "Randomized mask weights should be non-zero");
 
         // Interaction matrix should be near identity diagonal
         for i in 0..EMBED_DIM {
@@ -3909,8 +4316,8 @@ mod tests {
     fn test_unified_architecture_serialization_roundtrip() {
         use std::path::PathBuf;
 
-        let mut net = DualHeadNnue::new_random(42);
-        net.randomize_mask_weights(123);
+        let mut net = ExprNnue::new_random(42);
+        net.randomize_mask_only(123);
 
         // Set some specific values we can verify
         net.interaction[0][0] = 1.234;
@@ -3924,7 +4331,7 @@ mod tests {
         net.save(&temp_path).expect("Save should succeed");
 
         // Deserialize
-        let loaded = DualHeadNnue::load(&temp_path).expect("Load should succeed");
+        let loaded = ExprNnue::load(&temp_path).expect("Load should succeed");
 
         // Cleanup temp file
         let _ = std::fs::remove_file(&temp_path);
@@ -3955,7 +4362,7 @@ mod tests {
 
     #[test]
     fn test_gradients_finite_through_all_paths() {
-        let mut net = DualHeadNnue::new_random(42);
+        let mut net = ExprNnue::new_random(42);
         let expr = make_fma_pattern();
         let rule_features = [0.25, 0.3, 1.0, 1.0, 0.0, 1.0, 0.5, 1.0];
 

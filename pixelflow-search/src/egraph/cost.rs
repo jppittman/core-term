@@ -12,7 +12,7 @@
 //!
 //! This allows the e-graph extraction to use either:
 //! - Fast hardcoded costs (`CostModel`)
-//! - Learned neural costs (`FactoredNnue` from pixelflow-nnue)
+//! - Learned neural costs (`ExprNnue` from pixelflow-nnue)
 //! - Custom domain-specific cost models
 
 use std::collections::HashMap;
@@ -46,7 +46,7 @@ use super::node::ENode;
 /// let (tree, cost) = extract(&egraph, root, &costs);
 ///
 /// // Using a learned neural cost model
-/// let nnue = FactoredNnue::load("model.bin")?;
+/// let nnue = ExprNnue::load("model.bin")?;
 /// let (tree, cost) = extract(&egraph, root, &nnue);
 /// ```
 pub trait CostFunction {

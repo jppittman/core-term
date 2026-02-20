@@ -23,7 +23,7 @@
 //! This handles the wide dynamic range of costs (10ns to 10000ns).
 
 use crate::nnue::factored::{
-    EdgeAccumulator, FactoredNnue, OpEmbeddings, StructuralFeatures,
+    EdgeAccumulator, ExprNnue, OpEmbeddings, StructuralFeatures,
     HIDDEN_DIM, INPUT_DIM, K,
 };
 use crate::nnue::{Expr, OpKind};
@@ -191,7 +191,7 @@ pub struct ForwardCache {
 
 impl ForwardCache {
     /// Run forward pass and cache intermediates.
-    pub fn forward(net: &FactoredNnue, acc: &EdgeAccumulator, structural: &StructuralFeatures) -> Self {
+    pub fn forward(net: &ExprNnue, acc: &EdgeAccumulator, structural: &StructuralFeatures) -> Self {
         let mut input = [0.0f32; INPUT_DIM];
 
         // Copy accumulator values (first 2K dims)
@@ -233,7 +233,7 @@ impl ForwardCache {
 ///
 /// Returns the loss value (MSE on log-cost).
 pub fn backward(
-    net: &FactoredNnue,
+    net: &ExprNnue,
     cache: &ForwardCache,
     target: f32,
     sample: &FactoredSample,
@@ -438,7 +438,7 @@ impl Momentum {
 /// SGD trainer for factored NNUE.
 pub struct FactoredTrainer {
     /// The network being trained.
-    pub net: FactoredNnue,
+    pub net: ExprNnue,
 
     /// Training configuration.
     pub config: TrainConfig,
@@ -457,7 +457,7 @@ impl FactoredTrainer {
     /// Create a new trainer with randomly initialized network.
     pub fn new(config: TrainConfig, seed: u64) -> Self {
         Self {
-            net: FactoredNnue::new_random(seed),
+            net: ExprNnue::new_random(seed),
             current_lr: config.learning_rate,
             config,
             momentum: Momentum::new(),
@@ -473,7 +473,7 @@ impl FactoredTrainer {
     /// - Remaining dimensions learn subtle interactions
     pub fn new_with_latency_prior(config: TrainConfig, seed: u64) -> Self {
         Self {
-            net: FactoredNnue::new_with_latency_prior(seed),
+            net: ExprNnue::new_with_latency_prior(seed),
             current_lr: config.learning_rate,
             config,
             momentum: Momentum::new(),
@@ -1065,7 +1065,7 @@ mod tests {
 
     #[test]
     fn test_forward_backward() {
-        let net = FactoredNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = parse_expr("Add(Mul(Var(0), Var(1)), Var(2))").unwrap();
         let sample = FactoredSample::new(expr, 100.0, &net.embeddings);
 

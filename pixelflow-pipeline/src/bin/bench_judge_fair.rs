@@ -8,7 +8,7 @@
 use pixelflow_core::{Field, Manifold};
 use pixelflow_compiler::kernel_raw;
 use pixelflow_search::egraph::{ExprTree, Leaf, ops, expr_tree_to_nnue};
-use pixelflow_search::nnue::DualHeadNnue;
+use pixelflow_search::nnue::ExprNnue;
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
@@ -26,7 +26,7 @@ struct ModelMeta {
 }
 
 /// Predict cost with proper denormalization
-fn predict_tree_cost_denorm(tree: &ExprTree, nnue: &DualHeadNnue, meta: &ModelMeta) -> f32 {
+fn predict_tree_cost_denorm(tree: &ExprTree, nnue: &ExprNnue, meta: &ModelMeta) -> f32 {
     let expr = expr_tree_to_nnue(tree);
     // The raw output is normalized log cost
     let normalized = nnue.predict_log_cost(&expr);
@@ -42,7 +42,7 @@ fn main() {
     println!("  kernel_raw! → Manifold → Field (SIMD) → LLVM");
     println!("═══════════════════════════════════════════════════════════════\n");
 
-    let judge = DualHeadNnue::load(Path::new(JUDGE_WEIGHTS))
+    let judge = ExprNnue::load(Path::new(JUDGE_WEIGHTS))
         .unwrap_or_else(|e| panic!("Failed to load Judge: {}", e));
 
     // Load model metadata for denormalization
@@ -102,7 +102,7 @@ fn main() {
 // DIVISION FAMILY
 // ============================================================================
 
-fn bench_simple_div(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
+fn bench_simple_div(judge: &ExprNnue, meta: &ModelMeta) -> usize {
     println!("━━━ Simple Division: X/Y vs X*recip(Y) ━━━");
 
     // ExprTree for Judge prediction
@@ -130,7 +130,7 @@ fn bench_simple_div(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
     check_winner(div_pred, recip_pred, div_actual, recip_actual)
 }
 
-fn bench_div_sum_denom(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
+fn bench_div_sum_denom(judge: &ExprNnue, meta: &ModelMeta) -> usize {
     println!("━━━ Division with Sum Denominator: X/(Y+1) vs X*recip(Y+1) ━━━");
 
     let denom = ExprTree::add(ExprTree::var(1), ExprTree::Leaf(Leaf::Const(1.0)));
@@ -157,7 +157,7 @@ fn bench_div_sum_denom(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
     check_winner(div_pred, recip_pred, div_actual, recip_actual)
 }
 
-fn bench_div_by_const(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
+fn bench_div_by_const(judge: &ExprNnue, meta: &ModelMeta) -> usize {
     println!("━━━ Division by Constant: X/2 vs X*0.5 ━━━");
 
     let div_tree = ExprTree::Op {
@@ -184,7 +184,7 @@ fn bench_div_by_const(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
 // NEGATION FAMILY
 // ============================================================================
 
-fn bench_simple_sub(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
+fn bench_simple_sub(judge: &ExprNnue, meta: &ModelMeta) -> usize {
     println!("━━━ Simple Subtraction: X-Y vs X+neg(Y) ━━━");
 
     let sub_tree = ExprTree::Op {
@@ -210,7 +210,7 @@ fn bench_simple_sub(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
     check_winner(sub_pred, add_neg_pred, sub_actual, add_neg_actual)
 }
 
-fn bench_double_neg(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
+fn bench_double_neg(judge: &ExprNnue, meta: &ModelMeta) -> usize {
     println!("━━━ Double Negation: neg(neg(X)) vs X ━━━");
 
     let double_neg_tree = ExprTree::Op {
@@ -240,7 +240,7 @@ fn bench_double_neg(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
 // SQRT FAMILY
 // ============================================================================
 
-fn bench_rsqrt(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
+fn bench_rsqrt(judge: &ExprNnue, meta: &ModelMeta) -> usize {
     println!("━━━ Reciprocal Sqrt: 1/sqrt(X) vs rsqrt(X) ━━━");
 
     let recip_sqrt_tree = ExprTree::Op {
@@ -273,7 +273,7 @@ fn bench_rsqrt(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
 // COMPOUND EXPRESSIONS
 // ============================================================================
 
-fn bench_soft_clamp(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
+fn bench_soft_clamp(judge: &ExprNnue, meta: &ModelMeta) -> usize {
     println!("━━━ Soft Clamp: X/(|X|+1) vs X*recip(|X|+1) ━━━");
 
     let abs_x = ExprTree::Op { op: &ops::Abs, children: vec![ExprTree::var(0)] };
@@ -302,7 +302,7 @@ fn bench_soft_clamp(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
     check_winner(div_pred, recip_pred, div_actual, recip_actual)
 }
 
-fn bench_distance_sq(judge: &DualHeadNnue, meta: &ModelMeta) -> usize {
+fn bench_distance_sq(judge: &ExprNnue, meta: &ModelMeta) -> usize {
     println!("━━━ Distance Squared: (X-0.5)²+(Y-0.5)² forms ━━━");
 
     // Form A: (X-0.5)*(X-0.5) + (Y-0.5)*(Y-0.5)

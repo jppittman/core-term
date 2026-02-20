@@ -1,6 +1,10 @@
-//! JIT code emission via catamorphism.
+//! JIT code emission for expression trees and DAGs.
 //!
-//! The key insight: register allocation emerges from tree structure.
+//! Two register allocation strategies:
+//!
+//! ## Sethi-Ullman (for trees)
+//!
+//! Register allocation emerges from tree structure.
 //! Sethi-Ullman labeling computes minimum registers needed.
 //! Register assignment is a FUNCTION of tree position (depth), not stateful allocation.
 //!
@@ -9,6 +13,11 @@
 //! ```
 //!
 //! No explicit alloc/free - the recursion depth IS the register.
+//!
+//! ## Graph Coloring (for DAGs)
+//!
+//! For expressions with shared subexpressions (from e-graph extraction),
+//! graph coloring handles liveness properly. See [`regalloc`] module.
 //!
 //! ## Spilling
 //!
@@ -20,6 +29,8 @@
 pub mod aarch64;
 pub mod executable;
 pub mod lower;
+#[cfg(feature = "alloc")]
+pub mod regalloc;
 pub mod x86_64;
 
 use crate::kind::OpKind;
@@ -31,7 +42,7 @@ use crate::expr::Expr;
 use alloc::vec::Vec;
 
 /// Physical register index.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Reg(pub u8);
 
 /// Location of a value: either in a register or spilled to stack.
@@ -531,6 +542,306 @@ pub fn compile(expr: &Expr) -> Result<executable::ExecutableCode, &'static str> 
     compile_with_ctx(expr, EmitCtx::default()).map(|r| r.code)
 }
 
+/// Compile a DAG (from e-graph extraction) using graph coloring.
+///
+/// Unlike `compile`, this handles shared subexpressions properly.
+/// Each unique subexpression is evaluated exactly once and its result
+/// is kept in a register (or spilled) for all uses.
+#[cfg(all(feature = "alloc", target_arch = "aarch64"))]
+pub fn compile_dag(expr: &Expr) -> Result<CompileResult, &'static str> {
+    compile_dag_with_ctx(expr, EmitCtx::default())
+}
+
+/// Compile DAG with explicit register budget.
+#[cfg(all(feature = "alloc", target_arch = "aarch64"))]
+pub fn compile_dag_with_ctx(expr: &Expr, ctx: EmitCtx) -> Result<CompileResult, &'static str> {
+    use regalloc::{ValueId, build_interference_graph, color_graph};
+    use alloc::collections::BTreeMap;
+
+    // Lower compound ops first
+    let lowered = lower::lower(expr);
+
+    // Step 1: Linearize DAG into schedule (topological order)
+    // Each unique subexpression gets a ValueId
+    let (schedule, _expr_to_value, uses_map) = linearize_dag(&lowered);
+
+    // Step 2: Build interference graph from schedule
+    let mut graph = build_interference_graph(&schedule, |v| {
+        uses_map.get(&v).cloned().unwrap_or_default()
+    });
+
+    // Step 2.5: Precolor input variables to their fixed registers
+    // Var(0) -> v0, Var(1) -> v1, etc.
+    for (value_id, op) in &schedule {
+        if let ScheduledOp::Var(i) = op {
+            graph.precolor(*value_id, INPUT_REGS[*i as usize]);
+        }
+    }
+
+    // Step 3: Color the graph
+    let allocation = color_graph(&graph, ctx.max_regs, SCRATCH_BASE);
+
+    // Step 4: Emit code using the register assignment
+    let mut code = Vec::new();
+    let mut spill_offset = 0u16;
+    let mut spill_count = 0u16;
+
+    // Build spill slots for spilled values
+    let mut spill_slots: BTreeMap<ValueId, u16> = BTreeMap::new();
+    for &v in &allocation.spilled {
+        spill_slots.insert(v, spill_offset);
+        spill_offset += 16; // 128-bit vector
+        spill_count += 1;
+    }
+
+    // Prologue: allocate stack frame if we spilled
+    let frame_size = (spill_offset + 15) & !15;
+    if frame_size > 0 {
+        aarch64::emit_sub_sp(&mut code, frame_size);
+    }
+
+    // Emit each scheduled operation
+    for (value_id, op_info) in &schedule {
+        let dst_loc = if let Some(&reg) = allocation.assignment.get(value_id) {
+            Loc::Reg(reg)
+        } else if let Some(&offset) = spill_slots.get(value_id) {
+            // Compute to RELOAD_REG, then spill
+            Loc::Spill(offset)
+        } else {
+            panic!("value {:?} has no assignment or spill slot", value_id);
+        };
+
+        emit_scheduled_op(&mut code, op_info, dst_loc, &allocation.assignment, &spill_slots)?;
+    }
+
+    // Get result register (the last value in schedule is the root)
+    let root_value = schedule.last().map(|(v, _)| *v).expect("empty schedule");
+    let result_reg = if let Some(&reg) = allocation.assignment.get(&root_value) {
+        reg
+    } else if let Some(&offset) = spill_slots.get(&root_value) {
+        aarch64::emit_ldr_sp(&mut code, RELOAD_REG, offset);
+        RELOAD_REG
+    } else {
+        panic!("root has no register");
+    };
+
+    // Move result to v0 if needed
+    if result_reg.0 != 0 {
+        emit_mov(&mut code, Reg(0), result_reg);
+    }
+
+    // Epilogue
+    if frame_size > 0 {
+        aarch64::emit_add_sp(&mut code, frame_size);
+    }
+
+    // RET
+    code.extend_from_slice(&0xD65F03C0u32.to_le_bytes());
+
+    let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
+
+    Ok(CompileResult {
+        code: exec,
+        spill_count,
+        spill_bytes: spill_offset,
+        max_regs: ctx.max_regs,
+    })
+}
+
+/// Info about an operation in the schedule.
+#[cfg(feature = "alloc")]
+#[derive(Debug, Clone)]
+pub enum ScheduledOp {
+    /// Variable reference (input register)
+    Var(u8),
+    /// Constant value
+    Const(f32),
+    /// Unary op with input value
+    Unary(OpKind, regalloc::ValueId),
+    /// Binary op with input values
+    Binary(OpKind, regalloc::ValueId, regalloc::ValueId),
+    /// Ternary op with input values
+    Ternary(OpKind, regalloc::ValueId, regalloc::ValueId, regalloc::ValueId),
+}
+
+/// Linearize a DAG into a schedule with value IDs.
+/// Returns (schedule, expr_ptr_to_value_id, uses_map)
+#[cfg(feature = "alloc")]
+fn linearize_dag(
+    expr: &Expr,
+) -> (
+    Vec<(regalloc::ValueId, ScheduledOp)>,
+    alloc::collections::BTreeMap<*const Expr, regalloc::ValueId>,
+    alloc::collections::BTreeMap<regalloc::ValueId, Vec<regalloc::ValueId>>,
+) {
+    use alloc::collections::BTreeMap;
+    use regalloc::ValueId;
+
+    let mut schedule = Vec::new();
+    let mut expr_to_value: BTreeMap<*const Expr, ValueId> = BTreeMap::new();
+    let mut uses_map: BTreeMap<ValueId, Vec<ValueId>> = BTreeMap::new();
+    let mut next_id = 0u32;
+
+    fn visit(
+        expr: &Expr,
+        schedule: &mut Vec<(ValueId, ScheduledOp)>,
+        expr_to_value: &mut BTreeMap<*const Expr, ValueId>,
+        uses_map: &mut BTreeMap<ValueId, Vec<ValueId>>,
+        next_id: &mut u32,
+    ) -> ValueId {
+        let ptr = expr as *const Expr;
+
+        // Check if already scheduled (DAG sharing)
+        if let Some(&id) = expr_to_value.get(&ptr) {
+            return id;
+        }
+
+        let my_id = ValueId(*next_id);
+        *next_id += 1;
+
+        let op = match expr {
+            Expr::Var(i) => ScheduledOp::Var(*i as u8),
+            Expr::Const(v) => ScheduledOp::Const(*v),
+            Expr::Unary(op, child) => {
+                let child_id = visit(child, schedule, expr_to_value, uses_map, next_id);
+                uses_map.entry(my_id).or_default().push(child_id);
+                ScheduledOp::Unary(*op, child_id)
+            }
+            Expr::Binary(op, left, right) => {
+                let l_id = visit(left, schedule, expr_to_value, uses_map, next_id);
+                let r_id = visit(right, schedule, expr_to_value, uses_map, next_id);
+                uses_map.entry(my_id).or_default().push(l_id);
+                uses_map.entry(my_id).or_default().push(r_id);
+                ScheduledOp::Binary(*op, l_id, r_id)
+            }
+            Expr::Ternary(op, a, b, c) => {
+                let a_id = visit(a, schedule, expr_to_value, uses_map, next_id);
+                let b_id = visit(b, schedule, expr_to_value, uses_map, next_id);
+                let c_id = visit(c, schedule, expr_to_value, uses_map, next_id);
+                uses_map.entry(my_id).or_default().push(a_id);
+                uses_map.entry(my_id).or_default().push(b_id);
+                uses_map.entry(my_id).or_default().push(c_id);
+                ScheduledOp::Ternary(*op, a_id, b_id, c_id)
+            }
+            Expr::Nary(_, _) => panic!("Nary not supported in DAG compilation"),
+        };
+
+        schedule.push((my_id, op));
+        expr_to_value.insert(ptr, my_id);
+        my_id
+    }
+
+    visit(expr, &mut schedule, &mut expr_to_value, &mut uses_map, &mut next_id);
+
+    (schedule, expr_to_value, uses_map)
+}
+
+/// Emit code for a scheduled operation.
+#[cfg(all(feature = "alloc", target_arch = "aarch64"))]
+fn emit_scheduled_op(
+    code: &mut Vec<u8>,
+    op: &ScheduledOp,
+    dst_loc: Loc,
+    assignment: &alloc::collections::BTreeMap<regalloc::ValueId, Reg>,
+    spill_slots: &alloc::collections::BTreeMap<regalloc::ValueId, u16>,
+) -> Result<(), &'static str> {
+    use aarch64::*;
+
+    // Helper to get a value into a register
+    let get_reg = |code: &mut Vec<u8>, v: regalloc::ValueId| -> Reg {
+        if let Some(&reg) = assignment.get(&v) {
+            reg
+        } else if let Some(&offset) = spill_slots.get(&v) {
+            emit_ldr_sp(code, RELOAD_REG, offset);
+            RELOAD_REG
+        } else {
+            panic!("value {:?} not found in assignment or spill slots", v);
+        }
+    };
+
+    // Compute into a register (possibly RELOAD_REG if spilling)
+    let compute_reg = match dst_loc {
+        Loc::Reg(r) => r,
+        Loc::Spill(_) => RELOAD_REG,
+    };
+
+    match op {
+        ScheduledOp::Var(_) => {
+            // Variables are precolored to input registers - no code needed.
+            // The register allocator knows about this via precoloring.
+            // The value is already in the correct register.
+        }
+        ScheduledOp::Const(val) => {
+            let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
+            emit_fmov_imm(code, compute_reg, *val, scratch);
+        }
+        ScheduledOp::Unary(op_kind, child) => {
+            let src = get_reg(code, *child);
+            let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
+            emit_unary(code, *op_kind, compute_reg, src, scratch);
+        }
+        ScheduledOp::Binary(op_kind, left, right) => {
+            let l_reg = get_reg(code, *left);
+            let r_reg = get_reg(code, *right);
+            emit_binary(code, *op_kind, compute_reg, l_reg, r_reg);
+        }
+        ScheduledOp::Ternary(op_kind, a, b, c) => {
+            match op_kind {
+                OpKind::MulAdd => {
+                    let a_reg = get_reg(code, *a);
+                    let b_reg = get_reg(code, *b);
+                    let c_reg = get_reg(code, *c);
+
+                    // Copy c to dst (accumulator)
+                    if compute_reg.0 != c_reg.0 {
+                        emit_mov_reg(code, compute_reg, c_reg);
+                    }
+                    emit_fmla(code, compute_reg, a_reg, b_reg);
+                }
+                OpKind::Select => {
+                    let a_reg = get_reg(code, *a);
+                    let b_reg = get_reg(code, *b);
+                    let c_reg = get_reg(code, *c);
+
+                    if compute_reg.0 != a_reg.0 {
+                        emit_mov_reg(code, compute_reg, a_reg);
+                    }
+                    emit_bsl(code, compute_reg, b_reg, c_reg);
+                }
+                OpKind::Clamp => {
+                    let a_reg = get_reg(code, *a);
+                    let b_reg = get_reg(code, *b);
+                    let c_reg = get_reg(code, *c);
+
+                    emit_fmin(code, compute_reg, a_reg, c_reg);
+                    emit_fmax(code, compute_reg, compute_reg, b_reg);
+                }
+                _ => return Err("unsupported ternary op in DAG compilation"),
+            }
+        }
+    }
+
+    // Spill if needed
+    if let Loc::Spill(offset) = dst_loc {
+        emit_str_sp(code, compute_reg, offset);
+    }
+
+    Ok(())
+}
+
+/// Emit MOV (vector register copy) - internal helper
+#[cfg(target_arch = "aarch64")]
+fn emit_mov_reg(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    if dst.0 != src.0 {
+        // ORR Vd.16B, Vn.16B, Vn.16B
+        let inst = 0x4EA01C00u32
+            | (dst.0 as u32)
+            | ((src.0 as u32) << 5)
+            | ((src.0 as u32) << 16);
+        code.extend_from_slice(&inst.to_le_bytes());
+    }
+}
+
 /// Compile with explicit register budget for ML training.
 ///
 /// Returns compile result with spill statistics.
@@ -750,5 +1061,121 @@ mod tests {
             // ((((1+2)+3)+4)+1) = 11
             assert_eq!(vgetq_lane_f32(out, 0), 11.0);
         }
+    }
+
+    // =========================================================================
+    // Graph Coloring (DAG) Tests
+    // =========================================================================
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_dag_simple() {
+        // Simple expression: X + Y (no sharing)
+        let expr = Expr::Binary(
+            OpKind::Add,
+            Box::new(Expr::Var(0)),
+            Box::new(Expr::Var(1)),
+        );
+
+        let result = compile_dag(&expr).expect("DAG compile failed");
+        assert_eq!(result.spill_count, 0);
+
+        unsafe {
+            use core::arch::aarch64::*;
+            let x = vdupq_n_f32(3.0);
+            let y = vdupq_n_f32(4.0);
+            let z = vdupq_n_f32(0.0);
+            let w = vdupq_n_f32(0.0);
+
+            let func: executable::KernelFn = result.code.as_fn();
+            let out = func(x, y, z, w);
+            assert_eq!(vgetq_lane_f32(out, 0), 7.0);
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_dag_with_constant() {
+        // X * 2.0 + Y
+        let expr = Expr::Binary(
+            OpKind::Add,
+            Box::new(Expr::Binary(
+                OpKind::Mul,
+                Box::new(Expr::Var(0)),
+                Box::new(Expr::Const(2.0)),
+            )),
+            Box::new(Expr::Var(1)),
+        );
+
+        let result = compile_dag(&expr).expect("DAG compile failed");
+
+        unsafe {
+            use core::arch::aarch64::*;
+            let x = vdupq_n_f32(3.0);
+            let y = vdupq_n_f32(4.0);
+            let z = vdupq_n_f32(0.0);
+            let w = vdupq_n_f32(0.0);
+
+            let func: executable::KernelFn = result.code.as_fn();
+            let out = func(x, y, z, w);
+            // 3*2 + 4 = 10
+            assert_eq!(vgetq_lane_f32(out, 0), 10.0);
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_dag_with_spill() {
+        // Complex expression with limited registers
+        let left = Expr::Binary(
+            OpKind::Add,
+            Box::new(Expr::Var(0)),
+            Box::new(Expr::Var(1)),
+        );
+        let right = Expr::Binary(
+            OpKind::Add,
+            Box::new(Expr::Var(2)),
+            Box::new(Expr::Var(3)),
+        );
+        let expr = Expr::Binary(OpKind::Add, Box::new(left), Box::new(right));
+
+        // Compile with only 2 registers - should require spilling
+        let ctx = EmitCtx::with_max_regs(2);
+        let result = compile_dag_with_ctx(&expr, ctx).expect("DAG compile failed");
+
+        // Graph coloring may or may not spill depending on the graph structure
+        // The important thing is correctness
+        unsafe {
+            use core::arch::aarch64::*;
+            let x = vdupq_n_f32(1.0);
+            let y = vdupq_n_f32(2.0);
+            let z = vdupq_n_f32(3.0);
+            let w = vdupq_n_f32(4.0);
+
+            let func: executable::KernelFn = result.code.as_fn();
+            let out = func(x, y, z, w);
+            // (1+2) + (3+4) = 10
+            assert_eq!(vgetq_lane_f32(out, 0), 10.0);
+        }
+    }
+
+    #[test]
+    fn test_linearize_dag() {
+        // Test the linearization function
+        let expr = Expr::Binary(
+            OpKind::Add,
+            Box::new(Expr::Var(0)),
+            Box::new(Expr::Var(1)),
+        );
+
+        let (schedule, expr_to_value, uses_map) = linearize_dag(&expr);
+
+        // Should have 3 values: X, Y, X+Y
+        assert_eq!(schedule.len(), 3);
+
+        // Root (X+Y) should use both X and Y
+        let root_id = schedule.last().unwrap().0;
+        let root_uses = uses_map.get(&root_id).expect("root should have uses");
+        assert_eq!(root_uses.len(), 2);
     }
 }

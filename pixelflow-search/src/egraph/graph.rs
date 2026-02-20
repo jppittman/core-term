@@ -189,6 +189,22 @@ impl EGraph {
         self.classes.len()
     }
 
+    /// Iterate over all canonical e-class IDs.
+    ///
+    /// Returns an iterator of all e-class IDs that are canonical (i.e., roots
+    /// of their union-find tree) and have at least one node.
+    pub fn class_ids(&self) -> impl Iterator<Item = EClassId> + '_ {
+        (0..self.classes.len()).filter_map(move |idx| {
+            let id = EClassId(idx as u32);
+            let canonical = self.find(id);
+            if canonical == id && !self.classes[idx].nodes.is_empty() {
+                Some(id)
+            } else {
+                None
+            }
+        })
+    }
+
     /// Get the total number of nodes across all e-classes.
     pub fn node_count(&self) -> usize {
         self.classes.iter().map(|c| c.nodes.len()).sum()

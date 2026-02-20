@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use serde::Deserialize;
 
-use pixelflow_search::nnue::{DualHeadNnue, Expr};
+use pixelflow_search::nnue::{ExprNnue, Expr};
 use pixelflow_pipeline::training::factored::parse_kernel_code;
 use pixelflow_pipeline::training::dual_head::{
     ValueSample, DualGradients, DualForwardCache, backward_value,
@@ -161,8 +161,8 @@ fn main() {
     println!("Validation samples: {}", val_samples.len());
 
     // Initialize NNUE
-    let mut nnue = DualHeadNnue::new_with_latency_prior(args.seed);
-    println!("\nInitialized DualHeadNnue ({} parameters)", DualHeadNnue::param_count());
+    let mut nnue = ExprNnue::new_with_latency_prior(args.seed);
+    println!("\nInitialized ExprNnue ({} parameters)", ExprNnue::param_count());
 
     // Parse expressions and create ValueSamples
     let mut parse_failures = 0usize;
@@ -338,7 +338,7 @@ fn clip_grad(g: f32, max_norm: f32) -> f32 {
 
 /// Apply SGD update with momentum, weight decay, and gradient clipping.
 fn apply_momentum_update(
-    net: &mut DualHeadNnue,
+    net: &mut ExprNnue,
     grads: &DualGradients,
     momentum_buf: &mut DualGradients,
     lr: f32,
@@ -393,7 +393,7 @@ fn apply_momentum_update(
 
 /// Evaluate model and print metrics.
 fn evaluate_model(
-    nnue: &DualHeadNnue,
+    nnue: &ExprNnue,
     data: &[ValueSample],
     target_mean: f32,
     target_std: f32,

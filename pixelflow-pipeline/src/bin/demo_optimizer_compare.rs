@@ -3,7 +3,7 @@
 //! Compares three optimization strategies on real shader expressions:
 //! 1. Unoptimized - raw expression, no e-graph
 //! 2. Old optimizer - extract_tree_with_costs + static CostModel
-//! 3. New optimizer - extract_beam + trained Judge (DualHeadNnue)
+//! 3. New optimizer - extract_beam + trained Judge (ExprNnue)
 //!
 //! For each, shows:
 //! - Predicted cost (from respective cost model)
@@ -12,7 +12,7 @@
 
 use pixelflow_search::egraph::{EGraph, ExprTree, Leaf, ops, CostModel, extract_beam, predict_tree_cost};
 use pixelflow_search::math::all_math_rules;
-use pixelflow_search::nnue::DualHeadNnue;
+use pixelflow_search::nnue::ExprNnue;
 use std::path::Path;
 
 /// Path to trained Judge weights
@@ -24,7 +24,7 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════\n");
 
     // Load the trained Judge
-    let judge = DualHeadNnue::load(Path::new(JUDGE_WEIGHTS))
+    let judge = ExprNnue::load(Path::new(JUDGE_WEIGHTS))
         .unwrap_or_else(|e| panic!("Failed to load Judge from {}: {}", JUDGE_WEIGHTS, e));
     println!("Loaded trained Judge from {}\n", JUDGE_WEIGHTS);
 
@@ -43,7 +43,7 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════");
 }
 
-fn compare_expression(name: &str, expr: ExprTree, judge: &DualHeadNnue) {
+fn compare_expression(name: &str, expr: ExprTree, judge: &ExprNnue) {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("  {}", name);
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");

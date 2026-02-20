@@ -1,1 +1,1 @@
-{"target_mean":1.6920279,"target_std":0.8578507,"epochs":200,"samples":9541,"best_val_loss":0.22928864}
+{"target_mean":1.6920279,"target_std":0.8578507,"epochs":100,"samples":9541,"best_val_loss":0.25423813}

@@ -18,7 +18,7 @@
 //! - **Joint loss**: `L = λ_v * L_v + λ_s * L_s`
 
 use crate::nnue::factored::{
-    DualHeadNnue, EdgeAccumulator, OpEmbeddings, StructuralFeatures,
+    ExprNnue, EdgeAccumulator, OpEmbeddings, StructuralFeatures,
     HIDDEN_DIM, INPUT_DIM, K,
 };
 use crate::nnue::{Expr, OpKind};
@@ -256,7 +256,7 @@ pub struct DualForwardCache {
 
 impl DualForwardCache {
     /// Run forward pass through both heads and cache intermediates.
-    pub fn forward(net: &DualHeadNnue, acc: &EdgeAccumulator, structural: &StructuralFeatures) -> Self {
+    pub fn forward(net: &ExprNnue, acc: &EdgeAccumulator, structural: &StructuralFeatures) -> Self {
         let mut input = [0.0f32; INPUT_DIM];
 
         // Copy accumulator values (first 2K dims)
@@ -317,7 +317,7 @@ fn softplus(x: f32) -> f32 {
 ///
 /// This is for pairwise ranking loss where we compute d(loss)/d(output) externally.
 pub fn backward_value_with_d_output(
-    net: &DualHeadNnue,
+    net: &ExprNnue,
     cache: &DualForwardCache,
     d_output: f32,
     sample: &ValueSample,
@@ -363,7 +363,7 @@ pub fn backward_value_with_d_output(
 ///
 /// Returns the MSE loss on log-cost.
 pub fn backward_value(
-    net: &DualHeadNnue,
+    net: &ExprNnue,
     cache: &DualForwardCache,
     target: f32,
     sample: &ValueSample,
@@ -418,7 +418,7 @@ pub fn backward_value(
 ///
 /// Returns the MSE loss on priority.
 pub fn backward_search(
-    net: &DualHeadNnue,
+    net: &ExprNnue,
     cache: &DualForwardCache,
     target: f32,
     sample: &SearchSample,
@@ -652,7 +652,7 @@ impl Default for DualTrainConfig {
 /// - Phase 3: Joint training (both heads)
 pub struct DualHeadTrainer {
     /// The network being trained.
-    pub net: DualHeadNnue,
+    pub net: ExprNnue,
 
     /// Training configuration.
     pub config: DualTrainConfig,
@@ -674,7 +674,7 @@ impl DualHeadTrainer {
     /// Create a new trainer with randomly initialized network.
     pub fn new(config: DualTrainConfig, seed: u64) -> Self {
         Self {
-            net: DualHeadNnue::new_random(seed),
+            net: ExprNnue::new_random(seed),
             current_lr: config.learning_rate,
             config,
             momentum: DualMomentum::new(),
@@ -686,7 +686,7 @@ impl DualHeadTrainer {
     /// Create a new trainer with latency-prior initialized embeddings.
     pub fn new_with_latency_prior(config: DualTrainConfig, seed: u64) -> Self {
         Self {
-            net: DualHeadNnue::new_with_latency_prior(seed),
+            net: ExprNnue::new_with_latency_prior(seed),
             current_lr: config.learning_rate,
             config,
             momentum: DualMomentum::new(),
@@ -695,10 +695,10 @@ impl DualHeadTrainer {
         }
     }
 
-    /// Create a trainer from an existing FactoredNnue (transfer learning).
-    pub fn from_factored(factored: &crate::nnue::factored::FactoredNnue, config: DualTrainConfig) -> Self {
+    /// Create a trainer from an existing ExprNnue (transfer learning).
+    pub fn from_factored(factored: &crate::nnue::factored::ExprNnue, config: DualTrainConfig) -> Self {
         Self {
-            net: DualHeadNnue::from_factored(factored),
+            net: ExprNnue::from_factored(factored),
             current_lr: config.learning_rate,
             config,
             momentum: DualMomentum::new(),
@@ -1253,7 +1253,7 @@ mod tests {
 
     #[test]
     fn test_dual_forward_cache() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_add_xy();
         let acc = EdgeAccumulator::from_expr(&expr, &net.embeddings);
         let structural = StructuralFeatures::from_expr(&expr);
@@ -1266,7 +1266,7 @@ mod tests {
 
     #[test]
     fn test_value_backward() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_add_xy();
         let sample = ValueSample::new(expr, 100.0, &net.embeddings);
         let cache = DualForwardCache::forward(&net, &sample.accumulator, &sample.structural);
@@ -1284,7 +1284,7 @@ mod tests {
 
     #[test]
     fn test_search_backward() {
-        let net = DualHeadNnue::new_random(42);
+        let net = ExprNnue::new_random(42);
         let expr = make_add_xy();
         let sample = SearchSample::new(expr, 10.0, &net.embeddings);
         let cache = DualForwardCache::forward(&net, &sample.accumulator, &sample.structural);

@@ -5,7 +5,7 @@
 //!
 //! # Architecture
 //!
-//! Unlike the tree-based DualHeadNnue, the Guide uses flat rule features:
+//! Unlike the tree-based ExprNnue, the Guide uses flat rule features:
 //!
 //! ```text
 //! RuleFeatures (8 floats)

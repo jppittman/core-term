@@ -24,8 +24,8 @@ use serde::Deserialize;
 
 use pixelflow_ir::Expr;
 use pixelflow_pipeline::training::factored::parse_kernel_code;
-use pixelflow_search::egraph::{all_rules, CostModel, EGraph, ExprTree, GuidedSearch, Rewrite};
-use pixelflow_search::nnue::{DualHeadNnue, RuleTemplates, EMBED_DIM};
+use pixelflow_search::egraph::{all_rules, EGraph, ExprTree, GuidedSearch, NnueCostAdapter, Rewrite};
+use pixelflow_search::nnue::{ExprNnue, RuleTemplates, EMBED_DIM};
 use pixelflow_search::nnue::training::RewardBaseline;
 
 /// Resource-asymmetric mask training.
@@ -37,9 +37,9 @@ struct Args {
     #[arg(long, default_value = "pixelflow-pipeline/data/judge_training.jsonl")]
     data: String,
 
-    /// Path to load pre-trained model (optional)
-    #[arg(long)]
-    load_model: Option<String>,
+    /// Path to load pre-trained judge model (REQUIRED for value head)
+    #[arg(long, default_value = "pixelflow-pipeline/data/judge.bin")]
+    load_model: String,
 
     /// Path to save trained model
     #[arg(short, long, default_value = "pixelflow-pipeline/data/mask_reinforce.bin")]
@@ -81,6 +81,10 @@ struct Args {
     #[arg(long, default_value_t = 0.95)]
     baseline_decay: f32,
 
+    /// Oracle noise: probability of applying a random rule (breaks stable zero)
+    #[arg(long, default_value_t = 0.1)]
+    oracle_noise: f32,
+
     /// Maximum samples to process (0 = all)
     #[arg(long, default_value_t = 0)]
     max_samples: usize,
@@ -112,18 +116,16 @@ fn main() {
     let templates = build_rule_templates(&rules);
     println!("Built LHS/RHS templates for {} rules", templates.len());
 
-    // Load or create model
-    let mut model = if let Some(model_path) = &args.load_model {
-        let path = workspace_root.join(model_path);
-        println!("Loading pre-trained model from: {}", path.display());
-        DualHeadNnue::load(&path).expect("Failed to load model")
-    } else {
-        println!("Creating new model with random initialization");
-        let factored = pixelflow_search::nnue::FactoredNnue::new();
-        let mut model = DualHeadNnue::from_factored(&factored);
-        model.randomize_mask_weights(args.seed);
-        model
-    };
+    // Load the judge model (REQUIRED - contains trained value head)
+    // We train the mask on top of a pre-trained judge for cost estimation
+    let model_path = workspace_root.join(&args.load_model);
+    println!("Loading pre-trained judge model from: {}", model_path.display());
+    let mut model = ExprNnue::load(&model_path)
+        .expect("Failed to load judge model. Train it first with: cargo run --bin train_judge --release --features training");
+
+    // Randomize ONLY the mask-specific weights - preserve backbone + value head
+    model.randomize_mask_only(args.seed);
+    println!("Randomized mask-specific weights (backbone + value head preserved)");
 
     // Load training data
     let data_path = workspace_root.join(&args.data);
@@ -175,8 +177,9 @@ fn main() {
     // Baseline for REINFORCE
     let mut baseline = RewardBaseline::new(args.baseline_decay);
 
-    // Costs model
-    let costs = CostModel::default();
+    // NOTE: We use NnueCostAdapter inside the loop (created fresh each iteration)
+    // because we need to borrow model immutably for cost estimation,
+    // then mutably for training updates.
 
     // Training loop
     println!("\n=== Resource-Asymmetric Training ===");
@@ -215,16 +218,39 @@ fn main() {
                 );
             }
 
+            // Create cost adapter from NNUE value head (NO hardcoded costs!)
+            let costs = NnueCostAdapter::new(&model);
+
             // === ORACLE: Run with abundant resources ===
             let mut oracle_egraph = EGraph::with_rules(all_rules());
             let oracle_root = oracle_egraph.add_expr(tree);
             let mut oracle_search = GuidedSearch::new(oracle_egraph, oracle_root, args.oracle_epochs);
 
-            let oracle_result = oracle_search.run_uniform(
-                |t| tree_cost(t),
-                &costs,
-            );
-            let oracle_cost = oracle_result.best_cost;
+            // Oracle uses epsilon-greedy to break "stable zero" equilibrium.
+            // With probability (1-epsilon): uniform (accept all rules)
+            // With probability epsilon: random (explore)
+            // This creates variance while still mostly finding good optimizations.
+            let oracle_seed = (args.seed + idx as u64).wrapping_mul(2654435761);
+            let oracle_result = if args.oracle_noise > 0.0 {
+                oracle_search.run_epsilon_greedy(
+                    |t| tree_cost(t),
+                    &costs,
+                    args.oracle_noise,
+                    oracle_seed,
+                )
+            } else {
+                oracle_search.run_uniform(|t| tree_cost(t), &costs)
+            };
+            // Get costs for comparison:
+            // - original_cost: cost of the INPUT expression (before any optimization)
+            // - oracle_cost: cost after oracle optimization (unlimited resources)
+            // - student_cost: cost after student optimization (limited resources + mask)
+            let original_expr_ir = tree_to_expr(tree);
+            let original_cost = model.predict_log_cost(&original_expr_ir);
+
+            let oracle_tree = &oracle_result.best_tree;
+            let oracle_expr = tree_to_expr(oracle_tree);
+            let oracle_cost = model.predict_log_cost(&oracle_expr);
 
             // === STUDENT: Run with mask + exploration ===
             let mut student_egraph = EGraph::with_rules(all_rules());
@@ -240,20 +266,65 @@ fn main() {
                 args.threshold,
                 args.student_classes,
             );
-            let student_cost = student_result.best_cost;
+            let student_tree = &student_result.best_tree;
+            let student_expr = tree_to_expr(student_tree);
+            let student_cost = model.predict_log_cost(&student_expr);
+
+            // Drop the cost adapter before we mutate the model
+            drop(costs);
 
             // === REWARD ===
-            // Cost ratio: 1.0 = matched oracle, >1.0 = beat oracle, <1.0 = worse
-            let cost_ratio = if student_cost > 0 {
-                oracle_cost as f64 / student_cost as f64
+            // The key insight: we want to reward IMPROVEMENT over original, not just matching oracle.
+            //
+            // oracle_improvement = original_cost - oracle_cost (how much oracle improved)
+            // student_improvement = original_cost - student_cost (how much student improved)
+            //
+            // If oracle_improvement > 0, there was room to optimize.
+            // Reward = student_improvement / oracle_improvement (ratio of achieved improvement)
+            //
+            // Special cases:
+            // - oracle_improvement <= 0: expression can't be improved, skip training on this
+            // - student_improvement == oracle_improvement: student matched oracle -> reward = 1.0
+            // - student_improvement < oracle_improvement: student missed some optimizations -> reward < 1.0
+            // - student_improvement == 0: stable zero! -> reward = 0 (penalty)
+
+            let oracle_improvement = original_cost - oracle_cost;
+            let student_improvement = original_cost - student_cost;
+
+            // Skip expressions that oracle couldn't improve (nothing to learn)
+            // Threshold is in log space: 0.01 means oracle found at least 1% improvement
+            if oracle_improvement < 0.01 {
+                continue;
+            }
+
+            // Reward: fraction of possible improvement achieved (0 to 1+)
+            // Can exceed 1.0 if student beats oracle (lucky exploration)
+            let improvement_ratio = (student_improvement / oracle_improvement).clamp(0.0, 2.0);
+
+            // Center reward around 0 for REINFORCE: subtract 0.5 so matching oracle = +0.5, zero = -0.5
+            let reward = improvement_ratio - 0.5;
+            let advantage = baseline.update(reward);
+
+            // Track cost ratio for logging (in ns space, clamped)
+            let cost_diff = (oracle_cost - student_cost).clamp(-5.0, 5.0);
+            let cost_ratio = cost_diff.exp() as f64;
+
+            // Debug: show first few samples each epoch
+            let pairs_approved = student_result.pairs_tried;
+            let pairs_total = student_result.pairs_tried + student_result.pairs_skipped;
+            let approval_rate = if pairs_total > 0 {
+                pairs_approved as f32 / pairs_total as f32 * 100.0
             } else {
-                1.0
+                0.0
             };
 
-            // Use cost ratio as reward (centered around 1.0)
-            // Advantage = how much better/worse than baseline
-            let reward = cost_ratio as f32;
-            let advantage = baseline.update(reward);
+            if total < 3 {
+                eprintln!(
+                    "  [{}] orig={:.2} oracle={:.2} student={:.2} impr={:.0}% appr={:.0}% reward={:.2}",
+                    idx, original_cost, oracle_cost, student_cost,
+                    improvement_ratio * 100.0, approval_rate, reward
+                );
+            }
 
             total += 1;
             total_cost_ratio += cost_ratio;
@@ -316,9 +387,42 @@ fn main() {
     println!("\nSaved model to: {}", output_path.display());
 }
 
-/// Simple tree cost (node count).
+/// Extract cost from NNUE (used by GuidedSearch as tie-breaker).
+/// The actual cost comparison uses NnueCostAdapter directly.
 fn tree_cost(tree: &ExprTree) -> i64 {
+    // Simple node count as tie-breaker when NNUE costs are equal
     tree.node_count() as i64
+}
+
+/// Convert ExprTree to Expr (for NNUE prediction).
+fn tree_to_expr(tree: &ExprTree) -> Expr {
+    use pixelflow_search::egraph::{Leaf, nnue_adapter::op_to_nnue};
+
+    match tree {
+        ExprTree::Leaf(Leaf::Var(idx)) => Expr::Var(*idx),
+        ExprTree::Leaf(Leaf::Const(val)) => Expr::Const(*val),
+        ExprTree::Op { op, children } => {
+            let kind = op_to_nnue(*op);
+            match children.len() {
+                1 => Expr::Unary(kind, Box::new(tree_to_expr(&children[0]))),
+                2 => Expr::Binary(
+                    kind,
+                    Box::new(tree_to_expr(&children[0])),
+                    Box::new(tree_to_expr(&children[1])),
+                ),
+                3 => Expr::Ternary(
+                    kind,
+                    Box::new(tree_to_expr(&children[0])),
+                    Box::new(tree_to_expr(&children[1])),
+                    Box::new(tree_to_expr(&children[2])),
+                ),
+                _ => Expr::Nary(
+                    kind,
+                    children.iter().map(tree_to_expr).collect(),
+                ),
+            }
+        }
+    }
 }
 
 /// Convert pixelflow_ir::Expr to ExprTree.

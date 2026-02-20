@@ -219,7 +219,7 @@ impl ExprTree {
 ///
 /// The cost function can be any type implementing `CostFunction`:
 /// - `CostModel` for hardcoded costs
-/// - Neural cost models (e.g., `FactoredNnue` via adapter)
+/// - Neural cost models (e.g., `ExprNnue` via adapter)
 /// - Custom domain-specific cost functions
 pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (ExprTree, usize) {
     use alloc::collections::BTreeSet;

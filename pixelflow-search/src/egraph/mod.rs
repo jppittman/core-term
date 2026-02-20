@@ -26,6 +26,8 @@ mod graph;
 pub mod guided_search;  // Guided search with learned rule filtering
 mod node;
 pub mod nnue_adapter;
+pub mod nnue_cache;     // NNUE metadata cache for e-graph nodes
+pub mod nnue_optimize;  // NNUE-guided expression optimization
 pub mod ops;
 pub mod rewrite;
 pub mod saturate;
@@ -42,8 +44,10 @@ pub use saturate::{SaturationResult, saturate_with_budget, achievable_cost_withi
 pub use best_first::{BestFirstPlanner, BestFirstConfig, BestFirstResult, BestFirstContext, StopReason, TrajectoryStep, SearchTrajectory};
 pub use guided_search::{
     GuidedSearch, GuidedSearchResult, RuleFeatures, RuleStats, EpochRecord, RuleRecord,
-    DualMaskSearchResult, DualMaskEpochRecord, PairRecord,
+    UnifiedMaskSearchResult, UnifiedMaskEpochRecord, UnifiedPairRecord,
 };
+pub use nnue_optimize::{NnueOptimizer, OptimizeConfig, OptimizeResult};
+pub use nnue_cache::{NnueCache, ENodeMetadata};
 
 // Re-export NNUE adapter types
 pub use nnue_adapter::{NnueCostAdapter, predict_tree_cost, predict_tree_priority};

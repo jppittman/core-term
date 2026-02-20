@@ -433,6 +433,43 @@ impl GuidedSearch {
         self.run(random_guide, judge, costs)
     }
 
+    /// Run with epsilon-greedy exploration.
+    ///
+    /// With probability (1-epsilon): uniform (accept all rules)
+    /// With probability epsilon: random (accept with probability 0.5)
+    ///
+    /// This creates variance to break "stable zero" equilibrium while still
+    /// mostly finding good optimizations.
+    pub fn run_epsilon_greedy<J, C>(
+        &mut self,
+        judge: J,
+        costs: &C,
+        epsilon: f32,
+        seed: u64,
+    ) -> GuidedSearchResult
+    where
+        J: FnMut(&ExprTree) -> i64,
+        C: CostFunction,
+    {
+        let mut state = seed;
+        let epsilon_guide = move |_: &EGraph, _: usize, _: &RuleStats| -> f32 {
+            // LCG for random number
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let r = (state as f32) / (u64::MAX as f32);
+
+            if r < epsilon {
+                // Explore: return random score [0, 1]
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                (state as f32) / (u64::MAX as f32)
+            } else {
+                // Exploit: accept all (score = 1.0)
+                1.0
+            }
+        };
+
+        self.run(epsilon_guide, judge, costs)
+    }
+
     /// Finish search and return result.
     fn finish(
         &self,
@@ -449,184 +486,59 @@ impl GuidedSearch {
         }
     }
 
-    /// Run with dual-mask guide (expression mask × rule mask).
+    // =========================================================================
+    // Unified Mask Architecture (ExprNnue with bilinear interaction)
+    //
+    // This replaces the separate DualMaskGuide with a unified architecture that
+    // scales to 1000+ rules. Uses bilinear expr-rule scoring.
+    // =========================================================================
+
+    /// Run with unified dual-mask architecture (ExprNnue).
     ///
-    /// This uses egg-style application (rules apply everywhere they match),
-    /// but the dual-mask learns to predict which (expr, rule) pairs will fire.
-    ///
-    /// Training signal:
-    /// - Pair fires → positive (correct prediction)
-    /// - Pair predicted high but doesn't fire → penalty (illegal/non-matching)
-    pub fn run_dual_mask<J, C>(
-        &mut self,
-        dual_mask: &crate::nnue::DualMaskGuide,
-        mut judge: J,
-        costs: &C,
-    ) -> DualMaskSearchResult
-    where
-        J: FnMut(&ExprTree) -> i64,
-        C: CostFunction,
-    {
-        use crate::nnue::dual_mask::{EXPR_FEATURE_DIM, RULE_FEATURE_DIM};
-
-        let mut trajectory = Vec::new();
-        let num_rules = self.egraph.num_rules();
-        let num_classes = self.egraph.num_classes();
-
-        if num_rules == 0 {
-            let (tree, _) = self.egraph.extract_best(self.root, costs);
-            let cost = judge(&tree);
-            return DualMaskSearchResult {
-                best_tree: tree,
-                best_cost: cost,
-                epochs_used: 0,
-                pair_records: trajectory,
-                stop_reason: StopReason::NoRules,
-            };
-        }
-
-        // Initial extraction
-        let (initial_tree, _) = self.egraph.extract_best(self.root, costs);
-        self.best_cost = judge(&initial_tree);
-        self.best_tree = Some(initial_tree);
-
-        loop {
-            if self.epoch >= self.max_epochs {
-                return self.finish_dual_mask(StopReason::MaxEpochs, trajectory);
-            }
-
-            // Extract features for all e-classes
-            let expr_features: Vec<[f32; EXPR_FEATURE_DIM]> = (0..num_classes)
-                .map(|i| self.extract_expr_features(EClassId(i as u32)))
-                .collect();
-
-            // Extract features for all rules
-            let rule_features: Vec<[f32; RULE_FEATURE_DIM]> = (0..num_rules)
-                .map(|i| self.extract_dual_mask_rule_features(i))
-                .collect();
-
-            // Score all (expr, rule) pairs
-            // For now, consider all pairs as potentially legal (we'll check actual matching)
-            let all_pairs: Vec<(usize, usize)> = (0..num_classes)
-                .flat_map(|e| (0..num_rules).map(move |r| (e, r)))
-                .collect();
-
-            let scores = dual_mask.score_actions(&expr_features, &rule_features, &all_pairs);
-
-            // Apply rules egg-style and record which (expr, rule) pairs actually fired
-            let cost_before = self.best_cost;
-            let mut total_changes = 0;
-            let mut epoch_pairs = Vec::new();
-
-            for rule_idx in 0..num_rules {
-                for class_idx in 0..num_classes {
-                    let class_id = EClassId(class_idx as u32);
-                    let class_id = self.egraph.find(class_id);
-
-                    // Get the score for this pair
-                    let pair_idx = class_idx * num_rules + rule_idx;
-                    let predicted_score = scores.get(pair_idx).copied().unwrap_or(0.0);
-
-                    // Try to apply rule at this class
-                    let nodes: Vec<_> = self.egraph.nodes(class_id).to_vec();
-                    let mut pair_fired = false;
-
-                    for (node_idx, _) in nodes.iter().enumerate() {
-                        if self.egraph.apply_single_rule(rule_idx, class_id, node_idx) {
-                            pair_fired = true;
-                            total_changes += 1;
-                        }
-                    }
-
-                    // Record training signal
-                    epoch_pairs.push(PairRecord {
-                        expr_idx: class_idx,
-                        rule_idx,
-                        predicted_score,
-                        fired: pair_fired,
-                        expr_features: expr_features[class_idx],
-                        rule_features: rule_features[rule_idx],
-                    });
-                }
-
-                // Update rule stats
-                self.rule_stats[rule_idx].total_attempts += 1;
-            }
-
-            // Extract and evaluate
-            let cost_after = if total_changes > 0 {
-                let (tree, _) = self.egraph.extract_best(self.root, costs);
-                let cost = judge(&tree);
-                if cost < self.best_cost {
-                    self.best_cost = cost;
-                    self.best_tree = Some(tree);
-                }
-                self.best_cost
-            } else {
-                cost_before
-            };
-
-            trajectory.push(DualMaskEpochRecord {
-                epoch: self.epoch,
-                pairs: epoch_pairs,
-                cost_before,
-                cost_after,
-                total_changes,
-            });
-
-            if total_changes == 0 {
-                return self.finish_dual_mask(StopReason::Saturated, trajectory);
-            }
-
-            self.epoch += 1;
-        }
-    }
-
-    /// Run with dual-mask FILTERING (only try approved pairs).
-    ///
-    /// This is the key difference from run_dual_mask: instead of trying all
-    /// (expr, rule) pairs egg-style, we ONLY try pairs the guide approves.
-    ///
-    /// This enables handling hundreds/thousands of rules without explosion.
+    /// The unified architecture combines expression and rule scoring in a single
+    /// model with bilinear interaction, scaling to 1000+ rules.
     ///
     /// # Arguments
-    /// * `dual_mask` - The guide that filters which pairs to try
+    /// * `model` - ExprNnue with trained unified mask architecture
+    /// * `rule_features` - Pre-computed hand-crafted features for each rule
     /// * `judge` - Cost function for extracted trees
     /// * `costs` - Cost model for extraction
     /// * `threshold` - Pairs with sigmoid(score) > threshold are approved
     /// * `max_classes` - E-graph space limit (resource constraint)
-    /// * `epsilon` - Exploration rate: with this probability, try random pairs
-    /// * `rng_seed` - Random seed for epsilon-greedy exploration
-    pub fn run_dual_mask_filtered<J, C>(
+    pub fn run_dual_mask_unified<J, C>(
         &mut self,
-        dual_mask: &crate::nnue::DualMaskGuide,
+        model: &crate::nnue::ExprNnue,
+        rule_features: &crate::nnue::RuleFeatures,
         mut judge: J,
         costs: &C,
         threshold: f32,
         max_classes: usize,
-        epsilon: f32,
-        mut rng_seed: u64,
-    ) -> DualMaskSearchResult
+    ) -> UnifiedMaskSearchResult
     where
         J: FnMut(&ExprTree) -> i64,
         C: CostFunction,
     {
-        use crate::nnue::dual_mask::{EXPR_FEATURE_DIM, RULE_FEATURE_DIM};
-
-        let mut trajectory = Vec::new();
         let num_rules = self.egraph.num_rules();
+        let mut pairs_tried = 0usize;
+        let mut pairs_skipped = 0usize;
+        let mut trajectory = Vec::new();
 
         if num_rules == 0 {
             let (tree, _) = self.egraph.extract_best(self.root, costs);
             let cost = judge(&tree);
-            return DualMaskSearchResult {
+            return UnifiedMaskSearchResult {
                 best_tree: tree,
                 best_cost: cost,
                 epochs_used: 0,
-                pair_records: trajectory,
+                pairs_tried,
+                pairs_skipped,
+                trajectory,
                 stop_reason: StopReason::NoRules,
             };
         }
+
+        // Pre-encode all rules (cached for entire search)
+        let rule_embeds = model.encode_all_rules(rule_features, num_rules);
 
         // Initial extraction
         let (initial_tree, _) = self.egraph.extract_best(self.root, costs);
@@ -634,96 +546,75 @@ impl GuidedSearch {
         self.best_tree = Some(initial_tree);
 
         loop {
+            // Termination checks
             if self.epoch >= self.max_epochs {
-                return self.finish_dual_mask(StopReason::MaxEpochs, trajectory);
+                return self.finish_unified_mask(
+                    StopReason::MaxEpochs, pairs_tried, pairs_skipped, trajectory
+                );
             }
 
-            // Get current e-graph state
             let num_classes = self.egraph.num_classes();
-
-            // Check space constraint
-            let space_remaining = 1.0 - (num_classes as f32 / max_classes as f32);
             if num_classes >= max_classes {
-                // Out of space - guide filled graph with junk
-                return self.finish_dual_mask(StopReason::MaxEpochs, trajectory); // TODO: add OutOfSpace reason
+                return self.finish_unified_mask(
+                    StopReason::MaxEpochs, // TODO: add OutOfSpace reason
+                    pairs_tried, pairs_skipped, trajectory
+                );
             }
 
-            // Extract features for all e-classes
-            let expr_features: Vec<[f32; EXPR_FEATURE_DIM]> = (0..num_classes)
-                .map(|i| self.extract_expr_features(EClassId(i as u32)))
-                .collect();
-
-            // Extract features for all rules WITH resource context
-            let rule_features: Vec<[f32; RULE_FEATURE_DIM]> = (0..num_rules)
-                .map(|i| self.extract_dual_mask_rule_features_with_resources(
-                    i,
-                    space_remaining,
-                    1.0, // pairs_remaining not used as hard constraint
-                ))
-                .collect();
-
-            // All possible (expr, rule) pairs
-            let all_pairs: Vec<(usize, usize)> = (0..num_classes)
-                .flat_map(|e| (0..num_rules).map(move |r| (e, r)))
-                .collect();
-
-            // Filter to approved pairs (guide decides what to try)
-            let approved_pairs = dual_mask.get_approved_actions(
-                &expr_features,
-                &rule_features,
-                &all_pairs,
-                threshold,
-            );
-
-            // Epsilon-greedy: with probability epsilon, add random pairs for exploration
-            let mut pairs_to_try = approved_pairs;
-            rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-            if (rng_seed as f32 / u64::MAX as f32) < epsilon && !all_pairs.is_empty() {
-                let num_random = (all_pairs.len() / 10).max(1).min(20);
-                for _ in 0..num_random {
-                    rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-                    let idx = (rng_seed as usize) % all_pairs.len();
-                    let random_pair = all_pairs[idx];
-                    if !pairs_to_try.contains(&random_pair) {
-                        pairs_to_try.push(random_pair);
-                    }
-                }
-            }
-
-            // If no pairs to try, we're done
-            if pairs_to_try.is_empty() {
-                return self.finish_dual_mask(StopReason::GuidePredictsNoMatch, trajectory);
-            }
-
-            // Apply only the approved pairs
             let cost_before = self.best_cost;
             let mut total_changes = 0;
             let mut epoch_pairs = Vec::new();
 
-            for (class_idx, rule_idx) in &pairs_to_try {
-                let class_id = EClassId(*class_idx as u32);
+            // For each e-class
+            for class_idx in 0..num_classes {
+                let class_id = EClassId(class_idx as u32);
                 let class_id = self.egraph.find(class_id);
 
-                // Try to apply this specific rule at this class
-                let nodes: Vec<_> = self.egraph.nodes(class_id).to_vec();
-                let mut pair_fired = false;
+                // Get representative expression for this e-class
+                // We extract the best tree rooted at this class to get its structure
+                let (repr_tree, _) = self.egraph.extract_best(class_id, costs);
 
-                for (node_idx, _) in nodes.iter().enumerate() {
-                    if self.egraph.apply_single_rule(*rule_idx, class_id, node_idx) {
-                        pair_fired = true;
-                        total_changes += 1;
+                // Convert ExprTree to Expr for the model
+                let expr = expr_tree_to_expr(&repr_tree);
+
+                // Score all rules for this expression (one forward pass)
+                let scores = model.mask_score_all_rules(&expr, &rule_embeds);
+
+                // Score rules, record decisions, apply approved ones
+                for (rule_idx, &score) in scores.iter().enumerate().take(num_rules) {
+                    let prob = sigmoid(score);
+                    let approved = prob > threshold;
+
+                    // Record this decision for REINFORCE
+                    // Sample ~10% of rejections to avoid memory explosion
+                    let should_record = approved || {
+                        let hash = (class_idx.wrapping_mul(31) ^ rule_idx) as u32;
+                        hash % 10 == 0
+                    };
+
+                    if should_record {
+                        epoch_pairs.push(UnifiedPairRecord {
+                            class_idx,
+                            rule_idx,
+                            score,
+                            approved,
+                        });
+                    }
+
+                    if approved {
+                        pairs_tried += 1;
+
+                        // Try to apply this rule at this class
+                        let nodes: Vec<_> = self.egraph.nodes(class_id).to_vec();
+                        for (node_idx, _) in nodes.iter().enumerate() {
+                            if self.egraph.apply_single_rule(rule_idx, class_id, node_idx) {
+                                total_changes += 1;
+                            }
+                        }
+                    } else {
+                        pairs_skipped += 1;
                     }
                 }
-
-                // Record for training
-                epoch_pairs.push(PairRecord {
-                    expr_idx: *class_idx,
-                    rule_idx: *rule_idx,
-                    predicted_score: 0.0, // Could compute if needed
-                    fired: pair_fired,
-                    expr_features: expr_features[*class_idx],
-                    rule_features: rule_features[*rule_idx],
-                });
             }
 
             // Extract and evaluate
@@ -739,7 +630,7 @@ impl GuidedSearch {
                 cost_before
             };
 
-            trajectory.push(DualMaskEpochRecord {
+            trajectory.push(UnifiedMaskEpochRecord {
                 epoch: self.epoch,
                 pairs: epoch_pairs,
                 cost_before,
@@ -748,166 +639,461 @@ impl GuidedSearch {
             });
 
             if total_changes == 0 {
-                return self.finish_dual_mask(StopReason::Saturated, trajectory);
+                return self.finish_unified_mask(
+                    StopReason::Saturated, pairs_tried, pairs_skipped, trajectory
+                );
             }
 
             self.epoch += 1;
         }
     }
 
-    /// Extract features for an e-class (for dual-mask expression head).
-    fn extract_expr_features(&self, class_id: EClassId) -> [f32; crate::nnue::dual_mask::EXPR_FEATURE_DIM] {
-        let class_id = self.egraph.find(class_id);
-        let nodes = self.egraph.nodes(class_id);
-        let class_size = nodes.len() as f32;
+    /// Run with unified dual-mask architecture using LHS/RHS template-based rule encoding.
+    ///
+    /// This is the preferred method for the unified architecture. Rules are encoded
+    /// using their LHS/RHS expression templates through the shared backbone, enabling
+    /// learned structural similarity instead of hand-crafted features.
+    ///
+    /// # Arguments
+    /// * `model` - ExprNnue with trained unified mask architecture
+    /// * `templates` - LHS/RHS expression templates for each rule
+    /// * `judge` - Cost function for extracted trees
+    /// * `costs` - Cost model for extraction
+    /// * `threshold` - Pairs with sigmoid(score) > threshold are approved
+    /// * `max_classes` - E-graph space limit (resource constraint)
+    ///
+    /// # Template Encoding
+    /// Each rule is encoded as: `[z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS]`
+    /// where z_LHS and z_RHS are the shared expr embeddings of the templates.
+    /// This captures what the rule matches, what it produces, and their relationship.
+    pub fn run_dual_mask_with_templates<J, C>(
+        &mut self,
+        model: &crate::nnue::ExprNnue,
+        templates: &crate::nnue::RuleTemplates,
+        mut judge: J,
+        costs: &C,
+        threshold: f32,
+        max_classes: usize,
+    ) -> UnifiedMaskSearchResult
+    where
+        J: FnMut(&ExprTree) -> i64,
+        C: CostFunction,
+    {
+        let num_rules = self.egraph.num_rules();
+        let mut pairs_tried = 0usize;
+        let mut pairs_skipped = 0usize;
+        let mut trajectory = Vec::new();
 
-        // Compute some basic structural features
-        let mut has_expensive = 0.0f32;
-        let mut max_children = 0usize;
-        let mut op_categories = [0.0f32; 8];
-
-        for node in nodes {
-            match node {
-                super::node::ENode::Op { op, children } => {
-                    max_children = max_children.max(children.len());
-                    // Check for expensive ops
-                    let kind = op.kind();
-                    if matches!(kind,
-                        pixelflow_ir::OpKind::Div |
-                        pixelflow_ir::OpKind::Sqrt |
-                        pixelflow_ir::OpKind::Sin |
-                        pixelflow_ir::OpKind::Cos |
-                        pixelflow_ir::OpKind::Exp |
-                        pixelflow_ir::OpKind::Ln
-                    ) {
-                        has_expensive = 1.0;
-                    }
-                    // Categorize op type
-                    let cat = (kind as usize) % 8;
-                    op_categories[cat] = 1.0;
-                }
-                super::node::ENode::Var(_) => {
-                    op_categories[0] = 1.0; // vars in category 0
-                }
-                super::node::ENode::Const(_) => {
-                    op_categories[1] = 1.0; // consts in category 1
-                }
-            }
+        if num_rules == 0 {
+            let (tree, _) = self.egraph.extract_best(self.root, costs);
+            let cost = judge(&tree);
+            return UnifiedMaskSearchResult {
+                best_tree: tree,
+                best_cost: cost,
+                epochs_used: 0,
+                pairs_tried,
+                pairs_skipped,
+                trajectory,
+                stop_reason: StopReason::NoRules,
+            };
         }
 
-        let is_leaf = if max_children == 0 { 1.0 } else { 0.0 };
-        let num_classes = self.egraph.num_classes() as f32;
-        let relative_idx = class_id.0 as f32 / num_classes.max(1.0);
+        // Pre-encode all rules using LHS/RHS templates (cached for entire search)
+        let rule_embeds = model.encode_all_rules_from_templates(templates);
 
-        [
-            class_size / 10.0,           // normalized class size
-            max_children as f32 / 4.0,   // normalized fan-out
-            is_leaf,
-            has_expensive,
-            relative_idx,                // position in graph
-            self.epoch as f32 / self.max_epochs as f32, // time fraction
-            num_classes / 100.0,         // graph size context
-            self.egraph.node_count() as f32 / 500.0,
-            op_categories[0],
-            op_categories[1],
-            op_categories[2],
-            op_categories[3],
-            op_categories[4],
-            op_categories[5],
-            op_categories[6],
-            op_categories[7],
-        ]
+        // Initial extraction
+        let (initial_tree, _) = self.egraph.extract_best(self.root, costs);
+        self.best_cost = judge(&initial_tree);
+        self.best_tree = Some(initial_tree);
+
+        loop {
+            // Termination checks
+            if self.epoch >= self.max_epochs {
+                return self.finish_unified_mask(
+                    StopReason::MaxEpochs, pairs_tried, pairs_skipped, trajectory
+                );
+            }
+
+            let num_classes = self.egraph.num_classes();
+            if num_classes >= max_classes {
+                return self.finish_unified_mask(
+                    StopReason::MaxEpochs, // Resource limit (maps to MaxEpochs for now)
+                    pairs_tried, pairs_skipped, trajectory
+                );
+            }
+
+            let cost_before = self.best_cost;
+            let mut total_changes = 0;
+            let mut epoch_pairs = Vec::new();
+
+            // For each e-class
+            for class_idx in 0..num_classes {
+                let class_id = EClassId(class_idx as u32);
+                let class_id = self.egraph.find(class_id);
+
+                // Get representative expression for this e-class
+                let (repr_tree, _) = self.egraph.extract_best(class_id, costs);
+                let expr = expr_tree_to_expr(&repr_tree);
+
+                // Score all rules for this expression (one forward pass)
+                let scores = model.mask_score_all_rules(&expr, &rule_embeds);
+
+                // Score rules, record decisions, apply approved ones
+                for (rule_idx, &score) in scores.iter().enumerate().take(num_rules) {
+                    let prob = sigmoid(score);
+                    let approved = prob > threshold;
+
+                    // Record this decision for REINFORCE
+                    // Sample ~10% of rejections to avoid memory explosion
+                    let should_record = approved || {
+                        let hash = (class_idx.wrapping_mul(31) ^ rule_idx) as u32;
+                        hash % 10 == 0
+                    };
+
+                    if should_record {
+                        epoch_pairs.push(UnifiedPairRecord {
+                            class_idx,
+                            rule_idx,
+                            score,
+                            approved,
+                        });
+                    }
+
+                    if approved {
+                        pairs_tried += 1;
+
+                        // Try to apply this rule at this class
+                        let nodes: Vec<_> = self.egraph.nodes(class_id).to_vec();
+                        for (node_idx, _) in nodes.iter().enumerate() {
+                            if self.egraph.apply_single_rule(rule_idx, class_id, node_idx) {
+                                total_changes += 1;
+                            }
+                        }
+                    } else {
+                        pairs_skipped += 1;
+                    }
+                }
+            }
+
+            // Extract and evaluate
+            let cost_after = if total_changes > 0 {
+                let (tree, _) = self.egraph.extract_best(self.root, costs);
+                let cost = judge(&tree);
+                if cost < self.best_cost {
+                    self.best_cost = cost;
+                    self.best_tree = Some(tree);
+                }
+                self.best_cost
+            } else {
+                cost_before
+            };
+
+            trajectory.push(UnifiedMaskEpochRecord {
+                epoch: self.epoch,
+                pairs: epoch_pairs,
+                cost_before,
+                cost_after,
+                total_changes,
+            });
+
+            if total_changes == 0 {
+                return self.finish_unified_mask(
+                    StopReason::Saturated, pairs_tried, pairs_skipped, trajectory
+                );
+            }
+
+            self.epoch += 1;
+        }
     }
 
-    /// Extract features for a rule (for dual-mask rule head).
-    fn extract_dual_mask_rule_features(&self, rule_idx: usize) -> [f32; crate::nnue::dual_mask::RULE_FEATURE_DIM] {
-        self.extract_dual_mask_rule_features_with_resources(rule_idx, 1.0, 1.0)
-    }
-
-    /// Extract features for a rule with resource context (Markovian).
-    ///
-    /// Just the raw budget fractions - network learns its own thresholds.
-    fn extract_dual_mask_rule_features_with_resources(
-        &self,
-        rule_idx: usize,
-        space_remaining: f32,
-        pairs_remaining: f32,
-    ) -> [f32; crate::nnue::dual_mask::RULE_FEATURE_DIM] {
-        let stats = &self.rule_stats[rule_idx];
-        let num_rules = self.egraph.num_rules() as f32;
-
-        [
-            rule_idx as f32 / num_rules.max(1.0),  // 0: normalized rule index
-            self.egraph.num_classes() as f32 / 100.0, // 1: current graph size
-            self.egraph.node_count() as f32 / 500.0,  // 2: current node count
-            self.epoch as f32 / self.max_epochs as f32, // 3: time used
-            stats.match_rate(),                        // 4: historical match rate
-            stats.epochs_since_match(self.epoch).min(20) as f32 / 20.0, // 5: staleness
-            (self.max_epochs - self.epoch) as f32 / self.max_epochs as f32, // 6: time remaining
-            space_remaining,                           // 7: space remaining
-            pairs_remaining,                           // 8: pairs remaining
-        ]
-    }
-
-    fn finish_dual_mask(
+    fn finish_unified_mask(
         &self,
         stop_reason: StopReason,
-        trajectory: Vec<DualMaskEpochRecord>,
-    ) -> DualMaskSearchResult {
-        DualMaskSearchResult {
+        pairs_tried: usize,
+        pairs_skipped: usize,
+        trajectory: Vec<UnifiedMaskEpochRecord>,
+    ) -> UnifiedMaskSearchResult {
+        UnifiedMaskSearchResult {
             best_tree: self.best_tree.clone().expect("best_tree should be set"),
             best_cost: self.best_cost,
             epochs_used: self.epoch,
-            pair_records: trajectory,
+            pairs_tried,
+            pairs_skipped,
+            trajectory,
             stop_reason,
+        }
+    }
+
+    /// Run with NnueCache for efficient batch-cached rule scoring.
+    ///
+    /// This is the most efficient method for large-scale search:
+    /// - At each epoch start, all e-node embeddings are batch-computed
+    /// - Rule scoring is O(1) per (e-node, rule) pair using cached mask_features
+    /// - Memory: ~200 bytes per cached e-node
+    ///
+    /// # Arguments
+    /// * `cache` - NnueCache with pre-computed rule embeddings
+    /// * `judge` - Cost function for extracted trees
+    /// * `costs` - Cost model for extraction
+    /// * `threshold` - Pairs with sigmoid(score) > threshold are approved
+    /// * `max_classes` - E-graph space limit (resource constraint)
+    pub fn run_with_nnue_cache<J, C>(
+        &mut self,
+        cache: &mut super::nnue_cache::NnueCache,
+        mut judge: J,
+        costs: &C,
+        threshold: f32,
+        max_classes: usize,
+    ) -> UnifiedMaskSearchResult
+    where
+        J: FnMut(&ExprTree) -> i64,
+        C: CostFunction,
+    {
+        let num_rules = self.egraph.num_rules();
+        let mut pairs_tried = 0usize;
+        let mut pairs_skipped = 0usize;
+        let mut trajectory = Vec::new();
+
+        if num_rules == 0 || cache.rule_embeds.is_empty() {
+            let (tree, _) = self.egraph.extract_best(self.root, costs);
+            let cost = judge(&tree);
+            return UnifiedMaskSearchResult {
+                best_tree: tree,
+                best_cost: cost,
+                epochs_used: 0,
+                pairs_tried,
+                pairs_skipped,
+                trajectory,
+                stop_reason: StopReason::NoRules,
+            };
+        }
+
+        // Initial extraction
+        let (initial_tree, _) = self.egraph.extract_best(self.root, costs);
+        self.best_cost = judge(&initial_tree);
+        self.best_tree = Some(initial_tree);
+
+        loop {
+            // Termination checks
+            if self.epoch >= self.max_epochs {
+                return self.finish_unified_mask(
+                    StopReason::MaxEpochs, pairs_tried, pairs_skipped, trajectory
+                );
+            }
+
+            let num_classes = self.egraph.num_classes();
+            if num_classes >= max_classes {
+                return self.finish_unified_mask(
+                    StopReason::MaxEpochs, // Resource limit
+                    pairs_tried, pairs_skipped, trajectory
+                );
+            }
+
+            // Batch refresh all e-node embeddings at epoch start (Option D from plan)
+            cache.refresh_all(&self.egraph);
+
+            let cost_before = self.best_cost;
+            let mut total_changes = 0;
+            let mut epoch_pairs = Vec::new();
+
+            // Collect approved (class, node, rule) triples first, then apply
+            // This avoids borrow conflicts between scoring and mutation
+            let mut approved_actions: Vec<(EClassId, usize, usize)> = Vec::new();
+
+            // For each e-class (collect class IDs first to avoid borrow issues)
+            for class_idx in 0..num_classes {
+                let class_id = EClassId(class_idx as u32);
+                let class_id = self.egraph.find(class_id);
+                let node_count = self.egraph.nodes(class_id).len();
+
+                // For each e-node in the class
+                for node_idx in 0..node_count {
+                    // Score all rules using cached mask_features (O(1) per rule)
+                    let scores = cache.score_all_rules(class_id, node_idx);
+
+                    for (rule_idx, &score) in scores.iter().enumerate().take(num_rules) {
+                        let prob = sigmoid(score);
+                        let approved = prob > threshold;
+
+                        // Sample ~10% of rejections to avoid memory explosion
+                        let should_record = approved || {
+                            let hash = (class_idx.wrapping_mul(31) ^ rule_idx) as u32;
+                            hash % 10 == 0
+                        };
+
+                        if should_record {
+                            epoch_pairs.push(UnifiedPairRecord {
+                                class_idx,
+                                rule_idx,
+                                score,
+                                approved,
+                            });
+                        }
+
+                        if approved {
+                            approved_actions.push((class_id, node_idx, rule_idx));
+                        } else {
+                            pairs_skipped += 1;
+                        }
+                    }
+                }
+            }
+
+            // Now apply all approved actions (mutations happen here)
+            for (class_id, node_idx, rule_idx) in approved_actions {
+                pairs_tried += 1;
+                if self.egraph.apply_single_rule(rule_idx, class_id, node_idx) {
+                    total_changes += 1;
+                }
+            }
+
+            // Extract and evaluate
+            let cost_after = if total_changes > 0 {
+                let (tree, _) = self.egraph.extract_best(self.root, costs);
+                let cost = judge(&tree);
+                if cost < self.best_cost {
+                    self.best_cost = cost;
+                    self.best_tree = Some(tree);
+                }
+                self.best_cost
+            } else {
+                cost_before
+            };
+
+            trajectory.push(UnifiedMaskEpochRecord {
+                epoch: self.epoch,
+                pairs: epoch_pairs,
+                cost_before,
+                cost_after,
+                total_changes,
+            });
+
+            if total_changes == 0 {
+                return self.finish_unified_mask(
+                    StopReason::Saturated, pairs_tried, pairs_skipped, trajectory
+                );
+            }
+
+            self.epoch += 1;
         }
     }
 }
 
-/// Record for a single (expr, rule) pair evaluation.
-#[derive(Clone, Debug)]
-pub struct PairRecord {
-    /// E-class index
-    pub expr_idx: usize,
-    /// Rule index
-    pub rule_idx: usize,
-    /// Dual-mask predicted score
-    pub predicted_score: f32,
-    /// Did the rule actually fire at this expression?
-    pub fired: bool,
-    /// Expression features used
-    pub expr_features: [f32; crate::nnue::dual_mask::EXPR_FEATURE_DIM],
-    /// Rule features used
-    pub rule_features: [f32; crate::nnue::dual_mask::RULE_FEATURE_DIM],
+
+/// Convert ExprTree to pixelflow_ir::Expr for unified mask scoring.
+fn expr_tree_to_expr(tree: &ExprTree) -> pixelflow_ir::Expr {
+    use super::extract::Leaf;
+
+    match tree {
+        ExprTree::Leaf(Leaf::Var(idx)) => pixelflow_ir::Expr::Var(*idx),
+        ExprTree::Leaf(Leaf::Const(val)) => pixelflow_ir::Expr::Const(*val),
+        ExprTree::Op { op, children } => {
+            let kind = op.kind();
+            match children.len() {
+                0 => {
+                    // Nullary - shouldn't happen, but treat as const
+                    pixelflow_ir::Expr::Const(0.0)
+                }
+                1 => pixelflow_ir::Expr::Unary(
+                    kind,
+                    Box::new(expr_tree_to_expr(&children[0])),
+                ),
+                2 => pixelflow_ir::Expr::Binary(
+                    kind,
+                    Box::new(expr_tree_to_expr(&children[0])),
+                    Box::new(expr_tree_to_expr(&children[1])),
+                ),
+                3 => pixelflow_ir::Expr::Ternary(
+                    kind,
+                    Box::new(expr_tree_to_expr(&children[0])),
+                    Box::new(expr_tree_to_expr(&children[1])),
+                    Box::new(expr_tree_to_expr(&children[2])),
+                ),
+                _ => pixelflow_ir::Expr::Nary(
+                    kind,
+                    children.iter().map(expr_tree_to_expr).collect(),
+                ),
+            }
+        }
+    }
 }
 
-/// Epoch record for dual-mask training.
+/// Sigmoid activation for probability conversion.
+#[inline]
+fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + libm::expf(-x))
+}
+
+// =============================================================================
+// Unified Mask Architecture Result Types
+// =============================================================================
+
+/// Record of a mask decision for REINFORCE training.
+///
+/// We only care about: what decision was made, and what was the score.
+/// The reward comes from the FINAL extraction cost, not per-rule outcomes.
 #[derive(Clone, Debug)]
-pub struct DualMaskEpochRecord {
+pub struct UnifiedPairRecord {
+    /// E-class index
+    pub class_idx: usize,
+    /// Rule index
+    pub rule_idx: usize,
+    /// Raw bilinear score (before sigmoid)
+    pub score: f32,
+    /// Was this pair approved (prob > threshold)?
+    pub approved: bool,
+}
+
+/// Epoch record for unified mask training.
+#[derive(Clone, Debug)]
+pub struct UnifiedMaskEpochRecord {
     /// Epoch number
     pub epoch: usize,
-    /// Per-pair records
-    pub pairs: Vec<PairRecord>,
+    /// Per-pair records (only for tried pairs)
+    pub pairs: Vec<UnifiedPairRecord>,
     /// Cost before epoch
     pub cost_before: i64,
     /// Cost after epoch
     pub cost_after: i64,
-    /// Total changes
+    /// Total changes made
     pub total_changes: usize,
 }
 
-/// Result of dual-mask guided search.
-pub struct DualMaskSearchResult {
-    /// Best expression found
+/// Result of unified dual-mask guided search.
+pub struct UnifiedMaskSearchResult {
+    /// Best expression tree found
     pub best_tree: ExprTree,
-    /// Cost of best expression
+    /// Cost of best tree
     pub best_cost: i64,
-    /// Epochs used
+    /// Number of epochs used
     pub epochs_used: usize,
-    /// Training data: per-epoch pair records
-    pub pair_records: Vec<DualMaskEpochRecord>,
-    /// Why search stopped
+    /// Total (class, rule) pairs tried
+    pub pairs_tried: usize,
+    /// Total pairs skipped by filter
+    pub pairs_skipped: usize,
+    /// Training data: per-epoch records
+    pub trajectory: Vec<UnifiedMaskEpochRecord>,
+    /// Reason search stopped
     pub stop_reason: StopReason,
+}
+
+impl UnifiedMaskSearchResult {
+    /// Fraction of pairs skipped by the mask filter.
+    ///
+    /// Higher is better (more efficient). Target: >80%.
+    pub fn skip_rate(&self) -> f32 {
+        let total = self.pairs_tried + self.pairs_skipped;
+        if total == 0 {
+            0.0
+        } else {
+            self.pairs_skipped as f32 / total as f32
+        }
+    }
+
+    /// Total pairs considered (tried + skipped).
+    pub fn total_pairs(&self) -> usize {
+        self.pairs_tried + self.pairs_skipped
+    }
 }
 
 /// Collect training data by running egg-style saturation.

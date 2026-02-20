@@ -8,7 +8,7 @@
 
 use pixelflow_search::egraph::{EGraph, ExprTree, Leaf, ops, CostModel, extract_beam, predict_tree_cost, expr_tree_to_nnue};
 use pixelflow_search::math::all_math_rules;
-use pixelflow_search::nnue::DualHeadNnue;
+use pixelflow_search::nnue::ExprNnue;
 use pixelflow_ir::backend::emit::{compile, executable::KernelFn};
 use std::path::Path;
 use std::time::Instant;
@@ -21,7 +21,7 @@ fn main() {
     println!("    PSYCHEDELIC SHADER: Old Optimizer vs Neural Judge");
     println!("═══════════════════════════════════════════════════════════════\n");
 
-    let judge = DualHeadNnue::load(Path::new(JUDGE_WEIGHTS))
+    let judge = ExprNnue::load(Path::new(JUDGE_WEIGHTS))
         .unwrap_or_else(|e| panic!("Failed to load Judge: {}", e));
 
     // Build the psychedelic shader's core expressions
@@ -37,7 +37,7 @@ fn main() {
 }
 
 /// Radial field: (x² + y² - 0.7).abs()
-fn bench_radial_field(judge: &DualHeadNnue) {
+fn bench_radial_field(judge: &ExprNnue) {
     println!("━━━ Component 1: Radial Field ━━━");
     println!("    Expression: |x² + y² - 0.7|\n");
 
@@ -55,7 +55,7 @@ fn bench_radial_field(judge: &DualHeadNnue) {
 }
 
 /// Swirl: sin(x + t) * |x - y| * 0.2
-fn bench_swirl(judge: &DualHeadNnue) {
+fn bench_swirl(judge: &ExprNnue) {
     println!("━━━ Component 2: Swirl ━━━");
     println!("    Expression: sin(x + t) * |x - y| * 0.2\n");
 
@@ -76,7 +76,7 @@ fn bench_swirl(judge: &DualHeadNnue) {
 }
 
 /// Soft clamp: raw / (|raw| + 1) where raw = exp(y) * radial_factor / swirl
-fn bench_soft_clamp_channel(judge: &DualHeadNnue) {
+fn bench_soft_clamp_channel(judge: &ExprNnue) {
     println!("━━━ Component 3: Soft Clamp Channel ━━━");
     println!("    Expression: exp(y) / (|exp(y)| + 1)\n");
 
@@ -128,7 +128,7 @@ fn bench_soft_clamp_channel(judge: &DualHeadNnue) {
 /// Full red channel computation (simplified)
 /// raw_r = exp(y * factor) * exp(-4 * radial) / swirl
 /// red = (raw_r / (|raw_r| + 1) + 1) * 0.5
-fn bench_full_channel(judge: &DualHeadNnue) {
+fn bench_full_channel(judge: &ExprNnue) {
     println!("━━━ Component 4: Full Channel (Red) ━━━");
     println!("    Expression: ((exp(y) * exp(-4*r²) / swirl) / (|...| + 1) + 1) * 0.5\n");
 
@@ -234,7 +234,7 @@ fn bench_full_channel(judge: &DualHeadNnue) {
 fn compare_optimizers<F: Fn(f32, f32) -> f32>(
     name: &str,
     expr: &ExprTree,
-    judge: &DualHeadNnue,
+    judge: &ExprNnue,
     baseline_fn: F,
 ) {
     // === UNOPTIMIZED ===

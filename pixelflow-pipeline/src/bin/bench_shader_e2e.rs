@@ -7,7 +7,7 @@ use pixelflow_core::{Field, Manifold};
 use pixelflow_compiler::kernel_raw;
 use pixelflow_search::egraph::{EGraph, ExprTree, Leaf, ops, CostModel, extract_beam, codegen};
 use pixelflow_search::math::all_math_rules;
-use pixelflow_search::nnue::DualHeadNnue;
+use pixelflow_search::nnue::ExprNnue;
 use std::path::Path;
 use std::time::Instant;
 
@@ -20,7 +20,7 @@ fn main() {
     println!("  Full optimization → kernel_raw! → Field (SIMD) → LLVM");
     println!("═══════════════════════════════════════════════════════════════\n");
 
-    let judge = DualHeadNnue::load(Path::new(JUDGE_WEIGHTS))
+    let judge = ExprNnue::load(Path::new(JUDGE_WEIGHTS))
         .unwrap_or_else(|e| panic!("Failed to load Judge: {}", e));
     let hce = CostModel::fully_optimized();
 
@@ -80,7 +80,7 @@ fn main() {
 fn bench_expression(
     name: &str,
     expr: ExprTree,
-    judge: &DualHeadNnue,
+    judge: &ExprNnue,
     hce: &CostModel,
 ) {
     println!("━━━ {} ━━━", name);

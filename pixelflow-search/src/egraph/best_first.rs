@@ -813,7 +813,7 @@ impl BestFirstPlanner {
     /// ## Example
     ///
     /// ```ignore
-    /// let nnue = DualHeadNnue::new_with_latency_prior(42);
+    /// let nnue = ExprNnue::new_with_latency_prior(42);
     /// let mut planner = BestFirstPlanner::from_tree(&tree, config);
     /// let result = planner.run_with_nnue(&nnue);
     /// ```
@@ -826,7 +826,7 @@ impl BestFirstPlanner {
     /// The CostModel is still used for tree extraction (picking which nodes
     /// from the e-graph), but cost *comparison* uses the learned value head.
     #[cfg(feature = "nnue")]
-    pub fn run_with_nnue(&mut self, nnue: &crate::nnue::DualHeadNnue) -> BestFirstResult {
+    pub fn run_with_nnue(&mut self, nnue: &crate::nnue::ExprNnue) -> BestFirstResult {
         use super::nnue_adapter::{predict_tree_cost, predict_tree_priority, NnueCostAdapter};
 
         // Use NNUE for extraction costs instead of hardcoded CostModel
@@ -948,7 +948,7 @@ impl BestFirstPlanner {
     #[cfg(feature = "nnue")]
     pub fn run_recording_with_nnue(
         &mut self,
-        nnue: &crate::nnue::DualHeadNnue,
+        nnue: &crate::nnue::ExprNnue,
     ) -> (BestFirstResult, SearchTrajectory) {
         use super::nnue_adapter::{predict_tree_cost, predict_tree_priority};
 

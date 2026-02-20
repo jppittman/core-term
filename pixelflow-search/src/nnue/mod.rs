@@ -21,18 +21,18 @@ use libm::fabsf;
 /// Re-export canonical IR types as the source of truth.
 pub use pixelflow_ir::{Expr, OpKind};
 
-/// Re-export FactoredNnue for single-head cost prediction.
-pub use factored::FactoredNnue;
+/// Re-export ExprNnue for single-head cost prediction.
+pub use factored::ExprNnue;
 
-/// Re-export DualHeadNnue for dual-head AlphaZero-style architecture.
-pub use factored::DualHeadNnue;
+/// Re-export ExprNnue for dual-head AlphaZero-style architecture.
+pub use factored::ExprNnue;
 
 /// Re-export key types from factored module.
 pub use factored::{EdgeAccumulator, OpEmbeddings, StructuralFeatures};
 
 /// Re-export unified mask architecture constants and types.
 pub use factored::{
-    EMBED_DIM, MLP_HIDDEN, RULE_FEATURE_DIM, MASK_MAX_RULES, RULE_CONCAT_DIM,
+    EMBED_DIM, MLP_HIDDEN, MASK_INPUT_DIM, RULE_FEATURE_DIM, MASK_MAX_RULES, RULE_CONCAT_DIM,
     RuleFeatures, RuleTemplates,
 };
 
@@ -41,6 +41,9 @@ pub use guide::GuideNnue;
 
 /// Re-export training utilities.
 pub use training::{Metrics, ResourceConfig, TrainingResult};
+
+// Note: ExprGenConfig, ExprGenerator, BwdGenConfig, BwdGenerator, BwdTrainingPair
+// are already public structs defined in this module - no re-export needed.
 
 // ============================================================================
 // HalfEP Features (Legacy - being phased out in favor of Factored)

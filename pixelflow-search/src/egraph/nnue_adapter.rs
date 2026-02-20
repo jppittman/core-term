@@ -5,7 +5,7 @@
 //!
 //! ## Dual-Head NNUE Integration
 //!
-//! This module provides adapters for using [`DualHeadNnue`] with the e-graph:
+//! This module provides adapters for using [`ExprNnue`] with the e-graph:
 //!
 //! - [`NnueCostAdapter`]: Implements `CostFunction` using the value head for extraction
 //! - [`expr_tree_to_nnue`]: Converts `ExprTree` to NNUE `Expr` for prediction
@@ -17,7 +17,7 @@ use crate::egraph::node::ENode as ENodeRef;
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::nnue::{Expr, OpKind, DualHeadNnue};
+use crate::nnue::{Expr, OpKind, ExprNnue};
 
 /// Convert e-graph `Op` to `OpKind`.
 ///
@@ -98,7 +98,7 @@ pub fn expr_tree_to_nnue(tree: &ExprTree) -> Expr {
 // NNUE Cost Adapter for Extraction
 // ============================================================================
 
-/// Adapter that implements `CostFunction` using `DualHeadNnue`'s value head.
+/// Adapter that implements `CostFunction` using `ExprNnue`'s value head.
 ///
 /// This allows the e-graph extraction to use learned neural cost predictions
 /// instead of hardcoded lookup tables.
@@ -106,7 +106,7 @@ pub fn expr_tree_to_nnue(tree: &ExprTree) -> Expr {
 /// ## Usage
 ///
 /// ```ignore
-/// let nnue = DualHeadNnue::new_with_latency_prior(42);
+/// let nnue = ExprNnue::new_with_latency_prior(42);
 /// let adapter = NnueCostAdapter::new(&nnue);
 /// let (tree, cost) = extract(&egraph, root, &adapter);
 /// ```
@@ -121,7 +121,7 @@ pub fn expr_tree_to_nnue(tree: &ExprTree) -> Expr {
 /// The value head predicts cost in nanoseconds (log scale internally).
 pub struct NnueCostAdapter<'a> {
     /// Reference to the dual-head NNUE network.
-    nnue: &'a DualHeadNnue,
+    nnue: &'a ExprNnue,
     /// Scale factor for converting float cost to usize.
     /// Higher values give more precision but risk overflow.
     scale: f32,
@@ -130,7 +130,7 @@ pub struct NnueCostAdapter<'a> {
 impl<'a> NnueCostAdapter<'a> {
     /// Create a new adapter with the given NNUE model.
     #[must_use]
-    pub fn new(nnue: &'a DualHeadNnue) -> Self {
+    pub fn new(nnue: &'a ExprNnue) -> Self {
         Self {
             nnue,
             scale: 1000.0, // 1000x scale: 1.5ns → cost 1500
@@ -139,7 +139,7 @@ impl<'a> NnueCostAdapter<'a> {
 
     /// Create with a custom scale factor.
     #[must_use]
-    pub fn with_scale(nnue: &'a DualHeadNnue, scale: f32) -> Self {
+    pub fn with_scale(nnue: &'a ExprNnue, scale: f32) -> Self {
         Self { nnue, scale }
     }
 }
@@ -183,7 +183,7 @@ impl<'a> CostFunction for NnueCostAdapter<'a> {
 ///
 /// This is for cases where you have an `ExprTree` and want the
 /// neural network's full prediction (not just per-node costs).
-pub fn predict_tree_cost(tree: &ExprTree, nnue: &DualHeadNnue) -> f32 {
+pub fn predict_tree_cost(tree: &ExprTree, nnue: &ExprNnue) -> f32 {
     let expr = expr_tree_to_nnue(tree);
     nnue.predict_cost(&expr)
 }
@@ -191,7 +191,7 @@ pub fn predict_tree_cost(tree: &ExprTree, nnue: &DualHeadNnue) -> f32 {
 /// Predict search priority using the search head.
 ///
 /// Returns a priority value where lower = higher priority (expand first).
-pub fn predict_tree_priority(tree: &ExprTree, nnue: &DualHeadNnue) -> i64 {
+pub fn predict_tree_priority(tree: &ExprTree, nnue: &ExprNnue) -> i64 {
     let expr = expr_tree_to_nnue(tree);
     nnue.predict_priority(&expr)
 }
@@ -216,7 +216,7 @@ pub fn predict_tree_priority(tree: &ExprTree, nnue: &DualHeadNnue) -> i64 {
 ///
 /// This is more expensive than additive extraction (O(nodes × tree_size) vs O(nodes)),
 /// but gives ILP-aware cost estimates.
-pub fn extract_neural(egraph: &EGraph, root: EClassId, nnue: &DualHeadNnue) -> (ExprTree, f32) {
+pub fn extract_neural(egraph: &EGraph, root: EClassId, nnue: &ExprNnue) -> (ExprTree, f32) {
     use alloc::collections::BTreeSet;
 
     const CYCLE_COST: f32 = 1_000_000.0;
@@ -271,7 +271,7 @@ pub fn extract_neural(egraph: &EGraph, root: EClassId, nnue: &DualHeadNnue) -> (
                 }
                 let subtree = subtree.unwrap();
 
-                // Use the FULL neural network prediction
+                // Use the FULL neural network prediction (legacy value head)
                 let expr = expr_tree_to_nnue(&subtree);
                 let cost = nnue.predict_log_cost(&expr);
 
@@ -402,7 +402,7 @@ fn build_tree_with_choices(
 pub fn extract_beam(
     egraph: &EGraph,
     root: EClassId,
-    nnue: &DualHeadNnue,
+    nnue: &ExprNnue,
     beam_width: usize,
 ) -> (ExprTree, f32) {
     let num_classes = egraph.num_classes();
@@ -421,15 +421,16 @@ pub fn extract_beam(
         let mut choices: Choices = vec![None; num_classes];
         choices[root_canonical.0 as usize] = Some(node_idx);
 
-        // Evaluate full tree with this choice
+        // Evaluate full tree using NNUE value head (legacy path that judge training uses)
         if let Some(tree) = build_tree_with_partial_choices(egraph, root, &choices) {
             let expr = expr_tree_to_nnue(&tree);
+            // predict_log_cost uses value_w/value_b which judge training updates
             let cost = nnue.predict_log_cost(&expr);
             beam.push((choices, cost));
         }
     }
 
-    // Sort and truncate to beam width
+    // Sort and truncate to beam width (lower log-cost = better)
     beam.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal));
     beam.truncate(beam_width);
 
@@ -462,7 +463,7 @@ pub fn extract_beam(
                 let mut new_choices = choices.clone();
                 new_choices[next_canonical.0 as usize] = Some(node_idx);
 
-                // Evaluate full tree
+                // Evaluate full tree using NNUE value head (legacy path)
                 if let Some(tree) = build_tree_with_partial_choices(egraph, root, &new_choices) {
                     let expr = expr_tree_to_nnue(&tree);
                     let cost = nnue.predict_log_cost(&expr);
@@ -771,7 +772,7 @@ mod tests {
 
     #[test]
     fn test_nnue_cost_adapter_basic() {
-        let nnue = DualHeadNnue::new_with_latency_prior(42);
+        let nnue = ExprNnue::new_with_latency_prior(42);
         let adapter = NnueCostAdapter::new(&nnue);
 
         // Var nodes should have zero cost
@@ -785,7 +786,7 @@ mod tests {
 
     #[test]
     fn test_nnue_cost_adapter_ops() {
-        let nnue = DualHeadNnue::new_with_latency_prior(42);
+        let nnue = ExprNnue::new_with_latency_prior(42);
         let adapter = NnueCostAdapter::new(&nnue);
 
         // Create an Add node (should have non-zero cost)
@@ -807,7 +808,7 @@ mod tests {
 
     #[test]
     fn test_predict_tree_cost() {
-        let nnue = DualHeadNnue::new_with_latency_prior(42);
+        let nnue = ExprNnue::new_with_latency_prior(42);
 
         // Simple tree: x + y
         let tree = ExprTree::Op {
@@ -825,7 +826,7 @@ mod tests {
 
     #[test]
     fn test_predict_tree_priority() {
-        let nnue = DualHeadNnue::new_random(42);
+        let nnue = ExprNnue::new_random(42);
 
         let tree = ExprTree::Op {
             op: &ops::Mul,
@@ -842,7 +843,7 @@ mod tests {
 
     #[test]
     fn test_nnue_cost_by_kind() {
-        let nnue = DualHeadNnue::new_with_latency_prior(42);
+        let nnue = ExprNnue::new_with_latency_prior(42);
         let adapter = NnueCostAdapter::new(&nnue);
 
         // Var/Const should be cheap

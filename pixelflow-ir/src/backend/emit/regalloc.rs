@@ -1,0 +1,378 @@
+//! Graph coloring register allocator for DAG expressions.
+//!
+//! Sethi-Ullman is optimal for trees but suboptimal for DAGs with sharing.
+//! Graph coloring handles shared subexpressions properly.
+//!
+//! ## Algorithm (Hack et al. 2006)
+//!
+//! Based on "Register Allocation for Programs in SSA Form" by Hack, Grund, and Goos.
+//! Key insight: SSA-form programs produce **chordal** interference graphs.
+//!
+//! 1. **Liveness analysis**: Compute live ranges for each value
+//! 2. **Build interference graph**: Values live at same point interfere
+//! 3. **Simplicial elimination ordering**: Maximum cardinality search (MCS)
+//! 4. **Greedy coloring**: Optimal for chordal graphs
+//!
+//! For chordal graphs, this produces an optimal coloring in O(V + E) time.
+//! Expression DAGs from e-graph extraction are always in SSA form.
+
+use alloc::collections::BTreeMap;
+use alloc::collections::BTreeSet;
+use alloc::vec;
+use alloc::vec::Vec;
+
+use super::Reg;
+
+/// A value in the program (SSA-style).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ValueId(pub u32);
+
+/// Interference graph for register allocation.
+///
+/// Two values interfere if they're both live at the same program point.
+/// The graph is undirected - if A interferes with B, B interferes with A.
+#[derive(Debug, Default)]
+pub struct InterferenceGraph {
+    /// Adjacency list: value → set of interfering values
+    edges: BTreeMap<ValueId, BTreeSet<ValueId>>,
+    /// Pre-colored values (e.g., function arguments in specific registers)
+    precolored: BTreeMap<ValueId, Reg>,
+}
+
+impl InterferenceGraph {
+    /// Create an empty interference graph.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a value to the graph (with no interferences yet).
+    pub fn add_value(&mut self, v: ValueId) {
+        self.edges.entry(v).or_default();
+    }
+
+    /// Add an interference edge between two values.
+    pub fn add_edge(&mut self, a: ValueId, b: ValueId) {
+        if a != b {
+            self.edges.entry(a).or_default().insert(b);
+            self.edges.entry(b).or_default().insert(a);
+        }
+    }
+
+    /// Mark a value as pre-colored (must use specific register).
+    pub fn precolor(&mut self, v: ValueId, reg: Reg) {
+        self.add_value(v);
+        self.precolored.insert(v, reg);
+    }
+
+    /// Get the degree of a value (number of interferences).
+    pub fn degree(&self, v: ValueId) -> usize {
+        self.edges.get(&v).map(|s| s.len()).unwrap_or(0)
+    }
+
+    /// Get all values in the graph.
+    pub fn values(&self) -> impl Iterator<Item = ValueId> + '_ {
+        self.edges.keys().copied()
+    }
+
+    /// Get neighbors of a value.
+    pub fn neighbors(&self, v: ValueId) -> impl Iterator<Item = ValueId> + '_ {
+        self.edges
+            .get(&v)
+            .into_iter()
+            .flat_map(|s| s.iter().copied())
+    }
+
+    /// Check if a value is pre-colored.
+    pub fn is_precolored(&self, v: ValueId) -> bool {
+        self.precolored.contains_key(&v)
+    }
+
+    /// Get the pre-assigned register for a value, if any.
+    pub fn precolor_of(&self, v: ValueId) -> Option<Reg> {
+        self.precolored.get(&v).copied()
+    }
+
+    /// Number of values in the graph.
+    pub fn len(&self) -> usize {
+        self.edges.len()
+    }
+
+    /// Check if graph is empty.
+    pub fn is_empty(&self) -> bool {
+        self.edges.is_empty()
+    }
+}
+
+/// Result of register allocation.
+#[derive(Debug)]
+pub struct RegAllocation {
+    /// Mapping from value to assigned register.
+    pub assignment: BTreeMap<ValueId, Reg>,
+    /// Values that couldn't be colored (need spilling).
+    pub spilled: Vec<ValueId>,
+    /// Number of registers used.
+    pub num_regs: u8,
+}
+
+/// Greedy graph coloring with simplicial elimination ordering.
+///
+/// This is optimal for chordal graphs, which expression DAGs always produce.
+/// For non-chordal graphs, it's a good heuristic.
+///
+/// # Arguments
+/// * `graph` - The interference graph
+/// * `num_regs` - Number of available registers
+/// * `scratch_base` - First scratch register index
+pub fn color_graph(graph: &InterferenceGraph, num_regs: u8, scratch_base: u8) -> RegAllocation {
+    let mut assignment: BTreeMap<ValueId, Reg> = BTreeMap::new();
+    let mut spilled: Vec<ValueId> = Vec::new();
+
+    // Copy pre-colored assignments
+    for (&v, &reg) in &graph.precolored {
+        assignment.insert(v, reg);
+    }
+
+    // Build simplicial elimination ordering (reverse order for greedy coloring)
+    let ordering = simplicial_elimination_order(graph);
+
+    // Greedy coloring in the computed order
+    for v in ordering {
+        if assignment.contains_key(&v) {
+            continue; // Already pre-colored
+        }
+
+        // Find colors used by neighbors
+        let mut used_colors: BTreeSet<u8> = BTreeSet::new();
+        for neighbor in graph.neighbors(v) {
+            if let Some(&Reg(c)) = assignment.get(&neighbor) {
+                used_colors.insert(c);
+            }
+        }
+
+        // Find first available color in scratch range
+        let mut color = None;
+        for c in scratch_base..(scratch_base + num_regs) {
+            if !used_colors.contains(&c) {
+                color = Some(c);
+                break;
+            }
+        }
+
+        match color {
+            Some(c) => {
+                assignment.insert(v, Reg(c));
+            }
+            None => {
+                // No register available - need to spill
+                spilled.push(v);
+            }
+        }
+    }
+
+    // Count registers used
+    let max_reg = assignment
+        .values()
+        .filter(|r| r.0 >= scratch_base)
+        .map(|r| r.0 - scratch_base + 1)
+        .max()
+        .unwrap_or(0);
+
+    RegAllocation {
+        assignment,
+        spilled,
+        num_regs: max_reg,
+    }
+}
+
+/// Compute a simplicial elimination ordering.
+///
+/// Uses maximum cardinality search (MCS), which produces a perfect
+/// elimination ordering for chordal graphs.
+fn simplicial_elimination_order(graph: &InterferenceGraph) -> Vec<ValueId> {
+    let n = graph.len();
+    if n == 0 {
+        return vec![];
+    }
+
+    let mut order = Vec::with_capacity(n);
+    let mut weight: BTreeMap<ValueId, usize> = BTreeMap::new();
+    let mut remaining: BTreeSet<ValueId> = BTreeSet::new();
+
+    // Initialize
+    for v in graph.values() {
+        weight.insert(v, 0);
+        remaining.insert(v);
+    }
+
+    // MCS: repeatedly pick the vertex with maximum weight
+    for _ in 0..n {
+        // Find max-weight unordered vertex
+        let v = remaining
+            .iter()
+            .max_by_key(|&&v| weight.get(&v).unwrap_or(&0))
+            .copied()
+            .expect("remaining should not be empty");
+
+        remaining.remove(&v);
+        order.push(v);
+
+        // Increment weight of remaining neighbors
+        for neighbor in graph.neighbors(v) {
+            if remaining.contains(&neighbor) {
+                *weight.entry(neighbor).or_default() += 1;
+            }
+        }
+    }
+
+    // Return in reverse order for greedy coloring
+    order.reverse();
+    order
+}
+
+/// Build interference graph from a scheduled DAG.
+///
+/// # Arguments
+/// * `schedule` - Topologically sorted list of (value_id, definition)
+/// * `uses` - For each value, list of values that use it
+///
+/// Returns an interference graph where two values interfere if
+/// their live ranges overlap.
+pub fn build_interference_graph<D, F>(
+    schedule: &[(ValueId, D)],
+    uses_of: F,
+) -> InterferenceGraph
+where
+    F: Fn(ValueId) -> Vec<ValueId>,
+{
+    let mut graph = InterferenceGraph::new();
+
+    // Add all values
+    for (v, _) in schedule {
+        graph.add_value(*v);
+    }
+
+    // Live set tracking
+    let mut live: BTreeSet<ValueId> = BTreeSet::new();
+
+    // Walk schedule in reverse (backward liveness analysis)
+    for (v, _) in schedule.iter().rev() {
+        // v is defined here, so it's live after this point until its last use
+        // All currently live values interfere with v
+        for &other in &live {
+            graph.add_edge(*v, other);
+        }
+
+        // v is now live (just defined)
+        live.insert(*v);
+
+        // Remove v's uses from live set (they end here if this is their last use)
+        // Actually, we need to add uses TO the live set
+        for used in uses_of(*v) {
+            live.insert(used);
+        }
+    }
+
+    graph
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_graph() {
+        let graph = InterferenceGraph::new();
+        let alloc = color_graph(&graph, 8, 4);
+        assert!(alloc.assignment.is_empty());
+        assert!(alloc.spilled.is_empty());
+    }
+
+    #[test]
+    fn test_no_interference() {
+        let mut graph = InterferenceGraph::new();
+        graph.add_value(ValueId(0));
+        graph.add_value(ValueId(1));
+        graph.add_value(ValueId(2));
+        // No edges - no interference
+
+        let alloc = color_graph(&graph, 8, 4);
+        assert_eq!(alloc.assignment.len(), 3);
+        assert!(alloc.spilled.is_empty());
+        // All can use the same register since they don't interfere
+    }
+
+    #[test]
+    fn test_chain_interference() {
+        let mut graph = InterferenceGraph::new();
+        // Linear chain: 0 -- 1 -- 2
+        graph.add_value(ValueId(0));
+        graph.add_value(ValueId(1));
+        graph.add_value(ValueId(2));
+        graph.add_edge(ValueId(0), ValueId(1));
+        graph.add_edge(ValueId(1), ValueId(2));
+
+        let alloc = color_graph(&graph, 8, 4);
+        assert_eq!(alloc.assignment.len(), 3);
+        assert!(alloc.spilled.is_empty());
+
+        // 0 and 2 can share a color, 1 needs different
+        let c0 = alloc.assignment[&ValueId(0)];
+        let c1 = alloc.assignment[&ValueId(1)];
+        let c2 = alloc.assignment[&ValueId(2)];
+
+        assert_ne!(c0, c1);
+        assert_ne!(c1, c2);
+        // c0 and c2 could be same or different
+    }
+
+    #[test]
+    fn test_clique_needs_more_colors() {
+        let mut graph = InterferenceGraph::new();
+        // Triangle (3-clique): all interfere with all
+        for i in 0..3 {
+            graph.add_value(ValueId(i));
+        }
+        graph.add_edge(ValueId(0), ValueId(1));
+        graph.add_edge(ValueId(1), ValueId(2));
+        graph.add_edge(ValueId(0), ValueId(2));
+
+        let alloc = color_graph(&graph, 8, 4);
+        assert_eq!(alloc.assignment.len(), 3);
+        assert!(alloc.spilled.is_empty());
+        assert!(alloc.num_regs >= 3);
+
+        // All must have different colors
+        let colors: BTreeSet<_> = alloc.assignment.values().collect();
+        assert_eq!(colors.len(), 3);
+    }
+
+    #[test]
+    fn test_precolored() {
+        let mut graph = InterferenceGraph::new();
+        graph.precolor(ValueId(0), Reg(0)); // Input register
+        graph.add_value(ValueId(1));
+        graph.add_edge(ValueId(0), ValueId(1));
+
+        let alloc = color_graph(&graph, 8, 4);
+        assert_eq!(alloc.assignment[&ValueId(0)], Reg(0));
+        assert_ne!(alloc.assignment[&ValueId(1)], Reg(0));
+    }
+
+    #[test]
+    fn test_spilling() {
+        let mut graph = InterferenceGraph::new();
+        // 4-clique with only 2 registers available
+        for i in 0..4 {
+            graph.add_value(ValueId(i));
+        }
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                graph.add_edge(ValueId(i), ValueId(j));
+            }
+        }
+
+        let alloc = color_graph(&graph, 2, 4); // Only 2 registers!
+        assert_eq!(alloc.spilled.len(), 2); // 2 must spill
+        assert_eq!(alloc.assignment.len(), 2); // 2 got colors
+    }
+}
