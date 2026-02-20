@@ -38,3 +38,7 @@ harness = false
 [[bench]]
 name = "bench_optimize_spsc"
 harness = false
+
+[[bench]]
+name = "bench_kubelet"
+harness = false
