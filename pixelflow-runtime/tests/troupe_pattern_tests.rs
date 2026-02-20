@@ -258,12 +258,13 @@ fn directory_allows_cross_actor_messaging() {
 
 /// Simulates the Troupe struct that troupe! would generate (SPSC pattern)
 struct TestTroupe {
-    directory: TestDirectory,
-    // Schedulers run the actors when dropped; they're held here for that purpose.
+    alpha_builder: ActorBuilder<AlphaData, AlphaControl, AlphaManagement>,
     #[allow(dead_code)]
-    alpha_scheduler: ActorScheduler<AlphaData, AlphaControl, AlphaManagement>,
+    beta_builder: ActorBuilder<BetaData, BetaControl, BetaManagement>,
     #[allow(dead_code)]
-    beta_scheduler: ActorScheduler<BetaData, BetaControl, BetaManagement>,
+    alpha_dir: TestDirectory,
+    #[allow(dead_code)]
+    beta_dir: TestDirectory,
 }
 
 struct TestExposedHandles {
