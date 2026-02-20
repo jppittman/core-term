@@ -32,7 +32,7 @@ pub struct EGraph {
     memo: HashMap<ENode, EClassId>,
     worklist: Vec<EClassId>,
     /// Rules are shared via Arc so EGraph can be cloned for search branching.
-    rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
+    rules: std::sync::Arc<Vec<Box<dyn Rewrite + Send + Sync>>>,
     pub match_counts: HashMap<String, usize>,
 }
 
@@ -71,39 +71,36 @@ impl EGraph {
     }
 
     /// Create the standard algebraic rewrite rules.
-    fn create_algebraic_rules() -> Vec<Box<dyn Rewrite>> {
-        let mut rules: Vec<Box<dyn Rewrite>> = Vec::new();
-
-        // TEST: Adding remaining rules
-        rules.push(Canonicalize::<AddNeg>::new());
-        rules.push(Involution::<AddNeg>::new());
-        rules.push(Cancellation::<AddNeg>::new());
-        rules.push(InverseAnnihilation::<AddNeg>::new());
-        rules.push(Canonicalize::<MulRecip>::new());
-        rules.push(Involution::<MulRecip>::new());
-        rules.push(Cancellation::<MulRecip>::new());
-        rules.push(InverseAnnihilation::<MulRecip>::new());
-        rules.push(Commutative::new(&ops::Add));
-        rules.push(Commutative::new(&ops::Mul));
-        rules.push(Commutative::new(&ops::Min));
-        rules.push(Commutative::new(&ops::Max));
-        rules.push(Distributive::new(&ops::Mul, &ops::Add));
-        rules.push(Distributive::new(&ops::Mul, &ops::Sub));
-        // Domain-specific fusion rules (FmaFusion, RecipSqrt) should be added
-        // by the domain layer (pixelflow-macros) using add_rule(), not here.
-        // Identity rules: x + 0 = x, x * 1 = x
-        rules.push(Identity::new(&ops::Add));
-        rules.push(Identity::new(&ops::Mul));
-        // Annihilator rules: x * 0 = 0
-        rules.push(Annihilator::new(&ops::Mul));
-
-        rules
+    fn create_algebraic_rules() -> Vec<Box<dyn Rewrite + Send + Sync>> {
+        vec![
+            Canonicalize::<AddNeg>::new(),
+            Involution::<AddNeg>::new(),
+            Cancellation::<AddNeg>::new(),
+            InverseAnnihilation::<AddNeg>::new(),
+            Canonicalize::<MulRecip>::new(),
+            Involution::<MulRecip>::new(),
+            Cancellation::<MulRecip>::new(),
+            InverseAnnihilation::<MulRecip>::new(),
+            Commutative::new(&ops::Add),
+            Commutative::new(&ops::Mul),
+            Commutative::new(&ops::Min),
+            Commutative::new(&ops::Max),
+            Distributive::new(&ops::Mul, &ops::Add),
+            Distributive::new(&ops::Mul, &ops::Sub),
+            // Domain-specific fusion rules (FmaFusion, RecipSqrt) should be added
+            // by the domain layer (pixelflow-macros) using add_rule(), not here.
+            // Identity rules: x + 0 = x, x * 1 = x
+            Identity::new(&ops::Add),
+            Identity::new(&ops::Mul),
+            // Annihilator rules: x * 0 = 0
+            Annihilator::new(&ops::Mul),
+        ]
     }
 
     /// Add a custom rule (only works before cloning).
     ///
     /// Note: This will panic if the EGraph has been cloned.
-    pub fn add_rule(&mut self, rule: Box<dyn Rewrite>) {
+    pub fn add_rule(&mut self, rule: Box<dyn Rewrite + Send + Sync>) {
         std::sync::Arc::get_mut(&mut self.rules)
             .expect("Cannot add rules after EGraph has been cloned")
             .push(rule);
@@ -296,7 +293,7 @@ impl EGraph {
     /// Get a rule by index.
     #[must_use] 
     pub fn rule(&self, idx: usize) -> Option<&dyn Rewrite> {
-        self.rules.get(idx).map(|r| r.as_ref())
+        self.rules.get(idx).map(|r| r.as_ref() as &dyn Rewrite)
     }
 
     /// Find all actual rewrite matches in the E-graph.
