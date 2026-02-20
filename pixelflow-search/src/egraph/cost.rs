@@ -86,70 +86,84 @@ impl Default for CostModel {
 }
 
 impl CostModel {
+    // Cost constants (approximate x86-64 cycles)
+    const FREE: usize = 0;
+    const CHEAP: usize = 1;
+    const SELECT: usize = 2;
+    const FRACT: usize = 3;
+    const ADD_SUB: usize = 4;
+    const MUL: usize = 5;
+    const MUL_RSQRT: usize = 6;
+    const EXP2_LOG2: usize = 12;
+    const DIV_SQRT: usize = 15;
+    const TRIG_SIMPLE: usize = 20;
+    const TRIG_COMPLEX: usize = 25;
+    const POW: usize = 30;
+
     /// Create with default costs (reasonable x86-64 SIMD estimates).
     #[must_use] 
     pub fn with_defaults() -> Self {
-        let mut costs = [4usize; OpKind::COUNT]; // Default to medium cost
+        let mut costs = [Self::ADD_SUB; OpKind::COUNT]; // Default to medium cost
 
         // Leaves (no cost)
-        costs[OpKind::Var.index()] = 0;
-        costs[OpKind::Const.index()] = 0;
-        costs[OpKind::Tuple.index()] = 0;
+        costs[OpKind::Var.index()] = Self::FREE;
+        costs[OpKind::Const.index()] = Self::FREE;
+        costs[OpKind::Tuple.index()] = Self::FREE;
 
         // Cheap (1 cycle)
-        costs[OpKind::Neg.index()] = 1;
-        costs[OpKind::Abs.index()] = 1;
+        costs[OpKind::Neg.index()] = Self::CHEAP;
+        costs[OpKind::Abs.index()] = Self::CHEAP;
 
         // Medium (4-5 cycles)
-        costs[OpKind::Add.index()] = 4;
-        costs[OpKind::Sub.index()] = 4;
-        costs[OpKind::Mul.index()] = 5;
-        costs[OpKind::Min.index()] = 4;
-        costs[OpKind::Max.index()] = 4;
+        costs[OpKind::Add.index()] = Self::ADD_SUB;
+        costs[OpKind::Sub.index()] = Self::ADD_SUB;
+        costs[OpKind::Mul.index()] = Self::MUL;
+        costs[OpKind::Min.index()] = Self::ADD_SUB;
+        costs[OpKind::Max.index()] = Self::ADD_SUB;
 
         // Expensive (12-15 cycles)
-        costs[OpKind::Div.index()] = 15;
-        costs[OpKind::Sqrt.index()] = 15;
-        costs[OpKind::Recip.index()] = 5;
-        costs[OpKind::Rsqrt.index()] = 5;
+        costs[OpKind::Div.index()] = Self::DIV_SQRT;
+        costs[OpKind::Sqrt.index()] = Self::DIV_SQRT;
+        costs[OpKind::Recip.index()] = Self::MUL;
+        costs[OpKind::Rsqrt.index()] = Self::MUL;
 
         // Fused (same as components or cheaper)
-        costs[OpKind::MulAdd.index()] = 5;
-        costs[OpKind::MulRsqrt.index()] = 6;
+        costs[OpKind::MulAdd.index()] = Self::MUL;
+        costs[OpKind::MulRsqrt.index()] = Self::MUL_RSQRT;
 
         // Rounding (cheap)
-        costs[OpKind::Floor.index()] = 2;
-        costs[OpKind::Ceil.index()] = 2;
-        costs[OpKind::Round.index()] = 2;
-        costs[OpKind::Fract.index()] = 3;
+        costs[OpKind::Floor.index()] = Self::SELECT;
+        costs[OpKind::Ceil.index()] = Self::SELECT;
+        costs[OpKind::Round.index()] = Self::SELECT;
+        costs[OpKind::Fract.index()] = Self::FRACT;
 
         // Transcendentals (expensive)
-        costs[OpKind::Sin.index()] = 20;
-        costs[OpKind::Cos.index()] = 20;
-        costs[OpKind::Tan.index()] = 25;
-        costs[OpKind::Asin.index()] = 25;
-        costs[OpKind::Acos.index()] = 25;
-        costs[OpKind::Atan.index()] = 20;
-        costs[OpKind::Atan2.index()] = 25;
-        costs[OpKind::Exp.index()] = 15;
-        costs[OpKind::Exp2.index()] = 12;
-        costs[OpKind::Ln.index()] = 15;
-        costs[OpKind::Log2.index()] = 12;
-        costs[OpKind::Log10.index()] = 15;
-        costs[OpKind::Pow.index()] = 30;
-        costs[OpKind::Hypot.index()] = 20;
+        costs[OpKind::Sin.index()] = Self::TRIG_SIMPLE;
+        costs[OpKind::Cos.index()] = Self::TRIG_SIMPLE;
+        costs[OpKind::Tan.index()] = Self::TRIG_COMPLEX;
+        costs[OpKind::Asin.index()] = Self::TRIG_COMPLEX;
+        costs[OpKind::Acos.index()] = Self::TRIG_COMPLEX;
+        costs[OpKind::Atan.index()] = Self::TRIG_SIMPLE;
+        costs[OpKind::Atan2.index()] = Self::TRIG_COMPLEX;
+        costs[OpKind::Exp.index()] = Self::DIV_SQRT;
+        costs[OpKind::Exp2.index()] = Self::EXP2_LOG2;
+        costs[OpKind::Ln.index()] = Self::DIV_SQRT;
+        costs[OpKind::Log2.index()] = Self::EXP2_LOG2;
+        costs[OpKind::Log10.index()] = Self::DIV_SQRT;
+        costs[OpKind::Pow.index()] = Self::POW;
+        costs[OpKind::Hypot.index()] = Self::TRIG_SIMPLE;
 
         // Comparison (cheap)
-        costs[OpKind::Lt.index()] = 1;
-        costs[OpKind::Le.index()] = 1;
-        costs[OpKind::Gt.index()] = 1;
-        costs[OpKind::Ge.index()] = 1;
-        costs[OpKind::Eq.index()] = 1;
-        costs[OpKind::Ne.index()] = 1;
+        costs[OpKind::Lt.index()] = Self::CHEAP;
+        costs[OpKind::Le.index()] = Self::CHEAP;
+        costs[OpKind::Gt.index()] = Self::CHEAP;
+        costs[OpKind::Ge.index()] = Self::CHEAP;
+        costs[OpKind::Eq.index()] = Self::CHEAP;
+        costs[OpKind::Ne.index()] = Self::CHEAP;
 
         // Control flow
-        costs[OpKind::Select.index()] = 2;
-        costs[OpKind::Clamp.index()] = 4;
+        costs[OpKind::Select.index()] = Self::SELECT;
+        costs[OpKind::Clamp.index()] = Self::ADD_SUB;
 
         Self {
             costs,
@@ -162,7 +176,7 @@ impl CostModel {
     #[must_use] 
     pub fn with_fma() -> Self {
         let mut model = Self::with_defaults();
-        model.costs[OpKind::MulAdd.index()] = 5;
+        model.costs[OpKind::MulAdd.index()] = Self::MUL;
         model
     }
 
@@ -170,8 +184,8 @@ impl CostModel {
     #[must_use] 
     pub fn with_fast_rsqrt() -> Self {
         let mut model = Self::with_defaults();
-        model.costs[OpKind::Rsqrt.index()] = 4;
-        model.costs[OpKind::Recip.index()] = 4;
+        model.costs[OpKind::Rsqrt.index()] = Self::ADD_SUB;
+        model.costs[OpKind::Recip.index()] = Self::ADD_SUB;
         model
     }
 
@@ -179,9 +193,9 @@ impl CostModel {
     #[must_use] 
     pub fn fully_optimized() -> Self {
         let mut model = Self::with_defaults();
-        model.costs[OpKind::MulAdd.index()] = 5;
-        model.costs[OpKind::Rsqrt.index()] = 4;
-        model.costs[OpKind::Recip.index()] = 4;
+        model.costs[OpKind::MulAdd.index()] = Self::MUL;
+        model.costs[OpKind::Rsqrt.index()] = Self::ADD_SUB;
+        model.costs[OpKind::Recip.index()] = Self::ADD_SUB;
         model
     }
 
