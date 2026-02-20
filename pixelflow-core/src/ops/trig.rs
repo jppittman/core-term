@@ -129,10 +129,28 @@ pub(crate) fn cheby_cos(x: Field) -> Field {
 /// Accuracy: ~7-8 significant digits.
 #[inline(always)]
 pub(crate) fn cheby_atan2(y: Field, x: Field) -> Field {
-    // Compute the ratio and absolute value for range reduction
-    // Eval here because we use r_abs multiple times in different subexpressions
-    let r = eval(y / x);
-    let r_abs = r.abs();
+    // Robust atan2 implementation that handles (0,0) and avoids division by zero.
+    // Strategy: compute atan(r) where r = min(|x|, |y|) / max(|x|, |y|) which is in [0, 1].
+
+    let zero = Field::from(0.0);
+    let ax = x.abs();
+    let ay = y.abs();
+    let swap = ay.gt(ax);
+
+    // Determine numerator and denominator to ensure ratio <= 1
+    // If swap (|y| > |x|), ratio = |x|/|y|. We compute PI/2 - atan(ratio).
+    // If !swap (|x| >= |y|), ratio = |y|/|x|. We compute atan(ratio).
+    let num = swap.select(ax, ay);
+    let den = swap.select(ay, ax);
+
+    // Avoid division by zero if both x and y are zero.
+    // If den is zero, then both ax and ay are zero.
+    // den is non-negative, so den <= 0 implies den == 0.
+    let den_is_zero = den.clone().le(zero);
+    let safe_den = den_is_zero.select(Field::from(1.0), den);
+
+    // Eval here because we use r multiple times
+    let r = eval(num / safe_den);
 
     // Chebyshev approximation for atan on [0, 1]
     const C1: f32 = 0.999999999f32;
@@ -140,30 +158,28 @@ pub(crate) fn cheby_atan2(y: Field, x: Field) -> Field {
     const C5: f32 = 0.2f32;
     const C7: f32 = -0.142857143f32;
 
-    // Horner's method for approximation of atan(|r|)
-    // AST building enables FMA fusion
-    let t = r_abs;
+    // Horner's method for approximation of atan(r)
+    let t = r;
     let t2 = t * t;
-    let atan_approx =
+    let atan_r =
         (((Field::from(C7) * t2.clone() + Field::from(C5)) * t2.clone() + Field::from(C3)) * t2
             + Field::from(C1))
             * t;
 
-    // Handle quadrants
-    // For |r| > 1, use identity: atan(r) = π/2 - atan(1/r)
-    // Use ManifoldExt's select which builds AST
-    let mask_large = r_abs.gt(Field::from(1.0));
-    let atan_large = Field::from(PI_2) - (Field::from(1.0) / r_abs) * atan_approx.clone();
-    let atan_val = mask_large.select(atan_large, atan_approx);
+    // Reconstruct angle in [0, PI/2]
+    // If swap, result is PI/2 - atan(r). If not swap, result is atan(r).
+    let val = swap.select(Field::from(PI_2) - atan_r.clone(), atan_r);
 
-    // Apply sign of y
-    let sign_y = y.abs() / y;
-    let atan_signed = atan_val * sign_y.clone();
+    // Apply quadrants
+    // Q1 (+x, +y): val
+    // Q2 (-x, +y): PI - val
+    // Q3 (-x, -y): -(PI - val) = -PI + val
+    // Q4 (+x, -y): -val
+    let mask_neg_x = x.lt(zero);
+    let mask_neg_y = y.lt(zero);
 
-    // Apply sign of x (quadrant correction)
-    let mask_neg_x = x.lt(Field::from(0.0));
-    let correction = Field::from(PI) * sign_y;
-    let result = mask_neg_x.select(atan_signed.clone() - correction, atan_signed);
+    let angle_pos_y = mask_neg_x.select(Field::from(PI) - val.clone(), val);
+    let result = mask_neg_y.select(Field::from(0.0) - angle_pos_y.clone(), angle_pos_y);
 
     eval(result)
 }
