@@ -44,12 +44,12 @@ use pixelflow_search::egraph::{EGraph, ExprTree, CostModel};
 use pixelflow_search::egraph::search_adapter::insert_tree;
 
 // Create expression: (x + 0) * 1
-let tree = ExprTree::Mul(
-    Box::new(ExprTree::Add(
-        Box::new(ExprTree::Var(0)),
-        Box::new(ExprTree::Const(0.0)),
-    )),
-    Box::new(ExprTree::Const(1.0)),
+let tree = ExprTree::op_mul(
+    ExprTree::op_add(
+        ExprTree::var(0),
+        ExprTree::constant(0.0),
+    ),
+    ExprTree::constant(1.0),
 );
 
 // Insert into e-graph and saturate

@@ -68,7 +68,7 @@ impl ExprTree {
 
     // Constructor helpers for common operations
     #[must_use] 
-    pub fn add(a: Self, b: Self) -> Self {
+    pub fn op_add(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Add,
             children: alloc::vec![a, b],
@@ -76,7 +76,7 @@ impl ExprTree {
     }
 
     #[must_use] 
-    pub fn sub(a: Self, b: Self) -> Self {
+    pub fn op_sub(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Sub,
             children: alloc::vec![a, b],
@@ -84,7 +84,7 @@ impl ExprTree {
     }
 
     #[must_use] 
-    pub fn mul(a: Self, b: Self) -> Self {
+    pub fn op_mul(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Mul,
             children: alloc::vec![a, b],
@@ -92,7 +92,7 @@ impl ExprTree {
     }
 
     #[must_use] 
-    pub fn div(a: Self, b: Self) -> Self {
+    pub fn op_div(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Div,
             children: alloc::vec![a, b],
@@ -100,7 +100,7 @@ impl ExprTree {
     }
 
     #[must_use] 
-    pub fn neg(a: Self) -> Self {
+    pub fn op_neg(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Neg,
             children: alloc::vec![a],
@@ -619,6 +619,7 @@ fn toposort_dag(
     let mut visited: BTreeSet<u32> = BTreeSet::new();
     let mut result = Vec::new();
 
+    #[allow(clippy::too_many_arguments)]
     fn visit(
         egraph: &EGraph,
         class: EClassId,
@@ -669,7 +670,7 @@ mod tests {
         let x = ExprTree::var(0);
         assert_eq!(x.node_count(), 1);
 
-        let sum = ExprTree::add(ExprTree::var(0), ExprTree::var(1));
+        let sum = ExprTree::op_add(ExprTree::var(0), ExprTree::var(1));
         assert_eq!(sum.node_count(), 3); // Add + X + Y
     }
 
@@ -678,11 +679,11 @@ mod tests {
         let x = ExprTree::var(0);
         assert_eq!(x.depth(), 1);
 
-        let sum = ExprTree::add(ExprTree::var(0), ExprTree::var(1));
+        let sum = ExprTree::op_add(ExprTree::var(0), ExprTree::var(1));
         assert_eq!(sum.depth(), 2);
 
         // (X + Y) * Z
-        let nested = ExprTree::mul(sum, ExprTree::var(2));
+        let nested = ExprTree::op_mul(sum, ExprTree::var(2));
         assert_eq!(nested.depth(), 3);
     }
 
