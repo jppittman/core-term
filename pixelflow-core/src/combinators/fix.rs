@@ -103,9 +103,7 @@ impl<N, S, B> Default for RecFix<N, S, B> {
 }
 
 impl<N, S, B> Clone for RecFix<N, S, B> {
-    fn clone(&self) -> Self {
-        Self { _phantom: PhantomData }
-    }
+    fn clone(&self) -> Self { *self }
 }
 
 impl<N, S, B> Copy for RecFix<N, S, B> {}

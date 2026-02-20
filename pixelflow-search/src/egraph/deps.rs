@@ -46,6 +46,7 @@ pub enum Deps {
 impl Deps {
     /// Join two dependencies (least upper bound in the lattice).
     #[inline]
+    #[must_use] 
     pub fn join(self, other: Self) -> Self {
         // Ord is derived with Const < Uniform < Varying, so max works
         self.max(other)
@@ -53,12 +54,14 @@ impl Deps {
 
     /// Is this expression uniform (can be hoisted to frame-time)?
     #[inline]
+    #[must_use] 
     pub fn is_uniform(&self) -> bool {
         matches!(self, Deps::Const | Deps::Uniform)
     }
 
     /// Is this expression varying (must be computed per-pixel)?
     #[inline]
+    #[must_use] 
     pub fn is_varying(&self) -> bool {
         matches!(self, Deps::Varying)
     }
@@ -94,6 +97,7 @@ impl DepsAnalysis {
     /// Analyze dependencies using BFS from leaves.
     ///
     /// This is O(n) since deps only flow upward through the DAG.
+    #[must_use] 
     pub fn analyze(egraph: &EGraph) -> Self {
         let mut deps: HashMap<EClassId, Deps> = HashMap::new();
         let mut in_degree: HashMap<EClassId, usize> = HashMap::new();
@@ -178,6 +182,7 @@ impl DepsAnalysis {
     }
 
     /// Get the dependency for an e-class.
+    #[must_use] 
     pub fn get(&self, egraph: &EGraph, id: EClassId) -> Deps {
         let id = egraph.find(id);
         self.deps.get(&id).copied().unwrap_or(Deps::Varying)
@@ -188,6 +193,7 @@ impl DepsAnalysis {
     /// Returns e-class IDs of expressions that:
     /// 1. Are uniform (depend only on W or constants)
     /// 2. Are used by varying expressions (worth hoisting)
+    #[must_use] 
     pub fn find_hoistable(&self, egraph: &EGraph, root: EClassId) -> Vec<EClassId> {
         let mut hoistable = Vec::new();
         let mut visited = std::collections::HashSet::new();

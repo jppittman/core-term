@@ -21,12 +21,14 @@ pub fn op_to_nnue(op: &dyn crate::egraph::ops::Op) -> OpKind {
 ///
 /// Delegates to `ops::op_from_kind`.
 #[inline]
+#[must_use] 
 pub fn nnue_to_op(kind: OpKind) -> Option<&'static dyn crate::egraph::ops::Op> {
     ops::op_from_kind(kind)
 }
 
 /// Extract a concrete `Expr` from an e-class.
 /// Picks the first representative (a real implementation would use cost-based extraction).
+#[must_use] 
 pub fn eclass_to_expr(egraph: &EGraph, class: EClassId) -> Expr {
     let node = &egraph.nodes(class)[0];
 
@@ -55,6 +57,7 @@ pub fn eclass_to_expr(egraph: &EGraph, class: EClassId) -> Expr {
 }
 
 /// Convert an `ExprTree` to a NNUE `Expr` for feature extraction.
+#[must_use] 
 pub fn expr_tree_to_nnue(tree: &ExprTree) -> Expr {
     match tree {
         ExprTree::Leaf(Leaf::Var(i)) => Expr::Var(*i),

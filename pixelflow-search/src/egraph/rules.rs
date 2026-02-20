@@ -30,9 +30,9 @@ impl Rewrite for Associative {
         let (left, right) = node.binary_operands()?;
 
         for child in egraph.nodes(left) {
-            if let Some(child_op) = child.op() {
-                if child_op.name() == self.op.name() {
-                    if let Some((a, b)) = child.binary_operands() {
+            if let Some(child_op) = child.op()
+                && child_op.name() == self.op.name()
+                    && let Some((a, b)) = child.binary_operands() {
                         return Some(RewriteAction::Associate {
                             op: self.op,
                             a,
@@ -40,8 +40,6 @@ impl Rewrite for Associative {
                             c: right,
                         });
                     }
-                }
-            }
         }
         None
     }
@@ -98,9 +96,9 @@ impl Rewrite for Distributive {
         let (a, other) = node.binary_operands()?;
 
         for child_node in egraph.nodes(other) {
-            if let Some(child_op) = child_node.op() {
-                if child_op.name() == self.inner.name() {
-                    if let Some((b, c)) = child_node.binary_operands() {
+            if let Some(child_op) = child_node.op()
+                && child_op.name() == self.inner.name()
+                    && let Some((b, c)) = child_node.binary_operands() {
                         return Some(RewriteAction::Distribute {
                             outer: self.outer,
                             inner: self.inner,
@@ -109,8 +107,6 @@ impl Rewrite for Distributive {
                             c,
                         });
                     }
-                }
-            }
         }
         None
     }
@@ -274,22 +270,20 @@ impl Rewrite for RecipSqrt {
     fn name(&self) -> &str { "recip-sqrt" }
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        if let ENode::Op { op, children } = node {
-            if op.name() == "recip" && children.len() == 1 {
+        if let ENode::Op { op, children } = node
+            && op.name() == "recip" && children.len() == 1 {
                 let a = children[0];
                 for child in egraph.nodes(a) {
-                    if let ENode::Op { op: child_op, children: child_children } = child {
-                        if child_op.name() == "sqrt" && child_children.len() == 1 {
+                    if let ENode::Op { op: child_op, children: child_children } = child
+                        && child_op.name() == "sqrt" && child_children.len() == 1 {
                             let inner = child_children[0];
                             return Some(RewriteAction::Create(ENode::Op {
                                 op: &ops::Rsqrt,
                                 children: vec![inner],
                             }));
                         }
-                    }
                 }
             }
-        }
         None
     }
 }
@@ -308,15 +302,15 @@ impl Rewrite for FmaFusion {
 
     fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
         // Match Add(Mul(a, b), c) → MulAdd(a, b, c)
-        if let ENode::Op { op, children } = node {
-            if op.name() == "add" && children.len() == 2 {
+        if let ENode::Op { op, children } = node
+            && op.name() == "add" && children.len() == 2 {
                 let left = children[0];
                 let right = children[1];
 
                 // Check if left is a Mul
                 for left_node in egraph.nodes(left) {
-                    if let ENode::Op { op: left_op, children: left_children } = left_node {
-                        if left_op.name() == "mul" && left_children.len() == 2 {
+                    if let ENode::Op { op: left_op, children: left_children } = left_node
+                        && left_op.name() == "mul" && left_children.len() == 2 {
                             let a = left_children[0];
                             let b = left_children[1];
                             return Some(RewriteAction::Create(ENode::Op {
@@ -324,13 +318,12 @@ impl Rewrite for FmaFusion {
                                 children: vec![a, b, right],
                             }));
                         }
-                    }
                 }
 
                 // Check if right is a Mul (commutativity)
                 for right_node in egraph.nodes(right) {
-                    if let ENode::Op { op: right_op, children: right_children } = right_node {
-                        if right_op.name() == "mul" && right_children.len() == 2 {
+                    if let ENode::Op { op: right_op, children: right_children } = right_node
+                        && right_op.name() == "mul" && right_children.len() == 2 {
                             let a = right_children[0];
                             let b = right_children[1];
                             return Some(RewriteAction::Create(ENode::Op {
@@ -338,10 +331,8 @@ impl Rewrite for FmaFusion {
                                 children: vec![a, b, left],
                             }));
                         }
-                    }
                 }
             }
-        }
         None
     }
 }

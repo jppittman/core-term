@@ -42,7 +42,7 @@ pub fn ast_to_ir(expr: &Expr) -> Result<IR, String> {
             if let Some(val) = extract_f64_from_lit(&lit.lit) {
                 Ok(IR::Const(val as f32))
             } else {
-                Err(format!("Non-numeric literal"))
+                Err("Non-numeric literal".to_string())
             }
         }
 
@@ -66,7 +66,7 @@ pub fn ast_to_ir(expr: &Expr) -> Result<IR, String> {
 
             let op = match unary.op {
                 UnaryOp::Neg => OpKind::Neg,
-                UnaryOp::Not => return Err(format!("Unsupported unary op: Not")),
+                UnaryOp::Not => return Err("Unsupported unary op: Not".to_string()),
             };
 
             Ok(IR::Unary(op, operand))
@@ -103,7 +103,7 @@ pub fn ast_to_ir(expr: &Expr) -> Result<IR, String> {
             }
         }
 
-        _ => Err(format!("Unsupported expression type")),
+        _ => Err("Unsupported expression type".to_string()),
     }
 }
 
@@ -236,7 +236,7 @@ pub fn egraph_to_ir(tree: &ExprTree) -> IR {
             };
 
             // Convert children
-            let child_irs: Vec<IR> = children.iter().map(|c| egraph_to_ir(c)).collect();
+            let child_irs: Vec<IR> = children.iter().map(egraph_to_ir).collect();
 
             match child_irs.len() {
                 1 => IR::Unary(kind, Box::new(child_irs[0].clone())),

@@ -35,16 +35,19 @@ pub enum Leaf {
 
 impl ExprTree {
     /// Create a variable.
+    #[must_use] 
     pub fn var(idx: u8) -> Self {
         Self::Leaf(Leaf::Var(idx))
     }
 
     /// Create a constant.
+    #[must_use] 
     pub fn constant(val: f32) -> Self {
         Self::Leaf(Leaf::Const(val))
     }
 
     /// Count total nodes in the tree.
+    #[must_use] 
     pub fn node_count(&self) -> usize {
         match self {
             Self::Leaf(_) => 1,
@@ -53,6 +56,7 @@ impl ExprTree {
     }
 
     /// Compute depth of the tree.
+    #[must_use] 
     pub fn depth(&self) -> usize {
         match self {
             Self::Leaf(_) => 1,
@@ -63,6 +67,7 @@ impl ExprTree {
     }
 
     // Constructor helpers for common operations
+    #[must_use] 
     pub fn add(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Add,
@@ -70,6 +75,7 @@ impl ExprTree {
         }
     }
 
+    #[must_use] 
     pub fn sub(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Sub,
@@ -77,6 +83,7 @@ impl ExprTree {
         }
     }
 
+    #[must_use] 
     pub fn mul(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Mul,
@@ -84,6 +91,7 @@ impl ExprTree {
         }
     }
 
+    #[must_use] 
     pub fn div(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Div,
@@ -91,6 +99,7 @@ impl ExprTree {
         }
     }
 
+    #[must_use] 
     pub fn neg(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Neg,
@@ -98,6 +107,7 @@ impl ExprTree {
         }
     }
 
+    #[must_use] 
     pub fn sqrt(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Sqrt,
@@ -105,6 +115,7 @@ impl ExprTree {
         }
     }
 
+    #[must_use] 
     pub fn abs(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Abs,
@@ -112,6 +123,7 @@ impl ExprTree {
         }
     }
 
+    #[must_use] 
     pub fn min(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Min,
@@ -119,6 +131,7 @@ impl ExprTree {
         }
     }
 
+    #[must_use] 
     pub fn max(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Max,
@@ -126,6 +139,7 @@ impl ExprTree {
         }
     }
 
+    #[must_use] 
     pub fn mul_add(a: Self, b: Self, c: Self) -> Self {
         Self::Op {
             op: &super::ops::MulAdd,
@@ -134,6 +148,7 @@ impl ExprTree {
     }
 
     /// Compute the cost of this expression tree using the given cost model.
+    #[must_use] 
     pub fn cost(&self, costs: &CostModel) -> usize {
         match self {
             Self::Leaf(_) => 0,  // Variables and constants are free
@@ -385,7 +400,7 @@ pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (
         }
     }
 
-    let tree = result_stack.pop().unwrap_or_else(|| ExprTree::Leaf(Leaf::Const(0.0)));
+    let tree = result_stack.pop().unwrap_or(ExprTree::Leaf(Leaf::Const(0.0)));
     (tree, total_cost)
 }
 
@@ -428,11 +443,13 @@ pub struct ExtractedDAG {
 
 impl ExtractedDAG {
     /// Check if an e-class is shared (used more than once).
+    #[must_use] 
     pub fn is_shared(&self, class: EClassId) -> bool {
         self.shared.iter().any(|(id, _)| *id == class)
     }
 
     /// Get the use count for an e-class.
+    #[must_use] 
     pub fn use_count(&self, class: EClassId) -> usize {
         self.shared.iter()
             .find(|(id, _)| *id == class)
@@ -441,6 +458,7 @@ impl ExtractedDAG {
     }
 
     /// Get the index of the best node for an e-class.
+    #[must_use] 
     pub fn best_node_idx(&self, class: EClassId) -> Option<usize> {
         self.choices.get(class.0 as usize).and_then(|o| *o)
     }
@@ -574,8 +592,8 @@ fn count_refs_recursive(
     ref_counts[canonical.0 as usize] += 1;
 
     // Only recurse on first visit to count true structural refs
-    if ref_counts[canonical.0 as usize] == 1 {
-        if let Some(node_idx) = best_node[canonical.0 as usize] {
+    if ref_counts[canonical.0 as usize] == 1
+        && let Some(node_idx) = best_node[canonical.0 as usize] {
             let node = &egraph.nodes(canonical)[node_idx];
             if let ENode::Op { children, .. } = node {
                 for &child in children {
@@ -583,7 +601,6 @@ fn count_refs_recursive(
                 }
             }
         }
-    }
 }
 
 /// Topological sort of e-classes for emission order.
@@ -636,7 +653,7 @@ fn toposort_dag(
 
     // Add root if not already included
     let root_canonical = egraph.find(root);
-    if !result.iter().any(|id| *id == root_canonical) {
+    if !result.contains(&root_canonical) {
         result.push(root_canonical);
     }
 

@@ -221,7 +221,7 @@ fn handle_csi_command(emulator: &mut TerminalEmulator, csi: CsiCommand) -> Optio
                 // Bolt Optimization: Avoid String allocation by writing directly to Vec
                 use std::io::Write;
                 let mut response = Vec::with_capacity(16);
-                let _ = write!(&mut response, "\x1B[{};{}R", abs_y + 1, abs_x + 1);
+                drop(write!(&mut response, "\x1B[{};{}R", abs_y + 1, abs_x + 1));
                 Some(EmulatorAction::WritePty(response))
             }
             DSR_STATUS_OK => Some(EmulatorAction::WritePty(DSR_RESPONSE_OK.to_vec())),

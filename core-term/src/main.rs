@@ -66,11 +66,11 @@ fn get_secure_log_path() -> std::path::PathBuf {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
-                let _ = std::fs::DirBuilder::new().mode(0o700).create(&cache_dir);
+                drop(std::fs::DirBuilder::new().mode(0o700).create(&cache_dir));
             }
             #[cfg(not(unix))]
             {
-                let _ = std::fs::create_dir_all(&cache_dir);
+                drop(std::fs::create_dir_all(&cache_dir));
             }
         }
         return cache_dir.join("core-term.log");

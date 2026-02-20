@@ -61,6 +61,7 @@ use super::node::{EClassId, ENode};
 /// # Returns
 ///
 /// A Rust code string like: `let my_kernel = kernel!(|| X + Y);`
+#[must_use] 
 pub fn expr_tree_to_kernel_code(tree: &ExprTree, name: &str) -> String {
     let body = expr_tree_to_kernel_body(tree);
     format!("let {} = kernel!(|| {});", name, body)
@@ -265,6 +266,7 @@ fn format_const(v: f32) -> String {
 /// # Returns
 ///
 /// Complete Rust source code for a Criterion benchmark file.
+#[must_use] 
 pub fn generate_benchmark_file(variants: &[(String, ExprTree)]) -> String {
     let mut code = String::new();
 
@@ -357,6 +359,7 @@ criterion_main!(generated);
 ///     ((__0 * __0) + __0)
 /// });
 /// ```
+#[must_use] 
 pub fn dag_to_kernel_code(egraph: &EGraph, dag: &ExtractedDAG, name: &str) -> String {
     let body = dag_to_kernel_body(egraph, dag);
     format!("let {} = kernel!(|| {});", name, body)
@@ -372,6 +375,7 @@ pub fn dag_to_kernel_code(egraph: &EGraph, dag: &ExtractedDAG, name: &str) -> St
 /// Either:
 /// - A simple expression: `(X + Y)`
 /// - A block with let-bindings: `{ let __0 = ...; (__0 * __0) }`
+#[must_use] 
 pub fn dag_to_kernel_body(egraph: &EGraph, dag: &ExtractedDAG) -> String {
     // Build a map from shared e-class IDs to their variable names
     let mut names: BTreeMap<u32, String> = BTreeMap::new();
@@ -519,6 +523,7 @@ fn emit_op_code(op_name: &str, children: &[String]) -> String {
 /// # Returns
 ///
 /// Complete Rust source code for a Criterion benchmark file.
+#[must_use] 
 pub fn generate_dag_benchmark_file(
     variants: &[(String, EGraph, EClassId)],
 ) -> String {

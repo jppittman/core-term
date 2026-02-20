@@ -94,6 +94,7 @@ pub enum Expr {
 
 impl Expr {
     /// Get the operation type of this expression's root.
+    #[must_use] 
     pub fn op_type(&self) -> OpType {
         match self {
             Expr::Var(_) => OpType::Var,
@@ -105,6 +106,7 @@ impl Expr {
     }
 
     /// Compute the depth of this expression tree.
+    #[must_use] 
     pub fn depth(&self) -> usize {
         match self {
             Expr::Var(_) | Expr::Const(_) => 1,
@@ -115,6 +117,7 @@ impl Expr {
     }
 
     /// Count total nodes in the expression.
+    #[must_use] 
     pub fn node_count(&self) -> usize {
         match self {
             Expr::Var(_) | Expr::Const(_) => 1,
@@ -125,6 +128,7 @@ impl Expr {
     }
 
     /// Evaluate the expression with given variable values.
+    #[must_use] 
     pub fn eval(&self, vars: &[f32; 4]) -> f32 {
         match self {
             Expr::Var(i) => vars[*i as usize],
@@ -201,6 +205,7 @@ impl HalfEPFeature {
     pub const COUNT: usize = OpType::COUNT * OpType::COUNT * MAX_DEPTH * 256;
 
     /// Convert to a unique index for the feature vector.
+    #[must_use] 
     pub fn to_index(self) -> usize {
         let p = self.perspective_op as usize;
         let d = self.descendant_op as usize;
@@ -211,6 +216,7 @@ impl HalfEPFeature {
     }
 
     /// Create from a unique index.
+    #[must_use] 
     pub fn from_index(idx: usize) -> Self {
         let path = (idx % 256) as u8;
         let idx = idx / 256;
@@ -233,6 +239,7 @@ impl HalfEPFeature {
 /// For each node in the tree, we create features describing its descendants
 /// from that node's perspective (like HalfKP creates features from each
 /// king's perspective).
+#[must_use] 
 pub fn extract_features(expr: &Expr) -> Vec<HalfEPFeature> {
     let mut features = Vec::new();
     extract_features_recursive(expr, &mut features, 0, 0);
@@ -369,6 +376,7 @@ pub struct Nnue {
 
 impl Nnue {
     /// Create a new uninitialized NNUE network.
+    #[must_use] 
     pub fn new(config: NnueConfig) -> Self {
         let feature_count = HalfEPFeature::COUNT;
 
@@ -386,6 +394,7 @@ impl Nnue {
     }
 
     /// Create with default configuration.
+    #[must_use] 
     pub fn with_defaults() -> Self {
         Self::new(NnueConfig::default())
     }
@@ -404,6 +413,7 @@ pub struct Accumulator {
 
 impl Accumulator {
     /// Create a new accumulator initialized with biases.
+    #[must_use] 
     pub fn new(nnue: &Nnue) -> Self {
         Self {
             values: nnue.b1.clone(),
@@ -443,6 +453,7 @@ impl Accumulator {
     /// Compute the full forward pass from the accumulator state.
     ///
     /// Returns the predicted cost in centipawns (will need to be scaled).
+    #[must_use] 
     pub fn forward(&self, nnue: &Nnue) -> i32 {
         let l1_size = nnue.config.l1_size;
         let l2_size = nnue.config.l2_size;
@@ -529,6 +540,7 @@ pub struct ExprGenerator {
 
 impl ExprGenerator {
     /// Create a new generator with the given seed.
+    #[must_use] 
     pub fn new(seed: u64, config: ExprGenConfig) -> Self {
         Self {
             config,
@@ -679,6 +691,7 @@ impl RewriteRule {
     /// Try to apply this rule to an expression, returning the rewritten form.
     ///
     /// Returns None if the rule doesn't match.
+    #[must_use] 
     pub fn try_apply(&self, expr: &Expr) -> Option<Expr> {
         match self {
             RewriteRule::AddZero => match expr {
@@ -806,6 +819,7 @@ fn exprs_equal(a: &Expr, b: &Expr) -> bool {
 /// Find all applicable rewrites for an expression (at any position).
 ///
 /// Returns (path_to_subexpr, rule, rewritten_expr) tuples.
+#[must_use] 
 pub fn find_all_rewrites(expr: &Expr) -> Vec<(Vec<usize>, RewriteRule, Expr)> {
     let mut rewrites = Vec::new();
     find_rewrites_recursive(expr, &mut Vec::new(), &mut rewrites);
@@ -858,6 +872,7 @@ impl UnfuseRewrite {
     ///
     /// Unlike optimization rewrites that may fail to match, these always succeed
     /// for the appropriate expression types.
+    #[must_use] 
     pub fn apply(&self, expr: &Expr) -> Option<Expr> {
         match self {
             UnfuseRewrite::UnfuseMulAdd => match expr {
@@ -984,6 +999,7 @@ pub struct BwdGenerator {
 
 impl BwdGenerator {
     /// Create a new backward generator with the given seed.
+    #[must_use] 
     pub fn new(seed: u64, config: BwdGenConfig) -> Self {
         Self { config, state: seed }
     }
@@ -1191,6 +1207,7 @@ impl BwdGenerator {
 }
 
 /// Count fused operations in an expression.
+#[must_use] 
 pub fn count_fused_ops(expr: &Expr) -> usize {
     match expr {
         Expr::Var(_) | Expr::Const(_) => 0,

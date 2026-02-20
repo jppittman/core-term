@@ -296,6 +296,7 @@ pub struct CtxVar<ArrayPos, const INDEX: usize>(PhantomData<ArrayPos>);
 
 impl<ArrayPos, const INDEX: usize> CtxVar<ArrayPos, INDEX> {
     /// Create a new context variable reference.
+    #[must_use] 
     pub const fn new() -> Self {
         Self(PhantomData)
     }

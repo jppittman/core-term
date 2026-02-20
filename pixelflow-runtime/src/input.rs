@@ -103,6 +103,7 @@ pub enum KeySymbol {
 }
 
 impl KeySymbol {
+    #[must_use] 
     pub fn is_modifier(&self) -> bool {
         matches!(
             self,
