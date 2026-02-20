@@ -236,8 +236,8 @@ impl SchedulerParams {
     /// Values are clamped and rounded to valid ranges.
     #[must_use]
     pub fn from_vec(v: &[f64; 10]) -> Self {
-        let jitter_min = (v[8].round().max(5.0).min(90.0)) as u64;
-        let jitter_range = (v[9].round().max(1.0).min((100 - jitter_min) as f64)) as u64;
+        let jitter_min = v[8].round().clamp(5.0, 90.0) as u64;
+        let jitter_range = v[9].round().clamp(1.0, (100 - jitter_min) as f64) as u64;
 
         Self {
             control_mgmt_buffer_size: (v[0].round().max(2.0) as usize),

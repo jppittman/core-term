@@ -35,6 +35,7 @@ pub struct InboxBuilder<T> {
 impl<T> InboxBuilder<T> {
     /// Create a new builder. Each producer's SPSC channel will have
     /// at least `capacity` slots (rounded up to next power of 2).
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             receivers: Vec::new(),
@@ -55,6 +56,7 @@ impl<T> InboxBuilder<T> {
     ///
     /// No more producers can be added after this call.
     /// Panics if no producers were registered.
+    #[must_use]
     pub fn build(self) -> ShardedInbox<T> {
         assert!(
             !self.receivers.is_empty(),
@@ -152,6 +154,7 @@ impl<T> ShardedInbox<T> {
     }
 
     /// Number of registered shards (producers).
+    #[must_use]
     pub fn shard_count(&self) -> usize {
         self.shards.len()
     }
