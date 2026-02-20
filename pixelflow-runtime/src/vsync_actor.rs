@@ -49,7 +49,7 @@ pub(crate) fn return_vsync_token() {
     // Rate-limit warning to 1% of calls to avoid log spam
     if prev.is_err() {
         static WARN_COUNTER: AtomicU32 = AtomicU32::new(0);
-        if WARN_COUNTER.fetch_add(1, Ordering::Relaxed) % 100 == 0 {
+        if WARN_COUNTER.fetch_add(1, Ordering::Relaxed).is_multiple_of(100) {
             log::warn!("VSync token bucket already at max capacity");
         }
     }
@@ -146,6 +146,7 @@ const MAX_TOKENS: u32 = 100;
 
 impl VsyncActor {
     /// Create empty VsyncActor for troupe pattern - configured via SetConfig management message.
+    #[must_use] 
     pub fn new_empty() -> Self {
         Self {
             engine_handle: None,

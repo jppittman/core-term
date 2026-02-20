@@ -40,11 +40,13 @@ impl TerminalSurface {
     }
 
     /// Creates a terminal surface from a pre-computed flat list of cells.
+    #[must_use] 
     pub fn from_cells(_cells: Vec<()>, _cols: usize, _cell_width: u32, _cell_height: u32) -> Self {
         Self { _placeholder: () }
     }
 
     /// Creates a new terminal surface.
+    #[must_use] 
     pub fn new(_cols: usize, _rows: usize, _cell_width: u32, _cell_height: u32) -> Self {
         Self { _placeholder: () }
     }

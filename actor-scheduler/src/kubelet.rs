@@ -111,7 +111,7 @@ where
         thread::spawn(move || {
             let phase = scheduler.run(&mut actor);
             // Ignore send error: Kubelet may have already been dropped.
-            let _ = tx.send(phase);
+            drop(tx.send(phase));
         });
 
         // Publish after spawning so handles are live when ServiceHandles reconnect.
@@ -231,7 +231,7 @@ where
 
     thread::spawn(move || {
         let phase = scheduler.run(&mut actor);
-        let _ = tx.send(phase);
+        drop(tx.send(phase));
     });
 
     let handler = Box::new(TypedPodHandler {

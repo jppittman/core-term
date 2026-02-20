@@ -56,6 +56,7 @@ impl Clone for EGraph {
 }
 
 impl EGraph {
+    #[must_use] 
     pub fn new() -> Self {
         // Build rules first, then wrap in Arc
         let rules = Self::create_algebraic_rules();
@@ -163,6 +164,7 @@ impl EGraph {
         // self.add_rule(Box::new(FmaFusion)); // a * b + c → mul_add(a, b, c)
     }
 
+    #[must_use] 
     pub fn find(&self, id: EClassId) -> EClassId {
         let mut current = id;
         while self.parent[current.index()] != current {
@@ -244,22 +246,26 @@ impl EGraph {
         }
     }
 
+    #[must_use] 
     pub fn nodes(&self, id: EClassId) -> &[ENode] {
         let id = self.find(id);
         &self.classes[id.index()].nodes
     }
 
     /// Get the number of registered rewrite rules.
+    #[must_use] 
     pub fn num_rules(&self) -> usize {
         self.rules.len()
     }
 
     /// Get the number of e-classes.
+    #[must_use] 
     pub fn num_classes(&self) -> usize {
         self.classes.len()
     }
 
     /// Get the total number of nodes across all e-classes.
+    #[must_use] 
     pub fn node_count(&self) -> usize {
         self.classes.iter().map(|c| c.nodes.len()).sum()
     }
@@ -288,6 +294,7 @@ impl EGraph {
     }
 
     /// Get a rule by index.
+    #[must_use] 
     pub fn rule(&self, idx: usize) -> Option<&dyn Rewrite> {
         self.rules.get(idx).map(|r| r.as_ref())
     }
@@ -296,6 +303,7 @@ impl EGraph {
     ///
     /// Returns only targets where the rule actually matches (produces an action).
     /// Much more efficient than enumerating all combinations - only scores real matches.
+    #[must_use] 
     pub fn find_rewrite_matches(&self) -> Vec<RewriteTarget> {
         let mut matches = Vec::new();
 
@@ -426,6 +434,7 @@ impl EGraph {
         changed
     }
 
+    #[must_use] 
     pub fn contains_const(&self, id: EClassId, val: f32) -> bool {
         self.nodes(id).iter().any(|n| n.is_const(val))
     }
@@ -532,6 +541,7 @@ impl EGraph {
         unions
     }
 
+    #[must_use] 
     pub fn extract_with_costs(&self, root: EClassId, costs: &CostModel) -> ENode {
         let root = self.find(root);
         let mut cost_table: HashMap<EClassId, (usize, ENode)> = HashMap::new();
@@ -566,12 +576,14 @@ impl EGraph {
     }
 
     /// Extract the minimum-cost expression tree from an e-class.
+    #[must_use] 
     pub fn extract_tree_with_costs(&self, root: EClassId, costs: &CostModel) -> ExprTree {
         let (tree, _cost) = super::extract::extract(self, root, costs);
         tree
     }
 
     /// Extract the best expression tree and its cost.
+    #[must_use] 
     pub fn extract_best(&self, root: EClassId, costs: &CostModel) -> (ExprTree, usize) {
         super::extract::extract(self, root, costs)
     }
@@ -586,6 +598,7 @@ impl EGraph {
     /// For `sin(X) * sin(X) + sin(X)`:
     /// - Tree extraction would compute sin(X) three times
     /// - DAG extraction marks sin(X) as shared, enabling: `let __0 = X.sin(); __0 * __0 + __0`
+    #[must_use] 
     pub fn extract_dag_with_costs(&self, root: EClassId, costs: &CostModel) -> super::extract::ExtractedDAG {
         super::extract::extract_dag(self, root, costs)
     }
@@ -605,6 +618,7 @@ impl EGraph {
     /// # Returns
     ///
     /// A vector of distinct ExprTree representations, up to `n` elements.
+    #[must_use] 
     pub fn extract_variants(&self, root: EClassId, n: usize, costs: &CostModel) -> Vec<ExprTree> {
         let root = self.find(root);
         let nodes = &self.classes[root.index()].nodes;

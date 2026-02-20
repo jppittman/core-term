@@ -67,6 +67,7 @@ pub struct TerminalEmulator {
 
 impl TerminalEmulator {
     /// Creates a new `TerminalEmulator`.
+    #[must_use] 
     pub fn new(width: usize, height: usize) -> Self {
         let initial_attributes = Attributes::default(); // SGR Reset attributes
                                                         // Screen::new now gets scrollback_limit from CONFIG
@@ -303,11 +304,13 @@ impl TerminalEmulator {
     }
 
     /// Returns the current viewport offset (0 = live screen).
+    #[must_use] 
     pub fn viewport_offset(&self) -> usize {
         self.viewport_offset
     }
 
     /// Returns the maximum scrollback available.
+    #[must_use] 
     pub fn scrollback_len(&self) -> usize {
         self.screen.scrollback.len()
     }
@@ -352,6 +355,7 @@ impl TerminalEmulator {
         debug!("Selection cleared.");
     }
 
+    #[must_use] 
     pub fn get_selected_text(&self) -> Option<String> {
         self.screen.get_selected_text()
     }

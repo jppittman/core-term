@@ -21,6 +21,7 @@ pub struct MockEngine {
 impl MockEngine {
     /// Create a new MockEngine. Returns the engine instance (to inspect messages)
     /// and the handle (to pass to the actor under test).
+    #[must_use] 
     pub fn new() -> Self {
         let messages = Arc::new(Mutex::new(Vec::new()));
 
@@ -31,7 +32,7 @@ impl MockEngine {
         // Create scheduler with two producers: one for self, one for handle()
         let mut builder =
             ActorBuilder::<EngineData, EngineControl, AppManagement>::new(100, None);
-        let handle = builder.add_producer();
+        let _handle = builder.add_producer();
         let extra_handle = builder.add_producer();
         let mut scheduler = builder.build();
 

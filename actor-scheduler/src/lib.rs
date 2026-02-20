@@ -524,6 +524,7 @@ impl<D, C, M> ActorBuilder<D, C, M> {
     /// # Arguments
     /// * `data_buffer_size` - Per-producer SPSC buffer size for the data lane
     /// * `wake_handler` - Optional platform wake handler (e.g., macOS Cocoa waker)
+    #[must_use] 
     pub fn new(
         data_buffer_size: usize,
         wake_handler: Option<Arc<dyn WakeHandler>>,
@@ -532,6 +533,7 @@ impl<D, C, M> ActorBuilder<D, C, M> {
     }
 
     /// Create a new builder with explicit tuning parameters.
+    #[must_use] 
     pub fn new_with_params(
         data_buffer_size: usize,
         wake_handler: Option<Arc<dyn WakeHandler>>,
@@ -576,12 +578,14 @@ impl<D, C, M> ActorBuilder<D, C, M> {
     ///
     /// Uses default burst limits from [`SchedulerParams`].
     /// No more producers can be added after this call.
+    #[must_use] 
     pub fn build(self) -> ActorScheduler<D, C, M> {
         let burst = self.params.default_data_burst_limit;
         self.build_with_burst(burst, ShutdownMode::default())
     }
 
     /// Seal the registry with explicit burst limit and shutdown mode.
+    #[must_use] 
     pub fn build_with_burst(
         self,
         data_burst_limit: usize,
@@ -717,7 +721,7 @@ fn send_with_backoff<T>(
                 } else {
                     // Phase 3: Sleep (exponential backoff with jitter)
                     #[cfg(debug_assertions)]
-                    if attempt % 10 == 0 {
+                    if attempt.is_multiple_of(10) {
                         eprintln!(
                             "[ActorScheduler] Priority channel full, backing off (attempt {})",
                             attempt

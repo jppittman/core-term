@@ -48,6 +48,7 @@ kernel!(
 
 impl AnalyticalLine {
     /// Create from two endpoints. Returns None for horizontal/degenerate lines.
+    #[must_use] 
     pub fn from_points([x0, y0]: [f32; 2], [x1, y1]: [f32; 2]) -> Option<Self> {
         let dy = y1 - y0;
         if dy.abs() < 1e-6 {
@@ -103,6 +104,7 @@ pub struct AnalyticalQuad {
 
 impl AnalyticalQuad {
     #[inline]
+    #[must_use] 
     pub fn new([x0, y0]: [f32; 2], [x1, y1]: [f32; 2], [x2, y2]: [f32; 2]) -> Self {
         let ay = y0 - 2.0 * y1 + y2;
         let by = 2.0 * (y1 - y0);

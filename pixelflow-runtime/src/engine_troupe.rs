@@ -454,7 +454,7 @@ impl EngineHandler {
         let send_time = t1.elapsed();
 
         self.frame_number += 1;
-        if self.frame_number % 60 == 0 {
+        if self.frame_number.is_multiple_of(60) {
             log::info!(
                 "Frame {}: render={:?}, send={:?}",
                 self.frame_number,

@@ -136,6 +136,7 @@ pub struct Var<N>(PhantomData<N>);
 
 impl<N> Var<N> {
     /// Create a new variable reference.
+    #[must_use] 
     pub const fn new() -> Self {
         Self(PhantomData)
     }

@@ -77,6 +77,7 @@ mod x11_waker {
         /// Create a new uninitialized waker.
         ///
         /// Call `set_target()` once the X11 window is created.
+        #[must_use] 
         pub fn new() -> Self {
             Self {
                 inner: Arc::new(Mutex::new(None)),
@@ -103,6 +104,7 @@ mod x11_waker {
         }
 
         /// Get the wake atom for filtering in the event loop.
+        #[must_use] 
         pub fn wake_atom(&self) -> Option<xlib::Atom> {
             self.inner.lock().unwrap().as_ref().map(|i| i.wake_atom)
         }
