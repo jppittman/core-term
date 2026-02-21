@@ -23,8 +23,7 @@
 //! This handles the wide dynamic range of costs (10ns to 10000ns).
 
 use pixelflow_nnue::factored::{
-    EdgeAccumulator, FactoredNnue, OpEmbeddings, StructuralFeatures,
-    HIDDEN_DIM, INPUT_DIM, K,
+    EdgeAccumulator, FactoredNnue, HIDDEN_DIM, INPUT_DIM, K, OpEmbeddings, StructuralFeatures,
 };
 use pixelflow_nnue::{Expr, OpKind};
 
@@ -191,7 +190,11 @@ pub struct ForwardCache {
 
 impl ForwardCache {
     /// Run forward pass and cache intermediates.
-    pub fn forward(net: &FactoredNnue, acc: &EdgeAccumulator, structural: &StructuralFeatures) -> Self {
+    pub fn forward(
+        net: &FactoredNnue,
+        acc: &EdgeAccumulator,
+        structural: &StructuralFeatures,
+    ) -> Self {
         let mut input = [0.0f32; INPUT_DIM];
 
         // Copy accumulator values (first 2K dims)
@@ -279,11 +282,7 @@ pub fn backward(
     // So d(loss)/d(E[op]) = Σ d_input[i] for each edge where op appears
 
     // Extract edges from expression and propagate gradients
-    propagate_embedding_gradients(
-        &sample.expr,
-        &d_input[..2 * K],
-        &mut grads.d_emb,
-    );
+    propagate_embedding_gradients(&sample.expr, &d_input[..2 * K], &mut grads.d_emb);
 
     loss
 }
@@ -304,8 +303,8 @@ fn propagate_embedding_gradients(
             // This edge contributes: acc[0..K] += E[parent], acc[K..2K] += E[child]
             // So gradients flow back:
             for k in 0..K {
-                d_emb[parent_op.index()][k] += d_acc[k];       // parent contributes to first half
-                d_emb[child_op.index()][k] += d_acc[K + k];    // child contributes to second half
+                d_emb[parent_op.index()][k] += d_acc[k]; // parent contributes to first half
+                d_emb[child_op.index()][k] += d_acc[K + k]; // child contributes to second half
             }
 
             propagate_embedding_gradients(child, d_acc, d_emb);
@@ -340,6 +339,17 @@ fn propagate_embedding_gradients(
             propagate_embedding_gradients(a, d_acc, d_emb);
             propagate_embedding_gradients(b, d_acc, d_emb);
             propagate_embedding_gradients(c, d_acc, d_emb);
+        }
+        Expr::Nary(_, children) => {
+            for child in children {
+                let child_op = child.op_type();
+                // N-ary edges from this parent
+                for k in 0..K {
+                    d_emb[parent_op.index()][k] += d_acc[k]; // parent appears in N edges (1 per child)
+                    d_emb[child_op.index()][k] += d_acc[K + k];
+                }
+                propagate_embedding_gradients(child, d_acc, d_emb);
+            }
         }
     }
 }
@@ -573,14 +583,17 @@ impl FactoredTrainer {
         let wd = self.config.weight_decay;
 
         // Update embeddings
-        for (op_idx, (emb_row, grad_row)) in self.net.embeddings.e.iter_mut()
+        for (op_idx, (emb_row, grad_row)) in self
+            .net
+            .embeddings
+            .e
+            .iter_mut()
             .zip(grads.d_emb.iter())
             .enumerate()
         {
             for k in 0..K {
                 // Momentum update
-                self.momentum.v_emb[op_idx][k] =
-                    mom * self.momentum.v_emb[op_idx][k] + grad_row[k];
+                self.momentum.v_emb[op_idx][k] = mom * self.momentum.v_emb[op_idx][k] + grad_row[k];
 
                 // Weight decay + gradient step
                 emb_row[k] -= lr * (self.momentum.v_emb[op_idx][k] + wd * emb_row[k]);
@@ -634,7 +647,11 @@ impl FactoredTrainer {
         let rmse = mse.sqrt();
         let spearman = compute_spearman(&predictions, &targets);
 
-        TrainMetrics { mse, rmse, spearman }
+        TrainMetrics {
+            mse,
+            rmse,
+            spearman,
+        }
     }
 }
 
@@ -1049,7 +1066,12 @@ mod tests {
         assert!(loss >= 0.0);
 
         // Check that gradients are non-zero
-        let total_grad: f32 = grads.d_emb.iter().flat_map(|r| r.iter()).map(|&v| v.abs()).sum();
+        let total_grad: f32 = grads
+            .d_emb
+            .iter()
+            .flat_map(|r| r.iter())
+            .map(|&v| v.abs())
+            .sum();
         assert!(total_grad > 0.0, "Should have non-zero embedding gradients");
     }
 
@@ -1094,12 +1116,18 @@ mod tests {
         let a = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let b = vec![10.0, 20.0, 30.0, 40.0, 50.0];
         let rho = compute_spearman(&a, &b);
-        assert!((rho - 1.0).abs() < 0.01, "Perfect correlation should be ~1.0");
+        assert!(
+            (rho - 1.0).abs() < 0.01,
+            "Perfect correlation should be ~1.0"
+        );
 
         // Perfect negative correlation
         let c = vec![50.0, 40.0, 30.0, 20.0, 10.0];
         let rho = compute_spearman(&a, &c);
-        assert!((rho - (-1.0)).abs() < 0.01, "Perfect negative correlation should be ~-1.0");
+        assert!(
+            (rho - (-1.0)).abs() < 0.01,
+            "Perfect negative correlation should be ~-1.0"
+        );
     }
 
     // ========================================================================
@@ -1117,7 +1145,9 @@ mod tests {
     #[test]
     fn test_parse_kernel_code_constants() {
         assert!(matches!(parse_kernel_code("1.0"), Some(Expr::Const(v)) if (v - 1.0).abs() < 1e-6));
-        assert!(matches!(parse_kernel_code("(4.595877)"), Some(Expr::Const(v)) if (v - 4.595877).abs() < 1e-5));
+        assert!(
+            matches!(parse_kernel_code("(4.595877)"), Some(Expr::Const(v)) if (v - 4.595877).abs() < 1e-5)
+        );
         assert!(matches!(parse_kernel_code("0.0"), Some(Expr::Const(v)) if v.abs() < 1e-6));
     }
 
@@ -1202,7 +1232,11 @@ mod tests {
     fn test_parse_kernel_code_complex_expressions() {
         // Negative number in parens with rsqrt
         let expr = parse_kernel_code("((-0.724020)).rsqrt()");
-        assert!(expr.is_some(), "Should parse rsqrt of negative const: {:?}", expr);
+        assert!(
+            expr.is_some(),
+            "Should parse rsqrt of negative const: {:?}",
+            expr
+        );
 
         // Deeply nested with multiple methods
         let expr = parse_kernel_code("((((X).rsqrt()).abs()).abs())");
@@ -1221,13 +1255,13 @@ mod tests {
     fn test_parse_actual_failures() {
         // Exact expression from benchmark cache
         let expr = parse_kernel_code(
-            "((((X).rsqrt()).abs()).abs()).min(((((-0.724020)).rsqrt() * (1.0 / (X).abs()))).min(W))"
+            "((((X).rsqrt()).abs()).abs()).min(((((-0.724020)).rsqrt() * (1.0 / (X).abs()))).min(W))",
         );
         assert!(expr.is_some(), "Should parse chained min: {:?}", expr);
 
         // Another actual failure
         let expr = parse_kernel_code(
-            "((W * (((Y * X)).max(X)).rsqrt()) + (W * (-(((Y).abs() * Z) - (((0.296980) * Z) + (-W))))))"
+            "((W * (((Y * X)).max(X)).rsqrt()) + (W * (-(((Y).abs() * Z) - (((0.296980) * Z) + (-W))))))",
         );
         assert!(expr.is_some(), "Should parse complex expression");
     }

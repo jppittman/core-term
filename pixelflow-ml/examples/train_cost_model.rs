@@ -80,7 +80,7 @@ impl Default for TrainableCostModel {
             abs: 1.0,
             min: 4.0,
             max: 4.0,
-            mul_add: 10.0,  // Key question: is FMA worth it?
+            mul_add: 10.0, // Key question: is FMA worth it?
             mul_rsqrt: 5.0,
         }
     }
@@ -130,9 +130,18 @@ impl TrainableCostModel {
     /// Get weights as a vector for gradient descent.
     pub fn to_vec(&self) -> Vec<f32> {
         vec![
-            self.add, self.sub, self.mul, self.div, self.neg,
-            self.sqrt, self.rsqrt, self.abs, self.min, self.max,
-            self.mul_add, self.mul_rsqrt,
+            self.add,
+            self.sub,
+            self.mul,
+            self.div,
+            self.neg,
+            self.sqrt,
+            self.rsqrt,
+            self.abs,
+            self.min,
+            self.max,
+            self.mul_add,
+            self.mul_rsqrt,
         ]
     }
 
@@ -234,9 +243,18 @@ pub struct OpCounts {
 impl OpCounts {
     pub fn to_vec(&self) -> Vec<f32> {
         vec![
-            self.add as f32, self.sub as f32, self.mul as f32, self.div as f32,
-            self.neg as f32, self.sqrt as f32, self.rsqrt as f32, self.abs as f32,
-            self.min as f32, self.max as f32, self.mul_add as f32, self.mul_rsqrt as f32,
+            self.add as f32,
+            self.sub as f32,
+            self.mul as f32,
+            self.div as f32,
+            self.neg as f32,
+            self.sqrt as f32,
+            self.rsqrt as f32,
+            self.abs as f32,
+            self.min as f32,
+            self.max as f32,
+            self.mul_add as f32,
+            self.mul_rsqrt as f32,
         ]
     }
 }
@@ -245,7 +263,7 @@ impl OpCounts {
 // Expression Types (from pixelflow_ml::nnue)
 // ============================================================================
 
-use pixelflow_ml::nnue::{Expr, OpType, BwdGenerator, BwdGenConfig};
+use pixelflow_ml::nnue::{BwdGenConfig, BwdGenerator, Expr, OpType};
 
 // ============================================================================
 // Cost Cache (memoization)
@@ -292,7 +310,11 @@ impl CostCache {
 
     pub fn hit_rate(&self) -> f32 {
         let total = self.hits + self.misses;
-        if total == 0 { 0.0 } else { self.hits as f32 / total as f32 }
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f32 / total as f32
+        }
     }
 }
 
@@ -309,8 +331,14 @@ fn expr_hash(expr: &Expr) -> u64 {
 fn expr_hash_inner<H: std::hash::Hasher>(expr: &Expr, hasher: &mut H) {
     use std::hash::Hash as _;
     match expr {
-        Expr::Var(i) => { 0u8.hash(hasher); i.hash(hasher); }
-        Expr::Const(c) => { 1u8.hash(hasher); c.to_bits().hash(hasher); }
+        Expr::Var(i) => {
+            0u8.hash(hasher);
+            i.hash(hasher);
+        }
+        Expr::Const(c) => {
+            1u8.hash(hasher);
+            c.to_bits().hash(hasher);
+        }
         Expr::Unary(op, a) => {
             2u8.hash(hasher);
             (*op as u8).hash(hasher);
@@ -454,7 +482,9 @@ fn extract_json_number(json: &str, key: &str) -> Option<f64> {
     if rest.starts_with("null") {
         return None;
     }
-    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-' && c != 'e' && c != 'E' && c != '+')?;
+    let end = rest.find(|c: char| {
+        !c.is_ascii_digit() && c != '.' && c != '-' && c != 'e' && c != 'E' && c != '+'
+    })?;
     rest[..end].parse().ok()
 }
 
@@ -501,11 +531,11 @@ fn ground_truth_cost(expr: &Expr) -> f32 {
         div: 14.0,
         neg: 0.5,
         sqrt: 12.0,
-        rsqrt: 4.0,  // Fast rsqrt!
+        rsqrt: 4.0, // Fast rsqrt!
         abs: 0.5,
         min: 3.0,
         max: 3.0,
-        mul_add: 4.5,  // FMA is almost free!
+        mul_add: 4.5, // FMA is almost free!
         mul_rsqrt: 4.0,
     };
 
@@ -554,7 +584,10 @@ impl Default for TrainConfig {
 /// For each pair of samples (A, B):
 /// - If benchmark says A is faster, cost model should predict cost(A) < cost(B)
 /// - Loss = max(0, cost(A) - cost(B) + margin) when A should be faster
-pub fn train_from_benchmarks(samples: &[BenchmarkSample], config: &TrainConfig) -> TrainableCostModel {
+pub fn train_from_benchmarks(
+    samples: &[BenchmarkSample],
+    config: &TrainConfig,
+) -> TrainableCostModel {
     let mut model = TrainableCostModel::default();
 
     println!("=== Training The Judge (Cost Model) ===\n");
@@ -637,7 +670,9 @@ pub fn train_from_benchmarks(samples: &[BenchmarkSample], config: &TrainConfig) 
             let avg_loss = total_loss / total_pairs as f32;
             println!(
                 "Iter {:4}: loss={:.4}, accuracy={:.1}%",
-                iter + 1, avg_loss, accuracy * 100.0
+                iter + 1,
+                avg_loss,
+                accuracy * 100.0
             );
         }
     }
@@ -650,12 +685,18 @@ pub fn train_from_benchmarks(samples: &[BenchmarkSample], config: &TrainConfig) 
 
 fn print_weights(model: &TrainableCostModel) {
     println!("Learned weights (The Judge):");
-    println!("  add={:.2}, sub={:.2}, mul={:.2}, div={:.2}",
-             model.add, model.sub, model.mul, model.div);
-    println!("  neg={:.2}, sqrt={:.2}, rsqrt={:.2}, abs={:.2}",
-             model.neg, model.sqrt, model.rsqrt, model.abs);
-    println!("  min={:.2}, max={:.2}, mul_add={:.2}, mul_rsqrt={:.2}",
-             model.min, model.max, model.mul_add, model.mul_rsqrt);
+    println!(
+        "  add={:.2}, sub={:.2}, mul={:.2}, div={:.2}",
+        model.add, model.sub, model.mul, model.div
+    );
+    println!(
+        "  neg={:.2}, sqrt={:.2}, rsqrt={:.2}, abs={:.2}",
+        model.neg, model.sqrt, model.rsqrt, model.abs
+    );
+    println!(
+        "  min={:.2}, max={:.2}, mul_add={:.2}, mul_rsqrt={:.2}",
+        model.min, model.max, model.mul_add, model.mul_rsqrt
+    );
 }
 
 /// Train the cost model using pairwise ranking loss (synthetic fallback).
@@ -742,15 +783,22 @@ pub fn train_cost_model(config: &TrainConfig) -> TrainableCostModel {
             let avg_loss = total_loss / total_pairs as f32;
             println!(
                 "Iter {:4}: loss={:.4}, accuracy={:.1}%, cache_hit={:.1}%",
-                iter + 1, avg_loss, accuracy * 100.0, cache.hit_rate() * 100.0
+                iter + 1,
+                avg_loss,
+                accuracy * 100.0,
+                cache.hit_rate() * 100.0
             );
         }
     }
 
     println!("\n=== Training Complete ===\n");
     print_weights(&model);
-    println!("\nCache stats: {} hits, {} misses ({:.1}% hit rate)",
-             cache.hits, cache.misses, cache.hit_rate() * 100.0);
+    println!(
+        "\nCache stats: {} hits, {} misses ({:.1}% hit rate)",
+        cache.hits,
+        cache.misses,
+        cache.hit_rate() * 100.0
+    );
 
     model
 }
@@ -802,7 +850,11 @@ fn main() {
 
     if samples.len() >= 20 {
         // Train on REAL benchmark data
-        println!("Found {} benchmark samples at {}", samples.len(), cache_path.display());
+        println!(
+            "Found {} benchmark samples at {}",
+            samples.len(),
+            cache_path.display()
+        );
         println!("\n=== Training The Judge on REAL SIMD benchmarks ===\n");
 
         let start = Instant::now();
@@ -819,28 +871,37 @@ fn main() {
         // Key insight: what did we learn?
         println!("\n=== Key Insights ===");
         println!("Default FMA cost: 10.0 (mul=5 + add=4 + 1)");
-        println!("Learned:         mul_add={:.1}, mul+add={:.1}",
-                 trained.mul_add, trained.mul + trained.add);
+        println!(
+            "Learned:         mul_add={:.1}, mul+add={:.1}",
+            trained.mul_add,
+            trained.mul + trained.add
+        );
 
         if trained.mul_add < trained.mul + trained.add {
             println!("SUCCESS: Model learned that FMA is efficient!");
         } else {
             println!("Interesting: FMA not cheaper on this hardware?");
         }
-
     } else {
         // Fall back to synthetic training
         println!("No benchmark data found (need >= 20 samples)");
         println!("Run the benchmark pipeline first:");
-        println!("  cargo run -p pixelflow-ml --example gen_egraph_variants --features training -- --count 100");
+        println!(
+            "  cargo run -p pixelflow-ml --example gen_egraph_variants --features training -- --count 100"
+        );
         println!("  cargo bench -p pixelflow-ml --bench generated_kernels");
-        println!("  cargo run -p pixelflow-ml --example collect_benchmark_costs --features training");
+        println!(
+            "  cargo run -p pixelflow-ml --example collect_benchmark_costs --features training"
+        );
         println!("");
 
         // Baseline: untrained model
         let baseline = TrainableCostModel::default();
         let baseline_acc = evaluate_model(&baseline, 500);
-        println!("Baseline accuracy (default weights): {:.1}%\n", baseline_acc * 100.0);
+        println!(
+            "Baseline accuracy (default weights): {:.1}%\n",
+            baseline_acc * 100.0
+        );
 
         // Train on synthetic data
         let start = Instant::now();
@@ -856,9 +917,12 @@ fn main() {
         // Key insight: did we learn that FMA is cheap?
         println!("\n=== Key Insights (Synthetic Ground Truth) ===");
         println!("Ground truth: mul_add=4.5, mul+add=7.0 → FMA saves 2.5");
-        println!("Learned:      mul_add={:.1}, mul+add={:.1} → FMA saves {:.1}",
-                 trained.mul_add, trained.mul + trained.add,
-                 (trained.mul + trained.add) - trained.mul_add);
+        println!(
+            "Learned:      mul_add={:.1}, mul+add={:.1} → FMA saves {:.1}",
+            trained.mul_add,
+            trained.mul + trained.add,
+            (trained.mul + trained.add) - trained.mul_add
+        );
 
         if trained.mul_add < trained.mul + trained.add - 1.0 {
             println!("\nSUCCESS: Model learned that FMA is efficient!");
@@ -894,9 +958,18 @@ depth_threshold = 32
 depth_penalty = 100
 "#,
         std::time::SystemTime::now(),
-        model.add, model.sub, model.mul, model.div, model.neg,
-        model.sqrt, model.rsqrt, model.rsqrt, model.abs,
-        model.min, model.max, model.mul_add,
+        model.add,
+        model.sub,
+        model.mul,
+        model.div,
+        model.neg,
+        model.sqrt,
+        model.rsqrt,
+        model.rsqrt,
+        model.abs,
+        model.min,
+        model.max,
+        model.mul_add,
     );
 
     if let Err(e) = fs::write(path, contents) {

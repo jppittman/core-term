@@ -12,7 +12,9 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::Instant;
 
-use pixelflow_ml::training::factored::{parse_expr, parse_kernel_code, FactoredTrainer, TrainConfig};
+use pixelflow_ml::training::factored::{
+    FactoredTrainer, TrainConfig, parse_expr, parse_kernel_code,
+};
 
 fn main() {
     println!("=== Factored NNUE Training ===\n");
@@ -47,8 +49,14 @@ fn main() {
         trainer.add_sample(expr, cost);
     }
 
-    println!("Network parameters: {}", pixelflow_nnue::factored::FactoredNnue::param_count());
-    println!("Memory usage: {} bytes\n", pixelflow_nnue::factored::FactoredNnue::memory_bytes());
+    println!(
+        "Network parameters: {}",
+        pixelflow_nnue::factored::FactoredNnue::param_count()
+    );
+    println!(
+        "Memory usage: {} bytes\n",
+        pixelflow_nnue::factored::FactoredNnue::memory_bytes()
+    );
 
     // Initial metrics
     let initial = trainer.evaluate();
@@ -104,7 +112,12 @@ fn main() {
     for expr_str in &test_exprs {
         if let Some(expr) = parse_expr(expr_str) {
             let pred_ns = trainer.net.predict_ns(&expr);
-            println!("  {:40} -> {:.1} ns (log: {:.2})", expr_str, pred_ns, pred_ns.ln());
+            println!(
+                "  {:40} -> {:.1} ns (log: {:.2})",
+                expr_str,
+                pred_ns,
+                pred_ns.ln()
+            );
         }
     }
 }
@@ -179,7 +192,9 @@ fn parse_json_sample(line: &str) -> Option<(pixelflow_nnue::Expr, f64)> {
     let cost_start = line.find("\"cost_ns\":")?;
     let cost_value_start = cost_start + "\"cost_ns\":".len();
     let rest = line[cost_value_start..].trim();
-    let cost_end = rest.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(rest.len());
+    let cost_end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(rest.len());
     let cost: f64 = rest[..cost_end].parse().ok()?;
 
     // Use kernel code parser for DSL syntax like "(X + Y)"
@@ -217,8 +232,8 @@ fn run_synthetic_demo() {
         ("Rsqrt(Var(0))", 30.0),
         ("Min(Var(0), Var(1))", 20.0),
         ("Max(Var(0), Var(1))", 20.0),
-        ("Add(Mul(Var(0), Var(1)), Var(2))", 50.0),  // FMA pattern
-        ("MulAdd(Var(0), Var(1), Var(2))", 30.0),    // Fused FMA
+        ("Add(Mul(Var(0), Var(1)), Var(2))", 50.0), // FMA pattern
+        ("MulAdd(Var(0), Var(1), Var(2))", 30.0),   // Fused FMA
         ("Mul(Var(0), Rsqrt(Var(1)))", 55.0),
         ("Add(Add(Var(0), Var(1)), Var(2))", 45.0),
         ("Mul(Mul(Var(0), Var(1)), Var(2))", 55.0),
@@ -232,21 +247,35 @@ fn run_synthetic_demo() {
         }
     }
 
-    println!("Training on {} synthetic samples...\n", trainer.samples.len());
+    println!(
+        "Training on {} synthetic samples...\n",
+        trainer.samples.len()
+    );
 
     let initial = trainer.evaluate();
-    println!("Initial: MSE={:.2}, Spearman={:.3}\n", initial.mse, initial.spearman);
+    println!(
+        "Initial: MSE={:.2}, Spearman={:.3}\n",
+        initial.mse, initial.spearman
+    );
 
     for epoch in 0..config.epochs {
         let loss = trainer.train_epoch();
         if epoch % 10 == 9 {
             let m = trainer.evaluate();
-            println!("Epoch {:2}: loss={:.3}, spearman={:.3}", epoch + 1, loss, m.spearman);
+            println!(
+                "Epoch {:2}: loss={:.3}, spearman={:.3}",
+                epoch + 1,
+                loss,
+                m.spearman
+            );
         }
     }
 
     let final_m = trainer.evaluate();
-    println!("\nFinal: MSE={:.2}, Spearman={:.3}", final_m.mse, final_m.spearman);
+    println!(
+        "\nFinal: MSE={:.2}, Spearman={:.3}",
+        final_m.mse, final_m.spearman
+    );
 
     println!("\n=== Predictions vs Ground Truth ===\n");
     for (expr_str, actual) in &synthetic_data {
@@ -284,11 +313,22 @@ fn run_synthetic_demo() {
                 "  {:6.1} ns ({:15}) {}",
                 cost,
                 label,
-                if correct { "✓" } else { "✗ (ordering wrong)" }
+                if correct {
+                    "✓"
+                } else {
+                    "✗ (ordering wrong)"
+                }
             );
             prev_cost = cost;
         }
     }
 
-    println!("\nRank ordering {}!", if ordering_correct { "learned correctly" } else { "needs more training" });
+    println!(
+        "\nRank ordering {}!",
+        if ordering_correct {
+            "learned correctly"
+        } else {
+            "needs more training"
+        }
+    );
 }

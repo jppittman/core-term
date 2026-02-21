@@ -196,13 +196,13 @@ pub struct HandCraftedEvaluator {
 
 impl HandCraftedEvaluator {
     /// Create a new HCE with the given weights.
-    #[must_use] 
+    #[must_use]
     pub fn new(weights: Vec<i32>) -> Self {
         Self { weights }
     }
 
     /// Create an HCE with all weights set to zero.
-    #[must_use] 
+    #[must_use]
     pub fn zeros(num_features: usize) -> Self {
         Self {
             weights: alloc::vec![0; num_features],
@@ -217,7 +217,7 @@ impl HandCraftedEvaluator {
     }
 
     /// Get a specific weight.
-    #[must_use] 
+    #[must_use]
     pub fn get_weight(&self, index: usize) -> i32 {
         self.weights.get(index).copied().unwrap_or(0)
     }
@@ -226,9 +226,7 @@ impl HandCraftedEvaluator {
     pub fn evaluate_linear<F: LinearFeatures>(&self, features: &F) -> i32 {
         let mut score = 0i32;
         for i in 0..features.len().min(self.weights.len()) {
-            score = score.saturating_add(
-                self.weights[i].saturating_mul(features.get(i))
-            );
+            score = score.saturating_add(self.weights[i].saturating_mul(features.get(i)));
         }
         score
     }
@@ -305,12 +303,27 @@ impl ExprFeatures {
 
     /// Feature names for debugging.
     pub const NAMES: [&'static str; Self::COUNT] = [
-        "add", "sub", "mul", "div", "neg",
-        "sqrt", "rsqrt", "abs", "min", "max",
-        "fma", "mul_rsqrt",
-        "nodes", "depth", "vars", "consts",
-        "has_identity", "has_self_cancel", "has_fusable",
-        "critical_path", "max_width",
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "neg",
+        "sqrt",
+        "rsqrt",
+        "abs",
+        "min",
+        "max",
+        "fma",
+        "mul_rsqrt",
+        "nodes",
+        "depth",
+        "vars",
+        "consts",
+        "has_identity",
+        "has_self_cancel",
+        "has_fusable",
+        "critical_path",
+        "max_width",
     ];
 }
 
@@ -367,44 +380,44 @@ impl LinearFeatures for ExprFeatures {
 /// - **Patterns**: Negative weights = "good to have" (will reduce cost)
 /// - **Structure**: Slight bias toward smaller expressions
 /// - **ILP features**: Critical path matters more than total ops
-#[must_use] 
+#[must_use]
 pub fn default_expr_weights() -> HandCraftedEvaluator {
     let mut hce = HandCraftedEvaluator::zeros(ExprFeatures::COUNT);
 
     // Operation costs (approximate x86-64 cycles)
     // NOTE: These are now SECONDARY to critical_path for ILP-aware evaluation
-    hce.set_weight(0, 4);    // add: ~4 cycles
-    hce.set_weight(1, 4);    // sub: ~4 cycles
-    hce.set_weight(2, 5);    // mul: ~5 cycles
-    hce.set_weight(3, 15);   // div: ~15-20 cycles (expensive!)
-    hce.set_weight(4, 1);    // neg: ~1 cycle (just sign flip)
-    hce.set_weight(5, 15);   // sqrt: ~15-20 cycles
-    hce.set_weight(6, 5);    // rsqrt: ~5 cycles (fast approximation)
-    hce.set_weight(7, 1);    // abs: ~1 cycle (just clear sign bit)
-    hce.set_weight(8, 4);    // min: ~4 cycles
-    hce.set_weight(9, 4);    // max: ~4 cycles
+    hce.set_weight(0, 4); // add: ~4 cycles
+    hce.set_weight(1, 4); // sub: ~4 cycles
+    hce.set_weight(2, 5); // mul: ~5 cycles
+    hce.set_weight(3, 15); // div: ~15-20 cycles (expensive!)
+    hce.set_weight(4, 1); // neg: ~1 cycle (just sign flip)
+    hce.set_weight(5, 15); // sqrt: ~15-20 cycles
+    hce.set_weight(6, 5); // rsqrt: ~5 cycles (fast approximation)
+    hce.set_weight(7, 1); // abs: ~1 cycle (just clear sign bit)
+    hce.set_weight(8, 4); // min: ~4 cycles
+    hce.set_weight(9, 4); // max: ~4 cycles
 
     // Fused operation costs (should be cheaper than sum of parts)
-    hce.set_weight(10, 5);   // fma: ~5 cycles (same as mul alone!)
-    hce.set_weight(11, 6);   // mul_rsqrt: ~6 cycles
+    hce.set_weight(10, 5); // fma: ~5 cycles (same as mul alone!)
+    hce.set_weight(11, 6); // mul_rsqrt: ~6 cycles
 
     // Structural features (mild preferences)
-    hce.set_weight(12, 0);   // node_count: neutral (covered by ops)
-    hce.set_weight(13, 0);   // depth: neutral (superseded by critical_path)
-    hce.set_weight(14, 0);   // var_count: free (just register refs)
-    hce.set_weight(15, 0);   // const_count: free (immediates)
+    hce.set_weight(12, 0); // node_count: neutral (covered by ops)
+    hce.set_weight(13, 0); // depth: neutral (superseded by critical_path)
+    hce.set_weight(14, 0); // var_count: free (just register refs)
+    hce.set_weight(15, 0); // const_count: free (immediates)
 
     // Pattern features (opportunities for improvement)
     // Negative = "having this is good" because it indicates simplification potential
-    hce.set_weight(16, 0);   // has_identity: neutral (rewrite will fix)
-    hce.set_weight(17, 0);   // has_self_cancel: neutral
-    hce.set_weight(18, -2);  // has_fusable: slight bonus if FMA available
+    hce.set_weight(16, 0); // has_identity: neutral (rewrite will fix)
+    hce.set_weight(17, 0); // has_self_cancel: neutral
+    hce.set_weight(18, -2); // has_fusable: slight bonus if FMA available
 
     // ILP features - THE KEY NON-LINEAR INSIGHT
     // critical_path captures actual execution time on superscalar CPUs
-    hce.set_weight(19, 1);   // critical_path: primary cost driver
+    hce.set_weight(19, 1); // critical_path: primary cost driver
     // max_width approximates register pressure (more parallel = more regs needed)
-    hce.set_weight(20, 1);   // max_width: penalty for wide expressions
+    hce.set_weight(20, 1); // max_width: penalty for wide expressions
 
     hce
 }
@@ -412,15 +425,15 @@ pub fn default_expr_weights() -> HandCraftedEvaluator {
 /// Weights optimized for CPUs with FMA (Haswell+, Zen+).
 ///
 /// These weights assume FMA is "free" (same cost as mul).
-#[must_use] 
+#[must_use]
 pub fn fma_optimized_weights() -> HandCraftedEvaluator {
     let mut hce = default_expr_weights();
 
     // FMA is as cheap as mul on modern CPUs
-    hce.set_weight(10, 5);   // fma: ~5 cycles
+    hce.set_weight(10, 5); // fma: ~5 cycles
 
     // Strong incentive to use FMA
-    hce.set_weight(18, -4);  // has_fusable: big bonus
+    hce.set_weight(18, -4); // has_fusable: big bonus
 
     hce
 }
@@ -435,7 +448,7 @@ use crate::nnue::{Expr, OpType};
 ///
 /// This is the "sensing" step that converts a complex AST into
 /// a fixed-size feature vector for the evaluator.
-#[must_use] 
+#[must_use]
 pub fn extract_expr_features(expr: &Expr) -> ExprFeatures {
     let mut features = ExprFeatures::default();
     let mut width_at_depth = Vec::new();
@@ -476,10 +489,22 @@ fn extract_features_recursive(
         }
         Expr::Unary(op, a) => {
             let op_cost = match op {
-                OpType::Neg => { features.neg_count += 1; 1 }
-                OpType::Sqrt => { features.sqrt_count += 1; 15 }
-                OpType::Rsqrt => { features.rsqrt_count += 1; 5 }
-                OpType::Abs => { features.abs_count += 1; 1 }
+                OpType::Neg => {
+                    features.neg_count += 1;
+                    1
+                }
+                OpType::Sqrt => {
+                    features.sqrt_count += 1;
+                    15
+                }
+                OpType::Rsqrt => {
+                    features.rsqrt_count += 1;
+                    5
+                }
+                OpType::Abs => {
+                    features.abs_count += 1;
+                    1
+                }
                 _ => 5, // Default for unknown ops
             };
             let child_critical = extract_features_recursive(a, features, depth + 1, width_at_depth);
@@ -514,8 +539,9 @@ fn extract_features_recursive(
                         features.has_identity += 1;
                     }
                     // Check for fusable: x * rsqrt(y)
-                    if matches!(b.as_ref(), Expr::Unary(OpType::Rsqrt, _)) ||
-                       matches!(a.as_ref(), Expr::Unary(OpType::Rsqrt, _)) {
+                    if matches!(b.as_ref(), Expr::Unary(OpType::Rsqrt, _))
+                        || matches!(a.as_ref(), Expr::Unary(OpType::Rsqrt, _))
+                    {
                         features.has_fusable += 1;
                     }
                     5
@@ -528,9 +554,18 @@ fn extract_features_recursive(
                     }
                     15
                 }
-                OpType::Min => { features.min_count += 1; 4 }
-                OpType::Max => { features.max_count += 1; 4 }
-                OpType::MulRsqrt => { features.mul_rsqrt_count += 1; 6 }
+                OpType::Min => {
+                    features.min_count += 1;
+                    4
+                }
+                OpType::Max => {
+                    features.max_count += 1;
+                    4
+                }
+                OpType::MulRsqrt => {
+                    features.mul_rsqrt_count += 1;
+                    6
+                }
                 _ => 5, // Default
             };
             let crit_a = extract_features_recursive(a, features, depth + 1, width_at_depth);
@@ -540,7 +575,10 @@ fn extract_features_recursive(
         }
         Expr::Ternary(op, a, b, c) => {
             let op_cost = match op {
-                OpType::MulAdd => { features.fma_count += 1; 5 }
+                OpType::MulAdd => {
+                    features.fma_count += 1;
+                    5
+                }
                 _ => 10, // Default for unknown ternary
             };
             let crit_a = extract_features_recursive(a, features, depth + 1, width_at_depth);
@@ -571,11 +609,13 @@ fn exprs_structurally_equal(a: &Expr, b: &Expr) -> bool {
             op1 == op2 && exprs_structurally_equal(a1.as_ref(), b1.as_ref())
         }
         (Expr::Binary(op1, a1, a2), Expr::Binary(op2, b1, b2)) => {
-            op1 == op2 && exprs_structurally_equal(a1.as_ref(), b1.as_ref())
+            op1 == op2
+                && exprs_structurally_equal(a1.as_ref(), b1.as_ref())
                 && exprs_structurally_equal(a2.as_ref(), b2.as_ref())
         }
         (Expr::Ternary(op1, a1, a2, a3), Expr::Ternary(op2, b1, b2, b3)) => {
-            op1 == op2 && exprs_structurally_equal(a1.as_ref(), b1.as_ref())
+            op1 == op2
+                && exprs_structurally_equal(a1.as_ref(), b1.as_ref())
                 && exprs_structurally_equal(a2.as_ref(), b2.as_ref())
                 && exprs_structurally_equal(a3.as_ref(), b3.as_ref())
         }
@@ -635,10 +675,8 @@ fn apply_rewrite_at_path(expr: &Expr, path: &[usize], rule: &RewriteRule) -> Opt
 
         match expr {
             Expr::Var(_) | Expr::Const(_) => None, // Can't go deeper
-            Expr::Unary(op, a) if idx == 0 => {
-                apply_rewrite_at_path(a, rest, rule)
-                    .map(|new_a| Expr::Unary(*op, alloc::boxed::Box::new(new_a)))
-            }
+            Expr::Unary(op, a) if idx == 0 => apply_rewrite_at_path(a, rest, rule)
+                .map(|new_a| Expr::Unary(*op, alloc::boxed::Box::new(new_a))),
             Expr::Binary(op, a, b) => match idx {
                 0 => apply_rewrite_at_path(a, rest, rule)
                     .map(|new_a| Expr::Binary(*op, alloc::boxed::Box::new(new_a), b.clone())),
@@ -647,12 +685,15 @@ fn apply_rewrite_at_path(expr: &Expr, path: &[usize], rule: &RewriteRule) -> Opt
                 _ => None,
             },
             Expr::Ternary(op, a, b, c) => match idx {
-                0 => apply_rewrite_at_path(a, rest, rule)
-                    .map(|new_a| Expr::Ternary(*op, alloc::boxed::Box::new(new_a), b.clone(), c.clone())),
-                1 => apply_rewrite_at_path(b, rest, rule)
-                    .map(|new_b| Expr::Ternary(*op, a.clone(), alloc::boxed::Box::new(new_b), c.clone())),
-                2 => apply_rewrite_at_path(c, rest, rule)
-                    .map(|new_c| Expr::Ternary(*op, a.clone(), b.clone(), alloc::boxed::Box::new(new_c))),
+                0 => apply_rewrite_at_path(a, rest, rule).map(|new_a| {
+                    Expr::Ternary(*op, alloc::boxed::Box::new(new_a), b.clone(), c.clone())
+                }),
+                1 => apply_rewrite_at_path(b, rest, rule).map(|new_b| {
+                    Expr::Ternary(*op, a.clone(), alloc::boxed::Box::new(new_b), c.clone())
+                }),
+                2 => apply_rewrite_at_path(c, rest, rule).map(|new_c| {
+                    Expr::Ternary(*op, a.clone(), b.clone(), alloc::boxed::Box::new(new_c))
+                }),
                 _ => None,
             },
             _ => None,
@@ -707,7 +748,12 @@ mod tests {
         let cost_with = hce.evaluate_linear(&with_fma);
 
         // FMA should be cheaper
-        assert!(cost_with < cost_without, "FMA ({}) should be cheaper than mul+add ({})", cost_with, cost_without);
+        assert!(
+            cost_with < cost_without,
+            "FMA ({}) should be cheaper than mul+add ({})",
+            cost_with,
+            cost_without
+        );
     }
 
     #[test]
@@ -741,11 +787,7 @@ mod tests {
         use alloc::boxed::Box;
 
         // x + y
-        let expr = Expr::Binary(
-            OpType::Add,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Var(1)),
-        );
+        let expr = Expr::Binary(OpType::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1)));
         let features = extract_expr_features(&expr);
 
         assert_eq!(features.add_count, 1);
@@ -795,14 +837,13 @@ mod tests {
         use alloc::boxed::Box;
 
         // x - x
-        let expr = Expr::Binary(
-            OpType::Sub,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Var(0)),
-        );
+        let expr = Expr::Binary(OpType::Sub, Box::new(Expr::Var(0)), Box::new(Expr::Var(0)));
         let features = extract_expr_features(&expr);
 
-        assert_eq!(features.has_self_cancel, 1, "Should detect x-x as self-cancel");
+        assert_eq!(
+            features.has_self_cancel, 1,
+            "Should detect x-x as self-cancel"
+        );
     }
 
     // =========================================================================
@@ -853,13 +894,22 @@ mod tests {
         assert_eq!(deep_features.add_count, 3, "Deep should have 3 adds");
 
         // But different critical paths
-        assert_eq!(wide_features.critical_path, 8, "Wide: two levels of adds = 8");
-        assert_eq!(deep_features.critical_path, 12, "Deep: three sequential adds = 12");
+        assert_eq!(
+            wide_features.critical_path, 8,
+            "Wide: two levels of adds = 8"
+        );
+        assert_eq!(
+            deep_features.critical_path, 12,
+            "Deep: three sequential adds = 12"
+        );
 
         // Critical path prefers wide (more parallel)
-        assert!(wide_features.critical_path < deep_features.critical_path,
+        assert!(
+            wide_features.critical_path < deep_features.critical_path,
             "Wide ({}) should have shorter critical path than deep ({})",
-            wide_features.critical_path, deep_features.critical_path);
+            wide_features.critical_path,
+            deep_features.critical_path
+        );
     }
 
     #[test]
@@ -909,12 +959,18 @@ mod tests {
         let deep_features = extract_expr_features(&deep);
 
         // Wide has higher max_width (more parallel = more live values)
-        assert_eq!(wide_features.max_width, 4, "Wide max_width should be 4 (all vars at depth 2)");
+        assert_eq!(
+            wide_features.max_width, 4,
+            "Wide max_width should be 4 (all vars at depth 2)"
+        );
         assert_eq!(deep_features.max_width, 2, "Deep max_width should be 2");
 
-        assert!(wide_features.max_width > deep_features.max_width,
+        assert!(
+            wide_features.max_width > deep_features.max_width,
             "Wide ({}) should have higher max_width than deep ({})",
-            wide_features.max_width, deep_features.max_width);
+            wide_features.max_width,
+            deep_features.max_width
+        );
     }
 
     #[test]
@@ -958,9 +1014,12 @@ mod tests {
         // Wide has: 3 adds (12) + critical_path 8 + max_width 4 = 24
         // Deep has: 3 adds (12) + critical_path 12 + max_width 2 = 26
         // So even though wide has higher register pressure, its shorter critical path wins
-        assert!(wide_cost < deep_cost,
+        assert!(
+            wide_cost < deep_cost,
             "Wide ({}) should be cheaper than deep ({}) due to shorter critical path",
-            wide_cost, deep_cost);
+            wide_cost,
+            deep_cost
+        );
     }
 
     // =========================================================================
@@ -979,7 +1038,10 @@ mod tests {
         );
 
         let moves = ExprDomain::legal_moves(&expr);
-        assert!(!moves.is_empty(), "Should have at least one legal move (AddZero)");
+        assert!(
+            !moves.is_empty(),
+            "Should have at least one legal move (AddZero)"
+        );
 
         // Check that one move is AddZero
         let has_add_zero = moves.iter().any(|m| matches!(m.rule, RewriteRule::AddZero));
@@ -1006,7 +1068,10 @@ mod tests {
         assert!(result.is_some(), "AddZero should apply");
 
         let simplified = result.unwrap();
-        assert!(matches!(simplified, Expr::Var(0)), "x + 0 should simplify to x");
+        assert!(
+            matches!(simplified, Expr::Var(0)),
+            "x + 0 should simplify to x"
+        );
     }
 
     #[test]
@@ -1028,6 +1093,9 @@ mod tests {
         let cost_before = hce.evaluate_position(&before);
         let cost_after = hce.evaluate_position(&after);
 
-        assert!(cost_after < cost_before, "Simpler expression should have lower cost");
+        assert!(
+            cost_after < cost_before,
+            "Simpler expression should have lower cost"
+        );
     }
 }

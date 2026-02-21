@@ -237,22 +237,14 @@ impl SemanticAnalyzer {
     /// Known methods from ManifoldExt and standard operations.
     const KNOWN_METHODS: &'static [&'static str] = &[
         // ManifoldExt methods
-        "abs", "sqrt", "floor", "ceil", "round", "fract",
-        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-        "exp", "exp2", "ln", "log2", "log10", "pow",
-        "min", "max", "clamp",
-        "hypot", "rsqrt", "recip",
-        // Comparison methods
-        "lt", "le", "gt", "ge", "eq", "ne",
-        // Selection
-        "select",
-        // Coordinate warp (contramap)
-        "at",
-        // Field/Jet specific
-        "constant", "collapse",
-        // Unary
-        "neg",
-        // Clone for reusing expressions
+        "abs", "sqrt", "floor", "ceil", "round", "fract", "sin", "cos", "tan", "asin", "acos",
+        "atan", "atan2", "exp", "exp2", "ln", "log2", "log10", "pow", "min", "max", "clamp",
+        "hypot", "rsqrt", "recip", // Comparison methods
+        "lt", "le", "gt", "ge", "eq", "ne", // Selection
+        "select", // Coordinate warp (contramap)
+        "at", // Field/Jet specific
+        "constant", "collapse", // Unary
+        "neg", // Clone for reusing expressions
         "clone",
     ];
 
@@ -387,7 +379,10 @@ mod tests {
         let input = quote! { |r: f32| X * X + captured_from_env };
         let kernel = parse(input).unwrap();
         let result = analyze(kernel);
-        assert!(result.is_ok(), "Anonymous kernels should allow captured variables");
+        assert!(
+            result.is_ok(),
+            "Anonymous kernels should allow captured variables"
+        );
     }
 
     #[test]

@@ -173,7 +173,11 @@ pub trait SimdU32Ops:
     fn from_f32_scaled<F: SimdOps>(f: F) -> Self;
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32")))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "wasm32"
+)))]
 pub mod scalar;
 
 #[cfg(target_arch = "x86_64")]

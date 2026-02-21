@@ -31,7 +31,6 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy)]
 pub struct SchedulerParams {
     // ── Channel sizing ──────────────────────────────────────────────
-
     /// Capacity of the bounded Control and Management channels.
     ///
     /// Smaller buffers force faster detection of overload scenarios.
@@ -41,7 +40,6 @@ pub struct SchedulerParams {
     pub control_mgmt_buffer_size: usize,
 
     // ── Burst limiting ──────────────────────────────────────────────
-
     /// Control burst limit = `control_mgmt_buffer_size * control_burst_multiplier`.
     ///
     /// Controls how many control messages can be drained per scheduler wake cycle.
@@ -67,7 +65,6 @@ pub struct SchedulerParams {
     pub default_data_burst_limit: usize,
 
     // ── Backoff strategy (sender side) ──────────────────────────────
-
     /// Number of immediate retries (hot spin) before yielding.
     ///
     /// At ~10-20ns per spin, 100 spins = ~1-2us (less than a context switch).
@@ -102,7 +99,6 @@ pub struct SchedulerParams {
     pub max_backoff: Duration,
 
     // ── Jitter ──────────────────────────────────────────────────────
-
     /// Minimum jitter as a percentage of the backoff duration.
     ///
     /// Jitter prevents thundering herd when multiple senders wake simultaneously.
@@ -269,16 +265,16 @@ impl SchedulerParams {
     #[must_use]
     pub fn bounds() -> [(f64, f64); 10] {
         [
-            (4.0, 128.0),           // control_mgmt_buffer_size
-            (1.0, 50.0),            // control_burst_multiplier
-            (1.0, 10.0),            // management_burst_multiplier
-            (16.0, 8192.0),         // default_data_burst_limit
-            (0.0, 500.0),           // spin_attempts
-            (0.0, 200.0),           // yield_attempts
-            (10.0, 6_450.0),        // min_backoff (us) — at most one frame
+            (4.0, 128.0),              // control_mgmt_buffer_size
+            (1.0, 50.0),               // control_burst_multiplier
+            (1.0, 10.0),               // management_burst_multiplier
+            (16.0, 8192.0),            // default_data_burst_limit
+            (0.0, 500.0),              // spin_attempts
+            (0.0, 200.0),              // yield_attempts
+            (10.0, 6_450.0),           // min_backoff (us) — at most one frame
             (100_000.0, 10_000_000.0), // max_backoff (us) — 0.1s to 10s
-            (5.0, 80.0),            // jitter_min_pct
-            (20.0, 50.0),           // jitter_range_pct — at least 20% spread
+            (5.0, 80.0),               // jitter_min_pct
+            (20.0, 50.0),              // jitter_range_pct — at least 20% spread
         ]
     }
 
@@ -322,10 +318,7 @@ mod tests {
             original.control_mgmt_buffer_size,
             reconstructed.control_mgmt_buffer_size
         );
-        assert_eq!(
-            original.spin_attempts,
-            reconstructed.spin_attempts
-        );
+        assert_eq!(original.spin_attempts, reconstructed.spin_attempts);
         assert_eq!(original.min_backoff, reconstructed.min_backoff);
         assert_eq!(original.max_backoff, reconstructed.max_backoff);
         assert_eq!(original.jitter_min_pct, reconstructed.jitter_min_pct);

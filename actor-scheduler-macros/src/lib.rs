@@ -333,9 +333,7 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     // Generate spawns for non-main actors in play()
     let build_schedulers: String = actors
         .iter()
-        .map(|(name, _, _, _)| {
-            format!("let mut {name}_s = self.{name}_builder.build();")
-        })
+        .map(|(name, _, _, _)| format!("let mut {name}_s = self.{name}_builder.build();"))
         .collect::<Vec<_>>()
         .join("\n");
 

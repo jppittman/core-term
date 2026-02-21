@@ -1,0 +1,126 @@
+   Compiling pixelflow-nnue v0.1.0 (/app/pixelflow-nnue)
+    Checking gimli v0.32.3
+    Checking adler2 v2.0.1
+    Checking linux-raw-sys v0.9.4
+    Checking pixelflow-search v0.1.0 (/app/pixelflow-search)
+    Checking bytemuck v1.24.0
+error: method `add` can be confused for the standard trait method `std::ops::Add::add`
+  --> pixelflow-search/src/egraph/extract.rs:69:5
+   |
+69 | /     pub fn add(a: Self, b: Self) -> Self {
+70 | |         Self::Op {
+71 | |             op: &super::ops::Add,
+72 | |             children: alloc::vec![a, b],
+73 | |         }
+74 | |     }
+   | |_____^
+   |
+   = help: consider implementing the trait `std::ops::Add` or choosing a less ambiguous method name
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#should_implement_trait
+   = note: `-D clippy::should-implement-trait` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::should_implement_trait)]`
+
+error: method `sub` can be confused for the standard trait method `std::ops::Sub::sub`
+  --> pixelflow-search/src/egraph/extract.rs:77:5
+   |
+77 | /     pub fn sub(a: Self, b: Self) -> Self {
+78 | |         Self::Op {
+79 | |             op: &super::ops::Sub,
+80 | |             children: alloc::vec![a, b],
+81 | |         }
+82 | |     }
+   | |_____^
+   |
+   = help: consider implementing the trait `std::ops::Sub` or choosing a less ambiguous method name
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#should_implement_trait
+
+error: method `mul` can be confused for the standard trait method `std::ops::Mul::mul`
+  --> pixelflow-search/src/egraph/extract.rs:85:5
+   |
+85 | /     pub fn mul(a: Self, b: Self) -> Self {
+86 | |         Self::Op {
+87 | |             op: &super::ops::Mul,
+88 | |             children: alloc::vec![a, b],
+89 | |         }
+90 | |     }
+   | |_____^
+   |
+   = help: consider implementing the trait `std::ops::Mul` or choosing a less ambiguous method name
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#should_implement_trait
+
+error: method `div` can be confused for the standard trait method `std::ops::Div::div`
+  --> pixelflow-search/src/egraph/extract.rs:93:5
+   |
+93 | /     pub fn div(a: Self, b: Self) -> Self {
+94 | |         Self::Op {
+95 | |             op: &super::ops::Div,
+96 | |             children: alloc::vec![a, b],
+97 | |         }
+98 | |     }
+   | |_____^
+   |
+   = help: consider implementing the trait `std::ops::Div` or choosing a less ambiguous method name
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#should_implement_trait
+
+error: method `neg` can be confused for the standard trait method `std::ops::Neg::neg`
+   --> pixelflow-search/src/egraph/extract.rs:101:5
+    |
+101 | /     pub fn neg(a: Self) -> Self {
+102 | |         Self::Op {
+103 | |             op: &super::ops::Neg,
+104 | |             children: alloc::vec![a],
+105 | |         }
+106 | |     }
+    | |_____^
+    |
+    = help: consider implementing the trait `std::ops::Neg` or choosing a less ambiguous method name
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#should_implement_trait
+
+error: this function has too many arguments (6/5)
+   --> pixelflow-search/src/egraph/extract.rs:636:5
+    |
+636 | /     fn visit(
+637 | |         egraph: &EGraph,
+638 | |         class: EClassId,
+639 | |         best_node: &[Option<usize>],
+...   |
+642 | |         result: &mut Vec<EClassId>,
+643 | |     ) {
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: usage of an `Arc` that is not `Send` and `Sync`
+  --> pixelflow-search/src/egraph/graph.rs:70:20
+   |
+70 |             rules: std::sync::Arc::new(rules),
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `Arc<Vec<Box<dyn Rewrite>>>` is not `Send` and `Sync` as `Vec<Box<dyn Rewrite>>` is neither `Send` nor `Sync`
+   = help: if the `Arc` will not be used across threads replace it with an `Rc`
+   = help: otherwise make `Vec<Box<dyn Rewrite>>` `Send` and `Sync` or consider a wrapper type such as `Mutex`
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#arc_with_non_send_sync
+   = note: `-D clippy::arc-with-non-send-sync` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::arc_with_non_send_sync)]`
+
+error: calls to `push` immediately after creation
+   --> pixelflow-search/src/egraph/graph.rs:77:9
+    |
+ 77 | /         let mut rules: Vec<Box<dyn Rewrite>> = Vec::new();
+ 78 | |
+ 79 | |         // TEST: Adding remaining rules
+ 80 | |         rules.push(Canonicalize::<AddNeg>::new());
+...   |
+100 | |         rules.push(Annihilator::new(&ops::Mul));
+    | |________________________________________________^ help: consider using the `vec![]` macro: `let rules: Vec<Box<dyn Rewrite>> = vec![..];`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#vec_init_then_push
+    = note: `-D clippy::vec-init-then-push` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::vec_init_then_push)]`
+
+    Checking equivalent v1.0.2
+error: could not compile `pixelflow-search` (lib) due to 8 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `pixelflow-search` (lib) due to 8 previous errors

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 #[cfg(feature = "training")]
 use pixelflow_ml::nnue::HalfEPFeature;
 #[cfg(feature = "training")]
-use pixelflow_ml::training::{TrainingSample, BINPACK_MAGIC, BINPACK_VERSION};
+use pixelflow_ml::training::{BINPACK_MAGIC, BINPACK_VERSION, TrainingSample};
 
 fn main() {
     #[cfg(feature = "training")]
@@ -47,12 +47,17 @@ fn real_main() {
     // Check prerequisites
     if !cache_path.exists() {
         eprintln!("Error: Cache file not found at {}", cache_path.display());
-        eprintln!("Run: cargo run -p pixelflow-ml --example gen_egraph_variants --features training");
+        eprintln!(
+            "Run: cargo run -p pixelflow-ml --example gen_egraph_variants --features training"
+        );
         std::process::exit(1);
     }
 
     if !criterion_dir.exists() {
-        eprintln!("Error: Criterion results not found at {}", criterion_dir.display());
+        eprintln!(
+            "Error: Criterion results not found at {}",
+            criterion_dir.display()
+        );
         eprintln!("Run: cargo bench -p pixelflow-ml --bench generated_kernels");
         std::process::exit(1);
     }
@@ -72,7 +77,10 @@ fn real_main() {
     }
 
     // Parse criterion benchmark results
-    println!("\nReading criterion results from {}", criterion_dir.display());
+    println!(
+        "\nReading criterion results from {}",
+        criterion_dir.display()
+    );
     let benchmark_times = parse_criterion_results(&criterion_dir);
     println!("  Found {} benchmark results", benchmark_times.len());
 
@@ -97,7 +105,10 @@ fn real_main() {
     println!("\nCache update results:");
     println!("  Updated with new benchmark data: {}", updated);
     println!("  Already had benchmark data: {}", already_had);
-    println!("  Benchmark without cache entry: {} (normal for old/renamed benchmarks)", not_found);
+    println!(
+        "  Benchmark without cache entry: {} (normal for old/renamed benchmarks)",
+        not_found
+    );
 
     // Write updated cache
     if updated > 0 {
@@ -114,24 +125,36 @@ fn real_main() {
     }
 
     // Compute statistics
-    let costs: Vec<f64> = benchmarked_entries.iter().filter_map(|e| e.cost_ns).collect();
+    let costs: Vec<f64> = benchmarked_entries
+        .iter()
+        .filter_map(|e| e.cost_ns)
+        .collect();
     let total_cost: f64 = costs.iter().sum();
     let avg_cost = total_cost / costs.len() as f64;
     let min_cost = costs.iter().copied().fold(f64::INFINITY, f64::min);
     let max_cost = costs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
 
-    println!("\nBenchmark statistics ({} samples):", benchmarked_entries.len());
+    println!(
+        "\nBenchmark statistics ({} samples):",
+        benchmarked_entries.len()
+    );
     println!("  Average: {:.2} ns", avg_cost);
     println!("  Min: {:.2} ns", min_cost);
     println!("  Max: {:.2} ns", max_cost);
 
     // Analyze correlation between e-graph cost and benchmark cost
     let egraph_costs: Vec<usize> = benchmarked_entries.iter().map(|e| e.egraph_cost).collect();
-    let bench_costs: Vec<f64> = benchmarked_entries.iter().filter_map(|e| e.cost_ns).collect();
+    let bench_costs: Vec<f64> = benchmarked_entries
+        .iter()
+        .filter_map(|e| e.cost_ns)
+        .collect();
 
     if egraph_costs.len() >= 2 {
         let correlation = compute_correlation(&egraph_costs, &bench_costs);
-        println!("  E-graph cost vs benchmark correlation: {:.3}", correlation);
+        println!(
+            "  E-graph cost vs benchmark correlation: {:.3}",
+            correlation
+        );
 
         if correlation > 0.7 {
             println!("  -> Good correlation! E-graph cost model is predictive.");
@@ -147,7 +170,8 @@ fn real_main() {
         .iter()
         .map(|entry| {
             // Convert u16 indices back to HalfEPFeature
-            let features: Vec<HalfEPFeature> = entry.features
+            let features: Vec<HalfEPFeature> = entry
+                .features
                 .iter()
                 .map(|&idx| HalfEPFeature::from_index(idx as usize))
                 .collect();
@@ -197,7 +221,9 @@ impl CacheEntry {
         format!(
             r#"{{"expression":"{}","cost_ns":{},"timestamp":{},"name":"{}","egraph_cost":{},"node_count":{},"depth":{},"features":[{}]}}"#,
             escape_json(&self.expression),
-            self.cost_ns.map(|c| c.to_string()).unwrap_or_else(|| "null".to_string()),
+            self.cost_ns
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "null".to_string()),
             self.timestamp,
             self.name,
             self.egraph_cost,
@@ -280,7 +306,9 @@ fn extract_json_number(json: &str, key: &str) -> Option<f64> {
     if rest.starts_with("null") {
         return None;
     }
-    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-' && c != 'e' && c != 'E' && c != '+')?;
+    let end = rest.find(|c: char| {
+        !c.is_ascii_digit() && c != '.' && c != '-' && c != 'e' && c != 'E' && c != '+'
+    })?;
     rest[..end].parse().ok()
 }
 
@@ -307,7 +335,7 @@ fn extract_json_array(json: &str, key: &str) -> Option<Vec<u16>> {
         array_content
             .split(',')
             .filter_map(|s| s.trim().parse().ok())
-            .collect()
+            .collect(),
     )
 }
 
@@ -337,7 +365,11 @@ fn load_cache(path: &PathBuf) -> HashMap<String, CacheEntry> {
 fn write_cache(path: &PathBuf, entries: &HashMap<String, CacheEntry>) {
     if let Ok(mut file) = File::create(path) {
         writeln!(file, "# Benchmark cache - JSONL format").ok();
-        writeln!(file, "# Each line is a JSON object with expression, cost_ns, etc.").ok();
+        writeln!(
+            file,
+            "# Each line is a JSON object with expression, cost_ns, etc."
+        )
+        .ok();
 
         // Sort by name for consistent output
         let mut sorted: Vec<_> = entries.values().collect();
@@ -358,7 +390,8 @@ fn parse_criterion_results(criterion_dir: &PathBuf) -> HashMap<String, f64> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let bench_name = path.file_name()
+                let bench_name = path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("")
                     .to_string();
@@ -391,7 +424,10 @@ fn parse_estimates_json(path: &PathBuf) -> Option<f64> {
     let after_colon = &after_key[colon_pos + 1..];
 
     let trimmed = after_colon.trim_start();
-    let end = trimmed.find(|c: char| !c.is_ascii_digit() && c != '.' && c != 'e' && c != 'E' && c != '+' && c != '-')
+    let end = trimmed
+        .find(|c: char| {
+            !c.is_ascii_digit() && c != '.' && c != 'e' && c != 'E' && c != '+' && c != '-'
+        })
         .unwrap_or(trimmed.len());
     let num_str = &trimmed[..end];
 

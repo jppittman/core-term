@@ -126,13 +126,17 @@ impl Application for PsychedelicApp {
                     .map_err(|e| RuntimeError::EventSendError(e.to_string()))?;
             }
             EngineEvent::Control(EngineEventControl::Resized {
-                width_px, height_px, ..
+                width_px,
+                height_px,
+                ..
             }) => {
                 self.width.store(width_px, Ordering::Relaxed);
                 self.height.store(height_px, Ordering::Relaxed);
             }
             EngineEvent::Control(EngineEventControl::WindowCreated {
-                width_px, height_px, ..
+                width_px,
+                height_px,
+                ..
             }) => {
                 self.width.store(width_px, Ordering::Relaxed);
                 self.height.store(height_px, Ordering::Relaxed);

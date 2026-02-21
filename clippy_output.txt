@@ -1,0 +1,24 @@
+   Compiling pixelflow-nnue v0.1.0 (/app/pixelflow-nnue)
+    Checking actor-scheduler v0.1.0 (/app/actor-scheduler)
+    Checking debugid v0.8.0
+    Checking rand_chacha v0.3.1
+error: the loop variable `op_idx` is used to index `latencies`
+   --> pixelflow-nnue/src/factored.rs:172:23
+    |
+172 |         for op_idx in 0..OpKind::COUNT {
+    |                       ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+    = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator and enumerate()
+    |
+172 -         for op_idx in 0..OpKind::COUNT {
+172 +         for (op_idx, <item>) in latencies.iter().enumerate().take(OpKind::COUNT) {
+    |
+
+   Compiling core-term v0.1.0 (/app/core-term)
+    Checking memmap2 v0.9.9
+error: could not compile `pixelflow-nnue` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `pixelflow-nnue` (lib) due to 1 previous error

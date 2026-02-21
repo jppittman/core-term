@@ -8,9 +8,9 @@
 use actor_scheduler::sharded::InboxBuilder;
 use actor_scheduler::spsc;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TrySendError};
-use std::sync::Arc;
 use std::thread;
 
 // ─── Single-producer throughput ───────────────────────────────────────────
@@ -20,72 +20,64 @@ fn bench_single_producer_throughput(c: &mut Criterion) {
 
     for count in [10_000, 100_000, 1_000_000] {
         // MPSC baseline
-        group.bench_with_input(
-            BenchmarkId::new("mpsc", count),
-            &count,
-            |b, &count| {
-                b.iter(|| {
-                    let (tx, rx) = mpsc::sync_channel::<u64>(1024);
-                    let consumer = thread::spawn(move || {
-                        let mut n = 0u64;
-                        loop {
-                            match rx.try_recv() {
-                                Ok(v) => n += v,
-                                Err(mpsc::TryRecvError::Empty) => thread::yield_now(),
-                                Err(mpsc::TryRecvError::Disconnected) => break,
-                            }
-                        }
-                        n
-                    });
-
-                    for i in 0..count {
-                        loop {
-                            match tx.try_send(i) {
-                                Ok(()) => break,
-                                Err(TrySendError::Full(_)) => thread::yield_now(),
-                                Err(TrySendError::Disconnected(_)) => panic!(),
-                            }
+        group.bench_with_input(BenchmarkId::new("mpsc", count), &count, |b, &count| {
+            b.iter(|| {
+                let (tx, rx) = mpsc::sync_channel::<u64>(1024);
+                let consumer = thread::spawn(move || {
+                    let mut n = 0u64;
+                    loop {
+                        match rx.try_recv() {
+                            Ok(v) => n += v,
+                            Err(mpsc::TryRecvError::Empty) => thread::yield_now(),
+                            Err(mpsc::TryRecvError::Disconnected) => break,
                         }
                     }
-                    drop(tx);
-                    black_box(consumer.join().unwrap());
+                    n
                 });
-            },
-        );
+
+                for i in 0..count {
+                    loop {
+                        match tx.try_send(i) {
+                            Ok(()) => break,
+                            Err(TrySendError::Full(_)) => thread::yield_now(),
+                            Err(TrySendError::Disconnected(_)) => panic!(),
+                        }
+                    }
+                }
+                drop(tx);
+                black_box(consumer.join().unwrap());
+            });
+        });
 
         // SPSC
-        group.bench_with_input(
-            BenchmarkId::new("spsc", count),
-            &count,
-            |b, &count| {
-                b.iter(|| {
-                    let (mut tx, mut rx) = spsc::spsc_channel::<u64>(1024);
-                    let consumer = thread::spawn(move || {
-                        let mut n = 0u64;
-                        loop {
-                            match rx.try_recv() {
-                                Ok(v) => n += v,
-                                Err(spsc::TryRecvError::Empty) => thread::yield_now(),
-                                Err(spsc::TryRecvError::Disconnected) => break,
-                            }
-                        }
-                        n
-                    });
-
-                    for i in 0..count {
-                        loop {
-                            match tx.try_send(i) {
-                                Ok(()) => break,
-                                Err(spsc::TrySendError::Full(_)) => thread::yield_now(),
-                                Err(spsc::TrySendError::Disconnected(_)) => panic!(),
-                            }
+        group.bench_with_input(BenchmarkId::new("spsc", count), &count, |b, &count| {
+            b.iter(|| {
+                let (mut tx, mut rx) = spsc::spsc_channel::<u64>(1024);
+                let consumer = thread::spawn(move || {
+                    let mut n = 0u64;
+                    loop {
+                        match rx.try_recv() {
+                            Ok(v) => n += v,
+                            Err(spsc::TryRecvError::Empty) => thread::yield_now(),
+                            Err(spsc::TryRecvError::Disconnected) => break,
                         }
                     }
-                    drop(tx);
-                    black_box(consumer.join().unwrap());
+                    n
                 });
-            },
-        );
+
+                for i in 0..count {
+                    loop {
+                        match tx.try_send(i) {
+                            Ok(()) => break,
+                            Err(spsc::TrySendError::Full(_)) => thread::yield_now(),
+                            Err(spsc::TrySendError::Disconnected(_)) => panic!(),
+                        }
+                    }
+                }
+                drop(tx);
+                black_box(consumer.join().unwrap());
+            });
+        });
     }
 
     group.finish();
@@ -179,9 +171,7 @@ fn bench_multi_producer_throughput(c: &mut Criterion) {
                                     loop {
                                         match tx.try_send(i) {
                                             Ok(()) => break,
-                                            Err(spsc::TrySendError::Full(_)) => {
-                                                thread::yield_now()
-                                            }
+                                            Err(spsc::TrySendError::Full(_)) => thread::yield_now(),
                                             Err(spsc::TrySendError::Disconnected(_)) => return,
                                         }
                                     }
@@ -369,12 +359,14 @@ fn bench_roundtrip_latency(c: &mut Criterion) {
         let (tx, rx) = mpsc::sync_channel::<u64>(64);
         let (ack_tx, ack_rx) = mpsc::sync_channel::<()>(1);
 
-        let _worker = thread::spawn(move || loop {
-            match rx.recv() {
-                Ok(_v) => {
-                    let _ = ack_tx.try_send(());
+        let _worker = thread::spawn(move || {
+            loop {
+                match rx.recv() {
+                    Ok(_v) => {
+                        let _ = ack_tx.try_send(());
+                    }
+                    Err(_) => break,
                 }
-                Err(_) => break,
             }
         });
 
@@ -394,19 +386,19 @@ fn bench_roundtrip_latency(c: &mut Criterion) {
         let (mut tx, mut rx) = spsc::spsc_channel::<u64>(64);
         let (mut ack_tx, mut ack_rx) = spsc::spsc_channel::<()>(1);
 
-        let _worker = thread::spawn(move || loop {
-            match rx.try_recv() {
-                Ok(_v) => {
-                    loop {
+        let _worker = thread::spawn(move || {
+            loop {
+                match rx.try_recv() {
+                    Ok(_v) => loop {
                         match ack_tx.try_send(()) {
                             Ok(()) => break,
                             Err(spsc::TrySendError::Full(_)) => thread::yield_now(),
                             Err(spsc::TrySendError::Disconnected(_)) => return,
                         }
-                    }
+                    },
+                    Err(spsc::TryRecvError::Empty) => thread::yield_now(),
+                    Err(spsc::TryRecvError::Disconnected) => break,
                 }
-                Err(spsc::TryRecvError::Empty) => thread::yield_now(),
-                Err(spsc::TryRecvError::Disconnected) => break,
             }
         });
 

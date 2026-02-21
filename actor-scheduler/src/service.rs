@@ -171,9 +171,15 @@ mod tests {
 
     struct Noop;
     impl Actor<i32, i32, i32> for Noop {
-        fn handle_data(&mut self, _: i32) -> HandlerResult { Ok(()) }
-        fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-        fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+        fn handle_data(&mut self, _: i32) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_control(&mut self, _: i32) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _: i32) -> HandlerResult {
+            Ok(())
+        }
         fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
@@ -185,8 +191,8 @@ mod tests {
     /// `kill.send(Message::Shutdown)` and then `join.join()` to cleanly
     /// terminate the pod and disconnect the SPSC channels.
     fn spawn_pod() -> (
-        ActorHandle<i32, i32, i32>,  // svc: for ServiceHandle
-        ActorHandle<i32, i32, i32>,  // kill: send Shutdown to stop pod
+        ActorHandle<i32, i32, i32>, // svc: for ServiceHandle
+        ActorHandle<i32, i32, i32>, // kill: send Shutdown to stop pod
         thread::JoinHandle<()>,
     ) {
         let mut builder = ActorBuilder::<i32, i32, i32>::new(100, None);

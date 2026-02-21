@@ -48,7 +48,7 @@ kernel!(
 
 impl AnalyticalLine {
     /// Create from two endpoints. Returns None for horizontal/degenerate lines.
-    #[must_use] 
+    #[must_use]
     pub fn from_points([x0, y0]: [f32; 2], [x1, y1]: [f32; 2]) -> Option<Self> {
         let dy = y1 - y0;
         if dy.abs() < 1e-6 {
@@ -104,7 +104,7 @@ pub struct AnalyticalQuad {
 
 impl AnalyticalQuad {
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn new([x0, y0]: [f32; 2], [x1, y1]: [f32; 2], [x2, y2]: [f32; 2]) -> Self {
         let ay = y0 - 2.0 * y1 + y2;
         let by = 2.0 * (y1 - y0);
@@ -169,51 +169,75 @@ impl Manifold<Field4> for AnalyticalQuad {
 
         // True quadratic: solve ay*t^2 + by*t + (cy - Y) = 0
         // discriminant = by^2 - 4*ay*(cy - Y) = disc_const + disc_slope*Y
-        let k = kernel!(|ax: f32, bx: f32, cx: f32, ay: f32, by: f32,
-                         inv_2a: f32, neg_b_2a: f32, disc_const: f32, disc_slope: f32| {
+        let k = kernel!(|ax: f32,
+                         bx: f32,
+                         cx: f32,
+                         ay: f32,
+                         by: f32,
+                         inv_2a: f32,
+                         neg_b_2a: f32,
+                         disc_const: f32,
+                         disc_slope: f32| {
             let disc = Y * disc_slope + disc_const;
             let sqrt_disc = disc.clone().max(0.0).sqrt();
 
             // Two roots: t = (-by +/- sqrt(disc)) / (2*ay)
-            let t_plus  = sqrt_disc.clone() *  inv_2a + neg_b_2a;
-            let t_minus = sqrt_disc          * -inv_2a + neg_b_2a;
+            let t_plus = sqrt_disc.clone() * inv_2a + neg_b_2a;
+            let t_minus = sqrt_disc * -inv_2a + neg_b_2a;
 
             // X-coordinates at intersection points
-            let x_plus  = t_plus.clone()  * t_plus.clone()  * ax + t_plus.clone()  * bx + cx;
+            let x_plus = t_plus.clone() * t_plus.clone() * ax + t_plus.clone() * bx + cx;
             let x_minus = t_minus.clone() * t_minus.clone() * ax + t_minus.clone() * bx + cx;
 
             // Tangent vectors (dx/dt, dy/dt) at each root
-            let dx_plus  = t_plus.clone()  * (2.0 * ax) + bx;
+            let dx_plus = t_plus.clone() * (2.0 * ax) + bx;
             let dx_minus = t_minus.clone() * (2.0 * ax) + bx;
-            let dy_plus  = t_plus.clone()  * (2.0 * ay) + by;
+            let dy_plus = t_plus.clone() * (2.0 * ay) + by;
             let dy_minus = t_minus.clone() * (2.0 * ay) + by;
 
             // Gradient-weighted coverage: dist * |dy| / |tangent|
             // Normalizes AA width to 1 pixel perpendicular to the curve.
-            let dist_plus  = X - x_plus;
+            let dist_plus = X - x_plus;
             let dist_minus = X - x_minus;
-            let dy_plus_abs  = dy_plus.clone().abs();
+            let dy_plus_abs = dy_plus.clone().abs();
             let dy_minus_abs = dy_minus.clone().abs();
-            let grad_sq_plus  = dx_plus.clone()  * dx_plus  + dy_plus_abs.clone()  * dy_plus_abs.clone();
-            let grad_sq_minus = dx_minus.clone() * dx_minus + dy_minus_abs.clone() * dy_minus_abs.clone();
-            let coverage_plus  = (dist_plus  * dy_plus_abs  * grad_sq_plus.max(1e-12).rsqrt()  + 0.5).max(0.0).min(1.0);
-            let coverage_minus = (dist_minus * dy_minus_abs * grad_sq_minus.max(1e-12).rsqrt() + 0.5).max(0.0).min(1.0);
+            let grad_sq_plus =
+                dx_plus.clone() * dx_plus + dy_plus_abs.clone() * dy_plus_abs.clone();
+            let grad_sq_minus =
+                dx_minus.clone() * dx_minus + dy_minus_abs.clone() * dy_minus_abs.clone();
+            let coverage_plus = (dist_plus * dy_plus_abs * grad_sq_plus.max(1e-12).rsqrt() + 0.5)
+                .max(0.0)
+                .min(1.0);
+            let coverage_minus = (dist_minus * dy_minus_abs * grad_sq_minus.max(1e-12).rsqrt()
+                + 0.5)
+                .max(0.0)
+                .min(1.0);
 
             // Validity: only count roots with t in [0, 1]
-            let valid_plus  = t_plus.ge(0.0)  & t_plus.le(1.0);
+            let valid_plus = t_plus.ge(0.0) & t_plus.le(1.0);
             let valid_minus = t_minus.ge(0.0) & t_minus.le(1.0);
 
             // Winding sign from tangent direction
-            let sign_plus  = dy_plus.gt(0.0).select(-1.0,  1.0);
+            let sign_plus = dy_plus.gt(0.0).select(-1.0, 1.0);
             let sign_minus = dy_minus.gt(0.0).select(-1.0, 1.0);
 
             // Combine: valid roots contribute signed coverage, masked by discriminant
-            let contrib_plus  = valid_plus.select(coverage_plus  * sign_plus,  0.0);
+            let contrib_plus = valid_plus.select(coverage_plus * sign_plus, 0.0);
             let contrib_minus = valid_minus.select(coverage_minus * sign_minus, 0.0);
             disc.ge(0.0).select(contrib_plus + contrib_minus, 0.0)
         });
 
-        k(self.ax, self.bx, self.cx, self.ay, self.by,
-          self.inv_2ay, self.neg_b_2a, self.disc_const, self.disc_slope).eval(p)
+        k(
+            self.ax,
+            self.bx,
+            self.cx,
+            self.ay,
+            self.by,
+            self.inv_2ay,
+            self.neg_b_2a,
+            self.disc_const,
+            self.disc_slope,
+        )
+        .eval(p)
     }
 }

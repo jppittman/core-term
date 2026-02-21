@@ -1,0 +1,1122 @@
+   Compiling pixelflow-core v0.1.0 (/app/pixelflow-core)
+   Compiling core-term v0.1.0 (/app/core-term)
+warning: core-term@0.1.0: Building with X11 display driver
+warning: unused variable: `tree`
+   --> pixelflow-search/src/egraph/guided.rs:702:13
+    |
+702 |         let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_tree`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `tree`
+   --> pixelflow-search/src/egraph/guided.rs:703:13
+    |
+703 |         let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_tree`
+
+warning: unused variable: `tree`
+   --> pixelflow-search/src/egraph/guided.rs:801:13
+    |
+801 |         let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_tree`
+
+warning: `pixelflow-search` (lib test) generated 3 warnings (run `cargo fix --lib -p pixelflow-search --tests` to apply 3 suggestions)
+warning: unused import: `super::*`
+    --> pixelflow-ir/src/backend/x86.rs:1813:9
+     |
+1813 |     use super::*;
+     |         ^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pixelflow-ir` (lib test) generated 1 warning (run `cargo fix --lib -p pixelflow-ir --tests` to apply 1 suggestion)
+warning: unused import: `super::*`
+    --> pixelflow-core/src/backend/x86.rs:1821:9
+     |
+1821 |     use super::*;
+     |         ^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: missing documentation for a type alias
+   --> pixelflow-core/src/storage.rs:104:1
+    |
+104 | pub type NativeMaskStorage = crate::backend::x86::Mask8;
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: the lint level is defined here
+   --> pixelflow-core/src/lib.rs:130:9
+    |
+130 | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^
+
+warning: `pixelflow-core` (lib) generated 1 warning (1 duplicate)
+   Compiling pixelflow-graphics v0.1.0 (/app/pixelflow-graphics)
+warning: `pixelflow-core` (lib) generated 1 warning
+   Compiling pixelflow-ml v0.1.0 (/app/pixelflow-ml)
+warning: `pixelflow-core` (lib) generated 1 warning (1 duplicate)
+warning: `pixelflow-core` (lib test) generated 2 warnings (1 duplicate) (run `cargo fix --lib -p pixelflow-core --tests` to apply 1 suggestion)
+   Compiling pixelflow-runtime v0.1.0 (/app/pixelflow-runtime)
+warning: fields `beta_builder`, `alpha_dir`, and `beta_dir` are never read
+   --> pixelflow-runtime/tests/troupe_pattern_tests.rs:261:5
+    |
+259 | struct TestTroupe {
+    |        ---------- fields in this struct
+260 |     alpha_builder: ActorBuilder<AlphaData, AlphaControl, AlphaManagement>,
+261 |     beta_builder: ActorBuilder<BetaData, BetaControl, BetaManagement>,
+    |     ^^^^^^^^^^^^
+262 |     alpha_dir: TestDirectory,
+    |     ^^^^^^^^^
+263 |     beta_dir: TestDirectory,
+    |     ^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pixelflow-runtime` (test "troupe_pattern_tests") generated 1 warning
+   Compiling pixelflow-macros v0.1.0 (/app/pixelflow-macros)
+warning: unused import: `Mutex`
+   --> actor-scheduler/src/kubelet.rs:517:26
+    |
+517 |     use std::sync::{Arc, Mutex};
+    |                          ^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `status`
+   --> actor-scheduler/src/sharded.rs:271:13
+    |
+271 |         let status = inbox
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_status`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `0` is never read
+   --> actor-scheduler/src/spsc.rs:450:24
+    |
+450 |         struct Counted(u32);
+    |                ------- ^^^
+    |                |
+    |                field in this struct
+    |
+    = help: consider removing this field
+    = note: `Counted` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `actor-scheduler` (lib test) generated 3 warnings (run `cargo fix --lib -p actor-scheduler --tests` to apply 2 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1m 27s
+     Running unittests src/lib.rs (target/debug/deps/actor_scheduler-efb7e67bbf2ab543)
+
+running 63 tests
+test kubelet::tests::kubelet_builder_default_poll_interval ... ok
+test kubelet::tests::kubelet_handles_pod_sender_dropped_without_phase ... ok
+test kubelet::tests::kubelet_never_policy_exits_immediately_on_completed ... ok
+test kubelet::tests::kubelet_does_not_restart_completed_pod_on_failure_policy ... ok
+test kubelet::tests::multiple_slots_per_pod_all_published_on_restart ... ok
+test kubelet::tests::restart_count_incremented_on_each_restart ... ok
+test kubelet::tests::kubelet_stops_slot_when_frequency_gate_exhausted ... ok
+test kubelet::tests::spawn_managed_initial_pod_exits_completed ... ok
+test kubelet::tests::within_budget_resets_after_window_expires ... ok
+test lifecycle::tests::pod_phase_helpers ... ok
+test lifecycle::tests::restart_policy_always_restarts_on_both_phases ... ok
+test lifecycle::tests::restart_policy_never_never_restarts ... ok
+test lifecycle::tests::restart_policy_on_failure_only_restarts_failed ... ok
+test params::tests::default_params_are_valid ... ok
+test params::tests::roundtrip_to_vec_from_vec ... ok
+test params::tests::validates_buffer_size - should panic ... ok
+test params::tests::validates_jitter_sum - should panic ... ok
+test poll_once_tests::poll_once_returns_completed_after_all_handles_dropped ... ok
+test poll_once_tests::poll_once_drains_messages_and_returns_none ... ok
+test poll_once_tests::poll_once_returns_completed_on_shutdown_message ... ok
+test poll_once_tests::poll_once_returns_none_when_still_running ... ok
+test registry::tests::publish_then_reconnect_succeeds ... ok
+test poll_once_tests::poll_once_returns_failed_on_recoverable_error ... ok
+test registry::tests::reconnect_on_stopped_slot_returns_immediately ... ok
+test registry::tests::reconnect_blocks_until_publish ... ok
+test registry::tests::reconnect_times_out_when_no_publish ... ok
+test service::tests::hot_path_send_succeeds ... ok
+test registry::tests::stop_unblocks_reconnect_with_stopped_error ... ok
+test service::tests::returns_pod_gone_when_slot_stopped ... ok
+test service::tests::reconnects_after_pod_restart_and_returns_reconnected ... ok
+test sharded::tests::all_producers_disconnect ... ok
+test sharded::tests::basic_sharded_drain ... ok
+test sharded::tests::burst_limit_respected ... ok
+test sharded::tests::drain_buffered_after_disconnect ... ok
+test sharded::tests::handler_error_propagates ... ok
+test sharded::tests::panics_on_empty_build - should panic ... ok
+test sharded::tests::round_robin_fairness ... ok
+test kubelet::tests::kubelet_restarts_completed_pod_on_always_policy ... ok
+test service::tests::returns_timeout_when_pod_does_not_restart_in_time ... ok
+test kubelet::tests::kubelet_restarts_failed_pod_on_failure_policy ... ok
+test shutdown_tests::test_shutdown_drain_control_processes_control_and_mgmt ... ok
+test spsc::tests::consumer_disconnect ... ok
+test shutdown_tests::test_shutdown_immediate_exits_quickly_under_flood ... ok
+test spsc::tests::drain_after_producer_disconnect ... ok
+test spsc::tests::drop_cleans_up_buffered_messages ... ok
+test spsc::tests::full_then_drain ... ok
+test spsc::tests::power_of_two_rounding ... ok
+test spsc::tests::producer_disconnect ... ok
+test spsc::tests::send_recv_basic ... ok
+test spsc::tests::wrapping_indices ... ok
+test spsc::tests::cross_thread_throughput ... ok
+test shutdown_tests::test_shutdown_drain_all_processes_everything ... ok
+test tests::shutdown_message_exits_scheduler_immediately ... ok
+test troupe_nesting_tests::test_exposed_handles_outlive_troupe_struct ... ok
+test troupe_nesting_tests::test_troupe_two_phase_pattern ... ok
+test tests::verify_actor_trait_contract ... ok
+test shutdown_tests::test_shutdown_drain_all_timeout_fallback ... ok
+test tests::verify_data_lane_backpressure_contract ... ok
+test troupe_tests::adversarial_control_flood_vs_data ... ok
+test troupe_tests::test_troupe_directory_pattern ... ok
+test troupe_tests::adversarial_multiple_control_flooders ... ok
+test troupe_tests::adversarial_continuous_control_flood ... ok
+test troupe_tests::adversarial_slow_receiver_resilience ... ok
+
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.52s
+
+     Running tests/generic_type.rs (target/debug/deps/generic_type-616ef1acc5de2069)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/simple_type.rs (target/debug/deps/simple_type-7ff0382cfc150af2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/stress_tests.rs (target/debug/deps/stress_tests-c101d407abb82943)
+
+running 11 tests
+test custom_wake_handler_is_called ... ok
+test handle_is_send ... ok
+test empty_message_types_work_under_load ... ok
+test burst_limit_prevents_data_starvation ... ok
+test high_contention_all_messages_delivered ... ok
+test backpressure_with_slow_consumer ... ok
+test rapid_channel_creation_does_not_leak ... ok
+test rapid_producer_creation ... ok
+test large_messages_work ... ok
+test high_contention_fairness ... ok
+test multi_producer_send ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running unittests src/lib.rs (target/debug/deps/actor_scheduler_macros-f6f0972b11fe7b46)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/core_term-4386f50564a5d986)
+
+running 298 tests
+test ansi::tests::it_should_abort_csi_on_esc_and_process_subsequent_csi ... ok
+test ansi::tests::it_should_abort_dcs_on_esc_and_process_subsequent_st ... ok
+test ansi::tests::it_should_buffer_incomplete_csi_sequence ... ok
+test ansi::tests::it_should_abort_osc_on_esc_and_process_subsequent_commands ... ok
+test ansi::tests::it_should_buffer_incomplete_dcs_sequence ... ok
+test ansi::tests::it_should_buffer_incomplete_osc_sequence ... ok
+test ansi::tests::it_should_complete_csi_if_final_byte_arrives_after_params ... ok
+test ansi::tests::it_should_complete_dcs_if_terminator_arrives_after_string_fragment ... ok
+test ansi::tests::it_should_complete_osc_if_terminator_arrives_after_string_fragment ... ok
+test ansi::tests::it_should_handle_esc_k_screen_title_sequence ... ok
+test ansi::tests::it_should_handle_esc_k_with_empty_title ... ok
+test ansi::tests::it_should_handle_esc_k_with_longer_title ... ok
+test ansi::tests::it_should_handle_fragmented_utf8_input_with_intermediate_finalization ... ok
+test ansi::tests::it_should_handle_text_before_and_after_esc_k_sequence ... ok
+test ansi::tests::it_should_include_c0_controls_within_dcs_data ... ok
+test ansi::tests::it_should_not_process_st_in_ground_state ... ok
+test ansi::tests::it_should_process_a_simple_printable_string ... ok
+test ansi::tests::it_should_process_apc_string_terminated_by_st ... ok
+test ansi::tests::it_should_process_c0_bel ... ok
+test ansi::tests::it_should_process_charset_designator_boundary_high ... ok
+test ansi::tests::it_should_process_charset_designator_boundary_low ... ok
+test ansi::tests::it_should_process_charset_special_designators ... ok
+test ansi::tests::it_should_process_csi_h_as_cup_1_1 ... ok
+test ansi::tests::it_should_process_csi_sequence_fragmented_across_intermediate_bytes ... ok
+test ansi::tests::it_should_process_csi_sequence_fragmented_across_param_bytes ... ok
+test ansi::tests::it_should_process_csi_sequence_fragmented_after_esc ... ok
+test ansi::tests::it_should_process_csi_set_cursor_style_decscusr ... ok
+test ansi::tests::it_should_process_csi_sgr_reset ... ok
+test ansi::tests::it_should_process_csi_sgr_set_foreground ... ok
+test ansi::tests::it_should_process_csi_window_manipulation_t ... ok
+test ansi::tests::it_should_process_csi_with_invalid_final_byte_as_error ... ok
+test ansi::tests::it_should_process_dcs_string_terminated_by_st ... ok
+test ansi::tests::it_should_process_dec_private_mode_bracketed_paste_2004 ... ok
+test ansi::tests::it_should_process_dec_private_mode_focus_event_1004 ... ok
+test ansi::tests::it_should_process_dec_private_mode_reset_12_att610_cursor_blink ... ok
+test ansi::tests::it_should_process_dec_private_mode_reset_25_text_cursor_enable ... ok
+test ansi::tests::it_should_process_dec_private_mode_set_25_text_cursor_enable ... ok
+test ansi::tests::it_should_process_dec_private_mode_uncommon_7727 ... ok
+test ansi::tests::it_should_process_empty_input_as_no_commands ... ok
+test ansi::tests::it_should_process_esc_close_paren_a_uk_charset ... ok
+test ansi::tests::it_should_process_esc_open_paren_0_dec_graphics_charset ... ok
+test ansi::tests::it_should_process_esc_open_paren_b_usascii_charset ... ok
+test ansi::tests::it_should_process_esc_plus_with_dec_technical ... ok
+test ansi::tests::it_should_process_esc_star_with_dec_supplemental ... ok
+test ansi::tests::it_should_process_osc_string_terminated_by_bel ... ok
+test ansi::tests::it_should_process_osc_string_terminated_by_st ... ok
+test ansi::tests::it_should_process_pm_string_terminated_by_st ... ok
+test ansi::tests::it_should_process_string_interspersed_with_fragmented_csi ... ok
+test ansi::tests::it_should_process_various_dec_private_mouse_modes ... ok
+test ansi::tests::it_should_reject_charset_designator_above_valid_range ... ok
+test ansi::tests::it_should_reject_charset_designator_below_valid_range ... ok
+test ansi::tests::it_should_reject_space_as_charset_designator ... ok
+test ansi::tests::unicode_wide_tests::it_should_correctly_decode_euro_sign_followed_by_char ... ok
+test ansi::tests::it_should_terminate_osc_on_bel_and_process_subsequent_chars ... ok
+test ansi::tests::unicode_wide_tests::it_should_decode_valid_utf8_containing_c1_byte_value_for_ind_and_then_char ... ok
+test ansi::tests::unicode_wide_tests::it_should_decode_valid_utf8_containing_c1_byte_value_for_pad_and_then_char ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_c0_bel_and_char_after_interrupted_utf8 ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_c0_etx_and_esc_sequence_after_interrupted_utf8 ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_c0_nul_and_print_after_interrupted_utf8 ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_c1_like_byte_as_part_of_invalid_utf8_sequence ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_c1_like_byte_in_invalid_4_byte_utf8_sequence ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_c1_st_and_char_after_interrupted_4_byte_utf8 ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_complex_interruptions_and_valid_chars_in_sequence ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_del_interrupting_utf8_then_char ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_double_utf8_interruption_by_esc_then_c0 ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_esc_c_ris_after_interrupted_utf8 ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_esc_ris_after_3_byte_utf8_interrupted_at_2nd_byte ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_esc_ris_after_4_byte_utf8_interrupted_at_1st_byte ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_esc_ris_after_4_byte_utf8_interrupted_at_3rd_byte ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_invalid_utf8_continuation_followed_by_chars ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_overlong_utf8_sequence_c1_af_as_replacement_chars ... ok
+test ansi::tests::unicode_wide_tests::it_should_handle_standalone_c1_nel_between_chars_as_replacement ... ok
+test ansi::tests::unicode_wide_tests::it_should_ignore_sequence_of_standalone_c1_controls ... ok
+test ansi::tests::unicode_wide_tests::it_should_process_bel_correctly ... ok
+test ansi::tests::unicode_wide_tests::it_should_replace_incomplete_3_of_4_byte_utf8_at_stream_end ... ok
+test ansi::tests::unicode_wide_tests::it_should_replace_standalone_c1_ind_after_valid_utf8 ... ok
+test ansi::tests::unicode_wide_tests::it_should_process_esc_c_ris_correctly ... ok
+test io::event_monitor_actor::write_thread::tests::test_write_thread_handles_write_command ... ok
+test io::event_monitor_actor::write_thread::tests::test_write_thread_handles_resize_command ... ok
+test io::pty_tests::test_pty_resize_successful ... ok
+test io::pty_tests::test_pty_spawn_invalid_command ... ok
+test keys::tests::test_map_key_found ... ok
+test keys::tests::test_map_key_multiple_bindings_first_match ... ok
+test keys::tests::test_map_key_not_found_empty_bindings ... ok
+test keys::tests::test_map_key_not_found_modifier_mismatch ... ok
+test keys::tests::test_map_key_not_found_symbol_mismatch ... ok
+test surface::manifold::tests::test_cell_channel_blending ... ok
+test surface::manifold::tests::test_color_manifold ... ok
+test surface::manifold::tests::test_grid_construction ... ok
+test term::core_tests::it_should_clamp_cursor_at_bottom_line_on_csi_cud_if_move_is_too_far ... ok
+test term::core_tests::it_should_clamp_cursor_at_first_col_on_csi_cub_if_move_is_too_far ... ok
+test term::core_tests::it_should_clamp_cursor_at_last_col_on_csi_cha_if_move_is_too_far ... ok
+test term::core_tests::it_should_clamp_cursor_at_last_col_on_csi_cuf_if_move_is_too_far ... ok
+test term::core_tests::it_should_clamp_cursor_at_start_of_first_line_on_csi_cpl_if_move_is_too_far ... ok
+test term::core_tests::it_should_clamp_cursor_at_start_of_last_line_on_csi_cnl_if_move_is_too_far ... ok
+test term::core_tests::it_should_clamp_cursor_at_top_line_on_csi_cuu_if_move_is_too_far ... ok
+test term::core_tests::it_should_clamp_cursor_on_csi_cup_if_params_are_out_of_bounds ... ok
+test term::core_tests::it_should_clamp_cursor_to_new_bottom_right_if_cursor_was_beyond_after_shrink ... ok
+test term::core_tests::it_should_do_nothing_visible_on_escape_character ... ok
+test term::core_tests::it_should_enable_and_disable_autowrap_mode_on_decawm ... ok
+test term::core_tests::it_should_erase_entire_line_on_csi_2k ... ok
+test term::core_tests::it_should_erase_entire_screen_on_csi_2j ... ok
+test term::core_tests::it_should_erase_from_cursor_to_beginning_of_line_on_csi_1k ... ok
+test term::core_tests::it_should_erase_from_cursor_to_beginning_of_screen_on_csi_1j ... ok
+test term::core_tests::it_should_erase_from_cursor_to_end_of_line_on_csi_0k_or_csi_k ... ok
+test term::core_tests::it_should_erase_from_cursor_to_end_of_screen_on_csi_0j_or_csi_j ... ok
+test term::core_tests::it_should_handle_csi_cup_with_origin_mode_decom ... ok
+test term::core_tests::it_should_handle_empty_title_string_in_osc_sequence ... ok
+test term::core_tests::it_should_handle_mixed_ascii_and_multibyte_unicode_characters ... ok
+test term::core_tests::it_should_handle_osc_sequence_without_semicolon_for_title_setting_if_supported ... ok
+test term::core_tests::it_should_handle_resize_with_content_and_cursor_at_edges ... ok
+test term::core_tests::it_should_ignore_osc_sequences_for_unsupported_ps_codes_for_title ... ok
+test term::core_tests::it_should_move_cursor_back_by_1_col_on_csi_cub_with_param_0_or_1 ... ok
+test term::core_tests::it_should_move_cursor_back_by_n_cols_on_csi_cub ... ok
+test term::core_tests::it_should_move_cursor_down_and_to_col_0_on_line_feed_if_lnm_is_on ... ok
+test term::core_tests::it_should_move_cursor_down_by_1_line_on_csi_cud_with_param_0_or_1 ... ok
+test term::core_tests::it_should_move_cursor_down_by_n_lines_on_csi_cud ... ok
+test term::core_tests::it_should_move_cursor_down_keeping_column_on_line_feed_if_lnm_is_off ... ok
+test term::core_tests::it_should_move_cursor_forward_by_1_col_on_csi_cuf_with_param_0_or_1 ... ok
+test term::core_tests::it_should_move_cursor_forward_by_n_cols_on_csi_cuf ... ok
+test term::core_tests::it_should_move_cursor_left_on_backspace ... ok
+test term::core_tests::it_should_move_cursor_to_col_0_on_carriage_return ... ok
+test term::core_tests::it_should_move_cursor_to_col_1_on_csi_cha_with_param_0_or_1 ... ok
+test term::core_tests::it_should_move_cursor_to_col_n_on_csi_cha ... ok
+test term::core_tests::it_should_move_cursor_to_last_column_on_horizontal_tab_if_no_more_tab_stops ... ok
+test term::core_tests::it_should_move_cursor_to_next_tab_stop_on_horizontal_tab ... ok
+test term::core_tests::it_should_move_cursor_to_origin_on_csi_cup_with_params_0_0_or_1_1_or_missing ... ok
+test term::core_tests::it_should_move_cursor_to_row_n_col_m_on_csi_cup ... ok
+test term::core_tests::it_should_move_cursor_to_start_of_next_1_line_on_csi_cnl_with_param_0_or_1 ... ok
+test term::core_tests::it_should_move_cursor_to_start_of_next_n_lines_on_csi_cnl ... ok
+test term::core_tests::it_should_move_cursor_to_start_of_previous_1_line_on_csi_cpl_with_param_0_or_1 ... ok
+test term::core_tests::it_should_move_cursor_to_start_of_previous_n_lines_on_csi_cpl ... ok
+test term::core_tests::it_should_move_cursor_up_by_1_line_on_csi_cuu_with_param_0_or_1 ... ok
+test term::core_tests::it_should_move_cursor_up_by_n_lines_on_csi_cuu ... ok
+test term::core_tests::it_should_not_change_cursor_position_after_ed_or_el ... ok
+test term::core_tests::it_should_not_change_cursor_position_on_csi_s_or_csi_t ... ok
+test term::core_tests::it_should_not_print_second_half_of_wide_char_if_at_edge_and_no_wrap_mode_or_similar_logic ... ok
+test term::core_tests::it_should_not_wrap_cursor_on_backspace_at_start_of_line ... ok
+test term::core_tests::it_should_overwrite_existing_characters ... ok
+test term::core_tests::it_should_overwrite_first_half_of_wide_char_with_ascii ... ok
+test term::core_tests::it_should_overwrite_second_half_of_wide_char_with_ascii ... ok
+test term::core_tests::it_should_print_a_single_ascii_character ... ok
+test term::core_tests::it_should_print_a_single_multibyte_unicode_character ... ok
+test term::core_tests::it_should_print_ascii_over_wide_char_that_straddles_line_end_after_wrap ... ok
+test term::core_tests::it_should_print_multiple_ascii_characters_on_one_line ... ok
+test term::core_tests::it_should_print_multiple_multibyte_unicode_characters ... ok
+test term::core_tests::it_should_reset_all_attributes_on_sgr_0 ... ok
+test term::core_tests::it_should_reset_background_color_on_sgr_49 ... ok
+test term::core_tests::it_should_reset_foreground_color_on_sgr_39 ... ok
+test term::core_tests::it_should_resize_to_larger_dimensions_preserving_content_and_cursor ... ok
+test term::core_tests::it_should_resize_to_smaller_dimensions_truncating_content_and_clamping_cursor ... ok
+test term::core_tests::it_should_scroll_and_move_to_col_0_on_line_feed_at_bottom_if_lnm_is_on ... ok
+test term::core_tests::it_should_scroll_down_entire_screen_by_1_line_on_csi_t_with_param_0_or_1 ... ok
+test term::core_tests::it_should_scroll_down_entire_screen_by_n_lines_on_csi_t ... ok
+test term::core_tests::it_should_scroll_down_within_scrolling_region_on_csi_t ... ok
+test term::core_tests::it_should_scroll_up_and_move_cursor_down_keeping_column_on_line_feed_at_bottom_if_lnm_is_off ... ok
+test term::core_tests::it_should_scroll_up_entire_screen_by_1_line_on_csi_s_with_param_0_or_1 ... ok
+test term::core_tests::it_should_scroll_up_entire_screen_by_n_lines_on_csi_s ... ok
+test term::core_tests::it_should_scroll_up_within_scrolling_region_on_csi_s ... ok
+test term::core_tests::it_should_set_basic_ansi_background_colors_sgr_40_47 ... ok
+test term::core_tests::it_should_set_basic_ansi_foreground_colors_sgr_30_37 ... ok
+test term::core_tests::it_should_set_bold_on_sgr_1_and_reset_on_sgr_22 ... ok
+test term::core_tests::it_should_set_bright_ansi_background_colors_sgr_100_107 ... ok
+test term::core_tests::it_should_set_bright_ansi_foreground_colors_sgr_90_97 ... ok
+test term::core_tests::it_should_set_faint_on_sgr_2_and_reset_on_sgr_22 ... ok
+test term::core_tests::it_should_set_indexed_background_color_sgr_48_5_n ... ok
+test term::core_tests::it_should_set_indexed_foreground_color_sgr_38_5_n ... ok
+test term::core_tests::it_should_set_inverse_on_sgr_7_and_reset_on_sgr_27 ... ok
+test term::core_tests::it_should_set_italic_on_sgr_3_and_reset_on_sgr_23 ... ok
+test term::core_tests::it_should_set_multiple_attributes_in_one_sgr_sequence ... ok
+test term::core_tests::it_should_set_rgb_background_color_sgr_48_2_r_g_b ... ok
+test term::core_tests::it_should_set_rgb_foreground_color_sgr_38_2_r_g_b ... ok
+test term::core_tests::it_should_set_underline_on_sgr_4_and_reset_on_sgr_24 ... ok
+test term::core_tests::it_should_set_window_title_on_osc_0_sequence ... ok
+test term::core_tests::it_should_set_window_title_on_osc_2_sequence ... ok
+test term::core_tests::it_should_show_and_hide_cursor_on_dectcem ... ok
+test term::core_tests::it_should_switch_to_alternate_screen_buffer_and_back_on_csi_1049 ... ok
+test term::core_tests::it_should_wrap_character_to_next_line_when_end_of_line_is_reached ... ok
+test term::core_tests::it_should_wrap_wide_character_correctly ... ok
+test term::emulator::input_handler::tests::test_control_event_pty_data_ready_returns_none ... ok
+test term::emulator::input_handler::tests::test_control_event_request_snapshot_returns_none ... ok
+test term::emulator::input_handler::tests::test_control_event_resize_minimum_dimensions ... ok
+test term::emulator::input_handler::tests::test_control_event_resize_returns_resize_pty_action ... ok
+test term::emulator::input_handler::tests::test_paste_text_action_bracketed_off ... ok
+test term::emulator::input_handler::tests::test_paste_text_action_bracketed_on ... ok
+test term::emulator::key_translator::tests::macos_private_use_area_characters_ignored_for_arrow_keys ... ok
+test term::emulator::key_translator::tests::test_alt_chars ... ok
+test term::emulator::key_translator::tests::test_arrow_keys_app_mode ... ok
+test term::emulator::key_translator::tests::test_arrow_keys_normal_mode ... ok
+test term::emulator::key_translator::tests::test_ctrl_chars ... ok
+test term::emulator::key_translator::tests::test_shift_tab ... ok
+test term::emulator::key_translator::tests::test_simple_chars ... ok
+test term::layout::tests::test_cells_to_pixels ... ok
+test term::layout::tests::test_pixel_dimensions ... ok
+test term::layout::tests::test_pixels_to_cells_basic ... ok
+test term::layout::tests::test_pixels_to_cells_out_of_bounds ... ok
+test term::layout::tests::test_pixels_to_cells_with_padding ... ok
+test term::layout::tests::test_resize ... ok
+test term::screen::tests::test_block_selection_wide_char_full ... ok
+test term::screen::tests::test_block_selection_wide_char_partial_left ... ok
+test term::screen::tests::test_block_selection_wide_char_partial_right ... ok
+test term::screen::tests::test_clear_selection ... ok
+test term::screen::tests::test_end_selection ... ok
+test term::screen::tests::test_get_selected_text_block_beyond_line_length ... ok
+test term::screen::tests::test_get_selected_text_block_no_selection ... ok
+test term::screen::tests::test_get_selected_text_block_one_column ... ok
+test term::screen::tests::test_get_selected_text_block_one_row ... ok
+test term::screen::tests::test_get_selected_text_block_reversed_points ... ok
+test term::screen::tests::test_get_selected_text_block_simple ... ok
+test term::screen::tests::test_get_selected_text_normal_multi_line ... ok
+test term::screen::tests::test_get_selected_text_normal_multi_line_reversed_points ... ok
+test term::screen::tests::test_get_selected_text_normal_no_selection ... ok
+test term::screen::tests::test_get_selected_text_normal_single_char ... ok
+test term::screen::tests::test_get_selected_text_normal_single_line_full ... ok
+test term::screen::tests::test_get_selected_text_normal_single_line_partial ... ok
+test term::screen::tests::test_get_selected_text_normal_trailing_spaces_behavior ... ok
+test term::screen::tests::test_is_selected_block_no_selection ... ok
+test term::screen::tests::test_is_selected_block_reverse_points ... ok
+test term::screen::tests::test_is_selected_block_simple ... ok
+test term::screen::tests::test_is_selected_normal_multi_line ... ok
+test term::screen::tests::test_is_selected_normal_multi_line_selection_ends_at_width_minus_1 ... ok
+test term::screen::tests::test_is_selected_normal_no_selection ... ok
+test term::screen::tests::test_is_selected_normal_reverse_selection_points ... ok
+test term::screen::tests::test_is_selected_normal_single_line ... ok
+test term::screen::tests::test_is_selected_out_of_bounds_point ... ok
+test term::screen::tests::test_is_selected_point_equals_start_or_end ... ok
+test term::screen::tests::test_scroll_up_populates_scrollback ... ok
+test term::screen::tests::test_selection_cleared_on_resize ... ok
+test term::screen::tests::test_selection_default_state ... ok
+test term::screen::tests::test_start_selection ... ok
+test term::screen::tests::test_update_selection ... ok
+test term::screen::tests::test_update_selection_marks_old_and_new_lines_dirty ... ok
+test term::screen::tests::test_update_selection_when_not_active ... ok
+test term::tests::get_selected_text_tests::test_get_selected_text_empty_cells_within_grid ... ok
+test term::tests::get_selected_text_tests::test_get_selected_text_line_boundaries ... ok
+test term::tests::get_selected_text_tests::test_get_selected_text_multi_line ... ok
+test term::tests::get_selected_text_tests::test_get_selected_text_multi_line_full_lines ... ok
+test term::tests::get_selected_text_tests::test_get_selected_text_no_selection ... ok
+test term::tests::get_selected_text_tests::test_get_selected_text_reversed_points ... ok
+test term::tests::get_selected_text_tests::test_get_selected_text_selection_beyond_line_length ... ok
+test term::tests::get_selected_text_tests::test_get_selected_text_single_line ... ok
+test term::tests::get_selected_text_tests::test_get_selected_text_single_line_trailing_spaces_in_selection ... ok
+test term::tests::paste_text_tests::test_ansi_resize_sets_terminal_dimensions ... ok
+test term::tests::paste_text_tests::test_ansi_resize_updates_snapshot_dimensions ... ok
+test term::tests::paste_text_tests::test_ansi_resize_with_missing_params_ignored ... ok
+test term::tests::paste_text_tests::test_ansi_resize_with_zero_cols_ignored ... ok
+test term::tests::paste_text_tests::test_ansi_resize_with_zero_rows_ignored ... ok
+test term::tests::paste_text_tests::test_paste_text_bracketed_off_causes_wrap ... ok
+test term::tests::paste_text_tests::test_paste_text_bracketed_off_simple ... ok
+test term::tests::paste_text_tests::test_paste_text_bracketed_off_with_newline ... ok
+test term::tests::paste_text_tests::test_paste_text_bracketed_on_logs_warning_processes_chars ... ok
+test term::tests::paste_text_tests::test_window_manipulation_report_size ... ok
+test term::tests::selection_logic_tests::test_apply_selection_clear_click_and_drag ... ok
+test term::tests::selection_logic_tests::test_clear_selection ... ok
+test term::tests::selection_logic_tests::test_extend_selection_active_and_inactive ... ok
+test term::tests::selection_logic_tests::test_start_selection ... ok
+test term::tests::test_carriage_return_input ... ok
+test term::tests::test_csi_cursor_forward_cuf ... ok
+test term::tests::test_csi_ed_clear_below_csi_j ... ok
+test term::tests::test_csi_sgr_fg_color ... ok
+test term::tests::test_initiate_copy_block_selection ... ok
+test term::tests::test_initiate_copy_no_selection ... ok
+test term::tests::test_initiate_copy_with_selection ... ok
+test term::tests::test_key_event_arrow_up ... ok
+test term::tests::test_key_event_printable_char ... ok
+test term::tests::test_lf_at_bottom_of_partial_scrolling_region_no_origin_mode ... ok
+test term::tests::test_mode_show_cursor_dectcem ... ok
+test term::tests::test_mouse_drag_updates_selection ... ok
+test term::tests::test_mouse_press_starts_selection ... ok
+test term::tests::test_mouse_release_ends_selection_activity ... ok
+test term::tests::test_new_mouse_press_clears_old_selection ... ok
+test term::tests::test_newline_input ... ok
+test term::tests::test_osc_set_window_title ... ok
+test term::tests::test_primary_device_attributes_response ... ok
+test term::tests::test_ps1_multiline_exact_fill_then_scroll_on_final_lf ... ok
+test term::tests::test_ps1_multiline_prompt_at_bottom_causes_scroll ... ok
+test term::tests::test_ps1_multiline_prompt_ends_on_last_line_no_scroll_by_prompt ... ok
+test term::tests::test_ps1_multiline_prompt_last_line_fills_screen_then_input ... ok
+test term::tests::test_ps1_multiline_with_sgr_at_bottom_scrolls ... ok
+test term::tests::test_ps1_prompt_causes_multiple_scrolls ... ok
+test term::tests::test_ps1_prompt_with_internal_wrapping_and_scrolling ... ok
+test term::tests::test_resize_larger ... ok
+test term::tests::test_resize_smaller_content_truncation ... ok
+test term::tests::test_selection_coordinates_adjust_on_scroll ... ok
+test term::tests::test_selection_on_alt_screen_then_exit ... ok
+test term::tests::test_simple_char_input ... ok
+test term::tests::test_snapshot_with_selection ... ok
+test term::unicode::tests::test_ascii_char_width ... ok
+test term::unicode::tests::test_box_drawing_char_widths ... ok
+test term::unicode::tests::test_cjk_wide_char_widths ... ok
+test term::unicode::tests::test_control_char_widths ... ok
+test term::unicode::tests::test_locale_initializer_called ... ok
+test term::unicode::tests::test_zero_width_chars ... ok
+test terminal_app::tests::test_handle_control_resize ... ok
+test terminal_app::tests::test_handle_management_keydown ... ok
+test io::pty_tests::test_pty_read_write_interaction ... ok
+test io::pty_tests::test_pty_spawn_successful ... ok
+test io::pty_tests::test_pty_child_termination_on_drop ... ok
+
+test result: ok. 298 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running unittests src/main.rs (target/debug/deps/core_term-02b8392b9210e7db)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/actor_roundtrip_tests.rs (target/debug/deps/actor_roundtrip_tests-b97442f2f9c8a01f)
+
+running 19 tests
+test parser_roundtrip_empty_input_no_output ... ok
+test parser_roundtrip_mixed_content ... ok
+test parser_roundtrip_ansi_escape_sequence ... ok
+test pty_command_channel_closure_on_sender_drop ... ok
+test pty_command_resize_boundary_values ... ok
+test pty_command_resize_delivery_at_actor_boundary ... ok
+test pty_command_resize_from_multiple_senders ... ok
+test pty_command_resize_ordering_preserved ... ok
+test pty_command_write_and_resize_interleaved ... ok
+test multi_actor_chain_roundtrip ... ok
+test parser_roundtrip_simple_text ... ok
+test roundtrip_sender_dropped_during_processing ... ok
+test parser_roundtrip_multiple_batches_preserve_order ... ok
+test terminal_app_roundtrip_frame_request ... ok
+test roundtrip_handles_actor_panic_gracefully ... ok
+test terminal_app_roundtrip_key_input ... ok
+test terminal_app_roundtrip_resize_control ... ok
+test terminal_app_roundtrip_special_key ... ok
+test terminal_app_roundtrip_priority_ordering ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests/ansi_parser_message_tests.rs (target/debug/deps/ansi_parser_message_tests-c86884b34a84da01)
+
+running 9 tests
+test cuj_pty02_real_parser_escape_sequence ... ok
+test cuj_pty02_real_parser_c0_control ... ok
+test cuj_e2e_complete_message_chain ... ok
+test cuj_e2e_rapid_small_writes ... ok
+test cuj_pty02_real_parser_incremental_escape ... ok
+test cuj_pty02_real_parser_mixed_text_and_escapes ... ok
+test cuj_pty02_real_parser_sgr_color ... ok
+test cuj_pty02_real_parser_simple_text ... ok
+test cuj_pty02_real_parser_high_throughput ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests/ansi_to_grid_integration.rs (target/debug/deps/ansi_to_grid_integration-d35d4b93e56230a5)
+
+running 9 tests
+test test_cursor_position_command ... ok
+test test_bug_grid_changes_without_render_trigger ... ok
+test test_grid_checksum_changes_on_input ... ok
+test test_grid_checksum_stable_without_changes ... ok
+test test_multiline_text ... ok
+test test_multiple_characters ... ok
+test test_newline_advances_row ... ok
+test test_single_character_print ... ok
+test test_multiple_characters_change_checksum ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/message_cuj_tests.rs (target/debug/deps/message_cuj_tests-1fe3f8673d345dfc)
+
+running 17 tests
+test cuj_eng04_keydown_delivery ... ok
+test cuj_eng01_resize_message_delivery ... ok
+test cuj_eng02_close_requested_delivery ... ok
+test cuj_concurrent_senders_all_messages_delivered ... ok
+test cuj_eng08_paste_delivery ... ok
+test cuj_eng09_frame_request_delivery ... ok
+test cuj_pty01_channel_closure_propagation ... ok
+test cuj_priority_control_before_management_before_data ... ok
+test cuj_pty02_command_batch_delivery ... ok
+test cuj_pty01_single_byte_batch_delivery ... ok
+test cuj_pty01_large_batch_handling ... ok
+test cuj_pty01_multiple_batches_fifo_order ... ok
+test cuj_pty03_write_command_delivery ... ok
+test cuj_pty03_write_ordering_preserved ... ok
+test cuj_pty02_empty_input_no_output ... ok
+test cuj_pty04_sender_drop_terminates_receiver ... ok
+test cuj_pty02_mixed_content_batch ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running unittests src/lib.rs (target/debug/deps/pixelflow_core-4db68873b279b57d)
+
+running 52 tests
+test algebra::tests::test_bool_algebra ... ok
+test algebra::tests::test_f32_algebra ... ok
+test algebra::tests::test_u32_algebra ... ok
+test combinators::binding::tests::test_legacy_let_binding ... ok
+test combinators::binding::tests::test_let_binding_new_style ... ok
+test combinators::binding::tests::test_let_with_spatial ... ok
+test combinators::binding::tests::test_nested_let_new_style ... ok
+test combinators::block::tests::test_block_compiles_and_runs ... ok
+test combinators::block::tests::test_block_with_complex_expr ... ok
+test combinators::block::tests::test_block_nested ... ok
+test combinators::computed::tests::test_computed_basic ... ok
+test combinators::computed::tests::test_computed_captures ... ok
+test combinators::context::context_domain_tests::test_and_in_context_domain ... ok
+test combinators::context::context_domain_tests::test_checker_like_pattern ... ok
+test combinators::context::context_domain_tests::test_comparison_in_context_domain ... ok
+test combinators::context::context_domain_tests::test_ctxvar_in_context_domain ... ok
+test combinators::context::context_domain_tests::test_dz_x_in_context_domain ... ok
+test combinators::context::context_domain_tests::test_geometry_mask_pattern ... ok
+test combinators::context::context_domain_tests::test_mul_dz_x_in_context_domain ... ok
+test combinators::context::context_domain_tests::test_muladd_dz_in_context_domain ... ok
+test combinators::context::context_domain_tests::test_muladd_select_pattern ... ok
+test combinators::context::context_domain_tests::test_select_in_context_domain ... ok
+test combinators::context::context_domain_tests::test_select_with_valof_in_context_domain ... ok
+test combinators::context::context_domain_tests::test_x_in_context_domain ... ok
+test combinators::spherical::tests::test_sh_coeffs_dot ... ok
+test combinators::spherical::tests::test_sh_orthonormality ... ok
+test combinators::texture::tests::test_texture_clamping ... ok
+test combinators::texture::tests::test_texture_creation ... ok
+test combinators::texture::tests::test_texture_sample ... ok
+test combinators::with_gradient::tests::test_with_gradient_2d_distance ... ok
+test combinators::with_gradient::tests::test_with_gradient_2d_product ... ok
+test combinators::with_gradient::tests::test_with_gradient_2d_quadratic ... ok
+test combinators::with_gradient::tests::test_with_gradient_3d_distance ... ok
+test combinators::with_gradient::tests::test_with_gradient_3d_product ... ok
+test domain::tests::test_4d_spatial ... ok
+test domain::tests::test_2d_spatial ... ok
+test domain::tests::test_let_extended ... ok
+test domain::tests::test_nested_let ... ok
+test dual::tests::test_dual_chain_rule_mul ... ok
+test dual::tests::test_dual_comparison ... ok
+test dual::tests::test_dual_select ... ok
+test dual::tests::test_dual2_arithmetic ... ok
+test tests::test_gather_behavior ... ok
+test variables::tests::test_on_4d ... ok
+test variables::tests::test_x_on_2d ... ok
+test variables::tests::test_y_on_2d ... ok
+test variables::tests::test_z_on_2d_is_zero ... ok
+test zst::tests::test_combinators_with_zst_operands_are_zst ... ok
+test zst::tests::test_complex_expression_is_zst ... ok
+test zst::tests::test_coordinate_variables_are_zst ... ok
+test zst::tests::test_operators_with_zst_operands_are_zst ... ok
+test zst::tests::test_spherical_harmonics_are_zst ... ok
+
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/calibrate_costs.rs (target/debug/deps/calibrate_costs-a3f88179df371e12)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reference.rs (target/debug/deps/reference-d461aad61657668b)
+
+running 5 tests
+test tests::test_ref_bilinear_interpolate ... ok
+test tests::test_ref_blend_alpha ... ok
+test tests::test_ref_saturating_operations ... ok
+test tests::test_ref_gather_4bit_single ... ok
+test tests::test_ref_unpack_4bit ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_context_tuple.rs (target/debug/deps/test_context_tuple-d024971f1728fd05)
+
+running 2 tests
+test test_with_context_5_params_compiles ... ok
+test test_with_context_constructs ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_jet2.rs (target/debug/deps/test_jet2-6f2c142cc40cc13d)
+
+running 4 tests
+test test_jet2_automatic_gradient ... ignored, Needs internal Field access for lane extraction
+test test_jet2_chain_rule_sqrt ... ignored, Needs internal Field access for lane extraction
+test test_jet2_circle_normal ... ignored, Needs internal Field access for lane extraction
+test test_jet2_product_rule ... ignored, Needs internal Field access for lane extraction
+
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_jet2h.rs (target/debug/deps/test_jet2h-386d66b699d8e06f)
+
+running 7 tests
+test test_jet2h_arithmetic ... ok
+test test_jet2h_bitwise ... ok
+test test_jet2h_comparison ... ok
+test test_jet2h_complex_expression ... ok
+test test_jet2h_seeding ... ok
+test test_jet2h_select ... ok
+test test_jet2h_unary_ops ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_kernel_5params.rs (target/debug/deps/test_kernel_5params-438f7e34b4a538cb)
+
+running 5 tests
+test test_jet_kernel_with_param ... ok
+test test_kernel_6_params_compiles ... ok
+test test_kernel_5_params_compiles ... ok
+test test_kernel_8_params_compiles ... ok
+test test_kernel_7_params_compiles ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_log2.rs (target/debug/deps/test_log2-44af02fb21fa7ca7)
+
+running 12 tests
+test analysis::analyze_current_polynomial ... ignored
+test test_exp2_log2_roundtrip ... ok
+test test_exp2_accuracy_sweep ... ok
+test test_exp2_powers ... ok
+test test_log2_accuracy_sweep ... ok
+test test_log2_exp2_roundtrip ... ok
+test test_log2_known_values ... ok
+test test_log2_powers_of_two ... ok
+test test_log2_mantissa_range ... ok
+test test_log2_simd_consistency ... ok
+test test_log2_special_values ... ok
+test test_polynomial_coefficients_range ... ok
+
+test result: ok. 11 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/test_sphere_debug.rs (target/debug/deps/test_sphere_debug-6c278cbbee4d4ab9)
+
+running 9 tests
+test test_simple_param ... ok
+test test_sphere_hit ... ok
+test test_step1_d_dot_c ... ok
+test test_step2_c_sq ... ok
+test test_step3b_c_sq_minus_r_sq ... ok
+test test_step3_discriminant ... ok
+test test_step3a_r_sq ... ok
+test test_step3c_d_dot_c_sq ... ok
+test test_x_plus_param ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/unit_tests.rs (target/debug/deps/unit_tests-7eabe65c38845e6e)
+
+running 29 tests
+test binary_ops_tests::manifold_operators_should_compute_correctly ... ok
+test clone_copy_tests::axis_clone_should_work ... ok
+test bnot_tests::bnot_should_invert_logic ... ok
+test clone_copy_tests::field_copy_should_work ... ok
+test complex_expr_tests::circle_sdf_should_compute_distance ... ok
+test debug_tests::field_debug_should_produce_output ... ok
+test default_tests::field_default_should_be_zero ... ok
+test field_tests::field_arithmetic_should_compute_correctly ... ok
+test field_tests::field_bitwise_should_compute_correctly ... ok
+test field_tests::field_from_f32_should_broadcast_value ... ok
+test field_tests::field_from_i32_should_broadcast_value ... ok
+test field_tests::field_min_max_should_select_extremes ... ok
+test field_tests::field_sqrt_should_handle_negative ... ok
+test field_tests::field_sqrt_should_handle_zero ... ok
+test fix_tests::fix_combinator_should_iterate ... ok
+test jet2_tests::jet2_derivatives_should_be_correct ... ok
+test manifold_tests::scale_combinator_should_scale_coordinates ... ok
+test manifold_tests::constant_types_should_eval_to_constant ... ok
+test hash_tests::axis_should_be_hashable ... ok
+test map_tests::map_clamp_should_restrict_range ... ok
+test map_tests::map_should_transform_coordinates ... ok
+test select_tests::select_comparisons_should_respect_equality_boundary ... ok
+test select_tests::select_should_blend_mixed_mask ... ok
+test select_tests::select_should_choose_based_on_condition ... ok
+test select_tests::select_should_short_circuit_false_branch ... ok
+test select_tests::select_should_short_circuit_true_branch ... ok
+test unary_ops_tests::unary_operators_should_compute_correctly ... ok
+test variable_tests::axis_enums_should_be_distinct ... ok
+test variable_tests::coordinate_variables_should_evaluate_to_inputs ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/x86_backend_tests.rs (target/debug/deps/x86_backend_tests-b2e36530328640ff)
+
+running 7 tests
+test tests::test_sse2_arithmetic ... ok
+test tests::test_sse2_bitwise ... ok
+test tests::test_sse2_math ... ok
+test tests::test_sse2_mask_any_all ... ok
+test tests::test_sse2_sequential ... ok
+test tests::test_sse2_logic ... ok
+test tests::test_sse2_store_panic - should panic ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pixelflow_graphics-fc17c91fb44bc4a0)
+
+running 123 tests
+test baked::tests::test_baked_creation ... ok
+test baked::tests::test_baked_sequential_sampling ... ok
+test baked::tests::test_baked_eval ... ok
+test fonts::cache::tests::test_cache_memory_usage ... ok
+test fonts::cache::tests::test_cached_glyph_creation ... ok
+test fonts::cache::tests::test_cached_glyph_eval ... ok
+test fonts::cache::tests::test_glyph_cache_get ... ok
+test fonts::cache::tests::test_cached_text_creation ... ok
+test fonts::cache::tests::test_glyph_cache_warm ... ok
+test fonts::cache::tests::test_size_bucket ... ok
+test fonts::loader::tests::test_empty_data_returns_none ... ok
+test fonts::loader::tests::test_embedded_source ... ok
+test fonts::loader::tests::test_glyph_access_through_loaded_font ... ok
+test fonts::loader::tests::test_invalid_font_returns_none ... ok
+test image::tests::image_clone_is_independent ... ok
+test image::tests::image_data_initializes_to_zero ... ok
+test fonts::loader::tests::test_data_source ... ok
+test image::tests::image_large_dimensions ... ok
+test image::tests::image_new_creates_correct_buffer_size ... ok
+test image::tests::image_new_stores_dimensions ... ok
+test fonts::loader::tests::test_mmap_source ... ok
+test image::tests::image_one_pixel ... ok
+test image::tests::image_zero_dimensions_create_empty_buffer ... ok
+test mesh::tests::test_parse_simple_quad ... ok
+test mesh::tests::test_reject_triangles ... ok
+test mesh::tests::test_texture_coordinates_ignored ... ok
+test mesh::tests::test_valence_computation ... ok
+test patch::tests::test_derivatives ... ok
+test patch::tests::test_flat_patch ... ok
+test render::color::tests::test_bgra8_components ... ok
+test render::color::tests::test_color_manifold ... ok
+test render::color::tests::test_named_color_manifold ... ok
+test render::color::tests::test_rgba8_components ... ok
+test render::color::tests::test_rgba8_to_bgra8 ... ok
+test shapes::tests::circle_at_origin ... ok
+test shapes::tests::composition_works ... ok
+test render::rasterizer::actor::tests::test_rasterizer_actor_basic ... ok
+test shapes::tests::const_condition_with_select ... ok
+test shapes::tests::const_manifold_eval ... ok
+test spatial_bsp::tests::all_interior_node_indices_are_valid ... ok
+test spatial_bsp::tests::all_leaves_are_reachable_from_root ... ok
+test render::rasterizer::actor::tests::test_rasterizer_actor_thread_count_update ... ok
+test spatial_bsp::tests::alternating_dimensions_creates_balanced_tree ... ok
+test spatial_bsp::tests::binary_tree_exact_interior_count ... ok
+test spatial_bsp::tests::binary_tree_property_interior_count ... ok
+test spatial_bsp::tests::bsp_is_send_and_sync ... ok
+test spatial_bsp::tests::clone_preserves_structure ... ok
+test spatial_bsp::tests::each_interior_node_has_distinct_children ... ok
+test spatial_bsp::tests::empty_bsp_returns_transparent_on_eval ... ok
+test spatial_bsp::tests::empty_tree_has_exactly_zero_counts ... ok
+test spatial_bsp::tests::eval_at_multiple_coords_with_single_leaf ... ok
+test spatial_bsp::tests::eval_exactly_at_threshold_goes_right ... ok
+test spatial_bsp::tests::eval_just_above_threshold_goes_right ... ok
+test spatial_bsp::tests::eval_just_below_threshold_goes_left ... ok
+test spatial_bsp::tests::eval_respects_spatial_partitioning ... ok
+test spatial_bsp::tests::fully_contained_bounds_creates_valid_tree ... ok
+test spatial_bsp::tests::horizontal_split_when_width_exceeds_height ... ok
+test spatial_bsp::tests::identical_bounds_creates_valid_tree ... ok
+test spatial_bsp::tests::infinity_bounds_handled ... ok
+test spatial_bsp::tests::inverted_x_bounds_handled ... ok
+test spatial_bsp::tests::inverted_y_bounds_handled ... ok
+test spatial_bsp::tests::large_coordinates_handled_correctly ... ok
+test spatial_bsp::tests::linear_chain_creates_unbalanced_tree ... ok
+test spatial_bsp::tests::mixed_positive_negative_coordinates ... ok
+test spatial_bsp::tests::negative_coordinates_handled_correctly ... ok
+test spatial_bsp::tests::nan_bounds_panics_during_construction - should panic ... ok
+test spatial_bsp::tests::negative_infinity_bounds_handled ... ok
+test spatial_bsp::tests::new_with_empty_arrays_behaves_like_from_positioned_empty ... ok
+test spatial_bsp::tests::node_ref_types_are_distinct ... ok
+test spatial_bsp::tests::overlapping_bounds_creates_valid_tree ... ok
+test spatial_bsp::tests::point_bounds_creates_valid_tree ... ok
+test spatial_bsp::tests::power_of_two_leaves_creates_balanced_tree ... ok
+test spatial_bsp::tests::many_items_stress_test ... ok
+test spatial_bsp::tests::quadtree_like_structure_four_quadrants ... ok
+test spatial_bsp::tests::root_is_last_interior_node ... ok
+test spatial_bsp::tests::single_item_has_exactly_one_leaf_zero_interiors ... ok
+test spatial_bsp::tests::single_leaf_from_positioned_has_no_interiors ... ok
+test spatial_bsp::tests::single_leaf_has_no_interiors ... ok
+test spatial_bsp::tests::slightly_taller_splits_on_y ... ok
+test spatial_bsp::tests::slightly_wider_splits_on_x ... ok
+test spatial_bsp::tests::square_bounds_splits_on_either_axis ... ok
+test spatial_bsp::tests::test_empty_bsp ... ok
+test spatial_bsp::tests::test_four_leaves_grid ... ok
+test spatial_bsp::tests::test_single_leaf ... ok
+test spatial_bsp::tests::test_stack_of_wide_strips ... ok
+test spatial_bsp::tests::test_two_leaves ... ok
+test spatial_bsp::tests::three_levels_deep_has_interior_children ... ok
+test spatial_bsp::tests::threshold_between_non_overlapping_items ... ok
+test spatial_bsp::tests::threshold_calculation_with_touching_items ... ok
+test spatial_bsp::tests::threshold_correctly_partitions_item_centers ... ok
+test spatial_bsp::tests::threshold_is_finite ... ok
+test spatial_bsp::tests::threshold_split_semantics_left_is_less_than ... ok
+test spatial_bsp::tests::threshold_with_very_small_items ... ok
+test spatial_bsp::tests::vertical_split_when_height_exceeds_width ... ok
+test spatial_bsp::tests::zero_height_bounds_does_not_panic ... ok
+test spatial_bsp::tests::zero_width_bounds_does_not_panic ... ok
+test subdiv::tests::test_bicubic_constant ... ok
+test subdiv::tests::test_bicubic_linear ... ok
+test subdiv::tests::test_bspline_patch_corners ... ok
+test subdiv::tests::test_bspline_patch_flat_plane ... ok
+test subdiv::tests::test_bspline_symmetry ... ok
+test subdiv::tests::test_eigen_first_eigenvalue_is_one ... ok
+test subdiv::tests::test_eigen_patch_subpatch_routing ... ok
+test subdiv::tests::test_eigen_trivial_case ... ok
+test subdiv::tests::test_get_eigen_valence_4 ... ok
+test subdiv::tests::test_tile_scale_values ... ok
+test subdiv::tests::test_recursive_tiling_constant_surface ... ok
+test subdiv::tests::test_validate_eigen_domain_accepts_valid ... ok
+test subdiv::tests::test_validate_eigen_domain_panics_for_invalid - should panic ... ok
+test subdivision::tests::test_limit_eval ... ok
+test subdivision::tests::test_regular_patch ... ok
+test subdivision::tests::test_surface_stats ... ok
+test transform::tests::scale_and_translate_compose ... ok
+test transform::tests::scale_creation_and_eval ... ok
+test transform::tests::scale_function_works ... ok
+test transform::tests::scale_is_clone ... ok
+test transform::tests::scale_with_various_factors ... ok
+test transform::tests::struct_scale_and_translate_compose ... ok
+test transform::tests::struct_translate_and_scale_compose ... ok
+test transform::tests::translate_creation_and_eval ... ok
+test transform::tests::translate_function_works ... ok
+test transform::tests::translate_with_various_offsets ... ok
+test render::rasterizer::actor::tests::test_rasterizer_actor_pause_resume ... ok
+
+test result: ok. 123 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/e2e_render_to_file.rs (target/debug/deps/e2e_render_to_file-bbc9dec5a60f8b0e)
+
+running 6 tests
+test e2e_frame_operations ... ok
+test e2e_render_using_builtin_shapes ... ok
+test e2e_solid_color_renders_correctly ... ok
+test e2e_render_circle ... ok
+test e2e_render_radial_gradient ... ok
+test e2e_render_gradient ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/font_orientation_test.rs (target/debug/deps/font_orientation_test-a1fe4aeeedcf2685)
+
+running 3 tests
+test letter_a_has_crossbar ... ok
+test letter_v_point_is_at_bottom ... ok
+test letter_a_apex_is_at_top ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/font_rasterization_regression.rs (target/debug/deps/font_rasterization_regression-fd4848dd0dea3858)
+
+running 7 tests
+test regression_font_metrics ... ok
+test regression_line_x_intersection_test ... ok
+test regression_mask_and_not_multiply ... ok
+test regression_monospace_advance ... ok
+test regression_all_printable_ascii_render ... ok
+test regression_glyph_ascent_offset ... ok
+test regression_text_rendering_pipeline ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/kernel_macro.rs (target/debug/deps/kernel_macro-9f949156c4d9b7b6)
+
+running 37 tests
+test test_abs ... ok
+test test_antialias_2d ... ok
+test test_chained_composition ... ok
+test test_antialias_3d ... ok
+test test_composed_kernel_ownership ... ok
+test test_dx_accessor ... ok
+test test_dy_accessor ... ok
+test test_dz_accessor ... ok
+test test_floor ... ok
+test test_four_param_kernel ... ok
+test test_fused_combinators_with_kernel_composition ... ok
+test test_gradient_mag_2d ... ok
+test test_gradient_mag_3d ... ok
+test test_independent_instantiations ... ok
+test test_jet3_literals_and_params ... ok
+test test_jet3_multiple_literals ... ok
+test test_jet3_simple ... ok
+test test_jet3_sphere_sdf ... ok
+test test_jet3_with_literals ... ok
+test test_kernel_composition_with_offset ... ok
+test test_kernel_is_clone ... ok
+test test_manual_gradient_magnitude ... ok
+test test_method_chaining ... ok
+test test_mixed_manifold_scalar_params ... ok
+test test_normalized_2d ... ok
+test test_one_param_kernel ... ok
+test test_param_reuse_three ... ok
+test test_parameter_ordering_three ... ok
+test test_simple_kernel_composition ... ok
+test test_sphere_sdf_kernel ... ok
+test test_sqrt ... ok
+test test_two_manifold_params ... ignored, two-manifold params require ManifoldBind2 implementation
+test test_three_param_kernel ... ok
+test test_two_param_kernel ... ok
+test test_v_accessor ... ok
+test test_zero_param_kernel ... ok
+test test_zst_expression_is_copy ... ok
+
+test result: ok. 36 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/optimization_fuzz.rs (target/debug/deps/optimization_fuzz-fd7d59d775f97a7e)
+
+running 20 tests
+test fuzz_chained_methods ... FAILED
+test fuzz_abs ... ok
+test fuzz_add_zero_identity ... ok
+test fuzz_chained_ops ... ok
+test fuzz_distance_2d ... FAILED
+test fuzz_basic_arithmetic ... ok
+test fuzz_floor ... ok
+test fuzz_method_after_binop ... FAILED
+test fuzz_division ... ok
+test fuzz_mul_one_identity ... ok
+test fuzz_fma_pattern ... ok
+test fuzz_nested_binop_methods ... FAILED
+test fuzz_mul_zero_propagation ... ok
+test fuzz_neg ... ok
+test fuzz_scalar_param ... ok
+test regression_mul_then_method ... ok
+test fuzz_sqrt ... FAILED
+test regression_sqrt_with_param ... FAILED
+test fuzz_sqrt_of_sum ... FAILED
+test regression_sub_then_method ... ok
+
+failures:
+
+---- fuzz_chained_methods stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Saving this and future failures in /app/pixelflow-graphics/tests/optimization_fuzz.proptest-regressions
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file. (You may need to create it.)
+cc 6a084b9f249aa595de990f06cdbf6b2d5873d50e9132d3b2a56389f163e30142
+
+thread 'fuzz_chained_methods' (73386) panicked at pixelflow-graphics/tests/optimization_fuzz.rs:86:1:
+Test failed: chained_methods: kernel=5.727119 ref=5.728396 at pixelflow-graphics/tests/optimization_fuzz.rs:301.
+minimal failing input: x = 32.81352, y = 0.001
+	successes: 4
+	local rejects: 0
+	global rejects: 0
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- fuzz_distance_2d stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+
+thread 'fuzz_distance_2d' (73388) panicked at pixelflow-graphics/tests/optimization_fuzz.rs:86:1:
+Test failed: dist2d: kernel=72.50226 ref=72.493904 at pixelflow-graphics/tests/optimization_fuzz.rs:246.
+minimal failing input: x = 0.0, y = 72.493904
+	successes: 0
+	local rejects: 0
+	global rejects: 0
+
+
+---- fuzz_method_after_binop stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+
+thread 'fuzz_method_after_binop' (73392) panicked at pixelflow-graphics/tests/optimization_fuzz.rs:86:1:
+Test failed: method_after_binop: kernel=5.727119 ref=5.728396 x=32.81352 offset=0.001 at pixelflow-graphics/tests/optimization_fuzz.rs:287.
+minimal failing input: x = 32.81352, offset = 0.001
+	successes: 0
+	local rejects: 0
+	global rejects: 0
+
+
+---- fuzz_nested_binop_methods stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Saving this and future failures in /app/pixelflow-graphics/tests/optimization_fuzz.proptest-regressions
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file.
+cc 94bb7664de6586aea922978a67d5e7dd06befbeae537570a748e13daf627f997
+
+thread 'fuzz_nested_binop_methods' (73396) panicked at pixelflow-graphics/tests/optimization_fuzz.rs:86:1:
+Test failed: nested: kernel=32.704857 ref=32.712387 at pixelflow-graphics/tests/optimization_fuzz.rs:314.
+minimal failing input: x = 34.304794, y = 31.191992, z = 0.001
+	successes: 6
+	local rejects: 0
+	global rejects: 0
+
+
+---- fuzz_sqrt stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+
+thread 'fuzz_sqrt' (73398) panicked at pixelflow-graphics/tests/optimization_fuzz.rs:86:1:
+Test failed: sqrt: kernel=26.187956 ref=26.193317 at pixelflow-graphics/tests/optimization_fuzz.rs:130.
+minimal failing input: x = 686.0899
+	successes: 0
+	local rejects: 0
+	global rejects: 0
+
+
+---- regression_sqrt_with_param stdout ----
+
+thread 'regression_sqrt_with_param' (73401) panicked at pixelflow-graphics/tests/optimization_fuzz.rs:332:5:
+sqrt with param: got 3.9990234 expected 4
+
+---- fuzz_sqrt_of_sum stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+
+thread 'fuzz_sqrt_of_sum' (73399) panicked at pixelflow-graphics/tests/optimization_fuzz.rs:86:1:
+Test failed: sqrt(X+Y): kernel=0.044726565 ref=0.04472136 x=0.001 y=0.001 at pixelflow-graphics/tests/optimization_fuzz.rs:143.
+minimal failing input: x = 0.001, y = 0.001
+	successes: 0
+	local rejects: 0
+	global rejects: 0
+
+
+
+failures:
+    fuzz_chained_methods
+    fuzz_distance_2d
+    fuzz_method_after_binop
+    fuzz_nested_binop_methods
+    fuzz_sqrt
+    fuzz_sqrt_of_sum
+    regression_sqrt_with_param
+
+test result: FAILED. 13 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p pixelflow-graphics --test optimization_fuzz`
