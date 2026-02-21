@@ -68,7 +68,7 @@ impl Parse for KernelDef {
                 let kind = if is_kernel_keyword(&ty) {
                     ParamKind::Manifold
                 } else {
-                    ParamKind::Scalar(ty)
+                    ParamKind::Scalar(Box::new(ty))
                 };
 
                 params.push(Param { name: ident, kind });
@@ -388,12 +388,12 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
 
                 let init_expr = convert_expr((*init.expr).clone())?;
 
-                stmts.push(Stmt::Let(LetStmt {
+                stmts.push(Stmt::Let(Box::new(LetStmt {
                     name,
                     ty,
                     init: init_expr,
                     span: Span::call_site(),
-                }));
+                })));
             }
 
             syn::Stmt::Expr(expr, semi) => {

@@ -10,7 +10,7 @@ use crate::ast::{BinaryOp, ParamKind, UnaryOp};
 use crate::sema::AnalyzedKernel;
 use crate::symbol::SymbolKind;
 
-use super::struct_emitter::{Derives, StructEmitter};
+use super::struct_emitter::{Derives, StructEmitter, EvalBody};
 use super::util::{build_array, sort_by_index, standard_imports};
 
 /// Scan an annotated expression to find manifold params used with `.at()`.
@@ -44,18 +44,16 @@ fn find_derivative_params_inner(
             let func_str = call.func.to_string();
             // Check for derivative operations: DX, DY, DZ, V
             if matches!(func_str.as_str(), "DX" | "DY" | "DZ" | "V") {
-                if let Some(arg) = call.args.first() {
-                    // Check if the argument is a manifold param or a local bound to one
-                    if let AnnotatedExpr::Ident(ident_expr) = arg {
-                        let name_str = ident_expr.name.to_string();
-                        // Local bound to manifold param (e.g., `let t = geometry;`)
-                        if let Some(manifold_name) = locals_to_manifolds.get(&name_str) {
-                            result.insert(manifold_name.clone());
-                        } else if let Some(symbol) = symbols.lookup(&name_str) {
-                            // Direct manifold param reference
-                            if matches!(symbol.kind, SymbolKind::ManifoldParam) {
-                                result.insert(name_str);
-                            }
+                // Check if the argument is a manifold param or a local bound to one
+                if let Some(AnnotatedExpr::Ident(ident_expr)) = call.args.first() {
+                    let name_str = ident_expr.name.to_string();
+                    // Local bound to manifold param (e.g., `let t = geometry;`)
+                    if let Some(manifold_name) = locals_to_manifolds.get(&name_str) {
+                        result.insert(manifold_name.clone());
+                    } else if let Some(symbol) = symbols.lookup(&name_str) {
+                        // Direct manifold param reference
+                        if matches!(symbol.kind, SymbolKind::ManifoldParam) {
+                            result.insert(name_str);
                         }
                     }
                 }
@@ -592,9 +590,7 @@ fn find_at_manifold_params_inner(
             // - Unit struct or single scalar param → CloneCopy
             // - Single manifold param → Clone (Copy handled conditionally in StructEmitter)
             // - Multiple params → Clone only (multi-field structs shouldn't derive Copy)
-            let derives = if params.is_empty() {
-                Derives::CloneCopy
-            } else if manifold_count == 0 && params.len() == 1 {
+            let derives = if params.is_empty() || (manifold_count == 0 && params.len() == 1) {
                 Derives::CloneCopy
             } else {
                 Derives::Clone
@@ -618,13 +614,13 @@ fn find_at_manifold_params_inner(
             // else: generic domain (default in StructEmitter)
 
             // Configure eval body
-            emitter = emitter.with_eval_body(
-                std_imports,
+            emitter = emitter.with_eval_body(EvalBody {
+                imports: std_imports,
                 peano_imports,
-                manifold_eval_stmts,
-                body,
-                at_binding,
-            );
+                pre_eval_stmts: manifold_eval_stmts,
+                expr: body,
+                binding: at_binding,
+            });
 
             emitter.build()
         }

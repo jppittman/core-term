@@ -26,6 +26,12 @@ type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 /// The 4D PathJet domain type for recursive ray tracing.
 type PathJet4 = (PathJet<Jet3>, PathJet<Jet3>, PathJet<Jet3>, PathJet<Jet3>);
 
+const SPHERE_EPSILON: f32 = 0.0001;
+const NORMAL_EPSILON: f32 = 1e-10;
+const MIN_COS_INCIDENCE: f32 = 0.1;
+const CURVATURE_SCALE: f32 = 2.0;
+const AA_PIXEL_EPSILON: f32 = 0.001;
+
 // ============================================================================
 // LIFT: Field manifold → Jet3 manifold (explicit conversion)
 // ============================================================================
@@ -92,7 +98,6 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Field4> for ScreenToDir<M
     #[inline]
     fn eval(&self, p: Field4) -> Field {
         let (x, y, _z, w) = p;
-        // 1. Seed Jets from Screen Coords
         // x: varies with screen x (dx=1, dy=0, dz=0)
         let sx = Jet3::x(x);
         // y: varies with screen y (dx=0, dy=1, dz=0)
@@ -100,8 +105,7 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Field4> for ScreenToDir<M
         // z: constant 1.0 (pinhole focal length, no derivatives)
         let sz = Jet3::constant(Field::from(1.0));
 
-        // 2. Normalize to get Ray Direction
-        // The Jet math automatically computes d(dir)/dx and d(dir)/dy
+        // Normalize to get Ray Direction
         let len_sq = sx * sx + sy * sy + sz * sz;
         let len = len_sq.sqrt();
 
@@ -109,7 +113,6 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Field4> for ScreenToDir<M
         let dy = sy / len;
         let dz = sz / len;
 
-        // 3. Pass pure direction Jets to the scene
         self.inner.eval_raw(dx, dy, dz, Jet3::constant(w))
     }
 }
@@ -232,7 +235,7 @@ impl Manifold<PathJet4> for PathJetSphere {
         let cy = Jet3::constant(Field::from(self.center.1));
         let cz = Jet3::constant(Field::from(self.center.2));
         let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
-        let eps = Jet3::constant(Field::from(0.0001));
+        let eps = Jet3::constant(Field::from(SPHERE_EPSILON));
 
         // oc = O - C (origin minus center)
         let oc_x = x.val - cx;
@@ -272,7 +275,7 @@ impl Manifold<Jet3_4> for PathJetSphere {
         let cy = Jet3::constant(Field::from(self.center.1));
         let cz = Jet3::constant(Field::from(self.center.2));
         let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
-        let eps = Jet3::constant(Field::from(0.0001));
+        let eps = Jet3::constant(Field::from(SPHERE_EPSILON));
 
         // For origin at 0: oc = -C
         // oc·D = -C·D = -(D·C)
@@ -360,10 +363,8 @@ impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldG
 // Evaluates geometry to get t, computes hit point P = ray * t, then selects
 // between material (at P) and background based on hit validity.
 kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Field {
-    // 1. Get distance t from geometry
     let t = geometry;
 
-    // 2. Validate hit: t > 0, t < max, derivatives reasonable
     let t_max = 1000000.0;
     let deriv_max = 10000.0;
     let valid_t = (V(t) > 0.0) & (V(t) < t_max);
@@ -371,25 +372,20 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
     let mask = valid_t & valid_deriv;
 
-    // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
     let hx = X * t;
     let hy = Y * t;
     let hz = Z * t;
 
-    // 4. Sample material at hit point, background at ray direction
     let mat_val = material.at(hx, hy, hz, W);
     let bg_val = background;
 
-    // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
     mask.select(mat_val, bg_val)
 });
 
 // Color Surface: geometry + material + background, outputs Discrete.
 kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Discrete {
-    // 1. Get distance t from geometry
     let t = geometry;
 
-    // 2. Validate hit: t > 0, t < max, derivatives reasonable
     let t_max = 1000000.0;
     let deriv_max = 10000.0;
     let valid_t = (V(t) > 0.0) & (V(t) < t_max);
@@ -397,16 +393,13 @@ kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, backgroun
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
     let mask = valid_t & valid_deriv;
 
-    // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
     let hx = X * t;
     let hy = Y * t;
     let hz = Z * t;
 
-    // 4. Sample material at hit point, background at ray direction
     let mat_val = material.at(hx, hy, hz, W);
     let bg_val = background;
 
-    // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
     mask.select(mat_val, bg_val)
 });
 
@@ -602,7 +595,7 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq.max(Field::from(NORMAL_EPSILON)).sqrt().rsqrt();
 
         // Normal components - evaluate at Jet3 construction boundary
         let nx = (cross_x * inv_n_len.clone()).constant();
@@ -619,8 +612,8 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
 
         // Curvature-aware scaling: reflection magnifies angular spread
         // Scale = 2 / |cos(incidence)|, clamped to avoid infinity
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(MIN_COS_INCIDENCE));
+        let curvature_scale = (Field::from(CURVATURE_SCALE) / cos_incidence).constant();
 
         let n_jet_x = Jet3 {
             val: nx,
@@ -648,7 +641,7 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
 
         // Householder Reflection: R = D - 2(D·N)N
         let d_dot_n = d_jet_x * n_jet_x + d_jet_y * n_jet_y + d_jet_z * n_jet_z;
-        let two = Jet3::constant(Field::from(2.0));
+        let two = Jet3::constant(Field::from(2.0)); // Factor 2.0 is from reflection formula, not magic
         let k = two * d_dot_n;
 
         let r_x = d_jet_x - k * n_jet_x;
@@ -690,7 +683,7 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq.max(Field::from(NORMAL_EPSILON)).sqrt().rsqrt();
 
         // Normal components - evaluate at Jet3 construction boundary
         let nx = (cross_x * inv_n_len.clone()).constant();
@@ -707,8 +700,8 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
 
         // Curvature-aware scaling: reflection magnifies angular spread
         // Scale = 2 / |cos(incidence)|, clamped to avoid infinity
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(MIN_COS_INCIDENCE));
+        let curvature_scale = (Field::from(CURVATURE_SCALE) / cos_incidence).constant();
 
         let n_jet_x = Jet3 {
             val: nx,
@@ -734,7 +727,7 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
         let d_jet_z = z * inv_p_len;
 
         let d_dot_n = d_jet_x * n_jet_x + d_jet_y * n_jet_y + d_jet_z * n_jet_z;
-        let two = Jet3::constant(Field::from(2.0));
+        let two = Jet3::constant(Field::from(2.0)); // Factor 2.0 is from reflection formula, not magic
         let k = two * d_dot_n;
 
         let r_x = d_jet_x - k * n_jet_x;
@@ -779,10 +772,6 @@ where
     #[inline]
     fn eval(&self, p: PathJet4) -> Field {
         let (x, y, z, w) = p;
-        // ====================================================================
-        // 1. Extract surface normal from hit point's tangent frame
-        // ====================================================================
-
         // Hit point P = (x.val, y.val, z.val) with screen derivatives
         // Tangent vectors: Tu = dP/dscreen_x, Tv = dP/dscreen_y
         let tu = (x.val.dx, y.val.dx, z.val.dx);
@@ -797,15 +786,11 @@ where
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq.max(Field::from(NORMAL_EPSILON)).sqrt().rsqrt();
 
         let nx = (cross_x * inv_n_len.clone()).constant();
         let ny = (cross_y * inv_n_len.clone()).constant();
         let nz = (cross_z * inv_n_len).constant();
-
-        // ====================================================================
-        // 2. Get incoming direction D (from PathJet.dir)
-        // ====================================================================
 
         // Normalize the incoming direction
         let d_len_sq = x.dir * x.dir + y.dir * y.dir + z.dir * z.dir;
@@ -815,14 +800,10 @@ where
         let dy = y.dir * inv_d_len;
         let dz = z.dir * inv_d_len;
 
-        // ====================================================================
-        // 3. Curvature-aware derivative scaling for AA
-        // ====================================================================
-
         // Compute D·N for curvature scaling
         let d_dot_n_scalar = (dx.val * nx + dy.val * ny + dz.val * nz).constant();
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(MIN_COS_INCIDENCE));
+        let curvature_scale = (Field::from(CURVATURE_SCALE) / cos_incidence).constant();
 
         // Normal as Jet3 with scaled derivatives
         let fzero = Field::from(0.0);
@@ -845,10 +826,7 @@ where
             dz: fzero,
         };
 
-        // ====================================================================
-        // 4. Householder reflection: R = D - 2(D·N)N
-        // ====================================================================
-
+        // Householder reflection: R = D - 2(D·N)N
         let d_dot_n = dx * n_jet_x + dy * n_jet_y + dz * n_jet_z;
         let two = Jet3::constant(Field::from(2.0));
         let k = two * d_dot_n;
@@ -856,10 +834,6 @@ where
         let r_x = dx - k * n_jet_x;
         let r_y = dy - k * n_jet_y;
         let r_z = dz - k * n_jet_z;
-
-        // ====================================================================
-        // 5. Create reflected ray and recurse
-        // ====================================================================
 
         // New ray: origin = hit point, direction = reflected
         let reflected_x = PathJet {
@@ -898,7 +872,6 @@ where
         let (x, y, z, w) = p;
         // Same algorithm as Reflect<M> for PathJet<Jet3>
 
-        // 1. Extract normal from tangent frame
         let tu = (x.val.dx, y.val.dx, z.val.dx);
         let tv = (x.val.dy, y.val.dy, z.val.dy);
 
@@ -910,13 +883,13 @@ where
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq.max(Field::from(NORMAL_EPSILON)).sqrt().rsqrt();
 
         let nx = (cross_x * inv_n_len.clone()).constant();
         let ny = (cross_y * inv_n_len.clone()).constant();
         let nz = (cross_z * inv_n_len).constant();
 
-        // 2. Normalize incoming direction
+        // Normalize incoming direction
         let d_len_sq = x.dir * x.dir + y.dir * y.dir + z.dir * z.dir;
         let inv_d_len = Jet3::constant(Field::from(1.0)) / d_len_sq.sqrt();
 
@@ -924,10 +897,10 @@ where
         let dy = y.dir * inv_d_len;
         let dz = z.dir * inv_d_len;
 
-        // 3. Curvature scaling
+        // Curvature scaling
         let d_dot_n_scalar = (dx.val * nx + dy.val * ny + dz.val * nz).constant();
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(MIN_COS_INCIDENCE));
+        let curvature_scale = (Field::from(CURVATURE_SCALE) / cos_incidence).constant();
 
         let fzero = Field::from(0.0);
         let n_jet_x = Jet3 {
@@ -949,7 +922,7 @@ where
             dz: fzero,
         };
 
-        // 4. Householder reflection
+        // Householder reflection
         let d_dot_n = dx * n_jet_x + dy * n_jet_y + dz * n_jet_z;
         let two = Jet3::constant(Field::from(2.0));
         let k = two * d_dot_n;
@@ -958,7 +931,7 @@ where
         let r_y = dy - k * n_jet_y;
         let r_z = dz - k * n_jet_z;
 
-        // 5. Reflected ray
+        // Reflected ray
         let reflected_x = PathJet {
             val: x.val,
             dir: r_x,
@@ -1136,7 +1109,7 @@ impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorChec
         // Gradient magnitude from Jet3 derivatives
         let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt().constant();
         let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt().constant();
-        let pixel_size = (grad_x.max(grad_z) + Field::from(0.001)).constant();
+        let pixel_size = (grad_x.max(grad_z) + Field::from(AA_PIXEL_EPSILON)).constant();
 
         // Coverage: how much of the pixel is in this cell vs neighbor
         let zero = Field::from(0.0);
