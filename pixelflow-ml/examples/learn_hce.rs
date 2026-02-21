@@ -13,7 +13,9 @@
 
 use std::time::Instant;
 
-use pixelflow_ml::evaluator::{default_expr_weights, extract_expr_features, HandCraftedEvaluator, LinearFeatures};
+use pixelflow_ml::evaluator::{
+    HandCraftedEvaluator, LinearFeatures, default_expr_weights, extract_expr_features,
+};
 use pixelflow_ml::training::factored::{FactoredTrainer, TrainConfig};
 // Use pixelflow_ml's Expr for HCE, then convert for NNUE trainer
 use pixelflow_ml::nnue::{Expr, ExprGenConfig, ExprGenerator, OpType};
@@ -24,15 +26,10 @@ fn to_nnue_expr(expr: &Expr) -> pixelflow_nnue::Expr {
     match expr {
         Expr::Var(i) => pixelflow_nnue::Expr::Var(*i),
         Expr::Const(c) => pixelflow_nnue::Expr::Const(*c),
-        Expr::Unary(op, a) => pixelflow_nnue::Expr::Unary(
-            *op,
-            Box::new(to_nnue_expr(a)),
-        ),
-        Expr::Binary(op, a, b) => pixelflow_nnue::Expr::Binary(
-            *op,
-            Box::new(to_nnue_expr(a)),
-            Box::new(to_nnue_expr(b)),
-        ),
+        Expr::Unary(op, a) => pixelflow_nnue::Expr::Unary(*op, Box::new(to_nnue_expr(a))),
+        Expr::Binary(op, a, b) => {
+            pixelflow_nnue::Expr::Binary(*op, Box::new(to_nnue_expr(a)), Box::new(to_nnue_expr(b)))
+        }
         Expr::Ternary(op, a, b, c) => pixelflow_nnue::Expr::Ternary(
             *op,
             Box::new(to_nnue_expr(a)),
@@ -112,7 +109,10 @@ fn main() {
         trainer.add_sample(nnue_expr.clone(), *cost);
     }
 
-    println!("\nNetwork parameters: {}", pixelflow_nnue::factored::FactoredNnue::param_count());
+    println!(
+        "\nNetwork parameters: {}",
+        pixelflow_nnue::factored::FactoredNnue::param_count()
+    );
 
     // Initial metrics
     let initial = trainer.evaluate();
@@ -163,14 +163,16 @@ fn main() {
     }
 
     // Compute test metrics
-    let test_mse: f64 = test_predictions.iter()
+    let test_mse: f64 = test_predictions
+        .iter()
         .zip(test_targets.iter())
         .map(|(p, t)| {
             let log_p = (*p).ln();
             let log_t = (*t).ln();
             (log_p - log_t).powi(2)
         })
-        .sum::<f64>() / test_samples.len() as f64;
+        .sum::<f64>()
+        / test_samples.len() as f64;
     let test_rmse = test_mse.sqrt();
     let test_spearman = compute_spearman_f64(&test_predictions, &test_targets);
 
@@ -181,7 +183,10 @@ fn main() {
 
     // Show some example predictions
     println!("\n=== Sample Predictions (Test Set) ===\n");
-    println!("{:50} | {:>10} | {:>10} | {:>8}", "Expression", "HCE", "NNUE", "Error%");
+    println!(
+        "{:50} | {:>10} | {:>10} | {:>8}",
+        "Expression", "HCE", "NNUE", "Error%"
+    );
     println!("{:-<50}-+-{:-<10}-+-{:-<10}-+-{:-<8}", "", "", "", "");
 
     for (i, (ml_expr, _, actual_cost)) in test_samples.iter().take(15).enumerate() {
@@ -205,21 +210,43 @@ fn main() {
     // Build test cases manually
     let test_cases: Vec<(&str, Expr, pixelflow_nnue::Expr)> = vec![
         ("Var(0)", Expr::Var(0), pixelflow_nnue::Expr::Var(0)),
-        ("Neg(Var(0))",
-         Expr::Unary(OpKind::Neg, Box::new(Expr::Var(0))),
-         pixelflow_nnue::Expr::Unary(OpKind::Neg, Box::new(pixelflow_nnue::Expr::Var(0)))),
-        ("Add(Var(0), Var(1))",
-         Expr::Binary(OpKind::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))),
-         pixelflow_nnue::Expr::Binary(OpKind::Add, Box::new(pixelflow_nnue::Expr::Var(0)), Box::new(pixelflow_nnue::Expr::Var(1)))),
-        ("Mul(Var(0), Var(1))",
-         Expr::Binary(OpKind::Mul, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))),
-         pixelflow_nnue::Expr::Binary(OpKind::Mul, Box::new(pixelflow_nnue::Expr::Var(0)), Box::new(pixelflow_nnue::Expr::Var(1)))),
-        ("Div(Var(0), Var(1))",
-         Expr::Binary(OpKind::Div, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))),
-         pixelflow_nnue::Expr::Binary(OpKind::Div, Box::new(pixelflow_nnue::Expr::Var(0)), Box::new(pixelflow_nnue::Expr::Var(1)))),
-        ("Sqrt(Var(0))",
-         Expr::Unary(OpKind::Sqrt, Box::new(Expr::Var(0))),
-         pixelflow_nnue::Expr::Unary(OpKind::Sqrt, Box::new(pixelflow_nnue::Expr::Var(0)))),
+        (
+            "Neg(Var(0))",
+            Expr::Unary(OpKind::Neg, Box::new(Expr::Var(0))),
+            pixelflow_nnue::Expr::Unary(OpKind::Neg, Box::new(pixelflow_nnue::Expr::Var(0))),
+        ),
+        (
+            "Add(Var(0), Var(1))",
+            Expr::Binary(OpKind::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))),
+            pixelflow_nnue::Expr::Binary(
+                OpKind::Add,
+                Box::new(pixelflow_nnue::Expr::Var(0)),
+                Box::new(pixelflow_nnue::Expr::Var(1)),
+            ),
+        ),
+        (
+            "Mul(Var(0), Var(1))",
+            Expr::Binary(OpKind::Mul, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))),
+            pixelflow_nnue::Expr::Binary(
+                OpKind::Mul,
+                Box::new(pixelflow_nnue::Expr::Var(0)),
+                Box::new(pixelflow_nnue::Expr::Var(1)),
+            ),
+        ),
+        (
+            "Div(Var(0), Var(1))",
+            Expr::Binary(OpKind::Div, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))),
+            pixelflow_nnue::Expr::Binary(
+                OpKind::Div,
+                Box::new(pixelflow_nnue::Expr::Var(0)),
+                Box::new(pixelflow_nnue::Expr::Var(1)),
+            ),
+        ),
+        (
+            "Sqrt(Var(0))",
+            Expr::Unary(OpKind::Sqrt, Box::new(Expr::Var(0))),
+            pixelflow_nnue::Expr::Unary(OpKind::Sqrt, Box::new(pixelflow_nnue::Expr::Var(0))),
+        ),
     ];
 
     let mut prev_hce = 0;
@@ -256,25 +283,62 @@ fn main() {
     } else {
         0.0
     };
-    println!("\nRank agreement: {}/{} ({:.0}%)", rank_correct, rank_total - 1, rank_pct);
+    println!(
+        "\nRank agreement: {}/{} ({:.0}%)",
+        rank_correct,
+        rank_total - 1,
+        rank_pct
+    );
 
     // Final verdict
     println!("\n=== Verdict ===\n");
     if test_spearman > 0.95 {
-        println!("✓ EXCELLENT: Factored NNUE can learn the HCE (ρ = {:.3})", test_spearman);
+        println!(
+            "✓ EXCELLENT: Factored NNUE can learn the HCE (ρ = {:.3})",
+            test_spearman
+        );
     } else if test_spearman > 0.85 {
-        println!("✓ GOOD: Factored NNUE approximates the HCE reasonably (ρ = {:.3})", test_spearman);
+        println!(
+            "✓ GOOD: Factored NNUE approximates the HCE reasonably (ρ = {:.3})",
+            test_spearman
+        );
     } else if test_spearman > 0.70 {
-        println!("△ MARGINAL: Architecture works but needs tuning (ρ = {:.3})", test_spearman);
+        println!(
+            "△ MARGINAL: Architecture works but needs tuning (ρ = {:.3})",
+            test_spearman
+        );
     } else {
-        println!("✗ POOR: Architecture may have fundamental issues (ρ = {:.3})", test_spearman);
+        println!(
+            "✗ POOR: Architecture may have fundamental issues (ρ = {:.3})",
+            test_spearman
+        );
     }
 }
 
 fn print_hce_weights(hce: &HandCraftedEvaluator) {
-    let names = ["add", "sub", "mul", "div", "neg", "sqrt", "rsqrt", "abs",
-                 "min", "max", "fma", "mul_rsqrt", "nodes", "depth", "vars",
-                 "consts", "identity", "self_cancel", "fusable", "crit_path", "max_width"];
+    let names = [
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "neg",
+        "sqrt",
+        "rsqrt",
+        "abs",
+        "min",
+        "max",
+        "fma",
+        "mul_rsqrt",
+        "nodes",
+        "depth",
+        "vars",
+        "consts",
+        "identity",
+        "self_cancel",
+        "fusable",
+        "crit_path",
+        "max_width",
+    ];
     for (i, name) in names.iter().enumerate() {
         if hce.get_weight(i) != 0 {
             println!("  {:12}: {:3}", name, hce.get_weight(i));
@@ -330,8 +394,16 @@ fn format_expr(expr: &Expr) -> String {
         Expr::Var(i) => format!("Var({})", i),
         Expr::Const(c) => format!("Const({:.2})", c),
         Expr::Unary(op, a) => format!("{}({})", op_name(*op), format_expr(a)),
-        Expr::Binary(op, a, b) => format!("{}({}, {})", op_name(*op), format_expr(a), format_expr(b)),
-        Expr::Ternary(op, a, b, c) => format!("{}({}, {}, {})", op_name(*op), format_expr(a), format_expr(b), format_expr(c)),
+        Expr::Binary(op, a, b) => {
+            format!("{}({}, {})", op_name(*op), format_expr(a), format_expr(b))
+        }
+        Expr::Ternary(op, a, b, c) => format!(
+            "{}({}, {}, {})",
+            op_name(*op),
+            format_expr(a),
+            format_expr(b),
+            format_expr(c)
+        ),
     }
 }
 
@@ -340,8 +412,27 @@ fn format_nnue_expr(expr: &pixelflow_nnue::Expr) -> String {
         pixelflow_nnue::Expr::Var(i) => format!("Var({})", i),
         pixelflow_nnue::Expr::Const(c) => format!("Const({:.2})", c),
         pixelflow_nnue::Expr::Unary(op, a) => format!("{}({})", op_name(*op), format_nnue_expr(a)),
-        pixelflow_nnue::Expr::Binary(op, a, b) => format!("{}({}, {})", op_name(*op), format_nnue_expr(a), format_nnue_expr(b)),
-        pixelflow_nnue::Expr::Ternary(op, a, b, c) => format!("{}({}, {}, {})", op_name(*op), format_nnue_expr(a), format_nnue_expr(b), format_nnue_expr(c)),
+        pixelflow_nnue::Expr::Binary(op, a, b) => format!(
+            "{}({}, {})",
+            op_name(*op),
+            format_nnue_expr(a),
+            format_nnue_expr(b)
+        ),
+        pixelflow_nnue::Expr::Ternary(op, a, b, c) => format!(
+            "{}({}, {}, {})",
+            op_name(*op),
+            format_nnue_expr(a),
+            format_nnue_expr(b),
+            format_nnue_expr(c)
+        ),
+        pixelflow_nnue::Expr::Nary(op, children) => {
+            let args = children
+                .iter()
+                .map(|c| format_nnue_expr(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}({})", op_name(*op), args)
+        }
     }
 }
 
@@ -362,4 +453,3 @@ fn op_name(op: OpKind) -> &'static str {
         _ => "Op",
     }
 }
-

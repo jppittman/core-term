@@ -16,7 +16,7 @@
 use alloc::vec::Vec;
 
 use crate::evaluator::{ExprFeatures, extract_expr_features};
-use crate::nnue::{Expr, Accumulator, Nnue, extract_features};
+use crate::nnue::{Accumulator, Expr, Nnue, extract_features};
 
 // ============================================================================
 // Non-Linear Cost Models
@@ -24,7 +24,7 @@ use crate::nnue::{Expr, Accumulator, Nnue, extract_features};
 
 /// Linear cost model (equivalent to egg's CostModel).
 /// This is our baseline - what we're trying to beat.
-#[must_use] 
+#[must_use]
 pub fn linear_cost(features: &ExprFeatures) -> i32 {
     // Standard per-op costs (same as egg would use)
     features.add_count * 4
@@ -43,13 +43,14 @@ pub fn linear_cost(features: &ExprFeatures) -> i32 {
 
 /// Non-linear cost with interaction terms.
 /// Captures patterns that linear models miss.
-#[must_use] 
+#[must_use]
 pub fn interaction_cost(features: &ExprFeatures) -> i32 {
     let base = linear_cost(features);
 
     // Interaction: mul adjacent to add → FMA opportunity missed
     // If we have both mul and add but no FMA, that's bad
-    let missed_fma = if features.mul_count > 0 && features.add_count > 0 && features.fma_count == 0 {
+    let missed_fma = if features.mul_count > 0 && features.add_count > 0 && features.fma_count == 0
+    {
         // Penalty for missing FMA fusion
         features.mul_count.min(features.add_count) * 4
     } else {
@@ -57,11 +58,12 @@ pub fn interaction_cost(features: &ExprFeatures) -> i32 {
     };
 
     // Interaction: div + sqrt → could be rsqrt
-    let missed_rsqrt = if features.div_count > 0 && features.sqrt_count > 0 && features.mul_rsqrt_count == 0 {
-        features.div_count.min(features.sqrt_count) * 10
-    } else {
-        0
-    };
+    let missed_rsqrt =
+        if features.div_count > 0 && features.sqrt_count > 0 && features.mul_rsqrt_count == 0 {
+            features.div_count.min(features.sqrt_count) * 10
+        } else {
+            0
+        };
 
     // Depth penalty: deeper expressions have more dependencies
     // This is non-linear because depth isn't sum of depths
@@ -72,7 +74,7 @@ pub fn interaction_cost(features: &ExprFeatures) -> i32 {
 
 /// Critical path cost model.
 /// The slowest path through the expression matters most.
-#[must_use] 
+#[must_use]
 pub fn critical_path_cost(expr: &Expr) -> i32 {
     match expr {
         Expr::Var(_) | Expr::Const(_) => 0,
@@ -102,15 +104,16 @@ pub fn critical_path_cost(expr: &Expr) -> i32 {
                 crate::nnue::OpKind::MulAdd => 5,
                 _ => 10,
             };
-            op_cost + critical_path_cost(a)
-                .max(critical_path_cost(b))
-                .max(critical_path_cost(c))
+            op_cost
+                + critical_path_cost(a)
+                    .max(critical_path_cost(b))
+                    .max(critical_path_cost(c))
         }
     }
 }
 
 /// Total cost (sum of all operations) - for comparison.
-#[must_use] 
+#[must_use]
 pub fn total_cost(expr: &Expr) -> i32 {
     let features = extract_expr_features(expr);
     linear_cost(&features)
@@ -118,7 +121,7 @@ pub fn total_cost(expr: &Expr) -> i32 {
 
 /// NNUE-based cost (actual neural network).
 /// This is what provides real non-linearity.
-#[must_use] 
+#[must_use]
 pub fn nnue_cost(expr: &Expr, nnue: &Nnue) -> i32 {
     let features = extract_features(expr);
     let mut acc = Accumulator::new(nnue);
@@ -138,7 +141,7 @@ pub fn nnue_cost(expr: &Expr, nnue: &Nnue) -> i32 {
 
 /// Compare cost models on an expression.
 /// Returns (linear, interaction, critical_path, total).
-#[must_use] 
+#[must_use]
 pub fn compare_costs(expr: &Expr) -> CostComparison {
     let features = extract_expr_features(expr);
 
@@ -165,13 +168,13 @@ pub struct CostComparison {
 
 impl CostComparison {
     /// How much do interaction terms change the cost?
-    #[must_use] 
+    #[must_use]
     pub fn interaction_delta(&self) -> i32 {
         self.interaction - self.linear
     }
 
     /// How different is critical path from total?
-    #[must_use] 
+    #[must_use]
     pub fn critical_vs_total(&self) -> f32 {
         if self.total == 0 {
             1.0
@@ -187,11 +190,7 @@ impl CostComparison {
 
 /// Measure ranking agreement between cost models.
 /// Returns Kendall's tau correlation coefficient.
-pub fn ranking_correlation<F1, F2>(
-    exprs: &[Expr],
-    cost1: F1,
-    cost2: F2,
-) -> f32
+pub fn ranking_correlation<F1, F2>(exprs: &[Expr], cost1: F1, cost2: F2) -> f32
 where
     F1: Fn(&Expr) -> i32,
     F2: Fn(&Expr) -> i32,
@@ -236,7 +235,7 @@ where
 // ============================================================================
 
 /// Find expressions where models disagree on ranking.
-#[must_use] 
+#[must_use]
 pub fn find_disagreements(exprs: &[Expr]) -> Vec<Disagreement> {
     let mut disagreements = Vec::new();
 
@@ -300,8 +299,8 @@ pub struct Disagreement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::boxed::Box;
     use crate::nnue::OpKind;
+    use alloc::boxed::Box;
 
     #[test]
     fn test_linear_vs_interaction_fma() {
@@ -333,16 +332,22 @@ mod tests {
 
         // Interaction cost should penalize unfused MORE
         // because it detects the missed FMA opportunity
-        assert!(unfused_costs.interaction > unfused_costs.linear,
+        assert!(
+            unfused_costs.interaction > unfused_costs.linear,
             "Interaction should add penalty for missed FMA: {} vs {}",
-            unfused_costs.interaction, unfused_costs.linear);
+            unfused_costs.interaction,
+            unfused_costs.linear
+        );
 
         // The gap should be larger with interaction terms
         let linear_gap = unfused_costs.linear - fused_costs.linear;
         let interaction_gap = unfused_costs.interaction - fused_costs.interaction;
-        assert!(interaction_gap >= linear_gap,
+        assert!(
+            interaction_gap >= linear_gap,
             "Interaction should widen the gap: {} vs {}",
-            interaction_gap, linear_gap);
+            interaction_gap,
+            linear_gap
+        );
     }
 
     #[test]
@@ -390,15 +395,18 @@ mod tests {
         assert_eq!(wide_total, deep_total, "Same total ops");
 
         // Critical path should prefer wide (more parallel)
-        assert!(wide_critical < deep_critical,
+        assert!(
+            wide_critical < deep_critical,
             "Wide ({}) should have shorter critical path than deep ({})",
-            wide_critical, deep_critical);
+            wide_critical,
+            deep_critical
+        );
     }
 
     #[test]
     fn test_nonlinearity_size() {
         // Generate some expressions and measure how much interaction terms change things
-        use crate::nnue::{ExprGenerator, ExprGenConfig};
+        use crate::nnue::{ExprGenConfig, ExprGenerator};
 
         let config = ExprGenConfig {
             max_depth: 5,
@@ -443,7 +451,7 @@ mod tests {
 
     #[test]
     fn test_ranking_correlation() {
-        use crate::nnue::{ExprGenerator, ExprGenConfig};
+        use crate::nnue::{ExprGenConfig, ExprGenerator};
 
         let config = ExprGenConfig {
             max_depth: 4,
@@ -472,11 +480,7 @@ mod tests {
         );
 
         // Compare total vs critical path
-        let total_vs_critical = ranking_correlation(
-            &exprs,
-            total_cost,
-            critical_path_cost,
-        );
+        let total_vs_critical = ranking_correlation(&exprs, total_cost, critical_path_cost);
 
         // FINDINGS:
         // - Linear vs Interaction: Very high correlation (~0.95+)
@@ -490,12 +494,16 @@ mod tests {
         // simple interaction terms. It captures actual execution semantics.
 
         // Verify correlations are in expected ranges
-        assert!(linear_vs_interaction > 0.5,
-            "Linear and interaction should be positively correlated");
+        assert!(
+            linear_vs_interaction > 0.5,
+            "Linear and interaction should be positively correlated"
+        );
 
         // Critical path should be somewhat different from total
         // (if they're identical, critical path adds no value)
-        assert!(total_vs_critical < 1.0,
-            "Critical path should differ from total cost");
+        assert!(
+            total_vs_critical < 1.0,
+            "Critical path should differ from total cost"
+        );
     }
 }

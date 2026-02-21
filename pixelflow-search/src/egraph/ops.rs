@@ -136,7 +136,7 @@ define_op!(Tuple);
 /// Look up a static `&dyn Op` reference by `OpKind`.
 ///
 /// Returns `None` for `Var` and `Const` (which are leaves, not operations).
-#[must_use] 
+#[must_use]
 pub fn op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
     match kind {
         OpKind::Add => Some(&Add),

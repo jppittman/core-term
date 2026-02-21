@@ -186,8 +186,7 @@ fn directory_allows_cross_actor_messaging() {
     // Phase 1: Create builders for each actor
     let mut alpha_builder =
         ActorBuilder::<AlphaData, AlphaControl, AlphaManagement>::new(1024, None);
-    let mut beta_builder =
-        ActorBuilder::<BetaData, BetaControl, BetaManagement>::new(1024, None);
+    let mut beta_builder = ActorBuilder::<BetaData, BetaControl, BetaManagement>::new(1024, None);
 
     // Phase 2: Create per-actor directories with dedicated SPSC handles
     let alpha_dir = TestDirectory {
@@ -258,12 +257,10 @@ fn directory_allows_cross_actor_messaging() {
 
 /// Simulates the Troupe struct that troupe! would generate (SPSC pattern)
 struct TestTroupe {
-    directory: TestDirectory,
-    // Schedulers run the actors when dropped; they're held here for that purpose.
-    #[allow(dead_code)]
-    alpha_scheduler: ActorScheduler<AlphaData, AlphaControl, AlphaManagement>,
-    #[allow(dead_code)]
-    beta_scheduler: ActorScheduler<BetaData, BetaControl, BetaManagement>,
+    alpha_builder: ActorBuilder<AlphaData, AlphaControl, AlphaManagement>,
+    beta_builder: ActorBuilder<BetaData, BetaControl, BetaManagement>,
+    alpha_dir: TestDirectory,
+    beta_dir: TestDirectory,
 }
 
 struct TestExposedHandles {
@@ -496,8 +493,7 @@ fn circular_messaging_does_not_deadlock() {
     // Create builders for each actor
     let mut alpha_builder =
         ActorBuilder::<AlphaData, AlphaControl, AlphaManagement>::new(1000, None);
-    let mut beta_builder =
-        ActorBuilder::<BetaData, BetaControl, BetaManagement>::new(1000, None);
+    let mut beta_builder = ActorBuilder::<BetaData, BetaControl, BetaManagement>::new(1000, None);
 
     // Each actor gets a dedicated handle to the other
     let ping_beta_h = beta_builder.add_producer();
@@ -606,8 +602,7 @@ fn circular_messaging_does_not_deadlock() {
 
 #[test]
 fn multiple_producers_work_independently() {
-    let mut builder =
-        ActorBuilder::<AlphaData, AlphaControl, AlphaManagement>::new(1024, None);
+    let mut builder = ActorBuilder::<AlphaData, AlphaControl, AlphaManagement>::new(1024, None);
 
     // Create multiple producers (each gets dedicated SPSC channels)
     let h1 = builder.add_producer();

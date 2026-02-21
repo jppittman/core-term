@@ -13,9 +13,9 @@ use actor_scheduler::{
     Actor, ActorStatus, HandlerError, HandlerResult, SchedulerParams, SystemStatus,
 };
 use std::io::Write;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender, TryRecvError};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -99,10 +99,7 @@ fn create_spsc_scheduler_multi<D: Send + 'static, C: Send + 'static, M: Send + '
     params: &SchedulerParams,
     data_buffer_size: usize,
     num_producers: usize,
-) -> (
-    Vec<SpscHandle<D, C, M>>,
-    SpscScheduler<D, C, M>,
-) {
+) -> (Vec<SpscHandle<D, C, M>>, SpscScheduler<D, C, M>) {
     let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
 
     let mut data_builder = InboxBuilder::new(data_buffer_size);
@@ -234,34 +231,27 @@ impl<D, C, M> SpscScheduler<D, C, M> {
 
             match signal {
                 Ok(System::Shutdown) => return,
-                Ok(System::Wake) | Err(TryRecvError::Empty) => {
-                    match self.handle_wake(actor) {
-                        Ok(true) => working = true,
-                        Ok(false) => working = false,
-                        Err(_) => return,
-                    }
-                }
+                Ok(System::Wake) | Err(TryRecvError::Empty) => match self.handle_wake(actor) {
+                    Ok(true) => working = true,
+                    Ok(false) => working = false,
+                    Err(_) => return,
+                },
                 Err(TryRecvError::Disconnected) => return,
             }
         }
     }
 
     /// Priority drain: Control → Mgmt → Control → Data, same as ActorScheduler.
-    fn handle_wake<A: Actor<D, C, M>>(
-        &mut self,
-        actor: &mut A,
-    ) -> Result<bool, HandlerError> {
+    fn handle_wake<A: Actor<D, C, M>>(&mut self, actor: &mut A) -> Result<bool, HandlerError> {
         let half_control = self.control_burst_limit / 2;
 
         let c1 = self
             .rx_control
             .drain(half_control, |msg| actor.handle_control(msg))?;
 
-        let mg = self
-            .rx_mgmt
-            .drain(self.management_burst_limit, |msg| {
-                actor.handle_management(msg)
-            })?;
+        let mg = self.rx_mgmt.drain(self.management_burst_limit, |msg| {
+            actor.handle_management(msg)
+        })?;
 
         let c2 = self
             .rx_control
@@ -405,12 +395,9 @@ fn evaluate(params: &SchedulerParams) -> Measurements {
 fn cost(m: &Measurements, b: &Measurements, params: &SchedulerParams) -> f64 {
     let ctrl_lat = m.control_latency_ns / b.control_latency_ns;
     let mgmt_lat = m.management_latency_ns / b.management_latency_ns;
-    let data_tput =
-        b.data_throughput_msgs_per_sec / m.data_throughput_msgs_per_sec.max(1.0);
-    let ctrl_tput =
-        b.control_throughput_msgs_per_sec / m.control_throughput_msgs_per_sec.max(1.0);
-    let mixed_tput =
-        b.mixed_throughput_msgs_per_sec / m.mixed_throughput_msgs_per_sec.max(1.0);
+    let data_tput = b.data_throughput_msgs_per_sec / m.data_throughput_msgs_per_sec.max(1.0);
+    let ctrl_tput = b.control_throughput_msgs_per_sec / m.control_throughput_msgs_per_sec.max(1.0);
+    let mixed_tput = b.mixed_throughput_msgs_per_sec / m.mixed_throughput_msgs_per_sec.max(1.0);
     let fairness = b.fairness_ratio / m.fairness_ratio.max(0.01);
     let lat_load = m.latency_under_load_ns / b.latency_under_load_ns.max(1.0);
     let burst_rec = m.burst_recovery_ns / b.burst_recovery_ns.max(1.0);
@@ -607,8 +594,7 @@ fn measure_fairness_under_flood(params: &SchedulerParams) -> f64 {
     let stop = Arc::new(AtomicBool::new(false));
 
     // Use multi-producer: one flooder + one data sender
-    let (mut handles, mut rx) =
-        create_spsc_scheduler_multi::<i32, (), ()>(params, 128, 2);
+    let (mut handles, mut rx) = create_spsc_scheduler_multi::<i32, (), ()>(params, 128, 2);
     let mut data_handle = handles.pop().unwrap();
     let mut flood_handle = handles.pop().unwrap();
 
@@ -667,8 +653,7 @@ fn measure_latency_under_load(params: &SchedulerParams) -> f64 {
     }
 
     // Two producers: data flooder + control prober
-    let (mut handles, mut rx) =
-        create_spsc_scheduler_multi::<i32, (), ()>(params, 256, 2);
+    let (mut handles, mut rx) = create_spsc_scheduler_multi::<i32, (), ()>(params, 256, 2);
     let mut ctrl_handle = handles.pop().unwrap();
     let mut data_handle = handles.pop().unwrap();
 
@@ -918,8 +903,7 @@ fn erf(x: f64) -> f64 {
     let t = 1.0 / (1.0 + 0.3275911 * x);
     let poly = t
         * (0.254829592
-            + t * (-0.284496736
-                + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+            + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
     sign * (1.0 - poly * (-x * x).exp())
 }
 
@@ -998,9 +982,7 @@ fn run_optimization() {
     gp.observe(bp.to_vec(), bc);
 
     // 2. LHS exploration
-    println!(
-        "Phase 1: Latin Hypercube exploration ({initial_samples} samples)..."
-    );
+    println!("Phase 1: Latin Hypercube exploration ({initial_samples} samples)...");
     flush();
     let lhs = latin_hypercube(initial_samples, &mut rng);
 
@@ -1149,10 +1131,7 @@ fn run_optimization() {
 }
 
 fn print_measurements(m: &Measurements) {
-    println!(
-        "  Control latency:       {:>10.0} ns",
-        m.control_latency_ns
-    );
+    println!("  Control latency:       {:>10.0} ns", m.control_latency_ns);
     println!(
         "  Management latency:    {:>10.0} ns",
         m.management_latency_ns
@@ -1208,14 +1187,8 @@ fn print_domain_analysis(params: &SchedulerParams) {
         max_us / 1_000_000.0
     );
     println!("    doublings to timeout:  {:>10}", n_doublings);
-    println!(
-        "    total degradation:     {:>10.1} s",
-        total_degradation_s
-    );
-    println!(
-        "    frames lost on 1st backoff: {:>5.1}",
-        min_us / 6_450.0
-    );
+    println!("    total degradation:     {:>10.1} s", total_degradation_s);
+    println!("    frames lost on 1st backoff: {:>5.1}", min_us / 6_450.0);
 
     let jitter_lo = params.jitter_min_pct;
     let jitter_hi = params.jitter_min_pct + params.jitter_range_pct;

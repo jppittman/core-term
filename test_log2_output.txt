@@ -1,0 +1,32 @@
+warning: missing documentation for a type alias
+   --> pixelflow-core/src/storage.rs:104:1
+    |
+104 | pub type NativeMaskStorage = crate::backend::x86::Mask8;
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: the lint level is defined here
+   --> pixelflow-core/src/lib.rs:130:9
+    |
+130 | #![warn(missing_docs)]
+    |         ^^^^^^^^^^^^
+
+warning: `pixelflow-core` (lib) generated 1 warning
+warning: `pixelflow-core` (lib) generated 1 warning (1 duplicate)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.10s
+     Running tests/test_log2.rs (target/debug/deps/test_log2-b8c77b27940026a8)
+
+running 12 tests
+test analysis::analyze_current_polynomial ... ignored
+test test_exp2_accuracy_sweep ... ok
+test test_exp2_log2_roundtrip ... ok
+test test_log2_accuracy_sweep ... ok
+test test_exp2_powers ... ok
+test test_log2_exp2_roundtrip ... ok
+test test_log2_known_values ... ok
+test test_log2_mantissa_range ... ok
+test test_log2_powers_of_two ... ok
+test test_log2_simd_consistency ... ok
+test test_log2_special_values ... ok
+test test_polynomial_coefficients_range ... ok
+
+test result: ok. 11 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s

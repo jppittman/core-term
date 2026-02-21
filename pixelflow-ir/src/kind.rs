@@ -70,13 +70,13 @@ impl OpKind {
 
     /// Convert to array index.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn index(self) -> usize {
         self as usize
     }
 
     /// Convert index to OpKind.
-    #[must_use] 
+    #[must_use]
     pub fn from_index(idx: usize) -> Option<Self> {
         if idx >= Self::COUNT {
             return None;
@@ -86,29 +86,55 @@ impl OpKind {
     }
 
     /// Get the arity of the operation.
-    #[must_use] 
+    #[must_use]
     pub const fn arity(self) -> usize {
         match self {
             Self::Var | Self::Const | Self::Tuple => 0,
 
-            Self::Neg | Self::Sqrt | Self::Rsqrt | Self::Abs |
-            Self::Recip | Self::Floor | Self::Ceil | Self::Round |
-            Self::Fract | Self::Sin | Self::Cos | Self::Tan |
-            Self::Asin | Self::Acos | Self::Atan | Self::Exp |
-            Self::Exp2 | Self::Ln | Self::Log2 | Self::Log10 => 1,
+            Self::Neg
+            | Self::Sqrt
+            | Self::Rsqrt
+            | Self::Abs
+            | Self::Recip
+            | Self::Floor
+            | Self::Ceil
+            | Self::Round
+            | Self::Fract
+            | Self::Sin
+            | Self::Cos
+            | Self::Tan
+            | Self::Asin
+            | Self::Acos
+            | Self::Atan
+            | Self::Exp
+            | Self::Exp2
+            | Self::Ln
+            | Self::Log2
+            | Self::Log10 => 1,
 
-            Self::Add | Self::Sub | Self::Mul | Self::Div |
-            Self::Min | Self::Max | Self::MulRsqrt |
-            Self::Atan2 | Self::Pow | Self::Hypot |
-            Self::Lt | Self::Le | Self::Gt | Self::Ge |
-            Self::Eq | Self::Ne => 2,
+            Self::Add
+            | Self::Sub
+            | Self::Mul
+            | Self::Div
+            | Self::Min
+            | Self::Max
+            | Self::MulRsqrt
+            | Self::Atan2
+            | Self::Pow
+            | Self::Hypot
+            | Self::Lt
+            | Self::Le
+            | Self::Gt
+            | Self::Ge
+            | Self::Eq
+            | Self::Ne => 2,
 
             Self::MulAdd | Self::Select | Self::Clamp => 3,
         }
     }
 
     /// Get the display name of the operation.
-    #[must_use] 
+    #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Var => "var",
@@ -157,7 +183,7 @@ impl OpKind {
     }
 
     /// Parse OpKind from its string name.
-    #[must_use] 
+    #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "var" => Some(Self::Var),
@@ -207,37 +233,60 @@ impl OpKind {
     }
 
     /// Get the default cost estimate for this operation (in cycles).
-    #[must_use] 
+    #[must_use]
     pub const fn default_cost(self) -> usize {
         match self {
             Self::Var | Self::Const | Self::Tuple => 0,
-            Self::Neg | Self::Abs | Self::Floor | Self::Ceil |
-            Self::Round | Self::Fract => 1,
-            Self::Add | Self::Sub | Self::Min | Self::Max |
-            Self::Lt | Self::Le | Self::Gt | Self::Ge |
-            Self::Eq | Self::Ne | Self::Select | Self::Clamp => 4,
+            Self::Neg | Self::Abs | Self::Floor | Self::Ceil | Self::Round | Self::Fract => 1,
+            Self::Add
+            | Self::Sub
+            | Self::Min
+            | Self::Max
+            | Self::Lt
+            | Self::Le
+            | Self::Gt
+            | Self::Ge
+            | Self::Eq
+            | Self::Ne
+            | Self::Select
+            | Self::Clamp => 4,
             Self::Mul | Self::MulAdd | Self::MulRsqrt | Self::Recip | Self::Rsqrt => 5,
-            Self::Div | Self::Sqrt | Self::Sin | Self::Cos | Self::Tan |
-            Self::Asin | Self::Acos | Self::Atan | Self::Atan2 |
-            Self::Exp | Self::Exp2 | Self::Ln | Self::Log2 | Self::Log10 |
-            Self::Pow | Self::Hypot => 15,
+            Self::Div
+            | Self::Sqrt
+            | Self::Sin
+            | Self::Cos
+            | Self::Tan
+            | Self::Asin
+            | Self::Acos
+            | Self::Atan
+            | Self::Atan2
+            | Self::Exp
+            | Self::Exp2
+            | Self::Ln
+            | Self::Log2
+            | Self::Log10
+            | Self::Pow
+            | Self::Hypot => 15,
         }
     }
 
     /// Returns true if the operation is commutative (a op b == b op a).
-    #[must_use] 
+    #[must_use]
     pub const fn is_commutative(self) -> bool {
-        matches!(self, Self::Add | Self::Mul | Self::Min | Self::Max | Self::Eq | Self::Ne)
+        matches!(
+            self,
+            Self::Add | Self::Mul | Self::Min | Self::Max | Self::Eq | Self::Ne
+        )
     }
 
     /// Returns true if the operation is associative ((a op b) op c == a op (b op c)).
-    #[must_use] 
+    #[must_use]
     pub const fn is_associative(self) -> bool {
         matches!(self, Self::Add | Self::Mul | Self::Min | Self::Max)
     }
 
     /// Returns the identity element if one exists (a op identity == a).
-    #[must_use] 
+    #[must_use]
     pub const fn identity(self) -> Option<f32> {
         match self {
             Self::Add | Self::Sub => Some(0.0),
@@ -247,7 +296,7 @@ impl OpKind {
     }
 
     /// Returns the annihilator element if one exists (a op annihilator == annihilator).
-    #[must_use] 
+    #[must_use]
     pub const fn annihilator(self) -> Option<f32> {
         match self {
             Self::Mul => Some(0.0),
@@ -256,7 +305,7 @@ impl OpKind {
     }
 
     /// Returns true if the operation is idempotent (a op a == a).
-    #[must_use] 
+    #[must_use]
     pub const fn is_idempotent(self) -> bool {
         matches!(self, Self::Min | Self::Max | Self::Abs)
     }

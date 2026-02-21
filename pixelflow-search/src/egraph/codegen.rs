@@ -41,9 +41,9 @@
 //! ```
 
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 
 use super::extract::{ExprTree, ExtractedDAG, Leaf};
 use super::graph::EGraph;
@@ -61,7 +61,7 @@ use super::node::{EClassId, ENode};
 /// # Returns
 ///
 /// A Rust code string like: `let my_kernel = kernel!(|| X + Y);`
-#[must_use] 
+#[must_use]
 pub fn expr_tree_to_kernel_code(tree: &ExprTree, name: &str) -> String {
     let body = expr_tree_to_kernel_body(tree);
     format!("let {} = kernel!(|| {});", name, body)
@@ -266,7 +266,7 @@ fn format_const(v: f32) -> String {
 /// # Returns
 ///
 /// Complete Rust source code for a Criterion benchmark file.
-#[must_use] 
+#[must_use]
 pub fn generate_benchmark_file(variants: &[(String, ExprTree)]) -> String {
     let mut code = String::new();
 
@@ -359,7 +359,7 @@ criterion_main!(generated);
 ///     ((__0 * __0) + __0)
 /// });
 /// ```
-#[must_use] 
+#[must_use]
 pub fn dag_to_kernel_code(egraph: &EGraph, dag: &ExtractedDAG, name: &str) -> String {
     let body = dag_to_kernel_body(egraph, dag);
     format!("let {} = kernel!(|| {});", name, body)
@@ -375,7 +375,7 @@ pub fn dag_to_kernel_code(egraph: &EGraph, dag: &ExtractedDAG, name: &str) -> St
 /// Either:
 /// - A simple expression: `(X + Y)`
 /// - A block with let-bindings: `{ let __0 = ...; (__0 * __0) }`
-#[must_use] 
+#[must_use]
 pub fn dag_to_kernel_body(egraph: &EGraph, dag: &ExtractedDAG) -> String {
     // Build a map from shared e-class IDs to their variable names
     let mut names: BTreeMap<u32, String> = BTreeMap::new();
@@ -428,7 +428,8 @@ fn eclass_to_code(
     }
 
     // Get the best node for this e-class
-    let node_idx = dag.best_node_idx(canonical)
+    let node_idx = dag
+        .best_node_idx(canonical)
         .unwrap_or_else(|| panic!("No best node for e-class {}", canonical.0));
     let node = &egraph.nodes(canonical)[node_idx];
 
@@ -441,7 +442,8 @@ fn eclass_to_code(
         ENode::Const(bits) => format_const(f32::from_bits(*bits)),
         ENode::Op { op, children } => {
             let name = op.name();
-            let child_codes: Vec<String> = children.iter()
+            let child_codes: Vec<String> = children
+                .iter()
                 .map(|&c| eclass_to_code(egraph, c, dag, names))
                 .collect();
 
@@ -523,10 +525,8 @@ fn emit_op_code(op_name: &str, children: &[String]) -> String {
 /// # Returns
 ///
 /// Complete Rust source code for a Criterion benchmark file.
-#[must_use] 
-pub fn generate_dag_benchmark_file(
-    variants: &[(String, EGraph, EClassId)],
-) -> String {
+#[must_use]
+pub fn generate_dag_benchmark_file(variants: &[(String, EGraph, EClassId)]) -> String {
     use super::cost::CostModel;
     use super::extract::extract_dag;
 
@@ -617,17 +617,17 @@ mod tests {
     fn test_expr_tree_to_kernel_body_const() {
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(0.0)), "0.0");
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(1.0)), "1.0");
-        assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(-1.0)), "(-1.0)");
+        assert_eq!(
+            expr_tree_to_kernel_body(&ExprTree::constant(-1.0)),
+            "(-1.0)"
+        );
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(2.0)), "2.0");
     }
 
     #[test]
     fn test_expr_tree_to_kernel_body_unary() {
         let x = ExprTree::var(0);
-        assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::neg(x.clone())),
-            "(-X)"
-        );
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::op_neg(x.clone())), "(-X)");
         assert_eq!(
             expr_tree_to_kernel_body(&ExprTree::sqrt(x.clone())),
             "(X).sqrt()"
@@ -644,11 +644,11 @@ mod tests {
         let y = ExprTree::var(1);
 
         assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::add(x.clone(), y.clone())),
+            expr_tree_to_kernel_body(&ExprTree::op_add(x.clone(), y.clone())),
             "(X + Y)"
         );
         assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::mul(x.clone(), y.clone())),
+            expr_tree_to_kernel_body(&ExprTree::op_mul(x.clone(), y.clone())),
             "(X * Y)"
         );
         assert_eq!(
@@ -660,8 +660,8 @@ mod tests {
     #[test]
     fn test_expr_tree_to_kernel_body_nested() {
         // (X + Y) * Z
-        let tree = ExprTree::mul(
-            ExprTree::add(ExprTree::var(0), ExprTree::var(1)),
+        let tree = ExprTree::op_mul(
+            ExprTree::op_add(ExprTree::var(0), ExprTree::var(1)),
             ExprTree::var(2),
         );
         assert_eq!(expr_tree_to_kernel_body(&tree), "((X + Y) * Z)");
@@ -669,17 +669,13 @@ mod tests {
 
     #[test]
     fn test_expr_tree_to_kernel_body_mul_add() {
-        let tree = ExprTree::mul_add(
-            ExprTree::var(0),
-            ExprTree::var(1),
-            ExprTree::var(2),
-        );
+        let tree = ExprTree::mul_add(ExprTree::var(0), ExprTree::var(1), ExprTree::var(2));
         assert_eq!(expr_tree_to_kernel_body(&tree), "(X).mul_add(Y, Z)");
     }
 
     #[test]
     fn test_expr_tree_to_kernel_code() {
-        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(1.0));
+        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(1.0));
         let code = expr_tree_to_kernel_code(&tree, "my_kernel");
         assert_eq!(code, "let my_kernel = kernel!(|| (X + 1.0));");
     }
@@ -690,7 +686,7 @@ mod tests {
             ("k0".to_string(), ExprTree::var(0)),
             (
                 "k1".to_string(),
-                ExprTree::add(ExprTree::var(0), ExprTree::var(1)),
+                ExprTree::op_add(ExprTree::var(0), ExprTree::var(1)),
             ),
         ];
 
@@ -772,11 +768,18 @@ mod tests {
         let body = dag_to_kernel_body(&egraph, &dag);
 
         // sqrt(X) should be bound to a variable
-        assert!(body.contains("let __0"), "Expected let-binding, got: {}", body);
+        assert!(
+            body.contains("let __0"),
+            "Expected let-binding, got: {}",
+            body
+        );
         assert!(body.contains("sqrt"), "Expected sqrt operation");
         // The binding should be used twice in multiplication
-        assert!(body.contains("__0 * __0") || body.contains("__0) * (__0"),
-            "Expected __0 used twice, got: {}", body);
+        assert!(
+            body.contains("__0 * __0") || body.contains("__0) * (__0"),
+            "Expected __0 used twice, got: {}",
+            body
+        );
     }
 
     #[test]
@@ -803,7 +806,11 @@ mod tests {
         eprintln!("Triple shared body: {}", body);
 
         // sqrt(X) should be bound
-        assert!(body.contains("let __0"), "Expected let-binding for sqrt(X), got: {}", body);
+        assert!(
+            body.contains("let __0"),
+            "Expected let-binding for sqrt(X), got: {}",
+            body
+        );
         // Should reference __0 three times total (or at least be in a valid form)
         assert!(body.contains("__0"), "Expected __0 reference");
     }
@@ -835,7 +842,10 @@ mod tests {
         // (X + Y) should be bound
         assert!(body.contains("let __"), "Expected let-binding for (X + Y)");
         // The expression should be well-formed
-        assert!(body.contains("{") && body.contains("}"), "Expected block with let-bindings");
+        assert!(
+            body.contains("{") && body.contains("}"),
+            "Expected block with let-bindings"
+        );
     }
 
     #[test]
@@ -852,7 +862,10 @@ mod tests {
         let dag = extract_dag(&egraph, sum, &CostModel::default());
         let code = dag_to_kernel_code(&egraph, &dag, "my_kernel");
 
-        assert!(code.contains("let my_kernel = kernel!(||"), "Expected kernel declaration");
+        assert!(
+            code.contains("let my_kernel = kernel!(||"),
+            "Expected kernel declaration"
+        );
         assert!(code.contains("X + Y"), "Expected X + Y in kernel body");
     }
 

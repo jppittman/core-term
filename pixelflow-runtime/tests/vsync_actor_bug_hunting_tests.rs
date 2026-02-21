@@ -16,7 +16,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use actor_scheduler::{
-    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    SystemStatus,
 };
 use pixelflow_runtime::vsync_actor::{
     RenderedResponse, VsyncCommand, VsyncConfig, VsyncManagement,
@@ -330,11 +331,12 @@ fn clock_thread_stops_when_channel_closed() {
     // We can't easily test the real clock thread, but we can verify
     // the pattern works with our mock.
 
-    let (tx, rx) =
-        ActorScheduler::<RenderedResponse, VsyncCommand, VsyncManagement>::new(10, 100);
+    let mut builder = ActorBuilder::<RenderedResponse, VsyncCommand, VsyncManagement>::new(10, None);
+    let tx = builder.add_producer();
+    let clock_tx = builder.add_producer();
+    let rx = builder.build();
 
     // Simulate clock thread behavior in a thread
-    let clock_tx = tx.clone();
     let clock_handle = thread::spawn(move || {
         let interval = Duration::from_millis(10);
         let mut ticks_sent = 0;

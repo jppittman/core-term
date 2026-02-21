@@ -104,7 +104,7 @@ impl Texture {
 
     /// Get the backing data.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn data(&self) -> &[f32] {
         &self.data
     }

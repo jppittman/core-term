@@ -73,7 +73,10 @@ impl BindingStrategy {
                 )
             }
 
-            BindingStrategy::Mixed { param_tuple, literal_lets } => {
+            BindingStrategy::Mixed {
+                param_tuple,
+                literal_lets,
+            } => {
                 let tuple = build_tuple(&param_tuple);
                 let with_ctx = quote! { WithContext::new(#tuple, #expr) };
 

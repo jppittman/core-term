@@ -267,11 +267,7 @@ impl Algebra for f32 {
 
     #[inline(always)]
     fn select(mask: bool, if_true: Self, if_false: Self) -> Self {
-        if mask {
-            if_true
-        } else {
-            if_false
-        }
+        if mask { if_true } else { if_false }
     }
 
     #[inline(always)]
@@ -356,20 +352,12 @@ impl Transcendental for f32 {
 
     #[inline(always)]
     fn min(self, rhs: Self) -> Self {
-        if self < rhs {
-            self
-        } else {
-            rhs
-        }
+        if self < rhs { self } else { rhs }
     }
 
     #[inline(always)]
     fn max(self, rhs: Self) -> Self {
-        if self > rhs {
-            self
-        } else {
-            rhs
-        }
+        if self > rhs { self } else { rhs }
     }
 
     #[inline(always)]
@@ -443,11 +431,7 @@ impl Algebra for bool {
 
     #[inline(always)]
     fn select(mask: bool, if_true: Self, if_false: Self) -> Self {
-        if mask {
-            if_true
-        } else {
-            if_false
-        }
+        if mask { if_true } else { if_false }
     }
 }
 
@@ -516,11 +500,7 @@ impl Algebra for u32 {
 
     #[inline(always)]
     fn select(mask: bool, if_true: Self, if_false: Self) -> Self {
-        if mask {
-            if_true
-        } else {
-            if_false
-        }
+        if mask { if_true } else { if_false }
     }
 }
 

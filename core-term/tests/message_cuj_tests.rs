@@ -764,9 +764,7 @@ fn cuj_concurrent_senders_all_messages_delivered() {
 
     // ActorHandle is not Clone — use ActorBuilder to create one handle per sender
     let mut builder = ActorBuilder::<usize, (), ()>::new(256, None);
-    let mut sender_handles_vec: Vec<_> = (0..NUM_SENDERS)
-        .map(|_| builder.add_producer())
-        .collect();
+    let mut sender_handles_vec: Vec<_> = (0..NUM_SENDERS).map(|_| builder.add_producer()).collect();
     let mut rx = builder.build_with_burst(10, actor_scheduler::ShutdownMode::default());
     let count_clone = received_count.clone();
 
@@ -780,8 +778,7 @@ fn cuj_concurrent_senders_all_messages_delivered() {
     for (sender_id, tx) in sender_handles_vec.drain(..).enumerate() {
         let handle = thread::spawn(move || {
             for msg_id in 0..MESSAGES_PER_SENDER {
-                tx.send(Message::Data(sender_id * 1000 + msg_id))
-                    .unwrap();
+                tx.send(Message::Data(sender_id * 1000 + msg_id)).unwrap();
             }
         });
         sender_handles.push(handle);

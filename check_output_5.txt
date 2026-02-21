@@ -1,0 +1,193 @@
+   Compiling pixelflow-search v0.1.0 (/app/pixelflow-search)
+   Compiling core-term v0.1.0 (/app/core-term)
+warning: core-term@0.1.0: Building with Cocoa display driver
+    Checking pixelflow-macros v0.1.0 (/app/pixelflow-macros)
+    Checking xtask v0.1.0 (/app/xtask)
+    Checking pixelflow-nnue v0.1.0 (/app/pixelflow-nnue)
+    Checking pixelflow-ir v0.1.0 (/app/pixelflow-ir)
+warning: unused import: `super::*`
+    --> pixelflow-ir/src/backend/x86.rs:1813:9
+     |
+1813 |     use super::*;
+     |         ^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+    Checking actor-scheduler v0.1.0 (/app/actor-scheduler)
+error[E0599]: no variant or associated item named `add` found for enum `egraph::extract::ExprTree` in the current scope
+   --> pixelflow-search/src/egraph/guided.rs:716:30
+    |
+716 |         let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+    |                              ^^^ variant or associated item not found in `egraph::extract::ExprTree`
+    |
+   ::: pixelflow-search/src/egraph/extract.rs:17:1
+    |
+ 17 | pub enum ExprTree {
+    | ----------------- variant or associated item `add` not found for this enum
+    |
+note: if you're trying to build a new `egraph::extract::ExprTree` consider using one of the following associated functions:
+      egraph::extract::ExprTree::var
+      egraph::extract::ExprTree::constant
+      egraph::extract::ExprTree::op_add
+      egraph::extract::ExprTree::op_sub
+      and 8 others
+   --> pixelflow-search/src/egraph/extract.rs:39:5
+    |
+ 39 |     pub fn var(idx: u8) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 45 |     pub fn constant(val: f32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 69 |     pub fn op_add(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 77 |     pub fn op_sub(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `std::ops::Add`
+help: there is an associated function `op_add` with a similar name
+    |
+716 |         let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
+    |                              +++
+
+error[E0599]: no variant or associated item named `add` found for enum `egraph::extract::ExprTree` in the current scope
+   --> pixelflow-search/src/egraph/guided.rs:729:30
+    |
+729 |         let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+    |                              ^^^ variant or associated item not found in `egraph::extract::ExprTree`
+    |
+   ::: pixelflow-search/src/egraph/extract.rs:17:1
+    |
+ 17 | pub enum ExprTree {
+    | ----------------- variant or associated item `add` not found for this enum
+    |
+note: if you're trying to build a new `egraph::extract::ExprTree` consider using one of the following associated functions:
+      egraph::extract::ExprTree::var
+      egraph::extract::ExprTree::constant
+      egraph::extract::ExprTree::op_add
+      egraph::extract::ExprTree::op_sub
+      and 8 others
+   --> pixelflow-search/src/egraph/extract.rs:39:5
+    |
+ 39 |     pub fn var(idx: u8) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 45 |     pub fn constant(val: f32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 69 |     pub fn op_add(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 77 |     pub fn op_sub(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `std::ops::Add`
+help: there is an associated function `op_add` with a similar name
+    |
+729 |         let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
+    |                              +++
+
+error[E0599]: no variant or associated item named `add` found for enum `egraph::extract::ExprTree` in the current scope
+   --> pixelflow-search/src/egraph/guided.rs:813:30
+    |
+813 |         let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+    |                              ^^^ variant or associated item not found in `egraph::extract::ExprTree`
+    |
+   ::: pixelflow-search/src/egraph/extract.rs:17:1
+    |
+ 17 | pub enum ExprTree {
+    | ----------------- variant or associated item `add` not found for this enum
+    |
+note: if you're trying to build a new `egraph::extract::ExprTree` consider using one of the following associated functions:
+      egraph::extract::ExprTree::var
+      egraph::extract::ExprTree::constant
+      egraph::extract::ExprTree::op_add
+      egraph::extract::ExprTree::op_sub
+      and 8 others
+   --> pixelflow-search/src/egraph/extract.rs:39:5
+    |
+ 39 |     pub fn var(idx: u8) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 45 |     pub fn constant(val: f32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 69 |     pub fn op_add(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 77 |     pub fn op_sub(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `std::ops::Add`
+help: there is an associated function `op_add` with a similar name
+    |
+813 |         let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
+    |                              +++
+
+error[E0599]: no variant or associated item named `add` found for enum `egraph::extract::ExprTree` in the current scope
+   --> pixelflow-search/src/egraph/guided.rs:888:30
+    |
+888 |         let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(0.0));
+    |                              ^^^ variant or associated item not found in `egraph::extract::ExprTree`
+    |
+   ::: pixelflow-search/src/egraph/extract.rs:17:1
+    |
+ 17 | pub enum ExprTree {
+    | ----------------- variant or associated item `add` not found for this enum
+    |
+note: if you're trying to build a new `egraph::extract::ExprTree` consider using one of the following associated functions:
+      egraph::extract::ExprTree::var
+      egraph::extract::ExprTree::constant
+      egraph::extract::ExprTree::op_add
+      egraph::extract::ExprTree::op_sub
+      and 8 others
+   --> pixelflow-search/src/egraph/extract.rs:39:5
+    |
+ 39 |     pub fn var(idx: u8) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 45 |     pub fn constant(val: f32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 69 |     pub fn op_add(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 77 |     pub fn op_sub(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `std::ops::Add`
+help: there is an associated function `op_add` with a similar name
+    |
+888 |         let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
+    |                              +++
+
+warning: `pixelflow-ir` (lib test) generated 1 warning (run `cargo fix --lib -p pixelflow-ir --tests` to apply 1 suggestion)
+warning: unused variable: `tree`
+   --> pixelflow-search/src/egraph/guided.rs:702:13
+    |
+702 |         let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_tree`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `tree`
+   --> pixelflow-search/src/egraph/guided.rs:703:13
+    |
+703 |         let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_tree`
+
+warning: unused variable: `tree`
+   --> pixelflow-search/src/egraph/guided.rs:801:13
+    |
+801 |         let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(0.0));
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_tree`
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `pixelflow-search` (lib test) generated 3 warnings
+error: could not compile `pixelflow-search` (lib test) due to 4 previous errors; 3 warnings emitted
+warning: build failed, waiting for other jobs to finish...

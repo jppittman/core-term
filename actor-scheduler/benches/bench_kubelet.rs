@@ -52,12 +52,8 @@ fn bench_restart_round_trip(c: &mut Criterion) {
                 let slot_svc = PodSlot::<(), (), ()>::connected();
                 let slot_kill = PodSlot::<(), (), ()>::connected();
 
-                let mut pod = spawn_managed(
-                    vec![slot_svc.clone(), slot_kill.clone()],
-                    64,
-                    None,
-                    || Noop,
-                );
+                let mut pod =
+                    spawn_managed(vec![slot_svc.clone(), slot_kill.clone()], 64, None, || Noop);
                 // handle[0] → slot_svc (svc side — we grab fresh ones via reconnect)
                 // handle[1] → slot_kill (kill side — initial handle for first iteration)
                 let _initial_svc = pod.handles.remove(0);
@@ -151,5 +147,9 @@ fn bench_hot_path_with_kubelet(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_restart_round_trip, bench_hot_path_with_kubelet);
+criterion_group!(
+    benches,
+    bench_restart_round_trip,
+    bench_hot_path_with_kubelet
+);
 criterion_main!(benches);

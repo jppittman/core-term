@@ -85,7 +85,7 @@ const BSPLINE_BASIS: [[f32; 4]; 4] = [
 ///
 /// Uses X as u ∈ [0,1], Y as v ∈ [0,1].
 #[inline]
-#[must_use] 
+#[must_use]
 pub fn bspline_patch(
     control_points: [[f32; 3]; 16],
 ) -> (
@@ -342,7 +342,7 @@ fn first_tile_patch(coeffs: [[f32; 16]; 3]) -> impl Manifold<Output = Field> {
 ///
 /// For most artistic use cases, this is acceptable. For CAD-quality
 /// precision near extraordinary vertices, eigenvalue weighting is needed.
-#[must_use] 
+#[must_use]
 pub fn eigen_patch(
     control_points: &[[f32; 3]],
     valence: usize,
@@ -424,7 +424,7 @@ pub fn validate_eigen_domain(u: f32, v: f32) {
 /// Returns a manifold type - the polynomial IS the composition,
 /// not a struct that computes it.
 #[inline]
-#[must_use] 
+#[must_use]
 pub fn bicubic(c: [f32; 16]) -> impl Manifold<Output = Field> {
     // Powers of Y (v): Y, Y², Y³
     let v1 = Y;

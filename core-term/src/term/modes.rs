@@ -222,7 +222,7 @@ pub enum StandardModeConstant {
 impl StandardModeConstant {
     /// Converts a `u16` value to an `Option<StandardModeConstant>`.
     /// Returns `None` if the value does not correspond to a known constant.
-    #[must_use] 
+    #[must_use]
     pub fn from_u16(value: u16) -> Option<Self> {
         match value {
             4 => Some(StandardModeConstant::InsertMode),

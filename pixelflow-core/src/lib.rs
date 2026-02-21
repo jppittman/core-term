@@ -184,24 +184,45 @@ pub mod ext;
 pub use algebra::{Algebra, Transcendental};
 pub use backend::fastmath::FastMathGuard;
 pub use combinators::*;
+pub use domain::{Head, LetExtended, Spatial, Tail};
 pub use dual::{Dual, Dual1, Dual2, Dual3};
+pub use ext::*;
 pub use mask::Mask;
 pub use storage::{FieldStorage, NativeMaskStorage};
-pub use domain::{Head, LetExtended, Spatial, Tail};
-pub use ext::*;
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 pub use manifold::*;
 pub use numeric::{Computational, Coordinate, Selectable};
 pub use ops::binary::{Add, AddMasked, Div, Mul, MulAdd, MulRecip, MulRsqrt, Sub};
 pub use ops::compare::{Ge, Gt, Le, Lt, SoftGt, SoftLt, SoftSelect};
+pub use ops::derivative::{
+    Antialias2D,
+    Antialias3D,
+    Curvature2D,
+    DX,
+    DXX,
+    DXY,
+    DY,
+    DYY,
+    DZ,
+    // Simple accessor combinators and convenience functions
+    DxOf,
+    DxxOf,
+    DxyOf,
+    DyOf,
+    DyyOf,
+    DzOf,
+    GradientMag2D,
+    GradientMag3D,
+    HasDerivatives,
+    HasDz,
+    HasHessian,
+    Normalized2D,
+    Normalized3D,
+    V,
+    ValOf,
+};
 pub use ops::logic::*;
 pub use ops::unary::*;
-pub use ops::derivative::{
-    Antialias2D, Antialias3D, Curvature2D, GradientMag2D, GradientMag3D, HasDerivatives, HasDz,
-    HasHessian, Normalized2D, Normalized3D,
-    // Simple accessor combinators and convenience functions
-    DxOf, DxxOf, DxyOf, DyOf, DyyOf, DzOf, ValOf, DX, DXX, DXY, DY, DYY, DZ, V,
-};
 pub use variables::*;
 pub use zst::Zst;
 
@@ -428,7 +449,7 @@ impl Field {
     /// This is the efficient way to create sequential x-coordinates
     /// for rasterization loops.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn sequential(start: f32) -> Self {
         Self(NativeSimd::sequential(start))
     }
@@ -457,7 +478,7 @@ impl Field {
     ///
     /// Used for SIMD branching decisions in rendering code.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn any(&self) -> bool {
         // Convert float representation to native mask, then check
         self.0.float_to_mask().any()
@@ -467,7 +488,7 @@ impl Field {
     ///
     /// Used for SIMD branching decisions in rendering code.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn all(&self) -> bool {
         // Convert float representation to native mask, then check
         self.0.float_to_mask().all()
@@ -478,7 +499,7 @@ impl Field {
     /// Returns a Field where each lane is all-1s (true) or all-0s (false).
     /// Used for SIMD branching in rendering code like BSP traversal.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn lt(self, rhs: Self) -> Self {
         // Returns native mask, convert back to float representation
         Self(NativeSimd::mask_to_float(self.0.cmp_lt(rhs.0)))
@@ -488,7 +509,7 @@ impl Field {
     ///
     /// Returns a Field where each lane is all-1s (true) or all-0s (false).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn le(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_le(rhs.0)))
     }
@@ -497,7 +518,7 @@ impl Field {
     ///
     /// Returns a Field where each lane is all-1s (true) or all-0s (false).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn gt(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_gt(rhs.0)))
     }
@@ -506,7 +527,7 @@ impl Field {
     ///
     /// Returns a Field where each lane is all-1s (true) or all-0s (false).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn ge(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_ge(rhs.0)))
     }
@@ -543,7 +564,7 @@ impl Field {
 
     /// Absolute value.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn abs(self) -> Self {
         Self(self.0.simd_abs())
     }
@@ -747,7 +768,7 @@ impl Field<u32> {
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
     #[cfg(target_arch = "x86_64")]
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
         #[cfg(target_feature = "avx512f")]
         {
@@ -805,7 +826,7 @@ impl Field<u32> {
     ///
     /// The mask is interpreted bitwise from the Field representation.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn select(mask: Field, if_true: Self, if_false: Self) -> Self {
         use core::ops::{BitAnd, BitOr, Not};
         let mask_bits: NativeU32Simd = unsafe { core::mem::transmute(mask.0) };
@@ -839,7 +860,7 @@ where
 {
     /// Get the function value as a Field.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn val(&self) -> Field {
         Field(self.0.val)
     }
@@ -850,7 +871,7 @@ where
     /// - Index 1 = ∂/∂y
     /// - Index 2 = ∂/∂z (for Jet3)
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn partial(&self, index: usize) -> Field {
         Field(self.0.partials[index])
     }
@@ -864,7 +885,7 @@ where
     /// - `seed(val, 1)` for Y differentiation
     /// - `seed(val, 2)` for Z differentiation (Jet3)
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn seed(val: Field, index: usize) -> Self {
         let mut partials = [<f32 as FieldStorage>::zero_storage(); N];
         partials[index] = <f32 as FieldStorage>::one_storage();
@@ -878,7 +899,7 @@ where
     ///
     /// Used for constants that don't vary with coordinates.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn constant(val: Field) -> Self {
         Self(DualStorage {
             val: val.0,
@@ -888,7 +909,7 @@ where
 
     /// Create from value and partials.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn from_parts(val: Field, partials: [Field; N]) -> Self {
         Self(DualStorage {
             val: val.0,
@@ -904,28 +925,28 @@ where
 {
     /// Create a jet seeded for X differentiation (∂x/∂x = 1, ∂x/∂y = 0).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn x(val: Field) -> Self {
         Self::seed(val, 0)
     }
 
     /// Create a jet seeded for Y differentiation (∂y/∂x = 0, ∂y/∂y = 1).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn y(val: Field) -> Self {
         Self::seed(val, 1)
     }
 
     /// Get ∂f/∂x.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn dx(&self) -> Field {
         self.partial(0)
     }
 
     /// Get ∂f/∂y.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn dy(&self) -> Field {
         self.partial(1)
     }
@@ -938,42 +959,42 @@ where
 {
     /// Create a jet seeded for X differentiation.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn x(val: Field) -> Self {
         Self::seed(val, 0)
     }
 
     /// Create a jet seeded for Y differentiation.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn y(val: Field) -> Self {
         Self::seed(val, 1)
     }
 
     /// Create a jet seeded for Z differentiation.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn z(val: Field) -> Self {
         Self::seed(val, 2)
     }
 
     /// Get ∂f/∂x.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn dx(&self) -> Field {
         self.partial(0)
     }
 
     /// Get ∂f/∂y.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn dy(&self) -> Field {
         self.partial(1)
     }
 
     /// Get ∂f/∂z.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn dz(&self) -> Field {
         self.partial(2)
     }
@@ -985,7 +1006,8 @@ where
 
 impl<const N: usize> core::ops::Add for Field<Dual<N>>
 where
-    <f32 as FieldStorage>::Storage: Default + core::ops::Add<Output = <f32 as FieldStorage>::Storage>,
+    <f32 as FieldStorage>::Storage:
+        Default + core::ops::Add<Output = <f32 as FieldStorage>::Storage>,
 {
     type Output = Self;
     #[inline(always)]
@@ -1000,7 +1022,8 @@ where
 
 impl<const N: usize> core::ops::Sub for Field<Dual<N>>
 where
-    <f32 as FieldStorage>::Storage: Default + core::ops::Sub<Output = <f32 as FieldStorage>::Storage>,
+    <f32 as FieldStorage>::Storage:
+        Default + core::ops::Sub<Output = <f32 as FieldStorage>::Storage>,
 {
     type Output = Self;
     #[inline(always)]
@@ -1035,7 +1058,8 @@ where
 
 impl<const N: usize> core::ops::Neg for Field<Dual<N>>
 where
-    <f32 as FieldStorage>::Storage: Default + core::ops::Neg<Output = <f32 as FieldStorage>::Storage>,
+    <f32 as FieldStorage>::Storage:
+        Default + core::ops::Neg<Output = <f32 as FieldStorage>::Storage>,
 {
     type Output = Self;
     #[inline(always)]
@@ -1080,7 +1104,7 @@ where
 {
     /// Multiply jet by scalar: f * c = (val * c, partials * c)
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn scale(self, c: Field) -> Self
     where
         <f32 as FieldStorage>::Storage: core::ops::Mul<Output = <f32 as FieldStorage>::Storage>,
@@ -1093,7 +1117,7 @@ where
 
     /// Divide jet by scalar: f / c = (val / c, partials / c)
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn div_scalar(self, c: Field) -> Self
     where
         <f32 as FieldStorage>::Storage: core::ops::Div<Output = <f32 as FieldStorage>::Storage>,
@@ -1106,7 +1130,7 @@ where
 
     /// Add scalar to jet: f + c (constant doesn't change derivatives)
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn add_scalar(self, c: Field) -> Self
     where
         <f32 as FieldStorage>::Storage: core::ops::Add<Output = <f32 as FieldStorage>::Storage>,
@@ -1119,7 +1143,7 @@ where
 
     /// Subtract scalar from jet: f - c (constant doesn't change derivatives)
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn sub_scalar(self, c: Field) -> Self
     where
         <f32 as FieldStorage>::Storage: core::ops::Sub<Output = <f32 as FieldStorage>::Storage>,
@@ -1187,7 +1211,7 @@ where
 {
     /// Square root with chain rule: sqrt(f)' = f' / (2 * sqrt(f))
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn jet_sqrt(self) -> Self {
         let sqrt_val = field_sqrt(self.0.val);
         let two = NativeSimd::splat(2.0);
@@ -1200,7 +1224,7 @@ where
 
     /// Sine with chain rule: sin(f)' = cos(f) * f'
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn jet_sin(self) -> Self {
         let sin_val = field_sin(self.0.val);
         let cos_val = field_cos(self.0.val);
@@ -1212,7 +1236,7 @@ where
 
     /// Cosine with chain rule: cos(f)' = -sin(f) * f'
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn jet_cos(self) -> Self {
         let sin_val = field_sin(self.0.val);
         let cos_val = field_cos(self.0.val);
@@ -1225,7 +1249,7 @@ where
 
     /// Exponential with chain rule: exp(f)' = exp(f) * f'
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn jet_exp(self) -> Self {
         let exp_val = field_exp(self.0.val);
         Self(DualStorage {
@@ -1236,7 +1260,7 @@ where
 
     /// Natural log with chain rule: ln(f)' = f' / f
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn jet_ln(self) -> Self {
         let ln_val = field_ln(self.0.val);
         Self(DualStorage {
@@ -1247,7 +1271,7 @@ where
 
     /// Absolute value with chain rule: |f|' = sign(f) * f'
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn jet_abs(self) -> Self {
         let abs_val = field_abs(self.0.val);
         let zero = NativeSimd::splat(0.0);
@@ -1264,7 +1288,7 @@ where
 
     /// Floor function (derivative is 0 almost everywhere)
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn jet_floor(self) -> Self {
         Self(DualStorage {
             val: field_floor(self.0.val),
@@ -1274,7 +1298,7 @@ where
 
     /// Minimum of two jets: min(f, g) with derivative from the selected branch
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn jet_min(self, other: Self) -> Self {
         let mask = self.0.val.cmp_lt(other.0.val);
         Self(DualStorage {
@@ -1287,7 +1311,7 @@ where
 
     /// Maximum of two jets: max(f, g) with derivative from the selected branch
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn jet_max(self, other: Self) -> Self {
         let mask = self.0.val.cmp_gt(other.0.val);
         Self(DualStorage {

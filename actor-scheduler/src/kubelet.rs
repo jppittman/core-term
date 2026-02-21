@@ -48,8 +48,8 @@
 //! `PodSlot::stop()`, which causes blocked `ServiceHandle::send()` calls to
 //! return `ServiceError::PodGone`.
 
-use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -687,9 +687,7 @@ mod tests {
     fn kubelet_stops_slot_when_frequency_gate_exhausted() {
         let slot = make_slot();
         // Allow only 1 restart within a 60 s window.
-        let pod = spawn_managed(vec![slot.clone()], 64, None, || FailOnce {
-            failed: false,
-        });
+        let pod = spawn_managed(vec![slot.clone()], 64, None, || FailOnce { failed: false });
 
         // Shutdown the initial pod cleanly so we can exercise the frequency gate
         // without waiting for actual actor failures.
@@ -700,12 +698,7 @@ mod tests {
         let kubelet = KubeletBuilder::new()
             .with_poll_interval(Duration::from_millis(1))
             // Frequency gate: 0 restarts allowed → immediately exhausted.
-            .add_pod_with_gate(
-                pod,
-                RestartPolicy::Always,
-                0,
-                Duration::from_secs(60),
-            )
+            .add_pod_with_gate(pod, RestartPolicy::Always, 0, Duration::from_secs(60))
             .build();
 
         // Kubelet should exit quickly because max_restarts=0 → no restart → stop.
@@ -722,12 +715,7 @@ mod tests {
         let slot_a = make_slot();
         let slot_b = make_slot();
 
-        let pod = spawn_managed(
-            vec![slot_a.clone(), slot_b.clone()],
-            64,
-            None,
-            || Noop,
-        );
+        let pod = spawn_managed(vec![slot_a.clone(), slot_b.clone()], 64, None, || Noop);
 
         assert_eq!(pod.handles.len(), 2, "should have one handle per slot");
 
@@ -748,8 +736,14 @@ mod tests {
         let h_a = slot_a.reconnect(Duration::from_secs(2));
         let h_b = slot_b.reconnect(Duration::from_secs(2));
 
-        assert!(h_a.is_ok(), "slot_a should have a fresh handle after restart");
-        assert!(h_b.is_ok(), "slot_b should have a fresh handle after restart");
+        assert!(
+            h_a.is_ok(),
+            "slot_a should have a fresh handle after restart"
+        );
+        assert!(
+            h_b.is_ok(),
+            "slot_b should have a fresh handle after restart"
+        );
     }
 
     #[test]
@@ -767,7 +761,8 @@ mod tests {
             .build();
 
         let join = thread::spawn(move || kubelet.run());
-        join.join().expect("Kubelet with Never policy should exit after pod completes");
+        join.join()
+            .expect("Kubelet with Never policy should exit after pod completes");
 
         let result = slot.reconnect(Duration::from_millis(10));
         assert_eq!(result.unwrap_err(), crate::PodGone::Stopped);
@@ -836,7 +831,8 @@ mod tests {
             .build();
 
         let join = thread::spawn(move || kubelet.run());
-        join.join().expect("kubelet should exit after Never+Completed");
+        join.join()
+            .expect("kubelet should exit after Never+Completed");
     }
 
     // Verify the within_budget logic resets the window after restart_window expires.
@@ -853,7 +849,10 @@ mod tests {
         };
 
         // Budget should be reset since window expired.
-        assert!(pod.within_budget(), "budget should reset after window expires");
+        assert!(
+            pod.within_budget(),
+            "budget should reset after window expires"
+        );
         assert_eq!(pod.restart_count, 0);
     }
 

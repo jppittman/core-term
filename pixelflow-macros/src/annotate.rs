@@ -52,7 +52,7 @@ impl AnnotationCtx {
 #[derive(Debug, Clone)]
 pub enum AnnotatedExpr {
     Ident(IdentExpr),
-    Literal(AnnotatedLiteral),
+    Literal(Box<AnnotatedLiteral>),
     Binary(AnnotatedBinary),
     Unary(AnnotatedUnary),
     MethodCall(AnnotatedMethodCall),
@@ -119,7 +119,7 @@ pub struct AnnotatedBlock {
 
 #[derive(Debug, Clone)]
 pub enum AnnotatedStmt {
-    Let(AnnotatedLet),
+    Let(Box<AnnotatedLet>),
     Expr(AnnotatedExpr),
 }
 
@@ -147,7 +147,10 @@ pub struct AnnotationResult {
 /// Annotate an expression tree, resolving literal Var indices.
 ///
 /// This is a pure function - context flows through return values.
-pub fn annotate(expr: &Expr, ctx: AnnotationCtx) -> (AnnotatedExpr, AnnotationCtx, Vec<CollectedLiteral>) {
+pub fn annotate(
+    expr: &Expr,
+    ctx: AnnotationCtx,
+) -> (AnnotatedExpr, AnnotationCtx, Vec<CollectedLiteral>) {
     let mut literals = Vec::new();
     let (annotated, final_ctx) = annotate_expr(expr, ctx, &mut literals);
     (annotated, final_ctx, literals)
@@ -178,14 +181,13 @@ fn annotate_expr(
             });
             let new_ctx = AnnotationCtx {
                 next_literal: ctx.next_literal + 1,
-                ..ctx
             };
             (
-                AnnotatedExpr::Literal(AnnotatedLiteral {
+                AnnotatedExpr::Literal(Box::new(AnnotatedLiteral {
                     lit: lit_expr.lit.clone(),
                     span: lit_expr.span,
                     var_index: Some(collection_index),
-                }),
+                })),
                 new_ctx,
             )
         }
@@ -326,12 +328,12 @@ fn annotate_stmt(
         Stmt::Let(let_stmt) => {
             let (init, ctx1) = annotate_expr(&let_stmt.init, ctx, literals);
             (
-                AnnotatedStmt::Let(AnnotatedLet {
+                AnnotatedStmt::Let(Box::new(AnnotatedLet {
                     name: let_stmt.name.clone(),
                     ty: let_stmt.ty.clone(),
                     init,
                     span: let_stmt.span,
-                }),
+                })),
                 ctx1,
             )
         }

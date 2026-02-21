@@ -778,10 +778,12 @@ impl Troupe {
 
         // Send rasterizer forwarding handle BEFORE Configure
         init.engine
-            .send(Message::Management(AppManagement::SetRasterizerForwardHandle(
-                rasterizer_fwd.engine,
-            )))
-            .map_err(|e| RuntimeError::InitError(format!("Failed to set rasterizer fwd handle: {}", e)))?;
+            .send(Message::Management(
+                AppManagement::SetRasterizerForwardHandle(rasterizer_fwd.engine),
+            ))
+            .map_err(|e| {
+                RuntimeError::InitError(format!("Failed to set rasterizer fwd handle: {}", e))
+            })?;
 
         // Configure the engine with window settings
         init.engine

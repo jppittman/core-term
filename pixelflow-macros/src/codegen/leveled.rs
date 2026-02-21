@@ -41,12 +41,12 @@
 
 #![allow(dead_code, unused_imports)]
 
-use std::collections::HashMap;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
+use std::collections::HashMap;
 
 use crate::annotate::AnnotatedExpr;
-use crate::ast::{BinaryOp, UnaryOp, ParamKind};
+use crate::ast::{BinaryOp, ParamKind, UnaryOp};
 use crate::sema::AnalyzedKernel;
 use crate::symbol::SymbolKind;
 
@@ -97,11 +97,19 @@ pub enum LeveledNodeKind {
     /// Leaf: local variable reference
     Local { name: String },
     /// Binary operation referencing two prior nodes
-    Binary { op: BinaryOp, left: NodeRef, right: NodeRef },
+    Binary {
+        op: BinaryOp,
+        left: NodeRef,
+        right: NodeRef,
+    },
     /// Unary operation referencing one prior node
     Unary { op: UnaryOp, operand: NodeRef },
     /// Method call on a node
-    Method { receiver: NodeRef, method: String, args: Vec<NodeRef> },
+    Method {
+        receiver: NodeRef,
+        method: String,
+        args: Vec<NodeRef>,
+    },
 }
 
 /// Reference to a node by (level, index within level)
@@ -169,14 +177,16 @@ impl<'a> LevelBuilder<'a> {
         depths
     }
 
-    fn compute_depth_recursive(&self, expr: &AnnotatedExpr, depths: &mut HashMap<usize, usize>) -> usize {
+    fn compute_depth_recursive(
+        &self,
+        expr: &AnnotatedExpr,
+        depths: &mut HashMap<usize, usize>,
+    ) -> usize {
         let ptr = expr as *const _ as usize;
 
         let depth = match expr {
             // Leaves have depth 0
-            AnnotatedExpr::Ident(_) |
-            AnnotatedExpr::Literal(_) |
-            AnnotatedExpr::Verbatim(_) => 0,
+            AnnotatedExpr::Ident(_) | AnnotatedExpr::Literal(_) | AnnotatedExpr::Verbatim(_) => 0,
 
             // Unary: depth = child + 1
             AnnotatedExpr::Unary(unary) => {
@@ -194,7 +204,9 @@ impl<'a> LevelBuilder<'a> {
             // Method call: depth = max(receiver, args) + 1
             AnnotatedExpr::MethodCall(call) => {
                 let recv_depth = self.compute_depth_recursive(&call.receiver, depths);
-                let args_depth = call.args.iter()
+                let args_depth = call
+                    .args
+                    .iter()
                     .map(|a| self.compute_depth_recursive(a, depths))
                     .max()
                     .unwrap_or(0);
@@ -211,13 +223,13 @@ impl<'a> LevelBuilder<'a> {
             }
 
             // Paren: same as inner
-            AnnotatedExpr::Paren(inner) => {
-                self.compute_depth_recursive(inner, depths)
-            }
+            AnnotatedExpr::Paren(inner) => self.compute_depth_recursive(inner, depths),
 
             // Tuple: max of elements + 1
             AnnotatedExpr::Tuple(tuple) => {
-                let max_elem = tuple.elems.iter()
+                let max_elem = tuple
+                    .elems
+                    .iter()
                     .map(|e| self.compute_depth_recursive(e, depths))
                     .max()
                     .unwrap_or(0);
@@ -226,7 +238,9 @@ impl<'a> LevelBuilder<'a> {
 
             // Call: treat like method call
             AnnotatedExpr::Call(call) => {
-                let args_depth = call.args.iter()
+                let args_depth = call
+                    .args
+                    .iter()
                     .map(|a| self.compute_depth_recursive(a, depths))
                     .max()
                     .unwrap_or(0);
@@ -240,7 +254,11 @@ impl<'a> LevelBuilder<'a> {
 
     /// Assign nodes to levels and return root reference.
     /// Also computes dependency classification for uniform hoisting.
-    fn assign_to_levels(&mut self, expr: &AnnotatedExpr, depths: &HashMap<usize, usize>) -> NodeRef {
+    fn assign_to_levels(
+        &mut self,
+        expr: &AnnotatedExpr,
+        depths: &HashMap<usize, usize>,
+    ) -> NodeRef {
         let ptr = expr as *const _ as usize;
 
         // Check if already processed (CSE)
@@ -266,7 +284,11 @@ impl<'a> LevelBuilder<'a> {
                         }
                         SymbolKind::Parameter => {
                             // Look up param kind
-                            let param_kind = self.analyzed.def.params.iter()
+                            let param_kind = self
+                                .analyzed
+                                .def
+                                .params
+                                .iter()
                                 .find(|p| p.name == name)
                                 .map(|p| p.kind.clone())
                                 .unwrap_or(ParamKind::Scalar(syn::parse_quote!(f32)));
@@ -276,11 +298,21 @@ impl<'a> LevelBuilder<'a> {
                                 ParamKind::Scalar(_) => Deps::Const,
                                 ParamKind::Manifold => Deps::Varying,
                             };
-                            (LeveledNodeKind::Param { name, kind: param_kind }, deps)
+                            (
+                                LeveledNodeKind::Param {
+                                    name,
+                                    kind: param_kind,
+                                },
+                                deps,
+                            )
                         }
-                        SymbolKind::ManifoldParam => {
-                            (LeveledNodeKind::Param { name, kind: ParamKind::Manifold }, Deps::Varying)
-                        }
+                        SymbolKind::ManifoldParam => (
+                            LeveledNodeKind::Param {
+                                name,
+                                kind: ParamKind::Manifold,
+                            },
+                            Deps::Varying,
+                        ),
                         SymbolKind::Local => {
                             // Local variables - conservatively Varying
                             (LeveledNodeKind::Local { name }, Deps::Varying)
@@ -303,19 +335,34 @@ impl<'a> LevelBuilder<'a> {
             AnnotatedExpr::Unary(unary) => {
                 let operand = self.assign_to_levels(&unary.operand, depths);
                 let operand_deps = self.get_deps(operand);
-                (LeveledNodeKind::Unary { op: unary.op, operand }, operand_deps)
+                (
+                    LeveledNodeKind::Unary {
+                        op: unary.op,
+                        operand,
+                    },
+                    operand_deps,
+                )
             }
 
             AnnotatedExpr::Binary(binary) => {
                 let left = self.assign_to_levels(&binary.lhs, depths);
                 let right = self.assign_to_levels(&binary.rhs, depths);
                 let deps = self.get_deps(left).join(self.get_deps(right));
-                (LeveledNodeKind::Binary { op: binary.op, left, right }, deps)
+                (
+                    LeveledNodeKind::Binary {
+                        op: binary.op,
+                        left,
+                        right,
+                    },
+                    deps,
+                )
             }
 
             AnnotatedExpr::MethodCall(call) => {
                 let receiver = self.assign_to_levels(&call.receiver, depths);
-                let args: Vec<_> = call.args.iter()
+                let args: Vec<_> = call
+                    .args
+                    .iter()
                     .map(|a| self.assign_to_levels(a, depths))
                     .collect();
                 // Join deps from receiver and all args
@@ -323,11 +370,14 @@ impl<'a> LevelBuilder<'a> {
                 for &arg in &args {
                     deps = deps.join(self.get_deps(arg));
                 }
-                (LeveledNodeKind::Method {
-                    receiver,
-                    method: call.method.to_string(),
-                    args,
-                }, deps)
+                (
+                    LeveledNodeKind::Method {
+                        receiver,
+                        method: call.method.to_string(),
+                        args,
+                    },
+                    deps,
+                )
             }
 
             AnnotatedExpr::Paren(inner) => {
@@ -393,10 +443,7 @@ impl DepsStats {
 }
 
 /// Analyze the deps distribution in a leveled expression.
-pub fn analyze_deps(
-    analyzed: &AnalyzedKernel,
-    annotated: &AnnotatedExpr,
-) -> DepsStats {
+pub fn analyze_deps(analyzed: &AnalyzedKernel, annotated: &AnnotatedExpr) -> DepsStats {
     let mut builder = LevelBuilder::new(analyzed);
     let root = builder.build(annotated);
     let _root_deps = builder.get_deps(root);
@@ -552,7 +599,11 @@ fn emit_node(node: &LeveledNode, use_jet_wrapper: bool) -> TokenStream {
             }
         }
 
-        LeveledNodeKind::Method { receiver, method, args } => {
+        LeveledNodeKind::Method {
+            receiver,
+            method,
+            args,
+        } => {
             let recv_var = receiver.var_name();
             let method_ident = format_ident!("{}", method);
             let arg_vars: Vec<_> = args.iter().map(|a| a.var_name()).collect();
@@ -565,7 +616,7 @@ fn emit_node(node: &LeveledNode, use_jet_wrapper: bool) -> TokenStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::annotate::{annotate, AnnotationCtx};
+    use crate::annotate::{AnnotationCtx, annotate};
     use crate::parser::parse;
     use crate::sema::analyze;
     use quote::quote;
@@ -622,7 +673,10 @@ mod tests {
         assert!(stats.uniform_nodes > 0, "Expected uniform (W, W*0.5, sin)");
         assert!(stats.varying_nodes > 0, "Expected varying (X, +)");
         // The hoistable count: sin(...) is uniform child of varying Add
-        assert!(stats.hoistable_nodes > 0, "Expected hoistable uniform nodes");
+        assert!(
+            stats.hoistable_nodes > 0,
+            "Expected hoistable uniform nodes"
+        );
     }
 
     #[test]

@@ -11,16 +11,16 @@ use std::time::Instant;
 
 use serde::Deserialize;
 
+use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue, NnueConfig, OpKind};
 use pixelflow_search::egraph::{
-    ExprTree, Leaf,
-    BestFirstPlanner, BestFirstConfig, BestFirstContext, CostModel,
-};
-use pixelflow_nnue::{
-    Nnue, NnueConfig, HalfEPFeature, OpKind, DenseFeatures,
+    BestFirstConfig, BestFirstContext, BestFirstPlanner, CostModel, ExprTree, Leaf,
 };
 
+use super::backprop::{
+    ForwardState, HybridForwardState, backward, backward_hybrid, forward_with_state,
+    forward_with_state_hybrid,
+};
 use super::features::{extract_tree_features, op_counts_to_dense};
-use super::backprop::{forward_with_state, forward_with_state_hybrid, backward, backward_hybrid, ForwardState, HybridForwardState};
 
 // ============================================================================
 // Common Utilities
@@ -33,13 +33,13 @@ pub struct Rng {
 
 impl Rng {
     pub fn new(seed: u64) -> Self {
-        Self { state: seed.wrapping_add(1) }
+        Self {
+            state: seed.wrapping_add(1),
+        }
     }
 
     pub fn next_u64(&mut self) -> u64 {
-        self.state = self.state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
         self.state
     }
 
@@ -91,7 +91,9 @@ impl ExprGenerator {
                 ExprTree::Leaf(Leaf::Var(self.rng.gen_range(0..self.num_vars) as u8))
             } else {
                 let constants = [0.0, 1.0, -1.0, 2.0, 0.5];
-                ExprTree::Leaf(Leaf::Const(constants[self.rng.gen_range(0..constants.len())]))
+                ExprTree::Leaf(Leaf::Const(
+                    constants[self.rng.gen_range(0..constants.len())],
+                ))
             }
         } else {
             // Generate ops that ExprTree supports (10 ops available)
@@ -100,14 +102,32 @@ impl ExprGenerator {
             let op_type = self.rng.gen_range(0..10);
             match op_type {
                 // Binary ops (6)
-                0 => ExprTree::add(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
-                1 => ExprTree::sub(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
-                2 => ExprTree::mul(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
-                3 => ExprTree::div(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
-                4 => ExprTree::min(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
-                5 => ExprTree::max(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
+                0 => ExprTree::op_add(
+                    self.generate_inner(depth + 1),
+                    self.generate_inner(depth + 1),
+                ),
+                1 => ExprTree::op_sub(
+                    self.generate_inner(depth + 1),
+                    self.generate_inner(depth + 1),
+                ),
+                2 => ExprTree::op_mul(
+                    self.generate_inner(depth + 1),
+                    self.generate_inner(depth + 1),
+                ),
+                3 => ExprTree::op_div(
+                    self.generate_inner(depth + 1),
+                    self.generate_inner(depth + 1),
+                ),
+                4 => ExprTree::min(
+                    self.generate_inner(depth + 1),
+                    self.generate_inner(depth + 1),
+                ),
+                5 => ExprTree::max(
+                    self.generate_inner(depth + 1),
+                    self.generate_inner(depth + 1),
+                ),
                 // Unary ops (3)
-                6 => ExprTree::neg(self.generate_inner(depth + 1)),
+                6 => ExprTree::op_neg(self.generate_inner(depth + 1)),
                 7 => ExprTree::sqrt(self.generate_inner(depth + 1)),
                 8 => ExprTree::abs(self.generate_inner(depth + 1)),
                 // Fused op (1)
@@ -254,14 +274,23 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
 
     // Group samples by expression family (eg0000, eg0001, etc.)
     // Variants of the same expression MUST be in the same split to avoid leakage
-    let mut families: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    let mut families: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
     for (i, sample) in samples.iter().enumerate() {
         // Extract family from name like "eg0000v0" -> "eg0000"
-        let family = sample.name.chars()
-            .take_while(|c| !c.is_ascii_digit() || sample.name.matches(|x: char| x.is_ascii_digit()).count() > 4)
+        let family = sample
+            .name
+            .chars()
+            .take_while(|c| {
+                !c.is_ascii_digit() || sample.name.matches(|x: char| x.is_ascii_digit()).count() > 4
+            })
             .take_while(|&c| c != 'v')
             .collect::<String>();
-        let family = if family.is_empty() { sample.name.clone() } else { family };
+        let family = if family.is_empty() {
+            sample.name.clone()
+        } else {
+            family
+        };
         families.entry(family).or_default().push(i);
     }
 
@@ -278,10 +307,12 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
     let test_families: Vec<_> = family_keys[split_idx..].to_vec();
 
     // Collect samples by family assignment
-    let mut train_indices: Vec<usize> = train_families.iter()
+    let mut train_indices: Vec<usize> = train_families
+        .iter()
         .flat_map(|f| families.get(f).unwrap().iter().copied())
         .collect();
-    let mut test_indices: Vec<usize> = test_families.iter()
+    let mut test_indices: Vec<usize> = test_families
+        .iter()
         .flat_map(|f| families.get(f).unwrap().iter().copied())
         .collect();
 
@@ -291,16 +322,23 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
         train_indices.swap(i, j);
     }
 
-    let train_samples: Vec<_> = train_indices.iter()
+    let train_samples: Vec<_> = train_indices
+        .iter()
         .filter_map(|&i| all_samples.get(i).cloned())
         .collect();
-    let test_samples: Vec<_> = test_indices.iter()
+    let test_samples: Vec<_> = test_indices
+        .iter()
         .filter_map(|&i| all_samples.get(i).cloned())
         .collect();
 
-    println!("Split {} families: {} train ({} samples) + {} test ({} samples)",
-             families.len(), train_families.len(), train_samples.len(),
-             test_families.len(), test_samples.len());
+    println!(
+        "Split {} families: {} train ({} samples) + {} test ({} samples)",
+        families.len(),
+        train_families.len(),
+        train_samples.len(),
+        test_families.len(),
+        test_samples.len()
+    );
 
     let mut costs: Vec<f64> = train_samples.iter().map(|s| s.cost_ns).collect();
     costs.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -320,13 +358,21 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
 
         // Check initial prediction on first sample
         let (pred, state) = super::backprop::forward_with_state_hybrid(
-            &nnue, &train_samples[0].features, &train_samples[0].dense);
+            &nnue,
+            &train_samples[0].features,
+            &train_samples[0].dense,
+        );
         let target = (train_samples[0].cost_ns / cost_scale) as f32;
         let l1_active = state.l1_post.iter().filter(|&&x| x > 0.0).count();
 
         println!("BEFORE TRAINING:");
         println!("  B1: mean={:.0} min={} max={}", b1_mean, b1_min, b1_max);
-        println!("  First sample: pred={:.4} target={:.4} error={:.4}", pred, target, pred - target);
+        println!(
+            "  First sample: pred={:.4} target={:.4} error={:.4}",
+            pred,
+            target,
+            pred - target
+        );
         println!("  L1 active neurons: {}/256", l1_active);
         println!();
     }
@@ -353,21 +399,28 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
 
         // Debug: track neuron health
         if epoch == 0 || epoch == config.epochs - 1 {
-            let b1_mean: f64 = nnue.b1.iter().map(|&b| b as f64).sum::<f64>() / nnue.b1.len() as f64;
+            let b1_mean: f64 =
+                nnue.b1.iter().map(|&b| b as f64).sum::<f64>() / nnue.b1.len() as f64;
             let b1_min = nnue.b1.iter().min().unwrap();
             let b1_max = nnue.b1.iter().max().unwrap();
-            println!("Epoch {:3}: loss = {:.6}  B1 mean={:.0} min={} max={}",
-                     epoch, avg_loss, b1_mean, b1_min, b1_max);
+            println!(
+                "Epoch {:3}: loss = {:.6}  B1 mean={:.0} min={} max={}",
+                epoch, avg_loss, b1_mean, b1_min, b1_max
+            );
         } else if epoch % 10 == 0 {
             println!("Epoch {:3}: loss = {:.6}", epoch, avg_loss);
         }
     }
 
     println!();
-    println!("Training completed in {:.2}s", start.elapsed().as_secs_f64());
+    println!(
+        "Training completed in {:.2}s",
+        start.elapsed().as_secs_f64()
+    );
 
     // Save The Judge weights
-    let judge_path = cache_path.parent()
+    let judge_path = cache_path
+        .parent()
         .unwrap_or(Path::new("."))
         .join("nnue_judge_weights.bin");
     println!("Saving Judge weights to: {}", judge_path.display());
@@ -421,7 +474,10 @@ impl ReplayBuffer {
             indices.swap(i, j);
         }
 
-        indices[..n].iter().map(|&i| self.samples[i].clone()).collect()
+        indices[..n]
+            .iter()
+            .map(|&i| self.samples[i].clone())
+            .collect()
     }
 
     pub fn len(&self) -> usize {

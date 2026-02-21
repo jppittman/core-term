@@ -6,10 +6,7 @@
 //! All derivatives are precomputed polynomials - no Jets needed!
 
 use crate::shapes::{square, Bounded};
-use pixelflow_core::{
-    Abs, At, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Select,
-    W, Z,
-};
+use pixelflow_core::{Abs, At, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Select, W, Z};
 use pixelflow_macros::kernel;
 use std::sync::Arc;
 
@@ -18,7 +15,6 @@ use super::ttf_curve_analytical::{AnalyticalLine, AnalyticalQuad};
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Type Aliases for Concrete Kernel Types
@@ -92,7 +88,6 @@ impl<M: Manifold<Field4, Output = Field>> Manifold<Field4> for Sum<M> {
     }
 }
 
-
 /// Threshold combinator - converts winding number to inside/outside (0 or 1).
 ///
 /// Applies the non-zero winding rule: |winding| >= 0.5 means inside.
@@ -124,7 +119,7 @@ pub struct Quad<K> {
 
 /// Create a quad with analytical Loop-Blinn kernel from control points.
 #[inline(always)]
-#[must_use] 
+#[must_use]
 pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
     let kernel = AnalyticalQuad::new(points[0], points[1], points[2]);
     Quad { kernel }
@@ -132,7 +127,7 @@ pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
 
 /// Helper to create a quad with analytical Loop-Blinn kernel (for benchmarks).
 #[inline(always)]
-#[must_use] 
+#[must_use]
 pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
     make_quad(points)
 }
@@ -147,7 +142,7 @@ pub struct Line<K> {
 /// Create a line with analytical kernel from control points.
 /// Returns None for horizontal or degenerate lines (they don't contribute to winding).
 #[inline(always)]
-#[must_use] 
+#[must_use]
 pub fn make_line(points: [[f32; 2]; 2]) -> Option<Line<LineKernel>> {
     let kernel = AnalyticalLine::from_points(points[0], points[1])?;
     Some(Line { kernel })
@@ -173,7 +168,6 @@ impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Line<K> {
     }
 }
 
-
 impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Quad<K> {
     type Output = Field;
 
@@ -183,7 +177,6 @@ impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Quad<K> {
         self.kernel.eval_raw(x, y, z, w)
     }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Glyph (Compositional Scene Graph)
@@ -229,7 +222,6 @@ impl<L: Manifold<Field4, Output = Field>, Q: Manifold<Field4, Output = Field>> M
             .eval_raw(fzero, fzero, fzero, fzero)
     }
 }
-
 
 /// A simple glyph: segments in unit space, bounded, then transformed.
 ///
@@ -317,7 +309,6 @@ where
         }
     }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Reader
@@ -527,7 +518,7 @@ pub struct Font<'a> {
 }
 
 impl<'a> Font<'a> {
-    #[must_use] 
+    #[must_use]
     pub fn parse(data: &'a [u8]) -> Option<Self> {
         // TTF header: sfntVersion(4) + numTables(2) + searchRange(2) + entrySelector(2) + rangeShift(2) = 12 bytes
         // Table record: tag(4) + checksum(4) + offset(4) + length(4) = 16 bytes
@@ -582,11 +573,9 @@ impl<'a> Font<'a> {
                         ENCODING_WINDOWS_UNICODE_FULL,
                         FORMAT_SEGMENTED_COVERAGE,
                     )
-                    | (
-                        PLATFORM_UNICODE,
-                        ENCODING_UNICODE_2_0_FULL,
-                        FORMAT_SEGMENTED_COVERAGE,
-                    ) => Some((2, o, f)),
+                    | (PLATFORM_UNICODE, ENCODING_UNICODE_2_0_FULL, FORMAT_SEGMENTED_COVERAGE) => {
+                        Some((2, o, f))
+                    }
 
                     (PLATFORM_WINDOWS, ENCODING_WINDOWS_UNICODE_BMP, FORMAT_SEGMENT_MAPPING)
                     | (PLATFORM_UNICODE, ENCODING_UNICODE_2_0_BMP, FORMAT_SEGMENT_MAPPING) => {
@@ -608,27 +597,24 @@ impl<'a> Font<'a> {
     /// Use this when you need the glyph ID to batch multiple operations,
     /// avoiding redundant CMAP lookups in tight loops.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn cmap_lookup(&self, ch: char) -> Option<u16> {
         self.cmap.lookup(ch as u32)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn glyph(&self, ch: char) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         self.compile(self.cmap.lookup(ch as u32)?)
     }
 
     /// Get glyph by pre-looked-up glyph ID (avoids redundant CMAP lookup).
     #[inline]
-    #[must_use] 
-    pub fn glyph_by_id(
-        &self,
-        id: u16,
-    ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
+    #[must_use]
+    pub fn glyph_by_id(&self, id: u16) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         self.compile(id)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn glyph_scaled(
         &self,
         ch: char,
@@ -641,7 +627,7 @@ impl<'a> Font<'a> {
     /// Get scaled glyph by pre-looked-up glyph ID.
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
-    #[must_use] 
+    #[must_use]
     pub fn glyph_scaled_by_id(
         &self,
         id: u16,
@@ -663,7 +649,7 @@ impl<'a> Font<'a> {
         .into())))
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn advance(&self, ch: char) -> Option<f32> {
         let id = self.cmap.lookup(ch as u32)?;
         self.advance_by_id(id)
@@ -673,13 +659,13 @@ impl<'a> Font<'a> {
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn advance_by_id(&self, id: u16) -> Option<f32> {
         let i = (id as usize).min(self.num_hm.saturating_sub(1));
         Some(R(self.data, self.hmtx + i * 4).u16()? as f32)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn advance_scaled(&self, ch: char, size: f32) -> Option<f32> {
         Some(self.advance(ch)? * size / self.units_per_em as f32)
     }
@@ -687,13 +673,13 @@ impl<'a> Font<'a> {
     /// Get scaled advance width by pre-looked-up glyph ID.
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
-    #[must_use] 
+    #[must_use]
     pub fn advance_scaled_by_id(&self, id: u16, size: f32) -> Option<f32> {
         Some(self.advance_by_id(id)? * size / self.units_per_em as f32)
     }
 
     /// Get kerning adjustment between two characters in font units.
-    #[must_use] 
+    #[must_use]
     pub fn kern(&self, left: char, right: char) -> f32 {
         let left_id = self.cmap.lookup(left as u32).unwrap_or(0);
         let right_id = self.cmap.lookup(right as u32).unwrap_or(0);
@@ -704,13 +690,13 @@ impl<'a> Font<'a> {
     ///
     /// Avoids redundant CMAP lookups when you already have both glyph IDs.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn kern_by_ids(&self, left_id: u16, right_id: u16) -> f32 {
         self.kern.get(left_id, right_id) as f32
     }
 
     /// Get kerning adjustment between two characters, scaled to size.
-    #[must_use] 
+    #[must_use]
     pub fn kern_scaled(&self, left: char, right: char, size: f32) -> f32 {
         self.kern(left, right) * size / self.units_per_em as f32
     }

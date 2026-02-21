@@ -22,9 +22,9 @@
 //! No producers can be added after `build()`. This is the "register at init"
 //! constraint — you must know all producers before the scheduler starts.
 
+use crate::HandlerResult;
 pub use crate::error::DrainStatus;
 use crate::spsc::{self, SpscReceiver, SpscSender, TryRecvError};
-use crate::HandlerResult;
 
 /// Builder for a sharded inbox. Add producers, then seal with `build()`.
 pub struct InboxBuilder<T> {
@@ -154,7 +154,7 @@ impl<T> ShardedInbox<T> {
     }
 
     /// Number of registered shards (producers).
-    #[must_use] 
+    #[must_use]
     pub fn shard_count(&self) -> usize {
         self.shards.len()
     }
@@ -233,7 +233,8 @@ mod tests {
             .drain(4, |msg| {
                 received.push(msg);
                 Ok(())
-            }).unwrap();
+            })
+            .unwrap();
 
         // Producer 2's message should appear (not starved by producer 1)
         assert!(

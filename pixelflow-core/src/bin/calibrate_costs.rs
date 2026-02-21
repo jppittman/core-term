@@ -29,7 +29,7 @@
 //! rsqrt = 379    # ← 24% faster than recip+sqrt
 //! ```
 
-use pixelflow_core::{Field, PARALLELISM, ManifoldCompat};
+use pixelflow_core::{Field, ManifoldCompat, PARALLELISM};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -51,23 +51,13 @@ where
 
     // Warmup
     for _ in 0..WARMUP_ITERS {
-        std::hint::black_box(manifold.eval_raw(
-            std::hint::black_box(x),
-            y,
-            z,
-            w
-        ));
+        std::hint::black_box(manifold.eval_raw(std::hint::black_box(x), y, z, w));
     }
 
     // Measure
     let start = Instant::now();
     for _ in 0..MEASURE_ITERS {
-        std::hint::black_box(manifold.eval_raw(
-            std::hint::black_box(x),
-            y,
-            z,
-            w
-        ));
+        std::hint::black_box(manifold.eval_raw(std::hint::black_box(x), y, z, w));
     }
     let elapsed = start.elapsed();
 
@@ -87,12 +77,15 @@ fn main() {
 
     println!("SIMD Backend: {}", backend_name());
     println!("Parallelism:  {} (Field width)", PARALLELISM);
-    println!("Iterations:   {} (after {} warmup)", MEASURE_ITERS, WARMUP_ITERS);
+    println!(
+        "Iterations:   {} (after {} warmup)",
+        MEASURE_ITERS, WARMUP_ITERS
+    );
     println!();
 
     println!("Measuring operation latencies...\n");
 
-    use pixelflow_core::{X, Y, Z, ManifoldExt};
+    use pixelflow_core::{ManifoldExt, X, Y, Z};
 
     // Measure binary operations
     let add_ns = bench_manifold("add", X + Y);
@@ -128,22 +121,30 @@ fn main() {
     // Detect FMA
     let has_fma = mul_add_ns < (mul_plus_add_ns * 0.9);
     if has_fma {
-        println!("✓ FMA detected: mul_add ({:.2}ns) < mul+add ({:.2}ns)",
-                 mul_add_ns, mul_plus_add_ns);
+        println!(
+            "✓ FMA detected: mul_add ({:.2}ns) < mul+add ({:.2}ns)",
+            mul_add_ns, mul_plus_add_ns
+        );
     } else {
-        println!("✗ No FMA: mul_add ({:.2}ns) ≈ mul+add ({:.2}ns)",
-                 mul_add_ns, mul_plus_add_ns);
+        println!(
+            "✗ No FMA: mul_add ({:.2}ns) ≈ mul+add ({:.2}ns)",
+            mul_add_ns, mul_plus_add_ns
+        );
     }
 
     // Detect fast rsqrt
     let rsqrt_expected = recip_ns + sqrt_ns;
     let has_fast_rsqrt = rsqrt_ns < (rsqrt_expected * 0.7);
     if has_fast_rsqrt {
-        println!("✓ Fast rsqrt: rsqrt ({:.2}ns) < recip+sqrt ({:.2}ns)",
-                 rsqrt_ns, rsqrt_expected);
+        println!(
+            "✓ Fast rsqrt: rsqrt ({:.2}ns) < recip+sqrt ({:.2}ns)",
+            rsqrt_ns, rsqrt_expected
+        );
     } else {
-        println!("✗ No fast rsqrt: rsqrt ({:.2}ns) ≈ recip+sqrt ({:.2}ns)",
-                 rsqrt_ns, rsqrt_expected);
+        println!(
+            "✗ No fast rsqrt: rsqrt ({:.2}ns) ≈ recip+sqrt ({:.2}ns)",
+            rsqrt_ns, rsqrt_expected
+        );
     }
 
     println!();
@@ -182,18 +183,19 @@ fn main() {
     println!("abs      = {}", model.abs);
     println!("min      = {}", model.min);
     println!("max      = {}", model.max);
-    println!("mul_add  = {} {}", model.mul_add,
-             if has_fma { "(FMA)" } else { "" });
+    println!(
+        "mul_add  = {} {}",
+        model.mul_add,
+        if has_fma { "(FMA)" } else { "" }
+    );
     println!();
 
     // Save to config directory
     let config_dir = get_config_dir();
-    std::fs::create_dir_all(&config_dir)
-        .expect("Failed to create config directory");
+    std::fs::create_dir_all(&config_dir).expect("Failed to create config directory");
 
     let output_path = config_dir.join("cost_model.toml");
-    save_toml(&model, &output_path)
-        .expect("Failed to save cost model");
+    save_toml(&model, &output_path).expect("Failed to save cost model");
 
     println!("✓ Saved to: {}", output_path.display());
     println!();
@@ -228,7 +230,10 @@ fn save_toml(model: &CostModelData, path: &std::path::Path) -> std::io::Result<(
     writeln!(file, "# Generated from SIMD benchmark measurements")?;
     writeln!(file)?;
     writeln!(file, "# Operation costs (100x scaled for precision)")?;
-    writeln!(file, "# Relative to fastest operation with 3-digit accuracy")?;
+    writeln!(
+        file,
+        "# Relative to fastest operation with 3-digit accuracy"
+    )?;
     writeln!(file, "add = {}", model.add)?;
     writeln!(file, "sub = {}", model.sub)?;
     writeln!(file, "mul = {}", model.mul)?;
@@ -274,12 +279,21 @@ fn backend_name() -> &'static str {
         "AVX-512"
     }
 
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
     {
         return "AVX2";
     }
 
-    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse2", not(target_feature = "avx2"), not(target_feature = "avx512f")))]
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "sse2",
+        not(target_feature = "avx2"),
+        not(target_feature = "avx512f")
+    ))]
     {
         return "SSE2";
     }
@@ -292,7 +306,10 @@ fn backend_name() -> &'static str {
     #[cfg(not(any(
         all(target_arch = "x86_64", target_feature = "avx512f"),
         all(target_arch = "x86_64", target_feature = "avx2"),
-        all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse2"),
+        all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "sse2"
+        ),
         target_arch = "aarch64",
         target_arch = "arm"
     )))]

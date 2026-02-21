@@ -6,12 +6,10 @@
 //! 3. Greedy optimization with different iteration limits
 //! 4. Quality of optimization (cost reduction achieved)
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use pixelflow_ml::evaluator::{
-    default_expr_weights, fma_optimized_weights, extract_expr_features,
-};
-use pixelflow_ml::hce_extractor::{HceExtractor, FeatureAccumulator, SpsaTuner, SpsaConfig};
-use pixelflow_ml::nnue::{Expr, OpType, ExprGenerator, ExprGenConfig};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use pixelflow_ml::evaluator::{default_expr_weights, extract_expr_features, fma_optimized_weights};
+use pixelflow_ml::hce_extractor::{FeatureAccumulator, HceExtractor, SpsaConfig, SpsaTuner};
+use pixelflow_ml::nnue::{Expr, ExprGenConfig, ExprGenerator, OpType};
 
 /// Generate a test expression of given depth.
 fn generate_expr(seed: u64, max_depth: usize) -> Expr {
@@ -36,9 +34,7 @@ fn bench_feature_extraction(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("extract", format!("depth{}_nodes{}", depth, node_count)),
             &expr,
-            |b, expr| {
-                b.iter(|| extract_expr_features(black_box(expr)))
-            },
+            |b, expr| b.iter(|| extract_expr_features(black_box(expr))),
         );
     }
 
@@ -59,17 +55,13 @@ fn bench_hce_evaluation(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("default_weights", format!("depth{}", depth)),
             &features,
-            |b, features| {
-                b.iter(|| hce_default.evaluate_linear(black_box(features)))
-            },
+            |b, features| b.iter(|| hce_default.evaluate_linear(black_box(features))),
         );
 
         group.bench_with_input(
             BenchmarkId::new("fma_weights", format!("depth{}", depth)),
             &features,
-            |b, features| {
-                b.iter(|| hce_fma.evaluate_linear(black_box(features)))
-            },
+            |b, features| b.iter(|| hce_fma.evaluate_linear(black_box(features))),
         );
     }
 
@@ -88,9 +80,7 @@ fn bench_accumulator(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("from_expr", format!("depth{}", depth)),
             &expr,
-            |b, expr| {
-                b.iter(|| FeatureAccumulator::from_expr(black_box(expr)))
-            },
+            |b, expr| b.iter(|| FeatureAccumulator::from_expr(black_box(expr))),
         );
 
         let mut acc = FeatureAccumulator::from_expr(&expr);
@@ -133,9 +123,7 @@ fn bench_greedy_optimize(c: &mut Criterion) {
             group.bench_with_input(
                 BenchmarkId::new(format!("iters{}", max_iters), format!("seed{}", seed)),
                 &(expr.clone(), max_iters),
-                |b, (expr, iters)| {
-                    b.iter(|| extractor.greedy_optimize(black_box(expr), *iters))
-                },
+                |b, (expr, iters)| b.iter(|| extractor.greedy_optimize(black_box(expr), *iters)),
             );
         }
     }
@@ -158,13 +146,9 @@ fn bench_spsa_tuner(c: &mut Criterion) {
         let mut tuner = SpsaTuner::from_defaults(config.clone());
 
         // Simple loss function for benchmarking
-        let loss_fn = |w: &[i32]| -> f64 {
-            w.iter().map(|&x| (x as f64).powi(2)).sum()
-        };
+        let loss_fn = |w: &[i32]| -> f64 { w.iter().map(|&x| (x as f64).powi(2)).sum() };
 
-        b.iter(|| {
-            tuner.step(black_box(&loss_fn))
-        })
+        b.iter(|| tuner.step(black_box(&loss_fn)))
     });
 
     group.finish();
@@ -181,71 +165,67 @@ fn bench_optimization_quality(c: &mut Criterion) {
     // Test on various expression types
     let test_cases: Vec<(&str, Expr)> = vec![
         // FMA opportunity: a * b + c
-        ("fma_pattern", Expr::Binary(
-            OpType::Add,
-            Box::new(Expr::Binary(
-                OpType::Mul,
-                Box::new(Expr::Var(0)),
-                Box::new(Expr::Var(1)),
-            )),
-            Box::new(Expr::Var(2)),
-        )),
-        // Identity pattern: x * 1
-        ("identity_mul", Expr::Binary(
-            OpType::Mul,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Const(1.0)),
-        )),
-        // Complex nested: ((x * 1) + 0) * (y - y)
-        ("complex_nested", Expr::Binary(
-            OpType::Mul,
-            Box::new(Expr::Binary(
+        (
+            "fma_pattern",
+            Expr::Binary(
                 OpType::Add,
                 Box::new(Expr::Binary(
                     OpType::Mul,
                     Box::new(Expr::Var(0)),
-                    Box::new(Expr::Const(1.0)),
+                    Box::new(Expr::Var(1)),
                 )),
-                Box::new(Expr::Const(0.0)),
-            )),
-            Box::new(Expr::Binary(
-                OpType::Sub,
-                Box::new(Expr::Var(1)),
-                Box::new(Expr::Var(1)),
-            )),
-        )),
+                Box::new(Expr::Var(2)),
+            ),
+        ),
+        // Identity pattern: x * 1
+        (
+            "identity_mul",
+            Expr::Binary(
+                OpType::Mul,
+                Box::new(Expr::Var(0)),
+                Box::new(Expr::Const(1.0)),
+            ),
+        ),
+        // Complex nested: ((x * 1) + 0) * (y - y)
+        (
+            "complex_nested",
+            Expr::Binary(
+                OpType::Mul,
+                Box::new(Expr::Binary(
+                    OpType::Add,
+                    Box::new(Expr::Binary(
+                        OpType::Mul,
+                        Box::new(Expr::Var(0)),
+                        Box::new(Expr::Const(1.0)),
+                    )),
+                    Box::new(Expr::Const(0.0)),
+                )),
+                Box::new(Expr::Binary(
+                    OpType::Sub,
+                    Box::new(Expr::Var(1)),
+                    Box::new(Expr::Var(1)),
+                )),
+            ),
+        ),
     ];
 
     for (name, expr) in test_cases {
         // Benchmark default weights
-        group.bench_with_input(
-            BenchmarkId::new("default", name),
-            &expr,
-            |b, expr| {
-                b.iter(|| {
-                    let (optimized, reduction, _) = extractor_default.greedy_optimize(
-                        black_box(expr),
-                        10,
-                    );
-                    (optimized, reduction)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("default", name), &expr, |b, expr| {
+            b.iter(|| {
+                let (optimized, reduction, _) =
+                    extractor_default.greedy_optimize(black_box(expr), 10);
+                (optimized, reduction)
+            })
+        });
 
         // Benchmark FMA weights
-        group.bench_with_input(
-            BenchmarkId::new("fma", name),
-            &expr,
-            |b, expr| {
-                b.iter(|| {
-                    let (optimized, reduction, _) = extractor_fma.greedy_optimize(
-                        black_box(expr),
-                        10,
-                    );
-                    (optimized, reduction)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("fma", name), &expr, |b, expr| {
+            b.iter(|| {
+                let (optimized, reduction, _) = extractor_fma.greedy_optimize(black_box(expr), 10);
+                (optimized, reduction)
+            })
+        });
     }
 
     group.finish();
@@ -286,8 +266,14 @@ pub fn print_optimization_stats() {
 
     println!("Expressions tested:    100");
     println!("Expressions improved:  {}", num_improved);
-    println!("Average cost before:   {:.1}", total_original_cost as f64 / 100.0);
-    println!("Average cost after:    {:.1}", total_optimized_cost as f64 / 100.0);
+    println!(
+        "Average cost before:   {:.1}",
+        total_original_cost as f64 / 100.0
+    );
+    println!(
+        "Average cost after:    {:.1}",
+        total_optimized_cost as f64 / 100.0
+    );
     println!("Average cost reduction: {:.1} cycles", avg_reduction);
     println!("Average rewrites applied: {:.1}", avg_rewrites);
     println!();

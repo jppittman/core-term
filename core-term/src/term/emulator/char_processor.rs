@@ -27,7 +27,10 @@ impl TerminalEmulator {
             (screen_ctx.width.saturating_sub(1), cursor_y - 1)
         } else {
             // Cursor is at (0, 0) — no previous cell to attach to.
-            trace!("attach_combining_char: no previous cell at origin, discarding '{}'", combining);
+            trace!(
+                "attach_combining_char: no previous cell at origin, discarding '{}'",
+                combining
+            );
             return;
         };
 
@@ -47,9 +50,12 @@ impl TerminalEmulator {
             Glyph::WideSpacer => {
                 // For a wide-char spacer, walk back one more column to reach WidePrimary.
                 if base_x > 0 {
-                    if let Glyph::WidePrimary(mut cc) = self.screen.active_grid()[base_y][base_x - 1] {
+                    if let Glyph::WidePrimary(mut cc) =
+                        self.screen.active_grid()[base_y][base_x - 1]
+                    {
                         cc.combining = Some(combining);
-                        self.screen.set_glyph(base_x - 1, base_y, Glyph::WidePrimary(cc));
+                        self.screen
+                            .set_glyph(base_x - 1, base_y, Glyph::WidePrimary(cc));
                         self.screen.mark_line_dirty(base_y);
                     }
                 }

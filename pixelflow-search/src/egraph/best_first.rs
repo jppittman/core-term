@@ -17,11 +17,11 @@
 //! 2. **No Rollouts**: NNUE already knows that `a*(b+c)` beats `a*b+a*c`
 //! 3. **Easy Debugging**: Print the path, see why NNUE said cost was X
 
-use std::collections::{BinaryHeap, HashSet};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
 use std::hash::{Hash, Hasher};
 
-use super::{EGraph, EClassId, ExprTree, CostModel};
+use super::{CostModel, EClassId, EGraph, ExprTree};
 
 // ============================================================================
 // Search State Context (passed to evaluator)
@@ -60,7 +60,7 @@ pub struct BestFirstContext<'a> {
 impl<'a> BestFirstContext<'a> {
     /// Improvement ratio: how much better is current best vs initial?
     /// Returns 0.0 (no improvement) to 1.0 (perfect optimization).
-    #[must_use] 
+    #[must_use]
     pub fn improvement_ratio(&self) -> f64 {
         if self.initial_cost == 0 {
             0.0
@@ -70,13 +70,13 @@ impl<'a> BestFirstContext<'a> {
     }
 
     /// Search progress: fraction of max_expansions used.
-    #[must_use] 
+    #[must_use]
     pub fn search_progress(&self, max_expansions: usize) -> f64 {
         self.expansions as f64 / max_expansions.max(1) as f64
     }
 
     /// Frontier pressure: how crowded is the open set?
-    #[must_use] 
+    #[must_use]
     pub fn frontier_pressure(&self, max_queue_size: usize) -> f64 {
         self.frontier_size as f64 / max_queue_size.max(1) as f64
     }
@@ -175,7 +175,9 @@ impl Ord for SearchState {
     fn cmp(&self, other: &Self) -> Ordering {
         // Lower priority = better, so reverse the comparison
         // Tie-break by depth (prefer shallower for faster solutions)
-        other.priority.cmp(&self.priority)
+        other
+            .priority
+            .cmp(&self.priority)
             .then_with(|| other.depth.cmp(&self.depth))
     }
 }
@@ -209,35 +211,35 @@ impl Default for BestFirstConfig {
 
 impl BestFirstConfig {
     /// Set epsilon for exploration.
-    #[must_use] 
+    #[must_use]
     pub fn with_epsilon(mut self, epsilon: f64) -> Self {
         self.epsilon = epsilon;
         self
     }
 
     /// Set maximum expansions.
-    #[must_use] 
+    #[must_use]
     pub fn with_max_expansions(mut self, max: usize) -> Self {
         self.max_expansions = max;
         self
     }
 
     /// Set saturation threshold.
-    #[must_use] 
+    #[must_use]
     pub fn with_saturation_threshold(mut self, threshold: usize) -> Self {
         self.saturation_threshold = threshold;
         self
     }
 
     /// Training mode: higher exploration.
-    #[must_use] 
+    #[must_use]
     pub fn training_mode(mut self) -> Self {
         self.epsilon = 0.2;
         self
     }
 
     /// Inference mode: pure greedy.
-    #[must_use] 
+    #[must_use]
     pub fn inference_mode(mut self) -> Self {
         self.epsilon = 0.0;
         self
@@ -266,13 +268,13 @@ struct Rng {
 
 impl Rng {
     fn new(seed: u64) -> Self {
-        Self { state: seed.wrapping_add(1) }
+        Self {
+            state: seed.wrapping_add(1),
+        }
     }
 
     fn gen_f64(&mut self) -> f64 {
-        self.state = self.state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
         (self.state >> 33) as f64 / (1u64 << 31) as f64
     }
 
@@ -306,7 +308,7 @@ pub struct BestFirstPlanner {
 
 impl BestFirstPlanner {
     /// Create a new planner from an expression tree.
-    #[must_use] 
+    #[must_use]
     pub fn from_tree(tree: &ExprTree, config: BestFirstConfig) -> Self {
         let costs = CostModel::default();
         let initial = SearchState::new(tree, &costs);
@@ -332,7 +334,7 @@ impl BestFirstPlanner {
     }
 
     /// Check if the kernel is small enough to just saturate.
-    #[must_use] 
+    #[must_use]
     pub fn should_saturate(&self) -> bool {
         self.best_found.egraph.node_count() < self.config.saturation_threshold
     }
@@ -423,7 +425,10 @@ impl BestFirstPlanner {
     /// Saturate the e-graph completely (for small kernels).
     fn run_saturation(&mut self) -> BestFirstResult {
         self.best_found.egraph.saturate();
-        let (tree, cost) = self.best_found.egraph.extract_best(self.best_found.root, &self.costs);
+        let (tree, cost) = self
+            .best_found
+            .egraph
+            .extract_best(self.best_found.root, &self.costs);
 
         BestFirstResult {
             best_tree: tree,
@@ -455,19 +460,19 @@ impl BestFirstPlanner {
     }
 
     /// Get current best cost.
-    #[must_use] 
+    #[must_use]
     pub fn best_cost(&self) -> usize {
         self.best_found.best_cost
     }
 
     /// Get current best tree.
-    #[must_use] 
+    #[must_use]
     pub fn best_tree(&self) -> &ExprTree {
         &self.best_found.best_tree
     }
 
     /// Get number of expansions performed.
-    #[must_use] 
+    #[must_use]
     pub fn expansions(&self) -> usize {
         self.expansions
     }
@@ -489,8 +494,7 @@ mod tests {
             ],
         };
 
-        let config = BestFirstConfig::default()
-            .with_saturation_threshold(100);
+        let config = BestFirstConfig::default().with_saturation_threshold(100);
 
         let mut planner = BestFirstPlanner::from_tree(&tree, config);
         let result = planner.run_default();

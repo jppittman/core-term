@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use pixelflow_ir::OpKind;
 use super::node::ENode;
+use pixelflow_ir::OpKind;
 
 // ============================================================================
 // Cost Function Trait
@@ -87,7 +87,7 @@ impl Default for CostModel {
 
 impl CostModel {
     /// Create with default costs (reasonable x86-64 SIMD estimates).
-    #[must_use] 
+    #[must_use]
     pub fn with_defaults() -> Self {
         let mut costs = [4usize; OpKind::COUNT]; // Default to medium cost
 
@@ -159,7 +159,7 @@ impl CostModel {
     }
 
     /// Create with FMA optimization enabled.
-    #[must_use] 
+    #[must_use]
     pub fn with_fma() -> Self {
         let mut model = Self::with_defaults();
         model.costs[OpKind::MulAdd.index()] = 5;
@@ -167,7 +167,7 @@ impl CostModel {
     }
 
     /// Create with fast reciprocal/rsqrt.
-    #[must_use] 
+    #[must_use]
     pub fn with_fast_rsqrt() -> Self {
         let mut model = Self::with_defaults();
         model.costs[OpKind::Rsqrt.index()] = 4;
@@ -176,7 +176,7 @@ impl CostModel {
     }
 
     /// Create with all optimizations.
-    #[must_use] 
+    #[must_use]
     pub fn fully_optimized() -> Self {
         let mut model = Self::with_defaults();
         model.costs[OpKind::MulAdd.index()] = 5;
@@ -186,7 +186,7 @@ impl CostModel {
     }
 
     /// Create with custom depth threshold.
-    #[must_use] 
+    #[must_use]
     pub fn with_depth_limit(threshold: usize, penalty: usize) -> Self {
         Self {
             depth_threshold: threshold,
@@ -196,7 +196,7 @@ impl CostModel {
     }
 
     /// Create with aggressive depth penalty for complex kernels.
-    #[must_use] 
+    #[must_use]
     pub fn shallow() -> Self {
         Self {
             depth_threshold: 16,
@@ -211,7 +211,7 @@ impl CostModel {
 
     /// Get cost for an OpKind.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn cost(&self, op: OpKind) -> usize {
         self.costs[op.index()]
     }
@@ -223,7 +223,7 @@ impl CostModel {
     }
 
     /// Get the raw costs array.
-    #[must_use] 
+    #[must_use]
     pub fn costs(&self) -> &[usize; OpKind::COUNT] {
         &self.costs
     }
@@ -235,7 +235,7 @@ impl CostModel {
 
     /// Calculate the hinge penalty for a given depth.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn depth_cost(&self, depth: usize) -> usize {
         if depth > self.depth_threshold {
             (depth - self.depth_threshold) * self.depth_penalty
@@ -245,7 +245,7 @@ impl CostModel {
     }
 
     /// Get cost for an ENode.
-    #[must_use] 
+    #[must_use]
     pub fn node_op_cost(&self, node: &ENode) -> usize {
         match node {
             ENode::Var(_) | ENode::Const(_) => 0,
@@ -254,7 +254,7 @@ impl CostModel {
     }
 
     /// Get cost by operation name (for backward compatibility).
-    #[must_use] 
+    #[must_use]
     pub fn cost_by_name(&self, name: &str) -> usize {
         // Map name to OpKind
         let op = match name {
@@ -349,10 +349,11 @@ impl CostModel {
                         // Try to parse as OpKind name
                         for i in 0..OpKind::COUNT {
                             if let Some(op) = OpKind::from_index(i)
-                                && op.name() == key {
-                                    model.costs[i] = v;
-                                    break;
-                                }
+                                && op.name() == key
+                            {
+                                model.costs[i] = v;
+                                break;
+                            }
                         }
                     }
                 }
@@ -363,18 +364,18 @@ impl CostModel {
     }
 
     /// Try to load from a standard location, falling back to fully_optimized.
-    #[must_use] 
+    #[must_use]
     pub fn load_or_default() -> Self {
         // Check environment variable first
         if let Ok(path) = std::env::var("PIXELFLOW_COST_MODEL")
-            && let Ok(model) = Self::load_toml(&path) {
-                return model;
-            }
+            && let Ok(model) = Self::load_toml(&path)
+        {
+            return model;
+        }
 
         // Try user config directory
         if let Some(home) = std::env::var_os("HOME") {
-            let config_path = Path::new(&home)
-                .join(".config/pixelflow/cost_model.toml");
+            let config_path = Path::new(&home).join(".config/pixelflow/cost_model.toml");
             if let Ok(model) = Self::load_toml(&config_path) {
                 return model;
             }
@@ -400,7 +401,7 @@ impl CostModel {
     // =========================================================================
 
     /// Create from HashMap (for backward compatibility).
-    #[must_use] 
+    #[must_use]
     pub fn from_map(costs: &HashMap<String, usize>) -> Self {
         let mut model = Self::with_defaults();
         for (key, &value) in costs {
@@ -411,10 +412,11 @@ impl CostModel {
             } else {
                 for i in 0..OpKind::COUNT {
                     if let Some(op) = OpKind::from_index(i)
-                        && op.name() == key {
-                            model.costs[i] = value;
-                            break;
-                        }
+                        && op.name() == key
+                    {
+                        model.costs[i] = value;
+                        break;
+                    }
                 }
             }
         }
@@ -422,7 +424,7 @@ impl CostModel {
     }
 
     /// Convert to HashMap for interop.
-    #[must_use] 
+    #[must_use]
     pub fn to_map(&self) -> HashMap<String, usize> {
         let mut map = HashMap::new();
         for i in 0..OpKind::COUNT {

@@ -3,8 +3,8 @@
 //! Bridges the gap between `pixelflow_search::egraph` types and `pixelflow_nnue` types
 //! for feature extraction and training data generation.
 
-use crate::egraph::{EClassId, EGraph, ENode, ops};
 use crate::egraph::extract::{ExprTree, Leaf};
+use crate::egraph::{EClassId, EGraph, ENode, ops};
 use alloc::boxed::Box;
 use alloc::vec;
 use pixelflow_nnue::{Expr, OpKind};
@@ -21,14 +21,14 @@ pub fn op_to_nnue(op: &dyn crate::egraph::ops::Op) -> OpKind {
 ///
 /// Delegates to `ops::op_from_kind`.
 #[inline]
-#[must_use] 
+#[must_use]
 pub fn nnue_to_op(kind: OpKind) -> Option<&'static dyn crate::egraph::ops::Op> {
     ops::op_from_kind(kind)
 }
 
 /// Extract a concrete `Expr` from an e-class.
 /// Picks the first representative (a real implementation would use cost-based extraction).
-#[must_use] 
+#[must_use]
 pub fn eclass_to_expr(egraph: &EGraph, class: EClassId) -> Expr {
     let node = &egraph.nodes(class)[0];
 
@@ -57,7 +57,7 @@ pub fn eclass_to_expr(egraph: &EGraph, class: EClassId) -> Expr {
 }
 
 /// Convert an `ExprTree` to a NNUE `Expr` for feature extraction.
-#[must_use] 
+#[must_use]
 pub fn expr_tree_to_nnue(tree: &ExprTree) -> Expr {
     match tree {
         ExprTree::Leaf(Leaf::Var(i)) => Expr::Var(*i),
@@ -108,8 +108,8 @@ pub fn expr_to_egraph(expr: &Expr, egraph: &mut EGraph) -> EClassId {
                 });
             }
 
-            let op_ref = nnue_to_op(*kind)
-                .unwrap_or_else(|| panic!("Unsupported binary op: {:?}", kind));
+            let op_ref =
+                nnue_to_op(*kind).unwrap_or_else(|| panic!("Unsupported binary op: {:?}", kind));
             egraph.add(ENode::Op {
                 op: op_ref,
                 children: vec![a_class, b_class],
@@ -117,8 +117,8 @@ pub fn expr_to_egraph(expr: &Expr, egraph: &mut EGraph) -> EClassId {
         }
         Expr::Unary(kind, a) => {
             let a_class = expr_to_egraph(a, egraph);
-            let op_ref = nnue_to_op(*kind)
-                .unwrap_or_else(|| panic!("Unsupported unary op: {:?}", kind));
+            let op_ref =
+                nnue_to_op(*kind).unwrap_or_else(|| panic!("Unsupported unary op: {:?}", kind));
             egraph.add(ENode::Op {
                 op: op_ref,
                 children: vec![a_class],
@@ -128,17 +128,16 @@ pub fn expr_to_egraph(expr: &Expr, egraph: &mut EGraph) -> EClassId {
             let a_class = expr_to_egraph(a, egraph);
             let b_class = expr_to_egraph(b, egraph);
             let c_class = expr_to_egraph(c, egraph);
-            let op_ref = nnue_to_op(*kind)
-                .unwrap_or_else(|| panic!("Unsupported ternary op: {:?}", kind));
+            let op_ref =
+                nnue_to_op(*kind).unwrap_or_else(|| panic!("Unsupported ternary op: {:?}", kind));
             egraph.add(ENode::Op {
                 op: op_ref,
                 children: vec![a_class, b_class, c_class],
             })
         }
         Expr::Nary(kind, children) => {
-            let child_classes: Vec<_> = children.iter()
-                .map(|c| expr_to_egraph(c, egraph))
-                .collect();
+            let child_classes: Vec<_> =
+                children.iter().map(|c| expr_to_egraph(c, egraph)).collect();
             // Currently only Tuple is supported as Nary
             match kind {
                 OpKind::Tuple => {
@@ -171,8 +170,9 @@ mod tests {
                 op1 == op2 && expr_equals(a1, a2) && expr_equals(b1, b2) && expr_equals(c1, c2)
             }
             (Expr::Nary(op1, c1), Expr::Nary(op2, c2)) => {
-                op1 == op2 && c1.len() == c2.len() &&
-                c1.iter().zip(c2.iter()).all(|(x, y)| expr_equals(x, y))
+                op1 == op2
+                    && c1.len() == c2.len()
+                    && c1.iter().zip(c2.iter()).all(|(x, y)| expr_equals(x, y))
             }
             _ => false,
         }
@@ -197,7 +197,12 @@ mod tests {
             let nnue_op = op_to_nnue(*op);
             let back = nnue_to_op(nnue_op);
             assert!(back.is_some(), "Roundtrip failed for {}", op.name());
-            assert_eq!(back.unwrap().name(), op.name(), "Roundtrip failed for {}", op.name());
+            assert_eq!(
+                back.unwrap().name(),
+                op.name(),
+                "Roundtrip failed for {}",
+                op.name()
+            );
         }
     }
 
@@ -211,11 +216,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_simple() {
-        let expr = Expr::Binary(
-            OpKind::Add,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Var(1)),
-        );
+        let expr = Expr::Binary(OpKind::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1)));
         let mut egraph = EGraph::new();
         let class = expr_to_egraph(&expr, &mut egraph);
         let recovered = eclass_to_expr(&egraph, class);

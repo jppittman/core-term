@@ -103,7 +103,7 @@ impl Jet3 {
     /// Returns manifold expressions for the unit normal components.
     /// Use `Jet3::new(nx, ny, nz)` to collapse if needed.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn normal(
         &self,
     ) -> (
@@ -122,7 +122,7 @@ impl Jet3 {
 
     /// Get the raw gradient without normalization.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn gradient(&self) -> (Field, Field, Field) {
         (self.dx, self.dy, self.dz)
     }
@@ -144,28 +144,28 @@ impl Jet3 {
 
     /// Less than comparison (returns mask jet).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn lt(self, rhs: Self) -> Self {
         Self::constant(self.val.lt(rhs.val))
     }
 
     /// Less than or equal (returns mask jet).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn le(self, rhs: Self) -> Self {
         Self::constant(self.val.le(rhs.val))
     }
 
     /// Greater than comparison (returns mask jet).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn gt(self, rhs: Self) -> Self {
         Self::constant(self.val.gt(rhs.val))
     }
 
     /// Greater than or equal (returns mask jet).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn ge(self, rhs: Self) -> Self {
         Self::constant(self.val.ge(rhs.val))
     }
@@ -175,14 +175,14 @@ impl Jet3 {
     /// Returns `Jet3Sqrt` which enables automatic rsqrt fusion when divided.
     /// Example: `a / b.sqrt()` computes `a * rsqrt(b)` (faster than `a / sqrt(b)`).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn sqrt(self) -> Jet3Sqrt {
         Jet3Sqrt(self)
     }
 
     /// Absolute value with derivative.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn abs(self) -> Self {
         // |f|' = f' * sign(f)
         let sign = self.val / self.val.abs();
@@ -196,7 +196,7 @@ impl Jet3 {
 
     /// Element-wise minimum with derivative.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn min(self, rhs: Self) -> Self {
         let mask = self.val.lt(rhs.val);
         Self {
@@ -209,7 +209,7 @@ impl Jet3 {
 
     /// Element-wise maximum with derivative.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn max(self, rhs: Self) -> Self {
         let mask = self.val.gt(rhs.val);
         Self {
@@ -222,21 +222,21 @@ impl Jet3 {
 
     /// Check if any lane of the value is non-zero.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn any(&self) -> bool {
         self.val.any()
     }
 
     /// Check if all lanes of the value are non-zero.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn all(&self) -> bool {
         self.val.all()
     }
 
     /// Conditional select with early-exit optimization.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
         if mask.all() {
             return if_true;
@@ -265,7 +265,7 @@ pub struct Jet3Sqrt(Jet3);
 impl Jet3Sqrt {
     /// Evaluate to get the actual sqrt result as Jet3.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn eval(self) -> Jet3 {
         // Chain rule: (√f)' = f' / (2√f) = f' * rsqrt(f) / 2
         let rsqrt_val = self.0.val.rsqrt();
@@ -421,12 +421,7 @@ impl Jet3 {
     /// via operator overloads, not call raw SIMD operations directly.
     #[inline(always)]
     pub(crate) fn scale(self, s: Field) -> Jet3 {
-        Jet3::new(
-            self.val * s,
-            self.dx * s,
-            self.dy * s,
-            self.dz * s,
-        )
+        Jet3::new(self.val * s, self.dx * s, self.dy * s, self.dz * s)
     }
 }
 

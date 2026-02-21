@@ -25,7 +25,10 @@
 
 #![allow(dead_code, unused_imports)]
 
-use crate::ast::{BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt, UnaryExpr, UnaryOp};
+use crate::ast::{
+    BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LiteralExpr, MethodCallExpr, Stmt,
+    UnaryExpr, UnaryOp,
+};
 use syn::Ident;
 
 /// A fold (catamorphism) over the expression AST.
@@ -84,7 +87,11 @@ pub trait ExprFold {
     }
 
     /// Transform a block expression.
-    fn fold_block(&mut self, stmts: Vec<Self::Output>, final_expr: Option<Self::Output>) -> Self::Output;
+    fn fold_block(
+        &mut self,
+        stmts: Vec<Self::Output>,
+        final_expr: Option<Self::Output>,
+    ) -> Self::Output;
 
     /// Transform a tuple expression.
     fn fold_tuple(&mut self, elems: Vec<Self::Output>) -> Self::Output;
@@ -129,12 +136,12 @@ pub fn fold_expr<F: ExprFold>(folder: &mut F, expr: &Expr) -> F::Output {
             let stmts: Vec<_> = block
                 .stmts
                 .iter()
-                .filter_map(|stmt| match stmt {
+                .map(|stmt| match stmt {
                     Stmt::Let(let_stmt) => {
                         let init = fold_expr(folder, &let_stmt.init);
-                        Some(folder.fold_let(&let_stmt.name, init))
+                        folder.fold_let(&let_stmt.name, init)
                     }
-                    Stmt::Expr(e) => Some(fold_expr(folder, e)),
+                    Stmt::Expr(e) => fold_expr(folder, e),
                 })
                 .collect();
             let final_expr = block.expr.as_ref().map(|e| fold_expr(folder, e));

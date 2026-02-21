@@ -93,9 +93,9 @@
 //! ```
 
 mod error;
+pub mod kubelet;
 mod lifecycle;
 mod params;
-pub mod kubelet;
 pub mod registry;
 pub mod service;
 pub mod sharded;
@@ -103,7 +103,7 @@ pub mod spsc;
 
 use error::DrainStatus;
 pub use error::{HandlerError, HandlerResult, SendError};
-pub use kubelet::{KubeletBuilder, SpawnedPod, spawn_managed, Kubelet};
+pub use kubelet::{Kubelet, KubeletBuilder, SpawnedPod, spawn_managed};
 pub use lifecycle::{PodPhase, RestartPolicy};
 pub use params::SchedulerParams;
 pub use registry::{PodGone, PodSlot};
@@ -524,16 +524,13 @@ impl<D, C, M> ActorBuilder<D, C, M> {
     /// # Arguments
     /// * `data_buffer_size` - Per-producer SPSC buffer size for the data lane
     /// * `wake_handler` - Optional platform wake handler (e.g., macOS Cocoa waker)
-    #[must_use] 
-    pub fn new(
-        data_buffer_size: usize,
-        wake_handler: Option<Arc<dyn WakeHandler>>,
-    ) -> Self {
+    #[must_use]
+    pub fn new(data_buffer_size: usize, wake_handler: Option<Arc<dyn WakeHandler>>) -> Self {
         Self::new_with_params(data_buffer_size, wake_handler, SchedulerParams::DEFAULT)
     }
 
     /// Create a new builder with explicit tuning parameters.
-    #[must_use] 
+    #[must_use]
     pub fn new_with_params(
         data_buffer_size: usize,
         wake_handler: Option<Arc<dyn WakeHandler>>,
@@ -578,23 +575,21 @@ impl<D, C, M> ActorBuilder<D, C, M> {
     ///
     /// Uses default burst limits from [`SchedulerParams`].
     /// No more producers can be added after this call.
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> ActorScheduler<D, C, M> {
         let burst = self.params.default_data_burst_limit;
         self.build_with_burst(burst, ShutdownMode::default())
     }
 
     /// Seal the registry with explicit burst limit and shutdown mode.
-    #[must_use] 
+    #[must_use]
     pub fn build_with_burst(
         self,
         data_burst_limit: usize,
         shutdown_mode: ShutdownMode,
     ) -> ActorScheduler<D, C, M> {
         ActorScheduler {
-            rx_doorbell: self
-                .rx_doorbell
-                .expect("ActorBuilder::build called twice"),
+            rx_doorbell: self.rx_doorbell.expect("ActorBuilder::build called twice"),
             rx_data: self.data_inbox.build(),
             rx_control: self.control_inbox.build(),
             rx_mgmt: self.mgmt_inbox.build(),
@@ -863,9 +858,9 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         A: Actor<D, C, M>,
     {
         // Drain control completely
-        while let DrainStatus::More =
-            self.rx_control
-                .drain(usize::MAX, |msg| actor.handle_control(msg))?
+        while let DrainStatus::More = self
+            .rx_control
+            .drain(usize::MAX, |msg| actor.handle_control(msg))?
         {}
 
         // Drain management completely
@@ -946,11 +941,9 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             .rx_control
             .drain(half_control, |msg| actor.handle_control(msg))?;
 
-        let mgmt = self
-            .rx_mgmt
-            .drain(self.management_burst_limit, |msg| {
-                actor.handle_management(msg)
-            })?;
+        let mgmt = self.rx_mgmt.drain(self.management_burst_limit, |msg| {
+            actor.handle_management(msg)
+        })?;
 
         let control2 = self
             .rx_control
@@ -1127,7 +1120,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
             Ok(System::Wake) | Err(TryRecvError::Empty) => {
                 match self.handle_wake(actor) {
-                    Ok(Some(_)) => None, // still running
+                    Ok(Some(_)) => None,                   // still running
                     Ok(None) => Some(PodPhase::Completed), // all disconnected
                     Err(HandlerError::Recoverable(msg)) => Some(PodPhase::Failed(msg)),
                     Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
@@ -1422,8 +1415,12 @@ mod poll_once_tests {
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 Err(HandlerError::recoverable("injected failure"))
             }
-            fn handle_control(&mut self, _: i32) -> HandlerResult { Ok(()) }
-            fn handle_management(&mut self, _: i32) -> HandlerResult { Ok(()) }
+            fn handle_control(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: i32) -> HandlerResult {
+                Ok(())
+            }
             fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
