@@ -586,7 +586,7 @@ fn nnue_expr_to_tree(expr: &Expr) -> ExprTree {
         Expr::Unary(op, a) => {
             let a_tree = nnue_expr_to_tree(a);
             match op {
-                OpType::Neg => ExprTree::neg(a_tree),
+                OpType::Neg => ExprTree::op_neg(a_tree),
                 OpType::Sqrt => ExprTree::sqrt(a_tree),
                 OpType::Rsqrt => ExprTree::Op {
                     op: &ops::Rsqrt,
@@ -600,10 +600,10 @@ fn nnue_expr_to_tree(expr: &Expr) -> ExprTree {
             let a_tree = nnue_expr_to_tree(a);
             let b_tree = nnue_expr_to_tree(b);
             match op {
-                OpType::Add => ExprTree::add(a_tree, b_tree),
-                OpType::Sub => ExprTree::sub(a_tree, b_tree),
-                OpType::Mul => ExprTree::mul(a_tree, b_tree),
-                OpType::Div => ExprTree::div(a_tree, b_tree),
+                OpType::Add => ExprTree::op_add(a_tree, b_tree),
+                OpType::Sub => ExprTree::op_sub(a_tree, b_tree),
+                OpType::Mul => ExprTree::op_mul(a_tree, b_tree),
+                OpType::Div => ExprTree::op_div(a_tree, b_tree),
                 OpType::Min => ExprTree::min(a_tree, b_tree),
                 OpType::Max => ExprTree::max(a_tree, b_tree),
                 _ => ExprTree::var(0), // Fallback

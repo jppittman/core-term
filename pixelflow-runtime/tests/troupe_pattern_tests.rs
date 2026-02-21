@@ -260,7 +260,7 @@ fn directory_allows_cross_actor_messaging() {
 struct TestTroupe {
     // Builders are held until play() consumes them
     alpha_builder: ActorBuilder<AlphaData, AlphaControl, AlphaManagement>,
-    beta_builder: ActorBuilder<BetaData, BetaControl, BetaManagement>,
+    _beta_builder: ActorBuilder<BetaData, BetaControl, BetaManagement>,
     // Directories for each actor
     #[allow(dead_code)]
     alpha_dir: TestDirectory,
@@ -291,7 +291,7 @@ impl TestTroupe {
 
         Self {
             alpha_builder,
-            beta_builder,
+            _beta_builder: beta_builder,
             alpha_dir,
             beta_dir,
         }
