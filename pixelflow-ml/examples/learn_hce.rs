@@ -342,6 +342,10 @@ fn format_nnue_expr(expr: &pixelflow_nnue::Expr) -> String {
         pixelflow_nnue::Expr::Unary(op, a) => format!("{}({})", op_name(*op), format_nnue_expr(a)),
         pixelflow_nnue::Expr::Binary(op, a, b) => format!("{}({}, {})", op_name(*op), format_nnue_expr(a), format_nnue_expr(b)),
         pixelflow_nnue::Expr::Ternary(op, a, b, c) => format!("{}({}, {}, {})", op_name(*op), format_nnue_expr(a), format_nnue_expr(b), format_nnue_expr(c)),
+        pixelflow_nnue::Expr::Nary(op, children) => {
+            let args: Vec<String> = children.iter().map(|c| format_nnue_expr(c)).collect();
+            format!("{}({})", op_name(*op), args.join(", "))
+        }
     }
 }
 

@@ -114,7 +114,9 @@ impl NixPty {
                 }
 
                 // Set controlling terminal
-                if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY, 0) == -1 {
+                // TIOCSCTTY is u32 on Linux but u64 (c_ulong) on macOS.
+                // We cast to c_ulong to satisfy both platforms.
+                if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY as _, 0) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
 
