@@ -44,7 +44,7 @@ pub enum RewriteAction {
 }
 
 /// A rewrite rule that can be applied to e-graph nodes.
-pub trait Rewrite {
+pub trait Rewrite: Send + Sync {
     /// Human-readable name for debugging.
     fn name(&self) -> &str;
 
