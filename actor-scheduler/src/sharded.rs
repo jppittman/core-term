@@ -203,7 +203,7 @@ mod tests {
         }
 
         let mut count = 0;
-        let status = inbox
+        let _status = inbox
             .drain(10, |_msg| {
                 count += 1;
                 Ok(())
@@ -211,7 +211,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 10);
-        assert_eq!(status, DrainStatus::More);
+        assert_eq!(DrainStatus::More, _status);
     }
 
     #[test]
@@ -267,7 +267,7 @@ mod tests {
         drop(tx);
 
         let mut received = Vec::new();
-        let status = inbox
+        let _status = inbox
             .drain(100, |msg| {
                 received.push(msg);
                 Ok(())
