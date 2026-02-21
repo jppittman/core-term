@@ -242,11 +242,11 @@ fn bake_eigen() {
 
         // Read spline coefficients: 3 subpatches × K bases × 16 coeffs
         let mut spline_coeffs = vec![vec![vec![0.0f32; 16]; k]; 3];
-        for subpatch in 0..3 {
-            for basis in 0..k {
-                for coeff in 0..16 {
+        for subpatch_coeffs in spline_coeffs.iter_mut().take(3) {
+            for basis_coeffs in subpatch_coeffs.iter_mut().take(k) {
+                for coeff in basis_coeffs.iter_mut().take(16) {
                     let val = read_f64_le(&data, offset);
-                    spline_coeffs[subpatch][basis][coeff] = val as f32;
+                    *coeff = val as f32;
                     offset += 8;
                 }
             }
