@@ -45,6 +45,13 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
+/// Maximum number of data messages (render requests) to process per wake cycle.
+const RASTER_DATA_BURST_LIMIT: usize = 64;
+
+/// Size of the data channel buffer (backpressure threshold).
+/// This limits how many render requests can be queued before the sender blocks.
+const RASTER_DATA_BUFFER_SIZE: usize = 16;
+
 /// Rasterizer actor for parallel frame rendering.
 ///
 /// This actor manages a pool of worker threads for rendering frames via
@@ -112,7 +119,10 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
 
             // PHASE 2: Create the actor scheduler
             let (handle, mut scheduler) =
-                ActorScheduler::<RenderRequest<P>, RasterControl, RasterManagement>::new(64, 16);
+                ActorScheduler::<RenderRequest<P>, RasterControl, RasterManagement>::new(
+                    RASTER_DATA_BURST_LIMIT,
+                    RASTER_DATA_BUFFER_SIZE,
+                );
 
             // Send the full handle back to the caller
             reply_tx
