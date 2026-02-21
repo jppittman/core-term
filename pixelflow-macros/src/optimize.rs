@@ -855,12 +855,12 @@ impl EGraphContext {
                 let expr = self.eclass_to_expr(canonical, dag, &binding_names);
 
                 // Create let statement
-                stmts.push(Stmt::Let(LetStmt {
+                stmts.push(Stmt::Let(Box::new(LetStmt {
                     name: Ident::new(&var_name, span),
                     ty: None,
                     init: expr,
                     span,
-                }));
+                })));
 
                 binding_names.insert(canonical.index(), var_name);
                 binding_idx += 1;

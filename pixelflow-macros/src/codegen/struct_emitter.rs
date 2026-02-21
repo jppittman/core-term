@@ -123,19 +123,9 @@ impl StructEmitter {
 
     pub fn with_eval_body(
         mut self,
-        imports: TokenStream,
-        peano_imports: TokenStream,
-        pre_eval_stmts: TokenStream,
-        expr: TokenStream,
-        binding: TokenStream,
+        eval_body: EvalBody,
     ) -> Self {
-        self.eval_body = Some(EvalBody {
-            imports,
-            peano_imports,
-            pre_eval_stmts,
-            expr,
-            binding,
-        });
+        self.eval_body = Some(eval_body);
         self
     }
 
