@@ -514,7 +514,7 @@ mod tests {
     use super::*;
     use crate::{ActorStatus, HandlerError, HandlerResult, SystemStatus};
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     // ── Minimal actor for testing ───────────────────────────────────────────
 

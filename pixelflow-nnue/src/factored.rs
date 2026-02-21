@@ -169,9 +169,9 @@ impl OpEmbeddings {
         let mut rng_state = seed.wrapping_add(1);
         let small_scale = 0.1; // Small noise for other dimensions
 
-        for op_idx in 0..OpKind::COUNT {
+        for (op_idx, &latency) in latencies.iter().enumerate() {
             // Dimension 0: latency prior
-            self.e[op_idx][0] = latencies[op_idx];
+            self.e[op_idx][0] = latency;
 
             // Dimensions 1..K: small random for learning interactions
             for dim in 1..K {

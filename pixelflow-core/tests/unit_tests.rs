@@ -51,17 +51,6 @@ fn assert_field_approx_eq(field: Field, expected: f32) {
     // Check if difference is small enough
     if !mask.all() {
         // If not, materialize to show details
-        #[derive(Clone, Copy)]
-        struct Wrapper(Field);
-        impl pixelflow_core::ops::Vector for Wrapper {
-            type Component = Field;
-            fn get(&self, _axis: Axis) -> Field { self.0 }
-        }
-        impl Manifold for Wrapper {
-            type Output = Wrapper;
-            fn eval(&self, _: (Field, Field, Field, Field)) -> Wrapper { *self }
-        }
-
         let m = Wrapper(field);
         let mut out = vec![0.0f32; PARALLELISM * 4];
         materialize(&m, 0.0, 0.0, &mut out);
@@ -75,6 +64,17 @@ fn assert_field_approx_eq(field: Field, expected: f32) {
 
         panic!("Field assertion failed.\nExpected: approx {}\nActual (lanes): {:?}", expected, actual_values);
     }
+}
+
+#[derive(Clone, Copy)]
+struct Wrapper(Field);
+impl pixelflow_core::ops::Vector for Wrapper {
+    type Component = Field;
+    fn get(&self, _axis: Axis) -> Field { self.0 }
+}
+impl Manifold for Wrapper {
+    type Output = Wrapper;
+    fn eval(&self, _: (Field, Field, Field, Field)) -> Wrapper { *self }
 }
 
 // ============================================================================
@@ -97,7 +97,7 @@ mod field_tests {
     }
 
     #[test]
-    fn field_arithmetic_should_compute_correctly() {
+    fn field_arithmetic_should_return_sum_diff_prod_quotient() {
         let a: Field = 2.0f32.into();
         let b: Field = 3.0f32.into();
         let zero = Field::from(0.0);
@@ -110,12 +110,70 @@ mod field_tests {
     }
 
     #[test]
-    fn field_bitwise_should_compute_correctly() {
+    fn field_bitwise_and_should_mask_disjoint_bits() {
         let a: Field = 1.0f32.into();
         let b: Field = 2.0f32.into();
 
         // 1.0 & 2.0 -> 0.0 (bitwise representation)
         assert_field_approx_eq(a & b, 0.0);
+    }
+
+    #[test]
+    fn field_bitwise_or_should_combine_bits() {
+        // 1.0 is 0x3F800000
+        // 2.0 is 0x40000000
+        // 1.0 | 2.0 is 0x7F800000 which is Infinity
+        let a: Field = 1.0f32.into();
+        let b: Field = 2.0f32.into();
+        let res = a | b;
+
+        // We can't use assert_field_approx_eq directly for infinity because it does (a-b).abs()
+        // which would be Inf or NaN.
+        // We will inspect bits.
+
+        // This requires materializing.
+        // We can't eval `res` because it's a Field not a Manifold unless wrapped?
+        // Wait, Field implements Manifold? No, Field is computational substrate.
+        // But `(a+b).eval(coords)` works because `Field + Field` returns `Add<Field, Field>`.
+        // `a | b` returns `Field` because `BitOr` for `Field` returns `Field`.
+        // So `res` is `Field`.
+
+        // `assert_field_approx_eq` takes `Field`.
+
+        // Let's materialize `res`.
+        let m = Wrapper(res);
+        let mut out = vec![0.0f32; PARALLELISM * 4];
+        materialize(&m, 0.0, 0.0, &mut out);
+
+        // Check first lane
+        let val = out[0];
+        assert!(val.is_infinite());
+        assert!(val.is_sign_positive());
+    }
+
+    #[test]
+    fn field_bitwise_and_should_mask_bits() {
+        // 2.0 is 0x40000000
+        // 3.0 is 0x40400000
+        // 2.0 & 3.0 is 0x40000000 (2.0)
+        let a: Field = 2.0f32.into();
+        let b: Field = 3.0f32.into();
+        assert_field_approx_eq(a & b, 2.0);
+    }
+
+    #[test]
+    fn field_bitwise_not_should_flip_bits() {
+        // 0.0 is 0x00000000
+        // !0.0 is 0xFFFFFFFF which is NaN
+        let a: Field = 0.0f32.into();
+        let res = !a;
+
+        let m = Wrapper(res);
+        let mut out = vec![0.0f32; PARALLELISM * 4];
+        materialize(&m, 0.0, 0.0, &mut out);
+
+        let val = out[0];
+        assert!(val.is_nan());
     }
 
     #[test]
@@ -125,8 +183,14 @@ mod field_tests {
         // min/max return Min/Max combinators - eval them to get Field
         let zero = Field::from(0.0);
         let coords = (zero, zero, zero, zero);
+
+        // Commutative tests for Min
         assert_field_approx_eq(a.min(b).eval(coords), 3.0);
+        assert_field_approx_eq(b.min(a).eval(coords), 3.0);
+
+        // Commutative tests for Max
         assert_field_approx_eq(a.max(b).eval(coords), 5.0);
+        assert_field_approx_eq(b.max(a).eval(coords), 5.0);
     }
 
     // Robustness tests
@@ -151,6 +215,43 @@ mod field_tests {
         let coords = (zero, zero, zero, zero);
 
         assert_field_approx_eq(expr.eval(coords), 0.0);
+    }
+
+    #[test]
+    fn field_recip_should_return_inf_at_zero() {
+        // Compute 1.0 / 0.0 via AST
+        let f = Field::from(0.0);
+        let one = Field::from(1.0);
+        let expr = one / f;
+        let zero = Field::from(0.0);
+        let coords = (zero, zero, zero, zero);
+
+        let res = expr.eval(coords);
+
+        // Check for Inf
+        let m = Wrapper(res);
+        let mut out = vec![0.0f32; PARALLELISM * 4];
+        materialize(&m, 0.0, 0.0, &mut out);
+
+        let val = out[0];
+        assert!(val.is_infinite());
+    }
+
+    #[test]
+    fn field_rsqrt_should_return_inf_at_zero() {
+         use pixelflow_core::ops::unary::Rsqrt;
+         let expr = Rsqrt(Field::from(0.0));
+         let zero = Field::from(0.0);
+         let coords = (zero, zero, zero, zero);
+
+         let res = expr.eval(coords);
+
+         let m = Wrapper(res);
+         let mut out = vec![0.0f32; PARALLELISM * 4];
+         materialize(&m, 0.0, 0.0, &mut out);
+
+         let val = out[0];
+         assert!(val.is_infinite());
     }
 }
 
@@ -227,7 +328,7 @@ mod binary_ops_tests {
     use super::*;
 
     #[test]
-    fn manifold_operators_should_compute_correctly() {
+    fn manifold_operators_should_return_arithmetic_results() {
         let x = Field::from(10.0);
         let y = Field::from(2.0);
         let zero = Field::from(0.0);
@@ -248,7 +349,7 @@ mod unary_ops_tests {
     use super::*;
 
     #[test]
-    fn unary_operators_should_compute_correctly() {
+    fn unary_operators_should_return_sqrt_abs_max_min() {
         let x = Field::from(4.0);
         let neg_x = Field::from(-4.0);
         let y = Field::from(5.0);
@@ -352,18 +453,7 @@ mod select_tests {
         let result = s.eval(coords);
 
         // Helper to inspect lanes
-        #[derive(Clone, Copy)]
-        struct Res(Field);
-        impl pixelflow_core::ops::Vector for Res {
-            type Component = Field;
-            fn get(&self, _axis: Axis) -> Field { self.0 }
-        }
-        impl Manifold for Res {
-             type Output = Res;
-             fn eval(&self, _: (Field, Field, Field, Field)) -> Res { *self }
-        }
-
-        let m = Res(result);
+        let m = Wrapper(result);
         let mut out = vec![0.0f32; PARALLELISM * 4];
         materialize(&m, 0.0, 0.0, &mut out);
 
