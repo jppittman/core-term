@@ -40,7 +40,7 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use super::cost::CostModel;
 use super::extract::ExprTree;
 use super::graph::EGraph;
-use super::node::{EClassId, ENode};
+use super::node::EClassId;
 
 /// An action in the guided search space.
 ///

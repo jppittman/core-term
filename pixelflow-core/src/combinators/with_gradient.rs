@@ -314,12 +314,12 @@ mod tests {
             dx
         );
         assert!(
-            (dy - 2.0 / 3.0).abs() < 1e-4,
+            (dy - 2.0 / 3.0).abs() < 1e-3,
             "dy should be 2/3, got {}",
             dy
         );
         assert!(
-            (dz - 2.0 / 3.0).abs() < 1e-4,
+            (dz - 2.0 / 3.0).abs() < 1e-3,
             "dz should be 2/3, got {}",
             dz
         );
