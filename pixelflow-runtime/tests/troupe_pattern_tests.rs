@@ -264,6 +264,7 @@ struct TestTroupe {
     alpha_scheduler: ActorScheduler<AlphaData, AlphaControl, AlphaManagement>,
     #[allow(dead_code)]
     beta_scheduler: ActorScheduler<BetaData, BetaControl, BetaManagement>,
+    exposed_alpha: Option<ActorHandle<AlphaData, AlphaControl, AlphaManagement>>,
 }
 
 struct TestExposedHandles {
@@ -287,17 +288,52 @@ impl TestTroupe {
             beta: beta_builder.add_producer(),
         };
 
+        // Create exposed handles
+        let exposed_alpha = Some(alpha_builder.add_producer());
+
+        // Create main directory
+        let directory = TestDirectory {
+            alpha: alpha_builder.add_producer(), // Placeholder, not used in this test logic
+            beta: beta_builder.add_producer(),
+        };
+
+        let mut alpha_scheduler = alpha_builder.build();
+        let mut beta_scheduler = beta_builder.build();
+
+        // Spawn actors
+        // Note: In this test harness, we spawn them immediately.
+        // The schedulers passed to thread must be the ones we built.
+        // But wait, TestTroupe holds the schedulers.
+        // If we spawn here, we need to move the scheduler into the thread.
+        // But TestTroupe needs to keep them alive?
+        // The original code passed builders to TestTroupe and let it build/spawn later?
+        // No, the original code had `alpha_builder` fields.
+        // The test `two_phase_initialization_queues_messages_before_play` does:
+        // let mut troupe = TestTroupe::new();
+        // let exposed = troupe.exposed();
+        // exposed.alpha.send(...)
+        // drop(troupe);
+        // It doesn't call play(). It just verifies queueing works.
+        // So we don't need to spawn threads in `new()`.
+        // We just need to hold the schedulers.
+
+        // We do need to spawn the actors eventually if we want them to process messages.
+        // But for *this specific test*, it just checks that sending doesn't fail.
+
+        // Wait, the "directory" fields in TestTroupe were just holding handles.
+        // We need to ensure the actors *would* have access to them.
+
         Self {
-            alpha_builder,
-            beta_builder,
-            alpha_dir,
-            beta_dir,
+            directory,
+            alpha_scheduler,
+            beta_scheduler,
+            exposed_alpha,
         }
     }
 
     fn exposed(&mut self) -> TestExposedHandles {
         TestExposedHandles {
-            alpha: self.alpha_builder.add_producer(),
+            alpha: self.exposed_alpha.take().expect("exposed() called twice"),
         }
     }
 }
