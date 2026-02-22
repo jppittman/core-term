@@ -44,18 +44,15 @@ fn find_derivative_params_inner(
             let func_str = call.func.to_string();
             // Check for derivative operations: DX, DY, DZ, V
             if matches!(func_str.as_str(), "DX" | "DY" | "DZ" | "V") {
-                if let Some(arg) = call.args.first() {
-                    // Check if the argument is a manifold param or a local bound to one
-                    if let AnnotatedExpr::Ident(ident_expr) = arg {
-                        let name_str = ident_expr.name.to_string();
-                        // Local bound to manifold param (e.g., `let t = geometry;`)
-                        if let Some(manifold_name) = locals_to_manifolds.get(&name_str) {
-                            result.insert(manifold_name.clone());
-                        } else if let Some(symbol) = symbols.lookup(&name_str) {
-                            // Direct manifold param reference
-                            if matches!(symbol.kind, SymbolKind::ManifoldParam) {
-                                result.insert(name_str);
-                            }
+                if let Some(AnnotatedExpr::Ident(ident_expr)) = call.args.first() {
+                    let name_str = ident_expr.name.to_string();
+                    // Local bound to manifold param (e.g., `let t = geometry;`)
+                    if let Some(manifold_name) = locals_to_manifolds.get(&name_str) {
+                        result.insert(manifold_name.clone());
+                    } else if let Some(symbol) = symbols.lookup(&name_str) {
+                        // Direct manifold param reference
+                        if matches!(symbol.kind, SymbolKind::ManifoldParam) {
+                            result.insert(name_str);
                         }
                     }
                 }
@@ -592,9 +589,7 @@ fn find_at_manifold_params_inner(
             // - Unit struct or single scalar param → CloneCopy
             // - Single manifold param → Clone (Copy handled conditionally in StructEmitter)
             // - Multiple params → Clone only (multi-field structs shouldn't derive Copy)
-            let derives = if params.is_empty() {
-                Derives::CloneCopy
-            } else if manifold_count == 0 && params.len() == 1 {
+            let derives = if params.is_empty() || (manifold_count == 0 && params.len() == 1) {
                 Derives::CloneCopy
             } else {
                 Derives::Clone
