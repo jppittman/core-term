@@ -8,6 +8,8 @@
 //! For quadratics: analytical root-finding (quadratic formula) with
 //!   gradient-based antialiased coverage.
 
+#![allow(clippy::too_many_arguments)] // For kernel! macros generating large structs
+
 use pixelflow_core::{Field, Manifold};
 use pixelflow_macros::kernel;
 
@@ -140,6 +142,7 @@ impl Manifold<Field4> for AnalyticalQuad {
     type Output = Field;
 
     #[inline(always)]
+    #[allow(clippy::excessive_precision)]
     fn eval(&self, p: Field4) -> Field {
         if self.is_linear {
             // Degenerate: quadratic is a line. Solve by*t + (cy - Y) = 0

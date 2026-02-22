@@ -246,6 +246,7 @@ pub fn extract_features(expr: &Expr) -> Vec<HalfEPFeature> {
     features
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn extract_features_recursive(
     expr: &Expr,
     features: &mut Vec<HalfEPFeature>,
@@ -454,6 +455,7 @@ impl Accumulator {
     ///
     /// Returns the predicted cost in centipawns (will need to be scaled).
     #[must_use] 
+    #[allow(clippy::needless_range_loop)]
     pub fn forward(&self, nnue: &Nnue) -> i32 {
         let l1_size = nnue.config.l1_size;
         let l2_size = nnue.config.l2_size;
@@ -471,17 +473,17 @@ impl Accumulator {
 
         // L2 -> L3 with clipped ReLU
         let mut l3 = nnue.b3.clone();
-        for i in 0..l2_size {
-            let a = (l2[i] >> 6).clamp(0, 127) as i8;
-            for j in 0..l3_size {
-                l3[j] += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
+        for (i, l2_val) in l2.iter().enumerate().take(l2_size) {
+            let a = (l2_val >> 6).clamp(0, 127) as i8;
+            for (j, l3_val) in l3.iter_mut().enumerate().take(l3_size) {
+                *l3_val += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
             }
         }
 
         // L3 -> output
         let mut output = nnue.b_out;
-        for i in 0..l3_size {
-            let a = (l3[i] >> 6).clamp(0, 127) as i8;
+        for (i, l3_val) in l3.iter().enumerate().take(l3_size) {
+            let a = (l3_val >> 6).clamp(0, 127) as i8;
             output += (a as i32) * (nnue.w_out[i] as i32);
         }
 

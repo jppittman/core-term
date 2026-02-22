@@ -360,16 +360,17 @@ pub fn eigen_patch(
     let mut proj_z = vec![0.0f32; k];
 
     for i in 0..k {
-        for j in 0..k.min(control_points.len()) {
+        for (j, cp) in control_points.iter().enumerate().take(k) {
             let w = eigen.inv_eigen(j, i); // transpose
-            proj_x[i] += w * control_points[j][0];
-            proj_y[i] += w * control_points[j][1];
-            proj_z[i] += w * control_points[j][2];
+            proj_x[i] += w * cp[0];
+            proj_y[i] += w * cp[1];
+            proj_z[i] += w * cp[2];
         }
     }
 
     // Precompute bicubic coefficients for each subpatch
     let mut coeffs = [[[0.0f32; 16]; 3]; 3]; // [axis][subpatch][coeff]
+    #[allow(clippy::needless_range_loop)]
     for sub in 0..3 {
         for c in 0..16 {
             for basis in 0..k {

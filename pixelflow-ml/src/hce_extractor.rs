@@ -439,10 +439,10 @@ impl SpsaTuner {
         let mut weights_plus: Vec<i32> = Vec::with_capacity(self.weights.len());
         let mut weights_minus: Vec<i32> = Vec::with_capacity(self.weights.len());
 
-        for i in 0..self.weights.len() {
-            let plus = (self.weights[i] + c_k * delta[i])
+        for (i, delta_i) in delta.iter().enumerate().take(self.weights.len()) {
+            let plus = (self.weights[i] + c_k * delta_i)
                 .clamp(self.config.weight_clamp.0 as f64, self.config.weight_clamp.1 as f64) as i32;
-            let minus = (self.weights[i] - c_k * delta[i])
+            let minus = (self.weights[i] - c_k * delta_i)
                 .clamp(self.config.weight_clamp.0 as f64, self.config.weight_clamp.1 as f64) as i32;
             weights_plus.push(plus);
             weights_minus.push(minus);
@@ -457,8 +457,8 @@ impl SpsaTuner {
         let mut grad_norm = 0.0;
 
         // Update weights
-        for i in 0..self.weights.len() {
-            let grad_i = grad_scale * delta[i];
+        for (i, delta_i) in delta.iter().enumerate().take(self.weights.len()) {
+            let grad_i = grad_scale * delta_i;
             grad_norm += grad_i * grad_i;
             self.weights[i] -= a_k * grad_i;
 

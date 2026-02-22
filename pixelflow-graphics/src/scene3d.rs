@@ -13,6 +13,8 @@
 //!
 //! No iteration. Nesting is occlusion.
 
+#![allow(clippy::excessive_precision)]
+
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::*;
 use pixelflow_macros::{kernel, ManifoldExpr};

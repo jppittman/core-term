@@ -165,14 +165,19 @@ use pixelflow_core::Lt;
 /// Type encodes the computation; no runtime cost until evaluated.
 pub const UNIT_CIRCLE_DIST_SQ: Add<Mul<X, X>, Mul<Y, Y>> = Add(Mul(X, X), Mul(Y, Y));
 
+/// Type alias for Unit Circle SDF type to avoid complexity warnings
+pub type UnitCircleSdfType = Sub<Sqrt<Add<Mul<X, X>, Mul<Y, Y>>>, f32>;
+
 /// Unit circle SDF: sqrt(x² + y²) - 1.0
 /// Negative inside, zero on boundary, positive outside.
-pub const UNIT_CIRCLE_SDF: Sub<Sqrt<Add<Mul<X, X>, Mul<Y, Y>>>, f32> =
-    Sub(Sqrt(Add(Mul(X, X), Mul(Y, Y))), 1.0);
+pub const UNIT_CIRCLE_SDF: UnitCircleSdfType = Sub(Sqrt(Add(Mul(X, X), Mul(Y, Y))), 1.0);
+
+/// Type alias for Unit Circle Condition type to avoid complexity warnings
+pub type UnitCircleCondType = Lt<Add<Mul<X, X>, Mul<Y, Y>>, f32>;
 
 /// Unit circle condition: x² + y² < 1.0
 /// Returns mask (all-1s inside, all-0s outside).
-pub const UNIT_CIRCLE_COND: Lt<Add<Mul<X, X>, Mul<Y, Y>>, f32> = Lt(Add(Mul(X, X), Mul(Y, Y)), 1.0);
+pub const UNIT_CIRCLE_COND: UnitCircleCondType = Lt(Add(Mul(X, X), Mul(Y, Y)), 1.0);
 
 #[cfg(test)]
 mod tests {

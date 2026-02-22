@@ -261,6 +261,7 @@ where
 {
     /// Traverse the BSP tree, returning the blended result.
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     fn traverse(&self, idx: usize, x: Field, y: Field, z: Field, w: Field) -> Discrete {
         let node = &self.interiors[idx];
 
@@ -291,6 +292,7 @@ where
 
     /// Evaluate a child node (either interior or leaf).
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     fn eval_child(&self, child: NodeRef, x: Field, y: Field, z: Field, w: Field) -> Discrete {
         match child {
             NodeRef::Interior(i) => self.traverse(i as usize, x, y, z, w),
