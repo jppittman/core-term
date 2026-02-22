@@ -114,6 +114,7 @@ pub type NativeMaskStorage = crate::backend::x86::Mask4;
 pub type NativeMaskStorage = crate::backend::arm::Mask4;
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+/// Native mask storage type.
 pub type NativeMaskStorage = crate::backend::scalar::MaskScalar;
 
 impl FieldStorage for bool {
