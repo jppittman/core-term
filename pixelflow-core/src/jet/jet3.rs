@@ -407,9 +407,9 @@ impl core::ops::Mul for Jet3 {
         // Product rule: (f * g)' = f' * g + f * g'
         Self::new(
             self.val * rhs.val,
-            self.dx * rhs.val + self.val * rhs.dx,
-            self.dy * rhs.val + self.val * rhs.dy,
-            self.dz * rhs.val + self.val * rhs.dz,
+            self.dx.mul_add(rhs.val, self.val.raw_mul(rhs.dx)),
+            self.dy.mul_add(rhs.val, self.val.raw_mul(rhs.dy)),
+            self.dz.mul_add(rhs.val, self.val.raw_mul(rhs.dz)),
         )
     }
 }
@@ -522,8 +522,14 @@ impl Numeric for Jet3 {
         // sqrt(x) = x * rsqrt(x)
         // d(sqrt(x))/dx = rsqrt(x) / 2
         let rsqrt_val = self.val.rsqrt();
-        let sqrt_val = self.val * rsqrt_val;
+        let raw_sqrt_val = self.val.raw_mul(rsqrt_val);
         let half_rsqrt = rsqrt_val * Field::from(0.5);
+
+        // Handle 0 edge case: sqrt(0) should be 0, not NaN (0 * Inf)
+        let zero = Field::from(0.0);
+        let mask = self.val.le(zero);
+        let sqrt_val = Field::select_raw(mask, zero, raw_sqrt_val);
+
         Self::new(
             sqrt_val,
             self.dx * half_rsqrt.clone(),
@@ -726,9 +732,9 @@ impl Numeric for Jet3 {
         // (a * b + c)' where a, b, c are jets
         Self::new(
             self.val.mul_add(b.val, c.val),
-            self.dx * b.val + self.val * b.dx + c.dx,
-            self.dy * b.val + self.val * b.dy + c.dy,
-            self.dz * b.val + self.val * b.dz + c.dz,
+            self.dx.mul_add(b.val, self.val.mul_add(b.dx, c.dx)),
+            self.dy.mul_add(b.val, self.val.mul_add(b.dy, c.dy)),
+            self.dz.mul_add(b.val, self.val.mul_add(b.dz, c.dz)),
         )
     }
 
