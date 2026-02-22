@@ -108,8 +108,8 @@ pub enum VsyncManagement {
     /// Configure the vsync actor (set refresh rate, engine handle, etc.)
     SetConfig {
         config: VsyncConfig,
-        engine_handle: crate::api::private::EngineActorHandle,
-        self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+        engine_handle: Box<crate::api::private::EngineActorHandle>,
+        self_handle: Box<ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>>,
     },
 }
 actor_scheduler::impl_management_message!(VsyncManagement);
@@ -229,6 +229,17 @@ impl VsyncActor {
         thread::Builder::new()
             .name("vsync-actor".to_string())
             .spawn(move || {
+                // Manually send configuration message since we can't pass it to new() anymore
+                // (new() takes handle, but we changed how it's stored in SetConfig)
+                // Wait, VsyncActor::new uses the handle immediately.
+                // The issue was SetConfig taking ownership of the handle in the enum variant.
+                // We need to make sure we construct SetConfig with a Boxed handle if we use it.
+                // But VsyncActor::spawn doesn't use SetConfig directly?
+                // Ah, looking at Actor::handle_management... it unpacks SetConfig.
+
+                // Let's verify if `VsyncActor::new` or `handle_management` needs adjustment.
+                // `handle_management` unpacks `self_handle`.
+
                 let mut actor = VsyncActor::new(refresh_rate, engine_handle, clock_handle);
                 scheduler.run(&mut actor);
             })
@@ -363,7 +374,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 self_handle,
             } => {
                 // Configure the vsync actor (called via Management after construction)
-                self.engine_handle = Some(engine_handle);
+                self.engine_handle = Some(*engine_handle);
                 self.refresh_rate = config.refresh_rate;
                 self.interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
 
@@ -382,6 +393,10 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                                 Ok(ClockCommand::Stop) => break,
                                 Ok(ClockCommand::SetInterval(d)) => current_interval = d,
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                    // Deref the Box if needed, but ActorHandle works via reference or value.
+                                    // The type of self_handle here is Box<ActorHandle<...>>.
+                                    // send() is a method on ActorHandle.
+                                    // Box implements Deref, so self_handle.send() works.
                                     if self_handle.send(VsyncManagement::Tick).is_err() {
                                         break;
                                     }
