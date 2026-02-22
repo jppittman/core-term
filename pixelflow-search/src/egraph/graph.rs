@@ -32,6 +32,7 @@ pub struct EGraph {
     memo: HashMap<ENode, EClassId>,
     worklist: Vec<EClassId>,
     /// Rules are shared via Arc so EGraph can be cloned for search branching.
+    #[allow(clippy::arc_with_non_send_sync)]
     rules: std::sync::Arc<Vec<Box<dyn Rewrite>>>,
     pub match_counts: HashMap<String, usize>,
 }
@@ -72,11 +73,12 @@ impl EGraph {
 
     /// Create the standard algebraic rewrite rules.
     fn create_algebraic_rules() -> Vec<Box<dyn Rewrite>> {
-        let mut rules: Vec<Box<dyn Rewrite>> = Vec::new();
+        let mut rules: Vec<Box<dyn Rewrite>> = vec![
+            Canonicalize::<AddNeg>::new(),
+            Involution::<AddNeg>::new(),
+        ];
 
         // TEST: Adding remaining rules
-        rules.push(Canonicalize::<AddNeg>::new());
-        rules.push(Involution::<AddNeg>::new());
         rules.push(Cancellation::<AddNeg>::new());
         rules.push(InverseAnnihilation::<AddNeg>::new());
         rules.push(Canonicalize::<MulRecip>::new());
