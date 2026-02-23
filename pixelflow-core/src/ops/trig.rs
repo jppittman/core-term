@@ -140,28 +140,37 @@ pub(crate) fn cheby_atan2(y: Field, x: Field) -> Field {
     const C5: f32 = 0.2f32;
     const C7: f32 = -0.142_857_15_f32;
 
-    // Horner's method for approximation of atan(|r|)
+    let one = Field::from(1.0);
+    let mask_large = r_abs.gt(one);
+
+    // Compute effective parameter t in [0, 1]
+    // if |r| > 1, use 1/|r|, else use |r|
+    // This avoids evaluating polynomial outside its domain
+    let effective_t = mask_large.select(one / r_abs, r_abs);
+
+    // Horner's method for approximation of atan(t)
     // AST building enables FMA fusion
-    let t = r_abs;
-    let t2 = t * t;
+    let t = effective_t;
+    // Note: Select combinator is not Copy, so we must Clone
+    let t2 = t.clone() * t.clone();
     let atan_approx =
         (((Field::from(C7) * t2.clone() + Field::from(C5)) * t2.clone() + Field::from(C3)) * t2
             + Field::from(C1))
             * t;
 
-    // Handle quadrants
-    // For |r| > 1, use identity: atan(r) = π/2 - atan(1/r)
-    // Use ManifoldExt's select which builds AST
-    let mask_large = r_abs.gt(Field::from(1.0));
-    let atan_large = Field::from(PI_2) - (Field::from(1.0) / r_abs) * atan_approx.clone();
-    let atan_val = mask_large.select(atan_large, atan_approx);
+    // Handle large ratio identity: atan(r) = π/2 - atan(1/r)
+    // For |r| > 1, atan_approx is atan(1/r)
+    // For |r| <= 1, atan_approx is atan(r)
+    let atan_val = mask_large.select(Field::from(PI_2) - atan_approx.clone(), atan_approx);
 
     // Apply sign of y
-    let sign_y = y.abs() / y;
+    // Avoid y.abs() / y which produces NaN for y=0
+    let zero = Field::from(0.0);
+    let sign_y = y.ge(zero).select(one, Field::from(-1.0));
     let atan_signed = atan_val * sign_y.clone();
 
     // Apply sign of x (quadrant correction)
-    let mask_neg_x = x.lt(Field::from(0.0));
+    let mask_neg_x = x.lt(zero);
     let correction = Field::from(PI) * sign_y;
     let result = mask_neg_x.select(atan_signed.clone() - correction, atan_signed);
 
@@ -171,3 +180,43 @@ pub(crate) fn cheby_atan2(y: Field, x: Field) -> Field {
 // Tests are integrated via spherical harmonics in combinators/spherical.rs
 // The Chebyshev approximations are verified through their correctness
 // in computing surface normals and spherical harmonic coefficients.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Field;
+
+    #[test]
+    fn test_atan2_large_ratio() {
+        let y = Field::from(10.0);
+        let x = Field::from(1.0);
+        let result = cheby_atan2(y, x);
+        let mut out = [0.0; 16];
+        result.store(&mut out);
+        // atan(10) is approx 1.4711276
+        assert!((out[0] - 1.4711276).abs() < 1e-3, "Got {}", out[0]);
+    }
+
+    #[test]
+    fn test_atan2_zero_y() {
+        let y = Field::from(0.0);
+        let x = Field::from(1.0);
+        let result = cheby_atan2(y, x);
+        let mut out = [0.0; 16];
+        result.store(&mut out);
+        // atan2(0, 1) = 0
+        assert!(out[0].abs() < 1e-3, "Got {}", out[0]);
+    }
+
+    #[test]
+    fn test_atan2_neg_zero_y() {
+        // -0.0 handling might differ depending on backend, testing with slightly neg
+        let y = Field::from(-0.000001);
+        let x = Field::from(1.0);
+        let result = cheby_atan2(y, x);
+        let mut out = [0.0; 16];
+        result.store(&mut out);
+        // atan2(-epsilon, 1) approx 0 (actually -0)
+        assert!(out[0].abs() < 1e-3, "Got {}", out[0]);
+    }
+}
