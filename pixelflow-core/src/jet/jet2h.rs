@@ -87,6 +87,7 @@ impl Jet2H {
     ///
     /// Evaluates each component at origin to get concrete Field values.
     /// Use sparingly - prefer keeping expressions as manifolds.
+    #[allow(clippy::too_many_arguments)]
     #[inline(always)]
     pub fn new<V, Dx, Dy, Dxx, Dxy, Dyy>(
         val: V,
