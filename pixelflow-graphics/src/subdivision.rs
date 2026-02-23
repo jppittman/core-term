@@ -343,7 +343,8 @@ pub struct SubdivisionGeometry {
 
 impl SubdivisionGeometry {
     /// Create geometry from a patch and mesh.
-    #[must_use] 
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         patch: SubdivisionPatch,
         mesh: &QuadMesh,

@@ -117,7 +117,7 @@ impl Expr {
     }
 
     /// Count total nodes in the expression.
-    #[must_use] 
+    #[must_use]
     pub fn node_count(&self) -> usize {
         match self {
             Expr::Var(_) | Expr::Const(_) => 1,
@@ -128,7 +128,7 @@ impl Expr {
     }
 
     /// Evaluate the expression with given variable values.
-    #[must_use] 
+    #[must_use]
     pub fn eval(&self, vars: &[f32; 4]) -> f32 {
         match self {
             Expr::Var(i) => vars[*i as usize],
@@ -216,7 +216,7 @@ impl HalfEPFeature {
     }
 
     /// Create from a unique index.
-    #[must_use] 
+    #[must_use]
     pub fn from_index(idx: usize) -> Self {
         let path = (idx % 256) as u8;
         let idx = idx / 256;
@@ -246,6 +246,7 @@ pub fn extract_features(expr: &Expr) -> Vec<HalfEPFeature> {
     features
 }
 
+    #[allow(clippy::only_used_in_recursion)]
 fn extract_features_recursive(
     expr: &Expr,
     features: &mut Vec<HalfEPFeature>,
@@ -268,6 +269,8 @@ fn extract_features_recursive(
             extract_features_recursive(b, features, (path << 1) | 1, depth.saturating_add(1));
         }
         Expr::Ternary(_, a, b, c) => {
+            // For ternary, we reuse the path for simplicity as they don't branch like binary
+            // Alternatively, we could define a different path encoding for ternary
             extract_features_recursive(a, features, path, depth.saturating_add(1));
             extract_features_recursive(b, features, path, depth.saturating_add(1));
             extract_features_recursive(c, features, path, depth.saturating_add(1));
@@ -306,6 +309,7 @@ fn add_descendant_features(
         }
         Expr::Ternary(_, a, b, c) => {
             // For ternary, use bits 0, 1, 2 for the three children
+            // Need to shift by 2 bits to make room for 2 bits of index (0-3)
             add_descendant_features(a, features, perspective_op, depth + 1, path << 2);
             add_descendant_features(b, features, perspective_op, depth + 1, (path << 2) | 1);
             add_descendant_features(c, features, perspective_op, depth + 1, (path << 2) | 2);
@@ -376,7 +380,7 @@ pub struct Nnue {
 
 impl Nnue {
     /// Create a new uninitialized NNUE network.
-    #[must_use] 
+    #[must_use]
     pub fn new(config: NnueConfig) -> Self {
         let feature_count = HalfEPFeature::COUNT;
 
@@ -540,7 +544,7 @@ pub struct ExprGenerator {
 
 impl ExprGenerator {
     /// Create a new generator with the given seed.
-    #[must_use] 
+    #[must_use]
     pub fn new(seed: u64, config: ExprGenConfig) -> Self {
         Self {
             config,
@@ -691,7 +695,7 @@ impl RewriteRule {
     /// Try to apply this rule to an expression, returning the rewritten form.
     ///
     /// Returns None if the rule doesn't match.
-    #[must_use] 
+    #[must_use]
     pub fn try_apply(&self, expr: &Expr) -> Option<Expr> {
         match self {
             RewriteRule::AddZero => match expr {
@@ -819,7 +823,7 @@ fn exprs_equal(a: &Expr, b: &Expr) -> bool {
 /// Find all applicable rewrites for an expression (at any position).
 ///
 /// Returns (path_to_subexpr, rule, rewritten_expr) tuples.
-#[must_use] 
+    #[must_use]
 pub fn find_all_rewrites(expr: &Expr) -> Vec<(Vec<usize>, RewriteRule, Expr)> {
     let mut rewrites = Vec::new();
     find_rewrites_recursive(expr, &mut Vec::new(), &mut rewrites);
@@ -872,7 +876,7 @@ impl UnfuseRewrite {
     ///
     /// Unlike optimization rewrites that may fail to match, these always succeed
     /// for the appropriate expression types.
-    #[must_use] 
+    #[must_use]
     pub fn apply(&self, expr: &Expr) -> Option<Expr> {
         match self {
             UnfuseRewrite::UnfuseMulAdd => match expr {
@@ -999,7 +1003,7 @@ pub struct BwdGenerator {
 
 impl BwdGenerator {
     /// Create a new backward generator with the given seed.
-    #[must_use] 
+    #[must_use]
     pub fn new(seed: u64, config: BwdGenConfig) -> Self {
         Self { config, state: seed }
     }
@@ -1207,7 +1211,7 @@ impl BwdGenerator {
 }
 
 /// Count fused operations in an expression.
-#[must_use] 
+#[must_use]
 pub fn count_fused_ops(expr: &Expr) -> usize {
     match expr {
         Expr::Var(_) | Expr::Const(_) => 0,
