@@ -439,6 +439,7 @@ impl SpsaTuner {
         let mut weights_plus: Vec<i32> = Vec::with_capacity(self.weights.len());
         let mut weights_minus: Vec<i32> = Vec::with_capacity(self.weights.len());
 
+        #[allow(clippy::needless_range_loop)]
         for i in 0..self.weights.len() {
             let plus = (self.weights[i] + c_k * delta[i])
                 .clamp(self.config.weight_clamp.0 as f64, self.config.weight_clamp.1 as f64) as i32;
@@ -457,6 +458,7 @@ impl SpsaTuner {
         let mut grad_norm = 0.0;
 
         // Update weights
+        #[allow(clippy::needless_range_loop)]
         for i in 0..self.weights.len() {
             let grad_i = grad_scale * delta[i];
             grad_norm += grad_i * grad_i;

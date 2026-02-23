@@ -162,6 +162,11 @@ pub trait LinearFeatures {
     /// Number of features in this vector.
     fn len(&self) -> usize;
 
+    /// Check if the feature vector is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Get the value of feature at index `i`.
     ///
     /// Features are typically counts (0, 1, 2, ...) or

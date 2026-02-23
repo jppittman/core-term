@@ -164,43 +164,43 @@ mod tests {
     impl ExprFold for NodeCounter {
         type Output = ();
 
-        fn fold_ident(&mut self, _name: &Ident) -> () {
+        fn fold_ident(&mut self, _name: &Ident) {
             self.count += 1;
         }
 
-        fn fold_literal(&mut self, _lit: &syn::Lit) -> () {
+        fn fold_literal(&mut self, _lit: &syn::Lit) {
             self.count += 1;
         }
 
-        fn fold_binary(&mut self, _op: BinaryOp, _lhs: (), _rhs: ()) -> () {
+        fn fold_binary(&mut self, _op: BinaryOp, _lhs: (), _rhs: ()) {
             self.count += 1;
         }
 
-        fn fold_unary(&mut self, _op: UnaryOp, _operand: ()) -> () {
+        fn fold_unary(&mut self, _op: UnaryOp, _operand: ()) {
             self.count += 1;
         }
 
-        fn fold_method_call(&mut self, _receiver: (), _method: &Ident, _args: Vec<()>) -> () {
+        fn fold_method_call(&mut self, _receiver: (), _method: &Ident, _args: Vec<()>) {
             self.count += 1;
         }
 
-        fn fold_call(&mut self, _func: &Ident, _args: Vec<()>) -> () {
+        fn fold_call(&mut self, _func: &Ident, _args: Vec<()>) {
             self.count += 1;
         }
 
-        fn fold_block(&mut self, _stmts: Vec<()>, _final_expr: Option<()>) -> () {
+        fn fold_block(&mut self, _stmts: Vec<()>, _final_expr: Option<()>) {
             self.count += 1;
         }
 
-        fn fold_tuple(&mut self, _elems: Vec<()>) -> () {
+        fn fold_tuple(&mut self, _elems: Vec<()>) {
             self.count += 1;
         }
 
-        fn fold_let(&mut self, _name: &Ident, _init: ()) -> () {
+        fn fold_let(&mut self, _name: &Ident, _init: ()) {
             self.count += 1;
         }
 
-        fn fold_verbatim(&mut self, _expr: &syn::Expr) -> () {
+        fn fold_verbatim(&mut self, _expr: &syn::Expr) {
             self.count += 1;
         }
     }

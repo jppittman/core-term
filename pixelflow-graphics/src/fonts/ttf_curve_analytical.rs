@@ -8,6 +8,9 @@
 //! For quadratics: analytical root-finding (quadratic formula) with
 //!   gradient-based antialiased coverage.
 
+#![allow(clippy::excessive_precision)]
+#![allow(clippy::too_many_arguments)]
+
 use pixelflow_core::{Field, Manifold};
 use pixelflow_macros::kernel;
 

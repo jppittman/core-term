@@ -736,12 +736,7 @@ impl Field<u32> {
     #[cfg(target_arch = "aarch64")]
     #[inline(always)]
     pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
-        Self(backend::arm::U32x4::pack_rgba(
-            unsafe { core::mem::transmute(r.0) },
-            unsafe { core::mem::transmute(g.0) },
-            unsafe { core::mem::transmute(b.0) },
-            unsafe { core::mem::transmute(a.0) },
-        ))
+        Self(backend::arm::U32x4::pack_rgba(r.0, g.0, b.0, a.0))
     }
 
     /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
@@ -751,30 +746,15 @@ impl Field<u32> {
     pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
         #[cfg(target_feature = "avx512f")]
         {
-            Self(backend::x86::U32x16::pack_rgba(
-                unsafe { core::mem::transmute(r.0) },
-                unsafe { core::mem::transmute(g.0) },
-                unsafe { core::mem::transmute(b.0) },
-                unsafe { core::mem::transmute(a.0) },
-            ))
+            Self(backend::x86::U32x16::pack_rgba(r.0, g.0, b.0, a.0))
         }
         #[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2"))]
         {
-            Self(backend::x86::U32x8::pack_rgba(
-                unsafe { core::mem::transmute(r.0) },
-                unsafe { core::mem::transmute(g.0) },
-                unsafe { core::mem::transmute(b.0) },
-                unsafe { core::mem::transmute(a.0) },
-            ))
+            Self(backend::x86::U32x8::pack_rgba(r.0, g.0, b.0, a.0))
         }
         #[cfg(all(not(target_feature = "avx512f"), not(target_feature = "avx2")))]
         {
-            Self(backend::x86::U32x4::pack_rgba(
-                unsafe { core::mem::transmute(r.0) },
-                unsafe { core::mem::transmute(g.0) },
-                unsafe { core::mem::transmute(b.0) },
-                unsafe { core::mem::transmute(a.0) },
-            ))
+            Self(backend::x86::U32x4::pack_rgba(r.0, g.0, b.0, a.0))
         }
     }
 
@@ -1022,6 +1002,7 @@ where
 {
     type Output = Self;
     #[inline(always)]
+    #[allow(clippy::suspicious_arithmetic_impl)]
     fn mul(self, rhs: Self) -> Self {
         // Product rule: (f * g)' = f' * g + f * g'
         Self(DualStorage {

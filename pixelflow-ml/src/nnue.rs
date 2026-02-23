@@ -252,6 +252,7 @@ fn extract_features_recursive(
     path: u8,
     depth: u8,
 ) {
+    let _ = path; // Suppress only_used_in_recursion
     let root_op = expr.op_type();
 
     // Add features for all descendants from this node's perspective
@@ -453,7 +454,8 @@ impl Accumulator {
     /// Compute the full forward pass from the accumulator state.
     ///
     /// Returns the predicted cost in centipawns (will need to be scaled).
-    #[must_use] 
+    #[must_use]
+    #[allow(clippy::needless_range_loop)]
     pub fn forward(&self, nnue: &Nnue) -> i32 {
         let l1_size = nnue.config.l1_size;
         let l2_size = nnue.config.l2_size;

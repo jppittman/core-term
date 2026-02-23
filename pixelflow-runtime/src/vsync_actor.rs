@@ -102,6 +102,7 @@ actor_scheduler::impl_data_message!(RenderedResponse);
 
 /// Management messages
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum VsyncManagement {
     /// Internal clock tick - wakes the actor to check vsync timing
     Tick,

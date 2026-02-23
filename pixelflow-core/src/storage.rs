@@ -93,6 +93,7 @@ impl FieldStorage for f32 {
 /// - NEON: `Mask4`
 /// - Scalar: `MaskScalar`
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+/// Native mask storage.
 pub type NativeMaskStorage = crate::backend::x86::Mask16;
 
 #[cfg(all(
@@ -101,6 +102,7 @@ pub type NativeMaskStorage = crate::backend::x86::Mask16;
     not(all(target_feature = "avx512f", pixelflow_avx512f)),
     pixelflow_avx2
 ))]
+/// Native mask storage.
 pub type NativeMaskStorage = crate::backend::x86::Mask8;
 
 #[cfg(all(
@@ -108,12 +110,15 @@ pub type NativeMaskStorage = crate::backend::x86::Mask8;
     not(all(target_feature = "avx512f", pixelflow_avx512f)),
     not(all(target_feature = "avx2", pixelflow_avx2))
 ))]
+/// Native mask storage.
 pub type NativeMaskStorage = crate::backend::x86::Mask4;
 
 #[cfg(target_arch = "aarch64")]
+/// Native mask storage.
 pub type NativeMaskStorage = crate::backend::arm::Mask4;
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+/// Native mask storage.
 pub type NativeMaskStorage = crate::backend::scalar::MaskScalar;
 
 impl FieldStorage for bool {
