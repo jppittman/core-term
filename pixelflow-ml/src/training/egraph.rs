@@ -100,14 +100,14 @@ impl ExprGenerator {
             let op_type = self.rng.gen_range(0..10);
             match op_type {
                 // Binary ops (6)
-                0 => ExprTree::add(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
-                1 => ExprTree::sub(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
-                2 => ExprTree::mul(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
-                3 => ExprTree::div(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
+                0 => ExprTree::op_add(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
+                1 => ExprTree::op_sub(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
+                2 => ExprTree::op_mul(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
+                3 => ExprTree::op_div(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
                 4 => ExprTree::min(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
                 5 => ExprTree::max(self.generate_inner(depth + 1), self.generate_inner(depth + 1)),
                 // Unary ops (3)
-                6 => ExprTree::neg(self.generate_inner(depth + 1)),
+                6 => ExprTree::op_neg(self.generate_inner(depth + 1)),
                 7 => ExprTree::sqrt(self.generate_inner(depth + 1)),
                 8 => ExprTree::abs(self.generate_inner(depth + 1)),
                 // Fused op (1)

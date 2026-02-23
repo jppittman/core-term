@@ -341,6 +341,21 @@ fn propagate_embedding_gradients(
             propagate_embedding_gradients(b, d_acc, d_emb);
             propagate_embedding_gradients(c, d_acc, d_emb);
         }
+        Expr::Nary(_, children) => {
+            let n = children.len() as f32;
+            // N edges from this parent
+            for k in 0..K {
+                d_emb[parent_op.index()][k] += d_acc[k] * n;
+            }
+
+            for child in children {
+                let child_op = child.op_type();
+                for k in 0..K {
+                    d_emb[child_op.index()][k] += d_acc[K + k];
+                }
+                propagate_embedding_gradients(child, d_acc, d_emb);
+            }
+        }
     }
 }
 
