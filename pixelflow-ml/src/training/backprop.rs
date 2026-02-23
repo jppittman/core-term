@@ -7,24 +7,6 @@
 
 use pixelflow_nnue::{Nnue, HalfEPFeature, DenseFeatures};
 
-const CLIPPED_RELU_SHIFT: i32 = 6;
-const CLIPPED_RELU_MAX: i32 = 127;
-const GRADIENT_LEAKY_DEAD: f32 = 0.01;
-const GRADIENT_SATURATED: f32 = 0.1;
-const GRADIENT_ACTIVE: f32 = 1.0;
-
-const OUTPUT_SCALE: f32 = 1000.0;
-
-const WEIGHT_UPDATE_LIMIT_I8: f32 = 127.0;
-const WEIGHT_UPDATE_LIMIT_I16: f32 = 32767.0;
-
-const LR_SCALE_BIAS_OUTPUT: f32 = 1000.0;
-const LR_SCALE_BIAS_HIDDEN: f32 = 1.0;
-const LR_SCALE_W3: f32 = 0.01;
-const LR_SCALE_W2: f32 = 0.01;
-const LR_SCALE_W1: f32 = 0.1;
-const LR_SCALE_W_DENSE: f32 = 0.01;
-
 /// Clipped ReLU activation: (x >> 6).clamp(0, 127)
 ///
 /// Returns both the output and the derivative.
@@ -33,15 +15,15 @@ const LR_SCALE_W_DENSE: f32 = 0.01;
 /// Small gradient (0.1) in saturated region (>127) for soft clamping.
 #[inline]
 pub fn clipped_relu(x: i32) -> (f32, f32) {
-    let shifted = x >> CLIPPED_RELU_SHIFT;
-    let clamped = shifted.clamp(0, CLIPPED_RELU_MAX);
+    let shifted = x >> 6;
+    let clamped = shifted.clamp(0, 127);
     // Leaky gradient allows dead neurons to recover
     let deriv = if shifted <= 0 {
-        GRADIENT_LEAKY_DEAD  // Dead neuron - small gradient for recovery
-    } else if shifted >= CLIPPED_RELU_MAX {
-        GRADIENT_SATURATED   // Saturated - reduced but non-zero gradient
+        0.01  // Dead neuron - small gradient for recovery
+    } else if shifted >= 127 {
+        0.1   // Saturated - reduced but non-zero gradient
     } else {
-        GRADIENT_ACTIVE      // Active region - full gradient
+        1.0   // Active region - full gradient
     };
     (clamped as f32, deriv)
 }
@@ -150,7 +132,7 @@ pub fn forward_with_state(
         active_features,
     };
 
-    (output as f32 / OUTPUT_SCALE, state)
+    (output as f32 / 1000.0, state)
 }
 
 /// Forward pass with hybrid architecture (sparse + dense ILP features).
@@ -257,7 +239,7 @@ pub fn forward_with_state_hybrid(
         active_features,
     };
 
-    (output as f32 / OUTPUT_SCALE, state)
+    (output as f32 / 1000.0, state)
 }
 
 /// Backward pass for sparse-only architecture.
@@ -274,13 +256,13 @@ pub fn backward(
     let d_output = error;
 
     // Output layer
-    nnue.b_out -= (d_output * lr * LR_SCALE_BIAS_OUTPUT) as i32;
+    nnue.b_out -= (d_output * lr * 1000.0) as i32;
 
     let mut d_l3_post = vec![0.0f32; l3_size];
     for i in 0..l3_size {
         d_l3_post[i] = d_output * (nnue.w_out[i] as f32);
         let grad_w_out = d_output * state.l3_post[i];
-        let update = (grad_w_out * lr).clamp(-WEIGHT_UPDATE_LIMIT_I8, WEIGHT_UPDATE_LIMIT_I8) as i8;
+        let update = (grad_w_out * lr).clamp(-127.0, 127.0) as i8;
         nnue.w_out[i] = nnue.w_out[i].saturating_sub(update);
     }
 
@@ -292,7 +274,7 @@ pub fn backward(
     }
 
     for j in 0..l3_size {
-        nnue.b3[j] -= (d_l3_pre[j] * lr * LR_SCALE_BIAS_HIDDEN) as i32;
+        nnue.b3[j] -= (d_l3_pre[j] * lr * 1.0) as i32;
     }
 
     let mut d_l2_post = vec![0.0f32; l2_size];
@@ -300,7 +282,7 @@ pub fn backward(
         for j in 0..l3_size {
             d_l2_post[i] += d_l3_pre[j] * (nnue.w3[i * l3_size + j] as f32);
             let grad_w3 = d_l3_pre[j] * state.l2_post[i];
-            let update = (grad_w3 * lr * LR_SCALE_W3).clamp(-WEIGHT_UPDATE_LIMIT_I8, WEIGHT_UPDATE_LIMIT_I8) as i8;
+            let update = (grad_w3 * lr * 0.01).clamp(-127.0, 127.0) as i8;
             nnue.w3[i * l3_size + j] = nnue.w3[i * l3_size + j].saturating_sub(update);
         }
     }
@@ -313,7 +295,7 @@ pub fn backward(
     }
 
     for j in 0..l2_size {
-        nnue.b2[j] -= (d_l2_pre[j] * lr * LR_SCALE_BIAS_HIDDEN) as i32;
+        nnue.b2[j] -= (d_l2_pre[j] * lr * 1.0) as i32;
     }
 
     let mut d_l1_post = vec![0.0f32; l1_size];
@@ -321,7 +303,7 @@ pub fn backward(
         for j in 0..l2_size {
             d_l1_post[i] += d_l2_pre[j] * (nnue.w2[i * l2_size + j] as f32);
             let grad_w2 = d_l2_pre[j] * state.l1_post[i];
-            let update = (grad_w2 * lr * LR_SCALE_W2).clamp(-WEIGHT_UPDATE_LIMIT_I8, WEIGHT_UPDATE_LIMIT_I8) as i8;
+            let update = (grad_w2 * lr * 0.01).clamp(-127.0, 127.0) as i8;
             nnue.w2[i * l2_size + j] = nnue.w2[i * l2_size + j].saturating_sub(update);
         }
     }
@@ -334,7 +316,7 @@ pub fn backward(
     }
 
     for i in 0..l1_size {
-        nnue.b1[i] -= (d_l1_pre[i] * lr * LR_SCALE_BIAS_HIDDEN) as i32;
+        nnue.b1[i] -= (d_l1_pre[i] * lr * 1.0) as i32;
     }
 
     // W1 sparse update
@@ -342,7 +324,7 @@ pub fn backward(
         let offset = feature_idx * l1_size;
         for i in 0..l1_size {
             let grad_w1 = d_l1_pre[i];
-            let update = (grad_w1 * lr * LR_SCALE_W1).clamp(-WEIGHT_UPDATE_LIMIT_I16, WEIGHT_UPDATE_LIMIT_I16) as i16;
+            let update = (grad_w1 * lr * 0.1).clamp(-32767.0, 32767.0) as i16;
             nnue.w1[offset + i] = nnue.w1[offset + i].saturating_sub(update);
         }
     }
@@ -363,13 +345,13 @@ pub fn backward_hybrid(
     let d_output = error;
 
     // Output layer
-    nnue.b_out -= (d_output * lr * LR_SCALE_BIAS_OUTPUT) as i32;
+    nnue.b_out -= (d_output * lr * 1000.0) as i32;
 
     let mut d_l3_post = vec![0.0f32; l3_size];
     for i in 0..l3_size {
         d_l3_post[i] = d_output * (nnue.w_out[i] as f32);
         let grad_w_out = d_output * state.l3_post[i];
-        let update = (grad_w_out * lr).clamp(-WEIGHT_UPDATE_LIMIT_I8, WEIGHT_UPDATE_LIMIT_I8) as i8;
+        let update = (grad_w_out * lr).clamp(-127.0, 127.0) as i8;
         nnue.w_out[i] = nnue.w_out[i].saturating_sub(update);
     }
 
@@ -381,7 +363,7 @@ pub fn backward_hybrid(
     }
 
     for j in 0..l3_size {
-        nnue.b3[j] -= (d_l3_pre[j] * lr * LR_SCALE_BIAS_HIDDEN) as i32;
+        nnue.b3[j] -= (d_l3_pre[j] * lr * 1.0) as i32;
     }
 
     let mut d_l2_post = vec![0.0f32; l2_size];
@@ -389,7 +371,7 @@ pub fn backward_hybrid(
         for j in 0..l3_size {
             d_l2_post[i] += d_l3_pre[j] * (nnue.w3[i * l3_size + j] as f32);
             let grad_w3 = d_l3_pre[j] * state.l2_post[i];
-            let update = (grad_w3 * lr * LR_SCALE_W3).clamp(-WEIGHT_UPDATE_LIMIT_I8, WEIGHT_UPDATE_LIMIT_I8) as i8;
+            let update = (grad_w3 * lr * 0.01).clamp(-127.0, 127.0) as i8;
             nnue.w3[i * l3_size + j] = nnue.w3[i * l3_size + j].saturating_sub(update);
         }
     }
@@ -402,7 +384,7 @@ pub fn backward_hybrid(
     }
 
     for j in 0..l2_size {
-        nnue.b2[j] -= (d_l2_pre[j] * lr * LR_SCALE_BIAS_HIDDEN) as i32;
+        nnue.b2[j] -= (d_l2_pre[j] * lr * 1.0) as i32;
     }
 
     // Gradient into sparse branch
@@ -411,7 +393,7 @@ pub fn backward_hybrid(
         for j in 0..l2_size {
             d_l1_post[i] += d_l2_pre[j] * (nnue.w2[i * l2_size + j] as f32);
             let grad_w2 = d_l2_pre[j] * state.l1_post[i];
-            let update = (grad_w2 * lr * LR_SCALE_W2).clamp(-WEIGHT_UPDATE_LIMIT_I8, WEIGHT_UPDATE_LIMIT_I8) as i8;
+            let update = (grad_w2 * lr * 0.01).clamp(-127.0, 127.0) as i8;
             nnue.w2[i * l2_size + j] = nnue.w2[i * l2_size + j].saturating_sub(update);
         }
     }
@@ -422,7 +404,7 @@ pub fn backward_hybrid(
         for j in 0..l2_size {
             d_dense_post[i] += d_l2_pre[j] * (nnue.w2[(l1_size + i) * l2_size + j] as f32);
             let grad_w2 = d_l2_pre[j] * state.dense_post[i];
-            let update = (grad_w2 * lr * LR_SCALE_W2).clamp(-WEIGHT_UPDATE_LIMIT_I8, WEIGHT_UPDATE_LIMIT_I8) as i8;
+            let update = (grad_w2 * lr * 0.01).clamp(-127.0, 127.0) as i8;
             nnue.w2[(l1_size + i) * l2_size + j] =
                 nnue.w2[(l1_size + i) * l2_size + j].saturating_sub(update);
         }
@@ -436,7 +418,7 @@ pub fn backward_hybrid(
     }
 
     for i in 0..l1_size {
-        nnue.b1[i] -= (d_l1_pre[i] * lr * LR_SCALE_BIAS_HIDDEN) as i32;
+        nnue.b1[i] -= (d_l1_pre[i] * lr * 1.0) as i32;
     }
 
     // W1 sparse update
@@ -444,7 +426,7 @@ pub fn backward_hybrid(
         let offset = feature_idx * l1_size;
         for i in 0..l1_size {
             let grad_w1 = d_l1_pre[i];
-            let update = (grad_w1 * lr * LR_SCALE_W1).clamp(-WEIGHT_UPDATE_LIMIT_I16, WEIGHT_UPDATE_LIMIT_I16) as i16;
+            let update = (grad_w1 * lr * 0.1).clamp(-32767.0, 32767.0) as i16;
             nnue.w1[offset + i] = nnue.w1[offset + i].saturating_sub(update);
         }
     }
@@ -458,7 +440,7 @@ pub fn backward_hybrid(
 
     // Update dense biases
     for j in 0..dense_size {
-        nnue.b_dense[j] -= (d_dense_pre[j] * lr * LR_SCALE_BIAS_HIDDEN) as i32;
+        nnue.b_dense[j] -= (d_dense_pre[j] * lr * 1.0) as i32;
     }
 
     // Update W_dense weights: grad = d_dense_pre * dense_input
@@ -469,7 +451,7 @@ pub fn backward_hybrid(
         }
         for j in 0..dense_size {
             let grad_w_dense = d_dense_pre[j] * input_val;
-            let update = (grad_w_dense * lr * LR_SCALE_W_DENSE).clamp(-WEIGHT_UPDATE_LIMIT_I16, WEIGHT_UPDATE_LIMIT_I16) as i16;
+            let update = (grad_w_dense * lr * 0.01).clamp(-32767.0, 32767.0) as i16;
             nnue.w_dense[i * dense_size + j] = nnue.w_dense[i * dense_size + j].saturating_sub(update);
         }
     }
