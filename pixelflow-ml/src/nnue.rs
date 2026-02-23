@@ -467,8 +467,9 @@ impl Accumulator {
         for i in 0..l1_size {
             // Clipped ReLU: clamp to [0, 127] then scale
             let a = (self.values[i] >> 6).clamp(0, 127) as i8;
-            for (j, l2_val) in l2.iter_mut().enumerate() {
-                *l2_val += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
+            let weights = &nnue.w2[i * l2_size..];
+            for (l2_val, &w) in l2.iter_mut().zip(weights) {
+                *l2_val += (a as i32) * (w as i32);
             }
         }
 
