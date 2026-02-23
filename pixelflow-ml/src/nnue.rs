@@ -249,7 +249,7 @@ pub fn extract_features(expr: &Expr) -> Vec<HalfEPFeature> {
 fn extract_features_recursive(
     expr: &Expr,
     features: &mut Vec<HalfEPFeature>,
-    path: u8,
+    _path: u8,
     depth: u8,
 ) {
     let root_op = expr.op_type();
@@ -258,19 +258,25 @@ fn extract_features_recursive(
     add_descendant_features(expr, features, root_op.index() as u8, 0, 0);
 
     // Recurse into children with updated path
+    // Note: path is currently unused in recursion but maintained for future features
     match expr {
         Expr::Var(_) | Expr::Const(_) => {}
         Expr::Unary(_, a) => {
-            extract_features_recursive(a, features, path, depth.saturating_add(1));
+            extract_features_recursive(a, features, _path, depth.saturating_add(1));
         }
         Expr::Binary(_, a, b) => {
-            extract_features_recursive(a, features, path << 1, depth.saturating_add(1));
-            extract_features_recursive(b, features, (path << 1) | 1, depth.saturating_add(1));
+            extract_features_recursive(a, features, _path << 1, depth.saturating_add(1));
+            extract_features_recursive(
+                b,
+                features,
+                (_path << 1) | 1,
+                depth.saturating_add(1),
+            );
         }
         Expr::Ternary(_, a, b, c) => {
-            extract_features_recursive(a, features, path, depth.saturating_add(1));
-            extract_features_recursive(b, features, path, depth.saturating_add(1));
-            extract_features_recursive(c, features, path, depth.saturating_add(1));
+            extract_features_recursive(a, features, _path, depth.saturating_add(1));
+            extract_features_recursive(b, features, _path, depth.saturating_add(1));
+            extract_features_recursive(c, features, _path, depth.saturating_add(1));
         }
     }
 }
@@ -464,24 +470,24 @@ impl Accumulator {
         for i in 0..l1_size {
             // Clipped ReLU: clamp to [0, 127] then scale
             let a = (self.values[i] >> 6).clamp(0, 127) as i8;
-            for j in 0..l2_size {
-                l2[j] += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
+            for (j, l2_j) in l2.iter_mut().enumerate().take(l2_size) {
+                *l2_j += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
             }
         }
 
         // L2 -> L3 with clipped ReLU
         let mut l3 = nnue.b3.clone();
-        for i in 0..l2_size {
-            let a = (l2[i] >> 6).clamp(0, 127) as i8;
-            for j in 0..l3_size {
-                l3[j] += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
+        for (i, l2_i) in l2.iter().enumerate().take(l2_size) {
+            let a = (*l2_i >> 6).clamp(0, 127) as i8;
+            for (j, l3_j) in l3.iter_mut().enumerate().take(l3_size) {
+                *l3_j += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
             }
         }
 
         // L3 -> output
         let mut output = nnue.b_out;
-        for i in 0..l3_size {
-            let a = (l3[i] >> 6).clamp(0, 127) as i8;
+        for (i, l3_i) in l3.iter().enumerate().take(l3_size) {
+            let a = (*l3_i >> 6).clamp(0, 127) as i8;
             output += (a as i32) * (nnue.w_out[i] as i32);
         }
 

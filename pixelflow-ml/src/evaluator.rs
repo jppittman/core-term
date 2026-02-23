@@ -168,6 +168,11 @@ pub trait LinearFeatures {
     /// boolean indicators (0 or 1).
     fn get(&self, i: usize) -> i32;
 
+    /// Check if the feature vector is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Feature names for debugging/visualization.
     fn feature_names() -> &'static [&'static str];
 }
