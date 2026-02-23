@@ -101,7 +101,8 @@ impl<const L: usize, const M: i32> Manifold<Field4> for SphericalHarmonic<L, M> 
         let nz_val = eval_const(nz);
 
         // Convert to spherical coordinates
-        let cos_theta = nz_val;
+        // Clamp cos_theta to [-1, 1] to handle numerical noise when z approx 1
+        let cos_theta = nz_val.max(Field::from(-1.0)).min(Field::from(1.0));
         let sin_theta = eval_const((Field::from(1.0) - cos_theta * cos_theta).sqrt());
         let phi = ny_val.atan2(nx_val);
 
@@ -152,9 +153,8 @@ fn legendre_p<const L: usize, const M: i32>(cos_theta: Field, sin_theta: Field) 
             sin_pow = eval_const(sin_pow * sin_theta);
         }
         pmm = eval_const(Field::from(double_fact) * sin_pow);
-        if m % 2 == 1 {
-            pmm = eval_const(Field::from(0.0) - pmm); // (-1)^m
-        }
+        // Omit Condon-Shortley phase (-1)^m to match real SH convention
+        // where basis functions align with positive axes.
     }
 
     if L == m {
@@ -333,7 +333,8 @@ impl<const L: usize> Manifold<Field4> for ZonalHarmonic<L> {
         let inv_r = r_sq.rsqrt();
         let nz = eval_const(z * inv_r);
 
-        let cos_theta = nz;
+        // Clamp cos_theta to [-1, 1]
+        let cos_theta = nz.max(Field::from(-1.0)).min(Field::from(1.0));
         let sin_theta = eval_const((Field::from(1.0) - cos_theta * cos_theta).sqrt());
 
         // Y_l^0 = K_l^0 * P_l^0(cos θ)
@@ -399,12 +400,13 @@ pub static SH2_PRODUCT_TABLE: &[(usize, usize, usize, f32)] = &[
     (2, 2, 0, 0.282_095),
     (3, 3, 0, 0.282_095),
     // L1 × L1 → L2 (various m combinations)
-    (1, 2, 5, 0.126_157),
-    (2, 1, 5, 0.126_157),
-    (1, 3, 7, 0.126_157),
-    (3, 1, 7, 0.126_157),
-    (2, 3, 4, 0.126_157),
-    (3, 2, 4, 0.126_157),
+    // Cross terms (xy, yz, xz)
+    (1, 2, 5, 0.218_509), // y*z -> yz
+    (2, 1, 5, 0.218_509),
+    (1, 3, 4, 0.218_509), // y*x -> xy
+    (3, 1, 4, 0.218_509),
+    (2, 3, 7, 0.218_509), // z*x -> xz
+    (3, 2, 7, 0.218_509),
     (1, 1, 6, 0.218_509),
     (2, 2, 6, -0.218_509),
     (3, 3, 6, 0.218_509),
