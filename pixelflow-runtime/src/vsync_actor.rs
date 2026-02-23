@@ -49,7 +49,10 @@ pub(crate) fn return_vsync_token() {
     // Rate-limit warning to 1% of calls to avoid log spam
     if prev.is_err() {
         static WARN_COUNTER: AtomicU32 = AtomicU32::new(0);
-        if WARN_COUNTER.fetch_add(1, Ordering::Relaxed).is_multiple_of(100) {
+        if WARN_COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(WARN_INTERVAL)
+        {
             log::warn!("VSync token bucket already at max capacity");
         }
     }
@@ -69,7 +72,9 @@ pub struct VsyncConfig {
 
 impl Default for VsyncConfig {
     fn default() -> Self {
-        Self { refresh_rate: 60.0 }
+        Self {
+            refresh_rate: DEFAULT_REFRESH_RATE,
+        }
     }
 }
 
@@ -143,6 +148,9 @@ pub struct VsyncActor {
 }
 
 const MAX_TOKENS: u32 = 100;
+const DEFAULT_REFRESH_RATE: f64 = 60.0;
+const ACTOR_QUEUE_SIZE: usize = 1024;
+const WARN_INTERVAL: u32 = 100;
 
 impl VsyncActor {
     /// Create empty VsyncActor for troupe pattern - configured via SetConfig management message.
@@ -150,8 +158,8 @@ impl VsyncActor {
     pub fn new_empty() -> Self {
         Self {
             engine_handle: None,
-            refresh_rate: 60.0,
-            interval: Duration::from_secs_f64(1.0 / 60.0),
+            refresh_rate: DEFAULT_REFRESH_RATE,
+            interval: Duration::from_secs_f64(1.0 / DEFAULT_REFRESH_RATE),
             running: false,
             next_vsync: Instant::now(),
             frame_count: 0,
@@ -178,27 +186,7 @@ impl VsyncActor {
 
         // Spawn the clock thread — self_handle is a dedicated SPSC channel
         let (clock_tx, clock_rx) = std::sync::mpsc::channel();
-
-        thread::Builder::new()
-            .name("vsync-clock".to_string())
-            .spawn(move || {
-                let mut current_interval = interval;
-                loop {
-                    match clock_rx.recv_timeout(current_interval) {
-                        Ok(ClockCommand::Stop) => break,
-                        Ok(ClockCommand::SetInterval(d)) => current_interval = d,
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            // Time to tick
-                            if self_handle.send(VsyncManagement::Tick).is_err() {
-                                // Actor is gone
-                                break;
-                            }
-                        }
-                        Err(_) => break, // Channel disconnected
-                    }
-                }
-            })
-            .expect("Failed to spawn vsync clock thread");
+        Self::spawn_clock_thread(interval, clock_rx, self_handle);
 
         Self {
             engine_handle: Some(engine_handle),
@@ -220,8 +208,10 @@ impl VsyncActor {
         refresh_rate: f64,
         engine_handle: crate::api::private::EngineActorHandle,
     ) -> ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement> {
-        let mut builder =
-            ActorBuilder::<RenderedResponse, VsyncCommand, VsyncManagement>::new(1024, None);
+        let mut builder = ActorBuilder::<RenderedResponse, VsyncCommand, VsyncManagement>::new(
+            ACTOR_QUEUE_SIZE,
+            None,
+        );
         let handle = builder.add_producer(); // For the caller
         let clock_handle = builder.add_producer(); // For the clock thread (self-handle)
         let mut scheduler = builder.build();
@@ -235,6 +225,31 @@ impl VsyncActor {
             .expect("Failed to spawn vsync actor thread");
 
         handle
+    }
+
+    fn spawn_clock_thread(
+        interval: Duration,
+        clock_rx: std::sync::mpsc::Receiver<ClockCommand>,
+        self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+    ) {
+        thread::Builder::new()
+            .name("vsync-clock".to_string())
+            .spawn(move || {
+                let mut current_interval = interval;
+                loop {
+                    match clock_rx.recv_timeout(current_interval) {
+                        Ok(ClockCommand::Stop) => break,
+                        Ok(ClockCommand::SetInterval(d)) => current_interval = d,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            if self_handle.send(VsyncManagement::Tick).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+            .expect("Failed to spawn vsync clock thread");
     }
 
     fn send_vsync(&mut self) {
@@ -371,26 +386,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
 
                 // Spawn clock thread
                 let (clock_tx, clock_rx) = std::sync::mpsc::channel();
-                let interval = self.interval;
-
-                thread::Builder::new()
-                    .name("vsync-clock".to_string())
-                    .spawn(move || {
-                        let mut current_interval = interval;
-                        loop {
-                            match clock_rx.recv_timeout(current_interval) {
-                                Ok(ClockCommand::Stop) => break,
-                                Ok(ClockCommand::SetInterval(d)) => current_interval = d,
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                    if self_handle.send(VsyncManagement::Tick).is_err() {
-                                        break;
-                                    }
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                    })
-                    .expect("Failed to spawn vsync clock thread");
+                Self::spawn_clock_thread(self.interval, clock_rx, self_handle);
 
                 self.clock_control = Some(clock_tx);
 
