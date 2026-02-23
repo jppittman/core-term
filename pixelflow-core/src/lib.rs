@@ -1137,11 +1137,6 @@ where
 
 /// Helper to apply Field operations on storage and return storage
 #[inline(always)]
-fn field_sqrt(storage: NativeSimd) -> NativeSimd {
-    Field(storage).sqrt().0
-}
-
-#[inline(always)]
 fn field_sin(storage: NativeSimd) -> NativeSimd {
     Field(storage).sin().0
 }
@@ -1189,12 +1184,23 @@ where
     #[inline(always)]
     #[must_use] 
     pub fn jet_sqrt(self) -> Self {
-        let sqrt_val = field_sqrt(self.0.val);
-        let two = NativeSimd::splat(2.0);
-        let denom = two * sqrt_val;
+        // Compute rsqrt once
+        let x = Field(self.0.val);
+        let rsqrt = x.rsqrt();
+
+        // Compute value: x * rsqrt(x), masked for x <= 0
+        let zero = Field::from(0.0);
+        let result = Field(x.0 * rsqrt.0);
+        let is_zero_or_neg = x.le(zero);
+        let val = Field::select_raw(is_zero_or_neg, zero, result);
+
+        // Compute derivative factor: 0.5 * rsqrt(x)
+        let half = NativeSimd::splat(0.5);
+        let half_rsqrt = rsqrt.0 * half;
+
         Self(DualStorage {
-            val: sqrt_val,
-            partials: core::array::from_fn(|i| self.0.partials[i] / denom),
+            val: val.0,
+            partials: core::array::from_fn(|i| self.0.partials[i] * half_rsqrt),
         })
     }
 
