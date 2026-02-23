@@ -108,8 +108,8 @@ pub enum VsyncManagement {
     /// Configure the vsync actor (set refresh rate, engine handle, etc.)
     SetConfig {
         config: VsyncConfig,
-        engine_handle: Box<crate::api::private::EngineActorHandle>,
-        self_handle: Box<ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>>,
+        engine_handle: crate::api::private::EngineActorHandle,
+        self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
     },
 }
 actor_scheduler::impl_management_message!(VsyncManagement);
