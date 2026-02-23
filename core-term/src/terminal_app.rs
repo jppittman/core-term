@@ -46,6 +46,9 @@ use pixelflow_runtime::{EngineEventControl, EngineEventData, EngineEventManageme
 use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
+/// Convenience alias for the terminal app's actor handle type.
+type TerminalHandle = ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>;
+
 /// Font filename (looked up in multiple locations)
 const FONT_FILENAME: &str = "NotoSansMono-Regular.ttf";
 
@@ -477,15 +480,15 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 });
 
                 // Process the resize and handle the resulting action
-                if let Some(action) = self.emulator.interpret_input(input) {
-                    if let EmulatorAction::ResizePty { cols, rows } = action {
-                        // Send resize command to PTY write thread
-                        if let Err(e) = self.pty_tx.send(PtyCommand::Resize(crate::io::Resize {
-                            cols,
-                            rows,
-                        })) {
-                            log::warn!("Failed to send PTY resize command: {}", e);
-                        }
+                if let Some(EmulatorAction::ResizePty { cols, rows }) =
+                    self.emulator.interpret_input(input)
+                {
+                    // Send resize command to PTY write thread
+                    if let Err(e) = self.pty_tx.send(PtyCommand::Resize(crate::io::Resize {
+                        cols,
+                        rows,
+                    })) {
+                        log::warn!("Failed to send PTY resize command: {}", e);
                     }
                 }
 
@@ -641,11 +644,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
 /// 3. Spawns the app thread with the registered engine handle
 pub fn spawn_terminal_app(
     params: TerminalAppParams,
-) -> std::io::Result<(
-    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
-    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
-    std::thread::JoinHandle<()>,
-)> {
+) -> std::io::Result<(TerminalHandle, TerminalHandle, std::thread::JoinHandle<()>)> {
     // Create app actor's channels using ActorBuilder (SPSC - each producer is unique)
     // ActorHandle is not Clone; each consumer needs its own dedicated handle.
     let mut builder =

@@ -1377,7 +1377,10 @@ fn make_literal(val: f64, span: Span) -> Expr {
         };
         return Expr::Verbatim(path);
     }
-    let mut s = val.to_string();
+    // Serialize at f32 precision: kernel constants are all f32, so
+    // emitting f64 precision would produce literals with excessive digits
+    // (e.g. 0.1_f32 as f64 == 0.10000000149011612) that clippy flags.
+    let mut s = (val as f32).to_string();
     if !s.contains('.') && !s.contains('e') && !s.contains('E') {
         s.push_str(".0");
     }

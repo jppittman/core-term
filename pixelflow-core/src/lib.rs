@@ -751,12 +751,7 @@ impl Field<u32> {
     pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
         #[cfg(target_feature = "avx512f")]
         {
-            Self(backend::x86::U32x16::pack_rgba(
-                unsafe { core::mem::transmute(r.0) },
-                unsafe { core::mem::transmute(g.0) },
-                unsafe { core::mem::transmute(b.0) },
-                unsafe { core::mem::transmute(a.0) },
-            ))
+            Self(backend::x86::U32x16::pack_rgba(r.0, g.0, b.0, a.0))
         }
         #[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2"))]
         {
@@ -1013,6 +1008,8 @@ where
     }
 }
 
+// The product rule (f*g)' = f'g + fg' correctly uses + inside a Mul impl.
+#[allow(clippy::suspicious_arithmetic_impl)]
 impl<const N: usize> core::ops::Mul for Field<Dual<N>>
 where
     <f32 as FieldStorage>::Storage: Default

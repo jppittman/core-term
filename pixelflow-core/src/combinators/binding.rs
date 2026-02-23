@@ -297,6 +297,7 @@ where
 
 /// A computation graph node that evaluates with a context stack.
 /// Legacy trait for backward compatibility with existing code.
+#[allow(clippy::too_many_arguments)]
 pub trait Graph<Ctx>: Send + Sync {
     /// Evaluate at coordinates with the given context.
     fn eval_at(

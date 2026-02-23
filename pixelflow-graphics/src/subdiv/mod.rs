@@ -360,23 +360,32 @@ pub fn eigen_patch(
     let mut proj_z = vec![0.0f32; k];
 
     for i in 0..k {
-        for j in 0..k.min(control_points.len()) {
+        for (j, cp) in control_points.iter().take(k).enumerate() {
             let w = eigen.inv_eigen(j, i); // transpose
-            proj_x[i] += w * control_points[j][0];
-            proj_y[i] += w * control_points[j][1];
-            proj_z[i] += w * control_points[j][2];
+            proj_x[i] += w * cp[0];
+            proj_y[i] += w * cp[1];
+            proj_z[i] += w * cp[2];
         }
     }
 
     // Precompute bicubic coefficients for each subpatch
     let mut coeffs = [[[0.0f32; 16]; 3]; 3]; // [axis][subpatch][coeff]
-    for sub in 0..3 {
-        for c in 0..16 {
-            for basis in 0..k {
-                let s = eigen.spline(sub, basis, c);
-                coeffs[0][sub][c] += s * proj_x[basis];
-                coeffs[1][sub][c] += s * proj_y[basis];
-                coeffs[2][sub][c] += s * proj_z[basis];
+    {
+        let [ref mut x_coeffs, ref mut y_coeffs, ref mut z_coeffs] = coeffs;
+        for (sub, (x_sub, (y_sub, z_sub))) in x_coeffs.iter_mut()
+            .zip(y_coeffs.iter_mut().zip(z_coeffs.iter_mut()))
+            .enumerate()
+        {
+            for (c, (x_c, (y_c, z_c))) in x_sub.iter_mut()
+                .zip(y_sub.iter_mut().zip(z_sub.iter_mut()))
+                .enumerate()
+            {
+                for basis in 0..k {
+                    let s = eigen.spline(sub, basis, c);
+                    *x_c += s * proj_x[basis];
+                    *y_c += s * proj_y[basis];
+                    *z_c += s * proj_z[basis];
+                }
             }
         }
     }

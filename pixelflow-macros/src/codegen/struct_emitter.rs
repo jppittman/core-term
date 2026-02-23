@@ -194,6 +194,7 @@ impl StructEmitter {
         } else if generics.is_empty() {
             quote! {
                 impl #name {
+                    #[allow(clippy::too_many_arguments)]
                     pub fn new(#(#ctor_params),*) -> Self {
                         Self { #(#field_names),* }
                     }
@@ -202,6 +203,7 @@ impl StructEmitter {
         } else {
             quote! {
                 impl<#(#generics),*> #name<#(#generics),*> {
+                    #[allow(clippy::too_many_arguments)]
                     pub fn new(#(#ctor_params),*) -> Self {
                         Self { #(#field_names),* }
                     }
@@ -225,6 +227,7 @@ impl StructEmitter {
                             type Output = #output_type;
 
                             #[inline(always)]
+                            #[allow(clippy::excessive_precision)]
                             fn eval(&self, __p: #domain_type) -> #output_type {
                                 #imports
                                 #peano_imports
@@ -243,6 +246,7 @@ impl StructEmitter {
                             type Output = #output_type;
 
                             #[inline(always)]
+                            #[allow(clippy::excessive_precision)]
                             fn eval(&self, __p: #domain_type) -> #output_type {
                                 #imports
                                 #peano_imports
@@ -265,6 +269,7 @@ impl StructEmitter {
                             type Output = #output_type;
 
                             #[inline(always)]
+                            #[allow(clippy::excessive_precision)]
                             fn eval(&self, __p: __P) -> #output_type {
                                 #imports
                                 #peano_imports
@@ -284,6 +289,7 @@ impl StructEmitter {
                             type Output = #output_type;
 
                             #[inline(always)]
+                            #[allow(clippy::excessive_precision)]
                             fn eval(&self, __p: __P) -> #output_type {
                                 #imports
                                 #peano_imports

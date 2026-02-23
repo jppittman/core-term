@@ -436,16 +436,14 @@ impl SpsaTuner {
         let delta = self.generate_perturbation();
 
         // Compute perturbed weights
+        let clamp_lo = self.config.weight_clamp.0 as f64;
+        let clamp_hi = self.config.weight_clamp.1 as f64;
         let mut weights_plus: Vec<i32> = Vec::with_capacity(self.weights.len());
         let mut weights_minus: Vec<i32> = Vec::with_capacity(self.weights.len());
 
-        for i in 0..self.weights.len() {
-            let plus = (self.weights[i] + c_k * delta[i])
-                .clamp(self.config.weight_clamp.0 as f64, self.config.weight_clamp.1 as f64) as i32;
-            let minus = (self.weights[i] - c_k * delta[i])
-                .clamp(self.config.weight_clamp.0 as f64, self.config.weight_clamp.1 as f64) as i32;
-            weights_plus.push(plus);
-            weights_minus.push(minus);
+        for (w, d) in self.weights.iter().zip(delta.iter()) {
+            weights_plus.push((w + c_k * d).clamp(clamp_lo, clamp_hi) as i32);
+            weights_minus.push((w - c_k * d).clamp(clamp_lo, clamp_hi) as i32);
         }
 
         // Evaluate both perturbations
@@ -457,14 +455,11 @@ impl SpsaTuner {
         let mut grad_norm = 0.0;
 
         // Update weights
-        for i in 0..self.weights.len() {
-            let grad_i = grad_scale * delta[i];
+        for (w, d) in self.weights.iter_mut().zip(delta.iter()) {
+            let grad_i = grad_scale * d;
             grad_norm += grad_i * grad_i;
-            self.weights[i] -= a_k * grad_i;
-
-            // Clamp to valid range
-            self.weights[i] = self.weights[i]
-                .clamp(self.config.weight_clamp.0 as f64, self.config.weight_clamp.1 as f64);
+            *w -= a_k * grad_i;
+            *w = w.clamp(clamp_lo, clamp_hi);
         }
 
         // Track best

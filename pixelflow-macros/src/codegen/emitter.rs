@@ -993,12 +993,11 @@ fn find_at_manifold_params_inner(
                     let lit = &lit_expr.lit;
                     match lit {
                         syn::Lit::Float(f) => {
-                            let value = f.base10_parse::<f64>().unwrap_or(0.0);
-                            quote! { ::pixelflow_core::combinators::ContextFree(#value as f32) }
+                            // Emit the original token to avoid precision expansion
+                            quote! { ::pixelflow_core::combinators::ContextFree(#f as f32) }
                         }
                         syn::Lit::Int(i) => {
-                            let value = i.base10_parse::<i64>().unwrap_or(0);
-                            quote! { ::pixelflow_core::combinators::ContextFree(#value as f32) }
+                            quote! { ::pixelflow_core::combinators::ContextFree(#i as f32) }
                         }
                         _ => self.emit_annotated_expr(expr),
                     }

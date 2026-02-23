@@ -108,8 +108,8 @@ pub enum VsyncManagement {
     /// Configure the vsync actor (set refresh rate, engine handle, etc.)
     SetConfig {
         config: VsyncConfig,
-        engine_handle: crate::api::private::EngineActorHandle,
-        self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+        engine_handle: Box<crate::api::private::EngineActorHandle>,
+        self_handle: Box<ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>>,
     },
 }
 actor_scheduler::impl_management_message!(VsyncManagement);
@@ -363,7 +363,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 self_handle,
             } => {
                 // Configure the vsync actor (called via Management after construction)
-                self.engine_handle = Some(engine_handle);
+                self.engine_handle = Some(*engine_handle);
                 self.refresh_rate = config.refresh_rate;
                 self.interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
 
@@ -382,7 +382,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                                 Ok(ClockCommand::Stop) => break,
                                 Ok(ClockCommand::SetInterval(d)) => current_interval = d,
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                    if self_handle.send(VsyncManagement::Tick).is_err() {
+                                    if (*self_handle).send(VsyncManagement::Tick).is_err() {
                                         break;
                                     }
                                 }
