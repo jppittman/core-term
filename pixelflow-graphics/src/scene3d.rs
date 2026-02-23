@@ -13,6 +13,8 @@
 //!
 //! No iteration. Nesting is occlusion.
 
+#![allow(clippy::excessive_precision)]
+
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::*;
 use pixelflow_macros::{kernel, ManifoldExpr};
@@ -1047,6 +1049,7 @@ kernel!(pub struct Checker = || Jet3 -> Field {
 ///
 /// Uses Lift to project Jet3 → Field (discards derivatives - sky doesn't need AA).
 #[must_use] 
+#[allow(clippy::excessive_precision)]
 pub fn sky() -> Lift<impl Manifold<Field4, Output = Field> + Clone> {
     Lift(kernel!(|| {
         let t = (Y * 0.5 + 0.5).max(0.0).min(1.0);

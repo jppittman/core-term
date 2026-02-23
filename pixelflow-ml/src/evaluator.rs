@@ -170,6 +170,11 @@ pub trait LinearFeatures {
 
     /// Feature names for debugging/visualization.
     fn feature_names() -> &'static [&'static str];
+
+    /// Check if the feature vector is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Hand-Crafted Evaluator: A simple linear combination of features.
