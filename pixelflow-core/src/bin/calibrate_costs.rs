@@ -276,7 +276,7 @@ fn backend_name() -> &'static str {
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2", not(target_feature = "avx512f")))]
     {
-        return "AVX2";
+        "AVX2"
     }
 
     #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse2", not(target_feature = "avx2"), not(target_feature = "avx512f")))]

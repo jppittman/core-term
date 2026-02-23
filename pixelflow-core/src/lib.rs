@@ -736,6 +736,7 @@ impl Field<u32> {
     #[cfg(target_arch = "aarch64")]
     #[inline(always)]
     pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
+        #[allow(clippy::useless_transmute)]
         Self(backend::arm::U32x4::pack_rgba(
             unsafe { core::mem::transmute(r.0) },
             unsafe { core::mem::transmute(g.0) },
@@ -748,6 +749,7 @@ impl Field<u32> {
     #[cfg(target_arch = "x86_64")]
     #[inline(always)]
     #[must_use] 
+    #[allow(clippy::useless_transmute)]
     pub fn pack(r: Field, g: Field, b: Field, a: Field) -> Self {
         #[cfg(target_feature = "avx512f")]
         {
@@ -1027,7 +1029,10 @@ where
         Self(DualStorage {
             val: self.0.val * rhs.0.val,
             partials: core::array::from_fn(|i| {
-                self.0.partials[i] * rhs.0.val + self.0.val * rhs.0.partials[i]
+                #[allow(clippy::suspicious_arithmetic_impl)]
+                {
+                    self.0.partials[i] * rhs.0.val + self.0.val * rhs.0.partials[i]
+                }
             }),
         })
     }
