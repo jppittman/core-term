@@ -299,6 +299,7 @@ where
 /// Legacy trait for backward compatibility with existing code.
 pub trait Graph<Ctx>: Send + Sync {
     /// Evaluate at coordinates with the given context.
+    #[allow(clippy::too_many_arguments)]
     fn eval_at(
         &self,
         ctx: &Ctx,
