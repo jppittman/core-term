@@ -58,7 +58,7 @@ impl<M: ManifoldCompat<Field> + Send + Sync> Manifold<Jet3_4> for Lift<M> {
     #[inline(always)]
     fn eval(&self, p: Jet3_4) -> Self::Output {
         let (x, y, z, w) = p;
-        self.0.eval_raw(x.into(), y.into(), z.into(), w.into())
+        self.0.eval((x.into(), y.into(), z.into(), w.into()))
     }
 }
 
@@ -124,7 +124,7 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Field4> for ScreenToDir<M
         let dz = sz / len;
 
         // 3. Pass pure direction Jets to the scene
-        self.inner.eval_raw(dx, dy, dz, Jet3::constant(w))
+        self.inner.eval((dx, dy, dz, Jet3::constant(w)))
     }
 }
 
@@ -153,7 +153,7 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Field4> for ColorScree
         let dy = sy / len;
         let dz = sz / len;
 
-        self.inner.eval_raw(dx, dy, dz, Jet3::constant(w))
+        self.inner.eval((dx, dy, dz, Jet3::constant(w)))
     }
 }
 
@@ -343,7 +343,7 @@ impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldG
         let in_bounds = u.ge(zero) & u.le(one) & v.ge(zero) & v.le(one);
 
         // Sample height field
-        let h = self.height_field.eval_raw(u, v, zero, zero);
+        let h = self.height_field.eval((u, v, zero, zero));
 
         // Step 4: Adjust t for height displacement
         let effective_height =
@@ -474,16 +474,16 @@ where
         let m2 = self.second.mask();
         let c2 = self.second.color();
 
-        let mask1 = m1.eval_raw(rx, ry, rz, w);
-        let mask2 = m2.eval_raw(rx, ry, rz, w);
+        let mask1 = m1.eval((rx, ry, rz, w));
+        let mask2 = m2.eval((rx, ry, rz, w));
 
         // Inner select: S2 vs background
-        let color2 = c2.eval_raw(rx, ry, rz, w);
-        let bg_color = self.background.eval_raw(rx, ry, rz, w);
+        let color2 = c2.eval((rx, ry, rz, w));
+        let bg_color = self.background.eval((rx, ry, rz, w));
         let inner = Discrete::select(mask2, color2, bg_color);
 
         // Outer select: S1 vs inner
-        let color1 = c1.eval_raw(rx, ry, rz, w);
+        let color1 = c1.eval((rx, ry, rz, w));
         Discrete::select(mask1, color1, inner)
     }
 }
@@ -515,7 +515,7 @@ where
     #[inline]
     fn eval(&self, p: Jet3_4) -> Discrete {
         let (rx, ry, rz, w) = p;
-        let t = self.geometry.eval_raw(rx, ry, rz, w);
+        let t = self.geometry.eval((rx, ry, rz, w));
 
         // Compute hit point: P = ray * t
         let hx = rx * t;
@@ -523,7 +523,7 @@ where
         let hz = rz * t;
 
         // Evaluate material at hit point
-        self.material.eval_raw(hx, hy, hz, w)
+        self.material.eval((hx, hy, hz, w))
     }
 }
 
@@ -673,7 +673,7 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
         let r_z = d_jet_z - k * n_jet_z;
 
         // Recurse with curved reflected rays
-        self.inner.eval_raw(r_x, r_y, r_z, w)
+        self.inner.eval((r_x, r_y, r_z, w))
     }
 }
 
@@ -761,7 +761,7 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
         let r_y = d_jet_y - k * n_jet_y;
         let r_z = d_jet_z - k * n_jet_z;
 
-        self.inner.eval_raw(r_x, r_y, r_z, w)
+        self.inner.eval((r_x, r_y, r_z, w))
     }
 }
 
@@ -903,7 +903,7 @@ where
         };
 
         self.inner
-            .eval_raw(reflected_x, reflected_y, reflected_z, reflected_w)
+            .eval((reflected_x, reflected_y, reflected_z, reflected_w))
     }
 }
 
@@ -1003,7 +1003,7 @@ where
         };
 
         self.inner
-            .eval_raw(reflected_x, reflected_y, reflected_z, reflected_w)
+            .eval((reflected_x, reflected_y, reflected_z, reflected_w))
     }
 }
 
@@ -1098,7 +1098,7 @@ impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorSky<
         let g = (Field::from(0.85) - t * Field::from(0.45)).constant();
         let b = (one - t * Field::from(0.2)).constant();
 
-        self.color_cube.eval_raw(r, g, b, one)
+        self.color_cube.eval((r, g, b, one))
     }
 }
 
@@ -1185,6 +1185,6 @@ impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorChec
         let b = (b_base * coverage + b_neighbor * inv_coverage).constant();
 
         // Sample the color cube
-        self.color_cube.eval_raw(r, g, b, one)
+        self.color_cube.eval((r, g, b, one))
     }
 }
