@@ -26,6 +26,8 @@ use pixelflow_graphics::render::rasterizer::{
 use std::sync::Arc;
 use std::time::Instant;
 
+const LOG_FRAME_INTERVAL: u64 = 60;
+
 /// Metadata for a window being rendered (frame extracted, waiting for response).
 struct PendingRender {
     id: crate::api::public::WindowId,
@@ -454,7 +456,7 @@ impl EngineHandler {
         let send_time = t1.elapsed();
 
         self.frame_number += 1;
-        if self.frame_number.is_multiple_of(60) {
+        if self.frame_number.is_multiple_of(LOG_FRAME_INTERVAL) {
             log::info!(
                 "Frame {}: render={:?}, send={:?}",
                 self.frame_number,

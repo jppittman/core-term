@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 /// This is separate from FPS measurement (which counts actual rasterization).
 static VSYNC_TOKEN_BUCKET: AtomicU32 = AtomicU32::new(MAX_TOKENS);
 
+/// Default refresh rate in Hz.
+const DEFAULT_REFRESH_RATE: f64 = 60.0;
+
 /// Try to consume a VSync token. Returns true if token was available.
 #[inline]
 pub(crate) fn try_consume_vsync_token() -> bool {
@@ -74,7 +77,9 @@ pub struct VsyncConfig {
 
 impl Default for VsyncConfig {
     fn default() -> Self {
-        Self { refresh_rate: 60.0 }
+        Self {
+            refresh_rate: DEFAULT_REFRESH_RATE,
+        }
     }
 }
 
@@ -186,8 +191,8 @@ impl VsyncActor {
     pub fn new_empty() -> Self {
         Self {
             engine_handle: None,
-            refresh_rate: 60.0,
-            interval: Duration::from_secs_f64(1.0 / 60.0),
+            refresh_rate: DEFAULT_REFRESH_RATE,
+            interval: Duration::from_secs_f64(1.0 / DEFAULT_REFRESH_RATE),
             running: false,
             next_vsync: Instant::now(),
             frame_count: 0,
