@@ -11,6 +11,10 @@ jobs:
     name: Revert failed commit
     runs-on: ubuntu-latest
     if: github.event.workflow_run.conclusion == 'failure'
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,36 +26,30 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Get the failing commit
-        id: commit
+      - name: Create Revert PR and Issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FAILING_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          # Get the commit that triggered the workflow_run
-          COMMIT_SHA=${{ github.event.workflow_run.head_commit.id }}
-          COMMIT_MSG=$(git log -1 --format=%B $COMMIT_SHA)
-          echo "sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
-          echo "message=$COMMIT_MSG" >> $GITHUB_OUTPUT
+          # 1. Create a descriptive branch name
+          BRANCH_NAME="revert-failed-postsubmit-${FAILING_SHA:0:7}"
+          git checkout -b $BRANCH_NAME
 
-      - name: Revert the commit
-        run: |
-          # Revert the failing commit
-          git revert --no-edit ${{ steps.commit.outputs.sha }}
+          # 2. Revert the failing commit
+          git revert --no-edit $FAILING_SHA
 
-      - name: Push revert to main
-        run: |
-          git push origin HEAD:refs/heads/${{ github.event.workflow_run.head_branch }}
+          # 3. Push the branch
+          git push origin $BRANCH_NAME
 
-      - name: Create revert notification issue
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const failingCommit = '${{ steps.commit.outputs.sha }}';
-            const failingCommitMsg = '${{ steps.commit.outputs.message }}';
-            const workflowRunUrl = '${{ github.event.workflow_run.html_url }}';
+          # 4. Create the PR using gh CLI
+          PR_URL=$(gh pr create \
+            --title "Revert \"$(git log -1 --format=%s $FAILING_SHA)\"" \
+            --body "Reverting $FAILING_SHA due to postsubmit failure in [Run #${{ github.event.workflow_run.run_number }}](${{ github.event.workflow_run.html_url }})." \
+            --base main \
+            --head $BRANCH_NAME)
 
-            github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `Automatic revert: Failed flake detection for ${failingCommit.substring(0, 7)}`,
-              body: `## Automatic Revert Triggered\n\nThe following commit was automatically reverted due to failed flake detection tests:\n\n**Commit:** \`${failingCommit}\`\n\n**Original message:**\n\`\`\`\n${failingCommitMsg}\n\`\`\`\n\n**Failed workflow:** [View details](${workflowRunUrl})\n\nThis typically indicates a flaky test that intermittently fails. Please investigate and fix the underlying issue.`,
-              labels: ['flake-detected', 'automatic-revert']
-            });
+          # 5. Create the Tracking Issue
+          gh issue create \
+            --title "Postsubmit Failure: $FAILING_SHA" \
+            --body "Postsubmit failed. Revert PR opened at $PR_URL." \
+            --label "automatic-revert,flake-detected"
