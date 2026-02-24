@@ -95,7 +95,7 @@ impl Actor<AlphaData, AlphaControl, AlphaManagement> for AlphaActor<'_> {
             AlphaControl::Ping => {
                 self.log.lock().unwrap().push("Alpha:Ping".to_string());
                 // Send pong to beta
-                let _ = self.dir.beta.send(Message::Control(BetaControl::Pong));
+                let _ = self.dir.beta.send(Message::Control(BetaControl::Pong)).ok();
             }
             AlphaControl::Shutdown => {
                 self.log.lock().unwrap().push("Alpha:Shutdown".to_string());
@@ -147,7 +147,8 @@ impl Actor<BetaData, BetaControl, BetaManagement> for BetaActor<'_> {
                 let _ = self
                     .dir
                     .alpha
-                    .send(Message::Data(AlphaData("pong-response".to_string())));
+                    .send(Message::Data(AlphaData("pong-response".to_string())))
+                    .ok();
             }
             BetaControl::Shutdown => {
                 self.log.lock().unwrap().push("Beta:Shutdown".to_string());
@@ -258,6 +259,7 @@ fn directory_allows_cross_actor_messaging() {
 
 /// Simulates the Troupe struct that troupe! would generate (SPSC pattern)
 struct TestTroupe {
+    #[allow(dead_code)]
     directory: TestDirectory,
     // Schedulers run the actors when dropped; they're held here for that purpose.
     #[allow(dead_code)]
@@ -279,11 +281,11 @@ impl TestTroupe {
             ActorBuilder::<BetaData, BetaControl, BetaManagement>::new(1024, None);
 
         // Each actor gets its own directory with dedicated SPSC handles
-        let alpha_dir = TestDirectory {
+        let _alpha_dir = TestDirectory {
             alpha: alpha_builder.add_producer(),
             beta: beta_builder.add_producer(),
         };
-        let beta_dir = TestDirectory {
+        let _beta_dir = TestDirectory {
             alpha: alpha_builder.add_producer(),
             beta: beta_builder.add_producer(),
         };
@@ -297,8 +299,8 @@ impl TestTroupe {
             beta: beta_builder.add_producer(),
         };
 
-        let mut alpha_scheduler = alpha_builder.build();
-        let mut beta_scheduler = beta_builder.build();
+        let alpha_scheduler = alpha_builder.build();
+        let beta_scheduler = beta_builder.build();
 
         // Spawn actors
         // Note: In this test harness, we spawn them immediately.
@@ -563,7 +565,7 @@ fn circular_messaging_does_not_deadlock() {
                 if matches!(cmd, AlphaControl::Ping) {
                     let c = self.count.fetch_add(1, Ordering::SeqCst);
                     if c < self.max {
-                        let _ = self.beta_h.send(Message::Control(BetaControl::Pong));
+                        let _ = self.beta_h.send(Message::Control(BetaControl::Pong)).ok();
                     }
                 }
                 Ok(())
@@ -597,7 +599,7 @@ fn circular_messaging_does_not_deadlock() {
                 if matches!(cmd, BetaControl::Pong) {
                     let c = self.count.fetch_add(1, Ordering::SeqCst);
                     if c < self.max {
-                        let _ = self.alpha_h.send(Message::Control(AlphaControl::Ping));
+                        let _ = self.alpha_h.send(Message::Control(AlphaControl::Ping)).ok();
                     }
                 }
                 Ok(())
