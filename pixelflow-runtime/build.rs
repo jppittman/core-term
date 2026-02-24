@@ -1,3 +1,7 @@
+fn has_x11_feature() -> bool {
+    cfg!(feature = "display_x11") || std::env::var("CARGO_FEATURE_DISPLAY_X11").is_ok()
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=DISPLAY_DRIVER");
@@ -22,11 +26,12 @@ fn main() {
         "x11" => {
             println!("cargo:rustc-cfg=use_x11_display");
             // Probe for X11 libraries using pkg-config
-            let required_libs = ["x11"];
-            for lib in required_libs {
-                if let Err(e) = pkg_config::probe_library(lib) {
-                    eprintln!("Warning: Failed to find library `{}`: {}", lib, e);
-                }
+            // Only fail if X11 was explicitly requested via feature
+            if has_x11_feature() {
+                pkg_config::probe_library("x11")
+                    .expect("X11 library not found. On Linux, install libx11-dev (Debian/Ubuntu) or libx11-devel (RHEL/Fedora)");
+            } else if pkg_config::probe_library("x11").is_err() {
+                eprintln!("Warning: X11 libraries not found. X11 features may not be available.");
             }
         }
         "headless" => {
@@ -49,8 +54,7 @@ fn determine_display_driver(target_os: &str) -> String {
     // Check features
     let has_cocoa =
         cfg!(feature = "display_cocoa") || std::env::var("CARGO_FEATURE_DISPLAY_COCOA").is_ok();
-    let has_x11 =
-        cfg!(feature = "display_x11") || std::env::var("CARGO_FEATURE_DISPLAY_X11").is_ok();
+    let has_x11 = has_x11_feature();
     let has_headless = cfg!(feature = "display_headless")
         || std::env::var("CARGO_FEATURE_DISPLAY_HEADLESS").is_ok();
     let has_web =
@@ -74,7 +78,16 @@ fn determine_display_driver(target_os: &str) -> String {
     if target_os == "linux" {
         if has_x11 { return "x11".to_string(); }
         if has_headless { return "headless".to_string(); }
-        return "x11".to_string();
+
+        // On Linux, prefer X11 but fall back to headless if X11 is not available
+        if pkg_config::probe_library("x11").is_ok() {
+            return "x11".to_string();
+        } else {
+            eprintln!("Warning: X11 libraries not found. Falling back to headless display driver.");
+            println!("cargo:warning=X11 libraries not found. Building headless driver instead.");
+            println!("cargo:warning=To use X11, install libx11-dev (Debian/Ubuntu) or libx11-devel (RHEL/Fedora)");
+            return "headless".to_string();
+        }
     }
 
     // Fallbacks
