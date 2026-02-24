@@ -710,6 +710,7 @@ impl Field {
 impl Field<u32> {
     /// Create a Discrete field with the same value in all lanes.
     #[inline(always)]
+    #[must_use]
     pub fn splat(val: u32) -> Self {
         Self(NativeU32Simd::splat(val))
     }
