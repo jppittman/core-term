@@ -26,7 +26,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create Revert PR and Issue
+      - name: Create Tracking Issue and Revert PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FAILING_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -41,15 +41,37 @@ jobs:
           # 3. Push the branch
           git push origin $BRANCH_NAME
 
-          # 4. Create the PR using gh CLI
+          # 4. Create the Tracking Issue first
+          ISSUE_OUTPUT=$(gh issue create \
+            --title "Postsubmit Failure: $(git log -1 --format=%s $FAILING_SHA)" \
+            --body "Commit $FAILING_SHA failed postsubmit tests.
+
+## Details
+- **Workflow Run**: [#${{ github.event.workflow_run.run_number }}](${{ github.event.workflow_run.html_url }})
+- **Failing Commit**: $FAILING_SHA
+- **Author**: $(git log -1 --format=%an $FAILING_SHA)
+
+A revert PR has been automatically created to address this failure." \
+            --label "automatic-revert,postsubmit-failure")
+
+          # Extract issue number from output (format: "https://github.com/owner/repo/issues/NUMBER")
+          ISSUE_NUMBER=$(echo $ISSUE_OUTPUT | grep -oE '[0-9]+$')
+
+          # 5. Create the Revert PR and link it to the issue
           PR_URL=$(gh pr create \
             --title "Revert \"$(git log -1 --format=%s $FAILING_SHA)\"" \
-            --body "Reverting $FAILING_SHA due to postsubmit failure in [Run #${{ github.event.workflow_run.run_number }}](${{ github.event.workflow_run.html_url }})." \
+            --body "Reverting $FAILING_SHA due to postsubmit failure.
+
+## Related Issue
+Fixes #$ISSUE_NUMBER
+
+## Details
+- **Workflow Run**: [#${{ github.event.workflow_run.run_number }}](${{ github.event.workflow_run.html_url }})
+- **Failing SHA**: $FAILING_SHA
+- **Commit Author**: $(git log -1 --format=%an $FAILING_SHA)
+
+This revert was automatically created by the postsubmit failure detection system." \
             --base main \
             --head $BRANCH_NAME)
 
-          # 5. Create the Tracking Issue
-          gh issue create \
-            --title "Postsubmit Failure: $FAILING_SHA" \
-            --body "Postsubmit failed. Revert PR opened at $PR_URL." \
-            --label "automatic-revert,flake-detected"
+          echo "Created issue #$ISSUE_NUMBER and revert PR at $PR_URL"
