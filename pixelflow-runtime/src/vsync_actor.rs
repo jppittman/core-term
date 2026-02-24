@@ -145,6 +145,37 @@ pub struct VsyncActor {
 const MAX_TOKENS: u32 = 100;
 
 impl VsyncActor {
+    /// Helper to spawn the clock thread.
+    fn spawn_clock_thread(
+        interval: Duration,
+        self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+    ) -> Sender<ClockCommand> {
+        let (clock_tx, clock_rx) = std::sync::mpsc::channel();
+
+        thread::Builder::new()
+            .name("vsync-clock".to_string())
+            .spawn(move || {
+                let mut current_interval = interval;
+                loop {
+                    match clock_rx.recv_timeout(current_interval) {
+                        Ok(ClockCommand::Stop) => break,
+                        Ok(ClockCommand::SetInterval(d)) => current_interval = d,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            // Time to tick
+                            if self_handle.send(VsyncManagement::Tick).is_err() {
+                                // Actor is gone
+                                break;
+                            }
+                        }
+                        Err(_) => break, // Channel disconnected
+                    }
+                }
+            })
+            .expect("Failed to spawn vsync clock thread");
+
+        clock_tx
+    }
+
     /// Create empty VsyncActor for troupe pattern - configured via SetConfig management message.
     #[must_use] 
     pub fn new_empty() -> Self {
@@ -177,28 +208,7 @@ impl VsyncActor {
         );
 
         // Spawn the clock thread — self_handle is a dedicated SPSC channel
-        let (clock_tx, clock_rx) = std::sync::mpsc::channel();
-
-        thread::Builder::new()
-            .name("vsync-clock".to_string())
-            .spawn(move || {
-                let mut current_interval = interval;
-                loop {
-                    match clock_rx.recv_timeout(current_interval) {
-                        Ok(ClockCommand::Stop) => break,
-                        Ok(ClockCommand::SetInterval(d)) => current_interval = d,
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            // Time to tick
-                            if self_handle.send(VsyncManagement::Tick).is_err() {
-                                // Actor is gone
-                                break;
-                            }
-                        }
-                        Err(_) => break, // Channel disconnected
-                    }
-                }
-            })
-            .expect("Failed to spawn vsync clock thread");
+        let clock_tx = Self::spawn_clock_thread(interval, self_handle);
 
         Self {
             engine_handle: Some(engine_handle),
@@ -370,28 +380,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 info!("VsyncActor: Configured with {:.2} Hz", config.refresh_rate);
 
                 // Spawn clock thread
-                let (clock_tx, clock_rx) = std::sync::mpsc::channel();
-                let interval = self.interval;
-
-                thread::Builder::new()
-                    .name("vsync-clock".to_string())
-                    .spawn(move || {
-                        let mut current_interval = interval;
-                        loop {
-                            match clock_rx.recv_timeout(current_interval) {
-                                Ok(ClockCommand::Stop) => break,
-                                Ok(ClockCommand::SetInterval(d)) => current_interval = d,
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                    if self_handle.send(VsyncManagement::Tick).is_err() {
-                                        break;
-                                    }
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                    })
-                    .expect("Failed to spawn vsync clock thread");
-
+                let clock_tx = Self::spawn_clock_thread(self.interval, self_handle);
                 self.clock_control = Some(clock_tx);
 
                 // Auto-start after configuration (clock thread is ready now)
