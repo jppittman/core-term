@@ -295,7 +295,7 @@ impl EdgeAccumulator {
     /// Build accumulator from an expression tree.
     ///
     /// Traverses the tree and accumulates edge contributions.
-    #[must_use] 
+    #[must_use]
     pub fn from_expr(expr: &Expr, emb: &OpEmbeddings) -> Self {
         let mut acc = Self::new();
         acc.add_expr_edges(expr, emb);
@@ -591,10 +591,9 @@ impl StructuralFeatures {
                 };
 
                 // Check for FMA pattern: Mul as left child and current is in Add context
-                if *op == OpKind::Add
-                    && matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
-                        features.values[Self::HAS_FMA_PATTERN] = 1.0;
-                    }
+                if *op == OpKind::Add && matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
+                    features.values[Self::HAS_FMA_PATTERN] = 1.0;
+                }
 
 
                 let left_cost = Self::collect_stats(left, features, depth + 1, width_at_depth, leaf_depths);
@@ -1021,7 +1020,7 @@ mod tests {
 
         // Add→Mul (Mul under Add, same ops but different structure)
         let add_mul = make_add_mul_pattern();
-        let _acc_add_mul = EdgeAccumulator::from_expr(&add_mul, &emb);
+        let acc_add_mul = EdgeAccumulator::from_expr(&add_mul, &emb);
 
         // The accumulators should be different because:
         // - FMA has Add→Mul, Add→Var edges

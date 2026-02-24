@@ -789,7 +789,6 @@ fn test_snapshot_with_selection() {
     let default_glyph = Glyph::Single(ContentCell {
         c: ' ',
         attr: Attributes::default(),
-        combining: None,
     });
 
     let lines = vec![
@@ -1349,6 +1348,7 @@ mod selection_logic_tests {
 #[cfg(test)]
 mod get_selected_text_tests {
     use super::*;
+    use crate::term::snapshot::{Point, SelectionRange};
 
     #[test]
     fn test_get_selected_text_no_selection() {

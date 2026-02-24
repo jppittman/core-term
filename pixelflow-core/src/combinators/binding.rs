@@ -136,7 +136,6 @@ pub struct Var<N>(PhantomData<N>);
 
 impl<N> Var<N> {
     /// Create a new variable reference.
-    #[must_use] 
     pub const fn new() -> Self {
         Self(PhantomData)
     }
@@ -162,9 +161,7 @@ impl<N> Default for Var<N> {
 // Maps each positive number to its predecessor.
 // Uses a helper trait to avoid impl conflicts.
 
-/// Predecessor in the type-level natural number chain (N → N-1).
 pub trait Pred {
-    /// The predecessor type.
     type Output;
 }
 
@@ -299,7 +296,6 @@ where
 /// Legacy trait for backward compatibility with existing code.
 pub trait Graph<Ctx>: Send + Sync {
     /// Evaluate at coordinates with the given context.
-    #[allow(clippy::too_many_arguments)]
     fn eval_at(
         &self,
         ctx: &Ctx,
@@ -496,7 +492,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Field, X};
+    use crate::domain::LetExtended;
+    use crate::{Field, X, Y};
 
     #[test]
     fn test_let_binding_new_style() {

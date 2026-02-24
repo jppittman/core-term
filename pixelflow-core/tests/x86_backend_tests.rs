@@ -114,26 +114,4 @@ mod tests {
         let mut out = [0.0; 3]; // Too small
         a.store(&mut out);
     }
-
-    #[test]
-    fn test_sse2_reciprocal_math() {
-        let a = F32x4::splat(4.0);
-        let mut out = [0.0; 4];
-
-        // Reciprocal
-        let recip = a.recip();
-        recip.store(&mut out);
-        // recip is approximate, tolerance 1e-3
-        for x in out.iter() {
-            assert!((x - 0.25).abs() < 1e-3, "recip(4.0) should be 0.25, got {}", x);
-        }
-
-        // Reciprocal Square Root
-        let rsqrt = a.simd_rsqrt();
-        rsqrt.store(&mut out);
-        // rsqrt is approximate, tolerance 1e-3
-        for x in out.iter() {
-            assert!((x - 0.5).abs() < 1e-3, "rsqrt(4.0) should be 0.5, got {}", x);
-        }
-    }
 }

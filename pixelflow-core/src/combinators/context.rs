@@ -281,6 +281,8 @@ impl<Ctx, Body> WithContext<Ctx, Body> {
     }
 }
 
+impl<Ctx, Body> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
+
 // ============================================================================
 // CtxVar - Array-Indexed Variable Reference
 // ============================================================================
@@ -296,17 +298,12 @@ pub struct CtxVar<ArrayPos, const INDEX: usize>(PhantomData<ArrayPos>);
 
 impl<ArrayPos, const INDEX: usize> CtxVar<ArrayPos, INDEX> {
     /// Create a new context variable reference.
-    #[must_use] 
     pub const fn new() -> Self {
         Self(PhantomData)
     }
 }
 
 impl<ArrayPos, const INDEX: usize> crate::ext::ManifoldExpr for CtxVar<ArrayPos, INDEX> {}
-
-// A parameterized kernel that has been applied to concrete values is itself a
-// valid manifold expression and participates in the fluent ManifoldExt API.
-impl<Ctx, Body> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
 
 // ============================================================================
 // Operator Implementations for CtxVar
@@ -495,7 +492,6 @@ where
 
 // Macro to generate Spatial impls for context-extended domains.
 // These can't use a blanket impl due to overlap with base domain (I, I) impls.
-#[allow(unused_macros)]
 macro_rules! impl_spatial_for_context {
     ($($shape:ty),+ $(,)?) => {
         $(
@@ -728,8 +724,8 @@ mod context_domain_tests {
         // Replicate the Checker kernel pattern with 12 context elements
         // Uses Field coordinates since V() extracts the value component (Field)
         use crate::combinators::Select;
-        use crate::ops::derivative::V;
-        use crate::ops::unary::{Floor, Abs};
+        use crate::ops::derivative::{V, DX, DY, DZ};
+        use crate::ops::unary::{Floor, Abs, Sqrt};
         use crate::Z;
 
         type CheckerCtx = (([Field; 12],), (Field, Field, Field, Field));

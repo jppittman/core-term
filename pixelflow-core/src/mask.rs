@@ -75,35 +75,30 @@ pub struct Mask(pub(crate) NativeMaskStorage);
 impl Mask {
     /// Create a mask with all lanes true.
     #[inline(always)]
-    #[must_use]
     pub fn all_true() -> Self {
         Self(!NativeMaskStorage::default())
     }
 
     /// Create a mask with all lanes false.
     #[inline(always)]
-    #[must_use]
     pub fn all_false() -> Self {
         Self(NativeMaskStorage::default())
     }
 
     /// Check if any lane is true.
     #[inline(always)]
-    #[must_use]
     pub fn any(&self) -> bool {
         self.0.any()
     }
 
     /// Check if all lanes are true.
     #[inline(always)]
-    #[must_use]
     pub fn all(&self) -> bool {
         self.0.all()
     }
 
     /// Check if no lanes are true.
     #[inline(always)]
-    #[must_use] 
     pub fn none(&self) -> bool {
         !self.0.any()
     }
@@ -112,7 +107,6 @@ impl Mask {
     ///
     /// Each lane becomes either all-1s bits (NaN) or all-0s bits (0.0).
     #[inline(always)]
-    #[must_use] 
     pub fn to_field(self) -> Field {
         Field(NativeSimd::mask_to_float(self.0))
     }
@@ -121,14 +115,12 @@ impl Mask {
     ///
     /// Non-zero lanes become true, zero lanes become false.
     #[inline(always)]
-    #[must_use] 
     pub fn from_field(field: Field) -> Self {
         Self(field.0.float_to_mask())
     }
 
     /// Branchless select: returns `if_true` where mask is set, `if_false` elsewhere.
     #[inline(always)]
-    #[must_use] 
     pub fn select(self, if_true: Field, if_false: Field) -> Field {
         Field(NativeSimd::simd_select(self.0, if_true.0, if_false.0))
     }
@@ -138,7 +130,6 @@ impl Mask {
     /// If all lanes are true, returns `if_true` without blending.
     /// If no lanes are true, returns `if_false` without blending.
     #[inline(always)]
-    #[must_use] 
     pub fn select_opt(self, if_true: Field, if_false: Field) -> Field {
         if self.all() {
             return if_true;

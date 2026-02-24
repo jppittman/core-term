@@ -320,7 +320,6 @@ impl AnsiProcessor {
     /// - No partial UTF-8 sequences
     /// - No pending escape sequences
     /// - Ready for any input
-    #[must_use] 
     pub fn new() -> Self {
         AnsiProcessor {
             lexer: AnsiLexer::new(),

@@ -66,11 +66,11 @@ fn get_secure_log_path() -> std::path::PathBuf {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::DirBuilderExt;
-                drop(std::fs::DirBuilder::new().mode(0o700).create(&cache_dir));
+                let _ = std::fs::DirBuilder::new().mode(0o700).create(&cache_dir);
             }
             #[cfg(not(unix))]
             {
-                drop(std::fs::create_dir_all(&cache_dir));
+                let _ = std::fs::create_dir_all(&cache_dir);
             }
         }
         return cache_dir.join("core-term.log");
@@ -206,7 +206,7 @@ fn main() -> anyhow::Result<()> {
     info!("Engine config created. Creating EngineTroupe...");
 
     // Phase 1: Create troupe (channels ready, no threads spawned yet)
-    let mut troupe = EngineTroupe::with_config(engine_config.clone())
+    let troupe = EngineTroupe::with_config(engine_config.clone())
         .context("Failed to create EngineTroupe")?;
 
     // Phase 2: Get unregistered engine handle
@@ -226,11 +226,11 @@ fn main() -> anyhow::Result<()> {
             unregistered_engine: unregistered_handle,
             window_config: engine_config.window.clone(),
         };
-        let (app_handle, pty_handle, _app_thread_handle) =
+        let (app_handle, _app_thread_handle) =
             spawn_terminal_app(params).context("Failed to spawn terminal app")?;
 
         // Create adapter for PTY parser to send to app
-        let app_sender = Box::new(TerminalAppSender::new(pty_handle));
+        let app_sender = Box::new(TerminalAppSender::new(app_handle.clone()));
 
         // Spawn PTY
         let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();

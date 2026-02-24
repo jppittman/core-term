@@ -1,6 +1,6 @@
 use crate::api::private::{EngineActorHandle, EngineControl, EngineData};
 use crate::api::public::AppManagement; // Use public re-export
-use actor_scheduler::{Actor, ActorBuilder, ActorStatus, HandlerError, HandlerResult, SystemStatus};
+use actor_scheduler::{Actor, ActorStatus, HandlerError, HandlerResult, SystemStatus};
 use std::sync::{Arc, Mutex};
 
 /// A recorded message received by the MockEngine.
@@ -14,14 +14,13 @@ pub enum ReceivedMessage {
 /// A mock engine that captures messages sent to it suitable for unit testing actors.
 pub struct MockEngine {
     messages: Arc<Mutex<Vec<ReceivedMessage>>>,
-    handle: Option<EngineActorHandle>,
+    handle: EngineActorHandle,
     _thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl MockEngine {
     /// Create a new MockEngine. Returns the engine instance (to inspect messages)
     /// and the handle (to pass to the actor under test).
-    #[must_use] 
     pub fn new() -> Self {
         let messages = Arc::new(Mutex::new(Vec::new()));
 
@@ -29,12 +28,9 @@ impl MockEngine {
             messages: messages.clone(),
         };
 
-        // Create scheduler with two producers: one for self, one for handle()
-        let mut builder =
-            ActorBuilder::<EngineData, EngineControl, AppManagement>::new(100, None);
-        let _handle = builder.add_producer();
-        let extra_handle = builder.add_producer();
-        let mut scheduler = builder.build();
+        // Create scheduler channels
+        let (handle, mut scheduler) =
+            actor_scheduler::create_actor::<EngineData, EngineControl, AppManagement>(100, None);
 
         // Spawn background thread to process messages
         let thread = std::thread::spawn(move || {
@@ -43,17 +39,13 @@ impl MockEngine {
 
         Self {
             messages,
-            handle: Some(extra_handle),
+            handle,
             _thread: Some(thread),
         }
     }
 
-    /// Take the dedicated SPSC handle to the mock engine.
-    ///
-    /// With SPSC channels, each handle is a unique producer.
-    /// This can only be called once — panics if called again.
-    pub fn take_handle(&mut self) -> EngineActorHandle {
-        self.handle.take().expect("MockEngine handle already taken")
+    pub fn handle(&self) -> EngineActorHandle {
+        self.handle.clone()
     }
 
     pub fn messages(&self) -> std::sync::MutexGuard<'_, Vec<ReceivedMessage>> {

@@ -5,22 +5,6 @@ use core::arch::wasm32::*;
 use core::fmt::{Debug, Formatter};
 use core::ops::*;
 
-// Shared minimax polynomial coefficients (f32 precision)
-mod log2_poly {
-    pub const C4: f32 = -0.320_043_5;
-    pub const C3: f32 = 1.797_496_9;
-    pub const C2: f32 = -4.198_805;
-    pub const C1: f32 = 5.727_023;
-    pub const C0: f32 = -3.005_614_8;
-}
-
-/// 2^f on [0, 1), degree-4 minimax. Max error: ~1e-7.
-mod exp2_poly {
-    pub const C4: f32 = 0.013_555_7;
-    pub const C3: f32 = 0.052_032_3;
-    pub const C2: f32 = 0.241_379_3;
-}
-
 /// WebAssembly SIMD128 Backend (4 lanes).
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Wasm;
@@ -296,7 +280,7 @@ impl SimdOps for F32x4 {
 
         // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
         // If f >= √2, divide by 2 and increment exponent
-        let sqrt2 = f32x4_splat(core::f32::consts::SQRT_2);
+        let sqrt2 = f32x4_splat(1.4142135624);
         let mask = f32x4_ge(f, sqrt2);
         let adjust = v128_and(mask, f32x4_splat(1.0));
         n = f32x4_add(n, adjust);
@@ -308,11 +292,11 @@ impl SimdOps for F32x4 {
         // Polynomial for log2(f) on [√2/2, √2]
         // Fitted using least squares on Chebyshev nodes
         // Max error: ~1e-4
-        let c4 = f32x4_splat(log2_poly::C4);
-        let c3 = f32x4_splat(log2_poly::C3);
-        let c2 = f32x4_splat(log2_poly::C2);
-        let c1 = f32x4_splat(log2_poly::C1);
-        let c0 = f32x4_splat(log2_poly::C0);
+        let c4 = f32x4_splat(-0.3200435159);
+        let c3 = f32x4_splat(1.7974969154);
+        let c2 = f32x4_splat(-4.1988046176);
+        let c1 = f32x4_splat(5.7270231695);
+        let c0 = f32x4_splat(-3.0056146714);
 
         // Horner's method (no FMA)
         let poly = f32x4_add(f32x4_mul(c4, f), c3);
@@ -330,10 +314,10 @@ impl SimdOps for F32x4 {
         let f = f32x4_sub(self.0, n);
 
         // Minimax polynomial for 2^f, f ∈ [0, 1)
-        let c4 = f32x4_splat(exp2_poly::C4);
-        let c3 = f32x4_splat(exp2_poly::C3);
-        let c2 = f32x4_splat(exp2_poly::C2);
-        let c1 = f32x4_splat(core::f32::consts::LN_2);
+        let c4 = f32x4_splat(0.0135557);
+        let c3 = f32x4_splat(0.0520323);
+        let c2 = f32x4_splat(0.2413793);
+        let c1 = f32x4_splat(0.6931472);
         let c0 = f32x4_splat(1.0);
 
         // Horner's method

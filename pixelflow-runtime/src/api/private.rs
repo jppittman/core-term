@@ -131,7 +131,6 @@ pub type EngineActorHandle =
 pub type EngineActorScheduler =
     ActorScheduler<EngineData, EngineControl, crate::api::public::AppManagement>;
 
-#[must_use] 
 pub fn create_engine_actor(
     wake_handler: Option<Arc<dyn actor_scheduler::WakeHandler>>,
 ) -> (EngineActorHandle, EngineActorScheduler) {

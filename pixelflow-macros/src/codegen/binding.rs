@@ -1,5 +1,4 @@
 //! Binding strategies for parameter and literal values.
-#![allow(dead_code, unused_imports)]
 
 use proc_macro2::TokenStream;
 use quote::quote;

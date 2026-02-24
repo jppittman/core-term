@@ -50,7 +50,6 @@ impl Texture {
     ///
     /// # Panics
     /// Panics if `data.len() != width * height`.
-    #[must_use]
     pub fn new(data: Vec<f32>, width: usize, height: usize) -> Self {
         assert_eq!(data.len(), width * height, "texture size mismatch");
         Self {
@@ -90,21 +89,18 @@ impl Texture {
 
     /// Get the texture width.
     #[inline]
-    #[must_use]
     pub fn width(&self) -> usize {
         self.width
     }
 
     /// Get the texture height.
     #[inline]
-    #[must_use]
     pub fn height(&self) -> usize {
         self.height
     }
 
     /// Get the backing data.
     #[inline]
-    #[must_use] 
     pub fn data(&self) -> &[f32] {
         &self.data
     }

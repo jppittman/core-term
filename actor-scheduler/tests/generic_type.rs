@@ -31,8 +31,8 @@ impl ActorTypes for DriverActor<Platform> {
 }
 
 // TroupeActor just provides the constructor
-impl<Dir> TroupeActor<Dir> for DriverActor<Platform> {
-    fn new(_dir: Dir) -> Self {
+impl<'a, Dir: 'a> TroupeActor<'a, Dir> for DriverActor<Platform> {
+    fn new(_dir: &'a Dir) -> Self {
         Self {
             _platform: std::marker::PhantomData,
         }

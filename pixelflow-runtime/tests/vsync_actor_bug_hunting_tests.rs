@@ -16,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use actor_scheduler::{
-    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
 };
 use pixelflow_runtime::vsync_actor::{
     RenderedResponse, VsyncCommand, VsyncConfig, VsyncManagement,
@@ -330,13 +330,11 @@ fn clock_thread_stops_when_channel_closed() {
     // We can't easily test the real clock thread, but we can verify
     // the pattern works with our mock.
 
-    let mut builder =
-        ActorBuilder::<RenderedResponse, VsyncCommand, VsyncManagement>::new(100, None);
-    let tx = builder.add_producer();
-    let clock_tx = builder.add_producer();
-    let rx = builder.build_with_burst(10, Default::default());
+    let (tx, mut rx) =
+        ActorScheduler::<RenderedResponse, VsyncCommand, VsyncManagement>::new(10, 100);
 
     // Simulate clock thread behavior in a thread
+    let clock_tx = tx.clone();
     let clock_handle = thread::spawn(move || {
         let interval = Duration::from_millis(10);
         let mut ticks_sent = 0;
@@ -364,11 +362,9 @@ fn clock_thread_stops_when_channel_closed() {
 
     // Clock thread should exit soon
     let result = clock_handle.join();
-    // We accept panic here because actor-scheduler panics if doorbell is disconnected
-    // while sending. The important thing is that the thread stops.
-    // assert!(result.is_ok(), "Clock thread should exit cleanly");
+    assert!(result.is_ok(), "Clock thread should exit cleanly");
 
-    let ticks = result.unwrap_or_else(|_| 0); // If panic, it stopped.
+    let ticks = result.unwrap();
     assert!(
         ticks < 1000,
         "Clock thread should have exited before safety limit. Ticks: {}",

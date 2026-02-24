@@ -1,6 +1,6 @@
 //! Debug: test if sphere_at returns valid t values
 use pixelflow_core::jet::Jet3;
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Field, Manifold, ManifoldExt};
 use pixelflow_macros::kernel;
 
 type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);

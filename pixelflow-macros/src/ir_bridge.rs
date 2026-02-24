@@ -8,12 +8,13 @@
 //!
 //! The IR becomes the canonical representation, with AST only used during parsing.
 
-use crate::ast::{BinaryOp, Expr, UnaryOp};
+use crate::ast::{BinaryExpr, BinaryOp, Expr, LiteralExpr, UnaryOp};
 use pixelflow_ir::{Expr as IR, OpKind};
 use pixelflow_search::egraph::{EClassId, EGraph, ENode, ExprTree, Leaf, ops};
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
-use syn::Lit;
+use std::collections::HashMap;
+use syn::{Ident, Lit};
 
 // ============================================================================
 // AST → IR Conversion
@@ -42,7 +43,7 @@ pub fn ast_to_ir(expr: &Expr) -> Result<IR, String> {
             if let Some(val) = extract_f64_from_lit(&lit.lit) {
                 Ok(IR::Const(val as f32))
             } else {
-                Err("Non-numeric literal".to_string())
+                Err(format!("Non-numeric literal"))
             }
         }
 
@@ -66,7 +67,7 @@ pub fn ast_to_ir(expr: &Expr) -> Result<IR, String> {
 
             let op = match unary.op {
                 UnaryOp::Neg => OpKind::Neg,
-                UnaryOp::Not => return Err("Unsupported unary op: Not".to_string()),
+                UnaryOp::Not => return Err(format!("Unsupported unary op: Not")),
             };
 
             Ok(IR::Unary(op, operand))
@@ -103,7 +104,7 @@ pub fn ast_to_ir(expr: &Expr) -> Result<IR, String> {
             }
         }
 
-        _ => Err("Unsupported expression type".to_string()),
+        _ => Err(format!("Unsupported expression type")),
     }
 }
 
@@ -208,7 +209,6 @@ fn opkind_to_op(kind: OpKind) -> &'static dyn ops::Op {
 // ============================================================================
 
 /// Convert an extracted ExprTree back to IR.
-#[allow(dead_code)]
 pub fn egraph_to_ir(tree: &ExprTree) -> IR {
     match tree {
         ExprTree::Leaf(Leaf::Var(idx)) => IR::Var(*idx),
@@ -236,7 +236,7 @@ pub fn egraph_to_ir(tree: &ExprTree) -> IR {
             };
 
             // Convert children
-            let child_irs: Vec<IR> = children.iter().map(egraph_to_ir).collect();
+            let child_irs: Vec<IR> = children.iter().map(|c| egraph_to_ir(c)).collect();
 
             match child_irs.len() {
                 1 => IR::Unary(kind, Box::new(child_irs[0].clone())),
@@ -264,7 +264,6 @@ pub fn egraph_to_ir(tree: &ExprTree) -> IR {
 /// Generate type-level code from IR.
 ///
 /// This emits the type-level AST that will be monomorphized by rustc.
-#[allow(dead_code)]
 pub fn ir_to_code(ir: &IR) -> TokenStream {
     match ir {
         IR::Var(idx) => {

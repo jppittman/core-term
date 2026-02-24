@@ -40,7 +40,6 @@ impl Expr {
     ///
     /// For leaf nodes, returns `OpKind::Var` or `OpKind::Const`.
     #[inline]
-    #[must_use] 
     pub fn kind(&self) -> OpKind {
         match self {
             Self::Var(_) => OpKind::Var,
@@ -54,7 +53,6 @@ impl Expr {
 
     /// Alias for `kind()` - used by NNUE feature extraction.
     #[inline]
-    #[must_use] 
     pub fn op_type(&self) -> OpKind {
         self.kind()
     }
@@ -179,7 +177,6 @@ impl Expr {
     /// Panics for Unary, Binary, and Ternary variants since their children
     /// are stored in `Box<Expr>` fields, not a `Vec`. Use pattern matching
     /// for full access to children of these variants.
-    #[must_use] 
     pub fn children(&self) -> &[Expr] {
         match self {
             Self::Var(_) | Self::Const(_) => &[],

@@ -16,20 +16,19 @@ fn main() {
         (dx * dx + dy * dy).sqrt()
     });
 
+    // Can we subtract f32 from a kernel result?
     let d = dist(1.0, 2.0);
+    // d is impl Manifold<Field4, Output=Field>
+
+    // Using ManifoldExt to compose
+    // Note: closures don't implement Manifold, so we use X to refer to the input value
+    use pixelflow_core::X;
+    let circle = d.map(X - Field::from(0.5));  // radius 0.5
+
     let p = field4(1.5, 2.0);
-    println!("dist at (1.5, 2.0): {:?}", d.eval(p));
+    let result = circle.eval(p);
+    println!("circle at (1.5, 2.0): {:?}", result);
 
-    // Pattern 2: Compose via a second kernel using 'inner: kernel' parameter.
-    // The kernel macro's `inner: kernel` type accepts any ManifoldExpr as an
-    // operand, enabling algebraic composition at the expression level.
-    let circle = kernel!(|inner: kernel, r: f32| inner - r);
-
-    let c = circle(dist(1.0, 2.0), 0.5);
-    let result = c.eval(p);
-    println!("circle SDF at (1.5, 2.0): {:?}", result);
-
-    // Pattern 3: Direct scalar evaluation via eval4
-    let val = d.eval4(1.5, 2.0, 0.0, 0.0);
-    println!("eval4 result: {:?}", val);
+    // Pattern 2: What we WANT but don't have
+    // let circle = kernel!(|cx, cy, r| dist(cx, cy) - r);  // Won't work
 }

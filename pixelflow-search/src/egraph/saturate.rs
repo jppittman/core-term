@@ -52,7 +52,6 @@ pub struct SaturationResult {
 
 impl SaturationResult {
     /// Calculate the improvement ratio (how much the e-graph grew).
-    #[must_use] 
     pub fn growth_ratio(&self) -> f64 {
         if self.classes_before == 0 {
             1.0
@@ -62,7 +61,6 @@ impl SaturationResult {
     }
 
     /// Whether the budget was exhausted (saturation was cut off).
-    #[must_use] 
     pub fn budget_exhausted(&self) -> bool {
         !self.saturated && self.iterations >= self.budget
     }

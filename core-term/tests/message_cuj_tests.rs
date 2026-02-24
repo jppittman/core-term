@@ -4,8 +4,7 @@
 //! Each test covers a specific CUJ identified in MESSAGE_CUJ_COVERAGE.md.
 
 use actor_scheduler::{
-    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
-    SystemStatus,
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
@@ -18,7 +17,6 @@ use std::time::Duration;
 // =============================================================================
 
 /// Mock ANSI command for testing (simplified version of the real AnsiCommand)
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 enum MockAnsiCommand {
     Print(char),
@@ -68,13 +66,11 @@ impl Actor<Vec<u8>, (), ()> for MockParserActor {
 }
 
 /// App actor that receives parsed commands
-#[allow(dead_code)]
 struct MockAppActor {
     commands_received: Arc<Mutex<Vec<Vec<MockAnsiCommand>>>>,
 }
 
 impl MockAppActor {
-    #[allow(dead_code)]
     fn new() -> (Self, Arc<Mutex<Vec<Vec<MockAnsiCommand>>>>) {
         let commands = Arc::new(Mutex::new(Vec::new()));
         (
@@ -762,12 +758,7 @@ fn cuj_concurrent_senders_all_messages_delivered() {
         }
     }
 
-    // ActorHandle is not Clone — use ActorBuilder to create one handle per sender
-    let mut builder = ActorBuilder::<usize, (), ()>::new(256, None);
-    let mut sender_handles_vec: Vec<_> = (0..NUM_SENDERS)
-        .map(|_| builder.add_producer())
-        .collect();
-    let mut rx = builder.build_with_burst(10, actor_scheduler::ShutdownMode::default());
+    let (tx, mut rx) = ActorScheduler::<usize, (), ()>::new(10, 256);
     let count_clone = received_count.clone();
 
     let receiver_handle = thread::spawn(move || {
@@ -775,12 +766,14 @@ fn cuj_concurrent_senders_all_messages_delivered() {
         rx.run(&mut actor);
     });
 
-    // Spawn multiple senders, each with its own dedicated SPSC handle
+    // Spawn multiple senders
     let mut sender_handles = Vec::new();
-    for (sender_id, tx) in sender_handles_vec.drain(..).enumerate() {
+    for sender_id in 0..NUM_SENDERS {
+        let tx_clone = tx.clone();
         let handle = thread::spawn(move || {
             for msg_id in 0..MESSAGES_PER_SENDER {
-                tx.send(Message::Data(sender_id * 1000 + msg_id))
+                tx_clone
+                    .send(Message::Data(sender_id * 1000 + msg_id))
                     .unwrap();
             }
         });
@@ -793,6 +786,7 @@ fn cuj_concurrent_senders_all_messages_delivered() {
     }
 
     thread::sleep(Duration::from_millis(100));
+    drop(tx);
     receiver_handle.join().unwrap();
 
     // Verify all messages received

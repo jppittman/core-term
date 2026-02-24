@@ -302,8 +302,9 @@ impl Drop for X11Window {
     fn drop(&mut self) {
         // Clear waker first - prevents BadWindow errors from XSendEvent
         // after we destroy the window below.
-        if let Some(w) = super::platform::SHARED_WAKER
-            .get() { w.clear_target() }
+        super::platform::SHARED_WAKER
+            .get()
+            .map(|w| w.clear_target());
 
         unsafe {
             if let Some(xrm_db) = self.xrm_db {

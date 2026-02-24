@@ -45,11 +45,8 @@ pub struct EngineHandler {
     vsync: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
     /// Handle to the rasterizer actor (set after bootstrap completes).
     rasterizer: Option<RasterizerHandle<PlatformPixel>>,
-    /// Handle to self (for shutdown).
+    /// Handle to self (for rasterizer response forwarding).
     self_handle: Option<ActorHandle<EngineData, EngineControl, AppManagement>>,
-    /// Pre-created dedicated SPSC handle for rasterizer response forwarding thread.
-    /// Set via SetRasterizerForwardHandle management message before Configure.
-    rasterizer_forward_handle: Option<ActorHandle<EngineData, EngineControl, AppManagement>>,
     /// Handle to the application (for event forwarding).
     app_handle: Option<Arc<dyn Application + Send + Sync>>,
     /// Frame counter for VSync feedback.
@@ -86,7 +83,7 @@ impl ActorTypes for DriverActor<ActivePlatform> {
 actor_scheduler::troupe! {
     driver: DriverActor<ActivePlatform> [main],
     engine: EngineHandler [expose],
-    vsync: VsyncActor [expose],
+    vsync: VsyncActor,
 }
 
 // Implement Actor for EngineHandler
@@ -236,9 +233,6 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
 
     fn handle_management(&mut self, mgmt: AppManagement) -> HandlerResult {
         match mgmt {
-            AppManagement::SetRasterizerForwardHandle(handle) => {
-                self.rasterizer_forward_handle = Some(handle);
-            }
             AppManagement::Configure(config) => {
                 self.render_threads = config.performance.render_threads;
                 log::info!("Engine configured: {} render threads", self.render_threads);
@@ -344,9 +338,10 @@ impl EngineHandler {
         }
 
         let engine_handle = self
-            .rasterizer_forward_handle
-            .take()
-            .expect("SetRasterizerForwardHandle must be sent before Configure");
+            .self_handle
+            .as_ref()
+            .expect("Engine self_handle not set")
+            .clone();
 
         // Step 1: Spawn rasterizer with setup handle
         let (setup_handle, _rasterizer_thread) =
@@ -454,7 +449,7 @@ impl EngineHandler {
         let send_time = t1.elapsed();
 
         self.frame_number += 1;
-        if self.frame_number.is_multiple_of(60) {
+        if self.frame_number % 60 == 0 {
             log::info!(
                 "Frame {}: render={:?}, send={:?}",
                 self.frame_number,
@@ -706,15 +701,14 @@ fn convert_mouse_button(button: u8) -> MouseButton {
     }
 }
 
-// Implement TroupeActor for EngineHandler — takes ownership of per-actor Directory
-impl TroupeActor<Directory> for EngineHandler {
-    fn new(dir: Directory) -> Self {
+// Implement TroupeActor for EngineHandler
+impl<'a> TroupeActor<'a, Directory> for EngineHandler {
+    fn new(dir: &'a Directory) -> Self {
         Self {
-            driver: dir.driver,
-            vsync: dir.vsync,
+            driver: dir.driver.clone(),
+            vsync: dir.vsync.clone(),
             rasterizer: None, // Set up separately via bootstrap
-            self_handle: Some(dir.engine),
-            rasterizer_forward_handle: None, // Set via SetRasterizerForwardHandle message
+            self_handle: Some(dir.engine.clone()),
             app_handle: None,
             frame_number: 0,
             window: None,
@@ -725,26 +719,25 @@ impl TroupeActor<Directory> for EngineHandler {
     }
 }
 
-// Implement TroupeActor for DriverActor — takes ownership of per-actor Directory
-impl TroupeActor<Directory> for DriverActor<ActivePlatform> {
-    fn new(dir: Directory) -> Self {
+// Implement TroupeActor for DriverActor
+impl<'a> TroupeActor<'a, Directory> for DriverActor<ActivePlatform> {
+    fn new(dir: &'a Directory) -> Self {
         #[cfg(target_os = "macos")]
         {
             use crate::platform::MetalOps;
-            let ops = MetalOps::new(dir.engine).expect("Failed to create Metal ops");
+            let ops = MetalOps::new(dir.engine.clone()).expect("Failed to create Metal ops");
             let platform = PlatformActor::new(ops);
             DriverActor::new(platform)
         }
         #[cfg(target_os = "linux")]
         {
             use crate::platform::linux::LinuxOps;
-            let ops = LinuxOps::new(dir.engine).expect("Failed to create Linux ops");
+            let ops = LinuxOps::new(dir.engine.clone()).expect("Failed to create Linux ops");
             let platform = PlatformActor::new(ops);
             DriverActor::new(platform)
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
-            let _ = dir;
             panic!("Unsupported platform");
         }
     }
@@ -755,49 +748,41 @@ impl Troupe {
     pub fn with_config(config: EngineConfig) -> Result<Self, RuntimeError> {
         // Create troupe with platform-specific waker for the main (driver) actor
         #[cfg(target_os = "macos")]
-        let mut troupe = {
+        let troupe = {
             use crate::platform::waker::CocoaWaker;
             Self::new_with_waker(Some(std::sync::Arc::new(CocoaWaker::new())))
         };
         #[cfg(target_os = "linux")]
-        let mut troupe = {
+        let troupe = {
             use crate::platform::linux::set_shared_waker;
             use crate::platform::waker::X11Waker;
+            // Create waker and share it with LinuxOps via static.
+            // Both the troupe's ActorHandle and LinuxOps need the same waker:
+            // - ActorHandle calls wake() when sending messages
+            // - LinuxOps calls set_target() when creating the X11 window
             let waker = X11Waker::new();
             set_shared_waker(waker.clone());
             Self::new_with_waker(Some(std::sync::Arc::new(waker)))
         };
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        let mut troupe = Self::new();
-
-        // Create SPSC handles for initialization (each exposed() creates unique channels)
-        let init = troupe.exposed(); // engine + vsync handles for sending config messages
-        let vsync_engine = troupe.exposed(); // engine handle for vsync→engine
-        let clock_vsync = troupe.exposed(); // vsync handle for clock→vsync
-        let rasterizer_fwd = troupe.exposed(); // engine handle for rasterizer→engine
-
-        // Send rasterizer forwarding handle BEFORE Configure
-        init.engine
-            .send(Message::Management(AppManagement::SetRasterizerForwardHandle(
-                rasterizer_fwd.engine,
-            )))
-            .map_err(|e| RuntimeError::InitError(format!("Failed to set rasterizer fwd handle: {}", e)))?;
+        let troupe = Self::new();
+        let dir = troupe.directory();
 
         // Configure the engine with window settings
-        init.engine
+        dir.engine
             .send(Message::Management(AppManagement::Configure(
                 config.clone(),
             )))
             .map_err(|e| RuntimeError::InitError(format!("Failed to configure engine: {}", e)))?;
 
         // Configure vsync with target FPS (auto-starts after configuration)
-        init.vsync
+        dir.vsync
             .send(Message::Management(VsyncManagement::SetConfig {
                 config: VsyncConfig {
                     refresh_rate: config.performance.target_fps as f64,
                 },
-                engine_handle: vsync_engine.engine,
-                self_handle: clock_vsync.vsync,
+                engine_handle: dir.engine.clone(),
+                self_handle: dir.vsync.clone(),
             }))
             .map_err(|e| RuntimeError::InitError(format!("Failed to configure vsync: {}", e)))?;
 
@@ -806,19 +791,29 @@ impl Troupe {
 
     /// Get an unregistered engine handle.
     ///
-    /// Creates a new SPSC producer for the engine actor.
-    /// Must be called before `play()` (which consumes the builders).
-    pub fn engine_handle(&mut self) -> crate::api::public::UnregisteredEngineHandle {
-        let handles = self.exposed();
-        crate::api::public::UnregisteredEngineHandle::new(handles.engine)
+    /// You must call `register()` on this handle before you can use the engine.
+    /// This ensures proper initialization (app registration + window creation).
+    pub fn engine_handle(&self) -> crate::api::public::UnregisteredEngineHandle {
+        crate::api::public::UnregisteredEngineHandle::new(self.directory().engine.clone())
     }
 
     /// Get the raw engine actor handle for advanced use cases.
     ///
-    /// Creates a new SPSC producer for the engine actor.
-    /// Must be called before `play()` (which consumes the builders).
-    pub fn raw_engine_handle(&mut self) -> crate::api::private::EngineActorHandle {
-        let handles = self.exposed();
-        handles.engine
+    /// This is useful for pull-based rendering where the application needs
+    /// to hold a reference to the engine handle before registration.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let troupe = EngineTroupe::with_config(config)?;
+    /// let raw_handle = troupe.raw_engine_handle();
+    ///
+    /// // App can now hold raw_handle to send frames back
+    /// let app = MyApp { engine_handle: raw_handle, ... };
+    /// let unregistered = troupe.engine_handle();
+    /// unregistered.register(Arc::new(app), window)?;
+    /// ```
+    pub fn raw_engine_handle(&self) -> crate::api::private::EngineActorHandle {
+        self.directory().engine.clone()
     }
 }

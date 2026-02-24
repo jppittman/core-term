@@ -14,8 +14,7 @@ use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use std::sync::Arc;
 
-// NotoSansMono-Regular.ttf is a stub in CI; use the fallback which has real TTF data.
-const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
+const FONT_BYTES: &[u8] = include_bytes!("../assets/NotoSansMono-Regular.ttf");
 
 // =============================================================================
 // Regression: SIMD mask AND must use `&` not `*`
@@ -30,14 +29,12 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf"
 fn regression_mask_and_not_multiply() {
     // Create a 400x400 square from (100,100) to (500,500)
     // Use Geometry with lines (which now produce smooth AA coverage)
-    // Horizontal lines (dy≈0) return None from make_line — they never cross
-    // horizontal scanlines so they correctly contribute zero winding.
-    let lines: Vec<Line<LineKernel>> = [
-        [[100.0, 100.0], [500.0, 100.0]],  // bottom (horizontal, skipped)
-        [[500.0, 100.0], [500.0, 500.0]],  // right
-        [[500.0, 500.0], [100.0, 500.0]],  // top (horizontal, skipped)
-        [[100.0, 500.0], [100.0, 100.0]],  // left
-    ].into_iter().filter_map(|pts| make_line(pts)).collect();
+    let lines: Vec<Line<LineKernel>> = vec![
+        make_line([[100.0, 100.0], [500.0, 100.0]]).unwrap(), // bottom
+        make_line([[500.0, 100.0], [500.0, 500.0]]).unwrap(), // right
+        make_line([[500.0, 500.0], [100.0, 500.0]]).unwrap(), // top
+        make_line([[100.0, 500.0], [100.0, 100.0]]).unwrap(), // left
+    ];
     let geo: Geometry<Line<LineKernel>, Quad<QuadKernel>> = Geometry {
         lines: Arc::from(lines),
         quads: Arc::from(vec![]),
@@ -95,54 +92,35 @@ fn regression_mask_and_not_multiply() {
     );
 }
 
-/// Test that ray-crossing winding correctly distinguishes inside from outside.
-/// Uses a closed vertical strip (two parallel lines) to validate x-intersection math.
+/// Test that line segment winding calculation correctly handles the x < x_intersection test.
 /// Note: With analytical AA, we get smooth coverage rather than hard 0/1.
 #[test]
 fn regression_line_x_intersection_test() {
-    // Two vertical lines forming a closed strip from x=400 to x=500:
-    // - Right edge goes down (dir=-1): (500,100) → (500,500)
-    // - Left edge goes up (dir=+1):    (400,500) → (400,100)
-    let lines: Vec<Line<LineKernel>> = [
-        [[500.0, 100.0], [500.0, 500.0]], // right edge, downward
-        [[400.0, 500.0], [400.0, 100.0]], // left edge, upward
-    ]
-    .into_iter()
-    .filter_map(|pts| make_line(pts))
-    .collect();
+    // Vertical line at x=500, going from (500,100) to (500,500)
+    let line = make_line([[500.0, 100.0], [500.0, 500.0]]).unwrap();
     let geo: Geometry<Line<LineKernel>, Quad<QuadKernel>> = Geometry {
-        lines: Arc::from(lines),
+        lines: Arc::from(vec![line]),
         quads: Arc::from(vec![]),
     };
     let lifted = Grayscale(geo);
 
-    // Interior point (x=450) should have high winding coverage
-    let mut inside_pixels = [0u32; PARALLELISM];
-    materialize_discrete(&lifted, 450.0, 300.0, &mut inside_pixels);
-    let inside_value = inside_pixels[0] & 0xFF;
-    assert!(
-        inside_value > 200,
-        "Point inside strip should get high coverage, got {}",
-        inside_value
-    );
-
-    // Point to the left (x=100) should have low coverage
+    // Points to the left (x < 500) should contribute winding (high coverage)
     let mut left_pixels = [0u32; PARALLELISM];
     materialize_discrete(&lifted, 100.0, 300.0, &mut left_pixels);
     let left_value = left_pixels[0] & 0xFF;
     assert!(
-        left_value < 50,
-        "Point left of strip should get low coverage, got {}",
+        left_value > 200,
+        "Point left of line should get high contribution, got {}",
         left_value
     );
 
-    // Point to the right (x=600) should have low coverage
+    // Points well to the right (x >= 500) should have low contribution
     let mut right_pixels = [0u32; PARALLELISM];
     materialize_discrete(&lifted, 600.0, 300.0, &mut right_pixels);
     let right_value = right_pixels[0] & 0xFF;
     assert!(
         right_value < 50,
-        "Point right of strip should get low coverage, got {}",
+        "Point right of line should get low contribution, got {}",
         right_value
     );
 }

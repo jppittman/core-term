@@ -64,7 +64,6 @@ pub struct HceExtractor {
 
 impl HceExtractor {
     /// Create a new HCE extractor with default weights.
-    #[must_use] 
     pub fn new() -> Self {
         Self {
             hce: default_expr_weights(),
@@ -74,7 +73,6 @@ impl HceExtractor {
     }
 
     /// Create with custom weights.
-    #[must_use] 
     pub fn with_weights(weights: Vec<i32>) -> Self {
         Self {
             hce: HandCraftedEvaluator::new(weights),
@@ -84,7 +82,6 @@ impl HceExtractor {
     }
 
     /// Create with FMA-optimized weights.
-    #[must_use] 
     pub fn with_fma() -> Self {
         Self {
             hce: crate::evaluator::fma_optimized_weights(),
@@ -94,28 +91,24 @@ impl HceExtractor {
     }
 
     /// Enable structural cost factors.
-    #[must_use] 
     pub fn with_structural_costs(mut self) -> Self {
         self.include_structural = true;
         self
     }
 
     /// Set opportunity penalty.
-    #[must_use] 
     pub fn with_opportunity_penalty(mut self, penalty: i32) -> Self {
         self.opportunity_penalty = penalty;
         self
     }
 
     /// Evaluate an expression's cost using HCE.
-    #[must_use] 
     pub fn cost(&self, expr: &Expr) -> i32 {
         let features = extract_expr_features(expr);
         self.cost_from_features(&features)
     }
 
     /// Evaluate cost from pre-extracted features.
-    #[must_use]
     pub fn cost_from_features(&self, features: &ExprFeatures) -> i32 {
         let mut cost = self.hce.evaluate_linear(features);
 
@@ -134,13 +127,11 @@ impl HceExtractor {
     }
 
     /// Compare two expressions and return the better one (lower cost).
-    #[must_use] 
     pub fn better<'a>(&self, a: &'a Expr, b: &'a Expr) -> &'a Expr {
         if self.cost(a) <= self.cost(b) { a } else { b }
     }
 
     /// Find the best expression among candidates.
-    #[must_use] 
     pub fn best<'a>(&self, exprs: &[&'a Expr]) -> Option<&'a Expr> {
         exprs.iter()
             .min_by_key(|e| self.cost(e))
@@ -148,7 +139,6 @@ impl HceExtractor {
     }
 
     /// Evaluate all rewrites and return the best one.
-    #[must_use] 
     pub fn best_rewrite(&self, expr: &Expr) -> Option<(ExprMove, Expr, i32)> {
         let base_cost = self.cost(expr);
         let moves = ExprDomain::legal_moves(expr);
@@ -172,7 +162,6 @@ impl HceExtractor {
     /// Greedily optimize an expression by applying rewrites until no improvement.
     ///
     /// Returns (optimized_expr, cost_reduction, num_rewrites_applied).
-    #[must_use] 
     pub fn greedy_optimize(&self, expr: &Expr, max_iters: usize) -> (Expr, i32, usize) {
         let mut current = expr.clone();
         let mut total_reduction = 0i32;
@@ -225,7 +214,6 @@ pub struct FeatureAccumulator {
 
 impl FeatureAccumulator {
     /// Create a new accumulator initialized from an expression.
-    #[must_use] 
     pub fn from_expr(expr: &Expr) -> Self {
         Self {
             features: extract_expr_features(expr),
@@ -281,7 +269,6 @@ impl FeatureAccumulator {
     /// Verify the accumulator matches a full re-extraction.
     ///
     /// Returns true if features match, false if there's drift.
-    #[must_use] 
     pub fn verify(&self, expr: &Expr) -> bool {
         let fresh = extract_expr_features(expr);
         features_equal(&self.features, &fresh)
@@ -377,7 +364,6 @@ pub struct SpsaTuner {
 
 impl SpsaTuner {
     /// Create a new SPSA tuner starting from given weights.
-    #[must_use] 
     pub fn new(initial_weights: &[i32], config: SpsaConfig) -> Self {
         let weights: Vec<f64> = initial_weights.iter().map(|&w| w as f64).collect();
         Self {
@@ -391,7 +377,6 @@ impl SpsaTuner {
     }
 
     /// Create from default HCE weights.
-    #[must_use] 
     pub fn from_defaults(config: SpsaConfig) -> Self {
         let hce = default_expr_weights();
         Self::new(&hce.weights, config)
@@ -439,10 +424,10 @@ impl SpsaTuner {
         let mut weights_plus: Vec<i32> = Vec::with_capacity(self.weights.len());
         let mut weights_minus: Vec<i32> = Vec::with_capacity(self.weights.len());
 
-        for (i, d) in delta.iter().enumerate().take(self.weights.len()) {
-            let plus = (self.weights[i] + c_k * d)
+        for i in 0..self.weights.len() {
+            let plus = (self.weights[i] + c_k * delta[i])
                 .clamp(self.config.weight_clamp.0 as f64, self.config.weight_clamp.1 as f64) as i32;
-            let minus = (self.weights[i] - c_k * d)
+            let minus = (self.weights[i] - c_k * delta[i])
                 .clamp(self.config.weight_clamp.0 as f64, self.config.weight_clamp.1 as f64) as i32;
             weights_plus.push(plus);
             weights_minus.push(minus);
@@ -457,8 +442,8 @@ impl SpsaTuner {
         let mut grad_norm = 0.0;
 
         // Update weights
-        for (i, d) in delta.iter().enumerate().take(self.weights.len()) {
-            let grad_i = grad_scale * d;
+        for i in 0..self.weights.len() {
+            let grad_i = grad_scale * delta[i];
             grad_norm += grad_i * grad_i;
             self.weights[i] -= a_k * grad_i;
 
@@ -497,13 +482,11 @@ impl SpsaTuner {
     }
 
     /// Get current weights as i32.
-    #[must_use] 
     pub fn current_weights(&self) -> Vec<i32> {
         self.weights.iter().map(|&w| w as i32).collect()
     }
 
     /// Get best weights found.
-    #[must_use] 
     pub fn best_weights_i32(&self) -> Vec<i32> {
         self.best_weights.iter().map(|&w| w as i32).collect()
     }
@@ -517,7 +500,6 @@ impl SpsaTuner {
 ///
 /// This measures how well HCE ordering matches the true cost ordering.
 /// Lower is better.
-#[must_use] 
 pub fn ranking_loss(
     weights: &[i32],
     samples: &[(Expr, u64)],  // (expression, true_cost_ns)
@@ -563,7 +545,6 @@ pub fn ranking_loss(
 /// Compute correlation loss (1 - Spearman correlation).
 ///
 /// Measures how well HCE rankings correlate with true rankings.
-#[must_use] 
 pub fn correlation_loss(
     weights: &[i32],
     samples: &[(Expr, u64)],
@@ -977,7 +958,7 @@ mod tests {
 
         // Loss function: distance from target [4, 4, 5, 15, 1]
         let target = [4.0, 4.0, 5.0, 15.0, 1.0];
-        let _initial_loss = tuner.best_loss;
+        let initial_loss = tuner.best_loss;
 
         let (final_weights, final_loss, iters) = tuner.optimize(|w| {
             w.iter()

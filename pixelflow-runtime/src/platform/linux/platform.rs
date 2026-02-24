@@ -70,7 +70,7 @@ impl PlatformOps for LinuxOps {
                     }
                     window.frame = returned_frame;
                     // Return buffer to engine
-                    let _sent = self
+                    let _ = self
                         .engine_handle
                         .send(Message::Data(EngineData::PresentComplete(window)));
                 }
@@ -123,7 +123,7 @@ impl PlatformOps for LinuxOps {
                 );
                 match X11Window::new(&settings, &self.waker) {
                     Ok(window) => {
-                        let id = WindowId(window.window);
+                        let id = WindowId(window.window as u64);
                         // Allocate initial frame buffer
                         let frame = Frame::<LinuxPixel>::new(window.width, window.height);
 
@@ -136,7 +136,7 @@ impl PlatformOps for LinuxOps {
                         };
 
                         // Send WindowCreated event
-                        let _sent = self
+                        let _ = self
                             .engine_handle
                             .send(Message::Data(EngineData::FromDriver(
                                 DisplayEvent::WindowCreated { window: win },
@@ -158,7 +158,7 @@ impl PlatformOps for LinuxOps {
 
     fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, actor_scheduler::HandlerError> {
         if let Some(window) = &mut self.window {
-            let window_id = WindowId(window.window);
+            let window_id = WindowId(window.window as u64);
 
             // Poll for X11 events
             // If Busy, check pending without blocking.
@@ -189,7 +189,7 @@ impl PlatformOps for LinuxOps {
                     while xlib::XPending(window.display) > 0 {
                         xlib::XNextEvent(window.display, &mut event);
                         if let Some(display_event) = events::map_event(&event, window, window_id) {
-                            let _sent = self
+                            let _ = self
                                 .engine_handle
                                 .send(Message::Data(EngineData::FromDriver(display_event)));
                         }

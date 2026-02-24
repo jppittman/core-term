@@ -32,7 +32,6 @@ impl CharacterSet {
     /// * `ch` - The final character of the ESC ( G, ESC ) G, etc. sequence.
     ///
     /// Returns the corresponding `CharacterSet`, defaulting to `Ascii` for unsupported designators.
-    #[must_use] 
     pub fn from_char(ch: char) -> Self {
         match ch {
             'B' => CharacterSet::Ascii, // Designates G0, G1, G2, or G3 to US-ASCII
@@ -71,7 +70,6 @@ impl CharacterSet {
 ///
 /// # Returns
 /// The mapped DEC Special Graphics character, or the original character if no mapping exists.
-#[must_use] 
 pub fn map_to_dec_line_drawing(ch: char) -> char {
     match ch {
         // Common DEC Special Graphics Mappings

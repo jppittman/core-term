@@ -25,10 +25,6 @@
 //! - `|cx: f32, cy: f32|` → `struct __Kernel { cx: f32, cy: f32 }`
 //! - References in the body become `self.cx`, `self.cy`
 
-// Symbol fields (name, ty, span) and accessor methods are retained for future
-// use in error diagnostics and semantic analysis passes.
-#![allow(dead_code)]
-
 use proc_macro2::Span;
 use std::collections::HashMap;
 use syn::{Ident, Type};
@@ -163,14 +159,14 @@ impl SymbolTable {
     pub fn is_intrinsic(&self, name: &str) -> bool {
         self.symbols
             .get(name)
-            .is_some_and(|s| s.kind == SymbolKind::Intrinsic)
+            .map_or(false, |s| s.kind == SymbolKind::Intrinsic)
     }
 
     /// Check if a name is a captured parameter.
     pub fn is_parameter(&self, name: &str) -> bool {
         self.symbols
             .get(name)
-            .is_some_and(|s| s.kind == SymbolKind::Parameter)
+            .map_or(false, |s| s.kind == SymbolKind::Parameter)
     }
 
     /// Get all scalar parameter symbols (for struct generation).
@@ -184,7 +180,7 @@ impl SymbolTable {
     pub fn is_manifold_param(&self, name: &str) -> bool {
         self.symbols
             .get(name)
-            .is_some_and(|s| s.kind == SymbolKind::ManifoldParam)
+            .map_or(false, |s| s.kind == SymbolKind::ManifoldParam)
     }
 
     /// Get all manifold parameter symbols (for generic type generation).

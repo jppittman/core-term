@@ -40,12 +40,6 @@ pub struct ContentCell {
     pub c: char,
     /// The visual attributes of the character (foreground/background color, flags).
     pub attr: Attributes,
-    /// An optional Unicode combining character layered on top of the base character.
-    ///
-    /// Zero-width combining marks (e.g. accents, diacritics) do not advance the cursor.
-    /// Instead they are stored here and rendered on top of `c` by the font shaper.
-    /// `None` for ordinary cells with no combining overlay.
-    pub combining: Option<char>,
 }
 
 /// Placeholder character used by `Glyph::display_char()` for `WideSpacer` variants.
@@ -68,14 +62,12 @@ pub struct Attributes {
 
 impl Glyph {
     /// Provides a default Glyph instance, representing a cleared/empty cell.
-    #[must_use] 
     pub fn default_cell() -> Self {
         Glyph::Single(ContentCell::default_space())
     }
 
     /// Helper to get the displayable character of the cell, if applicable.
     /// For spacers, this might be the placeholder.
-    #[must_use] 
     pub fn display_char(&self) -> char {
         match self {
             Glyph::Single(cc) | Glyph::WidePrimary(cc) => cc.c,
@@ -86,12 +78,10 @@ impl Glyph {
 
 impl ContentCell {
     /// Creates a default `ContentCell` representing a blank space with default attributes.
-    #[must_use] 
     pub fn default_space() -> Self {
         ContentCell {
             c: ' ',
             attr: Attributes::default(),
-            combining: None,
         }
     }
 }

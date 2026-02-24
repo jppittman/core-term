@@ -9,7 +9,7 @@
 //! the actor wakes up reliably regardless of other system load, without relying
 //! on blocking `park` calls that could stall the actor scheduler.
 
-use actor_scheduler::{Actor, ActorBuilder, ActorHandle, HandlerError, HandlerResult, SystemStatus};
+use actor_scheduler::{Actor, ActorHandle, HandlerError, HandlerResult, SystemStatus};
 use log::info;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
@@ -49,7 +49,7 @@ pub(crate) fn return_vsync_token() {
     // Rate-limit warning to 1% of calls to avoid log spam
     if prev.is_err() {
         static WARN_COUNTER: AtomicU32 = AtomicU32::new(0);
-        if WARN_COUNTER.fetch_add(1, Ordering::Relaxed).is_multiple_of(100) {
+        if WARN_COUNTER.fetch_add(1, Ordering::Relaxed) % 100 == 0 {
             log::warn!("VSync token bucket already at max capacity");
         }
     }
@@ -146,7 +146,6 @@ const MAX_TOKENS: u32 = 100;
 
 impl VsyncActor {
     /// Create empty VsyncActor for troupe pattern - configured via SetConfig management message.
-    #[must_use] 
     pub fn new_empty() -> Self {
         Self {
             engine_handle: None,
@@ -176,8 +175,9 @@ impl VsyncActor {
             MAX_TOKENS
         );
 
-        // Spawn the clock thread — self_handle is a dedicated SPSC channel
+        // Spawn the clock thread
         let (clock_tx, clock_rx) = std::sync::mpsc::channel();
+        let clock_handle = self_handle.clone();
 
         thread::Builder::new()
             .name("vsync-clock".to_string())
@@ -189,7 +189,7 @@ impl VsyncActor {
                         Ok(ClockCommand::SetInterval(d)) => current_interval = d,
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             // Time to tick
-                            if self_handle.send(VsyncManagement::Tick).is_err() {
+                            if clock_handle.send(VsyncManagement::Tick).is_err() {
                                 // Actor is gone
                                 break;
                             }
@@ -220,16 +220,19 @@ impl VsyncActor {
         refresh_rate: f64,
         engine_handle: crate::api::private::EngineActorHandle,
     ) -> ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement> {
-        let mut builder =
-            ActorBuilder::<RenderedResponse, VsyncCommand, VsyncManagement>::new(1024, None);
-        let handle = builder.add_producer(); // For the caller
-        let clock_handle = builder.add_producer(); // For the clock thread (self-handle)
-        let mut scheduler = builder.build();
+        let (handle, mut scheduler) =
+            actor_scheduler::create_actor::<RenderedResponse, VsyncCommand, VsyncManagement>(
+                1024, // Data buffer (RenderedResponse)
+                None, // No wake handler
+            );
+
+        // We need to pass the handle to new(), so we clone it
+        let actor_handle = handle.clone();
 
         thread::Builder::new()
             .name("vsync-actor".to_string())
             .spawn(move || {
-                let mut actor = VsyncActor::new(refresh_rate, engine_handle, clock_handle);
+                let mut actor = VsyncActor::new(refresh_rate, engine_handle, actor_handle);
                 scheduler.run(&mut actor);
             })
             .expect("Failed to spawn vsync actor thread");
@@ -420,9 +423,9 @@ impl actor_scheduler::ActorTypes for VsyncActor {
     type Management = VsyncManagement;
 }
 
-// TroupeActor impl for VsyncActor — ignores directory, configured via SetConfig message
-impl<Dir> actor_scheduler::TroupeActor<Dir> for VsyncActor {
-    fn new(_dir: Dir) -> Self {
+// TroupeActor impl for VsyncActor
+impl<'a, Dir: 'a> actor_scheduler::TroupeActor<'a, Dir> for VsyncActor {
+    fn new(_dir: &Dir) -> Self {
         Self::new_empty()
     }
 }

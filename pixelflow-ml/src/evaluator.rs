@@ -170,11 +170,6 @@ pub trait LinearFeatures {
 
     /// Feature names for debugging/visualization.
     fn feature_names() -> &'static [&'static str];
-
-    /// Check if the feature vector is empty.
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 /// Hand-Crafted Evaluator: A simple linear combination of features.
@@ -201,13 +196,11 @@ pub struct HandCraftedEvaluator {
 
 impl HandCraftedEvaluator {
     /// Create a new HCE with the given weights.
-    #[must_use] 
     pub fn new(weights: Vec<i32>) -> Self {
         Self { weights }
     }
 
     /// Create an HCE with all weights set to zero.
-    #[must_use] 
     pub fn zeros(num_features: usize) -> Self {
         Self {
             weights: alloc::vec![0; num_features],
@@ -222,7 +215,6 @@ impl HandCraftedEvaluator {
     }
 
     /// Get a specific weight.
-    #[must_use] 
     pub fn get_weight(&self, index: usize) -> i32 {
         self.weights.get(index).copied().unwrap_or(0)
     }
@@ -372,7 +364,6 @@ impl LinearFeatures for ExprFeatures {
 /// - **Patterns**: Negative weights = "good to have" (will reduce cost)
 /// - **Structure**: Slight bias toward smaller expressions
 /// - **ILP features**: Critical path matters more than total ops
-#[must_use] 
 pub fn default_expr_weights() -> HandCraftedEvaluator {
     let mut hce = HandCraftedEvaluator::zeros(ExprFeatures::COUNT);
 
@@ -417,7 +408,6 @@ pub fn default_expr_weights() -> HandCraftedEvaluator {
 /// Weights optimized for CPUs with FMA (Haswell+, Zen+).
 ///
 /// These weights assume FMA is "free" (same cost as mul).
-#[must_use] 
 pub fn fma_optimized_weights() -> HandCraftedEvaluator {
     let mut hce = default_expr_weights();
 
@@ -440,7 +430,6 @@ use crate::nnue::{Expr, OpType};
 ///
 /// This is the "sensing" step that converts a complex AST into
 /// a fixed-size feature vector for the evaluator.
-#[must_use] 
 pub fn extract_expr_features(expr: &Expr) -> ExprFeatures {
     let mut features = ExprFeatures::default();
     let mut width_at_depth = Vec::new();

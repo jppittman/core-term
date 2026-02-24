@@ -1,10 +1,10 @@
 //! Kernel code generation task.
 
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
 use pixelflow_search::egraph::{EGraph, ENode, CostModel, ExprTree, Leaf, ops};
 
-pub fn generate_kernels(workspace_root: &Path) {
+pub fn generate_kernels(workspace_root: &PathBuf) {
     println!("Generating kernels...");
 
     // Example: Optimize a discriminant calculation: d^2 - (c^2 - r^2)

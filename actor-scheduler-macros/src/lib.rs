@@ -27,7 +27,9 @@ use proc_macro::{Delimiter, TokenStream, TokenTree};
 /// Generates:
 ///
 /// ```ignore
-/// impl<__Dir> TroupeActor<__Dir> for EngineActor
+/// impl<'__dir, __Dir> TroupeActor<'__dir, __Dir> for EngineActor<'__dir>
+/// where
+///     __Dir: '__dir,
 /// {
 ///     // ... body
 /// }
@@ -87,7 +89,9 @@ pub fn actor_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     format!(
         r#"
-        impl<__Dir> ::actor_scheduler::TroupeActor<__Dir> for {type_name}
+        impl<'__dir, __Dir> ::actor_scheduler::TroupeActor<'__dir, __Dir> for {type_name}<'__dir>
+        where
+            __Dir: '__dir,
         {{
             {body}
         }}
@@ -256,19 +260,19 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Generate exposed() impl - creates new SPSC handles from builders
-    let exposed_add_producer: String = exposed_actors
+    // Generate exposed() impl - clones exposed handles from directory
+    let exposed_clone: String = exposed_actors
         .iter()
-        .map(|(name, _, _, _)| format!("{name}: self.{name}_builder.add_producer(),"))
+        .map(|(name, _, _, _)| format!("{name}: self.directory.{name}.clone(),"))
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Generate builder fields for Troupe struct (builders, not schedulers)
-    let builder_fields: String = actors
+    // Generate scheduler fields for Troupe struct
+    let scheduler_fields: String = actors
         .iter()
         .map(|(name, ty, _, _)| {
             format!(
-                "{name}_builder: ::actor_scheduler::ActorBuilder<
+                "{name}_scheduler: ::actor_scheduler::ActorScheduler<
                     <{ty} as ::actor_scheduler::ActorTypes>::Data,
                     <{ty} as ::actor_scheduler::ActorTypes>::Control,
                     <{ty} as ::actor_scheduler::ActorTypes>::Management,
@@ -278,81 +282,47 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Generate per-actor directory fields in Troupe
-    let dir_storage_fields: String = actors
-        .iter()
-        .map(|(name, _, _, _)| format!("{name}_dir: Directory,"))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // Generate builder creation in new()
+    // Generate handle/scheduler creation in new()
     // Main actor gets the wake_handler parameter, others get None
-    let create_builders: String = actors
+    let create_actors: String = actors
         .iter()
         .map(|(name, ty, is_main, _)| {
             let waker = if *is_main { "main_waker" } else { "None" };
             format!(
-                "let mut {name}_builder = ::actor_scheduler::ActorBuilder::<
+                "let ({name}_h, {name}_s) = ::actor_scheduler::create_actor::<
                     <{ty} as ::actor_scheduler::ActorTypes>::Data,
                     <{ty} as ::actor_scheduler::ActorTypes>::Control,
                     <{ty} as ::actor_scheduler::ActorTypes>::Management,
-                >::new(1024, {waker});"
+                >(1024, {waker});"
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Generate per-actor directory creation
-    // Each actor gets its own Directory with dedicated SPSC handles
-    let create_dirs: String = actors
+    // Generate directory construction
+    let dir_init: String = actors
         .iter()
-        .map(|(actor_name, _, _, _)| {
-            let fields: String = actors
-                .iter()
-                .map(|(target_name, _, _, _)| {
-                    format!("{target_name}: {target_name}_builder.add_producer(),")
-                })
-                .collect::<Vec<_>>()
-                .join("\n                    ");
-            format!(
-                "let {actor_name}_dir = Directory {{
-                    {fields}
-                }};"
-            )
-        })
+        .map(|(name, _, _, _)| format!("{name}: {name}_h,"))
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Generate Troupe struct init
-    let troupe_init: String = actors
+    // Generate scheduler init for Troupe struct
+    let scheduler_init: String = actors
         .iter()
-        .map(|(name, _, _, _)| format!("{name}_builder, {name}_dir,"))
+        .map(|(name, _, _, _)| format!("{name}_scheduler: {name}_s,"))
         .collect::<Vec<_>>()
         .join("\n");
 
     // Generate spawns for non-main actors in play()
-    let build_schedulers: String = actors
-        .iter()
-        .map(|(name, _, _, _)| {
-            format!("let mut {name}_s = self.{name}_builder.build();")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let move_dirs: String = actors
-        .iter()
-        .map(|(name, _, _, _)| format!("let {name}_dir = self.{name}_dir;"))
-        .collect::<Vec<_>>()
-        .join("\n");
-
     let spawns: String = actors
         .iter()
         .filter(|(_, _, is_main, _)| !is_main)
         .map(|(name, ty, _, _)| {
             format!(
                 r#"
+                let mut {name}_s = self.{name}_scheduler;
                 s.spawn(move || {{
-                    let mut actor = <{ty} as ::actor_scheduler::TroupeActor<Directory>>::new({name}_dir);
+                    let mut actor = <{ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::new(dir);
                     {name}_s.run(&mut actor);
                 }});
                 "#
@@ -365,7 +335,8 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     let (main_name, main_ty, _, _) = actors.iter().find(|(_, _, m, _)| *m).unwrap();
     let main_run = format!(
         r#"
-        let mut actor = <{main_ty} as ::actor_scheduler::TroupeActor<Directory>>::new({main_name}_dir);
+        let mut {main_name}_s = self.{main_name}_scheduler;
+        let mut actor = <{main_ty} as ::actor_scheduler::TroupeActor<'_, Directory>>::new(dir);
         {main_name}_s.run(&mut actor);
         "#
     );
@@ -383,9 +354,6 @@ pub fn troupe(input: TokenStream) -> TokenStream {
     format!(
         r#"
         /// Directory containing handles to all actors in this troupe.
-        ///
-        /// With SPSC channels, each actor gets its OWN Directory instance
-        /// where each handle is a dedicated SPSC channel to the target actor.
         pub struct Directory {{
             {dir_fields}
         }}
@@ -393,8 +361,11 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         impl Directory {{
             /// Initiate graceful shutdown of all actors in this troupe.
             ///
-            /// Sends `Message::Shutdown` to each actor in reverse declaration order.
-            /// Uses this handle's doorbell (MPSC) for each target actor.
+            /// Sends `Message::Shutdown` to each actor in reverse declaration order
+            /// (last declared = first to receive shutdown). Actors exit on next
+            /// message drain - they never see the Shutdown message.
+            ///
+            /// Does not block. Scoped threads in `play()` will join automatically.
             pub fn shutdown(&self) {{
                 {shutdown_impl}
             }}
@@ -407,57 +378,66 @@ pub fn troupe(input: TokenStream) -> TokenStream {
 
         /// Troupe manages actor group lifecycle.
         ///
-        /// Stores [`ActorBuilder`]s until `play()` so that `exposed()` can
-        /// register additional producers. Builders are consumed by `play()`
-        /// which seals the registries and spawns the actor threads.
+        /// Use `new()` to create, `exposed()` to get handles for parent,
+        /// then `play()` to run actors in scoped threads.
         pub struct Troupe {{
-            {builder_fields}
-            {dir_storage_fields}
+            directory: Directory,
+            {scheduler_fields}
         }}
 
         impl Troupe {{
-            /// Create a new troupe with per-actor directories.
+            /// Create a new troupe. Builds directory and schedulers, but doesn't spawn threads.
             ///
             /// This is phase 1 of two-phase initialization:
-            /// 1. `new()` - create builders and per-actor directories
-            /// 2. `exposed()` - (optional) create handles for parent troupe
-            /// 3. `play()` - build schedulers, spawn threads, run actors
+            /// 1. `new()` - create channels, parent can grab exposed handles
+            /// 2. `play()` - spawn threads, run actors
+            ///
+            /// The `main_waker` is passed to the `[main]` actor's scheduler to wake
+            /// the event loop when messages arrive (e.g., `CocoaWaker` on macOS).
             pub fn new_with_waker(main_waker: Option<::std::sync::Arc<dyn ::actor_scheduler::WakeHandler>>) -> Self {{
-                {create_builders}
+                {create_actors}
 
-                // Each actor gets its own Directory with dedicated SPSC handles
-                {create_dirs}
+                let directory = Directory {{
+                    {dir_init}
+                }};
 
                 Self {{
-                    {troupe_init}
+                    directory,
+                    {scheduler_init}
                 }}
             }}
 
             /// Create a new troupe without a wake handler.
+            ///
+            /// Equivalent to `new_with_waker(None)`.
             pub fn new() -> Self {{
                 Self::new_with_waker(None)
             }}
 
-            /// Create exposed handles by adding new SPSC producers.
+            /// Get handles to exposed actors.
             ///
-            /// Each call creates a fresh set of handles with dedicated channels.
-            /// Must be called before `play()` (which consumes the builders).
-            pub fn exposed(&mut self) -> ExposedHandles {{
+            /// Call this after `new()` but before `play()` to give parent
+            /// troupe access to child actors.
+            pub fn exposed(&self) -> ExposedHandles {{
                 ExposedHandles {{
-                    {exposed_add_producer}
+                    {exposed_clone}
                 }}
             }}
 
-            /// Run the troupe. Builds schedulers (sealing all producers),
-            /// spawns threads for non-main actors, runs main actor on calling thread.
+            /// Get a reference to the directory.
+            pub fn directory(&self) -> &Directory {{
+                &self.directory
+            }}
+
+            /// Run the troupe. Spawns threads for non-main actors,
+            /// runs main actor on calling thread. Blocks until main actor exits.
+            ///
+            /// This is phase 2 of two-phase initialization.
             pub fn play(self) -> ::std::result::Result<(), ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>> {{
-                // Build schedulers — seals the builders, no more producers
-                {build_schedulers}
-
-                // Move per-actor directories out of self
-                {move_dirs}
-
+                let dir = self.directory;
                 ::std::thread::scope(|s| {{
+                    let dir = &dir;
+
                     {spawns}
 
                     {main_run}
@@ -468,6 +448,8 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         }}
 
         /// Convenience function: creates troupe and runs it.
+        ///
+        /// Equivalent to `Troupe::new().play()`.
         pub fn run() -> ::std::result::Result<(), ::std::boxed::Box<dyn ::std::error::Error + Send + Sync>> {{
             Troupe::new().play()
         }}

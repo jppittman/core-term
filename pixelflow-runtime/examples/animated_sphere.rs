@@ -167,10 +167,8 @@ fn build_scene_at_time(
 struct AnimatedSphereApp {
     /// Animation start time
     start: Instant,
-    /// Handle to send frames back to the engine.
-    /// Mutex satisfies Sync for Arc<dyn Application + Send + Sync>.
-    /// No contention — only the engine actor thread calls send().
-    engine_handle: std::sync::Mutex<pixelflow_runtime::api::private::EngineActorHandle>,
+    /// Handle to send frames back to the engine
+    engine_handle: pixelflow_runtime::api::private::EngineActorHandle,
     /// Current width (atomic for interior mutability)
     width: AtomicU32,
     /// Current height (atomic for interior mutability)
@@ -199,8 +197,6 @@ impl Application for AnimatedSphereApp {
                 // Send the frame back to the engine
                 log::debug!("App sending RenderSurface");
                 self.engine_handle
-                    .lock()
-                    .unwrap()
                     .send(Message::Data(EngineData::FromApp(AppData::RenderSurface(
                         arc,
                     ))))
@@ -249,7 +245,7 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    let mut troupe = EngineTroupe::with_config(config)?;
+    let troupe = EngineTroupe::with_config(config)?;
     let unregistered_handle = troupe.engine_handle();
     let start = Instant::now();
 
@@ -260,7 +256,7 @@ fn main() -> anyhow::Result<()> {
     // Create the pull-based app (scene is built per-frame with animation)
     let app = AnimatedSphereApp {
         start,
-        engine_handle: std::sync::Mutex::new(engine_handle_for_app),
+        engine_handle: engine_handle_for_app,
         width: AtomicU32::new(WIDTH),
         height: AtomicU32::new(HEIGHT),
     };

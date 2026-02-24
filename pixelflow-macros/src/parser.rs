@@ -40,7 +40,6 @@ pub fn parse(input: TokenStream) -> syn::Result<KernelDef> {
 }
 
 /// Parser state for the closure-like syntax.
-#[allow(dead_code)]
 struct KernelParser;
 
 impl Parse for KernelDef {
@@ -68,7 +67,7 @@ impl Parse for KernelDef {
                 let kind = if is_kernel_keyword(&ty) {
                     ParamKind::Manifold
                 } else {
-                    ParamKind::Scalar(Box::new(ty))
+                    ParamKind::Scalar(ty)
                 };
 
                 params.push(Param { name: ident, kind });
@@ -164,7 +163,7 @@ fn parse_type_annotations(input: ParseStream) -> syn::Result<(Option<Type>, Opti
     let fork = input.fork();
 
     // Try to parse a type
-    if let Ok(_ty) = fork.parse::<Type>() {
+    if let Ok(ty) = fork.parse::<Type>() {
         // Check if followed by `->`
         if fork.peek(Token![->]) {
             // Yes! This is `DomainType -> OutputType`
@@ -216,7 +215,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
             let op = BinaryOp::from_syn(&expr_binary.op).ok_or_else(|| {
                 let op_str = quote::quote!(#expr_binary.op).to_string();
                 syn::Error::new_spanned(
-                    expr_binary.op,
+                    &expr_binary.op,
                     format!(
                         "unsupported binary operator `{}`\n\
                          \n\
@@ -244,7 +243,7 @@ fn convert_expr(expr: syn::Expr) -> syn::Result<Expr> {
             let op = UnaryOp::from_syn(&expr_unary.op).ok_or_else(|| {
                 let op_str = quote::quote!(#expr_unary.op).to_string();
                 syn::Error::new_spanned(
-                    expr_unary.op,
+                    &expr_unary.op,
                     format!(
                         "unsupported unary operator `{}`\n\
                          \n\
@@ -388,12 +387,12 @@ fn convert_block(block: syn::Block) -> syn::Result<BlockExpr> {
 
                 let init_expr = convert_expr((*init.expr).clone())?;
 
-                stmts.push(Stmt::Let(Box::new(LetStmt {
+                stmts.push(Stmt::Let(LetStmt {
                     name,
                     ty,
                     init: init_expr,
                     span: Span::call_site(),
-                })));
+                }));
             }
 
             syn::Stmt::Expr(expr, semi) => {

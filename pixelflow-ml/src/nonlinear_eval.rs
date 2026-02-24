@@ -24,17 +24,16 @@ use crate::nnue::{Expr, Accumulator, Nnue, extract_features};
 
 /// Linear cost model (equivalent to egg's CostModel).
 /// This is our baseline - what we're trying to beat.
-#[must_use] 
 pub fn linear_cost(features: &ExprFeatures) -> i32 {
     // Standard per-op costs (same as egg would use)
     features.add_count * 4
         + features.sub_count * 4
         + features.mul_count * 5
         + features.div_count * 15
-        + features.neg_count
+        + features.neg_count * 1
         + features.sqrt_count * 15
         + features.rsqrt_count * 5
-        + features.abs_count
+        + features.abs_count * 1
         + features.min_count * 4
         + features.max_count * 4
         + features.fma_count * 5
@@ -43,7 +42,6 @@ pub fn linear_cost(features: &ExprFeatures) -> i32 {
 
 /// Non-linear cost with interaction terms.
 /// Captures patterns that linear models miss.
-#[must_use] 
 pub fn interaction_cost(features: &ExprFeatures) -> i32 {
     let base = linear_cost(features);
 
@@ -72,7 +70,6 @@ pub fn interaction_cost(features: &ExprFeatures) -> i32 {
 
 /// Critical path cost model.
 /// The slowest path through the expression matters most.
-#[must_use] 
 pub fn critical_path_cost(expr: &Expr) -> i32 {
     match expr {
         Expr::Var(_) | Expr::Const(_) => 0,
@@ -110,7 +107,6 @@ pub fn critical_path_cost(expr: &Expr) -> i32 {
 }
 
 /// Total cost (sum of all operations) - for comparison.
-#[must_use] 
 pub fn total_cost(expr: &Expr) -> i32 {
     let features = extract_expr_features(expr);
     linear_cost(&features)
@@ -118,7 +114,6 @@ pub fn total_cost(expr: &Expr) -> i32 {
 
 /// NNUE-based cost (actual neural network).
 /// This is what provides real non-linearity.
-#[must_use] 
 pub fn nnue_cost(expr: &Expr, nnue: &Nnue) -> i32 {
     let features = extract_features(expr);
     let mut acc = Accumulator::new(nnue);
@@ -138,7 +133,6 @@ pub fn nnue_cost(expr: &Expr, nnue: &Nnue) -> i32 {
 
 /// Compare cost models on an expression.
 /// Returns (linear, interaction, critical_path, total).
-#[must_use] 
 pub fn compare_costs(expr: &Expr) -> CostComparison {
     let features = extract_expr_features(expr);
 
@@ -153,25 +147,19 @@ pub fn compare_costs(expr: &Expr) -> CostComparison {
 /// Result of comparing cost models.
 #[derive(Clone, Debug)]
 pub struct CostComparison {
-    /// Cost using only linear (first-order) terms.
     pub linear: i32,
-    /// Cost including pairwise interaction terms.
     pub interaction: i32,
-    /// Cost along the longest dependency chain.
     pub critical_path: i32,
-    /// Combined total cost estimate.
     pub total: i32,
 }
 
 impl CostComparison {
     /// How much do interaction terms change the cost?
-    #[must_use] 
     pub fn interaction_delta(&self) -> i32 {
         self.interaction - self.linear
     }
 
     /// How different is critical path from total?
-    #[must_use] 
     pub fn critical_vs_total(&self) -> f32 {
         if self.total == 0 {
             1.0
@@ -236,7 +224,6 @@ where
 // ============================================================================
 
 /// Find expressions where models disagree on ranking.
-#[must_use] 
 pub fn find_disagreements(exprs: &[Expr]) -> Vec<Disagreement> {
     let mut disagreements = Vec::new();
 
@@ -281,15 +268,10 @@ pub fn find_disagreements(exprs: &[Expr]) -> Vec<Disagreement> {
 /// A case where cost models disagree.
 #[derive(Clone, Debug)]
 pub struct Disagreement {
-    /// Index of the first expression in the comparison.
     pub expr_a: usize,
-    /// Index of the second expression in the comparison.
     pub expr_b: usize,
-    /// Difference in linear cost estimates.
     pub linear_diff: i32,
-    /// Difference in interaction cost estimates.
     pub interaction_diff: i32,
-    /// Human-readable description of why the models disagree.
     pub reason: &'static str,
 }
 

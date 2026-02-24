@@ -423,9 +423,6 @@ pub enum AppManagement {
     Configure(crate::config::EngineConfig),
     /// Register the application handle so the engine can send events back to the app.
     RegisterApp(std::sync::Arc<dyn Application + Send + Sync>),
-    /// Pre-created engine handle for rasterizer response forwarding thread.
-    /// Sent before Configure so that spawn_rasterizer has a dedicated SPSC handle.
-    SetRasterizerForwardHandle(crate::api::private::EngineActorHandle),
     /// Request window creation.
     ///
     /// # Contract
@@ -448,9 +445,6 @@ impl std::fmt::Debug for AppManagement {
         match self {
             AppManagement::Configure(config) => f.debug_tuple("Configure").field(config).finish(),
             AppManagement::RegisterApp(_) => f.debug_tuple("RegisterApp").field(&"<app>").finish(),
-            AppManagement::SetRasterizerForwardHandle(_) => {
-                f.write_str("SetRasterizerForwardHandle(<handle>)")
-            }
             AppManagement::CreateWindow(descriptor) => {
                 f.debug_tuple("CreateWindow").field(descriptor).finish()
             }
@@ -565,6 +559,14 @@ pub struct EngineHandle {
         crate::api::private::EngineControl,
         AppManagement,
     >,
+}
+
+impl Clone for EngineHandle {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl EngineHandle {

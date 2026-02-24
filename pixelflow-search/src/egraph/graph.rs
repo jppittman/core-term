@@ -8,7 +8,7 @@ use super::extract::ExprTree;
 use super::node::{EClassId, ENode};
 use super::ops;
 use super::rewrite::{Rewrite, RewriteAction};
-use super::rules::{Annihilator, Commutative, Distributive, Identity};
+use super::rules::{Annihilator, Commutative, Distributive, Factor, Idempotent, Identity};
 
 /// A potential rewrite target: (rule, e-class, node within class).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -56,7 +56,6 @@ impl Clone for EGraph {
 }
 
 impl EGraph {
-    #[must_use] 
     pub fn new() -> Self {
         // Build rules first, then wrap in Arc
         let rules = Self::create_algebraic_rules();
@@ -72,29 +71,32 @@ impl EGraph {
 
     /// Create the standard algebraic rewrite rules.
     fn create_algebraic_rules() -> Vec<Box<dyn Rewrite>> {
-        vec![
-            Canonicalize::<AddNeg>::new(),
-            Involution::<AddNeg>::new(),
-            Cancellation::<AddNeg>::new(),
-            InverseAnnihilation::<AddNeg>::new(),
-            Canonicalize::<MulRecip>::new(),
-            Involution::<MulRecip>::new(),
-            Cancellation::<MulRecip>::new(),
-            InverseAnnihilation::<MulRecip>::new(),
-            Commutative::new(&ops::Add),
-            Commutative::new(&ops::Mul),
-            Commutative::new(&ops::Min),
-            Commutative::new(&ops::Max),
-            Distributive::new(&ops::Mul, &ops::Add),
-            Distributive::new(&ops::Mul, &ops::Sub),
-            // Domain-specific fusion rules (FmaFusion, RecipSqrt) should be added
-            // by the domain layer (pixelflow-macros) using add_rule(), not here.
-            // Identity rules: x + 0 = x, x * 1 = x
-            Identity::new(&ops::Add),
-            Identity::new(&ops::Mul),
-            // Annihilator rules: x * 0 = 0
-            Annihilator::new(&ops::Mul),
-        ]
+        let mut rules: Vec<Box<dyn Rewrite>> = Vec::new();
+
+        // TEST: Adding remaining rules
+        rules.push(Canonicalize::<AddNeg>::new());
+        rules.push(Involution::<AddNeg>::new());
+        rules.push(Cancellation::<AddNeg>::new());
+        rules.push(InverseAnnihilation::<AddNeg>::new());
+        rules.push(Canonicalize::<MulRecip>::new());
+        rules.push(Involution::<MulRecip>::new());
+        rules.push(Cancellation::<MulRecip>::new());
+        rules.push(InverseAnnihilation::<MulRecip>::new());
+        rules.push(Commutative::new(&ops::Add));
+        rules.push(Commutative::new(&ops::Mul));
+        rules.push(Commutative::new(&ops::Min));
+        rules.push(Commutative::new(&ops::Max));
+        rules.push(Distributive::new(&ops::Mul, &ops::Add));
+        rules.push(Distributive::new(&ops::Mul, &ops::Sub));
+        // Domain-specific fusion rules (FmaFusion, RecipSqrt) should be added
+        // by the domain layer (pixelflow-macros) using add_rule(), not here.
+        // Identity rules: x + 0 = x, x * 1 = x
+        rules.push(Identity::new(&ops::Add));
+        rules.push(Identity::new(&ops::Mul));
+        // Annihilator rules: x * 0 = 0
+        rules.push(Annihilator::new(&ops::Mul));
+
+        rules
     }
 
     /// Add a custom rule (only works before cloning).
@@ -161,7 +163,6 @@ impl EGraph {
         // self.add_rule(Box::new(FmaFusion)); // a * b + c → mul_add(a, b, c)
     }
 
-    #[must_use] 
     pub fn find(&self, id: EClassId) -> EClassId {
         let mut current = id;
         while self.parent[current.index()] != current {
@@ -243,26 +244,22 @@ impl EGraph {
         }
     }
 
-    #[must_use] 
     pub fn nodes(&self, id: EClassId) -> &[ENode] {
         let id = self.find(id);
         &self.classes[id.index()].nodes
     }
 
     /// Get the number of registered rewrite rules.
-    #[must_use] 
     pub fn num_rules(&self) -> usize {
         self.rules.len()
     }
 
     /// Get the number of e-classes.
-    #[must_use] 
     pub fn num_classes(&self) -> usize {
         self.classes.len()
     }
 
     /// Get the total number of nodes across all e-classes.
-    #[must_use] 
     pub fn node_count(&self) -> usize {
         self.classes.iter().map(|c| c.nodes.len()).sum()
     }
@@ -291,7 +288,6 @@ impl EGraph {
     }
 
     /// Get a rule by index.
-    #[must_use] 
     pub fn rule(&self, idx: usize) -> Option<&dyn Rewrite> {
         self.rules.get(idx).map(|r| r.as_ref())
     }
@@ -300,7 +296,6 @@ impl EGraph {
     ///
     /// Returns only targets where the rule actually matches (produces an action).
     /// Much more efficient than enumerating all combinations - only scores real matches.
-    #[must_use] 
     pub fn find_rewrite_matches(&self) -> Vec<RewriteTarget> {
         let mut matches = Vec::new();
 
@@ -431,7 +426,6 @@ impl EGraph {
         changed
     }
 
-    #[must_use] 
     pub fn contains_const(&self, id: EClassId, val: f32) -> bool {
         self.nodes(id).iter().any(|n| n.is_const(val))
     }
@@ -538,7 +532,6 @@ impl EGraph {
         unions
     }
 
-    #[must_use] 
     pub fn extract_with_costs(&self, root: EClassId, costs: &CostModel) -> ENode {
         let root = self.find(root);
         let mut cost_table: HashMap<EClassId, (usize, ENode)> = HashMap::new();
@@ -573,14 +566,12 @@ impl EGraph {
     }
 
     /// Extract the minimum-cost expression tree from an e-class.
-    #[must_use] 
     pub fn extract_tree_with_costs(&self, root: EClassId, costs: &CostModel) -> ExprTree {
         let (tree, _cost) = super::extract::extract(self, root, costs);
         tree
     }
 
     /// Extract the best expression tree and its cost.
-    #[must_use] 
     pub fn extract_best(&self, root: EClassId, costs: &CostModel) -> (ExprTree, usize) {
         super::extract::extract(self, root, costs)
     }
@@ -595,7 +586,6 @@ impl EGraph {
     /// For `sin(X) * sin(X) + sin(X)`:
     /// - Tree extraction would compute sin(X) three times
     /// - DAG extraction marks sin(X) as shared, enabling: `let __0 = X.sin(); __0 * __0 + __0`
-    #[must_use] 
     pub fn extract_dag_with_costs(&self, root: EClassId, costs: &CostModel) -> super::extract::ExtractedDAG {
         super::extract::extract_dag(self, root, costs)
     }
@@ -615,7 +605,6 @@ impl EGraph {
     /// # Returns
     ///
     /// A vector of distinct ExprTree representations, up to `n` elements.
-    #[must_use] 
     pub fn extract_variants(&self, root: EClassId, n: usize, costs: &CostModel) -> Vec<ExprTree> {
         let root = self.find(root);
         let nodes = &self.classes[root.index()].nodes;

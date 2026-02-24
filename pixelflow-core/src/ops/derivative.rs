@@ -506,9 +506,9 @@ where
 
 use crate::jet::{Jet2, Jet3};
 
-#[allow(dead_code)] type Field4 = (Field, Field, Field, Field);
-#[allow(dead_code)] type Jet2_4 = (Jet2, Jet2, Jet2, Jet2);
-#[allow(dead_code)] type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
+type Field4 = (Field, Field, Field, Field);
+type Jet2_4 = (Jet2, Jet2, Jet2, Jet2);
+type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 
 // ============================================================================
 // ValOf: Extract .val() from any domain where output has derivatives

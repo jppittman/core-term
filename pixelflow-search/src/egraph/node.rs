@@ -11,7 +11,6 @@ impl EClassId {
     /// Get the index of this e-class ID.
     ///
     /// This is useful for using EClassId as a key in external data structures.
-    #[must_use] 
     pub fn index(self) -> usize {
         self.0 as usize
     }
@@ -36,13 +35,11 @@ pub enum ENode {
 
 impl ENode {
     /// Create a constant node.
-    #[must_use] 
     pub fn constant(val: f32) -> Self {
         ENode::Const(val.to_bits())
     }
 
     /// Get the constant value if this is a Const node.
-    #[must_use] 
     pub fn as_f32(&self) -> Option<f32> {
         match self {
             ENode::Const(bits) => Some(f32::from_bits(*bits)),
@@ -51,13 +48,11 @@ impl ENode {
     }
 
     /// Check if this node is a specific constant value.
-    #[must_use] 
     pub fn is_const(&self, val: f32) -> bool {
         self.as_f32() == Some(val)
     }
 
     /// Get the operation if this is an Op node.
-    #[must_use] 
     pub fn op(&self) -> Option<&'static dyn Op> {
         match self {
             ENode::Op { op, .. } => Some(*op),
@@ -66,7 +61,6 @@ impl ENode {
     }
 
     /// Get children of this node.
-    #[must_use] 
     pub fn children(&self) -> Vec<EClassId> {
         match self {
             ENode::Var(_) | ENode::Const(_) => vec![],
@@ -75,7 +69,6 @@ impl ENode {
     }
 
     /// Get binary operands if this is a binary operation.
-    #[must_use] 
     pub fn binary_operands(&self) -> Option<(EClassId, EClassId)> {
         match self {
             ENode::Op { children, .. } if children.len() == 2 => {

@@ -62,8 +62,7 @@ use pixelflow_core::ops::compare::Lt;
 use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y};
 
 /// Natural logarithm of 2, used for 2^x = exp(x * LN_2).
-#[allow(dead_code)]
-const LN_2: f32 = std::f32::consts::LN_2;
+const LN_2: f32 = 0.6931471805599453;
 
 // ============================================================================
 // Regular Patch (Valence 4) - Standard B-Spline
@@ -85,7 +84,6 @@ const BSPLINE_BASIS: [[f32; 4]; 4] = [
 ///
 /// Uses X as u ∈ [0,1], Y as v ∈ [0,1].
 #[inline]
-#[must_use] 
 pub fn bspline_patch(
     control_points: [[f32; 3]; 16],
 ) -> (
@@ -169,7 +167,6 @@ fn bspline_axis(control_points: &[[f32; 4]; 4]) -> impl Manifold<Output = Field>
 /// - `Map` for log2/floor/pow operations on coordinates
 /// - Recursive `Select` tree for tile depth routing
 /// - Per-eigenbasis weighting (may require K separate bicubics, not combined)
-#[allow(dead_code)]
 fn axis_patch(coeffs: [[f32; 16]; 3]) -> impl Manifold<Output = Field> {
     // TODO(subdiv): Implement eigenvalue power weighting λᵢⁿ⁻¹
     // TODO(subdiv): Implement recursive tiling for (u,v) < 0.5
@@ -342,7 +339,6 @@ fn first_tile_patch(coeffs: [[f32; 16]; 3]) -> impl Manifold<Output = Field> {
 ///
 /// For most artistic use cases, this is acceptable. For CAD-quality
 /// precision near extraordinary vertices, eigenvalue weighting is needed.
-#[must_use] 
 pub fn eigen_patch(
     control_points: &[[f32; 3]],
     valence: usize,
@@ -360,18 +356,17 @@ pub fn eigen_patch(
     let mut proj_z = vec![0.0f32; k];
 
     for i in 0..k {
-        for (j, cp) in control_points.iter().enumerate().take(k) {
+        for j in 0..k.min(control_points.len()) {
             let w = eigen.inv_eigen(j, i); // transpose
-            proj_x[i] += w * cp[0];
-            proj_y[i] += w * cp[1];
-            proj_z[i] += w * cp[2];
+            proj_x[i] += w * control_points[j][0];
+            proj_y[i] += w * control_points[j][1];
+            proj_z[i] += w * control_points[j][2];
         }
     }
 
     // Precompute bicubic coefficients for each subpatch
     let mut coeffs = [[[0.0f32; 16]; 3]; 3]; // [axis][subpatch][coeff]
     for sub in 0..3 {
-        #[allow(clippy::needless_range_loop)]
         for c in 0..16 {
             for basis in 0..k {
                 let s = eigen.spline(sub, basis, c);
@@ -400,7 +395,7 @@ pub fn eigen_patch(
 #[inline]
 pub fn validate_eigen_domain(u: f32, v: f32) {
     // Check bounds
-    if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+    if u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0 {
         panic!(
             "eigen_patch: (u={}, v={}) outside valid domain [0, 1]²",
             u, v
@@ -425,7 +420,6 @@ pub fn validate_eigen_domain(u: f32, v: f32) {
 /// Returns a manifold type - the polynomial IS the composition,
 /// not a struct that computes it.
 #[inline]
-#[must_use] 
 pub fn bicubic(c: [f32; 16]) -> impl Manifold<Output = Field> {
     // Powers of Y (v): Y, Y², Y³
     let v1 = Y;
@@ -590,7 +584,7 @@ mod tests {
         // If all control points are at the SAME location,
         // the surface should evaluate to that location everywhere.
         // This tests affine invariance.
-        let _control_points = [[1.0f32, 2.0, 3.0]; 16];
+        let control_points = [[1.0f32, 2.0, 3.0]; 16];
 
         let eigen = get_eigen(4).unwrap();
         println!("K = {}", eigen.k);

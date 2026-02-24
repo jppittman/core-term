@@ -6,7 +6,7 @@ pub fn render_circle(buffer: &mut [u32]) {
     // Circle SDF - pure algebra
     let sdf = (X * X + Y * Y).sqrt() - 100.0;
 
-    let _packed = [0u32; PARALLELISM];
+    let mut packed = [0u32; PARALLELISM];
 
     // Render a 100x100 grid
     for y in 0..100 {
@@ -31,7 +31,7 @@ pub fn render_circle(buffer: &mut [u32]) {
             let clamped = normalized.min(one).max(zero).constant();
 
             // Pack to grayscale RGBA and materialize
-            let _discrete = Discrete::pack(clamped, clamped, clamped, one);
+            let discrete = Discrete::pack(clamped, clamped, clamped, one);
 
             // Materialize the discrete values - but we need a manifold, not a discrete value
             // This is awkward - in real code you'd use a Color manifold directly

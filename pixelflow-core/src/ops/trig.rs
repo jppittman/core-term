@@ -74,10 +74,10 @@ pub(crate) fn cheby_sin(x: Field) -> Field {
 
     // Chebyshev coefficients for sin on [-1,1]
     // T_1(t) through T_7(t)
-    const C1: f32 = 1.671_997_1_f32;
-    const C3: f32 = -0.645_963_55_f32;
-    const C5: f32 = 0.079_689_45_f32;
-    const C7: f32 = -0.004_681_754_f32;
+    const C1: f32 = 1.6719970703125f32;
+    const C3: f32 = -0.645963541666667f32;
+    const C5: f32 = 0.079689450f32;
+    const C7: f32 = -0.0046817541f32;
 
     // Horner's method: accumulate from highest degree down
     // p(t) = C1*t + C3*t^3 + C5*t^5 + C7*t^7
@@ -105,9 +105,9 @@ pub(crate) fn cheby_cos(x: Field) -> Field {
 
     // Chebyshev coefficients for cos on [-1,1]
     // T_0(t) through T_6(t)
-    const C0: f32 = core::f32::consts::FRAC_PI_2;
-    const C2: f32 = -2.467_401_3_f32;
-    const C4: f32 = 0.609_469_35_f32;
+    const C0: f32 = 1.5707963267948966f32;
+    const C2: f32 = -2.467401341f32;
+    const C4: f32 = 0.609469381f32;
     const C6: f32 = -0.038854038f32;
 
     // Horner's method for even polynomial
@@ -136,9 +136,9 @@ pub(crate) fn cheby_atan2(y: Field, x: Field) -> Field {
 
     // Chebyshev approximation for atan on [0, 1]
     const C1: f32 = 0.999999999f32;
-    const C3: f32 = -0.333_333_34_f32;
+    const C3: f32 = -0.333333333f32;
     const C5: f32 = 0.2f32;
-    const C7: f32 = -0.142_857_15_f32;
+    const C7: f32 = -0.142857143f32;
 
     // Horner's method for approximation of atan(|r|)
     // AST building enables FMA fusion

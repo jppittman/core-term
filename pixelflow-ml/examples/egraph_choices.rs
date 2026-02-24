@@ -95,7 +95,7 @@ fn fast_rsqrt(x: f32) -> f32 {
     y
 }
 
-fn benchmark<F>(_name: &str, iterations: u64, mut f: F) -> (f64, f32)
+fn benchmark<F>(name: &str, iterations: u64, mut f: F) -> (f64, f32)
 where F: FnMut() -> f32
 {
     // Warmup
@@ -118,7 +118,7 @@ where F: FnMut() -> f32
     (ns_per_iter, result)
 }
 
-fn compare(name: &str, _iterations: u64, opt_a: (&str, f64, f32), opt_b: (&str, f64, f32)) {
+fn compare(name: &str, iterations: u64, opt_a: (&str, f64, f32), opt_b: (&str, f64, f32)) {
     println!("{}", name);
     println!("  {}: {:.2} ns/iter (result: {:.6})", opt_a.0, opt_a.1, opt_a.2);
     println!("  {}: {:.2} ns/iter (result: {:.6})", opt_b.0, opt_b.1, opt_b.2);

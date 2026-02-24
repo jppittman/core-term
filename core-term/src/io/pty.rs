@@ -114,15 +114,7 @@ impl NixPty {
                 }
 
                 // Set controlling terminal
-                // On macOS/BSD, TIOCSCTTY is unsigned long, but ioctl expects unsigned long.
-                // However, constants might be inferred as u32.
-                // We cast both arguments to ensure compatibility across platforms.
-                if libc::ioctl(
-                    slave_raw_fd,
-                    libc::TIOCSCTTY as _,
-                    0 as libc::c_int,
-                ) == -1
-                {
+                if libc::ioctl(slave_raw_fd, libc::TIOCSCTTY.into(), 0) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
 

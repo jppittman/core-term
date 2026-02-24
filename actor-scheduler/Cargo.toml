@@ -26,19 +26,3 @@ harness = false
 [[bench]]
 name = "bench_adversarial"
 harness = false
-
-[[bench]]
-name = "bench_optimize"
-harness = false
-
-[[bench]]
-name = "bench_spsc_vs_mpsc"
-harness = false
-
-[[bench]]
-name = "bench_optimize_spsc"
-harness = false
-
-[[bench]]
-name = "bench_kubelet"
-harness = false
