@@ -76,7 +76,7 @@ impl Index<usize> for SnapshotLine {
 
 impl SnapshotLine {
     /// Creates a new SnapshotLine from an existing Arc (cheap clone).
-    #[must_use] 
+    #[must_use]
     pub fn from_arc(cells: Arc<Vec<Glyph>>, state: LineState) -> Self {
         Self {
             is_dirty: state == LineState::Dirty,
@@ -124,7 +124,7 @@ impl TerminalSnapshot {
     /// Gets the glyph at the given `Point` (column, row) if it exists within the snapshot dimensions.
     ///
     /// Returns `None` if the coordinates are out of bounds.
-    #[must_use] 
+    #[must_use]
     pub fn get_glyph(&self, p: Point) -> Option<Glyph> {
         let (term_width, term_height) = self.dimensions;
         if p.x >= term_width || p.y >= term_height {

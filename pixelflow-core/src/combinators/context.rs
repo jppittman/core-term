@@ -130,25 +130,25 @@ impl<T0: Copy + Send + Sync, T1: Copy + Send + Sync, const N: usize, const M: us
 {
 }
 impl<
-        T0: Copy + Send + Sync,
-        T1: Copy + Send + Sync,
-        T2: Copy + Send + Sync,
-        const N: usize,
-        const M: usize,
-        const K: usize,
-    > ContextShape for ([T0; N], [T1; M], [T2; K])
+    T0: Copy + Send + Sync,
+    T1: Copy + Send + Sync,
+    T2: Copy + Send + Sync,
+    const N: usize,
+    const M: usize,
+    const K: usize,
+> ContextShape for ([T0; N], [T1; M], [T2; K])
 {
 }
 impl<
-        T0: Copy + Send + Sync,
-        T1: Copy + Send + Sync,
-        T2: Copy + Send + Sync,
-        T3: Copy + Send + Sync,
-        const N: usize,
-        const M: usize,
-        const K: usize,
-        const L: usize,
-    > ContextShape for ([T0; N], [T1; M], [T2; K], [T3; L])
+    T0: Copy + Send + Sync,
+    T1: Copy + Send + Sync,
+    T2: Copy + Send + Sync,
+    T3: Copy + Send + Sync,
+    const N: usize,
+    const M: usize,
+    const K: usize,
+    const L: usize,
+> ContextShape for ([T0; N], [T1; M], [T2; K], [T3; L])
 {
 }
 
@@ -296,7 +296,7 @@ pub struct CtxVar<ArrayPos, const INDEX: usize>(PhantomData<ArrayPos>);
 
 impl<ArrayPos, const INDEX: usize> CtxVar<ArrayPos, INDEX> {
     /// Create a new context variable reference.
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self(PhantomData)
     }
@@ -525,13 +525,21 @@ impl<T: Copy + Send + Sync, const N: usize, P: Spatial> Spatial for (([T; N],), 
     type Coord = P::Coord;
     type Scalar = P::Scalar;
     #[inline(always)]
-    fn x(&self) -> Self::Coord { self.1.x() }
+    fn x(&self) -> Self::Coord {
+        self.1.x()
+    }
     #[inline(always)]
-    fn y(&self) -> Self::Coord { self.1.y() }
+    fn y(&self) -> Self::Coord {
+        self.1.y()
+    }
     #[inline(always)]
-    fn z(&self) -> Self::Coord { self.1.z() }
+    fn z(&self) -> Self::Coord {
+        self.1.z()
+    }
     #[inline(always)]
-    fn w(&self) -> Self::Coord { self.1.w() }
+    fn w(&self) -> Self::Coord {
+        self.1.w()
+    }
 }
 
 impl<T0: Copy + Send + Sync, T1: Copy + Send + Sync, const N: usize, const M: usize, P: Spatial>
@@ -540,59 +548,83 @@ impl<T0: Copy + Send + Sync, T1: Copy + Send + Sync, const N: usize, const M: us
     type Coord = P::Coord;
     type Scalar = P::Scalar;
     #[inline(always)]
-    fn x(&self) -> Self::Coord { self.1.x() }
+    fn x(&self) -> Self::Coord {
+        self.1.x()
+    }
     #[inline(always)]
-    fn y(&self) -> Self::Coord { self.1.y() }
+    fn y(&self) -> Self::Coord {
+        self.1.y()
+    }
     #[inline(always)]
-    fn z(&self) -> Self::Coord { self.1.z() }
+    fn z(&self) -> Self::Coord {
+        self.1.z()
+    }
     #[inline(always)]
-    fn w(&self) -> Self::Coord { self.1.w() }
+    fn w(&self) -> Self::Coord {
+        self.1.w()
+    }
 }
 
 impl<
-        T0: Copy + Send + Sync,
-        T1: Copy + Send + Sync,
-        T2: Copy + Send + Sync,
-        const N: usize,
-        const M: usize,
-        const K: usize,
-        P: Spatial,
-    > Spatial for (([T0; N], [T1; M], [T2; K]), P)
+    T0: Copy + Send + Sync,
+    T1: Copy + Send + Sync,
+    T2: Copy + Send + Sync,
+    const N: usize,
+    const M: usize,
+    const K: usize,
+    P: Spatial,
+> Spatial for (([T0; N], [T1; M], [T2; K]), P)
 {
     type Coord = P::Coord;
     type Scalar = P::Scalar;
     #[inline(always)]
-    fn x(&self) -> Self::Coord { self.1.x() }
+    fn x(&self) -> Self::Coord {
+        self.1.x()
+    }
     #[inline(always)]
-    fn y(&self) -> Self::Coord { self.1.y() }
+    fn y(&self) -> Self::Coord {
+        self.1.y()
+    }
     #[inline(always)]
-    fn z(&self) -> Self::Coord { self.1.z() }
+    fn z(&self) -> Self::Coord {
+        self.1.z()
+    }
     #[inline(always)]
-    fn w(&self) -> Self::Coord { self.1.w() }
+    fn w(&self) -> Self::Coord {
+        self.1.w()
+    }
 }
 
 impl<
-        T0: Copy + Send + Sync,
-        T1: Copy + Send + Sync,
-        T2: Copy + Send + Sync,
-        T3: Copy + Send + Sync,
-        const N: usize,
-        const M: usize,
-        const K: usize,
-        const L: usize,
-        P: Spatial,
-    > Spatial for (([T0; N], [T1; M], [T2; K], [T3; L]), P)
+    T0: Copy + Send + Sync,
+    T1: Copy + Send + Sync,
+    T2: Copy + Send + Sync,
+    T3: Copy + Send + Sync,
+    const N: usize,
+    const M: usize,
+    const K: usize,
+    const L: usize,
+    P: Spatial,
+> Spatial for (([T0; N], [T1; M], [T2; K], [T3; L]), P)
 {
     type Coord = P::Coord;
     type Scalar = P::Scalar;
     #[inline(always)]
-    fn x(&self) -> Self::Coord { self.1.x() }
+    fn x(&self) -> Self::Coord {
+        self.1.x()
+    }
     #[inline(always)]
-    fn y(&self) -> Self::Coord { self.1.y() }
+    fn y(&self) -> Self::Coord {
+        self.1.y()
+    }
     #[inline(always)]
-    fn z(&self) -> Self::Coord { self.1.z() }
+    fn z(&self) -> Self::Coord {
+        self.1.z()
+    }
     #[inline(always)]
-    fn w(&self) -> Self::Coord { self.1.w() }
+    fn w(&self) -> Self::Coord {
+        self.1.w()
+    }
 }
 
 #[cfg(test)]
@@ -600,11 +632,11 @@ mod context_domain_tests {
     use super::*;
     use crate::Field;
     use crate::X;
-    use crate::jet::Jet3;
-    use crate::ops::derivative::DZ;
-    use crate::ops::binary::MulAdd;
-    use crate::ops::logic::And;
     use crate::ext::ManifoldExt;
+    use crate::jet::Jet3;
+    use crate::ops::binary::MulAdd;
+    use crate::ops::derivative::DZ;
+    use crate::ops::logic::And;
 
     type CtxDomain = (([Jet3; 3],), (Jet3, Jet3, Jet3, Jet3));
 
@@ -639,7 +671,11 @@ mod context_domain_tests {
     #[test]
     fn test_muladd_dz_in_context_domain() {
         // mul_add(DZ(X), DZ(X), Mul(DX(X), DX(X))) should work - all Field outputs
-        let expr = MulAdd(DZ(X), DZ(X), crate::Mul(crate::ops::derivative::DX(X), crate::ops::derivative::DX(X)));
+        let expr = MulAdd(
+            DZ(X),
+            DZ(X),
+            crate::Mul(crate::ops::derivative::DX(X), crate::ops::derivative::DX(X)),
+        );
         check_manifold::<CtxDomain, _>(&expr);
     }
 
@@ -688,7 +724,9 @@ mod context_domain_tests {
         struct DummyGeometry;
         impl Manifold<(Jet3, Jet3, Jet3, Jet3)> for DummyGeometry {
             type Output = Jet3;
-            fn eval(&self, (x, _y, _z, _w): (Jet3, Jet3, Jet3, Jet3)) -> Jet3 { x }
+            fn eval(&self, (x, _y, _z, _w): (Jet3, Jet3, Jet3, Jet3)) -> Jet3 {
+                x
+            }
         }
 
         let g = DummyGeometry;
@@ -705,7 +743,11 @@ mod context_domain_tests {
         let true_branch = CtxVar::<A0, 2>::new();
         let false_branch = CtxVar::<A0, 2>::new();
 
-        let select = Select { cond, if_true: true_branch, if_false: false_branch };
+        let select = Select {
+            cond,
+            if_true: true_branch,
+            if_false: false_branch,
+        };
         check_manifold::<CtxDomain, _>(&select);
     }
 
@@ -716,10 +758,14 @@ mod context_domain_tests {
         use crate::ops::derivative::V;
 
         let cond = CtxVar::<A0, 0>::new().gt(CtxVar::<A0, 1>::new());
-        let true_branch = V(X);  // Field output
-        let false_branch = V(X);  // Field output
+        let true_branch = V(X); // Field output
+        let false_branch = V(X); // Field output
 
-        let select = Select { cond, if_true: true_branch, if_false: false_branch };
+        let select = Select {
+            cond,
+            if_true: true_branch,
+            if_false: false_branch,
+        };
         check_manifold::<CtxDomain, _>(&select);
     }
 
@@ -727,10 +773,10 @@ mod context_domain_tests {
     fn test_checker_like_pattern() {
         // Replicate the Checker kernel pattern with 12 context elements
         // Uses Field coordinates since V() extracts the value component (Field)
+        use crate::Z;
         use crate::combinators::Select;
         use crate::ops::derivative::V;
-        use crate::ops::unary::{Floor, Abs};
-        use crate::Z;
+        use crate::ops::unary::{Abs, Floor};
 
         type CheckerCtx = (([Field; 12],), (Field, Field, Field, Field));
 
@@ -783,7 +829,11 @@ mod context_domain_tests {
         let a = V(X);
         let b = V(X);
 
-        let select = Select { cond, if_true: a, if_false: b };
+        let select = Select {
+            cond,
+            if_true: a,
+            if_false: b,
+        };
 
         // coverage (Field)
         let coverage = V(X);

@@ -125,7 +125,11 @@ mod tests {
         recip.store(&mut out);
         // recip is approximate, tolerance 1e-3
         for x in out.iter() {
-            assert!((x - 0.25).abs() < 1e-3, "recip(4.0) should be 0.25, got {}", x);
+            assert!(
+                (x - 0.25).abs() < 1e-3,
+                "recip(4.0) should be 0.25, got {}",
+                x
+            );
         }
 
         // Reciprocal Square Root
@@ -133,7 +137,11 @@ mod tests {
         rsqrt.store(&mut out);
         // rsqrt is approximate, tolerance 1e-3
         for x in out.iter() {
-            assert!((x - 0.5).abs() < 1e-3, "rsqrt(4.0) should be 0.5, got {}", x);
+            assert!(
+                (x - 0.5).abs() < 1e-3,
+                "rsqrt(4.0) should be 0.5, got {}",
+                x
+            );
         }
     }
 }

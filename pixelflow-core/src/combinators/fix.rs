@@ -5,8 +5,8 @@
 //! - [`Fix`]: Dynamic iteration until convergence (runtime `loop`).
 //! - [`RecFix`]: Static recursion with compile-time unrolling (Peano numbers).
 
-use crate::{Field, Manifold};
 use crate::combinators::binding::{Pred, UTerm}; // Use existing Peano infrastructure
+use crate::{Field, Manifold};
 use core::marker::PhantomData;
 
 type Field4 = (Field, Field, Field, Field);
@@ -77,13 +77,21 @@ impl<Target, P: crate::domain::Spatial> crate::domain::Spatial for RecDomain<Tar
     type Coord = P::Coord;
     type Scalar = P::Scalar;
     #[inline(always)]
-    fn x(&self) -> Self::Coord { self.coords.x() }
+    fn x(&self) -> Self::Coord {
+        self.coords.x()
+    }
     #[inline(always)]
-    fn y(&self) -> Self::Coord { self.coords.y() }
+    fn y(&self) -> Self::Coord {
+        self.coords.y()
+    }
     #[inline(always)]
-    fn z(&self) -> Self::Coord { self.coords.z() }
+    fn z(&self) -> Self::Coord {
+        self.coords.z()
+    }
     #[inline(always)]
-    fn w(&self) -> Self::Coord { self.coords.w() }
+    fn w(&self) -> Self::Coord {
+        self.coords.w()
+    }
 }
 
 /// # Example: Sierpinski
@@ -98,12 +106,16 @@ pub struct RecFix<N, Step, Base> {
 
 impl<N, S, B> Default for RecFix<N, S, B> {
     fn default() -> Self {
-        Self { _phantom: PhantomData }
+        Self {
+            _phantom: PhantomData,
+        }
     }
 }
 
 impl<N, S, B> Clone for RecFix<N, S, B> {
-    fn clone(&self) -> Self { *self }
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 impl<N, S, B> Copy for RecFix<N, S, B> {}

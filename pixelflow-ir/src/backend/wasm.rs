@@ -286,7 +286,7 @@ impl SimdOps for F32x4 {
         n = f32x4_add(n, adjust);
         f = v128_or(
             v128_and(mask, f32x4_mul(f, f32x4_splat(0.5))),
-            v128_andnot(mask, f)
+            v128_andnot(mask, f),
         );
 
         // Polynomial for log2(f) on [√2/2, √2]

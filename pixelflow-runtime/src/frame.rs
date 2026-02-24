@@ -63,7 +63,7 @@ pub struct EngineHandle<T: Send> {
 
 impl<T: Send> EngineHandle<T> {
     /// Creates a new engine handle with the given submit channel.
-    #[must_use] 
+    #[must_use]
     pub fn new(submit_tx: SyncSender<FramePacket<T>>) -> Self {
         Self { submit_tx }
     }
@@ -101,7 +101,7 @@ impl<T: Send> Clone for EngineHandle<T> {
 /// - `receiver` is used by the engine to receive frames
 ///
 /// The channel has a buffer of 1 slot for ping-pong operation.
-#[must_use] 
+#[must_use]
 pub fn create_frame_channel<T: Send>() -> (EngineHandle<T>, Receiver<FramePacket<T>>) {
     let (tx, rx) = sync_channel(1);
     (EngineHandle::new(tx), rx)
@@ -112,7 +112,7 @@ pub fn create_frame_channel<T: Send>() -> (EngineHandle<T>, Receiver<FramePacket
 /// Returns (sender, receiver) where:
 /// - `sender` is Arc-wrapped and cloned into each FramePacket
 /// - `receiver` is held by the logic thread to get packets back
-#[must_use] 
+#[must_use]
 pub fn create_recycle_channel<T: Send>(
 ) -> (Arc<SyncSender<FramePacket<T>>>, Receiver<FramePacket<T>>) {
     let (tx, rx) = sync_channel(2); // 2 slots for double-buffering

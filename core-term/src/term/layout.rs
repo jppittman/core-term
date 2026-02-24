@@ -42,7 +42,7 @@ impl Layout {
     /// Creates a new Layout with the specified grid dimensions.
     ///
     /// Cell dimensions are read from CONFIG.appearance.
-    #[must_use] 
+    #[must_use]
     pub fn new(cols: usize, rows: usize) -> Self {
         Self {
             cols,
@@ -67,7 +67,7 @@ impl Layout {
     /// # Returns
     /// * `Some((col, row))` if the coordinates are within the grid
     /// * `None` if the coordinates are in padding or outside the grid
-    #[must_use] 
+    #[must_use]
     pub fn pixels_to_cells(&self, x_px: u16, y_px: u16) -> Option<(usize, usize)> {
         // Apply padding (if any)
         if x_px < self.padding_x || y_px < self.padding_y {
@@ -103,7 +103,7 @@ impl Layout {
     ///
     /// # Returns
     /// `(width_px, height_px)` tuple
-    #[must_use] 
+    #[must_use]
     pub fn pixel_dimensions(&self) -> (u32, u32) {
         let w = (self.cols * self.cell_width_px) + (self.padding_x as usize * 2);
         let h = (self.rows * self.cell_height_px) + (self.padding_y as usize * 2);
@@ -116,7 +116,7 @@ impl Layout {
     ///
     /// # Returns
     /// `(x_px, y_px)` tuple representing the top-left corner of the cell
-    #[must_use] 
+    #[must_use]
     pub fn cells_to_pixels(&self, col: usize, row: usize) -> (u16, u16) {
         let x = self.padding_x + (col * self.cell_width_px) as u16;
         let y = self.padding_y + (row * self.cell_height_px) as u16;

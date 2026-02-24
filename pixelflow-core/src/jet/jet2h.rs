@@ -134,28 +134,28 @@ impl Jet2H {
 
     /// Less than comparison (returns mask jet).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn lt(self, rhs: Self) -> Self {
         Self::constant(self.val.lt(rhs.val))
     }
 
     /// Less than or equal (returns mask jet).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn le(self, rhs: Self) -> Self {
         Self::constant(self.val.le(rhs.val))
     }
 
     /// Greater than comparison (returns mask jet).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn gt(self, rhs: Self) -> Self {
         Self::constant(self.val.gt(rhs.val))
     }
 
     /// Greater than or equal (returns mask jet).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn ge(self, rhs: Self) -> Self {
         Self::constant(self.val.ge(rhs.val))
     }
@@ -164,14 +164,14 @@ impl Jet2H {
     ///
     /// Returns `Jet2HSqrt` which enables automatic rsqrt fusion when divided.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn sqrt(self) -> Jet2HSqrt {
         Jet2HSqrt(self)
     }
 
     /// Absolute value with derivatives.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn abs(self) -> Self {
         // |f|' = f' * sign(f)
         // |f|'' = f'' * sign(f) + (f'/|f|) * (f' * sign(f) - f')'
@@ -189,7 +189,7 @@ impl Jet2H {
 
     /// Element-wise minimum with derivatives.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn min(self, rhs: Self) -> Self {
         let mask = self.val.lt(rhs.val);
         Self {
@@ -204,7 +204,7 @@ impl Jet2H {
 
     /// Element-wise maximum with derivatives.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn max(self, rhs: Self) -> Self {
         let mask = self.val.gt(rhs.val);
         Self {
@@ -219,14 +219,14 @@ impl Jet2H {
 
     /// Check if any lane of the value is non-zero.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn any(&self) -> bool {
         self.val.any()
     }
 
     /// Check if all lanes of the value are non-zero.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn all(&self) -> bool {
         self.val.all()
     }
@@ -234,7 +234,7 @@ impl Jet2H {
     /// Conditional select with early-exit optimization.
     /// Returns if_true where mask is set, if_false elsewhere.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
         if mask.all() {
             return if_true;
@@ -261,7 +261,7 @@ pub struct Jet2HSqrt(Jet2H);
 impl Jet2HSqrt {
     /// Evaluate to get the actual sqrt result as Jet2H.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn eval(self) -> Jet2H {
         let rsqrt_val = self.0.val.rsqrt();
         let sqrt_val = self.0.val * rsqrt_val;
@@ -471,10 +471,8 @@ impl core::ops::Div for Jet2H {
         let two = Field::from(2.0);
 
         // First derivatives
-        let dx = self.dx * inv_g
-            + self.val * rhs.dx * inv_g_sq.clone() * Field::from(-1.0);
-        let dy = self.dy * inv_g
-            + self.val * rhs.dy * inv_g_sq.clone() * Field::from(-1.0);
+        let dx = self.dx * inv_g + self.val * rhs.dx * inv_g_sq.clone() * Field::from(-1.0);
+        let dy = self.dy * inv_g + self.val * rhs.dy * inv_g_sq.clone() * Field::from(-1.0);
 
         // Second derivatives
         let dxx = self.dxx * inv_g
@@ -796,21 +794,11 @@ impl Numeric for Jet2H {
                 + val * exp.dxx * ln_base
                 - self.dx * self.dx * val * inv_self.clone() * inv_self.clone(),
             self.dxy * val * coeff.clone()
-                + self.dx
-                    * val
-                    * inv_self.clone()
-                    * (exp.dy * ln_base + coeff.clone() * self.dy)
-                + self.dy
-                    * val
-                    * inv_self.clone()
-                    * (exp.dx * ln_base + coeff.clone() * self.dx)
+                + self.dx * val * inv_self.clone() * (exp.dy * ln_base + coeff.clone() * self.dy)
+                + self.dy * val * inv_self.clone() * (exp.dx * ln_base + coeff.clone() * self.dx)
                 + val * exp.dxy * ln_base,
             self.dyy * val * coeff.clone()
-                + two
-                    * self.dy
-                    * val
-                    * inv_self.clone()
-                    * (exp.dy * ln_base + coeff * self.dy)
+                + two * self.dy * val * inv_self.clone() * (exp.dy * ln_base + coeff * self.dy)
                 + val * exp.dyy * ln_base
                 - self.dy * self.dy * val * inv_self.clone() * inv_self,
         )
@@ -839,12 +827,8 @@ impl Numeric for Jet2H {
             self.val.log2(),
             self.dx * deriv_coeff.clone(),
             self.dy * deriv_coeff,
-            log2_e
-                * (self.dxx * inv_val.clone()
-                    - self.dx * self.dx * inv_val_sq.clone()),
-            log2_e
-                * (self.dxy * inv_val.clone()
-                    - self.dx * self.dy * inv_val_sq.clone()),
+            log2_e * (self.dxx * inv_val.clone() - self.dx * self.dx * inv_val_sq.clone()),
+            log2_e * (self.dxy * inv_val.clone() - self.dx * self.dy * inv_val_sq.clone()),
             log2_e * (self.dyy * inv_val - self.dy * self.dy * inv_val_sq),
         )
     }

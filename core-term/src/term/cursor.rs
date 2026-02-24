@@ -34,7 +34,7 @@ impl CursorShape {
     }
     /// Creates a `CursorShape` from a u16 code as used in DECSCUSR.
     /// Handles unknown codes by defaulting and logging a warning.
-    #[must_use] 
+    #[must_use]
     pub fn from_decscusr_code(code: u16) -> Self {
         match code {
             0 => CursorShape::default(),
@@ -168,7 +168,7 @@ impl CursorController {
     ///
     /// # Arguments
     /// * `initial_attributes` - The initial SGR attributes for the cursor.
-    #[must_use] 
+    #[must_use]
     pub fn new(initial_attributes: Attributes) -> Self {
         trace!(
             "Creating new CursorController with initial attributes: {:?}",
@@ -192,7 +192,7 @@ impl CursorController {
     /// Otherwise, `row` is relative to the physical top of the screen.
     /// `column` can be equal to `context.width` if the cursor is positioned
     /// after the last character of a line (indicating a wrap on next print).
-    #[must_use] 
+    #[must_use]
     pub fn logical_pos(&self) -> (usize, usize) {
         (self.cursor.logical_x, self.cursor.logical_y)
     }
@@ -205,7 +205,7 @@ impl CursorController {
     ///
     /// # Arguments
     /// * `context`: A reference to the current `ScreenContext`.
-    #[must_use] 
+    #[must_use]
     pub fn physical_screen_pos(&self, context: &ScreenContext) -> (usize, usize) {
         let physical_y = if context.origin_mode_active {
             let max_relative_y = context.scroll_bot.saturating_sub(context.scroll_top);
@@ -233,7 +233,7 @@ impl CursorController {
     }
 
     /// Gets a copy of the current SGR attributes of the cursor.
-    #[must_use] 
+    #[must_use]
     pub fn attributes(&self) -> Attributes {
         self.cursor.attributes
     }
@@ -248,7 +248,7 @@ impl CursorController {
     }
 
     /// Returns `true` if the cursor is currently set to be visible.
-    #[must_use] 
+    #[must_use]
     pub fn is_visible(&self) -> bool {
         self.cursor.visible
     }

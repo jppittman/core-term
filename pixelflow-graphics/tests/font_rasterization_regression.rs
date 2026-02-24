@@ -33,11 +33,14 @@ fn regression_mask_and_not_multiply() {
     // Horizontal lines (dy≈0) return None from make_line — they never cross
     // horizontal scanlines so they correctly contribute zero winding.
     let lines: Vec<Line<LineKernel>> = [
-        [[100.0, 100.0], [500.0, 100.0]],  // bottom (horizontal, skipped)
-        [[500.0, 100.0], [500.0, 500.0]],  // right
-        [[500.0, 500.0], [100.0, 500.0]],  // top (horizontal, skipped)
-        [[100.0, 500.0], [100.0, 100.0]],  // left
-    ].into_iter().filter_map(|pts| make_line(pts)).collect();
+        [[100.0, 100.0], [500.0, 100.0]], // bottom (horizontal, skipped)
+        [[500.0, 100.0], [500.0, 500.0]], // right
+        [[500.0, 500.0], [100.0, 500.0]], // top (horizontal, skipped)
+        [[100.0, 500.0], [100.0, 100.0]], // left
+    ]
+    .into_iter()
+    .filter_map(|pts| make_line(pts))
+    .collect();
     let geo: Geometry<Line<LineKernel>, Quad<QuadKernel>> = Geometry {
         lines: Arc::from(lines),
         quads: Arc::from(vec![]),

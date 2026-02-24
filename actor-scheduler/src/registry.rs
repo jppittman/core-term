@@ -128,8 +128,7 @@ impl<D, C, M> PodSlot<D, C, M> {
                     if remaining.is_zero() {
                         return Err(PodGone::Timeout);
                     }
-                    let (guard, timed_out) =
-                        self.ready.wait_timeout(state, remaining).unwrap();
+                    let (guard, timed_out) = self.ready.wait_timeout(state, remaining).unwrap();
                     state = guard;
                     if timed_out.timed_out() {
                         return Err(PodGone::Timeout);
@@ -194,7 +193,10 @@ mod tests {
         let (new_handle, _) = make_handle_and_scheduler();
         slot.publish(new_handle);
 
-        assert!(waiter.join().unwrap(), "reconnect should succeed after publish");
+        assert!(
+            waiter.join().unwrap(),
+            "reconnect should succeed after publish"
+        );
         assert!(received.load(Ordering::SeqCst));
     }
 
@@ -228,7 +230,10 @@ mod tests {
 
         let start = std::time::Instant::now();
         let result = slot.reconnect(Duration::from_secs(5));
-        assert!(start.elapsed() < Duration::from_millis(10), "should be immediate");
+        assert!(
+            start.elapsed() < Duration::from_millis(10),
+            "should be immediate"
+        );
         assert_eq!(result.unwrap_err(), PodGone::Stopped);
     }
 }
