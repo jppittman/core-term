@@ -7,6 +7,8 @@
 //!
 //! Run with: `cargo bench -p actor-scheduler --bench bench_optimize_spsc`
 
+#![allow(clippy::type_complexity, clippy::if_same_then_else, clippy::let_underscore_must_use, clippy::needless_range_loop)]
+
 use actor_scheduler::sharded::{DrainStatus, InboxBuilder, ShardedInbox};
 use actor_scheduler::spsc::{SpscSender, TrySendError};
 use actor_scheduler::{

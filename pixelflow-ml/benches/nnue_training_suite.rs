@@ -8,9 +8,9 @@
 //! The results can be processed to create NNUE training data.
 
 use criterion::{Criterion, BenchmarkId, black_box, criterion_group, criterion_main};
-use pixelflow_core::{Field, Manifold, ManifoldExt, ManifoldCompat, X, Y, Z, W};
-use pixelflow_ml::nnue::{Expr, OpType, HalfEPFeature, extract_features};
-use pixelflow_ml::evaluator::{extract_expr_features, default_expr_weights, LinearFeatures};
+use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y, Z, W};
+use pixelflow_ml::nnue::{Expr, OpType, extract_features};
+use pixelflow_ml::evaluator::{extract_expr_features, default_expr_weights};
 
 // ============================================================================
 // Macro for generating matched Expr+Manifold kernel pairs
@@ -54,9 +54,6 @@ fn neg(a: Expr) -> Expr { Expr::Unary(OpType::Neg, Box::new(a)) }
 fn abs(a: Expr) -> Expr { Expr::Unary(OpType::Abs, Box::new(a)) }
 fn min(a: Expr, b: Expr) -> Expr { Expr::Binary(OpType::Min, Box::new(a), Box::new(b)) }
 fn max(a: Expr, b: Expr) -> Expr { Expr::Binary(OpType::Max, Box::new(a), Box::new(b)) }
-fn muladd(a: Expr, b: Expr, c: Expr) -> Expr {
-    Expr::Ternary(OpType::MulAdd, Box::new(a), Box::new(b), Box::new(c))
-}
 
 // Shorthand for x, y, z, w
 fn x() -> Expr { var(0) }

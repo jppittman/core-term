@@ -4,6 +4,8 @@
 //!
 //! DO NOT EDIT MANUALLY - regenerate with the command above.
 
+#![allow(clippy::excessive_precision, clippy::approx_constant, clippy::identity_op)]
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use pixelflow_core::{Field, Manifold};
 use pixelflow_macros::kernel_raw;

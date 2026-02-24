@@ -15,6 +15,8 @@
 //! This version uses a single unified kernel for all three color channels,
 //! enabling CSE (common subexpression elimination) across the entire expression.
 
+#![allow(clippy::excessive_precision)]
+
 use actor_scheduler::Message;
 use pixelflow_core::{Discrete, Field, Manifold};
 use pixelflow_macros::kernel;

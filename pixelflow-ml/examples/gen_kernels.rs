@@ -30,7 +30,7 @@ use pixelflow_ml::nnue::{
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, PartialEq)]
 enum GenerationMode {
@@ -111,7 +111,7 @@ fn main() {
 }
 
 /// Forward generation: random expression trees (original approach).
-fn generate_forward(count: usize, seed: u64, bench_path: &PathBuf, data_dir: &PathBuf) {
+fn generate_forward(count: usize, seed: u64, bench_path: &Path, data_dir: &Path) {
     let data_path = data_dir.join("generated_exprs.txt");
 
     // Configure generator for diverse expressions
@@ -170,7 +170,7 @@ fn generate_forward(count: usize, seed: u64, bench_path: &PathBuf, data_dir: &Pa
 }
 
 /// Backward generation: optimized → unoptimized pairs (Lample & Charton 2019).
-fn generate_backward(count: usize, seed: u64, bench_path: &PathBuf, data_dir: &PathBuf) {
+fn generate_backward(count: usize, seed: u64, bench_path: &Path, data_dir: &Path) {
     let pairs_path = data_dir.join("bwd_training_pairs.txt");
 
     // Configure backward generator with high fused op probability
@@ -306,10 +306,8 @@ fn find_workspace_root() -> PathBuf {
     loop {
         let cargo_toml = current.join("Cargo.toml");
         if cargo_toml.exists() {
-            if let Ok(contents) = fs::read_to_string(&cargo_toml) {
-                if contents.contains("[workspace]") {
-                    return current;
-                }
+            if fs::read_to_string(&cargo_toml).map(|c| c.contains("[workspace]")).unwrap_or(false) {
+                return current;
             }
         }
         if !current.pop() {

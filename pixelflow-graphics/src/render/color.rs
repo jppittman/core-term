@@ -85,7 +85,7 @@ impl pixelflow_core::Manifold<Field4> for NamedColor {
     #[inline(always)]
     fn eval(&self, _p: Field4) -> pixelflow_core::Discrete {
         // Optimization: Use precomputed packed value directly
-        pixelflow_core::Discrete::splat(PALETTE[*self as usize])
+        pixelflow_core::Discrete::from(PALETTE[*self as usize])
     }
 }
 
@@ -140,7 +140,7 @@ impl pixelflow_core::Manifold<Field4> for Color {
     #[inline(always)]
     fn eval(&self, _p: Field4) -> pixelflow_core::Discrete {
         // Optimization: Use precomputed packed value directly
-        pixelflow_core::Discrete::splat(u32::from(*self))
+        pixelflow_core::Discrete::from(u32::from(*self))
     }
 }
 

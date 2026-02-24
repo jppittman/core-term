@@ -278,6 +278,7 @@ mod tests {
         // First drain gets the message; the shard reports Disconnected but
         // we still got data, so it's not all-disconnected yet
         // Second drain should show disconnected
+        let _status = inbox.drain(100, |_: u32| Ok(())).unwrap(); // First drain
         let status2 = inbox.drain(100, |_: u32| Ok(())).unwrap();
         assert_eq!(status2, DrainStatus::Disconnected);
     }

@@ -1814,6 +1814,7 @@ impl U32x16 {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_feature = "avx512f")]
     use super::*;
 
     #[test]

@@ -586,6 +586,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn test_eigen_trivial_case() {
         // If all control points are at the SAME location,
         // the surface should evaluate to that location everywhere.

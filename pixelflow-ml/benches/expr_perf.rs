@@ -214,7 +214,7 @@ fn bench_hce_ranking_validation(c: &mut Criterion) {
     println!("\n=== HCE Ranking Validation ===");
     println!("Benchmarking {} expressions sorted by HCE cost...", expressions.len());
 
-    for (rank, (idx, hce_cost, expr)) in with_hce.iter().enumerate().take(10) {
+    for (rank, (_idx, hce_cost, expr)) in with_hce.iter().enumerate().take(10) {
         let features = extract_expr_features(expr);
         group.bench_with_input(
             BenchmarkId::new(format!("rank{:02}_hce{}", rank, hce_cost), expr.node_count()),

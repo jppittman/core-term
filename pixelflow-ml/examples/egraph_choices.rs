@@ -3,6 +3,8 @@
 //! These are the kinds of choices an e-graph optimizer actually makes.
 //! Run with: cargo run -p pixelflow-ml --example egraph_choices --release
 
+#![allow(clippy::approx_constant)]
+
 use std::time::Instant;
 
 // ============================================================================

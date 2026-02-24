@@ -268,11 +268,11 @@ struct LatencyActor {
 impl Actor<(), (), ()> for LatencyActor {
     fn handle_data(&mut self, _: ()) -> HandlerResult { Ok(()) }
     fn handle_control(&mut self, _: ()) -> HandlerResult {
-        let _ = self.response_tx.send(());
+        let _res = self.response_tx.send(());
         Ok(())
     }
     fn handle_management(&mut self, _: ()) -> HandlerResult {
-        let _ = self.response_tx.send(());
+        let _res = self.response_tx.send(());
         Ok(())
     }
     fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
@@ -406,10 +406,10 @@ fn measure_fairness_under_flood(params: &SchedulerParams) -> f64 {
     let h = thread::spawn(move || rx.run(&mut actor));
 
     let sf = stop.clone();
-    let flooder = thread::spawn(move || { while !sf.load(Ordering::Relaxed) { let _ = tx_f.send(Message::Control(())); } });
+    let flooder = thread::spawn(move || { while !sf.load(Ordering::Relaxed) { let _res = tx_f.send(Message::Control(())); } });
 
     thread::sleep(Duration::from_millis(2));
-    for i in 0..data_target { let _ = tx.send(Message::Data(i)); }
+    for i in 0..data_target { let _res = tx.send(Message::Data(i)); }
     thread::sleep(Duration::from_millis(15));
 
     stop.store(true, Ordering::Relaxed);
@@ -444,7 +444,7 @@ fn measure_latency_under_load(params: &SchedulerParams) -> f64 {
             Ok(())
         }
         fn handle_control(&mut self, _: ()) -> HandlerResult {
-            let _ = self.response_tx.send(());
+            let _res = self.response_tx.send(());
             Ok(())
         }
         fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
@@ -466,7 +466,7 @@ fn measure_latency_under_load(params: &SchedulerParams) -> f64 {
     let data_sender = thread::spawn(move || {
         let mut i = 0i32;
         while !sf.load(Ordering::Relaxed) {
-            let _ = tx_data.send(Message::Data(i));
+            let _res = tx_data.send(Message::Data(i));
             i = i.wrapping_add(1);
         }
     });
@@ -516,7 +516,7 @@ fn measure_burst_recovery(params: &SchedulerParams) -> f64 {
     impl Actor<i32, (), ()> for RecoveryActor {
         fn handle_data(&mut self, _: i32) -> HandlerResult { Ok(()) }
         fn handle_control(&mut self, _: ()) -> HandlerResult {
-            let _ = self.response_tx.send(());
+            let _res = self.response_tx.send(());
             Ok(())
         }
         fn handle_management(&mut self, _: ()) -> HandlerResult { Ok(()) }
@@ -653,15 +653,16 @@ impl GaussianProcess {
         if n == 0 { return (0.0, self.signal_var); }
 
         let mut ks = vec![0.0; n];
-        for i in 0..n { ks[i] = self.kernel(x, &self.xs[i]); }
+        for (i, ks_val) in ks.iter_mut().enumerate().take(n) { *ks_val = self.kernel(x, &self.xs[i]); }
 
         let mean: f64 = ks.iter().zip(self.alpha.iter()).map(|(a, b)| a * b).sum();
 
         let mut v = vec![0.0; n];
         for i in 0..n {
+            let (prev, curr) = v.split_at_mut(i);
             let mut s = 0.0;
-            for j in 0..i { s += self.chol[i * n + j] * v[j]; }
-            v[i] = (ks[i] - s) / self.chol[i * n + i];
+            for (j, v_j) in prev.iter().enumerate() { s += self.chol[i * n + j] * v_j; }
+            curr[0] = (ks[i] - s) / self.chol[i * n + i];
         }
         let vsq: f64 = v.iter().map(|vi| vi * vi).sum();
         (mean, (self.signal_var - vsq).max(1e-10))
