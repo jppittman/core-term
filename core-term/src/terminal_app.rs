@@ -477,15 +477,15 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 });
 
                 // Process the resize and handle the resulting action
-                if let Some(action) = self.emulator.interpret_input(input) {
-                    if let EmulatorAction::ResizePty { cols, rows } = action {
-                        // Send resize command to PTY write thread
-                        if let Err(e) = self.pty_tx.send(PtyCommand::Resize(crate::io::Resize {
-                            cols,
-                            rows,
-                        })) {
-                            log::warn!("Failed to send PTY resize command: {}", e);
-                        }
+                if let Some(EmulatorAction::ResizePty { cols, rows }) =
+                    self.emulator.interpret_input(input)
+                {
+                    // Send resize command to PTY write thread
+                    if let Err(e) = self.pty_tx.send(PtyCommand::Resize(crate::io::Resize {
+                        cols,
+                        rows,
+                    })) {
+                        log::warn!("Failed to send PTY resize command: {}", e);
                     }
                 }
 
@@ -633,19 +633,20 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
     }
 }
 
+/// Type alias for the terminal app handles returned by spawn.
+pub type TerminalAppHandles = (
+    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+    std::thread::JoinHandle<()>,
+);
+
 /// Creates terminal app and spawns it in a thread.
 ///
 /// This function handles registration atomically:
 /// 1. Creates the app actor's channel
 /// 2. Registers the app with the engine (sends RegisterApp + CreateWindow)
 /// 3. Spawns the app thread with the registered engine handle
-pub fn spawn_terminal_app(
-    params: TerminalAppParams,
-) -> std::io::Result<(
-    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
-    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
-    std::thread::JoinHandle<()>,
-)> {
+pub fn spawn_terminal_app(params: TerminalAppParams) -> std::io::Result<TerminalAppHandles> {
     // Create app actor's channels using ActorBuilder (SPSC - each producer is unique)
     // ActorHandle is not Clone; each consumer needs its own dedicated handle.
     let mut builder =
