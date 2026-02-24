@@ -18,8 +18,11 @@ type Field4 = (Field, Field, Field, Field);
 /// Iterate until convergence.
 #[derive(Clone, Debug)]
 pub struct Fix<Seed, Step, Done> {
+    /// Initial state manifold.
     pub seed: Seed,
+    /// State update manifold applied each iteration.
     pub step: Step,
+    /// Termination predicate manifold (non-zero = done).
     pub done: Done,
 }
 
@@ -66,6 +69,7 @@ impl crate::ManifoldExpr for Recurse {}
 #[derive(Clone, Copy, Debug)]
 pub struct RecDomain<Target, P> {
     _target: PhantomData<Target>,
+    /// The original coordinates before domain extension.
     pub coords: P,
 }
 
@@ -99,9 +103,7 @@ impl<N, S, B> Default for RecFix<N, S, B> {
 }
 
 impl<N, S, B> Clone for RecFix<N, S, B> {
-    fn clone(&self) -> Self {
-        Self { _phantom: PhantomData }
-    }
+    fn clone(&self) -> Self { *self }
 }
 
 impl<N, S, B> Copy for RecFix<N, S, B> {}

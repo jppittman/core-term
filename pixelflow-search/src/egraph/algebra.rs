@@ -27,7 +27,7 @@ use super::rewrite::{Rewrite, RewriteAction};
 /// - Involution: inv(inv(x)) → x
 /// - Cancellation: (x ⊕ a) ⊖ a → x
 /// - InverseAnnihilation: x ⊕ inv(x) → identity
-pub trait InversePair {
+pub trait InversePair: Send + Sync {
     /// The base operation (Add, Mul)
     fn base() -> &'static dyn Op;
     /// The inverse operation (Neg, Recip)
@@ -164,8 +164,8 @@ impl<T: InversePair> Rewrite for Cancellation<T> {
         let (numerator, canceller) = node.binary_operands()?;
 
         for inner_node in egraph.nodes(numerator) {
-            if node_matches_op(inner_node, T::base()) {
-                if let Some((a, b)) = inner_node.binary_operands() {
+            if node_matches_op(inner_node, T::base())
+                && let Some((a, b)) = inner_node.binary_operands() {
                     // (a ⊕ b) ⊖ b → a
                     if egraph.find(b) == egraph.find(canceller) {
                         return Some(RewriteAction::Union(a));
@@ -175,7 +175,6 @@ impl<T: InversePair> Rewrite for Cancellation<T> {
                         return Some(RewriteAction::Union(b));
                     }
                 }
-            }
         }
         None
     }
@@ -203,24 +202,20 @@ impl<T: InversePair> Rewrite for InverseAnnihilation<T> {
 
         // x ⊕ inv(x) → identity
         for node_b in egraph.nodes(b) {
-            if node_matches_op(node_b, T::inverse()) {
-                if let Some(&inner) = node_b.children().first() {
-                    if egraph.find(inner) == egraph.find(a) {
+            if node_matches_op(node_b, T::inverse())
+                && let Some(&inner) = node_b.children().first()
+                    && egraph.find(inner) == egraph.find(a) {
                         return Some(RewriteAction::Create(ENode::constant(T::identity())));
                     }
-                }
-            }
         }
 
         // inv(x) ⊕ x → identity
         for node_a in egraph.nodes(a) {
-            if node_matches_op(node_a, T::inverse()) {
-                if let Some(&inner) = node_a.children().first() {
-                    if egraph.find(inner) == egraph.find(b) {
+            if node_matches_op(node_a, T::inverse())
+                && let Some(&inner) = node_a.children().first()
+                    && egraph.find(inner) == egraph.find(b) {
                         return Some(RewriteAction::Create(ENode::constant(T::identity())));
                     }
-                }
-            }
         }
 
         None

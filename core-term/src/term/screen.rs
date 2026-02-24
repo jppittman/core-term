@@ -148,6 +148,7 @@ impl Screen {
         let default_fill_char = Glyph::Single(ContentCell {
             c: ' ',
             attr: default_attributes,
+            combining: None,
         });
 
         let scrollback_limit_from_config = CONFIG.behavior.scrollback_lines;
@@ -232,6 +233,7 @@ impl Screen {
         Glyph::Single(ContentCell {
             c: ' ',
             attr: self.default_attributes,
+            combining: None,
         })
     }
 
@@ -1197,6 +1199,7 @@ mod tests {
                 row[c] = Glyph::Single(ContentCell {
                     c: char_val,
                     attr: Attributes::default(),
+                    combining: None,
                 });
             }
         }
@@ -1446,22 +1449,27 @@ mod tests {
             row0[0] = Glyph::Single(ContentCell {
                 c: 'a',
                 attr: Attributes::default(),
+                combining: None,
             });
             row0[1] = Glyph::Single(ContentCell {
                 c: 'a',
                 attr: Attributes::default(),
+                combining: None,
             });
             row0[2] = Glyph::Single(ContentCell {
                 c: ' ',
                 attr: Attributes::default(),
+                combining: None,
             });
             row0[3] = Glyph::Single(ContentCell {
                 c: ' ',
                 attr: Attributes::default(),
+                combining: None,
             });
             row0[4] = Glyph::Single(ContentCell {
                 c: ' ',
                 attr: Attributes::default(),
+                combining: None,
             });
         }
         {
@@ -1469,22 +1477,27 @@ mod tests {
             row1[0] = Glyph::Single(ContentCell {
                 c: 'b',
                 attr: Attributes::default(),
+                combining: None,
             });
             row1[1] = Glyph::Single(ContentCell {
                 c: 'b',
                 attr: Attributes::default(),
+                combining: None,
             });
             row1[2] = Glyph::Single(ContentCell {
                 c: ' ',
                 attr: Attributes::default(),
+                combining: None,
             });
             row1[3] = Glyph::Single(ContentCell {
                 c: ' ',
                 attr: Attributes::default(),
+                combining: None,
             });
             row1[4] = Glyph::Single(ContentCell {
                 c: ' ',
                 attr: Attributes::default(),
+                combining: None,
             });
         }
 
@@ -1554,14 +1567,17 @@ mod tests {
             row0[0] = Glyph::Single(ContentCell {
                 c: 'a',
                 attr: Attributes::default(),
+                combining: None,
             });
             row0[1] = Glyph::Single(ContentCell {
                 c: ' ',
                 attr: Attributes::default(),
+                combining: None,
             });
             row0[2] = Glyph::Single(ContentCell {
                 c: ' ',
                 attr: Attributes::default(),
+                combining: None,
             });
         }
         {
@@ -1569,14 +1585,17 @@ mod tests {
             row1[0] = Glyph::Single(ContentCell {
                 c: 'b',
                 attr: Attributes::default(),
+                combining: None,
             });
             row1[1] = Glyph::Single(ContentCell {
                 c: ' ',
                 attr: Attributes::default(),
+                combining: None,
             });
             row1[2] = Glyph::Single(ContentCell {
                 c: ' ',
                 attr: Attributes::default(),
+                combining: None,
             });
         }
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Block);
@@ -1619,19 +1638,23 @@ mod tests {
         row[0] = Glyph::Single(ContentCell {
             c: 'a',
             attr: Attributes::default(),
+            combining: None,
         });
         row[1] = Glyph::Single(ContentCell {
             c: 'b',
             attr: Attributes::default(),
+            combining: None,
         });
         row[2] = Glyph::WidePrimary(ContentCell {
             c: '你',
             attr: Attributes::default(),
+            combining: None,
         });
         row[3] = Glyph::WideSpacer;
         row[4] = Glyph::Single(ContentCell {
             c: 'c',
             attr: Attributes::default(),
+            combining: None,
         });
         screen
     }

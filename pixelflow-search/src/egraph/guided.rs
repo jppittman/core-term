@@ -57,6 +57,7 @@ pub struct GuidedAction {
 
 impl GuidedAction {
     /// Create a new guided action.
+    #[must_use] 
     pub fn new(rule_idx: usize, target_class: EClassId, node_idx: usize) -> Self {
         Self {
             rule_idx,
@@ -109,6 +110,7 @@ impl GuidedState {
     ///
     /// The tree is inserted into a fresh e-graph, and no saturation
     /// is performed initially.
+    #[must_use] 
     pub fn from_tree(tree: &ExprTree, costs: CostModel) -> Self {
         let mut egraph = EGraph::new();
         let root = Self::insert_tree(&mut egraph, tree);
@@ -155,36 +157,43 @@ impl GuidedState {
     }
 
     /// Get the current best extraction.
+    #[must_use] 
     pub fn best_tree(&self) -> &ExprTree {
         &self.best_tree
     }
 
     /// Get the current best cost.
+    #[must_use] 
     pub fn best_cost(&self) -> usize {
         self.best_cost
     }
 
     /// Get the root e-class.
+    #[must_use] 
     pub fn root(&self) -> EClassId {
         self.root
     }
 
     /// Get the e-graph (read-only).
+    #[must_use] 
     pub fn egraph(&self) -> &EGraph {
         &self.egraph
     }
 
     /// Get the history of applied actions.
+    #[must_use] 
     pub fn history(&self) -> &[ActionRecord] {
         &self.history
     }
 
     /// Get the number of rules registered in the e-graph.
+    #[must_use] 
     pub fn num_rules(&self) -> usize {
         self.egraph.num_rules()
     }
 
     /// Get the number of e-classes in the e-graph.
+    #[must_use] 
     pub fn num_classes(&self) -> usize {
         self.egraph.num_classes()
     }
@@ -193,6 +202,7 @@ impl GuidedState {
     ///
     /// This returns actions that could potentially match. Not all will
     /// produce a rewrite (the rule may not match the node).
+    #[must_use] 
     pub fn available_actions(&self) -> Vec<GuidedAction> {
         let mut actions = Vec::new();
         let num_rules = self.egraph.num_rules();
@@ -253,6 +263,7 @@ impl GuidedState {
     }
 
     /// Get statistics about the guided search.
+    #[must_use] 
     pub fn stats(&self) -> GuidedStats {
         let improvements = self.history.iter().filter(|r| r.was_improvement).count();
         let total_actions = self.history.len();
@@ -284,6 +295,7 @@ pub struct GuidedStats {
 
 impl GuidedStats {
     /// Compute the improvement ratio (0.0 to 1.0).
+    #[must_use] 
     pub fn improvement_ratio(&self) -> f64 {
         if self.initial_cost == 0 {
             return 0.0;
@@ -292,6 +304,7 @@ impl GuidedStats {
     }
 
     /// Compute the success rate of actions.
+    #[must_use] 
     pub fn success_rate(&self) -> f64 {
         if self.total_actions == 0 {
             return 0.0;
@@ -328,6 +341,7 @@ pub struct ActionStats {
 
 impl ActionStats {
     /// Compute the average reward for this action.
+    #[must_use] 
     pub fn average_reward(&self) -> f64 {
         if self.visits == 0 {
             0.0
@@ -339,6 +353,7 @@ impl ActionStats {
     /// UCB1 score for action selection.
     ///
     /// UCB1(a) = Q(a) + c * sqrt(ln(N) / n(a))
+    #[must_use] 
     pub fn ucb1(&self, parent_visits: usize, exploration_constant: f64) -> f64 {
         if self.visits == 0 {
             // Unvisited actions have infinite UCB1 (explore first)
@@ -384,41 +399,48 @@ impl Default for GuidedConfig {
 
 impl GuidedConfig {
     /// Set maximum iterations.
+    #[must_use] 
     pub fn with_iterations(mut self, n: usize) -> Self {
         self.max_iterations = Some(n);
         self
     }
 
     /// Set timeout.
+    #[must_use] 
     pub fn with_timeout(mut self, d: Duration) -> Self {
         self.timeout = Some(d);
         self
     }
 
     /// Set exploration constant.
+    #[must_use] 
     pub fn with_exploration(mut self, c: f64) -> Self {
         self.exploration_constant = c;
         self
     }
 
     /// Set epsilon for ε-greedy exploration.
+    #[must_use] 
     pub fn with_epsilon(mut self, epsilon: f64) -> Self {
         self.epsilon = epsilon.clamp(0.0, 1.0);
         self
     }
 
     /// Set random seed for reproducible exploration.
+    #[must_use] 
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.random_seed = Some(seed);
         self
     }
 
     /// Configure for training mode (with exploration).
+    #[must_use] 
     pub fn training_mode(self) -> Self {
         self.with_epsilon(0.1)
     }
 
     /// Configure for inference mode (pure exploitation).
+    #[must_use] 
     pub fn inference_mode(self) -> Self {
         self.with_epsilon(0.0)
     }
@@ -444,6 +466,7 @@ pub struct GuidedMcts {
 
 impl GuidedMcts {
     /// Create a new MCTS search from an expression tree.
+    #[must_use] 
     pub fn from_tree(tree: &ExprTree, config: GuidedConfig) -> Self {
         let rng = match config.random_seed {
             Some(seed) => StdRng::seed_from_u64(seed),
@@ -585,17 +608,15 @@ impl GuidedMcts {
 
         loop {
             // Check termination conditions
-            if let Some(timeout) = self.config.timeout {
-                if start.elapsed() >= timeout {
+            if let Some(timeout) = self.config.timeout
+                && start.elapsed() >= timeout {
                     break;
                 }
-            }
 
-            if let Some(max_iter) = self.config.max_iterations {
-                if self.total_iterations >= max_iter {
+            if let Some(max_iter) = self.config.max_iterations
+                && self.total_iterations >= max_iter {
                     break;
                 }
-            }
 
             // Run one iteration
             if self.iterate().is_none() {
@@ -617,26 +638,31 @@ impl GuidedMcts {
     }
 
     /// Get the current best extraction.
+    #[must_use] 
     pub fn best_tree(&self) -> &ExprTree {
         self.state.best_tree()
     }
 
     /// Get the current best cost.
+    #[must_use] 
     pub fn best_cost(&self) -> usize {
         self.state.best_cost()
     }
 
     /// Get the number of iterations performed.
+    #[must_use] 
     pub fn iterations(&self) -> usize {
         self.total_iterations
     }
 
     /// Get the guided state (for inspection/debugging).
+    #[must_use] 
     pub fn state(&self) -> &GuidedState {
         &self.state
     }
 
     /// Get action statistics (for analysis).
+    #[must_use] 
     pub fn action_stats(&self) -> &HashMap<GuidedAction, ActionStats> {
         &self.action_stats
     }
@@ -656,6 +682,7 @@ impl GuidedMcts {
 /// # Returns
 ///
 /// The optimization result including the best tree found within budget.
+#[must_use] 
 pub fn guided_optimize(tree: &ExprTree, config: GuidedConfig) -> GuidedResult {
     let mut mcts = GuidedMcts::from_tree(tree, config);
     mcts.run()
@@ -668,7 +695,7 @@ mod tests {
     #[test]
     fn test_guided_state_creation() {
         // Create a simple tree: X + 0
-        let tree = ExprTree::add(
+        let tree = ExprTree::op_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -683,7 +710,7 @@ mod tests {
 
     #[test]
     fn test_available_actions() {
-        let tree = ExprTree::add(
+        let tree = ExprTree::op_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -699,7 +726,7 @@ mod tests {
     #[test]
     fn test_apply_action_improves() {
         // X + 0 should simplify to X
-        let tree = ExprTree::add(
+        let tree = ExprTree::op_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -728,7 +755,7 @@ mod tests {
 
     #[test]
     fn test_guided_stats() {
-        let tree = ExprTree::mul(
+        let tree = ExprTree::op_mul(
             ExprTree::var(0),
             ExprTree::constant(1.0),
         );
@@ -777,7 +804,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_creation() {
-        let tree = ExprTree::add(
+        let tree = ExprTree::op_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -791,7 +818,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_iterate() {
-        let tree = ExprTree::add(
+        let tree = ExprTree::op_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -819,7 +846,7 @@ mod tests {
     #[test]
     fn test_guided_mcts_run() {
         // x * 1 should simplify to x
-        let tree = ExprTree::mul(
+        let tree = ExprTree::op_mul(
             ExprTree::var(0),
             ExprTree::constant(1.0),
         );
@@ -837,15 +864,15 @@ mod tests {
     #[test]
     fn test_guided_mcts_complex_expr() {
         // (x + 0) * 1 + (y * 0) should simplify to x
-        let tree = ExprTree::add(
-            ExprTree::mul(
-                ExprTree::add(
+        let tree = ExprTree::op_add(
+            ExprTree::op_mul(
+                ExprTree::op_add(
                     ExprTree::var(0),
                     ExprTree::constant(0.0),
                 ),
                 ExprTree::constant(1.0),
             ),
-            ExprTree::mul(
+            ExprTree::op_mul(
                 ExprTree::var(1),
                 ExprTree::constant(0.0),
             ),
@@ -864,7 +891,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_epsilon_greedy() {
-        let tree = ExprTree::add(
+        let tree = ExprTree::op_add(
             ExprTree::var(0),
             ExprTree::var(1),
         );
@@ -887,7 +914,7 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_training_mode() {
-        let tree = ExprTree::add(
+        let tree = ExprTree::op_add(
             ExprTree::var(0),
             ExprTree::constant(0.0),
         );
@@ -908,8 +935,8 @@ mod tests {
 
     #[test]
     fn test_guided_mcts_timeout() {
-        let tree = ExprTree::add(
-            ExprTree::mul(
+        let tree = ExprTree::op_add(
+            ExprTree::op_mul(
                 ExprTree::var(0),
                 ExprTree::var(1),
             ),

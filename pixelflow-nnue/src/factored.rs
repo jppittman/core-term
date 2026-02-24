@@ -169,9 +169,9 @@ impl OpEmbeddings {
         let mut rng_state = seed.wrapping_add(1);
         let small_scale = 0.1; // Small noise for other dimensions
 
-        for op_idx in 0..OpKind::COUNT {
+        for (op_idx, &latency) in latencies.iter().enumerate().take(OpKind::COUNT) {
             // Dimension 0: latency prior
-            self.e[op_idx][0] = latencies[op_idx];
+            self.e[op_idx][0] = latency;
 
             // Dimensions 1..K: small random for learning interactions
             for dim in 1..K {
@@ -295,6 +295,7 @@ impl EdgeAccumulator {
     /// Build accumulator from an expression tree.
     ///
     /// Traverses the tree and accumulates edge contributions.
+    #[must_use] 
     pub fn from_expr(expr: &Expr, emb: &OpEmbeddings) -> Self {
         let mut acc = Self::new();
         acc.add_expr_edges(expr, emb);
@@ -590,11 +591,10 @@ impl StructuralFeatures {
                 };
 
                 // Check for FMA pattern: Mul as left child and current is in Add context
-                if *op == OpKind::Add {
-                    if matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
+                if *op == OpKind::Add
+                    && matches!(left.as_ref(), Expr::Binary(OpKind::Mul, _, _)) {
                         features.values[Self::HAS_FMA_PATTERN] = 1.0;
                     }
-                }
 
 
                 let left_cost = Self::collect_stats(left, features, depth + 1, width_at_depth, leaf_depths);
@@ -1021,7 +1021,7 @@ mod tests {
 
         // Add→Mul (Mul under Add, same ops but different structure)
         let add_mul = make_add_mul_pattern();
-        let acc_add_mul = EdgeAccumulator::from_expr(&add_mul, &emb);
+        let _acc_add_mul = EdgeAccumulator::from_expr(&add_mul, &emb);
 
         // The accumulators should be different because:
         // - FMA has Add→Mul, Add→Var edges

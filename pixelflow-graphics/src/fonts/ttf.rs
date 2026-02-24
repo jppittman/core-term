@@ -8,7 +8,7 @@
 use crate::shapes::{square, Bounded};
 use pixelflow_core::{
     Abs, At, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Select,
-    W, X, Y, Z,
+    W, Z,
 };
 use pixelflow_macros::kernel;
 use std::sync::Arc;
@@ -34,8 +34,8 @@ pub type QuadKernel = AnalyticalQuad;
 // Combinators
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Affine coordinate transform kernel.
-/// Computes: (X - tx) * a + (Y - ty) * b
+// Affine coordinate transform kernel.
+// Computes: (X - tx) * a + (Y - ty) * b
 kernel!(
     pub struct AffineTransform = |tx: f32, a: f32, ty: f32, b: f32|
     (X - tx) * a + (Y - ty) * b
@@ -114,10 +114,6 @@ pub fn threshold<M>(m: M) -> Threshold<M> {
 // Geometry
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Legacy Curve type for benchmarking
-#[derive(Clone, Copy, Debug)]
-pub struct Curve<const N: usize>(pub [[f32; 2]; N]);
-
 /// Quadratic Bézier curve with baked Loop-Blinn kernel.
 /// All control point computations happen at load time.
 /// Derivatives are computed analytically inside the kernel.
@@ -128,6 +124,7 @@ pub struct Quad<K> {
 
 /// Create a quad with analytical Loop-Blinn kernel from control points.
 #[inline(always)]
+#[must_use] 
 pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
     let kernel = AnalyticalQuad::new(points[0], points[1], points[2]);
     Quad { kernel }
@@ -135,6 +132,7 @@ pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
 
 /// Helper to create a quad with analytical Loop-Blinn kernel (for benchmarks).
 #[inline(always)]
+#[must_use] 
 pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
     make_quad(points)
 }
@@ -147,9 +145,11 @@ pub struct Line<K> {
 }
 
 /// Create a line with analytical kernel from control points.
+/// Returns None for horizontal or degenerate lines (they don't contribute to winding).
 #[inline(always)]
+#[must_use] 
 pub fn make_line(points: [[f32; 2]; 2]) -> Option<Line<LineKernel>> {
-    let kernel = AnalyticalLine::new(points[0], points[1])?;
+    let kernel = AnalyticalLine::from_points(points[0], points[1])?;
     Some(Line { kernel })
 }
 
@@ -158,101 +158,6 @@ impl<K> Line<K> {
     #[inline(always)]
     pub fn with_kernel(kernel: K) -> Self {
         Self { kernel }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Optimized Geometry with Precomputed Reciprocals
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Line segment optimized with precomputed division reciprocal.
-#[derive(Clone, Copy, Debug)]
-pub struct OptLine {
-    x0: f32,
-    y0: f32,
-    y_min: f32,
-    y_max: f32,
-    dx_over_dy: f32, // Precomputed dx/dy
-    dir: f32,        // +1 or -1
-}
-
-impl OptLine {
-    /// Create from two points. Returns None for horizontal lines.
-    #[inline(always)]
-    pub fn new([x0, y0]: [f32; 2], [x1, y1]: [f32; 2]) -> Option<Self> {
-        let dy = y1 - y0;
-        if dy.abs() < 1e-6 {
-            return None;
-        }
-        let dx = x1 - x0;
-        Some(Self {
-            x0,
-            y0,
-            y_min: y0.min(y1),
-            y_max: y0.max(y1),
-            dx_over_dy: dx / dy, // Division at construction, not evaluation
-            dir: if dy > 0.0 { 1.0 } else { -1.0 },
-        })
-    }
-}
-
-/// Quadratic curve optimized with precomputed reciprocals.
-#[derive(Clone, Copy, Debug)]
-pub struct OptQuad {
-    // Bezier coefficients
-    ax: f32,
-    bx: f32,
-    cx: f32,
-    ay: f32,
-    by: f32,
-    cy: f32,
-    two_ay: f32,
-    // Precomputed reciprocals (0.0 if degenerate)
-    inv_by: f32,  // 1/by for linear Y case
-    inv_2ay: f32, // 1/(2*ay) for quadratic case
-    // Precomputed quadratic formula values
-    neg_by: f32,
-    by_sq: f32,
-    four_ay: f32,
-    // Flag for which case we're in
-    is_linear: bool,
-    is_degenerate: bool,
-}
-
-impl OptQuad {
-    /// Create from three control points.
-    #[inline(always)]
-    pub fn new([[x0, y0], [x1, y1], [x2, y2]]: [[f32; 2]; 3]) -> Self {
-        let ay = y0 - 2.0 * y1 + y2;
-        let by = 2.0 * (y1 - y0);
-        let cy = y0;
-        let ax = x0 - 2.0 * x1 + x2;
-        let bx = 2.0 * (x1 - x0);
-        let cx = x0;
-
-        let is_linear = ay.abs() < 1e-6;
-        let is_degenerate = is_linear && by.abs() < 1e-6;
-
-        Self {
-            ax,
-            bx,
-            cx,
-            ay,
-            by,
-            cy,
-            two_ay: 2.0 * ay,
-            inv_by: if !is_linear || is_degenerate {
-                0.0
-            } else {
-                1.0 / by
-            },
-            inv_2ay: if is_linear { 0.0 } else { 1.0 / (2.0 * ay) },
-            neg_by: -by,
-            by_sq: by * by,
-            four_ay: 4.0 * ay,
-            is_linear,
-            is_degenerate,
-        }
     }
 }
 
@@ -279,98 +184,6 @@ impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Quad<K> {
     }
 }
 
-
-// Old Quad implementation using quadratic formula (for benchmarking Curve<3>)
-// Uses layered contramap pattern: build AST with ZST variables, inject values via .at()
-impl Manifold<Field4> for Curve<3> {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, p: Field4) -> Field {
-        let (x, y, z, w) = p;
-        let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
-        let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
-        let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
-
-        if ay.abs() < 1e-6 {
-            if by.abs() < 1e-6 {
-                return Field::from(0.0);
-            }
-            // Linear case - Layer 2 (inner): Z = t parameter
-            // Build expression using ZST variables (X, Y, Z are Copy)
-            // Note: Coefficients (ax, bx, etc.) are f32, making expressions non-Copy
-            // Clone where expressions are used multiple times
-            let inner = {
-                // Z represents t, X represents screen_x
-                let in_t = Z.ge(0.0) & Z.lt(1.0);
-                let x_int = Z * Z * ax + Z * bx + cx;
-                let dx_dt = Z * (2.0 * ax) + bx;
-                let dy_dt = Z * (2.0 * ay) + by;
-                // dy_dt used twice: for dir and for gradient - clone for first use
-                let dir = dy_dt.clone().gt(0.0).select(1.0, -1.0);
-                let dist = x_int - X;
-                // dx_dt used twice in gradient, dy_dt used in gradient AND later for abs()
-                let curve_grad_sq = dx_dt.clone() * dx_dt + dy_dt.clone() * dy_dt.clone();
-                let aa_scale = dy_dt.abs() * curve_grad_sq.max(1e-12f32).rsqrt();
-                let coverage = (dist * aa_scale + 0.5).max(0.0f32).min(1.0f32);
-                in_t.select(coverage * dir, 0.0f32)
-            };
-
-            // Layer 1 (outer): inject t = (Y - cy) / by via contramap
-            inner.at(X, Y, (Y - cy) / by, W).at(x, y, z, w).collapse()
-        } else {
-            // Quadratic case - Layer 3 (innermost): Y = t1, Z = t2
-            // Build winding contributions using ZST variables (all Copy)
-            let contrib1 = {
-                // Y represents t1
-                let in_t = Y.ge(0.0) & Y.lt(1.0);
-                let x_int = Y * Y * ax + Y * bx + cx;
-                let dx_dt = Y * (2.0 * ax) + bx;
-                let dy_dt = Y * (2.0 * ay) + by;
-                let dir = dy_dt.clone().gt(0.0).select(1.0, -1.0);
-                let dist = x_int - X;
-                let grad_sq = dx_dt.clone() * dx_dt + dy_dt.clone() * dy_dt.clone();
-                let aa = dy_dt.abs() * grad_sq.max(1e-12f32).rsqrt();
-                let cov = (dist * aa + 0.5).max(0.0f32).min(1.0f32);
-                in_t.select(cov * dir, 0.0f32)
-            };
-            let contrib2 = {
-                // Z represents t2
-                let in_t = Z.ge(0.0) & Z.lt(1.0);
-                let x_int = Z * Z * ax + Z * bx + cx;
-                let dx_dt = Z * (2.0 * ax) + bx;
-                let dy_dt = Z * (2.0 * ay) + by;
-                let dir = dy_dt.clone().gt(0.0).select(1.0, -1.0);
-                let dist = x_int - X;
-                let grad_sq = dx_dt.clone() * dx_dt + dy_dt.clone() * dy_dt.clone();
-                let aa = dy_dt.abs() * grad_sq.max(1e-12f32).rsqrt();
-                let cov = (dist * aa + 0.5).max(0.0f32).min(1.0f32);
-                in_t.select(cov * dir, 0.0f32)
-            };
-
-            // Sum contributions from both roots
-            let contrib = contrib1 + contrib2;
-
-            // Layer 2: W = sqrt(discriminant), inject t1 and t2
-            let inv_2ay = 1.0 / (2.0 * ay);
-            let with_roots = contrib.at(
-                X,
-                W * (-inv_2ay) + (-by * inv_2ay), // t1 = (-by - sqrt_disc) / (2*ay)
-                W * inv_2ay + (-by * inv_2ay),    // t2 = (-by + sqrt_disc) / (2*ay)
-                W,
-            );
-
-            // Layer 1 (outermost): compute discriminant, check validity
-            // disc used twice: for ge() check and for sqrt() in W coordinate
-            let disc = Y * (-4.0 * ay) + (by * by + 4.0 * ay * cy);
-            disc.clone()
-                .ge(0.0)
-                .select(with_roots.at(X, Y, Z, disc.max(0.0).sqrt()), 0.0f32)
-                .at(x, y, z, w)
-                .collapse()
-        }
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Glyph (Compositional Scene Graph)
@@ -554,8 +367,8 @@ enum Loca<'a> {
 impl Loca<'_> {
     fn get(&self, i: usize) -> Option<usize> {
         match self {
-            Self::Short(d) => Some(R(*d, i * 2).u16()? as usize * 2),
-            Self::Long(d) => Some(R(*d, i * 4).u32()? as usize),
+            Self::Short(d) => Some(R(d, i * 2).u16()? as usize * 2),
+            Self::Long(d) => Some(R(d, i * 4).u32()? as usize),
         }
     }
 }
@@ -569,24 +382,24 @@ impl Cmap<'_> {
     fn lookup(&self, c: u32) -> Option<u16> {
         match self {
             Self::Fmt4(d) if c <= 0xFFFF => {
-                let n = R(*d, 6).u16()? as usize / 2;
+                let n = R(d, 6).u16()? as usize / 2;
                 (0..n).find_map(|i| {
-                    let end = R(*d, 14 + i * 2).u16()?;
+                    let end = R(d, 14 + i * 2).u16()?;
                     if c as u16 > end {
                         return None;
                     }
-                    let start = R(*d, 16 + n * 2 + i * 2).u16()?;
+                    let start = R(d, 16 + n * 2 + i * 2).u16()?;
                     if (c as u16) < start {
                         return Some(0);
                     }
-                    let delta = R(*d, 16 + n * 4 + i * 2).i16()?;
-                    let range = R(*d, 16 + n * 6 + i * 2).u16()?;
+                    let delta = R(d, 16 + n * 4 + i * 2).i16()?;
+                    let range = R(d, 16 + n * 6 + i * 2).u16()?;
                     Some(if range == 0 {
                         (c as i16).wrapping_add(delta) as u16
                     } else {
                         let off =
                             16 + n * 6 + i * 2 + range as usize + (c as u16 - start) as usize * 2;
-                        let g = R(*d, off).u16()?;
+                        let g = R(d, off).u16()?;
                         if g == 0 {
                             0
                         } else {
@@ -595,11 +408,11 @@ impl Cmap<'_> {
                     })
                 })
             }
-            Self::Fmt12(d) => (0..R(*d, 12).u32()? as usize).find_map(|i| {
+            Self::Fmt12(d) => (0..R(d, 12).u32()? as usize).find_map(|i| {
                 let (s, e, g) = (
-                    R(*d, 16 + i * 12).u32()?,
-                    R(*d, 20 + i * 12).u32()?,
-                    R(*d, 24 + i * 12).u32()?,
+                    R(d, 16 + i * 12).u32()?,
+                    R(d, 20 + i * 12).u32()?,
+                    R(d, 24 + i * 12).u32()?,
                 );
                 (c >= s && c <= e).then(|| (g + c - s) as u16)
             }),
@@ -656,14 +469,14 @@ impl<'a> Kern<'a> {
 
                 while lo < hi {
                     let mid = (lo + hi) / 2;
-                    let pair = ((R(*data, mid * 6).u16().unwrap_or(0) as u32) << 16)
-                        | (R(*data, mid * 6 + 2).u16().unwrap_or(0) as u32);
+                    let pair = ((R(data, mid * 6).u16().unwrap_or(0) as u32) << 16)
+                        | (R(data, mid * 6 + 2).u16().unwrap_or(0) as u32);
 
                     match pair.cmp(&key) {
                         std::cmp::Ordering::Less => lo = mid + 1,
                         std::cmp::Ordering::Greater => hi = mid,
                         std::cmp::Ordering::Equal => {
-                            return R(*data, mid * 6 + 4).i16().unwrap_or(0)
+                            return R(data, mid * 6 + 4).i16().unwrap_or(0)
                         }
                     }
                 }
@@ -714,6 +527,7 @@ pub struct Font<'a> {
 }
 
 impl<'a> Font<'a> {
+    #[must_use] 
     pub fn parse(data: &'a [u8]) -> Option<Self> {
         // TTF header: sfntVersion(4) + numTables(2) + searchRange(2) + entrySelector(2) + rangeShift(2) = 12 bytes
         // Table record: tag(4) + checksum(4) + offset(4) + length(4) = 16 bytes
@@ -794,16 +608,19 @@ impl<'a> Font<'a> {
     /// Use this when you need the glyph ID to batch multiple operations,
     /// avoiding redundant CMAP lookups in tight loops.
     #[inline]
+    #[must_use] 
     pub fn cmap_lookup(&self, ch: char) -> Option<u16> {
         self.cmap.lookup(ch as u32)
     }
 
+    #[must_use] 
     pub fn glyph(&self, ch: char) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         self.compile(self.cmap.lookup(ch as u32)?)
     }
 
     /// Get glyph by pre-looked-up glyph ID (avoids redundant CMAP lookup).
     #[inline]
+    #[must_use] 
     pub fn glyph_by_id(
         &self,
         id: u16,
@@ -811,6 +628,7 @@ impl<'a> Font<'a> {
         self.compile(id)
     }
 
+    #[must_use] 
     pub fn glyph_scaled(
         &self,
         ch: char,
@@ -823,6 +641,7 @@ impl<'a> Font<'a> {
     /// Get scaled glyph by pre-looked-up glyph ID.
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
+    #[must_use] 
     pub fn glyph_scaled_by_id(
         &self,
         id: u16,
@@ -844,6 +663,7 @@ impl<'a> Font<'a> {
         .into())))
     }
 
+    #[must_use] 
     pub fn advance(&self, ch: char) -> Option<f32> {
         let id = self.cmap.lookup(ch as u32)?;
         self.advance_by_id(id)
@@ -853,11 +673,13 @@ impl<'a> Font<'a> {
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
     #[inline]
+    #[must_use] 
     pub fn advance_by_id(&self, id: u16) -> Option<f32> {
         let i = (id as usize).min(self.num_hm.saturating_sub(1));
         Some(R(self.data, self.hmtx + i * 4).u16()? as f32)
     }
 
+    #[must_use] 
     pub fn advance_scaled(&self, ch: char, size: f32) -> Option<f32> {
         Some(self.advance(ch)? * size / self.units_per_em as f32)
     }
@@ -865,11 +687,13 @@ impl<'a> Font<'a> {
     /// Get scaled advance width by pre-looked-up glyph ID.
     ///
     /// Avoids redundant CMAP lookup when you already have the glyph ID.
+    #[must_use] 
     pub fn advance_scaled_by_id(&self, id: u16, size: f32) -> Option<f32> {
         Some(self.advance_by_id(id)? * size / self.units_per_em as f32)
     }
 
     /// Get kerning adjustment between two characters in font units.
+    #[must_use] 
     pub fn kern(&self, left: char, right: char) -> f32 {
         let left_id = self.cmap.lookup(left as u32).unwrap_or(0);
         let right_id = self.cmap.lookup(right as u32).unwrap_or(0);
@@ -880,11 +704,13 @@ impl<'a> Font<'a> {
     ///
     /// Avoids redundant CMAP lookups when you already have both glyph IDs.
     #[inline]
+    #[must_use] 
     pub fn kern_by_ids(&self, left_id: u16, right_id: u16) -> f32 {
         self.kern.get(left_id, right_id) as f32
     }
 
     /// Get kerning adjustment between two characters, scaled to size.
+    #[must_use] 
     pub fn kern_scaled(&self, left: char, right: char, size: f32) -> f32 {
         self.kern(left, right) * size / self.units_per_em as f32
     }

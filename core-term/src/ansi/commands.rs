@@ -211,6 +211,7 @@ pub enum C0Control {
 
 impl C0Control {
     /// Creates a `C0Control` from a byte if it's a valid C0 code.
+    #[must_use] 
     pub fn from_byte(byte: u8) -> Option<Self> {
         if (byte <= 0x1F && byte != 0x1B/* ESC is handled separately by parser state */)
             || byte == 0x7F

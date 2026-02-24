@@ -97,7 +97,9 @@ kernel!(pub struct PsychedelicScene = |t: f32, width: f32, height: f32| Field ->
 
 struct PsychedelicApp {
     start: Instant,
-    engine_handle: pixelflow_runtime::api::private::EngineActorHandle,
+    // Mutex satisfies Sync for Arc<dyn Application + Send + Sync>.
+    // No contention — only the engine actor thread calls send().
+    engine_handle: std::sync::Mutex<pixelflow_runtime::api::private::EngineActorHandle>,
     width: AtomicU32,
     height: AtomicU32,
 }
@@ -116,6 +118,8 @@ impl Application for PsychedelicApp {
                 let arc: Arc<dyn Manifold<Output = Discrete> + Send + Sync> = Arc::new(scene);
 
                 self.engine_handle
+                    .lock()
+                    .unwrap()
                     .send(Message::Data(EngineData::FromApp(AppData::RenderSurface(
                         arc,
                     ))))
@@ -156,14 +160,14 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    let troupe = EngineTroupe::with_config(config)?;
+    let mut troupe = EngineTroupe::with_config(config)?;
     let unregistered_handle = troupe.engine_handle();
     let start = Instant::now();
     let engine_handle_for_app = troupe.raw_engine_handle();
 
     let app = PsychedelicApp {
         start,
-        engine_handle: engine_handle_for_app,
+        engine_handle: std::sync::Mutex::new(engine_handle_for_app),
         width: AtomicU32::new(WIDTH),
         height: AtomicU32::new(HEIGHT),
     };

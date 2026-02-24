@@ -13,6 +13,8 @@
 //!
 //! No iteration. Nesting is occlusion.
 
+#![allow(clippy::excessive_precision)]
+
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::*;
 use pixelflow_macros::{kernel, ManifoldExpr};
@@ -25,6 +27,18 @@ type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 
 /// The 4D PathJet domain type for recursive ray tracing.
 type PathJet4 = (PathJet<Jet3>, PathJet<Jet3>, PathJet<Jet3>, PathJet<Jet3>);
+
+/// Epsilon for normalizing vectors to avoid division by zero.
+const NORMALIZATION_EPSILON: f32 = 1e-10;
+
+/// Minimum cosine of incidence angle to avoid infinite curvature scaling at grazing angles.
+const MIN_INCIDENCE_COSINE: f32 = 0.1;
+
+/// Scaling factor for curvature-aware reflection (magnifies angular spread).
+const CURVATURE_SCALE_FACTOR: f32 = 2.0;
+
+/// Epsilon for sphere intersection to avoid self-intersection artifacts.
+const SPHERE_EPSILON: f32 = 0.0001;
 
 // ============================================================================
 // LIFT: Field manifold → Jet3 manifold (explicit conversion)
@@ -55,6 +69,7 @@ impl<M: ManifoldCompat<Field> + Send + Sync> Manifold<Jet3_4> for Lift<M> {
 /// Wraps a Field mask to implement Manifold<Jet3> for use as a Select condition.
 /// This is needed because Select<C, T, F> for Jet3 requires C: ManifoldCompat<Jet3, Output = Jet3>.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 struct FieldMask(Field);
 
 impl Manifold<Jet3_4> for FieldMask {
@@ -167,6 +182,7 @@ impl Manifold<Jet3_4> for UnitSphere {
 /// Unit sphere centered at origin.
 /// Solves |t * ray| = 1  =>  t = 1 / |ray|
 #[inline]
+#[must_use] 
 pub fn unit_sphere() -> UnitSphere {
     UnitSphere
 }
@@ -189,6 +205,7 @@ impl Manifold<Jet3_4> for PlaneKernel {
 /// Horizontal plane at y = height.
 /// Solves P.y = height => t * ry = height => t = height / ry
 #[allow(dead_code)]
+#[must_use] 
 pub fn plane(height: f32) -> PlaneKernel {
     PlaneKernel { h: height }
 }
@@ -213,6 +230,7 @@ pub struct PathJetSphere {
 }
 
 impl PathJetSphere {
+    #[must_use] 
     pub fn new(center: (f32, f32, f32), radius: f32) -> Self {
         Self { center, radius }
     }
@@ -228,7 +246,7 @@ impl Manifold<PathJet4> for PathJetSphere {
         let cy = Jet3::constant(Field::from(self.center.1));
         let cz = Jet3::constant(Field::from(self.center.2));
         let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
-        let eps = Jet3::constant(Field::from(0.0001));
+        let eps = Jet3::constant(Field::from(SPHERE_EPSILON));
 
         // oc = O - C (origin minus center)
         let oc_x = x.val - cx;
@@ -268,7 +286,7 @@ impl Manifold<Jet3_4> for PathJetSphere {
         let cy = Jet3::constant(Field::from(self.center.1));
         let cz = Jet3::constant(Field::from(self.center.2));
         let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
-        let eps = Jet3::constant(Field::from(0.0001));
+        let eps = Jet3::constant(Field::from(SPHERE_EPSILON));
 
         // For origin at 0: oc = -C
         // oc·D = -C·D = -(D·C)
@@ -347,14 +365,14 @@ impl<H: ManifoldCompat<Field, Output = Field>> Manifold<Jet3_4> for HeightFieldG
 // LAYER 2: Surface (The Warp)
 // ============================================================================
 
-/// The Glue. Combines Geometry, Material, and Background.
-///
-/// Performs **The Warp**: `P = ray * t`.
-/// Because `t` carries derivatives from Layer 1, and `ray` carries derivatives
-/// from Root, `P` automatically contains the Surface Tangent Frame via the Chain Rule.
-///
-/// Evaluates geometry to get t, computes hit point P = ray * t, then selects
-/// between material (at P) and background based on hit validity.
+// The Glue. Combines Geometry, Material, and Background.
+//
+// Performs The Warp: P = ray * t.
+// Because t carries derivatives from Layer 1, and ray carries derivatives
+// from Root, P automatically contains the Surface Tangent Frame via the Chain Rule.
+//
+// Evaluates geometry to get t, computes hit point P = ray * t, then selects
+// between material (at P) and background based on hit validity.
 kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Field {
     // 1. Get distance t from geometry
     let t = geometry;
@@ -380,7 +398,7 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     mask.select(mat_val, bg_val)
 });
 
-/// Color Surface: geometry + material + background, outputs Discrete.
+// Color Surface: geometry + material + background, outputs Discrete.
 kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, background: kernel| Jet3 -> Discrete {
     // 1. Get distance t from geometry
     let t = geometry;
@@ -509,7 +527,7 @@ where
     }
 }
 
-/// Mask manifold for geometry hit detection.
+// Mask manifold for geometry hit detection.
 kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
     let t = geometry;
     let t_max = 1000000.0;
@@ -598,7 +616,10 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq
+            .max(Field::from(NORMALIZATION_EPSILON))
+            .sqrt()
+            .rsqrt();
 
         // Normal components - evaluate at Jet3 construction boundary
         let nx = (cross_x * inv_n_len.clone()).constant();
@@ -615,8 +636,8 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
 
         // Curvature-aware scaling: reflection magnifies angular spread
         // Scale = 2 / |cos(incidence)|, clamped to avoid infinity
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(MIN_INCIDENCE_COSINE));
+        let curvature_scale = (Field::from(CURVATURE_SCALE_FACTOR) / cos_incidence).constant();
 
         let n_jet_x = Jet3 {
             val: nx,
@@ -686,7 +707,10 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq
+            .max(Field::from(NORMALIZATION_EPSILON))
+            .sqrt()
+            .rsqrt();
 
         // Normal components - evaluate at Jet3 construction boundary
         let nx = (cross_x * inv_n_len.clone()).constant();
@@ -703,8 +727,8 @@ impl<M: ManifoldCompat<Jet3, Output = Discrete>> Manifold<Jet3_4> for ColorRefle
 
         // Curvature-aware scaling: reflection magnifies angular spread
         // Scale = 2 / |cos(incidence)|, clamped to avoid infinity
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(MIN_INCIDENCE_COSINE));
+        let curvature_scale = (Field::from(CURVATURE_SCALE_FACTOR) / cos_incidence).constant();
 
         let n_jet_x = Jet3 {
             val: nx,
@@ -793,7 +817,10 @@ where
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq
+            .max(Field::from(NORMALIZATION_EPSILON))
+            .sqrt()
+            .rsqrt();
 
         let nx = (cross_x * inv_n_len.clone()).constant();
         let ny = (cross_y * inv_n_len.clone()).constant();
@@ -817,8 +844,8 @@ where
 
         // Compute D·N for curvature scaling
         let d_dot_n_scalar = (dx.val * nx + dy.val * ny + dz.val * nz).constant();
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(MIN_INCIDENCE_COSINE));
+        let curvature_scale = (Field::from(CURVATURE_SCALE_FACTOR) / cos_incidence).constant();
 
         // Normal as Jet3 with scaled derivatives
         let fzero = Field::from(0.0);
@@ -906,7 +933,10 @@ where
         let n_len_sq = cross_x.clone() * cross_x.clone()
             + cross_y.clone() * cross_y.clone()
             + cross_z.clone() * cross_z.clone();
-        let inv_n_len = n_len_sq.max(Field::from(1e-10)).sqrt().rsqrt();
+        let inv_n_len = n_len_sq
+            .max(Field::from(NORMALIZATION_EPSILON))
+            .sqrt()
+            .rsqrt();
 
         let nx = (cross_x * inv_n_len.clone()).constant();
         let ny = (cross_y * inv_n_len.clone()).constant();
@@ -922,8 +952,8 @@ where
 
         // 3. Curvature scaling
         let d_dot_n_scalar = (dx.val * nx + dy.val * ny + dz.val * nz).constant();
-        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(0.1));
-        let curvature_scale = (Field::from(2.0) / cos_incidence).constant();
+        let cos_incidence = d_dot_n_scalar.abs().max(Field::from(MIN_INCIDENCE_COSINE));
+        let curvature_scale = (Field::from(CURVATURE_SCALE_FACTOR) / cos_incidence).constant();
 
         let fzero = Field::from(0.0);
         let n_jet_x = Jet3 {
@@ -977,8 +1007,8 @@ where
     }
 }
 
-/// Checkerboard pattern based on X/Z coordinates.
-/// Uses Jet3 derivatives for automatic antialiasing at edges.
+// Checkerboard pattern based on X/Z coordinates.
+// Uses Jet3 derivatives for automatic antialiasing at edges.
 kernel!(pub struct Checker = || Jet3 -> Field {
     // Which checker cell are we in?
     let cell_x = V(X).floor();
@@ -1018,6 +1048,8 @@ kernel!(pub struct Checker = || Jet3 -> Field {
 /// Simple Sky Gradient based on Y direction.
 ///
 /// Uses Lift to project Jet3 → Field (discards derivatives - sky doesn't need AA).
+#[must_use] 
+#[allow(clippy::excessive_precision)]
 pub fn sky() -> Lift<impl Manifold<Field4, Output = Field> + Clone> {
     Lift(kernel!(|| {
         let t = (Y * 0.5 + 0.5).max(0.0).min(1.0);
@@ -1103,12 +1135,12 @@ impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorChec
         let z_val: Field = z.val;
 
         // Which checker cell are we in?
-        let cell_x = x_val.clone().floor();
-        let cell_z = z_val.clone().floor();
+        let cell_x = x_val.floor();
+        let cell_z = z_val.floor();
         let sum = (cell_x.clone() + cell_z.clone()).constant();
         let half = Field::from(0.5);
-        let sum_half = (sum.clone() * half.clone()).constant();
-        let fract_half = (sum_half.clone() - sum_half.floor()).constant();
+        let sum_half = (sum * half).constant();
+        let fract_half = (sum_half - sum_half.floor()).constant();
         let is_even = fract_half.abs().lt(Field::from(0.25));
 
         // Colors (warm and cool)
@@ -1124,9 +1156,9 @@ impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorChec
         let fz = (z_val - cell_z).constant();
 
         // Distance to nearest edge (0.0 or 1.0 boundary)
-        let dx_edge = (fx - half.clone()).abs().constant();
-        let dz_edge = (fz - half.clone()).abs().constant();
-        let dist_to_edge = (half.clone() - dx_edge).min(half - dz_edge).constant();
+        let dx_edge = (fx - half).abs().constant();
+        let dz_edge = (fz - half).abs().constant();
+        let dist_to_edge = (half - dx_edge).min(half - dz_edge).constant();
 
         // Gradient magnitude from Jet3 derivatives
         let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt().constant();
@@ -1136,20 +1168,20 @@ impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorChec
         // Coverage: how much of the pixel is in this cell vs neighbor
         let zero = Field::from(0.0);
         let one = Field::from(1.0);
-        let coverage = (dist_to_edge / pixel_size).min(one.clone()).max(zero).constant();
+        let coverage = (dist_to_edge / pixel_size).min(one).max(zero).constant();
 
         // Select and blend colors
-        let r_base = is_even.clone().select(ra.clone(), rb.clone());
-        let g_base = is_even.clone().select(ga.clone(), gb.clone());
-        let b_base = is_even.clone().select(ba.clone(), bb.clone());
+        let r_base = is_even.select(ra, rb);
+        let g_base = is_even.select(ga, gb);
+        let b_base = is_even.select(ba, bb);
 
-        let r_neighbor = is_even.clone().select(rb, ra);
-        let g_neighbor = is_even.clone().select(gb, ga);
+        let r_neighbor = is_even.select(rb, ra);
+        let g_neighbor = is_even.select(gb, ga);
         let b_neighbor = is_even.select(bb, ba);
 
-        let inv_coverage = (one.clone() - coverage.clone()).constant();
-        let r = (r_base * coverage.clone() + r_neighbor * inv_coverage.clone()).constant();
-        let g = (g_base * coverage.clone() + g_neighbor * inv_coverage.clone()).constant();
+        let inv_coverage = (one - coverage).constant();
+        let r = (r_base * coverage + r_neighbor * inv_coverage).constant();
+        let g = (g_base * coverage + g_neighbor * inv_coverage).constant();
         let b = (b_base * coverage + b_neighbor * inv_coverage).constant();
 
         // Sample the color cube
