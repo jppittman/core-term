@@ -459,34 +459,35 @@ impl Accumulator {
     /// Returns the predicted cost in centipawns (will need to be scaled).
     #[must_use] 
     pub fn forward(&self, nnue: &Nnue) -> i32 {
-        let l1_size = nnue.config.l1_size;
         let l2_size = nnue.config.l2_size;
         let l3_size = nnue.config.l3_size;
 
         // L1 -> L2 with clipped ReLU
         let mut l2 = nnue.b2.clone();
-        for i in 0..l1_size {
+        for (i, &v1) in self.values.iter().enumerate() {
             // Clipped ReLU: clamp to [0, 127] then scale
-            let a = (self.values[i] >> 6).clamp(0, 127) as i8;
-            for j in 0..l2_size {
-                l2[j] += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
+            let a = (v1 >> 6).clamp(0, 127) as i8;
+            let w2_row = &nnue.w2[i * l2_size..(i + 1) * l2_size];
+            for (l2_val, &w) in l2.iter_mut().zip(w2_row) {
+                *l2_val += (a as i32) * (w as i32);
             }
         }
 
         // L2 -> L3 with clipped ReLU
         let mut l3 = nnue.b3.clone();
-        for i in 0..l2_size {
-            let a = (l2[i] >> 6).clamp(0, 127) as i8;
-            for j in 0..l3_size {
-                l3[j] += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
+        for (i, &v2) in l2.iter().enumerate() {
+            let a = (v2 >> 6).clamp(0, 127) as i8;
+            let w3_row = &nnue.w3[i * l3_size..(i + 1) * l3_size];
+            for (l3_val, &w) in l3.iter_mut().zip(w3_row) {
+                *l3_val += (a as i32) * (w as i32);
             }
         }
 
         // L3 -> output
         let mut output = nnue.b_out;
-        for i in 0..l3_size {
-            let a = (l3[i] >> 6).clamp(0, 127) as i8;
-            output += (a as i32) * (nnue.w_out[i] as i32);
+        for (&v3, &w) in l3.iter().zip(&nnue.w_out) {
+            let a = (v3 >> 6).clamp(0, 127) as i8;
+            output += (a as i32) * (w as i32);
         }
 
         output

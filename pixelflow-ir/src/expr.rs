@@ -10,6 +10,7 @@
 use alloc::boxed::Box;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
+#[cfg(feature = "alloc")]
 use crate::kind::OpKind;
 
 /// A recursive expression tree.
