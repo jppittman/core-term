@@ -48,7 +48,7 @@ static COST_MODEL: OnceLock<CostModel> = OnceLock::new();
 
 /// Get the cost model, initializing it lazily on first use.
 fn get_cost_model() -> &'static CostModel {
-    COST_MODEL.get_or_init(|| cost_builder::build_cost_model_with_hce())
+    COST_MODEL.get_or_init(cost_builder::build_cost_model_with_hce)
 }
 
 /// Generate a unique name for an opaque expression (unknown method call, etc.)
