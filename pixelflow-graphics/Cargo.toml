@@ -45,6 +45,10 @@ harness = false
 name = "kernel_bench"
 harness = false
 
+[[bench]]
+name = "color_bench"
+harness = false
+
 [features]
 default = []
 freetype = ["dep:freetype-rs"]

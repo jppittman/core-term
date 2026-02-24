@@ -708,6 +708,12 @@ impl Field {
 }
 
 impl Field<u32> {
+    /// Create a Discrete field with the same value in all lanes.
+    #[inline(always)]
+    pub fn splat(val: u32) -> Self {
+        Self(NativeU32Simd::splat(val))
+    }
+
     /// Store packed pixels to a slice.
     ///
     /// # Internal Use Only
