@@ -68,14 +68,14 @@ pub struct Attributes {
 
 impl Glyph {
     /// Provides a default Glyph instance, representing a cleared/empty cell.
-    #[must_use] 
+    #[must_use]
     pub fn default_cell() -> Self {
         Glyph::Single(ContentCell::default_space())
     }
 
     /// Helper to get the displayable character of the cell, if applicable.
     /// For spacers, this might be the placeholder.
-    #[must_use] 
+    #[must_use]
     pub fn display_char(&self) -> char {
         match self {
             Glyph::Single(cc) | Glyph::WidePrimary(cc) => cc.c,
@@ -86,7 +86,7 @@ impl Glyph {
 
 impl ContentCell {
     /// Creates a default `ContentCell` representing a blank space with default attributes.
-    #[must_use] 
+    #[must_use]
     pub fn default_space() -> Self {
         ContentCell {
             c: ' ',

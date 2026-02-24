@@ -16,7 +16,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use actor_scheduler::{
-    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
+    Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
+    SystemStatus,
 };
 use pixelflow_runtime::vsync_actor::{
     RenderedResponse, VsyncCommand, VsyncConfig, VsyncManagement,

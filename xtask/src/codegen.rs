@@ -1,8 +1,8 @@
 //! Kernel code generation task.
 
+use pixelflow_search::egraph::{ops, CostModel, EGraph, ENode, ExprTree, Leaf};
 use std::fs;
 use std::path::Path;
-use pixelflow_search::egraph::{EGraph, ENode, CostModel, ExprTree, Leaf, ops};
 
 pub fn generate_kernels(workspace_root: &Path) {
     println!("Generating kernels...");
@@ -55,7 +55,8 @@ pub fn generate_kernels(workspace_root: &Path) {
     // Write to a file in pixelflow-core/src/generated_kernels.rs (just for demo)
     let output_path = workspace_root.join("pixelflow-core/src/generated_kernels.rs");
 
-    let file_content = format!(r#"//! Auto-generated kernels by xtask codegen.
+    let file_content = format!(
+        r#"//! Auto-generated kernels by xtask codegen.
 
 use crate::{{Field, Manifold}};
 
@@ -64,7 +65,9 @@ use crate::{{Field, Manifold}};
 pub fn discriminant(d: Field, c: Field, r: Field) -> Field {{
     {}
 }}
-"#, code, code);
+"#,
+        code, code
+    );
 
     fs::write(&output_path, file_content).expect("Failed to write generated kernels");
     println!("Wrote kernels to {}", output_path.display());
@@ -77,15 +80,18 @@ fn emit_rust_expr(tree: &ExprTree) -> String {
         ExprTree::Leaf(Leaf::Var(2)) => "r".to_string(),
         ExprTree::Leaf(Leaf::Var(n)) => format!("var_{}", n),
         ExprTree::Leaf(Leaf::Const(c)) => format!("{:.1}", c),
-        ExprTree::Op { op, children } => {
-            match (op.name(), children.as_slice()) {
-                ("add", [a, b]) => format!("({} + {})", emit_rust_expr(a), emit_rust_expr(b)),
-                ("sub", [a, b]) => format!("({} - {})", emit_rust_expr(a), emit_rust_expr(b)),
-                ("mul", [a, b]) => format!("({} * {})", emit_rust_expr(a), emit_rust_expr(b)),
-                ("mul_add", [a, b, c]) => format!("{}.mul_add({}, {})", emit_rust_expr(a), emit_rust_expr(b), emit_rust_expr(c)),
-                ("neg", [a]) => format!("-{}", emit_rust_expr(a)),
-                _ => format!("/* todo: {} */", op.name()),
-            }
-        }
+        ExprTree::Op { op, children } => match (op.name(), children.as_slice()) {
+            ("add", [a, b]) => format!("({} + {})", emit_rust_expr(a), emit_rust_expr(b)),
+            ("sub", [a, b]) => format!("({} - {})", emit_rust_expr(a), emit_rust_expr(b)),
+            ("mul", [a, b]) => format!("({} * {})", emit_rust_expr(a), emit_rust_expr(b)),
+            ("mul_add", [a, b, c]) => format!(
+                "{}.mul_add({}, {})",
+                emit_rust_expr(a),
+                emit_rust_expr(b),
+                emit_rust_expr(c)
+            ),
+            ("neg", [a]) => format!("-{}", emit_rust_expr(a)),
+            _ => format!("/* todo: {} */", op.name()),
+        },
     }
 }

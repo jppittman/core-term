@@ -38,8 +38,8 @@ use alloc::vec::Vec;
 use libm::{pow, sqrt};
 
 use crate::evaluator::{
-    Domain, ExprDomain, ExprFeatures, ExprMove, HandCraftedEvaluator,
-    default_expr_weights, extract_expr_features,
+    Domain, ExprDomain, ExprFeatures, ExprMove, HandCraftedEvaluator, default_expr_weights,
+    extract_expr_features,
 };
 use crate::nnue::Expr;
 
@@ -64,7 +64,7 @@ pub struct HceExtractor {
 
 impl HceExtractor {
     /// Create a new HCE extractor with default weights.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             hce: default_expr_weights(),
@@ -74,7 +74,7 @@ impl HceExtractor {
     }
 
     /// Create with custom weights.
-    #[must_use] 
+    #[must_use]
     pub fn with_weights(weights: Vec<i32>) -> Self {
         Self {
             hce: HandCraftedEvaluator::new(weights),
@@ -84,7 +84,7 @@ impl HceExtractor {
     }
 
     /// Create with FMA-optimized weights.
-    #[must_use] 
+    #[must_use]
     pub fn with_fma() -> Self {
         Self {
             hce: crate::evaluator::fma_optimized_weights(),
@@ -94,21 +94,21 @@ impl HceExtractor {
     }
 
     /// Enable structural cost factors.
-    #[must_use] 
+    #[must_use]
     pub fn with_structural_costs(mut self) -> Self {
         self.include_structural = true;
         self
     }
 
     /// Set opportunity penalty.
-    #[must_use] 
+    #[must_use]
     pub fn with_opportunity_penalty(mut self, penalty: i32) -> Self {
         self.opportunity_penalty = penalty;
         self
     }
 
     /// Evaluate an expression's cost using HCE.
-    #[must_use] 
+    #[must_use]
     pub fn cost(&self, expr: &Expr) -> i32 {
         let features = extract_expr_features(expr);
         self.cost_from_features(&features)
@@ -126,7 +126,8 @@ impl HceExtractor {
 
         if self.opportunity_penalty != 0 {
             // Penalize having unfused patterns (incentivize running more rewrites)
-            let opportunities = features.has_fusable + features.has_identity + features.has_self_cancel;
+            let opportunities =
+                features.has_fusable + features.has_identity + features.has_self_cancel;
             cost = cost.saturating_add(opportunities.saturating_mul(self.opportunity_penalty));
         }
 
@@ -134,21 +135,19 @@ impl HceExtractor {
     }
 
     /// Compare two expressions and return the better one (lower cost).
-    #[must_use] 
+    #[must_use]
     pub fn better<'a>(&self, a: &'a Expr, b: &'a Expr) -> &'a Expr {
         if self.cost(a) <= self.cost(b) { a } else { b }
     }
 
     /// Find the best expression among candidates.
-    #[must_use] 
+    #[must_use]
     pub fn best<'a>(&self, exprs: &[&'a Expr]) -> Option<&'a Expr> {
-        exprs.iter()
-            .min_by_key(|e| self.cost(e))
-            .copied()
+        exprs.iter().min_by_key(|e| self.cost(e)).copied()
     }
 
     /// Evaluate all rewrites and return the best one.
-    #[must_use] 
+    #[must_use]
     pub fn best_rewrite(&self, expr: &Expr) -> Option<(ExprMove, Expr, i32)> {
         let base_cost = self.cost(expr);
         let moves = ExprDomain::legal_moves(expr);
@@ -172,7 +171,7 @@ impl HceExtractor {
     /// Greedily optimize an expression by applying rewrites until no improvement.
     ///
     /// Returns (optimized_expr, cost_reduction, num_rewrites_applied).
-    #[must_use] 
+    #[must_use]
     pub fn greedy_optimize(&self, expr: &Expr, max_iters: usize) -> (Expr, i32, usize) {
         let mut current = expr.clone();
         let mut total_reduction = 0i32;
@@ -225,7 +224,7 @@ pub struct FeatureAccumulator {
 
 impl FeatureAccumulator {
     /// Create a new accumulator initialized from an expression.
-    #[must_use] 
+    #[must_use]
     pub fn from_expr(expr: &Expr) -> Self {
         Self {
             features: extract_expr_features(expr),
@@ -261,13 +260,15 @@ impl FeatureAccumulator {
         self.features.min_count += new_features.min_count - old_features.min_count;
         self.features.max_count += new_features.max_count - old_features.max_count;
         self.features.fma_count += new_features.fma_count - old_features.fma_count;
-        self.features.mul_rsqrt_count += new_features.mul_rsqrt_count - old_features.mul_rsqrt_count;
+        self.features.mul_rsqrt_count +=
+            new_features.mul_rsqrt_count - old_features.mul_rsqrt_count;
         self.features.node_count += new_features.node_count - old_features.node_count;
         // Note: depth is tricky to update incrementally - may need full recompute
         self.features.var_count += new_features.var_count - old_features.var_count;
         self.features.const_count += new_features.const_count - old_features.const_count;
         self.features.has_identity += new_features.has_identity - old_features.has_identity;
-        self.features.has_self_cancel += new_features.has_self_cancel - old_features.has_self_cancel;
+        self.features.has_self_cancel +=
+            new_features.has_self_cancel - old_features.has_self_cancel;
         self.features.has_fusable += new_features.has_fusable - old_features.has_fusable;
 
         self.update_count += 1;
@@ -281,7 +282,7 @@ impl FeatureAccumulator {
     /// Verify the accumulator matches a full re-extraction.
     ///
     /// Returns true if features match, false if there's drift.
-    #[must_use] 
+    #[must_use]
     pub fn verify(&self, expr: &Expr) -> bool {
         let fresh = extract_expr_features(expr);
         features_equal(&self.features, &fresh)
@@ -290,9 +291,18 @@ impl FeatureAccumulator {
 
 /// Helper: compute simple cost from features (for delta tracking).
 fn compute_feature_cost(f: &ExprFeatures) -> i32 {
-    f.add_count * 4 + f.sub_count * 4 + f.mul_count * 5 + f.div_count * 15
-        + f.neg_count + f.sqrt_count * 15 + f.rsqrt_count * 5 + f.abs_count
-        + f.min_count * 4 + f.max_count * 4 + f.fma_count * 5 + f.mul_rsqrt_count * 6
+    f.add_count * 4
+        + f.sub_count * 4
+        + f.mul_count * 5
+        + f.div_count * 15
+        + f.neg_count
+        + f.sqrt_count * 15
+        + f.rsqrt_count * 5
+        + f.abs_count
+        + f.min_count * 4
+        + f.max_count * 4
+        + f.fma_count * 5
+        + f.mul_rsqrt_count * 6
 }
 
 /// Helper: check if two feature sets are equal.
@@ -347,9 +357,9 @@ impl Default for SpsaConfig {
         Self {
             c: 1.0,
             a: 0.1,
-            c_decay: 0.101,      // gamma = 0.101 (standard SPSA)
-            a_decay: 0.602,      // alpha = 0.602 (standard SPSA)
-            a_stability: 10.0,   // A = 10% of max_iters
+            c_decay: 0.101,    // gamma = 0.101 (standard SPSA)
+            a_decay: 0.602,    // alpha = 0.602 (standard SPSA)
+            a_stability: 10.0, // A = 10% of max_iters
             max_iters: 100,
             samples_per_eval: 50,
             weight_clamp: (-100, 100),
@@ -377,7 +387,7 @@ pub struct SpsaTuner {
 
 impl SpsaTuner {
     /// Create a new SPSA tuner starting from given weights.
-    #[must_use] 
+    #[must_use]
     pub fn new(initial_weights: &[i32], config: SpsaConfig) -> Self {
         let weights: Vec<f64> = initial_weights.iter().map(|&w| w as f64).collect();
         Self {
@@ -391,7 +401,7 @@ impl SpsaTuner {
     }
 
     /// Create from default HCE weights.
-    #[must_use] 
+    #[must_use]
     pub fn from_defaults(config: SpsaConfig) -> Self {
         let hce = default_expr_weights();
         Self::new(&hce.weights, config)
@@ -402,7 +412,10 @@ impl SpsaTuner {
         let n = self.weights.len();
         let mut delta = Vec::with_capacity(n);
         for _ in 0..n {
-            self.rng_state = self.rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            self.rng_state = self
+                .rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
             let bit = (self.rng_state >> 63) as i32;
             delta.push(if bit == 0 { -1.0 } else { 1.0 });
         }
@@ -416,7 +429,11 @@ impl SpsaTuner {
 
     /// Get current learning rate a_k.
     fn current_a(&self) -> f64 {
-        self.config.a / pow(self.iteration as f64 + self.config.a_stability + 1.0, self.config.a_decay)
+        self.config.a
+            / pow(
+                self.iteration as f64 + self.config.a_stability + 1.0,
+                self.config.a_decay,
+            )
     }
 
     /// Perform one SPSA iteration.
@@ -440,10 +457,14 @@ impl SpsaTuner {
         let mut weights_minus: Vec<i32> = Vec::with_capacity(self.weights.len());
 
         for (i, d) in delta.iter().enumerate().take(self.weights.len()) {
-            let plus = (self.weights[i] + c_k * d)
-                .clamp(self.config.weight_clamp.0 as f64, self.config.weight_clamp.1 as f64) as i32;
-            let minus = (self.weights[i] - c_k * d)
-                .clamp(self.config.weight_clamp.0 as f64, self.config.weight_clamp.1 as f64) as i32;
+            let plus = (self.weights[i] + c_k * d).clamp(
+                self.config.weight_clamp.0 as f64,
+                self.config.weight_clamp.1 as f64,
+            ) as i32;
+            let minus = (self.weights[i] - c_k * d).clamp(
+                self.config.weight_clamp.0 as f64,
+                self.config.weight_clamp.1 as f64,
+            ) as i32;
             weights_plus.push(plus);
             weights_minus.push(minus);
         }
@@ -463,8 +484,10 @@ impl SpsaTuner {
             self.weights[i] -= a_k * grad_i;
 
             // Clamp to valid range
-            self.weights[i] = self.weights[i]
-                .clamp(self.config.weight_clamp.0 as f64, self.config.weight_clamp.1 as f64);
+            self.weights[i] = self.weights[i].clamp(
+                self.config.weight_clamp.0 as f64,
+                self.config.weight_clamp.1 as f64,
+            );
         }
 
         // Track best
@@ -489,21 +512,19 @@ impl SpsaTuner {
             self.step(&loss_fn);
         }
 
-        let final_weights: Vec<i32> = self.best_weights.iter()
-            .map(|&w| w as i32)
-            .collect();
+        let final_weights: Vec<i32> = self.best_weights.iter().map(|&w| w as i32).collect();
 
         (final_weights, self.best_loss, self.iteration)
     }
 
     /// Get current weights as i32.
-    #[must_use] 
+    #[must_use]
     pub fn current_weights(&self) -> Vec<i32> {
         self.weights.iter().map(|&w| w as i32).collect()
     }
 
     /// Get best weights found.
-    #[must_use] 
+    #[must_use]
     pub fn best_weights_i32(&self) -> Vec<i32> {
         self.best_weights.iter().map(|&w| w as i32).collect()
     }
@@ -517,10 +538,10 @@ impl SpsaTuner {
 ///
 /// This measures how well HCE ordering matches the true cost ordering.
 /// Lower is better.
-#[must_use] 
+#[must_use]
 pub fn ranking_loss(
     weights: &[i32],
-    samples: &[(Expr, u64)],  // (expression, true_cost_ns)
+    samples: &[(Expr, u64)], // (expression, true_cost_ns)
 ) -> f64 {
     if samples.len() < 2 {
         return 0.0;
@@ -563,11 +584,8 @@ pub fn ranking_loss(
 /// Compute correlation loss (1 - Spearman correlation).
 ///
 /// Measures how well HCE rankings correlate with true rankings.
-#[must_use] 
-pub fn correlation_loss(
-    weights: &[i32],
-    samples: &[(Expr, u64)],
-) -> f64 {
+#[must_use]
+pub fn correlation_loss(weights: &[i32], samples: &[(Expr, u64)]) -> f64 {
     if samples.len() < 2 {
         return 0.0;
     }
@@ -575,7 +593,8 @@ pub fn correlation_loss(
     let hce = HandCraftedEvaluator::new(weights.to_vec());
 
     // Get predicted costs
-    let mut predictions: Vec<(usize, i32)> = samples.iter()
+    let mut predictions: Vec<(usize, i32)> = samples
+        .iter()
         .enumerate()
         .map(|(i, (expr, _))| {
             let features = extract_expr_features(expr);
@@ -584,7 +603,8 @@ pub fn correlation_loss(
         .collect();
 
     // Get true costs
-    let mut truths: Vec<(usize, u64)> = samples.iter()
+    let mut truths: Vec<(usize, u64)> = samples
+        .iter()
         .enumerate()
         .map(|(i, (_, cost))| (i, *cost))
         .collect();
@@ -626,9 +646,9 @@ pub fn correlation_loss(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
-    use alloc::boxed::Box;
     use crate::nnue::{OpType, RewriteRule};
+    use alloc::boxed::Box;
+    use alloc::vec;
 
     // =========================================================================
     // HceExtractor Tests
@@ -639,11 +659,7 @@ mod tests {
         let extractor = HceExtractor::new();
 
         // Simple expression: x + y
-        let expr = Expr::Binary(
-            OpType::Add,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Var(1)),
-        );
+        let expr = Expr::Binary(OpType::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1)));
 
         let cost = extractor.cost(&expr);
         assert!(cost > 0, "Add should have non-zero cost");
@@ -685,9 +701,12 @@ mod tests {
         // With default weights:
         // - unfused: mul(5) + add(4) + has_fusable(-2) = 7
         // - fused: fma(5) = 5
-        assert!(fused_cost < unfused_cost,
+        assert!(
+            fused_cost < unfused_cost,
             "FMA ({}) should be cheaper than unfused mul+add ({})",
-            fused_cost, unfused_cost);
+            fused_cost,
+            unfused_cost
+        );
 
         // Also verify FMA-optimized weights still prefer fused
         let fma_extractor = HceExtractor::with_fma();
@@ -697,9 +716,12 @@ mod tests {
         // With FMA weights: has_fusable penalty is -4, so unfused = 5+4-4=5, fused=5
         // They're equal because has_fusable rewards expressions that CAN be fused
         // This incentivizes running the rewrite to actually fuse them
-        assert!(fma_fused_cost <= fma_unfused_cost,
+        assert!(
+            fma_fused_cost <= fma_unfused_cost,
             "With FMA, fused ({}) should be <= unfused ({})",
-            fma_fused_cost, fma_unfused_cost);
+            fma_fused_cost,
+            fma_unfused_cost
+        );
     }
 
     #[test]
@@ -707,14 +729,13 @@ mod tests {
         let extractor = HceExtractor::new();
 
         let simple = Expr::Var(0);
-        let complex = Expr::Binary(
-            OpType::Div,
-            Box::new(Expr::Var(0)),
-            Box::new(Expr::Var(1)),
-        );
+        let complex = Expr::Binary(OpType::Div, Box::new(Expr::Var(0)), Box::new(Expr::Var(1)));
 
         let better = extractor.better(&simple, &complex);
-        assert!(matches!(better, Expr::Var(0)), "Simple expression should be better");
+        assert!(
+            matches!(better, Expr::Var(0)),
+            "Simple expression should be better"
+        );
     }
 
     #[test]
@@ -732,14 +753,20 @@ mod tests {
         assert!(result.is_some(), "Should find AddZero rewrite");
 
         let (mv, rewritten, cost) = result.unwrap();
-        assert!(matches!(mv.rule, RewriteRule::AddZero), "Should be AddZero rule");
+        assert!(
+            matches!(mv.rule, RewriteRule::AddZero),
+            "Should be AddZero rule"
+        );
         assert!(matches!(rewritten, Expr::Var(0)), "Should simplify to x");
         // Variable cost with ILP features:
         // - var_count: 0 (weight 0)
         // - critical_path: 0 (no latency) * weight(1) = 0
         // - max_width: 1 (one node at depth 0) * weight(1) = 1
         // Total = 1
-        assert_eq!(cost, 1, "Variable should have minimal cost (just max_width)");
+        assert_eq!(
+            cost, 1,
+            "Variable should have minimal cost (just max_width)"
+        );
     }
 
     #[test]
@@ -809,7 +836,10 @@ mod tests {
 
         let mut acc = FeatureAccumulator::from_expr(&original);
         assert_eq!(acc.features.mul_count, 1);
-        assert_eq!(acc.features.has_identity, 1, "x*1 should be detected as identity");
+        assert_eq!(
+            acc.features.has_identity, 1,
+            "x*1 should be detected as identity"
+        );
 
         // Simulate rewrite: x * 1 -> x
         let old_subtree = original.clone();
@@ -822,7 +852,10 @@ mod tests {
         assert_eq!(acc.features.const_count, 0, "Const should be removed");
         assert_eq!(acc.features.has_identity, 0, "No more identity pattern");
         assert_eq!(acc.update_count, 1, "Should have 1 update");
-        assert!(acc.total_delta < 0, "Total delta should be negative (cost reduced)");
+        assert!(
+            acc.total_delta < 0,
+            "Total delta should be negative (cost reduced)"
+        );
     }
 
     #[test]
@@ -946,15 +979,14 @@ mod tests {
             a: 0.1,
             ..Default::default()
         };
-        let initial_weights: Vec<i32> = vec![4, 4, 5, 15, 1, 15, 5, 1, 4, 4, 5, 6, 0, 0, 0, 0, 0, 0, -2];
+        let initial_weights: Vec<i32> =
+            vec![4, 4, 5, 15, 1, 15, 5, 1, 4, 4, 5, 6, 0, 0, 0, 0, 0, 0, -2];
         let mut tuner = SpsaTuner::new(&initial_weights, config);
 
         let initial = tuner.weights.clone();
 
         // Simple loss function: sum of squared weights
-        let grad_norm = tuner.step(|w| {
-            w.iter().map(|&x| (x as f64).powi(2)).sum()
-        });
+        let grad_norm = tuner.step(|w| w.iter().map(|&x| (x as f64).powi(2)).sum());
 
         assert!(grad_norm > 0.0, "Should have non-zero gradient");
         assert_ne!(tuner.weights, initial, "Weights should change after step");
@@ -990,8 +1022,10 @@ mod tests {
         assert_eq!(iters, 50);
 
         // Weights should move toward target
-        assert!(final_weights[3] > final_weights[0],
-            "Weight for div (index 3) should be larger than add (index 0)");
+        assert!(
+            final_weights[3] > final_weights[0],
+            "Weight for div (index 3) should be larger than add (index 0)"
+        );
     }
 
     // =========================================================================
@@ -1002,42 +1036,66 @@ mod tests {
     fn test_ranking_loss_perfect() {
         let samples = vec![
             (Expr::Var(0), 0),
-            (Expr::Binary(OpType::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))), 4),
-            (Expr::Binary(OpType::Div, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))), 15),
+            (
+                Expr::Binary(OpType::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))),
+                4,
+            ),
+            (
+                Expr::Binary(OpType::Div, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))),
+                15,
+            ),
         ];
 
         let weights = default_expr_weights().weights;
         let loss = ranking_loss(&weights, &samples);
 
         // Default weights should rank these correctly
-        assert!(loss < 0.5, "Default weights should have low ranking loss, got {}", loss);
+        assert!(
+            loss < 0.5,
+            "Default weights should have low ranking loss, got {}",
+            loss
+        );
     }
 
     #[test]
     fn test_ranking_loss_inverted() {
         let samples = vec![
-            (Expr::Var(0), 100),  // Inverted: simple is "expensive"
-            (Expr::Binary(OpType::Div, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))), 0), // div is "cheap"
+            (Expr::Var(0), 100), // Inverted: simple is "expensive"
+            (
+                Expr::Binary(OpType::Div, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))),
+                0,
+            ), // div is "cheap"
         ];
 
         let weights = default_expr_weights().weights;
         let loss = ranking_loss(&weights, &samples);
 
         // Should have high loss because ordering is inverted
-        assert!(loss > 0.5, "Inverted samples should have high ranking loss, got {}", loss);
+        assert!(
+            loss > 0.5,
+            "Inverted samples should have high ranking loss, got {}",
+            loss
+        );
     }
 
     #[test]
     fn test_correlation_loss_bounds() {
         let samples = vec![
             (Expr::Var(0), 0),
-            (Expr::Binary(OpType::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))), 4),
+            (
+                Expr::Binary(OpType::Add, Box::new(Expr::Var(0)), Box::new(Expr::Var(1))),
+                4,
+            ),
         ];
 
         let weights = default_expr_weights().weights;
         let loss = correlation_loss(&weights, &samples);
 
-        assert!(loss >= 0.0 && loss <= 2.0, "Correlation loss should be in [0, 2], got {}", loss);
+        assert!(
+            loss >= 0.0 && loss <= 2.0,
+            "Correlation loss should be in [0, 2], got {}",
+            loss
+        );
     }
 
     // =========================================================================
@@ -1066,6 +1124,9 @@ mod tests {
         let acc = FeatureAccumulator::from_expr(&expr);
         let acc_cost = extractor.cost_from_features(&acc.features);
 
-        assert_eq!(direct_cost, acc_cost, "Direct and accumulator costs should match");
+        assert_eq!(
+            direct_cost, acc_cost,
+            "Direct and accumulator costs should match"
+        );
     }
 }

@@ -67,7 +67,7 @@ pub struct TerminalEmulator {
 
 impl TerminalEmulator {
     /// Creates a new `TerminalEmulator`.
-    #[must_use] 
+    #[must_use]
     pub fn new(width: usize, height: usize) -> Self {
         let initial_attributes = Attributes::default(); // SGR Reset attributes
                                                         // Screen::new now gets scrollback_limit from CONFIG
@@ -189,7 +189,10 @@ impl TerminalEmulator {
                     // scrollback is ordered oldest first, so we need to index from the end
                     let scrollback_idx = scrollback_len - effective_offset + y_idx;
                     // All scrollback lines are considered "dirty" when first viewed
-                    SnapshotLine::from_arc(self.screen.scrollback[scrollback_idx].clone(), true.into())
+                    SnapshotLine::from_arc(
+                        self.screen.scrollback[scrollback_idx].clone(),
+                        true.into(),
+                    )
                 } else {
                     // This line comes from active grid
                     let grid_idx = y_idx - effective_offset;
@@ -200,7 +203,9 @@ impl TerminalEmulator {
                         // Beyond active grid, return empty line
                         SnapshotLine::from_arc(
                             std::sync::Arc::new(vec![
-                                crate::glyph::Glyph::Single(crate::glyph::ContentCell::default_space());
+                                crate::glyph::Glyph::Single(
+                                    crate::glyph::ContentCell::default_space()
+                                );
                                 width
                             ]),
                             true.into(),
@@ -304,13 +309,13 @@ impl TerminalEmulator {
     }
 
     /// Returns the current viewport offset (0 = live screen).
-    #[must_use] 
+    #[must_use]
     pub fn viewport_offset(&self) -> usize {
         self.viewport_offset
     }
 
     /// Returns the maximum scrollback available.
-    #[must_use] 
+    #[must_use]
     pub fn scrollback_len(&self) -> usize {
         self.screen.scrollback.len()
     }
@@ -355,7 +360,7 @@ impl TerminalEmulator {
         debug!("Selection cleared.");
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn get_selected_text(&self) -> Option<String> {
         self.screen.get_selected_text()
     }

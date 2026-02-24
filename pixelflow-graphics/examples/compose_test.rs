@@ -5,7 +5,12 @@ use pixelflow_macros::kernel;
 type Field4 = (Field, Field, Field, Field);
 
 fn field4(x: f32, y: f32) -> Field4 {
-    (Field::from(x), Field::from(y), Field::from(0.0), Field::from(0.0))
+    (
+        Field::from(x),
+        Field::from(y),
+        Field::from(0.0),
+        Field::from(0.0),
+    )
 }
 
 fn main() {

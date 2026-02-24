@@ -5,7 +5,7 @@
 //! - Dense branch (ILP features -> L_dense)
 //! - Combined layers (L2 -> L3 -> Output)
 
-use pixelflow_nnue::{Nnue, HalfEPFeature, DenseFeatures};
+use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue};
 
 /// Clipped ReLU activation: (x >> 6).clamp(0, 127)
 ///
@@ -19,11 +19,11 @@ pub fn clipped_relu(x: i32) -> (f32, f32) {
     let clamped = shifted.clamp(0, 127);
     // Leaky gradient allows dead neurons to recover
     let deriv = if shifted <= 0 {
-        0.01  // Dead neuron - small gradient for recovery
+        0.01 // Dead neuron - small gradient for recovery
     } else if shifted >= 127 {
-        0.1   // Saturated - reduced but non-zero gradient
+        0.1 // Saturated - reduced but non-zero gradient
     } else {
-        1.0   // Active region - full gradient
+        1.0 // Active region - full gradient
     };
     (clamped as f32, deriv)
 }
@@ -45,8 +45,8 @@ pub struct ForwardState {
 pub struct HybridForwardState {
     pub l1_pre: Vec<i32>,
     pub l1_post: Vec<f32>,
-    pub dense_input: Vec<i32>,  // Input to dense branch (for W_dense gradients)
-    pub dense_pre: Vec<i32>,    // Pre-activation (for derivative)
+    pub dense_input: Vec<i32>, // Input to dense branch (for W_dense gradients)
+    pub dense_pre: Vec<i32>,   // Pre-activation (for derivative)
     pub dense_post: Vec<f32>,
     pub l2_pre: Vec<i32>,
     pub l2_post: Vec<f32>,
@@ -56,10 +56,7 @@ pub struct HybridForwardState {
 }
 
 /// Forward pass (sparse-only) that stores intermediate activations.
-pub fn forward_with_state(
-    nnue: &Nnue,
-    features: &[HalfEPFeature],
-) -> (f32, ForwardState) {
+pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, ForwardState) {
     let l1_size = nnue.config.l1_size;
     let l2_size = nnue.config.l2_size;
     let l3_size = nnue.config.l3_size;
@@ -243,12 +240,7 @@ pub fn forward_with_state_hybrid(
 }
 
 /// Backward pass for sparse-only architecture.
-pub fn backward(
-    nnue: &mut Nnue,
-    state: &ForwardState,
-    error: f32,
-    lr: f32,
-) {
+pub fn backward(nnue: &mut Nnue, state: &ForwardState, error: f32, lr: f32) {
     let l1_size = nnue.config.l1_size;
     let l2_size = nnue.config.l2_size;
     let l3_size = nnue.config.l3_size;
@@ -331,12 +323,7 @@ pub fn backward(
 }
 
 /// Backward pass for hybrid architecture (sparse + dense).
-pub fn backward_hybrid(
-    nnue: &mut Nnue,
-    state: &HybridForwardState,
-    error: f32,
-    lr: f32,
-) {
+pub fn backward_hybrid(nnue: &mut Nnue, state: &HybridForwardState, error: f32, lr: f32) {
     let l1_size = nnue.config.l1_size;
     let dense_size = nnue.config.dense_size;
     let l2_size = nnue.config.l2_size;
@@ -452,7 +439,8 @@ pub fn backward_hybrid(
         for j in 0..dense_size {
             let grad_w_dense = d_dense_pre[j] * input_val;
             let update = (grad_w_dense * lr * 0.01).clamp(-32767.0, 32767.0) as i16;
-            nnue.w_dense[i * dense_size + j] = nnue.w_dense[i * dense_size + j].saturating_sub(update);
+            nnue.w_dense[i * dense_size + j] =
+                nnue.w_dense[i * dense_size + j].saturating_sub(update);
         }
     }
 }

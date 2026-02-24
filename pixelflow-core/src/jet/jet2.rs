@@ -101,21 +101,21 @@ impl Jet2 {
 
     /// Less than or equal (returns mask jet).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn le(self, rhs: Self) -> Self {
         Self::constant(self.val.le(rhs.val))
     }
 
     /// Greater than comparison (returns mask jet).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn gt(self, rhs: Self) -> Self {
         Self::constant(self.val.gt(rhs.val))
     }
 
     /// Greater than or equal (returns mask jet).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn ge(self, rhs: Self) -> Self {
         Self::constant(self.val.ge(rhs.val))
     }
@@ -125,14 +125,14 @@ impl Jet2 {
     /// Returns `Jet2Sqrt` which enables automatic rsqrt fusion when divided.
     /// Example: `a / b.sqrt()` computes `a * rsqrt(b)` (faster than `a / sqrt(b)`).
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn sqrt(self) -> Jet2Sqrt {
         Jet2Sqrt(self)
     }
 
     /// Absolute value with derivative.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn abs(self) -> Self {
         // |f|' = f' * sign(f)
         let sign = self.val / self.val.abs();
@@ -141,7 +141,7 @@ impl Jet2 {
 
     /// Element-wise minimum with derivative.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn min(self, rhs: Self) -> Self {
         let mask = self.val.lt(rhs.val);
         Self {
@@ -153,7 +153,7 @@ impl Jet2 {
 
     /// Element-wise maximum with derivative.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn max(self, rhs: Self) -> Self {
         let mask = self.val.gt(rhs.val);
         Self {
@@ -165,14 +165,14 @@ impl Jet2 {
 
     /// Check if any lane of the value is non-zero.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn any(&self) -> bool {
         self.val.any()
     }
 
     /// Check if all lanes of the value are non-zero.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn all(&self) -> bool {
         self.val.all()
     }
@@ -180,7 +180,7 @@ impl Jet2 {
     /// Conditional select with early-exit optimization.
     /// Returns if_true where mask is set, if_false elsewhere.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn select(mask: Self, if_true: Self, if_false: Self) -> Self {
         if mask.all() {
             return if_true;
@@ -207,7 +207,7 @@ pub struct Jet2Sqrt(Jet2);
 impl Jet2Sqrt {
     /// Evaluate to get the actual sqrt result as Jet2.
     #[inline(always)]
-    #[must_use] 
+    #[must_use]
     pub fn eval(self) -> Jet2 {
         let rsqrt_val = self.0.val.rsqrt();
         let sqrt_val = self.0.val * rsqrt_val;
@@ -585,11 +585,7 @@ impl Numeric for Jet2 {
     fn exp(self) -> Self {
         // Chain rule: (exp f)' = exp(f) * f'
         let exp_val = self.val.exp();
-        Self::new(
-            exp_val,
-            self.dx * exp_val,
-            self.dy * exp_val,
-        )
+        Self::new(exp_val, self.dx * exp_val, self.dy * exp_val)
     }
 
     #[inline(always)]
