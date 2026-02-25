@@ -511,7 +511,7 @@ fn set_config_auto_starts_actor() {
     tx.send(Message::Management(VsyncManagement::SetConfig {
         config: VsyncConfig { refresh_rate: 90.0 },
         engine_handle,
-        self_handle,
+        self_handle: Box::new(self_handle),
     }))
     .unwrap();
 
