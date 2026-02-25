@@ -14,11 +14,11 @@
 use std::time::Instant;
 
 use pixelflow_ml::evaluator::{
-    HandCraftedEvaluator, LinearFeatures, default_expr_weights, extract_expr_features,
+    HandCraftedEvaluator, default_expr_weights, extract_expr_features,
 };
 use pixelflow_ml::training::factored::{FactoredTrainer, TrainConfig};
 // Use pixelflow_ml's Expr for HCE, then convert for NNUE trainer
-use pixelflow_ml::nnue::{Expr, ExprGenConfig, ExprGenerator, OpType};
+use pixelflow_ml::nnue::{Expr, ExprGenConfig, ExprGenerator};
 use pixelflow_nnue::OpKind;
 
 /// Convert pixelflow_ml::Expr to pixelflow_nnue::Expr
@@ -425,6 +425,10 @@ fn format_nnue_expr(expr: &pixelflow_nnue::Expr) -> String {
             format_nnue_expr(b),
             format_nnue_expr(c)
         ),
+        pixelflow_nnue::Expr::Nary(op, children) => {
+            let args: Vec<String> = children.iter().map(|c| format_nnue_expr(c)).collect();
+            format!("{}({})", op_name(*op), args.join(", "))
+        }
     }
 }
 

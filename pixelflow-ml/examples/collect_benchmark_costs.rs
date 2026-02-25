@@ -397,11 +397,10 @@ fn parse_criterion_results(criterion_dir: &PathBuf) -> HashMap<String, f64> {
                     .to_string();
 
                 let estimates_path = path.join("new/estimates.json");
-                if estimates_path.exists() {
-                    if let Some(median_ns) = parse_estimates_json(&estimates_path) {
+                if estimates_path.exists()
+                    && let Some(median_ns) = parse_estimates_json(&estimates_path) {
                         results.insert(bench_name, median_ns);
                     }
-                }
             }
         }
     }
@@ -556,13 +555,11 @@ fn find_workspace_root() -> PathBuf {
 
     loop {
         let cargo_toml = current.join("Cargo.toml");
-        if cargo_toml.exists() {
-            if let Ok(contents) = fs::read_to_string(&cargo_toml) {
-                if contents.contains("[workspace]") {
+        if cargo_toml.exists()
+            && let Ok(contents) = fs::read_to_string(&cargo_toml)
+                && contents.contains("[workspace]") {
                     return current;
                 }
-            }
-        }
         if !current.pop() {
             panic!("Could not find workspace root");
         }

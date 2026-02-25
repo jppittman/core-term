@@ -11,16 +11,13 @@ use std::time::Instant;
 
 use serde::Deserialize;
 
-use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue, NnueConfig, OpKind};
-use pixelflow_search::egraph::{
-    BestFirstConfig, BestFirstContext, BestFirstPlanner, CostModel, ExprTree, Leaf,
-};
+use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue, NnueConfig};
+use pixelflow_search::egraph::{ExprTree, Leaf};
 
 use super::backprop::{
-    ForwardState, HybridForwardState, backward, backward_hybrid, forward_with_state,
+    backward, backward_hybrid, forward_with_state,
     forward_with_state_hybrid,
 };
-use super::features::{extract_tree_features, op_counts_to_dense};
 
 // ============================================================================
 // Common Utilities
@@ -32,26 +29,32 @@ pub struct Rng {
 }
 
 impl Rng {
+    /// Create a new RNG with the given seed.
+    #[must_use]
     pub fn new(seed: u64) -> Self {
         Self {
             state: seed.wrapping_add(1),
         }
     }
 
+    /// Generate a random u64.
     pub fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
         self.state
     }
 
+    /// Generate a random usize in the given range.
     pub fn gen_range(&mut self, range: std::ops::Range<usize>) -> usize {
         let len = range.end - range.start;
         range.start + (self.next_u64() as usize % len)
     }
 
+    /// Generate a random boolean.
     pub fn gen_bool(&mut self) -> bool {
         self.next_u64() & 1 == 0
     }
 
+    /// Generate a random f64 in [0, 1).
     pub fn gen_f64(&mut self) -> f64 {
         (self.next_u64() as f64) / (u64::MAX as f64)
     }
@@ -65,6 +68,8 @@ pub struct ExprGenerator {
 }
 
 impl ExprGenerator {
+    /// Create a new expression generator.
+    #[must_use]
     pub fn new(seed: u64) -> Self {
         Self {
             rng: Rng::new(seed),
@@ -73,11 +78,13 @@ impl ExprGenerator {
         }
     }
 
+    /// Generate a small random expression.
     pub fn generate_small(&mut self) -> ExprTree {
         self.max_depth = 3 + self.rng.gen_range(0..2);
         self.generate_inner(0)
     }
 
+    /// Generate a large random expression.
     pub fn generate_large(&mut self) -> ExprTree {
         self.max_depth = 6 + self.rng.gen_range(0..3);
         self.generate_inner(0)
@@ -102,19 +109,19 @@ impl ExprGenerator {
             let op_type = self.rng.gen_range(0..10);
             match op_type {
                 // Binary ops (6)
-                0 => ExprTree::add(
+                0 => ExprTree::op_add(
                     self.generate_inner(depth + 1),
                     self.generate_inner(depth + 1),
                 ),
-                1 => ExprTree::sub(
+                1 => ExprTree::op_sub(
                     self.generate_inner(depth + 1),
                     self.generate_inner(depth + 1),
                 ),
-                2 => ExprTree::mul(
+                2 => ExprTree::op_mul(
                     self.generate_inner(depth + 1),
                     self.generate_inner(depth + 1),
                 ),
-                3 => ExprTree::div(
+                3 => ExprTree::op_div(
                     self.generate_inner(depth + 1),
                     self.generate_inner(depth + 1),
                 ),
@@ -127,7 +134,7 @@ impl ExprGenerator {
                     self.generate_inner(depth + 1),
                 ),
                 // Unary ops (3)
-                6 => ExprTree::neg(self.generate_inner(depth + 1)),
+                6 => ExprTree::op_neg(self.generate_inner(depth + 1)),
                 7 => ExprTree::sqrt(self.generate_inner(depth + 1)),
                 8 => ExprTree::abs(self.generate_inner(depth + 1)),
                 // Fused op (1)
@@ -148,15 +155,22 @@ impl ExprGenerator {
 /// A benchmark sample with expression and measured cost.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BenchmarkSample {
+    /// Name of the benchmark.
     pub name: String,
+    /// The expression string.
     pub expression: String,
+    /// Measured cost in nanoseconds.
     pub cost_ns: Option<f64>,
+    /// Estimated cost from e-graph.
     pub egraph_cost: Option<usize>,
+    /// Number of nodes in the expression.
     pub node_count: Option<usize>,
+    /// Depth of the expression tree.
     pub depth: Option<usize>,
     /// Precomputed HalfEP feature indices (packed as u32)
     #[serde(default)]
     pub features: Vec<u32>,
+    /// Operation counts.
     #[serde(default)]
     pub op_counts: HashMap<String, usize>,
 }
@@ -169,7 +183,7 @@ pub fn load_benchmark_cache(path: &Path) -> Vec<BenchmarkSample> {
 
     BufReader::new(file)
         .lines()
-        .filter_map(Result::ok)
+        .map_while(Result::ok)
         .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
         .filter_map(|line| serde_json::from_str::<BenchmarkSample>(&line).ok())
         .filter(|s| s.cost_ns.is_some())
@@ -179,9 +193,13 @@ pub fn load_benchmark_cache(path: &Path) -> Vec<BenchmarkSample> {
 /// Configuration for benchmark-based training.
 #[derive(Clone)]
 pub struct BenchmarkConfig {
+    /// Learning rate for training.
     pub learning_rate: f32,
+    /// Number of epochs.
     pub epochs: usize,
+    /// Batch size.
     pub batch_size: usize,
+    /// Random seed.
     pub seed: u64,
 }
 
@@ -199,12 +217,16 @@ impl Default for BenchmarkConfig {
 /// A prepared training sample for The Judge.
 #[derive(Clone)]
 pub struct JudgeTrainingSample {
+    /// Sparse features.
     pub features: Vec<HalfEPFeature>,
+    /// Dense features.
     pub dense: DenseFeatures,
+    /// Ground truth cost in nanoseconds.
     pub cost_ns: f64,
 }
 
 /// Prepare benchmark samples for training.
+#[must_use]
 pub fn prepare_judge_samples(samples: &[BenchmarkSample]) -> Vec<JudgeTrainingSample> {
     samples.iter()
         .filter_map(|s| {
@@ -311,7 +333,7 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
         .iter()
         .flat_map(|f| families.get(f).unwrap().iter().copied())
         .collect();
-    let mut test_indices: Vec<usize> = test_families
+    let test_indices: Vec<usize> = test_families
         .iter()
         .flat_map(|f| families.get(f).unwrap().iter().copied())
         .collect();
@@ -436,8 +458,11 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
 /// A training sample for curriculum learning.
 #[derive(Clone)]
 pub struct GuideTrainingSample {
+    /// Features of the state.
     pub features: Vec<HalfEPFeature>,
+    /// Final cost after optimization.
     pub final_cost: usize,
+    /// Initial cost before optimization.
     pub initial_cost: usize,
 }
 
@@ -449,6 +474,8 @@ pub struct ReplayBuffer {
 }
 
 impl ReplayBuffer {
+    /// Create a new replay buffer.
+    #[must_use]
     pub fn new(max_size: usize, seed: u64) -> Self {
         Self {
             samples: Vec::new(),
@@ -457,6 +484,7 @@ impl ReplayBuffer {
         }
     }
 
+    /// Add a sample to the buffer.
     pub fn add(&mut self, sample: GuideTrainingSample) {
         if self.samples.len() >= self.max_size {
             let idx = self.rng.gen_range(0..self.samples.len());
@@ -465,6 +493,7 @@ impl ReplayBuffer {
         self.samples.push(sample);
     }
 
+    /// Sample a batch from the buffer.
     pub fn sample_batch(&mut self, batch_size: usize) -> Vec<GuideTrainingSample> {
         let n = self.samples.len().min(batch_size);
         let mut indices: Vec<usize> = (0..self.samples.len()).collect();
@@ -480,23 +509,41 @@ impl ReplayBuffer {
             .collect()
     }
 
+    /// Get current buffer size.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.samples.len()
+    }
+
+    /// Check if buffer is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
     }
 }
 
 /// Configuration for curriculum training.
 #[derive(Clone)]
 pub struct CurriculumConfig {
+    /// Number of samples for kindergarten phase.
     pub kindergarten_samples: usize,
+    /// Number of epochs for kindergarten phase.
     pub kindergarten_epochs: usize,
+    /// Number of samples for university phase.
     pub university_samples: usize,
+    /// Number of epochs for university phase.
     pub university_epochs: usize,
+    /// Learning rate for training.
     pub learning_rate: f32,
+    /// Epsilon for epsilon-greedy exploration.
     pub epsilon: f32,
+    /// Maximum number of expansions.
     pub max_expansions: usize,
+    /// Batch size for training.
     pub batch_size: usize,
+    /// Size of the replay buffer.
     pub replay_buffer_size: usize,
+    /// Random seed.
     pub seed: u64,
 }
 

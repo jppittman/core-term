@@ -49,6 +49,7 @@ pub struct FactoredSample {
 
 impl FactoredSample {
     /// Create a new sample from expression and cost.
+    #[must_use]
     pub fn new(expr: Expr, cost_ns: f64, embeddings: &OpEmbeddings) -> Self {
         let accumulator = EdgeAccumulator::from_expr(&expr, embeddings);
         let structural = StructuralFeatures::from_expr(&expr);
@@ -67,6 +68,7 @@ impl FactoredSample {
 
     /// Target value for training (log of cost).
     #[inline]
+    #[must_use]
     pub fn target(&self) -> f32 {
         (self.cost_ns as f32).ln()
     }
@@ -103,6 +105,7 @@ impl Default for Gradients {
 
 impl Gradients {
     /// Create zero-initialized gradients.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             d_emb: [[0.0; K]; OpKind::COUNT],
@@ -190,6 +193,7 @@ pub struct ForwardCache {
 
 impl ForwardCache {
     /// Run forward pass and cache intermediates.
+    #[must_use]
     pub fn forward(
         net: &FactoredNnue,
         acc: &EdgeAccumulator,
@@ -340,6 +344,16 @@ fn propagate_embedding_gradients(
             propagate_embedding_gradients(b, d_acc, d_emb);
             propagate_embedding_gradients(c, d_acc, d_emb);
         }
+        Expr::Nary(_, children) => {
+            for child in children {
+                let child_op = child.op_type();
+                for k in 0..K {
+                    d_emb[parent_op.index()][k] += d_acc[k];
+                    d_emb[child_op.index()][k] += d_acc[K + k];
+                }
+                propagate_embedding_gradients(child, d_acc, d_emb);
+            }
+        }
     }
 }
 
@@ -412,6 +426,7 @@ impl Default for Momentum {
 
 impl Momentum {
     /// Create zero-initialized momentum buffers.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             v_emb: [[0.0; K]; OpKind::COUNT],
@@ -443,6 +458,7 @@ pub struct FactoredTrainer {
 
 impl FactoredTrainer {
     /// Create a new trainer with randomly initialized network.
+    #[must_use]
     pub fn new(config: TrainConfig, seed: u64) -> Self {
         Self {
             net: FactoredNnue::new_random(seed),
@@ -459,6 +475,7 @@ impl FactoredTrainer {
     /// - Embeddings start with known op latencies
     /// - Model can immediately distinguish Add from Div from Sqrt
     /// - Remaining dimensions learn subtle interactions
+    #[must_use]
     pub fn new_with_latency_prior(config: TrainConfig, seed: u64) -> Self {
         Self {
             net: FactoredNnue::new_with_latency_prior(seed),
@@ -615,6 +632,7 @@ impl FactoredTrainer {
     }
 
     /// Compute evaluation metrics on current samples.
+    #[must_use]
     pub fn evaluate(&self) -> TrainMetrics {
         if self.samples.is_empty() {
             return TrainMetrics::default();
@@ -711,6 +729,7 @@ fn compute_ranks(values: &[f32]) -> Vec<f32> {
 /// Parse an expression from a string representation.
 ///
 /// Format: `OpName(child1, child2, ...)` or `Var(n)` or `Const(value)`
+#[must_use]
 pub fn parse_expr(s: &str) -> Option<Expr> {
     let s = s.trim();
 
@@ -848,17 +867,18 @@ fn split_args(s: &str) -> Vec<&str> {
 type ParseResult<'a, T> = Option<(T, &'a str)>;
 
 /// Parse kernel code syntax like "(X + Y)" into Expr.
+#[must_use]
 pub fn parse_kernel_code(s: &str) -> Option<Expr> {
     kc_expr(s.trim()).and_then(|(expr, rest)| rest.is_empty().then_some(expr))
 }
 
 /// Top-level: parse a complete expression
-fn kc_expr(input: &str) -> ParseResult<Expr> {
+fn kc_expr(input: &str) -> ParseResult<'_, Expr> {
     parse_additive(input.trim())
 }
 
 /// Parse additive: left-associative chain of +/-
-fn parse_additive(input: &str) -> ParseResult<Expr> {
+fn parse_additive(input: &str) -> ParseResult<'_, Expr> {
     let (mut acc, mut rest) = parse_multiplicative(input)?;
 
     while let Some((op, remaining)) = parse_additive_op(rest.trim_start()) {
@@ -870,7 +890,7 @@ fn parse_additive(input: &str) -> ParseResult<Expr> {
     Some((acc, rest))
 }
 
-fn parse_additive_op(input: &str) -> ParseResult<OpKind> {
+fn parse_additive_op(input: &str) -> ParseResult<'_, OpKind> {
     match input.chars().next()? {
         '+' => Some((OpKind::Add, &input[1..])),
         '-' => Some((OpKind::Sub, &input[1..])),
@@ -879,7 +899,7 @@ fn parse_additive_op(input: &str) -> ParseResult<OpKind> {
 }
 
 /// Parse multiplicative: left-associative chain of * /
-fn parse_multiplicative(input: &str) -> ParseResult<Expr> {
+fn parse_multiplicative(input: &str) -> ParseResult<'_, Expr> {
     let (mut acc, mut rest) = parse_postfix(input)?;
 
     while let Some((op, remaining)) = parse_multiplicative_op(rest.trim_start()) {
@@ -891,7 +911,7 @@ fn parse_multiplicative(input: &str) -> ParseResult<Expr> {
     Some((acc, rest))
 }
 
-fn parse_multiplicative_op(input: &str) -> ParseResult<OpKind> {
+fn parse_multiplicative_op(input: &str) -> ParseResult<'_, OpKind> {
     match input.chars().next()? {
         '*' => Some((OpKind::Mul, &input[1..])),
         '/' => Some((OpKind::Div, &input[1..])),
@@ -900,7 +920,7 @@ fn parse_multiplicative_op(input: &str) -> ParseResult<OpKind> {
 }
 
 /// Parse postfix: primary followed by method chains
-fn parse_postfix(input: &str) -> ParseResult<Expr> {
+fn parse_postfix(input: &str) -> ParseResult<'_, Expr> {
     let (mut acc, mut rest) = parse_primary(input)?;
 
     while let Some((expr, remaining)) = parse_method_call(rest.trim_start(), acc.clone()) {
@@ -956,7 +976,7 @@ fn parse_method_call<'a>(input: &'a str, base: Expr) -> ParseResult<'a, Expr> {
 }
 
 /// Parse primary: parens, negation, variable, or number
-fn parse_primary(input: &str) -> ParseResult<Expr> {
+fn parse_primary(input: &str) -> ParseResult<'_, Expr> {
     let input = input.trim_start();
 
     // Parenthesized expression
@@ -977,7 +997,7 @@ fn parse_primary(input: &str) -> ParseResult<Expr> {
 }
 
 /// Parse a variable: X, Y, Z, W
-fn parse_variable(input: &str) -> ParseResult<Expr> {
+fn parse_variable(input: &str) -> ParseResult<'_, Expr> {
     let (c, rest) = input.split_at(1.min(input.len()));
     match c {
         "X" => Some((Expr::Var(0), rest)),
@@ -989,7 +1009,7 @@ fn parse_variable(input: &str) -> ParseResult<Expr> {
 }
 
 /// Parse a numeric literal
-fn parse_number(input: &str) -> ParseResult<Expr> {
+fn parse_number(input: &str) -> ParseResult<'_, Expr> {
     let end = input
         .char_indices()
         .find(|(_, c)| !matches!(c, '0'..='9' | '.' | '-' | 'e' | 'E' | '+'))
@@ -1006,7 +1026,7 @@ fn parse_number(input: &str) -> ParseResult<Expr> {
 }
 
 /// Parse an identifier (method name)
-fn parse_ident(input: &str) -> ParseResult<&str> {
+fn parse_ident(input: &str) -> ParseResult<'_, &str> {
     let end = input
         .char_indices()
         .find(|(_, c)| !c.is_ascii_alphabetic() && *c != '_')
