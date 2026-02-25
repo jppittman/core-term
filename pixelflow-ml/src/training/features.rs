@@ -28,6 +28,7 @@ pub const BACKREF_FEATURE: HalfEPFeature = HalfEPFeature {
 };
 
 /// Map ExprTree variant to OpKind for feature encoding.
+#[must_use]
 pub fn expr_tree_to_op_type(tree: &ExprTree) -> OpKind {
     match tree {
         ExprTree::Leaf(Leaf::Var(_)) => OpKind::Var,
@@ -55,6 +56,7 @@ pub fn expr_tree_to_op_type(tree: &ExprTree) -> OpKind {
 }
 
 /// Convert ExprTree to NnueExpr for dense feature extraction.
+#[must_use]
 pub fn expr_tree_to_nnue_expr(tree: &ExprTree) -> NnueExpr {
     match tree {
         ExprTree::Leaf(Leaf::Var(i)) => NnueExpr::Var(*i),
@@ -102,6 +104,7 @@ pub fn expr_tree_to_nnue_expr(tree: &ExprTree) -> NnueExpr {
 }
 
 /// Compute a structural hash for an ExprTree subtree.
+#[must_use]
 pub fn structural_hash(tree: &ExprTree) -> u64 {
     use std::collections::hash_map::DefaultHasher;
 
@@ -133,6 +136,7 @@ pub fn structural_hash(tree: &ExprTree) -> u64 {
 /// Uses a DAG-walk instead of tree-walk:
 /// - First visit to a subtree: extract full features
 /// - Subsequent visits to structurally-identical subtrees: emit BackRef token
+#[must_use]
 pub fn extract_tree_features(tree: &ExprTree) -> Vec<HalfEPFeature> {
     let mut features = Vec::new();
     let mut visited = HashSet::new();
@@ -298,6 +302,7 @@ fn bucket_ratio(ratio: f64, max_bucket: u8) -> u8 {
 /// - "Prefer exploitation late in search (high progress)"
 /// - "Explore more when improvement has stalled"
 /// - "Be greedy when frontier is crowded"
+#[must_use]
 pub fn extract_search_features(ctx: &BestFirstContext<'_>) -> Vec<HalfEPFeature> {
     // Start with tree structure features
     let mut features = extract_tree_features(ctx.tree);
@@ -329,6 +334,7 @@ pub fn extract_search_features(ctx: &BestFirstContext<'_>) -> Vec<HalfEPFeature>
 }
 
 /// Extract features with explicit max_expansions for accurate progress tracking.
+#[must_use]
 pub fn extract_search_features_with_budget(
     ctx: &BestFirstContext<'_>,
     max_expansions: usize,
@@ -355,6 +361,7 @@ pub fn extract_search_features_with_budget(
 }
 
 /// Convert op_counts from benchmark data to DenseFeatures.
+#[must_use]
 pub fn op_counts_to_dense(op_counts: &HashMap<String, usize>, node_count: usize) -> DenseFeatures {
     let mut dense = DenseFeatures::default();
 
@@ -379,6 +386,7 @@ pub fn op_counts_to_dense(op_counts: &HashMap<String, usize>, node_count: usize)
 }
 
 /// Extract dense features from an ExprTree.
+#[must_use]
 pub fn extract_dense_from_tree(tree: &ExprTree) -> DenseFeatures {
     let nnue_expr = expr_tree_to_nnue_expr(tree);
     pixelflow_nnue::extract_dense_features(&nnue_expr)

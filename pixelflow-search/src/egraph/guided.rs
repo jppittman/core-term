@@ -610,16 +610,18 @@ impl GuidedMcts {
 
         loop {
             // Check termination conditions
-            if let Some(timeout) = self.config.timeout
-                && start.elapsed() >= timeout
-            {
-                break;
+            #[allow(clippy::collapsible_if)]
+            if let Some(timeout) = self.config.timeout {
+                if start.elapsed() >= timeout {
+                    break;
+                }
             }
 
-            if let Some(max_iter) = self.config.max_iterations
-                && self.total_iterations >= max_iter
-            {
-                break;
+            #[allow(clippy::collapsible_if)]
+            if let Some(max_iter) = self.config.max_iterations {
+                if self.total_iterations >= max_iter {
+                    break;
+                }
             }
 
             // Run one iteration
@@ -736,11 +738,9 @@ mod tests {
         let mut found_improvement = false;
 
         for action in actions {
-            if state.apply_action(action) {
-                if state.best_cost() < initial_cost {
-                    found_improvement = true;
-                    break;
-                }
+            if state.apply_action(action) && state.best_cost() < initial_cost {
+                found_improvement = true;
+                break;
             }
         }
 

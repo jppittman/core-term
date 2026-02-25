@@ -370,14 +370,20 @@ pub fn eigen_patch(
 
     // Precompute bicubic coefficients for each subpatch
     let mut coeffs = [[[0.0f32; 16]; 3]; 3]; // [axis][subpatch][coeff]
-    for sub in 0..3 {
-        #[allow(clippy::needless_range_loop)]
+    let [cx, cy, cz] = &mut coeffs;
+
+    for (sub, ((x_sub, y_sub), z_sub)) in cx
+        .iter_mut()
+        .zip(cy.iter_mut())
+        .zip(cz.iter_mut())
+        .enumerate()
+    {
         for c in 0..16 {
             for basis in 0..k {
                 let s = eigen.spline(sub, basis, c);
-                coeffs[0][sub][c] += s * proj_x[basis];
-                coeffs[1][sub][c] += s * proj_y[basis];
-                coeffs[2][sub][c] += s * proj_z[basis];
+                x_sub[c] += s * proj_x[basis];
+                y_sub[c] += s * proj_y[basis];
+                z_sub[c] += s * proj_z[basis];
             }
         }
     }

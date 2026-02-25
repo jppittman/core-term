@@ -268,7 +268,7 @@ mod tests {
         drop(tx);
 
         let mut received = Vec::new();
-        let status = inbox
+        let _status = inbox
             .drain(100, |msg| {
                 received.push(msg);
                 Ok(())

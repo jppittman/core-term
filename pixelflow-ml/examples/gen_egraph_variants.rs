@@ -268,8 +268,8 @@ impl BenchmarkCache {
     fn load(path: PathBuf) -> Self {
         let mut entries = HashMap::new();
 
-        if path.exists() {
-            if let Ok(file) = File::open(&path) {
+        if path.exists()
+            && let Ok(file) = File::open(&path) {
                 let reader = BufReader::new(file);
                 for line in reader.lines().map_while(Result::ok) {
                     if line.starts_with('#') || line.trim().is_empty() {
@@ -280,7 +280,6 @@ impl BenchmarkCache {
                     }
                 }
             }
-        }
 
         println!("Loaded {} cached benchmark entries", entries.len());
         BenchmarkCache { entries, path }
@@ -304,11 +303,9 @@ impl BenchmarkCache {
             .create(true)
             .append(true)
             .open(&self.path)
-        {
-            if let Err(e) = writeln!(file, "{}", json) {
+            && let Err(e) = writeln!(file, "{}", json) {
                 eprintln!("Warning: failed to write cache entry: {}", e);
             }
-        }
 
         self.entries.insert(expression, entry);
     }
@@ -614,7 +611,7 @@ fn nnue_expr_to_tree(expr: &Expr) -> ExprTree {
         Expr::Unary(op, a) => {
             let a_tree = nnue_expr_to_tree(a);
             match op {
-                OpType::Neg => ExprTree::neg(a_tree),
+                OpType::Neg => ExprTree::op_neg(a_tree),
                 OpType::Sqrt => ExprTree::sqrt(a_tree),
                 OpType::Rsqrt => ExprTree::Op {
                     op: &ops::Rsqrt,
@@ -628,10 +625,10 @@ fn nnue_expr_to_tree(expr: &Expr) -> ExprTree {
             let a_tree = nnue_expr_to_tree(a);
             let b_tree = nnue_expr_to_tree(b);
             match op {
-                OpType::Add => ExprTree::add(a_tree, b_tree),
-                OpType::Sub => ExprTree::sub(a_tree, b_tree),
-                OpType::Mul => ExprTree::mul(a_tree, b_tree),
-                OpType::Div => ExprTree::div(a_tree, b_tree),
+                OpType::Add => ExprTree::op_add(a_tree, b_tree),
+                OpType::Sub => ExprTree::op_sub(a_tree, b_tree),
+                OpType::Mul => ExprTree::op_mul(a_tree, b_tree),
+                OpType::Div => ExprTree::op_div(a_tree, b_tree),
                 OpType::Min => ExprTree::min(a_tree, b_tree),
                 OpType::Max => ExprTree::max(a_tree, b_tree),
                 _ => ExprTree::var(0), // Fallback
@@ -809,13 +806,11 @@ fn find_workspace_root() -> PathBuf {
 
     loop {
         let cargo_toml = current.join("Cargo.toml");
-        if cargo_toml.exists() {
-            if let Ok(contents) = fs::read_to_string(&cargo_toml) {
-                if contents.contains("[workspace]") {
+        if cargo_toml.exists()
+            && let Ok(contents) = fs::read_to_string(&cargo_toml)
+                && contents.contains("[workspace]") {
                     return current;
                 }
-            }
-        }
         if !current.pop() {
             panic!("Could not find workspace root");
         }

@@ -605,13 +605,14 @@ fn count_refs_recursive(
     ref_counts[canonical.0 as usize] += 1;
 
     // Only recurse on first visit to count true structural refs
-    if ref_counts[canonical.0 as usize] == 1
-        && let Some(node_idx) = best_node[canonical.0 as usize]
-    {
-        let node = &egraph.nodes(canonical)[node_idx];
-        if let ENode::Op { children, .. } = node {
-            for &child in children {
-                count_refs_recursive(egraph, child, best_node, ref_counts);
+    #[allow(clippy::collapsible_if)]
+    if ref_counts[canonical.0 as usize] == 1 {
+        if let Some(node_idx) = best_node[canonical.0 as usize] {
+            let node = &egraph.nodes(canonical)[node_idx];
+            if let ENode::Op { children, .. } = node {
+                for &child in children {
+                    count_refs_recursive(egraph, child, best_node, ref_counts);
+                }
             }
         }
     }

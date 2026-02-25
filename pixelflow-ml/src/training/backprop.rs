@@ -14,6 +14,7 @@ use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue};
 /// Full gradient (1.0) in active region [0, 127].
 /// Small gradient (0.1) in saturated region (>127) for soft clamping.
 #[inline]
+#[must_use]
 pub fn clipped_relu(x: i32) -> (f32, f32) {
     let shifted = x >> 6;
     let clamped = shifted.clamp(0, 127);
@@ -31,31 +32,49 @@ pub fn clipped_relu(x: i32) -> (f32, f32) {
 /// Intermediate activations for sparse-only forward pass.
 #[derive(Clone)]
 pub struct ForwardState {
+    /// Layer 1 pre-activation values.
     pub l1_pre: Vec<i32>,
+    /// Layer 1 post-activation values.
     pub l1_post: Vec<f32>,
+    /// Layer 2 pre-activation values.
     pub l2_pre: Vec<i32>,
+    /// Layer 2 post-activation values.
     pub l2_post: Vec<f32>,
+    /// Layer 3 pre-activation values.
     pub l3_pre: Vec<i32>,
+    /// Layer 3 post-activation values.
     pub l3_post: Vec<f32>,
+    /// Active feature indices.
     pub active_features: Vec<usize>,
 }
 
 /// Intermediate activations for hybrid forward pass (sparse + dense).
 #[derive(Clone)]
 pub struct HybridForwardState {
+    /// Layer 1 pre-activation values.
     pub l1_pre: Vec<i32>,
+    /// Layer 1 post-activation values.
     pub l1_post: Vec<f32>,
-    pub dense_input: Vec<i32>, // Input to dense branch (for W_dense gradients)
-    pub dense_pre: Vec<i32>,   // Pre-activation (for derivative)
+    /// Input to dense branch (for W_dense gradients)
+    pub dense_input: Vec<i32>,
+    /// Pre-activation (for derivative)
+    pub dense_pre: Vec<i32>,
+    /// Post-activation values.
     pub dense_post: Vec<f32>,
+    /// Layer 2 pre-activation values.
     pub l2_pre: Vec<i32>,
+    /// Layer 2 post-activation values.
     pub l2_post: Vec<f32>,
+    /// Layer 3 pre-activation values.
     pub l3_pre: Vec<i32>,
+    /// Layer 3 post-activation values.
     pub l3_post: Vec<f32>,
+    /// Active feature indices.
     pub active_features: Vec<usize>,
 }
 
 /// Forward pass (sparse-only) that stores intermediate activations.
+#[must_use]
 pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, ForwardState) {
     let l1_size = nnue.config.l1_size;
     let l2_size = nnue.config.l2_size;
@@ -133,6 +152,7 @@ pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, Forw
 }
 
 /// Forward pass with hybrid architecture (sparse + dense ILP features).
+#[must_use]
 pub fn forward_with_state_hybrid(
     nnue: &Nnue,
     features: &[HalfEPFeature],
