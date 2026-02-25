@@ -268,8 +268,8 @@ impl BenchmarkCache {
     fn load(path: PathBuf) -> Self {
         let mut entries = HashMap::new();
 
-        if path.exists() {
-            if let Ok(file) = File::open(&path) {
+        if path.exists()
+            && let Ok(file) = File::open(&path) {
                 let reader = BufReader::new(file);
                 for line in reader.lines().map_while(Result::ok) {
                     if line.starts_with('#') || line.trim().is_empty() {
@@ -280,7 +280,6 @@ impl BenchmarkCache {
                     }
                 }
             }
-        }
 
         println!("Loaded {} cached benchmark entries", entries.len());
         BenchmarkCache { entries, path }
@@ -304,11 +303,9 @@ impl BenchmarkCache {
             .create(true)
             .append(true)
             .open(&self.path)
-        {
-            if let Err(e) = writeln!(file, "{}", json) {
+            && let Err(e) = writeln!(file, "{}", json) {
                 eprintln!("Warning: failed to write cache entry: {}", e);
             }
-        }
 
         self.entries.insert(expression, entry);
     }
@@ -809,13 +806,11 @@ fn find_workspace_root() -> PathBuf {
 
     loop {
         let cargo_toml = current.join("Cargo.toml");
-        if cargo_toml.exists() {
-            if let Ok(contents) = fs::read_to_string(&cargo_toml) {
-                if contents.contains("[workspace]") {
+        if cargo_toml.exists()
+            && let Ok(contents) = fs::read_to_string(&cargo_toml)
+                && contents.contains("[workspace]") {
                     return current;
                 }
-            }
-        }
         if !current.pop() {
             panic!("Could not find workspace root");
         }

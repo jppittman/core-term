@@ -262,11 +262,10 @@ fn main() {
         let hce_order_ok = hce_cost >= prev_hce;
         let nnue_order_ok = nnue_cost >= prev_nnue;
 
-        if rank_total > 0 {
-            if hce_order_ok == nnue_order_ok {
+        if rank_total > 0
+            && hce_order_ok == nnue_order_ok {
                 rank_correct += 1;
             }
-        }
         rank_total += 1;
 
         println!(
@@ -426,7 +425,7 @@ fn format_nnue_expr(expr: &pixelflow_nnue::Expr) -> String {
             format_nnue_expr(c)
         ),
         pixelflow_nnue::Expr::Nary(op, children) => {
-            let args: Vec<String> = children.iter().map(|c| format_nnue_expr(c)).collect();
+            let args: Vec<String> = children.iter().map(format_nnue_expr).collect();
             format!("{}({})", op_name(*op), args.join(", "))
         }
     }
