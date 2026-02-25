@@ -605,6 +605,7 @@ fn count_refs_recursive(
     ref_counts[canonical.0 as usize] += 1;
 
     // Only recurse on first visit to count true structural refs
+    #[allow(clippy::collapsible_if)]
     if ref_counts[canonical.0 as usize] == 1 {
         if let Some(node_idx) = best_node[canonical.0 as usize] {
             let node = &egraph.nodes(canonical)[node_idx];

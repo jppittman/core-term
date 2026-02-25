@@ -610,12 +610,14 @@ impl GuidedMcts {
 
         loop {
             // Check termination conditions
+            #[allow(clippy::collapsible_if)]
             if let Some(timeout) = self.config.timeout {
                 if start.elapsed() >= timeout {
                     break;
                 }
             }
 
+            #[allow(clippy::collapsible_if)]
             if let Some(max_iter) = self.config.max_iterations {
                 if self.total_iterations >= max_iter {
                     break;
