@@ -118,7 +118,7 @@ pub enum VsyncManagement {
     /// Configure the vsync actor (set refresh rate, engine handle, etc.)
     SetConfig {
         config: VsyncConfig,
-        engine_handle: crate::api::private::EngineActorHandle,
+        engine_handle: Box<crate::api::private::EngineActorHandle>,
         self_handle: Box<ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>>,
     },
 }
@@ -383,7 +383,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
                 self_handle,
             } => {
                 // Configure the vsync actor (called via Management after construction)
-                self.engine_handle = Some(engine_handle);
+                self.engine_handle = Some(*engine_handle);
                 self.refresh_rate = config.refresh_rate;
                 self.interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
 
