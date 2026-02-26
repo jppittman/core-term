@@ -1,0 +1,283 @@
+// src/term/emulator/mouse.rs
+
+//! Mouse event encoding for terminal mouse tracking protocols.
+//!
+//! When a shell application enables mouse tracking (via DEC private modes like
+//! 1000, 1002, 1003), mouse events must be encoded as escape sequences and
+//! sent to the PTY. This module handles the encoding for both SGR (mode 1006)
+//! and legacy X10/Normal mouse protocols.
+
+use crate::term::modes::DecPrivateModes;
+use pixelflow_runtime::input::MouseButton;
+
+/// The type of mouse event being reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseEventKind {
+    Press,
+    Release,
+    Motion,
+}
+
+/// Encode a mouse event as terminal escape sequence bytes.
+///
+/// Returns `None` if no mouse tracking mode is active, or if the current mode
+/// doesn't report this event kind (e.g., X10 mode doesn't report releases).
+///
+/// Coordinates `col` and `row` are 0-based cell positions.
+pub(crate) fn encode_mouse_event(
+    modes: &DecPrivateModes,
+    button: MouseButton,
+    col: usize,
+    row: usize,
+    kind: MouseEventKind,
+) -> Option<Vec<u8>> {
+    // Determine if the current tracking mode reports this event kind
+    if !should_report(modes, kind) {
+        return None;
+    }
+
+    let button_code = mouse_button_code(button, kind);
+
+    if modes.mouse_sgr_mode {
+        Some(encode_sgr(button_code, col, row, kind))
+    } else {
+        encode_legacy(button_code, col, row)
+    }
+}
+
+/// Check whether the active tracking mode should report this event kind.
+fn should_report(modes: &DecPrivateModes, kind: MouseEventKind) -> bool {
+    match kind {
+        MouseEventKind::Press => {
+            modes.mouse_x10_mode
+                || modes.mouse_vt200_mode
+                || modes.mouse_button_event_mode
+                || modes.mouse_any_event_mode
+        }
+        MouseEventKind::Release => {
+            // X10 mode does not report releases
+            modes.mouse_vt200_mode
+                || modes.mouse_button_event_mode
+                || modes.mouse_any_event_mode
+        }
+        MouseEventKind::Motion => {
+            // Button-event mode reports motion only while a button is held,
+            // but filtering by held-button state is done by the caller.
+            // Any-event mode reports all motion.
+            modes.mouse_button_event_mode || modes.mouse_any_event_mode
+        }
+    }
+}
+
+/// Map a MouseButton + event kind to the xterm button protocol code.
+///
+/// Button codes (Cb):
+/// - 0 = left press
+/// - 1 = middle press
+/// - 2 = right press
+/// - 3 = release (legacy mode only; SGR uses lowercase 'm')
+/// - 32 = motion flag (added for motion events)
+/// - 64 = scroll up
+/// - 65 = scroll down
+fn mouse_button_code(button: MouseButton, kind: MouseEventKind) -> u8 {
+    let base = match button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+        MouseButton::ScrollUp => 64,
+        MouseButton::ScrollDown => 65,
+        MouseButton::Other(n) => {
+            // Buttons 4+ map to codes 128+
+            if n >= 4 { 128 + n - 4 } else { n }
+        }
+    };
+
+    if kind == MouseEventKind::Motion {
+        base + 32 // Add motion flag
+    } else {
+        base
+    }
+}
+
+/// Encode using SGR extended mouse mode (1006).
+///
+/// Format: `ESC [ < Cb ; Cx ; Cy M` for press/motion, `ESC [ < Cb ; Cx ; Cy m` for release.
+/// Coordinates are 1-based.
+fn encode_sgr(button_code: u8, col: usize, row: usize, kind: MouseEventKind) -> Vec<u8> {
+    let suffix = if kind == MouseEventKind::Release { 'm' } else { 'M' };
+    // SGR uses 1-based coordinates
+    let cx = col + 1;
+    let cy = row + 1;
+    format!("\x1b[<{};{};{}{}", button_code, cx, cy, suffix).into_bytes()
+}
+
+/// Encode using legacy X10/Normal mouse mode.
+///
+/// Format: `ESC [ M Cb Cx Cy` where each of Cb, Cx, Cy is a single byte + 32.
+/// Limited to coordinates 0-222 (encoded as 32-254).
+/// Returns `None` if coordinates exceed the encodable range.
+fn encode_legacy(button_code: u8, col: usize, row: usize) -> Option<Vec<u8>> {
+    // Legacy encoding caps at 222 (byte value 254, since we add 32)
+    if col > 222 || row > 222 {
+        return None;
+    }
+    let cb = button_code + 32;
+    let cx = (col as u8) + 33; // 1-based + 32
+    let cy = (row as u8) + 33;
+    Some(vec![b'\x1b', b'[', b'M', cb, cx, cy])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn modes_with_vt200() -> DecPrivateModes {
+        let mut modes = DecPrivateModes::default();
+        modes.mouse_vt200_mode = true;
+        modes
+    }
+
+    fn modes_with_sgr() -> DecPrivateModes {
+        let mut modes = DecPrivateModes::default();
+        modes.mouse_vt200_mode = true;
+        modes.mouse_sgr_mode = true;
+        modes
+    }
+
+    fn modes_with_x10() -> DecPrivateModes {
+        let mut modes = DecPrivateModes::default();
+        modes.mouse_x10_mode = true;
+        modes
+    }
+
+    fn modes_with_any_event_sgr() -> DecPrivateModes {
+        let mut modes = DecPrivateModes::default();
+        modes.mouse_any_event_mode = true;
+        modes.mouse_sgr_mode = true;
+        modes
+    }
+
+    #[test]
+    fn no_mode_returns_none() {
+        let modes = DecPrivateModes::default();
+        let result = encode_mouse_event(&modes, MouseButton::Left, 5, 10, MouseEventKind::Press);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn sgr_left_press() {
+        let modes = modes_with_sgr();
+        let result =
+            encode_mouse_event(&modes, MouseButton::Left, 5, 10, MouseEventKind::Press).unwrap();
+        // SGR: ESC[<0;6;11M (1-based coords)
+        assert_eq!(result, b"\x1b[<0;6;11M");
+    }
+
+    #[test]
+    fn sgr_left_release() {
+        let modes = modes_with_sgr();
+        let result =
+            encode_mouse_event(&modes, MouseButton::Left, 5, 10, MouseEventKind::Release).unwrap();
+        // SGR release uses lowercase 'm'
+        assert_eq!(result, b"\x1b[<0;6;11m");
+    }
+
+    #[test]
+    fn sgr_right_press() {
+        let modes = modes_with_sgr();
+        let result =
+            encode_mouse_event(&modes, MouseButton::Right, 0, 0, MouseEventKind::Press).unwrap();
+        assert_eq!(result, b"\x1b[<2;1;1M");
+    }
+
+    #[test]
+    fn sgr_middle_press() {
+        let modes = modes_with_sgr();
+        let result =
+            encode_mouse_event(&modes, MouseButton::Middle, 79, 23, MouseEventKind::Press)
+                .unwrap();
+        assert_eq!(result, b"\x1b[<1;80;24M");
+    }
+
+    #[test]
+    fn sgr_motion() {
+        let modes = modes_with_any_event_sgr();
+        let result =
+            encode_mouse_event(&modes, MouseButton::Left, 10, 5, MouseEventKind::Motion).unwrap();
+        // Motion adds 32 to button code: 0 + 32 = 32
+        assert_eq!(result, b"\x1b[<32;11;6M");
+    }
+
+    #[test]
+    fn sgr_scroll_up() {
+        let modes = modes_with_sgr();
+        let result =
+            encode_mouse_event(&modes, MouseButton::ScrollUp, 10, 5, MouseEventKind::Press)
+                .unwrap();
+        assert_eq!(result, b"\x1b[<64;11;6M");
+    }
+
+    #[test]
+    fn sgr_scroll_down() {
+        let modes = modes_with_sgr();
+        let result =
+            encode_mouse_event(&modes, MouseButton::ScrollDown, 10, 5, MouseEventKind::Press)
+                .unwrap();
+        assert_eq!(result, b"\x1b[<65;11;6M");
+    }
+
+    #[test]
+    fn legacy_left_press() {
+        let modes = modes_with_vt200();
+        let result =
+            encode_mouse_event(&modes, MouseButton::Left, 5, 10, MouseEventKind::Press).unwrap();
+        // Legacy: ESC[M + (0+32) + (5+33) + (10+33)
+        assert_eq!(result, vec![0x1b, b'[', b'M', 32, 38, 43]);
+    }
+
+    #[test]
+    fn legacy_coords_overflow_returns_none() {
+        let modes = modes_with_vt200();
+        let result =
+            encode_mouse_event(&modes, MouseButton::Left, 300, 10, MouseEventKind::Press);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn x10_reports_press_only() {
+        let modes = modes_with_x10();
+        let press =
+            encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Press);
+        assert!(press.is_some());
+        let release =
+            encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Release);
+        assert_eq!(release, None);
+        let motion =
+            encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Motion);
+        assert_eq!(motion, None);
+    }
+
+    #[test]
+    fn vt200_reports_press_and_release() {
+        let modes = modes_with_vt200();
+        let press =
+            encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Press);
+        assert!(press.is_some());
+        let release =
+            encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Release);
+        assert!(release.is_some());
+        let motion =
+            encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Motion);
+        assert_eq!(motion, None);
+    }
+
+    #[test]
+    fn sgr_large_coordinates() {
+        let modes = modes_with_sgr();
+        // SGR has no coordinate limit
+        let result =
+            encode_mouse_event(&modes, MouseButton::Left, 500, 300, MouseEventKind::Press)
+                .unwrap();
+        assert_eq!(result, b"\x1b[<0;501;301M");
+    }
+}
