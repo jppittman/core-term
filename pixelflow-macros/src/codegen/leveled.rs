@@ -317,6 +317,10 @@ impl<'a> LevelBuilder<'a> {
                             // Local variables - conservatively Varying
                             (LeveledNodeKind::Local { name }, Deps::Varying)
                         }
+                        SymbolKind::Constant => {
+                            // Constants - effectively literals
+                            (LeveledNodeKind::Local { name }, Deps::Const)
+                        }
                     },
                     None => (LeveledNodeKind::Local { name }, Deps::Varying),
                 }

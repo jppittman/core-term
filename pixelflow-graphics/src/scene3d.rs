@@ -40,6 +40,12 @@ const CURVATURE_SCALE_FACTOR: f32 = 2.0;
 /// Epsilon for sphere intersection to avoid self-intersection artifacts.
 const SPHERE_EPSILON: f32 = 0.0001;
 
+/// Maximum ray distance for intersection checks.
+const MAX_RAY_DISTANCE: f32 = 1_000_000.0;
+
+/// Maximum derivative magnitude for valid hits (filters out singularities/edge artifacts).
+const MAX_DERIVATIVE_MAGNITUDE: f32 = 10_000.0;
+
 // ============================================================================
 // LIFT: Field manifold → Jet3 manifold (explicit conversion)
 // ============================================================================
@@ -378,8 +384,8 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     let t = geometry;
 
     // 2. Validate hit: t > 0, t < max, derivatives reasonable
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
+    let t_max = MAX_RAY_DISTANCE;
+    let deriv_max = MAX_DERIVATIVE_MAGNITUDE;
     let valid_t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
@@ -404,8 +410,8 @@ kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, backgroun
     let t = geometry;
 
     // 2. Validate hit: t > 0, t < max, derivatives reasonable
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
+    let t_max = MAX_RAY_DISTANCE;
+    let deriv_max = MAX_DERIVATIVE_MAGNITUDE;
     let valid_t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
@@ -530,8 +536,8 @@ where
 // Mask manifold for geometry hit detection.
 kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
     let t = geometry;
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
+    let t_max = MAX_RAY_DISTANCE;
+    let deriv_max = MAX_DERIVATIVE_MAGNITUDE;
 
     // Valid if: t > 0, t < max, derivatives reasonable
     let valid_t = (V(t) > 0.0) & (V(t) < t_max);
