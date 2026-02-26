@@ -373,11 +373,13 @@ pub fn eigen_patch(
     for sub in 0..3 {
         #[allow(clippy::needless_range_loop)]
         for c in 0..16 {
-            for basis in 0..k {
+            for (basis, (proj_x_val, (proj_y_val, proj_z_val))) in
+                proj_x.iter().zip(proj_y.iter().zip(proj_z.iter())).enumerate().take(k)
+            {
                 let s = eigen.spline(sub, basis, c);
-                coeffs[0][sub][c] += s * proj_x[basis];
-                coeffs[1][sub][c] += s * proj_y[basis];
-                coeffs[2][sub][c] += s * proj_z[basis];
+                coeffs[0][sub][c] += s * proj_x_val;
+                coeffs[1][sub][c] += s * proj_y_val;
+                coeffs[2][sub][c] += s * proj_z_val;
             }
         }
     }
