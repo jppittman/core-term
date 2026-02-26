@@ -557,6 +557,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 }
             }
             EngineEventManagement::MouseClick { button, x, y } => {
+                use crate::term::MouseEventKind;
                 let col = (x / self.config.appearance.cell_width_px as u32) as usize;
                 let row = (y / self.config.appearance.cell_height_px as u32) as usize;
                 log::trace!(
@@ -565,9 +566,17 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                     col,
                     row
                 );
-                // TODO: Handle mouse tracking modes, selection
+                if let Some(bytes) =
+                    self.emulator
+                        .encode_mouse_event(button, col, row, MouseEventKind::Press)
+                {
+                    if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
+                        log::warn!("Failed to send mouse press to PTY: {}", e);
+                    }
+                }
             }
             EngineEventManagement::MouseRelease { button, x, y } => {
+                use crate::term::MouseEventKind;
                 let col = (x / self.config.appearance.cell_width_px as u32) as usize;
                 let row = (y / self.config.appearance.cell_height_px as u32) as usize;
                 log::trace!(
@@ -576,13 +585,33 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                     col,
                     row
                 );
-                // TODO: Handle mouse tracking modes, end selection
+                if let Some(bytes) =
+                    self.emulator
+                        .encode_mouse_event(button, col, row, MouseEventKind::Release)
+                {
+                    if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
+                        log::warn!("Failed to send mouse release to PTY: {}", e);
+                    }
+                }
             }
             EngineEventManagement::MouseMove { x, y, mods: _ } => {
+                use crate::term::MouseEventKind;
                 let col = (x / self.config.appearance.cell_width_px as u32) as usize;
                 let row = (y / self.config.appearance.cell_height_px as u32) as usize;
                 log::trace!("Mouse move: cell ({}, {})", col, row);
-                // TODO: Handle mouse tracking modes, drag selection
+                // Only report motion if a tracking mode that cares about motion is active
+                if self.emulator.reports_button_motion() {
+                    if let Some(bytes) = self.emulator.encode_mouse_event(
+                        pixelflow_runtime::input::MouseButton::Left,
+                        col,
+                        row,
+                        MouseEventKind::Motion,
+                    ) {
+                        if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
+                            log::warn!("Failed to send mouse motion to PTY: {}", e);
+                        }
+                    }
+                }
             }
             EngineEventManagement::MouseScroll {
                 x: _,

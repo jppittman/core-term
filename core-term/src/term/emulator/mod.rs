@@ -39,6 +39,7 @@ mod input_handler;
 mod key_translator;
 mod methods;
 mod mode_handler;
+pub(crate) mod mouse;
 mod osc_handler;
 mod screen_ops;
 
@@ -363,6 +364,47 @@ impl TerminalEmulator {
     #[must_use]
     pub fn get_selected_text(&self) -> Option<String> {
         self.screen.get_selected_text()
+    }
+
+    /// Encode a mouse event as terminal escape sequence bytes, respecting the
+    /// currently active mouse tracking and encoding modes.
+    ///
+    /// Returns `None` if no mouse tracking mode is active or the event kind
+    /// is not reported by the current mode.
+    ///
+    /// Coordinates `col` and `row` are 0-based cell positions.
+    #[must_use]
+    pub fn encode_mouse_event(
+        &self,
+        button: pixelflow_runtime::input::MouseButton,
+        col: usize,
+        row: usize,
+        kind: mouse::MouseEventKind,
+    ) -> Option<Vec<u8>> {
+        mouse::encode_mouse_event(&self.dec_modes, button, col, row, kind)
+    }
+
+    /// Returns true if any mouse tracking mode is active.
+    #[must_use]
+    pub fn is_mouse_tracking_active(&self) -> bool {
+        self.dec_modes.mouse_x10_mode
+            || self.dec_modes.mouse_vt200_mode
+            || self.dec_modes.mouse_button_event_mode
+            || self.dec_modes.mouse_any_event_mode
+    }
+
+    /// Returns true if the any-event mouse mode (1003) is active,
+    /// which reports all mouse motion regardless of button state.
+    #[must_use]
+    pub fn reports_all_motion(&self) -> bool {
+        self.dec_modes.mouse_any_event_mode
+    }
+
+    /// Returns true if button-event or any-event mouse mode is active,
+    /// which report mouse motion while a button is held.
+    #[must_use]
+    pub fn reports_button_motion(&self) -> bool {
+        self.dec_modes.mouse_button_event_mode || self.dec_modes.mouse_any_event_mode
     }
 
     pub fn paste_text(&mut self, text: String) {
