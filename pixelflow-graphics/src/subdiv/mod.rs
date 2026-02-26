@@ -370,8 +370,8 @@ pub fn eigen_patch(
 
     // Precompute bicubic coefficients for each subpatch
     let mut coeffs = [[[0.0f32; 16]; 3]; 3]; // [axis][subpatch][coeff]
+    #[allow(clippy::needless_range_loop)]
     for sub in 0..3 {
-        #[allow(clippy::needless_range_loop)]
         for c in 0..16 {
             for (basis, (proj_x_val, (proj_y_val, proj_z_val))) in
                 proj_x.iter().zip(proj_y.iter().zip(proj_z.iter())).enumerate().take(k)
