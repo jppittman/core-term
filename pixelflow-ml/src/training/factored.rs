@@ -340,6 +340,7 @@ fn propagate_embedding_gradients(
             propagate_embedding_gradients(b, d_acc, d_emb);
             propagate_embedding_gradients(c, d_acc, d_emb);
         }
+        &pixelflow_ir::Expr::Nary(_, _) => todo!(),
     }
 }
 

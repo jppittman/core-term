@@ -1,0 +1,251 @@
+    Checking freetype-sys v0.17.0
+    Checking pixelflow-ml v0.1.0 (/app/pixelflow-ml)
+    Checking debugid v0.8.0
+error: unused import: `alloc::string::String`
+  --> pixelflow-ml/src/training/data_gen.rs:42:5
+   |
+42 | use alloc::string::String;
+   |     ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `-D unused-imports` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: unused import: `RewriteRule`
+  --> pixelflow-ml/src/training/data_gen.rs:46:64
+   |
+46 |     Expr, ExprGenConfig, ExprGenerator, HalfEPFeature, OpType, RewriteRule, extract_features,
+   |                                                                ^^^^^^^^^^^
+
+error: unused import: `OpKind`
+  --> pixelflow-ml/src/training/egraph.rs:14:70
+   |
+14 | use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue, NnueConfig, OpKind};
+   |                                                                      ^^^^^^
+
+error: unused imports: `BestFirstConfig`, `BestFirstContext`, `BestFirstPlanner`, and `CostModel`
+  --> pixelflow-ml/src/training/egraph.rs:16:5
+   |
+16 |     BestFirstConfig, BestFirstContext, BestFirstPlanner, CostModel, ExprTree, Leaf,
+   |     ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^
+
+error: unused imports: `ForwardState` and `HybridForwardState`
+  --> pixelflow-ml/src/training/egraph.rs:20:5
+   |
+20 |     ForwardState, HybridForwardState, backward, backward_hybrid, forward_with_state,
+   |     ^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+
+error: unused imports: `extract_tree_features` and `op_counts_to_dense`
+  --> pixelflow-ml/src/training/egraph.rs:23:23
+   |
+23 | use super::features::{extract_tree_features, op_counts_to_dense};
+   |                       ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^
+
+   Compiling core-term v0.1.0 (/app/core-term)
+    Checking freetype-rs v0.32.0
+    Checking memmap2 v0.9.9
+error[E0599]: no variant or associated item named `add` found for enum `pixelflow_search::egraph::ExprTree` in the current scope
+   --> pixelflow-ml/src/training/egraph.rs:105:32
+    |
+105 |                 0 => ExprTree::add(
+    |                                ^^^ variant or associated item not found in `pixelflow_search::egraph::ExprTree`
+    |
+note: if you're trying to build a new `pixelflow_search::egraph::ExprTree` consider using one of the following associated functions:
+      pixelflow_search::egraph::ExprTree::var
+      pixelflow_search::egraph::ExprTree::constant
+      pixelflow_search::egraph::ExprTree::op_add
+      pixelflow_search::egraph::ExprTree::op_sub
+      and 8 others
+   --> /app/pixelflow-search/src/egraph/extract.rs:39:5
+    |
+ 39 |     pub fn var(idx: u8) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 45 |     pub fn constant(val: f32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 69 |     pub fn op_add(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 77 |     pub fn op_sub(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is an associated function `op_add` with a similar name
+    |
+105 |                 0 => ExprTree::op_add(
+    |                                +++
+
+error[E0599]: no variant or associated item named `sub` found for enum `pixelflow_search::egraph::ExprTree` in the current scope
+   --> pixelflow-ml/src/training/egraph.rs:109:32
+    |
+109 |                 1 => ExprTree::sub(
+    |                                ^^^ variant or associated item not found in `pixelflow_search::egraph::ExprTree`
+    |
+note: if you're trying to build a new `pixelflow_search::egraph::ExprTree` consider using one of the following associated functions:
+      pixelflow_search::egraph::ExprTree::var
+      pixelflow_search::egraph::ExprTree::constant
+      pixelflow_search::egraph::ExprTree::op_add
+      pixelflow_search::egraph::ExprTree::op_sub
+      and 8 others
+   --> /app/pixelflow-search/src/egraph/extract.rs:39:5
+    |
+ 39 |     pub fn var(idx: u8) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 45 |     pub fn constant(val: f32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 69 |     pub fn op_add(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 77 |     pub fn op_sub(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is an associated function `op_sub` with a similar name
+    |
+109 |                 1 => ExprTree::op_sub(
+    |                                +++
+
+error[E0599]: no variant or associated item named `mul` found for enum `pixelflow_search::egraph::ExprTree` in the current scope
+   --> pixelflow-ml/src/training/egraph.rs:113:32
+    |
+113 |                 2 => ExprTree::mul(
+    |                                ^^^ variant or associated item not found in `pixelflow_search::egraph::ExprTree`
+    |
+note: if you're trying to build a new `pixelflow_search::egraph::ExprTree` consider using one of the following associated functions:
+      pixelflow_search::egraph::ExprTree::var
+      pixelflow_search::egraph::ExprTree::constant
+      pixelflow_search::egraph::ExprTree::op_add
+      pixelflow_search::egraph::ExprTree::op_sub
+      and 8 others
+   --> /app/pixelflow-search/src/egraph/extract.rs:39:5
+    |
+ 39 |     pub fn var(idx: u8) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 45 |     pub fn constant(val: f32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 69 |     pub fn op_add(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 77 |     pub fn op_sub(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is an associated function `op_mul` with a similar name
+    |
+113 |                 2 => ExprTree::op_mul(
+    |                                +++
+
+error[E0599]: no variant or associated item named `div` found for enum `pixelflow_search::egraph::ExprTree` in the current scope
+   --> pixelflow-ml/src/training/egraph.rs:117:32
+    |
+117 |                 3 => ExprTree::div(
+    |                                ^^^ variant or associated item not found in `pixelflow_search::egraph::ExprTree`
+    |
+note: if you're trying to build a new `pixelflow_search::egraph::ExprTree` consider using one of the following associated functions:
+      pixelflow_search::egraph::ExprTree::var
+      pixelflow_search::egraph::ExprTree::constant
+      pixelflow_search::egraph::ExprTree::op_add
+      pixelflow_search::egraph::ExprTree::op_sub
+      and 8 others
+   --> /app/pixelflow-search/src/egraph/extract.rs:39:5
+    |
+ 39 |     pub fn var(idx: u8) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 45 |     pub fn constant(val: f32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 69 |     pub fn op_add(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 77 |     pub fn op_sub(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is an associated function `op_div` with a similar name
+    |
+117 |                 3 => ExprTree::op_div(
+    |                                +++
+
+error[E0599]: no variant or associated item named `neg` found for enum `pixelflow_search::egraph::ExprTree` in the current scope
+   --> pixelflow-ml/src/training/egraph.rs:130:32
+    |
+130 |                 6 => ExprTree::neg(self.generate_inner(depth + 1)),
+    |                                ^^^ variant or associated item not found in `pixelflow_search::egraph::ExprTree`
+    |
+note: if you're trying to build a new `pixelflow_search::egraph::ExprTree` consider using one of the following associated functions:
+      pixelflow_search::egraph::ExprTree::var
+      pixelflow_search::egraph::ExprTree::constant
+      pixelflow_search::egraph::ExprTree::op_add
+      pixelflow_search::egraph::ExprTree::op_sub
+      and 8 others
+   --> /app/pixelflow-search/src/egraph/extract.rs:39:5
+    |
+ 39 |     pub fn var(idx: u8) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 45 |     pub fn constant(val: f32) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 69 |     pub fn op_add(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 77 |     pub fn op_sub(a: Self, b: Self) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is an associated function `op_neg` with a similar name
+    |
+130 |                 6 => ExprTree::op_neg(self.generate_inner(depth + 1)),
+    |                                +++
+
+    Checking pixelflow-graphics v0.1.0 (/app/pixelflow-graphics)
+    Checking equivalent v1.0.2
+    Checking hashbrown v0.16.1
+error: variable does not need to be mutable
+   --> pixelflow-ml/src/training/egraph.rs:314:9
+    |
+314 |     let mut test_indices: Vec<usize> = test_families
+    |         ----^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `-D unused-mut` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(unused_mut)]`
+
+error[E0004]: non-exhaustive patterns: `&pixelflow_ir::Expr::Nary(_, _)` not covered
+   --> pixelflow-ml/src/training/factored.rs:298:11
+    |
+298 |     match expr {
+    |           ^^^^ pattern `&pixelflow_ir::Expr::Nary(_, _)` not covered
+    |
+note: `pixelflow_ir::Expr` defined here
+   --> /app/pixelflow-ir/src/expr.rs:22:1
+    |
+ 22 | pub enum Expr {
+    | ^^^^^^^^^^^^^
+...
+ 34 |     Nary(OpKind, Vec<Expr>),
+    |     ---- not covered
+    = note: the matched value is of type `&pixelflow_ir::Expr`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+    |
+342 ~         },
+343 +         &pixelflow_ir::Expr::Nary(_, _) => todo!()
+    |
+
+Some errors have detailed explanations: E0004, E0599.
+For more information about an error, try `rustc --explain E0004`.
+error: could not compile `pixelflow-ml` (lib) due to 13 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: the loop variable `sub` is used to index `coeffs`
+   --> pixelflow-graphics/src/subdiv/mod.rs:373:16
+    |
+373 |     for sub in 0..3 {
+    |                ^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+    = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator and enumerate()
+    |
+373 -     for sub in 0..3 {
+373 +     for (sub, <item>) in coeffs.iter_mut().enumerate() {
+    |
+
+error: could not compile `pixelflow-graphics` (lib) due to 1 previous error
+error: could not compile `pixelflow-graphics` (lib) due to 1 previous error

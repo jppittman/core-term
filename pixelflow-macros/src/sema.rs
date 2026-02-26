@@ -240,11 +240,11 @@ impl SemanticAnalyzer {
         "abs", "sqrt", "floor", "ceil", "round", "fract", "sin", "cos", "tan", "asin", "acos",
         "atan", "atan2", "exp", "exp2", "ln", "log2", "log10", "pow", "min", "max", "clamp",
         "hypot", "rsqrt", "recip", // Comparison methods
-        "lt", "le", "gt", "ge", "eq", "ne", // Selection
+        "lt", "le", "gt", "ge", "eq", "ne",     // Selection
         "select", // Coordinate warp (contramap)
-        "at", // Field/Jet specific
+        "at",     // Field/Jet specific
         "constant", "collapse", // Unary
-        "neg", // Clone for reusing expressions
+        "neg",      // Clone for reusing expressions
         "clone",
     ];
 

@@ -39,12 +39,10 @@
 
 extern crate alloc;
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::nnue::{
-    Expr, ExprGenConfig, ExprGenerator, HalfEPFeature, OpType, RewriteRule, extract_features,
-    find_all_rewrites,
+    Expr, ExprGenConfig, ExprGenerator, HalfEPFeature, OpType, extract_features, find_all_rewrites,
 };
 
 // ============================================================================
