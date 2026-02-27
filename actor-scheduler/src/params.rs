@@ -341,4 +341,106 @@ mod tests {
         p.jitter_range_pct = 30; // 80 + 30 = 110 > 100
         p.validate();
     }
+
+    // Kills: replace * with + in control_burst_limit (line 201)
+    // With +: control_burst_limit = buf_size + multiplier (wrong — should be product)
+    #[test]
+    fn control_burst_limit_is_product_of_size_and_multiplier() {
+        let p = SchedulerParams {
+            control_mgmt_buffer_size: 8,
+            control_burst_multiplier: 5,
+            ..SchedulerParams::DEFAULT
+        };
+        assert_eq!(p.control_burst_limit(), 40, "control_burst_limit = 8 * 5 = 40");
+    }
+
+    // Kills: replace * with + in management_burst_limit (line 207)
+    // With +: management_burst_limit = buf_size + multiplier (wrong — should be product)
+    #[test]
+    fn management_burst_limit_is_product_of_size_and_multiplier() {
+        let p = SchedulerParams {
+            control_mgmt_buffer_size: 10,
+            management_burst_multiplier: 3,
+            ..SchedulerParams::DEFAULT
+        };
+        assert_eq!(p.management_burst_limit(), 30, "management_burst_limit = 10 * 3 = 30");
+    }
+
+    // Kills: replace management_burst_limit with 1 (line 207 return-value replacement)
+    #[test]
+    fn management_burst_limit_exceeds_one_for_large_multiplier() {
+        let p = SchedulerParams {
+            control_mgmt_buffer_size: 10,
+            management_burst_multiplier: 4,
+            ..SchedulerParams::DEFAULT
+        };
+        assert!(p.management_burst_limit() > 1, "management_burst_limit should exceed 1");
+        assert_eq!(p.management_burst_limit(), 40);
+    }
+
+    // Kills: replace * with / in control_burst_limit
+    #[test]
+    fn control_burst_limit_different_from_quotient() {
+        let p = SchedulerParams {
+            control_mgmt_buffer_size: 8,
+            control_burst_multiplier: 4,
+            ..SchedulerParams::DEFAULT
+        };
+        // 8 * 4 = 32, but 8 / 4 = 2 — should be 32
+        assert_eq!(p.control_burst_limit(), 32);
+        assert_ne!(p.control_burst_limit(), p.control_mgmt_buffer_size / p.control_burst_multiplier);
+    }
+
+    // Kills: replace - with + in from_vec jitter_range clamping (line 236)
+    // With +: jitter_range = max(1, min(v[9], 100 + jitter_min))
+    //         The cap becomes much larger, allowing jitter_range > 100-jitter_min
+    #[test]
+    fn from_vec_jitter_range_clamped_to_prevent_overflow() {
+        // jitter_min=50, jitter_range=60 would sum to 110 (>100, invalid)
+        // from_vec should clamp jitter_range to (100 - jitter_min) = 50
+        let v = [
+            10.0, // control_mgmt_buffer_size
+            1.0,  // control_burst_multiplier
+            1.0,  // management_burst_multiplier
+            16.0, // default_data_burst_limit
+            0.0,  // spin_attempts
+            0.0,  // yield_attempts
+            100.0, // min_backoff_us
+            200_000.0, // max_backoff_us
+            50.0,  // jitter_min_pct
+            60.0,  // jitter_range_pct (too high, should be clamped to 50)
+        ];
+        let p = SchedulerParams::from_vec(&v);
+        // With correct subtraction: jitter_range = min(60, 100 - 50) = min(60, 50) = 50
+        // With + mutation: jitter_range = min(60, 100 + 50) = min(60, 150) = 60 (not clamped!)
+        assert!(
+            p.jitter_min_pct + p.jitter_range_pct <= 100,
+            "from_vec must clamp jitter_range so min+range <= 100"
+        );
+        assert_eq!(
+            p.jitter_range_pct, 50,
+            "jitter_range should be clamped to 100 - jitter_min = 50"
+        );
+    }
+
+    // Kills: replace from_vec with Default::default() (line 235)
+    #[test]
+    fn from_vec_preserves_non_default_values() {
+        let v = [
+            64.0, // control_mgmt_buffer_size (differs from DEFAULT=118)
+            2.0,  // control_burst_multiplier
+            2.0,  // management_burst_multiplier
+            64.0, // default_data_burst_limit
+            10.0, // spin_attempts
+            5.0,  // yield_attempts
+            500.0, // min_backoff_us
+            500_000.0, // max_backoff_us
+            20.0, // jitter_min_pct
+            20.0, // jitter_range_pct
+        ];
+        let p = SchedulerParams::from_vec(&v);
+        assert_eq!(p.control_mgmt_buffer_size, 64);
+        assert_eq!(p.control_burst_multiplier, 2);
+        assert_eq!(p.spin_attempts, 10);
+    }
 }
