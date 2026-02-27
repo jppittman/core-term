@@ -465,6 +465,7 @@ impl Accumulator {
     ///
     /// Returns the predicted cost in centipawns (will need to be scaled).
     #[must_use]
+    #[allow(clippy::needless_range_loop)]
     pub fn forward(&self, nnue: &Nnue) -> i32 {
         let l1_size = nnue.config.l1_size;
         let l2_size = nnue.config.l2_size;
@@ -472,20 +473,20 @@ impl Accumulator {
 
         // L1 -> L2 with clipped ReLU
         let mut l2 = nnue.b2.clone();
-        for (j, value) in l2.iter_mut().enumerate().take(l2_size) {
-            for i in 0..l1_size {
+        for i in 0..l2_size {
+            for j in 0..l1_size {
                 // Clipped ReLU: clamp to [0, 127] then scale
-                let a = (self.values[i] >> 6).clamp(0, 127) as i8;
-                *value += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
+                let a = (self.values[j] >> 6).clamp(0, 127) as i8;
+                l2[i] += (a as i32) * (nnue.w2[j * l2_size + i] as i32);
             }
         }
 
         // L2 -> L3 with clipped ReLU
         let mut l3 = nnue.b3.clone();
-        for (j, value) in l3.iter_mut().enumerate().take(l3_size) {
-            for i in 0..l2_size {
-                let a = (l2[i] >> 6).clamp(0, 127) as i8;
-                *value += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
+        for i in 0..l3_size {
+            for j in 0..l2_size {
+                let a = (l2[j] >> 6).clamp(0, 127) as i8;
+                l3[i] += (a as i32) * (nnue.w3[j * l3_size + i] as i32);
             }
         }
 
