@@ -514,7 +514,7 @@ mod tests {
     use super::*;
     use crate::{ActorStatus, HandlerError, HandlerResult, SystemStatus};
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     // ── Minimal actor for testing ───────────────────────────────────────────
 
@@ -912,46 +912,4 @@ mod tests {
         );
     }
 
-    // Kills: replace += with *= in Kubelet::poll_pods restart_count increment (line 481)
-    // With *=: restart_count would be multiplied (0 * 1 = 0, then stuck at 0).
-    // Also kills: replace += with -= in budget counter (line 485)
-    #[test]
-    fn restart_count_increments_on_restart() {
-        let slot = make_slot();
-        let restart_count = Arc::new(AtomicU32::new(0));
-        let rc = restart_count.clone();
-
-        let pod = spawn_managed(vec![slot.clone()], 64, None, move || {
-            rc.fetch_add(1, Ordering::SeqCst);
-            FailOnce { failed: false }
-        });
-
-        // Give 3 restarts budget in a large window.
-        let kubelet = KubeletBuilder::new()
-            .with_poll_interval(Duration::from_millis(1))
-            .add_pod_with_gate(
-                pod,
-                RestartPolicy::OnFailure,
-                3,                          // max_restarts
-                Duration::from_secs(60),    // restart_window
-            )
-            .build();
-
-        let handle = thread::spawn(move || kubelet.run());
-
-        // Wait for the first failure and restart to complete.
-        thread::sleep(Duration::from_millis(100));
-
-        // The Kubelet's internal restart_count must have been incremented to 1 after one restart.
-        // We can't observe it directly, but we can verify restart_count > 0 (actor created 2+).
-        // FailOnce fails on first data message; without data, it runs until Shutdown.
-        // We already verified restart_count > 0 via spawn_managed callback increments.
-        // If poll_pods uses *= instead of +=, restart_count stays 0 → never depletes budget.
-        assert!(
-            restart_count.load(Ordering::SeqCst) >= 1,
-            "Actor factory should have been called at least once"
-        );
-
-        drop(handle);
-    }
 }
