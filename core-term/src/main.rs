@@ -226,11 +226,10 @@ fn main() -> anyhow::Result<()> {
             unregistered_engine: unregistered_handle,
             window_config: engine_config.window.clone(),
         };
-        let (app_handle, pty_handle, _app_thread_handle) =
-            spawn_terminal_app(params).context("Failed to spawn terminal app")?;
+        let app_handles = spawn_terminal_app(params).context("Failed to spawn terminal app")?;
 
         // Create adapter for PTY parser to send to app
-        let app_sender = Box::new(TerminalAppSender::new(pty_handle));
+        let app_sender = Box::new(TerminalAppSender::new(app_handles.pty_handle));
 
         // Spawn PTY
         let shell_args_refs: Vec<&str> = shell_args.iter().map(String::as_str).collect();
@@ -248,8 +247,8 @@ fn main() -> anyhow::Result<()> {
         info!("EventMonitorActor spawned successfully");
 
         // Phase 3: Run troupe (blocks on main thread)
-        // The _app_handle keeps the terminal app channel alive
-        let _ = app_handle; // Keep app_handle alive until troupe completes
+        // The app_handle keeps the terminal app channel alive
+        let _ = app_handles.app_handle; // Keep app_handle alive until troupe completes
         troupe.play().map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 

@@ -14,6 +14,7 @@ use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue};
 /// Full gradient (1.0) in active region [0, 127].
 /// Small gradient (0.1) in saturated region (>127) for soft clamping.
 #[inline]
+#[must_use]
 pub fn clipped_relu(x: i32) -> (f32, f32) {
     let shifted = x >> 6;
     let clamped = shifted.clamp(0, 127);
@@ -31,31 +32,49 @@ pub fn clipped_relu(x: i32) -> (f32, f32) {
 /// Intermediate activations for sparse-only forward pass.
 #[derive(Clone)]
 pub struct ForwardState {
+    /// L1 pre-activation values.
     pub l1_pre: Vec<i32>,
+    /// L1 post-activation values.
     pub l1_post: Vec<f32>,
+    /// L2 pre-activation values.
     pub l2_pre: Vec<i32>,
+    /// L2 post-activation values.
     pub l2_post: Vec<f32>,
+    /// L3 pre-activation values.
     pub l3_pre: Vec<i32>,
+    /// L3 post-activation values.
     pub l3_post: Vec<f32>,
+    /// Indices of active features.
     pub active_features: Vec<usize>,
 }
 
 /// Intermediate activations for hybrid forward pass (sparse + dense).
 #[derive(Clone)]
 pub struct HybridForwardState {
+    /// L1 pre-activation values.
     pub l1_pre: Vec<i32>,
+    /// L1 post-activation values.
     pub l1_post: Vec<f32>,
-    pub dense_input: Vec<i32>, // Input to dense branch (for W_dense gradients)
-    pub dense_pre: Vec<i32>,   // Pre-activation (for derivative)
+    /// Input to dense branch (for W_dense gradients).
+    pub dense_input: Vec<i32>,
+    /// Dense branch pre-activation (for derivative).
+    pub dense_pre: Vec<i32>,
+    /// Dense branch post-activation.
     pub dense_post: Vec<f32>,
+    /// L2 pre-activation values.
     pub l2_pre: Vec<i32>,
+    /// L2 post-activation values.
     pub l2_post: Vec<f32>,
+    /// L3 pre-activation values.
     pub l3_pre: Vec<i32>,
+    /// L3 post-activation values.
     pub l3_post: Vec<f32>,
+    /// Indices of active features.
     pub active_features: Vec<usize>,
 }
 
 /// Forward pass (sparse-only) that stores intermediate activations.
+#[must_use]
 pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, ForwardState) {
     let l1_size = nnue.config.l1_size;
     let l2_size = nnue.config.l2_size;
@@ -71,8 +90,8 @@ pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, Forw
     let mut l1_pre = nnue.b1.clone();
     for &feature_idx in &active_features {
         let offset = feature_idx * l1_size;
-        for i in 0..l1_size {
-            l1_pre[i] += nnue.w1[offset + i] as i32;
+        for (i, pre) in l1_pre.iter_mut().enumerate().take(l1_size) {
+            *pre += nnue.w1[offset + i] as i32;
         }
     }
 
@@ -84,10 +103,10 @@ pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, Forw
 
     // L2
     let mut l2_pre = nnue.b2.clone();
-    for i in 0..l1_size {
-        let a = l1_post[i] as i8 as i32;
-        for j in 0..l2_size {
-            l2_pre[j] += a * (nnue.w2[i * l2_size + j] as i32);
+    for (i, &post) in l1_post.iter().enumerate().take(l1_size) {
+        let a = post as i8 as i32;
+        for (j, pre) in l2_pre.iter_mut().enumerate().take(l2_size) {
+            *pre += a * (nnue.w2[i * l2_size + j] as i32);
         }
     }
 
@@ -99,10 +118,10 @@ pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, Forw
 
     // L3
     let mut l3_pre = nnue.b3.clone();
-    for i in 0..l2_size {
-        let a = l2_post[i] as i8 as i32;
-        for j in 0..l3_size {
-            l3_pre[j] += a * (nnue.w3[i * l3_size + j] as i32);
+    for (i, &post) in l2_post.iter().enumerate().take(l2_size) {
+        let a = post as i8 as i32;
+        for (j, pre) in l3_pre.iter_mut().enumerate().take(l3_size) {
+            *pre += a * (nnue.w3[i * l3_size + j] as i32);
         }
     }
 
@@ -114,8 +133,8 @@ pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, Forw
 
     // Output
     let mut output = nnue.b_out;
-    for i in 0..l3_size {
-        let a = l3_post[i] as i8 as i32;
+    for (i, &post) in l3_post.iter().enumerate().take(l3_size) {
+        let a = post as i8 as i32;
         output += a * (nnue.w_out[i] as i32);
     }
 
@@ -133,6 +152,7 @@ pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, Forw
 }
 
 /// Forward pass with hybrid architecture (sparse + dense ILP features).
+#[must_use]
 pub fn forward_with_state_hybrid(
     nnue: &Nnue,
     features: &[HalfEPFeature],
@@ -153,8 +173,8 @@ pub fn forward_with_state_hybrid(
     let mut l1_pre = nnue.b1.clone();
     for &feature_idx in &active_features {
         let offset = feature_idx * l1_size;
-        for i in 0..l1_size {
-            l1_pre[i] += nnue.w1[offset + i] as i32;
+        for (i, pre) in l1_pre.iter_mut().enumerate().take(l1_size) {
+            *pre += nnue.w1[offset + i] as i32;
         }
     }
 
@@ -181,17 +201,17 @@ pub fn forward_with_state_hybrid(
     // L2: Combined
     let mut l2_pre = nnue.b2.clone();
 
-    for i in 0..l1_size {
-        let a = l1_post[i] as i8 as i32;
-        for j in 0..l2_size {
-            l2_pre[j] += a * (nnue.w2[i * l2_size + j] as i32);
+    for (i, &post) in l1_post.iter().enumerate().take(l1_size) {
+        let a = post as i8 as i32;
+        for (j, pre) in l2_pre.iter_mut().enumerate().take(l2_size) {
+            *pre += a * (nnue.w2[i * l2_size + j] as i32);
         }
     }
 
-    for i in 0..dense_size {
-        let a = dense_post[i] as i8 as i32;
-        for j in 0..l2_size {
-            l2_pre[j] += a * (nnue.w2[(l1_size + i) * l2_size + j] as i32);
+    for (i, &post) in dense_post.iter().enumerate().take(dense_size) {
+        let a = post as i8 as i32;
+        for (j, pre) in l2_pre.iter_mut().enumerate().take(l2_size) {
+            *pre += a * (nnue.w2[(l1_size + i) * l2_size + j] as i32);
         }
     }
 
@@ -203,10 +223,10 @@ pub fn forward_with_state_hybrid(
 
     // L3
     let mut l3_pre = nnue.b3.clone();
-    for i in 0..l2_size {
-        let a = l2_post[i] as i8 as i32;
-        for j in 0..l3_size {
-            l3_pre[j] += a * (nnue.w3[i * l3_size + j] as i32);
+    for (i, &post) in l2_post.iter().enumerate().take(l2_size) {
+        let a = post as i8 as i32;
+        for (j, pre) in l3_pre.iter_mut().enumerate().take(l3_size) {
+            *pre += a * (nnue.w3[i * l3_size + j] as i32);
         }
     }
 
@@ -218,8 +238,8 @@ pub fn forward_with_state_hybrid(
 
     // Output
     let mut output = nnue.b_out;
-    for i in 0..l3_size {
-        let a = l3_post[i] as i8 as i32;
+    for (i, &post) in l3_post.iter().enumerate().take(l3_size) {
+        let a = post as i8 as i32;
         output += a * (nnue.w_out[i] as i32);
     }
 
@@ -251,8 +271,8 @@ pub fn backward(nnue: &mut Nnue, state: &ForwardState, error: f32, lr: f32) {
     nnue.b_out -= (d_output * lr * 1000.0) as i32;
 
     let mut d_l3_post = vec![0.0f32; l3_size];
-    for i in 0..l3_size {
-        d_l3_post[i] = d_output * (nnue.w_out[i] as f32);
+    for (i, d_post) in d_l3_post.iter_mut().enumerate().take(l3_size) {
+        *d_post = d_output * (nnue.w_out[i] as f32);
         let grad_w_out = d_output * state.l3_post[i];
         let update = (grad_w_out * lr).clamp(-127.0, 127.0) as i8;
         nnue.w_out[i] = nnue.w_out[i].saturating_sub(update);
@@ -260,20 +280,20 @@ pub fn backward(nnue: &mut Nnue, state: &ForwardState, error: f32, lr: f32) {
 
     // L3
     let mut d_l3_pre = vec![0.0f32; l3_size];
-    for i in 0..l3_size {
+    for (i, d_pre) in d_l3_pre.iter_mut().enumerate().take(l3_size) {
         let (_, deriv) = clipped_relu(state.l3_pre[i]);
-        d_l3_pre[i] = d_l3_post[i] * deriv;
+        *d_pre = d_l3_post[i] * deriv;
     }
 
-    for j in 0..l3_size {
-        nnue.b3[j] -= (d_l3_pre[j] * lr * 1.0) as i32;
+    for (j, d_pre) in d_l3_pre.iter().enumerate().take(l3_size) {
+        nnue.b3[j] -= (d_pre * lr * 1.0) as i32;
     }
 
     let mut d_l2_post = vec![0.0f32; l2_size];
-    for i in 0..l2_size {
-        for j in 0..l3_size {
-            d_l2_post[i] += d_l3_pre[j] * (nnue.w3[i * l3_size + j] as f32);
-            let grad_w3 = d_l3_pre[j] * state.l2_post[i];
+    for (i, d_post) in d_l2_post.iter_mut().enumerate().take(l2_size) {
+        for (j, d_pre) in d_l3_pre.iter().enumerate().take(l3_size) {
+            *d_post += d_pre * (nnue.w3[i * l3_size + j] as f32);
+            let grad_w3 = d_pre * state.l2_post[i];
             let update = (grad_w3 * lr * 0.01).clamp(-127.0, 127.0) as i8;
             nnue.w3[i * l3_size + j] = nnue.w3[i * l3_size + j].saturating_sub(update);
         }
@@ -281,20 +301,20 @@ pub fn backward(nnue: &mut Nnue, state: &ForwardState, error: f32, lr: f32) {
 
     // L2
     let mut d_l2_pre = vec![0.0f32; l2_size];
-    for i in 0..l2_size {
+    for (i, d_pre) in d_l2_pre.iter_mut().enumerate().take(l2_size) {
         let (_, deriv) = clipped_relu(state.l2_pre[i]);
-        d_l2_pre[i] = d_l2_post[i] * deriv;
+        *d_pre = d_l2_post[i] * deriv;
     }
 
-    for j in 0..l2_size {
-        nnue.b2[j] -= (d_l2_pre[j] * lr * 1.0) as i32;
+    for (j, d_pre) in d_l2_pre.iter().enumerate().take(l2_size) {
+        nnue.b2[j] -= (d_pre * lr * 1.0) as i32;
     }
 
     let mut d_l1_post = vec![0.0f32; l1_size];
-    for i in 0..l1_size {
-        for j in 0..l2_size {
-            d_l1_post[i] += d_l2_pre[j] * (nnue.w2[i * l2_size + j] as f32);
-            let grad_w2 = d_l2_pre[j] * state.l1_post[i];
+    for (i, d_post) in d_l1_post.iter_mut().enumerate().take(l1_size) {
+        for (j, d_pre) in d_l2_pre.iter().enumerate().take(l2_size) {
+            *d_post += d_pre * (nnue.w2[i * l2_size + j] as f32);
+            let grad_w2 = d_pre * state.l1_post[i];
             let update = (grad_w2 * lr * 0.01).clamp(-127.0, 127.0) as i8;
             nnue.w2[i * l2_size + j] = nnue.w2[i * l2_size + j].saturating_sub(update);
         }
@@ -302,20 +322,20 @@ pub fn backward(nnue: &mut Nnue, state: &ForwardState, error: f32, lr: f32) {
 
     // L1
     let mut d_l1_pre = vec![0.0f32; l1_size];
-    for i in 0..l1_size {
+    for (i, d_pre) in d_l1_pre.iter_mut().enumerate().take(l1_size) {
         let (_, deriv) = clipped_relu(state.l1_pre[i]);
-        d_l1_pre[i] = d_l1_post[i] * deriv;
+        *d_pre = d_l1_post[i] * deriv;
     }
 
-    for i in 0..l1_size {
-        nnue.b1[i] -= (d_l1_pre[i] * lr * 1.0) as i32;
+    for (i, d_pre) in d_l1_pre.iter().enumerate().take(l1_size) {
+        nnue.b1[i] -= (d_pre * lr * 1.0) as i32;
     }
 
     // W1 sparse update
     for &feature_idx in &state.active_features {
         let offset = feature_idx * l1_size;
-        for i in 0..l1_size {
-            let grad_w1 = d_l1_pre[i];
+        for (i, d_pre) in d_l1_pre.iter().enumerate().take(l1_size) {
+            let grad_w1 = *d_pre;
             let update = (grad_w1 * lr * 0.1).clamp(-32767.0, 32767.0) as i16;
             nnue.w1[offset + i] = nnue.w1[offset + i].saturating_sub(update);
         }
@@ -335,8 +355,8 @@ pub fn backward_hybrid(nnue: &mut Nnue, state: &HybridForwardState, error: f32, 
     nnue.b_out -= (d_output * lr * 1000.0) as i32;
 
     let mut d_l3_post = vec![0.0f32; l3_size];
-    for i in 0..l3_size {
-        d_l3_post[i] = d_output * (nnue.w_out[i] as f32);
+    for (i, d_post) in d_l3_post.iter_mut().enumerate().take(l3_size) {
+        *d_post = d_output * (nnue.w_out[i] as f32);
         let grad_w_out = d_output * state.l3_post[i];
         let update = (grad_w_out * lr).clamp(-127.0, 127.0) as i8;
         nnue.w_out[i] = nnue.w_out[i].saturating_sub(update);
@@ -344,20 +364,20 @@ pub fn backward_hybrid(nnue: &mut Nnue, state: &HybridForwardState, error: f32, 
 
     // L3
     let mut d_l3_pre = vec![0.0f32; l3_size];
-    for i in 0..l3_size {
+    for (i, d_pre) in d_l3_pre.iter_mut().enumerate().take(l3_size) {
         let (_, deriv) = clipped_relu(state.l3_pre[i]);
-        d_l3_pre[i] = d_l3_post[i] * deriv;
+        *d_pre = d_l3_post[i] * deriv;
     }
 
-    for j in 0..l3_size {
-        nnue.b3[j] -= (d_l3_pre[j] * lr * 1.0) as i32;
+    for (j, d_pre) in d_l3_pre.iter().enumerate().take(l3_size) {
+        nnue.b3[j] -= (d_pre * lr * 1.0) as i32;
     }
 
     let mut d_l2_post = vec![0.0f32; l2_size];
-    for i in 0..l2_size {
-        for j in 0..l3_size {
-            d_l2_post[i] += d_l3_pre[j] * (nnue.w3[i * l3_size + j] as f32);
-            let grad_w3 = d_l3_pre[j] * state.l2_post[i];
+    for (i, d_post) in d_l2_post.iter_mut().enumerate().take(l2_size) {
+        for (j, d_pre) in d_l3_pre.iter().enumerate().take(l3_size) {
+            *d_post += d_pre * (nnue.w3[i * l3_size + j] as f32);
+            let grad_w3 = d_pre * state.l2_post[i];
             let update = (grad_w3 * lr * 0.01).clamp(-127.0, 127.0) as i8;
             nnue.w3[i * l3_size + j] = nnue.w3[i * l3_size + j].saturating_sub(update);
         }
@@ -365,21 +385,21 @@ pub fn backward_hybrid(nnue: &mut Nnue, state: &HybridForwardState, error: f32, 
 
     // L2
     let mut d_l2_pre = vec![0.0f32; l2_size];
-    for i in 0..l2_size {
+    for (i, d_pre) in d_l2_pre.iter_mut().enumerate().take(l2_size) {
         let (_, deriv) = clipped_relu(state.l2_pre[i]);
-        d_l2_pre[i] = d_l2_post[i] * deriv;
+        *d_pre = d_l2_post[i] * deriv;
     }
 
-    for j in 0..l2_size {
-        nnue.b2[j] -= (d_l2_pre[j] * lr * 1.0) as i32;
+    for (j, d_pre) in d_l2_pre.iter().enumerate().take(l2_size) {
+        nnue.b2[j] -= (d_pre * lr * 1.0) as i32;
     }
 
     // Gradient into sparse branch
     let mut d_l1_post = vec![0.0f32; l1_size];
-    for i in 0..l1_size {
-        for j in 0..l2_size {
-            d_l1_post[i] += d_l2_pre[j] * (nnue.w2[i * l2_size + j] as f32);
-            let grad_w2 = d_l2_pre[j] * state.l1_post[i];
+    for (i, d_post) in d_l1_post.iter_mut().enumerate().take(l1_size) {
+        for (j, d_pre) in d_l2_pre.iter().enumerate().take(l2_size) {
+            *d_post += d_pre * (nnue.w2[i * l2_size + j] as f32);
+            let grad_w2 = d_pre * state.l1_post[i];
             let update = (grad_w2 * lr * 0.01).clamp(-127.0, 127.0) as i8;
             nnue.w2[i * l2_size + j] = nnue.w2[i * l2_size + j].saturating_sub(update);
         }
@@ -387,10 +407,10 @@ pub fn backward_hybrid(nnue: &mut Nnue, state: &HybridForwardState, error: f32, 
 
     // Gradient into dense branch
     let mut d_dense_post = vec![0.0f32; dense_size];
-    for i in 0..dense_size {
-        for j in 0..l2_size {
-            d_dense_post[i] += d_l2_pre[j] * (nnue.w2[(l1_size + i) * l2_size + j] as f32);
-            let grad_w2 = d_l2_pre[j] * state.dense_post[i];
+    for (i, d_post) in d_dense_post.iter_mut().enumerate().take(dense_size) {
+        for (j, d_pre) in d_l2_pre.iter().enumerate().take(l2_size) {
+            *d_post += d_pre * (nnue.w2[(l1_size + i) * l2_size + j] as f32);
+            let grad_w2 = d_pre * state.dense_post[i];
             let update = (grad_w2 * lr * 0.01).clamp(-127.0, 127.0) as i8;
             nnue.w2[(l1_size + i) * l2_size + j] =
                 nnue.w2[(l1_size + i) * l2_size + j].saturating_sub(update);
@@ -399,20 +419,20 @@ pub fn backward_hybrid(nnue: &mut Nnue, state: &HybridForwardState, error: f32, 
 
     // L1 (sparse)
     let mut d_l1_pre = vec![0.0f32; l1_size];
-    for i in 0..l1_size {
+    for (i, d_pre) in d_l1_pre.iter_mut().enumerate().take(l1_size) {
         let (_, deriv) = clipped_relu(state.l1_pre[i]);
-        d_l1_pre[i] = d_l1_post[i] * deriv;
+        *d_pre = d_l1_post[i] * deriv;
     }
 
-    for i in 0..l1_size {
-        nnue.b1[i] -= (d_l1_pre[i] * lr * 1.0) as i32;
+    for (i, d_pre) in d_l1_pre.iter().enumerate().take(l1_size) {
+        nnue.b1[i] -= (d_pre * lr * 1.0) as i32;
     }
 
     // W1 sparse update
     for &feature_idx in &state.active_features {
         let offset = feature_idx * l1_size;
-        for i in 0..l1_size {
-            let grad_w1 = d_l1_pre[i];
+        for (i, d_pre) in d_l1_pre.iter().enumerate().take(l1_size) {
+            let grad_w1 = *d_pre;
             let update = (grad_w1 * lr * 0.1).clamp(-32767.0, 32767.0) as i16;
             nnue.w1[offset + i] = nnue.w1[offset + i].saturating_sub(update);
         }
@@ -420,14 +440,14 @@ pub fn backward_hybrid(nnue: &mut Nnue, state: &HybridForwardState, error: f32, 
 
     // Dense branch: compute pre-activation gradients using leaky ReLU
     let mut d_dense_pre = vec![0.0f32; dense_size];
-    for j in 0..dense_size {
+    for (j, d_pre) in d_dense_pre.iter_mut().enumerate().take(dense_size) {
         let (_, deriv) = clipped_relu(state.dense_pre[j]);
-        d_dense_pre[j] = d_dense_post[j] * deriv;
+        *d_pre = d_dense_post[j] * deriv;
     }
 
     // Update dense biases
-    for j in 0..dense_size {
-        nnue.b_dense[j] -= (d_dense_pre[j] * lr * 1.0) as i32;
+    for (j, d_pre) in d_dense_pre.iter().enumerate().take(dense_size) {
+        nnue.b_dense[j] -= (d_pre * lr * 1.0) as i32;
     }
 
     // Update W_dense weights: grad = d_dense_pre * dense_input
@@ -436,8 +456,8 @@ pub fn backward_hybrid(nnue: &mut Nnue, state: &HybridForwardState, error: f32, 
         if input_val == 0.0 {
             continue; // Skip zero inputs for efficiency
         }
-        for j in 0..dense_size {
-            let grad_w_dense = d_dense_pre[j] * input_val;
+        for (j, d_pre) in d_dense_pre.iter().enumerate().take(dense_size) {
+            let grad_w_dense = d_pre * input_val;
             let update = (grad_w_dense * lr * 0.01).clamp(-32767.0, 32767.0) as i16;
             nnue.w_dense[i * dense_size + j] =
                 nnue.w_dense[i * dense_size + j].saturating_sub(update);

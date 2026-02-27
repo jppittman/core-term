@@ -32,6 +32,7 @@ pub struct NnueSample {
 
 impl NnueSample {
     /// Create from an expression and measured cost.
+    #[must_use]
     pub fn from_expr(expr: &Expr, cost_ns: f32) -> Self {
         let features = extract_features(expr);
         let mut indices: Vec<usize> = features.iter().map(|f| f.to_index()).collect();
@@ -48,6 +49,7 @@ impl NnueSample {
     }
 
     /// Create from pre-computed feature indices.
+    #[must_use]
     pub fn from_features(feature_indices: Vec<usize>, cost_ns: f32) -> Self {
         let mut indices = feature_indices;
         indices.sort_unstable();
@@ -115,6 +117,7 @@ pub struct LinearNnue {
 
 impl LinearNnue {
     /// Create a new linear NNUE with zero weights.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             weights: alloc::vec![0.0; HalfEPFeature::COUNT],
@@ -123,6 +126,7 @@ impl LinearNnue {
     }
 
     /// Predict cost for a sample.
+    #[must_use]
     pub fn predict(&self, sample: &NnueSample) -> f32 {
         let mut sum = self.bias;
         for &idx in &sample.feature_indices {
@@ -158,6 +162,7 @@ pub struct NnueTrainer {
 
 impl NnueTrainer {
     /// Create a new trainer with default config.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             model: LinearNnue::new(),
@@ -168,6 +173,7 @@ impl NnueTrainer {
     }
 
     /// Create a new trainer with custom config.
+    #[must_use]
     pub fn with_config(train_config: TrainConfig) -> Self {
         Self {
             model: LinearNnue::new(),
@@ -285,6 +291,7 @@ impl NnueTrainer {
     /// Evaluate the model on a set of samples.
     ///
     /// Returns (predictions, targets) for correlation analysis.
+    #[must_use]
     pub fn evaluate(&self, samples: &[NnueSample]) -> (Vec<f32>, Vec<f32>) {
         let mut predictions = Vec::with_capacity(samples.len());
         let mut targets = Vec::with_capacity(samples.len());
@@ -298,6 +305,7 @@ impl NnueTrainer {
     }
 
     /// Compute Spearman rank correlation between predictions and targets.
+    #[must_use]
     pub fn spearman_correlation(&self, samples: &[NnueSample]) -> f32 {
         if samples.len() < 2 {
             return 0.0;
