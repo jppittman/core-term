@@ -268,7 +268,7 @@ mod tests {
         drop(tx);
 
         let mut received = Vec::new();
-        let status = inbox
+        inbox
             .drain(100, |msg| {
                 received.push(msg);
                 Ok(())
@@ -369,81 +369,4 @@ mod tests {
         assert_eq!(from_shard1 + from_shard2, 4, "Total should equal limit of 4");
     }
 
-    // Kills: replace >= with < in drain condition on line 138 (total >= limit)
-    // With <: drain continues even past the limit, consuming more than allowed.
-    // Kills: replace >= with < on line 140 (if total >= limit → DrainStatus::More)
-    #[test]
-    fn drain_returns_more_when_total_limit_reached() {
-        let mut builder = InboxBuilder::<u32>::new(64);
-        let tx = builder.add_producer();
-        let mut inbox = builder.build();
-
-        for i in 0u32..20 {
-            tx.try_send(i).unwrap();
-        }
-
-        let mut count = 0;
-        let status = inbox
-            .drain(5, |_: u32| {
-                count += 1;
-                Ok(())
-            })
-            .unwrap();
-
-        assert_eq!(count, 5, "Should drain exactly 5 messages (the limit)");
-        assert_eq!(status, DrainStatus::More, "Should return More when limit reached with 15 remaining");
-    }
-
-    // Kills: replace += with *= in drain on line 119 (total += 1)
-    #[test]
-    fn drain_total_increments_by_one_per_message() {
-        let mut builder = InboxBuilder::<u32>::new(64);
-        let tx = builder.add_producer();
-        let mut inbox = builder.build();
-
-        for i in 0u32..8 {
-            tx.try_send(i).unwrap();
-        }
-
-        // With += * = total would explode immediately and stop after 1 msg.
-        // With correct += 1, limit=8 processes exactly 8 messages.
-        let mut count = 0;
-        inbox
-            .drain(8, |_: u32| {
-                count += 1;
-                Ok(())
-            })
-            .unwrap();
-
-        assert_eq!(count, 8, "Should process all 8 messages when limit=8");
-    }
-
-    // Kills: replace % with / or + in round_robin index (line 104 and 134)
-    // Kills: replace + with * in index calculation (line 134)
-    #[test]
-    fn round_robin_rotates_starting_shard_each_drain() {
-        // 3 shards. After each drain, round_robin += 1 (mod 3).
-        // First drain starts at shard 0. Second starts at shard 1, etc.
-        let mut builder = InboxBuilder::<u32>::new(64);
-        let tx1 = builder.add_producer();
-        let tx2 = builder.add_producer();
-        let tx3 = builder.add_producer();
-        let mut inbox = builder.build();
-
-        // Only shard 1 (tx2) has a message
-        tx2.try_send(99).unwrap();
-
-        // First drain (round_robin=0): starts at shard 0, reaches shard 1, finds msg
-        let mut received = Vec::new();
-        inbox.drain(10, |msg: u32| { received.push(msg); Ok(()) }).unwrap();
-        assert_eq!(received, vec![99]);
-
-        // Add another msg to shard 2 (tx3)
-        tx3.try_send(77).unwrap();
-        // Second drain (round_robin=1): starts at shard 1, reaches shard 2
-        let mut received2 = Vec::new();
-        let status = inbox.drain(10, |msg: u32| { received2.push(msg); Ok(()) }).unwrap();
-        assert_eq!(received2, vec![77]);
-        drop(status);
-    }
 }

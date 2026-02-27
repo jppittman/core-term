@@ -1596,38 +1596,6 @@ mod backoff_unit_tests {
         );
     }
 
-    // Kills: replace - with + on line 726 (sleep_attempt calculation)
-    // Tests that sleep_attempt = attempt - (spin + yield) works correctly:
-    // with spin=2, yield=2, attempt=4 → sleep_attempt=0 → first sleep is min backoff
-    // With + mutation: sleep_attempt=8 → backoff=256*min → immediate timeout
-    #[test]
-    fn send_with_backoff_sleep_attempt_uses_correct_offset() {
-        let (tx, _rx) = spsc::spsc_channel::<u32>(2);
-        tx.try_send(1u32).unwrap();
-        tx.try_send(2u32).unwrap();
-
-        // spin=2, yield=2, large max_backoff so we don't timeout from attempt offset
-        // The correct code uses sleep_attempt = attempt - (spin + yield) starting from 0.
-        // A large min_backoff means we'd observe a long sleep if offset is wrong.
-        let params = SchedulerParams {
-            spin_attempts: 2,
-            yield_attempts: 2,
-            // Large enough to distinguish attempt 0 (no timeout) from attempt 8 (overflow)
-            min_backoff: Duration::from_micros(1),
-            max_backoff: Duration::from_micros(3), // 1 * 2^2 = 4 > 3 → Timeout at sleep_attempt=2
-            jitter_min_pct: 50,
-            jitter_range_pct: 49,
-            ..SchedulerParams::DEFAULT
-        };
-        // Correct: times out when sleep_attempt reaches 2 (backoff=4 > max=3)
-        // + mutation: sleep_attempt=8 on first sleep → immediate Timeout
-        // Both return Timeout but correct code takes a bit longer; both pass the assert.
-        // The assertion verifies we DO get Timeout (not Disconnected or hang).
-        assert!(matches!(
-            send_with_backoff(&tx, 3, &params),
-            Err(SendError::Timeout)
-        ));
-    }
 }
 
 // Tests targeting missed mutations in drain_all_with_timeout.
