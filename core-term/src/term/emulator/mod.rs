@@ -17,7 +17,7 @@ use crate::{
             // MouseEventType, // Unused
             // UserInputAction, // Unused
         },
-        charset::CharacterSet,
+        charset::{CharacterSet, GLevel},
         cursor::{self, CursorController, ScreenContext}, // Import cursor module for its CursorShape
         layout::Layout,
         modes::DecPrivateModes,
@@ -57,7 +57,7 @@ pub struct TerminalEmulator {
     pub(super) cursor_controller: CursorController,
     pub(super) dec_modes: DecPrivateModes,
     pub(super) active_charsets: [CharacterSet; 4],
-    pub(super) active_charset_g_level: usize,
+    pub(super) active_charset_g_level: GLevel,
     pub(super) cursor_wrap_next: bool,
     /// Layout manager - handles coordinate transformations and geometry
     pub(super) layout: Layout,
@@ -94,7 +94,7 @@ impl TerminalEmulator {
                 CharacterSet::Ascii, // G3
             ],
             focus_state: FocusState::Focused,
-            active_charset_g_level: 0, // Default to G0
+            active_charset_g_level: GLevel::G0, // Default to G0
             cursor_wrap_next: false,
             layout,
             viewport_offset: 0,
