@@ -7,7 +7,7 @@ use crate::{
     glyph::{AttrFlags, Attributes},
     term::{
         action::EmulatorAction,
-        charset::CharacterSet,
+        charset::{CharacterSet, GLevel},
         cursor_visibility::CursorVisibility,
         modes::{DecModeConstant, Mode, ModeAction, StandardModeConstant},
     },
@@ -15,21 +15,21 @@ use crate::{
 use log::{trace, warn};
 
 impl TerminalEmulator {
-    pub(super) fn set_g_level(&mut self, g_level: usize) {
-        if g_level < self.active_charsets.len() {
+    pub(super) fn set_g_level(&mut self, g_level: GLevel) {
+        if (g_level as usize) < self.active_charsets.len() {
             self.active_charset_g_level = g_level;
-            trace!("Switched to G{} character set mapping.", g_level);
+            trace!("Switched to G{} character set mapping.", g_level as usize);
         } else {
-            warn!("Attempted to set invalid G-level: {}", g_level);
+            warn!("Attempted to set invalid G-level: {:?}", g_level);
         }
     }
 
-    pub(super) fn designate_character_set(&mut self, g_set_index: usize, charset: CharacterSet) {
-        if g_set_index < self.active_charsets.len() {
-            self.active_charsets[g_set_index] = charset;
-            trace!("Designated G{} to {:?}", g_set_index, charset);
+    pub(super) fn designate_character_set(&mut self, g_set_index: GLevel, charset: CharacterSet) {
+        if (g_set_index as usize) < self.active_charsets.len() {
+            self.active_charsets[g_set_index as usize] = charset;
+            trace!("Designated G{} to {:?}", g_set_index as usize, charset);
         } else {
-            warn!("Invalid G-set index for designate charset: {}", g_set_index);
+            warn!("Invalid G-set index for designate charset: {:?}", g_set_index);
         }
     }
 

@@ -7,6 +7,7 @@ use crate::{
     glyph::Attributes,
     term::{
         action::EmulatorAction,
+        charset::GLevel,
         cursor_visibility::CursorVisibility,
         modes::{DecPrivateModes, EraseMode},
         screen::{ScrollHistory, TabClearMode},
@@ -38,7 +39,7 @@ impl TerminalEmulator {
         let (_, h) = self.dimensions();
         self.screen.set_scrolling_region(1, h);
         self.active_charsets = [crate::term::charset::CharacterSet::Ascii; 4];
-        self.active_charset_g_level = 0;
+        self.active_charset_g_level = GLevel::G0;
         self.screen.clear_tabstops(0, TabClearMode::All);
         let (w, _) = self.dimensions();
         for i in (DEFAULT_TAB_INTERVAL as usize..w).step_by(DEFAULT_TAB_INTERVAL as usize) {
