@@ -124,7 +124,9 @@ fn encode_sgr(button_code: u8, col: usize, row: usize, kind: MouseEventKind) -> 
     let cy = row + 1;
     // Max realistic: "\x1b[<999;99999;99999M" = ~22 bytes
     let mut buf = Vec::with_capacity(24);
-    let _ = write!(buf, "\x1b[<{};{};{}", button_code, cx, cy);
+    // Write returns a Result - unwrap/handle it for clippy
+    // Writing to a Vec<u8> is infallible unless allocation fails (which panics)
+    write!(buf, "\x1b[<{};{};{}", button_code, cx, cy).ok();
     buf.push(suffix);
     buf
 }

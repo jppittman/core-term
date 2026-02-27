@@ -175,20 +175,88 @@ impl Actor<(), (), ()> for ParkTrackingActor {
 
 #[test]
 fn control_messages_processed_before_earlier_data_messages() {
-    let (tx, mut rx) = ActorScheduler::new(10, 100);
+    // BURST LIMIT = 1 is critical here!
+    // We send a "warmup" Data message to block the actor.
+    // While blocked, we queue "first" (Data) and "priority" (Control).
+    // When the actor unblocks, it finishes the "warmup" message.
+    // If burst limit > 1, the scheduler will continue draining the Data lane
+    // and process "first" immediately, violating priority.
+    // With burst limit = 1, the scheduler is forced to yield after "warmup",
+    // restart the loop, check Control lane, and find "priority".
+    let (tx, mut rx) = ActorScheduler::new(1, 100);
     let log = Arc::new(Mutex::new(Vec::new()));
     let log_clone = log.clone();
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier_clone = barrier.clone();
+
+    // Use a special actor that waits on a barrier for the FIRST message only
+    struct SynchronizedActor {
+        log: Arc<Mutex<Vec<(String, std::time::Instant)>>>,
+        barrier: Arc<Barrier>,
+        first_message: bool,
+    }
+
+    impl Actor<String, String, String> for SynchronizedActor {
+        fn handle_data(&mut self, msg: String) -> HandlerResult {
+            if self.first_message {
+                self.first_message = false;
+                // Signal we started processing warmup
+                self.barrier.wait();
+                // Wait for main thread to fill queues
+                self.barrier.wait();
+            } else {
+                self.log
+                    .lock()
+                    .unwrap()
+                    .push((format!("D:{}", msg), std::time::Instant::now()));
+            }
+            Ok(())
+        }
+
+        fn handle_control(&mut self, msg: String) -> HandlerResult {
+            self.log
+                .lock()
+                .unwrap()
+                .push((format!("C:{}", msg), std::time::Instant::now()));
+            Ok(())
+        }
+
+        fn handle_management(&mut self, msg: String) -> HandlerResult {
+            self.log
+                .lock()
+                .unwrap()
+                .push((format!("M:{}", msg), std::time::Instant::now()));
+            Ok(())
+        }
+
+        fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
+        }
+    }
 
     let handle = thread::spawn(move || {
-        let mut actor = OrderingActor { log: log_clone };
+        let mut actor = SynchronizedActor {
+            log: log_clone,
+            barrier: barrier_clone,
+            first_message: true,
+        };
         rx.run(&mut actor);
     });
 
-    // Send data first, then control
+    // 1. Send warmup message to block the actor
+    tx.send(Message::Data("warmup".to_string())).unwrap();
+
+    // 2. Wait for actor to start processing warmup
+    barrier.wait();
+
+    // 3. Queue Data ("first"), then Control ("priority")
+    // Since actor is blocked, these will accumulate in the channel
     tx.send(Message::Data("first".to_string())).unwrap();
-    tx.send(Message::Data("second".to_string())).unwrap();
     tx.send(Message::Control("priority".to_string())).unwrap();
-    tx.send(Message::Data("third".to_string())).unwrap();
+
+    // 4. Release actor. It finishes "warmup" and loops.
+    // The scheduler should now see both Data and Control.
+    barrier.wait();
 
     thread::sleep(Duration::from_millis(50));
     drop(tx);
@@ -202,9 +270,15 @@ fn control_messages_processed_before_earlier_data_messages() {
         .unwrap_or(usize::MAX);
 
     // Control should be processed before any data that arrived before it
+    // because Control has higher priority in the scheduler loop
+    assert!(
+        ctrl_idx.is_some(),
+        "Control message should be processed. Got: {:?}",
+        messages.iter().map(|(s, _)| s).collect::<Vec<_>>()
+    );
     assert!(
         ctrl_idx.unwrap() < first_data_idx,
-        "Control message should be processed before earlier data messages. Got: {:?}",
+        "Control message should be processed before data messages queued at the same time. Got: {:?}",
         messages.iter().map(|(s, _)| s).collect::<Vec<_>>()
     );
 }

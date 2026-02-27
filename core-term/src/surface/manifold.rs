@@ -192,6 +192,7 @@ pub fn build_grid<F: CellFactory>(
 }
 
 /// Build a Select tree for a single color channel.
+#[allow(clippy::too_many_arguments)] // Builder function with recursive parameters
 fn build_channel_tree<F: CellFactory, const CHANNEL: usize>(
     factory: &F,
     col_start: usize,
