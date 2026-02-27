@@ -440,6 +440,73 @@ mod tests {
         }
     }
 
+    // Kills: replace is_disconnected -> bool with true (line 232)
+    // Kills: replace is_disconnected -> bool with false (line 232)
+    // Kills: replace == with != in SpscSender::is_disconnected (line 232)
+    #[test]
+    fn sender_is_disconnected_false_while_receiver_alive() {
+        let (tx, _rx) = spsc_channel::<u32>(4);
+        assert!(!tx.is_disconnected(), "Sender should NOT be disconnected while receiver lives");
+    }
+
+    #[test]
+    fn sender_is_disconnected_true_after_receiver_dropped() {
+        let (tx, rx) = spsc_channel::<u32>(4);
+        drop(rx);
+        assert!(tx.is_disconnected(), "Sender should be disconnected after receiver drops");
+    }
+
+    // Kills: replace is_disconnected -> bool with true (line 277)
+    // Kills: replace is_disconnected -> bool with false (line 277)
+    // Kills: replace == with != in SpscReceiver::is_disconnected (line 277)
+    #[test]
+    fn receiver_is_disconnected_false_while_sender_alive() {
+        let (_tx, rx) = spsc_channel::<u32>(4);
+        assert!(!rx.is_disconnected(), "Receiver should NOT be disconnected while sender lives");
+    }
+
+    #[test]
+    fn receiver_is_disconnected_true_after_sender_dropped() {
+        let (tx, rx) = spsc_channel::<u32>(4);
+        drop(tx);
+        assert!(rx.is_disconnected(), "Receiver should be disconnected after sender drops");
+    }
+
+    // Kills: replace len -> usize with 0 (line 285)
+    // Kills: replace len -> usize with 1 (line 285)
+    #[test]
+    fn len_reflects_message_count() {
+        let (tx, rx) = spsc_channel::<u32>(8);
+        assert_eq!(rx.len(), 0, "Empty buffer has len 0");
+
+        tx.try_send(1).unwrap();
+        tx.try_send(2).unwrap();
+        tx.try_send(3).unwrap();
+        assert_eq!(rx.len(), 3, "Buffer with 3 messages has len 3");
+        assert_ne!(rx.len(), 0);
+        assert_ne!(rx.len(), 1);
+    }
+
+    // Kills: replace is_empty -> bool with true (line 293)
+    // Kills: replace is_empty -> bool with false (line 293)
+    // Kills: replace == with != in SpscReceiver::is_empty (line 293)
+    #[test]
+    fn is_empty_true_when_buffer_empty() {
+        let (_tx, rx) = spsc_channel::<u32>(4);
+        assert!(rx.is_empty(), "Freshly created buffer should be empty");
+    }
+
+    #[test]
+    fn is_empty_false_when_buffer_has_messages() {
+        let (tx, rx) = spsc_channel::<u32>(4);
+        tx.try_send(42).unwrap();
+        assert!(!rx.is_empty(), "Buffer with a message should not be empty");
+    }
+
+    // Kills: replace & with | in RingBuffer::drop (line 115)
+    // Kills: replace & with ^ in RingBuffer::drop (line 115)
+    // The mask used in drop must correctly compute slot index: idx = i & mask
+    // With | or ^: wrong slots are accessed → UB or double-free
     #[test]
     fn drop_cleans_up_buffered_messages() {
         use std::sync::atomic::{AtomicUsize, Ordering};
