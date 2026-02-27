@@ -1,6 +1,6 @@
 //! ARM NEON backend (4 lanes for f32).
 
-use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
+use super::{Backend, MaskOps, SimdBf16Ops, SimdOps, SimdU32Ops};
 use core::arch::aarch64::*;
 use core::fmt::{Debug, Formatter};
 use core::ops::*;
@@ -619,6 +619,112 @@ impl U32x4 {
 
             let packed = vorrq_u32(vorrq_u32(r_u32, g_shifted), vorrq_u32(b_shifted, a_shifted));
             Self(packed)
+        }
+    }
+}
+
+// ============================================================================
+// BF16x8 — 8-lane bf16 for ARM NEON
+// ============================================================================
+
+/// 8-lane bfloat16 SIMD vector for ARM NEON.
+///
+/// Internally stores 8 × u16 bf16 values in a 128-bit NEON register
+/// (as `uint16x8_t`). When the `bf16` target feature is available, hardware
+/// `vcvt_f32_bf16` / `vcvt_bf16_f32` instructions are used; otherwise integer
+/// shift operations provide correct software emulation.
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct BF16x8(pub(crate) uint16x8_t);
+
+impl Default for BF16x8 {
+    fn default() -> Self {
+        unsafe { Self(vdupq_n_u16(0)) }
+    }
+}
+
+impl core::fmt::Debug for BF16x8 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut arr = [0u16; 8];
+        unsafe { vst1q_u16(arr.as_mut_ptr(), self.0) };
+        write!(f, "BF16x8({:?})", arr)
+    }
+}
+
+impl SimdBf16Ops for BF16x8 {
+    const LANES: usize = 8;
+    type F32Simd = F32x4;
+
+    #[inline(always)]
+    fn splat(val: u16) -> Self {
+        unsafe { Self(vdupq_n_u16(val)) }
+    }
+
+    #[inline(always)]
+    fn load(slice: &[u16]) -> Self {
+        assert!(slice.len() >= 8);
+        unsafe { Self(vld1q_u16(slice.as_ptr())) }
+    }
+
+    #[inline(always)]
+    fn store(&self, out: &mut [u16]) {
+        assert!(out.len() >= 8);
+        unsafe { vst1q_u16(out.as_mut_ptr(), self.0) }
+    }
+
+    #[inline(always)]
+    fn to_f32_lo(self) -> F32x4 {
+        unsafe {
+            #[cfg(target_feature = "bf16")]
+            {
+                let bh8: bfloat16x8_t = vreinterpretq_bf16_u16(self.0);
+                F32x4(vcvt_f32_bf16(vget_low_bf16(bh8)))
+            }
+            #[cfg(not(target_feature = "bf16"))]
+            {
+                let lo: uint16x4_t = vget_low_u16(self.0);
+                let lo_u32: uint32x4_t = vmovl_u16(lo);
+                let shifted: uint32x4_t = vshlq_n_u32::<16>(lo_u32);
+                F32x4(vreinterpretq_f32_u32(shifted))
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn to_f32_hi(self) -> F32x4 {
+        unsafe {
+            #[cfg(target_feature = "bf16")]
+            {
+                let bh8: bfloat16x8_t = vreinterpretq_bf16_u16(self.0);
+                F32x4(vcvt_f32_bf16(vget_high_bf16(bh8)))
+            }
+            #[cfg(not(target_feature = "bf16"))]
+            {
+                let hi: uint16x4_t = vget_high_u16(self.0);
+                let hi_u32: uint32x4_t = vmovl_u16(hi);
+                let shifted: uint32x4_t = vshlq_n_u32::<16>(hi_u32);
+                F32x4(vreinterpretq_f32_u32(shifted))
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn from_f32(lo: F32x4, hi: F32x4) -> Self {
+        unsafe {
+            #[cfg(target_feature = "bf16")]
+            {
+                let lo_bh: bfloat16x4_t = vcvt_bf16_f32(lo.0);
+                let hi_bh: bfloat16x4_t = vcvt_bf16_f32(hi.0);
+                Self(vreinterpretq_u16_bf16(vcombine_bf16(lo_bh, hi_bh)))
+            }
+            #[cfg(not(target_feature = "bf16"))]
+            {
+                let lo_u32 = vreinterpretq_u32_f32(lo.0);
+                let hi_u32 = vreinterpretq_u32_f32(hi.0);
+                let lo_u16: uint16x4_t = vshrn_n_u32::<16>(lo_u32);
+                let hi_u16: uint16x4_t = vshrn_n_u32::<16>(hi_u32);
+                Self(vcombine_u16(lo_u16, hi_u16))
+            }
         }
     }
 }

@@ -138,6 +138,9 @@ extern crate alloc;
 /// SIMD backend abstractions.
 pub mod backend;
 
+/// BFloat16 scalar type for Field<Bf16>.
+pub mod bf16;
+
 /// Algebra trait for unified type system.
 pub mod algebra;
 
@@ -182,6 +185,7 @@ pub mod ext;
 // ============================================================================
 
 pub use algebra::{Algebra, Transcendental};
+pub use bf16::Bf16;
 pub use backend::fastmath::FastMathGuard;
 pub use combinators::*;
 pub use domain::{Head, LetExtended, Spatial, Tail};
@@ -233,7 +237,7 @@ pub use manifold::Differentiable;
 // Field: The ONLY User-Facing SIMD Type
 // ============================================================================
 
-use backend::{Backend, MaskOps, SimdOps, SimdU32Ops};
+use backend::{Backend, MaskOps, SimdBf16Ops, SimdOps, SimdU32Ops};
 
 // Backend selection: Use target-cpu=native intrinsics with build.rs preference hints.
 // Build.rs detects the build machine's CPU and emits pixelflow_* flags for optimal selection.
@@ -281,6 +285,31 @@ type NativeU32Simd = <backend::arm::Neon as Backend>::U32;
 type NativeSimd = <backend::scalar::Scalar as Backend>::F32;
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 type NativeU32Simd = <backend::scalar::Scalar as Backend>::U32;
+
+// NativeBf16Simd: paired bf16 SIMD type (2× lanes of the f32 SIMD).
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+type NativeBf16Simd = backend::x86::BF16x32;
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(all(target_feature = "avx512f", pixelflow_avx512f)),
+    pixelflow_avx2
+))]
+type NativeBf16Simd = backend::x86::BF16x16;
+
+#[cfg(all(
+    target_arch = "x86_64",
+    not(all(target_feature = "avx512f", pixelflow_avx512f)),
+    not(all(target_feature = "avx2", pixelflow_avx2))
+))]
+type NativeBf16Simd = backend::x86::BF16x8;
+
+#[cfg(target_arch = "aarch64")]
+type NativeBf16Simd = backend::arm::BF16x8;
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+type NativeBf16Simd = backend::scalar::ScalarBf16;
 
 /// The computational substrate for continuous values (intermediate representation).
 ///
@@ -818,6 +847,70 @@ impl Field<u32> {
         let t = if_true.0.bitand(mask_bits);
         let f = if_false.0.bitand(mask_bits.not());
         Self(t.bitor(f))
+    }
+}
+
+// ============================================================================
+// Field<Bf16> — BFloat16 SIMD support
+// ============================================================================
+
+/// A SIMD batch of bfloat16 values.
+///
+/// `Field<Bf16>` holds `NativeBf16Simd::LANES` bf16 values packed in a SIMD
+/// register (32 on AVX-512, 16 on AVX2, 8 on SSE2/NEON, 2 on scalar).
+///
+/// Use `load` to read from a bf16 slice, `to_f32_lo`/`to_f32_hi` to upcast to
+/// `Field<f32>` for arithmetic, and `from_f32` + `store` to write back.
+#[doc(hidden)]
+pub type FieldBf16 = Field<Bf16>;
+
+impl Field<Bf16> {
+    /// Number of bf16 lanes in this SIMD type.
+    pub const LANES: usize = NativeBf16Simd::LANES;
+
+    /// Load `LANES` bf16 values from a slice of raw `u16` bits.
+    ///
+    /// # Panics
+    /// Panics if `slice.len() < LANES`.
+    #[inline(always)]
+    pub fn load(slice: &[u16]) -> Self {
+        Self(NativeBf16Simd::load(slice))
+    }
+
+    /// Store `LANES` bf16 values to a slice of raw `u16` bits.
+    ///
+    /// # Panics
+    /// Panics if `out.len() < LANES`.
+    #[inline(always)]
+    pub(crate) fn store(&self, out: &mut [u16]) {
+        self.0.store(out)
+    }
+
+    /// Convert the lower `LANES/2` bf16 lanes to `Field<f32>`.
+    ///
+    /// Uses hardware `vcvtpbh2ps` / `vcvt_f32_bf16` when available;
+    /// falls back to software zero-extension otherwise.
+    #[inline(always)]
+    pub fn to_f32_lo(self) -> Field {
+        Field(self.0.to_f32_lo())
+    }
+
+    /// Convert the upper `LANES/2` bf16 lanes to `Field<f32>`.
+    #[inline(always)]
+    pub fn to_f32_hi(self) -> Field {
+        Field(self.0.to_f32_hi())
+    }
+
+    /// Pack two `Field<f32>` vectors into a `Field<Bf16>`.
+    ///
+    /// - `lo` → lanes `0 .. LANES/2`
+    /// - `hi` → lanes `LANES/2 .. LANES`
+    ///
+    /// Uses hardware `vcvtne2ps2bf16` (round-to-nearest-even) when available;
+    /// falls back to truncation (round-toward-zero) otherwise.
+    #[inline(always)]
+    pub fn from_f32(lo: Field, hi: Field) -> Self {
+        Self(NativeBf16Simd::from_f32(lo.0, hi.0))
     }
 }
 
