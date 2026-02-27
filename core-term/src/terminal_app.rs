@@ -143,6 +143,26 @@ pub struct TerminalAppParams {
     pub window_config: pixelflow_runtime::WindowConfig,
 }
 
+/// Handles returned by spawn_terminal_app.
+pub struct TerminalAppHandles {
+    /// Handle to the terminal app actor (for main thread).
+    pub app_handle: actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+    /// Handle to the PTY sender (for PTY thread).
+    pub pty_handle: actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+    /// Join handle for the app thread.
+    pub join_handle: std::thread::JoinHandle<()>,
+}
+
+impl std::fmt::Debug for TerminalAppHandles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TerminalAppHandles")
+            .field("app_handle", &self.app_handle)
+            .field("pty_handle", &self.pty_handle)
+            .field("join_handle", &"JoinHandle")
+            .finish()
+    }
+}
+
 impl TerminalApp {
     /// Helper to create a positioned terminal cell with background blending.
     ///
@@ -476,15 +496,15 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 });
 
                 // Process the resize and handle the resulting action
-                if let Some(action) = self.emulator.interpret_input(input) {
-                    if let EmulatorAction::ResizePty { cols, rows } = action {
-                        // Send resize command to PTY write thread
-                        if let Err(e) = self
-                            .pty_tx
-                            .send(PtyCommand::Resize(crate::io::Resize { cols, rows }))
-                        {
-                            log::warn!("Failed to send PTY resize command: {}", e);
-                        }
+                if let Some(EmulatorAction::ResizePty { cols, rows }) =
+                    self.emulator.interpret_input(input)
+                {
+                    // Send resize command to PTY write thread
+                    if let Err(e) = self
+                        .pty_tx
+                        .send(PtyCommand::Resize(crate::io::Resize { cols, rows }))
+                    {
+                        log::warn!("Failed to send PTY resize command: {}", e);
                     }
                 }
 
@@ -708,11 +728,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
 /// 3. Spawns the app thread with the registered engine handle
 pub fn spawn_terminal_app(
     params: TerminalAppParams,
-) -> std::io::Result<(
-    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
-    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
-    std::thread::JoinHandle<()>,
-)> {
+) -> std::io::Result<TerminalAppHandles> {
     // Create app actor's channels using ActorBuilder (SPSC - each producer is unique)
     // ActorHandle is not Clone; each consumer needs its own dedicated handle.
     let mut builder =
@@ -777,13 +793,17 @@ pub fn spawn_terminal_app(
     let mut app = TerminalApp::new_registered(app_params_registered);
 
     // Spawn app thread
-    let handle = std::thread::Builder::new()
+    let join_handle = std::thread::Builder::new()
         .name("terminal-app".to_string())
         .spawn(move || {
             app_rx.run(&mut app);
         })?;
 
-    Ok((app_handle, pty_handle, handle))
+    Ok(TerminalAppHandles {
+        app_handle,
+        pty_handle,
+        join_handle,
+    })
 }
 
 /// Parameters after registration (internal use).
