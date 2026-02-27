@@ -557,6 +557,9 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                                 log::warn!("Failed to send PTY resize command: {}", e);
                             }
                         }
+                        EmulatorAction::SetWorkingDirectory(path) => {
+                            log::debug!("Shell working directory: {}", path);
+                        }
                     }
                 }
             }

@@ -601,4 +601,18 @@ pub enum EmulatorAction {
     ///
     /// **Postcondition**: Application shuts down
     Quit,
+
+    /// Notify that the shell's current working directory has changed.
+    ///
+    /// # Contract
+    ///
+    /// **Emulator**: Generated in response to OSC 7 escape sequence.
+    /// The shell sends `\x1b]7;file://hostname/path/to/dir\x07` to report CWD.
+    ///
+    /// **Orchestrator**:
+    /// 1. Updates the tracked working directory
+    /// 2. May use this for "Open new tab here" or title bar display
+    ///
+    /// **Postcondition**: Application knows the shell's current directory
+    SetWorkingDirectory(String),
 }
