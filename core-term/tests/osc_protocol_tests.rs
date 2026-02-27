@@ -145,6 +145,21 @@ fn osc_7_with_empty_hostname() {
 }
 
 #[test]
+fn osc_7_hostname_without_path_defaults_to_root() {
+    let mut harness = MinimalTestHarness::new();
+    // file://hostname with no trailing slash or path component
+    let actions = process_bytes_and_get_actions(
+        &mut harness,
+        b"\x1b]7;file://localhost\x07",
+    );
+    assert_eq!(actions.len(), 1);
+    assert_eq!(
+        actions[0],
+        EmulatorAction::SetWorkingDirectory("/".to_string())
+    );
+}
+
+#[test]
 fn osc_7_bare_path() {
     let mut harness = MinimalTestHarness::new();
     let actions = process_bytes_and_get_actions(

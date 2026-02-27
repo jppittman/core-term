@@ -2111,14 +2111,11 @@ fn it_should_handle_osc_sequence_without_semicolon_for_title_setting_if_supporte
     let action_implicit =
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Osc(osc_implicit_bytes)));
 
-    // Based on osc_handler.rs logic:
-    // code_str = "Implicit Title" -> parse to u8 fails -> code = 0
-    // content = "" (because no data after the first part if no ';')
-    // Expected: SetTitle("") due to OSC 0
+    // "Implicit Title" has no numeric Ps prefix, so the OSC handler correctly
+    // rejects it as malformed (non-digit bytes in the command code).
     assert_eq!(
-        action_implicit,
-        Some(EmulatorAction::SetTitle("".to_string())),
-        "OSC with implicit code '0' and no content (due to parsing) should set empty title."
+        action_implicit, None,
+        "OSC with non-numeric prefix should be ignored as malformed."
     );
 }
 

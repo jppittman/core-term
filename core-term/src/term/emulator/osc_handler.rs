@@ -104,54 +104,99 @@ fn parse_x11_color(s: &str) -> Option<(u8, u8, u8)> {
     None
 }
 
+/// Split raw OSC data into (Ps numeric code, content bytes after the semicolon).
+///
+/// Parses the command prefix as bytes to avoid converting potentially large
+/// payloads (e.g. OSC 52 base64 blobs) through `from_utf8_lossy` up front.
+fn split_osc_prefix(data: &[u8]) -> Option<(u32, &[u8])> {
+    let semi_pos = data.iter().position(|&b| b == b';');
+    let (ps_bytes, content) = match semi_pos {
+        Some(pos) => (&data[..pos], &data[pos + 1..]),
+        None => (data, &[] as &[u8]),
+    };
+    // Parse the numeric prefix (ASCII digits only)
+    let mut ps: u32 = 0;
+    for &b in ps_bytes {
+        match b {
+            b'0'..=b'9' => {
+                ps = ps.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+            }
+            _ => return None,
+        }
+    }
+    Some((ps, content))
+}
+
 impl TerminalEmulator {
     pub(super) fn handle_osc(&mut self, data: Vec<u8>) -> Option<EmulatorAction> {
-        let osc_str = String::from_utf8_lossy(&data);
-        let parts: Vec<&str> = osc_str.splitn(2, ';').collect();
-
-        let (ps_str, content_str) = if parts.len() == 2 {
-            (parts[0], parts[1])
-        } else if parts.len() == 1 {
-            (parts[0], "")
-        } else {
-            warn!("Malformed OSC sequence: {}", osc_str);
-            return None;
+        let (ps, content_bytes) = match split_osc_prefix(&data) {
+            Some(pair) => pair,
+            None => {
+                warn!(
+                    "Malformed OSC sequence: {:?}",
+                    String::from_utf8_lossy(&data)
+                );
+                return None;
+            }
         };
 
-        let ps = ps_str.parse::<u32>().unwrap_or(0);
-
+        // Only convert content to a string for commands that need it.
+        // OSC 52 base64 payloads are decoded directly from bytes below.
         match ps {
             // OSC 0 - Set Icon Name and Window Title
             // OSC 1 - Set Icon Name (we treat same as title)
             // OSC 2 - Set Window Title
-            0 | 1 | 2 => Some(EmulatorAction::SetTitle(content_str.to_string())),
+            0 | 1 | 2 => {
+                let content_str = String::from_utf8_lossy(content_bytes);
+                Some(EmulatorAction::SetTitle(content_str.into_owned()))
+            }
 
             // OSC 4 - Query/set 256-color palette entry
             // Format: OSC 4 ; index ; ? ST (query)
             // Format: OSC 4 ; index ; color ST (set)
-            4 => self.handle_osc_palette(content_str),
+            4 => {
+                let content_str = String::from_utf8_lossy(content_bytes);
+                self.handle_osc_palette(&content_str)
+            }
 
             // OSC 7 - Current Working Directory
             // Format: OSC 7 ; file://hostname/path ST
-            7 => self.handle_osc_cwd(content_str),
+            7 => {
+                let content_str = String::from_utf8_lossy(content_bytes);
+                self.handle_osc_cwd(&content_str)
+            }
 
             // OSC 10 - Query/set foreground color
-            10 => self.handle_osc_color_query(10, content_str),
+            10 => {
+                let content_str = String::from_utf8_lossy(content_bytes);
+                self.handle_osc_color_query(10, &content_str)
+            }
 
             // OSC 11 - Query/set background color
-            11 => self.handle_osc_color_query(11, content_str),
+            11 => {
+                let content_str = String::from_utf8_lossy(content_bytes);
+                self.handle_osc_color_query(11, &content_str)
+            }
 
             // OSC 12 - Query/set cursor color
-            12 => self.handle_osc_color_query(12, content_str),
+            12 => {
+                let content_str = String::from_utf8_lossy(content_bytes);
+                self.handle_osc_color_query(12, &content_str)
+            }
 
             // OSC 52 - Clipboard manipulation
             // Format: OSC 52 ; selection ; base64data ST
-            52 => self.handle_osc_clipboard(content_str),
+            // Parsed directly from bytes to avoid needless UTF-8 conversion
+            // of potentially large base64 payloads.
+            52 => self.handle_osc_clipboard_bytes(content_bytes),
 
             // OSC 104 - Reset palette color
             // Format: OSC 104 ; index ST (reset specific) or OSC 104 ST (reset all)
             104 => {
-                debug!("OSC 104: Reset palette color (index='{}')", content_str);
+                debug!(
+                    "OSC 104: Reset palette color (index='{}')",
+                    String::from_utf8_lossy(content_bytes)
+                );
                 None
             }
 
@@ -176,7 +221,8 @@ impl TerminalEmulator {
             _ => {
                 debug!(
                     "Unhandled OSC command code: Ps={}, Pt='{}'",
-                    ps, content_str
+                    ps,
+                    String::from_utf8_lossy(content_bytes)
                 );
                 None
             }
@@ -234,7 +280,8 @@ impl TerminalEmulator {
             if let Some(slash_pos) = rest.find('/') {
                 &rest[slash_pos..]
             } else {
-                rest
+                // Hostname without path component (e.g. "file://localhost") → root
+                "/"
             }
         } else {
             // Some shells send just the path without file:// prefix
@@ -282,7 +329,12 @@ impl TerminalEmulator {
         }
     }
 
-    /// Handle OSC 52: Clipboard manipulation.
+    /// Handle OSC 52: Clipboard manipulation (byte-level).
+    ///
+    /// Operates on raw bytes to avoid converting potentially large base64
+    /// payloads through `from_utf8_lossy`. The selection identifier is always
+    /// short ASCII, and the payload is pure base64 (also ASCII), so byte-level
+    /// parsing is both correct and efficient.
     ///
     /// Format: `selection;base64data`
     ///
@@ -294,22 +346,28 @@ impl TerminalEmulator {
     ///
     /// If base64data is `?`, this is a query (respond with clipboard contents).
     /// Otherwise, decode the base64 and set the clipboard.
-    fn handle_osc_clipboard(&self, content: &str) -> Option<EmulatorAction> {
+    fn handle_osc_clipboard_bytes(&self, content: &[u8]) -> Option<EmulatorAction> {
         if !CONFIG.behavior.allow_osc52_clipboard {
             debug!("OSC 52: Clipboard access disabled by configuration");
             return None;
         }
 
-        let parts: Vec<&str> = content.splitn(2, ';').collect();
-        if parts.len() != 2 {
-            warn!("OSC 52: Malformed clipboard request: '{}'", content);
-            return None;
-        }
+        let semi_pos = content.iter().position(|&b| b == b';');
+        let (selection_bytes, payload) = match semi_pos {
+            Some(pos) => (&content[..pos], &content[pos + 1..]),
+            None => {
+                warn!(
+                    "OSC 52: Malformed clipboard request: '{}'",
+                    String::from_utf8_lossy(content)
+                );
+                return None;
+            }
+        };
 
-        let selection = parts[0]; // e.g., "c" for clipboard, "p" for primary
-        let payload = parts[1];
+        // Selection is short ASCII (typically "c", "p", "s", etc.)
+        let selection = std::str::from_utf8(selection_bytes).unwrap_or("c");
 
-        if payload == "?" {
+        if payload == b"?" {
             // Query clipboard - respond with empty (we don't have access to clipboard contents
             // from within the emulator; the orchestrator would need to handle this)
             debug!(
@@ -323,24 +381,22 @@ impl TerminalEmulator {
             debug!("OSC 52: Clear clipboard for selection '{}'", selection);
             Some(EmulatorAction::CopyToClipboard(String::new()))
         } else {
-            // Decode base64 payload and set clipboard
-            match base64_decode(payload.as_bytes()) {
-                Some(decoded_bytes) => {
-                    match String::from_utf8(decoded_bytes) {
-                        Ok(text) => {
-                            debug!(
-                                "OSC 52: Set clipboard for selection '{}' ({} bytes)",
-                                selection,
-                                text.len()
-                            );
-                            Some(EmulatorAction::CopyToClipboard(text))
-                        }
-                        Err(e) => {
-                            warn!("OSC 52: Decoded base64 is not valid UTF-8: {}", e);
-                            None
-                        }
+            // Decode base64 payload directly from bytes and set clipboard
+            match base64_decode(payload) {
+                Some(decoded_bytes) => match String::from_utf8(decoded_bytes) {
+                    Ok(text) => {
+                        debug!(
+                            "OSC 52: Set clipboard for selection '{}' ({} bytes)",
+                            selection,
+                            text.len()
+                        );
+                        Some(EmulatorAction::CopyToClipboard(text))
                     }
-                }
+                    Err(e) => {
+                        warn!("OSC 52: Decoded base64 is not valid UTF-8: {}", e);
+                        None
+                    }
+                },
                 None => {
                     warn!("OSC 52: Invalid base64 payload");
                     None
