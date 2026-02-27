@@ -1881,11 +1881,12 @@ mod mutation_tests {
 
     #[test]
     fn csi_accepts_exactly_16_params() {
-        // SGR with 16 parameters: 1;2;3;4;5;6;7;8;9;0;0;0;0;0;0;0m
-        // All 16 should be collected; we check that Bold and Faint appear.
+        // SGR with 16 parameters: 1;2;0;0;... (14 zeros)
+        // All 16 must be collected and processed.
         let cmds = process_bytes(b"\x1b[1;2;0;0;0;0;0;0;0;0;0;0;0;0;0;0m");
-        // First param must be Bold (1), second Faint (2), rest Reset (0).
         if let Some(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(attrs))) = cmds.first() {
+            // Checking len kills mutations that reduce MAX_PARAMS below 16.
+            assert_eq!(attrs.len(), 16, "all 16 params must be retained");
             assert_eq!(attrs[0], Attribute::Bold, "first of 16 params should be Bold");
             assert_eq!(
                 attrs[1],
@@ -2208,5 +2209,88 @@ mod mutation_tests {
                 bottom: 0
             })]
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // CSI final bytes with no tests elsewhere
+    // Mutations: typo in final-byte match arm, wrong CsiCommand variant
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csi_f_is_cup_alias_for_h() {
+        // 'f' is an alias for 'H' (CursorPosition / HVP).
+        // A mutation removing the `| (false, b"", b'f')` arm would produce Error.
+        let cmds = process_bytes(b"\x1b[5;10f");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorPosition(5, 10))]
+        );
+    }
+
+    #[test]
+    fn csi_d_is_vpa_column_always_1() {
+        // 'd' = VPA (Vertical Position Absolute). Column is hardcoded to 1.
+        // Mutation: changing the hardcoded 1 to 0, or wiring column to param.
+        let cmds = process_bytes(b"\x1b[7d");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorPosition(7, 1))]
+        );
+    }
+
+    #[test]
+    fn csi_d_default_row_is_1() {
+        // No param: row defaults to 1 (param_or_1), column always 1.
+        let cmds = process_bytes(b"\x1b[d");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorPosition(1, 1))]
+        );
+    }
+
+    #[test]
+    fn csi_c_is_primary_device_attributes() {
+        // 'c' with no params triggers PrimaryDeviceAttributes.
+        // Mutation: confusing 'c' with other single-char finals.
+        let cmds = process_bytes(b"\x1b[c");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::PrimaryDeviceAttributes)]
+        );
+    }
+
+    #[test]
+    fn csi_n_is_device_status_report() {
+        // 'n' with param 6 = DSR cursor position request.
+        // Mutation: confusing 'n' with 'm' (SGR) or wrong default.
+        let cmds = process_bytes(b"\x1b[6n");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::DeviceStatusReport(6))]
+        );
+    }
+
+    #[test]
+    fn csi_n_default_param_is_0() {
+        // No param: DSR(0).
+        let cmds = process_bytes(b"\x1b[n");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::DeviceStatusReport(0))]
+        );
+    }
+
+    #[test]
+    fn csi_s_is_save_cursor() {
+        // 's' = save cursor (ANSI). Mutation: confusing 's' with 'S' (ScrollUp).
+        let cmds = process_bytes(b"\x1b[s");
+        assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::SaveCursor)]);
+    }
+
+    #[test]
+    fn csi_u_is_restore_cursor() {
+        // 'u' = restore cursor (ANSI). Mutation: confusing 'u' with 'U'.
+        let cmds = process_bytes(b"\x1b[u");
+        assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::RestoreCursor)]);
     }
 }
