@@ -140,6 +140,17 @@ impl Color {
             rgba.a() as f32 / 255.0,
         )
     }
+
+    /// Convert to an (R, G, B) tuple of u8 values.
+    ///
+    /// Resolves all color variants (Named, Indexed, Rgb, Default) to concrete
+    /// RGB components. Used by OSC color query responses.
+    #[inline]
+    #[must_use]
+    pub fn to_rgb_tuple(self) -> (u8, u8, u8) {
+        let rgba = self.to_rgba8();
+        (rgba.r(), rgba.g(), rgba.b())
+    }
 }
 
 // Make Color a manifold - an infinite field of that color

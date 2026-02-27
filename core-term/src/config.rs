@@ -270,6 +270,7 @@ pub struct BehaviorConfig {
     pub allow_alt_screen: bool,
     pub allow_window_ops: bool,
     pub default_origin_mode: bool,
+    pub allow_osc52_clipboard: bool,
 }
 
 impl Default for BehaviorConfig {
@@ -285,6 +286,7 @@ impl Default for BehaviorConfig {
             allow_alt_screen: true,
             allow_window_ops: false,
             default_origin_mode: false,
+            allow_osc52_clipboard: true,
         }
     }
 }

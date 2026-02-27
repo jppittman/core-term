@@ -36,6 +36,15 @@ impl MinimalTestHarness {
         // Ignore actions (they would be PTY writes or redraws)
     }
 
+    /// Inject an ANSI command and return the emulator action (if any).
+    pub fn inject_ansi_with_action(
+        &mut self,
+        cmd: AnsiCommand,
+    ) -> Option<core_term::term::action::EmulatorAction> {
+        let input = EmulatorInput::Ansi(cmd);
+        self.emulator.interpret_input(input)
+    }
+
     /// Inject multiple ANSI commands
     pub fn inject_ansi_batch(&mut self, cmds: Vec<AnsiCommand>) {
         for cmd in cmds {
