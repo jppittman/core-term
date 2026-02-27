@@ -13,7 +13,7 @@
 //! | `Dual<N, A>` | Compound: (Storage<A>, [Storage<A>; N]) |
 
 use crate::algebra::Algebra;
-use crate::backend::{SimdOps, SimdU32Ops};
+use crate::backend::{SimdBf16Ops, SimdOps, SimdU32Ops};
 
 /// Trait that maps an Algebra type to its SIMD storage representation.
 ///
@@ -190,6 +190,53 @@ impl FieldStorage for u32 {
     #[inline(always)]
     fn one_storage() -> Self::Storage {
         <Self::Storage as SimdU32Ops>::splat(1)
+    }
+}
+
+// ============================================================================
+// Storage Implementation for Bf16
+// ============================================================================
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+type NativeBf16Storage = crate::backend::x86::BF16x32;
+
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(all(target_feature = "avx512f", pixelflow_avx512f)),
+    pixelflow_avx2
+))]
+type NativeBf16Storage = crate::backend::x86::BF16x16;
+
+#[cfg(all(
+    target_arch = "x86_64",
+    not(all(target_feature = "avx512f", pixelflow_avx512f)),
+    not(all(target_feature = "avx2", pixelflow_avx2))
+))]
+type NativeBf16Storage = crate::backend::x86::BF16x8;
+
+#[cfg(target_arch = "aarch64")]
+type NativeBf16Storage = crate::backend::arm::BF16x8;
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+type NativeBf16Storage = crate::backend::scalar::ScalarBf16;
+
+impl FieldStorage for crate::bf16::Bf16 {
+    type Storage = NativeBf16Storage;
+
+    #[inline(always)]
+    fn splat_storage(val: Self) -> Self::Storage {
+        <Self::Storage as SimdBf16Ops>::splat(val.to_bits())
+    }
+
+    #[inline(always)]
+    fn zero_storage() -> Self::Storage {
+        <Self::Storage as SimdBf16Ops>::splat(crate::bf16::Bf16::ZERO.to_bits())
+    }
+
+    #[inline(always)]
+    fn one_storage() -> Self::Storage {
+        <Self::Storage as SimdBf16Ops>::splat(crate::bf16::Bf16::ONE.to_bits())
     }
 }
 

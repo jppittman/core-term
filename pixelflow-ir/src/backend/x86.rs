@@ -1,6 +1,6 @@
 //! x86_64 backend.
 
-use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
+use super::{Backend, MaskOps, SimdBf16Ops, SimdOps, SimdU32Ops};
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 use core::fmt::{Debug, Formatter};
@@ -1804,6 +1804,299 @@ impl U32x16 {
                 _mm512_or_si512(b_shifted, a_shifted),
             );
             Self(packed)
+        }
+    }
+}
+
+// ============================================================================
+// BF16x32 — 32-lane bf16 for AVX-512
+// ============================================================================
+
+/// 32-lane bfloat16 SIMD vector for AVX-512.
+///
+/// Internally stores 32 × u16 bf16 values in a 512-bit `__m512i`.
+/// When `avx512bf16` target feature is available, uses hardware
+/// `vcvtpbh2ps` / `vcvtne2ps2bf16`; otherwise uses software shift.
+#[cfg(target_feature = "avx512f")]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct BF16x32(pub(crate) __m512i);
+
+#[cfg(target_feature = "avx512f")]
+impl Default for BF16x32 {
+    fn default() -> Self {
+        unsafe { Self(_mm512_setzero_si512()) }
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl core::fmt::Debug for BF16x32 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let mut arr = [0u16; 32];
+        unsafe { _mm512_storeu_si512(arr.as_mut_ptr() as *mut __m512i, self.0) };
+        write!(f, "BF16x32({:?})", arr)
+    }
+}
+
+#[cfg(target_feature = "avx512f")]
+impl SimdBf16Ops for BF16x32 {
+    const LANES: usize = 32;
+    type F32Simd = F32x16;
+
+    #[inline(always)]
+    fn splat(val: u16) -> Self {
+        unsafe { Self(_mm512_set1_epi16(val as i16)) }
+    }
+
+    #[inline(always)]
+    fn load(slice: &[u16]) -> Self {
+        assert!(slice.len() >= 32);
+        unsafe { Self(_mm512_loadu_si512(slice.as_ptr() as *const __m512i)) }
+    }
+
+    #[inline(always)]
+    fn store(&self, out: &mut [u16]) {
+        assert!(out.len() >= 32);
+        unsafe { _mm512_storeu_si512(out.as_mut_ptr() as *mut __m512i, self.0) }
+    }
+
+    #[inline(always)]
+    fn to_f32_lo(self) -> F32x16 {
+        unsafe {
+            let lo: __m256i = _mm512_castsi512_si256(self.0);
+            #[cfg(target_feature = "avx512bf16")]
+            {
+                let lo_bh: __m256bh = core::mem::transmute(lo);
+                F32x16(_mm512_cvtpbh_ps(lo_bh))
+            }
+            #[cfg(not(target_feature = "avx512bf16"))]
+            {
+                let lo_u32 = _mm512_cvtepu16_epi32(lo);
+                F32x16(_mm512_castsi512_ps(_mm512_slli_epi32(lo_u32, 16)))
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn to_f32_hi(self) -> F32x16 {
+        unsafe {
+            let hi: __m256i = _mm512_extracti64x4_epi64::<1>(self.0);
+            #[cfg(target_feature = "avx512bf16")]
+            {
+                let hi_bh: __m256bh = core::mem::transmute(hi);
+                F32x16(_mm512_cvtpbh_ps(hi_bh))
+            }
+            #[cfg(not(target_feature = "avx512bf16"))]
+            {
+                let hi_u32 = _mm512_cvtepu16_epi32(hi);
+                F32x16(_mm512_castsi512_ps(_mm512_slli_epi32(hi_u32, 16)))
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn from_f32(lo: F32x16, hi: F32x16) -> Self {
+        unsafe {
+            #[cfg(target_feature = "avx512bf16")]
+            {
+                let bh: __m512bh = _mm512_cvtne2ps_pbh(hi.0, lo.0);
+                Self(core::mem::transmute(bh))
+            }
+            #[cfg(not(target_feature = "avx512bf16"))]
+            {
+                let lo_shr = _mm512_srli_epi32(_mm512_castps_si512(lo.0), 16);
+                let hi_shr = _mm512_srli_epi32(_mm512_castps_si512(hi.0), 16);
+                let lo_u16: __m256i = _mm512_cvtepi32_epi16(lo_shr);
+                let hi_u16: __m256i = _mm512_cvtepi32_epi16(hi_shr);
+                Self(_mm512_inserti64x4::<1>(_mm512_castsi256_si512(lo_u16), hi_u16))
+            }
+        }
+    }
+}
+
+// ============================================================================
+// BF16x16 — 16-lane bf16 for AVX2
+// ============================================================================
+
+/// 16-lane bfloat16 SIMD vector for AVX2.
+///
+/// Internally stores 16 × u16 bf16 values in a 256-bit `__m256i`.
+/// Uses software conversion (no AVX2 bf16 instructions exist).
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct BF16x16(pub(crate) __m256i);
+
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
+impl Default for BF16x16 {
+    fn default() -> Self {
+        unsafe { Self(_mm256_setzero_si256()) }
+    }
+}
+
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
+impl core::fmt::Debug for BF16x16 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let mut arr = [0u16; 16];
+        unsafe { _mm256_storeu_si256(arr.as_mut_ptr() as *mut __m256i, self.0) };
+        write!(f, "BF16x16({:?})", arr)
+    }
+}
+
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
+impl SimdBf16Ops for BF16x16 {
+    const LANES: usize = 16;
+    type F32Simd = F32x8;
+
+    #[inline(always)]
+    fn splat(val: u16) -> Self {
+        unsafe { Self(_mm256_set1_epi16(val as i16)) }
+    }
+
+    #[inline(always)]
+    fn load(slice: &[u16]) -> Self {
+        assert!(slice.len() >= 16);
+        unsafe { Self(_mm256_loadu_si256(slice.as_ptr() as *const __m256i)) }
+    }
+
+    #[inline(always)]
+    fn store(&self, out: &mut [u16]) {
+        assert!(out.len() >= 16);
+        unsafe { _mm256_storeu_si256(out.as_mut_ptr() as *mut __m256i, self.0) }
+    }
+
+    #[inline(always)]
+    fn to_f32_lo(self) -> F32x8 {
+        unsafe {
+            let lo: __m128i = _mm256_castsi256_si128(self.0);
+            let lo_u32: __m256i = _mm256_cvtepu16_epi32(lo);
+            F32x8(_mm256_castsi256_ps(_mm256_slli_epi32(lo_u32, 16)))
+        }
+    }
+
+    #[inline(always)]
+    fn to_f32_hi(self) -> F32x8 {
+        unsafe {
+            let hi: __m128i = _mm256_extracti128_si256::<1>(self.0);
+            let hi_u32: __m256i = _mm256_cvtepu16_epi32(hi);
+            F32x8(_mm256_castsi256_ps(_mm256_slli_epi32(hi_u32, 16)))
+        }
+    }
+
+    #[inline(always)]
+    fn from_f32(lo: F32x8, hi: F32x8) -> Self {
+        unsafe {
+            let lo_shr = _mm256_srli_epi32(_mm256_castps_si256(lo.0), 16);
+            let hi_shr = _mm256_srli_epi32(_mm256_castps_si256(hi.0), 16);
+            let lo_lo = _mm256_castsi256_si128(lo_shr);
+            let lo_hi = _mm256_extracti128_si256::<1>(lo_shr);
+            let hi_lo = _mm256_castsi256_si128(hi_shr);
+            let hi_hi = _mm256_extracti128_si256::<1>(hi_shr);
+            let lo_packed: __m128i = _mm_packus_epi32(lo_lo, lo_hi);
+            let hi_packed: __m128i = _mm_packus_epi32(hi_lo, hi_hi);
+            Self(_mm256_set_m128i(hi_packed, lo_packed))
+        }
+    }
+}
+
+// ============================================================================
+// BF16x8 — 8-lane bf16 for SSE2 (x86_64 baseline)
+// ============================================================================
+
+/// 8-lane bfloat16 SIMD vector for SSE2.
+///
+/// Internally stores 8 × u16 bf16 values in a 128-bit `__m128i`.
+/// Uses software conversion (no SSE bf16 instructions exist).
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx2"),
+    not(target_feature = "avx512f")
+))]
+#[derive(Copy, Clone)]
+#[repr(transparent)]
+pub struct BF16x8(pub(crate) __m128i);
+
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx2"),
+    not(target_feature = "avx512f")
+))]
+impl Default for BF16x8 {
+    fn default() -> Self {
+        unsafe { Self(_mm_setzero_si128()) }
+    }
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx2"),
+    not(target_feature = "avx512f")
+))]
+impl core::fmt::Debug for BF16x8 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let mut arr = [0u16; 8];
+        unsafe { _mm_storeu_si128(arr.as_mut_ptr() as *mut __m128i, self.0) };
+        write!(f, "BF16x8({:?})", arr)
+    }
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx2"),
+    not(target_feature = "avx512f")
+))]
+impl SimdBf16Ops for BF16x8 {
+    const LANES: usize = 8;
+    type F32Simd = F32x4;
+
+    #[inline(always)]
+    fn splat(val: u16) -> Self {
+        unsafe { Self(_mm_set1_epi16(val as i16)) }
+    }
+
+    #[inline(always)]
+    fn load(slice: &[u16]) -> Self {
+        assert!(slice.len() >= 8);
+        unsafe { Self(_mm_loadu_si128(slice.as_ptr() as *const __m128i)) }
+    }
+
+    #[inline(always)]
+    fn store(&self, out: &mut [u16]) {
+        assert!(out.len() >= 8);
+        unsafe { _mm_storeu_si128(out.as_mut_ptr() as *mut __m128i, self.0) }
+    }
+
+    #[inline(always)]
+    fn to_f32_lo(self) -> F32x4 {
+        unsafe {
+            let zero = _mm_setzero_si128();
+            let lo_u32 = _mm_unpacklo_epi16(self.0, zero);
+            F32x4(_mm_castsi128_ps(_mm_slli_epi32(lo_u32, 16)))
+        }
+    }
+
+    #[inline(always)]
+    fn to_f32_hi(self) -> F32x4 {
+        unsafe {
+            let zero = _mm_setzero_si128();
+            let hi_u32 = _mm_unpackhi_epi16(self.0, zero);
+            F32x4(_mm_castsi128_ps(_mm_slli_epi32(hi_u32, 16)))
+        }
+    }
+
+    #[inline(always)]
+    fn from_f32(lo: F32x4, hi: F32x4) -> Self {
+        unsafe {
+            let mut lo_buf = [0.0f32; 4];
+            let mut hi_buf = [0.0f32; 4];
+            _mm_storeu_ps(lo_buf.as_mut_ptr(), lo.0);
+            _mm_storeu_ps(hi_buf.as_mut_ptr(), hi.0);
+            let mut out = [0u16; 8];
+            for i in 0..4 {
+                out[i] = (lo_buf[i].to_bits() >> 16) as u16;
+                out[i + 4] = (hi_buf[i].to_bits() >> 16) as u16;
+            }
+            Self(_mm_loadu_si128(out.as_ptr() as *const __m128i))
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Scalar fallback backend for non-SIMD platforms.
 
-use super::{Backend, MaskOps, SimdOps, SimdU32Ops};
+use super::{Backend, MaskOps, SimdBf16Ops, SimdOps, SimdU32Ops};
 use core::fmt::Debug;
 use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Shl, Shr, Sub};
 
@@ -352,5 +352,58 @@ impl ScalarU32 {
         let b_u8 = (b.0.clamp(0.0, 1.0) * 255.0) as u32;
         let a_u8 = (a.0.clamp(0.0, 1.0) * 255.0) as u32;
         Self(r_u8 | (g_u8 << 8) | (b_u8 << 16) | (a_u8 << 24))
+    }
+}
+
+// ============================================================================
+// ScalarBf16 — 2-lane bf16 scalar fallback
+// ============================================================================
+
+/// 2-lane bfloat16 scalar type for non-SIMD platforms.
+///
+/// Holds 2 bf16 values (as raw `u16` bits). The "2-lane" design preserves the
+/// invariant that `BF16::LANES == 2 × F32Simd::LANES` (scalar has 1 f32 lane).
+/// `to_f32_lo` → value 0, `to_f32_hi` → value 1.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct ScalarBf16(pub [u16; 2]);
+
+impl SimdBf16Ops for ScalarBf16 {
+    const LANES: usize = 2;
+    type F32Simd = ScalarF32;
+
+    #[inline(always)]
+    fn splat(val: u16) -> Self {
+        Self([val, val])
+    }
+
+    #[inline(always)]
+    fn load(slice: &[u16]) -> Self {
+        assert!(slice.len() >= 2);
+        Self([slice[0], slice[1]])
+    }
+
+    #[inline(always)]
+    fn store(&self, out: &mut [u16]) {
+        assert!(out.len() >= 2);
+        out[0] = self.0[0];
+        out[1] = self.0[1];
+    }
+
+    #[inline(always)]
+    fn to_f32_lo(self) -> ScalarF32 {
+        ScalarF32(f32::from_bits((self.0[0] as u32) << 16))
+    }
+
+    #[inline(always)]
+    fn to_f32_hi(self) -> ScalarF32 {
+        ScalarF32(f32::from_bits((self.0[1] as u32) << 16))
+    }
+
+    #[inline(always)]
+    fn from_f32(lo: ScalarF32, hi: ScalarF32) -> Self {
+        Self([
+            (lo.0.to_bits() >> 16) as u16,
+            (hi.0.to_bits() >> 16) as u16,
+        ])
     }
 }

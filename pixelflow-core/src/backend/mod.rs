@@ -217,6 +217,73 @@ pub trait SimdU32Ops:
     fn from_f32_scaled<F: SimdOps>(f: F) -> Self;
 }
 
+// ============================================================================
+// SimdBf16Ops — bf16 SIMD load/store/convert trait
+// ============================================================================
+
+/// SIMD operations for bfloat16 vectors.
+///
+/// bf16 values are stored in SIMD registers as packed `u16` words (the raw
+/// IEEE 754 bf16 bit pattern). All arithmetic is performed in f32 by calling
+/// [`to_f32_lo`](SimdBf16Ops::to_f32_lo) / [`to_f32_hi`](SimdBf16Ops::to_f32_hi)
+/// to upcast, computing, then packing back with [`from_f32`](SimdBf16Ops::from_f32).
+///
+/// # Lane layout
+///
+/// A `SimdBf16Ops` type holds `LANES` bf16 values, which is always **2×** the
+/// lane count of the paired [`F32Simd`](SimdBf16Ops::F32Simd) type. The lanes
+/// are split evenly:
+/// - lanes `0 .. LANES/2` → `to_f32_lo`
+/// - lanes `LANES/2 .. LANES` → `to_f32_hi`
+///
+/// # Hardware acceleration
+///
+/// | Platform | Feature | Instruction |
+/// |----------|---------|-------------|
+/// | AVX-512 | `avx512bf16` | `vcvtpbh2ps`, `vcvtne2ps2bf16` |
+/// | NEON | `bf16` | `vcvt_f32_bf16`, `vcvt_bf16_f32` |
+/// | Other | (software) | shift + pack |
+pub trait SimdBf16Ops: Copy + Clone + core::fmt::Debug + Default + Send + Sync {
+    /// Number of bf16 lanes (always 2× `F32Simd::LANES`).
+    const LANES: usize;
+
+    /// The paired f32 SIMD type — holds `LANES / 2` f32 values.
+    type F32Simd: SimdOps;
+
+    /// Splat a raw bf16 value (as `u16` bits) to every lane.
+    fn splat(val: u16) -> Self;
+
+    /// Load `LANES` bf16 values from a slice of raw `u16` bits.
+    ///
+    /// # Panics
+    /// Panics if `slice.len() < LANES`.
+    fn load(slice: &[u16]) -> Self;
+
+    /// Store `LANES` bf16 values to a slice of raw `u16` bits.
+    ///
+    /// # Panics
+    /// Panics if `out.len() < LANES`.
+    fn store(&self, out: &mut [u16]);
+
+    /// Convert the lower `LANES/2` bf16 lanes to f32.
+    ///
+    /// Uses hardware `vcvtpbh2ps` / `vcvt_f32_bf16` when available;
+    /// falls back to software zero-extension otherwise.
+    fn to_f32_lo(self) -> Self::F32Simd;
+
+    /// Convert the upper `LANES/2` bf16 lanes to f32.
+    fn to_f32_hi(self) -> Self::F32Simd;
+
+    /// Pack two f32 SIMD vectors into a bf16 vector.
+    ///
+    /// - `lo` → lanes `0 .. LANES/2`
+    /// - `hi` → lanes `LANES/2 .. LANES`
+    ///
+    /// Uses hardware `vcvtne2ps2bf16` (round-to-nearest-even) when available;
+    /// falls back to truncation (round-toward-zero) otherwise.
+    fn from_f32(lo: Self::F32Simd, hi: Self::F32Simd) -> Self;
+}
+
 #[cfg(target_arch = "aarch64")]
 pub mod arm;
 
