@@ -124,6 +124,9 @@ pub struct TerminalApp {
     loaded_font: Arc<LoadedFont<MmapSource>>,
     /// Cached rasterized glyphs.
     glyph_cache: GlyphCache,
+    /// Currently pressed mouse button, tracked for motion reporting.
+    /// Set on MouseClick, cleared on MouseRelease.
+    pressed_mouse_button: Option<pixelflow_runtime::input::MouseButton>,
 }
 
 /// Parameters for constructing a TerminalApp.
@@ -231,6 +234,7 @@ impl TerminalApp {
             engine_tx: params.engine_tx,
             loaded_font,
             glyph_cache,
+            pressed_mouse_button: None,
         }
     }
 
@@ -566,6 +570,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                     col,
                     row
                 );
+                self.pressed_mouse_button = Some(button);
                 if let Some(bytes) =
                     self.emulator
                         .encode_mouse_event(button, col, row, MouseEventKind::Press)
@@ -585,6 +590,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                     col,
                     row
                 );
+                self.pressed_mouse_button = None;
                 if let Some(bytes) =
                     self.emulator
                         .encode_mouse_event(button, col, row, MouseEventKind::Release)
@@ -599,35 +605,72 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 let col = (x / self.config.appearance.cell_width_px as u32) as usize;
                 let row = (y / self.config.appearance.cell_height_px as u32) as usize;
                 log::trace!("Mouse move: cell ({}, {})", col, row);
-                // Only report motion if a tracking mode that cares about motion is active
-                if self.emulator.reports_button_motion() {
-                    if let Some(bytes) = self.emulator.encode_mouse_event(
-                        pixelflow_runtime::input::MouseButton::Left,
-                        col,
-                        row,
-                        MouseEventKind::Motion,
-                    ) {
+                // any-event mode (1003) reports all motion;
+                // button-event mode (1002) only reports motion while a button is held
+                if self.emulator.reports_all_motion() {
+                    let button = self
+                        .pressed_mouse_button
+                        .unwrap_or(pixelflow_runtime::input::MouseButton::Left);
+                    if let Some(bytes) =
+                        self.emulator
+                            .encode_mouse_event(button, col, row, MouseEventKind::Motion)
+                    {
                         if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
                             log::warn!("Failed to send mouse motion to PTY: {}", e);
+                        }
+                    }
+                } else if self.emulator.reports_button_motion() {
+                    // button-event mode: only report when a button is held
+                    if let Some(button) = self.pressed_mouse_button {
+                        if let Some(bytes) = self.emulator.encode_mouse_event(
+                            button,
+                            col,
+                            row,
+                            MouseEventKind::Motion,
+                        ) {
+                            if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
+                                log::warn!("Failed to send mouse motion to PTY: {}", e);
+                            }
                         }
                     }
                 }
             }
             EngineEventManagement::MouseScroll {
-                x: _,
-                y: _,
+                x,
+                y,
                 dx: _,
                 dy,
                 mods: _,
             } => {
                 log::trace!("Mouse scroll: delta dy={}", dy);
-                // Scrollback navigation: negative dy scrolls up (into history),
-                // positive dy scrolls down (toward live screen)
-                // Scale by 3 lines per scroll unit for better UX
-                let scroll_lines = -(dy as i32) * 3;
-                if self.emulator.scroll_viewport(scroll_lines) {
-                    // Viewport changed, send frame immediately for responsive scrolling
-                    self.send_frame();
+                // When mouse tracking is active, report scroll as button press events
+                if self.emulator.is_mouse_tracking_active() && dy != 0.0 {
+                    use crate::term::MouseEventKind;
+                    use pixelflow_runtime::input::MouseButton;
+                    let col = (x / self.config.appearance.cell_width_px as u32) as usize;
+                    let row = (y / self.config.appearance.cell_height_px as u32) as usize;
+                    let button = if dy < 0.0 {
+                        MouseButton::ScrollUp
+                    } else {
+                        MouseButton::ScrollDown
+                    };
+                    if let Some(bytes) =
+                        self.emulator
+                            .encode_mouse_event(button, col, row, MouseEventKind::Press)
+                    {
+                        if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
+                            log::warn!("Failed to send mouse scroll to PTY: {}", e);
+                        }
+                    }
+                } else {
+                    // Scrollback navigation: negative dy scrolls up (into history),
+                    // positive dy scrolls down (toward live screen)
+                    // Scale by 3 lines per scroll unit for better UX
+                    let scroll_lines = -(dy as i32) * 3;
+                    if self.emulator.scroll_viewport(scroll_lines) {
+                        // Viewport changed, send frame immediately for responsive scrolling
+                        self.send_frame();
+                    }
                 }
             }
             EngineEventManagement::FocusGained => {

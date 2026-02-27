@@ -9,6 +9,7 @@
 
 use crate::term::modes::DecPrivateModes;
 use pixelflow_runtime::input::MouseButton;
+use std::io::Write;
 
 /// The type of mouse event being reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,11 +37,11 @@ pub(crate) fn encode_mouse_event(
         return None;
     }
 
-    let button_code = mouse_button_code(button, kind);
-
     if modes.mouse_sgr_mode {
+        let button_code = sgr_button_code(button, kind);
         Some(encode_sgr(button_code, col, row, kind))
     } else {
+        let button_code = legacy_button_code(button, kind);
         encode_legacy(button_code, col, row)
     }
 }
@@ -69,18 +70,11 @@ fn should_report(modes: &DecPrivateModes, kind: MouseEventKind) -> bool {
     }
 }
 
-/// Map a MouseButton + event kind to the xterm button protocol code.
+/// Map a button to its base code for the xterm protocol.
 ///
-/// Button codes (Cb):
-/// - 0 = left press
-/// - 1 = middle press
-/// - 2 = right press
-/// - 3 = release (legacy mode only; SGR uses lowercase 'm')
-/// - 32 = motion flag (added for motion events)
-/// - 64 = scroll up
-/// - 65 = scroll down
-fn mouse_button_code(button: MouseButton, kind: MouseEventKind) -> u8 {
-    let base = match button {
+/// Base codes: 0=left, 1=middle, 2=right, 64=scroll_up, 65=scroll_down.
+fn button_base_code(button: MouseButton) -> u8 {
+    match button {
         MouseButton::Left => 0,
         MouseButton::Middle => 1,
         MouseButton::Right => 2,
@@ -90,12 +84,32 @@ fn mouse_button_code(button: MouseButton, kind: MouseEventKind) -> u8 {
             // Buttons 4+ map to codes 128+
             if n >= 4 { 128 + n - 4 } else { n }
         }
-    };
+    }
+}
 
+/// Compute the button code for SGR encoding.
+///
+/// SGR distinguishes press from release via the suffix character (M vs m),
+/// so the button code always carries the actual button identity.
+/// Motion events add 32 to the code.
+fn sgr_button_code(button: MouseButton, kind: MouseEventKind) -> u8 {
+    let base = button_base_code(button);
     if kind == MouseEventKind::Motion {
-        base + 32 // Add motion flag
+        base + 32
     } else {
         base
+    }
+}
+
+/// Compute the button code for legacy (X10/Normal) encoding.
+///
+/// In legacy mode, release events use code 3 (no button identity) because
+/// the protocol has no other way to signal a release. Motion events add 32.
+fn legacy_button_code(button: MouseButton, kind: MouseEventKind) -> u8 {
+    match kind {
+        MouseEventKind::Release => 3,
+        MouseEventKind::Motion => button_base_code(button) + 32,
+        MouseEventKind::Press => button_base_code(button),
     }
 }
 
@@ -104,11 +118,15 @@ fn mouse_button_code(button: MouseButton, kind: MouseEventKind) -> u8 {
 /// Format: `ESC [ < Cb ; Cx ; Cy M` for press/motion, `ESC [ < Cb ; Cx ; Cy m` for release.
 /// Coordinates are 1-based.
 fn encode_sgr(button_code: u8, col: usize, row: usize, kind: MouseEventKind) -> Vec<u8> {
-    let suffix = if kind == MouseEventKind::Release { 'm' } else { 'M' };
+    let suffix = if kind == MouseEventKind::Release { b'm' } else { b'M' };
     // SGR uses 1-based coordinates
     let cx = col + 1;
     let cy = row + 1;
-    format!("\x1b[<{};{};{}{}", button_code, cx, cy, suffix).into_bytes()
+    // Max realistic: "\x1b[<999;99999;99999M" = ~22 bytes
+    let mut buf = Vec::with_capacity(24);
+    let _ = write!(buf, "\x1b[<{};{};{}", button_code, cx, cy);
+    buf.push(suffix);
+    buf
 }
 
 /// Encode using legacy X10/Normal mouse mode.
@@ -157,6 +175,13 @@ mod tests {
         modes
     }
 
+    fn modes_with_button_event_sgr() -> DecPrivateModes {
+        let mut modes = DecPrivateModes::default();
+        modes.mouse_button_event_mode = true;
+        modes.mouse_sgr_mode = true;
+        modes
+    }
+
     #[test]
     fn no_mode_returns_none() {
         let modes = DecPrivateModes::default();
@@ -178,7 +203,7 @@ mod tests {
         let modes = modes_with_sgr();
         let result =
             encode_mouse_event(&modes, MouseButton::Left, 5, 10, MouseEventKind::Release).unwrap();
-        // SGR release uses lowercase 'm'
+        // SGR release uses lowercase 'm', button code preserved
         assert_eq!(result, b"\x1b[<0;6;11m");
     }
 
@@ -191,6 +216,15 @@ mod tests {
     }
 
     #[test]
+    fn sgr_right_release() {
+        let modes = modes_with_sgr();
+        let result =
+            encode_mouse_event(&modes, MouseButton::Right, 3, 7, MouseEventKind::Release).unwrap();
+        // SGR preserves button identity on release
+        assert_eq!(result, b"\x1b[<2;4;8m");
+    }
+
+    #[test]
     fn sgr_middle_press() {
         let modes = modes_with_sgr();
         let result =
@@ -200,12 +234,21 @@ mod tests {
     }
 
     #[test]
-    fn sgr_motion() {
+    fn sgr_motion_left() {
         let modes = modes_with_any_event_sgr();
         let result =
             encode_mouse_event(&modes, MouseButton::Left, 10, 5, MouseEventKind::Motion).unwrap();
         // Motion adds 32 to button code: 0 + 32 = 32
         assert_eq!(result, b"\x1b[<32;11;6M");
+    }
+
+    #[test]
+    fn sgr_motion_right() {
+        let modes = modes_with_button_event_sgr();
+        let result =
+            encode_mouse_event(&modes, MouseButton::Right, 10, 5, MouseEventKind::Motion).unwrap();
+        // Motion adds 32 to button code: 2 + 32 = 34
+        assert_eq!(result, b"\x1b[<34;11;6M");
     }
 
     #[test]
@@ -236,6 +279,25 @@ mod tests {
     }
 
     #[test]
+    fn legacy_left_release_uses_code_3() {
+        let modes = modes_with_vt200();
+        let result =
+            encode_mouse_event(&modes, MouseButton::Left, 5, 10, MouseEventKind::Release).unwrap();
+        // Legacy release: button code = 3, so Cb = 3 + 32 = 35
+        assert_eq!(result, vec![0x1b, b'[', b'M', 35, 38, 43]);
+    }
+
+    #[test]
+    fn legacy_right_release_uses_code_3() {
+        let modes = modes_with_vt200();
+        let result =
+            encode_mouse_event(&modes, MouseButton::Right, 5, 10, MouseEventKind::Release)
+                .unwrap();
+        // Legacy release always uses code 3 regardless of which button was released
+        assert_eq!(result, vec![0x1b, b'[', b'M', 35, 38, 43]);
+    }
+
+    #[test]
     fn legacy_coords_overflow_returns_none() {
         let modes = modes_with_vt200();
         let result =
@@ -246,28 +308,24 @@ mod tests {
     #[test]
     fn x10_reports_press_only() {
         let modes = modes_with_x10();
-        let press =
-            encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Press);
+        let press = encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Press);
         assert!(press.is_some());
         let release =
             encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Release);
         assert_eq!(release, None);
-        let motion =
-            encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Motion);
+        let motion = encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Motion);
         assert_eq!(motion, None);
     }
 
     #[test]
     fn vt200_reports_press_and_release() {
         let modes = modes_with_vt200();
-        let press =
-            encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Press);
+        let press = encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Press);
         assert!(press.is_some());
         let release =
             encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Release);
         assert!(release.is_some());
-        let motion =
-            encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Motion);
+        let motion = encode_mouse_event(&modes, MouseButton::Left, 0, 0, MouseEventKind::Motion);
         assert_eq!(motion, None);
     }
 
