@@ -376,12 +376,9 @@ impl TerminalEmulator {
     #[must_use]
     pub fn encode_mouse_event(
         &self,
-        button: pixelflow_runtime::input::MouseButton,
-        col: usize,
-        row: usize,
-        kind: mouse::MouseEventKind,
+        params: mouse::MouseEncodingParams,
     ) -> Option<Vec<u8>> {
-        mouse::encode_mouse_event(&self.dec_modes, button, col, row, kind)
+        mouse::encode_mouse_event(&self.dec_modes, params)
     }
 
     /// Returns true if any mouse tracking mode is active.
