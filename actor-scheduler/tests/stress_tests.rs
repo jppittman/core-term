@@ -26,6 +26,7 @@ struct CountingHandler {
 }
 
 impl Actor<u64, u64, u64> for CountingHandler {
+        type Error = String;
     fn handle_data(&mut self, _msg: u64) -> HandlerResult {
         self.data_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -49,6 +50,7 @@ struct SlowHandler {
 }
 
 impl Actor<u64, u64, u64> for SlowHandler {
+        type Error = String;
     fn handle_data(&mut self, _msg: u64) -> HandlerResult {
         thread::sleep(self.delay);
         self.processed.fetch_add(1, Ordering::SeqCst);
@@ -68,6 +70,7 @@ impl Actor<u64, u64, u64> for SlowHandler {
 struct NoOpHandler;
 
 impl Actor<(), (), ()> for NoOpHandler {
+        type Error = String;
     fn handle_data(&mut self, _: ()) -> HandlerResult {
         Ok(())
     }
@@ -310,6 +313,7 @@ fn burst_limit_prevents_data_starvation() {
     }
 
     impl Actor<u64, u64, u64> for BurstHandler {
+        type Error = String;
         fn handle_data(&mut self, _: u64) -> HandlerResult {
             self.data_processed.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -381,6 +385,7 @@ fn multi_producer_send() {
     }
 
     impl Actor<u64, u64, u64> for SimpleHandler {
+        type Error = String;
         fn handle_data(&mut self, _: u64) -> HandlerResult {
             self.count.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -460,6 +465,7 @@ fn large_messages_work() {
     }
 
     impl Actor<LargeMessage, (), ()> for LargeHandler {
+        type Error = String;
         fn handle_data(&mut self, msg: LargeMessage) -> HandlerResult {
             // Verify data integrity
             assert!(msg.data.iter().all(|&b| b == 42));

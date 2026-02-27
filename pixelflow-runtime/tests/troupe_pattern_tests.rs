@@ -82,6 +82,7 @@ impl<'a> TroupeActor<&'a TestDirectory> for AlphaActor<'a> {
 }
 
 impl Actor<AlphaData, AlphaControl, AlphaManagement> for AlphaActor<'_> {
+    type Error = String;
     fn handle_data(&mut self, msg: AlphaData) -> HandlerResult {
         self.log
             .lock()
@@ -131,6 +132,7 @@ impl<'a> TroupeActor<&'a TestDirectory> for BetaActor<'a> {
 }
 
 impl Actor<BetaData, BetaControl, BetaManagement> for BetaActor<'_> {
+    type Error = String;
     fn handle_data(&mut self, msg: BetaData) -> HandlerResult {
         self.log
             .lock()
@@ -383,6 +385,7 @@ fn all_actor_threads_exit_on_channel_close() {
     let alpha_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for NoopActor {
+            type Error = String;
             fn handle_data(&mut self, _: AlphaData) -> HandlerResult {
                 Ok(())
             }
@@ -403,6 +406,7 @@ fn all_actor_threads_exit_on_channel_close() {
     let beta_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<BetaData, BetaControl, BetaManagement> for NoopActor {
+            type Error = String;
             fn handle_data(&mut self, _: BetaData) -> HandlerResult {
                 Ok(())
             }
@@ -451,6 +455,7 @@ fn actor_thread_panic_isolated() {
     let alpha_thread = thread::spawn(move || {
         struct PanicActor;
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for PanicActor {
+            type Error = String;
             fn handle_data(&mut self, _: AlphaData) -> HandlerResult {
                 panic!("Alpha panics!");
             }
@@ -473,6 +478,7 @@ fn actor_thread_panic_isolated() {
     let beta_thread = thread::spawn(move || {
         struct CountActor(Arc<AtomicUsize>);
         impl Actor<BetaData, BetaControl, BetaManagement> for CountActor {
+            type Error = String;
             fn handle_data(&mut self, _: BetaData) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -554,6 +560,7 @@ fn circular_messaging_does_not_deadlock() {
             max: usize,
         }
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for PingActor {
+            type Error = String;
             fn handle_data(&mut self, _: AlphaData) -> HandlerResult {
                 Ok(())
             }
@@ -588,6 +595,7 @@ fn circular_messaging_does_not_deadlock() {
             max: usize,
         }
         impl Actor<BetaData, BetaControl, BetaManagement> for PongActor {
+            type Error = String;
             fn handle_data(&mut self, _: BetaData) -> HandlerResult {
                 Ok(())
             }
@@ -656,6 +664,7 @@ fn multiple_producers_work_independently() {
     let handle = thread::spawn(move || {
         struct CountActor(Arc<AtomicUsize>);
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for CountActor {
+            type Error = String;
             fn handle_data(&mut self, _: AlphaData) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -718,6 +727,7 @@ fn actors_can_coordinate_startup_with_barrier() {
 
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
+            type Error = String;
             fn handle_data(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
@@ -742,6 +752,7 @@ fn actors_can_coordinate_startup_with_barrier() {
 
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
+            type Error = String;
             fn handle_data(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
@@ -793,6 +804,7 @@ fn shutdown_message_causes_actor_exit() {
     let handle = thread::spawn(move || {
         struct NoopActor;
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for NoopActor {
+            type Error = String;
             fn handle_data(&mut self, _: AlphaData) -> HandlerResult {
                 Ok(())
             }
@@ -838,6 +850,7 @@ fn shutdown_works_with_multiple_actors() {
     let alpha_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<AlphaData, AlphaControl, AlphaManagement> for NoopActor {
+            type Error = String;
             fn handle_data(&mut self, _: AlphaData) -> HandlerResult {
                 Ok(())
             }
@@ -858,6 +871,7 @@ fn shutdown_works_with_multiple_actors() {
     let beta_thread = thread::spawn(move || {
         struct NoopActor;
         impl Actor<BetaData, BetaControl, BetaManagement> for NoopActor {
+            type Error = String;
             fn handle_data(&mut self, _: BetaData) -> HandlerResult {
                 Ok(())
             }

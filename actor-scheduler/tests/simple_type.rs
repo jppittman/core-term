@@ -6,6 +6,7 @@ use actor_scheduler::{
 struct SimpleActor;
 
 impl Actor<(), (), ()> for SimpleActor {
+    type Error = String;
     fn handle_data(&mut self, _: ()) -> HandlerResult {
         Ok(())
     }

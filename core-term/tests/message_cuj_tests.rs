@@ -33,6 +33,7 @@ struct MockParserActor {
 }
 
 impl Actor<Vec<u8>, (), ()> for MockParserActor {
+    type Error = String;
     fn handle_data(&mut self, data: Vec<u8>) -> HandlerResult {
         self.bytes_received.fetch_add(data.len(), Ordering::SeqCst);
 
@@ -392,6 +393,7 @@ fn cuj_pty04_sender_drop_terminates_receiver() {
     }
 
     impl Actor<u8, (), ()> for TerminationActor {
+        type Error = String;
         fn handle_data(&mut self, _: u8) -> HandlerResult {
             Ok(())
         }
@@ -467,6 +469,7 @@ struct MockTerminalAppActor {
 }
 
 impl Actor<MockEngineData, MockEngineControl, MockEngineManagement> for MockTerminalAppActor {
+    type Error = String;
     fn handle_data(&mut self, data: MockEngineData) -> HandlerResult {
         self.data_events.lock().unwrap().push(data);
         Ok(())
@@ -680,6 +683,7 @@ fn cuj_priority_control_before_management_before_data() {
     }
 
     impl Actor<String, String, String> for OrderRecordingActor {
+        type Error = String;
         fn handle_data(&mut self, msg: String) -> HandlerResult {
             self.order.lock().unwrap().push(format!("D:{}", msg));
             Ok(())
@@ -747,6 +751,7 @@ fn cuj_concurrent_senders_all_messages_delivered() {
     }
 
     impl Actor<usize, (), ()> for CountingActor {
+        type Error = String;
         fn handle_data(&mut self, _: usize) -> HandlerResult {
             self.count.fetch_add(1, Ordering::SeqCst);
             Ok(())

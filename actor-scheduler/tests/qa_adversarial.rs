@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 
 struct Noop;
 impl Actor<i32, i32, i32> for Noop {
+        type Error = String;
     fn handle_data(&mut self, _: i32) -> HandlerResult {
         Ok(())
     }
@@ -51,19 +52,19 @@ impl Actor<i32, i32, i32> for Noop {
 /// from the same thread deadlocks when the scheduler is NOT running.
 ///
 /// The doorbell channel has capacity=1. Data sends push a Wake into the
-/// doorbell. Shutdown uses `tx_doorbell.send(System::Shutdown)` (blocking).
-/// If no one is draining the doorbell, the Shutdown sender blocks forever.
+/// doorbell. Previously, Shutdown used `tx_doorbell.send(System::Shutdown)`
+/// (blocking) which deadlocked when the doorbell was full.
 ///
-/// This test verifies the deadlock exists by checking with a timeout.
+/// GAP-1 FIX: Shutdown now uses an AtomicBool flag + non-blocking wake,
+/// so it never deadlocks regardless of doorbell state.
 #[test]
-fn gap1_shutdown_after_data_deadlocks_without_running_scheduler() {
+fn gap1_shutdown_never_deadlocks_with_full_doorbell() {
     let (tx, _rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
 
     // Fill the doorbell with a Wake by sending data
     tx.send(Message::Data(1)).unwrap();
 
-    // Now try to send Shutdown from a separate thread with a timeout.
-    // If the doorbell is full, this will block indefinitely.
+    // Now send Shutdown — this must complete immediately (non-blocking).
     let done = Arc::new(AtomicBool::new(false));
     let done_clone = done.clone();
 
@@ -72,24 +73,15 @@ fn gap1_shutdown_after_data_deadlocks_without_running_scheduler() {
         done_clone.store(true, Ordering::SeqCst);
     });
 
-    // Wait 200ms — if Shutdown hasn't completed, it's deadlocked
+    // Wait 200ms — Shutdown should have completed instantly
     thread::sleep(Duration::from_millis(200));
     let completed = done.load(Ordering::SeqCst);
 
-    // GAP-1 CONFIRMED: Shutdown did NOT complete because doorbell is full
-    // and nobody is consuming it.
-    if !completed {
-        // Clean up: drop _rx to unblock the sender (doorbell receiver dropped
-        // → send returns Err(Disconnected), unblocking the thread)
-        // Note: _rx is already going out of scope, but let's be explicit
-        drop(_rx);
-        let _ = sender.join();
-    }
+    let _ = sender.join();
 
     assert!(
-        !completed,
-        "GAP-1: Shutdown should deadlock when doorbell is full and scheduler not running. \
-         If this assertion fails, the bug has been fixed!"
+        completed,
+        "GAP-1 FIX: Shutdown must not deadlock even when doorbell is full."
     );
 }
 
@@ -117,6 +109,7 @@ fn greedy_data_handler_blocks_control_processing() {
         data_count: Arc<AtomicUsize>,
     }
     impl Actor<i32, i32, i32> for GreedyActor {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             // Greedy: sleep 50ms per message (simulates expensive computation)
             thread::sleep(Duration::from_millis(50));
@@ -209,6 +202,7 @@ fn park_busy_causes_immediate_repoll() {
         limit: usize,
     }
     impl Actor<(), (), ()> for BusyActor {
+        type Error = String;
         fn handle_data(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
@@ -277,6 +271,7 @@ fn control_interleaving_during_data_burst() {
         order: Arc<std::sync::Mutex<Vec<String>>>,
     }
     impl Actor<i32, i32, i32> for OrderTracker {
+        type Error = String;
         fn handle_data(&mut self, v: i32) -> HandlerResult {
             self.order.lock().unwrap().push(format!("D{}", v));
             Ok(())
@@ -636,6 +631,7 @@ fn recoverable_error_causes_failed_exit() {
 
     struct FailingActor;
     impl Actor<i32, i32, i32> for FailingActor {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             Err(HandlerError::recoverable("intentional failure"))
         }
@@ -670,6 +666,7 @@ fn fatal_error_panics_scheduler() {
 
     struct FatalActor;
     impl Actor<i32, i32, i32> for FatalActor {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             Err(HandlerError::fatal("kaboom"))
         }
@@ -710,6 +707,7 @@ fn poll_once_processes_messages_without_blocking() {
         count: Arc<AtomicUsize>,
     }
     impl Actor<i32, i32, i32> for CountActor {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             self.count.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -798,6 +796,7 @@ fn drain_all_processes_pending_data_on_shutdown() {
         count: Arc<AtomicUsize>,
     }
     impl Actor<i32, i32, i32> for DataCounter {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             self.count.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -858,6 +857,7 @@ fn drain_control_drops_data_on_shutdown() {
         ctrl: Arc<AtomicUsize>,
     }
     impl Actor<i32, i32, i32> for DualCounter {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             self.data.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -919,6 +919,7 @@ fn drain_all_timeout_prevents_hang() {
 
     struct SlowActor;
     impl Actor<i32, i32, i32> for SlowActor {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             // Each message takes 10ms
             thread::sleep(Duration::from_millis(10));
@@ -986,6 +987,7 @@ fn sharded_extreme_imbalance() {
         trickle: Arc<AtomicUsize>,
     }
     impl Actor<i32, i32, i32> for ImbalanceActor {
+        type Error = String;
         fn handle_data(&mut self, v: i32) -> HandlerResult {
             if v == -1 {
                 self.trickle.fetch_add(1, Ordering::SeqCst);
@@ -1067,6 +1069,7 @@ fn kubelet_rapid_restart_frequency_gate() {
     /// This ensures it fails even after restart when no one sends data.
     struct InstantFail;
     impl Actor<i32, i32, i32> for InstantFail {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             Err(HandlerError::recoverable("always fail"))
         }
@@ -1209,6 +1212,7 @@ fn error_during_drain_all_exits_cleanly() {
         count: usize,
     }
     impl Actor<i32, i32, i32> for FailDuringDrain {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             self.count += 1;
             if self.count == 3 {
@@ -1283,6 +1287,7 @@ fn all_lanes_saturated_simultaneously() {
         mgmt: Arc<AtomicUsize>,
     }
     impl Actor<i32, i32, i32> for TriCounter {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             self.data.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -1359,6 +1364,7 @@ fn handler_panic_disconnects_senders() {
 
     struct PanicActor;
     impl Actor<i32, i32, i32> for PanicActor {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             panic!("actor panic!")
         }
@@ -1405,6 +1411,7 @@ fn park_fatal_panics_scheduler() {
 
     struct FatalParkActor;
     impl Actor<i32, i32, i32> for FatalParkActor {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             Ok(())
         }
@@ -1454,6 +1461,7 @@ fn minimal_data_burst_preserves_control_responsiveness() {
         data: Arc<AtomicUsize>,
     }
     impl Actor<i32, i32, i32> for MinBurstActor {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             self.data.fetch_add(1, Ordering::SeqCst);
             Ok(())

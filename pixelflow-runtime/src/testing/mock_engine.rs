@@ -68,6 +68,7 @@ struct MessageCollector {
 }
 
 impl Actor<EngineData, EngineControl, AppManagement> for MessageCollector {
+    type Error = String;
     fn handle_data(&mut self, msg: EngineData) -> HandlerResult {
         self.messages
             .lock()

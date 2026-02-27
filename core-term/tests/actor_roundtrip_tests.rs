@@ -32,6 +32,7 @@ enum TestAnsiCommand {
 }
 
 impl Actor<Vec<u8>, (), ()> for TestParserActor {
+    type Error = String;
     fn handle_data(&mut self, bytes: Vec<u8>) -> HandlerResult {
         self.bytes_processed
             .fetch_add(bytes.len(), Ordering::SeqCst);
@@ -276,6 +277,7 @@ struct TestTerminalAppActor {
 }
 
 impl Actor<TestEngineData, TestEngineControl, TestEngineManagement> for TestTerminalAppActor {
+    type Error = String;
     fn handle_data(&mut self, data: TestEngineData) -> HandlerResult {
         match data {
             TestEngineData::FrameRequest => {
@@ -570,6 +572,7 @@ fn multi_actor_chain_roundtrip() {
     }
 
     impl Actor<Vec<TestAnsiCommand>, (), ()> for ForwardingActor {
+        type Error = String;
         fn handle_data(&mut self, cmds: Vec<TestAnsiCommand>) -> HandlerResult {
             let text: String = cmds
                 .iter()
@@ -648,6 +651,7 @@ fn roundtrip_handles_actor_panic_gracefully() {
     }
 
     impl Actor<String, (), ()> for PanickyActor {
+        type Error = String;
         fn handle_data(&mut self, _msg: String) -> HandlerResult {
             let count = self.message_count.fetch_add(1, Ordering::SeqCst) + 1;
             if count == self.panic_on_message {
@@ -709,6 +713,7 @@ fn roundtrip_sender_dropped_during_processing() {
             started: Arc<AtomicBool>,
         }
         impl Actor<usize, (), ()> for SlowActor {
+            type Error = String;
             fn handle_data(&mut self, _: usize) -> HandlerResult {
                 self.started.store(true, Ordering::SeqCst);
                 thread::sleep(Duration::from_millis(50));

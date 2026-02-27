@@ -60,6 +60,7 @@ impl MockVsyncActor {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
+    type Error = String;
     fn handle_data(&mut self, response: RenderedResponse) -> HandlerResult {
         // Token replenishment on rendered response
         if self.tokens < MAX_TOKENS {
@@ -720,6 +721,7 @@ fn shutdown_stops_processing_immediately() {
     let handle = thread::spawn(move || {
         struct CountingActor(Arc<AtomicUsize>);
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for CountingActor {
+            type Error = String;
             fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())

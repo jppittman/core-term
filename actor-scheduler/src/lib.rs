@@ -64,6 +64,7 @@
 //! struct MyHandler;
 //!
 //! impl SchedulerHandler<String, String, String> for MyHandler {
+//!     type Error = String;
 //!     fn handle_data(&mut self, msg: String) -> HandlerResult {
 //!         println!("Data: {}", msg);
 //!         Ok(())
@@ -116,6 +117,7 @@ use sharded::{InboxBuilder, ShardedInbox};
 use spsc::SpscSender;
 use std::sync::{
     Arc,
+    atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, SyncSender},
 };
 use std::time::Duration;
@@ -361,34 +363,48 @@ pub enum SystemStatus {
 /// - **Data** (D): High-throughput data messages
 /// - **Control** (C): Time-critical control messages
 /// - **Management** (M): Lifecycle and configuration messages
+///
+/// # Associated error type
+///
+/// The `Error` associated type lets actors use domain-specific error types
+/// instead of strings. The scheduler converts errors to `String` (via
+/// `Display`) at the `PodPhase` boundary for supervisors.
+///
+/// For backward compatibility, set `type Error = String;` in existing impls.
 pub trait Actor<D, C, M> {
+    /// The error type returned by handler methods.
+    ///
+    /// Must implement `Display` so the scheduler can convert to string
+    /// for `PodPhase::Failed`. Use `String` for simple actors.
+    type Error: std::fmt::Display;
+
     /// Handle a data message.
     ///
     /// Returns `Ok(())` on success, or a `HandlerError` on failure.
-    /// - `HandlerError::Temporary`: Scheduler logs and continues
-    /// - `HandlerError::Fatal`: Scheduler initiates shutdown
-    fn handle_data(&mut self, msg: D) -> HandlerResult;
+    /// - `HandlerError::Recoverable`: Scheduler exits, supervisor may respawn
+    /// - `HandlerError::Fatal`: Scheduler panics
+    fn handle_data(&mut self, msg: D) -> HandlerResult<Self::Error>;
 
     /// Handle a control message.
     ///
     /// Returns `Ok(())` on success, or a `HandlerError` on failure.
-    /// - `HandlerError::Temporary`: Scheduler logs and continues
-    /// - `HandlerError::Fatal`: Scheduler initiates shutdown
-    fn handle_control(&mut self, msg: C) -> HandlerResult;
+    /// - `HandlerError::Recoverable`: Scheduler exits, supervisor may respawn
+    /// - `HandlerError::Fatal`: Scheduler panics
+    fn handle_control(&mut self, msg: C) -> HandlerResult<Self::Error>;
 
     /// Handle a management message.
     ///
     /// Returns `Ok(())` on success, or a `HandlerError` on failure.
-    /// - `HandlerError::Temporary`: Scheduler logs and continues
-    /// - `HandlerError::Fatal`: Scheduler initiates shutdown
-    fn handle_management(&mut self, msg: M) -> HandlerResult;
+    /// - `HandlerError::Recoverable`: Scheduler exits, supervisor may respawn
+    /// - `HandlerError::Fatal`: Scheduler panics
+    fn handle_management(&mut self, msg: M) -> HandlerResult<Self::Error>;
 
     /// The "Hook" where the Actor creates the bridge to the OS.
     /// Called when the scheduler has drained available messages (or hit burst limits).
     ///
     /// Returns actor status: Busy if yielding with unfinished work, Idle if done.
     /// Can return `HandlerError::Fatal` to trigger shutdown.
-    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError>;
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError<Self::Error>>;
 }
 
 /// Legacy alias for backward compatibility
@@ -443,6 +459,7 @@ pub trait ActorTypes {
 /// }
 ///
 /// impl Actor<EngineData, EngineControl, EngineManagement> for EngineActor<'_> {
+///     type Error = String;
 ///     fn handle_data(&mut self, msg: EngineData) { }
 ///     fn handle_control(&mut self, msg: EngineControl) { }
 ///     fn handle_management(&mut self, msg: EngineManagement) { }
@@ -511,6 +528,7 @@ pub fn create_actor<D, C, M>(
 pub struct ActorBuilder<D, C, M> {
     tx_doorbell: SyncSender<System>,
     rx_doorbell: Option<Receiver<System>>,
+    shutdown_requested: Arc<AtomicBool>,
     data_inbox: InboxBuilder<D>,
     control_inbox: InboxBuilder<C>,
     mgmt_inbox: InboxBuilder<M>,
@@ -548,6 +566,7 @@ impl<D, C, M> ActorBuilder<D, C, M> {
         Self {
             tx_doorbell,
             rx_doorbell: Some(rx_doorbell),
+            shutdown_requested: Arc::new(AtomicBool::new(false)),
             data_inbox: InboxBuilder::new(data_buffer_size),
             control_inbox: InboxBuilder::new(params.control_mgmt_buffer_size),
             mgmt_inbox: InboxBuilder::new(params.control_mgmt_buffer_size),
@@ -563,6 +582,7 @@ impl<D, C, M> ActorBuilder<D, C, M> {
     pub fn add_producer(&mut self) -> ActorHandle<D, C, M> {
         ActorHandle {
             tx_doorbell: self.tx_doorbell.clone(),
+            shutdown_requested: self.shutdown_requested.clone(),
             tx_data: self.data_inbox.add_producer(),
             tx_control: self.control_inbox.add_producer(),
             tx_mgmt: self.mgmt_inbox.add_producer(),
@@ -590,6 +610,8 @@ impl<D, C, M> ActorBuilder<D, C, M> {
     ) -> ActorScheduler<D, C, M> {
         ActorScheduler {
             rx_doorbell: self.rx_doorbell.expect("ActorBuilder::build called twice"),
+            shutdown_requested: self.shutdown_requested,
+            idle_timeout: self.params.idle_timeout,
             rx_data: self.data_inbox.build(),
             rx_control: self.control_inbox.build(),
             rx_mgmt: self.mgmt_inbox.build(),
@@ -648,13 +670,15 @@ fn backoff_with_jitter(attempt: u32, params: &SchedulerParams) -> Result<Duratio
     Ok(Duration::from_micros(jittered_micros))
 }
 
-/// System messages - combines wake and shutdown into one channel
+/// System messages on the doorbell channel.
+///
+/// The doorbell is a capacity-1 `SyncSender` used to wake the scheduler
+/// from blocking `recv()`. Shutdown uses a separate `AtomicBool` to avoid
+/// deadlock when the doorbell is full (GAP-1 fix).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum System {
     /// Wake the scheduler to process messages
     Wake,
-    /// Shutdown the scheduler
-    Shutdown,
 }
 
 /// A unified sender handle that routes messages to the scheduler with priority lanes.
@@ -663,8 +687,10 @@ enum System {
 /// Not `Clone` — use [`ActorBuilder::add_producer`] to create additional handles.
 /// This eliminates all send-side contention: each producer gets its own wait-free path.
 pub struct ActorHandle<D, C, M> {
-    // Doorbell channel (buffer: 1) - wake and shutdown signals (MPSC, shared)
+    // Doorbell channel (buffer: 1) - wake signals only (MPSC, shared)
     tx_doorbell: SyncSender<System>,
+    // Shared shutdown flag — set by any handle, checked by scheduler (GAP-1 fix)
+    shutdown_requested: Arc<AtomicBool>,
     // Each lane is a dedicated SPSC channel (one producer per handle)
     tx_data: SpscSender<D>,
     tx_control: SpscSender<C>,
@@ -788,14 +814,11 @@ impl<D, C, M> ActorHandle<D, C, M> {
                 self.wake();
             }
             Message::Shutdown => {
-                // Shutdown: blocking send to guarantee delivery
-                // Actor must be running before calling this (doorbell will be drained)
-                self.tx_doorbell.send(System::Shutdown)?;
-
-                // Also call custom wake handler if present
-                if let Some(waker) = &self.wake_handler {
-                    waker.wake();
-                }
+                // Set the shutdown flag (non-blocking, can never deadlock — GAP-1 fix).
+                // The scheduler checks this flag at the top of every loop iteration.
+                self.shutdown_requested.store(true, Ordering::Release);
+                // Wake the scheduler so it notices the flag.
+                self.wake();
             }
         };
         Ok(())
@@ -830,7 +853,9 @@ impl<D, C, M> ActorHandle<D, C, M> {
 /// a dedicated SPSC ring buffer, and the scheduler drains all shards with
 /// round-robin fairness. The MPSC doorbell channel is kept for wake/shutdown signals.
 pub struct ActorScheduler<D, C, M> {
-    rx_doorbell: Receiver<System>, // Wake and shutdown signals (MPSC)
+    rx_doorbell: Receiver<System>, // Wake signals (MPSC)
+    shutdown_requested: Arc<AtomicBool>, // Shutdown flag, shared with handles (GAP-1 fix)
+    idle_timeout: Option<Duration>, // Exit if idle for this long (GAP-2 fix)
     rx_data: ShardedInbox<D>,
     rx_control: ShardedInbox<C>,
     rx_mgmt: ShardedInbox<M>,
@@ -853,7 +878,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     ///
     /// Used for `ShutdownMode::DrainControl` to process critical cleanup messages
     /// while dropping lower-priority data messages.
-    fn drain_control_and_management<A>(&mut self, actor: &mut A) -> Result<(), HandlerError>
+    fn drain_control_and_management<A>(&mut self, actor: &mut A) -> Result<(), HandlerError<A::Error>>
     where
         A: Actor<D, C, M>,
     {
@@ -880,7 +905,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         &mut self,
         actor: &mut A,
         timeout: std::time::Duration,
-    ) -> Result<(), HandlerError>
+    ) -> Result<(), HandlerError<A::Error>>
     where
         A: Actor<D, C, M>,
     {
@@ -929,7 +954,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// - `Ok(None)` - All channels disconnected, normal shutdown
     /// - `Err(HandlerError)` - Handler failed
     #[inline]
-    fn handle_wake<A>(&mut self, actor: &mut A) -> Result<Option<SchedulerLoopStatus>, HandlerError>
+    fn handle_wake<A>(&mut self, actor: &mut A) -> Result<Option<SchedulerLoopStatus>, HandlerError<A::Error>>
     where
         A: Actor<D, C, M>,
     {
@@ -990,7 +1015,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     }
 
     #[cold]
-    fn handle_shutdown<A>(&mut self, actor: &mut A) -> Result<(), HandlerError>
+    fn handle_shutdown<A>(&mut self, actor: &mut A) -> Result<(), HandlerError<A::Error>>
     where
         A: Actor<D, C, M>,
     {
@@ -1080,8 +1105,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     {
         match self.run_inner(actor) {
             Ok(()) => PodPhase::Completed,
-            Err(HandlerError::Recoverable(msg)) => PodPhase::Failed(msg),
-            Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
+            Err(HandlerError::Recoverable(e)) => PodPhase::Failed(e.to_string()),
+            Err(HandlerError::Fatal(e)) => panic!("Actor fatal error: {e}"),
         }
     }
 
@@ -1106,24 +1131,25 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     {
         use std::sync::mpsc::TryRecvError;
 
+        // Check shutdown flag first (GAP-1 fix: non-blocking shutdown signaling)
+        if self.shutdown_requested.load(Ordering::Acquire) {
+            let phase = match self.handle_shutdown(actor) {
+                Ok(()) => PodPhase::Completed,
+                Err(HandlerError::Recoverable(e)) => PodPhase::Failed(e.to_string()),
+                Err(HandlerError::Fatal(e)) => panic!("Actor fatal error: {e}"),
+            };
+            return Some(phase);
+        }
+
         let signal = self.rx_doorbell.try_recv();
 
         match signal {
-            Ok(System::Shutdown) => {
-                let phase = match self.handle_shutdown(actor) {
-                    Ok(()) => PodPhase::Completed,
-                    Err(HandlerError::Recoverable(msg)) => PodPhase::Failed(msg),
-                    Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
-                };
-                Some(phase)
-            }
-
             Ok(System::Wake) | Err(TryRecvError::Empty) => {
                 match self.handle_wake(actor) {
                     Ok(Some(_)) => None,                   // still running
                     Ok(None) => Some(PodPhase::Completed), // all disconnected
-                    Err(HandlerError::Recoverable(msg)) => Some(PodPhase::Failed(msg)),
-                    Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
+                    Err(HandlerError::Recoverable(e)) => Some(PodPhase::Failed(e.to_string())),
+                    Err(HandlerError::Fatal(e)) => panic!("Actor fatal error: {e}"),
                 }
             }
 
@@ -1132,14 +1158,14 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                 match self.handle_wake(actor) {
                     Ok(Some(_)) => None, // more buffered work; caller polls again
                     Ok(None) => Some(PodPhase::Completed),
-                    Err(HandlerError::Recoverable(msg)) => Some(PodPhase::Failed(msg)),
-                    Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
+                    Err(HandlerError::Recoverable(e)) => Some(PodPhase::Failed(e.to_string())),
+                    Err(HandlerError::Fatal(e)) => panic!("Actor fatal error: {e}"),
                 }
             }
         }
     }
 
-    fn run_inner<A>(&mut self, actor: &mut A) -> Result<(), HandlerError>
+    fn run_inner<A>(&mut self, actor: &mut A) -> Result<(), HandlerError<A::Error>>
     where
         A: Actor<D, C, M>,
     {
@@ -1148,20 +1174,39 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         let mut working = false;
 
         loop {
+            // Check shutdown flag first (GAP-1 fix: non-blocking shutdown signaling)
+            if self.shutdown_requested.load(Ordering::Acquire) {
+                self.handle_shutdown(actor)?;
+                return Ok(());
+            }
+
             let signal = if working {
                 self.rx_doorbell.try_recv()
             } else {
-                self.rx_doorbell
-                    .recv()
-                    .map_err(|_| TryRecvError::Disconnected)
+                // Blocking recv, with optional idle timeout (GAP-2 fix)
+                match self.idle_timeout {
+                    Some(timeout) => {
+                        use std::sync::mpsc::RecvTimeoutError;
+                        self.rx_doorbell.recv_timeout(timeout).map_err(|e| match e {
+                            RecvTimeoutError::Timeout => TryRecvError::Disconnected,
+                            RecvTimeoutError::Disconnected => TryRecvError::Disconnected,
+                        })
+                    }
+                    None => {
+                        self.rx_doorbell
+                            .recv()
+                            .map_err(|_| TryRecvError::Disconnected)
+                    }
+                }
             };
 
             match signal {
-                Ok(System::Shutdown) => {
-                    self.handle_shutdown(actor)?;
-                    return Ok(());
-                }
                 Ok(System::Wake) | Err(TryRecvError::Empty) => {
+                    // Re-check shutdown after waking (may have been set while blocked)
+                    if self.shutdown_requested.load(Ordering::Acquire) {
+                        self.handle_shutdown(actor)?;
+                        return Ok(());
+                    }
                     match self.handle_wake(actor)? {
                         Some(status) => {
                             working = matches!(status, SchedulerLoopStatus::Working);
@@ -1170,7 +1215,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
-                    // Doorbell disconnected — all handles dropped.
+                    // Doorbell disconnected or idle timeout — all handles dropped.
                     // SPSC shards may still have buffered messages.
                     // Drain until all shards report Disconnected.
                     loop {
@@ -1197,6 +1242,7 @@ mod tests {
     }
 
     impl SchedulerHandler<String, String, String> for TestHandler {
+        type Error = String;
         fn handle_data(&mut self, msg: String) -> HandlerResult {
             self.log.lock().unwrap().push(format!("Data: {}", msg));
             Ok(())
@@ -1248,6 +1294,7 @@ mod tests {
         }
 
         impl SchedulerHandler<i32, String, bool> for CountingHandler {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.data_count += 1;
                 Ok(())
@@ -1303,6 +1350,7 @@ mod tests {
         let handle = thread::spawn(move || {
             struct NoopActor;
             impl Actor<(), (), ()> for NoopActor {
+                type Error = String;
                 fn handle_data(&mut self, _: ()) -> HandlerResult {
                     Ok(())
                 }
@@ -1345,6 +1393,7 @@ mod poll_once_tests {
     }
 
     impl Actor<i32, i32, i32> for CountActor {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             self.data += 1;
             Ok(())
@@ -1412,6 +1461,7 @@ mod poll_once_tests {
 
         struct FailOnData;
         impl Actor<i32, i32, i32> for FailOnData {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 Err(HandlerError::recoverable("injected failure"))
             }
@@ -1613,6 +1663,7 @@ mod drain_all_targeted_tests {
     }
 
     impl Actor<i32, (), ()> for FastCountActor {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             self.data.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -1707,6 +1758,7 @@ mod drain_all_targeted_tests {
             mgmt: Arc<AtomicUsize>,
         }
         impl Actor<i32, (), ()> for FullCountActor {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.data.fetch_add(1, Ordering::Relaxed);
                 Ok(())
@@ -1769,6 +1821,7 @@ mod drain_all_targeted_tests {
             mgmt: Arc<AtomicUsize>,
         }
         impl Actor<(), (), ()> for CmActor {
+            type Error = String;
             fn handle_data(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
@@ -1844,6 +1897,7 @@ mod troupe_tests {
     }
 
     impl Actor<EngineData, EngineControl, EngineManagement> for EngineActor<'_> {
+        type Error = String;
         fn handle_data(&mut self, _msg: EngineData) -> HandlerResult {
             Ok(())
         }
@@ -1887,6 +1941,7 @@ mod troupe_tests {
     }
 
     impl Actor<DisplayData, DisplayControl, DisplayManagement> for DisplayActor<'_> {
+        type Error = String;
         fn handle_data(&mut self, _msg: DisplayData) -> HandlerResult {
             Ok(())
         }
@@ -1999,6 +2054,7 @@ mod troupe_tests {
                 data_count: Arc<AtomicUsize>,
             }
             impl Actor<i32, (), ()> for TestActor {
+                type Error = String;
                 fn handle_control(&mut self, _: ()) -> HandlerResult {
                     self.control_count.fetch_add(1, Ordering::Relaxed);
                     Ok(())
@@ -2098,6 +2154,7 @@ mod troupe_tests {
                 data_count: Arc<AtomicUsize>,
             }
             impl Actor<i32, (), ()> for TestActor {
+                type Error = String;
                 fn handle_control(&mut self, _: ()) -> HandlerResult {
                     self.control_count.fetch_add(1, Ordering::Relaxed);
                     Ok(())
@@ -2199,6 +2256,7 @@ mod troupe_tests {
                 data_count: Arc<AtomicUsize>,
             }
             impl Actor<i32, (), ()> for TestActor {
+                type Error = String;
                 fn handle_control(&mut self, _: ()) -> HandlerResult {
                     self.control_count.fetch_add(1, Ordering::Relaxed);
                     Ok(())
@@ -2294,6 +2352,7 @@ mod troupe_tests {
                 data_count: Arc<AtomicUsize>,
             }
             impl Actor<i32, i32, i32> for SlowActor {
+                type Error = String;
                 fn handle_control(&mut self, _: i32) -> HandlerResult {
                     self.control_count.fetch_add(1, Ordering::Relaxed);
                     thread::sleep(Duration::from_millis(2));
@@ -2386,6 +2445,7 @@ mod troupe_nesting_tests {
     }
 
     impl Actor<WorkerData, WorkerControl, WorkerManagement> for WorkerActor<'_> {
+        type Error = String;
         fn handle_data(&mut self, _msg: WorkerData) -> HandlerResult {
             Ok(())
         }
@@ -2518,6 +2578,7 @@ mod shutdown_tests {
     }
 
     impl Actor<i32, (), ()> for CountingActor {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             self.data_count.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -2709,6 +2770,7 @@ mod shutdown_tests {
         }
 
         impl Actor<i32, (), ()> for SlowActor {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 thread::sleep(Duration::from_millis(1)); // Slow!
                 self.data_count.fetch_add(1, Ordering::Relaxed);

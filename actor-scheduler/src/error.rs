@@ -48,6 +48,10 @@ impl<T> From<crate::spsc::TrySendError<T>> for SendError {
 
 /// Error from an actor handler indicating failure severity.
 ///
+/// Generic over `E`, the error payload type. The scheduler converts `E` to
+/// `String` (via `Display`) at the `PodPhase` boundary, so actors can use
+/// domain-specific error types internally while the supervisor sees strings.
+///
 /// # Severity Levels
 ///
 /// - **Recoverable**: Actor state is corrupted but the problem might be fixed
@@ -68,39 +72,47 @@ impl<T> From<crate::spsc::TrySendError<T>> for SendError {
 /// - Memory corruption detected
 /// - Security invariant violated
 /// - Continuing would cause data loss or undefined behavior
+///
+/// # Default type parameter
+///
+/// `E` defaults to `String` for backward compatibility. Existing code using
+/// `HandlerError` (without a type parameter) continues to work unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HandlerError {
+pub enum HandlerError<E = String> {
     /// Actor needs restart - scheduler exits, supervisor may respawn
-    Recoverable(String),
+    Recoverable(E),
     /// Process must crash - scheduler panics
-    Fatal(String),
+    Fatal(E),
 }
 
-impl HandlerError {
+impl<E> HandlerError<E> {
     /// Create a recoverable error (actor restart).
-    pub fn recoverable(msg: impl Into<String>) -> Self {
-        HandlerError::Recoverable(msg.into())
+    pub fn recoverable(e: impl Into<E>) -> Self {
+        HandlerError::Recoverable(e.into())
     }
 
     /// Create a fatal error (process crash).
-    pub fn fatal(msg: impl Into<String>) -> Self {
-        HandlerError::Fatal(msg.into())
+    pub fn fatal(e: impl Into<E>) -> Self {
+        HandlerError::Fatal(e.into())
     }
 }
 
-impl std::fmt::Display for HandlerError {
+impl<E: std::fmt::Display> std::fmt::Display for HandlerError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HandlerError::Recoverable(msg) => write!(f, "recoverable: {}", msg),
-            HandlerError::Fatal(msg) => write!(f, "FATAL: {}", msg),
+            HandlerError::Recoverable(e) => write!(f, "recoverable: {}", e),
+            HandlerError::Fatal(e) => write!(f, "FATAL: {}", e),
         }
     }
 }
 
-impl std::error::Error for HandlerError {}
+impl<E: std::fmt::Display + std::fmt::Debug> std::error::Error for HandlerError<E> {}
 
 /// Result type for actor handlers.
-pub type HandlerResult = Result<(), HandlerError>;
+///
+/// `E` defaults to `String` for backward compatibility. Actors with custom
+/// error types use `HandlerResult<MyError>`.
+pub type HandlerResult<E = String> = Result<(), HandlerError<E>>;
 
 /// Result of draining messages from a channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

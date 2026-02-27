@@ -38,6 +38,7 @@ impl<P: Platform> DriverActor<P> {
 }
 
 impl<P: Platform> Actor<DisplayData, DisplayControl, DisplayMgmt> for DriverActor<P> {
+    type Error = String;
     fn handle_data(&mut self, data: DisplayData) -> HandlerResult {
         self.platform.handle_data(data)
     }

@@ -114,6 +114,18 @@ pub struct SchedulerParams {
     ///
     /// **Default: 50** (so range is 50%..100%)
     pub jitter_range_pct: u64,
+
+    // ── Idle timeout ─────────────────────────────────────────────────
+    /// Optional idle timeout for the scheduler's blocking recv.
+    ///
+    /// When set, the scheduler exits with `PodPhase::Completed` if no messages
+    /// arrive within this duration while idle. This prevents restarted pods
+    /// with no external senders from blocking the Kubelet thread indefinitely.
+    ///
+    /// `None` means the scheduler blocks indefinitely (original behavior).
+    ///
+    /// **Default: None** (no timeout)
+    pub idle_timeout: Option<Duration>,
 }
 
 impl SchedulerParams {
@@ -155,6 +167,7 @@ impl SchedulerParams {
         max_backoff: Duration::from_micros(2_965_136),
         jitter_min_pct: 73,
         jitter_range_pct: 25,
+        idle_timeout: None,
     };
 
     /// Validate invariants, panicking on violation.
@@ -246,6 +259,7 @@ impl SchedulerParams {
             max_backoff: Duration::from_micros(v[7].round().max(100.0) as u64),
             jitter_min_pct: jitter_min,
             jitter_range_pct: jitter_range,
+            idle_timeout: None,
         }
     }
 

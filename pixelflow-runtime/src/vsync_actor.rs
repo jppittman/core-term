@@ -319,6 +319,7 @@ impl VsyncActor {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
+    type Error = String;
     fn handle_data(&mut self, response: RenderedResponse) -> HandlerResult {
         // Count actual rendered frames for accurate FPS measurement
         // (Token management is now handled via atomic bucket)

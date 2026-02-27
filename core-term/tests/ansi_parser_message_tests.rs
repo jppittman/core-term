@@ -25,6 +25,7 @@ struct RealParserActor {
 }
 
 impl Actor<Vec<u8>, (), ()> for RealParserActor {
+    type Error = String;
     fn handle_data(&mut self, data: Vec<u8>) -> HandlerResult {
         self.bytes_processed.fetch_add(data.len(), Ordering::SeqCst);
 

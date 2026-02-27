@@ -25,6 +25,7 @@ mod tests {
 
     // Use generics as required by the Actor trait definition
     impl Actor<EngineData, EngineControl, AppManagement> for MockEngine {
+        type Error = String;
         fn handle_data(&mut self, msg: EngineData) -> HandlerResult {
             if let EngineData::FromDriver(evt) = msg {
                 self.captured_events.lock().unwrap().push(evt);

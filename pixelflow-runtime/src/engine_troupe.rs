@@ -93,6 +93,7 @@ actor_scheduler::troupe! {
 
 // Implement Actor for EngineHandler
 impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
+    type Error = String;
     fn handle_data(&mut self, data: EngineData) -> HandlerResult {
         match data {
             EngineData::FromApp(app_data) => self.handle_app_data(app_data),

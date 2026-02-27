@@ -39,6 +39,7 @@ struct TickRateTracker {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker {
+    type Error = String;
     fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
         Ok(())
     }
@@ -153,6 +154,7 @@ struct TokenTracker {
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TokenTracker {
+    type Error = String;
     fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
         // Replenish token
         let prev = self.tokens.fetch_add(1, Ordering::SeqCst);
@@ -396,6 +398,7 @@ fn shutdown_command_stops_tick_processing() {
             shutdown: bool,
         }
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for ShutdownActor {
+            type Error = String;
             fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
                 Ok(())
             }
@@ -462,6 +465,7 @@ fn fps_request_handles_dropped_receiver() {
     let handle = thread::spawn(move || {
         struct FPSActor(Arc<Mutex<Vec<String>>>);
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for FPSActor {
+            type Error = String;
             fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
                 Ok(())
             }
@@ -551,6 +555,7 @@ fn refresh_rate_update_during_ticks_is_safe() {
             refresh_rate: f64,
         }
         impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for RateChangeActor {
+            type Error = String;
             fn handle_data(&mut self, _: RenderedResponse) -> HandlerResult {
                 Ok(())
             }

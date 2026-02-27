@@ -88,6 +88,7 @@ fn zero_burst_limit_does_not_cause_infinite_loop() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -153,6 +154,7 @@ fn mass_sender_drop_does_not_cause_race() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -221,6 +223,7 @@ fn actor_panic_does_not_corrupt_state() {
             panic_at: usize,
         }
         impl Actor<i32, i32, i32> for PanicActor {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.count += 1;
                 if self.count == self.panic_at {
@@ -271,6 +274,7 @@ fn continuous_control_eventually_processes_data() {
     let handle = thread::spawn(move || {
         struct StarvationTracker(Arc<AtomicBool>);
         impl Actor<String, String, String> for StarvationTracker {
+            type Error = String;
             fn handle_data(&mut self, _: String) -> HandlerResult {
                 self.0.store(true, Ordering::SeqCst);
                 Ok(())
@@ -326,6 +330,7 @@ fn park_poll_does_not_spin_indefinitely() {
             max_parks: usize,
         }
         impl Actor<(), (), ()> for SpinActor {
+            type Error = String;
             fn handle_data(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
@@ -385,6 +390,7 @@ fn slow_handler_backpressure_works() {
     let handle = thread::spawn(move || {
         struct SlowActor(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for SlowActor {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 thread::sleep(Duration::from_millis(50)); // Very slow
                 self.0.fetch_add(1, Ordering::SeqCst);
@@ -443,6 +449,7 @@ fn single_sender_fifo_ordering_maintained() {
     let handle = thread::spawn(move || {
         struct OrderTracker(Arc<Mutex<Vec<i32>>>);
         impl Actor<i32, i32, i32> for OrderTracker {
+            type Error = String;
             fn handle_data(&mut self, msg: i32) -> HandlerResult {
                 self.0.lock().unwrap().push(msg);
                 Ok(())
@@ -545,6 +552,7 @@ fn concurrent_send_during_processing() {
     let handle = thread::spawn(move || {
         struct CountingActor(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for CountingActor {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 // Small delay to increase chance of concurrent send
                 thread::sleep(Duration::from_micros(100));
@@ -612,6 +620,7 @@ fn doorbell_saturation_does_not_lose_messages() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -745,6 +754,7 @@ fn large_queue_does_not_cause_issues() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<String, String, String> for Counter {
+            type Error = String;
             fn handle_data(&mut self, _: String) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -794,6 +804,7 @@ fn shutdown_race_does_not_panic() {
         let handle = thread::spawn(move || {
             struct NoopActor;
             impl Actor<i32, i32, i32> for NoopActor {
+                type Error = String;
                 fn handle_data(&mut self, _: i32) -> HandlerResult {
                     Ok(())
                 }

@@ -520,6 +520,7 @@ mod tests {
 
     struct Noop;
     impl Actor<i32, i32, i32> for Noop {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             Ok(())
         }
@@ -539,6 +540,7 @@ mod tests {
         failed: bool,
     }
     impl Actor<i32, i32, i32> for FailOnce {
+        type Error = String;
         fn handle_data(&mut self, _: i32) -> HandlerResult {
             if !self.failed {
                 self.failed = true;

@@ -9,6 +9,7 @@ struct DriverActor<P> {
 }
 
 impl<P> Actor<(), (), ()> for DriverActor<P> {
+    type Error = String;
     fn handle_data(&mut self, _: ()) -> HandlerResult {
         Ok(())
     }

@@ -30,6 +30,7 @@ struct OrderingActor {
 }
 
 impl Actor<String, String, String> for OrderingActor {
+    type Error = String;
     fn handle_data(&mut self, msg: String) -> HandlerResult {
         self.log
             .lock()
@@ -96,6 +97,7 @@ impl CountingActor {
 }
 
 impl Actor<i32, i32, i32> for CountingActor {
+    type Error = String;
     fn handle_data(&mut self, _msg: i32) -> HandlerResult {
         self.data_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -123,6 +125,7 @@ struct SlowActor {
 }
 
 impl Actor<String, String, String> for SlowActor {
+    type Error = String;
     fn handle_data(&mut self, msg: String) -> HandlerResult {
         thread::sleep(self.delay);
         self.processed.lock().unwrap().push(format!("D:{}", msg));
@@ -153,6 +156,7 @@ struct ParkTrackingActor {
 }
 
 impl Actor<(), (), ()> for ParkTrackingActor {
+    type Error = String;
     fn handle_data(&mut self, _msg: ()) -> HandlerResult {
         Ok(())
     }
@@ -262,6 +266,7 @@ fn control_processed_before_management() {
             management_seen: bool,
         }
         impl Actor<(), (), ()> for FirstWinsActor {
+            type Error = String;
             fn handle_control(&mut self, _: ()) -> HandlerResult {
                 if !self.control_seen && !self.management_seen {
                     self.control_first.store(true, Ordering::SeqCst);
@@ -363,6 +368,7 @@ fn mixed_priority_messages_all_delivered() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<(AtomicUsize, AtomicUsize, AtomicUsize)>);
         impl Actor<i32, i32, i32> for Counter {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0 .0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -424,6 +430,7 @@ fn no_starvation_with_continuous_high_priority() {
             data_processed: Arc<AtomicBool>,
         }
         impl Actor<(), (), ()> for Tracker {
+            type Error = String;
             fn handle_data(&mut self, _: ()) -> HandlerResult {
                 self.data_processed.store(true, Ordering::SeqCst);
                 Ok(())
@@ -480,6 +487,7 @@ fn management_burst_limit_prevents_starvation() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<String, String, String> for Counter {
+            type Error = String;
             fn handle_data(&mut self, _: String) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -586,6 +594,7 @@ fn multiple_senders_all_messages_delivered() {
         // Create a wrapper that uses the Arc
         struct ArcCountingActor(Arc<CountingActor>);
         impl Actor<i32, i32, i32> for ArcCountingActor {
+            type Error = String;
             fn handle_data(&mut self, _msg: i32) -> HandlerResult {
                 self.0.data_count.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -650,6 +659,7 @@ fn actor_run_exits_when_all_senders_dropped() {
     let handle = thread::spawn(move || {
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
+            type Error = String;
             fn handle_data(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
@@ -694,6 +704,7 @@ fn cloned_handle_works_after_original_dropped() {
     let handle = thread::spawn(move || {
         struct CounterActor(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for CounterActor {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -854,6 +865,7 @@ fn different_message_types_per_lane() {
     let handle = thread::spawn(move || {
         struct TypedActor(Arc<Mutex<(bool, bool, bool)>>);
         impl Actor<Vec<u8>, HashMap<String, i32>, std::time::Duration> for TypedActor {
+            type Error = String;
             fn handle_data(&mut self, _: Vec<u8>) -> HandlerResult {
                 self.0.lock().unwrap().0 = true;
                 Ok(())
@@ -904,6 +916,7 @@ fn handle_clone_is_independent() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -960,6 +973,7 @@ fn high_throughput_single_sender() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -1009,6 +1023,7 @@ fn concurrent_senders_stress_test() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -1084,6 +1099,7 @@ fn priority_maintained_when_both_lanes_have_messages() {
             first: Arc<Mutex<Option<&'static str>>>,
         }
         impl Actor<i32, i32, i32> for FirstChecker {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 let mut first = self.first.lock().unwrap();
                 if first.is_none() {
@@ -1137,6 +1153,7 @@ fn empty_message_types_work() {
     let handle = thread::spawn(move || {
         struct UnitActor;
         impl Actor<(), (), ()> for UnitActor {
+            type Error = String;
             fn handle_data(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
@@ -1174,6 +1191,7 @@ fn zero_size_type_messages() {
     let handle = thread::spawn(move || {
         struct ZSTActor(Arc<AtomicUsize>);
         impl Actor<ZST, ZST, ZST> for ZSTActor {
+            type Error = String;
             fn handle_data(&mut self, _: ZST) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -1220,6 +1238,7 @@ fn large_message_type_works() {
     let handle = thread::spawn(move || {
         struct LargeActor(Arc<AtomicUsize>);
         impl Actor<LargeMessage, (), ()> for LargeActor {
+            type Error = String;
             fn handle_data(&mut self, _: LargeMessage) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -1256,6 +1275,7 @@ fn immediate_shutdown_no_messages() {
     let handle = thread::spawn(move || {
         struct NoopActor;
         impl Actor<(), (), ()> for NoopActor {
+            type Error = String;
             fn handle_data(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
@@ -1294,6 +1314,7 @@ fn custom_burst_and_buffer_sizes() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -1331,6 +1352,7 @@ fn large_burst_and_buffer_sizes() {
     let handle = thread::spawn(move || {
         struct Counter(Arc<AtomicUsize>);
         impl Actor<i32, i32, i32> for Counter {
+            type Error = String;
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())

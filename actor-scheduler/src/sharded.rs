@@ -22,7 +22,6 @@
 //! No producers can be added after `build()`. This is the "register at init"
 //! constraint — you must know all producers before the scheduler starts.
 
-use crate::HandlerResult;
 pub use crate::error::DrainStatus;
 use crate::spsc::{self, SpscReceiver, SpscSender, TryRecvError};
 
@@ -89,11 +88,11 @@ impl<T> ShardedInbox<T> {
     /// - `Ok(DrainStatus::More)` — hit limit, more messages may exist
     /// - `Ok(DrainStatus::Disconnected)` — all producers dropped
     /// - `Err(HandlerError)` — handler failed
-    pub fn drain(
+    pub fn drain<E>(
         &mut self,
         limit: usize,
-        mut handler: impl FnMut(T) -> HandlerResult,
-    ) -> Result<DrainStatus, crate::HandlerError> {
+        mut handler: impl FnMut(T) -> crate::HandlerResult<E>,
+    ) -> Result<DrainStatus, crate::HandlerError<E>> {
         let n = self.shards.len();
         let per_shard = (limit / n).max(1);
         let mut total = 0usize;
@@ -179,7 +178,7 @@ mod tests {
 
         let mut received = Vec::new();
         let status = inbox
-            .drain(100, |msg| {
+            .drain(100, |msg| -> crate::HandlerResult {
                 received.push(msg);
                 Ok(())
             })
@@ -204,7 +203,7 @@ mod tests {
 
         let mut count = 0;
         let status = inbox
-            .drain(10, |_msg| {
+            .drain(10, |_msg| -> crate::HandlerResult {
                 count += 1;
                 Ok(())
             })
@@ -230,7 +229,7 @@ mod tests {
         // With limit=4 and 2 shards, per_shard=2
         let mut received = Vec::new();
         inbox
-            .drain(4, |msg| {
+            .drain(4, |msg| -> crate::HandlerResult {
                 received.push(msg);
                 Ok(())
             })
@@ -254,7 +253,7 @@ mod tests {
         drop(tx1);
         drop(tx2);
 
-        let status = inbox.drain(100, |_: u32| Ok(())).unwrap();
+        let status = inbox.drain(100, |_: u32| -> crate::HandlerResult { Ok(()) }).unwrap();
         assert_eq!(status, DrainStatus::Disconnected);
     }
 
@@ -269,7 +268,7 @@ mod tests {
 
         let mut received = Vec::new();
         inbox
-            .drain(100, |msg| {
+            .drain(100, |msg| -> crate::HandlerResult {
                 received.push(msg);
                 Ok(())
             })
@@ -279,7 +278,7 @@ mod tests {
         // First drain gets the message; the shard reports Disconnected but
         // we still got data, so it's not all-disconnected yet
         // Second drain should show disconnected
-        let status2 = inbox.drain(100, |_: u32| Ok(())).unwrap();
+        let status2 = inbox.drain(100, |_: u32| -> crate::HandlerResult { Ok(()) }).unwrap();
         assert_eq!(status2, DrainStatus::Disconnected);
     }
 
@@ -292,7 +291,7 @@ mod tests {
         tx.try_send(1).unwrap();
         tx.try_send(2).unwrap();
 
-        let result = inbox.drain(100, |msg: u32| {
+        let result = inbox.drain(100, |msg: u32| -> crate::HandlerResult {
             if msg == 1 {
                 Err(HandlerError::fatal("boom"))
             } else {
@@ -353,7 +352,7 @@ mod tests {
         let mut from_shard1 = 0usize;
         let mut from_shard2 = 0usize;
         inbox
-            .drain(4, |msg: u32| {
+            .drain(4, |msg: u32| -> crate::HandlerResult {
                 if msg < 100 {
                     from_shard1 += 1;
                 } else {

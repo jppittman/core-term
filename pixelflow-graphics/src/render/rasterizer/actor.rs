@@ -148,6 +148,7 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
 impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
     for RasterizerActor<P>
 {
+    type Error = String;
     fn handle_data(&mut self, request: RenderRequest<P>) -> HandlerResult {
         // Skip rendering if paused
         if self.paused {

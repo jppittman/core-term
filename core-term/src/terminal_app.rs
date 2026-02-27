@@ -420,6 +420,7 @@ impl TerminalApp {
 }
 
 impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for TerminalApp {
+    type Error = String;
     fn handle_data(&mut self, data: TerminalData) -> HandlerResult {
         match data {
             TerminalData::Engine(EngineEventData::RequestFrame { .. }) => {

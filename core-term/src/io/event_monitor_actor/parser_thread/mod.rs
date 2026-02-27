@@ -81,6 +81,7 @@ struct ParserActor {
 }
 
 impl Actor<Vec<u8>, NoControl, NoManagement> for ParserActor {
+    type Error = String;
     fn handle_data(&mut self, data: Vec<u8>) -> HandlerResult {
         if data.is_empty() {
             // Even if empty, recycle it (ignore error if read thread exited)
