@@ -1190,3 +1190,1023 @@ fn it_should_reject_space_as_charset_designator() {
         "ESC ( SP (0x20) should be rejected - not a valid charset designator"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Mutation tests
+//
+// Each test here is designed to kill a specific class of mutation that might
+// otherwise survive the test suite above. The comments name the mutation.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod mutation_tests {
+    use super::{
+        super::commands::{AnsiCommand, Attribute, CsiCommand, EscCommand},
+        process_bytes,
+    };
+    use crate::color::{Color, NamedColor};
+    use test_log::test;
+
+    // -----------------------------------------------------------------------
+    // SGR basic attributes
+    // Mutations: swap SGR constants, wrong Attribute variant, missing arms
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sgr_bold_is_1() {
+        let cmds = process_bytes(b"\x1b[1m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Bold
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_faint_is_2() {
+        let cmds = process_bytes(b"\x1b[2m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Faint
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_italic_is_3() {
+        let cmds = process_bytes(b"\x1b[3m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Italic
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_underline_is_4() {
+        let cmds = process_bytes(b"\x1b[4m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Underline
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_blink_slow_is_5() {
+        let cmds = process_bytes(b"\x1b[5m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::BlinkSlow
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_blink_rapid_is_6() {
+        let cmds = process_bytes(b"\x1b[6m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::BlinkRapid
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_reverse_is_7() {
+        let cmds = process_bytes(b"\x1b[7m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Reverse
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_conceal_is_8() {
+        let cmds = process_bytes(b"\x1b[8m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Conceal
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_strikethrough_is_9() {
+        let cmds = process_bytes(b"\x1b[9m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Strikethrough
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_underline_double_is_21() {
+        let cmds = process_bytes(b"\x1b[21m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::UnderlineDouble
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_normal_intensity_is_22() {
+        let cmds = process_bytes(b"\x1b[22m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::NoBold
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_no_italic_is_23() {
+        let cmds = process_bytes(b"\x1b[23m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::NoItalic
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_no_underline_is_24() {
+        let cmds = process_bytes(b"\x1b[24m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::NoUnderline
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_no_blink_is_25() {
+        let cmds = process_bytes(b"\x1b[25m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::NoBlink
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_no_reverse_is_27() {
+        let cmds = process_bytes(b"\x1b[27m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::NoReverse
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_no_conceal_is_28() {
+        let cmds = process_bytes(b"\x1b[28m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::NoConceal
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_no_strikethrough_is_29() {
+        let cmds = process_bytes(b"\x1b[29m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::NoStrikethrough
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_overlined_is_53() {
+        let cmds = process_bytes(b"\x1b[53m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Overlined
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_no_overlined_is_55() {
+        let cmds = process_bytes(b"\x1b[55m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::NoOverlined
+            ]))]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SGR foreground color offset arithmetic (param - SGR_FG_BLACK)
+    // Mutations: wrong base constant (29 instead of 30), wrong NamedColor variant
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sgr_fg_all_eight_normal_colors() {
+        // Tests every entry in map_basic_code_to_color for Normal intensity.
+        // A mutation that shifts the base constant by ±1 would fail on Black or White.
+        let cases: &[(u8, NamedColor)] = &[
+            (30, NamedColor::Black),
+            (31, NamedColor::Red),
+            (32, NamedColor::Green),
+            (33, NamedColor::Yellow),
+            (34, NamedColor::Blue),
+            (35, NamedColor::Magenta),
+            (36, NamedColor::Cyan),
+            (37, NamedColor::White),
+        ];
+        for &(code, expected_color) in cases {
+            let input = format!("\x1b[{}m", code);
+            let cmds = process_bytes(input.as_bytes());
+            assert_eq!(
+                cmds,
+                vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                    Attribute::Foreground(Color::Named(expected_color))
+                ]))],
+                "SGR {} should produce Foreground({:?})",
+                code,
+                expected_color
+            );
+        }
+    }
+
+    #[test]
+    fn sgr_fg_default_is_39() {
+        // Mutation: wrong constant (38 vs 39 would change to extended-color path)
+        let cmds = process_bytes(b"\x1b[39m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Foreground(Color::Default)
+            ]))]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SGR background color offset arithmetic (param - SGR_BG_BLACK)
+    // Mutations: wrong base constant (39 instead of 40), wrong variant
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sgr_bg_all_eight_normal_colors() {
+        let cases: &[(u8, NamedColor)] = &[
+            (40, NamedColor::Black),
+            (41, NamedColor::Red),
+            (42, NamedColor::Green),
+            (43, NamedColor::Yellow),
+            (44, NamedColor::Blue),
+            (45, NamedColor::Magenta),
+            (46, NamedColor::Cyan),
+            (47, NamedColor::White),
+        ];
+        for &(code, expected_color) in cases {
+            let input = format!("\x1b[{}m", code);
+            let cmds = process_bytes(input.as_bytes());
+            assert_eq!(
+                cmds,
+                vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                    Attribute::Background(Color::Named(expected_color))
+                ]))],
+                "SGR {} should produce Background({:?})",
+                code,
+                expected_color
+            );
+        }
+    }
+
+    #[test]
+    fn sgr_bg_default_is_49() {
+        let cmds = process_bytes(b"\x1b[49m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Background(Color::Default)
+            ]))]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SGR bright foreground colors (90-97)
+    // Mutations: wrong base (89 vs 90), wrong intensity branch
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sgr_fg_all_eight_bright_colors() {
+        let cases: &[(u8, NamedColor)] = &[
+            (90, NamedColor::BrightBlack),
+            (91, NamedColor::BrightRed),
+            (92, NamedColor::BrightGreen),
+            (93, NamedColor::BrightYellow),
+            (94, NamedColor::BrightBlue),
+            (95, NamedColor::BrightMagenta),
+            (96, NamedColor::BrightCyan),
+            (97, NamedColor::BrightWhite),
+        ];
+        for &(code, expected_color) in cases {
+            let input = format!("\x1b[{}m", code);
+            let cmds = process_bytes(input.as_bytes());
+            assert_eq!(
+                cmds,
+                vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                    Attribute::Foreground(Color::Named(expected_color))
+                ]))],
+                "SGR {} should produce Foreground({:?})",
+                code,
+                expected_color
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SGR bright background colors (100-107)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sgr_bg_all_eight_bright_colors() {
+        let cases: &[(u8, NamedColor)] = &[
+            (100, NamedColor::BrightBlack),
+            (101, NamedColor::BrightRed),
+            (102, NamedColor::BrightGreen),
+            (103, NamedColor::BrightYellow),
+            (104, NamedColor::BrightBlue),
+            (105, NamedColor::BrightMagenta),
+            (106, NamedColor::BrightCyan),
+            (107, NamedColor::BrightWhite),
+        ];
+        for &(code, expected_color) in cases {
+            let input = format!("\x1b[{}m", code);
+            let cmds = process_bytes(input.as_bytes());
+            assert_eq!(
+                cmds,
+                vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                    Attribute::Background(Color::Named(expected_color))
+                ]))],
+                "SGR {} should produce Background({:?})",
+                code,
+                expected_color
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SGR 256-color and RGB truecolor
+    // Mutations: wrong mode sub-parameter (4 vs 5, 1 vs 2), Fg vs Bg confusion
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sgr_fg_256_color_index_min() {
+        // 38;5;0 -> Foreground(Indexed(0))
+        let cmds = process_bytes(b"\x1b[38;5;0m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Foreground(Color::Indexed(0))
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_fg_256_color_index_max() {
+        // 38;5;255 -> Foreground(Indexed(255))
+        let cmds = process_bytes(b"\x1b[38;5;255m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Foreground(Color::Indexed(255))
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_bg_256_color() {
+        // 48;5;100 -> Background(Indexed(100))
+        // Mutation: mixing up 38 and 48 would swap Fg/Bg
+        let cmds = process_bytes(b"\x1b[48;5;100m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Background(Color::Indexed(100))
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_fg_rgb_truecolor() {
+        // 38;2;255;128;0 -> Foreground(Rgb(255, 128, 0))
+        let cmds = process_bytes(b"\x1b[38;2;255;128;0m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Foreground(Color::Rgb(255, 128, 0))
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_bg_rgb_truecolor() {
+        // 48;2;10;20;30 -> Background(Rgb(10, 20, 30))
+        let cmds = process_bytes(b"\x1b[48;2;10;20;30m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Background(Color::Rgb(10, 20, 30))
+            ]))]
+        );
+    }
+
+    #[test]
+    fn sgr_rgb_channel_order_is_r_g_b_not_b_g_r() {
+        // Explicitly verify R,G,B order - a mutation swapping two channel reads would survive
+        // a test using equal values. Using distinct non-symmetric values.
+        let cmds = process_bytes(b"\x1b[38;2;1;2;3m");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(vec![
+                Attribute::Foreground(Color::Rgb(1, 2, 3))
+            ]))]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // CSI cursor movement: default parameter must be 1
+    // Mutations: param_or_1 returns 0 instead of 1, or uses param_or(0) default
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csi_cursor_up_no_param_defaults_to_1() {
+        let cmds = process_bytes(b"\x1b[A");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorUp(1))]
+        );
+    }
+
+    #[test]
+    fn csi_cursor_up_param_zero_is_coerced_to_1() {
+        // param_or_1 applies max(1), so 0 -> 1
+        let cmds = process_bytes(b"\x1b[0A");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorUp(1))]
+        );
+    }
+
+    #[test]
+    fn csi_cursor_up_explicit_5() {
+        let cmds = process_bytes(b"\x1b[5A");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorUp(5))]
+        );
+    }
+
+    #[test]
+    fn csi_cursor_down_defaults_to_1() {
+        let cmds = process_bytes(b"\x1b[B");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorDown(1))]
+        );
+    }
+
+    #[test]
+    fn csi_cursor_forward_defaults_to_1() {
+        let cmds = process_bytes(b"\x1b[C");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorForward(1))]
+        );
+    }
+
+    #[test]
+    fn csi_cursor_backward_defaults_to_1() {
+        let cmds = process_bytes(b"\x1b[D");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorBackward(1))]
+        );
+    }
+
+    #[test]
+    fn csi_cursor_next_line_defaults_to_1() {
+        let cmds = process_bytes(b"\x1b[E");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorNextLine(1))]
+        );
+    }
+
+    #[test]
+    fn csi_cursor_prev_line_defaults_to_1() {
+        let cmds = process_bytes(b"\x1b[F");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorPrevLine(1))]
+        );
+    }
+
+    #[test]
+    fn csi_cursor_char_absolute_defaults_to_1() {
+        let cmds = process_bytes(b"\x1b[G");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorCharacterAbsolute(1))]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // CSI cursor position: both row and col default to 1
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csi_cup_both_params_present() {
+        let cmds = process_bytes(b"\x1b[5;10H");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorPosition(5, 10))]
+        );
+    }
+
+    #[test]
+    fn csi_cup_row_only_col_defaults_to_1() {
+        let cmds = process_bytes(b"\x1b[3H");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorPosition(3, 1))]
+        );
+    }
+
+    #[test]
+    fn csi_cup_no_params_both_default_to_1() {
+        // ESC [ H with no params = home (1,1); tested above but repeat here for clarity
+        let cmds = process_bytes(b"\x1b[H");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::CursorPosition(1, 1))]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // CSI erase: EraseInDisplay and EraseInLine default to 0, not 1
+    // Mutation: using param_or_1 instead of param_or(0,0) would give 1
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csi_erase_in_display_no_param_defaults_to_0() {
+        let cmds = process_bytes(b"\x1b[J");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::EraseInDisplay(0))]
+        );
+    }
+
+    #[test]
+    fn csi_erase_in_display_explicit_2() {
+        let cmds = process_bytes(b"\x1b[2J");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::EraseInDisplay(2))]
+        );
+    }
+
+    #[test]
+    fn csi_erase_in_line_no_param_defaults_to_0() {
+        let cmds = process_bytes(b"\x1b[K");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::EraseInLine(0))]
+        );
+    }
+
+    #[test]
+    fn csi_erase_in_line_explicit_1() {
+        let cmds = process_bytes(b"\x1b[1K");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::EraseInLine(1))]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ESC command dispatch: every ESC final-char mapping
+    // Mutations: wrong char in from_esc match arm, swapped EscCommand variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn esc_d_is_index() {
+        let cmds = process_bytes(b"\x1bD");
+        assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::Index)]);
+    }
+
+    #[test]
+    fn esc_e_is_next_line() {
+        let cmds = process_bytes(b"\x1bE");
+        assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::NextLine)]);
+    }
+
+    #[test]
+    fn esc_h_is_set_tab_stop() {
+        let cmds = process_bytes(b"\x1bH");
+        assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::SetTabStop)]);
+    }
+
+    #[test]
+    fn esc_m_is_reverse_index() {
+        let cmds = process_bytes(b"\x1bM");
+        assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::ReverseIndex)]);
+    }
+
+    #[test]
+    fn esc_7_is_save_cursor() {
+        let cmds = process_bytes(b"\x1b7");
+        assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::SaveCursor)]);
+    }
+
+    #[test]
+    fn esc_8_is_restore_cursor() {
+        let cmds = process_bytes(b"\x1b8");
+        assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::RestoreCursor)]);
+    }
+
+    #[test]
+    fn esc_c_is_reset_to_initial_state() {
+        let cmds = process_bytes(b"\x1bc");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Esc(EscCommand::ResetToInitialState)]
+        );
+    }
+
+    #[test]
+    fn esc_n_is_single_shift_2() {
+        let cmds = process_bytes(b"\x1bN");
+        assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::SingleShift2)]);
+    }
+
+    #[test]
+    fn esc_o_is_single_shift_3() {
+        let cmds = process_bytes(b"\x1bO");
+        assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::SingleShift3)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // CSI MAX_PARAMS boundary enforcement
+    // Mutation: `<` to `<=` in add_param would allow 17 params (the 17th
+    //           would be added and the 16th dropped or the limit off by one).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csi_accepts_exactly_16_params() {
+        // SGR with 16 parameters: 1;2;3;4;5;6;7;8;9;0;0;0;0;0;0;0m
+        // All 16 should be collected; we check that Bold and Faint appear.
+        let cmds = process_bytes(b"\x1b[1;2;0;0;0;0;0;0;0;0;0;0;0;0;0;0m");
+        // First param must be Bold (1), second Faint (2), rest Reset (0).
+        if let Some(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(attrs))) = cmds.first() {
+            assert_eq!(attrs[0], Attribute::Bold, "first of 16 params should be Bold");
+            assert_eq!(
+                attrs[1],
+                Attribute::Faint,
+                "second of 16 params should be Faint"
+            );
+        } else {
+            panic!("expected SetGraphicsRendition, got {:?}", cmds);
+        }
+    }
+
+    #[test]
+    fn csi_silently_drops_17th_param() {
+        // 16 zeros then ;7 (Reverse). The 17th param (7) must be ignored.
+        // We send: ESC [ 0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;7m
+        //          that's 16 zeros + 1 extra -> the 7 (Reverse) is the 17th and dropped.
+        let cmds =
+            process_bytes(b"\x1b[0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;7m");
+        if let Some(AnsiCommand::Csi(CsiCommand::SetGraphicsRendition(attrs))) = cmds.first() {
+            // Every kept attribute should be Reset (0); Reverse (7) must NOT appear.
+            assert!(
+                !attrs.contains(&Attribute::Reverse),
+                "17th param (Reverse) should have been dropped; got attrs: {:?}",
+                attrs
+            );
+        } else {
+            panic!("expected SetGraphicsRendition, got {:?}", cmds);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // UTF-8 boundary: exact invalid/valid byte transitions
+    // Mutations: off-by-one on UTF8_2_BYTE_MIN (0xC2), UTF8_4_BYTE_MAX (0xF4),
+    //            continuation range (0x80..=0xBF)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn utf8_0xc1_is_invalid_start_produces_replacement() {
+        // 0xC1 is just below the valid 2-byte start range (0xC2)
+        let cmds = process_bytes(&[0xC1, 0x80]);
+        // Both bytes should produce replacement characters, not a valid char
+        assert!(
+            cmds.iter()
+                .all(|c| c == &AnsiCommand::Print(char::REPLACEMENT_CHARACTER)),
+            "0xC1 must be an invalid start; got {:?}",
+            cmds
+        );
+    }
+
+    #[test]
+    fn utf8_0xc2_is_valid_2_byte_start() {
+        // 0xC2 0x80 = U+0080 (PAD) - lowest valid 2-byte sequence
+        let cmds = process_bytes(&[0xC2, 0x80]);
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Print('\u{0080}')],
+            "0xC2 0x80 must decode to U+0080"
+        );
+    }
+
+    #[test]
+    fn utf8_0xf4_0x8f_0xbf_0xbf_is_valid() {
+        // 0xF4 0x8F 0xBF 0xBF = U+10FFFF (highest valid code point)
+        let cmds = process_bytes(&[0xF4, 0x8F, 0xBF, 0xBF]);
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Print('\u{10FFFF}')],
+            "0xF4 0x8F 0xBF 0xBF must decode to U+10FFFF"
+        );
+    }
+
+    #[test]
+    fn utf8_0xf5_is_invalid_start_produces_replacement() {
+        // 0xF5 is just above the valid 4-byte start range (0xF4)
+        let cmds = process_bytes(&[0xF5, 0x80, 0x80, 0x80]);
+        assert!(
+            cmds.iter()
+                .any(|c| c == &AnsiCommand::Print(char::REPLACEMENT_CHARACTER)),
+            "0xF5 must be invalid; got {:?}",
+            cmds
+        );
+    }
+
+    #[test]
+    fn utf8_continuation_0x7f_is_not_valid_continuation() {
+        // 0xE2 starts a 3-byte sequence; 0x7F is DEL (not a continuation byte 0x80..=0xBF)
+        // Should abort the UTF-8 sequence and emit replacement + DEL control
+        let cmds = process_bytes(&[0xE2, 0x7F]);
+        assert!(
+            cmds.iter()
+                .any(|c| c == &AnsiCommand::Print(char::REPLACEMENT_CHARACTER)),
+            "0x7F after 3-byte start must not be a valid continuation; got {:?}",
+            cmds
+        );
+    }
+
+    #[test]
+    fn utf8_continuation_0xc0_is_not_valid_continuation() {
+        // 0xC0 is above the continuation range (0x80..=0xBF)
+        // Should abort the UTF-8 sequence
+        let cmds = process_bytes(&[0xE2, 0xC0]);
+        assert!(
+            cmds.iter()
+                .any(|c| c == &AnsiCommand::Print(char::REPLACEMENT_CHARACTER)),
+            "0xC0 after 3-byte start must not be a valid continuation; got {:?}",
+            cmds
+        );
+    }
+
+    #[test]
+    fn utf8_continuation_0xbf_is_valid_continuation() {
+        // 0xDF 0xBF = U+07FF - uses 0xBF which is the highest continuation byte
+        let cmds = process_bytes(&[0xDF, 0xBF]);
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Print('\u{07FF}')],
+            "0xDF 0xBF must decode to U+07FF"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // CAN / SUB cancel string sequences
+    // Mutations: wrong C0 byte constant in the match (0x17 instead of 0x18)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn osc_cancelled_by_can() {
+        // CAN (0x18) inside an OSC should discard the string and return to ground
+        let cmds = process_bytes(b"\x1b]0;title\x18rest");
+        // No Osc command should appear; "rest" prints normally
+        assert!(
+            !cmds.iter().any(|c| matches!(c, AnsiCommand::Osc(_))),
+            "CAN must cancel OSC; got {:?}",
+            cmds
+        );
+        assert!(
+            cmds.iter().any(|c| c == &AnsiCommand::Print('r')),
+            "text after CAN must print; got {:?}",
+            cmds
+        );
+    }
+
+    #[test]
+    fn osc_cancelled_by_sub() {
+        // SUB (0x1A) inside an OSC should also discard it
+        let cmds = process_bytes(b"\x1b]0;title\x1Arest");
+        assert!(
+            !cmds.iter().any(|c| matches!(c, AnsiCommand::Osc(_))),
+            "SUB must cancel OSC; got {:?}",
+            cmds
+        );
+    }
+
+    #[test]
+    fn dcs_cancelled_by_can() {
+        let cmds = process_bytes(b"\x1bPdata\x18rest");
+        assert!(
+            !cmds.iter().any(|c| matches!(c, AnsiCommand::Dcs(_))),
+            "CAN must cancel DCS; got {:?}",
+            cmds
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // CSI param overflow: u16 saturation at MAX
+    // Mutation: removing checked_mul/checked_add would panic or wrap on overflow
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csi_param_overflow_saturates_not_panics() {
+        // A number larger than u16::MAX (65535) should saturate to u16::MAX, not panic
+        let cmds = process_bytes(b"\x1b[99999A");
+        // Should produce CursorUp with some value (saturated), not panic
+        assert_eq!(cmds.len(), 1, "should produce exactly one command");
+        assert!(
+            matches!(cmds[0], AnsiCommand::Csi(CsiCommand::CursorUp(_))),
+            "should still produce CursorUp; got {:?}",
+            cmds
+        );
+        if let AnsiCommand::Csi(CsiCommand::CursorUp(n)) = cmds[0] {
+            assert_eq!(n, u16::MAX, "overflow must saturate to u16::MAX, got {}", n);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // CSI clear-tab-stop parameter values
+    // Mutation: wrong W-param mapping (0->SetTabStop, 2->ClearTabStops(0),
+    //           5->ClearTabStops(3) - each value is distinct)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csi_ctc_0_is_set_tab_stop() {
+        let cmds = process_bytes(b"\x1b[0W");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetTabStop)]
+        );
+    }
+
+    #[test]
+    fn csi_ctc_2_clears_current_tab_stop() {
+        let cmds = process_bytes(b"\x1b[2W");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::ClearTabStops(0))]
+        );
+    }
+
+    #[test]
+    fn csi_ctc_5_clears_all_tab_stops() {
+        let cmds = process_bytes(b"\x1b[5W");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::ClearTabStops(3))]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // CSI scroll up/down distinction
+    // Mutations: confusing S (scroll up) with T (scroll down)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csi_s_uppercase_is_scroll_up() {
+        let cmds = process_bytes(b"\x1b[3S");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::ScrollUp(3))]
+        );
+    }
+
+    #[test]
+    fn csi_t_uppercase_is_scroll_down() {
+        let cmds = process_bytes(b"\x1b[3T");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::ScrollDown(3))]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // CSI delete / insert / erase character distinction
+    // Mutations: wrong command for P, @, X
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csi_at_is_insert_character() {
+        let cmds = process_bytes(b"\x1b[2@");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::InsertCharacter(2))]
+        );
+    }
+
+    #[test]
+    fn csi_p_uppercase_is_delete_character() {
+        let cmds = process_bytes(b"\x1b[2P");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::DeleteCharacter(2))]
+        );
+    }
+
+    #[test]
+    fn csi_x_uppercase_is_erase_character() {
+        let cmds = process_bytes(b"\x1b[2X");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::EraseCharacter(2))]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // CSI insert / delete line distinction (L vs M)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csi_l_uppercase_is_insert_line() {
+        let cmds = process_bytes(b"\x1b[4L");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::InsertLine(4))]
+        );
+    }
+
+    #[test]
+    fn csi_m_uppercase_is_delete_line() {
+        let cmds = process_bytes(b"\x1b[4M");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::DeleteLine(4))]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DECSTBM scrolling region: top/bottom defaults and values
+    // Mutations: swapped row/col, wrong default (1 vs 0)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn csi_decstbm_explicit_top_and_bottom() {
+        let cmds = process_bytes(b"\x1b[5;24r");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetScrollingRegion {
+                top: 5,
+                bottom: 24
+            })]
+        );
+    }
+
+    #[test]
+    fn csi_decstbm_top_defaults_to_1() {
+        // No params: top=1, bottom=0 (convention for "last line")
+        let cmds = process_bytes(b"\x1b[r");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Csi(CsiCommand::SetScrollingRegion {
+                top: 1,
+                bottom: 0
+            })]
+        );
+    }
+}
