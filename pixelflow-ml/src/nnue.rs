@@ -445,6 +445,7 @@ impl Accumulator {
         let offset = feature_idx * l1_size;
 
         // Add the column of W1 corresponding to this feature
+        #[allow(clippy::needless_range_loop)] // Optimized for loop unrolling
         for i in 0..l1_size {
             self.values[i] += nnue.w1[offset + i] as i32;
         }
@@ -456,6 +457,7 @@ impl Accumulator {
         let l1_size = nnue.config.l1_size;
         let offset = feature_idx * l1_size;
 
+        #[allow(clippy::needless_range_loop)] // Optimized for loop unrolling
         for i in 0..l1_size {
             self.values[i] -= nnue.w1[offset + i] as i32;
         }
@@ -472,27 +474,35 @@ impl Accumulator {
 
         // L1 -> L2 with clipped ReLU
         let mut l2 = nnue.b2.clone();
-        for i in 0..l1_size {
+        for (i, &val) in self.values.iter().enumerate().take(l1_size) {
             // Clipped ReLU: clamp to [0, 127] then scale
-            let a = (self.values[i] >> 6).clamp(0, 127) as i8;
-            for j in 0..l2_size {
-                l2[j] += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
+            let a = (val >> 6).clamp(0, 127) as i8;
+            for (j, &w2_ij) in nnue.w2[i * l2_size..(i + 1) * l2_size]
+                .iter()
+                .enumerate()
+                .take(l2_size)
+            {
+                l2[j] += (a as i32) * (w2_ij as i32);
             }
         }
 
         // L2 -> L3 with clipped ReLU
         let mut l3 = nnue.b3.clone();
-        for i in 0..l2_size {
-            let a = (l2[i] >> 6).clamp(0, 127) as i8;
-            for j in 0..l3_size {
-                l3[j] += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
+        for (i, &val) in l2.iter().enumerate().take(l2_size) {
+            let a = (val >> 6).clamp(0, 127) as i8;
+            for (j, &w3_ij) in nnue.w3[i * l3_size..(i + 1) * l3_size]
+                .iter()
+                .enumerate()
+                .take(l3_size)
+            {
+                l3[j] += (a as i32) * (w3_ij as i32);
             }
         }
 
         // L3 -> output
         let mut output = nnue.b_out;
-        for i in 0..l3_size {
-            let a = (l3[i] >> 6).clamp(0, 127) as i8;
+        for (i, &val) in l3.iter().enumerate().take(l3_size) {
+            let a = (val >> 6).clamp(0, 127) as i8;
             output += (a as i32) * (nnue.w_out[i] as i32);
         }
 
