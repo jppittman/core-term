@@ -477,8 +477,12 @@ impl Accumulator {
         for (i, &val) in self.values.iter().enumerate().take(l1_size) {
             // Clipped ReLU: clamp to [0, 127] then scale
             let a = (val >> 6).clamp(0, 127) as i8;
-            for j in 0..l2_size {
-                l2[j] += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
+            for (j, &w2_ij) in nnue.w2[i * l2_size..(i + 1) * l2_size]
+                .iter()
+                .enumerate()
+                .take(l2_size)
+            {
+                l2[j] += (a as i32) * (w2_ij as i32);
             }
         }
 
@@ -486,8 +490,12 @@ impl Accumulator {
         let mut l3 = nnue.b3.clone();
         for (i, &val) in l2.iter().enumerate().take(l2_size) {
             let a = (val >> 6).clamp(0, 127) as i8;
-            for j in 0..l3_size {
-                l3[j] += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
+            for (j, &w3_ij) in nnue.w3[i * l3_size..(i + 1) * l3_size]
+                .iter()
+                .enumerate()
+                .take(l3_size)
+            {
+                l3[j] += (a as i32) * (w3_ij as i32);
             }
         }
 
