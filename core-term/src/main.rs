@@ -249,7 +249,7 @@ fn main() -> anyhow::Result<()> {
 
         // Phase 3: Run troupe (blocks on main thread)
         // The _app_handle keeps the terminal app channel alive
-        let _ = app_handle; // Keep app_handle alive until troupe completes
+        let _res = app_handle; // Keep app_handle alive until troupe completes
         troupe.play().map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 

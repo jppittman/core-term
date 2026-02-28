@@ -75,18 +75,18 @@ fn test_platform_actor_delegation() {
     // Note: We test `Actor` trait implementation directly, skipping Scheduler for unit test simplicity
 
     // Test Management (Create)
-    let _ = actor.handle_management(DisplayMgmt::Create {
+    let _res = actor.handle_management(DisplayMgmt::Create {
         settings: Default::default(),
     });
 
     // Test Control (SetTitle)
-    let _ = actor.handle_control(DisplayControl::SetTitle {
+    let _res = actor.handle_control(DisplayControl::SetTitle {
         id: pixelflow_runtime::api::private::WindowId(1),
         title: "Test Window".to_string(),
     });
 
     // Test Data (Present)
-    let _ = actor.handle_data(DisplayData::Present {
+    let _res = actor.handle_data(DisplayData::Present {
         window: pixelflow_runtime::display::messages::Window {
             id: pixelflow_runtime::api::private::WindowId(1),
             frame: Frame::new(100, 100),
@@ -97,7 +97,7 @@ fn test_platform_actor_delegation() {
     });
 
     // Test Park
-    let _ = actor.park(SystemStatus::Busy);
+    let _res = actor.park(SystemStatus::Busy);
 
     // 4. Verify Log
     let log = log_ref.lock().unwrap();

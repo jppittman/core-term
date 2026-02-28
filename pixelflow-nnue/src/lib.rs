@@ -2392,7 +2392,7 @@ mod tests {
         let dense = DenseFeatures::default();
 
         // Should not panic
-        let _ = acc.forward_hybrid(&nnue, &dense);
+        let _result = acc.forward_hybrid(&nnue, &dense);
     }
 
     #[test]

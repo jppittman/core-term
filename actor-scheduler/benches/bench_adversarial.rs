@@ -80,7 +80,7 @@ fn bench_control_flood_impact(c: &mut Criterion) {
             // Now send data messages while control is flooding
             let data_sender = thread::spawn(move || {
                 for i in 0..1000 {
-                    let _ = tx_data.send(Message::Data(i));
+                    let _res = tx_data.send(Message::Data(i));
                 }
             });
 
@@ -123,10 +123,10 @@ fn bench_burst_limiting_effectiveness(c: &mut Criterion) {
 
             // Send large batch of control then data
             for _ in 0..1000 {
-                let _ = tx.send(Message::Control(()));
+                let _res = tx.send(Message::Control(()));
             }
             for i in 0..100 {
-                let _ = tx.send(Message::Data(i));
+                let _res = tx.send(Message::Data(i));
             }
 
             thread::sleep(Duration::from_millis(50));
@@ -188,7 +188,7 @@ fn bench_multiple_control_flooders(c: &mut Criterion) {
             // Send data while control is being flooded by 4 threads
             let data_sender = thread::spawn(move || {
                 for i in 0..500 {
-                    let _ = tx_data.send(Message::Data(i));
+                    let _res = tx_data.send(Message::Data(i));
                 }
             });
 

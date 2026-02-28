@@ -11,18 +11,18 @@ use pixelflow_core::jet::Jet2H;
 #[test]
 fn test_jet2h_seeding() {
     let x = Jet2H::x(Field::from(2.0));
-    let _ = x.val;
-    let _ = x.dx;
-    let _ = x.dy;
-    let _ = x.dxx;
-    let _ = x.dxy;
-    let _ = x.dyy;
+    let _res = x.val;
+    let _res = x.dx;
+    let _res = x.dy;
+    let _res = x.dxx;
+    let _res = x.dxy;
+    let _res = x.dyy;
 
     let y = Jet2H::y(Field::from(3.0));
-    let _ = y.val;
+    let _res = y.val;
 
     let c = Jet2H::constant(Field::from(5.0));
-    let _ = c.val;
+    let _res = c.val;
 }
 
 /// Verify that Jet2H arithmetic operations work.
@@ -32,16 +32,16 @@ fn test_jet2h_arithmetic() {
     let y = Jet2H::y(Field::from(3.0));
 
     let sum = x + y;
-    let _ = sum.val;
+    let _res = sum.val;
 
     let diff = x - y;
-    let _ = diff.val;
+    let _res = diff.val;
 
     let prod = x * y;
-    let _ = prod.val;
+    let _res = prod.val;
 
     let quot = x / y;
-    let _ = quot.val;
+    let _res = quot.val;
 }
 
 /// Verify that Jet2H unary operations work.
@@ -53,10 +53,10 @@ fn test_jet2h_unary_ops() {
     let _: Jet2H = sqrt_result.into();
 
     let min_result = x.min(Jet2H::y(Field::from(3.0)));
-    let _ = min_result.val;
+    let _res = min_result.val;
 
     let max_result = x.max(Jet2H::y(Field::from(3.0)));
-    let _ = max_result.val;
+    let _res = max_result.val;
 }
 
 /// Verify that Jet2H comparison operations work.
@@ -90,7 +90,7 @@ fn test_jet2h_select() {
     let mask = x.lt(y);
 
     let selected = Jet2H::select(mask, x, y);
-    let _ = selected.val;
+    let _res = selected.val;
 }
 
 /// Verify that complex Jet2H expressions compile.
@@ -104,7 +104,7 @@ fn test_jet2h_complex_expression() {
     let sum = x_sq + y_sq;
     let r: Jet2H = sum.sqrt().into();
 
-    let _ = r.val;
-    let _ = r.dx;
-    let _ = r.dy;
+    let _res = r.val;
+    let _res = r.dx;
+    let _res = r.dy;
 }

@@ -2038,7 +2038,7 @@ mod troupe_tests {
         // Well-behaved data sender via its own dedicated SPSC
         let data_sender = thread::spawn(move || {
             for i in 0..100 {
-                let _ = tx_data.send(Message::Data(i));
+                let _res = tx_data.send(Message::Data(i));
             }
         });
 
@@ -2140,7 +2140,7 @@ mod troupe_tests {
 
         let data_sender = thread::spawn(move || {
             for i in 0..100 {
-                let _ = tx_data.send(Message::Data(i));
+                let _res = tx_data.send(Message::Data(i));
             }
         });
 
@@ -2236,7 +2236,7 @@ mod troupe_tests {
 
         let data_sender = thread::spawn(move || {
             for i in 0..100 {
-                let _ = tx_data.send(Message::Data(i));
+                let _res = tx_data.send(Message::Data(i));
             }
         });
 
@@ -2327,8 +2327,8 @@ mod troupe_tests {
             let handle = thread::spawn(move || {
                 for i in 0..100 {
                     let msg_val = (sender_id * 1000 + i) as i32;
-                    let _ = tx.send(Message::Control(msg_val));
-                    let _ = tx.send(Message::Management(msg_val));
+                    let _res = tx.send(Message::Control(msg_val));
+                    let _res = tx.send(Message::Management(msg_val));
                 }
             });
             sender_handles.push(handle);
@@ -2565,7 +2565,7 @@ mod shutdown_tests {
 
         // Flood with data messages
         for i in 0..1000 {
-            let _ = tx.send(Message::Data(i));
+            let _res = tx.send(Message::Data(i));
         }
 
         // Give time for messages to queue

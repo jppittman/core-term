@@ -2,7 +2,7 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -22,13 +22,13 @@ impl Actor<(), (), ()> for LatencyActor {
 
     fn handle_control(&mut self, _: ()) -> HandlerResult {
         // Immediately signal completion
-        let _ = self.response_tx.send(());
+        let _res = self.response_tx.send(());
         Ok(())
     }
 
     fn handle_management(&mut self, _: ()) -> HandlerResult {
         // Immediately signal completion
-        let _ = self.response_tx.send(());
+        let _res = self.response_tx.send(());
         Ok(())
     }
 
@@ -99,7 +99,7 @@ fn bench_control_latency_under_load(c: &mut Criterion) {
         let stop_clone = stop.clone();
         let flooder = thread::spawn(move || {
             while !stop_clone.load(Ordering::Relaxed) {
-                let _ = tx_data.send(Message::Data(()));
+                let _res = tx_data.send(Message::Data(()));
             }
         });
 
@@ -181,7 +181,7 @@ fn bench_management_latency_under_load(c: &mut Criterion) {
         let stop_clone = stop.clone();
         let flooder = thread::spawn(move || {
             while !stop_clone.load(Ordering::Relaxed) {
-                let _ = tx_control.send(Message::Control(()));
+                let _res = tx_control.send(Message::Control(()));
             }
         });
 

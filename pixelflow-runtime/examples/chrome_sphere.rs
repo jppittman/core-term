@@ -85,11 +85,11 @@ impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScre
 
 /// Build the color scene using the mullet architecture.
 /// Geometry runs once, colors flow as packed RGBA.
-fn build_scene() -> impl Manifold<Output = Discrete> + Clone + Sync {
+fn build_scene() -> impl Manifold<Output = Discrete> + Clone {
     let color_cube = ColorCube::default();
     let world = ColorSurface {
         geometry: plane(-1.0),
-        material: ColorChecker::new(color_cube.clone()),
+        material: ColorChecker::new(color_cube),
         background: ColorSky::new(color_cube),
     };
 
@@ -99,7 +99,7 @@ fn build_scene() -> impl Manifold<Output = Discrete> + Clone + Sync {
             radius: 1.0,
         },
         material: ColorReflect {
-            inner: world.clone(),
+            inner: world,
         },
         background: world,
     };

@@ -373,7 +373,7 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         .iter()
         .rev()
         .map(|(name, _, _, _)| {
-            format!("let _ = self.{name}.send(::actor_scheduler::Message::Shutdown);")
+            format!("let _res = self.{name}.send(::actor_scheduler::Message::Shutdown);")
         })
         .collect::<Vec<_>>()
         .join("\n");

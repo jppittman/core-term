@@ -272,7 +272,7 @@ fn test_pty_child_termination_on_drop() {
                 "Child process {} still alive after drop and SIGHUP. Sending SIGKILL.",
                 child_pid
             );
-            let _ = kill(child_pid, Some(Signal::SIGKILL)); // Attempt to clean up
+            let _res = kill(child_pid, Some(Signal::SIGKILL)); // Attempt to clean up
                                                             // Depending on strictness, this could be a panic.
                                                             // For CI stability, we might log and not panic, if SIGHUP is not 100% guaranteed kill for `sleep`.
                                                             // panic!("Child process {} did not terminate after PTY drop.", child_pid);

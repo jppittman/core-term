@@ -300,7 +300,7 @@ mod tests {
     fn test_elu_feature_positive() {
         let f = EluFeature;
         let result = f.apply(Field::from(0.0));
-        let _ = result;
+        let _res = result;
     }
 
     #[test]

@@ -43,24 +43,24 @@ fn main() {
 
     // Use them all to prevent DCE
     let v = 1.0f32;
-    let _ = k1(v, v, v, v).eval(p);
-    let _ = k2(v, v, v, v).eval(p);
-    let _ = k3(v, v, v, v).eval(p);
-    let _ = k4(v, v, v, v).eval(p);
-    let _ = k5(v, v, v, v).eval(p);
-    let _ = k6(v, v, v, v).eval(p);
-    let _ = k7(v, v, v, v).eval(p);
-    let _ = k8(v, v, v, v).eval(p);
-    let _ = k9(v, v, v, v).eval(p);
-    let _ = k10(v, v, v, v).eval(p);
-    let _ = k11(v, v, v, v).eval(p);
-    let _ = k12(v, v, v, v).eval(p);
-    let _ = k13(v, v, v, v).eval(p);
-    let _ = k14(v, v, v, v).eval(p);
-    let _ = k15(v, v, v, v).eval(p);
-    let _ = k16(v, v, v, v).eval(p);
-    let _ = k17(v, v, v, v).eval(p);
-    let _ = k18(v, v, v, v).eval(p);
-    let _ = k19(v, v, v, v).eval(p);
-    let _ = k20(v, v, v, v).eval(p);
+    let _res = k1(v, v, v, v).eval(p);
+    let _res = k2(v, v, v, v).eval(p);
+    let _res = k3(v, v, v, v).eval(p);
+    let _res = k4(v, v, v, v).eval(p);
+    let _res = k5(v, v, v, v).eval(p);
+    let _res = k6(v, v, v, v).eval(p);
+    let _res = k7(v, v, v, v).eval(p);
+    let _res = k8(v, v, v, v).eval(p);
+    let _res = k9(v, v, v, v).eval(p);
+    let _res = k10(v, v, v, v).eval(p);
+    let _res = k11(v, v, v, v).eval(p);
+    let _res = k12(v, v, v, v).eval(p);
+    let _res = k13(v, v, v, v).eval(p);
+    let _res = k14(v, v, v, v).eval(p);
+    let _res = k15(v, v, v, v).eval(p);
+    let _res = k16(v, v, v, v).eval(p);
+    let _res = k17(v, v, v, v).eval(p);
+    let _res = k18(v, v, v, v).eval(p);
+    let _res = k19(v, v, v, v).eval(p);
+    let _res = k20(v, v, v, v).eval(p);
 }

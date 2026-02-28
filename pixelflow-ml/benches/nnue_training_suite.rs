@@ -8,9 +8,9 @@
 //! The results can be processed to create NNUE training data.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use pixelflow_core::{Field, Manifold, ManifoldCompat, ManifoldExt, W, X, Y, Z};
+use pixelflow_core::{Field, Manifold, ManifoldExt, W, X, Y, Z};
 use pixelflow_ml::evaluator::{LinearFeatures, default_expr_weights, extract_expr_features};
-use pixelflow_ml::nnue::{Expr, HalfEPFeature, OpType, extract_features};
+use pixelflow_ml::nnue::{Expr, OpType, extract_features};
 
 // ============================================================================
 // Macro for generating matched Expr+Manifold kernel pairs

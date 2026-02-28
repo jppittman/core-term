@@ -52,7 +52,7 @@ fn bench_single_producer_throughput(c: &mut Criterion) {
         // SPSC
         group.bench_with_input(BenchmarkId::new("spsc", count), &count, |b, &count| {
             b.iter(|| {
-                let (mut tx, mut rx) = spsc::spsc_channel::<u64>(1024);
+                let (tx, mut rx) = spsc::spsc_channel::<u64>(1024);
                 let consumer = thread::spawn(move || {
                     let mut n = 0u64;
                     loop {
@@ -165,7 +165,7 @@ fn bench_multi_producer_throughput(c: &mut Criterion) {
 
                     let producers: Vec<_> = senders
                         .into_iter()
-                        .map(|mut tx| {
+                        .map(|tx| {
                             thread::spawn(move || {
                                 for i in 0..msg_per_producer {
                                     loop {
@@ -204,14 +204,14 @@ fn bench_send_latency(c: &mut Criterion) {
         let stop_c = stop.clone();
         let _consumer = thread::spawn(move || {
             while !stop_c.load(Ordering::Relaxed) {
-                let _ = rx.try_recv();
+                let _res = rx.try_recv();
             }
         });
         thread::sleep(std::time::Duration::from_millis(1));
 
         let mut i = 0u64;
         b.iter(|| {
-            let _ = tx.try_send(i);
+            let _res = tx.try_send(i);
             i += 1;
             black_box(i);
         });
@@ -220,19 +220,19 @@ fn bench_send_latency(c: &mut Criterion) {
 
     // SPSC: single send with a background consumer draining
     group.bench_function("spsc", |b| {
-        let (mut tx, mut rx) = spsc::spsc_channel::<u64>(4096);
+        let (tx, mut rx) = spsc::spsc_channel::<u64>(4096);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_c = stop.clone();
         let _consumer = thread::spawn(move || {
             while !stop_c.load(Ordering::Relaxed) {
-                let _ = rx.try_recv();
+                let _res = rx.try_recv();
             }
         });
         thread::sleep(std::time::Duration::from_millis(1));
 
         let mut i = 0u64;
         b.iter(|| {
-            let _ = tx.try_send(i);
+            let _res = tx.try_send(i);
             i += 1;
             black_box(i);
         });
@@ -261,7 +261,7 @@ fn bench_send_latency_contended(c: &mut Criterion) {
                     let stop = stop.clone();
                     thread::spawn(move || {
                         while !stop.load(Ordering::Relaxed) {
-                            let _ = rx.try_recv();
+                            let _res = rx.try_recv();
                             thread::yield_now();
                         }
                     })
@@ -275,7 +275,7 @@ fn bench_send_latency_contended(c: &mut Criterion) {
                         thread::spawn(move || {
                             let mut i = 0u64;
                             while !stop.load(Ordering::Relaxed) {
-                                let _ = tx.try_send(i);
+                                let _res = tx.try_send(i);
                                 i += 1;
                             }
                         })
@@ -286,7 +286,7 @@ fn bench_send_latency_contended(c: &mut Criterion) {
 
                 let mut i = 0u64;
                 b.iter(|| {
-                    let _ = tx.try_send(i);
+                    let _res = tx.try_send(i);
                     i += 1;
                     black_box(i);
                 });
@@ -302,7 +302,7 @@ fn bench_send_latency_contended(c: &mut Criterion) {
             &num_contenders,
             |b, &n| {
                 let mut builder = InboxBuilder::<u64>::new(4096);
-                let mut my_tx = builder.add_producer();
+                let my_tx = builder.add_producer();
                 let contender_txs: Vec<_> = (0..n).map(|_| builder.add_producer()).collect();
                 let mut inbox = builder.build();
 
@@ -312,7 +312,7 @@ fn bench_send_latency_contended(c: &mut Criterion) {
                 let stop_c = stop.clone();
                 let _consumer = thread::spawn(move || {
                     while !stop_c.load(Ordering::Relaxed) {
-                        let _ = inbox.drain(256, |_v: u64| Ok(()));
+                        let _res = inbox.drain(256, |_v: u64| Ok(()));
                         thread::yield_now();
                     }
                 });
@@ -320,12 +320,12 @@ fn bench_send_latency_contended(c: &mut Criterion) {
                 // Background contenders — each with own SPSC (no shared state)
                 let _contenders: Vec<_> = contender_txs
                     .into_iter()
-                    .map(|mut tx| {
+                    .map(|tx| {
                         let stop = stop.clone();
                         thread::spawn(move || {
                             let mut i = 0u64;
                             while !stop.load(Ordering::Relaxed) {
-                                let _ = tx.try_send(i);
+                                let _res = tx.try_send(i);
                                 i += 1;
                             }
                         })
@@ -336,7 +336,7 @@ fn bench_send_latency_contended(c: &mut Criterion) {
 
                 let mut i = 0u64;
                 b.iter(|| {
-                    let _ = my_tx.try_send(i);
+                    let _res = my_tx.try_send(i);
                     i += 1;
                     black_box(i);
                 });
@@ -360,13 +360,8 @@ fn bench_roundtrip_latency(c: &mut Criterion) {
         let (ack_tx, ack_rx) = mpsc::sync_channel::<()>(1);
 
         let _worker = thread::spawn(move || {
-            loop {
-                match rx.recv() {
-                    Ok(_v) => {
-                        let _ = ack_tx.try_send(());
-                    }
-                    Err(_) => break,
-                }
+            while let Ok(_v) = rx.recv() {
+                let _res = ack_tx.try_send(());
             }
         });
 
@@ -383,8 +378,8 @@ fn bench_roundtrip_latency(c: &mut Criterion) {
 
     // SPSC round-trip
     group.bench_function("spsc", |b| {
-        let (mut tx, mut rx) = spsc::spsc_channel::<u64>(64);
-        let (mut ack_tx, mut ack_rx) = spsc::spsc_channel::<()>(1);
+        let (tx, mut rx) = spsc::spsc_channel::<u64>(64);
+        let (ack_tx, mut ack_rx) = spsc::spsc_channel::<()>(1);
 
         let _worker = thread::spawn(move || {
             loop {

@@ -51,7 +51,7 @@ impl Actor<Vec<u8>, (), ()> for MockParserActor {
             .collect();
 
         if !commands.is_empty() {
-            let _ = self.cmd_tx.send(commands);
+            let _res = self.cmd_tx.send(commands);
         }
         Ok(())
     }

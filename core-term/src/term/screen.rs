@@ -1258,7 +1258,7 @@ mod tests {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.selection.is_active = false;
-        let original_selection_state = screen.selection.clone();
+        let original_selection_state = screen.selection;
         screen.update_selection(Point { x: 5, y: 2 });
         assert_eq!(screen.selection, original_selection_state);
     }

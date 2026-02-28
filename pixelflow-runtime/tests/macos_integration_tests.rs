@@ -69,11 +69,11 @@ mod tests {
             ..Default::default()
         };
 
-        let _ = ops.handle_management(DisplayMgmt::Create { settings });
+        let _res = ops.handle_management(DisplayMgmt::Create { settings });
 
         // 5. Emulate run loop step (Platform)
         // This should trigger window creation and send event to Engine
-        let _ = ops.park(SystemStatus::Busy);
+        let _res = ops.park(SystemStatus::Busy);
 
         // Give some time for message passing
         thread::sleep(Duration::from_millis(100));
@@ -96,7 +96,7 @@ mod tests {
 
         // 7. Update Window Title
         let win_id = found_window_id.unwrap();
-        let _ = ops.handle_control(DisplayControl::SetTitle {
+        let _res = ops.handle_control(DisplayControl::SetTitle {
             id: win_id,
             title: "Updated Title".to_string(),
         });

@@ -736,11 +736,9 @@ mod tests {
         let mut found_improvement = false;
 
         for action in actions {
-            if state.apply_action(action) {
-                if state.best_cost() < initial_cost {
-                    found_improvement = true;
-                    break;
-                }
+            if state.apply_action(action) && state.best_cost() < initial_cost {
+                found_improvement = true;
+                break;
             }
         }
 

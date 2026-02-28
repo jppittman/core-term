@@ -448,7 +448,7 @@ mod tests {
         // Should not panic when evaluating empty BSP
         let result = bsp.eval_raw(x, y, z, w);
         // Empty BSP should successfully evaluate (implementation returns default/transparent)
-        let _ = result;
+        let _res = result;
     }
 
     #[test]
@@ -1217,7 +1217,7 @@ mod tests {
         );
 
         // Should return a valid result without panicking
-        let _ = result;
+        let _res = result;
     }
 
     #[test]
@@ -1244,7 +1244,7 @@ mod tests {
             Field::from(0.0),
         );
 
-        let _ = result;
+        let _res = result;
     }
 
     #[test]
@@ -1271,7 +1271,7 @@ mod tests {
             Field::from(0.0),
         );
 
-        let _ = result;
+        let _res = result;
     }
 
     // ========================================================================
@@ -1363,7 +1363,7 @@ mod tests {
             Field::from(0.0),
         );
 
-        let _ = result;
+        let _res = result;
     }
 
     // ========================================================================
