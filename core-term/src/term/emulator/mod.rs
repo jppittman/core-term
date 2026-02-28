@@ -39,7 +39,7 @@ mod input_handler;
 mod key_translator;
 mod methods;
 mod mode_handler;
-pub(crate) mod mouse;
+pub mod mouse;
 mod osc_handler;
 mod screen_ops;
 
@@ -374,14 +374,8 @@ impl TerminalEmulator {
     ///
     /// Coordinates `col` and `row` are 0-based cell positions.
     #[must_use]
-    pub fn encode_mouse_event(
-        &self,
-        button: pixelflow_runtime::input::MouseButton,
-        col: usize,
-        row: usize,
-        kind: mouse::MouseEventKind,
-    ) -> Option<Vec<u8>> {
-        mouse::encode_mouse_event(&self.dec_modes, button, col, row, kind)
+    pub fn encode_mouse_event(&self, params: mouse::MouseEncodingParams) -> Option<Vec<u8>> {
+        mouse::encode_mouse_event(&self.dec_modes, params)
     }
 
     /// Returns true if any mouse tracking mode is active.

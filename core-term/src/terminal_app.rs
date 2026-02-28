@@ -5,6 +5,7 @@ use crate::glyph::Glyph;
 use crate::io::traits::PtySender;
 use crate::io::PtyCommand;
 use crate::messages::TerminalData;
+use crate::term::MouseEncodingParams;
 use crate::term::TerminalEmulator;
 use actor_scheduler::{
     Actor, ActorBuilder, ActorHandle, ActorStatus, HandlerError, HandlerResult, Message,
@@ -571,10 +572,12 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                     row
                 );
                 self.pressed_mouse_button = Some(button);
-                if let Some(bytes) =
-                    self.emulator
-                        .encode_mouse_event(button, col, row, MouseEventKind::Press)
-                {
+                if let Some(bytes) = self.emulator.encode_mouse_event(MouseEncodingParams {
+                    button: button,
+                    col: col,
+                    row: row,
+                    kind: MouseEventKind::Press,
+                }) {
                     if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
                         log::warn!("Failed to send mouse press to PTY: {}", e);
                     }
@@ -591,10 +594,12 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                     row
                 );
                 self.pressed_mouse_button = None;
-                if let Some(bytes) =
-                    self.emulator
-                        .encode_mouse_event(button, col, row, MouseEventKind::Release)
-                {
+                if let Some(bytes) = self.emulator.encode_mouse_event(MouseEncodingParams {
+                    button: button,
+                    col: col,
+                    row: row,
+                    kind: MouseEventKind::Release,
+                }) {
                     if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
                         log::warn!("Failed to send mouse release to PTY: {}", e);
                     }
@@ -611,10 +616,12 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                     let button = self
                         .pressed_mouse_button
                         .unwrap_or(pixelflow_runtime::input::MouseButton::Left);
-                    if let Some(bytes) =
-                        self.emulator
-                            .encode_mouse_event(button, col, row, MouseEventKind::Motion)
-                    {
+                    if let Some(bytes) = self.emulator.encode_mouse_event(MouseEncodingParams {
+                        button: button,
+                        col: col,
+                        row: row,
+                        kind: MouseEventKind::Motion,
+                    }) {
                         if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
                             log::warn!("Failed to send mouse motion to PTY: {}", e);
                         }
@@ -622,12 +629,12 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 } else if self.emulator.reports_button_motion() {
                     // button-event mode: only report when a button is held
                     if let Some(button) = self.pressed_mouse_button {
-                        if let Some(bytes) = self.emulator.encode_mouse_event(
-                            button,
-                            col,
-                            row,
-                            MouseEventKind::Motion,
-                        ) {
+                        if let Some(bytes) = self.emulator.encode_mouse_event(MouseEncodingParams {
+                            button: button,
+                            col: col,
+                            row: row,
+                            kind: MouseEventKind::Motion,
+                        }) {
                             if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
                                 log::warn!("Failed to send mouse motion to PTY: {}", e);
                             }
@@ -654,10 +661,12 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                     } else {
                         MouseButton::ScrollDown
                     };
-                    if let Some(bytes) =
-                        self.emulator
-                            .encode_mouse_event(button, col, row, MouseEventKind::Press)
-                    {
+                    if let Some(bytes) = self.emulator.encode_mouse_event(MouseEncodingParams {
+                        button: button,
+                        col: col,
+                        row: row,
+                        kind: MouseEventKind::Press,
+                    }) {
                         if let Err(e) = self.pty_tx.send(PtyCommand::Write(bytes)) {
                             log::warn!("Failed to send mouse scroll to PTY: {}", e);
                         }
