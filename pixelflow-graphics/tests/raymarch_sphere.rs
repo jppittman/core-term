@@ -94,7 +94,7 @@ fn test_sphere_on_floor() {
             radius: 1.0,
         },
         material: ColorReflect {
-            inner: world.clone(),
+            inner: world,
         },
         background: world,
     };
@@ -211,7 +211,7 @@ fn test_chrome_sphere_on_checkerboard() {
             radius: 1.0,
         },
         material: ColorReflect {
-            inner: world.clone(),
+            inner: world,
         },
         background: world,
     };

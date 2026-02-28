@@ -75,6 +75,7 @@ impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ColorScre
 
 /// Evaluate one pixel - this is what we want ASM for
 #[inline(never)]
+#[must_use]
 pub fn eval_one_pixel(x: Field, y: Field) -> Discrete {
     let world = ColorSurface {
         geometry: plane(-1.0),
@@ -88,7 +89,7 @@ pub fn eval_one_pixel(x: Field, y: Field) -> Discrete {
             radius: 1.0,
         },
         material: ColorReflect {
-            inner: world.clone(),
+            inner: world,
         },
         background: world,
     };

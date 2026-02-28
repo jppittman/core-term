@@ -1,0 +1,1613 @@
+    Checking pixelflow-runtime v0.1.0 (/app/pixelflow-runtime)
+    Checking pixelflow-ml v0.1.0 (/app/pixelflow-ml)
+   Compiling core-term v0.1.0 (/app/core-term)
+    Checking utf8parse v0.2.2
+warning: core-term@0.1.0: Building with Cocoa display driver
+    Checking comma v1.0.0
+    Checking anstyle-parse v0.2.6
+    Checking rexpect v0.6.1
+    Checking test-log v0.2.17
+    Checking anstyle-query v1.1.2
+    Checking is_terminal_polyfill v1.70.1
+    Checking colorchoice v1.0.3
+    Checking env_filter v0.1.3
+    Checking anstream v0.6.18
+    Checking x11 v2.21.0
+    Checking wait-timeout v0.2.1
+   Compiling crossbeam-utils v0.8.21
+    Checking bit-vec v0.8.0
+    Checking fnv v1.0.7
+    Checking quick-error v1.2.3
+    Checking jiff v0.2.15
+error: the loop variable `j` is used to index `l2`
+   --> pixelflow-ml/src/nnue.rs:478:22
+    |
+478 |             for j in 0..l2_size {
+    |                      ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+    = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator and enumerate()
+    |
+478 -             for j in 0..l2_size {
+478 +             for (j, <item>) in l2.iter_mut().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `i` is used to index `l2`
+   --> pixelflow-ml/src/nnue.rs:485:18
+    |
+485 |         for i in 0..l2_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+485 -         for i in 0..l2_size {
+485 +         for (i, <item>) in l2.iter().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `j` is used to index `l3`
+   --> pixelflow-ml/src/nnue.rs:487:22
+    |
+487 |             for j in 0..l3_size {
+    |                      ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+487 -             for j in 0..l3_size {
+487 +             for (j, <item>) in l3.iter_mut().enumerate().take(l3_size) {
+    |
+
+error: the loop variable `i` is used to index `l3`
+   --> pixelflow-ml/src/nnue.rs:494:18
+    |
+494 |         for i in 0..l3_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+494 -         for i in 0..l3_size {
+494 +         for (i, <item>) in l3.iter().enumerate().take(l3_size) {
+    |
+
+error: this function could have a `#[must_use]` attribute
+  --> pixelflow-ml/src/training/data_gen.rs:96:8
+   |
+96 | pub fn benchmark_expr(expr: &Expr, config: &BenchConfig) -> BenchResult {
+   |        ^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+   = note: `-D clippy::must-use-candidate` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::must_use_candidate)]`
+help: add the attribute
+   |
+96 + #[must_use]
+97 | pub fn benchmark_expr(expr: &Expr, config: &BenchConfig) -> BenchResult {
+   |
+
+error: this function could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/data_gen.rs:165:8
+    |
+165 | pub fn estimate_cost(expr: &Expr) -> usize {
+    |        ^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+165 + #[must_use]
+166 | pub fn estimate_cost(expr: &Expr) -> usize {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/data_gen.rs:218:12
+    |
+218 |     pub fn new(features: Vec<HalfEPFeature>, cost: u64) -> Self {
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+218 ~     #[must_use]
+219 ~     pub fn new(features: Vec<HalfEPFeature>, cost: u64) -> Self {
+    |
+
+error: you should consider adding a `Default` implementation for `MockEngine`
+  --> pixelflow-runtime/src/testing/mock_engine.rs:27:5
+   |
+27 | /     pub fn new() -> Self {
+28 | |         let messages = Arc::new(Mutex::new(Vec::new()));
+29 | |
+30 | |         let mut collector = MessageCollector {
+...  |
+50 | |     }
+   | |_____^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#new_without_default
+   = note: `-D clippy::new-without-default` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::new_without_default)]`
+help: try adding this
+   |
+23 + impl Default for MockEngine {
+24 +     fn default() -> Self {
+25 +         Self::new()
+26 +     }
+27 + }
+   |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/data_gen.rs:290:12
+    |
+290 |     pub fn new(seed: u64, config: DataGenConfig) -> Self {
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+290 ~     #[must_use]
+291 ~     pub fn new(seed: u64, config: DataGenConfig) -> Self {
+    |
+
+error: large size difference between variants
+   --> pixelflow-runtime/src/vsync_actor.rs:115:1
+    |
+115 | /  pub enum VsyncManagement {
+116 | |      /// Internal clock tick - wakes the actor to check vsync timing
+117 | |      Tick,
+    | |      ---- the second-largest variant carries no data at all
+118 | |      /// Configure the vsync actor (set refresh rate, engine handle, etc.)
+119 | |/     SetConfig {
+120 | ||         config: VsyncConfig,
+121 | ||         engine_handle: crate::api::private::EngineActorHandle,
+122 | ||         self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+123 | ||     },
+    | ||_____- the largest variant contains at least 392 bytes
+124 | |  }
+    | |__^ the entire enum is at least 392 bytes
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#large_enum_variant
+    = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::large_enum_variant)]`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    |
+122 -         self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+122 +         self_handle: Box<ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>>,
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/data_gen.rs:506:12
+    |
+506 |     pub fn from_samples(samples: &[TrainingSample]) -> Self {
+    |            ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+506 ~     #[must_use]
+507 ~     pub fn from_samples(samples: &[TrainingSample]) -> Self {
+    |
+
+error: this function could have a `#[must_use]` attribute
+  --> pixelflow-ml/src/training/features.rs:31:8
+   |
+31 | pub fn expr_tree_to_op_type(tree: &ExprTree) -> OpKind {
+   |        ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+   |
+31 + #[must_use]
+32 | pub fn expr_tree_to_op_type(tree: &ExprTree) -> OpKind {
+   |
+
+error: this function could have a `#[must_use]` attribute
+  --> pixelflow-ml/src/training/features.rs:58:8
+   |
+58 | pub fn expr_tree_to_nnue_expr(tree: &ExprTree) -> NnueExpr {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+   |
+58 + #[must_use]
+59 | pub fn expr_tree_to_nnue_expr(tree: &ExprTree) -> NnueExpr {
+   |
+
+error: this function could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/features.rs:105:8
+    |
+105 | pub fn structural_hash(tree: &ExprTree) -> u64 {
+    |        ^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+105 + #[must_use]
+106 | pub fn structural_hash(tree: &ExprTree) -> u64 {
+    |
+
+error: this function could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/features.rs:136:8
+    |
+136 | pub fn extract_tree_features(tree: &ExprTree) -> Vec<HalfEPFeature> {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+136 + #[must_use]
+137 | pub fn extract_tree_features(tree: &ExprTree) -> Vec<HalfEPFeature> {
+    |
+
+error: this function could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/features.rs:301:8
+    |
+301 | pub fn extract_search_features(ctx: &BestFirstContext<'_>) -> Vec<HalfEPFeature> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+301 + #[must_use]
+302 | pub fn extract_search_features(ctx: &BestFirstContext<'_>) -> Vec<HalfEPFeature> {
+    |
+
+error: this function could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/features.rs:332:8
+    |
+332 | pub fn extract_search_features_with_budget(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+332 + #[must_use]
+333 | pub fn extract_search_features_with_budget(
+    |
+
+error: this function could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/features.rs:358:8
+    |
+358 | pub fn op_counts_to_dense(op_counts: &HashMap<String, usize>, node_count: usize) -> DenseFeatures {
+    |        ^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+358 + #[must_use]
+359 | pub fn op_counts_to_dense(op_counts: &HashMap<String, usize>, node_count: usize) -> DenseFeatures {
+    |
+
+error: this function could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/features.rs:382:8
+    |
+382 | pub fn extract_dense_from_tree(tree: &ExprTree) -> DenseFeatures {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+382 + #[must_use]
+383 | pub fn extract_dense_from_tree(tree: &ExprTree) -> DenseFeatures {
+    |
+
+error: this function could have a `#[must_use]` attribute
+  --> pixelflow-ml/src/training/backprop.rs:17:8
+   |
+17 | pub fn clipped_relu(x: i32) -> (f32, f32) {
+   |        ^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+   |
+17 + #[must_use]
+18 | pub fn clipped_relu(x: i32) -> (f32, f32) {
+   |
+
+error: this function could have a `#[must_use]` attribute
+  --> pixelflow-ml/src/training/backprop.rs:59:8
+   |
+59 | pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, ForwardState) {
+   |        ^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+   |
+59 + #[must_use]
+60 | pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, ForwardState) {
+   |
+
+error: the loop variable `i` is used to index `l1_pre`
+  --> pixelflow-ml/src/training/backprop.rs:74:18
+   |
+74 |         for i in 0..l1_size {
+   |                  ^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+   |
+74 -         for i in 0..l1_size {
+74 +         for (i, <item>) in l1_pre.iter_mut().enumerate().take(l1_size) {
+   |
+
+error: the loop variable `i` is used to index `l1_post`
+  --> pixelflow-ml/src/training/backprop.rs:87:14
+   |
+87 |     for i in 0..l1_size {
+   |              ^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+   |
+87 -     for i in 0..l1_size {
+87 +     for (i, <item>) in l1_post.iter().enumerate().take(l1_size) {
+   |
+
+error: the loop variable `j` is used to index `l2_pre`
+  --> pixelflow-ml/src/training/backprop.rs:89:18
+   |
+89 |         for j in 0..l2_size {
+   |                  ^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+   |
+89 -         for j in 0..l2_size {
+89 +         for (j, <item>) in l2_pre.iter_mut().enumerate().take(l2_size) {
+   |
+
+error: the loop variable `i` is used to index `l2_post`
+   --> pixelflow-ml/src/training/backprop.rs:102:14
+    |
+102 |     for i in 0..l2_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+102 -     for i in 0..l2_size {
+102 +     for (i, <item>) in l2_post.iter().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `j` is used to index `l3_pre`
+   --> pixelflow-ml/src/training/backprop.rs:104:18
+    |
+104 |         for j in 0..l3_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+104 -         for j in 0..l3_size {
+104 +         for (j, <item>) in l3_pre.iter_mut().enumerate().take(l3_size) {
+    |
+
+error: the loop variable `i` is used to index `l3_post`
+   --> pixelflow-ml/src/training/backprop.rs:117:14
+    |
+117 |     for i in 0..l3_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+117 -     for i in 0..l3_size {
+117 +     for (i, <item>) in l3_post.iter().enumerate().take(l3_size) {
+    |
+
+error: this function could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/backprop.rs:136:8
+    |
+136 | pub fn forward_with_state_hybrid(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+136 + #[must_use]
+137 | pub fn forward_with_state_hybrid(
+    |
+
+error: the loop variable `i` is used to index `l1_pre`
+   --> pixelflow-ml/src/training/backprop.rs:156:18
+    |
+156 |         for i in 0..l1_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+156 -         for i in 0..l1_size {
+156 +         for (i, <item>) in l1_pre.iter_mut().enumerate().take(l1_size) {
+    |
+
+error: the loop variable `i` is used to index `l1_post`
+   --> pixelflow-ml/src/training/backprop.rs:184:14
+    |
+184 |     for i in 0..l1_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+184 -     for i in 0..l1_size {
+184 +     for (i, <item>) in l1_post.iter().enumerate().take(l1_size) {
+    |
+
+error: the loop variable `j` is used to index `l2_pre`
+   --> pixelflow-ml/src/training/backprop.rs:186:18
+    |
+186 |         for j in 0..l2_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+186 -         for j in 0..l2_size {
+186 +         for (j, <item>) in l2_pre.iter_mut().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `i` is used to index `dense_post`
+   --> pixelflow-ml/src/training/backprop.rs:191:14
+    |
+191 |     for i in 0..dense_size {
+    |              ^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+191 -     for i in 0..dense_size {
+191 +     for (i, <item>) in dense_post.iter().enumerate().take(dense_size) {
+    |
+
+error: the loop variable `j` is used to index `l2_pre`
+   --> pixelflow-ml/src/training/backprop.rs:193:18
+    |
+193 |         for j in 0..l2_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+193 -         for j in 0..l2_size {
+193 +         for (j, <item>) in l2_pre.iter_mut().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `i` is used to index `l2_post`
+   --> pixelflow-ml/src/training/backprop.rs:206:14
+    |
+206 |     for i in 0..l2_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+206 -     for i in 0..l2_size {
+206 +     for (i, <item>) in l2_post.iter().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `j` is used to index `l3_pre`
+   --> pixelflow-ml/src/training/backprop.rs:208:18
+    |
+208 |         for j in 0..l3_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+208 -         for j in 0..l3_size {
+208 +         for (j, <item>) in l3_pre.iter_mut().enumerate().take(l3_size) {
+    |
+
+error: the loop variable `i` is used to index `l3_post`
+   --> pixelflow-ml/src/training/backprop.rs:221:14
+    |
+221 |     for i in 0..l3_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+221 -     for i in 0..l3_size {
+221 +     for (i, <item>) in l3_post.iter().enumerate().take(l3_size) {
+    |
+
+error: the loop variable `i` is used to index `d_l3_post`
+   --> pixelflow-ml/src/training/backprop.rs:254:14
+    |
+254 |     for i in 0..l3_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+254 -     for i in 0..l3_size {
+254 +     for (i, <item>) in d_l3_post.iter_mut().enumerate().take(l3_size) {
+    |
+
+error: the loop variable `j` is used to index `d_l3_pre`
+   --> pixelflow-ml/src/training/backprop.rs:268:14
+    |
+268 |     for j in 0..l3_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+268 -     for j in 0..l3_size {
+268 +     for (j, <item>) in d_l3_pre.iter().enumerate().take(l3_size) {
+    |
+
+error: the loop variable `i` is used to index `d_l2_post`
+   --> pixelflow-ml/src/training/backprop.rs:273:14
+    |
+273 |     for i in 0..l2_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+273 -     for i in 0..l2_size {
+273 +     for (i, <item>) in d_l2_post.iter_mut().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `j` is used to index `d_l3_pre`
+   --> pixelflow-ml/src/training/backprop.rs:274:18
+    |
+274 |         for j in 0..l3_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+274 -         for j in 0..l3_size {
+274 +         for (j, <item>) in d_l3_pre.iter().enumerate().take(l3_size) {
+    |
+
+error: the loop variable `j` is used to index `d_l2_pre`
+   --> pixelflow-ml/src/training/backprop.rs:289:14
+    |
+289 |     for j in 0..l2_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+289 -     for j in 0..l2_size {
+289 +     for (j, <item>) in d_l2_pre.iter().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `i` is used to index `d_l1_post`
+   --> pixelflow-ml/src/training/backprop.rs:294:14
+    |
+294 |     for i in 0..l1_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+294 -     for i in 0..l1_size {
+294 +     for (i, <item>) in d_l1_post.iter_mut().enumerate().take(l1_size) {
+    |
+
+error: the loop variable `j` is used to index `d_l2_pre`
+   --> pixelflow-ml/src/training/backprop.rs:295:18
+    |
+295 |         for j in 0..l2_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+295 -         for j in 0..l2_size {
+295 +         for (j, <item>) in d_l2_pre.iter().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `i` is used to index `d_l1_pre`
+   --> pixelflow-ml/src/training/backprop.rs:310:14
+    |
+310 |     for i in 0..l1_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+310 -     for i in 0..l1_size {
+310 +     for (i, <item>) in d_l1_pre.iter().enumerate().take(l1_size) {
+    |
+
+error: the loop variable `i` is used to index `d_l1_pre`
+   --> pixelflow-ml/src/training/backprop.rs:317:18
+    |
+317 |         for i in 0..l1_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+317 -         for i in 0..l1_size {
+317 +         for (i, <item>) in d_l1_pre.iter().enumerate().take(l1_size) {
+    |
+
+error: could not compile `pixelflow-runtime` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: the loop variable `i` is used to index `d_l3_post`
+   --> pixelflow-ml/src/training/backprop.rs:338:14
+    |
+338 |     for i in 0..l3_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+338 -     for i in 0..l3_size {
+338 +     for (i, <item>) in d_l3_post.iter_mut().enumerate().take(l3_size) {
+    |
+
+error: the loop variable `j` is used to index `d_l3_pre`
+   --> pixelflow-ml/src/training/backprop.rs:352:14
+    |
+352 |     for j in 0..l3_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+352 -     for j in 0..l3_size {
+352 +     for (j, <item>) in d_l3_pre.iter().enumerate().take(l3_size) {
+    |
+
+error: the loop variable `i` is used to index `d_l2_post`
+   --> pixelflow-ml/src/training/backprop.rs:357:14
+    |
+357 |     for i in 0..l2_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+357 -     for i in 0..l2_size {
+357 +     for (i, <item>) in d_l2_post.iter_mut().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `j` is used to index `d_l3_pre`
+   --> pixelflow-ml/src/training/backprop.rs:358:18
+    |
+358 |         for j in 0..l3_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+358 -         for j in 0..l3_size {
+358 +         for (j, <item>) in d_l3_pre.iter().enumerate().take(l3_size) {
+    |
+
+error: the loop variable `j` is used to index `d_l2_pre`
+   --> pixelflow-ml/src/training/backprop.rs:373:14
+    |
+373 |     for j in 0..l2_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+373 -     for j in 0..l2_size {
+373 +     for (j, <item>) in d_l2_pre.iter().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `i` is used to index `d_l1_post`
+   --> pixelflow-ml/src/training/backprop.rs:379:14
+    |
+379 |     for i in 0..l1_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+379 -     for i in 0..l1_size {
+379 +     for (i, <item>) in d_l1_post.iter_mut().enumerate().take(l1_size) {
+    |
+
+error: the loop variable `j` is used to index `d_l2_pre`
+   --> pixelflow-ml/src/training/backprop.rs:380:18
+    |
+380 |         for j in 0..l2_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+380 -         for j in 0..l2_size {
+380 +         for (j, <item>) in d_l2_pre.iter().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `i` is used to index `d_dense_post`
+   --> pixelflow-ml/src/training/backprop.rs:390:14
+    |
+390 |     for i in 0..dense_size {
+    |              ^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+390 -     for i in 0..dense_size {
+390 +     for (i, <item>) in d_dense_post.iter_mut().enumerate().take(dense_size) {
+    |
+
+error: the loop variable `j` is used to index `d_l2_pre`
+   --> pixelflow-ml/src/training/backprop.rs:391:18
+    |
+391 |         for j in 0..l2_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+391 -         for j in 0..l2_size {
+391 +         for (j, <item>) in d_l2_pre.iter().enumerate().take(l2_size) {
+    |
+
+error: the loop variable `i` is used to index `d_l1_pre`
+   --> pixelflow-ml/src/training/backprop.rs:407:14
+    |
+407 |     for i in 0..l1_size {
+    |              ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+407 -     for i in 0..l1_size {
+407 +     for (i, <item>) in d_l1_pre.iter().enumerate().take(l1_size) {
+    |
+
+error: the loop variable `i` is used to index `d_l1_pre`
+   --> pixelflow-ml/src/training/backprop.rs:414:18
+    |
+414 |         for i in 0..l1_size {
+    |                  ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+414 -         for i in 0..l1_size {
+414 +         for (i, <item>) in d_l1_pre.iter().enumerate().take(l1_size) {
+    |
+
+error: the loop variable `j` is used to index `d_dense_pre`
+   --> pixelflow-ml/src/training/backprop.rs:429:14
+    |
+429 |     for j in 0..dense_size {
+    |              ^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+429 -     for j in 0..dense_size {
+429 +     for (j, <item>) in d_dense_pre.iter().enumerate().take(dense_size) {
+    |
+
+error: the loop variable `j` is used to index `d_dense_pre`
+   --> pixelflow-ml/src/training/backprop.rs:439:18
+    |
+439 |         for j in 0..dense_size {
+    |                  ^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#needless_range_loop
+help: consider using an iterator and enumerate()
+    |
+439 -         for j in 0..dense_size {
+439 +         for (j, <item>) in d_dense_pre.iter().enumerate().take(dense_size) {
+    |
+
+error: this method could have a `#[must_use]` attribute
+  --> pixelflow-ml/src/training/egraph.rs:29:12
+   |
+29 |     pub fn new(seed: u64) -> Self {
+   |            ^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+   |
+29 ~     #[must_use]
+30 ~     pub fn new(seed: u64) -> Self {
+   |
+
+error: this method could have a `#[must_use]` attribute
+  --> pixelflow-ml/src/training/egraph.rs:62:12
+   |
+62 |     pub fn new(seed: u64) -> Self {
+   |            ^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+   |
+62 ~     #[must_use]
+63 ~     pub fn new(seed: u64) -> Self {
+   |
+
+error: `filter_map()` will run forever if the iterator repeatedly produces an `Err`
+   --> pixelflow-ml/src/training/egraph.rs:166:10
+    |
+166 |         .filter_map(Result::ok)
+    |          ^^^^^^^^^^^^^^^^^^^^^^ help: replace with: `map_while(Result::ok)`
+    |
+note: this expression returning a `std::io::Lines` may produce an infinite number of `Err` in case of a read error
+   --> pixelflow-ml/src/training/egraph.rs:164:5
+    |
+164 | /     BufReader::new(file)
+165 | |         .lines()
+    | |________________^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#lines_filter_map_ok
+    = note: `-D clippy::lines-filter-map-ok` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::lines_filter_map_ok)]`
+
+error: this function could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/egraph.rs:202:8
+    |
+202 | pub fn prepare_judge_samples(samples: &[BenchmarkSample]) -> Vec<JudgeTrainingSample> {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+202 + #[must_use]
+203 | pub fn prepare_judge_samples(samples: &[BenchmarkSample]) -> Vec<JudgeTrainingSample> {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/egraph.rs:446:12
+    |
+446 |     pub fn new(max_size: usize, seed: u64) -> Self {
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+446 ~     #[must_use]
+447 ~     pub fn new(max_size: usize, seed: u64) -> Self {
+    |
+
+error: struct `ReplayBuffer` has a public `len` method, but no `is_empty` method
+   --> pixelflow-ml/src/training/egraph.rs:477:5
+    |
+477 |     pub fn len(&self) -> usize {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#len_without_is_empty
+    = note: `-D clippy::len-without-is-empty` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::len_without_is_empty)]`
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/egraph.rs:477:12
+    |
+477 |     pub fn len(&self) -> usize {
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+477 ~     #[must_use]
+478 ~     pub fn len(&self) -> usize {
+    |
+
+error: this method could have a `#[must_use]` attribute
+  --> pixelflow-ml/src/training/factored.rs:52:12
+   |
+52 |     pub fn new(expr: Expr, cost_ns: f64, embeddings: &OpEmbeddings) -> Self {
+   |            ^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+   |
+52 ~     #[must_use]
+53 ~     pub fn new(expr: Expr, cost_ns: f64, embeddings: &OpEmbeddings) -> Self {
+   |
+
+error: this method could have a `#[must_use]` attribute
+  --> pixelflow-ml/src/training/factored.rs:70:12
+   |
+70 |     pub fn target(&self) -> f32 {
+   |            ^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+   |
+70 ~     #[must_use]
+71 ~     pub fn target(&self) -> f32 {
+   |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/factored.rs:106:12
+    |
+106 |     pub fn new() -> Self {
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+106 ~     #[must_use]
+107 ~     pub fn new() -> Self {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/factored.rs:193:12
+    |
+193 |     pub fn forward(
+    |            ^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+193 ~     #[must_use]
+194 ~     pub fn forward(
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/factored.rs:416:12
+    |
+416 |     pub fn new() -> Self {
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+416 ~     #[must_use]
+417 ~     pub fn new() -> Self {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/factored.rs:447:12
+    |
+447 |     pub fn new(config: TrainConfig, seed: u64) -> Self {
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+447 ~     #[must_use]
+448 ~     pub fn new(config: TrainConfig, seed: u64) -> Self {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/factored.rs:463:12
+    |
+463 |     pub fn new_with_latency_prior(config: TrainConfig, seed: u64) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+463 ~     #[must_use]
+464 ~     pub fn new_with_latency_prior(config: TrainConfig, seed: u64) -> Self {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/factored.rs:619:12
+    |
+619 |     pub fn evaluate(&self) -> TrainMetrics {
+    |            ^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+619 ~     #[must_use]
+620 ~     pub fn evaluate(&self) -> TrainMetrics {
+    |
+
+error: this function could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/factored.rs:715:8
+    |
+715 | pub fn parse_expr(s: &str) -> Option<Expr> {
+    |        ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+715 + #[must_use]
+716 | pub fn parse_expr(s: &str) -> Option<Expr> {
+    |
+
+error: this function could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/training/factored.rs:852:8
+    |
+852 | pub fn parse_kernel_code(s: &str) -> Option<Expr> {
+    |        ^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+852 + #[must_use]
+853 | pub fn parse_kernel_code(s: &str) -> Option<Expr> {
+    |
+
+error: this method could have a `#[must_use]` attribute
+  --> pixelflow-ml/src/nnue_trainer.rs:35:12
+   |
+35 |     pub fn from_expr(expr: &Expr, cost_ns: f32) -> Self {
+   |            ^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+   |
+35 ~     #[must_use]
+36 ~     pub fn from_expr(expr: &Expr, cost_ns: f32) -> Self {
+   |
+
+error: this method could have a `#[must_use]` attribute
+  --> pixelflow-ml/src/nnue_trainer.rs:51:12
+   |
+51 |     pub fn from_features(feature_indices: Vec<usize>, cost_ns: f32) -> Self {
+   |            ^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+   |
+51 ~     #[must_use]
+52 ~     pub fn from_features(feature_indices: Vec<usize>, cost_ns: f32) -> Self {
+   |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/nnue_trainer.rs:118:12
+    |
+118 |     pub fn new() -> Self {
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+118 ~     #[must_use]
+119 ~     pub fn new() -> Self {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/nnue_trainer.rs:126:12
+    |
+126 |     pub fn predict(&self, sample: &NnueSample) -> f32 {
+    |            ^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+126 ~     #[must_use]
+127 ~     pub fn predict(&self, sample: &NnueSample) -> f32 {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/nnue_trainer.rs:161:12
+    |
+161 |     pub fn new() -> Self {
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+161 ~     #[must_use]
+162 ~     pub fn new() -> Self {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/nnue_trainer.rs:171:12
+    |
+171 |     pub fn with_config(train_config: TrainConfig) -> Self {
+    |            ^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+171 ~     #[must_use]
+172 ~     pub fn with_config(train_config: TrainConfig) -> Self {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/nnue_trainer.rs:288:12
+    |
+288 |     pub fn evaluate(&self, samples: &[NnueSample]) -> (Vec<f32>, Vec<f32>) {
+    |            ^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+288 ~     #[must_use]
+289 ~     pub fn evaluate(&self, samples: &[NnueSample]) -> (Vec<f32>, Vec<f32>) {
+    |
+
+error: this method could have a `#[must_use]` attribute
+   --> pixelflow-ml/src/nnue_trainer.rs:301:12
+    |
+301 |     pub fn spearman_correlation(&self, samples: &[NnueSample]) -> f32 {
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#must_use_candidate
+help: add the attribute
+    |
+301 ~     #[must_use]
+302 ~     pub fn spearman_correlation(&self, samples: &[NnueSample]) -> f32 {
+    |
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:34:5
+   |
+34 |     pub l1_pre: Vec<i32>,
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `-D missing-docs` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(missing_docs)]`
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:35:5
+   |
+35 |     pub l1_post: Vec<f32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:36:5
+   |
+36 |     pub l2_pre: Vec<i32>,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:37:5
+   |
+37 |     pub l2_post: Vec<f32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:38:5
+   |
+38 |     pub l3_pre: Vec<i32>,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:39:5
+   |
+39 |     pub l3_post: Vec<f32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:40:5
+   |
+40 |     pub active_features: Vec<usize>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:46:5
+   |
+46 |     pub l1_pre: Vec<i32>,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:47:5
+   |
+47 |     pub l1_post: Vec<f32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:48:5
+   |
+48 |     pub dense_input: Vec<i32>, // Input to dense branch (for W_dense gradients)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:49:5
+   |
+49 |     pub dense_pre: Vec<i32>,   // Pre-activation (for derivative)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:50:5
+   |
+50 |     pub dense_post: Vec<f32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:51:5
+   |
+51 |     pub l2_pre: Vec<i32>,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:52:5
+   |
+52 |     pub l2_post: Vec<f32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:53:5
+   |
+53 |     pub l3_pre: Vec<i32>,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:54:5
+   |
+54 |     pub l3_post: Vec<f32>,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+  --> pixelflow-ml/src/training/backprop.rs:55:5
+   |
+55 |     pub active_features: Vec<usize>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for an associated function
+  --> pixelflow-ml/src/training/egraph.rs:29:5
+   |
+29 |     pub fn new(seed: u64) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a method
+  --> pixelflow-ml/src/training/egraph.rs:35:5
+   |
+35 |     pub fn next_u64(&mut self) -> u64 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a method
+  --> pixelflow-ml/src/training/egraph.rs:40:5
+   |
+40 |     pub fn gen_range(&mut self, range: std::ops::Range<usize>) -> usize {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a method
+  --> pixelflow-ml/src/training/egraph.rs:45:5
+   |
+45 |     pub fn gen_bool(&mut self) -> bool {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a method
+  --> pixelflow-ml/src/training/egraph.rs:49:5
+   |
+49 |     pub fn gen_f64(&mut self) -> f64 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for an associated function
+  --> pixelflow-ml/src/training/egraph.rs:62:5
+   |
+62 |     pub fn new(seed: u64) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a method
+  --> pixelflow-ml/src/training/egraph.rs:70:5
+   |
+70 |     pub fn generate_small(&mut self) -> ExprTree {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a method
+  --> pixelflow-ml/src/training/egraph.rs:75:5
+   |
+75 |     pub fn generate_large(&mut self) -> ExprTree {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:145:5
+    |
+145 |     pub name: String,
+    |     ^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:146:5
+    |
+146 |     pub expression: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:147:5
+    |
+147 |     pub cost_ns: Option<f64>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:148:5
+    |
+148 |     pub egraph_cost: Option<usize>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:149:5
+    |
+149 |     pub node_count: Option<usize>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:150:5
+    |
+150 |     pub depth: Option<usize>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:155:5
+    |
+155 |     pub op_counts: HashMap<String, usize>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:176:5
+    |
+176 |     pub learning_rate: f32,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:177:5
+    |
+177 |     pub epochs: usize,
+    |     ^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:178:5
+    |
+178 |     pub batch_size: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:179:5
+    |
+179 |     pub seed: u64,
+    |     ^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:196:5
+    |
+196 |     pub features: Vec<HalfEPFeature>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:197:5
+    |
+197 |     pub dense: DenseFeatures,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:198:5
+    |
+198 |     pub cost_ns: f64,
+    |     ^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:433:5
+    |
+433 |     pub features: Vec<HalfEPFeature>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:434:5
+    |
+434 |     pub final_cost: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:435:5
+    |
+435 |     pub initial_cost: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for an associated function
+   --> pixelflow-ml/src/training/egraph.rs:446:5
+    |
+446 |     pub fn new(max_size: usize, seed: u64) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a method
+   --> pixelflow-ml/src/training/egraph.rs:454:5
+    |
+454 |     pub fn add(&mut self, sample: GuideTrainingSample) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a method
+   --> pixelflow-ml/src/training/egraph.rs:462:5
+    |
+462 |     pub fn sample_batch(&mut self, batch_size: usize) -> Vec<GuideTrainingSample> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a method
+   --> pixelflow-ml/src/training/egraph.rs:477:5
+    |
+477 |     pub fn len(&self) -> usize {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:485:5
+    |
+485 |     pub kindergarten_samples: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:486:5
+    |
+486 |     pub kindergarten_epochs: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:487:5
+    |
+487 |     pub university_samples: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:488:5
+    |
+488 |     pub university_epochs: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:489:5
+    |
+489 |     pub learning_rate: f32,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:490:5
+    |
+490 |     pub epsilon: f32,
+    |     ^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:491:5
+    |
+491 |     pub max_expansions: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:492:5
+    |
+492 |     pub batch_size: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:493:5
+    |
+493 |     pub replay_buffer_size: usize,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: missing documentation for a struct field
+   --> pixelflow-ml/src/training/egraph.rs:494:5
+    |
+494 |     pub seed: u64,
+    |     ^^^^^^^^^^^^^
+
+error: hiding a lifetime that's elided elsewhere is confusing
+   --> pixelflow-ml/src/training/factored.rs:857:19
+    |
+857 | fn kc_expr(input: &str) -> ParseResult<Expr> {
+    |                   ^^^^     ^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                   |
+    |                   the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `-D mismatched-lifetime-syntaxes` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(mismatched_lifetime_syntaxes)]`
+help: use `'_` for type paths
+    |
+857 | fn kc_expr(input: &str) -> ParseResult<'_, Expr> {
+    |                                        +++
+
+error: hiding a lifetime that's elided elsewhere is confusing
+   --> pixelflow-ml/src/training/factored.rs:862:26
+    |
+862 | fn parse_additive(input: &str) -> ParseResult<Expr> {
+    |                          ^^^^     ^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                          |
+    |                          the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+862 | fn parse_additive(input: &str) -> ParseResult<'_, Expr> {
+    |                                               +++
+
+error: hiding a lifetime that's elided elsewhere is confusing
+   --> pixelflow-ml/src/training/factored.rs:874:29
+    |
+874 | fn parse_additive_op(input: &str) -> ParseResult<OpKind> {
+    |                             ^^^^     ^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                             |
+    |                             the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+874 | fn parse_additive_op(input: &str) -> ParseResult<'_, OpKind> {
+    |                                                  +++
+
+error: hiding a lifetime that's elided elsewhere is confusing
+   --> pixelflow-ml/src/training/factored.rs:883:32
+    |
+883 | fn parse_multiplicative(input: &str) -> ParseResult<Expr> {
+    |                                ^^^^     ^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                                |
+    |                                the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+883 | fn parse_multiplicative(input: &str) -> ParseResult<'_, Expr> {
+    |                                                     +++
+
+error: hiding a lifetime that's elided elsewhere is confusing
+   --> pixelflow-ml/src/training/factored.rs:895:35
+    |
+895 | fn parse_multiplicative_op(input: &str) -> ParseResult<OpKind> {
+    |                                   ^^^^     ^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                                   |
+    |                                   the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+895 | fn parse_multiplicative_op(input: &str) -> ParseResult<'_, OpKind> {
+    |                                                        +++
+
+error: hiding a lifetime that's elided elsewhere is confusing
+   --> pixelflow-ml/src/training/factored.rs:904:25
+    |
+904 | fn parse_postfix(input: &str) -> ParseResult<Expr> {
+    |                         ^^^^     ^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                         |
+    |                         the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+904 | fn parse_postfix(input: &str) -> ParseResult<'_, Expr> {
+    |                                              +++
+
+error: hiding a lifetime that's elided elsewhere is confusing
+   --> pixelflow-ml/src/training/factored.rs:960:25
+    |
+960 | fn parse_primary(input: &str) -> ParseResult<Expr> {
+    |                         ^^^^     ^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                         |
+    |                         the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+960 | fn parse_primary(input: &str) -> ParseResult<'_, Expr> {
+    |                                              +++
+
+error: hiding a lifetime that's elided elsewhere is confusing
+   --> pixelflow-ml/src/training/factored.rs:981:26
+    |
+981 | fn parse_variable(input: &str) -> ParseResult<Expr> {
+    |                          ^^^^     ^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                          |
+    |                          the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+981 | fn parse_variable(input: &str) -> ParseResult<'_, Expr> {
+    |                                               +++
+
+error: hiding a lifetime that's elided elsewhere is confusing
+   --> pixelflow-ml/src/training/factored.rs:993:24
+    |
+993 | fn parse_number(input: &str) -> ParseResult<Expr> {
+    |                        ^^^^     ^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                        |
+    |                        the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+993 | fn parse_number(input: &str) -> ParseResult<'_, Expr> {
+    |                                             +++
+
+error: hiding a lifetime that's elided elsewhere is confusing
+    --> pixelflow-ml/src/training/factored.rs:1010:23
+     |
+1010 | fn parse_ident(input: &str) -> ParseResult<&str> {
+     |                       ^^^^     ^^^^^^^^^^^^^^^^^
+     |                       |        |           |
+     |                       |        |           the same lifetime is elided here
+     |                       |        the same lifetime is hidden here
+     |                       the lifetime is elided here
+     |
+     = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+     |
+1010 | fn parse_ident(input: &str) -> ParseResult<'_, &str> {
+     |                                            +++
+
+error: could not compile `pixelflow-ml` (lib) due to 147 previous errors

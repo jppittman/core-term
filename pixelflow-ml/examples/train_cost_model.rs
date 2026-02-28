@@ -88,6 +88,7 @@ impl Default for TrainableCostModel {
 
 impl TrainableCostModel {
     /// Predict cost for an expression.
+    #[must_use]
     pub fn predict(&self, expr: &Expr) -> f32 {
         match expr {
             Expr::Var(_) | Expr::Const(_) => 0.0,
@@ -128,6 +129,7 @@ impl TrainableCostModel {
     }
 
     /// Get weights as a vector for gradient descent.
+    #[must_use]
     pub fn to_vec(&self) -> Vec<f32> {
         vec![
             self.add,
@@ -162,6 +164,7 @@ impl TrainableCostModel {
     }
 
     /// Predict cost from pre-computed op counts (for benchmark data).
+    #[must_use]
     pub fn predict_from_counts(&self, counts: &OpCounts) -> f32 {
         counts.add as f32 * self.add
             + counts.sub as f32 * self.sub
@@ -178,6 +181,7 @@ impl TrainableCostModel {
     }
 
     /// Count operations in an expression (for gradient computation).
+    #[must_use]
     pub fn count_ops(&self, expr: &Expr) -> OpCounts {
         let mut counts = OpCounts::default();
         self.count_ops_inner(expr, &mut counts);
@@ -241,6 +245,7 @@ pub struct OpCounts {
 }
 
 impl OpCounts {
+    #[must_use]
     pub fn to_vec(&self) -> Vec<f32> {
         vec![
             self.add as f32,
@@ -282,7 +287,14 @@ pub struct CostCache {
     pub misses: usize,
 }
 
+impl Default for CostCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CostCache {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             cache: HashMap::new(),
@@ -308,6 +320,7 @@ impl CostCache {
         }
     }
 
+    #[must_use]
     pub fn hit_rate(&self) -> f32 {
         let total = self.hits + self.misses;
         if total == 0 {
@@ -502,13 +515,11 @@ fn find_workspace_root() -> PathBuf {
 
     loop {
         let cargo_toml = current.join("Cargo.toml");
-        if cargo_toml.exists() {
-            if let Ok(contents) = fs::read_to_string(&cargo_toml) {
-                if contents.contains("[workspace]") {
+        if cargo_toml.exists()
+            && let Ok(contents) = fs::read_to_string(&cargo_toml)
+                && contents.contains("[workspace]") {
                     return current;
                 }
-            }
-        }
         if !current.pop() {
             panic!("Could not find workspace root");
         }
@@ -584,6 +595,7 @@ impl Default for TrainConfig {
 /// For each pair of samples (A, B):
 /// - If benchmark says A is faster, cost model should predict cost(A) < cost(B)
 /// - Loss = max(0, cost(A) - cost(B) + margin) when A should be faster
+#[must_use]
 pub fn train_from_benchmarks(
     samples: &[BenchmarkSample],
     config: &TrainConfig,
@@ -808,6 +820,7 @@ pub fn train_cost_model(config: &TrainConfig) -> TrainableCostModel {
 // ============================================================================
 
 /// Evaluate the trained model on a test set.
+#[must_use]
 pub fn evaluate_model(model: &TrainableCostModel, test_size: usize) -> f32 {
     let mut generator = BwdGenerator::new(9999, BwdGenConfig::default());
     let mut correct = 0;
@@ -893,7 +906,7 @@ fn main() {
         println!(
             "  cargo run -p pixelflow-ml --example collect_benchmark_costs --features training"
         );
-        println!("");
+        println!();
 
         // Baseline: untrained model
         let baseline = TrainableCostModel::default();

@@ -39,7 +39,7 @@ fn regression_mask_and_not_multiply() {
         [[100.0, 500.0], [100.0, 100.0]], // left
     ]
     .into_iter()
-    .filter_map(|pts| make_line(pts))
+    .filter_map(make_line)
     .collect();
     let geo: Geometry<Line<LineKernel>, Quad<QuadKernel>> = Geometry {
         lines: Arc::from(lines),
@@ -111,7 +111,7 @@ fn regression_line_x_intersection_test() {
         [[400.0, 500.0], [400.0, 100.0]], // left edge, upward
     ]
     .into_iter()
-    .filter_map(|pts| make_line(pts))
+    .filter_map(make_line)
     .collect();
     let geo: Geometry<Line<LineKernel>, Quad<QuadKernel>> = Geometry {
         lines: Arc::from(lines),

@@ -123,7 +123,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k =
             kernel_raw!(|| (W
-                * ((-(1.509110).min(Z)).abs() + (((1.728882) * (1.0 / W)) * (1.0 / Y)).max(W))));
+                * ((-(1.509_11).min(Z)).abs() + (((1.728882) * (1.0 / W)) * (1.0 / Y)).max(W))));
         let m = k();
         group.bench_function("eg0007v0", |b| {
             b.iter(|| {
@@ -134,7 +134,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0007v1 - 17 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((-(1.509110).min(Z)).abs()
+        let k = kernel_raw!(|| (((-(1.509_11).min(Z)).abs()
             + (((1.728882) * (1.0 / W)) * (1.0 / Y)).max(W))
             * W));
         let m = k();
@@ -147,7 +147,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0007v2 - 19 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((W * (-(1.509110).min(Z)).abs())
+        let k = kernel_raw!(|| ((W * (-(1.509_11).min(Z)).abs())
             + (W * (((1.728882) * (1.0 / W)) * (1.0 / Y)).max(W))));
         let m = k();
         group.bench_function("eg0007v2", |b| {
@@ -160,7 +160,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0007v3 - 19 nodes, depth 7
     {
         let k = kernel_raw!(|| ((W * (((1.728882) * (1.0 / W)) * (1.0 / Y)).max(W))
-            + (W * (-(1.509110).min(Z)).abs())));
+            + (W * (-(1.509_11).min(Z)).abs())));
         let m = k();
         group.bench_function("eg0007v3", |b| {
             b.iter(|| {
@@ -346,7 +346,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(
             || (((((0.056010) * (1.0 / (3.514283))) * (1.0 / Z)).sqrt()).sqrt()
-                / ((-1.317785) + ((-1.144670) * (1.0 / (3.599814)))))
+                / ((-1.317785) + ((-1.144_67) * (1.0 / (3.599814)))))
         );
         let m = k();
         group.bench_function("eg0019v0", |b| {
@@ -360,7 +360,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(
             || (((((0.056010) * (1.0 / (3.514283))) * (1.0 / Z)).sqrt()).sqrt()
-                * (1.0 / ((-1.317785) + ((-1.144670) * (1.0 / (3.599814))))))
+                * (1.0 / ((-1.317785) + ((-1.144_67) * (1.0 / (3.599814))))))
         );
         let m = k();
         group.bench_function("eg0019v1", |b| {
@@ -373,7 +373,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0019v2 - 17 nodes, depth 7
     {
         let k = kernel_raw!(
-            || ((1.0 / ((-1.317785) + ((-1.144670) * (1.0 / (3.599814)))))
+            || ((1.0 / ((-1.317785) + ((-1.144_67) * (1.0 / (3.599814)))))
                 * ((((0.056010) * (1.0 / (3.514283))) * (1.0 / Z)).sqrt()).sqrt())
         );
         let m = k();
@@ -446,7 +446,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0030v0 - 4 nodes, depth 3
     {
-        let k = kernel_raw!(|| ((-4.070620).abs()).min(Z));
+        let k = kernel_raw!(|| ((-4.070_62).abs()).min(Z));
         let m = k();
         group.bench_function("eg0030v0", |b| {
             b.iter(|| {
@@ -457,7 +457,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0030v1 - 4 nodes, depth 3
     {
-        let k = kernel_raw!(|| (Z).min((-4.070620).abs()));
+        let k = kernel_raw!(|| (Z).min((-4.070_62).abs()));
         let m = k();
         group.bench_function("eg0030v1", |b| {
             b.iter(|| {
@@ -563,8 +563,8 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(|| (((((2.994793).max(X) * (1.0 / Y))
             * (1.0 / (-W).min((-1.193219).sqrt())))
-            + (((W).min(Z) * (-(-3.583620))) + Y))
-            * (Y * ((-((2.193665) * (-1.974750))) * W))));
+            + (((W).min(Z) * (-(-3.583_62))) + Y))
+            * (Y * ((-((2.193665) * (-1.974_75))) * W))));
         let m = k();
         group.bench_function("eg0040v0", |b| {
             b.iter(|| {
@@ -575,9 +575,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0040v1 - 31 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((Y * ((-((2.193665) * (-1.974750))) * W))
+        let k = kernel_raw!(|| ((Y * ((-((2.193665) * (-1.974_75))) * W))
             * ((((2.994793).max(X) * (1.0 / Y)) * (1.0 / (-W).min((-1.193219).sqrt())))
-                + (((W).min(Z) * (-(-3.583620))) + Y))));
+                + (((W).min(Z) * (-(-3.583_62))) + Y))));
         let m = k();
         group.bench_function("eg0040v1", |b| {
             b.iter(|| {
@@ -588,9 +588,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0040v2 - 40 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((Y * ((-((2.193665) * (-1.974750))) * W))
+        let k = kernel_raw!(|| (((Y * ((-((2.193665) * (-1.974_75))) * W))
             * (((2.994793).max(X) * (1.0 / Y)) * (1.0 / (-W).min((-1.193219).sqrt()))))
-            + ((Y * ((-((2.193665) * (-1.974750))) * W)) * (((W).min(Z) * (-(-3.583620))) + Y))));
+            + ((Y * ((-((2.193665) * (-1.974_75))) * W)) * (((W).min(Z) * (-(-3.583_62))) + Y))));
         let m = k();
         group.bench_function("eg0040v2", |b| {
             b.iter(|| {
@@ -601,9 +601,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0040v3 - 40 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((Y * ((-((2.193665) * (-1.974750))) * W))
-            * (((W).min(Z) * (-(-3.583620))) + Y))
-            + ((Y * ((-((2.193665) * (-1.974750))) * W))
+        let k = kernel_raw!(|| (((Y * ((-((2.193665) * (-1.974_75))) * W))
+            * (((W).min(Z) * (-(-3.583_62))) + Y))
+            + ((Y * ((-((2.193665) * (-1.974_75))) * W))
                 * (((2.994793).max(X) * (1.0 / Y)) * (1.0 / (-W).min((-1.193219).sqrt()))))));
         let m = k();
         group.bench_function("eg0040v3", |b| {
@@ -836,7 +836,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0055v0 - 13 nodes, depth 6
     {
         let k = kernel_raw!(
-            || (((((-3.289971).min(X)).sqrt()).max(((-3.301490) * Z).sqrt())).min((X).abs()))
+            || (((((-3.289971).min(X)).sqrt()).max(((-3.301_49) * Z).sqrt())).min((X).abs()))
                 .rsqrt()
         );
         let m = k();
@@ -871,7 +871,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0060v0 - 25 nodes, depth 8
     {
-        let k = kernel_raw!(|| ((((((2.895780) * W) * (1.0 / (X * (1.0 / Z))))
+        let k = kernel_raw!(|| ((((((2.895_78) * W) * (1.0 / (X * (1.0 / Z))))
             * (1.0 / ((W).min((1.060561))).min(((2.426245) * (1.0 / (-3.836515))))))
             + (X).sqrt())
             - (Z).abs()));
@@ -885,7 +885,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0060v1 - 26 nodes, depth 8
     {
-        let k = kernel_raw!(|| ((((((2.895780) * W) * (1.0 / (X * (1.0 / Z))))
+        let k = kernel_raw!(|| ((((((2.895_78) * W) * (1.0 / (X * (1.0 / Z))))
             * (1.0 / ((W).min((1.060561))).min(((2.426245) * (1.0 / (-3.836515))))))
             + (X).sqrt())
             + (-(Z).abs())));
@@ -900,7 +900,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0060v2 - 26 nodes, depth 8
     {
         let k = kernel_raw!(|| ((-(Z).abs())
-            + (((((2.895780) * W) * (1.0 / (X * (1.0 / Z))))
+            + (((((2.895_78) * W) * (1.0 / (X * (1.0 / Z))))
                 * (1.0 / ((W).min((1.060561))).min(((2.426245) * (1.0 / (-3.836515))))))
                 + (X).sqrt())));
         let m = k();
@@ -1145,7 +1145,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0085v0 - 3 nodes, depth 3
     {
-        let k = kernel_raw!(|| ((2.083520).abs()).rsqrt());
+        let k = kernel_raw!(|| ((2.083_52).abs()).rsqrt());
         let m = k();
         group.bench_function("eg0085v0", |b| {
             b.iter(|| {
@@ -1203,7 +1203,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| (W * (Y + (X - Y)).max(X)).max(
             (((((2.738595) + W) * (1.0 / (X).max((4.006333))))
                 * (1.0 / (-(3.393076)).min((1.760871))))
-                * (1.0 / (-((0.997003).min((-3.395770))).sqrt())))
+                * (1.0 / (-((0.997003).min((-3.395_77))).sqrt())))
         ));
         let m = k();
         group.bench_function("eg0090v0", |b| {
@@ -1217,7 +1217,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(|| (((((2.738595) + W) * (1.0 / (X).max((4.006333))))
             * (1.0 / (-(3.393076)).min((1.760871))))
-            * (1.0 / (-((0.997003).min((-3.395770))).sqrt())))
+            * (1.0 / (-((0.997003).min((-3.395_77))).sqrt())))
         .max((W * (Y + (X - Y)).max(X))));
         let m = k();
         group.bench_function("eg0090v1", |b| {
@@ -1340,7 +1340,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0098v0 - 28 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((4.750300).abs()
+        let k = kernel_raw!(|| (((4.750_3).abs()
             * (1.0 / (-((Z).max((-1.979906))).min(((3.641943) + Y)))))
             - ((((Z).abs() * (-2.281867).min(W)) - ((Y + X) + (X).sqrt())) + Y)));
         let m = k();
@@ -1353,7 +1353,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0098v1 - 29 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((4.750300).abs()
+        let k = kernel_raw!(|| (((4.750_3).abs()
             * (1.0 / (-((Z).max((-1.979906))).min(((3.641943) + Y)))))
             + (-((((Z).abs() * (-2.281867).min(W)) - ((Y + X) + (X).sqrt())) + Y))));
         let m = k();
@@ -1368,7 +1368,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(
             || ((-((((Z).abs() * (-2.281867).min(W)) - ((Y + X) + (X).sqrt())) + Y))
-                + ((4.750300).abs() * (1.0 / (-((Z).max((-1.979906))).min(((3.641943) + Y))))))
+                + ((4.750_3).abs() * (1.0 / (-((Z).max((-1.979906))).min(((3.641943) + Y))))))
         );
         let m = k();
         group.bench_function("eg0098v2", |b| {
@@ -1445,7 +1445,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0102v0 - 23 nodes, depth 6
     {
         let k = kernel_raw!(|| (((Y).sqrt() * ((-4.235051).sqrt() * (1.0 / Z)))
-            + (((Z * Z).rsqrt()).max(Z) + (((3.042980).rsqrt()).max((W * Y))).rsqrt())));
+            + (((Z * Z).rsqrt()).max(Z) + (((3.042_98).rsqrt()).max((W * Y))).rsqrt())));
         let m = k();
         group.bench_function("eg0102v0", |b| {
             b.iter(|| {
@@ -1457,7 +1457,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0102v1 - 23 nodes, depth 6
     {
         let k = kernel_raw!(|| ((((Z * Z).rsqrt()).max(Z)
-            + (((3.042980).rsqrt()).max((W * Y))).rsqrt())
+            + (((3.042_98).rsqrt()).max((W * Y))).rsqrt())
             + ((Y).sqrt() * ((-4.235051).sqrt() * (1.0 / Z)))));
         let m = k();
         group.bench_function("eg0102v1", |b| {
@@ -1694,7 +1694,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0117v0 - 14 nodes, depth 7
     {
         let k = kernel_raw!(|| ((((W).sqrt())
-            .max(((4.602210).max((-0.212237)) * (1.0 / (-1.459226).max((1.383642))))))
+            .max(((4.602_21).max((-0.212237)) * (1.0 / (-1.459226).max((1.383642))))))
         .min(W))
         .sqrt());
         let m = k();
@@ -1865,7 +1865,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0134v0 - 7 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((((-3.691070).sqrt()).sqrt()).rsqrt()).rsqrt()).max(X));
+        let k = kernel_raw!(|| (((((-3.691_07).sqrt()).sqrt()).rsqrt()).rsqrt()).max(X));
         let m = k();
         group.bench_function("eg0134v0", |b| {
             b.iter(|| {
@@ -1876,7 +1876,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0134v1 - 7 nodes, depth 6
     {
-        let k = kernel_raw!(|| (X).max(((((-3.691070).sqrt()).sqrt()).rsqrt()).rsqrt()));
+        let k = kernel_raw!(|| (X).max(((((-3.691_07).sqrt()).sqrt()).rsqrt()).rsqrt()));
         let m = k();
         group.bench_function("eg0134v1", |b| {
             b.iter(|| {
@@ -2206,7 +2206,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0154v0 - 7 nodes, depth 4
     {
-        let k = kernel_raw!(|| ((X - (0.160927)).sqrt()).max((-(-3.555030))));
+        let k = kernel_raw!(|| ((X - (0.160927)).sqrt()).max((-(-3.555_03))));
         let m = k();
         group.bench_function("eg0154v0", |b| {
             b.iter(|| {
@@ -2217,7 +2217,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0154v1 - 7 nodes, depth 4
     {
-        let k = kernel_raw!(|| (-(-3.555030)).max((X - (0.160927)).sqrt()));
+        let k = kernel_raw!(|| (-(-3.555_03)).max((X - (0.160927)).sqrt()));
         let m = k();
         group.bench_function("eg0154v1", |b| {
             b.iter(|| {
@@ -2228,7 +2228,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0154v2 - 9 nodes, depth 6
     {
-        let k = kernel_raw!(|| (-(-((X - (0.160927)).sqrt()).max((-(-3.555030))))));
+        let k = kernel_raw!(|| (-(-((X - (0.160927)).sqrt()).max((-(-3.555_03))))));
         let m = k();
         group.bench_function("eg0154v2", |b| {
             b.iter(|| {
@@ -2333,7 +2333,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0161v0 - 17 nodes, depth 7
     {
         let k = kernel_raw!(|| (Y
-            + ((Y * (1.0 / Z)) * (W - (4.439586))).min((-(-3.609830)).min((Y).rsqrt())))
+            + ((Y * (1.0 / Z)) * (W - (4.439586))).min((-(-3.609_83)).min((Y).rsqrt())))
         .abs());
         let m = k();
         group.bench_function("eg0161v0", |b| {
@@ -2487,9 +2487,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0175v0 - 20 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((1.164830).max(W) * (W).sqrt()).rsqrt()
+        let k = kernel_raw!(|| ((((1.164_83).max(W) * (W).sqrt()).rsqrt()
             * (1.0 / (-3.249316).rsqrt()))
-            - (((-Z) * ((-4.535360) + (-4.702350))).abs()).sqrt()));
+            - (((-Z) * ((-4.535_36) + (-4.702_35))).abs()).sqrt()));
         let m = k();
         group.bench_function("eg0175v0", |b| {
             b.iter(|| {
@@ -2500,9 +2500,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0175v1 - 21 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((((1.164830).max(W) * (W).sqrt()).rsqrt()
+        let k = kernel_raw!(|| ((((1.164_83).max(W) * (W).sqrt()).rsqrt()
             * (1.0 / (-3.249316).rsqrt()))
-            + (-(((-Z) * ((-4.535360) + (-4.702350))).abs()).sqrt())));
+            + (-(((-Z) * ((-4.535_36) + (-4.702_35))).abs()).sqrt())));
         let m = k();
         group.bench_function("eg0175v1", |b| {
             b.iter(|| {
@@ -2513,8 +2513,8 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0175v2 - 21 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((-(((-Z) * ((-4.535360) + (-4.702350))).abs()).sqrt())
-            + (((1.164830).max(W) * (W).sqrt()).rsqrt() * (1.0 / (-3.249316).rsqrt()))));
+        let k = kernel_raw!(|| ((-(((-Z) * ((-4.535_36) + (-4.702_35))).abs()).sqrt())
+            + (((1.164_83).max(W) * (W).sqrt()).rsqrt() * (1.0 / (-3.249316).rsqrt()))));
         let m = k();
         group.bench_function("eg0175v2", |b| {
             b.iter(|| {
@@ -2602,9 +2602,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0185v0 - 34 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((W + (Y).min(X)) - ((W * (2.885730)) - Y))
+        let k = kernel_raw!(|| ((((W + (Y).min(X)) - ((W * (2.885_73)) - Y))
             - ((X).min((-Y))).sqrt())
-            + (((Z * (-4.525660)).sqrt() + ((-Y) * (-(4.646133)))) - (W * (X * W)))));
+            + (((Z * (-4.525_66)).sqrt() + ((-Y) * (-(4.646133)))) - (W * (X * W)))));
         let m = k();
         group.bench_function("eg0185v0", |b| {
             b.iter(|| {
@@ -2615,9 +2615,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0185v1 - 34 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((Z * (-4.525660)).sqrt() + ((-Y) * (-(4.646133))))
+        let k = kernel_raw!(|| ((((Z * (-4.525_66)).sqrt() + ((-Y) * (-(4.646133))))
             - (W * (X * W)))
-            + (((W + (Y).min(X)) - ((W * (2.885730)) - Y)) - ((X).min((-Y))).sqrt())));
+            + (((W + (Y).min(X)) - ((W * (2.885_73)) - Y)) - ((X).min((-Y))).sqrt())));
         let m = k();
         group.bench_function("eg0185v1", |b| {
             b.iter(|| {
@@ -2819,7 +2819,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
             .min((((X).rsqrt()).rsqrt() + (-W))))
         .min(
             ((-4.389203).sqrt()
-                + (((-2.904880) - (-0.402075)).abs())
+                + (((-2.904_88) - (-0.402075)).abs())
                     .max(((4.823628).abs() * ((-1.062762) - (3.574683)))))
         ));
         let m = k();
@@ -2833,7 +2833,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0197v1 - 30 nodes, depth 6
     {
         let k = kernel_raw!(|| ((-4.389203).sqrt()
-            + (((-2.904880) - (-0.402075)).abs())
+            + (((-2.904_88) - (-0.402075)).abs())
                 .max(((4.823628).abs() * ((-1.062762) - (3.574683)))))
         .min(((3.904159).min(((Z).rsqrt() * (W + Z)))).min((((X).rsqrt()).rsqrt() + (-W)))));
         let m = k();
@@ -2960,7 +2960,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0207v0 - 13 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((-(-Z).sqrt()) / ((-3.714180) * ((-W) + (-Z)).abs())));
+        let k = kernel_raw!(|| ((-(-Z).sqrt()) / ((-3.714_18) * ((-W) + (-Z)).abs())));
         let m = k();
         group.bench_function("eg0207v0", |b| {
             b.iter(|| {
@@ -2971,7 +2971,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0207v1 - 14 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((-(-Z).sqrt()) * (1.0 / ((-3.714180) * ((-W) + (-Z)).abs()))));
+        let k = kernel_raw!(|| ((-(-Z).sqrt()) * (1.0 / ((-3.714_18) * ((-W) + (-Z)).abs()))));
         let m = k();
         group.bench_function("eg0207v1", |b| {
             b.iter(|| {
@@ -2982,7 +2982,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0207v2 - 14 nodes, depth 7
     {
-        let k = kernel_raw!(|| ((1.0 / ((-3.714180) * ((-W) + (-Z)).abs())) * (-(-Z).sqrt())));
+        let k = kernel_raw!(|| ((1.0 / ((-3.714_18) * ((-W) + (-Z)).abs())) * (-(-Z).sqrt())));
         let m = k();
         group.bench_function("eg0207v2", |b| {
             b.iter(|| {
@@ -3015,7 +3015,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0212v0 - 11 nodes, depth 6
     {
-        let k = kernel_raw!(|| (X).min(((1.157384) - (((-1.500850) * X) * (1.0 / 1.0)).abs())));
+        let k = kernel_raw!(|| (X).min(((1.157384) - (((-1.500_85) * X) * (1.0 / 1.0)).abs())));
         let m = k();
         group.bench_function("eg0212v0", |b| {
             b.iter(|| {
@@ -3026,7 +3026,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0212v1 - 11 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((1.157384) - (((-1.500850) * X) * (1.0 / 1.0)).abs()).min(X));
+        let k = kernel_raw!(|| ((1.157384) - (((-1.500_85) * X) * (1.0 / 1.0)).abs()).min(X));
         let m = k();
         group.bench_function("eg0212v1", |b| {
             b.iter(|| {
@@ -3040,7 +3040,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
         let k = kernel_raw!(|| ((((X).min((-3.881632)) * (1.0 / (Y).max((-2.399267))))
             + ((Y).max(W)).sqrt())
         .min((-(W - ((-2.721025) * W))))
-            + ((((Z + (-2.730025)) - (3.807329)) * (((1.081100) * Y) + (-3.318097).abs())) + W)));
+            + ((((Z + (-2.730025)) - (3.807329)) * (((1.081_1) * Y) + (-3.318097).abs())) + W)));
         let m = k();
         group.bench_function("eg0213v0", |b| {
             b.iter(|| {
@@ -3052,7 +3052,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0213v1 - 35 nodes, depth 7
     {
         let k = kernel_raw!(|| (((((Z + (-2.730025)) - (3.807329))
-            * (((1.081100) * Y) + (-3.318097).abs()))
+            * (((1.081_1) * Y) + (-3.318097).abs()))
             + W)
             + (((X).min((-3.881632)) * (1.0 / (Y).max((-2.399267)))) + ((Y).max(W)).sqrt())
                 .min((-(W - ((-2.721025) * W))))));
@@ -3067,7 +3067,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0214v0 - 20 nodes, depth 6
     {
         let k = kernel_raw!(
-            || ((X - (1.028118).min((2.202770))).min((-(Y * (-2.900324)))) * (1.0 / W))
+            || ((X - (1.028118).min((2.202_77))).min((-(Y * (-2.900324)))) * (1.0 / W))
                 .max(((-3.145947) - (-(-4.295406)).abs()).rsqrt())
         );
         let m = k();
@@ -3081,7 +3081,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0214v1 - 20 nodes, depth 6
     {
         let k = kernel_raw!(|| (((-3.145947) - (-(-4.295406)).abs()).rsqrt())
-            .max(((X - (1.028118).min((2.202770))).min((-(Y * (-2.900324)))) * (1.0 / W))));
+            .max(((X - (1.028118).min((2.202_77))).min((-(Y * (-2.900324)))) * (1.0 / W))));
         let m = k();
         group.bench_function("eg0214v1", |b| {
             b.iter(|| {
@@ -3405,7 +3405,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(|| ((((X * (0.041897)) * (1.0 / (W - (4.982385))))
             * (1.0 / (0.0).rsqrt()))
-            - ((-3.273620) * (1.0 / W)))
+            - ((-3.273_62) * (1.0 / W)))
             .min((4.641154)));
         let m = k();
         group.bench_function("eg0230v0", |b| {
@@ -3419,7 +3419,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(|| (4.641154).min(
             ((((X * (0.041897)) * (1.0 / (W - (4.982385)))) * (1.0 / (0.0).rsqrt()))
-                - ((-3.273620) * (1.0 / W)))
+                - ((-3.273_62) * (1.0 / W)))
         ));
         let m = k();
         group.bench_function("eg0230v1", |b| {
@@ -3598,7 +3598,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(
             || (((W).max((W - (-4.144545))) - ((-0.503252).sqrt()).sqrt())
-                * (1.0 / (((X).min(Y) * (1.0 / (Y * Z))) - ((3.523380) * (1.0 / Z)).sqrt())))
+                * (1.0 / (((X).min(Y) * (1.0 / (Y * Z))) - ((3.523_38) * (1.0 / Z)).sqrt())))
             .abs()
         );
         let m = k();
@@ -3832,7 +3832,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0264v0 - 6 nodes, depth 4
     {
-        let k = kernel_raw!(|| (-((-1.826620).sqrt()).min((-1.044643).sqrt())));
+        let k = kernel_raw!(|| (-((-1.826_62).sqrt()).min((-1.044643).sqrt())));
         let m = k();
         group.bench_function("eg0264v0", |b| {
             b.iter(|| {
@@ -3843,7 +3843,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0266v0 - 12 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((Y * (3.083390)).min((Z).sqrt()) * (Z).sqrt()).max(Z)).rsqrt());
+        let k = kernel_raw!(|| (((Y * (3.083_39)).min((Z).sqrt()) * (Z).sqrt()).max(Z)).rsqrt());
         let m = k();
         group.bench_function("eg0266v0", |b| {
             b.iter(|| {
@@ -4070,7 +4070,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0280v0 - 12 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((W).abs() * ((X).min(Z) - (-Z).sqrt())).min((-4.297400)));
+        let k = kernel_raw!(|| ((W).abs() * ((X).min(Z) - (-Z).sqrt())).min((-4.297_4)));
         let m = k();
         group.bench_function("eg0280v0", |b| {
             b.iter(|| {
@@ -4081,7 +4081,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0280v1 - 12 nodes, depth 6
     {
-        let k = kernel_raw!(|| (-4.297400).min(((W).abs() * ((X).min(Z) - (-Z).sqrt()))));
+        let k = kernel_raw!(|| (-4.297_4).min(((W).abs() * ((X).min(Z) - (-Z).sqrt()))));
         let m = k();
         group.bench_function("eg0280v1", |b| {
             b.iter(|| {
@@ -4608,7 +4608,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(|| ((((W).max((W).rsqrt())).sqrt())
             .max((((W).max(X) + X) + (X).abs()))
-            * ((-((4.568920) + W)).max((X).abs())).abs()));
+            * ((-((4.568_92) + W)).max((X).abs())).abs()));
         let m = k();
         group.bench_function("eg0311v0", |b| {
             b.iter(|| {
@@ -4619,7 +4619,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0311v1 - 23 nodes, depth 6
     {
-        let k = kernel_raw!(|| (((-((4.568920) + W)).max((X).abs())).abs()
+        let k = kernel_raw!(|| (((-((4.568_92) + W)).max((X).abs())).abs()
             * (((W).max((W).rsqrt())).sqrt()).max((((W).max(X) + X) + (X).abs()))));
         let m = k();
         group.bench_function("eg0311v1", |b| {
@@ -4631,7 +4631,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0313v0 - 3 nodes, depth 2
     {
-        let k = kernel_raw!(|| ((3.250410) - X));
+        let k = kernel_raw!(|| ((3.250_41) - X));
         let m = k();
         group.bench_function("eg0313v0", |b| {
             b.iter(|| {
@@ -4642,7 +4642,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0313v1 - 4 nodes, depth 3
     {
-        let k = kernel_raw!(|| ((3.250410) + (-X)));
+        let k = kernel_raw!(|| ((3.250_41) + (-X)));
         let m = k();
         group.bench_function("eg0313v1", |b| {
             b.iter(|| {
@@ -4653,7 +4653,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0313v2 - 4 nodes, depth 3
     {
-        let k = kernel_raw!(|| ((-X) + (3.250410)));
+        let k = kernel_raw!(|| ((-X) + (3.250_41)));
         let m = k();
         group.bench_function("eg0313v2", |b| {
             b.iter(|| {
@@ -4767,7 +4767,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0322v0 - 21 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((-Z) * (Y).min((-4.767060)))
+        let k = kernel_raw!(|| ((((-Z) * (Y).min((-4.767_06)))
             - ((Z).min(X) - (-3.074243).rsqrt()))
         .sqrt())
         .min((X * (1.0 / (-(4.466405).abs())))));
@@ -4782,7 +4782,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0322v1 - 21 nodes, depth 6
     {
         let k = kernel_raw!(|| (X * (1.0 / (-(4.466405).abs())))
-            .min((((-Z) * (Y).min((-4.767060))) - ((Z).min(X) - (-3.074243).rsqrt())).sqrt()));
+            .min((((-Z) * (Y).min((-4.767_06))) - ((Z).min(X) - (-3.074243).rsqrt())).sqrt()));
         let m = k();
         group.bench_function("eg0322v1", |b| {
             b.iter(|| {
@@ -4860,7 +4860,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0327v0 - 13 nodes, depth 6
     {
         let k = kernel_raw!(
-            || ((((-1.114450) * X) - (Y).sqrt()).abs() * (1.0 / (Z).abs())).max((3.038898))
+            || ((((-1.114_45) * X) - (Y).sqrt()).abs() * (1.0 / (Z).abs())).max((3.038898))
         );
         let m = k();
         group.bench_function("eg0327v0", |b| {
@@ -4873,7 +4873,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0327v1 - 13 nodes, depth 6
     {
         let k = kernel_raw!(
-            || (3.038898).max(((((-1.114450) * X) - (Y).sqrt()).abs() * (1.0 / (Z).abs())))
+            || (3.038898).max(((((-1.114_45) * X) - (Y).sqrt()).abs() * (1.0 / (Z).abs())))
         );
         let m = k();
         group.bench_function("eg0327v1", |b| {
@@ -5203,7 +5203,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(
             || ((((W).max((1.610761)) * ((-4.693887) * (1.0 / (-4.991247))))
-                .min(((4.651614) - (-3.043020)).sqrt()))
+                .min(((4.651614) - (-3.043_02)).sqrt()))
             .sqrt()
                 + Y)
         );
@@ -5219,7 +5219,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(|| (Y
             + (((W).max((1.610761)) * ((-4.693887) * (1.0 / (-4.991247))))
-                .min(((4.651614) - (-3.043020)).sqrt()))
+                .min(((4.651614) - (-3.043_02)).sqrt()))
             .sqrt()));
         let m = k();
         group.bench_function("eg0354v1", |b| {
@@ -5304,7 +5304,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(|| (((W).max((Y).max(Y))).sqrt()
             + (0.0).max(((-4.999033).sqrt() * (Y).sqrt())))
-        .max((((Y - X) * (Y).abs()).max(((2.101082) + (2.149981)).max((X * (2.121390)))) * Y)));
+        .max((((Y - X) * (Y).abs()).max(((2.101082) + (2.149981)).max((X * (2.121_39)))) * Y)));
         let m = k();
         group.bench_function("eg0359v0", |b| {
             b.iter(|| {
@@ -5316,7 +5316,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0359v1 - 31 nodes, depth 6
     {
         let k = kernel_raw!(|| (((Y - X) * (Y).abs())
-            .max(((2.101082) + (2.149981)).max((X * (2.121390))))
+            .max(((2.101082) + (2.149981)).max((X * (2.121_39))))
             * Y)
             .max((((W).max((Y).max(Y))).sqrt() + (0.0).max(((-4.999033).sqrt() * (Y).sqrt())))));
         let m = k();
@@ -5611,7 +5611,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0379v0 - 23 nodes, depth 8
     {
         let k = kernel_raw!(
-            || ((((1.105515).max((2.098510)) * (-0.551870).sqrt()) * (X).rsqrt())
+            || ((((1.105515).max((2.098_51)) * (-0.551870).sqrt()) * (X).rsqrt())
                 * ((-0.190973) * (1.0 / ((W * (1.0 / (-4.103743))) * (1.0 / (W).rsqrt())))))
             .min(W)
         );
@@ -5626,7 +5626,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0379v1 - 23 nodes, depth 8
     {
         let k = kernel_raw!(|| (W).min(
-            ((((1.105515).max((2.098510)) * (-0.551870).sqrt()) * (X).rsqrt())
+            ((((1.105515).max((2.098_51)) * (-0.551870).sqrt()) * (X).rsqrt())
                 * ((-0.190973) * (1.0 / ((W * (1.0 / (-4.103743))) * (1.0 / (W).rsqrt())))))
         ));
         let m = k();
@@ -5911,8 +5911,8 @@ fn bench_generated_kernels(c: &mut Criterion) {
     {
         let k = kernel_raw!(|| ((((Z).rsqrt()).rsqrt())
             .max(((Z).abs()).max((W * (1.0 / (-4.147976)))))
-            * ((W * (1.0 / (X + Z))) * (1.0 / (-(1.788011).min((-3.646980))))))
-        .min((((X).sqrt()).sqrt() * ((2.303950) + (-2.001426).min(Z))).rsqrt()));
+            * ((W * (1.0 / (X + Z))) * (1.0 / (-(1.788011).min((-3.646_98))))))
+        .min((((X).sqrt()).sqrt() * ((2.303_95) + (-2.001426).min(Z))).rsqrt()));
         let m = k();
         group.bench_function("eg0400v0", |b| {
             b.iter(|| {
@@ -5924,9 +5924,9 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0400v1 - 35 nodes, depth 7
     {
         let k = kernel_raw!(
-            || ((((X).sqrt()).sqrt() * ((2.303950) + (-2.001426).min(Z))).rsqrt()).min(
+            || ((((X).sqrt()).sqrt() * ((2.303_95) + (-2.001426).min(Z))).rsqrt()).min(
                 ((((Z).rsqrt()).rsqrt()).max(((Z).abs()).max((W * (1.0 / (-4.147976)))))
-                    * ((W * (1.0 / (X + Z))) * (1.0 / (-(1.788011).min((-3.646980))))))
+                    * ((W * (1.0 / (X + Z))) * (1.0 / (-(1.788011).min((-3.646_98))))))
             )
         );
         let m = k();
@@ -6234,7 +6234,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0429v0 - 10 nodes, depth 6
     {
-        let k = kernel_raw!(|| ((((-1.585810) * (W * Z)) * W).abs()).min(X));
+        let k = kernel_raw!(|| ((((-1.585_81) * (W * Z)) * W).abs()).min(X));
         let m = k();
         group.bench_function("eg0429v0", |b| {
             b.iter(|| {
@@ -6245,7 +6245,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0429v1 - 10 nodes, depth 6
     {
-        let k = kernel_raw!(|| (X).min((((-1.585810) * (W * Z)) * W).abs()));
+        let k = kernel_raw!(|| (X).min((((-1.585_81) * (W * Z)) * W).abs()));
         let m = k();
         group.bench_function("eg0429v1", |b| {
             b.iter(|| {
@@ -6322,7 +6322,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0433v0 - 13 nodes, depth 6
     {
         let k =
-            kernel_raw!(|| ((((0.899629).min(W) * (-0.356499)) + (-3.047560)) + (Z * (-Z))).sqrt());
+            kernel_raw!(|| ((((0.899629).min(W) * (-0.356499)) + (-3.047_56)) + (Z * (-Z))).sqrt());
         let m = k();
         group.bench_function("eg0433v0", |b| {
             b.iter(|| {
@@ -6452,7 +6452,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0441v0 - 4 nodes, depth 4
     {
-        let k = kernel_raw!(|| (((-2.337000).rsqrt()).sqrt()).sqrt());
+        let k = kernel_raw!(|| (((-2.337).rsqrt()).sqrt()).sqrt());
         let m = k();
         group.bench_function("eg0441v0", |b| {
             b.iter(|| {
@@ -6716,7 +6716,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0457v0 - 17 nodes, depth 7
     {
         let k = kernel_raw!(|| ((3.094716)
-            * ((X + (1.721467)).min((-W)) * (1.0 / ((Y).min((3.870050)) - (X).abs()))))
+            * ((X + (1.721467)).min((-W)) * (1.0 / ((Y).min((3.870_05)) - (X).abs()))))
         .sqrt());
         let m = k();
         group.bench_function("eg0457v0", |b| {
@@ -6773,7 +6773,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0463v0 - 14 nodes, depth 6
     {
         let k = kernel_raw!(|| (((-((-3.867996) * (4.294795).rsqrt()))
-            * (1.149168).max((-(X).min((1.214870)))))
+            * (1.149168).max((-(X).min((1.214_87)))))
             / W));
         let m = k();
         group.bench_function("eg0463v0", |b| {
@@ -6786,7 +6786,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0463v1 - 15 nodes, depth 6
     {
         let k = kernel_raw!(|| (((-((-3.867996) * (4.294795).rsqrt()))
-            * (1.149168).max((-(X).min((1.214870)))))
+            * (1.149168).max((-(X).min((1.214_87)))))
             * (1.0 / W)));
         let m = k();
         group.bench_function("eg0463v1", |b| {
@@ -6799,7 +6799,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0463v2 - 15 nodes, depth 6
     {
         let k = kernel_raw!(|| ((1.0 / W)
-            * ((-((-3.867996) * (4.294795).rsqrt())) * (1.149168).max((-(X).min((1.214870)))))));
+            * ((-((-3.867996) * (4.294795).rsqrt())) * (1.149168).max((-(X).min((1.214_87)))))));
         let m = k();
         group.bench_function("eg0463v2", |b| {
             b.iter(|| {
@@ -7205,7 +7205,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0495v0 - 16 nodes, depth 7
     {
         let k = kernel_raw!(
-            || (-((Z * (1.0 / (((-2.776930) + (3.896163)) - (Z).sqrt())))
+            || (-((Z * (1.0 / (((-2.776_93) + (3.896163)) - (Z).sqrt())))
                 + ((-4.413002) - (Z).abs()).abs()))
         );
         let m = k();
@@ -7245,7 +7245,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
     // eg0498v0 - 34 nodes, depth 7
     {
         let k = kernel_raw!(|| ((((X * (1.0 / (X).min(W))) + ((Z).min(X)).abs()) * Y)
-            + ((((2.309270).rsqrt()).abs()).min((1.100795).rsqrt())
+            + ((((2.309_27).rsqrt()).abs()).min((1.100795).rsqrt())
                 + (((X * Z) * (1.0 / (Y).max(X))) + (-((-1.379393) - Z))))));
         let m = k();
         group.bench_function("eg0498v0", |b| {
@@ -7257,7 +7257,7 @@ fn bench_generated_kernels(c: &mut Criterion) {
 
     // eg0498v1 - 34 nodes, depth 7
     {
-        let k = kernel_raw!(|| (((((2.309270).rsqrt()).abs()).min((1.100795).rsqrt())
+        let k = kernel_raw!(|| (((((2.309_27).rsqrt()).abs()).min((1.100795).rsqrt())
             + (((X * Z) * (1.0 / (Y).max(X))) + (-((-1.379393) - Z))))
             + (((X * (1.0 / (X).min(W))) + ((Z).min(X)).abs()) * Y)));
         let m = k();

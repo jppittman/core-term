@@ -14,11 +14,11 @@
 use std::time::Instant;
 
 use pixelflow_ml::evaluator::{
-    HandCraftedEvaluator, LinearFeatures, default_expr_weights, extract_expr_features,
+    HandCraftedEvaluator, default_expr_weights, extract_expr_features,
 };
 use pixelflow_ml::training::factored::{FactoredTrainer, TrainConfig};
 // Use pixelflow_ml's Expr for HCE, then convert for NNUE trainer
-use pixelflow_ml::nnue::{Expr, ExprGenConfig, ExprGenerator, OpType};
+use pixelflow_ml::nnue::{Expr, ExprGenConfig, ExprGenerator};
 use pixelflow_nnue::OpKind;
 
 /// Convert pixelflow_ml::Expr to pixelflow_nnue::Expr
@@ -262,11 +262,10 @@ fn main() {
         let hce_order_ok = hce_cost >= prev_hce;
         let nnue_order_ok = nnue_cost >= prev_nnue;
 
-        if rank_total > 0 {
-            if hce_order_ok == nnue_order_ok {
+        if rank_total > 0
+            && hce_order_ok == nnue_order_ok {
                 rank_correct += 1;
             }
-        }
         rank_total += 1;
 
         println!(
@@ -425,6 +424,7 @@ fn format_nnue_expr(expr: &pixelflow_nnue::Expr) -> String {
             format_nnue_expr(b),
             format_nnue_expr(c)
         ),
+        pixelflow_nnue::Expr::Nary(_, _) => todo!(),
     }
 }
 
