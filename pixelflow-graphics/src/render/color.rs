@@ -83,18 +83,8 @@ impl pixelflow_core::Manifold<Field4> for NamedColor {
     type Output = pixelflow_core::Discrete;
 
     #[inline(always)]
-    fn eval(&self, p: Field4) -> pixelflow_core::Discrete {
-        let (x, y, z, w) = p;
-        let (r, g, b) = self.to_rgb();
-        // Use RGBA ColorCube terminal object directly
-        RgbaColorCube::default()
-            .at(
-                Field::from(r as f32 / 255.0),
-                Field::from(g as f32 / 255.0),
-                Field::from(b as f32 / 255.0),
-                Field::from(1.0),
-            )
-            .eval_raw(x, y, z, w)
+    fn eval(&self, _p: Field4) -> pixelflow_core::Discrete {
+        pixelflow_core::Discrete::from(u32::from(Color::Named(*self)))
     }
 }
 
@@ -147,17 +137,8 @@ impl pixelflow_core::Manifold<Field4> for Color {
     type Output = pixelflow_core::Discrete;
 
     #[inline(always)]
-    fn eval(&self, p: Field4) -> pixelflow_core::Discrete {
-        let (x, y, z, w) = p;
-        let (r, g, b, a) = self.to_f32_rgba();
-        RgbaColorCube::default()
-            .at(
-                Field::from(r),
-                Field::from(g),
-                Field::from(b),
-                Field::from(a),
-            )
-            .eval_raw(x, y, z, w)
+    fn eval(&self, _p: Field4) -> pixelflow_core::Discrete {
+        pixelflow_core::Discrete::from(u32::from(*self))
     }
 }
 
