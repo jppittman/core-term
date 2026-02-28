@@ -476,15 +476,13 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 });
 
                 // Process the resize and handle the resulting action
-                if let Some(action) = self.emulator.interpret_input(input) {
-                    if let EmulatorAction::ResizePty { cols, rows } = action {
-                        // Send resize command to PTY write thread
-                        if let Err(e) = self
-                            .pty_tx
-                            .send(PtyCommand::Resize(crate::io::Resize { cols, rows }))
-                        {
-                            log::warn!("Failed to send PTY resize command: {}", e);
-                        }
+                if let Some(EmulatorAction::ResizePty { cols, rows }) = self.emulator.interpret_input(input) {
+                    // Send resize command to PTY write thread
+                    if let Err(e) = self
+                        .pty_tx
+                        .send(PtyCommand::Resize(crate::io::Resize { cols, rows }))
+                    {
+                        log::warn!("Failed to send PTY resize command: {}", e);
                     }
                 }
 
@@ -706,6 +704,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
 /// 1. Creates the app actor's channel
 /// 2. Registers the app with the engine (sends RegisterApp + CreateWindow)
 /// 3. Spawns the app thread with the registered engine handle
+#[allow(clippy::type_complexity)]
 pub fn spawn_terminal_app(
     params: TerminalAppParams,
 ) -> std::io::Result<(
