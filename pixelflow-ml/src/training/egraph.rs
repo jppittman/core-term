@@ -11,16 +11,10 @@ use std::time::Instant;
 
 use serde::Deserialize;
 
-use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue, NnueConfig, OpKind};
-use pixelflow_search::egraph::{
-    BestFirstConfig, BestFirstContext, BestFirstPlanner, CostModel, ExprTree, Leaf,
-};
+use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue, NnueConfig};
+use pixelflow_search::egraph::{ExprTree, Leaf};
 
-use super::backprop::{
-    ForwardState, HybridForwardState, backward, backward_hybrid, forward_with_state,
-    forward_with_state_hybrid,
-};
-use super::features::{extract_tree_features, op_counts_to_dense};
+use super::backprop::{backward, backward_hybrid, forward_with_state, forward_with_state_hybrid};
 
 // ============================================================================
 // Common Utilities
@@ -32,6 +26,7 @@ pub struct Rng {
 }
 
 impl Rng {
+    #[must_use]
     pub fn new(seed: u64) -> Self {
         Self {
             state: seed.wrapping_add(1),
@@ -65,6 +60,7 @@ pub struct ExprGenerator {
 }
 
 impl ExprGenerator {
+    #[must_use]
     pub fn new(seed: u64) -> Self {
         Self {
             rng: Rng::new(seed),
@@ -102,19 +98,19 @@ impl ExprGenerator {
             let op_type = self.rng.gen_range(0..10);
             match op_type {
                 // Binary ops (6)
-                0 => ExprTree::add(
+                0 => ExprTree::op_add(
                     self.generate_inner(depth + 1),
                     self.generate_inner(depth + 1),
                 ),
-                1 => ExprTree::sub(
+                1 => ExprTree::op_sub(
                     self.generate_inner(depth + 1),
                     self.generate_inner(depth + 1),
                 ),
-                2 => ExprTree::mul(
+                2 => ExprTree::op_mul(
                     self.generate_inner(depth + 1),
                     self.generate_inner(depth + 1),
                 ),
-                3 => ExprTree::div(
+                3 => ExprTree::op_div(
                     self.generate_inner(depth + 1),
                     self.generate_inner(depth + 1),
                 ),
@@ -127,7 +123,7 @@ impl ExprGenerator {
                     self.generate_inner(depth + 1),
                 ),
                 // Unary ops (3)
-                6 => ExprTree::neg(self.generate_inner(depth + 1)),
+                6 => ExprTree::op_neg(self.generate_inner(depth + 1)),
                 7 => ExprTree::sqrt(self.generate_inner(depth + 1)),
                 8 => ExprTree::abs(self.generate_inner(depth + 1)),
                 // Fused op (1)
@@ -205,6 +201,7 @@ pub struct JudgeTrainingSample {
 }
 
 /// Prepare benchmark samples for training.
+#[must_use]
 pub fn prepare_judge_samples(samples: &[BenchmarkSample]) -> Vec<JudgeTrainingSample> {
     samples.iter()
         .filter_map(|s| {
@@ -311,7 +308,7 @@ pub fn run_judge_training(config: BenchmarkConfig, cache_path: &Path) {
         .iter()
         .flat_map(|f| families.get(f).unwrap().iter().copied())
         .collect();
-    let mut test_indices: Vec<usize> = test_families
+    let test_indices: Vec<usize> = test_families
         .iter()
         .flat_map(|f| families.get(f).unwrap().iter().copied())
         .collect();
@@ -449,6 +446,7 @@ pub struct ReplayBuffer {
 }
 
 impl ReplayBuffer {
+    #[must_use]
     pub fn new(max_size: usize, seed: u64) -> Self {
         Self {
             samples: Vec::new(),
@@ -480,6 +478,7 @@ impl ReplayBuffer {
             .collect()
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.samples.len()
     }

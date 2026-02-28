@@ -2342,22 +2342,20 @@ fn it_should_set_underline_on_sgr_4_and_reset_on_sgr_24() {
 #[test]
 fn it_should_set_basic_ansi_foreground_colors_sgr_30_37() {
     let mut term = create_test_emulator(8, 1);
-    let colors = vec![
-        NamedColor::Black,
+    let colors = [NamedColor::Black,
         NamedColor::Red,
         NamedColor::Green,
         NamedColor::Yellow,
         NamedColor::Blue,
         NamedColor::Magenta,
         NamedColor::Cyan,
-        NamedColor::White,
-    ];
+        NamedColor::White];
     for (i, &color_name) in colors.iter().enumerate() {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
             CsiCommand::SetGraphicsRendition(vec![Attribute::Foreground(Color::Named(color_name))]),
         )));
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print(
-            ('A' as u8 + i as u8) as char,
+            (b'A' + i as u8) as char,
         )));
     }
     let snapshot = term.get_render_snapshot().expect("Snapshot was None");
@@ -2365,7 +2363,7 @@ fn it_should_set_basic_ansi_foreground_colors_sgr_30_37() {
         let glyph_wrapper = get_glyph_from_snapshot(&snapshot, 0, i).unwrap();
         match glyph_wrapper {
             Glyph::Single(cell) => {
-                assert_eq!(cell.c, ('A' as u8 + i as u8) as char);
+                assert_eq!(cell.c, (b'A' + i as u8) as char);
                 assert_eq!(
                     cell.attr.fg,
                     Color::Named(color_name),
@@ -2381,16 +2379,14 @@ fn it_should_set_basic_ansi_foreground_colors_sgr_30_37() {
 #[test]
 fn it_should_set_bright_ansi_foreground_colors_sgr_90_97() {
     let mut term = create_test_emulator(8, 1);
-    let bright_colors = vec![
-        NamedColor::BrightBlack,
+    let bright_colors = [NamedColor::BrightBlack,
         NamedColor::BrightRed,
         NamedColor::BrightGreen,
         NamedColor::BrightYellow,
         NamedColor::BrightBlue,
         NamedColor::BrightMagenta,
         NamedColor::BrightCyan,
-        NamedColor::BrightWhite,
-    ];
+        NamedColor::BrightWhite];
     for (i, &color_name) in bright_colors.iter().enumerate() {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
             CsiCommand::SetGraphicsRendition(vec![
@@ -2398,7 +2394,7 @@ fn it_should_set_bright_ansi_foreground_colors_sgr_90_97() {
             ]),
         )));
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print(
-            ('A' as u8 + i as u8) as char,
+            (b'A' + i as u8) as char,
         )));
     }
     let snapshot = term.get_render_snapshot().expect("Snapshot was None");
@@ -2406,7 +2402,7 @@ fn it_should_set_bright_ansi_foreground_colors_sgr_90_97() {
         let glyph_wrapper = get_glyph_from_snapshot(&snapshot, 0, i).unwrap();
         match glyph_wrapper {
             Glyph::Single(cell) => {
-                assert_eq!(cell.c, ('A' as u8 + i as u8) as char);
+                assert_eq!(cell.c, (b'A' + i as u8) as char);
                 assert_eq!(
                     cell.attr.fg,
                     Color::Named(color_name),
@@ -2492,22 +2488,20 @@ fn it_should_reset_foreground_color_on_sgr_39() {
 #[test]
 fn it_should_set_basic_ansi_background_colors_sgr_40_47() {
     let mut term = create_test_emulator(8, 1);
-    let colors = vec![
-        NamedColor::Black,
+    let colors = [NamedColor::Black,
         NamedColor::Red,
         NamedColor::Green,
         NamedColor::Yellow,
         NamedColor::Blue,
         NamedColor::Magenta,
         NamedColor::Cyan,
-        NamedColor::White,
-    ];
+        NamedColor::White];
     for (i, &color_name) in colors.iter().enumerate() {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
             CsiCommand::SetGraphicsRendition(vec![Attribute::Background(Color::Named(color_name))]),
         )));
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print(
-            ('A' as u8 + i as u8) as char,
+            (b'A' + i as u8) as char,
         )));
     }
     let snapshot = term.get_render_snapshot().expect("Snapshot was None");
@@ -2515,7 +2509,7 @@ fn it_should_set_basic_ansi_background_colors_sgr_40_47() {
         let glyph_wrapper = get_glyph_from_snapshot(&snapshot, 0, i).unwrap();
         match glyph_wrapper {
             Glyph::Single(cell) => {
-                assert_eq!(cell.c, ('A' as u8 + i as u8) as char);
+                assert_eq!(cell.c, (b'A' + i as u8) as char);
                 assert_eq!(
                     cell.attr.bg,
                     Color::Named(color_name),
@@ -2531,16 +2525,14 @@ fn it_should_set_basic_ansi_background_colors_sgr_40_47() {
 #[test]
 fn it_should_set_bright_ansi_background_colors_sgr_100_107() {
     let mut term = create_test_emulator(8, 1);
-    let bright_colors = vec![
-        NamedColor::BrightBlack,
+    let bright_colors = [NamedColor::BrightBlack,
         NamedColor::BrightRed,
         NamedColor::BrightGreen,
         NamedColor::BrightYellow,
         NamedColor::BrightBlue,
         NamedColor::BrightMagenta,
         NamedColor::BrightCyan,
-        NamedColor::BrightWhite,
-    ];
+        NamedColor::BrightWhite];
     for (i, &color_name) in bright_colors.iter().enumerate() {
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
             CsiCommand::SetGraphicsRendition(vec![
@@ -2548,7 +2540,7 @@ fn it_should_set_bright_ansi_background_colors_sgr_100_107() {
             ]),
         )));
         term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print(
-            ('A' as u8 + i as u8) as char,
+            (b'A' + i as u8) as char,
         )));
     }
     let snapshot = term.get_render_snapshot().expect("Snapshot was None");
@@ -2556,7 +2548,7 @@ fn it_should_set_bright_ansi_background_colors_sgr_100_107() {
         let glyph_wrapper = get_glyph_from_snapshot(&snapshot, 0, i).unwrap();
         match glyph_wrapper {
             Glyph::Single(cell) => {
-                assert_eq!(cell.c, ('A' as u8 + i as u8) as char);
+                assert_eq!(cell.c, (b'A' + i as u8) as char);
                 assert_eq!(
                     cell.attr.bg,
                     Color::Named(color_name),

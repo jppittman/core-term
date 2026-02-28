@@ -4,7 +4,7 @@
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use pixelflow_core::{
-    FastMathGuard, Field, Manifold, ManifoldCompat, ManifoldExt, PARALLELISM, X, Y, Z,
+    FastMathGuard, Field, ManifoldCompat, ManifoldExt, PARALLELISM, X, Y, Z,
     combinators::Fix, jet::Jet2,
 };
 

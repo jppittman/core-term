@@ -4,7 +4,7 @@
 //! not runtime performance. They help identify bottlenecks in the compiler frontend.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use pixelflow_core::{Field, Manifold, ManifoldCompat, X, Y};
+use pixelflow_core::{Field, ManifoldCompat, X, Y};
 use pixelflow_macros::kernel;
 
 // ============================================================================

@@ -2392,7 +2392,9 @@ mod tests {
         let dense = DenseFeatures::default();
 
         // Should not panic
-        let _ = acc.forward_hybrid(&nnue, &dense);
+        let out = acc.forward_hybrid(&nnue, &dense);
+        // ensure output is not optimized away
+        std::hint::black_box(out);
     }
 
     #[test]

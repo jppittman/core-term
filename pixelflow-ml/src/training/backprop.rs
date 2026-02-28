@@ -14,6 +14,7 @@ use pixelflow_nnue::{DenseFeatures, HalfEPFeature, Nnue};
 /// Full gradient (1.0) in active region [0, 127].
 /// Small gradient (0.1) in saturated region (>127) for soft clamping.
 #[inline]
+#[must_use]
 pub fn clipped_relu(x: i32) -> (f32, f32) {
     let shifted = x >> 6;
     let clamped = shifted.clamp(0, 127);
@@ -56,6 +57,7 @@ pub struct HybridForwardState {
 }
 
 /// Forward pass (sparse-only) that stores intermediate activations.
+#[must_use]
 pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, ForwardState) {
     let l1_size = nnue.config.l1_size;
     let l2_size = nnue.config.l2_size;
@@ -133,6 +135,7 @@ pub fn forward_with_state(nnue: &Nnue, features: &[HalfEPFeature]) -> (f32, Forw
 }
 
 /// Forward pass with hybrid architecture (sparse + dense ILP features).
+#[must_use]
 pub fn forward_with_state_hybrid(
     nnue: &Nnue,
     features: &[HalfEPFeature],

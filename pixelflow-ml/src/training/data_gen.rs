@@ -39,12 +39,10 @@
 
 extern crate alloc;
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::nnue::{
-    Expr, ExprGenConfig, ExprGenerator, HalfEPFeature, OpType, RewriteRule, extract_features,
-    find_all_rewrites,
+    Expr, ExprGenConfig, ExprGenerator, HalfEPFeature, OpType, extract_features, find_all_rewrites,
 };
 
 // ============================================================================
@@ -95,6 +93,7 @@ pub struct BenchResult {
 /// This simulates what the expression would cost when compiled to SIMD code
 /// by running many evaluations and measuring time.
 #[cfg(feature = "std")]
+#[must_use]
 pub fn benchmark_expr(expr: &Expr, config: &BenchConfig) -> BenchResult {
     use std::time::Instant;
 
@@ -164,6 +163,7 @@ pub fn benchmark_expr(expr: &Expr, config: &BenchConfig) -> BenchResult {
 /// Estimate cost without benchmarking (fast, approximate).
 ///
 /// Uses the static cost model to estimate expression cost.
+#[must_use]
 pub fn estimate_cost(expr: &Expr) -> usize {
     match expr {
         Expr::Var(_) | Expr::Const(_) => 0,
@@ -217,6 +217,7 @@ pub struct TrainingSample {
 
 impl TrainingSample {
     /// Create a new training sample.
+    #[must_use]
     pub fn new(features: Vec<HalfEPFeature>, cost: u64) -> Self {
         let mut packed: Vec<u32> = features.iter().map(|f| f.to_index() as u32).collect();
         packed.sort_unstable();
@@ -289,6 +290,7 @@ pub struct DataGenStats {
 
 impl DataGenerator {
     /// Create a new data generator.
+    #[must_use]
     pub fn new(seed: u64, config: DataGenConfig) -> Self {
         Self {
             expr_gen: ExprGenerator::new(seed, config.expr_config.clone()),
@@ -505,6 +507,7 @@ pub struct DatasetStats {
 
 impl DatasetStats {
     /// Compute statistics from a dataset.
+    #[must_use]
     pub fn from_samples(samples: &[TrainingSample]) -> Self {
         if samples.is_empty() {
             return Self {

@@ -29,7 +29,7 @@ use pixelflow_ml::training::egraph::{
 };
 
 use pixelflow_ml::training::backprop::{forward_with_state, forward_with_state_hybrid};
-use pixelflow_ml::training::features::{extract_search_features, extract_tree_features};
+use pixelflow_ml::training::features::extract_search_features;
 use pixelflow_nnue::{Nnue, NnueConfig};
 use pixelflow_search::egraph::{BestFirstConfig, BestFirstContext, BestFirstPlanner, CostModel};
 
@@ -161,13 +161,11 @@ fn find_workspace_root() -> PathBuf {
 
     loop {
         let cargo_toml = current.join("Cargo.toml");
-        if cargo_toml.exists() {
-            if let Ok(contents) = fs::read_to_string(&cargo_toml) {
-                if contents.contains("[workspace]") {
+        if cargo_toml.exists()
+            && let Ok(contents) = fs::read_to_string(&cargo_toml)
+                && contents.contains("[workspace]") {
                     return current;
                 }
-            }
-        }
         if !current.pop() {
             panic!("Could not find workspace root");
         }
@@ -503,7 +501,7 @@ fn trace_forward_pass(
 
 /// Compute baseline: linear sum of op costs (no learning, just heuristics)
 fn compute_linear_baseline(samples: &[pixelflow_ml::training::egraph::JudgeTrainingSample]) -> f64 {
-    use pixelflow_nnue::DenseFeatures;
+
 
     // Simple cycle costs per operation (typical modern CPU)
     const COSTS: [i32; 12] = [
@@ -620,7 +618,7 @@ fn evaluate_judge(judge: &Nnue, workspace: &PathBuf) {
     };
 
     // CRITICAL: Evaluate on BOTH train and test to detect overfitting
-    let (train_spearman, train_actuals, train_preds) = compute_metrics(&train_samples, "TRAIN");
+    let (train_spearman, _train_actuals, _train_preds) = compute_metrics(&train_samples, "TRAIN");
     let (test_spearman, test_actuals, test_preds) = compute_metrics(&test_samples, "TEST ");
 
     // Overfitting detection
