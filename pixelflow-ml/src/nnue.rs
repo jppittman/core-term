@@ -475,6 +475,7 @@ impl Accumulator {
         for i in 0..l1_size {
             // Clipped ReLU: clamp to [0, 127] then scale
             let a = (self.values[i] >> 6).clamp(0, 127) as i8;
+            #[allow(clippy::needless_range_loop)]
             for j in 0..l2_size {
                 l2[j] += (a as i32) * (nnue.w2[i * l2_size + j] as i32);
             }
@@ -482,8 +483,10 @@ impl Accumulator {
 
         // L2 -> L3 with clipped ReLU
         let mut l3 = nnue.b3.clone();
+        #[allow(clippy::needless_range_loop)]
         for i in 0..l2_size {
             let a = (l2[i] >> 6).clamp(0, 127) as i8;
+            #[allow(clippy::needless_range_loop)]
             for j in 0..l3_size {
                 l3[j] += (a as i32) * (nnue.w3[i * l3_size + j] as i32);
             }
@@ -491,6 +494,7 @@ impl Accumulator {
 
         // L3 -> output
         let mut output = nnue.b_out;
+        #[allow(clippy::needless_range_loop)]
         for i in 0..l3_size {
             let a = (l3[i] >> 6).clamp(0, 127) as i8;
             output += (a as i32) * (nnue.w_out[i] as i32);

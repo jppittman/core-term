@@ -533,6 +533,6 @@ mod tests {
         let x = eg.add_expr(&ExprTree::Leaf(Leaf::Var(0)));
         let _cloned = eg.clone();
         assert!(eg.num_classes() > 0);
-        let _ = x; // silence warning
+        let _res = x; // silence warning
     }
 }

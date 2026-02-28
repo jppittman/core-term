@@ -140,7 +140,7 @@ pub fn pin_to_core(_core_id: usize) -> Result<(), &'static str> {
 pub fn benchmark_expr(expr: &Expr, config: &BenchmarkConfig) -> BenchmarkResult {
     // Pin to core if requested
     if let Some(core) = config.pin_to_core {
-        let _ = pin_to_core(core);
+        let _res = pin_to_core(core);
     }
 
     // Test coordinates
@@ -152,7 +152,7 @@ pub fn benchmark_expr(expr: &Expr, config: &BenchmarkConfig) -> BenchmarkResult 
     // Warmup
     for _ in 0..config.warmup_iterations {
         for _ in 0..config.evals_per_iteration {
-            let _ = std::hint::black_box(eval_expr_scalar(
+            let _res = std::hint::black_box(eval_expr_scalar(
                 std::hint::black_box(expr),
                 x, y, z, w,
             ));
@@ -165,7 +165,7 @@ pub fn benchmark_expr(expr: &Expr, config: &BenchmarkConfig) -> BenchmarkResult 
     for _ in 0..config.measure_iterations {
         let start = Instant::now();
         for _ in 0..config.evals_per_iteration {
-            let _ = std::hint::black_box(eval_expr_scalar(
+            let _res = std::hint::black_box(eval_expr_scalar(
                 std::hint::black_box(expr),
                 x, y, z, w,
             ));

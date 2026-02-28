@@ -327,13 +327,11 @@ fn find_workspace_root() -> PathBuf {
 
     loop {
         let cargo_toml = current.join("Cargo.toml");
-        if cargo_toml.exists() {
-            if let Ok(contents) = fs::read_to_string(&cargo_toml) {
-                if contents.contains("[workspace]") {
+        if cargo_toml.exists()
+            && let Ok(contents) = fs::read_to_string(&cargo_toml)
+                && contents.contains("[workspace]") {
                     return current;
                 }
-            }
-        }
         if !current.pop() {
             panic!("Could not find workspace root");
         }

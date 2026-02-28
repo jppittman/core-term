@@ -127,7 +127,7 @@ fn run_event_loop(
     canvas.set_height(height_px);
 
     // Send initial resize (web scale_factor typically comes from devicePixelRatio)
-    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
+    let _res = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
         id: window_id,
         width_px,
         height_px,
@@ -167,7 +167,7 @@ impl WebState {
                     if matches!(evt, DisplayEvent::CloseRequested { .. }) {
                         return Ok(());
                     }
-                    let _ = engine_tx.send(EngineCommand::DisplayEvent(evt));
+                    let _res = engine_tx.send(EngineCommand::DisplayEvent(evt));
                 }
                 Ok(None) => {
                     // Timeout, no events
@@ -196,32 +196,32 @@ impl WebState {
                         if let Err(e) = result {
                             error!("Web: Present failed: {:?}", e);
                         }
-                        let _ = engine_tx
+                        let _res = engine_tx
                             .send(Message::Data(EngineData::PresentComplete(returned_frame)));
                     }
                     DriverCommand::SetTitle { .. } => {
                         // Not supported in worker context
-                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                        let _res = engine_tx.send(EngineCommand::DriverAck);
                     }
                     DriverCommand::SetSize { .. } => {
                         // Not supported in worker context
-                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                        let _res = engine_tx.send(EngineCommand::DriverAck);
                     }
                     DriverCommand::CopyToClipboard(_) => {
                         // Not supported in worker context
-                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                        let _res = engine_tx.send(EngineCommand::DriverAck);
                     }
                     DriverCommand::RequestPaste => {
                         // Not supported in worker context
-                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                        let _res = engine_tx.send(EngineCommand::DriverAck);
                     }
                     DriverCommand::Bell => {
                         // Not supported in worker context
-                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                        let _res = engine_tx.send(EngineCommand::DriverAck);
                     }
                     DriverCommand::SetCursorIcon { .. } => {
                         // Not supported in worker context
-                        let _ = engine_tx.send(EngineCommand::DriverAck);
+                        let _res = engine_tx.send(EngineCommand::DriverAck);
                     }
                 }
             }

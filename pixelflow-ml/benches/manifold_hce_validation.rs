@@ -5,9 +5,9 @@
 //!
 //! Run with: cargo bench -p pixelflow-ml --bench manifold_hce_validation
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use pixelflow_core::{Field, Manifold, ManifoldCompat, ManifoldExt, X, Y, Z};
-use pixelflow_ml::evaluator::{LinearFeatures, default_expr_weights, extract_expr_features};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use pixelflow_core::{Field, Manifold, ManifoldExt, X, Y, Z};
+use pixelflow_ml::evaluator::{default_expr_weights, extract_expr_features};
 use pixelflow_ml::nnue::{Expr, OpType};
 
 // ============================================================================
@@ -330,7 +330,7 @@ fn bench_manifold_kernels(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_hce_ranking_validation(c: &mut Criterion) {
+fn bench_hce_ranking_validation(_c: &mut Criterion) {
     // After benchmarking, collect results and compare rankings
     println!("\n=== Ranking Validation ===");
     println!("Compare HCE ranking vs actual runtime ranking.");

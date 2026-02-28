@@ -1810,6 +1810,7 @@ impl U32x16 {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]

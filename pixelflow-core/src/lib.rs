@@ -1600,6 +1600,13 @@ impl From<i32> for Field {
     }
 }
 
+impl From<u32> for Field<u32> {
+    #[inline(always)]
+    fn from(val: u32) -> Self {
+        Self(NativeU32Simd::splat(val))
+    }
+}
+
 // ============================================================================
 // Operator Implementations (AST-building)
 // ============================================================================

@@ -215,7 +215,7 @@ fn bench_hce_ranking_validation(c: &mut Criterion) {
         expressions.len()
     );
 
-    for (rank, (idx, hce_cost, expr)) in with_hce.iter().enumerate().take(10) {
+    for (rank, (_idx, hce_cost, expr)) in with_hce.iter().enumerate().take(10) {
         let features = extract_expr_features(expr);
         group.bench_with_input(
             BenchmarkId::new(

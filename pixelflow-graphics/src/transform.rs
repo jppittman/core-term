@@ -145,7 +145,7 @@ mod tests {
 
         // At x=2, scaled should give x/2 = 1
         let result = scaled.eval((two, zero, zero, zero));
-        let _ = result;
+        let _res = result;
     }
 
     #[test]
@@ -156,7 +156,7 @@ mod tests {
 
         // At x=2, translated should give x-1 = 1
         let result = translated.eval((two, zero, zero, zero));
-        let _ = result;
+        let _res = result;
     }
 
     #[test]
@@ -168,7 +168,7 @@ mod tests {
         let four = Field::from(4.0);
 
         let result = composed.eval((four, zero, zero, zero));
-        let _ = result;
+        let _res = result;
     }
 
     #[test]
@@ -181,7 +181,7 @@ mod tests {
         let zero = Field::from(0.0);
         let one = Field::from(1.0);
 
-        let _ = scaled.eval((one, zero, zero, zero));
+        let _res = scaled.eval((one, zero, zero, zero));
     }
 
     #[test]
@@ -193,7 +193,7 @@ mod tests {
             };
             let zero = Field::from(0.0);
             let one = Field::from(1.0);
-            let _ = scaled.eval((one, one, zero, zero));
+            let _res = scaled.eval((one, one, zero, zero));
         }
     }
 
@@ -217,7 +217,7 @@ mod tests {
         let zero = Field::from(0.0);
         let one = Field::from(1.0);
 
-        let _ = translated.eval((one, one, zero, zero));
+        let _res = translated.eval((one, one, zero, zero));
     }
 
     #[test]
@@ -229,7 +229,7 @@ mod tests {
             };
             let zero = Field::from(0.0);
             let one = Field::from(1.0);
-            let _ = translated.eval((one, one, zero, zero));
+            let _res = translated.eval((one, one, zero, zero));
         }
     }
 
@@ -247,7 +247,7 @@ mod tests {
         let zero = Field::from(0.0);
         let one = Field::from(1.0);
 
-        let _ = composed.eval((one, one, zero, zero));
+        let _res = composed.eval((one, one, zero, zero));
     }
 
     #[test]
@@ -264,6 +264,6 @@ mod tests {
         let zero = Field::from(0.0);
         let one = Field::from(1.0);
 
-        let _ = composed.eval((one, one, zero, zero));
+        let _res = composed.eval((one, one, zero, zero));
     }
 }

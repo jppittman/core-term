@@ -192,6 +192,7 @@ pub fn build_grid<F: CellFactory>(
 }
 
 /// Build a Select tree for a single color channel.
+#[allow(clippy::too_many_arguments)]
 fn build_channel_tree<F: CellFactory, const CHANNEL: usize>(
     factory: &F,
     col_start: usize,
@@ -305,7 +306,7 @@ mod tests {
 
         fn fg(&self, col: usize, row: usize) -> [f32; 4] {
             // Alternate white/black based on position
-            if (col + row) % 2 == 0 {
+            if (col + row).is_multiple_of(2) {
                 [1.0, 1.0, 1.0, 1.0]
             } else {
                 [0.0, 0.0, 0.0, 1.0]
@@ -345,7 +346,7 @@ mod tests {
         rasterize(&grid, &mut frame, 1);
 
         // Check pixel at (4, 0) - should be in first cell (0,0) - white
-        let pixel_index = 0 * 8 + 4; // row 0, col 4
+        let pixel_index = 4; // row 0, col 4
         let r = frame.data[pixel_index].r();
         assert!(r > 200, "Expected white, got r={}", r);
     }

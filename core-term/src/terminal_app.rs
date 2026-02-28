@@ -476,15 +476,13 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 });
 
                 // Process the resize and handle the resulting action
-                if let Some(action) = self.emulator.interpret_input(input) {
-                    if let EmulatorAction::ResizePty { cols, rows } = action {
-                        // Send resize command to PTY write thread
-                        if let Err(e) = self
-                            .pty_tx
-                            .send(PtyCommand::Resize(crate::io::Resize { cols, rows }))
-                        {
-                            log::warn!("Failed to send PTY resize command: {}", e);
-                        }
+                if let Some(EmulatorAction::ResizePty { cols, rows }) = self.emulator.interpret_input(input) {
+                    // Send resize command to PTY write thread
+                    if let Err(e) = self
+                        .pty_tx
+                        .send(PtyCommand::Resize(crate::io::Resize { cols, rows }))
+                    {
+                        log::warn!("Failed to send resize command to PTY thread: {}", e);
                     }
                 }
 
@@ -893,7 +891,7 @@ mod tests {
             width_px: 1000,
             height_px: 800,
         };
-        let _ = app.handle_control(resize_event);
+        let _res = app.handle_control(resize_event);
 
         // Verify resize via snapshot
         let snapshot_new = app.emulator.get_render_snapshot().expect("Snapshot");
@@ -929,7 +927,7 @@ mod tests {
             text: Some("a".to_string()),
         };
 
-        let _ = app.handle_management(key_event);
+        let _res = app.handle_management(key_event);
 
         // We expect 'a' to be sent to PTY wrapped in PtyCommand::Write
         let received = pty_rx.try_recv();

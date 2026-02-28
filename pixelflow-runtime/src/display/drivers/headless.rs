@@ -96,7 +96,7 @@ fn run_event_loop(
     );
 
     // Send WindowCreated event
-    let _ = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
+    let _res = engine_tx.send(EngineCommand::DisplayEvent(DisplayEvent::WindowCreated {
         id: window_id,
         width_px,
         height_px,
@@ -122,32 +122,32 @@ fn run_event_loop(
             }
             DriverCommand::Present { frame, .. } => {
                 // Just return the framebuffer
-                let _ = engine_tx.send(Message::Data(EngineData::PresentComplete(frame)));
+                let _res = engine_tx.send(Message::Data(EngineData::PresentComplete(frame)));
             }
             DriverCommand::SetTitle { title, .. } => {
                 info!("Headless: SetTitle '{}'", title);
-                let _ = engine_tx.send(EngineCommand::DriverAck);
+                let _res = engine_tx.send(EngineCommand::DriverAck);
             }
             DriverCommand::SetSize { width, height, .. } => {
                 info!("Headless: SetSize {}x{}", width, height);
-                let _ = engine_tx.send(EngineCommand::DriverAck);
+                let _res = engine_tx.send(EngineCommand::DriverAck);
             }
             DriverCommand::CopyToClipboard(text) => {
                 info!("Headless: CopyToClipboard '{}'", text);
-                let _ = engine_tx.send(EngineCommand::DriverAck);
+                let _res = engine_tx.send(EngineCommand::DriverAck);
             }
             DriverCommand::RequestPaste => {
                 info!("Headless: RequestPaste");
                 // In headless mode, just acknowledge - no actual paste data
-                let _ = engine_tx.send(EngineCommand::DriverAck);
+                let _res = engine_tx.send(EngineCommand::DriverAck);
             }
             DriverCommand::Bell => {
                 info!("Headless: Bell");
-                let _ = engine_tx.send(EngineCommand::DriverAck);
+                let _res = engine_tx.send(EngineCommand::DriverAck);
             }
             DriverCommand::SetCursorIcon { icon } => {
                 info!("Headless: SetCursorIcon {:?}", icon);
-                let _ = engine_tx.send(EngineCommand::DriverAck);
+                let _res = engine_tx.send(EngineCommand::DriverAck);
             }
         }
     }

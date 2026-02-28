@@ -1092,7 +1092,7 @@ mod tests {
         let loss = correlation_loss(&weights, &samples);
 
         assert!(
-            loss >= 0.0 && loss <= 2.0,
+            (0.0..=2.0).contains(&loss),
             "Correlation loss should be in [0, 2], got {}",
             loss
         );

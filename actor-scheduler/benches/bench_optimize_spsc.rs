@@ -208,11 +208,11 @@ impl<D, C, M> SpscHandle<D, C, M> {
     }
 
     fn send_shutdown(&self) {
-        let _ = self.tx_doorbell.send(System::Shutdown);
+        let _res = self.tx_doorbell.send(System::Shutdown);
     }
 
     fn wake(&self) {
-        let _ = self.tx_doorbell.try_send(System::Wake);
+        let _res = self.tx_doorbell.try_send(System::Wake);
     }
 }
 
@@ -427,11 +427,11 @@ impl Actor<(), (), ()> for LatencyActor {
         Ok(())
     }
     fn handle_control(&mut self, _: ()) -> HandlerResult {
-        let _ = self.response_tx.send(());
+        let _res = self.response_tx.send(());
         Ok(())
     }
     fn handle_management(&mut self, _: ()) -> HandlerResult {
-        let _ = self.response_tx.send(());
+        let _res = self.response_tx.send(());
         Ok(())
     }
     fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
@@ -603,13 +603,13 @@ fn measure_fairness_under_flood(params: &SchedulerParams) -> f64 {
     let sf = stop.clone();
     let flooder = thread::spawn(move || {
         while !sf.load(Ordering::Relaxed) {
-            let _ = flood_handle.send_control(());
+            let _res = flood_handle.send_control(());
         }
     });
 
     thread::sleep(Duration::from_millis(2));
     for i in 0..data_target {
-        let _ = data_handle.send_data(i);
+        let _res = data_handle.send_data(i);
     }
     thread::sleep(Duration::from_millis(15));
 
@@ -638,7 +638,7 @@ fn measure_latency_under_load(params: &SchedulerParams) -> f64 {
             Ok(())
         }
         fn handle_control(&mut self, _: ()) -> HandlerResult {
-            let _ = self.response_tx.send(());
+            let _res = self.response_tx.send(());
             Ok(())
         }
         fn handle_management(&mut self, _: ()) -> HandlerResult {
@@ -669,7 +669,7 @@ fn measure_latency_under_load(params: &SchedulerParams) -> f64 {
     let data_sender = thread::spawn(move || {
         let mut i = 0i32;
         while !sf.load(Ordering::Relaxed) {
-            let _ = data_handle.send_data(i);
+            let _res = data_handle.send_data(i);
             i = i.wrapping_add(1);
         }
     });
@@ -712,7 +712,7 @@ fn measure_burst_recovery(params: &SchedulerParams) -> f64 {
             Ok(())
         }
         fn handle_control(&mut self, _: ()) -> HandlerResult {
-            let _ = self.response_tx.send(());
+            let _res = self.response_tx.send(());
             Ok(())
         }
         fn handle_management(&mut self, _: ()) -> HandlerResult {
@@ -867,8 +867,8 @@ impl GaussianProcess {
         }
 
         let mut ks = vec![0.0; n];
-        for i in 0..n {
-            ks[i] = self.kernel(x, &self.xs[i]);
+        for (i, k_val) in ks.iter_mut().enumerate().take(n) {
+            *k_val = self.kernel(x, &self.xs[i]);
         }
 
         let mean: f64 = ks.iter().zip(self.alpha.iter()).map(|(a, b)| a * b).sum();
@@ -876,8 +876,8 @@ impl GaussianProcess {
         let mut v = vec![0.0; n];
         for i in 0..n {
             let mut s = 0.0;
-            for j in 0..i {
-                s += self.chol[i * n + j] * v[j];
+            for (j, v_val) in v.iter().enumerate().take(i) {
+                s += self.chol[i * n + j] * v_val;
             }
             v[i] = (ks[i] - s) / self.chol[i * n + i];
         }

@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn test_locale_initializer_called() {
         // Ensure OnceLock mechanism is engaged
-        let _ = get_char_display_width(' ');
+        let _res = get_char_display_width(' ');
         assert!(
             GLOBAL_LOCALE_INITIALIZER.get().is_some(),
             "LocaleInitializer should be initialized after first call"

@@ -43,7 +43,7 @@ fn bench_keybindings(c: &mut Criterion) {
             b.iter(|| {
                 let key = black_box(target_key);
                 let mods = black_box(target_mods);
-                let _ = config.lookup.get(&(key, mods));
+                let _res = config.lookup.get(&(key, mods));
             })
         });
 
@@ -52,7 +52,7 @@ fn bench_keybindings(c: &mut Criterion) {
             b.iter(|| {
                 let key = black_box(target_key);
                 let mods = black_box(target_mods);
-                let _ = config
+                let _res = config
                     .bindings
                     .iter()
                     .find(|b| b.key == key && b.mods == mods)
@@ -70,7 +70,7 @@ fn bench_keybindings(c: &mut Criterion) {
                 let key = black_box(target_key);
                 let mods = black_box(target_mods);
                 // Note: binary_search_by returns Result<usize, usize>
-                let _ = sorted_bindings
+                let _res = sorted_bindings
                     .binary_search_by(|probe| (probe.key, probe.mods).cmp(&(key, mods)));
             })
         });
