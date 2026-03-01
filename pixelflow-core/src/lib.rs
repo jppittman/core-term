@@ -1600,6 +1600,13 @@ impl From<i32> for Field {
     }
 }
 
+impl From<u32> for Field<u32> {
+    #[inline(always)]
+    fn from(val: u32) -> Self {
+        Self(NativeU32Simd::splat(val))
+    }
+}
+
 // ============================================================================
 // Operator Implementations (AST-building)
 // ============================================================================
@@ -1973,6 +1980,17 @@ pub const PARALLELISM: usize = NativeSimd::LANES;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_discrete_from_u32() {
+        let val = 0xAABBCCDD;
+        let d = Discrete::from(val);
+        let mut out = [0u32; PARALLELISM];
+        d.store(&mut out);
+        for i in 0..PARALLELISM {
+            assert_eq!(out[i], val, "Lane {} mismatch", i);
+        }
+    }
 
     #[test]
     fn test_gather_behavior() {
