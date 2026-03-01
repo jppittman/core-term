@@ -179,6 +179,18 @@ impl SemanticAnalyzer {
                     return Ok(SymbolKind::Local); // Treat as external/captured
                 }
 
+                // Check for constants (ALL_CAPS) - allow external constants
+                // Heuristic: Must be all uppercase/numeric/underscore, start with letter, length > 1
+                // (Single letters could be local variables or loop indices, except intrinsics which are handled above)
+                if name.len() > 1
+                    && name
+                        .chars()
+                        .all(|c| c.is_uppercase() || c.is_numeric() || c == '_')
+                    && !name.chars().next().unwrap().is_numeric()
+                {
+                    return Ok(SymbolKind::Constant);
+                }
+
                 // For named kernels, undefined symbols are errors
                 let suggestion = self.find_similar_symbol(&name);
                 let msg = match suggestion {

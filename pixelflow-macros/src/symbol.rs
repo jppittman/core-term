@@ -52,6 +52,10 @@ pub enum SymbolKind {
     /// Local variable introduced by `let`.
     /// Scoped to the containing block.
     Local,
+
+    /// External constant (heuristically identified by uppercase naming).
+    /// Emitted as-is, bypassing symbol table restrictions.
+    Constant,
 }
 
 /// A symbol in the symbol table.

@@ -828,8 +828,8 @@ impl<'a> CodeEmitter<'a> {
                                 quote! { #name }
                             }
                         }
-                        SymbolKind::Local => {
-                            // Locals emitted as-is
+                        SymbolKind::Local | SymbolKind::Constant => {
+                            // Locals and Constants emitted as-is
                             quote! { #name }
                         }
                     },
