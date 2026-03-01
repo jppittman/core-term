@@ -65,7 +65,7 @@ pub struct KernelDef {
 pub enum ParamKind {
     /// Scalar parameter - use Let/Var binding with concrete type.
     /// Example: `r: f32` → struct field, bound via Let::new(self.r, ...)
-    Scalar(Box<Type>),
+    Scalar(Type),
     /// Manifold parameter - generic type with trait bounds.
     /// Example: `inner: kernel` → generic M0, evaluated then bound via Let
     Manifold,
@@ -125,8 +125,6 @@ pub struct TupleExpr {
 #[derive(Debug, Clone)]
 pub struct IdentExpr {
     pub name: Ident,
-    // Retained for future error reporting and diagnostics.
-    #[allow(dead_code)]
     pub span: Span,
 }
 
@@ -207,7 +205,7 @@ pub struct CallExpr {
 #[derive(Debug, Clone)]
 pub enum Stmt {
     /// A let binding: `let dx = X - cx;`
-    Let(Box<LetStmt>),
+    Let(LetStmt),
     /// An expression statement: `foo();`
     Expr(Expr),
 }

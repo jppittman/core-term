@@ -25,7 +25,17 @@
 
 use crate::ast::{BlockExpr, Expr, KernelDef, LetStmt, MethodCallExpr, Param, ParamKind, Stmt};
 use crate::symbol::{SymbolKind, SymbolTable};
+use pixelflow_ir::known_method_names;
 use syn::Ident;
+
+/// DSL-specific methods that aren't IR operations.
+/// These are handled separately in the macro/runtime.
+const DSL_METHODS: &[&str] = &[
+    "at",       // coordinate transformation
+    "constant", // collapse to Field
+    "collapse", // alias for constant
+    "clone",    // clone for reuse
+];
 
 /// The result of semantic analysis.
 #[derive(Debug)]
@@ -104,7 +114,7 @@ impl SemanticAnalyzer {
         match &param.kind {
             ParamKind::Scalar(ty) => {
                 self.symbols
-                    .register_parameter(param.name.clone(), *ty.clone());
+                    .register_parameter(param.name.clone(), ty.clone());
             }
             ParamKind::Manifold => {
                 self.symbols.register_manifold_param(param.name.clone());
@@ -234,20 +244,6 @@ impl SemanticAnalyzer {
         None
     }
 
-    /// Known methods from ManifoldExt and standard operations.
-    const KNOWN_METHODS: &'static [&'static str] = &[
-        // ManifoldExt methods
-        "abs", "sqrt", "floor", "ceil", "round", "fract", "sin", "cos", "tan", "asin", "acos",
-        "atan", "atan2", "exp", "exp2", "ln", "log2", "log10", "pow", "min", "max", "clamp",
-        "hypot", "rsqrt", "recip", // Comparison methods
-        "lt", "le", "gt", "ge", "eq", "ne", // Selection
-        "select", // Coordinate warp (contramap)
-        "at", // Field/Jet specific
-        "constant", "collapse", // Unary
-        "neg", // Clone for reusing expressions
-        "clone",
-    ];
-
     /// Analyze a method call.
     fn analyze_method_call(&mut self, call: &MethodCallExpr) -> syn::Result<()> {
         // Analyze the receiver
@@ -258,11 +254,18 @@ impl SemanticAnalyzer {
             self.analyze_expr(arg)?;
         }
 
-        // Validate method name against known methods
+        // Validate method name against known methods (IR ops + DSL methods)
         let method_name = call.method.to_string();
-        if !Self::KNOWN_METHODS.contains(&method_name.as_str()) {
-            // Find similar method for suggestion
-            let suggestion = Self::KNOWN_METHODS
+        let is_ir_method = known_method_names().any(|m| m == method_name);
+        let is_dsl_method = DSL_METHODS.contains(&method_name.as_str());
+
+        if !is_ir_method && !is_dsl_method {
+            // Find similar method for suggestion - collect all known methods
+            let all_methods: Vec<&str> = known_method_names()
+                .chain(DSL_METHODS.iter().copied())
+                .collect();
+
+            let suggestion = all_methods
                 .iter()
                 .find(|&&m| {
                     let m_lower = m.to_lowercase();
@@ -379,10 +382,7 @@ mod tests {
         let input = quote! { |r: f32| X * X + captured_from_env };
         let kernel = parse(input).unwrap();
         let result = analyze(kernel);
-        assert!(
-            result.is_ok(),
-            "Anonymous kernels should allow captured variables"
-        );
+        assert!(result.is_ok(), "Anonymous kernels should allow captured variables");
     }
 
     #[test]

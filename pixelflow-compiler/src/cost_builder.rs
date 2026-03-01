@@ -17,7 +17,7 @@ use pixelflow_search::egraph::CostModel;
 /// ```bash
 /// cargo run -p pixelflow-ml --example train_cost_model --features training --release
 /// ```
-static LEARNED_WEIGHTS_TOML: &str = include_str!("../../pixelflow-ml/data/learned_cost_model.toml");
+static LEARNED_WEIGHTS_TOML: &str = include_str!("../data/learned_cost_model.toml");
 
 /// Build a cost model from learned weights embedded at compile time.
 ///

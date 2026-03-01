@@ -5,7 +5,7 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use pixelflow_core::{Field, Manifold, ManifoldCompat, X, Y};
-use pixelflow_macros::kernel;
+use pixelflow_compiler::kernel;
 
 // ============================================================================
 // Macro Expansion Benchmarks (Compile-Time, measured via codegen)

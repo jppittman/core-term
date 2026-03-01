@@ -1,5 +1,5 @@
 [package]
-name = "pixelflow-macros"
+name = "pixelflow-compiler"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
@@ -15,7 +15,6 @@ quote = "1"
 proc-macro2 = "1"
 pixelflow-ir = { path = "../pixelflow-ir", features = ["alloc"] }
 pixelflow-search = { path = "../pixelflow-search" }
-pixelflow-nnue = { path = "../pixelflow-nnue" }
 
 [dev-dependencies]
 pixelflow-core = { path = "../pixelflow-core" }

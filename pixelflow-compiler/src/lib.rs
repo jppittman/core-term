@@ -46,14 +46,13 @@ mod lexer;
 mod manifold_expr;
 mod optimize;
 mod parser;
-mod rewrite_rules;
 mod sema;
 mod symbol;
 
 use proc_macro::TokenStream;
 use quote::format_ident;
 use syn::parse::{Parse, ParseStream};
-use syn::{LitInt, parse_macro_input};
+use syn::{parse_macro_input, LitInt};
 
 /// Derive macro for the `Element` trait.
 ///
@@ -87,7 +86,7 @@ pub fn derive_element(input: TokenStream) -> TokenStream {
 /// # Example
 ///
 /// ```ignore
-/// use pixelflow_macros::kernel;
+/// use pixelflow_compiler::kernel;
 /// use pixelflow_core::{X, Y, Manifold, ManifoldExt};
 ///
 /// let circle = kernel!(|cx: f32, cy: f32, r: f32| {
@@ -174,6 +173,166 @@ pub fn kernel_raw(input: TokenStream) -> TokenStream {
     codegen::emit(analyzed).into()
 }
 
+/// The `kernel_jit!` macro: JIT-compiled kernels that bypass LLVM.
+///
+/// Has identical semantics to `kernel!`:
+/// - With parameters: returns a builder closure that JITs on each call
+/// - Without parameters: returns a `JitManifold` directly
+///
+/// Parameters are constant-folded into the JIT'd kernel. Different parameter
+/// values produce different kernels — no cache, caller owns the result.
+///
+/// # Example
+///
+/// ```ignore
+/// use pixelflow_compiler::kernel_jit;
+///
+/// // With parameters — builder pattern
+/// let builder = kernel_jit!(|cx: f32, r: f32| (X - cx) * r);
+/// let manifold = builder(1.0, 2.0);  // JITs immediately
+/// manifold.eval((x, y, z, w));
+///
+/// // Without parameters — direct JitManifold
+/// let manifold = kernel_jit!(|| X + Y);
+/// manifold.eval((x, y, z, w));
+/// ```
+#[proc_macro]
+pub fn kernel_jit(input: TokenStream) -> TokenStream {
+    use quote::quote;
+
+    // Phase 1: Parse
+    let tokens = proc_macro2::TokenStream::from(input);
+    let kernel_ast = match parser::parse(tokens) {
+        Ok(ast) => ast,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    // Phase 2: Semantic analysis
+    let analyzed = match sema::analyze(kernel_ast) {
+        Ok(a) => a,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    // Phase 3: Collect scalar params in declaration order
+    let scalar_params: Vec<_> = analyzed
+        .def
+        .params
+        .iter()
+        .filter(|p| matches!(p.kind, ast::ParamKind::Scalar(_)))
+        .collect();
+
+    // Phase 4: Convert body to IR (params become Expr::Param(i) nodes)
+    let param_map = ir_bridge::scalar_param_indices(&analyzed);
+    let ir = match ir_bridge::ast_to_ir(&analyzed.def.body, &param_map) {
+        Ok(ir) => ir,
+        Err(e) => {
+            return syn::Error::new(proc_macro2::Span::call_site(), e)
+                .to_compile_error()
+                .into()
+        }
+    };
+
+    // Phase 5: Generate the runtime Expr constructor (Param nodes included)
+    let expr_code = ir_bridge::ir_to_runtime_expr(&ir);
+
+    if scalar_params.is_empty() {
+        // Zero-param: compile immediately, return JitManifold
+        let output = quote! {
+            {
+                let __expr = #expr_code;
+                let __code = ::pixelflow_ir::backend::emit::compile_dag(&__expr).map(|r| r.code)
+                    .expect("kernel_jit! JIT compilation failed");
+                let __jit = ::pixelflow_ir::JitManifold::new(__code);
+                // Wrap in a struct that implements Manifold in the user's crate
+                struct __JitWrapper(::pixelflow_ir::JitManifold);
+                impl ::pixelflow_core::Manifold<(
+                    ::pixelflow_core::Field,
+                    ::pixelflow_core::Field,
+                    ::pixelflow_core::Field,
+                    ::pixelflow_core::Field,
+                )> for __JitWrapper {
+                    type Output = ::pixelflow_core::Field;
+                    #[inline(always)]
+                    fn eval(&self, (x, y, z, w): (
+                        ::pixelflow_core::Field,
+                        ::pixelflow_core::Field,
+                        ::pixelflow_core::Field,
+                        ::pixelflow_core::Field,
+                    )) -> ::pixelflow_core::Field {
+                        unsafe {
+                            ::core::mem::transmute(
+                                self.0.call(
+                                    ::core::mem::transmute(x),
+                                    ::core::mem::transmute(y),
+                                    ::core::mem::transmute(z),
+                                    ::core::mem::transmute(w),
+                                )
+                            )
+                        }
+                    }
+                }
+                unsafe impl Send for __JitWrapper {}
+                unsafe impl Sync for __JitWrapper {}
+                __JitWrapper(__jit)
+            }
+        };
+        output.into()
+    } else {
+        // N-param: emit a builder closure
+        let param_names: Vec<proc_macro2::Ident> = scalar_params
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        let param_types: Vec<proc_macro2::TokenStream> = scalar_params
+            .iter()
+            .map(|_| quote! { f32 })
+            .collect();
+        // params slice in declaration order: first param = index 0
+        let param_slice = quote! { &[ #( #param_names as f32 ),* ] };
+
+        let output = quote! {
+            move | #( #param_names : #param_types ),* | {
+                let __expr = #expr_code;
+                let __expr = ::pixelflow_ir::substitute_params(&__expr, #param_slice);
+                let __code = ::pixelflow_ir::backend::emit::compile_dag(&__expr).map(|r| r.code)
+                    .expect("kernel_jit! JIT compilation failed");
+                let __jit = ::pixelflow_ir::JitManifold::new(__code);
+                struct __JitWrapper(::pixelflow_ir::JitManifold);
+                impl ::pixelflow_core::Manifold<(
+                    ::pixelflow_core::Field,
+                    ::pixelflow_core::Field,
+                    ::pixelflow_core::Field,
+                    ::pixelflow_core::Field,
+                )> for __JitWrapper {
+                    type Output = ::pixelflow_core::Field;
+                    #[inline(always)]
+                    fn eval(&self, (x, y, z, w): (
+                        ::pixelflow_core::Field,
+                        ::pixelflow_core::Field,
+                        ::pixelflow_core::Field,
+                        ::pixelflow_core::Field,
+                    )) -> ::pixelflow_core::Field {
+                        unsafe {
+                            ::core::mem::transmute(
+                                self.0.call(
+                                    ::core::mem::transmute(x),
+                                    ::core::mem::transmute(y),
+                                    ::core::mem::transmute(z),
+                                    ::core::mem::transmute(w),
+                                )
+                            )
+                        }
+                    }
+                }
+                unsafe impl Send for __JitWrapper {}
+                unsafe impl Sync for __JitWrapper {}
+                __JitWrapper(__jit)
+            }
+        };
+        output.into()
+    }
+}
+
 /// Derive macro for the `ManifoldExpr` marker trait.
 ///
 /// This trait gates access to `ManifoldExt` methods, preventing them from
@@ -182,7 +341,7 @@ pub fn kernel_raw(input: TokenStream) -> TokenStream {
 /// # Example
 ///
 /// ```ignore
-/// use pixelflow_macros::ManifoldExpr;
+/// use pixelflow_compiler::ManifoldExpr;
 ///
 /// #[derive(ManifoldExpr)]
 /// pub struct MyCustomCombinator<M>(pub M);

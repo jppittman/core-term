@@ -54,7 +54,9 @@ pub enum DomainConfig {
         trait_bounds: Vec<TokenStream>,
     },
     /// Generic domain: `impl<__P: Spatial> Manifold<__P> for Struct`
-    Generic { output_type: TokenStream },
+    Generic {
+        output_type: TokenStream,
+    },
 }
 
 /// The eval function body.
@@ -119,7 +121,6 @@ impl StructEmitter {
         self
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn with_eval_body(
         mut self,
         imports: TokenStream,
@@ -150,23 +151,23 @@ impl StructEmitter {
         // All structs derive ManifoldExpr for composability
         let struct_def = if self.fields.is_empty() {
             // Unit struct
-            quote! { #[derive(Clone, Copy, ::pixelflow_macros::ManifoldExpr)] #vis struct #name; }
+            quote! { #[derive(Clone, Copy, ::pixelflow_compiler::ManifoldExpr)] #vis struct #name; }
         } else if generics.is_empty() {
             // Non-generic struct
             match self.derives {
                 Derives::CloneCopy => quote! {
-                    #[derive(Clone, Copy, ::pixelflow_macros::ManifoldExpr)]
+                    #[derive(Clone, Copy, ::pixelflow_compiler::ManifoldExpr)]
                     #vis struct #name { #(#fields),* }
                 },
                 Derives::Clone => quote! {
-                    #[derive(Clone, ::pixelflow_macros::ManifoldExpr)]
+                    #[derive(Clone, ::pixelflow_compiler::ManifoldExpr)]
                     #vis struct #name { #(#fields),* }
                 },
             }
         } else {
             // Generic struct - manual Clone/Copy impls, derive ManifoldExpr
             quote! {
-                #[derive(::pixelflow_macros::ManifoldExpr)]
+                #[derive(::pixelflow_compiler::ManifoldExpr)]
                 #vis struct #name<#(#generics),*> { #(#fields),* }
 
                 impl<#(#generics: Clone),*> Clone for #name<#(#generics),*> {
@@ -216,11 +217,7 @@ impl StructEmitter {
         let binding = &eval_body.binding;
 
         let manifold_impl = match &self.domain_config {
-            DomainConfig::Fixed {
-                domain_type,
-                output_type,
-                trait_bounds,
-            } => {
+            DomainConfig::Fixed { domain_type, output_type, trait_bounds } => {
                 if generics.is_empty() {
                     quote! {
                         impl ::pixelflow_core::Manifold<#domain_type> for #name {
