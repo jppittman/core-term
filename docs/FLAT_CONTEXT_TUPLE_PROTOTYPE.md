@@ -134,7 +134,7 @@ WithContext<(V0, V1, V2), Body>: Manifold<P>
 
 ### 1. Modify kernel! Macro Codegen
 
-Update `pixelflow-macros/src/codegen.rs` to emit `WithContext` instead of nested `Let`:
+Update `pixelflow-compiler/src/codegen.rs` to emit `WithContext` instead of nested `Let`:
 
 ```rust
 // Before:
@@ -212,7 +212,7 @@ impl_with_context!(0: V0 O0, 1: V1 O1, 2: V2 O2, 3: V3 O3, 4: V4 O4, 5: V5 O5);
 
 - ✅ WithContext combinator implemented (`pixelflow-core/src/combinators/context.rs`)
 - ✅ Compiles successfully with 5+ params (tested up to 8)
-- ✅ kernel! macro integration complete (`pixelflow-macros/src/codegen.rs`)
+- ✅ kernel! macro integration complete (`pixelflow-compiler/src/codegen.rs`)
 - ✅ CtxVar arithmetic operators implemented
 - ✅ Spatial trait impls for tuple domains
 - ✅ Test suite passes (tests/test_kernel_5params.rs)
@@ -222,4 +222,4 @@ impl_with_context!(0: V0 O0, 1: V1 O1, 2: V2 O2, 3: V3 O3, 4: V4 O4, 5: V5 O5);
 
 - `pixelflow-core/src/combinators/context.rs` - WithContext & CtxVar implementation
 - `pixelflow-core/tests/test_context_tuple.rs` - Compilation tests
-- `pixelflow-macros/src/codegen.rs` - (TODO) Macro emission changes
+- `pixelflow-compiler/src/codegen.rs` - (TODO) Macro emission changes

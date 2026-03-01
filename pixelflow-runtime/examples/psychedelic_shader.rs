@@ -17,7 +17,7 @@
 
 use actor_scheduler::Message;
 use pixelflow_core::{Discrete, Field, Manifold};
-use pixelflow_macros::kernel;
+use pixelflow_compiler::kernel;
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::{AppData, EngineEvent, EngineEventControl, EngineEventData};
 use pixelflow_runtime::platform::ColorCube;

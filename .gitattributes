@@ -8,7 +8,6 @@
 *.tiff filter=lfs diff=lfs merge=lfs -text
 *.ico filter=lfs diff=lfs merge=lfs -text
 *.icns filter=lfs diff=lfs merge=lfs -text
-
 # Fonts
 *.ttf filter=lfs diff=lfs merge=lfs -text
 # Exception: Test fallback font embedded in test binary (checked into git, not LFS)
@@ -16,19 +15,22 @@ pixelflow-graphics/assets/DejaVuSansMono-Fallback.ttf filter= diff= merge= -text
 *.otf filter=lfs diff=lfs merge=lfs -text
 *.woff filter=lfs diff=lfs merge=lfs -text
 *.woff2 filter=lfs diff=lfs merge=lfs -text
-
 # Binary data files
 *.bin filter=lfs diff=lfs merge=lfs -text
 *.dat filter=lfs diff=lfs merge=lfs -text
-
 # Large data/model files
 *.h5 filter=lfs diff=lfs merge=lfs -text
 *.onnx filter=lfs diff=lfs merge=lfs -text
 *.pkl filter=lfs diff=lfs merge=lfs -text
 *.pth filter=lfs diff=lfs merge=lfs -text
 *.safetensors filter=lfs diff=lfs merge=lfs -text
-
 # Archives (if used for data)
 *.zip filter=lfs diff=lfs merge=lfs -text
 *.tar.gz filter=lfs diff=lfs merge=lfs -text
 *.tgz filter=lfs diff=lfs merge=lfs -text
+pixelflow-pipeline/data/guide_data_v2.json filter=lfs diff=lfs merge=lfs -text
+*.jsonl filter=lfs diff=lfs merge=lfs -text
+*.pt filter=lfs diff=lfs merge=lfs -text
+pixelflow-pipeline/src/bin/fast_kernels.rs filter=lfs diff=lfs merge=lfs -text
+pixelflow-pipeline/src/bin/bench_extracted.rs filter=lfs diff=lfs merge=lfs -text
+pixelflow-pipeline/benches/generated_kernels.rs filter=lfs diff=lfs merge=lfs -text

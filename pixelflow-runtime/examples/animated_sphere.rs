@@ -20,7 +20,7 @@ use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
 use pixelflow_graphics::scene3d::{
     plane, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
 };
-use pixelflow_macros::ManifoldExpr;
+use pixelflow_compiler::ManifoldExpr;
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::{AppData, EngineEvent, EngineEventControl, EngineEventData};
 use pixelflow_runtime::platform::ColorCube;

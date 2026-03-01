@@ -65,7 +65,7 @@ Let::new(a,
 
 **Impact**: A 5-parameter kernel with 3 literals in the body creates **8 nested Let bindings**.
 
-See: `pixelflow-macros/src/codegen.rs:171-182`
+See: `pixelflow-compiler/src/codegen.rs:171-182`
 
 ```rust
 // Literals get indices 0..m-1, params get indices m..m+n-1

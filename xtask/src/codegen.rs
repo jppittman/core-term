@@ -43,7 +43,7 @@ pub fn generate_kernels(workspace_root: &Path) {
 
     eg.saturate();
 
-    let costs = CostModel::fully_optimized();
+    let costs = CostModel::new();
     let best_tree = eg.extract_tree_with_costs(res, &costs);
 
     println!("Optimized Tree: {:?}", best_tree);

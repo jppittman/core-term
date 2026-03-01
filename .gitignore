@@ -2,9 +2,10 @@
 CoreTerm.app
 .DS_Store
 /vendor
-mutants.out/
 
 
 .gemini*/
 gha-creds-*.json
 *.ppm
+*.log
+*.db
