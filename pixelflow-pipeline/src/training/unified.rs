@@ -30,6 +30,15 @@ pub struct TrajectoryStep {
     /// JIT-benchmarked cost of the expression at this epoch (nanoseconds).
     /// All steps within the same epoch share this value.
     pub jit_cost_ns: f64,
+    /// Edge list for embedding gradient flow: (parent_op, child_op, depth).
+    /// Compact representation of the expression structure at decision time.
+    /// Each tuple is (parent OpKind index as u8, child OpKind index as u8, effective depth as u16).
+    #[serde(default)]
+    pub edges: Vec<(u8, u8, u16)>,
+    /// Graph accumulator state (VSA encoding) at decision time (GRAPH_INPUT_DIM floats).
+    /// Used by the graph backbone for mask scoring (separate from expression EdgeAccumulator).
+    #[serde(default)]
+    pub graph_accumulator_state: Vec<f32>,
 }
 
 /// A complete self-play trajectory with terminal cost.
@@ -46,9 +55,11 @@ pub struct Trajectory {
     /// JIT-benchmarked execution time of the final compiled AST (nanoseconds).
     pub final_cost_ns: f64,
     /// Judge-estimated initial cost before any rewrites.
-    pub initial_cost: f32,
+    #[serde(default)]
+    pub initial_cost: Option<f32>,
     /// Judge-estimated final cost after all rewrites.
-    pub final_cost: f32,
+    #[serde(default)]
+    pub final_cost: Option<f32>,
 }
 
 /// Per-trajectory advantage scores produced by the Python Critic.
@@ -79,6 +90,8 @@ mod tests {
                     action_probability: 0.87,
                     matched: true,
                     jit_cost_ns: 8.75,
+                    edges: vec![(2, 3, 0), (2, 4, 1)],
+                    graph_accumulator_state: vec![0.0; pixelflow_search::nnue::factored::GRAPH_INPUT_DIM],
                 },
                 TrajectoryStep {
                     accumulator_state: vec![0.2; 130],
@@ -89,12 +102,14 @@ mod tests {
                     action_probability: 0.42,
                     matched: false,
                     jit_cost_ns: 8.75,
+                    edges: vec![(5, 6, 3)],
+                    graph_accumulator_state: vec![0.0; pixelflow_search::nnue::factored::GRAPH_INPUT_DIM],
                 },
             ],
             initial_cost_ns: 10.25,
             final_cost_ns: 3.42,
-            initial_cost: 10.5,
-            final_cost: 3.2,
+            initial_cost: Some(10.5),
+            final_cost: Some(3.2),
         };
         let json = serde_json::to_string(&traj).expect("serialize failed");
         let back: Trajectory = serde_json::from_str(&json).expect("deserialize failed");

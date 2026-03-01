@@ -56,6 +56,7 @@ pub mod algebra;
 pub mod exp;
 pub mod fusion;
 pub mod parity;
+pub mod power;
 pub mod trig;
 
 use crate::egraph::rewrite::Rewrite;
@@ -63,7 +64,7 @@ use crate::egraph::rewrite::Rewrite;
 // Re-export key types for convenience
 pub use algebra::{
     InversePair, AddNeg, MulRecip,
-    Commutative, Identity, Annihilator, Associative,
+    Commutative, Identity, Annihilator, Associative, ReverseAssociative,
     algebra_rules, inverse_pair_rules, basic_algebra_rules,
 };
 pub use parity::{
@@ -81,6 +82,9 @@ pub use exp::{
     ExpLn, Exp2Log2, ExpHomomorphism, LnHomomorphism,
     exp_rules,
 };
+pub use power::{
+    power_rules,
+};
 pub use fusion::{
     FmaFusion, RecipSqrt,
     fusion_rules,
@@ -89,27 +93,30 @@ pub use fusion::{
 /// All mathematical rewrite rules.
 ///
 /// This is the primary entry point for getting all math rules. Categories:
-/// - Algebra (22 rules): 8 InversePair (AddNeg/MulRecip × 4 each) + 14 basic
+/// - Algebra (30 rules): 8 InversePair (AddNeg/MulRecip × 4 each) + 22 basic
 ///   (constant fold, commutative×4, identity×2, annihilator, idempotent×2,
-///    distributive, factor, doubling, halving)
+///    distributive, factor, doubling, halving, associative×4, reverse-associative×4)
 /// - Parity (6 rules): sin, cos, tan, asin, atan, abs negation symmetry
 /// - Trig (5 rules): angle addition×2, reverse angle addition, half angle, Pythagorean
-/// - Exp (1 rule): power combine (inverse pairs and homomorphisms removed for IEEE 754 safety)
+/// - Exp (7 rules): function inverse cancellation×4, homomorphisms×2, power combine
+/// - Power (11 rules): special values×6, recurrence, log-power×2, expand-square,
+///   diff-of-squares
 ///
-/// Total: 34 math rules
+/// Total: 59 math rules
 ///
 /// For the full set including fusion rules (FMA, rsqrt),
-/// use [`all_rules`] which returns 42 rules.
+/// use [`all_rules`] which returns 61 rules.
 pub fn all_math_rules() -> Vec<Box<dyn Rewrite>> {
     let mut rules = Vec::new();
     rules.extend(algebra_rules());
     rules.extend(parity_rules());
     rules.extend(trig_rules());
     rules.extend(exp_rules());
+    rules.extend(power_rules());
     rules
 }
 
-/// All rewrite rules: math (34) + fusion (2) = 36 total.
+/// All rewrite rules: math (59) + fusion (2) = 61 total.
 ///
 /// This is the complete rule set for optimization. Use this for training
 /// and production optimization where all rules should be available.
@@ -287,10 +294,140 @@ mod tests {
     }
 
     #[test]
+    fn test_associativity_left_to_right() {
+        // (v0 + v1) + v2 should produce v0 + (v1 + v2) in the e-graph
+        let v0 = Expr::Var(0);
+        let v1 = Expr::Var(1);
+        let v2 = Expr::Var(2);
+
+        // Build (v0 + v1) + v2
+        let left = Expr::Binary(OpKind::Add, b(v0.clone()), b(v1.clone()));
+        let expr = Expr::Binary(OpKind::Add, b(left), b(v2.clone()));
+
+        let mut eg = EGraph::with_rules(all_rules());
+        let root = expr_to_egraph(&expr, &mut eg);
+        // Budget 5 is sufficient — associativity fires on the first iteration.
+        // Higher budgets cause combinatorial explosion with commutativity.
+        let _result = saturate_with_budget(&mut eg, 5);
+
+        // Verify semantic equivalence
+        let optimized = eclass_to_expr(&eg, root);
+        let pts = standard_test_points();
+        for point in &pts {
+            let original = eval_expr(&expr, point);
+            let opt = eval_expr(&optimized, point);
+            if original.is_nan() && opt.is_nan() { continue; }
+            let diff = (original - opt).abs();
+            let threshold = if original.abs() > 1.0 { 1e-5 * original.abs() } else { 1e-5 };
+            assert!(diff <= threshold,
+                "Associativity L->R changed semantics at {point:?}: {original} vs {opt}");
+        }
+
+        // Verify the e-graph contains the right-associated form by checking
+        // that the root class has grown (new nodes added by associativity)
+        let root = eg.find(root);
+        let node_count = eg.nodes(root).len();
+        assert!(node_count > 1,
+            "Expected associativity to add alternative tree shapes, \
+             but root class has only {node_count} node(s)");
+    }
+
+    #[test]
+    fn test_associativity_right_to_left() {
+        // v0 + (v1 + v2) should produce (v0 + v1) + v2 in the e-graph
+        let v0 = Expr::Var(0);
+        let v1 = Expr::Var(1);
+        let v2 = Expr::Var(2);
+
+        // Build v0 + (v1 + v2)
+        let right = Expr::Binary(OpKind::Add, b(v1.clone()), b(v2.clone()));
+        let expr = Expr::Binary(OpKind::Add, b(v0.clone()), b(right));
+
+        let mut eg = EGraph::with_rules(all_rules());
+        let root = expr_to_egraph(&expr, &mut eg);
+        let _result = saturate_with_budget(&mut eg, 5);
+
+        // Verify semantic equivalence
+        let optimized = eclass_to_expr(&eg, root);
+        let pts = standard_test_points();
+        for point in &pts {
+            let original = eval_expr(&expr, point);
+            let opt = eval_expr(&optimized, point);
+            if original.is_nan() && opt.is_nan() { continue; }
+            let diff = (original - opt).abs();
+            let threshold = if original.abs() > 1.0 { 1e-5 * original.abs() } else { 1e-5 };
+            assert!(diff <= threshold,
+                "Associativity R->L changed semantics at {point:?}: {original} vs {opt}");
+        }
+
+        // Verify the e-graph grew from reverse associativity
+        let root = eg.find(root);
+        let node_count = eg.nodes(root).len();
+        assert!(node_count > 1,
+            "Expected reverse associativity to add alternative tree shapes, \
+             but root class has only {node_count} node(s)");
+    }
+
+    #[test]
+    fn test_associativity_mul() {
+        // (v0 * v1) * v2 should produce v0 * (v1 * v2) and vice versa
+        let v0 = Expr::Var(0);
+        let v1 = Expr::Var(1);
+        let v2 = Expr::Var(2);
+
+        let left = Expr::Binary(OpKind::Mul, b(v0.clone()), b(v1.clone()));
+        let expr = Expr::Binary(OpKind::Mul, b(left), b(v2.clone()));
+
+        let pts = standard_test_points();
+        check_optimization_preserves_semantics(&expr, &pts, 1e-4);
+    }
+
+    #[test]
+    fn test_associativity_min_max() {
+        let v0 = Expr::Var(0);
+        let v1 = Expr::Var(1);
+        let v2 = Expr::Var(2);
+
+        // min(min(v0, v1), v2) should produce min(v0, min(v1, v2))
+        let min_left = Expr::Binary(OpKind::Min, b(v0.clone()), b(v1.clone()));
+        let expr_min = Expr::Binary(OpKind::Min, b(min_left), b(v2.clone()));
+        let pts = standard_test_points();
+        check_optimization_preserves_semantics(&expr_min, &pts, 1e-6);
+
+        // max(max(v0, v1), v2) should produce max(v0, max(v1, v2))
+        let max_left = Expr::Binary(OpKind::Max, b(v0.clone()), b(v1.clone()));
+        let expr_max = Expr::Binary(OpKind::Max, b(max_left), b(v2.clone()));
+        check_optimization_preserves_semantics(&expr_max, &pts, 1e-6);
+    }
+
+    #[test]
+    fn test_associativity_templates() {
+        // Verify all associativity rules have valid lhs/rhs templates
+        let assoc_add = Associative::new(&crate::egraph::ops::Add);
+        assert!(assoc_add.lhs_template().is_some(), "Associative Add missing lhs_template");
+        assert!(assoc_add.rhs_template().is_some(), "Associative Add missing rhs_template");
+
+        let rev_assoc_add = ReverseAssociative::new(&crate::egraph::ops::Add);
+        assert!(rev_assoc_add.lhs_template().is_some(), "ReverseAssociative Add missing lhs_template");
+        assert!(rev_assoc_add.rhs_template().is_some(), "ReverseAssociative Add missing rhs_template");
+
+        // Verify template structure: LHS of Associative should be RHS of ReverseAssociative
+        let assoc_lhs = assoc_add.lhs_template().unwrap();
+        let rev_rhs = rev_assoc_add.rhs_template().unwrap();
+        assert_eq!(format!("{}", assoc_lhs), format!("{}", rev_rhs),
+            "Associative LHS should equal ReverseAssociative RHS (same structural pattern)");
+
+        let assoc_rhs = assoc_add.rhs_template().unwrap();
+        let rev_lhs = rev_assoc_add.lhs_template().unwrap();
+        assert_eq!(format!("{}", assoc_rhs), format!("{}", rev_lhs),
+            "Associative RHS should equal ReverseAssociative LHS (same structural pattern)");
+    }
+
+    #[test]
     fn test_all_rules_count() {
         // Verify we have the expected number of rules after removal.
         let rules = all_rules();
-        assert_eq!(rules.len(), 42,
-            "Expected 42 rules (40 math + 2 fusion), got {}", rules.len());
+        assert_eq!(rules.len(), 61,
+            "Expected 61 rules (59 math + 2 fusion), got {}", rules.len());
     }
 }

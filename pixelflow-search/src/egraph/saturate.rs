@@ -89,21 +89,42 @@ impl SaturationResult {
 /// assert!(result.saturated || result.iterations <= 100);
 /// ```
 pub fn saturate_with_budget(egraph: &mut EGraph, max_iterations: usize) -> SaturationResult {
-    // Record initial state
+    saturate_with_full_budget(egraph, max_iterations, 10_000, std::time::Duration::from_secs(5))
+}
+
+/// Run saturation with budget, class, and time limits.
+///
+/// Unlike `saturate_with_budget`, this gives full control over safety limits.
+/// The e-graph stops growing when ANY limit is reached.
+pub fn saturate_with_full_budget(
+    egraph: &mut EGraph,
+    max_iterations: usize,
+    max_classes: usize,
+    timeout: std::time::Duration,
+) -> SaturationResult {
     let classes_before = egraph.classes.len();
     egraph.match_counts.clear();
 
+    let start = std::time::Instant::now();
     let mut iterations = 0;
     let mut total_unions = 0;
 
-    // Run saturation with budget
     for _ in 0..max_iterations {
+        // Global time limit
+        if start.elapsed() >= timeout {
+            break;
+        }
+        // Global class limit
+        if egraph.classes.len() > max_classes {
+            break;
+        }
+
         iterations += 1;
-        let unions = apply_rules_counted(egraph);
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let unions = apply_rules_counted_with_limits(egraph, max_classes, remaining);
         total_unions += unions;
 
         if unions == 0 {
-            // Saturation completed - no more changes
             break;
         }
     }
@@ -123,19 +144,15 @@ pub fn saturate_with_budget(egraph: &mut EGraph, max_iterations: usize) -> Satur
     }
 }
 
-/// Apply all rules once and count unions.
-///
-/// This is equivalent to EGraph::apply_rules but accessible from outside the module.
-fn apply_rules_counted(egraph: &mut EGraph) -> usize {
-    // We use saturate_with_limit(1) to get a single iteration
-    // and infer unions from the change in e-graph size
+/// Apply all rules once and count new classes, with safety limits.
+fn apply_rules_counted_with_limits(
+    egraph: &mut EGraph,
+    max_classes: usize,
+    timeout: std::time::Duration,
+) -> usize {
     let classes_before = egraph.classes.len();
-    egraph.saturate_with_limit(1);
+    egraph.saturate_with_limits(1, max_classes, timeout);
     let classes_after = egraph.classes.len();
-
-    // Return the change as a proxy for union count
-    // Note: This underestimates since unions can merge without adding classes
-    // For proper counting, we'd need to modify EGraph::apply_rules to return unions
     classes_after.saturating_sub(classes_before)
 }
 

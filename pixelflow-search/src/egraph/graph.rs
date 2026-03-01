@@ -221,6 +221,20 @@ impl EGraph {
         self.classes.iter().map(|c| c.nodes.len()).sum()
     }
 
+    /// Get the OpKind of the canonical representative of an e-class.
+    ///
+    /// Resolves through union-find to the canonical class, then returns
+    /// the OpKind of the first node in that class.
+    pub fn canonical_op(&self, id: EClassId) -> pixelflow_ir::OpKind {
+        let id = self.find(id);
+        let class = &self.classes[id.index()];
+        match &class.nodes[0] {
+            ENode::Var(_) => pixelflow_ir::OpKind::Var,
+            ENode::Const(_) => pixelflow_ir::OpKind::Const,
+            ENode::Op { op, .. } => op.kind(),
+        }
+    }
+
     /// Debug: dump the entire e-graph structure.
     #[allow(dead_code)]
     pub fn dump(&self) -> String {
@@ -390,6 +404,19 @@ impl EGraph {
                     false
                 }
             }
+            RewriteAction::ReverseAssociate { op, a, b, c } => {
+                // a op (b op c) → (a op b) op c
+                let ab_node = ENode::Op { op, children: vec![a, b] };
+                let ab_id = self.add(ab_node);
+                let result_node = ENode::Op { op, children: vec![ab_id, c] };
+                let result_id = self.add(result_node);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    true
+                } else {
+                    false
+                }
+            }
             RewriteAction::OddParity { func, inner } => {
                 // For odd functions: Op(neg(x)) → neg(Op(x))
                 let func_node = ENode::Op { op: func, children: vec![inner] };
@@ -512,6 +539,72 @@ impl EGraph {
             RewriteAction::Halving { a } => {
                 // 2 * a → a + a
                 let result = ENode::Op { op: &ops::Add, children: vec![a, a] };
+                let result_id = self.add(result);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    true
+                } else {
+                    false
+                }
+            }
+            RewriteAction::PowerRecurrence { base, exponent } => {
+                // pow(x, n) → x * pow(x, n-1)
+                let n_minus_1 = ENode::constant((exponent - 1) as f32);
+                let n_minus_1_id = self.add(n_minus_1);
+                let pow_reduced = ENode::Op { op: &ops::Pow, children: vec![base, n_minus_1_id] };
+                let pow_id = self.add(pow_reduced);
+                let result = ENode::Op { op: &ops::Mul, children: vec![base, pow_id] };
+                let result_id = self.add(result);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    true
+                } else {
+                    false
+                }
+            }
+            RewriteAction::LogPower { log_op, base, exponent } => {
+                // log(pow(x, n)) → n * log(x)
+                let log_x = ENode::Op { op: log_op, children: vec![base] };
+                let log_x_id = self.add(log_x);
+                let result = ENode::Op { op: &ops::Mul, children: vec![exponent, log_x_id] };
+                let result_id = self.add(result);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    true
+                } else {
+                    false
+                }
+            }
+            RewriteAction::ExpandSquare { a, b } => {
+                // (a+b)² → a² + 2ab + b²
+                let a2 = ENode::Op { op: &ops::Mul, children: vec![a, a] };
+                let a2_id = self.add(a2);
+                let b2 = ENode::Op { op: &ops::Mul, children: vec![b, b] };
+                let b2_id = self.add(b2);
+                let ab = ENode::Op { op: &ops::Mul, children: vec![a, b] };
+                let ab_id = self.add(ab);
+                let two = ENode::constant(2.0);
+                let two_id = self.add(two);
+                let two_ab = ENode::Op { op: &ops::Mul, children: vec![two_id, ab_id] };
+                let two_ab_id = self.add(two_ab);
+                let sum1 = ENode::Op { op: &ops::Add, children: vec![a2_id, two_ab_id] };
+                let sum1_id = self.add(sum1);
+                let result = ENode::Op { op: &ops::Add, children: vec![sum1_id, b2_id] };
+                let result_id = self.add(result);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    true
+                } else {
+                    false
+                }
+            }
+            RewriteAction::DiffOfSquares { a, b } => {
+                // a² - b² → (a+b)(a-b)
+                let sum = ENode::Op { op: &ops::Add, children: vec![a, b] };
+                let sum_id = self.add(sum);
+                let diff = ENode::Op { op: &ops::Sub, children: vec![a, b] };
+                let diff_id = self.add(diff);
+                let result = ENode::Op { op: &ops::Mul, children: vec![sum_id, diff_id] };
                 let result_id = self.add(result);
                 if self.find(class_id) != self.find(result_id) {
                     self.union(class_id, result_id);
@@ -698,6 +791,19 @@ impl EGraph {
                     0
                 }
             }
+            RewriteAction::ReverseAssociate { op, a, b, c } => {
+                // a op (b op c) → (a op b) op c
+                let ab_node = ENode::Op { op, children: vec![a, b] };
+                let ab_id = self.add(ab_node);
+                let result_node = ENode::Op { op, children: vec![ab_id, c] };
+                let result_id = self.add(result_node);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    1
+                } else {
+                    0
+                }
+            }
             RewriteAction::OddParity { func, inner } => {
                 // For odd functions: Op(neg(x)) → neg(Op(x))
                 // Create func(inner), then wrap in neg
@@ -868,6 +974,68 @@ impl EGraph {
                 let result = ENode::Op { op: &ops::Add, children: vec![a, a] };
                 let result_id = self.add(result);
 
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    1
+                } else {
+                    0
+                }
+            }
+            RewriteAction::PowerRecurrence { base, exponent } => {
+                let n_minus_1 = ENode::constant((exponent - 1) as f32);
+                let n_minus_1_id = self.add(n_minus_1);
+                let pow_reduced = ENode::Op { op: &ops::Pow, children: vec![base, n_minus_1_id] };
+                let pow_id = self.add(pow_reduced);
+                let result = ENode::Op { op: &ops::Mul, children: vec![base, pow_id] };
+                let result_id = self.add(result);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    1
+                } else {
+                    0
+                }
+            }
+            RewriteAction::LogPower { log_op, base, exponent } => {
+                let log_x = ENode::Op { op: log_op, children: vec![base] };
+                let log_x_id = self.add(log_x);
+                let result = ENode::Op { op: &ops::Mul, children: vec![exponent, log_x_id] };
+                let result_id = self.add(result);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    1
+                } else {
+                    0
+                }
+            }
+            RewriteAction::ExpandSquare { a, b } => {
+                let a2 = ENode::Op { op: &ops::Mul, children: vec![a, a] };
+                let a2_id = self.add(a2);
+                let b2 = ENode::Op { op: &ops::Mul, children: vec![b, b] };
+                let b2_id = self.add(b2);
+                let ab = ENode::Op { op: &ops::Mul, children: vec![a, b] };
+                let ab_id = self.add(ab);
+                let two = ENode::constant(2.0);
+                let two_id = self.add(two);
+                let two_ab = ENode::Op { op: &ops::Mul, children: vec![two_id, ab_id] };
+                let two_ab_id = self.add(two_ab);
+                let sum1 = ENode::Op { op: &ops::Add, children: vec![a2_id, two_ab_id] };
+                let sum1_id = self.add(sum1);
+                let result = ENode::Op { op: &ops::Add, children: vec![sum1_id, b2_id] };
+                let result_id = self.add(result);
+                if self.find(class_id) != self.find(result_id) {
+                    self.union(class_id, result_id);
+                    1
+                } else {
+                    0
+                }
+            }
+            RewriteAction::DiffOfSquares { a, b } => {
+                let sum = ENode::Op { op: &ops::Add, children: vec![a, b] };
+                let sum_id = self.add(sum);
+                let diff = ENode::Op { op: &ops::Sub, children: vec![a, b] };
+                let diff_id = self.add(diff);
+                let result = ENode::Op { op: &ops::Mul, children: vec![sum_id, diff_id] };
+                let result_id = self.add(result);
                 if self.find(class_id) != self.find(result_id) {
                     self.union(class_id, result_id);
                     1

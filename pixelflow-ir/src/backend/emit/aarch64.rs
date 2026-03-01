@@ -547,10 +547,6 @@ fn emit_u32_const(code: &mut Vec<u8>, dst: Reg, bits: u32) {
     emit32(code, 0x4E040C00 | (dst.0 as u32) | (16 << 5));
 }
 
-/// Load an f32 constant into all 4 lanes of a vector register.
-fn emit_f32_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
-    emit_u32_const(code, dst, val.to_bits());
-}
 
 // =============================================================================
 // Transcendental Builtins — inline polynomial sequences
@@ -569,7 +565,13 @@ fn emit_f32_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
 ///
 /// Translated from pixelflow-core arm.rs F32x4::log2().
 /// Uses exponent extraction and 5-coefficient polynomial on [√2/2, √2].
-pub fn emit_log2_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_log2_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
     let s0 = scratch[0]; // n (exponent as float), then Horner scratch
     let s1 = scratch[1]; // f (normalized mantissa), alive through Horner
     let s2 = scratch[2]; // general scratch
@@ -596,17 +598,20 @@ pub fn emit_log2_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 
 
     // Phase 3: Reduce to [√2/2, √2] for better accuracy
     // mask = (f >= √2)
-    emit_f32_const(code, s2, 1.4142135624);
+    let sqrt2 = pool.push_f32(1.4142135624)?;
+    emit_ldr_q_x17(code, s2, sqrt2);
     emit_fcmge(code, s2, s1, s2); // s2 = mask (all-ones where f >= √2)
     // adjust = 1.0 & mask
-    emit_f32_const(code, s0, 1.0);
+    let one = pool.push_f32(1.0)?;
+    emit_ldr_q_x17(code, s0, one);
     emit_and(code, s0, s0, s2); // s0 = adjust (1.0 where f >= √2, 0 elsewhere)
     // n += adjust
     emit_fadd(code, dst, dst, s0);
     // If f >= √2: multiply by 0.5 (divide by 2).
     // Use BSL: s1 = mask ? f*0.5 : f
     // Compute f*0.5 into s0, then BSL s2 (mask), s0 (if_true), s1 (if_false)
-    emit_f32_const(code, s0, 0.5);
+    let half = pool.push_f32(0.5)?;
+    emit_ldr_q_x17(code, s0, half);
     emit_fmul(code, s0, s1, s0); // s0 = f * 0.5
     emit_bsl(code, s2, s0, s1);  // s2 = mask ? f*0.5 : f
     emit_mov(code, s1, s2);      // s1 = adjusted f
@@ -621,24 +626,31 @@ pub fn emit_log2_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 
     // Horner: alternate dst and s2 as accumulator, s1 = f throughout.
 
     // p = c4*f + c3
-    emit_f32_const(code, s2, -0.3200435159_f32);  // s2 = c4
-    emit_f32_const(code, s0, 1.7974969154_f32);   // s0 = c3
+    let c4 = pool.push_f32(-0.3200435159_f32)?;
+    emit_ldr_q_x17(code, s2, c4);
+    let c3 = pool.push_f32(1.7974969154_f32)?;
+    emit_ldr_q_x17(code, s0, c3);
     emit_fmla(code, s0, s2, s1);                   // s0 = c3 + c4*f
 
     // p = p*f + c2
-    emit_f32_const(code, s2, -4.1988046176_f32);  // s2 = c2
+    let c2 = pool.push_f32(-4.1988046176_f32)?;
+    emit_ldr_q_x17(code, s2, c2);
     emit_fmla(code, s2, s0, s1);                   // s2 = c2 + p*f
 
     // p = p*f + c1
-    emit_f32_const(code, s0, 5.7270231695_f32);   // s0 = c1
+    let c1 = pool.push_f32(5.7270231695_f32)?;
+    emit_ldr_q_x17(code, s0, c1);
     emit_fmla(code, s0, s2, s1);                   // s0 = c1 + p*f
 
     // p = p*f + c0
-    emit_f32_const(code, s2, -3.0056146714_f32);  // s2 = c0
+    let c0 = pool.push_f32(-3.0056146714_f32)?;
+    emit_ldr_q_x17(code, s2, c0);
     emit_fmla(code, s2, s0, s1);                   // s2 = c0 + p*f
 
     // result = n + poly
     emit_fadd(code, dst, dst, s2);                  // dst = n + poly
+
+    Ok(())
 }
 
 /// exp2(x) — base-2 exponential via floor + polynomial + bit scaling.
@@ -646,7 +658,13 @@ pub fn emit_log2_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 
 /// Translated from pixelflow-core arm.rs F32x4::exp2().
 /// Uses 5-coefficient minimax polynomial on [0,1) fractional part,
 /// then scales by 2^n via integer exponent bit manipulation.
-pub fn emit_exp2_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_exp2_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
     let s0 = scratch[0]; // n = floor(x)
     let s1 = scratch[1]; // f = frac(x), then integer scratch
     let s2 = scratch[2]; // Horner alternating accumulator
@@ -662,20 +680,25 @@ pub fn emit_exp2_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 
     // Alternate between dst and s2 as accumulator, s1 = f.
 
     // p = c4*f + c3
-    emit_f32_const(code, s2, 0.0135557_f32);  // s2 = c4
-    emit_f32_const(code, dst, 0.0520323_f32); // dst = c3
+    let c4 = pool.push_f32(0.0135557_f32)?;
+    emit_ldr_q_x17(code, s2, c4);
+    let c3 = pool.push_f32(0.0520323_f32)?;
+    emit_ldr_q_x17(code, dst, c3);
     emit_fmla(code, dst, s2, s1);              // dst = c3 + c4*f
 
     // p = p*f + c2
-    emit_f32_const(code, s2, 0.2413793_f32);  // s2 = c2
+    let c2 = pool.push_f32(0.2413793_f32)?;
+    emit_ldr_q_x17(code, s2, c2);
     emit_fmla(code, s2, dst, s1);              // s2 = c2 + p*f
 
     // p = p*f + c1
-    emit_f32_const(code, dst, 0.6931472_f32); // dst = c1
+    let c1 = pool.push_f32(0.6931472_f32)?;
+    emit_ldr_q_x17(code, dst, c1);
     emit_fmla(code, dst, s2, s1);              // dst = c1 + p*f
 
-    // p = p*f + c0
-    emit_f32_const(code, s2, 1.0_f32);        // s2 = c0
+    // p = p*f + c0 — 1.0 is FMOV-encodable but pool dedup is harmless
+    let c0 = pool.push_f32(1.0_f32)?;
+    emit_ldr_q_x17(code, s2, c0);
     emit_fmla(code, s2, dst, s1);              // s2 = c0 + p*f
     // Polynomial result now in s2.
 
@@ -688,6 +711,8 @@ pub fn emit_exp2_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 
 
     // Phase 4: result = poly * 2^n
     emit_fmul(code, dst, s2, s1);              // dst = poly * scale = 2^x
+
+    Ok(())
 }
 
 /// sin(x) — sine via Chebyshev polynomial.
@@ -696,23 +721,36 @@ pub fn emit_exp2_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 
 /// Range reduction to [-π, π], then 4-coefficient Horner in t².
 ///
 /// Uses scratch[0..2] only. scratch[3] is NOT touched (available for cos/tan).
-fn emit_sin_body(code: &mut Vec<u8>, dst: Reg, src: Reg, s0: Reg, s1: Reg, s2: Reg) {
+fn emit_sin_body(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    s0: Reg,
+    s1: Reg,
+    s2: Reg,
+) -> Result<(), &'static str> {
     // Phase 1: Range reduction
     // k = floor(x * (1/TAU) + 0.5)
-    emit_f32_const(code, s0, 1.0 / core::f32::consts::TAU); // s0 = 1/TAU
+    let inv_tau = pool.push_f32(1.0 / core::f32::consts::TAU)?;
+    emit_ldr_q_x17(code, s0, inv_tau);
     emit_fmul(code, s0, src, s0);              // s0 = x * (1/TAU)
-    emit_f32_const(code, s2, 0.5);
+
+    let half = pool.push_f32(0.5)?;
+    emit_ldr_q_x17(code, s2, half);
     emit_fadd(code, s0, s0, s2);               // s0 = x*(1/TAU) + 0.5
     emit_frintm(code, s0, s0);                 // s0 = k = floor(...)
 
     // x_reduced = x - k * TAU
-    emit_f32_const(code, s2, core::f32::consts::TAU);
+    let tau = pool.push_f32(core::f32::consts::TAU)?;
+    emit_ldr_q_x17(code, s2, tau);
     emit_fmul(code, s2, s0, s2);               // s2 = k * TAU
     emit_fsub(code, s0, src, s2);              // s0 = x_reduced = x - k*TAU
 
     // Phase 2: Normalize to [-1, 1]
     // t = x_reduced / PI
-    emit_f32_const(code, s2, 1.0 / core::f32::consts::PI);
+    let inv_pi = pool.push_f32(1.0 / core::f32::consts::PI)?;
+    emit_ldr_q_x17(code, s2, inv_pi);
     emit_fmul(code, s0, s0, s2);               // s0 = t
 
     // Phase 3: Polynomial sin(π*t) ≈ t * (c1 + t²*(c3 + t²*(c5 + t²*c7)))
@@ -720,74 +758,123 @@ fn emit_sin_body(code: &mut Vec<u8>, dst: Reg, src: Reg, s0: Reg, s1: Reg, s2: R
     emit_fmul(code, s1, s0, s0);               // s1 = t² (alive through Horner)
 
     // Horner: p = c7*t² + c5, then p*t² + c3, then p*t² + c1
-    emit_f32_const(code, s2, -0.599264528932149_f32);  // s2 = c7
-    emit_f32_const(code, dst, 2.55016403987734_f32);   // dst = c5
+    let c7 = pool.push_f32(-0.599264528932149_f32)?;
+    emit_ldr_q_x17(code, s2, c7);
+    let c5 = pool.push_f32(2.55016403987734_f32)?;
+    emit_ldr_q_x17(code, dst, c5);
     emit_fmla(code, dst, s2, s1);                       // dst = c5 + c7*t²
 
-    emit_f32_const(code, s2, -5.16771278004997_f32);   // s2 = c3
+    let c3 = pool.push_f32(-5.16771278004997_f32)?;
+    emit_ldr_q_x17(code, s2, c3);
     emit_fmla(code, s2, dst, s1);                       // s2 = c3 + p*t²
 
-    emit_f32_const(code, dst, 3.14159265358979_f32);   // dst = c1 (= π)
+    let c1 = pool.push_f32(3.14159265358979_f32)?;
+    emit_ldr_q_x17(code, dst, c1);
     emit_fmla(code, dst, s2, s1);                       // dst = c1 + p*t²
 
     // Phase 4: result = t * p
     emit_fmul(code, dst, s0, dst);              // dst = t * p = sin(x)
+
+    Ok(())
 }
 
 /// sin(x) — public entry point.
-pub fn emit_sin_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
-    emit_sin_body(code, dst, src, scratch[0], scratch[1], scratch[2]);
+pub(crate) fn emit_sin_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
+    emit_sin_body(code, pool, dst, src, scratch[0], scratch[1], scratch[2])
 }
 
 /// cos(x) = sin(x + π/2).
 ///
 /// Computes x + π/2 into scratch[3], then calls sin_body using scratch[0..2].
-pub fn emit_cos_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_cos_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
     let s3 = scratch[3];
-    emit_f32_const(code, s3, core::f32::consts::FRAC_PI_2);
+    let frac_pi_2 = pool.push_f32(core::f32::consts::FRAC_PI_2)?;
+    emit_ldr_q_x17(code, s3, frac_pi_2);
     emit_fadd(code, s3, src, s3);               // s3 = x + π/2
-    emit_sin_body(code, dst, s3, scratch[0], scratch[1], scratch[2]);
+    emit_sin_body(code, pool, dst, s3, scratch[0], scratch[1], scratch[2])
 }
 
 /// tan(x) = sin(x) / cos(x).
 ///
 /// Computes sin(x) into scratch[3], then cos(x) into dst, then divides.
-pub fn emit_tan_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_tan_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
     let s3 = scratch[3];
     // sin(x) → s3
-    emit_sin_body(code, s3, src, scratch[0], scratch[1], scratch[2]);
+    emit_sin_body(code, pool, s3, src, scratch[0], scratch[1], scratch[2])?;
     // cos(x) → dst  (src is still intact — sin_body doesn't clobber it)
-    emit_cos_builtin(code, dst, src, scratch);
+    emit_cos_builtin(code, pool, dst, src, scratch)?;
     // dst = sin(x) / cos(x)
     emit_fdiv(code, dst, s3, dst);
+    Ok(())
 }
 
 /// exp(x) = exp2(x * log2(e)).
-pub fn emit_exp_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_exp_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
     let s0 = scratch[0];
     // s0 = x * log2(e)
-    emit_f32_const(code, s0, 1.4426950408889634_f32); // LOG2_E
+    let log2_e = pool.push_f32(1.4426950408889634_f32)?;
+    emit_ldr_q_x17(code, s0, log2_e);
     emit_fmul(code, s0, src, s0);
     // exp2(s0) → dst
-    emit_exp2_builtin(code, dst, s0, scratch);
+    emit_exp2_builtin(code, pool, dst, s0, scratch)
 }
 
 /// ln(x) = log2(x) * ln(2).
-pub fn emit_ln_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_ln_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
     // log2(x) → dst
-    emit_log2_builtin(code, dst, src, scratch);
+    emit_log2_builtin(code, pool, dst, src, scratch)?;
     // dst *= ln(2)
     let s0 = scratch[0];
-    emit_f32_const(code, s0, 0.6931471805599453_f32); // LN_2
+    let ln_2 = pool.push_f32(0.6931471805599453_f32)?;
+    emit_ldr_q_x17(code, s0, ln_2);
     emit_fmul(code, dst, dst, s0);
+    Ok(())
 }
 
 /// log10(x) = log2(x) * log10(2).
-pub fn emit_log10_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
-    emit_log2_builtin(code, dst, src, scratch);
+pub(crate) fn emit_log10_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
+    emit_log2_builtin(code, pool, dst, src, scratch)?;
     let s0 = scratch[0];
-    emit_f32_const(code, s0, 0.30102999566398120_f32); // LOG10_2
+    let log10_2 = pool.push_f32(0.30102999566398120_f32)?;
+    emit_ldr_q_x17(code, s0, log10_2);
     emit_fmul(code, dst, dst, s0);
+    Ok(())
 }
 
 /// round(x) — round to nearest, ties away from zero. ARM64 FRINTA instruction.
@@ -807,14 +894,21 @@ pub fn emit_fract_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg;
 // =============================================================================
 
 /// pow(x, y) = exp2(y * log2(x)).
-pub fn emit_pow_builtin(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_pow_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src1: Reg,
+    src2: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
     let s3 = scratch[3];
     // log2(x) → s3 (uses s0, s1, s2 as scratch, reads src1)
-    emit_log2_builtin(code, s3, src1, scratch);
+    emit_log2_builtin(code, pool, s3, src1, scratch)?;
     // s3 = y * log2(x)
     emit_fmul(code, s3, src2, s3);
     // exp2(s3) → dst (uses s0, s1, s2 as scratch)
-    emit_exp2_builtin(code, dst, s3, scratch);
+    emit_exp2_builtin(code, pool, dst, s3, scratch)
 }
 
 /// hypot(x, y) = sqrt(x*x + y*y).
@@ -860,13 +954,14 @@ pub fn emit_hypot_builtin(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
 ///
 ///   Phase 5: Quadrant correction. Deallocate stack frame.
 /// ```
-pub fn emit_atan2_builtin(
+pub(crate) fn emit_atan2_builtin(
     code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
     dst: Reg,
     src1: Reg,   // y
     src2: Reg,   // x
     scratch: [Reg; 4],
-) {
+) -> Result<(), &'static str> {
     let s0 = scratch[0];
     let s1 = scratch[1];
     let s2 = scratch[2];
@@ -884,7 +979,8 @@ pub fn emit_atan2_builtin(
     // =========================================================================
 
     // mask_neg_x: "x < 0" via reversed fcmgt → s2 (LIVE until Phase 5)
-    emit_f32_const(code, s0, 0.0_f32);           // s0 = 0.0
+    // Zero is FMOV-encodable, so use MOVI directly (no pool needed)
+    emit_fmov_imm(code, s0, 0.0_f32, [Reg(28), Reg(29), Reg(30), Reg(31)]);
     emit_fcmgt(code, s2, s0, src2);              // s2 = mask(0 > x) = mask(x < 0)
 
     // r = y / x → dst
@@ -893,9 +989,10 @@ pub fn emit_atan2_builtin(
     // ---- src1, src2 DEAD ----
 
     // sign_r: +1.0 where r >= 0, -1.0 where r < 0.
-    emit_f32_const(code, s0, 0.0_f32);           // s0 = 0.0
+    emit_fmov_imm(code, s0, 0.0_f32, [Reg(28), Reg(29), Reg(30), Reg(31)]);
     emit_fcmge(code, s0, dst, s0);               // s0 = mask(r >= 0)
-    emit_f32_const(code, s3, 1.0_f32);           // s3 = 1.0
+    let one = pool.push_f32(1.0_f32)?;
+    emit_ldr_q_x17(code, s3, one);
     emit_fneg(code, s1, s3);                     // s1 = -1.0
     emit_bsl(code, s0, s3, s1);                  // s0 = r>=0 ? 1.0 : -1.0
     emit_str_sp(code, s0, 0);                    // [SP, #0] = sign_r (spilled)
@@ -905,7 +1002,7 @@ pub fn emit_atan2_builtin(
     emit_fabs(code, s3, dst);                    // s3 = r_abs = |r|
 
     // mask_large = r_abs > 1.0 → s1 (LIVE until Phase 3)
-    emit_f32_const(code, s0, 1.0_f32);           // s0 = 1.0
+    emit_ldr_q_x17(code, s0, one);               // s0 = 1.0 (reuse pool offset)
     emit_fcmgt(code, s1, s3, s0);                // s1 = mask(r_abs > 1.0)
 
     // State: s0 = free, s1 = mask_large, s2 = mask_neg_x, s3 = r_abs, dst = free.
@@ -923,7 +1020,7 @@ pub fn emit_atan2_builtin(
     // =========================================================================
 
     // Compute 1/r_abs → s0
-    emit_f32_const(code, s0, 1.0_f32);           // s0 = 1.0
+    emit_ldr_q_x17(code, s0, one);               // s0 = 1.0
     emit_fdiv(code, s0, s0, s3);                 // s0 = 1.0 / r_abs
 
     // Select t: mask_large ? (1/r_abs) : r_abs
@@ -945,16 +1042,20 @@ pub fn emit_atan2_builtin(
     // We'll save t in a different way: t = sqrt(t^2) at the end.
 
     // Horner step 1: dst = c5 + c7 * t^2
-    emit_f32_const(code, dst, 0.2_f32);          // dst = c5
-    emit_f32_const(code, s3, -0.142857143_f32);  // s3 = c7 (clobbers t)
+    let atan_c5 = pool.push_f32(0.2_f32)?;
+    emit_ldr_q_x17(code, dst, atan_c5);
+    let atan_c7 = pool.push_f32(-0.142857143_f32)?;
+    emit_ldr_q_x17(code, s3, atan_c7);          // s3 = c7 (clobbers t)
     emit_fmla(code, dst, s3, s0);                // dst = c5 + c7*t^2
 
     // Horner step 2: s3 = c3 + dst * t^2
-    emit_f32_const(code, s3, -0.333333333_f32);  // s3 = c3
+    let atan_c3 = pool.push_f32(-0.333333333_f32)?;
+    emit_ldr_q_x17(code, s3, atan_c3);
     emit_fmla(code, s3, dst, s0);                // s3 = c3 + poly*t^2
 
     // Horner step 3: dst = c1 + s3 * t^2
-    emit_f32_const(code, dst, 0.999999999_f32);  // dst = c1
+    let atan_c1 = pool.push_f32(0.999999999_f32)?;
+    emit_ldr_q_x17(code, dst, atan_c1);
     emit_fmla(code, dst, s3, s0);                // dst = poly
 
     // Recover t = sqrt(t^2) → s3
@@ -973,7 +1074,8 @@ pub fn emit_atan2_builtin(
     // =========================================================================
 
     // atan_large = π/2 - atan_small → s3
-    emit_f32_const(code, s3, core::f32::consts::FRAC_PI_2);  // s3 = π/2
+    let frac_pi_2 = pool.push_f32(core::f32::consts::FRAC_PI_2)?;
+    emit_ldr_q_x17(code, s3, frac_pi_2);
     emit_fsub(code, s3, s3, dst);                // s3 = π/2 - atan_small
 
     // BSL: s1 = mask_large ? s3 (atan_large) : dst (atan_small)
@@ -1006,7 +1108,8 @@ pub fn emit_atan2_builtin(
     emit_bsl(code, s1, s3, s0);                        // s1 = sign_y
 
     // correction = π * sign_y → s3
-    emit_f32_const(code, s3, core::f32::consts::PI);   // s3 = π
+    let pi = pool.push_f32(core::f32::consts::PI)?;
+    emit_ldr_q_x17(code, s3, pi);
     emit_fmul(code, s3, s3, s1);                       // s3 = π * sign_y
 
     // corrected = atan_signed + π*sign_y → s0
@@ -1018,42 +1121,65 @@ pub fn emit_atan2_builtin(
 
     // Deallocate stack frame.
     emit_add_sp(code, 16);
+
+    Ok(())
 }
 
 /// atan(x) = atan2(x, 1.0).
 ///
 /// Loads 1.0 into scratch[3], then delegates to atan2.
-pub fn emit_atan_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_atan_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
     let s3 = scratch[3];
-    emit_f32_const(code, s3, 1.0_f32);       // s3 = 1.0
-    emit_atan2_builtin(code, dst, src, s3, scratch);
+    let one = pool.push_f32(1.0_f32)?;
+    emit_ldr_q_x17(code, s3, one);
+    emit_atan2_builtin(code, pool, dst, src, s3, scratch)
 }
 
 /// asin(x) = atan2(x, sqrt(1 - x*x)).
 ///
 /// Uses scratch[3] for the denominator, then delegates to atan2.
-pub fn emit_asin_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_asin_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
     let s3 = scratch[3];
     // s3 = 1.0 - src*src
-    emit_f32_const(code, s3, 1.0_f32);
+    let one = pool.push_f32(1.0_f32)?;
+    emit_ldr_q_x17(code, s3, one);
     emit_fmul(code, dst, src, src);           // dst = src*src (temporary)
     emit_fsub(code, s3, s3, dst);             // s3 = 1 - src*src
     emit_fsqrt(code, s3, s3);                 // s3 = sqrt(1 - src*src)
-    emit_atan2_builtin(code, dst, src, s3, scratch);
+    emit_atan2_builtin(code, pool, dst, src, s3, scratch)
 }
 
 /// acos(x) = atan2(sqrt(1 - x*x), x).
 ///
 /// Uses scratch[3] for the numerator, then delegates to atan2 with swapped args.
-pub fn emit_acos_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_acos_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
     let s3 = scratch[3];
     // s3 = 1.0 - src*src
-    emit_f32_const(code, s3, 1.0_f32);
+    let one = pool.push_f32(1.0_f32)?;
+    emit_ldr_q_x17(code, s3, one);
     emit_fmul(code, dst, src, src);           // dst = src*src (temporary)
     emit_fsub(code, s3, s3, dst);             // s3 = 1 - src*src
     emit_fsqrt(code, s3, s3);                 // s3 = sqrt(1 - src*src)
     // atan2(sqrt(1-x^2), x) — note: y=s3, x=src
-    emit_atan2_builtin(code, dst, s3, src, scratch);
+    emit_atan2_builtin(code, pool, dst, s3, src, scratch)
 }
 
 // =============================================================================
@@ -1061,7 +1187,14 @@ pub fn emit_acos_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 
 // =============================================================================
 
 /// Emit unary operation - dispatches to appropriate instruction(s)
-pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_unary(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    op: OpKind,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
     match op {
         OpKind::Neg => emit_fneg(code, dst, src),
         OpKind::Abs => emit_fabs(code, dst, src),
@@ -1072,24 +1205,25 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: [
         OpKind::Ceil => emit_frintp(code, dst, src),
 
         // Transcendental builtins — inline polynomial sequences
-        OpKind::Sin => emit_sin_builtin(code, dst, src, scratch),
-        OpKind::Cos => emit_cos_builtin(code, dst, src, scratch),
-        OpKind::Tan => emit_tan_builtin(code, dst, src, scratch),
-        OpKind::Exp => emit_exp_builtin(code, dst, src, scratch),
-        OpKind::Exp2 => emit_exp2_builtin(code, dst, src, scratch),
-        OpKind::Ln => emit_ln_builtin(code, dst, src, scratch),
-        OpKind::Log2 => emit_log2_builtin(code, dst, src, scratch),
-        OpKind::Log10 => emit_log10_builtin(code, dst, src, scratch),
+        OpKind::Sin => return emit_sin_builtin(code, pool, dst, src, scratch),
+        OpKind::Cos => return emit_cos_builtin(code, pool, dst, src, scratch),
+        OpKind::Tan => return emit_tan_builtin(code, pool, dst, src, scratch),
+        OpKind::Exp => return emit_exp_builtin(code, pool, dst, src, scratch),
+        OpKind::Exp2 => return emit_exp2_builtin(code, pool, dst, src, scratch),
+        OpKind::Ln => return emit_ln_builtin(code, pool, dst, src, scratch),
+        OpKind::Log2 => return emit_log2_builtin(code, pool, dst, src, scratch),
+        OpKind::Log10 => return emit_log10_builtin(code, pool, dst, src, scratch),
         OpKind::Round => emit_round_builtin(code, dst, src),
         OpKind::Fract => emit_fract_builtin(code, dst, src, scratch),
 
         // Inverse trig builtins — polynomial atan2 core with composition
-        OpKind::Atan => emit_atan_builtin(code, dst, src, scratch),
-        OpKind::Asin => emit_asin_builtin(code, dst, src, scratch),
-        OpKind::Acos => emit_acos_builtin(code, dst, src, scratch),
+        OpKind::Atan => return emit_atan_builtin(code, pool, dst, src, scratch),
+        OpKind::Asin => return emit_asin_builtin(code, pool, dst, src, scratch),
+        OpKind::Acos => return emit_acos_builtin(code, pool, dst, src, scratch),
 
-        _ => panic!("unary emit not implemented for {:?}", op),
+        _ => return Err("unary emit not implemented for this op"),
     }
+    Ok(())
 }
 
 /// Emit binary operation
@@ -1119,19 +1253,20 @@ pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Re
 }
 
 /// Emit binary transcendental operation (needs scratch registers).
-pub fn emit_binary_transcendental(
+pub(crate) fn emit_binary_transcendental(
     code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
     op: OpKind,
     dst: Reg,
     src1: Reg,
     src2: Reg,
     scratch: [Reg; 4],
-) {
+) -> Result<(), &'static str> {
     match op {
-        OpKind::Pow => emit_pow_builtin(code, dst, src1, src2, scratch),
-        OpKind::Hypot => emit_hypot_builtin(code, dst, src1, src2),
-        OpKind::Atan2 => emit_atan2_builtin(code, dst, src1, src2, scratch),
-        _ => panic!("binary transcendental emit not implemented for {:?}", op),
+        OpKind::Pow => emit_pow_builtin(code, pool, dst, src1, src2, scratch),
+        OpKind::Hypot => { emit_hypot_builtin(code, dst, src1, src2); Ok(()) }
+        OpKind::Atan2 => emit_atan2_builtin(code, pool, dst, src1, src2, scratch),
+        _ => Err("binary transcendental emit not implemented for this op"),
     }
 }
 

@@ -52,7 +52,7 @@ pub struct AngleExpansion {
 ///
 /// Implementing this trait derives the rule:
 /// f(a + b) → term1_op1(a)*term1_op2(b) + sign*term2_op1(a)*term2_op2(b)
-pub trait AngleAddition {
+pub trait AngleAddition: Send + Sync {
     /// The trig operation (sin or cos).
     fn op() -> &'static dyn Op;
     /// The expansion formula.

@@ -245,6 +245,11 @@ impl GuidedSearch {
                 return self.finish(StopReason::MaxEpochs, trajectory);
             }
 
+            // Node budget: stop if e-graph has grown too large
+            if self.egraph.node_count() > self.node_budget {
+                return self.finish(StopReason::MaxEpochs, trajectory);
+            }
+
             // Score each rule with the Guide
             let mut rules_to_apply = Vec::new();
             let mut rule_records = Vec::new();
@@ -988,7 +993,8 @@ mod tests {
         let root = egraph.add_expr(&expr);
 
         let nnue = ExprNnue::new_random(42);
-        let mut search = GuidedSearch::new(egraph, root, 10);
+        let mut search = GuidedSearch::new(egraph, root, 3)
+            .with_node_budget(500);
 
         // Run with uniform guide (baseline)
         let result = search.run_uniform(

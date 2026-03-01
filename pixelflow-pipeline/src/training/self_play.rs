@@ -18,11 +18,13 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 use pixelflow_search::egraph::{
-    all_rules, expr_tree_to_nnue, extract_neural, predict_tree_cost, EGraph, Rewrite,
+    all_rules, expr_tree_to_nnue, extract_neural, predict_tree_cost, EGraph, ENode, Rewrite,
 };
 use pixelflow_search::nnue::{
-    BwdGenConfig, BwdGenerator, EdgeAccumulator, Expr, ExprNnue, RuleTemplates, EMBED_DIM,
+    BwdGenConfig, BwdGenerator, EdgeAccumulator, Expr, ExprNnue, GraphAccumulator, OpKind,
+    RuleTemplates, EMBED_DIM, GRAPH_INPUT_DIM,
 };
+use pixelflow_search::nnue::factored::MAX_ARITY;
 use pixelflow_search::nnue::factored::INPUT_DIM;
 
 use crate::jit_bench::benchmark_jit;
@@ -50,6 +52,42 @@ pub fn acc_to_vec(acc: &EdgeAccumulator) -> Vec<f32> {
     v
 }
 
+/// Convert a [`GraphAccumulator`] to a flat `GRAPH_INPUT_DIM`-element `Vec<f32>`.
+///
+/// Layout: `[values (3*K=96 floats), edge_count, node_count]` = 98 floats total.
+pub fn gacc_to_vec(gacc: &GraphAccumulator) -> Vec<f32> {
+    let mut v = Vec::with_capacity(GRAPH_INPUT_DIM);
+    v.extend_from_slice(&gacc.values);
+    v.push(gacc.edge_count as f32);
+    v.push(gacc.node_count as f32);
+    v
+}
+
+/// Build a [`GraphAccumulator`] from the current e-graph state.
+///
+/// O(V+E) traversal. Walks all canonical e-classes, resolves child ops
+/// via union-find, and accumulates VSA-encoded edges. Rebuilt from scratch
+/// each epoch because union-find merges change canonical representatives,
+/// making incremental updates unsound.
+fn build_graph_acc(egraph: &EGraph, emb: &pixelflow_search::nnue::OpEmbeddings) -> GraphAccumulator {
+    let mut gacc = GraphAccumulator::new();
+    for class_id in egraph.class_ids() {
+        for node in egraph.nodes(class_id) {
+            match node {
+                ENode::Var(_) | ENode::Const(_) => gacc.add_leaf(),
+                ENode::Op { op, children } => {
+                    let child_ops: Vec<OpKind> = children
+                        .iter()
+                        .map(|c| egraph.canonical_op(*c))
+                        .collect();
+                    gacc.add_op_node(emb, op.kind(), &child_ops);
+                }
+            }
+        }
+    }
+    gacc
+}
+
 /// Build [`RuleTemplates`] from rule definitions.
 ///
 /// Each rule provides LHS/RHS expression templates via the [`Rewrite`] trait.
@@ -68,52 +106,68 @@ pub fn build_rule_templates(rules: &[Box<dyn Rewrite>]) -> RuleTemplates {
 
 /// Convert an NNUE [`Expr`] to an [`ExprTree`] for e-graph insertion.
 ///
-/// Mirrors the `expr_to_tree` helper from `collect_guide_data.rs`.
+/// Uses iterative traversal with explicit stack to avoid thread stack overflow
+/// on deeply nested expression trees.
 fn expr_to_tree(
     expr: &Expr,
 ) -> pixelflow_search::egraph::ExprTree {
     use pixelflow_search::egraph::ExprTree;
 
-    match expr {
-        Expr::Var(v) => ExprTree::var(*v),
-        Expr::Const(c) => ExprTree::constant(*c),
-        Expr::Param(i) => panic!("Expr::Param({i}) in expr_to_tree -- call substitute_params first"),
-        Expr::Unary(op, a) => {
-            let child = expr_to_tree(a);
-            let op_ref = op_kind_to_static(*op);
-            ExprTree::Op {
-                op: op_ref,
-                children: vec![child],
-            }
-        }
-        Expr::Binary(op, a, b) => {
-            let left = expr_to_tree(a);
-            let right = expr_to_tree(b);
-            let op_ref = op_kind_to_static(*op);
-            ExprTree::Op {
-                op: op_ref,
-                children: vec![left, right],
-            }
-        }
-        Expr::Ternary(op, a, b, c) => {
-            let c1 = expr_to_tree(a);
-            let c2 = expr_to_tree(b);
-            let c3 = expr_to_tree(c);
-            let op_ref = op_kind_to_static(*op);
-            ExprTree::Op {
-                op: op_ref,
-                children: vec![c1, c2, c3],
-            }
-        }
-        Expr::Nary(op, children) => {
-            let child_trees: Vec<_> = children.iter().map(|c| expr_to_tree(c)).collect();
-            let op_ref = op_kind_to_static(*op);
-            ExprTree::Op {
-                op: op_ref,
-                children: child_trees,
+    enum Task<'a> {
+        Visit(&'a Expr),
+        Complete {
+            op_ref: &'static dyn pixelflow_search::egraph::ops::Op,
+            arity: usize,
+        },
+    }
+
+    let mut stack: Vec<Task<'_>> = vec![Task::Visit(expr)];
+    let mut result_stack: Vec<ExprTree> = Vec::new();
+
+    while let Some(task) = stack.pop() {
+        match task {
+            Task::Visit(node) => match node {
+                Expr::Var(v) => result_stack.push(ExprTree::var(*v)),
+                Expr::Const(c) => result_stack.push(ExprTree::constant(*c)),
+                Expr::Param(i) => panic!("Expr::Param({i}) in expr_to_tree -- call substitute_params first"),
+                Expr::Unary(op, a) => {
+                    let op_ref = op_kind_to_static(*op);
+                    stack.push(Task::Complete { op_ref, arity: 1 });
+                    stack.push(Task::Visit(a));
+                }
+                Expr::Binary(op, a, b) => {
+                    let op_ref = op_kind_to_static(*op);
+                    stack.push(Task::Complete { op_ref, arity: 2 });
+                    stack.push(Task::Visit(b));
+                    stack.push(Task::Visit(a));
+                }
+                Expr::Ternary(op, a, b, c) => {
+                    let op_ref = op_kind_to_static(*op);
+                    stack.push(Task::Complete { op_ref, arity: 3 });
+                    stack.push(Task::Visit(c));
+                    stack.push(Task::Visit(b));
+                    stack.push(Task::Visit(a));
+                }
+                Expr::Nary(op, children) => {
+                    let op_ref = op_kind_to_static(*op);
+                    stack.push(Task::Complete { op_ref, arity: children.len() });
+                    for child in children.iter().rev() {
+                        stack.push(Task::Visit(child));
+                    }
+                }
+            },
+            Task::Complete { op_ref, arity } => {
+                let start = result_stack.len().saturating_sub(arity);
+                let child_trees: Vec<ExprTree> = result_stack.drain(start..).collect();
+                result_stack.push(ExprTree::Op {
+                    op: op_ref,
+                    children: child_trees,
+                });
             }
         }
     }
+
+    result_stack.pop().unwrap_or_else(|| panic!("expr_to_tree: empty result stack"))
 }
 
 /// Convert [`OpKind`] to a static [`Op`] reference for e-graph construction.
@@ -168,6 +222,69 @@ fn op_kind_to_static(
 }
 
 // ============================================================================
+// Edge collection for embedding gradients
+// ============================================================================
+
+/// Collect edges from an expression tree for embedding gradient flow.
+///
+/// Mirrors the traversal in `EdgeAccumulator::from_expr_dedup` but only records
+/// `(parent_op_index, child_op_index, effective_depth)` tuples. Uses dedup via
+/// structural hashing to match what the accumulator actually sees.
+pub fn collect_edges_dedup(expr: &Expr) -> Vec<(u8, u8, u16)> {
+    use std::collections::BTreeSet;
+
+    let mut edges = Vec::new();
+    let mut seen = BTreeSet::<u64>::new();
+    let mut stack: Vec<(&Expr, u32)> = vec![(expr, 0)];
+
+    while let Some((node, d)) = stack.pop() {
+        let h = pixelflow_search::nnue::factored::structural_hash(node);
+        if !seen.insert(h) {
+            continue;
+        }
+
+        let parent_op = node.op_type();
+
+        match node {
+            Expr::Var(_) | Expr::Const(_) => {}
+            Expr::Param(i) => panic!(
+                "Expr::Param({i}) in collect_edges_dedup — call substitute_params first"
+            ),
+            Expr::Unary(_, child) => {
+                let eff_depth = d * MAX_ARITY as u32;
+                edges.push((parent_op.index() as u8, child.op_type().index() as u8, eff_depth as u16));
+                stack.push((child, d + 1));
+            }
+            Expr::Binary(_, left, right) => {
+                edges.push((parent_op.index() as u8, left.op_type().index() as u8, (d * MAX_ARITY as u32) as u16));
+                edges.push((parent_op.index() as u8, right.op_type().index() as u8, (d * MAX_ARITY as u32 + 1) as u16));
+                stack.push((right, d + 1));
+                stack.push((left, d + 1));
+            }
+            Expr::Ternary(_, a, b, c) => {
+                edges.push((parent_op.index() as u8, a.op_type().index() as u8, (d * MAX_ARITY as u32) as u16));
+                edges.push((parent_op.index() as u8, b.op_type().index() as u8, (d * MAX_ARITY as u32 + 1) as u16));
+                edges.push((parent_op.index() as u8, c.op_type().index() as u8, (d * MAX_ARITY as u32 + 2) as u16));
+                stack.push((c, d + 1));
+                stack.push((b, d + 1));
+                stack.push((a, d + 1));
+            }
+            Expr::Nary(_, children) => {
+                for (idx, child) in children.iter().enumerate() {
+                    let eff_depth = d * MAX_ARITY as u32 + (idx.min(MAX_ARITY - 1)) as u32;
+                    edges.push((parent_op.index() as u8, child.op_type().index() as u8, eff_depth as u16));
+                }
+                for child in children.iter().rev() {
+                    stack.push((child, d + 1));
+                }
+            }
+        }
+    }
+
+    edges
+}
+
+// ============================================================================
 // Core trajectory runner
 // ============================================================================
 
@@ -212,6 +329,10 @@ pub fn run_self_play_trajectory(
 
     // 2b. JIT benchmark the initial expression for ground-truth initial cost
     let initial_expr_nnue = expr_tree_to_nnue(&initial_tree);
+    if initial_expr_nnue.has_degenerate() {
+        eprintln!("Skipping degenerate seed expression in {trajectory_id} (seed={seed_name})");
+        return None;
+    }
     let initial_bench = match benchmark_jit(&initial_expr_nnue) {
         Ok(b) => b,
         Err(e) => {
@@ -236,8 +357,62 @@ pub fn run_self_play_trajectory(
     let effective_epochs = max_epochs.min(epoch_budget);
 
     // 4. Epoch loop
+    //
+    // KEY DESIGN: Score rules from the e-graph state (GraphAccumulator), not
+    // from a single extracted expression. After rules fire and create new
+    // e-nodes/equivalences, rebuild the GraphAccumulator and re-score to
+    // approve newly-passing rules. The EdgeAccumulator is still built from
+    // the initial expression for the value head (TrajectoryStep.accumulator_state).
+    //
+    // No per-epoch extraction or JIT. The only JIT benchmark is the final one.
+    // The transformer critic assigns per-step credit from the single terminal reward.
+
+    // Build EdgeAccumulator from initial expression (for value head training)
+    let acc = EdgeAccumulator::from_expr_dedup(&initial_expr_nnue, &model.embeddings);
+    let acc_vec = acc_to_vec(&acc);
+    let edges = collect_edges_dedup(&initial_expr_nnue);
+    let hidden = model.forward_shared(&acc);
+    let expr_embed = model.compute_expr_embed(&hidden);
+    let expr_embed_vec: Vec<f32> = expr_embed.to_vec();
+
+    // Build GraphAccumulator from initial e-graph state (for mask scoring)
+    let mut gacc = build_graph_acc(&egraph, &model.embeddings);
+    let mut gacc_vec = gacc_to_vec(&gacc);
+
+    // Score all rules via graph pathway
+    let scores = model.mask_score_all_rules_graph(&gacc, rule_embeds);
+
+    // Determine which rules are approved
+    let mut approved_rules: Vec<(usize, f32)> = Vec::new();
+    for r in 0..num_rules {
+        let score = if r < scores.len() { scores[r] } else { 0.0 };
+        let prob = sigmoid(score);
+        if prob > threshold {
+            approved_rules.push((r, prob));
+        }
+    }
+
+    // Record one step per approved rule (decisions made, not yet applied)
+    for &(r, prob) in &approved_rules {
+        steps.push(TrajectoryStep {
+            accumulator_state: acc_vec.clone(),
+            expression_embedding: expr_embed_vec.clone(),
+            rule_embedding: rule_embeds.get(r).map_or_else(
+                || vec![0.0; EMBED_DIM],
+                |e| e.to_vec(),
+            ),
+            budget_remaining: (node_budget as i32) - (egraph.node_count() as i32),
+            epochs_remaining: effective_epochs as i32,
+            action_probability: prob,
+            matched: false, // Updated during saturation
+            jit_cost_ns: f64::NAN, // Backfilled with final cost
+            edges: edges.clone(),
+            graph_accumulator_state: gacc_vec.clone(),
+        });
+    }
+
+    // Saturate: apply approved rules, rebuild graph accumulator, re-score
     for epoch in 0..effective_epochs {
-        // Wall-clock safety net: if we hit this, something is wrong.
         if std::time::Instant::now() > deadline {
             panic!(
                 "Trajectory {trajectory_id} hit 30s wall-clock deadline at epoch {epoch} \
@@ -246,42 +421,38 @@ pub fn run_self_play_trajectory(
             );
         }
 
-        // Node budget
         if egraph.node_count() > node_budget {
             break;
         }
 
-        // a. Extract current best expression
-        let (tree, _) = extract_neural(&egraph, root, model);
-        let current_expr = expr_tree_to_nnue(&tree);
-
-        // a2. JIT benchmark this epoch's expression for ground-truth per-step cost
-        let epoch_cost_ns = match benchmark_jit(&current_expr) {
-            Ok(b) => b.ns,
-            Err(e) => {
-                eprintln!("JIT bench failed at epoch {epoch} for {seed_name}: {e}");
-                f64::NAN // Will be skipped in value training
+        let mut any_changed = false;
+        for (step_idx, &(r, _)) in approved_rules.iter().enumerate() {
+            let result = egraph.apply_rule_at_index(r);
+            if result.changes > 0 {
+                steps[step_idx].matched = true;
+                any_changed = true;
             }
-        };
+        }
 
-        // b. Build accumulator and score all rules via explicit forward pass
-        //    so we can capture expr_embed for the critic.
-        let acc = EdgeAccumulator::from_expr_dedup(&current_expr, &model.embeddings);
-        let acc_vec = acc_to_vec(&acc);
-        let hidden = model.forward_shared(&acc);
-        let expr_embed = model.compute_expr_embed(&hidden);
-        let expr_embed_vec: Vec<f32> = expr_embed.to_vec();
-        let scores = model.mask_score_all_rules_with_hidden(&hidden, rule_embeds);
+        // Fixed point: no rule produced new unions this epoch
+        if !any_changed {
+            break;
+        }
 
-        // c. For each rule, decide and possibly apply
-        let mut any_applied = false;
+        // Rebuild graph accumulator from post-union-find state
+        gacc = build_graph_acc(&egraph, &model.embeddings);
+        gacc_vec = gacc_to_vec(&gacc);
+
+        // Re-score with accurate graph state
+        let new_scores = model.mask_score_all_rules_graph(&gacc, rule_embeds);
+
+        // Approve newly-passing rules, record new steps with updated gacc
+        let epochs_remaining = (effective_epochs as i32) - (epoch as i32) - 1;
         for r in 0..num_rules {
-            let score = if r < scores.len() { scores[r] } else { 0.0 };
+            let score = if r < new_scores.len() { new_scores[r] } else { 0.0 };
             let prob = sigmoid(score);
-            let approved = prob > threshold;
-
-            if approved {
-                // Record step BEFORE applying
+            if prob > threshold && !approved_rules.iter().any(|(idx, _)| *idx == r) {
+                approved_rules.push((r, prob));
                 steps.push(TrajectoryStep {
                     accumulator_state: acc_vec.clone(),
                     expression_embedding: expr_embed_vec.clone(),
@@ -290,40 +461,24 @@ pub fn run_self_play_trajectory(
                         |e| e.to_vec(),
                     ),
                     budget_remaining: (node_budget as i32) - (egraph.node_count() as i32),
-                    epochs_remaining: (effective_epochs as i32) - (epoch as i32),
+                    epochs_remaining,
                     action_probability: prob,
-                    matched: false, // Will update below
-                    jit_cost_ns: epoch_cost_ns,
+                    matched: false,
+                    jit_cost_ns: f64::NAN,
+                    edges: edges.clone(),
+                    graph_accumulator_state: gacc_vec.clone(),
                 });
-
-                // Try to apply rule
-                let result = egraph.apply_rule_at_index(r);
-                if result.changes > 0 {
-                    // Safety: we just pushed, so last_mut is guaranteed Some.
-                    steps.last_mut()
-                        .expect("steps is non-empty after push")
-                        .matched = true;
-                    any_applied = true;
-                }
             }
-        }
-
-        // If no rules were approved at all, stop early (saturated from mask's perspective)
-        if !any_applied {
-            break;
-        }
-
-        // d. Update best cost if improved
-        let (new_tree, _) = extract_neural(&egraph, root, model);
-        let new_cost = predict_tree_cost(&new_tree, model);
-        if new_cost < best_cost {
-            best_cost = new_cost;
         }
     }
 
     // 5. JIT benchmark the final expression for terminal cost
     let (final_tree, _) = extract_neural(&egraph, root, model);
     let final_expr = expr_tree_to_nnue(&final_tree);
+    if final_expr.has_degenerate() {
+        eprintln!("Rewrite produced degenerate expression in {trajectory_id} (seed={seed_name})");
+        return None;
+    }
     let final_bench = match benchmark_jit(&final_expr) {
         Ok(b) => b,
         Err(e) => {
@@ -334,6 +489,12 @@ pub fn run_self_play_trajectory(
         }
     };
     let final_cost_ns = final_bench.ns;
+
+    // Backfill all steps with the final cost. The transformer critic will
+    // assign per-step advantages from this single terminal reward.
+    for step in &mut steps {
+        step.jit_cost_ns = final_cost_ns;
+    }
 
     // Correctness check: rewrites must preserve semantics.
     // Compare all SIMD lanes at the test point.
@@ -372,14 +533,32 @@ pub fn run_self_play_trajectory(
         steps,
         initial_cost_ns,
         final_cost_ns,
-        initial_cost,
-        final_cost: best_cost,
+        initial_cost: Some(initial_cost),
+        final_cost: Some(best_cost),
     })
 }
 
 // ============================================================================
 // Batch generator
 // ============================================================================
+
+/// Stack size for worker threads: 16MB. Default 8MB is usually sufficient since
+/// we use iterative traversals, but 16MB provides safety margin for deep
+/// expression trees during e-graph extraction.
+const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
+/// Determine effective worker count from an optional hint.
+///
+/// Returns `workers.unwrap_or(available_parallelism)`, clamped to `[1, 256]`.
+/// Falls back to 1 if `available_parallelism` cannot be determined.
+fn effective_workers(workers: Option<usize>) -> usize {
+    let n = workers.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    });
+    n.clamp(1, 256)
+}
 
 /// Generate `count` trajectories from random seeds using [`BwdGenerator`].
 ///
@@ -396,31 +575,136 @@ pub fn generate_trajectory_batch(
     max_epochs: usize,
     config: &BwdGenConfig,
 ) -> Vec<Trajectory> {
+    generate_trajectory_batch_parallel(
+        model, templates, rules, count, seed, threshold, max_epochs, config, None,
+    )
+}
+
+/// Generate `count` trajectories in parallel across `workers` threads.
+///
+/// Expression seeds are pre-generated sequentially (BwdGenerator is stateful),
+/// then trajectory self-play runs in parallel. Each worker thread gets its own
+/// stack and runs independent trajectories sharing the model read-only.
+///
+/// Pass `workers = None` to auto-detect from `available_parallelism`.
+/// Pass `workers = Some(1)` for sequential execution (useful for debugging).
+pub fn generate_trajectory_batch_parallel(
+    model: &ExprNnue,
+    templates: &RuleTemplates,
+    rules: &[Box<dyn Rewrite>],
+    count: usize,
+    seed: u64,
+    threshold: f32,
+    max_epochs: usize,
+    config: &BwdGenConfig,
+    workers: Option<usize>,
+) -> Vec<Trajectory> {
+    let num_workers = effective_workers(workers);
     let rule_embeds = model.encode_all_rules_from_templates(templates);
+
+    // Pre-generate all expression pairs sequentially. BwdGenerator maintains
+    // internal PRNG state so it cannot be safely split across threads.
     let mut generator = BwdGenerator::new(seed, config.clone(), templates.clone());
-    let mut trajectories = Vec::new();
+    let work_items: Vec<_> = (0..count)
+        .map(|i| {
+            let pair = generator.generate();
+            let traj_id = format!("seed_{seed}_t{i}");
+            let name = format!("expr_{i}");
+            (pair.unoptimized, name, traj_id)
+        })
+        .collect();
 
-    for i in 0..count {
-        let pair = generator.generate();
-        let traj_id = format!("seed_{seed}_t{i}");
-        let name = format!("expr_{i}");
-
-        if let Some(traj) = run_self_play_trajectory(
-            &pair.unoptimized, // Start from unoptimized version
-            &name,
-            model,
-            &rule_embeds,
-            rules,
-            threshold,
-            max_epochs,
-            traj_id,
-        ) {
-            trajectories.push(traj);
+    if num_workers <= 1 || count <= 1 {
+        // Sequential fast path: no thread overhead.
+        let mut trajectories = Vec::new();
+        for (expr, name, traj_id) in &work_items {
+            if let Some(traj) = run_self_play_trajectory(
+                expr, name, model, &rule_embeds, rules, threshold, max_epochs,
+                traj_id.clone(),
+            ) {
+                trajectories.push(traj);
+            }
         }
+        eprintln!("Generated {}/{count} trajectories (sequential)", trajectories.len());
+        return trajectories;
     }
 
-    eprintln!("Generated {}/{count} trajectories", trajectories.len());
-    trajectories
+    // Parallel: partition work items across workers, spawn scoped threads.
+    let num_rules = rules.len();
+    let chunk_size = (count + num_workers - 1) / num_workers;
+    let chunks: Vec<&[(Expr, String, String)]> = work_items.chunks(chunk_size).collect();
+    let actual_workers = chunks.len();
+
+    eprintln!(
+        "[PARALLEL] Spawning {actual_workers} workers for {count} trajectories ({chunk_size} each)"
+    );
+
+    let mut all_trajectories: Vec<Trajectory> = Vec::new();
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(worker_id, chunk)| {
+                // Each worker borrows model, rule_embeds, and creates its own rules.
+                let model_ref = &*model;
+                let rule_embeds_ref = &rule_embeds;
+
+                std::thread::Builder::new()
+                    .name(format!("traj-worker-{worker_id}"))
+                    .stack_size(WORKER_STACK_SIZE)
+                    .spawn_scoped(scope, move || {
+                        // Each worker creates its own rules (avoids sharing Box<dyn Rewrite>
+                        // through the hot loop — rules are used by EGraph internally).
+                        let worker_rules: Vec<Box<dyn Rewrite>> = all_rules();
+                        assert_eq!(
+                            worker_rules.len(), num_rules,
+                            "Worker {worker_id}: rule count mismatch ({} vs {num_rules})",
+                            worker_rules.len()
+                        );
+
+                        let mut results = Vec::with_capacity(chunk.len());
+                        for (expr, name, traj_id) in chunk {
+                            if let Some(traj) = run_self_play_trajectory(
+                                expr,
+                                name,
+                                model_ref,
+                                rule_embeds_ref,
+                                &worker_rules,
+                                threshold,
+                                max_epochs,
+                                traj_id.clone(),
+                            ) {
+                                results.push(traj);
+                            }
+                        }
+                        results
+                    })
+                    .unwrap_or_else(|e| {
+                        panic!("Failed to spawn trajectory worker {worker_id}: {e}")
+                    })
+            })
+            .collect();
+
+        for handle in handles {
+            let worker_results = handle.join().unwrap_or_else(|e| {
+                panic!(
+                    "Trajectory worker panicked: {}",
+                    e.downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| e.downcast_ref::<&str>().copied())
+                        .unwrap_or("unknown panic")
+                )
+            });
+            all_trajectories.extend(worker_results);
+        }
+    });
+
+    eprintln!(
+        "Generated {}/{count} trajectories ({actual_workers} workers)",
+        all_trajectories.len()
+    );
+    all_trajectories
 }
 
 // ============================================================================
@@ -443,6 +727,25 @@ pub fn write_trajectories_jsonl(trajectories: &[Trajectory], path: &Path) {
     writer
         .flush()
         .unwrap_or_else(|e| panic!("Failed to flush {}: {e}", path.display()));
+}
+
+/// Read trajectories from a JSONL file.
+///
+/// Each line is a JSON-serialized [`Trajectory`].
+/// Empty lines are skipped. Panics on I/O or parse errors (fail fast, fail loudly).
+pub fn load_trajectories_jsonl(path: &Path) -> Vec<Trajectory> {
+    let file = std::fs::File::open(path)
+        .unwrap_or_else(|e| panic!("Failed to open {}: {e}", path.display()));
+    let reader = std::io::BufReader::new(file);
+    let mut trajectories = Vec::new();
+    for (line_num, line) in std::io::BufRead::lines(reader).enumerate() {
+        let line = line.unwrap_or_else(|e| panic!("Failed to read line {} of {}: {e}", line_num + 1, path.display()));
+        if line.trim().is_empty() { continue; }
+        let traj: Trajectory = serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("Failed to parse trajectory at {}:{}: {e}", path.display(), line_num + 1));
+        trajectories.push(traj);
+    }
+    trajectories
 }
 
 /// Read per-trajectory advantage scores from a JSONL file.
@@ -594,45 +897,153 @@ pub fn generate_corpus_trajectories(
     threshold: f32,
     max_epochs: usize,
 ) -> Vec<Trajectory> {
+    generate_corpus_trajectories_parallel(
+        model, templates, rules, corpus, count, seed, threshold, max_epochs, None,
+    )
+}
+
+/// Run self-play trajectories on corpus expressions in parallel.
+///
+/// Samples `count` expressions from `corpus` with replacement using LCG
+/// (deterministic regardless of worker count), then distributes trajectory
+/// self-play across `workers` threads.
+///
+/// Pass `workers = None` to auto-detect from `available_parallelism`.
+pub fn generate_corpus_trajectories_parallel(
+    model: &ExprNnue,
+    templates: &RuleTemplates,
+    rules: &[Box<dyn Rewrite>],
+    corpus: &[(String, Expr)],
+    count: usize,
+    seed: u64,
+    threshold: f32,
+    max_epochs: usize,
+    workers: Option<usize>,
+) -> Vec<Trajectory> {
     assert!(!corpus.is_empty(), "corpus must be non-empty");
 
+    let num_workers = effective_workers(workers);
     let rule_embeds = model.encode_all_rules_from_templates(templates);
-    let mut trajectories = Vec::new();
-    let mut state = seed;
     let corpus_len = corpus.len();
 
-    for i in 0..count {
-        // LCG to pick index with replacement
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let idx = (state >> 33) as usize % corpus_len;
+    // Pre-compute corpus indices deterministically using LCG.
+    let mut state = seed;
+    let work_items: Vec<_> = (0..count)
+        .map(|i| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let idx = (state >> 33) as usize % corpus_len;
+            let traj_id = format!("corpus_{seed}_t{i}");
+            (idx, traj_id)
+        })
+        .collect();
 
-        let (ref name, ref expr) = corpus[idx];
-        let traj_id = format!("corpus_{seed}_t{i}");
-
-        match run_self_play_trajectory(
-            expr,
-            name,
-            model,
-            &rule_embeds,
-            rules,
-            threshold,
-            max_epochs,
-            traj_id,
-        ) {
-            Some(traj) => trajectories.push(traj),
-            None => {
-                eprintln!("[corpus] no trajectory produced for '{name}' (JIT error or no rules matched)");
+    if num_workers <= 1 || count <= 1 {
+        // Sequential fast path.
+        let mut trajectories = Vec::new();
+        for (idx, traj_id) in &work_items {
+            let (ref name, ref expr) = corpus[*idx];
+            match run_self_play_trajectory(
+                expr, name, model, &rule_embeds, rules, threshold, max_epochs,
+                traj_id.clone(),
+            ) {
+                Some(traj) => trajectories.push(traj),
+                None => {
+                    eprintln!(
+                        "[corpus] no trajectory produced for '{name}' (JIT error or no rules matched)"
+                    );
+                }
             }
         }
+        eprintln!(
+            "Generated {}/{count} corpus trajectories (sequential)",
+            trajectories.len()
+        );
+        return trajectories;
     }
 
+    // Parallel: partition work items across workers.
+    let num_rules = rules.len();
+    let chunk_size = (count + num_workers - 1) / num_workers;
+    let chunks: Vec<&[(usize, String)]> = work_items.chunks(chunk_size).collect();
+    let actual_workers = chunks.len();
+
     eprintln!(
-        "Generated {}/{count} corpus trajectories",
-        trajectories.len()
+        "[PARALLEL] Spawning {actual_workers} workers for {count} corpus trajectories"
     );
-    trajectories
+
+    let mut all_trajectories: Vec<Trajectory> = Vec::new();
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(worker_id, chunk)| {
+                let model_ref = &*model;
+                let rule_embeds_ref = &rule_embeds;
+                let corpus_ref = corpus;
+
+                std::thread::Builder::new()
+                    .name(format!("corpus-worker-{worker_id}"))
+                    .stack_size(WORKER_STACK_SIZE)
+                    .spawn_scoped(scope, move || {
+                        let worker_rules: Vec<Box<dyn Rewrite>> = all_rules();
+                        assert_eq!(
+                            worker_rules.len(), num_rules,
+                            "Worker {worker_id}: rule count mismatch ({} vs {num_rules})",
+                            worker_rules.len()
+                        );
+
+                        let mut results = Vec::with_capacity(chunk.len());
+                        for (idx, traj_id) in chunk {
+                            let (ref name, ref expr) = corpus_ref[*idx];
+                            match run_self_play_trajectory(
+                                expr,
+                                name,
+                                model_ref,
+                                rule_embeds_ref,
+                                &worker_rules,
+                                threshold,
+                                max_epochs,
+                                traj_id.clone(),
+                            ) {
+                                Some(traj) => results.push(traj),
+                                None => {
+                                    eprintln!(
+                                        "[corpus] no trajectory produced for '{name}' \
+                                         (JIT error or no rules matched)"
+                                    );
+                                }
+                            }
+                        }
+                        results
+                    })
+                    .unwrap_or_else(|e| {
+                        panic!("Failed to spawn corpus worker {worker_id}: {e}")
+                    })
+            })
+            .collect();
+
+        for handle in handles {
+            let worker_results = handle.join().unwrap_or_else(|e| {
+                panic!(
+                    "Corpus worker panicked: {}",
+                    e.downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| e.downcast_ref::<&str>().copied())
+                        .unwrap_or("unknown panic")
+                )
+            });
+            all_trajectories.extend(worker_results);
+        }
+    });
+
+    eprintln!(
+        "Generated {}/{count} corpus trajectories ({actual_workers} workers)",
+        all_trajectories.len()
+    );
+    all_trajectories
 }
 
 // ============================================================================
@@ -684,11 +1095,13 @@ mod tests {
                 action_probability: 0.5,
                 matched: true,
                 jit_cost_ns: 5.0,
+                edges: vec![(2, 3, 0)],
+                graph_accumulator_state: vec![0.0; GRAPH_INPUT_DIM],
             }],
             initial_cost_ns: 5.0,
             final_cost_ns: 1.0,
-            initial_cost: 5.0,
-            final_cost: 1.0,
+            initial_cost: Some(5.0),
+            final_cost: Some(1.0),
         };
 
         let tmp = std::env::temp_dir().join("test_self_play_traj.jsonl");
@@ -703,7 +1116,7 @@ mod tests {
         assert_eq!(back.steps.len(), 1);
         assert!(back.steps[0].matched);
         assert!((back.final_cost_ns - 1.0).abs() < 1e-6);
-        assert!((back.initial_cost - 5.0).abs() < 1e-6);
+        assert!((back.initial_cost.unwrap() - 5.0).abs() < 1e-6);
 
         std::fs::remove_file(&tmp)
             .unwrap_or_else(|e| panic!("Failed to remove temp file {}: {e}", tmp.display()));
@@ -791,5 +1204,56 @@ mod tests {
         assert!((sigmoid(0.0) - 0.5).abs() < 1e-6, "sigmoid(0) should be 0.5");
         assert!(sigmoid(10.0) > 0.999, "sigmoid(10) should be ~1.0");
         assert!(sigmoid(-10.0) < 0.001, "sigmoid(-10) should be ~0.0");
+    }
+
+    #[test]
+    fn gacc_to_vec_correct_length() {
+        let gacc = GraphAccumulator::new();
+        let v = gacc_to_vec(&gacc);
+        assert_eq!(
+            v.len(),
+            GRAPH_INPUT_DIM,
+            "Expected {GRAPH_INPUT_DIM} floats, got {}",
+            v.len()
+        );
+    }
+
+    #[test]
+    fn gacc_to_vec_preserves_values() {
+        let mut gacc = GraphAccumulator::new();
+        gacc.values[0] = 2.5;
+        gacc.values[95] = -1.0;
+        gacc.edge_count = 5;
+        gacc.node_count = 8;
+
+        let v = gacc_to_vec(&gacc);
+        assert!((v[0] - 2.5).abs() < 1e-9, "values[0] mismatch");
+        assert!((v[95] - (-1.0)).abs() < 1e-9, "values[95] mismatch");
+        assert!((v[96] - 5.0).abs() < 1e-9, "edge_count mismatch");
+        assert!((v[97] - 8.0).abs() < 1e-9, "node_count mismatch");
+    }
+
+    #[test]
+    fn build_graph_acc_empty_egraph() {
+        use pixelflow_search::nnue::OpEmbeddings;
+
+        let egraph = EGraph::new();
+        let emb = OpEmbeddings::default();
+        let gacc = build_graph_acc(&egraph, &emb);
+        assert_eq!(gacc.edge_count, 0, "empty e-graph should have 0 edges");
+        assert_eq!(gacc.node_count, 0, "empty e-graph should have 0 nodes");
+    }
+
+    #[test]
+    fn build_graph_acc_single_var() {
+        use pixelflow_search::egraph::{EGraph, ENode};
+        use pixelflow_search::nnue::OpEmbeddings;
+
+        let mut egraph = EGraph::new();
+        egraph.add(ENode::Var(0));
+        let emb = OpEmbeddings::default();
+        let gacc = build_graph_acc(&egraph, &emb);
+        assert_eq!(gacc.node_count, 1, "single var should have 1 node");
+        assert_eq!(gacc.edge_count, 0, "single var should have 0 edges");
     }
 }

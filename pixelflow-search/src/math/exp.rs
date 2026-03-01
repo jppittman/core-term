@@ -36,7 +36,7 @@ fn b(e: Expr) -> Box<Expr> { Box::new(e) }
 /// Implementing this trait derives two rules:
 /// - f(f⁻¹(x)) → x
 /// - f⁻¹(f(x)) → x
-pub trait FunctionInverse {
+pub trait FunctionInverse: Send + Sync {
     /// The forward function (e.g., exp).
     fn forward() -> &'static dyn Op;
     /// The backward/inverse function (e.g., ln).
@@ -202,7 +202,7 @@ impl<T: FunctionInverse> Rewrite for BackwardForward<T> {
 ///
 /// Implementing this trait derives the rule:
 /// f(source_op(a, b)) → target_op(f(a), f(b))
-pub trait Homomorphism {
+pub trait Homomorphism: Send + Sync {
     /// The function (e.g., exp, ln).
     fn func() -> &'static dyn Op;
     /// The source operation (e.g., Add for exp).

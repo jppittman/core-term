@@ -45,21 +45,44 @@ impl ExprTree {
     }
 
     /// Count total nodes in the tree.
+    ///
+    /// Uses iterative traversal to avoid stack overflow on deep trees.
     pub fn node_count(&self) -> usize {
-        match self {
-            Self::Leaf(_) => 1,
-            Self::Op { children, .. } => 1 + children.iter().map(|c| c.node_count()).sum::<usize>(),
+        let mut count = 0usize;
+        let mut stack: Vec<&ExprTree> = vec![self];
+        while let Some(node) = stack.pop() {
+            count += 1;
+            if let Self::Op { children, .. } = node {
+                for child in children {
+                    stack.push(child);
+                }
+            }
         }
+        count
     }
 
     /// Compute depth of the tree.
+    ///
+    /// Uses iterative traversal to avoid stack overflow on deep trees.
     pub fn depth(&self) -> usize {
-        match self {
-            Self::Leaf(_) => 1,
-            Self::Op { children, .. } => {
-                1 + children.iter().map(|c| c.depth()).max().unwrap_or(0)
+        // Stack stores (node, depth_at_node)
+        let mut stack: Vec<(&ExprTree, usize)> = vec![(self, 1)];
+        let mut max_depth = 0usize;
+        while let Some((node, d)) = stack.pop() {
+            match node {
+                Self::Leaf(_) => {
+                    if d > max_depth {
+                        max_depth = d;
+                    }
+                }
+                Self::Op { children, .. } => {
+                    for child in children {
+                        stack.push((child, d + 1));
+                    }
+                }
             }
         }
+        max_depth
     }
 
     /// Check if this expression has valid types.
@@ -77,52 +100,70 @@ impl ExprTree {
     }
 
     /// Returns Some(is_boolean) if valid, None if invalid.
+    ///
+    /// Uses iterative traversal to avoid stack overflow on deep trees.
     fn check_type(&self) -> Option<bool> {
-        match self {
-            Self::Leaf(_) => Some(false), // Leaves are numeric
+        enum Task<'a> {
+            Visit(&'a ExprTree),
+            Complete { name: &'static str, arity: usize },
+        }
 
-            Self::Op { op, children } => {
-                let name = op.name();
+        let mut stack: Vec<Task<'_>> = vec![Task::Visit(self)];
+        // result_stack holds Option<bool>: Some(true)=boolean, Some(false)=numeric, None=invalid
+        let mut result_stack: Vec<Option<bool>> = Vec::new();
 
-                // Comparison ops: require numeric children, return boolean
-                if matches!(name, "lt" | "le" | "gt" | "ge" | "eq" | "ne") {
-                    // All children must be numeric (not boolean)
-                    for child in children {
-                        match child.check_type() {
-                            Some(false) => {} // Numeric - OK
-                            _ => return None, // Boolean or invalid - ERROR
+        while let Some(task) = stack.pop() {
+            match task {
+                Task::Visit(node) => match node {
+                    Self::Leaf(_) => result_stack.push(Some(false)), // Leaves are numeric
+
+                    Self::Op { op, children } => {
+                        let name = op.name();
+                        stack.push(Task::Complete { name, arity: children.len() });
+                        for child in children.iter().rev() {
+                            stack.push(Task::Visit(child));
                         }
                     }
-                    return Some(true); // Return boolean
-                }
+                },
+                Task::Complete { name, arity } => {
+                    let start = result_stack.len().saturating_sub(arity);
+                    let child_types: Vec<Option<bool>> = result_stack.drain(start..).collect();
 
-                // Select: first child MUST be boolean (comparison result), others numeric
-                if name == "select" && children.len() == 3 {
-                    // Condition MUST be boolean (comparison result)
-                    match children[0].check_type() {
-                        Some(true) => {} // Boolean - OK
-                        _ => return None, // Numeric or invalid - ERROR
-                    }
-                    // Then/else branches must be numeric
-                    for child in &children[1..] {
-                        match child.check_type() {
-                            Some(false) => {} // Numeric - OK
-                            _ => return None,
+                    // Comparison ops: require numeric children, return boolean
+                    if matches!(name, "lt" | "le" | "gt" | "ge" | "eq" | "ne") {
+                        let valid = child_types.iter().all(|t| matches!(t, Some(false)));
+                        if valid {
+                            result_stack.push(Some(true)); // Return boolean
+                        } else {
+                            result_stack.push(None); // Invalid
                         }
+                        continue;
                     }
-                    return Some(false); // Return numeric
-                }
 
-                // All other ops: require numeric children, return numeric
-                for child in children {
-                    match child.check_type() {
-                        Some(false) => {} // Numeric - OK
-                        _ => return None, // Boolean or invalid - ERROR
+                    // Select: first child MUST be boolean, others numeric
+                    if name == "select" && arity == 3 {
+                        let cond_ok = matches!(child_types[0], Some(true));
+                        let branches_ok = child_types[1..].iter().all(|t| matches!(t, Some(false)));
+                        if cond_ok && branches_ok {
+                            result_stack.push(Some(false)); // Return numeric
+                        } else {
+                            result_stack.push(None); // Invalid
+                        }
+                        continue;
+                    }
+
+                    // All other ops: require numeric children, return numeric
+                    let valid = child_types.iter().all(|t| matches!(t, Some(false)));
+                    if valid {
+                        result_stack.push(Some(false)); // Return numeric
+                    } else {
+                        result_stack.push(None); // Invalid
                     }
                 }
-                Some(false) // Return numeric
             }
         }
+
+        result_stack.pop().unwrap_or_else(|| panic!("check_type: empty result stack"))
     }
 
     // Constructor helpers for common operations
@@ -197,16 +238,23 @@ impl ExprTree {
     }
 
     /// Compute the cost of this expression tree using the given cost model.
+    ///
+    /// Uses iterative traversal to avoid stack overflow on deep trees.
     pub fn cost(&self, costs: &CostModel) -> usize {
-        match self {
-            Self::Leaf(_) => 0,  // Variables and constants are free
-            Self::Op { op, children } => {
-                // Use op.kind() at the boundary to convert to OpKind
-                let op_cost = costs.cost(op.kind());
-                let children_cost: usize = children.iter().map(|c| c.cost(costs)).sum();
-                op_cost + children_cost
+        let mut total = 0usize;
+        let mut stack: Vec<&ExprTree> = vec![self];
+        while let Some(node) = stack.pop() {
+            match node {
+                Self::Leaf(_) => {} // Variables and constants are free
+                Self::Op { op, children } => {
+                    total += costs.cost(op.kind());
+                    for child in children {
+                        stack.push(child);
+                    }
+                }
             }
         }
+        total
     }
 
 }

@@ -48,7 +48,7 @@ use alloc::vec::Vec;
 /// with a single `LDR Qt, [X17, #offset]` instead of the 3-instruction
 /// MOVZ+MOVK+DUP sequence.
 #[cfg(feature = "alloc")]
-struct ConstPool {
+pub(crate) struct ConstPool {
     /// Deduplicated entries: f32 bit patterns in pool order.
     entries: Vec<u32>,
     /// Map from f32 bits → pool index.
@@ -57,24 +57,47 @@ struct ConstPool {
 
 #[cfg(feature = "alloc")]
 impl ConstPool {
-    /// Build a constant pool from a schedule, collecting constants that need pool entries.
-    fn from_schedule(schedule: &[(regalloc::ValueId, ScheduledOp)]) -> Self {
-        use alloc::collections::BTreeMap;
-        let mut entries = Vec::new();
-        let mut index = BTreeMap::new();
+    /// Create an empty constant pool.
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            index: alloc::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Build a constant pool from a schedule, pre-seeding constants that need pool entries.
+    fn from_schedule(schedule: &[(regalloc::ValueId, ScheduledOp)]) -> Result<Self, &'static str> {
+        let mut pool = Self::new();
         for (_, op) in schedule {
             if let ScheduledOp::Const(val) = op {
                 if aarch64::needs_const_pool(*val) {
-                    let bits = val.to_bits();
-                    if !index.contains_key(&bits) {
-                        let idx = entries.len() as u16;
-                        entries.push(bits);
-                        index.insert(bits, idx);
-                    }
+                    pool.push_f32(*val)?;
                 }
             }
         }
-        Self { entries, index }
+        Ok(pool)
+    }
+
+    /// Insert an f32 into the pool (deduplicating by bit pattern) and return
+    /// the byte offset for an `LDR Qt, [X17, #offset]` load.
+    ///
+    /// Zero and FMOV-encodable constants are NOT filtered here — callers
+    /// that want the fast path should check `needs_const_pool` first.
+    /// Builtin emitters call this unconditionally because every constant
+    /// they use benefits from the pool (they are transcendental coefficients,
+    /// never zero or FMOV-encodable).
+    pub(crate) fn push_f32(&mut self, val: f32) -> Result<u16, &'static str> {
+        let bits = val.to_bits();
+        if let Some(&idx) = self.index.get(&bits) {
+            return Ok(idx * 16);
+        }
+        let idx = self.entries.len();
+        if idx >= 4096 {
+            return Err("constant pool overflow: exceeded 12-bit LDR offset limit (max 4095 entries)");
+        }
+        self.entries.push(bits);
+        self.index.insert(bits, idx as u16);
+        Ok((idx * 16) as u16)
     }
 
     /// Get the byte offset for a constant, or None if it's not in the pool.
@@ -583,8 +606,18 @@ pub fn compile_dag_with_ctx(expr: &Expr, ctx: EmitCtx) -> Result<CompileResult, 
         }
     }
 
-    // 7. Build constant pool from schedule
-    let pool = ConstPool::from_schedule(&schedule);
+    // 7. Build constant pool from schedule (pre-seed with ScheduledOp::Const values;
+    //    builtins will add their polynomial coefficients incrementally during emission).
+    let mut pool = ConstPool::from_schedule(&schedule)?;
+
+    // Guard: bail early if the expression alone nearly fills the pool.
+    // Builtins (sin, cos, atan2, etc.) add up to ~60 polynomial coefficients
+    // during emission. If the expression constants + builtin headroom exceed
+    // the aarch64 12-bit LDR offset limit, the expression is too large to compile.
+    const BUILTIN_HEADROOM: usize = 128;
+    if pool.entries.len() + BUILTIN_HEADROOM > 4095 {
+        return Err("expression too large: constant pool would exceed 12-bit LDR offset limit");
+    }
 
     // 8. Resolve + Emit: (Schedule, Allocation, Layout) → MachineCode
     let mut code = Vec::new();
@@ -594,12 +627,10 @@ pub fn compile_dag_with_ctx(expr: &Expr, ctx: EmitCtx) -> Result<CompileResult, 
         aarch64::emit_sub_sp(&mut code, layout.frame_size);
     }
 
-    // Emit ADR X17 placeholder for constant pool base (if pool is non-empty)
-    let adr_patch_pos = if !pool.is_empty() {
-        Some(aarch64::emit_adr_x17_placeholder(&mut code))
-    } else {
-        None
-    };
+    // Always emit ADR X17 placeholder — builtins (sin, cos, atan2, etc.) add
+    // their polynomial coefficients to the pool incrementally during emission,
+    // so we can't know at this point whether the pool will be empty.
+    let adr_patch_pos = aarch64::emit_adr_x17_placeholder(&mut code);
 
     // Track pending branch patches: (guard_idx, arm) → code position to patch
     let mut pending_patches: BTreeMap<(usize, u8), usize> = BTreeMap::new();
@@ -709,7 +740,7 @@ pub fn compile_dag_with_ctx(expr: &Expr, ctx: EmitCtx) -> Result<CompileResult, 
                     let all_true_branch = aarch64::emit_cbz_w16(&mut code);
 
                     // Mixed path: emit BSL (both arms already computed)
-                    emit_instruction_plan(&mut code, &plan, &pool);
+                    emit_instruction_plan(&mut code, &plan, &mut pool)?;
                     let skip_to_end = aarch64::emit_b(&mut code);
 
                     // All-false target: MOV dst ← false_arm
@@ -754,7 +785,7 @@ pub fn compile_dag_with_ctx(expr: &Expr, ctx: EmitCtx) -> Result<CompileResult, 
             }
         }
 
-        emit_instruction_plan(&mut code, &plan, &pool);
+        emit_instruction_plan(&mut code, &plan, &mut pool)?;
     }
 
     // Verify no pending patches remain unresolved
@@ -783,8 +814,12 @@ pub fn compile_dag_with_ctx(expr: &Expr, ctx: EmitCtx) -> Result<CompileResult, 
     // RET
     code.extend_from_slice(&0xD65F03C0u32.to_le_bytes());
 
-    // Emit constant pool after RET and patch ADR X17
-    if let Some(adr_pos) = adr_patch_pos {
+    // Emit constant pool after RET and patch ADR X17.
+    // If the pool ended up empty (no constants needed), the ADR is harmless —
+    // it just sets X17 to an unused address. The 4-byte placeholder cost is
+    // negligible compared to the code savings from pool loads.
+    if !pool.is_empty() {
+        let adr_pos = adr_patch_pos;
         // If the pool is going to be far away, upgrade ADR to ADRP + ADD.
         // We check against 1MB (1 << 20) minus a small margin for alignment padding.
         let estimated_offset = (code.len() as i64) - (adr_pos as i64);
@@ -1377,7 +1412,7 @@ pub fn resolve_operands(
 /// instructions. No decisions are made here — all decisions were
 /// made by resolve_operands.
 #[cfg(all(feature = "alloc", target_arch = "aarch64"))]
-fn emit_instruction_plan(code: &mut Vec<u8>, plan: &InstructionPlan, pool: &ConstPool) {
+fn emit_instruction_plan(code: &mut Vec<u8>, plan: &InstructionPlan, pool: &mut ConstPool) -> Result<(), &'static str> {
     use aarch64::*;
 
     // 1. Emit reloads (from stack or rematerialized constants)
@@ -1405,13 +1440,13 @@ fn emit_instruction_plan(code: &mut Vec<u8>, plan: &InstructionPlan, pool: &Cons
         }
         ResolvedOp::Unary { op, dst, src } => {
             let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
-            emit_unary(code, *op, *dst, *src, scratch);
+            emit_unary(code, pool, *op, *dst, *src, scratch)?;
         }
         ResolvedOp::Binary { op, dst, left, right } => {
             match op {
                 OpKind::Pow | OpKind::Hypot | OpKind::Atan2 => {
                     let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
-                    aarch64::emit_binary_transcendental(code, *op, *dst, *left, *right, scratch);
+                    aarch64::emit_binary_transcendental(code, pool, *op, *dst, *left, *right, scratch)?;
                 }
                 _ => emit_binary(code, *op, *dst, *left, *right),
             }
@@ -1446,6 +1481,8 @@ fn emit_instruction_plan(code: &mut Vec<u8>, plan: &InstructionPlan, pool: &Cons
     if let Some(store) = &plan.store {
         emit_str_sp(code, store.src, store.offset);
     }
+
+    Ok(())
 }
 
 /// Resolve a value to a register at emit time, emitting a reload if necessary.

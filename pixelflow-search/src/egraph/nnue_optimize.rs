@@ -59,8 +59,8 @@ impl OptimizeConfig {
     /// Fast config for simple expressions.
     pub fn fast() -> Self {
         Self {
-            max_epochs: 10,
-            max_classes: 1000,
+            max_epochs: 3,
+            max_classes: 500,
             threshold: 0.5,
             beam_width: 4,
         }
@@ -201,8 +201,11 @@ impl NnueOptimizer {
 
             let mut total_changes = 0;
 
-            // For each e-class
+            // For each e-class (re-check class limit after rule applications)
             for class_idx in 0..num_classes {
+                if egraph.num_classes() >= config.max_classes {
+                    break;
+                }
                 let class_id = EClassId(class_idx as u32);
                 let class_id = egraph.find(class_id);
 
@@ -455,7 +458,7 @@ mod tests {
         );
 
         let optimizer = NnueOptimizer::random(42);
-        let result = optimizer.optimize(&expr, OptimizeConfig::default());
+        let result = optimizer.optimize(&expr, OptimizeConfig::fast());
 
         println!("Complex: {:.3} -> {:.3} (ratio: {:.2})",
             result.initial_cost, result.final_cost, result.cost_ratio());

@@ -165,6 +165,40 @@ impl Expr {
         count
     }
 
+    /// Check for degenerate subexpressions: NaN/Inf constants, recip(0), div(x, 0).
+    ///
+    /// These produce garbage values that corrupt training data.
+    #[must_use]
+    pub fn has_degenerate(&self) -> bool {
+        let mut stack: Vec<&Expr> = vec![self];
+        while let Some(node) = stack.pop() {
+            match node {
+                Self::Const(v) if !v.is_finite() => return true,
+                Self::Unary(OpKind::Recip, a) => {
+                    if matches!(a.as_ref(), Self::Const(v) if *v == 0.0) {
+                        return true;
+                    }
+                    stack.push(a);
+                }
+                Self::Binary(OpKind::Div, a, b) => {
+                    if matches!(b.as_ref(), Self::Const(v) if *v == 0.0) {
+                        return true;
+                    }
+                    stack.push(a);
+                    stack.push(b);
+                }
+                Self::Var(_) | Self::Const(_) | Self::Param(_) => {}
+                Self::Unary(_, a) => stack.push(a),
+                Self::Binary(_, a, b) => { stack.push(a); stack.push(b); }
+                Self::Ternary(_, a, b, c) => { stack.push(a); stack.push(b); stack.push(c); }
+                Self::Nary(_, children) => {
+                    for child in children { stack.push(child); }
+                }
+            }
+        }
+        false
+    }
+
     /// Get the children as a slice (only works for Nary).
     ///
     /// # Panics
@@ -197,26 +231,69 @@ impl Expr {
 /// Examples:
 ///   `Var(0)`, `Const(-3.14)`, `add(Var(0), Var(1))`, `sin(Var(0))`
 ///   `mul_add(Var(0), Var(1), Const(2.0))`
+///
+/// Uses an explicit stack to avoid stack overflow on deeply nested trees.
 #[cfg(feature = "alloc")]
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Expr::Var(i) => write!(f, "Var({})", i),
-            Expr::Const(v) => write!(f, "Const({})", v),
-            Expr::Param(i) => write!(f, "Param({})", i),
-            Expr::Unary(op, a) => write!(f, "{}({})", op.name(), a),
-            Expr::Binary(op, a, b) => write!(f, "{}({}, {})", op.name(), a, b),
-            Expr::Ternary(op, a, b, c) => write!(f, "{}({}, {}, {})", op.name(), a, b, c),
-            Expr::Nary(op, children) => {
-                write!(f, "{}(", op.name())?;
-                for (i, child) in children.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+        /// Work items for the iterative display traversal.
+        enum Task<'a> {
+            /// Visit an expression node, expanding it into write tasks.
+            Visit(&'a Expr),
+            /// Write a static string (op names, punctuation).
+            WriteStr(&'static str),
+        }
+
+        let mut stack: Vec<Task<'_>> = Vec::new();
+        stack.push(Task::Visit(self));
+
+        while let Some(task) = stack.pop() {
+            match task {
+                Task::WriteStr(s) => f.write_str(s)?,
+                Task::Visit(expr) => match expr {
+                    Expr::Var(i) => write!(f, "Var({})", i)?,
+                    Expr::Const(v) => write!(f, "Const({})", v)?,
+                    Expr::Param(i) => write!(f, "Param({})", i)?,
+                    Expr::Unary(op, a) => {
+                        // Push in reverse execution order (stack is LIFO).
+                        stack.push(Task::WriteStr(")"));
+                        stack.push(Task::Visit(a));
+                        f.write_str(op.name())?;
+                        f.write_str("(")?;
                     }
-                    write!(f, "{}", child)?;
-                }
-                write!(f, ")")
+                    Expr::Binary(op, a, b) => {
+                        stack.push(Task::WriteStr(")"));
+                        stack.push(Task::Visit(b));
+                        stack.push(Task::WriteStr(", "));
+                        stack.push(Task::Visit(a));
+                        f.write_str(op.name())?;
+                        f.write_str("(")?;
+                    }
+                    Expr::Ternary(op, a, b, c) => {
+                        stack.push(Task::WriteStr(")"));
+                        stack.push(Task::Visit(c));
+                        stack.push(Task::WriteStr(", "));
+                        stack.push(Task::Visit(b));
+                        stack.push(Task::WriteStr(", "));
+                        stack.push(Task::Visit(a));
+                        f.write_str(op.name())?;
+                        f.write_str("(")?;
+                    }
+                    Expr::Nary(op, children) => {
+                        stack.push(Task::WriteStr(")"));
+                        // Push children in reverse, with ", " separators between them.
+                        for (i, child) in children.iter().enumerate().rev() {
+                            stack.push(Task::Visit(child));
+                            if i > 0 {
+                                stack.push(Task::WriteStr(", "));
+                            }
+                        }
+                        f.write_str(op.name())?;
+                        f.write_str("(")?;
+                    }
+                },
             }
         }
+        Ok(())
     }
 }

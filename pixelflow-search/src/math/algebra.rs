@@ -29,7 +29,7 @@ fn b(e: Expr) -> Box<Expr> { Box::new(e) }
 /// - Involution: inv(inv(x)) → x
 /// - Cancellation: (x ⊕ a) ⊖ a → x
 /// - InverseAnnihilation: x ⊕ inv(x) → identity
-pub trait InversePair {
+pub trait InversePair: Send + Sync {
     /// The base operation (Add, Mul)
     fn base() -> &'static dyn Op;
     /// The inverse operation (Neg, Recip)
@@ -357,6 +357,57 @@ impl Rewrite for Associative {
         // Op(V0, Op(V1, V2))
         let k = self.op.kind();
         Some(Expr::Binary(k, b(Expr::Var(0)), b(Expr::Binary(k, b(Expr::Var(1)), b(Expr::Var(2))))))
+    }
+}
+
+/// Reverse associativity: a op (b op c) → (a op b) op c
+pub struct ReverseAssociative {
+    op: &'static dyn Op,
+}
+
+impl ReverseAssociative {
+    pub fn new(op: &'static dyn Op) -> Box<Self> {
+        Box::new(Self { op })
+    }
+}
+
+impl Rewrite for ReverseAssociative {
+    fn name(&self) -> &str { "reverse-associative" }
+
+    fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
+        let node_op = node.op()?;
+        if node_op.kind() != self.op.kind() { return None; }
+
+        let (left, right) = node.binary_operands()?;
+
+        // Check if the right child has a node with the same op
+        for child in egraph.nodes(right) {
+            if let Some(child_op) = child.op() {
+                if child_op.kind() == self.op.kind() {
+                    if let Some((b, c)) = child.binary_operands() {
+                        return Some(RewriteAction::ReverseAssociate {
+                            op: self.op,
+                            a: left,
+                            b,
+                            c,
+                        });
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn lhs_template(&self) -> Option<Expr> {
+        // Op(V0, Op(V1, V2))
+        let k = self.op.kind();
+        Some(Expr::Binary(k, b(Expr::Var(0)), b(Expr::Binary(k, b(Expr::Var(1)), b(Expr::Var(2))))))
+    }
+
+    fn rhs_template(&self) -> Option<Expr> {
+        // Op(Op(V0, V1), V2)
+        let k = self.op.kind();
+        Some(Expr::Binary(k, b(Expr::Binary(k, b(Expr::Var(0)), b(Expr::Var(1)))), b(Expr::Var(2))))
     }
 }
 
@@ -855,6 +906,16 @@ pub fn basic_algebra_rules() -> Vec<Box<dyn Rewrite>> {
         // Doubling/Halving: a + a ↔ 2 * a
         Doubling::new(),
         Halving::new(),
+        // Associativity (L→R): (a op b) op c → a op (b op c)
+        Associative::new(&ops::Add),
+        Associative::new(&ops::Mul),
+        Associative::new(&ops::Min),
+        Associative::new(&ops::Max),
+        // Reverse associativity (R→L): a op (b op c) → (a op b) op c
+        ReverseAssociative::new(&ops::Add),
+        ReverseAssociative::new(&ops::Mul),
+        ReverseAssociative::new(&ops::Min),
+        ReverseAssociative::new(&ops::Max),
     ]
 }
 

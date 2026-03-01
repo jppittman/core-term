@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use pixelflow_search::nnue::factored::{
-    EdgeAccumulator, ExprNnue, EMBED_DIM, K,
+    EdgeAccumulator, ExprNnue, GraphAccumulator, EMBED_DIM, K,
 };
 use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator};
 use pixelflow_search::egraph::all_rules;
@@ -246,6 +246,7 @@ fn main() {
 
     // We need a dummy rule embedding for forward_cached — value head doesn't use it
     let dummy_rule_embed = [0.0f32; EMBED_DIM];
+    let dummy_gacc = GraphAccumulator::new();
 
     for epoch in 0..args.epochs {
         // Shuffle indices
@@ -263,7 +264,7 @@ fn main() {
 
             for &idx in chunk {
                 let sample = &samples[idx];
-                let cache = forward_cached(&model, &sample.acc, &dummy_rule_embed);
+                let cache = forward_cached(&model, &sample.acc, &dummy_gacc, &dummy_rule_embed);
 
                 backward_value(&model, &cache, sample.target_log_ns, args.value_coeff, &mut grads);
 
@@ -290,7 +291,7 @@ fn main() {
             let mut mae_count = 0usize;
             let start = if samples.len() > 1000 { samples.len() - 1000 } else { 0 };
             for sample in &samples[start..] {
-                let cache = forward_cached(&model, &sample.acc, &dummy_rule_embed);
+                let cache = forward_cached(&model, &sample.acc, &dummy_gacc, &dummy_rule_embed);
                 mae += (cache.value_pred - sample.target_log_ns).abs() as f64;
                 mae_count += 1;
             }
@@ -313,7 +314,7 @@ fn main() {
     eprintln!("\n=== Sample predictions ===");
     for i in [0, samples.len() / 4, samples.len() / 2, 3 * samples.len() / 4, samples.len() - 1] {
         let sample = &samples[i];
-        let cache = forward_cached(&model, &sample.acc, &dummy_rule_embed);
+        let cache = forward_cached(&model, &sample.acc, &dummy_gacc, &dummy_rule_embed);
         let pred_ns = libm::expf(cache.value_pred) as f64;
         let actual_ns = libm::expf(sample.target_log_ns) as f64;
         eprintln!(

@@ -61,6 +61,12 @@ pub const SCALAR_FEATURE_COUNT: usize = 2;
 /// 4K (dual accumulator: 2K flat + 2K depth-encoded) + 2 scalars.
 pub const INPUT_DIM: usize = 4 * K + SCALAR_FEATURE_COUNT;
 
+/// Graph accumulator dimension: marginals (2K) + VSA binding (K).
+pub const GRAPH_ACC_DIM: usize = 3 * K;  // 96
+
+/// Graph backbone input: 3K + 2 scalars (edge_count, node_count).
+pub const GRAPH_INPUT_DIM: usize = GRAPH_ACC_DIM + SCALAR_FEATURE_COUNT; // 98
+
 /// Maximum arity for child-index encoding.
 /// Effective depth = `depth * MAX_ARITY + child_index`, where child_index ∈ [0, MAX_ARITY).
 /// This breaks sibling symmetry: left and right children of the same parent get different PEs.
@@ -543,6 +549,19 @@ pub fn depth_pe(depth: u32) -> &'static [f32; K] {
     &DEPTH_PE[depth.min((MAX_DEPTH - 1) as u32) as usize]
 }
 
+/// Cyclic shift by 1 position (VSA permutation for breaking commutativity).
+///
+/// Used by `GraphAccumulator` to ensure `parent ⊙ shift₁(child)` produces a
+/// different binding vector than `child ⊙ shift₁(parent)`, i.e. `Mul→Add ≠ Add→Mul`.
+#[inline]
+fn shift1(emb: &[f32; K]) -> [f32; K] {
+    let mut out = [0.0f32; K];
+    for i in 0..K {
+        out[i] = emb[(i + 1) % K];
+    }
+    out
+}
+
 // ============================================================================
 // Edge Accumulator (Dual: Flat + Depth-Encoded)
 // ============================================================================
@@ -886,6 +905,96 @@ impl EdgeAccumulator {
 }
 
 // ============================================================================
+// Graph Accumulator (VSA encoding of e-graph state for mask head)
+// ============================================================================
+
+/// VSA accumulator for e-graph state (rebuilt each epoch).
+///
+/// Three-section encoding captures both marginal and joint op distributions:
+///
+/// | Section | Dim | Operation | Signal |
+/// |---------|-----|-----------|--------|
+/// | `[0..K]` | K | `Σ E[parent]` | Marginal: which ops appear as parents |
+/// | `[K..2K]` | K | `Σ E[child]` | Marginal: which ops appear as children |
+/// | `[2K..3K]` | K | `Σ E[parent] ⊙ shift₁(E[child])` | **VSA binding**: which ops are connected |
+///
+/// The binding section uses element-wise Hadamard product with a cyclic shift to
+/// break commutativity (`Mul→Add ≠ Add→Mul`). This captures the **joint**
+/// distribution of parent-child pairs — strictly more informative than marginals
+/// alone. The downstream backbone learns to decode the bundled representation.
+///
+/// Shares `OpEmbeddings` with the value head — same learned op embeddings,
+/// different downstream pathway.
+#[derive(Clone)]
+pub struct GraphAccumulator {
+    /// `[0..K]`:    marginal parent sum  `Σ E[parent]`
+    /// `[K..2K]`:   marginal child sum   `Σ E[child]`
+    /// `[2K..3K]`:  VSA binding sum      `Σ E[parent] ⊙ shift₁(E[child])`
+    pub values: [f32; GRAPH_ACC_DIM],
+    /// Number of edges added to the accumulator.
+    pub edge_count: u32,
+    /// Number of nodes (ops + leaves) in the graph.
+    pub node_count: u32,
+}
+
+impl Default for GraphAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GraphAccumulator {
+    /// Create a zero-initialized graph accumulator.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            values: [0.0; GRAPH_ACC_DIM],
+            edge_count: 0,
+            node_count: 0,
+        }
+    }
+
+    /// Reset to zero state.
+    pub fn reset(&mut self) {
+        self.values = [0.0; GRAPH_ACC_DIM];
+        self.edge_count = 0;
+        self.node_count = 0;
+    }
+
+    /// Add a single edge with VSA encoding.
+    ///
+    /// Updates all three sections: marginal parent, marginal child, and
+    /// VSA binding (`E[parent] ⊙ shift₁(E[child])`).
+    #[inline]
+    pub fn add_edge(&mut self, emb: &OpEmbeddings, parent_op: OpKind, child_op: OpKind) {
+        let p = emb.get(parent_op);
+        let c = emb.get(child_op);
+        let c_shifted = shift1(c);
+        for i in 0..K {
+            self.values[i] += p[i];                        // marginal parent
+            self.values[K + i] += c[i];                    // marginal child
+            self.values[2 * K + i] += p[i] * c_shifted[i]; // VSA binding
+        }
+        self.edge_count += 1;
+    }
+
+    /// Add a leaf node (Var/Const) — no edges, just increment node count.
+    pub fn add_leaf(&mut self) {
+        self.node_count += 1;
+    }
+
+    /// Add an Op node and all its edges to children.
+    ///
+    /// Emits one edge per child and increments `node_count` once.
+    pub fn add_op_node(&mut self, emb: &OpEmbeddings, op: OpKind, child_ops: &[OpKind]) {
+        for &child_op in child_ops {
+            self.add_edge(emb, op, child_op);
+        }
+        self.node_count += 1;
+    }
+}
+
+// ============================================================================
 // Structural Hashing
 // ============================================================================
 
@@ -1125,6 +1234,19 @@ pub struct ExprNnue {
 
     /// Learned bias projection: produces per-rule bias via dot(mask_bias_proj, rule_embed)
     pub mask_bias_proj: [f32; EMBED_DIM],
+
+    // ========== GRAPH STATE BACKBONE (for mask head) ==========
+    // Separate pathway: GraphAccumulator (VSA e-graph state) → graph_w1 → graph_proj → mask_mlp → bilinear
+    // The value head path (EdgeAccumulator → w1 → expr_proj) is completely unchanged.
+
+    /// Graph backbone weights: [GRAPH_INPUT_DIM][HIDDEN_DIM] (98 × 64 = 6,272 params)
+    pub graph_w1: [[f32; HIDDEN_DIM]; GRAPH_INPUT_DIM],
+    /// Graph backbone biases: [HIDDEN_DIM] (64 params)
+    pub graph_b1: [f32; HIDDEN_DIM],
+    /// Graph → embed projection weights: [HIDDEN_DIM][EMBED_DIM] (64 × 32 = 2,048 params)
+    pub graph_proj_w: [[f32; EMBED_DIM]; HIDDEN_DIM],
+    /// Graph → embed projection bias: [EMBED_DIM] (32 params)
+    pub graph_proj_b: [f32; EMBED_DIM],
 }
 
 impl Default for ExprNnue {
@@ -1168,6 +1290,12 @@ impl ExprNnue {
 
             interaction: [[0.0; EMBED_DIM]; EMBED_DIM],
             mask_bias_proj: [0.0; EMBED_DIM],
+
+            // Graph state backbone (zero-init)
+            graph_w1: [[0.0; HIDDEN_DIM]; GRAPH_INPUT_DIM],
+            graph_b1: [0.0; HIDDEN_DIM],
+            graph_proj_w: [[0.0; EMBED_DIM]; HIDDEN_DIM],
+            graph_proj_b: [0.0; EMBED_DIM],
         }
     }
 
@@ -1229,6 +1357,12 @@ impl ExprNnue {
 
             interaction: [[0.0; EMBED_DIM]; EMBED_DIM],
             mask_bias_proj: [0.0; EMBED_DIM],
+
+            // Graph state backbone - zero-initialized (needs training)
+            graph_w1: [[0.0; HIDDEN_DIM]; GRAPH_INPUT_DIM],
+            graph_b1: [0.0; HIDDEN_DIM],
+            graph_proj_w: [[0.0; EMBED_DIM]; HIDDEN_DIM],
+            graph_proj_b: [0.0; EMBED_DIM],
         }
     }
 
@@ -1355,6 +1489,27 @@ impl ExprNnue {
             *b = 0.0;
         }
 
+        // Graph backbone: GRAPH_INPUT_DIM → HIDDEN_DIM
+        let scale_graph = sqrtf(2.0 / GRAPH_INPUT_DIM as f32);
+        for row in 0..GRAPH_INPUT_DIM {
+            for col in 0..HIDDEN_DIM {
+                self.graph_w1[row][col] = next_f32() * scale_graph;
+            }
+        }
+        for b in &mut self.graph_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+
+        // Graph projection: HIDDEN_DIM → EMBED_DIM
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                self.graph_proj_w[j][k] = next_f32() * scale_proj;
+            }
+        }
+        for b in &mut self.graph_proj_b {
+            *b = next_f32().abs() * 0.1;
+        }
+
         // NOTE: search_mlp randomization removed - mask IS the policy
     }
 
@@ -1458,6 +1613,28 @@ impl ExprNnue {
         // Bias projection: neutral
         for b in &mut self.mask_bias_proj {
             *b = 0.0;
+        }
+
+        // Graph backbone: GRAPH_INPUT_DIM → HIDDEN_DIM (mask-specific pathway)
+        let scale_graph = sqrtf(2.0 / GRAPH_INPUT_DIM as f32);
+        let scale_proj = sqrtf(2.0 / HIDDEN_DIM as f32);
+        for row in 0..GRAPH_INPUT_DIM {
+            for col in 0..HIDDEN_DIM {
+                self.graph_w1[row][col] = next_f32() * scale_graph;
+            }
+        }
+        for b in &mut self.graph_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+
+        // Graph projection: HIDDEN_DIM → EMBED_DIM
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                self.graph_proj_w[j][k] = next_f32() * scale_proj;
+            }
+        }
+        for b in &mut self.graph_proj_b {
+            *b = next_f32().abs() * 0.1;
         }
     }
 
@@ -1573,6 +1750,90 @@ impl ExprNnue {
             }
         }
         embed
+    }
+
+    // ========================================================================
+    // Graph State Backbone Forward Pass
+    //
+    // Separate pathway for mask head: GraphAccumulator → graph_w1 → graph_proj
+    // Feeds into the SAME mask_mlp + bilinear scoring as the expr pathway.
+    // ========================================================================
+
+    /// Graph state forward pass (for mask head).
+    ///
+    /// Same structure as `forward_shared` but with `graph_w1`/`graph_b1` and
+    /// `GRAPH_INPUT_DIM` input (98 vs 130). Uses `1/sqrt(node_count)` scaling
+    /// and log2 scalars, matching the `forward_shared` conventions.
+    #[inline]
+    pub fn forward_graph(&self, gacc: &GraphAccumulator) -> [f32; HIDDEN_DIM] {
+        let mut hidden = self.graph_b1;
+
+        // Scale factor: 1/sqrt(N) prevents variance explosion from summing N embeddings.
+        let scale = if gacc.node_count > 0 {
+            1.0 / libm::sqrtf(gacc.node_count as f32)
+        } else {
+            1.0
+        };
+
+        // Process graph accumulator (96 dims: 3K sections)
+        for (i, &val) in gacc.values.iter().enumerate() {
+            let scaled_val = val * scale;
+            for (j, h) in hidden.iter_mut().enumerate() {
+                *h += scaled_val * self.graph_w1[i][j];
+            }
+        }
+
+        // Process scalar features (2 dims: edge_count, node_count).
+        // Use log2 to compress the range for large e-graphs.
+        let base = GRAPH_ACC_DIM;
+        let ec = libm::log2f(1.0 + gacc.edge_count as f32);
+        let nc = libm::log2f(1.0 + gacc.node_count as f32);
+        for (j, h) in hidden.iter_mut().enumerate() {
+            *h += ec * self.graph_w1[base][j];
+            *h += nc * self.graph_w1[base + 1][j];
+        }
+
+        // ReLU activation
+        for h in &mut hidden {
+            *h = h.max(0.0);
+        }
+
+        hidden
+    }
+
+    /// Project graph hidden to graph embedding (EMBED_DIM).
+    ///
+    /// Same structure as `compute_expr_embed` but with `graph_proj_w`/`graph_proj_b`.
+    #[inline]
+    pub fn compute_graph_embed(&self, hidden: &[f32; HIDDEN_DIM]) -> [f32; EMBED_DIM] {
+        let mut embed = self.graph_proj_b;
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                embed[k] += hidden[j] * self.graph_proj_w[j][k];
+            }
+        }
+        embed
+    }
+
+    /// Score all rules using graph state (not expression state).
+    ///
+    /// `forward_graph → compute_graph_embed → compute_mask_features → bilinear_score`
+    ///
+    /// The mask_mlp, interaction matrix, and bilinear_score are **shared** with the
+    /// expression pathway — only the input pathway changes.
+    #[must_use]
+    pub fn mask_score_all_rules_graph(
+        &self,
+        gacc: &GraphAccumulator,
+        rule_embeds: &[[f32; EMBED_DIM]],
+    ) -> Vec<f32> {
+        let hidden = self.forward_graph(gacc);
+        let graph_embed = self.compute_graph_embed(&hidden);
+        let mask_features = self.compute_mask_features(&graph_embed);
+        rule_embeds
+            .iter()
+            .map(|re| self.bilinear_score(&mask_features, re))
+            .collect()
     }
 
     /// Compute mask features from expr embedding and value prediction (for bilinear scoring).
@@ -1917,6 +2178,11 @@ impl ExprNnue {
             // bilinear
             + EMBED_DIM * EMBED_DIM           // interaction: 24 * 24 = 576
             + EMBED_DIM                        // mask_bias_proj: 32
+            // graph state backbone
+            + GRAPH_INPUT_DIM * HIDDEN_DIM    // graph_w1: 98 * 64 = 6,272
+            + HIDDEN_DIM                      // graph_b1: 64
+            + HIDDEN_DIM * EMBED_DIM          // graph_proj_w: 64 * 32 = 2,048
+            + EMBED_DIM                       // graph_proj_b: 32
     }
 
     /// Memory size in bytes (f32 weights).
@@ -2192,6 +2458,24 @@ impl ExprNnue {
             file.write_all(&val.to_le_bytes())?;
         }
 
+        // Graph state backbone
+        for row in &self.graph_w1 {
+            for &val in row {
+                file.write_all(&val.to_le_bytes())?;
+            }
+        }
+        for &val in &self.graph_b1 {
+            file.write_all(&val.to_le_bytes())?;
+        }
+        for row in &self.graph_proj_w {
+            for &val in row {
+                file.write_all(&val.to_le_bytes())?;
+            }
+        }
+        for &val in &self.graph_proj_b {
+            file.write_all(&val.to_le_bytes())?;
+        }
+
         Ok(())
     }
 
@@ -2365,6 +2649,92 @@ impl ExprNnue {
             let mut buf = [0u8; 4];
             file.read_exact(&mut buf)?;
             *val = f32::from_le_bytes(buf);
+        }
+
+        // Graph state backbone (backward compat: old models won't have these bytes)
+        let mut has_graph = true;
+        for row in &mut net.graph_w1 {
+            for val in row {
+                let mut buf = [0u8; 4];
+                if file.read_exact(&mut buf).is_err() {
+                    has_graph = false;
+                    break;
+                }
+                *val = f32::from_le_bytes(buf);
+            }
+            if !has_graph { break; }
+        }
+        if has_graph {
+            for val in &mut net.graph_b1 {
+                let mut buf = [0u8; 4];
+                if file.read_exact(&mut buf).is_err() {
+                    has_graph = false;
+                    break;
+                }
+                *val = f32::from_le_bytes(buf);
+            }
+        }
+        if has_graph {
+            for row in &mut net.graph_proj_w {
+                for val in row {
+                    let mut buf = [0u8; 4];
+                    if file.read_exact(&mut buf).is_err() {
+                        has_graph = false;
+                        break;
+                    }
+                    *val = f32::from_le_bytes(buf);
+                }
+                if !has_graph { break; }
+            }
+        }
+        if has_graph {
+            for val in &mut net.graph_proj_b {
+                let mut buf = [0u8; 4];
+                if file.read_exact(&mut buf).is_err() {
+                    has_graph = false;
+                    break;
+                }
+                *val = f32::from_le_bytes(buf);
+            }
+        }
+
+        // If old model (no graph backbone bytes), initialize randomly
+        if !has_graph {
+            #[cfg(feature = "std")]
+            {
+                eprintln!(
+                    "WARN: loaded TRIB model without graph backbone — initializing graph_w1/graph_b1/graph_proj_w/graph_proj_b randomly"
+                );
+            }
+            // Use a deterministic seed derived from existing weights for reproducibility
+            let seed = net.b1[0].to_bits() as u64 ^ 0xDEAD_BEEF_CAFE_BABE;
+            let mut rng_state = seed.wrapping_add(99999);
+            let mut next_f32 = || {
+                rng_state = rng_state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1);
+                (rng_state >> 33) as f32 / (1u64 << 31) as f32 * 2.0 - 1.0
+            };
+
+            let scale_graph = sqrtf(2.0 / GRAPH_INPUT_DIM as f32);
+            let scale_proj = sqrtf(2.0 / HIDDEN_DIM as f32);
+
+            for row in 0..GRAPH_INPUT_DIM {
+                for col in 0..HIDDEN_DIM {
+                    net.graph_w1[row][col] = next_f32() * scale_graph;
+                }
+            }
+            for b in &mut net.graph_b1 {
+                *b = next_f32().abs() * 0.1;
+            }
+            for j in 0..HIDDEN_DIM {
+                for k in 0..EMBED_DIM {
+                    net.graph_proj_w[j][k] = next_f32() * scale_proj;
+                }
+            }
+            for b in &mut net.graph_proj_b {
+                *b = next_f32().abs() * 0.1;
+            }
         }
 
         Ok(net)

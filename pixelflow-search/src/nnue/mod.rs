@@ -26,7 +26,7 @@ pub use pixelflow_ir::{Expr, OpKind};
 pub use factored::ExprNnue;
 
 /// Re-export key types from factored module.
-pub use factored::{EdgeAccumulator, OpEmbeddings};
+pub use factored::{EdgeAccumulator, GraphAccumulator, OpEmbeddings};
 
 /// Re-export InstructionWindow for sliding-window scheduling.
 pub use window::InstructionWindow;
@@ -34,6 +34,7 @@ pub use window::InstructionWindow;
 /// Re-export unified mask architecture constants and types.
 pub use factored::{
     EMBED_DIM, MLP_HIDDEN, MASK_INPUT_DIM, RULE_FEATURE_DIM, MASK_MAX_RULES, RULE_CONCAT_DIM,
+    GRAPH_ACC_DIM, GRAPH_INPUT_DIM,
     RuleFeatures, RuleTemplates,
 };
 

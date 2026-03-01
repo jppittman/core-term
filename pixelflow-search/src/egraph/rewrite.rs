@@ -42,6 +42,13 @@ pub enum RewriteAction {
         b: EClassId,
         c: EClassId,
     },
+    /// ReverseAssociate: a op (b op c) -> (a op b) op c
+    ReverseAssociate {
+        op: &'static dyn Op,
+        a: EClassId,
+        b: EClassId,
+        c: EClassId,
+    },
     /// OddParity: Op(neg(x)) -> neg(Op(x))
     /// Creates Op(inner), then wraps in Neg.
     OddParity {
@@ -93,10 +100,34 @@ pub enum RewriteAction {
     Halving {
         a: EClassId,
     },
+    /// PowerRecurrence: pow(x, n) -> x * pow(x, n-1) for integer n >= 3
+    PowerRecurrence {
+        base: EClassId,
+        exponent: i32,
+    },
+    /// LogPower: log(pow(x, n)) -> n * log(x)
+    LogPower {
+        log_op: &'static dyn Op,
+        base: EClassId,
+        exponent: EClassId,
+    },
+    /// ExpandSquare: (a+b)² -> a² + 2ab + b²
+    ExpandSquare {
+        a: EClassId,
+        b: EClassId,
+    },
+    /// DiffOfSquares: a² - b² -> (a+b)(a-b)
+    DiffOfSquares {
+        a: EClassId,
+        b: EClassId,
+    },
 }
 
 /// A rewrite rule that can be applied to e-graph nodes.
-pub trait Rewrite {
+///
+/// Requires `Send + Sync` so rules can be shared across worker threads
+/// during parallel trajectory generation.
+pub trait Rewrite: Send + Sync {
     /// Human-readable name for debugging.
     fn name(&self) -> &str;
 

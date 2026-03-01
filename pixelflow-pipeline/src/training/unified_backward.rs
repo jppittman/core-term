@@ -1,34 +1,36 @@
 //! # Full Analytical Backward Pass Through ExprNnue
 //!
-//! Hand-derived gradients through the ENTIRE ExprNnue forward path:
+//! Hand-derived gradients through the ENTIRE ExprNnue forward path with
+//! separate backbones for value and policy heads:
 //!
 //! ```text
-//! EdgeAccumulator → backbone W1 → expr_proj → value_mlp → mask_mlp → bilinear → score
+//! Value:  EdgeAccumulator  → W1        → expr_proj  → value_mlp → value_pred
+//! Policy: GraphAccumulator → graph_w1  → graph_proj → mask_mlp  → bilinear → score
 //! ```
 //!
 //! ## Why This Exists
 //!
 //! The existing REINFORCE code (`train_mask_reinforce_with_embed` in factored.rs)
 //! only backprops through `interaction + mask_bias_proj`. This module extends
-//! gradients through the FULL path: backbone W1, expr_proj, value_mlp (for
-//! the value_pred dependency in mask input), and mask_mlp.
+//! gradients through the FULL path for both heads.
 //!
 //! This enables joint training of both the value head (judge) and policy head
-//! (mask/guide) through a shared backbone, like AlphaZero.
+//! (mask/guide) through independent backbones, like AlphaZero.
 //!
 //! ## Two Losses
 //!
 //! - **Policy loss**: REINFORCE with advantage, chain-ruled through
-//!   bilinear → mask_mlp → expr_proj → backbone (value_mlp decoupled)
+//!   bilinear → mask_mlp → graph_proj → graph_w1 (graph backbone)
 //! - **Value loss**: MSE against ground-truth cost, chain-ruled through
-//!   value_mlp → expr_proj → backbone
+//!   value_mlp → expr_proj → W1 (expr backbone)
 //!
-//! Both losses accumulate gradients into the same [`UnifiedGradients`] buffer
-//! (the shared backbone gets gradients from both heads).
+//! The two heads have independent backbones: value uses EdgeAccumulator → W1,
+//! policy uses GraphAccumulator → graph_w1. No shared backbone gradients.
 
+use pixelflow_ir::OpKind;
 use pixelflow_search::nnue::factored::{
-    EdgeAccumulator, ExprNnue, EMBED_DIM, HIDDEN_DIM, INPUT_DIM, K,
-    MLP_HIDDEN,
+    depth_pe, EdgeAccumulator, ExprNnue, GraphAccumulator, EMBED_DIM, GRAPH_ACC_DIM,
+    GRAPH_INPUT_DIM, HIDDEN_DIM, INPUT_DIM, K, MLP_HIDDEN,
 };
 
 // ============================================================================
@@ -54,7 +56,15 @@ pub struct UnifiedForwardCache {
     pub value_h: [f32; MLP_HIDDEN],
     /// Scalar value prediction.
     pub value_pred: f32,
-    /// Mask MLP input: expr_embed (24 dims) directly.
+    /// Graph backbone input: gacc.values[0..96] + edge_count + node_count = 98 floats.
+    pub graph_input: [f32; GRAPH_INPUT_DIM],
+    /// Pre-ReLU graph backbone hidden.
+    pub graph_pre_relu: [f32; HIDDEN_DIM],
+    /// Post-ReLU graph backbone hidden.
+    pub graph_hidden: [f32; HIDDEN_DIM],
+    /// Graph embedding: graph_proj_b + graph_proj_w^T @ graph_hidden.
+    pub graph_embed: [f32; EMBED_DIM],
+    /// Mask MLP input: graph_embed (32 dims) — comes from graph backbone, not expr backbone.
     pub mask_input: [f32; EMBED_DIM],
     /// Mask MLP pre-ReLU.
     pub mask_h_pre: [f32; MLP_HIDDEN],
@@ -86,9 +96,10 @@ pub struct UnifiedForwardCache {
 pub fn forward_cached(
     net: &ExprNnue,
     acc: &EdgeAccumulator,
+    gacc: &GraphAccumulator,
     rule_embed: &[f32; EMBED_DIM],
 ) -> UnifiedForwardCache {
-    // ---- Build acc_input from EdgeAccumulator ----
+    // ---- Build acc_input from EdgeAccumulator (for value head) ----
     let mut acc_input = [0.0f32; INPUT_DIM];
 
     let scale = if acc.node_count > 0 {
@@ -104,7 +115,7 @@ pub fn forward_cached(
     acc_input[4 * K] = libm::log2f(1.0 + acc.edge_count as f32);
     acc_input[4 * K + 1] = libm::log2f(1.0 + acc.node_count as f32);
 
-    // ---- Layer 1: Shared Backbone ----
+    // ---- Layer 1: Shared Backbone (for value head) ----
     let mut pre_relu = net.b1;
     for i in 0..INPUT_DIM {
         for j in 0..HIDDEN_DIM {
@@ -117,7 +128,7 @@ pub fn forward_cached(
         *h = h.max(0.0);
     }
 
-    // ---- Layer 2: Expr Projection ----
+    // ---- Layer 2: Expr Projection (for value head) ----
     let mut expr_embed = net.expr_proj_b;
     for j in 0..HIDDEN_DIM {
         for k in 0..EMBED_DIM {
@@ -143,8 +154,48 @@ pub fn forward_cached(
         value_pred += value_h[j] * net.value_mlp_w2[j];
     }
 
-    // ---- Layer 3b: Mask MLP ----
-    let mask_input = expr_embed;
+    // ---- Graph Backbone (for mask head) ----
+    // Build graph_input from GraphAccumulator: scale by 1/sqrt(node_count),
+    // use log2(1+edge_count) and log2(1+node_count) as scalars.
+    let mut graph_input = [0.0f32; GRAPH_INPUT_DIM];
+
+    let graph_scale = if gacc.node_count > 0 {
+        1.0 / libm::sqrtf(gacc.node_count as f32)
+    } else {
+        1.0
+    };
+
+    for i in 0..GRAPH_ACC_DIM {
+        graph_input[i] = gacc.values[i] * graph_scale;
+    }
+
+    graph_input[GRAPH_ACC_DIM] = libm::log2f(1.0 + gacc.edge_count as f32);
+    graph_input[GRAPH_ACC_DIM + 1] = libm::log2f(1.0 + gacc.node_count as f32);
+
+    // graph_pre_relu = graph_b1 + graph_w1^T @ graph_input
+    let mut graph_pre_relu = net.graph_b1;
+    for i in 0..GRAPH_INPUT_DIM {
+        for j in 0..HIDDEN_DIM {
+            graph_pre_relu[j] += graph_input[i] * net.graph_w1[i][j];
+        }
+    }
+
+    // graph_hidden = max(0, graph_pre_relu) (ReLU)
+    let mut graph_hidden = graph_pre_relu;
+    for h in &mut graph_hidden {
+        *h = h.max(0.0);
+    }
+
+    // graph_embed = graph_proj_b + graph_proj_w^T @ graph_hidden
+    let mut graph_embed = net.graph_proj_b;
+    for j in 0..HIDDEN_DIM {
+        for k in 0..EMBED_DIM {
+            graph_embed[k] += graph_hidden[j] * net.graph_proj_w[j][k];
+        }
+    }
+
+    // ---- Layer 3b: Mask MLP (fed by graph_embed, not expr_embed) ----
+    let mask_input = graph_embed;
 
     let mut mask_h_pre = net.mask_mlp_b1;
     for i in 0..EMBED_DIM {
@@ -188,6 +239,10 @@ pub fn forward_cached(
         value_h_pre,
         value_h,
         value_pred,
+        graph_input,
+        graph_pre_relu,
+        graph_hidden,
+        graph_embed,
         mask_input,
         mask_h_pre,
         mask_h,
@@ -235,6 +290,16 @@ pub struct UnifiedGradients {
     pub d_interaction: [[f32; EMBED_DIM]; EMBED_DIM],
     /// Bias projection gradients: EMBED_DIM.
     pub d_mask_bias_proj: [f32; EMBED_DIM],
+    /// OpEmbedding gradients: [OpKind::COUNT][K].
+    pub d_embeddings: [[f32; K]; OpKind::COUNT],
+    /// Graph backbone weight gradients: GRAPH_INPUT_DIM x HIDDEN_DIM.
+    pub d_graph_w1: [[f32; HIDDEN_DIM]; GRAPH_INPUT_DIM],
+    /// Graph backbone bias gradients: HIDDEN_DIM.
+    pub d_graph_b1: [f32; HIDDEN_DIM],
+    /// Graph projection weight gradients: HIDDEN_DIM x EMBED_DIM.
+    pub d_graph_proj_w: [[f32; EMBED_DIM]; HIDDEN_DIM],
+    /// Graph projection bias gradients: EMBED_DIM.
+    pub d_graph_proj_b: [f32; EMBED_DIM],
 }
 
 impl UnifiedGradients {
@@ -256,6 +321,11 @@ impl UnifiedGradients {
             d_mask_mlp_b2: [0.0; EMBED_DIM],
             d_interaction: [[0.0; EMBED_DIM]; EMBED_DIM],
             d_mask_bias_proj: [0.0; EMBED_DIM],
+            d_embeddings: [[0.0; K]; OpKind::COUNT],
+            d_graph_w1: [[0.0; HIDDEN_DIM]; GRAPH_INPUT_DIM],
+            d_graph_b1: [0.0; HIDDEN_DIM],
+            d_graph_proj_w: [[0.0; EMBED_DIM]; HIDDEN_DIM],
+            d_graph_proj_b: [0.0; EMBED_DIM],
         }
     }
 
@@ -311,6 +381,27 @@ impl UnifiedGradients {
             }
         }
         for v in &mut self.d_mask_bias_proj {
+            *v *= s;
+        }
+        for row in &mut self.d_embeddings {
+            for v in row {
+                *v *= s;
+            }
+        }
+        for row in &mut self.d_graph_w1 {
+            for v in row {
+                *v *= s;
+            }
+        }
+        for v in &mut self.d_graph_b1 {
+            *v *= s;
+        }
+        for row in &mut self.d_graph_proj_w {
+            for v in row {
+                *v *= s;
+            }
+        }
+        for v in &mut self.d_graph_proj_b {
             *v *= s;
         }
     }
@@ -371,6 +462,27 @@ impl UnifiedGradients {
         for &v in &self.d_mask_bias_proj {
             sum += (v as f64) * (v as f64);
         }
+        for row in &self.d_embeddings {
+            for &v in row {
+                sum += (v as f64) * (v as f64);
+            }
+        }
+        for row in &self.d_graph_w1 {
+            for &v in row {
+                sum += (v as f64) * (v as f64);
+            }
+        }
+        for &v in &self.d_graph_b1 {
+            sum += (v as f64) * (v as f64);
+        }
+        for row in &self.d_graph_proj_w {
+            for &v in row {
+                sum += (v as f64) * (v as f64);
+            }
+        }
+        for &v in &self.d_graph_proj_b {
+            sum += (v as f64) * (v as f64);
+        }
         libm::sqrt(sum) as f32
     }
 
@@ -428,6 +540,27 @@ impl UnifiedGradients {
         for k in 0..EMBED_DIM {
             self.d_mask_bias_proj[k] += other.d_mask_bias_proj[k];
         }
+        for op in 0..OpKind::COUNT {
+            for i in 0..K {
+                self.d_embeddings[op][i] += other.d_embeddings[op][i];
+            }
+        }
+        for i in 0..GRAPH_INPUT_DIM {
+            for j in 0..HIDDEN_DIM {
+                self.d_graph_w1[i][j] += other.d_graph_w1[i][j];
+            }
+        }
+        for j in 0..HIDDEN_DIM {
+            self.d_graph_b1[j] += other.d_graph_b1[j];
+        }
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                self.d_graph_proj_w[j][k] += other.d_graph_proj_w[j][k];
+            }
+        }
+        for k in 0..EMBED_DIM {
+            self.d_graph_proj_b[k] += other.d_graph_proj_b[k];
+        }
     }
 }
 
@@ -437,8 +570,8 @@ impl UnifiedGradients {
 
 /// Backprop policy loss through the FULL path.
 ///
-/// Chain rule: bilinear → mask_mlp → expr_proj → backbone W1.
-/// (value_mlp is decoupled — only trained via value loss, not policy loss.)
+/// Chain rule: bilinear → mask_mlp → graph_proj → graph backbone W1.
+/// (value_mlp and expr backbone are decoupled — only trained via value loss.)
 ///
 /// The policy loss gradient w.r.t. score:
 /// ```text
@@ -464,6 +597,7 @@ pub fn backward_policy(
     matched: bool,
     advantage: f32,
     entropy_coeff: f32,
+    miss_penalty: f32,
     grads: &mut UnifiedGradients,
 ) {
     // ---- d_score from REINFORCE ----
@@ -477,7 +611,13 @@ pub fn backward_policy(
     //
     // If advantage < 0 (penalty), d_score is positive, meaning gradient descent
     // will subtract a positive value, driving the score (and prob) DOWN.
-    let mut d_score = -(1.0 - cache.prob) * advantage;
+    //
+    // miss_penalty: when the rule didn't match (matched=false), we scale the
+    // advantage down to avoid punishing exploration too harshly. A low
+    // miss_penalty (e.g. 0.1) means the policy barely gets penalized for
+    // trying rules that don't match, encouraging it to explore more rules.
+    let effective_advantage = if matched { advantage } else { advantage * miss_penalty };
+    let mut d_score = -(1.0 - cache.prob) * effective_advantage;
 
     // ---- Entropy bonus: prevent policy from collapsing to 0/1 ----
     // H(p) = -[p*log(p) + (1-p)*log(1-p)]  (Bernoulli entropy)
@@ -543,20 +683,19 @@ pub fn backward_policy(
     }
 
     // mask_h_pre = mask_mlp_b1 + mask_mlp_w1^T @ mask_input
-    // mask_input is just expr_embed (24 dims), no value_pred dependency
-    let mut d_expr_embed = [0.0f32; EMBED_DIM];
+    // mask_input is graph_embed (32 dims) — from graph backbone, not expr backbone.
+    let mut d_graph_embed = [0.0f32; EMBED_DIM];
     for m in 0..MLP_HIDDEN {
         grads.d_mask_mlp_b1[m] += d_mask_h_pre[m];
         for i in 0..EMBED_DIM {
-            d_expr_embed[i] += d_mask_h_pre[m] * net.mask_mlp_w1[i][m];
+            d_graph_embed[i] += d_mask_h_pre[m] * net.mask_mlp_w1[i][m];
             grads.d_mask_mlp_w1[i][m] += d_mask_h_pre[m] * cache.mask_input[i];
         }
     }
 
-    // No value_mlp chain rule from policy path — value_pred is no longer a mask input.
-
-    // ---- Layer 2: Expr projection backward ----
-    backward_expr_proj_and_backbone(net, cache, &d_expr_embed, grads);
+    // ---- Graph projection backward ----
+    // graph_embed = graph_proj_b + graph_proj_w^T @ graph_hidden
+    backward_graph_proj_and_backbone(net, cache, &d_graph_embed, grads);
 }
 
 // ============================================================================
@@ -656,6 +795,293 @@ fn backward_backbone_from_hidden(
     for i in 0..INPUT_DIM {
         for j in 0..HIDDEN_DIM {
             grads.d_w1[i][j] += d_pre_relu[j] * cache.acc_input[i];
+        }
+    }
+}
+
+// ============================================================================
+// Graph Backbone Backward (for policy/mask head)
+// ============================================================================
+
+/// Backprop from d_graph_embed through graph_proj and graph backbone.
+///
+/// This is the graph-backbone analog of `backward_expr_proj_and_backbone`.
+/// The policy gradient flows: mask_mlp -> graph_proj -> graph_w1.
+fn backward_graph_proj_and_backbone(
+    net: &ExprNnue,
+    cache: &UnifiedForwardCache,
+    d_graph_embed: &[f32; EMBED_DIM],
+    grads: &mut UnifiedGradients,
+) {
+    // ---- Graph projection backward ----
+    // graph_embed = graph_proj_b + graph_proj_w^T @ graph_hidden
+    let mut d_graph_hidden = [0.0f32; HIDDEN_DIM];
+    for k in 0..EMBED_DIM {
+        grads.d_graph_proj_b[k] += d_graph_embed[k];
+    }
+    for j in 0..HIDDEN_DIM {
+        for k in 0..EMBED_DIM {
+            d_graph_hidden[j] += d_graph_embed[k] * net.graph_proj_w[j][k];
+            grads.d_graph_proj_w[j][k] += d_graph_embed[k] * cache.graph_hidden[j];
+        }
+    }
+
+    // ---- Graph backbone backward ----
+    // ReLU gate
+    let mut d_graph_pre_relu = [0.0f32; HIDDEN_DIM];
+    for j in 0..HIDDEN_DIM {
+        d_graph_pre_relu[j] = if cache.graph_pre_relu[j] > 0.0 {
+            d_graph_hidden[j]
+        } else {
+            0.0
+        };
+    }
+    for j in 0..HIDDEN_DIM {
+        grads.d_graph_b1[j] += d_graph_pre_relu[j];
+    }
+    for i in 0..GRAPH_INPUT_DIM {
+        for j in 0..HIDDEN_DIM {
+            grads.d_graph_w1[i][j] += d_graph_pre_relu[j] * cache.graph_input[i];
+        }
+    }
+}
+
+// ============================================================================
+// Embedding Backward: d_acc_input → d_embeddings
+// ============================================================================
+
+/// Compute gradient w.r.t. EdgeAccumulator input from the policy loss path.
+///
+/// With the graph backbone architecture, the policy path flows through
+/// `graph_w1 → graph_input` (from GraphAccumulator), NOT through
+/// `w1 → acc_input` (from EdgeAccumulator). Therefore this returns all zeros.
+///
+/// Policy embedding gradients should instead use [`compute_d_graph_input_policy`]
+/// to flow through the graph accumulator construction.
+#[must_use]
+pub fn compute_d_acc_input_policy(
+    _net: &ExprNnue,
+    _cache: &UnifiedForwardCache,
+    _rule_embed: &[f32; EMBED_DIM],
+    _advantage: f32,
+    _entropy_coeff: f32,
+) -> [f32; INPUT_DIM] {
+    // Policy path now flows through graph backbone, not expr backbone.
+    // No gradient flows from the policy loss into the EdgeAccumulator input.
+    [0.0f32; INPUT_DIM]
+}
+
+/// Compute gradient w.r.t. graph accumulator input from the policy loss path.
+///
+/// Re-derives the full chain from d_score through bilinear → mask_mlp → graph_proj → graph_w1 → graph_input.
+/// This duplicates some computation from `backward_policy` but avoids changing its return type.
+/// The duplicated work is cheap (~microseconds per step).
+#[must_use]
+pub fn compute_d_graph_input_policy(
+    net: &ExprNnue,
+    cache: &UnifiedForwardCache,
+    rule_embed: &[f32; EMBED_DIM],
+    advantage: f32,
+    entropy_coeff: f32,
+) -> [f32; GRAPH_INPUT_DIM] {
+    // d_score from REINFORCE (action=1 always, since steps are only recorded when approved)
+    let mut d_score = -(1.0 - cache.prob) * advantage;
+    if entropy_coeff != 0.0 {
+        d_score += entropy_coeff * cache.prob * (1.0 - cache.prob) * cache.score;
+    }
+
+    // Bilinear backward → d_mask_features
+    let mut d_transformed = [0.0f32; EMBED_DIM];
+    for j in 0..EMBED_DIM {
+        d_transformed[j] = d_score * rule_embed[j];
+    }
+    let mut d_mask_features = [0.0f32; EMBED_DIM];
+    for i in 0..EMBED_DIM {
+        for j in 0..EMBED_DIM {
+            d_mask_features[i] += d_transformed[j] * net.interaction[i][j];
+        }
+    }
+
+    // Mask MLP backward → d_graph_embed
+    let mut d_mask_h = [0.0f32; MLP_HIDDEN];
+    for m in 0..MLP_HIDDEN {
+        for k in 0..EMBED_DIM {
+            d_mask_h[m] += d_mask_features[k] * net.mask_mlp_w2[m][k];
+        }
+    }
+    let mut d_mask_h_pre = [0.0f32; MLP_HIDDEN];
+    for m in 0..MLP_HIDDEN {
+        d_mask_h_pre[m] = if cache.mask_h_pre[m] > 0.0 { d_mask_h[m] } else { 0.0 };
+    }
+    let mut d_graph_embed = [0.0f32; EMBED_DIM];
+    for m in 0..MLP_HIDDEN {
+        for i in 0..EMBED_DIM {
+            d_graph_embed[i] += d_mask_h_pre[m] * net.mask_mlp_w1[i][m];
+        }
+    }
+
+    // Graph proj backward → d_graph_hidden
+    let mut d_graph_hidden = [0.0f32; HIDDEN_DIM];
+    for j in 0..HIDDEN_DIM {
+        for k in 0..EMBED_DIM {
+            d_graph_hidden[j] += d_graph_embed[k] * net.graph_proj_w[j][k];
+        }
+    }
+
+    // Graph backbone backward → d_graph_input
+    let mut d_graph_pre_relu = [0.0f32; HIDDEN_DIM];
+    for j in 0..HIDDEN_DIM {
+        d_graph_pre_relu[j] = if cache.graph_pre_relu[j] > 0.0 {
+            d_graph_hidden[j]
+        } else {
+            0.0
+        };
+    }
+    let mut d_graph_input = [0.0f32; GRAPH_INPUT_DIM];
+    for i in 0..GRAPH_INPUT_DIM {
+        for j in 0..HIDDEN_DIM {
+            d_graph_input[i] += d_graph_pre_relu[j] * net.graph_w1[i][j];
+        }
+    }
+    d_graph_input
+}
+
+/// Compute gradient w.r.t. accumulator input from the value loss path.
+///
+/// Re-derives the full chain from d_value through value_mlp → expr_proj → backbone → acc_input.
+#[must_use]
+pub fn compute_d_acc_input_value(
+    net: &ExprNnue,
+    cache: &UnifiedForwardCache,
+    target_cost: f32,
+    value_coeff: f32,
+) -> [f32; INPUT_DIM] {
+    let d_value = 2.0 * (cache.value_pred - target_cost) * value_coeff;
+
+    // Value MLP backward → d_expr_embed
+    let mut d_value_h = [0.0f32; MLP_HIDDEN];
+    for m in 0..MLP_HIDDEN {
+        d_value_h[m] = d_value * net.value_mlp_w2[m];
+    }
+    let mut d_value_h_pre = [0.0f32; MLP_HIDDEN];
+    for m in 0..MLP_HIDDEN {
+        d_value_h_pre[m] = if cache.value_h_pre[m] > 0.0 { d_value_h[m] } else { 0.0 };
+    }
+    let mut d_expr_embed = [0.0f32; EMBED_DIM];
+    for m in 0..MLP_HIDDEN {
+        for k in 0..EMBED_DIM {
+            d_expr_embed[k] += d_value_h_pre[m] * net.value_mlp_w1[k][m];
+        }
+    }
+
+    // Expr proj backward → d_hidden
+    let mut d_hidden = [0.0f32; HIDDEN_DIM];
+    for j in 0..HIDDEN_DIM {
+        for k in 0..EMBED_DIM {
+            d_hidden[j] += d_expr_embed[k] * net.expr_proj_w[j][k];
+        }
+    }
+
+    // Backbone backward → d_acc_input
+    let mut d_pre_relu = [0.0f32; HIDDEN_DIM];
+    for j in 0..HIDDEN_DIM {
+        d_pre_relu[j] = if cache.pre_relu[j] > 0.0 { d_hidden[j] } else { 0.0 };
+    }
+    let mut d_acc_input = [0.0f32; INPUT_DIM];
+    for i in 0..INPUT_DIM {
+        for j in 0..HIDDEN_DIM {
+            d_acc_input[i] += d_pre_relu[j] * net.w1[i][j];
+        }
+    }
+    d_acc_input
+}
+
+/// Flow gradients from d_acc_input through EdgeAccumulator construction to OpEmbeddings.
+///
+/// Given the gradient w.r.t. the scaled accumulator input (d_acc_input), this function
+/// reverses the accumulator construction to compute per-op embedding gradients.
+///
+/// The forward path is:
+/// ```text
+/// for each edge (parent, child, depth):
+///   values[0..K]     += parent_emb
+///   values[K..2K]    += child_emb
+///   values[2K..3K]   += complex_mul(parent_emb, PE(depth))
+///   values[3K..4K]   += complex_mul(child_emb, PE(depth))
+/// acc_input[i] = values[i] * scale   (scale = 1/sqrt(node_count))
+/// ```
+///
+/// # Panics
+///
+/// Panics if any op index in `edges` is out of range for `OpKind::COUNT`.
+pub fn backward_through_accumulator(
+    d_acc_input: &[f32; INPUT_DIM],
+    edges: &[(u8, u8, u16)],
+    node_count: u32,
+    grads: &mut UnifiedGradients,
+) {
+    // Undo the sqrt(node_count) scaling: d_values[i] = d_acc_input[i] * scale
+    let scale = if node_count > 0 {
+        1.0 / libm::sqrtf(node_count as f32)
+    } else {
+        1.0
+    };
+
+    let mut d_values = [0.0f32; 4 * K];
+    for i in 0..4 * K {
+        d_values[i] = d_acc_input[i] * scale;
+    }
+    // d_acc_input[4*K] and d_acc_input[4*K+1] are log2-scaled edge/node counts —
+    // these don't depend on embeddings, so we skip them.
+
+    for &(parent_op_u8, child_op_u8, depth_u16) in edges {
+        let pi = parent_op_u8 as usize;
+        let ci = child_op_u8 as usize;
+        assert!(
+            pi < OpKind::COUNT,
+            "parent op index {pi} out of range for OpKind::COUNT={}",
+            OpKind::COUNT
+        );
+        assert!(
+            ci < OpKind::COUNT,
+            "child op index {ci} out of range for OpKind::COUNT={}",
+            OpKind::COUNT
+        );
+        let pe = depth_pe(depth_u16 as u32);
+
+        // Flat parent half: values[i] += parent_emb[i]
+        // d_parent_emb[i] += d_values[i]
+        for i in 0..K {
+            grads.d_embeddings[pi][i] += d_values[i];
+        }
+
+        // Flat child half: values[K+i] += child_emb[i]
+        for i in 0..K {
+            grads.d_embeddings[ci][i] += d_values[K + i];
+        }
+
+        // Depth-encoded parent half (complex multiply backward):
+        // Forward: values[2K+2f]   += p_re * cos_d - p_im * sin_d
+        //          values[2K+2f+1] += p_re * sin_d + p_im * cos_d
+        // Backward: d_p_re += dv_re * cos_d + dv_im * sin_d
+        //           d_p_im += -dv_re * sin_d + dv_im * cos_d
+        for f in 0..K / 2 {
+            let sin_d = pe[2 * f];
+            let cos_d = pe[2 * f + 1];
+            let dv_re = d_values[2 * K + 2 * f];
+            let dv_im = d_values[2 * K + 2 * f + 1];
+            grads.d_embeddings[pi][2 * f] += dv_re * cos_d + dv_im * sin_d;
+            grads.d_embeddings[pi][2 * f + 1] += -dv_re * sin_d + dv_im * cos_d;
+        }
+
+        // Depth-encoded child half:
+        for f in 0..K / 2 {
+            let sin_d = pe[2 * f];
+            let cos_d = pe[2 * f + 1];
+            let dv_re = d_values[3 * K + 2 * f];
+            let dv_im = d_values[3 * K + 2 * f + 1];
+            grads.d_embeddings[ci][2 * f] += dv_re * cos_d + dv_im * sin_d;
+            grads.d_embeddings[ci][2 * f + 1] += -dv_re * sin_d + dv_im * cos_d;
         }
     }
 }
@@ -833,6 +1259,57 @@ pub fn apply_unified_sgd(
             momentum_buf.d_mask_bias_proj[k]
         );
     }
+
+    // embeddings: [OpKind::COUNT][K]
+    for op in 0..OpKind::COUNT {
+        for i in 0..K {
+            sgd_scalar!(
+                net.embeddings.e[op][i],
+                grads.d_embeddings[op][i],
+                momentum_buf.d_embeddings[op][i]
+            );
+        }
+    }
+
+    // graph_w1: [GRAPH_INPUT_DIM][HIDDEN_DIM]
+    for i in 0..GRAPH_INPUT_DIM {
+        for j in 0..HIDDEN_DIM {
+            sgd_scalar!(
+                net.graph_w1[i][j],
+                grads.d_graph_w1[i][j],
+                momentum_buf.d_graph_w1[i][j]
+            );
+        }
+    }
+
+    // graph_b1: [HIDDEN_DIM]
+    for j in 0..HIDDEN_DIM {
+        sgd_scalar!(
+            net.graph_b1[j],
+            grads.d_graph_b1[j],
+            momentum_buf.d_graph_b1[j]
+        );
+    }
+
+    // graph_proj_w: [HIDDEN_DIM][EMBED_DIM]
+    for j in 0..HIDDEN_DIM {
+        for k in 0..EMBED_DIM {
+            sgd_scalar!(
+                net.graph_proj_w[j][k],
+                grads.d_graph_proj_w[j][k],
+                momentum_buf.d_graph_proj_w[j][k]
+            );
+        }
+    }
+
+    // graph_proj_b: [EMBED_DIM]
+    for k in 0..EMBED_DIM {
+        sgd_scalar!(
+            net.graph_proj_b[k],
+            grads.d_graph_proj_b[k],
+            momentum_buf.d_graph_proj_b[k]
+        );
+    }
 }
 
 // ============================================================================
@@ -919,6 +1396,25 @@ mod tests {
         }
         net.value_mlp_b2 = rng.next_f32() * 0.5;
 
+        // Randomize graph backbone (for mask/policy head)
+        let scale_graph = libm::sqrtf(2.0 / GRAPH_INPUT_DIM as f32);
+        for i in 0..GRAPH_INPUT_DIM {
+            for j in 0..HIDDEN_DIM {
+                net.graph_w1[i][j] = rng.next_f32() * scale_graph;
+            }
+        }
+        for j in 0..HIDDEN_DIM {
+            net.graph_b1[j] = rng.next_f32() * 0.1;
+        }
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                net.graph_proj_w[j][k] = rng.next_f32() * scale_hidden;
+            }
+        }
+        for k in 0..EMBED_DIM {
+            net.graph_proj_b[k] = rng.next_f32() * 0.1;
+        }
+
         net
     }
 
@@ -932,6 +1428,18 @@ mod tests {
         acc.edge_count = 5;
         acc.node_count = 4;
         acc
+    }
+
+    /// Create a test graph accumulator with nonzero values.
+    fn make_test_gacc() -> GraphAccumulator {
+        let mut gacc = GraphAccumulator::new();
+        let mut rng = Lcg::new(3333);
+        for v in &mut gacc.values {
+            *v = rng.next_f32() * 0.5;
+        }
+        gacc.edge_count = 7;
+        gacc.node_count = 5;
+        gacc
     }
 
     /// Create a test rule embedding.
@@ -954,8 +1462,8 @@ mod tests {
     ///
     /// The f64 computation avoids the f32 precision bottleneck where
     /// sigmoid(score) → log() loses significant digits.
-    fn policy_loss(net: &ExprNnue, acc: &EdgeAccumulator, rule_embed: &[f32; EMBED_DIM], _matched: bool, advantage: f32) -> f64 {
-        let cache = forward_cached(net, acc, rule_embed);
+    fn policy_loss(net: &ExprNnue, acc: &EdgeAccumulator, gacc: &GraphAccumulator, rule_embed: &[f32; EMBED_DIM], _matched: bool, advantage: f32) -> f64 {
+        let cache = forward_cached(net, acc, gacc, rule_embed);
         let s = cache.score as f64;
         // In self-play, steps are only recorded when the policy chose Action=1 (approve).
         // Loss = -log(sigma(s)) * advantage = softplus(-s) * advantage
@@ -964,8 +1472,8 @@ mod tests {
     }
 
     /// Compute value loss: (value_pred - target)^2 * value_coeff.
-    fn value_loss(net: &ExprNnue, acc: &EdgeAccumulator, rule_embed: &[f32; EMBED_DIM], target_cost: f32, value_coeff: f32) -> f64 {
-        let cache = forward_cached(net, acc, rule_embed);
+    fn value_loss(net: &ExprNnue, acc: &EdgeAccumulator, gacc: &GraphAccumulator, rule_embed: &[f32; EMBED_DIM], target_cost: f32, value_coeff: f32) -> f64 {
+        let cache = forward_cached(net, acc, gacc, rule_embed);
         let diff = cache.value_pred as f64 - target_cost as f64;
         diff * diff * value_coeff as f64
     }
@@ -1000,14 +1508,15 @@ mod tests {
     fn numerical_gradient_check_policy_interaction() {
         let net = make_test_net();
         let acc = make_test_acc();
+        let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
         let matched = true;
         let advantage = 1.5;
 
         // Analytical gradient
-        let cache = forward_cached(&net, &acc, &rule_embed);
+        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let mut grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, &mut grads);
+        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, 1.0, &mut grads);
 
         // Check a sample of interaction matrix elements
         // eps=5e-4 balances truncation error (O(eps^2)) and rounding error (O(1/eps))
@@ -1020,11 +1529,11 @@ mod tests {
             for j in [0, 7, 15, 23] {
                 let mut net_p = net.clone();
                 net_p.interaction[i][j] += eps;
-                let loss_plus = policy_loss(&net_p, &acc, &rule_embed, matched, advantage);
+                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
 
                 let mut net_m = net.clone();
                 net_m.interaction[i][j] -= eps;
-                let loss_minus = policy_loss(&net_m, &acc, &rule_embed, matched, advantage);
+                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_interaction[i][j], num_grad);
@@ -1053,13 +1562,14 @@ mod tests {
     fn numerical_gradient_check_policy_mask_mlp() {
         let net = make_test_net();
         let acc = make_test_acc();
+        let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
         let matched = false;
         let advantage = 2.0;
 
-        let cache = forward_cached(&net, &acc, &rule_embed);
+        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let mut grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, &mut grads);
+        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, 1.0, &mut grads);
 
         // eps=5e-4 balances truncation error (O(eps^2)) and rounding error (O(1/eps))
         // for the log-sigmoid policy loss in f32 arithmetic.
@@ -1072,11 +1582,11 @@ mod tests {
             for j in [0, 8, 15] {
                 let mut net_p = net.clone();
                 net_p.mask_mlp_w1[i][j] += eps;
-                let loss_plus = policy_loss(&net_p, &acc, &rule_embed, matched, advantage);
+                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
 
                 let mut net_m = net.clone();
                 net_m.mask_mlp_w1[i][j] -= eps;
-                let loss_minus = policy_loss(&net_m, &acc, &rule_embed, matched, advantage);
+                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_mask_mlp_w1[i][j], num_grad);
@@ -1096,11 +1606,11 @@ mod tests {
             for k in [0, 12, 23] {
                 let mut net_p = net.clone();
                 net_p.mask_mlp_w2[j][k] += eps;
-                let loss_plus = policy_loss(&net_p, &acc, &rule_embed, matched, advantage);
+                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
 
                 let mut net_m = net.clone();
                 net_m.mask_mlp_w2[j][k] -= eps;
-                let loss_minus = policy_loss(&net_m, &acc, &rule_embed, matched, advantage);
+                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_mask_mlp_w2[j][k], num_grad);
@@ -1120,102 +1630,121 @@ mod tests {
     }
 
     // ========================================================================
-    // Test 3: Backbone W1 gradient (policy — deepest chain rule)
+    // Test 3: Graph backbone gradient (policy — deepest chain rule)
     // ========================================================================
 
     #[test]
-    fn numerical_gradient_check_policy_backbone() {
+    fn numerical_gradient_check_policy_graph_backbone() {
         let net = make_test_net();
         let acc = make_test_acc();
+        let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
         let matched = true;
         let advantage = 0.8;
 
-        let cache = forward_cached(&net, &acc, &rule_embed);
+        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let mut grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, &mut grads);
+        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, 1.0, &mut grads);
 
         let eps = 1e-3f32;
         let mut max_err = 0.0f64;
         let mut checked = 0;
         let mut nonzero_grads = 0;
 
-        // Check w1 (130 x 64) — sample some elements
-        for i in [0, 30, 64, 128, 129] {
+        // Check graph_w1 (98 x 64) — sample some elements
+        for i in [0, 30, 64, 96, 97] {
             for j in [0, 16, 32, 63] {
                 let mut net_p = net.clone();
-                net_p.w1[i][j] += eps;
-                let loss_plus = policy_loss(&net_p, &acc, &rule_embed, matched, advantage);
+                net_p.graph_w1[i][j] += eps;
+                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
 
                 let mut net_m = net.clone();
-                net_m.w1[i][j] -= eps;
-                let loss_minus = policy_loss(&net_m, &acc, &rule_embed, matched, advantage);
+                net_m.graph_w1[i][j] -= eps;
+                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
-                let (a, n, err) = check_gradient(grads.d_w1[i][j], num_grad);
+                let (a, n, err) = check_gradient(grads.d_graph_w1[i][j], num_grad);
                 if err > max_err {
                     max_err = err;
                 }
-                if grads.d_w1[i][j].abs() > 1e-10 {
+                if grads.d_graph_w1[i][j].abs() > 1e-10 {
                     nonzero_grads += 1;
                 }
                 assert!(
                     err < 0.05,
-                    "w1[{i}][{j}]: analytical={a:.8}, numerical={n:.8}, rel_err={err:.6}"
+                    "graph_w1[{i}][{j}]: analytical={a:.8}, numerical={n:.8}, rel_err={err:.6}"
                 );
                 checked += 1;
             }
         }
 
-        // Also check b1
+        // Also check graph_b1
         for j in [0, 16, 32, 63] {
             let mut net_p = net.clone();
-            net_p.b1[j] += eps;
-            let loss_plus = policy_loss(&net_p, &acc, &rule_embed, matched, advantage);
+            net_p.graph_b1[j] += eps;
+            let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
 
             let mut net_m = net.clone();
-            net_m.b1[j] -= eps;
-            let loss_minus = policy_loss(&net_m, &acc, &rule_embed, matched, advantage);
+            net_m.graph_b1[j] -= eps;
+            let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
 
             let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
-            let (a, n, err) = check_gradient(grads.d_b1[j], num_grad);
+            let (a, n, err) = check_gradient(grads.d_graph_b1[j], num_grad);
             if err > max_err {
                 max_err = err;
             }
             assert!(
                 err < 0.05,
-                "b1[{j}]: analytical={a:.8}, numerical={n:.8}, rel_err={err:.6}"
+                "graph_b1[{j}]: analytical={a:.8}, numerical={n:.8}, rel_err={err:.6}"
             );
             checked += 1;
         }
 
-        // Also check expr_proj_w
+        // Also check graph_proj_w
         for j in [0, 32, 63] {
             for k in [0, 12, 23] {
                 let mut net_p = net.clone();
-                net_p.expr_proj_w[j][k] += eps;
-                let loss_plus = policy_loss(&net_p, &acc, &rule_embed, matched, advantage);
+                net_p.graph_proj_w[j][k] += eps;
+                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
 
                 let mut net_m = net.clone();
-                net_m.expr_proj_w[j][k] -= eps;
-                let loss_minus = policy_loss(&net_m, &acc, &rule_embed, matched, advantage);
+                net_m.graph_proj_w[j][k] -= eps;
+                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
-                let (a, n, err) = check_gradient(grads.d_expr_proj_w[j][k], num_grad);
+                let (a, n, err) = check_gradient(grads.d_graph_proj_w[j][k], num_grad);
                 if err > max_err {
                     max_err = err;
                 }
                 assert!(
                     err < 0.05,
-                    "expr_proj_w[{j}][{k}]: analytical={a:.8}, numerical={n:.8}, rel_err={err:.6}"
+                    "graph_proj_w[{j}][{k}]: analytical={a:.8}, numerical={n:.8}, rel_err={err:.6}"
                 );
                 checked += 1;
             }
         }
 
-        assert!(checked >= 29, "checked {checked} backbone elements");
-        assert!(nonzero_grads > 0, "at least some backbone gradients must be nonzero");
-        eprintln!("  backbone max rel error: {max_err:.6e}  ({checked} elements, {nonzero_grads} nonzero)");
+        // Verify that w1/b1/expr_proj_w have ZERO policy gradient (policy no longer flows through expr backbone)
+        for i in [0, 64, 129] {
+            for j in [0, 32, 63] {
+                assert!(
+                    grads.d_w1[i][j].abs() < 1e-10,
+                    "w1[{i}][{j}] should have zero policy gradient, got {}",
+                    grads.d_w1[i][j]
+                );
+            }
+        }
+        for j in [0, 32, 63] {
+            assert!(
+                grads.d_b1[j].abs() < 1e-10,
+                "b1[{j}] should have zero policy gradient, got {}",
+                grads.d_b1[j]
+            );
+        }
+
+        assert!(checked >= 29, "checked {checked} graph backbone elements");
+        assert!(nonzero_grads > 0, "at least some graph backbone gradients must be nonzero");
+        eprintln!("  graph backbone max rel error: {max_err:.6e}  ({checked} elements, {nonzero_grads} nonzero)");
     }
 
     // ========================================================================
@@ -1226,11 +1755,12 @@ mod tests {
     fn numerical_gradient_check_value() {
         let net = make_test_net();
         let acc = make_test_acc();
+        let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
         let target_cost = 3.5f32;
         let value_coeff = 0.5f32;
 
-        let cache = forward_cached(&net, &acc, &rule_embed);
+        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let mut grads = UnifiedGradients::zero();
         backward_value(&net, &cache, target_cost, value_coeff, &mut grads);
 
@@ -1242,11 +1772,11 @@ mod tests {
         for j in [0, 8, 15] {
             let mut net_p = net.clone();
             net_p.value_mlp_w2[j] += eps;
-            let loss_plus = value_loss(&net_p, &acc, &rule_embed, target_cost, value_coeff);
+            let loss_plus = value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
             let mut net_m = net.clone();
             net_m.value_mlp_w2[j] -= eps;
-            let loss_minus = value_loss(&net_m, &acc, &rule_embed, target_cost, value_coeff);
+            let loss_minus = value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
             let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
             let (a, n, err) = check_gradient(grads.d_value_mlp_w2[j], num_grad);
@@ -1264,11 +1794,11 @@ mod tests {
         {
             let mut net_p = net.clone();
             net_p.value_mlp_b2 += eps;
-            let loss_plus = value_loss(&net_p, &acc, &rule_embed, target_cost, value_coeff);
+            let loss_plus = value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
             let mut net_m = net.clone();
             net_m.value_mlp_b2 -= eps;
-            let loss_minus = value_loss(&net_m, &acc, &rule_embed, target_cost, value_coeff);
+            let loss_minus = value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
             let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
             let (a, n, err) = check_gradient(grads.d_value_mlp_b2, num_grad);
@@ -1287,11 +1817,11 @@ mod tests {
             for j in [0, 8, 15] {
                 let mut net_p = net.clone();
                 net_p.value_mlp_w1[i][j] += eps;
-                let loss_plus = value_loss(&net_p, &acc, &rule_embed, target_cost, value_coeff);
+                let loss_plus = value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let mut net_m = net.clone();
                 net_m.value_mlp_w1[i][j] -= eps;
-                let loss_minus = value_loss(&net_m, &acc, &rule_embed, target_cost, value_coeff);
+                let loss_minus = value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_value_mlp_w1[i][j], num_grad);
@@ -1311,11 +1841,11 @@ mod tests {
             for k in [0, 12, 23] {
                 let mut net_p = net.clone();
                 net_p.expr_proj_w[j][k] += eps;
-                let loss_plus = value_loss(&net_p, &acc, &rule_embed, target_cost, value_coeff);
+                let loss_plus = value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let mut net_m = net.clone();
                 net_m.expr_proj_w[j][k] -= eps;
-                let loss_minus = value_loss(&net_m, &acc, &rule_embed, target_cost, value_coeff);
+                let loss_minus = value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_expr_proj_w[j][k], num_grad);
@@ -1335,11 +1865,11 @@ mod tests {
             for j in [0, 32, 63] {
                 let mut net_p = net.clone();
                 net_p.w1[i][j] += eps;
-                let loss_plus = value_loss(&net_p, &acc, &rule_embed, target_cost, value_coeff);
+                let loss_plus = value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let mut net_m = net.clone();
                 net_m.w1[i][j] -= eps;
-                let loss_minus = value_loss(&net_m, &acc, &rule_embed, target_cost, value_coeff);
+                let loss_minus = value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_w1[i][j], num_grad);
@@ -1359,13 +1889,14 @@ mod tests {
     }
 
     // ========================================================================
-    // Test 5: Joint gradient accumulation (both losses into d_w1)
+    // Test 5: Joint gradient accumulation (independent backbones)
     // ========================================================================
 
     #[test]
     fn joint_gradient_accumulates() {
         let net = make_test_net();
         let acc = make_test_acc();
+        let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
         let matched = true;
         let advantage = 1.0;
@@ -1373,38 +1904,46 @@ mod tests {
         let value_coeff = 0.5f32;
 
         // Compute joint gradient (both losses into same buffer)
-        let cache = forward_cached(&net, &acc, &rule_embed);
+        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let mut joint_grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, &mut joint_grads);
+        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, 1.0, &mut joint_grads);
         backward_value(&net, &cache, target_cost, value_coeff, &mut joint_grads);
 
         // Compute separate gradients
         let mut policy_grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, &mut policy_grads);
+        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, 1.0, &mut policy_grads);
 
         let mut value_grads = UnifiedGradients::zero();
         backward_value(&net, &cache, target_cost, value_coeff, &mut value_grads);
 
         // Joint loss for numerical check
         let joint_loss = |net: &ExprNnue| -> f64 {
-            policy_loss(net, &acc, &rule_embed, matched, advantage)
-                + value_loss(net, &acc, &rule_embed, target_cost, value_coeff)
+            policy_loss(net, &acc, &gacc, &rule_embed, matched, advantage)
+                + value_loss(net, &acc, &gacc, &rule_embed, target_cost, value_coeff)
         };
 
         let eps = 2e-4f32;
         let mut max_err = 0.0f64;
         let mut checked = 0;
 
-        // Check that joint gradient = policy gradient + value gradient for shared parameters
+        // w1 is value-only now (policy flows through graph_w1 instead).
+        // Verify joint w1 gradient matches value-only gradient.
         for i in [0, 64, 129] {
             for j in [0, 32, 63] {
-                // Verify additivity
-                let sum = policy_grads.d_w1[i][j] + value_grads.d_w1[i][j];
+                // Policy gradient for w1 should be zero
+                assert!(
+                    policy_grads.d_w1[i][j].abs() < 1e-10,
+                    "w1[{i}][{j}] should have zero policy gradient, got {}",
+                    policy_grads.d_w1[i][j]
+                );
+
+                // Joint = value-only for w1
                 let joint = joint_grads.d_w1[i][j];
-                let diff = (sum - joint).abs();
+                let value_only = value_grads.d_w1[i][j];
+                let diff = (joint - value_only).abs();
                 assert!(
                     diff < 1e-6,
-                    "w1[{i}][{j}]: joint={joint:.8} != policy+value={sum:.8}, diff={diff:.8e}"
+                    "w1[{i}][{j}]: joint={joint:.8} != value={value_only:.8}, diff={diff:.8e}"
                 );
 
                 // Verify vs numerical gradient of joint loss
@@ -1430,6 +1969,29 @@ mod tests {
             }
         }
 
+        // graph_w1 is policy-only (value flows through w1 instead).
+        // Verify joint graph_w1 gradient matches policy-only gradient.
+        for i in [0, 48, 97] {
+            for j in [0, 32, 63] {
+                // Value gradient for graph_w1 should be zero
+                assert!(
+                    value_grads.d_graph_w1[i][j].abs() < 1e-10,
+                    "graph_w1[{i}][{j}] should have zero value gradient, got {}",
+                    value_grads.d_graph_w1[i][j]
+                );
+
+                // Joint = policy-only for graph_w1
+                let joint = joint_grads.d_graph_w1[i][j];
+                let policy_only = policy_grads.d_graph_w1[i][j];
+                let diff = (joint - policy_only).abs();
+                assert!(
+                    diff < 1e-6,
+                    "graph_w1[{i}][{j}]: joint={joint:.8} != policy={policy_only:.8}, diff={diff:.8e}"
+                );
+                checked += 1;
+            }
+        }
+
         // Verify policy-only params (interaction) are NOT affected by value loss
         for i in [0, 12, 23] {
             for j in [0, 12, 23] {
@@ -1441,8 +2003,7 @@ mod tests {
             }
         }
 
-        // Verify value-only params are NOT affected by policy loss through
-        // the interaction matrix (mask_bias_proj should get policy but NOT value grad)
+        // Verify value-only params are NOT affected by policy loss
         // mask_bias_proj only appears in the bilinear score, so value loss doesn't touch it
         for k in 0..EMBED_DIM {
             assert!(
@@ -1452,7 +2013,7 @@ mod tests {
             );
         }
 
-        assert!(checked >= 9, "checked {checked} joint elements");
+        assert!(checked >= 18, "checked {checked} joint elements");
         eprintln!("  joint accumulation max rel error: {max_err:.6e}  ({checked} elements)");
     }
 
@@ -1464,9 +2025,10 @@ mod tests {
     fn forward_cached_matches_bilinear_score() {
         let net = make_test_net();
         let acc = make_test_acc();
+        let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
 
-        let cache = forward_cached(&net, &acc, &rule_embed);
+        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
 
         // bilinear_score is public — verify our cached mask_features + score agree
         let score_from_public = net.bilinear_score(&cache.mask_features, &rule_embed);
@@ -1506,6 +2068,27 @@ mod tests {
             (cache.acc_input[4 * K + 1] - libm::log2f(1.0 + acc.node_count as f32)).abs() < 1e-6,
             "acc_input node_count mismatch"
         );
+
+        // Verify graph_input was built correctly from the graph accumulator
+        let graph_scale = if gacc.node_count > 0 {
+            1.0 / libm::sqrtf(gacc.node_count as f32)
+        } else {
+            1.0
+        };
+        for i in 0..GRAPH_ACC_DIM {
+            assert!(
+                (cache.graph_input[i] - gacc.values[i] * graph_scale).abs() < 1e-6,
+                "graph_input[{i}] should match scaled gacc.values"
+            );
+        }
+        assert!(
+            (cache.graph_input[GRAPH_ACC_DIM] - libm::log2f(1.0 + gacc.edge_count as f32)).abs() < 1e-6,
+            "graph_input edge_count mismatch"
+        );
+        assert!(
+            (cache.graph_input[GRAPH_ACC_DIM + 1] - libm::log2f(1.0 + gacc.node_count as f32)).abs() < 1e-6,
+            "graph_input node_count mismatch"
+        );
     }
 
     // ========================================================================
@@ -1516,12 +2099,13 @@ mod tests {
     fn gradient_norm_nonzero() {
         let net = make_test_net();
         let acc = make_test_acc();
+        let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
 
-        let cache = forward_cached(&net, &acc, &rule_embed);
+        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
 
         let mut grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, true, 1.0, 0.0, &mut grads);
+        backward_policy(&net, &cache, &rule_embed, true, 1.0, 0.0, 1.0, &mut grads);
         let policy_norm = grads.norm();
         assert!(
             policy_norm > 1e-8,
@@ -1548,14 +2132,16 @@ mod tests {
     fn sgd_moves_parameters() {
         let mut net = make_test_net();
         let acc = make_test_acc();
+        let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
 
         let w1_before = net.w1[0][0];
         let interaction_before = net.interaction[0][0];
+        let graph_w1_before = net.graph_w1[0][0];
 
-        let cache = forward_cached(&net, &acc, &rule_embed);
+        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let mut grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, true, 1.0, 0.0, &mut grads);
+        backward_policy(&net, &cache, &rule_embed, true, 1.0, 0.0, 1.0, &mut grads);
         backward_value(&net, &cache, 3.0, 0.5, &mut grads);
 
         let mut momentum_buf = UnifiedGradients::zero();
@@ -1571,6 +2157,7 @@ mod tests {
 
         let w1_after = net.w1[0][0];
         let interaction_after = net.interaction[0][0];
+        let graph_w1_after = net.graph_w1[0][0];
 
         assert!(
             (w1_after - w1_before).abs() > 1e-10,
@@ -1579,6 +2166,10 @@ mod tests {
         assert!(
             (interaction_after - interaction_before).abs() > 1e-10,
             "interaction[0][0] should have moved: before={interaction_before}, after={interaction_after}"
+        );
+        assert!(
+            (graph_w1_after - graph_w1_before).abs() > 1e-10,
+            "graph_w1[0][0] should have moved: before={graph_w1_before}, after={graph_w1_after}"
         );
     }
 
@@ -1590,14 +2181,15 @@ mod tests {
     fn scale_and_accumulate() {
         let net = make_test_net();
         let acc = make_test_acc();
+        let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
-        let cache = forward_cached(&net, &acc, &rule_embed);
+        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
 
         let mut g1 = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, true, 1.0, 0.0, &mut g1);
+        backward_policy(&net, &cache, &rule_embed, true, 1.0, 0.0, 1.0, &mut g1);
 
         let mut g2 = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, true, 1.0, 0.0, &mut g2);
+        backward_policy(&net, &cache, &rule_embed, true, 1.0, 0.0, 1.0, &mut g2);
 
         // g2 should equal g1
         for i in 0..INPUT_DIM {
@@ -1636,18 +2228,19 @@ mod tests {
     fn numerical_gradient_check_entropy() {
         let net = make_test_net();
         let acc = make_test_acc();
+        let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
 
-        let cache = forward_cached(&net, &acc, &rule_embed);
+        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let entropy_coeff = 0.1f32;
 
         // Compute analytical gradient with entropy only (advantage=0 isolates entropy)
         let mut grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, true, 0.0, entropy_coeff, &mut grads);
+        backward_policy(&net, &cache, &rule_embed, true, 0.0, entropy_coeff, 1.0, &mut grads);
 
         // Compute entropy numerically
         let entropy_at = |net: &ExprNnue| -> f64 {
-            let c = forward_cached(net, &acc, &rule_embed);
+            let c = forward_cached(net, &acc, &gacc, &rule_embed);
             let p = c.prob as f64;
             let p = p.clamp(1e-7, 1.0 - 1e-7);
             // We minimize -entropy, so loss = -(- p*ln(p) - (1-p)*ln(1-p)) * coeff
@@ -1706,21 +2299,22 @@ mod tests {
     fn entropy_pushes_toward_half() {
         let net = make_test_net();
         let acc = make_test_acc();
+        let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
 
-        let cache = forward_cached(&net, &acc, &rule_embed);
+        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let initial_prob = cache.prob;
 
         // Apply entropy gradient only (advantage=0)
         let mut grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, true, 0.0, 0.1, &mut grads);
+        backward_policy(&net, &cache, &rule_embed, true, 0.0, 0.1, 1.0, &mut grads);
 
         // Apply one SGD step
         let mut net2 = net.clone();
         let mut momentum = UnifiedGradients::zero();
         apply_unified_sgd(&mut net2, &grads, &mut momentum, 0.01, 0.0, 0.0, 10.0);
 
-        let cache2 = forward_cached(&net2, &acc, &rule_embed);
+        let cache2 = forward_cached(&net2, &acc, &gacc, &rule_embed);
         let updated_prob = cache2.prob;
 
         // Entropy gradient should push probability toward 0.5

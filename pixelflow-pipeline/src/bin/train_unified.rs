@@ -31,16 +31,22 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use pixelflow_search::egraph::{all_rules, Rewrite};
-use pixelflow_search::nnue::factored::{EdgeAccumulator, ExprNnue, INPUT_DIM, EMBED_DIM, K};
+use pixelflow_search::nnue::factored::{
+    EdgeAccumulator, ExprNnue, GraphAccumulator, EMBED_DIM, GRAPH_ACC_DIM, GRAPH_INPUT_DIM,
+    INPUT_DIM, K,
+};
 
 use pixelflow_pipeline::training::gen_es::{log_ns, GenEs, GenEsConfig};
 use pixelflow_pipeline::training::self_play::{
-    build_rule_templates, generate_corpus_trajectories, generate_trajectory_batch,
-    load_corpus_exprs, read_advantages_jsonl, write_trajectories_jsonl,
+    build_rule_templates, generate_corpus_trajectories_parallel,
+    generate_trajectory_batch_parallel, load_corpus_exprs, load_trajectories_jsonl,
+    read_advantages_jsonl, write_trajectories_jsonl,
 };
 use pixelflow_pipeline::training::unified::{Trajectory, TrajectoryAdvantages, TrajectoryStep};
 use pixelflow_pipeline::training::unified_backward::{
-    apply_unified_sgd, backward_policy, backward_value, forward_cached, UnifiedGradients,
+    apply_unified_sgd, backward_policy, backward_value,
+    backward_through_accumulator, compute_d_acc_input_value,
+    forward_cached, UnifiedGradients,
 };
 
 // ============================================================================
@@ -89,28 +95,37 @@ struct Args {
     threshold: f32,
 
     /// Learning rate for SGD.
-    #[arg(long, default_value_t = 2.91e-4)]
+    #[arg(long, default_value_t = 8.17e-3)]
     lr: f32,
 
     /// Momentum for SGD.
-    #[arg(long, default_value_t = 0.903)]
+    #[arg(long, default_value_t = 0.891)]
     momentum: f32,
 
     /// Weight decay.
-    #[arg(long, default_value_t = 3.34e-6)]
+    #[arg(long, default_value_t = 5.34e-6)]
     weight_decay: f32,
 
     /// Value loss coefficient.
-    #[arg(long, default_value_t = 0.804)]
+    #[arg(long, default_value_t = 1.175)]
     value_coeff: f32,
 
     /// Gradient clipping threshold (global L2 norm).
-    #[arg(long, default_value_t = 0.103)]
+    #[arg(long, default_value_t = 8.74)]
     grad_clip: f32,
 
     /// Entropy bonus coefficient (prevents policy collapse).
-    #[arg(long, default_value_t = 0.025)]
+    #[arg(long, default_value_t = 0.098)]
     entropy_coeff: f32,
+
+    /// Minimum entropy coefficient (floor for annealing — never goes below this).
+    #[arg(long, default_value_t = 0.02)]
+    entropy_floor: f32,
+
+    /// Miss penalty: scales down advantage for steps where the rule didn't match.
+    /// Lower values encourage exploration (0.0 = no penalty for misses, 1.0 = full penalty).
+    #[arg(long, default_value_t = 0.1)]
+    miss_penalty: f32,
 
     /// Path to model weights (loaded at start, saved at end).
     #[arg(long, default_value = "pixelflow-pipeline/data/judge.bin")]
@@ -129,15 +144,15 @@ struct Args {
     critic_checkpoint: PathBuf,
 
     /// Critic training epochs per round.
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 80)]
     critic_epochs: usize,
 
     /// Critic learning rate (forwarded to critic.py --lr).
-    #[arg(long, default_value_t = 4.03e-5)]
+    #[arg(long, default_value_t = 1.66e-4)]
     critic_lr: f64,
 
     /// Critic dropout (forwarded to critic.py --dropout).
-    #[arg(long, default_value_t = 0.085)]
+    #[arg(long, default_value_t = 0.124)]
     critic_dropout: f64,
 
     /// Random seed.
@@ -174,13 +189,35 @@ struct Args {
     #[arg(long, default_value_t = 200000)]
     replay_capacity: usize,
 
+    /// Re-label entire replay buffer every N rounds (0 = never).
+    #[arg(long, default_value_t = 5)]
+    relabel_interval: usize,
+
     /// Mini-batch size for SGD updates from replay buffer.
-    #[arg(long, default_value_t = 1024)]
+    #[arg(long, default_value_t = 2048)]
     mini_batch_size: usize,
 
     /// Number of gradient update steps per round.
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = 19)]
     updates_per_round: usize,
+
+    /// Offline mode: skip self-play, load existing trajectory JSONL from output_dir,
+    /// train critic once, then do pure SGD rounds on the replay buffer.
+    /// Ideal for Optuna hyperparameter sweeps.
+    #[arg(long, default_value_t = false)]
+    offline: bool,
+
+    /// Directory containing existing trajectory JSONL files to load in offline mode.
+    /// Defaults to --output-dir if not set.
+    #[arg(long)]
+    trajectory_dir: Option<PathBuf>,
+
+    // ── Parallelism ────────────────────────────────────────────
+    /// Number of worker threads for parallel trajectory generation.
+    /// Defaults to the number of available CPU cores.
+    /// Set to 1 for sequential execution (useful for debugging).
+    #[arg(long)]
+    workers: Option<usize>,
 }
 
 // ============================================================================
@@ -226,14 +263,30 @@ fn embed_from_replay(step: &ReplayStep) -> [f32; EMBED_DIM] {
     embed
 }
 
+/// Reconstruct [`GraphAccumulator`] from a [`ReplayStep`].
+fn gacc_from_replay(step: &ReplayStep) -> GraphAccumulator {
+    let mut gacc = GraphAccumulator::new();
+    if step.graph_acc.len() == GRAPH_INPUT_DIM {
+        gacc.values.copy_from_slice(&step.graph_acc[..GRAPH_ACC_DIM]);
+        gacc.edge_count = step.graph_acc[GRAPH_ACC_DIM] as u32;
+        gacc.node_count = step.graph_acc[GRAPH_ACC_DIM + 1] as u32;
+    }
+    // If graph_acc is empty (old replay data), return zeroed accumulator.
+    // The graph backbone will produce a zero-centered embedding, which is fine
+    // for backward compat — the mask gradient will be small but non-zero.
+    gacc
+}
+
 // ============================================================================
 // Replay Buffer
 // ============================================================================
 
 struct ReplayStep {
     acc: Vec<f32>,           // 130 floats (INPUT_DIM)
+    graph_acc: Vec<f32>,     // 98 floats (GRAPH_INPUT_DIM) — VSA graph state
     expr_embed: Vec<f32>,    // 32 floats (EMBED_DIM) — expr_proj output at decision time
     rule_embed: Vec<f32>,    // 32 floats (EMBED_DIM)
+    edges: Vec<(u8, u8, u16)>, // Edge list for embedding gradient flow
     matched: bool,
     jit_cost_ns: f64,
     advantage: f32,
@@ -262,8 +315,10 @@ impl ReplayBuffer {
             for (step, &advantage) in traj.steps.iter().zip(adv.advantages.iter()) {
                 self.steps.push(ReplayStep {
                     acc: step.accumulator_state.clone(),
+                    graph_acc: step.graph_accumulator_state.clone(),
                     expr_embed: step.expression_embedding.clone(),
                     rule_embed: step.rule_embedding.clone(),
+                    edges: step.edges.clone(),
                     matched: step.matched,
                     jit_cost_ns: step.jit_cost_ns,
                     advantage,
@@ -306,6 +361,15 @@ impl ReplayBuffer {
 // ============================================================================
 
 fn main() {
+    // E-graph expressions can get deep; default 8MB stack isn't enough.
+    let builder = std::thread::Builder::new().stack_size(64 * 1024 * 1024);
+    let handler = builder
+        .spawn(real_main)
+        .expect("failed to spawn main thread with larger stack");
+    handler.join().expect("main thread panicked");
+}
+
+fn real_main() {
     let args = Args::parse();
 
     // Create output directory
@@ -322,6 +386,21 @@ fn main() {
         eprintln!("No model at {:?}, initializing fresh with seed {}", args.model, args.seed);
         ExprNnue::new_with_latency_prior(args.seed)
     };
+
+    // ── OFFLINE MODE ─────────────────────────────────────────────
+    if args.offline {
+        run_offline(&args, &mut model);
+        return;
+    }
+
+    // Report parallelism
+    let effective_workers = args.workers.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    });
+    eprintln!("Workers: {effective_workers} ({})",
+        if args.workers.is_some() { "explicit" } else { "auto-detected" });
 
     // Build rules + templates
     let rules: Vec<Box<dyn Rewrite>> = all_rules();
@@ -390,7 +469,7 @@ fn main() {
         );
         let gen_start = std::time::Instant::now();
 
-        let mut trajectories = generate_trajectory_batch(
+        let mut trajectories = generate_trajectory_batch_parallel(
             &model,
             &templates,
             &rules,
@@ -399,10 +478,11 @@ fn main() {
             args.threshold,
             args.max_steps,
             &gen_config,
+            args.workers,
         );
 
         if corpus_count > 0 && !corpus_exprs.is_empty() {
-            trajectories.extend(generate_corpus_trajectories(
+            trajectories.extend(generate_corpus_trajectories_parallel(
                 &model,
                 &templates,
                 &rules,
@@ -411,6 +491,7 @@ fn main() {
                 round_seed.wrapping_add(0xC0),
                 args.threshold,
                 args.max_steps,
+                args.workers,
             ));
         }
         let gen_elapsed = gen_start.elapsed();
@@ -523,9 +604,68 @@ fn main() {
         }
 
         // Anneal entropy bonus toward 0 as training progresses
-        let annealed_entropy = args.entropy_coeff * (1.0 - round as f32 / args.rounds as f32);
+        let annealed_entropy = (args.entropy_coeff * (1.0 - round as f32 / args.rounds as f32)).max(args.entropy_floor);
 
         replay_buffer.push_round(&trajectories, &advantages);
+
+        // ── RELABEL: periodically re-critique entire replay buffer ───
+        if args.relabel_interval > 0 && round > 0 && round % args.relabel_interval == 0 {
+            eprintln!("[RELABEL] Re-critiquing all trajectories at round {round}...");
+            let relabel_start = std::time::Instant::now();
+
+            // Concat all trajectory JSONL files into one temp file
+            let combined_path = args.output_dir.join("_relabel_trajectories.jsonl");
+            {
+                let mut combined = std::fs::File::create(&combined_path)
+                    .unwrap_or_else(|e| panic!("Failed to create relabel file: {e}"));
+                for r in 0..=round {
+                    let rpath = args.output_dir.join(format!("trajectories_r{r}.jsonl"));
+                    if rpath.exists() {
+                        let content = std::fs::read(&rpath)
+                            .unwrap_or_else(|e| panic!("Failed to read {}: {e}", rpath.display()));
+                        std::io::Write::write_all(&mut combined, &content)
+                            .unwrap_or_else(|e| panic!("Failed to write relabel file: {e}"));
+                    }
+                }
+            }
+
+            // Run critic on combined trajectories
+            let relabel_adv_path = args.output_dir.join("_relabel_advantages.jsonl");
+            let status = std::process::Command::new("uv")
+                .args(["run", critic_script_str])
+                .arg("train")
+                .args(["--input", combined_path.to_str().unwrap()])
+                .args(["--output", relabel_adv_path.to_str().unwrap()])
+                .args(["--checkpoint", critic_ckpt_str])
+                .args(["--epochs", &args.critic_epochs.to_string()])
+                .args(["--lr", &args.critic_lr.to_string()])
+                .args(["--dropout", &args.critic_dropout.to_string()])
+                .status()
+                .unwrap_or_else(|e| panic!("Failed to run relabel critic: {e}"));
+
+            if !status.success() {
+                panic!("Relabel critic failed with exit code: {status}");
+            }
+
+            // Reload all trajectories and rebuild replay buffer
+            let all_trajs = load_trajectories_jsonl(&combined_path);
+            let all_advs = read_advantages_jsonl(&relabel_adv_path);
+            assert_eq!(all_trajs.len(), all_advs.len(),
+                "Relabel trajectory/advantage mismatch: {} vs {}", all_trajs.len(), all_advs.len());
+
+            replay_buffer.steps.clear();
+            replay_buffer.push_round(&all_trajs, &all_advs);
+
+            // Cleanup temp files
+            let _ = std::fs::remove_file(&combined_path);
+            let _ = std::fs::remove_file(&relabel_adv_path);
+
+            eprintln!(
+                "[RELABEL] Rebuilt replay buffer with {} steps from {} trajectories in {:.1}s",
+                replay_buffer.len(), all_trajs.len(), relabel_start.elapsed().as_secs_f64()
+            );
+        }
+
         eprintln!("[UPDATE] Buffer size: {} steps", replay_buffer.len());
         eprintln!("[MEMORY] after buffer push: {:.0}MB ({} steps)", rss_mb(), replay_buffer.len());
 
@@ -556,18 +696,32 @@ fn main() {
                 );
 
                 let acc = acc_from_replay(step);
+                let gacc = gacc_from_replay(step);
                 let rule_embed = embed_from_replay(step);
-                let cache = forward_cached(&model, &acc, &rule_embed);
+                let cache = forward_cached(&model, &acc, &gacc, &rule_embed);
 
                 backward_policy(
                     &model, &cache, &rule_embed,
-                    step.matched, step.advantage, annealed_entropy, &mut grads,
+                    step.matched, step.advantage, annealed_entropy, args.miss_penalty, &mut grads,
                 );
                 batch_policy += 1;
 
                 let target = log_ns(step.jit_cost_ns);
                 backward_value(&model, &cache, target, args.value_coeff, &mut grads);
                 batch_value += 1;
+
+                // Embedding gradients: value loss flows through expr backbone → acc_input.
+                // Policy loss flows through graph backbone → graph_input (handled by
+                // backward_policy → graph_w1). Only value path needs acc_input gradient.
+                if !step.edges.is_empty() {
+                    let d_acc_v = compute_d_acc_input_value(
+                        &model, &cache, target, args.value_coeff,
+                    );
+                    let node_count = acc.node_count;
+                    backward_through_accumulator(
+                        &d_acc_v, &step.edges, node_count, &mut grads,
+                    );
+                }
             }
 
             let batch_size = batch_policy.max(1) as f32;
@@ -707,6 +861,8 @@ fn main() {
             "buffer_size": replay_buffer.len(),
             "updates_this_round": args.updates_per_round,
             "effective_batch": args.updates_per_round * args.mini_batch_size,
+            "workers": effective_workers,
+            "gen_elapsed_s": gen_elapsed.as_secs_f64(),
             "rss_mb": rss_mb(),
             "elapsed_s": round_elapsed.as_secs_f64(),
         });
@@ -737,4 +893,254 @@ fn main() {
         .unwrap_or_else(|e| panic!("Failed to save final model to {:?}: {e}", args.model));
     eprintln!("\nTraining complete. Final model saved to {:?}", args.model);
     eprintln!("Metrics log: {:?}", metrics_path);
+}
+
+// ============================================================================
+// Offline Mode
+// ============================================================================
+
+/// Pure SGD on existing trajectory data. No self-play, no JIT benchmarking.
+///
+/// Pipeline:
+/// 1. Load all trajectory JSONL from trajectory_dir (or output_dir)
+/// 2. Run critic once to produce advantages
+/// 3. Build replay buffer
+/// 4. Do N rounds of pure SGD
+/// 5. Save model + per-round metrics
+fn run_offline(args: &Args, model: &mut ExprNnue) {
+    let traj_dir = args.trajectory_dir.as_ref().unwrap_or(&args.output_dir);
+
+    eprintln!("[OFFLINE] Loading trajectories from {:?}...", traj_dir);
+
+    // Collect all trajectory files
+    let mut traj_files: Vec<PathBuf> = std::fs::read_dir(traj_dir)
+        .unwrap_or_else(|e| panic!("Failed to read trajectory dir {:?}: {e}", traj_dir))
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("trajectories_r") && name.ends_with(".jsonl") {
+                Some(entry.path())
+            } else {
+                None
+            }
+        })
+        .collect();
+    traj_files.sort();
+
+    if traj_files.is_empty() {
+        panic!("[OFFLINE] No trajectory files found in {:?}", traj_dir);
+    }
+
+    // Concatenate all trajectory files
+    let combined_path = args.output_dir.join("_offline_trajectories.jsonl");
+    {
+        let mut combined = std::fs::File::create(&combined_path)
+            .unwrap_or_else(|e| panic!("Failed to create combined file: {e}"));
+        for f in &traj_files {
+            let content = std::fs::read(f)
+                .unwrap_or_else(|e| panic!("Failed to read {}: {e}", f.display()));
+            std::io::Write::write_all(&mut combined, &content)
+                .unwrap_or_else(|e| panic!("Failed to write combined file: {e}"));
+        }
+    }
+
+    let all_trajs = load_trajectories_jsonl(&combined_path);
+    let total_steps: usize = all_trajs.iter().map(|t| t.steps.len()).sum();
+    eprintln!(
+        "[OFFLINE] Loaded {} trajectories ({} steps) from {} files",
+        all_trajs.len(), total_steps, traj_files.len()
+    );
+
+    // Run critic to produce advantages
+    let adv_path = args.output_dir.join("_offline_advantages.jsonl");
+    let critic_script_str = args.critic_script.to_str()
+        .unwrap_or_else(|| panic!("Invalid UTF-8 in critic script path"));
+    let critic_ckpt_str = args.critic_checkpoint.to_str()
+        .unwrap_or_else(|| panic!("Invalid UTF-8 in critic checkpoint path"));
+
+    eprintln!("[OFFLINE] Training critic on {} trajectories...", all_trajs.len());
+    let critic_start = std::time::Instant::now();
+    let status = std::process::Command::new("uv")
+        .args(["run", critic_script_str])
+        .arg("train")
+        .args(["--input", combined_path.to_str().unwrap()])
+        .args(["--output", adv_path.to_str().unwrap()])
+        .args(["--checkpoint", critic_ckpt_str])
+        .args(["--epochs", &args.critic_epochs.to_string()])
+        .args(["--lr", &args.critic_lr.to_string()])
+        .args(["--dropout", &args.critic_dropout.to_string()])
+        .status()
+        .unwrap_or_else(|e| panic!("Failed to run critic: {e}"));
+
+    if !status.success() {
+        panic!("[OFFLINE] Critic failed with exit code: {status}");
+    }
+    eprintln!("[OFFLINE] Critic done in {:.1}s", critic_start.elapsed().as_secs_f64());
+
+    let all_advs = read_advantages_jsonl(&adv_path);
+    assert_eq!(
+        all_trajs.len(), all_advs.len(),
+        "Trajectory/advantage count mismatch: {} vs {}", all_trajs.len(), all_advs.len()
+    );
+
+    // Build replay buffer
+    let mut replay_buffer = ReplayBuffer::new(args.replay_capacity);
+    replay_buffer.push_round(&all_trajs, &all_advs);
+    eprintln!("[OFFLINE] Replay buffer: {} steps", replay_buffer.len());
+
+    // Cleanup temp files
+    let _ = std::fs::remove_file(&combined_path);
+    let _ = std::fs::remove_file(&adv_path);
+
+    // Metrics log
+    let metrics_path = args.output_dir.join("metrics.jsonl");
+    let mut metrics_file = std::io::BufWriter::new(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&metrics_path)
+            .unwrap_or_else(|e| panic!("Failed to open metrics file: {e}")),
+    );
+
+    // Initialize momentum buffer
+    let mut momentum_buf = UnifiedGradients::zero();
+
+    // Pure SGD rounds
+    for round in 0..args.rounds {
+        let round_start = std::time::Instant::now();
+        let round_seed = args.seed.wrapping_add(round as u64 * 1000);
+        let annealed_entropy = (args.entropy_coeff * (1.0 - round as f32 / args.rounds as f32)).max(args.entropy_floor);
+
+        let mut round_grad_norm = 0.0f32;
+        let mut total_policy_steps = 0usize;
+        let mut total_value_steps = 0usize;
+
+        for update_idx in 0..args.updates_per_round {
+            let batch_indices = replay_buffer.sample_batch(
+                args.mini_batch_size,
+                round_seed.wrapping_add(update_idx as u64 * 7919),
+            );
+            let mut grads = UnifiedGradients::zero();
+            let mut batch_policy = 0usize;
+            let mut batch_value = 0usize;
+
+            for &idx in &batch_indices {
+                let step = &replay_buffer.steps[idx];
+
+                assert!(
+                    step.jit_cost_ns.is_finite() && step.jit_cost_ns >= 0.0,
+                    "NaN/negative jit_cost_ns={} in replay buffer at index {idx}",
+                    step.jit_cost_ns,
+                );
+
+                let acc = acc_from_replay(step);
+                let gacc = gacc_from_replay(step);
+                let rule_embed = embed_from_replay(step);
+                let cache = forward_cached(model, &acc, &gacc, &rule_embed);
+
+                backward_policy(
+                    model, &cache, &rule_embed,
+                    step.matched, step.advantage, annealed_entropy, args.miss_penalty, &mut grads,
+                );
+                batch_policy += 1;
+
+                let target = log_ns(step.jit_cost_ns);
+                backward_value(model, &cache, target, args.value_coeff, &mut grads);
+                batch_value += 1;
+
+                // Embedding gradients: value loss flows through expr backbone → acc_input.
+                // Policy loss flows through graph backbone → graph_input (handled by
+                // backward_policy → graph_w1). Only value path needs acc_input gradient.
+                if !step.edges.is_empty() {
+                    let d_acc_v = compute_d_acc_input_value(
+                        model, &cache, target, args.value_coeff,
+                    );
+                    backward_through_accumulator(
+                        &d_acc_v, &step.edges, acc.node_count, &mut grads,
+                    );
+                }
+            }
+
+            let batch_size = batch_policy.max(1) as f32;
+            grads.scale(1.0 / batch_size);
+            let grad_norm = grads.norm();
+            round_grad_norm += grad_norm;
+
+            apply_unified_sgd(
+                model, &grads, &mut momentum_buf,
+                args.lr, args.momentum, args.weight_decay, args.grad_clip,
+            );
+
+            total_policy_steps += batch_policy;
+            total_value_steps += batch_value;
+        }
+
+        let avg_grad_norm = round_grad_norm / args.updates_per_round as f32;
+
+        // Compute value loss on a sample for metrics
+        let eval_indices = replay_buffer.sample_batch(
+            args.mini_batch_size.min(replay_buffer.len()),
+            round_seed.wrapping_add(0xE7A1),
+        );
+        let mut value_loss_sum = 0.0f64;
+        let mut policy_loss_sum = 0.0f64;
+        for &idx in &eval_indices {
+            let step = &replay_buffer.steps[idx];
+            let acc = acc_from_replay(step);
+            let gacc = gacc_from_replay(step);
+            let rule_embed = embed_from_replay(step);
+            let cache = forward_cached(model, &acc, &gacc, &rule_embed);
+
+            let target = log_ns(step.jit_cost_ns);
+            let value_err = cache.value_pred - target;
+            value_loss_sum += (value_err * value_err) as f64;
+
+            // Policy loss: -log(prob) if matched, -log(1-prob) if not
+            let p = (cache.prob as f64).clamp(1e-7, 1.0 - 1e-7);
+            policy_loss_sum += -libm::log(p);
+        }
+        let avg_value_loss = value_loss_sum / eval_indices.len().max(1) as f64;
+        let avg_policy_loss = policy_loss_sum / eval_indices.len().max(1) as f64;
+
+        // Checkpoint
+        let ckpt_path = args.output_dir.join(format!("model_r{round}.bin"));
+        model.save(&ckpt_path)
+            .unwrap_or_else(|e| panic!("Failed to save checkpoint: {e}"));
+
+        let round_elapsed = round_start.elapsed();
+
+        let metrics = serde_json::json!({
+            "round": round,
+            "mode": "offline",
+            "policy_steps": total_policy_steps,
+            "value_steps": total_value_steps,
+            "avg_value_loss": avg_value_loss,
+            "avg_policy_loss": avg_policy_loss,
+            "entropy_coeff": annealed_entropy,
+            "grad_norm": avg_grad_norm,
+            "buffer_size": replay_buffer.len(),
+            "updates_this_round": args.updates_per_round,
+            "effective_batch": args.updates_per_round * args.mini_batch_size,
+            "rss_mb": rss_mb(),
+            "elapsed_s": round_elapsed.as_secs_f64(),
+        });
+        writeln!(metrics_file, "{}", serde_json::to_string(&metrics)
+            .unwrap_or_else(|e| panic!("Failed to serialize metrics: {e}")))
+            .unwrap_or_else(|e| panic!("Failed to write metrics: {e}"));
+        metrics_file.flush()
+            .unwrap_or_else(|e| panic!("Failed to flush metrics: {e}"));
+
+        eprintln!(
+            "[OFFLINE] round {}/{}: val_loss={:.4} pol_loss={:.4} grad={:.4} time={:.2}s",
+            round + 1, args.rounds, avg_value_loss, avg_policy_loss,
+            avg_grad_norm, round_elapsed.as_secs_f64()
+        );
+    }
+
+    let final_path = args.output_dir.join("final_model.bin");
+    model.save(&final_path)
+        .unwrap_or_else(|e| panic!("Failed to save final model: {e}"));
+    eprintln!("\n[OFFLINE] Complete. Final model saved to {:?}", final_path);
+    eprintln!("[OFFLINE] Metrics: {:?}", metrics_path);
 }

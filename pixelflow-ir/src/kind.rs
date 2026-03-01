@@ -38,14 +38,14 @@ pub enum OpKind {
     Asin = 21,
     Acos = 22,
     Atan = 23,
-    Atan2 = 29,
+    Atan2 = 24,
 
     // --- Exponentials ---
-    Exp = 24,
-    Exp2 = 25,
-    Ln = 26,
-    Log2 = 27,
-    Log10 = 28,
+    Exp = 25,
+    Exp2 = 26,
+    Ln = 27,
+    Log2 = 28,
+    Log10 = 29,
     Pow = 30,
     Hypot = 31,
 

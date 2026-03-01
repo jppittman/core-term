@@ -33,7 +33,7 @@ pub enum ParityKind {
 /// Implementing this trait for a type automatically derives:
 /// - For Odd: `Op(neg(x)) → neg(Op(x))`
 /// - For Even: `Op(neg(x)) → Op(x)`
-pub trait Parity {
+pub trait Parity: Send + Sync {
     /// The operation this parity applies to.
     fn op() -> &'static dyn Op;
     /// Whether the function is odd or even.
