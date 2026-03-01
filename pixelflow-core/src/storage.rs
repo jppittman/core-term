@@ -92,6 +92,7 @@ impl FieldStorage for f32 {
 /// - SSE2: `Mask4` (float-encoded in XMM registers)
 /// - NEON: `Mask4`
 /// - Scalar: `MaskScalar`
+///
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
 /// Native mask storage for AVX-512.
 pub type NativeMaskStorage = crate::backend::x86::Mask16;

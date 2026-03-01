@@ -179,6 +179,12 @@ impl SemanticAnalyzer {
                     return Ok(SymbolKind::Local); // Treat as external/captured
                 }
 
+                // Check for constants (heuristic: all uppercase, allowing underscores/digits)
+                // We allow these to pass through to codegen as external symbols
+                if name.chars().all(|c| c.is_uppercase() || c == '_' || c.is_numeric()) {
+                    return Ok(SymbolKind::Constant);
+                }
+
                 // For named kernels, undefined symbols are errors
                 let suggestion = self.find_similar_symbol(&name);
                 let msg = match suggestion {

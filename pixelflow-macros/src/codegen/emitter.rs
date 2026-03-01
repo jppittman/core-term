@@ -832,6 +832,10 @@ impl<'a> CodeEmitter<'a> {
                             // Locals emitted as-is
                             quote! { #name }
                         }
+                        SymbolKind::Constant => {
+                            // Constants emitted as-is
+                            quote! { #name }
+                        }
                     },
                     None => {
                         // Unknown - emit as-is
