@@ -1,0 +1,228 @@
+//! Shared JIT benchmarking infrastructure.
+//!
+//! Provides `benchmark_jit()` for timing JIT-compiled expressions.
+//! Used by `bench_jit_corpus` and `train_online`.
+
+use std::fmt;
+
+use pixelflow_ir::Expr;
+use pixelflow_ir::backend::emit::compile_dag;
+
+/// Number of timed samples per expression. Take the median.
+const TIMED_RUNS: usize = 5;
+
+/// Warmup iterations before timed runs. Warms icache, branch predictor,
+/// and microarchitectural state so every benchmark_jit() call measures
+/// hot performance — not cold-start overhead.
+const WARMUP_ITERS: usize = 64;
+
+/// Inner iterations per timed sample. Keep low — we care about relative
+/// cost differences for training, not sub-nanosecond precision.
+const INNER_ITERS: usize = 4;
+
+/// Maximum plausible single-eval time: 1 second.
+/// Anything above this is a timing artifact (e.g., u64 underflow in
+/// `nanos_now() - start`, OS scheduling jitter, or JIT codegen bug).
+const MAX_PLAUSIBLE_NS: f64 = 1_000_000_000.0;
+
+/// Errors from JIT benchmarking.
+#[derive(Debug)]
+pub enum BenchError {
+    /// JIT compilation failed.
+    CompileFailed(&'static str),
+    /// Architecture not supported for JIT.
+    UnsupportedArch,
+    /// Measurement was invalid (NaN, negative, or absurdly large).
+    InvalidMeasurement(f64),
+}
+
+impl fmt::Display for BenchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BenchError::CompileFailed(msg) => write!(f, "compile failed: {}", msg),
+            BenchError::UnsupportedArch => write!(f, "unsupported architecture for JIT benchmarking"),
+            BenchError::InvalidMeasurement(v) => write!(f, "invalid measurement: {}ns", v),
+        }
+    }
+}
+
+// Platform-specific high-resolution timing.
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn mach_absolute_time() -> u64;
+}
+
+#[cfg(target_os = "macos")]
+fn nanos_now() -> u64 {
+    // On Apple Silicon, mach_absolute_time() ticks == nanoseconds (timebase 1:1).
+    unsafe { mach_absolute_time() }
+}
+
+#[cfg(target_os = "linux")]
+fn nanos_now() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut ts); }
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn nanos_now() -> u64 {
+    use std::time::Instant;
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let epoch = EPOCH.get_or_init(Instant::now);
+    epoch.elapsed().as_nanos() as u64
+}
+
+/// Validate a raw median timing, rejecting garbage values.
+///
+/// Rejects: NaN, negative (impossible for u64→f64 but defensive),
+/// and absurdly large values (>1s, indicating u64 underflow from clock
+/// non-monotonicity or OS scheduling artifacts). Zero is valid for
+/// constant-folded expressions.
+fn validate_median(median: f64) -> Result<f64, BenchError> {
+    if median.is_nan() || median.is_infinite() {
+        return Err(BenchError::InvalidMeasurement(median));
+    }
+    if median < 0.0 {
+        return Err(BenchError::InvalidMeasurement(median));
+    }
+    if median > MAX_PLAUSIBLE_NS {
+        return Err(BenchError::InvalidMeasurement(median));
+    }
+    Ok(median)
+}
+
+/// JIT-compile and benchmark one expression. Returns ns/eval (median of TIMED_RUNS).
+///
+/// Rejects:
+/// - NaN or negative timings
+/// - Absurdly large timings (>1s, indicating measurement failure)
+/// Result of benchmarking: timing and the full SIMD output for correctness checks.
+pub struct BenchResult {
+    /// Median ns per evaluation.
+    pub ns: f64,
+    /// All 4 SIMD lanes at the test point (0.5, 0.7, 1.3, -0.2).
+    pub output: [f32; 4],
+}
+
+impl BenchResult {
+    /// Check that two results compute the same function (all lanes within epsilon).
+    /// Returns Err with the max divergence if any lane differs.
+    pub fn check_equivalence(&self, other: &BenchResult, epsilon: f32) -> Result<(), f32> {
+        let mut max_diff: f32 = 0.0;
+        for i in 0..4 {
+            let diff = (self.output[i] - other.output[i]).abs();
+            if diff > max_diff {
+                max_diff = diff;
+            }
+        }
+        if max_diff > epsilon {
+            Err(max_diff)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub fn benchmark_jit(expr: &Expr) -> Result<BenchResult, BenchError> {
+    let result = compile_dag(expr).map_err(BenchError::CompileFailed)?;
+    let exec_code = result.code;
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use core::arch::aarch64::*;
+        unsafe {
+            use pixelflow_ir::backend::emit::executable::KernelFn;
+            let func: KernelFn = exec_code.as_fn();
+
+            let x = vdupq_n_f32(0.5);
+            let y = vdupq_n_f32(0.7);
+            let z = vdupq_n_f32(1.3);
+            let w = vdupq_n_f32(-0.2);
+
+            // Warmup: fill icache, train branch predictor, stabilize μarch.
+            for _ in 0..WARMUP_ITERS {
+                std::hint::black_box(func(x, y, z, w));
+            }
+
+            // Grab output for correctness check (post-warmup).
+            let out = func(x, y, z, w);
+            let mut output = [0.0f32; 4];
+            vst1q_f32(output.as_mut_ptr(), out);
+
+            let mut times = [0u64; TIMED_RUNS];
+            for t in &mut times {
+                let start = nanos_now();
+                for _ in 0..INNER_ITERS {
+                    std::hint::black_box(func(x, y, z, w));
+                }
+                *t = nanos_now() - start;
+            }
+            times.sort_unstable();
+            let median = times[TIMED_RUNS / 2] as f64 / INNER_ITERS as f64;
+            validate_median(median).map(|ns| BenchResult { ns, output })
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::arch::x86_64::*;
+        unsafe {
+            use pixelflow_ir::backend::emit::executable::KernelFn;
+            let func: KernelFn = exec_code.as_fn();
+
+            let x = _mm_set1_ps(0.5);
+            let y = _mm_set1_ps(0.7);
+            let z = _mm_set1_ps(1.3);
+            let w = _mm_set1_ps(-0.2);
+
+            // Warmup: fill icache, train branch predictor, stabilize μarch.
+            for _ in 0..WARMUP_ITERS {
+                std::hint::black_box(func(x, y, z, w));
+            }
+
+            let out = func(x, y, z, w);
+            let mut output = [0.0f32; 4];
+            _mm_storeu_ps(output.as_mut_ptr(), out);
+
+            let mut times = [0u64; TIMED_RUNS];
+            for t in &mut times {
+                let start = nanos_now();
+                for _ in 0..INNER_ITERS {
+                    std::hint::black_box(func(x, y, z, w));
+                }
+                *t = nanos_now() - start;
+            }
+            times.sort_unstable();
+            let median = times[TIMED_RUNS / 2] as f64 / INNER_ITERS as f64;
+            validate_median(median).map(|ns| BenchResult { ns, output })
+        }
+    }
+
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        let _ = exec_code;
+        Err(BenchError::UnsupportedArch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pixelflow_ir::Expr;
+
+    #[test]
+    fn constant_expr_benchmarks_successfully() {
+        let expr = Expr::Const(3.14);
+        let result = benchmark_jit(&expr).expect("constant expression must JIT-compile and benchmark");
+        for lane in &result.output {
+            assert!(
+                (*lane - 3.14).abs() < 1e-5,
+                "expected all lanes ~3.14, got {}",
+                lane
+            );
+        }
+        assert!(result.ns >= 0.0, "timing must be non-negative, got {}", result.ns);
+    }
+}
