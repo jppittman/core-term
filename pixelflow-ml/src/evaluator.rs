@@ -306,6 +306,49 @@ impl ExprFeatures {
     /// Number of features in this struct.
     pub const COUNT: usize = 21;
 
+    /// Feature indices for `get()` and `set_weight()`.
+    pub const IDX_ADD: usize = 0;
+    /// Index for subtraction count.
+    pub const IDX_SUB: usize = 1;
+    /// Index for multiplication count.
+    pub const IDX_MUL: usize = 2;
+    /// Index for division count.
+    pub const IDX_DIV: usize = 3;
+    /// Index for negation count.
+    pub const IDX_NEG: usize = 4;
+    /// Index for square root count.
+    pub const IDX_SQRT: usize = 5;
+    /// Index for reciprocal square root count.
+    pub const IDX_RSQRT: usize = 6;
+    /// Index for absolute value count.
+    pub const IDX_ABS: usize = 7;
+    /// Index for min operation count.
+    pub const IDX_MIN: usize = 8;
+    /// Index for max operation count.
+    pub const IDX_MAX: usize = 9;
+    /// Index for fused multiply-add count.
+    pub const IDX_FMA: usize = 10;
+    /// Index for fused multiply-rsqrt count.
+    pub const IDX_MUL_RSQRT: usize = 11;
+    /// Index for total node count.
+    pub const IDX_NODES: usize = 12;
+    /// Index for maximum depth.
+    pub const IDX_DEPTH: usize = 13;
+    /// Index for variable count.
+    pub const IDX_VARS: usize = 14;
+    /// Index for constant count.
+    pub const IDX_CONSTS: usize = 15;
+    /// Index for identity pattern presence.
+    pub const IDX_HAS_IDENTITY: usize = 16;
+    /// Index for self-cancel pattern presence.
+    pub const IDX_HAS_SELF_CANCEL: usize = 17;
+    /// Index for fusable pattern presence.
+    pub const IDX_HAS_FUSABLE: usize = 18;
+    /// Index for critical path latency.
+    pub const IDX_CRITICAL_PATH: usize = 19;
+    /// Index for maximum width (parallelism).
+    pub const IDX_MAX_WIDTH: usize = 20;
+
     /// Feature names for debugging.
     pub const NAMES: [&'static str; Self::COUNT] = [
         "add",
@@ -339,27 +382,27 @@ impl LinearFeatures for ExprFeatures {
 
     fn get(&self, i: usize) -> i32 {
         match i {
-            0 => self.add_count,
-            1 => self.sub_count,
-            2 => self.mul_count,
-            3 => self.div_count,
-            4 => self.neg_count,
-            5 => self.sqrt_count,
-            6 => self.rsqrt_count,
-            7 => self.abs_count,
-            8 => self.min_count,
-            9 => self.max_count,
-            10 => self.fma_count,
-            11 => self.mul_rsqrt_count,
-            12 => self.node_count,
-            13 => self.depth,
-            14 => self.var_count,
-            15 => self.const_count,
-            16 => self.has_identity,
-            17 => self.has_self_cancel,
-            18 => self.has_fusable,
-            19 => self.critical_path,
-            20 => self.max_width,
+            Self::IDX_ADD => self.add_count,
+            Self::IDX_SUB => self.sub_count,
+            Self::IDX_MUL => self.mul_count,
+            Self::IDX_DIV => self.div_count,
+            Self::IDX_NEG => self.neg_count,
+            Self::IDX_SQRT => self.sqrt_count,
+            Self::IDX_RSQRT => self.rsqrt_count,
+            Self::IDX_ABS => self.abs_count,
+            Self::IDX_MIN => self.min_count,
+            Self::IDX_MAX => self.max_count,
+            Self::IDX_FMA => self.fma_count,
+            Self::IDX_MUL_RSQRT => self.mul_rsqrt_count,
+            Self::IDX_NODES => self.node_count,
+            Self::IDX_DEPTH => self.depth,
+            Self::IDX_VARS => self.var_count,
+            Self::IDX_CONSTS => self.const_count,
+            Self::IDX_HAS_IDENTITY => self.has_identity,
+            Self::IDX_HAS_SELF_CANCEL => self.has_self_cancel,
+            Self::IDX_HAS_FUSABLE => self.has_fusable,
+            Self::IDX_CRITICAL_PATH => self.critical_path,
+            Self::IDX_MAX_WIDTH => self.max_width,
             _ => 0,
         }
     }
@@ -372,6 +415,22 @@ impl LinearFeatures for ExprFeatures {
 // ============================================================================
 // Default Weights: "Gut Feeling" Initialization
 // ============================================================================
+
+// Operation latency estimates (approximate x86-64 cycles).
+const LATENCY_ADD: i32 = 4;
+const LATENCY_SUB: i32 = 4;
+const LATENCY_MUL: i32 = 5;
+const LATENCY_DIV: i32 = 15;
+const LATENCY_NEG: i32 = 1;
+const LATENCY_SQRT: i32 = 15;
+const LATENCY_RSQRT: i32 = 5;
+const LATENCY_ABS: i32 = 1;
+const LATENCY_MIN: i32 = 4;
+const LATENCY_MAX: i32 = 4;
+const LATENCY_FMA: i32 = 5;
+const LATENCY_MUL_RSQRT: i32 = 6;
+const LATENCY_TERNARY_DEFAULT: i32 = 10;
+const LATENCY_OP_DEFAULT: i32 = 5;
 
 /// Default weights based on approximate x86-64 cycle counts.
 ///
@@ -391,38 +450,38 @@ pub fn default_expr_weights() -> HandCraftedEvaluator {
 
     // Operation costs (approximate x86-64 cycles)
     // NOTE: These are now SECONDARY to critical_path for ILP-aware evaluation
-    hce.set_weight(0, 4); // add: ~4 cycles
-    hce.set_weight(1, 4); // sub: ~4 cycles
-    hce.set_weight(2, 5); // mul: ~5 cycles
-    hce.set_weight(3, 15); // div: ~15-20 cycles (expensive!)
-    hce.set_weight(4, 1); // neg: ~1 cycle (just sign flip)
-    hce.set_weight(5, 15); // sqrt: ~15-20 cycles
-    hce.set_weight(6, 5); // rsqrt: ~5 cycles (fast approximation)
-    hce.set_weight(7, 1); // abs: ~1 cycle (just clear sign bit)
-    hce.set_weight(8, 4); // min: ~4 cycles
-    hce.set_weight(9, 4); // max: ~4 cycles
+    hce.set_weight(ExprFeatures::IDX_ADD, LATENCY_ADD);
+    hce.set_weight(ExprFeatures::IDX_SUB, LATENCY_SUB);
+    hce.set_weight(ExprFeatures::IDX_MUL, LATENCY_MUL);
+    hce.set_weight(ExprFeatures::IDX_DIV, LATENCY_DIV);
+    hce.set_weight(ExprFeatures::IDX_NEG, LATENCY_NEG);
+    hce.set_weight(ExprFeatures::IDX_SQRT, LATENCY_SQRT);
+    hce.set_weight(ExprFeatures::IDX_RSQRT, LATENCY_RSQRT);
+    hce.set_weight(ExprFeatures::IDX_ABS, LATENCY_ABS);
+    hce.set_weight(ExprFeatures::IDX_MIN, LATENCY_MIN);
+    hce.set_weight(ExprFeatures::IDX_MAX, LATENCY_MAX);
 
     // Fused operation costs (should be cheaper than sum of parts)
-    hce.set_weight(10, 5); // fma: ~5 cycles (same as mul alone!)
-    hce.set_weight(11, 6); // mul_rsqrt: ~6 cycles
+    hce.set_weight(ExprFeatures::IDX_FMA, LATENCY_FMA);
+    hce.set_weight(ExprFeatures::IDX_MUL_RSQRT, LATENCY_MUL_RSQRT);
 
     // Structural features (mild preferences)
-    hce.set_weight(12, 0); // node_count: neutral (covered by ops)
-    hce.set_weight(13, 0); // depth: neutral (superseded by critical_path)
-    hce.set_weight(14, 0); // var_count: free (just register refs)
-    hce.set_weight(15, 0); // const_count: free (immediates)
+    hce.set_weight(ExprFeatures::IDX_NODES, 0); // node_count: neutral (covered by ops)
+    hce.set_weight(ExprFeatures::IDX_DEPTH, 0); // depth: neutral (superseded by critical_path)
+    hce.set_weight(ExprFeatures::IDX_VARS, 0); // var_count: free (just register refs)
+    hce.set_weight(ExprFeatures::IDX_CONSTS, 0); // const_count: free (immediates)
 
     // Pattern features (opportunities for improvement)
     // Negative = "having this is good" because it indicates simplification potential
-    hce.set_weight(16, 0); // has_identity: neutral (rewrite will fix)
-    hce.set_weight(17, 0); // has_self_cancel: neutral
-    hce.set_weight(18, -2); // has_fusable: slight bonus if FMA available
+    hce.set_weight(ExprFeatures::IDX_HAS_IDENTITY, 0); // has_identity: neutral (rewrite will fix)
+    hce.set_weight(ExprFeatures::IDX_HAS_SELF_CANCEL, 0); // has_self_cancel: neutral
+    hce.set_weight(ExprFeatures::IDX_HAS_FUSABLE, -2); // has_fusable: slight bonus if FMA available
 
     // ILP features - THE KEY NON-LINEAR INSIGHT
     // critical_path captures actual execution time on superscalar CPUs
-    hce.set_weight(19, 1); // critical_path: primary cost driver
+    hce.set_weight(ExprFeatures::IDX_CRITICAL_PATH, 1); // critical_path: primary cost driver
     // max_width approximates register pressure (more parallel = more regs needed)
-    hce.set_weight(20, 1); // max_width: penalty for wide expressions
+    hce.set_weight(ExprFeatures::IDX_MAX_WIDTH, 1); // max_width: penalty for wide expressions
 
     hce
 }
@@ -435,10 +494,10 @@ pub fn fma_optimized_weights() -> HandCraftedEvaluator {
     let mut hce = default_expr_weights();
 
     // FMA is as cheap as mul on modern CPUs
-    hce.set_weight(10, 5); // fma: ~5 cycles
+    hce.set_weight(ExprFeatures::IDX_FMA, LATENCY_FMA);
 
     // Strong incentive to use FMA
-    hce.set_weight(18, -4); // has_fusable: big bonus
+    hce.set_weight(ExprFeatures::IDX_HAS_FUSABLE, -4); // has_fusable: big bonus
 
     hce
 }
@@ -496,21 +555,21 @@ fn extract_features_recursive(
             let op_cost = match op {
                 OpType::Neg => {
                     features.neg_count += 1;
-                    1
+                    LATENCY_NEG
                 }
                 OpType::Sqrt => {
                     features.sqrt_count += 1;
-                    15
+                    LATENCY_SQRT
                 }
                 OpType::Rsqrt => {
                     features.rsqrt_count += 1;
-                    5
+                    LATENCY_RSQRT
                 }
                 OpType::Abs => {
                     features.abs_count += 1;
-                    1
+                    LATENCY_ABS
                 }
-                _ => 5, // Default for unknown ops
+                _ => LATENCY_OP_DEFAULT, // Default for unknown ops
             };
             let child_critical = extract_features_recursive(a, features, depth + 1, width_at_depth);
             op_cost + child_critical
@@ -527,7 +586,7 @@ fn extract_features_recursive(
                     if is_zero(b) || is_zero(a) {
                         features.has_identity += 1;
                     }
-                    4
+                    LATENCY_ADD
                 }
                 OpType::Sub => {
                     features.sub_count += 1;
@@ -535,7 +594,7 @@ fn extract_features_recursive(
                     if exprs_structurally_equal(a, b) {
                         features.has_self_cancel += 1;
                     }
-                    4
+                    LATENCY_SUB
                 }
                 OpType::Mul => {
                     features.mul_count += 1;
@@ -549,7 +608,7 @@ fn extract_features_recursive(
                     {
                         features.has_fusable += 1;
                     }
-                    5
+                    LATENCY_MUL
                 }
                 OpType::Div => {
                     features.div_count += 1;
@@ -557,21 +616,21 @@ fn extract_features_recursive(
                     if exprs_structurally_equal(a, b) {
                         features.has_self_cancel += 1;
                     }
-                    15
+                    LATENCY_DIV
                 }
                 OpType::Min => {
                     features.min_count += 1;
-                    4
+                    LATENCY_MIN
                 }
                 OpType::Max => {
                     features.max_count += 1;
-                    4
+                    LATENCY_MAX
                 }
                 OpType::MulRsqrt => {
                     features.mul_rsqrt_count += 1;
-                    6
+                    LATENCY_MUL_RSQRT
                 }
-                _ => 5, // Default
+                _ => LATENCY_OP_DEFAULT, // Default
             };
             let crit_a = extract_features_recursive(a, features, depth + 1, width_at_depth);
             let crit_b = extract_features_recursive(b, features, depth + 1, width_at_depth);
@@ -582,9 +641,9 @@ fn extract_features_recursive(
             let op_cost = match op {
                 OpType::MulAdd => {
                     features.fma_count += 1;
-                    5
+                    LATENCY_FMA
                 }
-                _ => 10, // Default for unknown ternary
+                _ => LATENCY_TERNARY_DEFAULT, // Default for unknown ternary
             };
             let crit_a = extract_features_recursive(a, features, depth + 1, width_at_depth);
             let crit_b = extract_features_recursive(b, features, depth + 1, width_at_depth);

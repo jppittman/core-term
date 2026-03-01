@@ -119,7 +119,7 @@ pub enum VsyncManagement {
     SetConfig {
         config: VsyncConfig,
         engine_handle: crate::api::private::EngineActorHandle,
-        self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+        self_handle: Box<ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>>,
     },
 }
 actor_scheduler::impl_management_message!(VsyncManagement);
@@ -158,7 +158,7 @@ impl VsyncActor {
     /// Helper to spawn the clock thread.
     fn spawn_clock_thread(
         interval: Duration,
-        self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+        self_handle: Box<ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>>,
     ) -> Sender<ClockCommand> {
         let (clock_tx, clock_rx) = std::sync::mpsc::channel();
 
@@ -218,7 +218,7 @@ impl VsyncActor {
         );
 
         // Spawn the clock thread — self_handle is a dedicated SPSC channel
-        let clock_tx = Self::spawn_clock_thread(interval, self_handle);
+        let clock_tx = Self::spawn_clock_thread(interval, Box::new(self_handle));
 
         Self {
             engine_handle: Some(engine_handle),
