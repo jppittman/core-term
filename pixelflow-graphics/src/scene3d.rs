@@ -378,8 +378,9 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     let t = geometry;
 
     // 2. Validate hit: t > 0, t < max, derivatives reasonable
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
+    // Note: Magic numbers used here because kernel! macro does not support external constants
+    let t_max = 1_000_000.0;
+    let deriv_max = 10_000.0;
     let valid_t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
@@ -404,8 +405,9 @@ kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, backgroun
     let t = geometry;
 
     // 2. Validate hit: t > 0, t < max, derivatives reasonable
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
+    // Note: Magic numbers used here because kernel! macro does not support external constants
+    let t_max = 1_000_000.0;
+    let deriv_max = 10_000.0;
     let valid_t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
@@ -530,8 +532,9 @@ where
 // Mask manifold for geometry hit detection.
 kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
     let t = geometry;
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
+    // Note: Magic numbers used here because kernel! macro does not support external constants
+    let t_max = 1_000_000.0;
+    let deriv_max = 10_000.0;
 
     // Valid if: t > 0, t < max, derivatives reasonable
     let valid_t = (V(t) > 0.0) & (V(t) < t_max);
