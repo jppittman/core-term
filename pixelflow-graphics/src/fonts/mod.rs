@@ -172,7 +172,6 @@
 //! - **Variable fonts**: Supported if font has variation axes
 //!
 pub mod cache;
-pub mod combinators;
 pub mod loader;
 pub mod text;
 pub mod ttf;

@@ -7,7 +7,7 @@
 
 use crate::shapes::{square, Bounded};
 use pixelflow_core::{
-    Abs, At, Field, Ge, Manifold, ManifoldCompat, ManifoldExt, Select,
+    At, Field, Manifold, ManifoldCompat, ManifoldExt,
     W, X, Y, Z,
 };
 use pixelflow_compiler::kernel;
@@ -93,30 +93,9 @@ impl<M: Manifold<Field4, Output = Field>> Manifold<Field4> for Sum<M> {
 }
 
 
-/// Threshold combinator - converts winding number to inside/outside (0 or 1).
-///
-/// Applies the non-zero winding rule: |winding| >= 0.5 means inside.
-/// Threshold: |winding| >= 0.5 → 1.0, else 0.0 (non-zero winding rule)
-/// Defined as combinator composition, not imperative code.
-pub type Threshold<M> = Select<Ge<Abs<M>, f32>, f32, f32>;
-
-/// Create a threshold manifold from a winding number manifold.
-#[inline(always)]
-pub fn threshold<M>(m: M) -> Threshold<M> {
-    Select {
-        cond: Ge(Abs(m), 0.5f32),
-        if_true: 1.0f32,
-        if_false: 0.0f32,
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Geometry
 // ═══════════════════════════════════════════════════════════════════════════
-
-// Legacy Curve type for benchmarking
-#[derive(Clone, Copy, Debug)]
-pub struct Curve<const N: usize>(pub [[f32; 2]; N]);
 
 /// Quadratic Bézier curve with baked Loop-Blinn kernel.
 /// All control point computations happen at load time.
@@ -133,12 +112,6 @@ pub fn make_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
     Quad { kernel }
 }
 
-/// Helper to create a quad with analytical Loop-Blinn kernel (for benchmarks).
-#[inline(always)]
-pub fn loop_blinn_quad(points: [[f32; 2]; 3]) -> Quad<QuadKernel> {
-    make_quad(points)
-}
-
 /// Line segment with baked winding kernel.
 /// All control point computations happen at load time.
 #[derive(Clone)]
@@ -149,7 +122,7 @@ pub struct Line<K> {
 /// Create a line with analytical kernel from control points.
 #[inline(always)]
 pub fn make_line(points: [[f32; 2]; 2]) -> Option<Line<LineKernel>> {
-    let kernel = AnalyticalLine::new(points[0], points[1])?;
+    let kernel = AnalyticalLine::from_points(points[0], points[1])?;
     Some(Line { kernel })
 }
 
@@ -158,101 +131,6 @@ impl<K> Line<K> {
     #[inline(always)]
     pub fn with_kernel(kernel: K) -> Self {
         Self { kernel }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Optimized Geometry with Precomputed Reciprocals
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Line segment optimized with precomputed division reciprocal.
-#[derive(Clone, Copy, Debug)]
-pub struct OptLine {
-    x0: f32,
-    y0: f32,
-    y_min: f32,
-    y_max: f32,
-    dx_over_dy: f32, // Precomputed dx/dy
-    dir: f32,        // +1 or -1
-}
-
-impl OptLine {
-    /// Create from two points. Returns None for horizontal lines.
-    #[inline(always)]
-    pub fn new([x0, y0]: [f32; 2], [x1, y1]: [f32; 2]) -> Option<Self> {
-        let dy = y1 - y0;
-        if dy.abs() < 1e-6 {
-            return None;
-        }
-        let dx = x1 - x0;
-        Some(Self {
-            x0,
-            y0,
-            y_min: y0.min(y1),
-            y_max: y0.max(y1),
-            dx_over_dy: dx / dy, // Division at construction, not evaluation
-            dir: if dy > 0.0 { 1.0 } else { -1.0 },
-        })
-    }
-}
-
-/// Quadratic curve optimized with precomputed reciprocals.
-#[derive(Clone, Copy, Debug)]
-pub struct OptQuad {
-    // Bezier coefficients
-    ax: f32,
-    bx: f32,
-    cx: f32,
-    ay: f32,
-    by: f32,
-    cy: f32,
-    two_ay: f32,
-    // Precomputed reciprocals (0.0 if degenerate)
-    inv_by: f32,  // 1/by for linear Y case
-    inv_2ay: f32, // 1/(2*ay) for quadratic case
-    // Precomputed quadratic formula values
-    neg_by: f32,
-    by_sq: f32,
-    four_ay: f32,
-    // Flag for which case we're in
-    is_linear: bool,
-    is_degenerate: bool,
-}
-
-impl OptQuad {
-    /// Create from three control points.
-    #[inline(always)]
-    pub fn new([[x0, y0], [x1, y1], [x2, y2]]: [[f32; 2]; 3]) -> Self {
-        let ay = y0 - 2.0 * y1 + y2;
-        let by = 2.0 * (y1 - y0);
-        let cy = y0;
-        let ax = x0 - 2.0 * x1 + x2;
-        let bx = 2.0 * (x1 - x0);
-        let cx = x0;
-
-        let is_linear = ay.abs() < 1e-6;
-        let is_degenerate = is_linear && by.abs() < 1e-6;
-
-        Self {
-            ax,
-            bx,
-            cx,
-            ay,
-            by,
-            cy,
-            two_ay: 2.0 * ay,
-            inv_by: if !is_linear || is_degenerate {
-                0.0
-            } else {
-                1.0 / by
-            },
-            inv_2ay: if is_linear { 0.0 } else { 1.0 / (2.0 * ay) },
-            neg_by: -by,
-            by_sq: by * by,
-            four_ay: 4.0 * ay,
-            is_linear,
-            is_degenerate,
-        }
     }
 }
 
@@ -279,98 +157,6 @@ impl<K: Manifold<Field4, Output = Field>> Manifold<Field4> for Quad<K> {
     }
 }
 
-
-// Old Quad implementation using quadratic formula (for benchmarking Curve<3>)
-// Uses layered contramap pattern: build AST with ZST variables, inject values via .at()
-impl Manifold<Field4> for Curve<3> {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, p: Field4) -> Field {
-        let (x, y, z, w) = p;
-        let [[x0, y0], [x1, y1], [x2, y2]] = self.0;
-        let (ay, by, cy) = (y0 - 2.0 * y1 + y2, 2.0 * (y1 - y0), y0);
-        let (ax, bx, cx) = (x0 - 2.0 * x1 + x2, 2.0 * (x1 - x0), x0);
-
-        if ay.abs() < 1e-6 {
-            if by.abs() < 1e-6 {
-                return Field::from(0.0);
-            }
-            // Linear case - Layer 2 (inner): Z = t parameter
-            // Build expression using ZST variables (X, Y, Z are Copy)
-            // Note: Coefficients (ax, bx, etc.) are f32, making expressions non-Copy
-            // Clone where expressions are used multiple times
-            let inner = {
-                // Z represents t, X represents screen_x
-                let in_t = Z.ge(0.0) & Z.lt(1.0);
-                let x_int = Z * Z * ax + Z * bx + cx;
-                let dx_dt = Z * (2.0 * ax) + bx;
-                let dy_dt = Z * (2.0 * ay) + by;
-                // dy_dt used twice: for dir and for gradient - clone for first use
-                let dir = dy_dt.clone().gt(0.0).select(1.0, -1.0);
-                let dist = x_int - X;
-                // dx_dt used twice in gradient, dy_dt used in gradient AND later for abs()
-                let curve_grad_sq = dx_dt.clone() * dx_dt + dy_dt.clone() * dy_dt.clone();
-                let aa_scale = dy_dt.abs() * curve_grad_sq.max(1e-12f32).rsqrt();
-                let coverage = (dist * aa_scale + 0.5).max(0.0f32).min(1.0f32);
-                in_t.select(coverage * dir, 0.0f32)
-            };
-
-            // Layer 1 (outer): inject t = (Y - cy) / by via contramap
-            inner.at(X, Y, (Y - cy) / by, W).at(x, y, z, w).collapse()
-        } else {
-            // Quadratic case - Layer 3 (innermost): Y = t1, Z = t2
-            // Build winding contributions using ZST variables (all Copy)
-            let contrib1 = {
-                // Y represents t1
-                let in_t = Y.ge(0.0) & Y.lt(1.0);
-                let x_int = Y * Y * ax + Y * bx + cx;
-                let dx_dt = Y * (2.0 * ax) + bx;
-                let dy_dt = Y * (2.0 * ay) + by;
-                let dir = dy_dt.clone().gt(0.0).select(1.0, -1.0);
-                let dist = x_int - X;
-                let grad_sq = dx_dt.clone() * dx_dt + dy_dt.clone() * dy_dt.clone();
-                let aa = dy_dt.abs() * grad_sq.max(1e-12f32).rsqrt();
-                let cov = (dist * aa + 0.5).max(0.0f32).min(1.0f32);
-                in_t.select(cov * dir, 0.0f32)
-            };
-            let contrib2 = {
-                // Z represents t2
-                let in_t = Z.ge(0.0) & Z.lt(1.0);
-                let x_int = Z * Z * ax + Z * bx + cx;
-                let dx_dt = Z * (2.0 * ax) + bx;
-                let dy_dt = Z * (2.0 * ay) + by;
-                let dir = dy_dt.clone().gt(0.0).select(1.0, -1.0);
-                let dist = x_int - X;
-                let grad_sq = dx_dt.clone() * dx_dt + dy_dt.clone() * dy_dt.clone();
-                let aa = dy_dt.abs() * grad_sq.max(1e-12f32).rsqrt();
-                let cov = (dist * aa + 0.5).max(0.0f32).min(1.0f32);
-                in_t.select(cov * dir, 0.0f32)
-            };
-
-            // Sum contributions from both roots
-            let contrib = contrib1 + contrib2;
-
-            // Layer 2: W = sqrt(discriminant), inject t1 and t2
-            let inv_2ay = 1.0 / (2.0 * ay);
-            let with_roots = contrib.at(
-                X,
-                W * (-inv_2ay) + (-by * inv_2ay), // t1 = (-by - sqrt_disc) / (2*ay)
-                W * inv_2ay + (-by * inv_2ay),    // t2 = (-by + sqrt_disc) / (2*ay)
-                W,
-            );
-
-            // Layer 1 (outermost): compute discriminant, check validity
-            // disc used twice: for ge() check and for sqrt() in W coordinate
-            let disc = Y * (-4.0 * ay) + (by * by + 4.0 * ay * cy);
-            disc.clone()
-                .ge(0.0)
-                .select(with_roots.at(X, Y, Z, disc.max(0.0).sqrt()), 0.0f32)
-                .at(x, y, z, w)
-                .collapse()
-        }
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Glyph (Compositional Scene Graph)
@@ -829,17 +615,17 @@ impl<'a> Font<'a> {
         size: f32,
     ) -> Option<Glyph<Line<LineKernel>, Quad<QuadKernel>>> {
         let g = self.glyph_by_id(id)?;
-        // Scale based on total font height (ascent + |descent|) instead of units_per_em
-        // This ensures descenders fit within the requested size
+        // Scale based on total font height (ascent + |descent|) to fit within `size` pixels.
         let total_height = self.ascent as f32 + self.descent.abs() as f32;
         let scale = size / total_height;
-        // Transform: scale X, flip Y (screen Y goes down), and translate by ascent
-        // so the top of the text is at Y=0 in screen coordinates.
-        let y_offset = self.ascent as f32 * scale;
-
+        // Y-flip: screen Y increases downward, font Y increases upward.
+        // Forward transform: font_x = scale * screen_x,
+        //                    font_y = ascent*scale - scale * screen_y
+        // This places the ascent line at screen_y=0 (top) and the descent at screen_y=size.
+        let ascent_px = self.ascent as f32 * scale;
         Some(Glyph::Compound(Sum([affine(
             g,
-            [scale, 0.0, 0.0, -scale, 0.0, y_offset],
+            [scale, 0.0, 0.0, -scale, 0.0, ascent_px],
         )]
         .into())))
     }
