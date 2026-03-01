@@ -2,6 +2,7 @@ pub mod binary;
 pub mod compare;
 pub mod derivative;
 pub mod logic;
+pub mod ternary;
 pub mod unary;
 pub mod vector;
 
@@ -12,5 +13,6 @@ pub use binary::*;
 pub use compare::*;
 pub use derivative::*;
 pub use logic::*;
+pub use ternary::*;
 pub use unary::*;
 pub use vector::*;

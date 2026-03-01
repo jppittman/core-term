@@ -10,7 +10,8 @@ workspace = true
 bench = false
 
 [dependencies]
-pixelflow-macros = { path = "../pixelflow-macros" }
+pixelflow-ir = { path = "../pixelflow-ir" }
+pixelflow-compiler = { path = "../pixelflow-compiler" }
 
 # libm only needed for scalar fallback (non-x86_64, non-aarch64)
 [target.'cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]

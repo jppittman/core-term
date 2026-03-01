@@ -60,8 +60,9 @@
 use crate::Manifold;
 use crate::combinators::{At, ClosureMap, Map, Select};
 use crate::ops::{
-    Abs, Add, Cos, Div, Exp, Exp2, Floor, Ge, Gt, Le, Log2, Lt, Max, Min, Mul, MulAdd, Neg, Rsqrt,
-    Sin, Sqrt, Sub,
+    Abs, Acos, Add, Asin, Atan, Atan2, Ceil, Clamp, Cos, Div, Eq, Exp, Exp2, Floor, Fract, Ge, Gt,
+    Hypot, Le, Ln, Log10, Log2, Lt, Max, Min, Mul, MulAdd, MulRsqrt, Ne, Neg, Pow, Recip, Round,
+    Rsqrt, Sin, Sqrt, Sub, Tan,
 };
 
 use alloc::sync::Arc;
@@ -213,6 +214,66 @@ pub trait ManifoldExt: Sized {
         Exp(self)
     }
 
+    /// Reciprocal (1/x).
+    #[inline(always)]
+    fn recip(self) -> Recip<Self> {
+        Recip(self)
+    }
+
+    /// Ceiling (round toward positive infinity).
+    #[inline(always)]
+    fn ceil(self) -> Ceil<Self> {
+        Ceil(self)
+    }
+
+    /// Round to nearest integer.
+    #[inline(always)]
+    fn round(self) -> Round<Self> {
+        Round(self)
+    }
+
+    /// Fractional part: x - floor(x).
+    #[inline(always)]
+    fn fract(self) -> Fract<Self> {
+        Fract(self)
+    }
+
+    /// Tangent function.
+    #[inline(always)]
+    fn tan(self) -> Tan<Self> {
+        Tan(self)
+    }
+
+    /// Arcsine function.
+    #[inline(always)]
+    fn asin(self) -> Asin<Self> {
+        Asin(self)
+    }
+
+    /// Arccosine function.
+    #[inline(always)]
+    fn acos(self) -> Acos<Self> {
+        Acos(self)
+    }
+
+    /// Arctangent function.
+    #[inline(always)]
+    fn atan(self) -> Atan<Self> {
+        Atan(self)
+    }
+
+    /// Natural logarithm.
+    #[inline(always)]
+    fn ln(self) -> Ln<Self> {
+        Ln(self)
+    }
+
+    /// Base-10 logarithm.
+    #[inline(always)]
+    fn log10(self) -> Log10<Self> {
+        Log10(self)
+    }
+
     // =========================================================================
     // Binary Operations (no domain constraint)
     // =========================================================================
@@ -261,6 +322,34 @@ pub trait ManifoldExt: Sized {
         MulAdd(self, b, c)
     }
 
+    /// Two-argument arctangent: atan2(self, x).
+    ///
+    /// Returns the angle in radians between the positive x-axis and the point (x, self).
+    #[inline(always)]
+    fn atan2<X>(self, x: X) -> Atan2<Self, X> {
+        Atan2(self, x)
+    }
+
+    /// Power: self^exp.
+    #[inline(always)]
+    fn pow<E>(self, exp: E) -> Pow<Self, E> {
+        Pow(self, exp)
+    }
+
+    /// Hypotenuse: sqrt(self² + y²).
+    #[inline(always)]
+    fn hypot<Y>(self, y: Y) -> Hypot<Self, Y> {
+        Hypot(self, y)
+    }
+
+    /// Multiply by reciprocal square root: self * rsqrt(other) = self / sqrt(other).
+    ///
+    /// This is a common operation in SIMD code for normalization.
+    #[inline(always)]
+    fn mul_rsqrt<R>(self, other: R) -> MulRsqrt<Self, R> {
+        MulRsqrt(self, other)
+    }
+
     // =========================================================================
     // Comparisons (no domain constraint)
     // =========================================================================
@@ -287,6 +376,32 @@ pub trait ManifoldExt: Sized {
     #[inline(always)]
     fn ge<R>(self, rhs: R) -> Ge<Self, R> {
         Ge(self, rhs)
+    }
+
+    /// Equality comparison.
+    #[inline(always)]
+    fn eq<R>(self, rhs: R) -> Eq<Self, R> {
+        Eq(self, rhs)
+    }
+
+    /// Inequality comparison.
+    #[inline(always)]
+    fn ne<R>(self, rhs: R) -> Ne<Self, R> {
+        Ne(self, rhs)
+    }
+
+    // =========================================================================
+    // Ternary Operations (no domain constraint)
+    // =========================================================================
+
+    /// Clamp value to range [lo, hi].
+    #[inline(always)]
+    fn clamp<Lo, Hi>(self, lo: Lo, hi: Hi) -> Clamp<Self, Lo, Hi> {
+        Clamp {
+            value: self,
+            lo,
+            hi,
+        }
     }
 
     // =========================================================================
@@ -443,10 +558,10 @@ pub trait ManifoldExt: Sized {
 ///
 /// ## Deriving
 ///
-/// Use `#[derive(ManifoldExpr)]` from `pixelflow_macros` to implement this trait:
+/// Use `#[derive(ManifoldExpr)]` from `pixelflow_compiler` to implement this trait:
 ///
 /// ```ignore
-/// use pixelflow_macros::ManifoldExpr;
+/// use pixelflow_compiler::ManifoldExpr;
 ///
 /// #[derive(ManifoldExpr)]
 /// pub struct MyCustomCombinator<M>(pub M);

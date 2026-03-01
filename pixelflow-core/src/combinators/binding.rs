@@ -45,7 +45,7 @@
 use crate::Manifold;
 use crate::domain::{Head, LetExtended, Tail};
 use core::marker::PhantomData;
-use pixelflow_macros::Element;
+use pixelflow_compiler::Element;
 
 // ============================================================================
 // Binary Type-Level Numbers (Logarithmic Depth)
@@ -69,7 +69,7 @@ pub struct B1;
 pub struct UInt<U, B>(PhantomData<(U, B)>);
 
 // Convenience aliases: Generate N0..N255 using binary encoding
-pixelflow_macros::generate_binary_types!(256);
+pixelflow_compiler::generate_binary_types!(256);
 
 // ============================================================================
 // Let Combinator

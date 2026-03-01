@@ -22,7 +22,7 @@ use crate::Manifold;
 use crate::backend::{MaskOps, SimdOps};
 use crate::ops::compare::{Ge, Gt, Le, Lt};
 use crate::ops::logic::{And, BNot, Or};
-use pixelflow_macros::Element;
+use pixelflow_compiler::Element;
 
 /// Branchless conditional with short-circuit.
 ///

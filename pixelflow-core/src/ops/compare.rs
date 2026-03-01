@@ -3,7 +3,7 @@
 use crate::Manifold;
 use crate::jet::Jet2;
 use crate::numeric::Computational;
-use pixelflow_macros::Element;
+use pixelflow_compiler::Element;
 
 // ============================================================================
 // Hard Comparisons (generic over Numeric)
@@ -24,6 +24,14 @@ pub struct Le<L, R>(pub L, pub R);
 /// Greater than or equal: L >= R
 #[derive(Clone, Debug, Element)]
 pub struct Ge<L, R>(pub L, pub R);
+
+/// Equality comparison: L == R
+#[derive(Clone, Debug, Element)]
+pub struct Eq<L, R>(pub L, pub R);
+
+/// Inequality comparison: L != R
+#[derive(Clone, Debug, Element)]
+pub struct Ne<L, R>(pub L, pub R);
 
 // Select is defined in combinators/select.rs with early-exit optimization.
 // Use `pixelflow_core::Select` from there.
@@ -105,6 +113,40 @@ where
         let l: crate::Field = self.0.eval(p).into();
         let r: crate::Field = self.1.eval(p).into();
         l.ge(r)
+    }
+}
+
+impl<P, L, R, OL, OR> Manifold<P> for Eq<L, R>
+where
+    P: Copy + Send + Sync,
+    L: Manifold<P, Output = OL>,
+    R: Manifold<P, Output = OR>,
+    OL: Into<crate::Field> + Copy,
+    OR: Into<crate::Field> + Copy,
+{
+    type Output = crate::Field;
+    #[inline(always)]
+    fn eval(&self, p: P) -> crate::Field {
+        let l: crate::Field = self.0.eval(p).into();
+        let r: crate::Field = self.1.eval(p).into();
+        l.eq(r)
+    }
+}
+
+impl<P, L, R, OL, OR> Manifold<P> for Ne<L, R>
+where
+    P: Copy + Send + Sync,
+    L: Manifold<P, Output = OL>,
+    R: Manifold<P, Output = OR>,
+    OL: Into<crate::Field> + Copy,
+    OR: Into<crate::Field> + Copy,
+{
+    type Output = crate::Field;
+    #[inline(always)]
+    fn eval(&self, p: P) -> crate::Field {
+        let l: crate::Field = self.0.eval(p).into();
+        let r: crate::Field = self.1.eval(p).into();
+        l.ne(r)
     }
 }
 

@@ -726,6 +726,86 @@ impl Field {
     pub(crate) fn gather(slice: &[f32], indices: Self) -> Self {
         Self(NativeSimd::gather(slice, indices.0))
     }
+
+    /// Base-10 logarithm.
+    ///
+    /// Computed as log2(x) * log10(2).
+    #[inline(always)]
+    pub(crate) fn log10(self) -> Self {
+        Self(self.0.log10())
+    }
+
+    /// Tangent (sin/cos).
+    #[inline(always)]
+    pub(crate) fn tan(self) -> Self {
+        Self(self.0.tan())
+    }
+
+    /// Arcsine.
+    #[inline(always)]
+    pub(crate) fn asin(self) -> Self {
+        Self(self.0.asin())
+    }
+
+    /// Arccosine.
+    #[inline(always)]
+    pub(crate) fn acos(self) -> Self {
+        Self(self.0.acos())
+    }
+
+    /// Arctangent.
+    #[inline(always)]
+    pub(crate) fn atan(self) -> Self {
+        Self(self.0.atan())
+    }
+
+    /// Ceiling (round toward positive infinity).
+    #[inline(always)]
+    pub(crate) fn ceil(self) -> Self {
+        Self(self.0.ceil())
+    }
+
+    /// Round to nearest integer.
+    #[inline(always)]
+    pub(crate) fn round(self) -> Self {
+        Self(self.0.round())
+    }
+
+    /// Fractional part: x - floor(x).
+    #[inline(always)]
+    pub(crate) fn fract(self) -> Self {
+        Self(self.0.fract())
+    }
+
+    /// Hypotenuse: sqrt(x² + y²).
+    #[inline(always)]
+    pub(crate) fn hypot(self, y: Self) -> Self {
+        Self(self.0.hypot(y.0))
+    }
+
+    /// Multiply by reciprocal square root: self * rsqrt(other) = self / sqrt(other).
+    #[inline(always)]
+    pub(crate) fn mul_rsqrt(self, other: Self) -> Self {
+        Self(self.0.mul_rsqrt(other.0))
+    }
+
+    /// Clamp to range [lo, hi].
+    #[inline(always)]
+    pub(crate) fn clamp(self, lo: Self, hi: Self) -> Self {
+        Self(self.0.clamp(lo.0, hi.0))
+    }
+
+    /// Equality comparison (returns mask as Field).
+    #[inline(always)]
+    pub fn eq(self, rhs: Self) -> Self {
+        Self(NativeSimd::mask_to_float(self.0.cmp_eq(rhs.0)))
+    }
+
+    /// Inequality comparison (returns mask as Field).
+    #[inline(always)]
+    pub fn ne(self, rhs: Self) -> Self {
+        Self(NativeSimd::mask_to_float(self.0.cmp_ne(rhs.0)))
+    }
 }
 
 impl Field<u32> {
@@ -1537,8 +1617,78 @@ impl numeric::Numeric for Field {
     }
 
     #[inline(always)]
+    fn ln(self) -> Self {
+        Self::ln(self)
+    }
+
+    #[inline(always)]
+    fn log10(self) -> Self {
+        Self::log10(self)
+    }
+
+    #[inline(always)]
+    fn tan(self) -> Self {
+        Self::tan(self)
+    }
+
+    #[inline(always)]
+    fn asin(self) -> Self {
+        Self::asin(self)
+    }
+
+    #[inline(always)]
+    fn acos(self) -> Self {
+        Self::acos(self)
+    }
+
+    #[inline(always)]
+    fn atan(self) -> Self {
+        Self::atan(self)
+    }
+
+    #[inline(always)]
     fn floor(self) -> Self {
         Self::floor(self)
+    }
+
+    #[inline(always)]
+    fn ceil(self) -> Self {
+        Self::ceil(self)
+    }
+
+    #[inline(always)]
+    fn round(self) -> Self {
+        Self::round(self)
+    }
+
+    #[inline(always)]
+    fn fract(self) -> Self {
+        Self::fract(self)
+    }
+
+    #[inline(always)]
+    fn hypot(self, y: Self) -> Self {
+        Self::hypot(self, y)
+    }
+
+    #[inline(always)]
+    fn mul_rsqrt(self, other: Self) -> Self {
+        Self::mul_rsqrt(self, other)
+    }
+
+    #[inline(always)]
+    fn clamp(self, lo: Self, hi: Self) -> Self {
+        Self::clamp(self, lo, hi)
+    }
+
+    #[inline(always)]
+    fn eq(self, rhs: Self) -> Self {
+        Self::eq(self, rhs)
+    }
+
+    #[inline(always)]
+    fn ne(self, rhs: Self) -> Self {
+        Self::ne(self, rhs)
     }
 
     #[inline(always)]
@@ -1579,6 +1729,11 @@ impl numeric::Numeric for Field {
     #[inline(always)]
     fn raw_div(self, rhs: Self) -> Self {
         Self(self.0 / rhs.0)
+    }
+
+    #[inline(always)]
+    fn raw_neg(self) -> Self {
+        Self(-self.0)
     }
 }
 
@@ -1715,6 +1870,104 @@ impl<DM: Manifold> core::ops::Div<ops::Cos<DM>> for Field {
     type Output = ops::Div<Self, ops::Cos<DM>>;
     #[inline(always)]
     fn div(self, rhs: ops::Cos<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Tan<DM>> for Field {
+    type Output = ops::Div<Self, ops::Tan<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Tan<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Asin<DM>> for Field {
+    type Output = ops::Div<Self, ops::Asin<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Asin<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Acos<DM>> for Field {
+    type Output = ops::Div<Self, ops::Acos<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Acos<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Atan<DM>> for Field {
+    type Output = ops::Div<Self, ops::Atan<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Atan<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Ceil<DM>> for Field {
+    type Output = ops::Div<Self, ops::Ceil<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Ceil<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Round<DM>> for Field {
+    type Output = ops::Div<Self, ops::Round<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Round<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Fract<DM>> for Field {
+    type Output = ops::Div<Self, ops::Fract<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Fract<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Log2<DM>> for Field {
+    type Output = ops::Div<Self, ops::Log2<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Log2<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Exp2<DM>> for Field {
+    type Output = ops::Div<Self, ops::Exp2<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Exp2<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Exp<DM>> for Field {
+    type Output = ops::Div<Self, ops::Exp<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Exp<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Ln<DM>> for Field {
+    type Output = ops::Div<Self, ops::Ln<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Ln<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Log10<DM>> for Field {
+    type Output = ops::Div<Self, ops::Log10<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Log10<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Recip<DM>> for Field {
+    type Output = ops::Div<Self, ops::Recip<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Recip<DM>) -> Self::Output {
+        ops::Div(self, rhs)
+    }
+}
+impl<DM: Manifold> core::ops::Div<ops::Neg<DM>> for Field {
+    type Output = ops::Div<Self, ops::Neg<DM>>;
+    #[inline(always)]
+    fn div(self, rhs: ops::Neg<DM>) -> Self::Output {
         ops::Div(self, rhs)
     }
 }

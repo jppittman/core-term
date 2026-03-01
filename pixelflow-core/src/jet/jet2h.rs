@@ -912,6 +912,171 @@ impl Numeric for Jet2H {
     }
 
     #[inline(always)]
+    fn ln(self) -> Self {
+        // ln(f)' = f'/f
+        // ln(f)'' = f''/f - f'²/f²
+        let inv = Field::from(1.0) / self.val;
+        let inv_sq = inv.clone() * inv.clone();
+        Self::new(
+            self.val.ln(),
+            self.dx * inv.clone(),
+            self.dy * inv.clone(),
+            self.dxx * inv.clone() - self.dx * self.dx * inv_sq.clone(),
+            self.dxy * inv.clone() - self.dx * self.dy * inv_sq.clone(),
+            self.dyy * inv - self.dy * self.dy * inv_sq,
+        )
+    }
+
+    #[inline(always)]
+    fn log10(self) -> Self {
+        // log10(f) = ln(f) / ln(10)
+        let log10_e = Field::from(0.4342944819032518);
+        let inv = Field::from(1.0) / self.val;
+        let inv_sq = inv.clone() * inv.clone();
+        let scale = inv * log10_e.clone();
+        let scale_sq = inv_sq * log10_e;
+        Self::new(
+            self.val.log10(),
+            self.dx * scale.clone(),
+            self.dy * scale.clone(),
+            self.dxx * scale.clone() - self.dx * self.dx * scale_sq.clone(),
+            self.dxy * scale.clone() - self.dx * self.dy * scale_sq.clone(),
+            self.dyy * scale - self.dy * self.dy * scale_sq,
+        )
+    }
+
+    #[inline(always)]
+    fn tan(self) -> Self {
+        // tan(f)' = sec²(f) * f'
+        // tan(f)'' = 2*sec²(f)*tan(f)*f'² + sec²(f)*f''
+        let tan_val = self.val.tan();
+        let cos_val = self.val.cos();
+        let sec_sq = Field::from(1.0) / (cos_val * cos_val);
+        let two_sec_sq_tan = Field::from(2.0) * sec_sq.clone() * tan_val;
+        Self::new(
+            tan_val,
+            self.dx * sec_sq.clone(),
+            self.dy * sec_sq.clone(),
+            self.dxx * sec_sq.clone() + self.dx * self.dx * two_sec_sq_tan.clone(),
+            self.dxy * sec_sq.clone() + self.dx * self.dy * two_sec_sq_tan.clone(),
+            self.dyy * sec_sq + self.dy * self.dy * two_sec_sq_tan,
+        )
+    }
+
+    #[inline(always)]
+    fn asin(self) -> Self {
+        // asin(f)' = f' / sqrt(1-f²)
+        use crate::numeric::Numeric as _;
+        let one = Field::from(1.0);
+        let one_minus_sq = one.raw_sub(self.val.raw_mul(self.val));
+        let inv_sqrt = one_minus_sq.rsqrt();
+        Self::new(
+            self.val.asin(),
+            self.dx.raw_mul(inv_sqrt),
+            self.dy.raw_mul(inv_sqrt),
+            self.dxx.raw_mul(inv_sqrt),
+            self.dxy.raw_mul(inv_sqrt),
+            self.dyy.raw_mul(inv_sqrt),
+        )
+    }
+
+    #[inline(always)]
+    fn acos(self) -> Self {
+        use crate::numeric::Numeric as _;
+        let one = Field::from(1.0);
+        let one_minus_sq = one.raw_sub(self.val.raw_mul(self.val));
+        let neg_inv_sqrt = Field::from(0.0).raw_sub(one_minus_sq.rsqrt());
+        Self::new(
+            self.val.acos(),
+            self.dx.raw_mul(neg_inv_sqrt),
+            self.dy.raw_mul(neg_inv_sqrt),
+            self.dxx.raw_mul(neg_inv_sqrt),
+            self.dxy.raw_mul(neg_inv_sqrt),
+            self.dyy.raw_mul(neg_inv_sqrt),
+        )
+    }
+
+    #[inline(always)]
+    fn atan(self) -> Self {
+        // atan(f)' = f' / (1+f²)
+        use crate::numeric::Numeric as _;
+        let one = Field::from(1.0);
+        let one_plus_sq = one.raw_add(self.val.raw_mul(self.val));
+        let inv = Field::from(1.0).raw_div(one_plus_sq);
+        Self::new(
+            self.val.atan(),
+            self.dx.raw_mul(inv),
+            self.dy.raw_mul(inv),
+            self.dxx.raw_mul(inv),
+            self.dxy.raw_mul(inv),
+            self.dyy.raw_mul(inv),
+        )
+    }
+
+    #[inline(always)]
+    fn ceil(self) -> Self {
+        Self::constant(self.val.ceil())
+    }
+
+    #[inline(always)]
+    fn round(self) -> Self {
+        Self::constant(self.val.round())
+    }
+
+    #[inline(always)]
+    fn fract(self) -> Self {
+        Self::new(self.val.fract(), self.dx, self.dy, self.dxx, self.dxy, self.dyy)
+    }
+
+    #[inline(always)]
+    fn hypot(self, y: Self) -> Self {
+        let h = self.val.hypot(y.val);
+        let inv_h = Field::from(1.0) / h;
+        let dx_coeff = self.val * inv_h.clone();
+        let dy_coeff = y.val * inv_h;
+        Self::new(
+            h,
+            self.dx * dx_coeff.clone() + y.dx * dy_coeff.clone(),
+            self.dy * dx_coeff.clone() + y.dy * dy_coeff.clone(),
+            self.dxx * dx_coeff.clone() + y.dxx * dy_coeff.clone(),
+            self.dxy * dx_coeff.clone() + y.dxy * dy_coeff.clone(),
+            self.dyy * dx_coeff + y.dyy * dy_coeff,
+        )
+    }
+
+    #[inline(always)]
+    fn mul_rsqrt(self, other: Self) -> Self {
+        // mul_rsqrt(a, b) = a * rsqrt(b)
+        // Delegate to existing rsqrt and multiplication for correct second derivatives
+        self * other.rsqrt()
+    }
+
+    #[inline(always)]
+    fn clamp(self, lo: Self, hi: Self) -> Self {
+        let mask_low = self.val.lt(lo.val);
+        let mask_high = self.val.gt(hi.val);
+        let clamped = self.val.clamp(lo.val, hi.val);
+        Self {
+            val: clamped,
+            dx: Field::select_raw(mask_low, lo.dx, Field::select_raw(mask_high, hi.dx, self.dx)),
+            dy: Field::select_raw(mask_low, lo.dy, Field::select_raw(mask_high, hi.dy, self.dy)),
+            dxx: Field::select_raw(mask_low, lo.dxx, Field::select_raw(mask_high, hi.dxx, self.dxx)),
+            dxy: Field::select_raw(mask_low, lo.dxy, Field::select_raw(mask_high, hi.dxy, self.dxy)),
+            dyy: Field::select_raw(mask_low, lo.dyy, Field::select_raw(mask_high, hi.dyy, self.dyy)),
+        }
+    }
+
+    #[inline(always)]
+    fn eq(self, rhs: Self) -> Self {
+        Self::constant(self.val.eq(rhs.val))
+    }
+
+    #[inline(always)]
+    fn ne(self, rhs: Self) -> Self {
+        Self::constant(self.val.ne(rhs.val))
+    }
+
+    #[inline(always)]
     fn add_masked(self, val: Self, mask: Self) -> Self {
         Self {
             val: self.val.add_masked(val.val, mask.val),
@@ -941,6 +1106,11 @@ impl Numeric for Jet2H {
     #[inline(always)]
     fn raw_div(self, rhs: Self) -> Self {
         self / rhs
+    }
+
+    #[inline(always)]
+    fn raw_neg(self) -> Self {
+        Self::new(-self.val, -self.dx, -self.dy, -self.dxx, -self.dxy, -self.dyy)
     }
 }
 

@@ -43,7 +43,7 @@
 //! ```
 
 use crate::{Computational, Manifold};
-use pixelflow_macros::Element;
+use pixelflow_compiler::Element;
 
 /// The universal contramap combinator (tuple-based).
 ///
