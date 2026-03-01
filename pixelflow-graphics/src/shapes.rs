@@ -167,13 +167,11 @@ pub const UNIT_CIRCLE_DIST_SQ: Add<Mul<X, X>, Mul<Y, Y>> = Add(Mul(X, X), Mul(Y,
 
 /// Unit circle SDF: sqrt(x² + y²) - 1.0
 /// Negative inside, zero on boundary, positive outside.
-#[allow(clippy::type_complexity)]
 pub const UNIT_CIRCLE_SDF: Sub<Sqrt<Add<Mul<X, X>, Mul<Y, Y>>>, f32> =
     Sub(Sqrt(Add(Mul(X, X), Mul(Y, Y))), 1.0);
 
 /// Unit circle condition: x² + y² < 1.0
 /// Returns mask (all-1s inside, all-0s outside).
-#[allow(clippy::type_complexity)]
 pub const UNIT_CIRCLE_COND: Lt<Add<Mul<X, X>, Mul<Y, Y>>, f32> = Lt(Add(Mul(X, X), Mul(Y, Y)), 1.0);
 
 #[cfg(test)]

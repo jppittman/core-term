@@ -1,40 +1,37 @@
 //! Testing kernel composition patterns
-use pixelflow_core::{Field, Manifold, ManifoldExt};
-use pixelflow_macros::kernel;
+use pixelflow_core::{Field, Manifold};
+use pixelflow_compiler::kernel;
 
 type Field4 = (Field, Field, Field, Field);
 
 fn field4(x: f32, y: f32) -> Field4 {
-    (
-        Field::from(x),
-        Field::from(y),
-        Field::from(0.0),
-        Field::from(0.0),
-    )
+    (Field::from(x), Field::from(y), Field::from(0.0), Field::from(0.0))
 }
 
 fn main() {
-    // Pattern 1: Separate kernels, compose at call site
+    // Pattern 1: Parameterized kernel returns a manifold
     let dist = kernel!(|cx: f32, cy: f32| {
         let dx = X - cx;
         let dy = Y - cy;
         (dx * dx + dy * dy).sqrt()
     });
 
+    // Instantiate with concrete parameters
     let d = dist(1.0, 2.0);
+
+    // Evaluate at a point
     let p = field4(1.5, 2.0);
-    println!("dist at (1.5, 2.0): {:?}", d.eval(p));
+    let result = d.eval(p);
+    println!("distance from (1.0, 2.0) at (1.5, 2.0): {:?}", result);
 
-    // Pattern 2: Compose via a second kernel using 'inner: kernel' parameter.
-    // The kernel macro's `inner: kernel` type accepts any ManifoldExpr as an
-    // operand, enabling algebraic composition at the expression level.
-    let circle = kernel!(|inner: kernel, r: f32| inner - r);
+    // Pattern 2: Circle with radius built into the kernel
+    let circle = kernel!(|cx: f32, cy: f32, r: f32| {
+        let dx = X - cx;
+        let dy = Y - cy;
+        (dx * dx + dy * dy).sqrt() - r
+    });
 
-    let c = circle(dist(1.0, 2.0), 0.5);
-    let result = c.eval(p);
-    println!("circle SDF at (1.5, 2.0): {:?}", result);
-
-    // Pattern 3: Direct scalar evaluation via eval4
-    let val = d.eval4(1.5, 2.0, 0.0, 0.0);
-    println!("eval4 result: {:?}", val);
+    let c = circle(1.0, 2.0, 0.5);
+    let result2 = c.eval(p);
+    println!("circle(center=(1.0, 2.0), r=0.5) at (1.5, 2.0): {:?}", result2);
 }

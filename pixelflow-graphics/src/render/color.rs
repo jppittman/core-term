@@ -65,14 +65,12 @@ pub enum NamedColor {
 
 impl NamedColor {
     /// Convert a u8 index (0-15) to a NamedColor.
-    #[must_use]
     pub fn from_index(idx: u8) -> Self {
         assert!(idx < 16, "Invalid NamedColor index: {}. Must be 0-15.", idx);
         unsafe { core::mem::transmute(idx) }
     }
 
     /// Returns the RGB representation of this named color.
-    #[must_use]
     pub fn to_rgb(self) -> (u8, u8, u8) {
         ANSI_COLORS_RGB[self as usize]
     }
@@ -116,21 +114,18 @@ pub enum Color {
 impl Color {
     /// Convert to an Rgba8 pixel.
     #[inline]
-    #[must_use]
     pub fn to_rgba8(self) -> Rgba8 {
         Rgba8(u32::from(self))
     }
 
     /// Convert to a Bgra8 pixel.
     #[inline]
-    #[must_use]
     pub fn to_bgra8(self) -> Bgra8 {
         Bgra8::from(self.to_rgba8())
     }
 
     /// Convert to normalized f32 RGBA components.
     #[inline]
-    #[must_use]
     pub fn to_f32_rgba(self) -> (f32, f32, f32, f32) {
         let rgba = self.to_rgba8();
         (
@@ -211,21 +206,9 @@ const fn generate_palette() -> [u32; 256] {
             let r_comp = (cube_idx / (COLOR_CUBE_SIZE * COLOR_CUBE_SIZE)) % COLOR_CUBE_SIZE;
             let g_comp = (cube_idx / COLOR_CUBE_SIZE) % COLOR_CUBE_SIZE;
             let b_comp = cube_idx % COLOR_CUBE_SIZE;
-            let r_val = if r_comp == 0 {
-                0
-            } else {
-                r_comp * CUBE_SCALE_FACTOR + CUBE_BASE_OFFSET
-            };
-            let g_val = if g_comp == 0 {
-                0
-            } else {
-                g_comp * CUBE_SCALE_FACTOR + CUBE_BASE_OFFSET
-            };
-            let b_val = if b_comp == 0 {
-                0
-            } else {
-                b_comp * CUBE_SCALE_FACTOR + CUBE_BASE_OFFSET
-            };
+            let r_val = if r_comp == 0 { 0 } else { r_comp * CUBE_SCALE_FACTOR + CUBE_BASE_OFFSET };
+            let g_val = if g_comp == 0 { 0 } else { g_comp * CUBE_SCALE_FACTOR + CUBE_BASE_OFFSET };
+            let b_val = if b_comp == 0 { 0 } else { b_comp * CUBE_SCALE_FACTOR + CUBE_BASE_OFFSET };
             (r_val, g_val, b_val)
         } else {
             // Grayscale ramp (indices 232-255)
@@ -298,28 +281,23 @@ pub struct Bgra8(pub u32);
 impl Rgba8 {
     /// Creates a new RGBA pixel from component values.
     #[inline]
-    #[must_use]
     pub fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self(u32::from_le_bytes([r, g, b, a]))
     }
 
     #[inline]
-    #[must_use]
     pub fn r(self) -> u8 {
         self.0.to_le_bytes()[0]
     }
     #[inline]
-    #[must_use]
     pub fn g(self) -> u8 {
         self.0.to_le_bytes()[1]
     }
     #[inline]
-    #[must_use]
     pub fn b(self) -> u8 {
         self.0.to_le_bytes()[2]
     }
     #[inline]
-    #[must_use]
     pub fn a(self) -> u8 {
         self.0.to_le_bytes()[3]
     }
@@ -328,28 +306,23 @@ impl Rgba8 {
 impl Bgra8 {
     /// Creates a new BGRA pixel from component values.
     #[inline]
-    #[must_use]
     pub fn new(b: u8, g: u8, r: u8, a: u8) -> Self {
         Self(u32::from_le_bytes([b, g, r, a]))
     }
 
     #[inline]
-    #[must_use]
     pub fn b(self) -> u8 {
         self.0.to_le_bytes()[0]
     }
     #[inline]
-    #[must_use]
     pub fn g(self) -> u8 {
         self.0.to_le_bytes()[1]
     }
     #[inline]
-    #[must_use]
     pub fn r(self) -> u8 {
         self.0.to_le_bytes()[2]
     }
     #[inline]
-    #[must_use]
     pub fn a(self) -> u8 {
         self.0.to_le_bytes()[3]
     }

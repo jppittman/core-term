@@ -51,6 +51,21 @@ path = "src/bin/bench_jit_corpus.rs"
 required-features = ["training"]
 
 [[bin]]
+name = "bench_judge_fair"
+path = "src/bin/bench_judge_fair.rs"
+required-features = ["training"]
+
+[[bin]]
+name = "bench_shader_e2e"
+path = "src/bin/bench_shader_e2e.rs"
+required-features = ["training"]
+
+[[bin]]
+name = "bootstrap_judge"
+path = "src/bin/bootstrap_judge.rs"
+required-features = ["training"]
+
+[[bin]]
 name = "gen_bench_corpus"
 path = "src/bin/gen_bench_corpus.rs"
 required-features = ["training"]

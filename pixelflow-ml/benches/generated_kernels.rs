@@ -6,7 +6,7 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use pixelflow_core::{Field, Manifold};
-use pixelflow_macros::kernel_raw;
+use pixelflow_compiler::kernel_raw;
 
 fn bench_generated_kernels(c: &mut Criterion) {
     let mut group = c.benchmark_group("generated_kernels");

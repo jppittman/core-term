@@ -22,3 +22,4 @@ libm = "0.2.15"
 [dev-dependencies]
 criterion = "0.5"
 pixelflow-core = { path = "../pixelflow-core" }
+pixelflow-compiler = { path = "../pixelflow-compiler" }

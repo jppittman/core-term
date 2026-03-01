@@ -428,8 +428,6 @@ impl<M> ContextFree<M> {
 
 impl<M: crate::ext::ManifoldExpr> crate::ext::ManifoldExpr for ContextFree<M> {}
 
-impl<Ctx, Body: crate::ext::ManifoldExpr> crate::ext::ManifoldExpr for WithContext<Ctx, Body> {}
-
 // ============================================================================
 // Operator Implementations for ContextFree
 // ============================================================================
