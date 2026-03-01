@@ -700,19 +700,21 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
     }
 }
 
+/// Handles returned by spawn_terminal_app.
+#[derive(Debug)]
+pub struct TerminalAppHandles {
+    pub app_handle: ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+    pub pty_handle: ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
+    pub join_handle: std::thread::JoinHandle<()>,
+}
+
 /// Creates terminal app and spawns it in a thread.
 ///
 /// This function handles registration atomically:
 /// 1. Creates the app actor's channel
 /// 2. Registers the app with the engine (sends RegisterApp + CreateWindow)
 /// 3. Spawns the app thread with the registered engine handle
-pub fn spawn_terminal_app(
-    params: TerminalAppParams,
-) -> std::io::Result<(
-    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
-    actor_scheduler::ActorHandle<TerminalData, EngineEventControl, EngineEventManagement>,
-    std::thread::JoinHandle<()>,
-)> {
+pub fn spawn_terminal_app(params: TerminalAppParams) -> std::io::Result<TerminalAppHandles> {
     // Create app actor's channels using ActorBuilder (SPSC - each producer is unique)
     // ActorHandle is not Clone; each consumer needs its own dedicated handle.
     let mut builder =
@@ -783,7 +785,11 @@ pub fn spawn_terminal_app(
             app_rx.run(&mut app);
         })?;
 
-    Ok((app_handle, pty_handle, handle))
+    Ok(TerminalAppHandles {
+        app_handle,
+        pty_handle,
+        join_handle: handle,
+    })
 }
 
 /// Parameters after registration (internal use).
