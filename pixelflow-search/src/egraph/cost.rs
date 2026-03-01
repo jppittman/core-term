@@ -12,15 +12,15 @@
 //!
 //! This allows the e-graph extraction to use either:
 //! - Fast hardcoded costs (`CostModel`)
-//! - Learned neural costs (`FactoredNnue` from pixelflow-nnue)
+//! - Learned neural costs (`ExprNnue` from pixelflow-nnue)
 //! - Custom domain-specific cost models
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use super::node::ENode;
 use pixelflow_ir::OpKind;
+use super::node::ENode;
 
 // ============================================================================
 // Cost Function Trait
@@ -46,22 +46,22 @@ use pixelflow_ir::OpKind;
 /// let (tree, cost) = extract(&egraph, root, &costs);
 ///
 /// // Using a learned neural cost model
-/// let nnue = FactoredNnue::load("model.bin")?;
+/// let nnue = ExprNnue::load("model.bin")?;
 /// let (tree, cost) = extract(&egraph, root, &nnue);
 /// ```
 pub trait CostFunction {
-    /// Estimate the cost of a single ENode.
+    /// Estimate the cost of a single ENode given its parent context.
     ///
     /// This is the atomic operation cost, NOT including children.
     /// The extraction algorithm sums child costs separately.
-    fn node_cost(&self, node: &ENode) -> usize;
+    ///
+    /// `parent` is the OpKind of the operation using this result.
+    /// This allows for 'sliding window' optimizations (e.g. FMA detection).
+    fn node_cost(&self, node: &ENode, parent: Option<OpKind>) -> usize;
 
     /// Get the cost of an operation by OpKind (optional, for interop).
-    ///
-    /// Default implementation panics - only needed for models that
-    /// support direct OpKind lookup.
-    fn cost_by_kind(&self, _op: OpKind) -> usize {
-        panic!("CostFunction::cost_by_kind not implemented for this cost model");
+    fn cost_by_kind(&self, op: OpKind, parent: Option<OpKind>) -> usize {
+        panic!("CostFunction::cost_by_kind not implemented");
     }
 }
 
@@ -81,127 +81,26 @@ pub struct CostModel {
 
 impl Default for CostModel {
     fn default() -> Self {
-        Self::with_defaults()
+        Self::new()
     }
 }
 
 impl CostModel {
-    /// Create with default costs (reasonable x86-64 SIMD estimates).
-    #[must_use]
-    pub fn with_defaults() -> Self {
-        let mut costs = [4usize; OpKind::COUNT]; // Default to medium cost
-
-        // Leaves (no cost)
-        costs[OpKind::Var.index()] = 0;
-        costs[OpKind::Const.index()] = 0;
-        costs[OpKind::Tuple.index()] = 0;
-
-        // Cheap (1 cycle)
-        costs[OpKind::Neg.index()] = 1;
-        costs[OpKind::Abs.index()] = 1;
-
-        // Medium (4-5 cycles)
-        costs[OpKind::Add.index()] = 4;
-        costs[OpKind::Sub.index()] = 4;
-        costs[OpKind::Mul.index()] = 5;
-        costs[OpKind::Min.index()] = 4;
-        costs[OpKind::Max.index()] = 4;
-
-        // Expensive (12-15 cycles)
-        costs[OpKind::Div.index()] = 15;
-        costs[OpKind::Sqrt.index()] = 15;
-        costs[OpKind::Recip.index()] = 5;
-        costs[OpKind::Rsqrt.index()] = 5;
-
-        // Fused (same as components or cheaper)
-        costs[OpKind::MulAdd.index()] = 5;
-        costs[OpKind::MulRsqrt.index()] = 6;
-
-        // Rounding (cheap)
-        costs[OpKind::Floor.index()] = 2;
-        costs[OpKind::Ceil.index()] = 2;
-        costs[OpKind::Round.index()] = 2;
-        costs[OpKind::Fract.index()] = 3;
-
-        // Transcendentals (expensive)
-        costs[OpKind::Sin.index()] = 20;
-        costs[OpKind::Cos.index()] = 20;
-        costs[OpKind::Tan.index()] = 25;
-        costs[OpKind::Asin.index()] = 25;
-        costs[OpKind::Acos.index()] = 25;
-        costs[OpKind::Atan.index()] = 20;
-        costs[OpKind::Atan2.index()] = 25;
-        costs[OpKind::Exp.index()] = 15;
-        costs[OpKind::Exp2.index()] = 12;
-        costs[OpKind::Ln.index()] = 15;
-        costs[OpKind::Log2.index()] = 12;
-        costs[OpKind::Log10.index()] = 15;
-        costs[OpKind::Pow.index()] = 30;
-        costs[OpKind::Hypot.index()] = 20;
-
-        // Comparison (cheap)
-        costs[OpKind::Lt.index()] = 1;
-        costs[OpKind::Le.index()] = 1;
-        costs[OpKind::Gt.index()] = 1;
-        costs[OpKind::Ge.index()] = 1;
-        costs[OpKind::Eq.index()] = 1;
-        costs[OpKind::Ne.index()] = 1;
-
-        // Control flow
-        costs[OpKind::Select.index()] = 2;
-        costs[OpKind::Clamp.index()] = 4;
-
+    /// Create an empty cost model with zero weights.
+    pub fn new() -> Self {
         Self {
-            costs,
-            depth_threshold: 32,
-            depth_penalty: 100,
-        }
-    }
-
-    /// Create with FMA optimization enabled.
-    #[must_use]
-    pub fn with_fma() -> Self {
-        let mut model = Self::with_defaults();
-        model.costs[OpKind::MulAdd.index()] = 5;
-        model
-    }
-
-    /// Create with fast reciprocal/rsqrt.
-    #[must_use]
-    pub fn with_fast_rsqrt() -> Self {
-        let mut model = Self::with_defaults();
-        model.costs[OpKind::Rsqrt.index()] = 4;
-        model.costs[OpKind::Recip.index()] = 4;
-        model
-    }
-
-    /// Create with all optimizations.
-    #[must_use]
-    pub fn fully_optimized() -> Self {
-        let mut model = Self::with_defaults();
-        model.costs[OpKind::MulAdd.index()] = 5;
-        model.costs[OpKind::Rsqrt.index()] = 4;
-        model.costs[OpKind::Recip.index()] = 4;
-        model
-    }
-
-    /// Create with custom depth threshold.
-    #[must_use]
-    pub fn with_depth_limit(threshold: usize, penalty: usize) -> Self {
-        Self {
-            depth_threshold: threshold,
-            depth_penalty: penalty,
-            ..Self::with_defaults()
+            costs: [0usize; OpKind::COUNT],
+            depth_threshold: 1024, // Effectively disabled
+            depth_penalty: 0,
         }
     }
 
     /// Create with aggressive depth penalty for complex kernels.
-    #[must_use]
     pub fn shallow() -> Self {
         Self {
             depth_threshold: 16,
             depth_penalty: 500,
-            ..Self::fully_optimized()
+            ..Self::new()
         }
     }
 
@@ -211,7 +110,6 @@ impl CostModel {
 
     /// Get cost for an OpKind.
     #[inline]
-    #[must_use]
     pub fn cost(&self, op: OpKind) -> usize {
         self.costs[op.index()]
     }
@@ -223,7 +121,6 @@ impl CostModel {
     }
 
     /// Get the raw costs array.
-    #[must_use]
     pub fn costs(&self) -> &[usize; OpKind::COUNT] {
         &self.costs
     }
@@ -235,7 +132,6 @@ impl CostModel {
 
     /// Calculate the hinge penalty for a given depth.
     #[inline]
-    #[must_use]
     pub fn depth_cost(&self, depth: usize) -> usize {
         if depth > self.depth_threshold {
             (depth - self.depth_threshold) * self.depth_penalty
@@ -245,16 +141,16 @@ impl CostModel {
     }
 
     /// Get cost for an ENode.
-    #[must_use]
+    ///
+    /// Uses `op.kind()` to convert at the boundary from `&dyn Op` to `OpKind`.
     pub fn node_op_cost(&self, node: &ENode) -> usize {
         match node {
             ENode::Var(_) | ENode::Const(_) => 0,
-            ENode::Op { op, .. } => self.cost_by_name(op.name()),
+            ENode::Op { op, .. } => self.cost(op.kind()),
         }
     }
 
     /// Get cost by operation name (for backward compatibility).
-    #[must_use]
     pub fn cost_by_name(&self, name: &str) -> usize {
         // Map name to OpKind
         let op = match name {
@@ -271,7 +167,6 @@ impl CostModel {
             "min" => OpKind::Min,
             "max" => OpKind::Max,
             "mul_add" => OpKind::MulAdd,
-            "mul_rsqrt" => OpKind::MulRsqrt,
             "recip" => OpKind::Recip,
             "floor" => OpKind::Floor,
             "ceil" => OpKind::Ceil,
@@ -329,7 +224,7 @@ impl CostModel {
     /// Load cost model from a TOML file.
     pub fn load_toml<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
         let contents = fs::read_to_string(path)?;
-        let mut model = Self::with_defaults();
+        let mut model = Self::new();
 
         for line in contents.lines() {
             let line = line.trim();
@@ -345,17 +240,11 @@ impl CostModel {
                         model.depth_threshold = v;
                     } else if key == "depth_penalty" {
                         model.depth_penalty = v;
-                    } else {
-                        // Try to parse as OpKind name
-                        for i in 0..OpKind::COUNT {
-                            if let Some(op) = OpKind::from_index(i)
-                                && op.name() == key
-                            {
-                                model.costs[i] = v;
-                                break;
-                            }
-                        }
+                    } else if let Some(op) = OpKind::from_name(key) {
+                        // O(1) lookup via OpKind::from_name
+                        model.costs[op.index()] = v;
                     }
+                    // Unknown keys are silently ignored (external data format)
                 }
             }
         }
@@ -364,18 +253,18 @@ impl CostModel {
     }
 
     /// Try to load from a standard location, falling back to fully_optimized.
-    #[must_use]
     pub fn load_or_default() -> Self {
         // Check environment variable first
-        if let Ok(path) = std::env::var("PIXELFLOW_COST_MODEL")
-            && let Ok(model) = Self::load_toml(&path)
-        {
-            return model;
+        if let Ok(path) = std::env::var("PIXELFLOW_COST_MODEL") {
+            if let Ok(model) = Self::load_toml(&path) {
+                return model;
+            }
         }
 
         // Try user config directory
         if let Some(home) = std::env::var_os("HOME") {
-            let config_path = Path::new(&home).join(".config/pixelflow/cost_model.toml");
+            let config_path = Path::new(&home)
+                .join(".config/pixelflow/cost_model.toml");
             if let Ok(model) = Self::load_toml(&config_path) {
                 return model;
             }
@@ -392,8 +281,8 @@ impl CostModel {
             }
         }
 
-        // Default to hardcoded optimized settings
-        Self::fully_optimized()
+        // Default to empty settings
+        Self::new()
     }
 
     // =========================================================================
@@ -401,30 +290,23 @@ impl CostModel {
     // =========================================================================
 
     /// Create from HashMap (for backward compatibility).
-    #[must_use]
     pub fn from_map(costs: &HashMap<String, usize>) -> Self {
-        let mut model = Self::with_defaults();
+        let mut model = Self::new();
         for (key, &value) in costs {
             if key == "depth_threshold" {
                 model.depth_threshold = value;
             } else if key == "depth_penalty" {
                 model.depth_penalty = value;
-            } else {
-                for i in 0..OpKind::COUNT {
-                    if let Some(op) = OpKind::from_index(i)
-                        && op.name() == key
-                    {
-                        model.costs[i] = value;
-                        break;
-                    }
-                }
+            } else if let Some(op) = OpKind::from_name(key) {
+                // O(1) lookup via OpKind::from_name
+                model.costs[op.index()] = value;
             }
+            // Unknown keys are silently ignored (external data format)
         }
         model
     }
 
     /// Convert to HashMap for interop.
-    #[must_use]
     pub fn to_map(&self) -> HashMap<String, usize> {
         let mut map = HashMap::new();
         for i in 0..OpKind::COUNT {
@@ -443,11 +325,11 @@ impl CostModel {
 // ============================================================================
 
 impl CostFunction for CostModel {
-    fn node_cost(&self, node: &ENode) -> usize {
+    fn node_cost(&self, node: &ENode, _parent: Option<OpKind>) -> usize {
         self.node_op_cost(node)
     }
 
-    fn cost_by_kind(&self, op: OpKind) -> usize {
+    fn cost_by_kind(&self, op: OpKind, _parent: Option<OpKind>) -> usize {
         self.cost(op)
     }
 }

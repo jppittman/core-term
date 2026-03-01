@@ -3,11 +3,11 @@
 //! An e-graph compresses many equivalent expressions. Extraction picks
 //! the "best" one according to a cost model.
 
+use alloc::vec::Vec;
 use super::cost::{CostFunction, CostModel};
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use super::ops::Op;
-use alloc::vec::Vec;
 
 /// A concrete expression tree extracted from an e-graph.
 ///
@@ -35,19 +35,16 @@ pub enum Leaf {
 
 impl ExprTree {
     /// Create a variable.
-    #[must_use]
     pub fn var(idx: u8) -> Self {
         Self::Leaf(Leaf::Var(idx))
     }
 
     /// Create a constant.
-    #[must_use]
     pub fn constant(val: f32) -> Self {
         Self::Leaf(Leaf::Const(val))
     }
 
     /// Count total nodes in the tree.
-    #[must_use]
     pub fn node_count(&self) -> usize {
         match self {
             Self::Leaf(_) => 1,
@@ -56,56 +53,114 @@ impl ExprTree {
     }
 
     /// Compute depth of the tree.
-    #[must_use]
     pub fn depth(&self) -> usize {
         match self {
             Self::Leaf(_) => 1,
-            Self::Op { children, .. } => 1 + children.iter().map(|c| c.depth()).max().unwrap_or(0),
+            Self::Op { children, .. } => {
+                1 + children.iter().map(|c| c.depth()).max().unwrap_or(0)
+            }
+        }
+    }
+
+    /// Check if this expression has valid types.
+    ///
+    /// Returns `false` if comparison results are used in invalid contexts
+    /// (e.g., as operands to arithmetic operations).
+    ///
+    /// Type rules:
+    /// - Comparison ops (lt, le, gt, ge, eq, ne) return boolean
+    /// - Select's first arg must be boolean, returns numeric
+    /// - All other ops require numeric operands and return numeric
+    /// - Leaves (Var, Const) are numeric
+    pub fn is_type_valid(&self) -> bool {
+        self.check_type().is_some()
+    }
+
+    /// Returns Some(is_boolean) if valid, None if invalid.
+    fn check_type(&self) -> Option<bool> {
+        match self {
+            Self::Leaf(_) => Some(false), // Leaves are numeric
+
+            Self::Op { op, children } => {
+                let name = op.name();
+
+                // Comparison ops: require numeric children, return boolean
+                if matches!(name, "lt" | "le" | "gt" | "ge" | "eq" | "ne") {
+                    // All children must be numeric (not boolean)
+                    for child in children {
+                        match child.check_type() {
+                            Some(false) => {} // Numeric - OK
+                            _ => return None, // Boolean or invalid - ERROR
+                        }
+                    }
+                    return Some(true); // Return boolean
+                }
+
+                // Select: first child MUST be boolean (comparison result), others numeric
+                if name == "select" && children.len() == 3 {
+                    // Condition MUST be boolean (comparison result)
+                    match children[0].check_type() {
+                        Some(true) => {} // Boolean - OK
+                        _ => return None, // Numeric or invalid - ERROR
+                    }
+                    // Then/else branches must be numeric
+                    for child in &children[1..] {
+                        match child.check_type() {
+                            Some(false) => {} // Numeric - OK
+                            _ => return None,
+                        }
+                    }
+                    return Some(false); // Return numeric
+                }
+
+                // All other ops: require numeric children, return numeric
+                for child in children {
+                    match child.check_type() {
+                        Some(false) => {} // Numeric - OK
+                        _ => return None, // Boolean or invalid - ERROR
+                    }
+                }
+                Some(false) // Return numeric
+            }
         }
     }
 
     // Constructor helpers for common operations
-    #[must_use]
-    pub fn op_add(a: Self, b: Self) -> Self {
+    pub fn add(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Add,
             children: alloc::vec![a, b],
         }
     }
 
-    #[must_use]
-    pub fn op_sub(a: Self, b: Self) -> Self {
+    pub fn sub(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Sub,
             children: alloc::vec![a, b],
         }
     }
 
-    #[must_use]
-    pub fn op_mul(a: Self, b: Self) -> Self {
+    pub fn mul(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Mul,
             children: alloc::vec![a, b],
         }
     }
 
-    #[must_use]
-    pub fn op_div(a: Self, b: Self) -> Self {
+    pub fn div(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Div,
             children: alloc::vec![a, b],
         }
     }
 
-    #[must_use]
-    pub fn op_neg(a: Self) -> Self {
+    pub fn neg(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Neg,
             children: alloc::vec![a],
         }
     }
 
-    #[must_use]
     pub fn sqrt(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Sqrt,
@@ -113,7 +168,6 @@ impl ExprTree {
         }
     }
 
-    #[must_use]
     pub fn abs(a: Self) -> Self {
         Self::Op {
             op: &super::ops::Abs,
@@ -121,7 +175,6 @@ impl ExprTree {
         }
     }
 
-    #[must_use]
     pub fn min(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Min,
@@ -129,7 +182,6 @@ impl ExprTree {
         }
     }
 
-    #[must_use]
     pub fn max(a: Self, b: Self) -> Self {
         Self::Op {
             op: &super::ops::Max,
@@ -137,7 +189,6 @@ impl ExprTree {
         }
     }
 
-    #[must_use]
     pub fn mul_add(a: Self, b: Self, c: Self) -> Self {
         Self::Op {
             op: &super::ops::MulAdd,
@@ -146,103 +197,254 @@ impl ExprTree {
     }
 
     /// Compute the cost of this expression tree using the given cost model.
-    #[must_use]
     pub fn cost(&self, costs: &CostModel) -> usize {
         match self {
-            Self::Leaf(_) => 0, // Variables and constants are free
+            Self::Leaf(_) => 0,  // Variables and constants are free
             Self::Op { op, children } => {
-                let op_cost = costs.cost_by_name(op.name());
+                // Use op.kind() at the boundary to convert to OpKind
+                let op_cost = costs.cost(op.kind());
                 let children_cost: usize = children.iter().map(|c| c.cost(costs)).sum();
                 op_cost + children_cost
             }
         }
     }
 
-    /// Evaluate the expression tree with given variable values.
+}
+
+use crate::nnue::{ExprNnue, EdgeAccumulator};
+
+/// Incremental 3-pass neural extractor.
+///
+/// Instead of recomputing the full `EdgeAccumulator` from scratch for each
+/// candidate, performs an O(Δ) swap: remove old subtree edges, add new.
+/// This makes each candidate evaluation O(subtree_size) instead of O(whole_tree).
+///
+/// ## Algorithm
+///
+/// - **Pass 1 (Bootstrap)**: extract shallowest tree (minimum AST node count per
+///   e-class). This is fast and gives a reasonable starting point.
+/// - **Passes 2-3 (Refine)**: for each active e-class, try alternative nodes
+///   using O(Δ) accumulator updates. Accept if strictly lower cost.
+///   Repeat until fixpoint or `MAX_PASSES` (3) reached.
+pub struct IncrementalExtractor<'a> {
+    nnue: &'a ExprNnue,
+    top_k: usize,
+}
+
+impl<'a> IncrementalExtractor<'a> {
+    /// Create a new incremental extractor.
     ///
-    /// env[0] = X, env[1] = Y, env[2] = Z, env[3] = W
-    pub fn eval(&self, env: &[f32]) -> f32 {
-        match self {
-            Self::Leaf(Leaf::Var(idx)) => env.get(*idx as usize).copied().unwrap_or(0.0),
-            Self::Leaf(Leaf::Const(val)) => *val,
-            Self::Op { op, children } => {
-                let name = op.name();
-                match name {
-                    "add" => children.iter().map(|c| c.eval(env)).sum(),
-                    "sub" => {
-                        if children.len() == 2 {
-                            children[0].eval(env) - children[1].eval(env)
-                        } else {
-                            0.0
+    /// `top_k` bounds how many alternative nodes per e-class are evaluated
+    /// during refinement passes (default 8 is a good trade-off).
+    pub fn new(nnue: &'a ExprNnue, top_k: usize) -> Self {
+        Self { nnue, top_k }
+    }
+
+    /// Run the 3-pass extraction and return the best tree with its neural cost.
+    pub fn extract(&self, egraph: &EGraph, root_class: EClassId) -> (ExprTree, f32) {
+        const MAX_PASSES: usize = 3;
+
+        // Pass 1: Bootstrap with shallowest tree (minimum node count)
+        let mut choices = self.extract_shallowest(egraph, root_class);
+
+        // Build initial tree and its full-tree accumulator
+        let initial_tree = super::nnue_adapter::build_tree_with_choices(
+            egraph, root_class, &choices,
+        );
+        let initial_expr = super::nnue_adapter::expr_tree_to_nnue(&initial_tree);
+        // Use dedup variant: extracted trees may contain CSE (shared subtrees).
+        let mut current_acc = EdgeAccumulator::from_expr_dedup(
+            &initial_expr, &self.nnue.embeddings,
+        );
+        let mut current_cost = self.nnue.predict_log_cost_with_features(&current_acc);
+
+        // Passes 2..MAX_PASSES: Refine via O(Δ) swaps
+        for _pass in 1..MAX_PASSES {
+            let active = self.get_active_classes(egraph, root_class, &choices);
+            let mut improved = false;
+
+            for &class in &active {
+                let canonical = egraph.find(class);
+                let nodes = egraph.nodes(canonical);
+                if nodes.len() <= 1 {
+                    continue; // No alternatives
+                }
+
+                let current_node_idx = choices[canonical.0 as usize].unwrap_or(0);
+
+                // Build old subtree for this e-class
+                let old_subtree = super::nnue_adapter::build_subtree_with_choices(
+                    egraph, canonical, current_node_idx, &choices,
+                );
+                let old_subtree_expr = super::nnue_adapter::expr_tree_to_nnue(
+                    &old_subtree,
+                );
+
+                let candidates_to_try = nodes.len().min(self.top_k);
+
+                for node_idx in 0..candidates_to_try {
+                    if node_idx == current_node_idx {
+                        continue;
+                    }
+
+                    // Build candidate subtree (same descendants, different root node)
+                    let cand_subtree = super::nnue_adapter::build_subtree_with_choices(
+                        egraph, canonical, node_idx, &choices,
+                    );
+                    let cand_expr = super::nnue_adapter::expr_tree_to_nnue(
+                        &cand_subtree,
+                    );
+
+                    // O(Δ) accumulator swap: remove old, add new.
+                    // Candidate subtrees are freshly built slices — use dedup to
+                    // guard against any shared subtrees they may contain.
+                    let mut test_acc = current_acc.clone();
+                    test_acc.remove_expr_edges(
+                        &old_subtree_expr, &self.nnue.embeddings,
+                    );
+                    let cand_acc = EdgeAccumulator::from_expr_dedup(
+                        &cand_expr, &self.nnue.embeddings,
+                    );
+                    test_acc.merge(&cand_acc);
+
+                    let test_cost = self.nnue.predict_log_cost_with_features(&test_acc);
+
+                    if test_cost < current_cost {
+                        choices[canonical.0 as usize] = Some(node_idx);
+                        current_acc = test_acc;
+                        current_cost = test_cost;
+                        improved = true;
+                        break; // First-improvement: move to next e-class
+                    }
+                }
+            }
+
+            if !improved {
+                break; // Fixpoint
+            }
+        }
+
+        // Build final tree from refined choices
+        let tree = super::nnue_adapter::build_tree_with_choices(
+            egraph, root_class, &choices,
+        );
+        (tree, current_cost)
+    }
+
+    /// Pass 1: Bottom-up DP choosing the node with fewest total AST nodes.
+    fn extract_shallowest(
+        &self,
+        egraph: &EGraph,
+        root: EClassId,
+    ) -> Vec<Option<usize>> {
+        use alloc::collections::BTreeSet;
+
+        const CYCLE_COUNT: usize = 1_000_000;
+
+        let num_classes = egraph.num_classes();
+        let mut best_count: Vec<Option<usize>> = alloc::vec![None; num_classes];
+        let mut best_node: Vec<Option<usize>> = alloc::vec![None; num_classes];
+
+        let mut stack: Vec<(EClassId, bool)> = vec![(root, false)];
+        let mut on_stack: BTreeSet<u32> = BTreeSet::new();
+
+        while let Some((class, children_done)) = stack.pop() {
+            let canonical = egraph.find(class);
+
+            if best_count[canonical.0 as usize].is_some() {
+                continue;
+            }
+
+            if !children_done {
+                if !on_stack.insert(canonical.0) {
+                    continue;
+                }
+                stack.push((canonical, true));
+
+                for node in egraph.nodes(canonical) {
+                    if let ENode::Op { children, .. } = node {
+                        for &child in children {
+                            let child_can = egraph.find(child);
+                            if best_count[child_can.0 as usize].is_none() {
+                                stack.push((child, false));
+                            }
                         }
                     }
-                    "mul" => children.iter().map(|c| c.eval(env)).product(),
-                    "div" => {
-                        if children.len() == 2 {
-                            children[0].eval(env) / children[1].eval(env)
-                        } else {
-                            0.0
+                }
+            } else {
+                on_stack.remove(&canonical.0);
+
+                let nodes = egraph.nodes(canonical);
+                let mut min_count = usize::MAX;
+                let mut min_idx = 0;
+
+                for (idx, node) in nodes.iter().enumerate() {
+                    let count = match node {
+                        ENode::Var(_) | ENode::Const(_) => 1,
+                        ENode::Op { children, .. } => {
+                            if children.iter().any(|&c| egraph.find(c) == canonical) {
+                                CYCLE_COUNT
+                            } else {
+                                let child_sum: usize = children
+                                    .iter()
+                                    .map(|&c| {
+                                        let cc = egraph.find(c);
+                                        best_count[cc.0 as usize]
+                                            .unwrap_or(CYCLE_COUNT)
+                                    })
+                                    .sum();
+                                1usize.saturating_add(child_sum)
+                            }
                         }
+                    };
+
+                    if count < min_count {
+                        min_count = count;
+                        min_idx = idx;
                     }
-                    "neg" => {
-                        if children.len() == 1 {
-                            -children[0].eval(env)
-                        } else {
-                            0.0
-                        }
-                    }
-                    "sqrt" => {
-                        if children.len() == 1 {
-                            children[0].eval(env).sqrt()
-                        } else {
-                            0.0
-                        }
-                    }
-                    "abs" => {
-                        if children.len() == 1 {
-                            children[0].eval(env).abs()
-                        } else {
-                            0.0
-                        }
-                    }
-                    "recip" => {
-                        if children.len() == 1 {
-                            1.0 / children[0].eval(env)
-                        } else {
-                            0.0
-                        }
-                    }
-                    "rsqrt" => {
-                        if children.len() == 1 {
-                            1.0 / children[0].eval(env).sqrt()
-                        } else {
-                            0.0
-                        }
-                    }
-                    "min" => children
-                        .iter()
-                        .map(|c| c.eval(env))
-                        .fold(f32::INFINITY, f32::min),
-                    "max" => children
-                        .iter()
-                        .map(|c| c.eval(env))
-                        .fold(f32::NEG_INFINITY, f32::max),
-                    "mul_add" => {
-                        if children.len() == 3 {
-                            children[0]
-                                .eval(env)
-                                .mul_add(children[1].eval(env), children[2].eval(env))
-                        } else {
-                            0.0
-                        }
-                    }
-                    _ => {
-                        // Unknown operation, return 0
-                        0.0
+                }
+
+                best_count[canonical.0 as usize] = Some(min_count);
+                best_node[canonical.0 as usize] = Some(min_idx);
+            }
+        }
+
+        best_node
+    }
+
+    /// Walk the current best tree and collect active (reachable) e-class IDs.
+    fn get_active_classes(
+        &self,
+        egraph: &EGraph,
+        root: EClassId,
+        choices: &[Option<usize>],
+    ) -> Vec<EClassId> {
+        use alloc::collections::BTreeSet;
+
+        let mut active = Vec::new();
+        let mut visited = BTreeSet::new();
+        let mut stack = vec![root];
+
+        while let Some(class) = stack.pop() {
+            let canonical = egraph.find(class);
+            if !visited.insert(canonical.0) {
+                continue;
+            }
+
+            active.push(canonical);
+
+            let node_idx = choices[canonical.0 as usize].unwrap_or(0);
+            let nodes = egraph.nodes(canonical);
+            if node_idx < nodes.len() {
+                if let ENode::Op { children, .. } = &nodes[node_idx] {
+                    for &child in children {
+                        stack.push(child);
                     }
                 }
             }
         }
+
+        active
     }
 }
 
@@ -254,7 +456,7 @@ impl ExprTree {
 ///
 /// The cost function can be any type implementing `CostFunction`:
 /// - `CostModel` for hardcoded costs
-/// - Neural cost models (e.g., `FactoredNnue` via adapter)
+/// - Neural cost models (e.g., `ExprNnue` via adapter)
 /// - Custom domain-specific cost functions
 pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (ExprTree, usize) {
     use alloc::collections::BTreeSet;
@@ -309,13 +511,13 @@ pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (
 
             for (idx, node) in nodes.iter().enumerate() {
                 let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) => costs.node_cost(node),
+                    ENode::Var(_) | ENode::Const(_) => costs.node_cost(node, None),
                     ENode::Op { children, .. } => {
                         // Check for self-referential children
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             CYCLE_COST
                         } else {
-                            let op_cost = costs.node_cost(node);
+                            let op_cost = costs.node_cost(node, None);
                             let children_cost: usize = children
                                 .iter()
                                 .map(|&child| {
@@ -345,11 +547,7 @@ pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (
     // Use a stack of (class, partially_built_tree_slot)
     enum BuildTask {
         Visit(EClassId),
-        Complete {
-            canonical: u32,
-            op: &'static dyn super::ops::Op,
-            num_children: usize,
-        },
+        Complete { canonical: u32, op: &'static dyn super::ops::Op, num_children: usize },
     }
 
     let mut build_stack: Vec<BuildTask> = vec![BuildTask::Visit(root)];
@@ -392,26 +590,17 @@ pub fn extract<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) -> (
                     }
                 }
             }
-            BuildTask::Complete {
-                canonical,
-                op,
-                num_children,
-            } => {
+            BuildTask::Complete { canonical, op, num_children } => {
                 building.remove(&canonical);
                 // Pop children from result stack (they're in correct order now)
                 let start = result_stack.len().saturating_sub(num_children);
                 let child_trees: Vec<ExprTree> = result_stack.drain(start..).collect();
-                result_stack.push(ExprTree::Op {
-                    op,
-                    children: child_trees,
-                });
+                result_stack.push(ExprTree::Op { op, children: child_trees });
             }
         }
     }
 
-    let tree = result_stack
-        .pop()
-        .unwrap_or(ExprTree::Leaf(Leaf::Const(0.0)));
+    let tree = result_stack.pop().unwrap_or_else(|| ExprTree::Leaf(Leaf::Const(0.0)));
     (tree, total_cost)
 }
 
@@ -454,23 +643,19 @@ pub struct ExtractedDAG {
 
 impl ExtractedDAG {
     /// Check if an e-class is shared (used more than once).
-    #[must_use]
     pub fn is_shared(&self, class: EClassId) -> bool {
         self.shared.iter().any(|(id, _)| *id == class)
     }
 
     /// Get the use count for an e-class.
-    #[must_use]
     pub fn use_count(&self, class: EClassId) -> usize {
-        self.shared
-            .iter()
+        self.shared.iter()
             .find(|(id, _)| *id == class)
             .map(|(_, count)| *count)
             .unwrap_or(1)
     }
 
     /// Get the index of the best node for an e-class.
-    #[must_use]
     pub fn best_node_idx(&self, class: EClassId) -> Option<usize> {
         self.choices.get(class.0 as usize).and_then(|o| *o)
     }
@@ -539,12 +724,12 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
 
             for (idx, node) in nodes.iter().enumerate() {
                 let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) => costs.node_cost(node),
+                    ENode::Var(_) | ENode::Const(_) => costs.node_cost(node, None),
                     ENode::Op { children, .. } => {
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             CYCLE_COST
                         } else {
-                            let op_cost = costs.node_cost(node);
+                            let op_cost = costs.node_cost(node, None);
                             let children_cost: usize = children
                                 .iter()
                                 .map(|&child| {
@@ -575,8 +760,7 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
     count_refs_recursive(egraph, root, &best_node, &mut ref_counts);
 
     // Phase 3: Identify shared e-classes (count > 1)
-    let shared: Vec<(EClassId, usize)> = ref_counts
-        .iter()
+    let shared: Vec<(EClassId, usize)> = ref_counts.iter()
         .enumerate()
         .filter(|(_, count)| **count > 1)
         .map(|(idx, count)| (EClassId(idx as u32), *count))
@@ -595,23 +779,29 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
 }
 
 /// Count references to each e-class in the extracted expression.
+///
+/// Uses iterative traversal with explicit stack to avoid thread stack overflow.
 fn count_refs_recursive(
     egraph: &EGraph,
     class: EClassId,
     best_node: &[Option<usize>],
     ref_counts: &mut [usize],
 ) {
-    let canonical = egraph.find(class);
-    ref_counts[canonical.0 as usize] += 1;
+    let mut stack: Vec<EClassId> = alloc::vec![class];
 
-    // Only recurse on first visit to count true structural refs
-    if ref_counts[canonical.0 as usize] == 1
-        && let Some(node_idx) = best_node[canonical.0 as usize]
-    {
-        let node = &egraph.nodes(canonical)[node_idx];
-        if let ENode::Op { children, .. } = node {
-            for &child in children {
-                count_refs_recursive(egraph, child, best_node, ref_counts);
+    while let Some(cls) = stack.pop() {
+        let canonical = egraph.find(cls);
+        ref_counts[canonical.0 as usize] += 1;
+
+        // Only recurse on first visit to count true structural refs
+        if ref_counts[canonical.0 as usize] == 1 {
+            if let Some(node_idx) = best_node[canonical.0 as usize] {
+                let node = &egraph.nodes(canonical)[node_idx];
+                if let ENode::Op { children, .. } = node {
+                    for &child in children {
+                        stack.push(child);
+                    }
+                }
             }
         }
     }
@@ -621,6 +811,8 @@ fn count_refs_recursive(
 ///
 /// Returns e-classes in order such that dependencies come before dependents.
 /// Shared e-classes are prioritized to appear early.
+///
+/// Uses iterative post-order traversal to avoid thread stack overflow.
 fn toposort_dag(
     egraph: &EGraph,
     root: EClassId,
@@ -633,49 +825,42 @@ fn toposort_dag(
     let mut visited: BTreeSet<u32> = BTreeSet::new();
     let mut result = Vec::new();
 
-    #[allow(clippy::too_many_arguments)]
-    fn visit(
-        egraph: &EGraph,
-        class: EClassId,
-        best_node: &[Option<usize>],
-        shared_set: &BTreeSet<u32>,
-        visited: &mut BTreeSet<u32>,
-        result: &mut Vec<EClassId>,
-    ) {
+    // Iterative post-order: (class, children_pushed)
+    let mut stack: Vec<(EClassId, bool)> = alloc::vec![(root, false)];
+
+    while let Some((class, children_done)) = stack.pop() {
         let canonical = egraph.find(class);
-        if !visited.insert(canonical.0) {
-            return;
+
+        if visited.contains(&canonical.0) {
+            continue;
         }
 
-        // Visit children first (post-order)
-        if let Some(node_idx) = best_node.get(canonical.0 as usize).and_then(|o| *o) {
-            let node = &egraph.nodes(canonical)[node_idx];
-            if let ENode::Op { children, .. } = node {
-                for &child in children {
-                    visit(egraph, child, best_node, shared_set, visited, result);
+        if !children_done {
+            stack.push((canonical, true));
+
+            if let Some(node_idx) = best_node.get(canonical.0 as usize).and_then(|o| *o) {
+                let node = &egraph.nodes(canonical)[node_idx];
+                if let ENode::Op { children, .. } = node {
+                    for &child in children {
+                        let child_can = egraph.find(child);
+                        if !visited.contains(&child_can.0) {
+                            stack.push((child, false));
+                        }
+                    }
                 }
             }
-        }
+        } else {
+            visited.insert(canonical.0);
 
-        // Add shared e-classes to the schedule (they need let-bindings)
-        // Leaves and non-shared nodes don't need explicit scheduling
-        if shared_set.contains(&canonical.0) {
-            result.push(canonical);
+            if shared_set.contains(&canonical.0) {
+                result.push(canonical);
+            }
         }
     }
 
-    visit(
-        egraph,
-        root,
-        best_node,
-        &shared_set,
-        &mut visited,
-        &mut result,
-    );
-
     // Add root if not already included
     let root_canonical = egraph.find(root);
-    if !result.contains(&root_canonical) {
+    if !result.iter().any(|id| *id == root_canonical) {
         result.push(root_canonical);
     }
 
@@ -691,7 +876,7 @@ mod tests {
         let x = ExprTree::var(0);
         assert_eq!(x.node_count(), 1);
 
-        let sum = ExprTree::op_add(ExprTree::var(0), ExprTree::var(1));
+        let sum = ExprTree::add(ExprTree::var(0), ExprTree::var(1));
         assert_eq!(sum.node_count(), 3); // Add + X + Y
     }
 
@@ -700,11 +885,11 @@ mod tests {
         let x = ExprTree::var(0);
         assert_eq!(x.depth(), 1);
 
-        let sum = ExprTree::op_add(ExprTree::var(0), ExprTree::var(1));
+        let sum = ExprTree::add(ExprTree::var(0), ExprTree::var(1));
         assert_eq!(sum.depth(), 2);
 
         // (X + Y) * Z
-        let nested = ExprTree::op_mul(sum, ExprTree::var(2));
+        let nested = ExprTree::mul(sum, ExprTree::var(2));
         assert_eq!(nested.depth(), 3);
     }
 
@@ -755,10 +940,7 @@ mod tests {
         let costs = CostModel::default();
         let dag = extract_dag(&egraph, sum, &costs);
 
-        assert!(
-            dag.shared.is_empty(),
-            "X + Y should have no shared subexprs"
-        );
+        assert!(dag.shared.is_empty(), "X + Y should have no shared subexprs");
         assert_eq!(dag.root, egraph.find(sum));
     }
 
@@ -805,10 +987,7 @@ mod tests {
         let dag = extract_dag(&egraph, result, &costs);
 
         // sin_x should be shared (used 3 times: twice in Mul, once in Add)
-        assert!(
-            dag.is_shared(sin_x),
-            "sqrt(X) should be shared (used 3 times)"
-        );
+        assert!(dag.is_shared(sin_x), "sqrt(X) should be shared (used 3 times)");
         assert_eq!(dag.use_count(sin_x), 3);
 
         // Schedule should have sin_x before the operations that use it

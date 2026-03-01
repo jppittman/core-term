@@ -10,7 +10,7 @@
 //! ```ignore
 //! use pixelflow_search::egraph::{ExprTree, codegen};
 //!
-//! let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::op_mul(ExprTree::var(1), ExprTree::constant(2.0)));
+//! let tree = ExprTree::add(ExprTree::var(0), ExprTree::mul(ExprTree::var(1), ExprTree::constant(2.0)));
 //!
 //! let body = codegen::expr_tree_to_kernel_body(&tree);
 //! // Returns: "(X + (Y * 2.0))"
@@ -41,13 +41,14 @@
 //! ```
 
 use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::format;
 
 use super::extract::{ExprTree, ExtractedDAG, Leaf};
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
+use pixelflow_ir::EmitStyle;
 
 /// Convert an ExprTree to a kernel! macro code string.
 ///
@@ -61,7 +62,6 @@ use super::node::{EClassId, ENode};
 /// # Returns
 ///
 /// A Rust code string like: `let my_kernel = kernel!(|| X + Y);`
-#[must_use]
 pub fn expr_tree_to_kernel_code(tree: &ExprTree, name: &str) -> String {
     let body = expr_tree_to_kernel_body(tree);
     format!("let {} = kernel!(|| {});", name, body)
@@ -88,144 +88,46 @@ pub fn expr_tree_to_kernel_body(tree: &ExprTree) -> String {
         ExprTree::Leaf(Leaf::Const(v)) => format_const(*v),
 
         ExprTree::Op { op, children } => {
-            let name = op.name();
-            match (name, children.as_slice()) {
-                // Unary operations
-                ("neg", [a]) => format!("(-{})", expr_tree_to_kernel_body(a)),
-                ("recip", [a]) => format!("(1.0 / {})", expr_tree_to_kernel_body(a)),
-                ("sqrt", [a]) => format!("({}).sqrt()", expr_tree_to_kernel_body(a)),
-                ("rsqrt", [a]) => format!("({}).rsqrt()", expr_tree_to_kernel_body(a)),
-                ("abs", [a]) => format!("({}).abs()", expr_tree_to_kernel_body(a)),
-                ("floor", [a]) => format!("({}).floor()", expr_tree_to_kernel_body(a)),
-                ("ceil", [a]) => format!("({}).ceil()", expr_tree_to_kernel_body(a)),
-                ("round", [a]) => format!("({}).round()", expr_tree_to_kernel_body(a)),
-                ("fract", [a]) => format!("({}).fract()", expr_tree_to_kernel_body(a)),
-                ("sin", [a]) => format!("({}).sin()", expr_tree_to_kernel_body(a)),
-                ("cos", [a]) => format!("({}).cos()", expr_tree_to_kernel_body(a)),
-                ("tan", [a]) => format!("({}).tan()", expr_tree_to_kernel_body(a)),
-                ("asin", [a]) => format!("({}).asin()", expr_tree_to_kernel_body(a)),
-                ("acos", [a]) => format!("({}).acos()", expr_tree_to_kernel_body(a)),
-                ("atan", [a]) => format!("({}).atan()", expr_tree_to_kernel_body(a)),
-                ("exp", [a]) => format!("({}).exp()", expr_tree_to_kernel_body(a)),
-                ("exp2", [a]) => format!("({}).exp2()", expr_tree_to_kernel_body(a)),
-                ("ln", [a]) => format!("({}).ln()", expr_tree_to_kernel_body(a)),
-                ("log2", [a]) => format!("({}).log2()", expr_tree_to_kernel_body(a)),
-                ("log10", [a]) => format!("({}).log10()", expr_tree_to_kernel_body(a)),
+            emit_op(*op, children)
+        }
+    }
+}
 
-                // Binary operations - infix
-                ("add", [a, b]) => format!(
-                    "({} + {})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("sub", [a, b]) => format!(
-                    "({} - {})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("mul", [a, b]) => format!(
-                    "({} * {})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("div", [a, b]) => format!(
-                    "({} / {})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
+/// Emit code for an operation using Op's emit_style.
+fn emit_op(op: &dyn super::ops::Op, children: &[ExprTree]) -> String {
+    use EmitStyle::*;
 
-                // Binary operations - method style
-                ("min", [a, b]) => format!(
-                    "({}).min({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("max", [a, b]) => format!(
-                    "({}).max({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("atan2", [a, b]) => format!(
-                    "({}).atan2({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("pow", [a, b]) => format!(
-                    "({}).powf({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("hypot", [a, b]) => format!(
-                    "({}).hypot({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
+    let name = op.name();
+    let style = op.emit_style();
 
-                // Comparison operations
-                ("lt", [a, b]) => format!(
-                    "({}).lt({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("le", [a, b]) => format!(
-                    "({}).le({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("gt", [a, b]) => format!(
-                    "({}).gt({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("ge", [a, b]) => format!(
-                    "({}).ge({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("eq", [a, b]) => format!(
-                    "({}).eq({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
-                ("ne", [a, b]) => format!(
-                    "({}).ne({})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b)
-                ),
+    // Recursively emit children
+    let args: Vec<String> = children.iter().map(expr_tree_to_kernel_body).collect();
 
-                // Ternary operations
-                // mul_add(a, b, c) = a * b + c, kernel! supports mul_add method
-                ("mul_add", [a, b, c]) => format!(
-                    "({}).mul_add({}, {})",
-                    expr_tree_to_kernel_body(a),
-                    expr_tree_to_kernel_body(b),
-                    expr_tree_to_kernel_body(c)
-                ),
-                ("select", [cond, then_val, else_val]) => format!(
-                    "({}).select({}, {})",
-                    expr_tree_to_kernel_body(cond),
-                    expr_tree_to_kernel_body(then_val),
-                    expr_tree_to_kernel_body(else_val)
-                ),
-                ("clamp", [val, min, max]) => format!(
-                    "({}).clamp({}, {})",
-                    expr_tree_to_kernel_body(val),
-                    expr_tree_to_kernel_body(min),
-                    expr_tree_to_kernel_body(max)
-                ),
+    // Special cases that don't fit the standard patterns
+    match name {
+        // Recip is emitted as division for clarity
+        "recip" if args.len() == 1 => {
+            return format!("(1.0 / {})", args[0]);
+        }
+        // Tuple needs special formatting (variadic, no emit_style)
+        "tuple" => {
+            return format!("({})", args.join(", "));
+        }
+        _ => {}
+    }
 
-                // Tuple
-                ("tuple", elems) => {
-                    let parts: Vec<_> = elems.iter().map(expr_tree_to_kernel_body).collect();
-                    format!("({})", parts.join(", "))
-                }
+    // Use the emit_style from the Op
+    match (style, args.as_slice()) {
+        (UnaryPrefix, [a]) => format!("(-{})", a),
+        (UnaryMethod, [a]) => format!("({}).{}()", a, name),
+        (BinaryInfix(sym), [a, b]) => format!("({} {} {})", a, sym, b),
+        (BinaryMethod, [a, b]) => format!("({}).{}({})", a, name, b),
+        (BinaryMethodNamed(method_name), [a, b]) => format!("({}).{}({})", a, method_name, b),
+        (TernaryMethod, [a, b, c]) => format!("({}).{}({}, {})", a, name, b, c),
 
-                // Unknown operation
-                (op_name, children) => {
-                    let args: Vec<_> = children.iter().map(expr_tree_to_kernel_body).collect();
-                    format!("{}({})", op_name, args.join(", "))
-                }
-            }
+        // Fallback for mismatched arity or special types
+        (Special, _) | (_, _) => {
+            format!("{}({})", name, args.join(", "))
         }
     }
 }
@@ -254,85 +156,25 @@ fn format_const(v: f32) -> String {
     }
 }
 
-/// Generate a complete benchmark file for a set of expression trees.
+
+/// Generate a corpus JSONL file for JIT benchmarking.
 ///
-/// This creates a Criterion benchmark file that can measure the actual
-/// SIMD execution cost of each expression.
-///
-/// # Arguments
-///
-/// * `variants` - List of (name, tree) pairs to benchmark
+/// Replaces the old approach of emitting a `kernel_raw!`-packed .rs file that
+/// took ~13 minutes and ~10 GB RAM to compile through LLVM. The corpus JSONL
+/// is read by `bench_jit_corpus` which JIT-compiles each expression in µs.
 ///
 /// # Returns
 ///
-/// Complete Rust source code for a Criterion benchmark file.
-#[must_use]
-pub fn generate_benchmark_file(variants: &[(String, ExprTree)]) -> String {
-    let mut code = String::new();
-
-    // Header
-    code.push_str(
-        r#"//! Auto-generated kernels for NNUE cost model training.
-//!
-//! Generated by: cargo run -p pixelflow-ml --example gen_egraph_variants --features training
-//!
-//! DO NOT EDIT MANUALLY - regenerate with the command above.
-
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use pixelflow_core::{Field, Manifold};
-use pixelflow_macros::kernel_raw;
-
-fn bench_generated_kernels(c: &mut Criterion) {
-    let mut group = c.benchmark_group("generated_kernels");
-    group.sample_size(10);  // Low precision for fast training data collection
-
-    let xf = Field::sequential(1.0);
-    let yf = Field::from(2.0);
-    let zf = Field::from(3.0);
-    let wf = Field::from(0.5);
-
-"#,
-    );
-
-    // Generate each kernel benchmark
+/// JSONL string with one `{"name":"...","expression":"..."}` per line.
+pub fn generate_corpus_jsonl(variants: &[(String, ExprTree)]) -> String {
+    let mut out = String::new();
     for (name, tree) in variants {
-        let kernel_body = expr_tree_to_kernel_body(tree);
-        let node_count = tree.node_count();
-        let depth = tree.depth();
-
-        code.push_str(&format!(
-            r#"    // {name} - {node_count} nodes, depth {depth}
-    {{
-        let k = kernel_raw!(|| {kernel_body});
-        let m = k();
-        group.bench_function("{name}", |b| {{
-            b.iter(|| black_box(m.eval((black_box(xf), black_box(yf), black_box(zf), black_box(wf)))))
-        }});
-    }}
-
-"#
-        ));
+        let expression = expr_tree_to_kernel_body(tree);
+        // JSON-escape the expression string.
+        let escaped = expression.replace('\\', "\\\\").replace('"', "\\\"");
+        out.push_str(&format!("{{\"name\":\"{name}\",\"expression\":\"{escaped}\"}}\n"));
     }
-
-    // Footer
-    code.push_str(
-        r#"    group.finish();
-}
-
-criterion_group!(
-    name = generated;
-    config = Criterion::default()
-        .sample_size(10)
-        .warm_up_time(std::time::Duration::from_millis(500))
-        .measurement_time(std::time::Duration::from_secs(1));
-    targets = bench_generated_kernels,
-);
-
-criterion_main!(generated);
-"#,
-    );
-
-    code
+    out
 }
 
 // ============================================================================
@@ -359,7 +201,6 @@ criterion_main!(generated);
 ///     ((__0 * __0) + __0)
 /// });
 /// ```
-#[must_use]
 pub fn dag_to_kernel_code(egraph: &EGraph, dag: &ExtractedDAG, name: &str) -> String {
     let body = dag_to_kernel_body(egraph, dag);
     format!("let {} = kernel!(|| {});", name, body)
@@ -375,7 +216,6 @@ pub fn dag_to_kernel_code(egraph: &EGraph, dag: &ExtractedDAG, name: &str) -> St
 /// Either:
 /// - A simple expression: `(X + Y)`
 /// - A block with let-bindings: `{ let __0 = ...; (__0 * __0) }`
-#[must_use]
 pub fn dag_to_kernel_body(egraph: &EGraph, dag: &ExtractedDAG) -> String {
     // Build a map from shared e-class IDs to their variable names
     let mut names: BTreeMap<u32, String> = BTreeMap::new();
@@ -428,8 +268,7 @@ fn eclass_to_code(
     }
 
     // Get the best node for this e-class
-    let node_idx = dag
-        .best_node_idx(canonical)
+    let node_idx = dag.best_node_idx(canonical)
         .unwrap_or_else(|| panic!("No best node for e-class {}", canonical.0));
     let node = &egraph.nodes(canonical)[node_idx];
 
@@ -441,82 +280,45 @@ fn eclass_to_code(
         ENode::Var(i) => format!("V{}", i),
         ENode::Const(bits) => format_const(f32::from_bits(*bits)),
         ENode::Op { op, children } => {
-            let name = op.name();
-            let child_codes: Vec<String> = children
-                .iter()
+            let child_codes: Vec<String> = children.iter()
                 .map(|&c| eclass_to_code(egraph, c, dag, names))
                 .collect();
 
-            emit_op_code(name, &child_codes)
+            emit_op_with_args(*op, &child_codes)
         }
     }
 }
 
-/// Emit code for an operation with the given children.
-fn emit_op_code(op_name: &str, children: &[String]) -> String {
-    match (op_name, children) {
-        // Unary operations
-        ("neg", [a]) => format!("(-{})", a),
-        ("recip", [a]) => format!("(1.0 / {})", a),
-        ("sqrt", [a]) => format!("({}).sqrt()", a),
-        ("rsqrt", [a]) => format!("({}).rsqrt()", a),
-        ("abs", [a]) => format!("({}).abs()", a),
-        ("floor", [a]) => format!("({}).floor()", a),
-        ("ceil", [a]) => format!("({}).ceil()", a),
-        ("round", [a]) => format!("({}).round()", a),
-        ("fract", [a]) => format!("({}).fract()", a),
-        ("sin", [a]) => format!("({}).sin()", a),
-        ("cos", [a]) => format!("({}).cos()", a),
-        ("tan", [a]) => format!("({}).tan()", a),
-        ("asin", [a]) => format!("({}).asin()", a),
-        ("acos", [a]) => format!("({}).acos()", a),
-        ("atan", [a]) => format!("({}).atan()", a),
-        ("exp", [a]) => format!("({}).exp()", a),
-        ("exp2", [a]) => format!("({}).exp2()", a),
-        ("ln", [a]) => format!("({}).ln()", a),
-        ("log2", [a]) => format!("({}).log2()", a),
-        ("log10", [a]) => format!("({}).log10()", a),
+/// Emit code for an operation with pre-computed child strings.
+fn emit_op_with_args(op: &dyn super::ops::Op, args: &[String]) -> String {
+    use EmitStyle::*;
 
-        // Binary operations - infix
-        ("add", [a, b]) => format!("({} + {})", a, b),
-        ("sub", [a, b]) => format!("({} - {})", a, b),
-        ("mul", [a, b]) => format!("({} * {})", a, b),
-        ("div", [a, b]) => format!("({} / {})", a, b),
+    let name = op.name();
+    let style = op.emit_style();
 
-        // Binary operations - method style
-        ("min", [a, b]) => format!("({}).min({})", a, b),
-        ("max", [a, b]) => format!("({}).max({})", a, b),
-        ("atan2", [a, b]) => format!("({}).atan2({})", a, b),
-        ("pow", [a, b]) => format!("({}).powf({})", a, b),
-        ("hypot", [a, b]) => format!("({}).hypot({})", a, b),
+    // Special cases
+    match name {
+        "recip" if args.len() == 1 => return format!("(1.0 / {})", args[0]),
+        "mul_add" if args.len() == 3 => return format!("(({} * {}) + {})", args[0], args[1], args[2]),
+        "tuple" => return format!("({})", args.join(", ")),
+        _ => {}
+    }
 
-        // Comparison operations
-        ("lt", [a, b]) => format!("({}).lt({})", a, b),
-        ("le", [a, b]) => format!("({}).le({})", a, b),
-        ("gt", [a, b]) => format!("({}).gt({})", a, b),
-        ("ge", [a, b]) => format!("({}).ge({})", a, b),
-        ("eq", [a, b]) => format!("({}).eq({})", a, b),
-        ("ne", [a, b]) => format!("({}).ne({})", a, b),
-
-        // Ternary operations
-        ("mul_add", [a, b, c]) => format!("({}).mul_add({}, {})", a, b, c),
-        ("select", [cond, then_val, else_val]) => {
-            format!("({}).select({}, {})", cond, then_val, else_val)
-        }
-        ("clamp", [val, min, max]) => format!("({}).clamp({}, {})", val, min, max),
-
-        // Tuple
-        ("tuple", elems) => format!("({})", elems.join(", ")),
-
-        // Unknown operation - emit as function call
-        (name, args) => format!("{}({})", name, args.join(", ")),
+    // Use emit_style
+    match (style, args) {
+        (UnaryPrefix, [a]) => format!("(-{})", a),
+        (UnaryMethod, [a]) => format!("({}).{}()", a, name),
+        (BinaryInfix(sym), [a, b]) => format!("({} {} {})", a, sym, b),
+        (BinaryMethod, [a, b]) => format!("({}).{}({})", a, name, b),
+        (BinaryMethodNamed(method_name), [a, b]) => format!("({}).{}({})", a, method_name, b),
+        (TernaryMethod, [a, b, c]) => format!("({}).{}({}, {})", a, name, b, c),
+        (Special, _) | (_, _) => format!("{}({})", name, args.join(", ")),
     }
 }
 
 /// Generate a benchmark file that uses DAG-aware extraction.
 ///
-/// Unlike `generate_benchmark_file`, this uses `extract_dag` and emits
-/// let-bindings for shared subexpressions.
+/// Uses `extract_dag` and emits let-bindings for shared subexpressions.
 ///
 /// # Arguments
 ///
@@ -525,8 +327,9 @@ fn emit_op_code(op_name: &str, children: &[String]) -> String {
 /// # Returns
 ///
 /// Complete Rust source code for a Criterion benchmark file.
-#[must_use]
-pub fn generate_dag_benchmark_file(variants: &[(String, EGraph, EClassId)]) -> String {
+pub fn generate_dag_benchmark_file(
+    variants: &[(String, EGraph, EClassId)],
+) -> String {
     use super::cost::CostModel;
     use super::extract::extract_dag;
 
@@ -541,8 +344,8 @@ pub fn generate_dag_benchmark_file(variants: &[(String, EGraph, EClassId)]) -> S
 //! DO NOT EDIT MANUALLY - regenerate with the command above.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use pixelflow_core::{Field, Manifold};
-use pixelflow_macros::kernel_raw;
+use pixelflow_core::{Field, Manifold, ManifoldExt};
+use pixelflow_compiler::kernel_raw;
 
 fn bench_dag_kernels(c: &mut Criterion) {
     let mut group = c.benchmark_group("dag_kernels");
@@ -617,10 +420,7 @@ mod tests {
     fn test_expr_tree_to_kernel_body_const() {
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(0.0)), "0.0");
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(1.0)), "1.0");
-        assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::constant(-1.0)),
-            "(-1.0)"
-        );
+        assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(-1.0)), "(-1.0)");
         assert_eq!(expr_tree_to_kernel_body(&ExprTree::constant(2.0)), "2.0");
     }
 
@@ -628,7 +428,7 @@ mod tests {
     fn test_expr_tree_to_kernel_body_unary() {
         let x = ExprTree::var(0);
         assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::op_neg(x.clone())),
+            expr_tree_to_kernel_body(&ExprTree::neg(x.clone())),
             "(-X)"
         );
         assert_eq!(
@@ -647,11 +447,11 @@ mod tests {
         let y = ExprTree::var(1);
 
         assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::op_add(x.clone(), y.clone())),
+            expr_tree_to_kernel_body(&ExprTree::add(x.clone(), y.clone())),
             "(X + Y)"
         );
         assert_eq!(
-            expr_tree_to_kernel_body(&ExprTree::op_mul(x.clone(), y.clone())),
+            expr_tree_to_kernel_body(&ExprTree::mul(x.clone(), y.clone())),
             "(X * Y)"
         );
         assert_eq!(
@@ -663,8 +463,8 @@ mod tests {
     #[test]
     fn test_expr_tree_to_kernel_body_nested() {
         // (X + Y) * Z
-        let tree = ExprTree::op_mul(
-            ExprTree::op_add(ExprTree::var(0), ExprTree::var(1)),
+        let tree = ExprTree::mul(
+            ExprTree::add(ExprTree::var(0), ExprTree::var(1)),
             ExprTree::var(2),
         );
         assert_eq!(expr_tree_to_kernel_body(&tree), "((X + Y) * Z)");
@@ -672,36 +472,37 @@ mod tests {
 
     #[test]
     fn test_expr_tree_to_kernel_body_mul_add() {
-        let tree = ExprTree::mul_add(ExprTree::var(0), ExprTree::var(1), ExprTree::var(2));
+        let tree = ExprTree::mul_add(
+            ExprTree::var(0),
+            ExprTree::var(1),
+            ExprTree::var(2),
+        );
         assert_eq!(expr_tree_to_kernel_body(&tree), "(X).mul_add(Y, Z)");
     }
 
     #[test]
     fn test_expr_tree_to_kernel_code() {
-        let tree = ExprTree::op_add(ExprTree::var(0), ExprTree::constant(1.0));
+        let tree = ExprTree::add(ExprTree::var(0), ExprTree::constant(1.0));
         let code = expr_tree_to_kernel_code(&tree, "my_kernel");
         assert_eq!(code, "let my_kernel = kernel!(|| (X + 1.0));");
     }
 
     #[test]
-    fn test_generate_benchmark_file() {
+    fn test_generate_corpus_jsonl() {
         let variants = vec![
             ("k0".to_string(), ExprTree::var(0)),
             (
                 "k1".to_string(),
-                ExprTree::op_add(ExprTree::var(0), ExprTree::var(1)),
+                ExprTree::add(ExprTree::var(0), ExprTree::var(1)),
             ),
         ];
 
-        let code = generate_benchmark_file(&variants);
-
-        // Check key parts are present
-        assert!(code.contains("criterion_group!"));
-        assert!(code.contains("criterion_main!"));
-        assert!(code.contains("kernel_raw!(|| X)"));
-        assert!(code.contains("kernel_raw!(|| (X + Y))"));
-        assert!(code.contains(r#"group.bench_function("k0""#));
-        assert!(code.contains(r#"group.bench_function("k1""#));
+        let jsonl = generate_corpus_jsonl(&variants);
+        let lines: Vec<&str> = jsonl.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains(r#""name":"k0""#));
+        assert!(lines[1].contains(r#""name":"k1""#));
+        assert!(lines[0].contains(r#""expression":"#));
     }
 
     // ========================================================================
@@ -771,18 +572,11 @@ mod tests {
         let body = dag_to_kernel_body(&egraph, &dag);
 
         // sqrt(X) should be bound to a variable
-        assert!(
-            body.contains("let __0"),
-            "Expected let-binding, got: {}",
-            body
-        );
+        assert!(body.contains("let __0"), "Expected let-binding, got: {}", body);
         assert!(body.contains("sqrt"), "Expected sqrt operation");
         // The binding should be used twice in multiplication
-        assert!(
-            body.contains("__0 * __0") || body.contains("__0) * (__0"),
-            "Expected __0 used twice, got: {}",
-            body
-        );
+        assert!(body.contains("__0 * __0") || body.contains("__0) * (__0"),
+            "Expected __0 used twice, got: {}", body);
     }
 
     #[test]
@@ -809,11 +603,7 @@ mod tests {
         eprintln!("Triple shared body: {}", body);
 
         // sqrt(X) should be bound
-        assert!(
-            body.contains("let __0"),
-            "Expected let-binding for sqrt(X), got: {}",
-            body
-        );
+        assert!(body.contains("let __0"), "Expected let-binding for sqrt(X), got: {}", body);
         // Should reference __0 three times total (or at least be in a valid form)
         assert!(body.contains("__0"), "Expected __0 reference");
     }
@@ -845,10 +635,7 @@ mod tests {
         // (X + Y) should be bound
         assert!(body.contains("let __"), "Expected let-binding for (X + Y)");
         // The expression should be well-formed
-        assert!(
-            body.contains("{") && body.contains("}"),
-            "Expected block with let-bindings"
-        );
+        assert!(body.contains("{") && body.contains("}"), "Expected block with let-bindings");
     }
 
     #[test]
@@ -865,10 +652,7 @@ mod tests {
         let dag = extract_dag(&egraph, sum, &CostModel::default());
         let code = dag_to_kernel_code(&egraph, &dag, "my_kernel");
 
-        assert!(
-            code.contains("let my_kernel = kernel!(||"),
-            "Expected kernel declaration"
-        );
+        assert!(code.contains("let my_kernel = kernel!(||"), "Expected kernel declaration");
         assert!(code.contains("X + Y"), "Expected X + Y in kernel body");
     }
 

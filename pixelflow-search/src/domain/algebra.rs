@@ -59,119 +59,9 @@ use alloc::vec::Vec;
 use alloc::boxed::Box;
 use libm::{sqrtf, fabsf};
 
-// ============================================================================
-// Operation Types (mirrors ENode from egraph.rs)
-// ============================================================================
-
-/// Operation type enumeration for feature encoding.
-///
-/// This mirrors the `ENode` variants but as a compact enum for NNUE features.
-/// Each operation maps to a unique index for the feature vector.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum OpType {
-    /// Variable reference
-    Var = 0,
-    /// Constant value
-    Const = 1,
-    /// Addition
-    Add = 2,
-    /// Subtraction
-    Sub = 3,
-    /// Multiplication
-    Mul = 4,
-    /// Division
-    Div = 5,
-    /// Negation
-    Neg = 6,
-    /// Square root
-    Sqrt = 7,
-    /// Reciprocal square root
-    Rsqrt = 8,
-    /// Absolute value
-    Abs = 9,
-    /// Minimum
-    Min = 10,
-    /// Maximum
-    Max = 11,
-    /// Fused multiply-add
-    MulAdd = 12,
-    /// Fused multiply-rsqrt
-    MulRsqrt = 13,
-    
-    // Extended set
-    Recip = 14,
-    Floor = 15,
-    Ceil = 16,
-    Round = 17,
-    Fract = 18,
-    Sin = 19,
-    Cos = 20,
-    Tan = 21,
-    Asin = 22,
-    Acos = 23,
-    Atan = 24,
-    Exp = 25,
-    Exp2 = 26,
-    Ln = 27,
-    Log2 = 28,
-    Log10 = 29,
-    Atan2 = 30,
-    Pow = 31,
-    Hypot = 32,
-    Lt = 33,
-    Le = 34,
-    Gt = 35,
-    Ge = 36,
-    Eq = 37,
-    Ne = 38,
-    Select = 39,
-    Clamp = 40,
-    Tuple = 41,
-}
-
-impl OpType {
-    /// Number of distinct operation types.
-    pub const COUNT: usize = 42;
-
-    /// Convert to index for feature encoding.
-    #[inline]
-    pub fn index(self) -> usize {
-        self as usize
-    }
-
-    /// Create from index.
-    pub fn from_index(idx: usize) -> Option<Self> {
-        if idx >= Self::COUNT {
-            return None;
-        }
-        // Unsafe is fine here because we checked bounds and repr is u8
-        Some(unsafe { core::mem::transmute(idx as u8) })
-    }
-
-    /// Get the arity (number of children) for this operation.
-    pub fn arity(self) -> usize {
-        match self {
-            OpType::Var | OpType::Const => 0,
-            
-            OpType::Neg | OpType::Sqrt | OpType::Rsqrt | OpType::Abs |
-            OpType::Recip | OpType::Floor | OpType::Ceil | OpType::Round | 
-            OpType::Fract | OpType::Sin | OpType::Cos | OpType::Tan | 
-            OpType::Asin | OpType::Acos | OpType::Atan | OpType::Exp | 
-            OpType::Exp2 | OpType::Ln | OpType::Log2 | OpType::Log10 => 1,
-            
-            OpType::Add | OpType::Sub | OpType::Mul | OpType::Div |
-            OpType::Min | OpType::Max | OpType::MulRsqrt |
-            OpType::Atan2 | OpType::Pow | OpType::Hypot |
-            OpType::Lt | OpType::Le | OpType::Gt | OpType::Ge | 
-            OpType::Eq | OpType::Ne => 2,
-            
-            OpType::MulAdd | OpType::Select | OpType::Clamp => 3,
-            
-            OpType::Tuple => 0, // Tuple is variadic, treat as 0 for static arity
-        }
-    }
-}
+// Re-export OpKind as OpType for backward compatibility within this module.
+// The canonical source of truth is `pixelflow_ir::OpKind`.
+use pixelflow_ir::OpKind as OpType;
 
 // ============================================================================
 // Expression AST (for training data generation)
@@ -252,7 +142,6 @@ impl Expr {
                     OpType::Div => a / b,
                     OpType::Min => if a < b { a } else { b },
                     OpType::Max => if a > b { a } else { b },
-                    OpType::MulRsqrt => a / sqrtf(b),
                     _ => unreachable!(),
                 }
             }
@@ -497,7 +386,7 @@ impl ExprGenerator {
         } else {
             // Generate an operation
             let op_choice = if self.config.include_fused {
-                self.rand_usize(12) // Include all ops
+                self.rand_usize(11) // Include all ops
             } else {
                 self.rand_usize(10) // Exclude fused ops
             };
@@ -546,11 +435,6 @@ impl ExprGenerator {
                     Box::new(self.generate_recursive(depth + 1)),
                     Box::new(self.generate_recursive(depth + 1)),
                 ),
-                11 => Expr::Binary(
-                    OpType::MulRsqrt,
-                    Box::new(self.generate_recursive(depth + 1)),
-                    Box::new(self.generate_recursive(depth + 1)),
-                ),
                 _ => unreachable!(),
             }
         }
@@ -583,10 +467,6 @@ pub enum RewriteRule {
     AddSelf,
     /// a * b + c → MulAdd(a, b, c)
     FuseToMulAdd,
-    /// x * rsqrt(y) → MulRsqrt(x, y)
-    FuseToMulRsqrt,
-    /// x / sqrt(y) → x * rsqrt(y)
-    DivSqrtToMulRsqrt,
     /// MulAdd(a, b, c) → a * b + c (unfuse)
     UnfuseMulAdd,
 }
@@ -602,8 +482,6 @@ impl RewriteRule {
         RewriteRule::DoubleNeg,
         RewriteRule::AddSelf,
         RewriteRule::FuseToMulAdd,
-        RewriteRule::FuseToMulRsqrt,
-        RewriteRule::DivSqrtToMulRsqrt,
         RewriteRule::UnfuseMulAdd,
     ];
 
@@ -681,26 +559,6 @@ impl RewriteRule {
                         a.clone(),
                         b.clone(),
                         c.clone(),
-                    )),
-                    _ => None,
-                },
-                _ => None,
-            },
-            RewriteRule::FuseToMulRsqrt => match expr {
-                Expr::Binary(OpType::Mul, x, rsqrt_expr) => match rsqrt_expr.as_ref() {
-                    Expr::Unary(OpType::Rsqrt, y) => {
-                        Some(Expr::Binary(OpType::MulRsqrt, x.clone(), y.clone()))
-                    }
-                    _ => None,
-                },
-                _ => None,
-            },
-            RewriteRule::DivSqrtToMulRsqrt => match expr {
-                Expr::Binary(OpType::Div, x, sqrt_expr) => match sqrt_expr.as_ref() {
-                    Expr::Unary(OpType::Sqrt, y) => Some(Expr::Binary(
-                        OpType::Mul,
-                        x.clone(),
-                        Box::new(Expr::Unary(OpType::Rsqrt, y.clone())),
                     )),
                     _ => None,
                 },
