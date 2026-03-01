@@ -1,0 +1,23 @@
+   Compiling libc v0.2.172
+   Compiling zerocopy v0.8.28
+   Compiling pixelflow-ir v0.1.0 (/app/pixelflow-ir)
+   Compiling pixelflow-core v0.1.0 (/app/pixelflow-core)
+warning: unused import: `crate::kind::OpKind`
+ --> pixelflow-ir/src/expr.rs:9:5
+  |
+9 | use crate::kind::OpKind;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pixelflow-ir` (lib) generated 1 warning (run `cargo fix --lib -p pixelflow-ir` to apply 1 suggestion)
+   Compiling pixelflow-nnue v0.1.0 (/app/pixelflow-nnue)
+   Compiling getrandom v0.2.17
+   Compiling rand_core v0.6.4
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.3.1
+   Compiling rand v0.8.5
+   Compiling pixelflow-search v0.1.0 (/app/pixelflow-search)
+   Compiling pixelflow-macros v0.1.0 (/app/pixelflow-macros)
+    Checking pixelflow-ml v0.1.0 (/app/pixelflow-ml)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 8.97s
