@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "code-index": {
+      "command": "cargo",
+      "args": ["run", "--release", "--quiet", "-p", "code-index", "--", "serve"]
+    }
+  }
+}
