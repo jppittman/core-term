@@ -101,7 +101,7 @@ impl<M: ManifoldCompat<Field, Output = Field> + ManifoldExt> Manifold<Field4> fo
 /// - Surface<SphereAt, Reflect<world>, world>: sphere reflecting world
 /// - world = Surface<plane, Checker, Sky>: floor + sky
 #[test]
-fn test_chrome_unit_sphere() {
+fn scene_should_render_chrome_sphere_reflecting_world() {
     const W: usize = 400;
     const H: usize = 300;
 
@@ -142,10 +142,10 @@ fn test_chrome_unit_sphere() {
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_chrome_unit_sphere.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
+    let mut file = File::create(&path).expect("Failed to create temporary file");
+    writeln!(file, "P6\n{} {}\n255", W, H).expect("Failed to write PPM header");
     for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
+        file.write_all(&[p.r(), p.g(), p.b()]).expect("Failed to write pixel data");
     }
     println!("Saved: {}", path.display());
 
@@ -176,7 +176,7 @@ fn test_chrome_unit_sphere() {
 
 /// Test: Just the sky (no geometry)
 #[test]
-fn test_sky_only() {
+fn scene_should_render_sky_gradient() {
     const W: usize = 200;
     const H: usize = 150;
 
@@ -209,10 +209,10 @@ fn test_sky_only() {
 
     // Save
     let path = std::env::temp_dir().join("pixelflow_sky_only.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
+    let mut file = File::create(&path).expect("Failed to create temporary file");
+    writeln!(file, "P6\n{} {}\n255", W, H).expect("Failed to write PPM header");
     for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
+        file.write_all(&[p.r(), p.g(), p.b()]).expect("Failed to write pixel data");
     }
     println!("Saved: {}", path.display());
 
@@ -228,7 +228,7 @@ fn test_sky_only() {
 
 /// Test: Floor only (plane with checker pattern)
 #[test]
-fn test_floor_only() {
+fn scene_should_render_floor_checkerboard() {
     const W: usize = 400;
     const H: usize = 300;
 
@@ -252,10 +252,10 @@ fn test_floor_only() {
 
     // Save
     let path = std::env::temp_dir().join("pixelflow_floor_only.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
+    let mut file = File::create(&path).expect("Failed to create temporary file");
+    writeln!(file, "P6\n{} {}\n255", W, H).expect("Failed to write PPM header");
     for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
+        file.write_all(&[p.r(), p.g(), p.b()]).expect("Failed to write pixel data");
     }
     println!("Saved: {}", path.display());
 
@@ -276,7 +276,7 @@ fn test_floor_only() {
 /// Test: Color chrome sphere with blue sky (MULLET ARCHITECTURE)
 /// Geometry runs ONCE, colors flow as packed RGBA. 3x speedup!
 #[test]
-fn test_color_chrome_sphere() {
+fn scene_should_render_color_chrome_sphere() {
     const W: usize = 1920;
     const H: usize = 1080;
 
@@ -343,10 +343,10 @@ fn test_color_chrome_sphere() {
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_color_chrome.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
+    let mut file = File::create(&path).expect("Failed to create temporary file");
+    writeln!(file, "P6\n{} {}\n255", W, H).expect("Failed to write PPM header");
     for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
+        file.write_all(&[p.r(), p.g(), p.b()]).expect("Failed to write pixel data");
     }
     println!("Saved: {}", path.display());
 
@@ -368,7 +368,7 @@ fn test_color_chrome_sphere() {
 /// Test: Compare 3-channel vs mullet rendering to ensure they match.
 /// This verifies the mullet architecture produces identical results.
 #[test]
-fn test_mullet_vs_3channel_comparison() {
+fn mullet_architecture_should_match_3channel_rendering() {
     const W: usize = 200;
     const H: usize = 150;
 
@@ -608,7 +608,7 @@ fn test_mullet_vs_3channel_comparison() {
 
 /// Benchmark: Compare work-stealing vs single-threaded at 1080p
 #[test]
-fn test_work_stealing_benchmark() {
+fn parallel_rendering_should_match_sequential() {
     const W: usize = 1920;
     const H: usize = 1080;
 
