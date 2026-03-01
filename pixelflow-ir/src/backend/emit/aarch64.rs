@@ -1,0 +1,1384 @@
+//! ARM64/NEON instruction encoding.
+//!
+//! Each function emits raw machine code bytes for one instruction (or a small fixed sequence).
+//! These are the "atoms" that compound operations are built from.
+
+use super::Reg;
+use crate::kind::OpKind;
+
+// =============================================================================
+// Instruction Encoding Helpers
+// =============================================================================
+
+/// Encode a NEON 3-same instruction (binary vector ops).
+/// Format: Vd.4S, Vn.4S, Vm.4S
+#[inline]
+fn encode_3same(opcode: u32, dst: Reg, src1: Reg, src2: Reg) -> u32 {
+    opcode
+        | (dst.0 as u32 & 0x1F)
+        | ((src1.0 as u32 & 0x1F) << 5)
+        | ((src2.0 as u32 & 0x1F) << 16)
+}
+
+/// Encode a NEON 2-reg misc instruction (unary vector ops).
+/// Format: Vd.4S, Vn.4S
+#[inline]
+fn encode_2misc(opcode: u32, dst: Reg, src: Reg) -> u32 {
+    opcode | (dst.0 as u32 & 0x1F) | ((src.0 as u32 & 0x1F) << 5)
+}
+
+/// Write a 32-bit instruction to the code buffer.
+#[inline]
+pub fn emit32(code: &mut Vec<u8>, inst: u32) {
+    code.extend_from_slice(&inst.to_le_bytes());
+}
+
+// =============================================================================
+// Load / Store
+// =============================================================================
+
+/// LDR Vd, [X0, #offset] - Load 128-bit vector from base + offset
+pub fn emit_ldr_voff(code: &mut Vec<u8>, dst: Reg, offset: u16) {
+    // LDR Qt, [Xn, #imm] - 128-bit load
+    // Encoding: 0x3DC00000 | (imm12 << 10) | (Rn << 5) | Rt
+    // imm12 is offset/16 for 128-bit loads
+    let imm12 = (offset / 16) as u32;
+    let inst = 0x3DC00000 | (imm12 << 10) | (0 << 5) | (dst.0 as u32); // X0 as base
+    emit32(code, inst);
+}
+
+/// STR Vt, [X0, #offset] - Store 128-bit vector to base + offset
+pub fn emit_str_voff(code: &mut Vec<u8>, src: Reg, offset: u16) {
+    let imm12 = (offset / 16) as u32;
+    let inst = 0x3D800000 | (imm12 << 10) | (0 << 5) | (src.0 as u32);
+    emit32(code, inst);
+}
+
+/// LDR Vd, [SP, #offset] - Load 128-bit vector from stack.
+///
+/// Small offsets (< 65536, 16-byte aligned) use single-instruction scaled
+/// immediate addressing. Large offsets use X16 (IP0) as scratch to compute
+/// the address, then load from [X16].
+pub fn emit_ldr_sp(code: &mut Vec<u8>, dst: Reg, offset: u32) {
+    assert!(offset % 16 == 0, "emit_ldr_sp: offset {offset} not 16-byte aligned");
+    let imm12 = offset / 16;
+    if imm12 <= 4095 {
+        // LDR Qt, [SP, #imm12*16]
+        let inst = 0x3DC00000 | (imm12 << 10) | (31 << 5) | (dst.0 as u32);
+        emit32(code, inst);
+    } else {
+        // ADD X16, SP, #offset  (may need multiple instructions)
+        emit_add_x16_sp(code, offset);
+        // LDR Qt, [X16]
+        let inst = 0x3DC00000 | (0 << 10) | (16 << 5) | (dst.0 as u32);
+        emit32(code, inst);
+    }
+}
+
+/// STR Vt, [SP, #offset] - Store 128-bit vector to stack.
+///
+/// Small offsets use scaled immediate. Large offsets use X16 scratch.
+pub fn emit_str_sp(code: &mut Vec<u8>, src: Reg, offset: u32) {
+    assert!(offset % 16 == 0, "emit_str_sp: offset {offset} not 16-byte aligned");
+    let imm12 = offset / 16;
+    if imm12 <= 4095 {
+        // STR Qt, [SP, #imm12*16]
+        let inst = 0x3D800000 | (imm12 << 10) | (31 << 5) | (src.0 as u32);
+        emit32(code, inst);
+    } else {
+        emit_add_x16_sp(code, offset);
+        // STR Qt, [X16]
+        let inst = 0x3D800000 | (0 << 10) | (16 << 5) | (src.0 as u32);
+        emit32(code, inst);
+    }
+}
+
+/// ADD X16, SP, #offset - Compute stack address in scratch register.
+///
+/// ARM64 ADD immediate is 12-bit (max 4095). For larger offsets, emit
+/// multiple ADD instructions.
+fn emit_add_x16_sp(code: &mut Vec<u8>, offset: u32) {
+    // First: MOV X16, SP  (ADD X16, SP, #0 — but we'll fold the first chunk)
+    let mut remaining = offset;
+    let first_chunk = remaining.min(4080);
+    // ADD X16, SP, #first_chunk
+    let inst = 0x91000000 | (first_chunk << 10) | (31 << 5) | 16;
+    emit32(code, inst);
+    remaining -= first_chunk;
+    while remaining > 0 {
+        let chunk = remaining.min(4080);
+        // ADD X16, X16, #chunk
+        let inst = 0x91000000 | (chunk << 10) | (16 << 5) | 16;
+        emit32(code, inst);
+        remaining -= chunk;
+    }
+}
+
+/// SUB SP, SP, #imm - Allocate stack frame.
+///
+/// ARM64 ADD/SUB immediate has a 12-bit field (max 4095). For larger frames,
+/// we emit multiple instructions, each subtracting up to 4080 (largest
+/// 16-byte-aligned value in 12 bits).
+pub fn emit_sub_sp(code: &mut Vec<u8>, size: u32) {
+    let mut remaining = size;
+    while remaining > 0 {
+        let chunk = remaining.min(4080);
+        assert!(chunk <= 4095, "ARM64 immediate overflow in emit_sub_sp");
+        let inst = 0xD10003FF | (chunk << 10);
+        emit32(code, inst);
+        remaining -= chunk;
+    }
+}
+
+/// ADD SP, SP, #imm - Deallocate stack frame.
+///
+/// See `emit_sub_sp` for why we emit multiple instructions.
+pub fn emit_add_sp(code: &mut Vec<u8>, size: u32) {
+    let mut remaining = size;
+    while remaining > 0 {
+        let chunk = remaining.min(4080);
+        assert!(chunk <= 4095, "ARM64 immediate overflow in emit_add_sp");
+        let inst = 0x910003FF | (chunk << 10);
+        emit32(code, inst);
+        remaining -= chunk;
+    }
+}
+
+// =============================================================================
+// Arithmetic - Single Instructions
+// =============================================================================
+
+/// FADD Vd.4S, Vn.4S, Vm.4S
+pub fn emit_fadd(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x4E20D400, dst, src1, src2));
+}
+
+/// FSUB Vd.4S, Vn.4S, Vm.4S
+pub fn emit_fsub(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x4EA0D400, dst, src1, src2));
+}
+
+/// FMUL Vd.4S, Vn.4S, Vm.4S
+pub fn emit_fmul(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x6E20DC00, dst, src1, src2));
+}
+
+/// FDIV Vd.4S, Vn.4S, Vm.4S
+pub fn emit_fdiv(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x6E20FC00, dst, src1, src2));
+}
+
+/// FMLA Vd.4S, Vn.4S, Vm.4S (fused multiply-add: Vd += Vn * Vm)
+pub fn emit_fmla(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x4E20CC00, dst, src1, src2));
+}
+
+/// FMIN Vd.4S, Vn.4S, Vm.4S
+pub fn emit_fmin(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x4EA0F400, dst, src1, src2));
+}
+
+/// FMAX Vd.4S, Vn.4S, Vm.4S
+pub fn emit_fmax(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x4E20F400, dst, src1, src2));
+}
+
+/// FSQRT Vd.4S, Vn.4S
+pub fn emit_fsqrt(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, encode_2misc(0x6EA1F800, dst, src));
+}
+
+/// FABS Vd.4S, Vn.4S
+pub fn emit_fabs(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, encode_2misc(0x4EA0F800, dst, src));
+}
+
+/// FNEG Vd.4S, Vn.4S
+pub fn emit_fneg(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, encode_2misc(0x6EA0F800, dst, src));
+}
+
+/// NOT Vd.16B, Vn.16B (bitwise NOT, 2-register miscellaneous)
+pub fn emit_not(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, encode_2misc(0x2E205800, dst, src));
+}
+
+/// FRINTM Vd.4S, Vn.4S (floor)
+pub fn emit_frintm(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, encode_2misc(0x4E219800, dst, src));
+}
+
+/// FRINTP Vd.4S, Vn.4S (ceil)
+pub fn emit_frintp(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, encode_2misc(0x4EA18800, dst, src));
+}
+
+// =============================================================================
+// Approximate operations (estimate + refinement)
+// =============================================================================
+
+/// FRSQRTE + FRSQRTS refinement (~3 instructions for rsqrt)
+pub fn emit_frsqrt(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: Reg) {
+    // est = frsqrte(src)
+    emit32(code, encode_2misc(0x6EA1D800, dst, src));
+    // scratch = est * est
+    emit32(code, encode_3same(0x6E20DC00, scratch, dst, dst));
+    // scratch = frsqrts(src, scratch) = (3 - src * scratch) / 2
+    emit32(code, encode_3same(0x4EA0FC00, scratch, src, scratch));
+    // dst = est * scratch (refined)
+    emit32(code, encode_3same(0x6E20DC00, dst, dst, scratch));
+}
+
+/// FRECPE + FRECPS refinement (~3 instructions for recip)
+pub fn emit_frecip(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: Reg) {
+    // est = frecpe(src)
+    emit32(code, encode_2misc(0x4EA1D800, dst, src));
+    // scratch = frecps(src, est) = 2 - src * est
+    emit32(code, encode_3same(0x4E20FC00, scratch, src, dst));
+    // dst = est * scratch (refined)
+    emit32(code, encode_3same(0x6E20DC00, dst, dst, scratch));
+}
+
+// =============================================================================
+// Comparisons
+// =============================================================================
+
+/// FCMGT Vd.4S, Vn.4S, Vm.4S (greater than)
+pub fn emit_fcmgt(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x6EA0E400, dst, src1, src2));
+}
+
+/// FCMGE Vd.4S, Vn.4S, Vm.4S (greater or equal)
+pub fn emit_fcmge(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x6E20E400, dst, src1, src2));
+}
+
+/// FCMEQ Vd.4S, Vn.4S, Vm.4S (equal)
+pub fn emit_fcmeq(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x4E20E400, dst, src1, src2));
+}
+
+// =============================================================================
+// Selection / Blending
+// =============================================================================
+
+/// BSL Vd.16B, Vn.16B, Vm.16B (bitwise select: Vd = (Vd & Vn) | (~Vd & Vm))
+pub fn emit_bsl(code: &mut Vec<u8>, mask: Reg, if_true: Reg, if_false: Reg) {
+    emit32(code, encode_3same(0x6E601C00, mask, if_true, if_false));
+}
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/// Load a floating-point constant into a vector register.
+///
+/// Strategy (in priority order):
+/// 1. Zero: MOVI Vd.4S, #0 (1 instruction)
+/// 2. FMOV-encodable: FMOV Vd.4S, #imm8 (1 instruction)
+/// 3. General: MOVZ W16 + MOVK W16 + DUP Vd.4S, W16 (3 instructions)
+///
+/// TODO: Use a constant pool with LDR for better performance on general case.
+pub fn emit_fmov_imm(code: &mut Vec<u8>, dst: Reg, val: f32, _scratch: [Reg; 4]) {
+    let bits = val.to_bits();
+
+    if bits == 0 {
+        // MOVI Vd.4S, #0 - single instruction for zero
+        emit32(code, 0x4F000400 | (dst.0 as u32));
+        return;
+    }
+
+    // Try FMOV Vd.4S, #imm8 for common float constants (1 instruction)
+    if let Some(imm8) = try_encode_fmov_imm8(val) {
+        let abc = ((imm8 as u32) >> 5) & 0x7;
+        let defgh = (imm8 as u32) & 0x1F;
+        // FMOV Vd.4S, #imm8: 0x4F00F400 | abc<<16 | defgh<<5 | Rd
+        emit32(code, 0x4F00_F400 | (abc << 16) | (defgh << 5) | (dst.0 as u32));
+        return;
+    }
+
+    // General case: load via GP register (W16)
+    // This is 3 instructions but works for any f32 value.
+    // Use W16 (IP0) as scratch - it's caller-saved and not used for arguments
+    let lo16 = (bits & 0xFFFF) as u32;
+    let hi16 = (bits >> 16) as u32;
+
+    // MOVZ W16, #lo16
+    emit32(code, 0x52800010 | (lo16 << 5));
+
+    // MOVK W16, #hi16, LSL #16
+    emit32(code, 0x72A00010 | (hi16 << 5));
+
+    // DUP Vd.4S, W16
+    emit32(code, 0x4E040C00 | (dst.0 as u32) | (16 << 5));
+}
+
+/// Try to encode an f32 as an ARM64 FMOV (vector, immediate) 8-bit value.
+///
+/// An f32 is FMOV-encodable when its bit pattern matches:
+///   `[a] [NOT(b)] [bbbbb] [cdefgh] [19 zeros]`
+/// producing imm8 = `abcdefgh`.
+///
+/// This covers values of the form `(-1)^a * 2^n * (1.0 + frac/64)`
+/// where n is in [-3, +4] and frac is in [0, 63].
+/// Common examples: 1.0, -1.0, 0.5, -0.5, 2.0, -2.0, 0.25, 1.5, etc.
+///
+/// Returns `None` for non-encodable values (including ±0.0, denormals, NaN, Inf).
+pub fn try_encode_fmov_imm8(val: f32) -> Option<u8> {
+    let bits = val.to_bits();
+
+    // Low 19 bits must be zero
+    if bits & 0x7_FFFF != 0 {
+        return None;
+    }
+
+    // ±0.0 is not FMOV-encodable (would require b=0 giving exp=0 which is denormal)
+    if bits & 0x7FFF_FFFF == 0 {
+        return None;
+    }
+
+    // bits[29:25] must all equal b, where NOT(b) = bit[30]
+    let not_b = (bits >> 30) & 1;
+    let b = not_b ^ 1;
+    let rep5 = if b == 1 { 0x1F } else { 0x00 };
+    let actual = (bits >> 25) & 0x1F;
+    if actual != rep5 {
+        return None;
+    }
+
+    // Extract imm8 = a:b:c:d:e:f:g:h
+    let a = (bits >> 31) & 1;
+    let c = (bits >> 24) & 1;
+    let d = (bits >> 23) & 1;
+    let e = (bits >> 22) & 1;
+    let f = (bits >> 21) & 1;
+    let g = (bits >> 20) & 1;
+    let h = (bits >> 19) & 1;
+    let imm8 = (a << 7) | (b << 6) | (c << 5) | (d << 4) | (e << 3) | (f << 2) | (g << 1) | h;
+    Some(imm8 as u8)
+}
+
+/// Duplicate scalar to all lanes: DUP Vd.4S, Vn.S[0]
+pub fn emit_dup_s0(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, 0x4E040400 | (dst.0 as u32) | ((src.0 as u32) << 5));
+}
+
+// =============================================================================
+// Constant Pool Support
+// =============================================================================
+
+/// Returns true if the given f32 needs a constant pool entry (not zero, not FMOV-encodable).
+pub fn needs_const_pool(val: f32) -> bool {
+    val.to_bits() != 0 && try_encode_fmov_imm8(val).is_none()
+}
+
+/// Emit `ADR X17, #0` as a placeholder. Returns the code offset for later patching.
+///
+/// ADR encodes a PC-relative offset into X17 (IP1, platform scratch register).
+/// The offset is patched after the constant pool position is known.
+pub fn emit_adr_x17_placeholder(code: &mut Vec<u8>) -> usize {
+    let pos = code.len();
+    // ADR X17, #0 — will be patched. Encoding: 0x10000011 (Rd=X17=17, imm=0)
+    emit32(code, 0x10000011);
+    pos
+}
+
+/// Patch a previously emitted `ADR X17` placeholder at `adr_pos` to point to `target_pos`.
+/// If `is_adrp` is true, assumes 8 bytes are reserved and patches `ADRP X17` + `ADD X17`.
+pub fn patch_adr_or_adrp(code: &mut [u8], adr_pos: usize, target_pos: usize, is_adrp: bool) {
+    if is_adrp {
+        assert!(
+            adr_pos + 8 <= code.len(),
+            "patch_adr_or_adrp: adr_pos {} + 8 exceeds code length {}",
+            adr_pos,
+            code.len()
+        );
+
+        let pc_page = (adr_pos as i64) & !0xFFF;
+        let target_page = (target_pos as i64) & !0xFFF;
+        let page_offset = (target_page - pc_page) >> 12;
+
+        assert!(
+            page_offset >= -(1 << 20) && page_offset < (1 << 20),
+            "ADRP page offset {} out of range (±4GB)",
+            page_offset
+        );
+
+        // 1. Patch ADRP
+        let imm_bits = (page_offset as u32) & 0x1F_FFFF;
+        let immlo = imm_bits & 0x3;
+        let immhi = (imm_bits >> 2) & 0x7FFFF;
+        let adrp_inst = 0x90000011 | (immlo << 29) | (immhi << 5);
+        code[adr_pos..adr_pos + 4].copy_from_slice(&adrp_inst.to_le_bytes());
+
+        // 2. Patch ADD (immediate)
+        // ADD X17, X17, #target_pos_within_page
+        let page_inner_offset = (target_pos as u32) & 0xFFF;
+        let add_inst = 0x91000231 | (page_inner_offset << 10);
+        code[adr_pos + 4..adr_pos + 8].copy_from_slice(&add_inst.to_le_bytes());
+    } else {
+        assert!(
+            adr_pos + 4 <= code.len(),
+            "patch_adr_or_adrp: adr_pos {} + 4 exceeds code length {}",
+            adr_pos,
+            code.len()
+        );
+        let offset = (target_pos as i64) - (adr_pos as i64);
+        assert!(
+            offset >= -(1 << 20) && offset < (1 << 20),
+            "ADR offset {} out of range (±1MB)",
+            offset
+        );
+        let offset_bits = (offset as u32) & 0x1F_FFFF;
+        let immlo = offset_bits & 0x3;
+        let immhi = (offset_bits >> 2) & 0x7FFFF;
+        let inst = 0x10000011 | (immlo << 29) | (immhi << 5);
+        code[adr_pos..adr_pos + 4].copy_from_slice(&inst.to_le_bytes());
+    }
+}
+
+/// Emit `LDR Qt, [X17, #imm]` — 128-bit load from constant pool base + offset.
+///
+/// Encoding: `0x3DC00000 | (imm12 << 10) | (Rn << 5) | Rt`
+/// where imm12 = byte_offset / 16, Rn = 17 (X17).
+pub fn emit_ldr_q_x17(code: &mut Vec<u8>, dst: Reg, byte_offset: u16) {
+    assert!(byte_offset % 16 == 0, "constant pool offset {} not 16-byte aligned", byte_offset);
+    let imm12 = (byte_offset / 16) as u32;
+    assert!(imm12 < 4096, "constant pool offset too large");
+    emit32(code, 0x3DC00000 | (imm12 << 10) | (17 << 5) | (dst.0 as u32));
+}
+
+/// Emit a constant pool entry: 16 bytes = f32 value splatted 4x (fills a 128-bit NEON register).
+pub fn emit_pool_entry(code: &mut Vec<u8>, val_bits: u32) {
+    let bytes = val_bits.to_le_bytes();
+    for _ in 0..4 {
+        code.extend_from_slice(&bytes);
+    }
+}
+
+// =============================================================================
+// Integer Vector Operations (for bit manipulation in transcendentals)
+// =============================================================================
+
+/// USHR Vd.4S, Vn.4S, #shift (unsigned shift right by immediate)
+fn emit_ushr(code: &mut Vec<u8>, dst: Reg, src: Reg, shift: u8) {
+    // Encoding: 0x6F200400 | ((32 - shift) << 16) as immh:immb
+    // For .4S: immh = 001x, so (32-shift) in bits [19:16]
+    let immhb = (64 - shift as u32) & 0x3F; // USHR uses (immh:immb) = (size*2 - shift)
+    let inst = 0x6F200400
+        | (dst.0 as u32)
+        | ((src.0 as u32) << 5)
+        | (immhb << 16);
+    emit32(code, inst);
+}
+
+/// SHL Vd.4S, Vn.4S, #shift (shift left by immediate)
+fn emit_shl(code: &mut Vec<u8>, dst: Reg, src: Reg, shift: u8) {
+    // For .4S: immh:immb = shift + 32
+    let immhb = (shift as u32) + 32;
+    let inst = 0x4F005400
+        | (dst.0 as u32)
+        | ((src.0 as u32) << 5)
+        | (immhb << 16);
+    emit32(code, inst);
+}
+
+/// SUB Vd.4S, Vn.4S, Vm.4S (integer subtract)
+fn emit_sub_i32(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x6EA08400, dst, src1, src2));
+}
+
+/// ADD Vd.4S, Vn.4S, Vm.4S (integer add)
+fn emit_add_i32(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x4EA08400, dst, src1, src2));
+}
+
+/// AND Vd.16B, Vn.16B, Vm.16B (bitwise AND)
+fn emit_and(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x4E201C00, dst, src1, src2));
+}
+
+/// ORR Vd.16B, Vn.16B, Vm.16B (bitwise OR)
+fn emit_orr(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x4EA01C00, dst, src1, src2));
+}
+
+/// FCVTZS Vd.4S, Vn.4S (float to signed int, round toward zero)
+fn emit_fcvtzs(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, encode_2misc(0x4EA1B800, dst, src));
+}
+
+/// SCVTF Vd.4S, Vn.4S (signed int to float)
+fn emit_scvtf(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, encode_2misc(0x4E21D800, dst, src));
+}
+
+/// FRINTA Vd.4S, Vn.4S (round to nearest, ties away from zero)
+fn emit_frinta(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit32(code, encode_2misc(0x6E218800, dst, src));
+}
+
+/// MOV Vd.16B, Vn.16B (register copy via ORR)
+fn emit_mov(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    if dst.0 != src.0 {
+        emit_orr(code, dst, src, src);
+    }
+}
+
+// =============================================================================
+// Constant Loading Helpers
+// =============================================================================
+
+/// Load a 32-bit constant (as raw bits) into all 4 lanes of a vector register.
+/// Uses W16 (IP0) as a GP scratch register.
+fn emit_u32_const(code: &mut Vec<u8>, dst: Reg, bits: u32) {
+    if bits == 0 {
+        // MOVI Vd.4S, #0
+        emit32(code, 0x4F000400 | (dst.0 as u32));
+        return;
+    }
+    let lo16 = (bits & 0xFFFF) as u32;
+    let hi16 = (bits >> 16) as u32;
+    // MOVZ W16, #lo16
+    emit32(code, 0x52800010 | (lo16 << 5));
+    // MOVK W16, #hi16, LSL #16
+    emit32(code, 0x72A00010 | (hi16 << 5));
+    // DUP Vd.4S, W16
+    emit32(code, 0x4E040C00 | (dst.0 as u32) | (16 << 5));
+}
+
+/// Load an f32 constant into all 4 lanes of a vector register.
+fn emit_f32_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
+    emit_u32_const(code, dst, val.to_bits());
+}
+
+// =============================================================================
+// Transcendental Builtins — inline polynomial sequences
+// =============================================================================
+//
+// Each builtin translates a pixelflow-core NEON implementation into direct
+// machine code emission. Same coefficients, same algorithms.
+//
+// Register contract:
+//   dst  — output register (also used as Horner accumulator)
+//   src  — input register (read-only, never clobbered)
+//   s0-s2 — scratch registers from scratch[0..2] (clobbered)
+//   s3    — scratch[3], used by composition builtins (cos, tan, pow)
+
+/// log2(x) — base-2 logarithm via bit manipulation + polynomial.
+///
+/// Translated from pixelflow-core arm.rs F32x4::log2().
+/// Uses exponent extraction and 5-coefficient polynomial on [√2/2, √2].
+pub fn emit_log2_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    let s0 = scratch[0]; // n (exponent as float), then Horner scratch
+    let s1 = scratch[1]; // f (normalized mantissa), alive through Horner
+    let s2 = scratch[2]; // general scratch
+
+    // Phase 1: Extract exponent as float
+    // exp_bits = src_as_u32 >> 23
+    emit_ushr(code, s0, src, 23);
+    // bias = 127 (as integer)
+    emit_u32_const(code, s2, 127);
+    // n_i32 = exp_bits - 127 (integer subtraction)
+    emit_sub_i32(code, s0, s0, s2);
+    // n = float(n_i32) — convert to float, result in dst (will hold n)
+    emit_scvtf(code, dst, s0);
+
+    // Phase 2: Extract mantissa in [1, 2)
+    // mantissa_mask = 0x007FFFFF
+    emit_u32_const(code, s2, 0x007FFFFF);
+    // s1 = src & mantissa_mask (extract mantissa bits)
+    emit_and(code, s1, src, s2);
+    // one_bits = 0x3F800000 (1.0 as bits)
+    emit_u32_const(code, s2, 0x3F800000);
+    // s1 = mantissa_bits | 1.0_bits → f in [1, 2)
+    emit_orr(code, s1, s1, s2);
+
+    // Phase 3: Reduce to [√2/2, √2] for better accuracy
+    // mask = (f >= √2)
+    emit_f32_const(code, s2, 1.4142135624);
+    emit_fcmge(code, s2, s1, s2); // s2 = mask (all-ones where f >= √2)
+    // adjust = 1.0 & mask
+    emit_f32_const(code, s0, 1.0);
+    emit_and(code, s0, s0, s2); // s0 = adjust (1.0 where f >= √2, 0 elsewhere)
+    // n += adjust
+    emit_fadd(code, dst, dst, s0);
+    // If f >= √2: multiply by 0.5 (divide by 2).
+    // Use BSL: s1 = mask ? f*0.5 : f
+    // Compute f*0.5 into s0, then BSL s2 (mask), s0 (if_true), s1 (if_false)
+    emit_f32_const(code, s0, 0.5);
+    emit_fmul(code, s0, s1, s0); // s0 = f * 0.5
+    emit_bsl(code, s2, s0, s1);  // s2 = mask ? f*0.5 : f
+    emit_mov(code, s1, s2);      // s1 = adjusted f
+
+    // Phase 4: Polynomial log2(f) on [√2/2, √2]
+    // Subtract 1 so argument is centered at 0 for the polynomial
+    // Actually, the arm.rs impl doesn't subtract 1 — it uses a polynomial
+    // fitted to the [√2/2, √2] interval directly. The Horner chain is:
+    //   poly = ((((c4*f + c3)*f + c2)*f + c1)*f + c0)
+    // Result = n + poly (not n + poly*f)
+    //
+    // Horner: alternate dst and s2 as accumulator, s1 = f throughout.
+
+    // p = c4*f + c3
+    emit_f32_const(code, s2, -0.3200435159_f32);  // s2 = c4
+    emit_f32_const(code, s0, 1.7974969154_f32);   // s0 = c3
+    emit_fmla(code, s0, s2, s1);                   // s0 = c3 + c4*f
+
+    // p = p*f + c2
+    emit_f32_const(code, s2, -4.1988046176_f32);  // s2 = c2
+    emit_fmla(code, s2, s0, s1);                   // s2 = c2 + p*f
+
+    // p = p*f + c1
+    emit_f32_const(code, s0, 5.7270231695_f32);   // s0 = c1
+    emit_fmla(code, s0, s2, s1);                   // s0 = c1 + p*f
+
+    // p = p*f + c0
+    emit_f32_const(code, s2, -3.0056146714_f32);  // s2 = c0
+    emit_fmla(code, s2, s0, s1);                   // s2 = c0 + p*f
+
+    // result = n + poly
+    emit_fadd(code, dst, dst, s2);                  // dst = n + poly
+}
+
+/// exp2(x) — base-2 exponential via floor + polynomial + bit scaling.
+///
+/// Translated from pixelflow-core arm.rs F32x4::exp2().
+/// Uses 5-coefficient minimax polynomial on [0,1) fractional part,
+/// then scales by 2^n via integer exponent bit manipulation.
+pub fn emit_exp2_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    let s0 = scratch[0]; // n = floor(x)
+    let s1 = scratch[1]; // f = frac(x), then integer scratch
+    let s2 = scratch[2]; // Horner alternating accumulator
+
+    // Phase 1: Split into integer and fractional parts
+    // n = floor(x)
+    emit_frintm(code, s0, src);
+    // f = x - n (fractional part in [0, 1))
+    emit_fsub(code, s1, src, s0);
+
+    // Phase 2: Horner polynomial for 2^f
+    // p = ((((c4*f + c3)*f + c2)*f + c1)*f + c0)
+    // Alternate between dst and s2 as accumulator, s1 = f.
+
+    // p = c4*f + c3
+    emit_f32_const(code, s2, 0.0135557_f32);  // s2 = c4
+    emit_f32_const(code, dst, 0.0520323_f32); // dst = c3
+    emit_fmla(code, dst, s2, s1);              // dst = c3 + c4*f
+
+    // p = p*f + c2
+    emit_f32_const(code, s2, 0.2413793_f32);  // s2 = c2
+    emit_fmla(code, s2, dst, s1);              // s2 = c2 + p*f
+
+    // p = p*f + c1
+    emit_f32_const(code, dst, 0.6931472_f32); // dst = c1
+    emit_fmla(code, dst, s2, s1);              // dst = c1 + p*f
+
+    // p = p*f + c0
+    emit_f32_const(code, s2, 1.0_f32);        // s2 = c0
+    emit_fmla(code, s2, dst, s1);              // s2 = c0 + p*f
+    // Polynomial result now in s2.
+
+    // Phase 3: Compute 2^n via bit manipulation
+    // 2^n = reinterpret_f32((int(n) + 127) << 23)
+    emit_fcvtzs(code, s1, s0);                 // s1 = int(n) (s1 was f, no longer needed)
+    emit_u32_const(code, dst, 127);            // dst = 127 (as integer)
+    emit_add_i32(code, s1, s1, dst);           // s1 = int(n) + 127
+    emit_shl(code, s1, s1, 23);               // s1 = (int(n) + 127) << 23 = 2^n as IEEE bits
+
+    // Phase 4: result = poly * 2^n
+    emit_fmul(code, dst, s2, s1);              // dst = poly * scale = 2^x
+}
+
+/// sin(x) — sine via Chebyshev polynomial.
+///
+/// Translated from pixelflow-ir compounds.rs Compounds::sin().
+/// Range reduction to [-π, π], then 4-coefficient Horner in t².
+///
+/// Uses scratch[0..2] only. scratch[3] is NOT touched (available for cos/tan).
+fn emit_sin_body(code: &mut Vec<u8>, dst: Reg, src: Reg, s0: Reg, s1: Reg, s2: Reg) {
+    // Phase 1: Range reduction
+    // k = floor(x * (1/TAU) + 0.5)
+    emit_f32_const(code, s0, 1.0 / core::f32::consts::TAU); // s0 = 1/TAU
+    emit_fmul(code, s0, src, s0);              // s0 = x * (1/TAU)
+    emit_f32_const(code, s2, 0.5);
+    emit_fadd(code, s0, s0, s2);               // s0 = x*(1/TAU) + 0.5
+    emit_frintm(code, s0, s0);                 // s0 = k = floor(...)
+
+    // x_reduced = x - k * TAU
+    emit_f32_const(code, s2, core::f32::consts::TAU);
+    emit_fmul(code, s2, s0, s2);               // s2 = k * TAU
+    emit_fsub(code, s0, src, s2);              // s0 = x_reduced = x - k*TAU
+
+    // Phase 2: Normalize to [-1, 1]
+    // t = x_reduced / PI
+    emit_f32_const(code, s2, 1.0 / core::f32::consts::PI);
+    emit_fmul(code, s0, s0, s2);               // s0 = t
+
+    // Phase 3: Polynomial sin(π*t) ≈ t * (c1 + t²*(c3 + t²*(c5 + t²*c7)))
+    // t² for Horner variable
+    emit_fmul(code, s1, s0, s0);               // s1 = t² (alive through Horner)
+
+    // Horner: p = c7*t² + c5, then p*t² + c3, then p*t² + c1
+    emit_f32_const(code, s2, -0.599264528932149_f32);  // s2 = c7
+    emit_f32_const(code, dst, 2.55016403987734_f32);   // dst = c5
+    emit_fmla(code, dst, s2, s1);                       // dst = c5 + c7*t²
+
+    emit_f32_const(code, s2, -5.16771278004997_f32);   // s2 = c3
+    emit_fmla(code, s2, dst, s1);                       // s2 = c3 + p*t²
+
+    emit_f32_const(code, dst, 3.14159265358979_f32);   // dst = c1 (= π)
+    emit_fmla(code, dst, s2, s1);                       // dst = c1 + p*t²
+
+    // Phase 4: result = t * p
+    emit_fmul(code, dst, s0, dst);              // dst = t * p = sin(x)
+}
+
+/// sin(x) — public entry point.
+pub fn emit_sin_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    emit_sin_body(code, dst, src, scratch[0], scratch[1], scratch[2]);
+}
+
+/// cos(x) = sin(x + π/2).
+///
+/// Computes x + π/2 into scratch[3], then calls sin_body using scratch[0..2].
+pub fn emit_cos_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    let s3 = scratch[3];
+    emit_f32_const(code, s3, core::f32::consts::FRAC_PI_2);
+    emit_fadd(code, s3, src, s3);               // s3 = x + π/2
+    emit_sin_body(code, dst, s3, scratch[0], scratch[1], scratch[2]);
+}
+
+/// tan(x) = sin(x) / cos(x).
+///
+/// Computes sin(x) into scratch[3], then cos(x) into dst, then divides.
+pub fn emit_tan_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    let s3 = scratch[3];
+    // sin(x) → s3
+    emit_sin_body(code, s3, src, scratch[0], scratch[1], scratch[2]);
+    // cos(x) → dst  (src is still intact — sin_body doesn't clobber it)
+    emit_cos_builtin(code, dst, src, scratch);
+    // dst = sin(x) / cos(x)
+    emit_fdiv(code, dst, s3, dst);
+}
+
+/// exp(x) = exp2(x * log2(e)).
+pub fn emit_exp_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    let s0 = scratch[0];
+    // s0 = x * log2(e)
+    emit_f32_const(code, s0, 1.4426950408889634_f32); // LOG2_E
+    emit_fmul(code, s0, src, s0);
+    // exp2(s0) → dst
+    emit_exp2_builtin(code, dst, s0, scratch);
+}
+
+/// ln(x) = log2(x) * ln(2).
+pub fn emit_ln_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    // log2(x) → dst
+    emit_log2_builtin(code, dst, src, scratch);
+    // dst *= ln(2)
+    let s0 = scratch[0];
+    emit_f32_const(code, s0, 0.6931471805599453_f32); // LN_2
+    emit_fmul(code, dst, dst, s0);
+}
+
+/// log10(x) = log2(x) * log10(2).
+pub fn emit_log10_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    emit_log2_builtin(code, dst, src, scratch);
+    let s0 = scratch[0];
+    emit_f32_const(code, s0, 0.30102999566398120_f32); // LOG10_2
+    emit_fmul(code, dst, dst, s0);
+}
+
+/// round(x) — round to nearest, ties away from zero. ARM64 FRINTA instruction.
+pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    emit_frinta(code, dst, src);
+}
+
+/// fract(x) = x - floor(x).
+pub fn emit_fract_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    let s0 = scratch[0];
+    emit_frintm(code, s0, src); // s0 = floor(x)
+    emit_fsub(code, dst, src, s0); // dst = x - floor(x)
+}
+
+// =============================================================================
+// Binary Transcendental Builtins
+// =============================================================================
+
+/// pow(x, y) = exp2(y * log2(x)).
+pub fn emit_pow_builtin(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg, scratch: [Reg; 4]) {
+    let s3 = scratch[3];
+    // log2(x) → s3 (uses s0, s1, s2 as scratch, reads src1)
+    emit_log2_builtin(code, s3, src1, scratch);
+    // s3 = y * log2(x)
+    emit_fmul(code, s3, src2, s3);
+    // exp2(s3) → dst (uses s0, s1, s2 as scratch)
+    emit_exp2_builtin(code, dst, s3, scratch);
+}
+
+/// hypot(x, y) = sqrt(x*x + y*y).
+pub fn emit_hypot_builtin(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    // dst = x * x
+    emit_fmul(code, dst, src1, src1);
+    // dst = dst + y * y  (FMLA: dst += y * y)
+    emit_fmla(code, dst, src2, src2);
+    // dst = sqrt(dst)
+    emit_fsqrt(code, dst, dst);
+}
+
+/// atan2(y, x) — four-quadrant arctangent via polynomial approximation.
+///
+/// Translated from pixelflow-core arm.rs F32x4::atan2().
+/// Uses 4-term Taylor-like polynomial for |r| <= 1, reciprocal identity for |r| > 1,
+/// and quadrant correction for negative x.
+///
+/// IMPORTANT: src1 and src2 may alias scratch registers (when called from
+/// atan/asin/acos composition). ALL reads of src1/src2 happen in Phase 1
+/// before any scratch register is written, so aliasing is safe.
+///
+/// Register allocation uses a single stack spill for sign_y to free a register
+/// for the Horner chain + large-ratio correction. The spill frame is
+/// allocated and deallocated within this function.
+///
+/// Register lifecycle:
+/// ```text
+///   Phase 1: Extract from src1/src2. After → src1,src2 DEAD.
+///     s1 = mask_large    (LIVE → end of Phase 3)
+///     s2 = mask_neg_x    (LIVE → end of Phase 5)
+///     sign_y → spilled to [SP, #0] (reloaded in Phase 4)
+///     s3 = r_abs          (LIVE → consumed by Phase 2 Horner)
+///     s0, dst = free for Horner
+///
+///   Phase 2: Horner polynomial using dst, s0, s3.
+///     s1 = mask_large, s2 = mask_neg_x preserved.
+///
+///   Phase 3: Large-ratio correction + BSL using s1 (mask).
+///     s2 preserved.
+///
+///   Phase 4: Reload sign_y from stack. Apply sign.
+///
+///   Phase 5: Quadrant correction. Deallocate stack frame.
+/// ```
+pub fn emit_atan2_builtin(
+    code: &mut Vec<u8>,
+    dst: Reg,
+    src1: Reg,   // y
+    src2: Reg,   // x
+    scratch: [Reg; 4],
+) {
+    let s0 = scratch[0];
+    let s1 = scratch[1];
+    let s2 = scratch[2];
+    let s3 = scratch[3];
+
+    // Allocate 16-byte stack frame for one spill slot (sign_y).
+    emit_sub_sp(code, 16);
+
+    // =========================================================================
+    // Phase 1: Extract mask_neg_x, r, sign_r, mask_large from src1/src2.
+    // All reads of src1/src2 happen here. After this phase, they are DEAD.
+    //
+    // We spill sign_r (sign of ratio y/x) instead of sign_y. In Phase 5,
+    // sign_y is derived as: sign_y = mask_neg_x ? -sign_r : sign_r.
+    // =========================================================================
+
+    // mask_neg_x: "x < 0" via reversed fcmgt → s2 (LIVE until Phase 5)
+    emit_f32_const(code, s0, 0.0_f32);           // s0 = 0.0
+    emit_fcmgt(code, s2, s0, src2);              // s2 = mask(0 > x) = mask(x < 0)
+
+    // r = y / x → dst
+    emit_fdiv(code, dst, src1, src2);            // dst = r = y / x
+
+    // ---- src1, src2 DEAD ----
+
+    // sign_r: +1.0 where r >= 0, -1.0 where r < 0.
+    emit_f32_const(code, s0, 0.0_f32);           // s0 = 0.0
+    emit_fcmge(code, s0, dst, s0);               // s0 = mask(r >= 0)
+    emit_f32_const(code, s3, 1.0_f32);           // s3 = 1.0
+    emit_fneg(code, s1, s3);                     // s1 = -1.0
+    emit_bsl(code, s0, s3, s1);                  // s0 = r>=0 ? 1.0 : -1.0
+    emit_str_sp(code, s0, 0);                    // [SP, #0] = sign_r (spilled)
+    // s0, s1, s3 now FREE
+
+    // r_abs = |r| → s3
+    emit_fabs(code, s3, dst);                    // s3 = r_abs = |r|
+
+    // mask_large = r_abs > 1.0 → s1 (LIVE until Phase 3)
+    emit_f32_const(code, s0, 1.0_f32);           // s0 = 1.0
+    emit_fcmgt(code, s1, s3, s0);                // s1 = mask(r_abs > 1.0)
+
+    // State: s0 = free, s1 = mask_large, s2 = mask_neg_x, s3 = r_abs, dst = free.
+    // sign_r spilled to [SP, #0].
+
+    // =========================================================================
+    // Phase 2: Reduce t into [0, 1] and evaluate polynomial.
+    //   If r_abs <= 1: t = r_abs, atan(r_abs) ≈ poly(t) * t
+    //   If r_abs > 1:  t = 1/r_abs, atan(r_abs) = π/2 - poly(t) * t
+    //
+    // Using BSL to select t = mask_large ? (1/r_abs) : r_abs.
+    // This ensures the polynomial always sees t in [0, 1].
+    //
+    // Free: dst, s0, s3 (3 regs). s1 = mask_large, s2 = mask_neg_x preserved.
+    // =========================================================================
+
+    // Compute 1/r_abs → s0
+    emit_f32_const(code, s0, 1.0_f32);           // s0 = 1.0
+    emit_fdiv(code, s0, s0, s3);                 // s0 = 1.0 / r_abs
+
+    // Select t: mask_large ? (1/r_abs) : r_abs
+    // We need mask in a register we can clobber. Copy mask_large into dst.
+    emit_mov(code, dst, s1);                     // dst = copy of mask_large
+    emit_bsl(code, dst, s0, s3);                 // dst = t = mask ? (1/r_abs) : r_abs
+    // s3 = r_abs and s0 = 1/r_abs are now free.
+
+    // t^2 → s0
+    emit_fmul(code, s0, dst, dst);               // s0 = t^2
+
+    // Save t in s3 for the final multiply (poly * t)
+    emit_mov(code, s3, dst);                     // s3 = t (saved)
+
+    // Horner chain: poly = ((c7*t^2 + c5)*t^2 + c3)*t^2 + c1
+    // Accumulator alternates between dst and s3. s0 = t^2.
+    // But s3 = t which we need at the end. So use dst as accumulator,
+    // loading constants into s3 temporarily (then s3 = t gets clobbered).
+    // We'll save t in a different way: t = sqrt(t^2) at the end.
+
+    // Horner step 1: dst = c5 + c7 * t^2
+    emit_f32_const(code, dst, 0.2_f32);          // dst = c5
+    emit_f32_const(code, s3, -0.142857143_f32);  // s3 = c7 (clobbers t)
+    emit_fmla(code, dst, s3, s0);                // dst = c5 + c7*t^2
+
+    // Horner step 2: s3 = c3 + dst * t^2
+    emit_f32_const(code, s3, -0.333333333_f32);  // s3 = c3
+    emit_fmla(code, s3, dst, s0);                // s3 = c3 + poly*t^2
+
+    // Horner step 3: dst = c1 + s3 * t^2
+    emit_f32_const(code, dst, 0.999999999_f32);  // dst = c1
+    emit_fmla(code, dst, s3, s0);                // dst = poly
+
+    // Recover t = sqrt(t^2) → s3
+    emit_fsqrt(code, s3, s0);                    // s3 = t (recovered from t^2)
+
+    // atan_small = poly * t → dst (always in [0, ~π/4] since t in [0, 1])
+    emit_fmul(code, dst, dst, s3);               // dst = atan_small
+
+    // State: dst = atan_small, s0 = t^2 (free), s1 = mask_large, s2 = mask_neg_x, s3 = free.
+
+    // =========================================================================
+    // Phase 3: Large-ratio correction: for |r| > 1, atan(r) = π/2 - atan(1/r)
+    //   atan_val = mask_large ? (π/2 - atan_small) : atan_small
+    //
+    // Free: s0, s3. dst = atan_small. s1 = mask_large.
+    // =========================================================================
+
+    // atan_large = π/2 - atan_small → s3
+    emit_f32_const(code, s3, core::f32::consts::FRAC_PI_2);  // s3 = π/2
+    emit_fsub(code, s3, s3, dst);                // s3 = π/2 - atan_small
+
+    // BSL: s1 = mask_large ? s3 (atan_large) : dst (atan_small)
+    emit_bsl(code, s1, s3, dst);                 // s1 = atan_val (unsigned)
+    emit_mov(code, dst, s1);                     // dst = atan_val
+
+    // State: dst = atan_val (unsigned, positive). s0-s3 free. s2 = mask_neg_x.
+
+    // =========================================================================
+    // Phase 4: Apply sign of r.
+    // Reload sign_r from stack, multiply to get signed atan(r).
+    // =========================================================================
+
+    emit_ldr_sp(code, s0, 0);                    // s0 = sign_r (from stack)
+    emit_fmul(code, dst, dst, s0);               // dst = atan_signed = sign(r) * atan(|r|)
+
+    // =========================================================================
+    // Phase 5: Quadrant correction for negative x.
+    //   When x < 0: atan2(y, x) = atan(y/x) + π*sign(y)
+    //   Derive sign_y from sign_r and mask_neg_x:
+    //     sign_y = mask_neg_x ? -sign_r : sign_r
+    //   (because sign(y) = sign(r) * sign(x), and sign(x) flips when x < 0)
+    //
+    // State: dst = atan_signed. s0 = sign_r. s2 = mask_neg_x. s1, s3 = free.
+    // =========================================================================
+
+    // Compute sign_y = mask_neg_x ? -sign_r : sign_r
+    emit_fneg(code, s3, s0);                           // s3 = -sign_r
+    emit_mov(code, s1, s2);                            // s1 = copy of mask_neg_x (BSL is destructive)
+    emit_bsl(code, s1, s3, s0);                        // s1 = sign_y
+
+    // correction = π * sign_y → s3
+    emit_f32_const(code, s3, core::f32::consts::PI);   // s3 = π
+    emit_fmul(code, s3, s3, s1);                       // s3 = π * sign_y
+
+    // corrected = atan_signed + π*sign_y → s0
+    emit_fadd(code, s0, dst, s3);                      // s0 = atan_signed + π*sign_y
+
+    // BSL: s2 = mask_neg_x ? s0 (corrected) : dst (atan_signed)
+    emit_bsl(code, s2, s0, dst);                       // s2 = result
+    emit_mov(code, dst, s2);                           // dst = final result
+
+    // Deallocate stack frame.
+    emit_add_sp(code, 16);
+}
+
+/// atan(x) = atan2(x, 1.0).
+///
+/// Loads 1.0 into scratch[3], then delegates to atan2.
+pub fn emit_atan_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    let s3 = scratch[3];
+    emit_f32_const(code, s3, 1.0_f32);       // s3 = 1.0
+    emit_atan2_builtin(code, dst, src, s3, scratch);
+}
+
+/// asin(x) = atan2(x, sqrt(1 - x*x)).
+///
+/// Uses scratch[3] for the denominator, then delegates to atan2.
+pub fn emit_asin_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    let s3 = scratch[3];
+    // s3 = 1.0 - src*src
+    emit_f32_const(code, s3, 1.0_f32);
+    emit_fmul(code, dst, src, src);           // dst = src*src (temporary)
+    emit_fsub(code, s3, s3, dst);             // s3 = 1 - src*src
+    emit_fsqrt(code, s3, s3);                 // s3 = sqrt(1 - src*src)
+    emit_atan2_builtin(code, dst, src, s3, scratch);
+}
+
+/// acos(x) = atan2(sqrt(1 - x*x), x).
+///
+/// Uses scratch[3] for the numerator, then delegates to atan2 with swapped args.
+pub fn emit_acos_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    let s3 = scratch[3];
+    // s3 = 1.0 - src*src
+    emit_f32_const(code, s3, 1.0_f32);
+    emit_fmul(code, dst, src, src);           // dst = src*src (temporary)
+    emit_fsub(code, s3, s3, dst);             // s3 = 1 - src*src
+    emit_fsqrt(code, s3, s3);                 // s3 = sqrt(1 - src*src)
+    // atan2(sqrt(1-x^2), x) — note: y=s3, x=src
+    emit_atan2_builtin(code, dst, s3, src, scratch);
+}
+
+// =============================================================================
+// Compound Operations (emit full instruction sequences)
+// =============================================================================
+
+/// Emit unary operation - dispatches to appropriate instruction(s)
+pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    match op {
+        OpKind::Neg => emit_fneg(code, dst, src),
+        OpKind::Abs => emit_fabs(code, dst, src),
+        OpKind::Sqrt => emit_fsqrt(code, dst, src),
+        OpKind::Rsqrt => emit_frsqrt(code, dst, src, scratch[0]),
+        OpKind::Recip => emit_frecip(code, dst, src, scratch[0]),
+        OpKind::Floor => emit_frintm(code, dst, src),
+        OpKind::Ceil => emit_frintp(code, dst, src),
+
+        // Transcendental builtins — inline polynomial sequences
+        OpKind::Sin => emit_sin_builtin(code, dst, src, scratch),
+        OpKind::Cos => emit_cos_builtin(code, dst, src, scratch),
+        OpKind::Tan => emit_tan_builtin(code, dst, src, scratch),
+        OpKind::Exp => emit_exp_builtin(code, dst, src, scratch),
+        OpKind::Exp2 => emit_exp2_builtin(code, dst, src, scratch),
+        OpKind::Ln => emit_ln_builtin(code, dst, src, scratch),
+        OpKind::Log2 => emit_log2_builtin(code, dst, src, scratch),
+        OpKind::Log10 => emit_log10_builtin(code, dst, src, scratch),
+        OpKind::Round => emit_round_builtin(code, dst, src),
+        OpKind::Fract => emit_fract_builtin(code, dst, src, scratch),
+
+        // Inverse trig builtins — polynomial atan2 core with composition
+        OpKind::Atan => emit_atan_builtin(code, dst, src, scratch),
+        OpKind::Asin => emit_asin_builtin(code, dst, src, scratch),
+        OpKind::Acos => emit_acos_builtin(code, dst, src, scratch),
+
+        _ => panic!("unary emit not implemented for {:?}", op),
+    }
+}
+
+/// Emit binary operation
+pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Reg) {
+    match op {
+        OpKind::Add => emit_fadd(code, dst, src1, src2),
+        OpKind::Sub => emit_fsub(code, dst, src1, src2),
+        OpKind::Mul => emit_fmul(code, dst, src1, src2),
+        OpKind::Div => emit_fdiv(code, dst, src1, src2),
+        OpKind::Min => emit_fmin(code, dst, src1, src2),
+        OpKind::Max => emit_fmax(code, dst, src1, src2),
+
+        // Comparisons (result is mask in dst)
+        OpKind::Gt => emit_fcmgt(code, dst, src1, src2),
+        OpKind::Ge => emit_fcmge(code, dst, src1, src2),
+        OpKind::Lt => emit_fcmgt(code, dst, src2, src1), // swap args
+        OpKind::Le => emit_fcmge(code, dst, src2, src1),
+        OpKind::Eq => emit_fcmeq(code, dst, src1, src2),
+        OpKind::Ne => {
+            // Ne = not Eq: FCMEQ then bitwise NOT
+            emit_fcmeq(code, dst, src1, src2);
+            emit_not(code, dst, dst);
+        }
+
+        _ => panic!("binary emit not implemented for {:?}", op),
+    }
+}
+
+/// Emit binary transcendental operation (needs scratch registers).
+pub fn emit_binary_transcendental(
+    code: &mut Vec<u8>,
+    op: OpKind,
+    dst: Reg,
+    src1: Reg,
+    src2: Reg,
+    scratch: [Reg; 4],
+) {
+    match op {
+        OpKind::Pow => emit_pow_builtin(code, dst, src1, src2, scratch),
+        OpKind::Hypot => emit_hypot_builtin(code, dst, src1, src2),
+        OpKind::Atan2 => emit_atan2_builtin(code, dst, src1, src2, scratch),
+        _ => panic!("binary transcendental emit not implemented for {:?}", op),
+    }
+}
+
+/// Emit ternary operation
+pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c: Reg) {
+    match op {
+        OpKind::MulAdd => {
+            // dst = a * b + c
+            // FMLA does: dst = dst + src1 * src2
+            //
+            // Problem: if dst == a and dst != c, copying c to dst would clobber a
+            // before we can use it. In that case, use FMUL + FADD instead.
+            if (dst.0 == a.0 || dst.0 == b.0) && dst.0 != c.0 {
+                // dst overlaps with a or b, can't use FMLA safely
+                // Use FMUL + FADD: dst = a * b, then dst = dst + c
+                emit_fmul(code, dst, a, b);
+                emit_fadd(code, dst, dst, c);
+            } else {
+                // Safe to use FMLA
+                if dst.0 != c.0 {
+                    // MOV dst, c first
+                    emit32(code, 0x4EA01C00 | (dst.0 as u32) | ((c.0 as u32) << 5) | ((c.0 as u32) << 16));
+                }
+                emit_fmla(code, dst, a, b);
+            }
+        }
+
+        OpKind::Select => {
+            // dst = a ? b : c (a is mask)
+            // Need to move mask to dst first for BSL
+            if dst.0 != a.0 {
+                emit32(code, 0x4EA01C00 | (dst.0 as u32) | ((a.0 as u32) << 5) | ((a.0 as u32) << 16));
+            }
+            emit_bsl(code, dst, b, c);
+        }
+
+        OpKind::Clamp => {
+            // dst = clamp(a, b, c) = max(min(a, c), b)
+            emit_fmin(code, dst, a, c);  // dst = min(a, hi)
+            emit_fmax(code, dst, dst, b); // dst = max(dst, lo)
+        }
+
+        _ => panic!("ternary emit not implemented for {:?}", op),
+    }
+}
+
+
+// =============================================================================
+// Select Short-Circuit Helpers
+// =============================================================================
+
+/// UMINV Sd, Vn.4S — horizontal unsigned minimum across all 4 lanes.
+/// Result is in lane 0 of dst (scalar Sd).
+/// If mask is all-ones (0xFFFFFFFF per lane), result = 0xFFFFFFFF.
+pub fn emit_uminv(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    // UMINV Vd.4S: 0x6EB1A800 | Rd | (Rn << 5)
+    // Encoding: 0 1 1 0 1 1 1 0 1 0 1 1 0 0 0 1  1 0 1 0 1 0 0 0  Rn:5 Rd:5
+    emit32(code, 0x6EB1A800 | (dst.0 as u32) | ((src.0 as u32) << 5));
+}
+
+/// UMAXV Sd, Vn.4S — horizontal unsigned maximum across all 4 lanes.
+/// If mask is all-zeros, result = 0x00000000.
+pub fn emit_umaxv(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+    // UMAXV Vd.4S: 0x6E30A800 | Rd | (Rn << 5)
+    emit32(code, 0x6E30A800 | (dst.0 as u32) | ((src.0 as u32) << 5));
+}
+
+/// FMOV Wd, Sn — move lane 0 of SIMD register to GP register W16.
+/// We always use W16 as the GP scratch for Select branching.
+pub fn emit_fmov_to_gp(code: &mut Vec<u8>, src: Reg) {
+    // FMOV W16, Sn: 0x1E260000 | (Rn << 5) | Rd
+    // where Rd=16 (W16), Rn is the SIMD register number
+    emit32(code, 0x1E260000 | ((src.0 as u32) << 5) | 16);
+}
+
+/// CBZ W16, #offset — branch if W16 == 0 (mask all-false).
+/// `offset` is in bytes, must be aligned to 4, range ±1MB.
+/// Returns the index in `code` where the offset is encoded (for patching).
+pub fn emit_cbz_w16(code: &mut Vec<u8>) -> usize {
+    let patch_pos = code.len();
+    // CBZ W16, #0 (placeholder offset)
+    // Encoding: 0 0110100 imm19 Rt
+    // Rt = 16 (W16)
+    emit32(code, 0x34000010); // imm19 = 0, will be patched
+    patch_pos
+}
+
+/// CBNZ W16, #offset — branch if W16 != 0 (mask has some true lanes).
+/// Returns the index in `code` where the offset is encoded (for patching).
+pub fn emit_cbnz_w16(code: &mut Vec<u8>) -> usize {
+    let patch_pos = code.len();
+    // CBNZ W16, #0 (placeholder offset)
+    emit32(code, 0x35000010); // imm19 = 0, will be patched
+    patch_pos
+}
+
+/// B #offset — unconditional branch (for skipping past else-arm).
+/// Returns the index in `code` where the offset is encoded (for patching).
+pub fn emit_b(code: &mut Vec<u8>) -> usize {
+    let patch_pos = code.len();
+    // B #0 (placeholder)
+    emit32(code, 0x14000000); // imm26 = 0, will be patched
+    patch_pos
+}
+
+/// Patch a CBZ/CBNZ instruction at `patch_pos` to branch to `target_pos`.
+/// Both positions are byte offsets into the code buffer.
+pub fn patch_cbz_cbnz(code: &mut [u8], patch_pos: usize, target_pos: usize) {
+    let offset = (target_pos as i64 - patch_pos as i64) / 4;
+    assert!(
+        offset >= -(1 << 18) && offset < (1 << 18),
+        "CBZ/CBNZ branch offset {} out of range (±1MB)", offset
+    );
+    let imm19 = (offset as u32) & 0x7FFFF;
+    let existing = u32::from_le_bytes([
+        code[patch_pos], code[patch_pos + 1],
+        code[patch_pos + 2], code[patch_pos + 3],
+    ]);
+    let patched = (existing & 0xFF00001F) | (imm19 << 5);
+    code[patch_pos..patch_pos + 4].copy_from_slice(&patched.to_le_bytes());
+}
+
+/// Patch an unconditional B instruction at `patch_pos` to branch to `target_pos`.
+pub fn patch_b(code: &mut [u8], patch_pos: usize, target_pos: usize) {
+    let offset = (target_pos as i64 - patch_pos as i64) / 4;
+    assert!(
+        offset >= -(1 << 25) && offset < (1 << 25),
+        "B branch offset {} out of range (±128MB)", offset
+    );
+    let imm26 = (offset as u32) & 0x3FFFFFF;
+    let existing = u32::from_le_bytes([
+        code[patch_pos], code[patch_pos + 1],
+        code[patch_pos + 2], code[patch_pos + 3],
+    ]);
+    let patched = (existing & 0xFC000000) | imm26;
+    code[patch_pos..patch_pos + 4].copy_from_slice(&patched.to_le_bytes());
+}
+
+// =============================================================================
+// Prologue / Epilogue
+// =============================================================================
+
+/// Emit function prologue
+pub fn emit_prologue(code: &mut Vec<u8>) {
+    // For a simple JIT kernel, we might not need much
+    // Input pointer already in X0
+    // Just ensure we're aligned
+}
+
+/// Emit function epilogue (return)
+pub fn emit_epilogue(code: &mut Vec<u8>, result: Reg) {
+    // Move result to V0 if not already there
+    if result.0 != 0 {
+        // MOV V0, Vresult (ORR Vd.16B, Vn.16B, Vn.16B)
+        emit32(code, 0x4EA01C00 | ((result.0 as u32) << 5) | ((result.0 as u32) << 16));
+    }
+    // RET
+    emit32(code, 0xD65F03C0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmov_imm8_common_values() {
+        // Encodable values — imm8 derived from ARM ARM bit layout:
+        //   f32 = [a][NOT(b)][bbbbb][cdefgh][19 zeros]
+        //   imm8 = a:b:c:d:e:f:g:h
+        assert_eq!(try_encode_fmov_imm8(2.0), Some(0x00));   // 0x40000000
+        assert_eq!(try_encode_fmov_imm8(0.5), Some(0x60));   // 0x3F000000
+        assert_eq!(try_encode_fmov_imm8(1.0), Some(0x70));   // 0x3F800000
+        assert_eq!(try_encode_fmov_imm8(1.5), Some(0x78));   // 0x3FC00000
+        assert_eq!(try_encode_fmov_imm8(-1.0), Some(0xF0));  // 0xBF800000
+        assert_eq!(try_encode_fmov_imm8(-0.5), Some(0xE0));  // 0xBF000000
+        assert_eq!(try_encode_fmov_imm8(-2.0), Some(0x80));  // 0xC0000000
+        assert_eq!(try_encode_fmov_imm8(4.0), Some(0x10));   // 0x40800000
+
+        // More encodable values
+        assert_eq!(try_encode_fmov_imm8(3.0), Some(0x08));   // 0x40400000
+        assert_eq!(try_encode_fmov_imm8(0.25), Some(0x50));  // 0x3E800000
+        assert_eq!(try_encode_fmov_imm8(0.125), Some(0x40)); // 0x3E000000
+
+        // Non-encodable values
+        assert_eq!(try_encode_fmov_imm8(0.0), None);
+        assert_eq!(try_encode_fmov_imm8(-0.0), None);
+        assert_eq!(try_encode_fmov_imm8(0.1), None);
+        assert_eq!(try_encode_fmov_imm8(f32::NAN), None);
+        assert_eq!(try_encode_fmov_imm8(f32::INFINITY), None);
+        assert_eq!(try_encode_fmov_imm8(100.0), None);
+    }
+
+    #[test]
+    fn fmov_imm8_roundtrip() {
+        // Every valid imm8 should encode a value that round-trips
+        for imm8 in 0..=255u8 {
+            let a = (imm8 >> 7) & 1;
+            let b = (imm8 >> 6) & 1;
+            let not_b = b ^ 1;
+            let cdefgh = imm8 & 0x3F;
+
+            let mut bits: u32 = 0;
+            bits |= (a as u32) << 31;
+            bits |= (not_b as u32) << 30;
+            // bits[29:25] = bbbbb
+            let rep5 = if b == 1 { 0x1F_u32 } else { 0x00 };
+            bits |= rep5 << 25;
+            bits |= (cdefgh as u32) << 19;
+            // bits[18:0] = 0
+
+            let val = f32::from_bits(bits);
+            let result = try_encode_fmov_imm8(val);
+            assert_eq!(
+                result,
+                Some(imm8),
+                "imm8={imm8:#04x} -> f32={val} ({bits:#010x}) did not roundtrip"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_fmov_imm_uses_single_instruction_for_encodable() {
+        let mut code = Vec::new();
+        let dst = Reg(0);
+        let scratch = [Reg(16), Reg(17), Reg(18), Reg(19)];
+
+        // 1.0 is FMOV-encodable → should emit exactly 1 instruction (4 bytes)
+        emit_fmov_imm(&mut code, dst, 1.0, scratch);
+        assert_eq!(code.len(), 4, "FMOV-encodable value should emit 1 instruction");
+
+        // Verify the encoding: 0x4F00F400 | (abc<<16) | (defgh<<5) | Rd
+        // imm8=0x70=0b01110000, abc=011=3, defgh=10000=16
+        let inst = u32::from_le_bytes(code[..4].try_into().unwrap());
+        assert_eq!(inst, 0x4F03_F600, "FMOV V0.4S, #1.0 encoding");
+    }
+
+    #[test]
+    fn emit_fmov_imm_zero_is_movi() {
+        let mut code = Vec::new();
+        emit_fmov_imm(&mut code, Reg(0), 0.0, [Reg(16), Reg(17), Reg(18), Reg(19)]);
+        assert_eq!(code.len(), 4, "zero should emit 1 instruction (MOVI)");
+    }
+
+    #[test]
+    fn emit_fmov_imm_fallback_for_non_encodable() {
+        let mut code = Vec::new();
+        emit_fmov_imm(&mut code, Reg(0), 3.14, [Reg(16), Reg(17), Reg(18), Reg(19)]);
+        assert_eq!(code.len(), 12, "non-encodable should emit 3 instructions (MOVZ+MOVK+DUP)");
+    }
+}

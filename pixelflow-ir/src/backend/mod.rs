@@ -2,9 +2,32 @@
 //!
 //! This module defines the interface for SIMD backends.
 //! Implementations (AVX2, NEON, Wasm) are provided in submodules.
+//!
+//! # Architecture
+//!
+//! The SIMD operations are split into two layers:
+//!
+//! - **Primitives** (`primitives.rs`): Operations that map 1:1 (or near 1:1) to
+//!   hardware instructions. These are what the JIT emits directly.
+//!
+//! - **Compounds** (`compounds.rs`): Higher-level operations (sin, cos, exp, log)
+//!   built from primitives. These have a blanket impl over all `Primitives`.
+//!
+//! The legacy `SimdOps` trait is preserved for backward compatibility but new
+//! code should use `Primitives` + `Compounds`.
 
 use core::fmt::Debug;
-use core::ops::{Add, BitAnd, BitOr, Div, Mul, Not, Shl, Shr, Sub};
+use core::ops::{Add, BitAnd, BitOr, Div, Mul, Neg, Not, Shl, Shr, Sub};
+
+// New layered architecture
+pub mod primitives;
+pub mod compounds;
+
+pub use primitives::{MaskPrimitives, Primitives};
+pub use compounds::Compounds;
+
+// JIT code emission
+pub mod emit;
 
 /// A backend provides the SIMD implementation for a specific platform.
 pub trait Backend: 'static + Copy + Clone + Send + Sync + Debug {
@@ -49,6 +72,7 @@ pub trait SimdOps:
     + Sub<Output = Self>
     + Mul<Output = Self>
     + Div<Output = Self>
+    + Neg<Output = Self>
     + BitAnd<Output = Self>
     + BitOr<Output = Self>
     + Not<Output = Self>
@@ -144,6 +168,140 @@ pub trait SimdOps:
     fn exp(self) -> Self {
         const LOG2_E: f32 = core::f32::consts::LOG2_E;
         (self * Self::splat(LOG2_E)).exp2()
+    }
+
+    // =========================================================================
+    // Trigonometric Functions
+    // =========================================================================
+
+    /// Sine (SIMD vectorized Chebyshev approximation).
+    /// Accuracy: ~7-8 significant digits.
+    fn sin(self) -> Self;
+
+    /// Cosine (SIMD vectorized Chebyshev approximation).
+    /// Accuracy: ~7-8 significant digits.
+    fn cos(self) -> Self;
+
+    /// Tangent: sin(x) / cos(x).
+    #[inline(always)]
+    fn tan(self) -> Self {
+        self.sin() / self.cos()
+    }
+
+    /// Arctangent of y/x (four-quadrant).
+    /// Returns angle in [-π, π].
+    fn atan2(self, x: Self) -> Self;
+
+    /// Arctangent.
+    #[inline(always)]
+    fn atan(self) -> Self {
+        self.atan2(Self::splat(1.0))
+    }
+
+    /// Arcsine.
+    /// Uses identity: asin(x) = atan2(x, sqrt(1 - x²))
+    #[inline(always)]
+    fn asin(self) -> Self {
+        let one = Self::splat(1.0);
+        let x2 = self * self;
+        let sqrt_term = (one - x2).simd_sqrt();
+        self.atan2(sqrt_term)
+    }
+
+    /// Arccosine.
+    /// Uses identity: acos(x) = atan2(sqrt(1 - x²), x)
+    #[inline(always)]
+    fn acos(self) -> Self {
+        let one = Self::splat(1.0);
+        let x2 = self * self;
+        let sqrt_term = (one - x2).simd_sqrt();
+        sqrt_term.atan2(self)
+    }
+
+    // =========================================================================
+    // Additional Logarithms
+    // =========================================================================
+
+    /// Natural logarithm.
+    /// ln(x) = log2(x) * ln(2)
+    #[inline(always)]
+    fn ln(self) -> Self {
+        const LN_2: f32 = 0.6931471805599453;
+        self.log2() * Self::splat(LN_2)
+    }
+
+    /// Base-10 logarithm.
+    /// log10(x) = log2(x) * log10(2)
+    #[inline(always)]
+    fn log10(self) -> Self {
+        const LOG10_2: f32 = 0.30102999566398120;
+        self.log2() * Self::splat(LOG10_2)
+    }
+
+    // =========================================================================
+    // Power Functions
+    // =========================================================================
+
+    /// Power: self^exp.
+    /// Uses identity: x^y = 2^(y * log2(x)) for positive x.
+    #[inline(always)]
+    fn pow(self, exp: Self) -> Self {
+        (exp * self.log2()).exp2()
+    }
+
+    /// Hypotenuse: sqrt(x² + y²).
+    #[inline(always)]
+    fn hypot(self, y: Self) -> Self {
+        (self * self + y * y).simd_sqrt()
+    }
+
+    /// Multiply by reciprocal square root: self * rsqrt(other) = self / sqrt(other).
+    /// This is more efficient than dividing by sqrt on most SIMD architectures.
+    #[inline(always)]
+    fn mul_rsqrt(self, other: Self) -> Self {
+        self * other.simd_rsqrt()
+    }
+
+    // =========================================================================
+    // Additional Rounding Functions
+    // =========================================================================
+
+    /// Ceiling (round toward positive infinity).
+    #[inline(always)]
+    fn ceil(self) -> Self {
+        -(-self).simd_floor()
+    }
+
+    /// Round to nearest integer.
+    #[inline(always)]
+    fn round(self) -> Self {
+        (self + Self::splat(0.5)).simd_floor()
+    }
+
+    /// Fractional part: x - floor(x).
+    #[inline(always)]
+    fn fract(self) -> Self {
+        self - self.simd_floor()
+    }
+
+    // =========================================================================
+    // Additional Comparisons
+    // =========================================================================
+
+    /// Equality comparison (returns native mask).
+    fn cmp_eq(self, rhs: Self) -> Self::Mask;
+
+    /// Inequality comparison (returns native mask).
+    fn cmp_ne(self, rhs: Self) -> Self::Mask;
+
+    // =========================================================================
+    // Ternary Operations
+    // =========================================================================
+
+    /// Clamp value to range [lo, hi].
+    #[inline(always)]
+    fn clamp(self, lo: Self, hi: Self) -> Self {
+        self.simd_max(lo).simd_min(hi)
     }
 }
 

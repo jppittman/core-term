@@ -6,11 +6,12 @@
 //! This is the **canonical** Expr type used across the compiler pipeline.
 //! Other crates (pixelflow-nnue, pixelflow-search) should re-export this type.
 
-use crate::kind::OpKind;
 #[cfg(feature = "alloc")]
 use alloc::boxed::Box;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
+use crate::kind::OpKind;
+use core::fmt;
 
 /// A recursive expression tree.
 ///
@@ -18,12 +19,16 @@ use alloc::vec::Vec;
 /// The type is designed for both optimization passes (e-graph) and
 /// evaluation (NNUE cost models).
 #[cfg(feature = "alloc")]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     /// Variable reference (index: 0=X, 1=Y, 2=Z, 3=W).
     Var(u8),
     /// Constant floating-point value.
     Const(f32),
+    /// Captured parameter by index. Ephemeral — must be substituted to [`Expr::Const`]
+    /// via [`substitute_params`] before passing to the JIT emitter.
+    /// Index is declaration order: first param = 0, second = 1, etc.
+    Param(u8),
     /// Unary operation (e.g., Neg, Sqrt, Abs).
     Unary(OpKind, Box<Expr>),
     /// Binary operation (e.g., Add, Sub, Mul, Div).
@@ -40,11 +45,10 @@ impl Expr {
     ///
     /// For leaf nodes, returns `OpKind::Var` or `OpKind::Const`.
     #[inline]
-    #[must_use]
     pub fn kind(&self) -> OpKind {
         match self {
             Self::Var(_) => OpKind::Var,
-            Self::Const(_) => OpKind::Const,
+            Self::Const(_) | Self::Param(_) => OpKind::Const,
             Self::Unary(op, _) => *op,
             Self::Binary(op, _, _) => *op,
             Self::Ternary(op, _, _, _) => *op,
@@ -54,161 +58,111 @@ impl Expr {
 
     /// Alias for `kind()` - used by NNUE feature extraction.
     #[inline]
-    #[must_use]
     pub fn op_type(&self) -> OpKind {
         self.kind()
     }
 
-    /// Compute the depth of this expression tree.
+    /// Compute the depth of this expression tree (iterative).
     #[must_use]
     pub fn depth(&self) -> usize {
-        match self {
-            Self::Var(_) | Self::Const(_) => 1,
-            Self::Unary(_, a) => 1 + a.depth(),
-            Self::Binary(_, a, b) => 1 + a.depth().max(b.depth()),
-            Self::Ternary(_, a, b, c) => 1 + a.depth().max(b.depth()).max(c.depth()),
-            Self::Nary(_, children) => 1 + children.iter().map(|c| c.depth()).max().unwrap_or(0),
+        // Stack holds (node, depth_at_this_node).
+        let mut stack: Vec<(&Expr, usize)> = Vec::new();
+        stack.push((self, 1));
+        let mut max_depth: usize = 0;
+
+        while let Some((node, d)) = stack.pop() {
+            match node {
+                Self::Var(_) | Self::Const(_) | Self::Param(_) => {
+                    max_depth = max_depth.max(d);
+                }
+                Self::Unary(_, a) => {
+                    stack.push((a, d + 1));
+                }
+                Self::Binary(_, a, b) => {
+                    stack.push((a, d + 1));
+                    stack.push((b, d + 1));
+                }
+                Self::Ternary(_, a, b, c) => {
+                    stack.push((a, d + 1));
+                    stack.push((b, d + 1));
+                    stack.push((c, d + 1));
+                }
+                Self::Nary(_, children) => {
+                    if children.is_empty() {
+                        max_depth = max_depth.max(d);
+                    } else {
+                        for child in children {
+                            stack.push((child, d + 1));
+                        }
+                    }
+                }
+            }
         }
+        max_depth
     }
 
-    /// Count total nodes in the expression.
+    /// Returns `true` if this expression contains at least one `Var` node (iterative).
+    ///
+    /// Expressions without variables are constant-foldable and benchmark
+    /// at the timing floor — useless for training.
+    #[must_use]
+    pub fn has_var(&self) -> bool {
+        let mut stack: Vec<&Expr> = Vec::new();
+        stack.push(self);
+
+        while let Some(node) = stack.pop() {
+            match node {
+                Self::Var(_) => return true,
+                Self::Const(_) | Self::Param(_) => {}
+                Self::Unary(_, a) => stack.push(a),
+                Self::Binary(_, a, b) => {
+                    stack.push(a);
+                    stack.push(b);
+                }
+                Self::Ternary(_, a, b, c) => {
+                    stack.push(a);
+                    stack.push(b);
+                    stack.push(c);
+                }
+                Self::Nary(_, children) => {
+                    for child in children {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Count total nodes in the expression (iterative).
     #[must_use]
     pub fn node_count(&self) -> usize {
-        match self {
-            Self::Var(_) | Self::Const(_) => 1,
-            Self::Unary(_, a) => 1 + a.node_count(),
-            Self::Binary(_, a, b) => 1 + a.node_count() + b.node_count(),
-            Self::Ternary(_, a, b, c) => 1 + a.node_count() + b.node_count() + c.node_count(),
-            Self::Nary(_, children) => 1 + children.iter().map(|c| c.node_count()).sum::<usize>(),
-        }
-    }
+        let mut stack: Vec<&Expr> = Vec::new();
+        stack.push(self);
+        let mut count: usize = 0;
 
-    /// Evaluate the expression with given variable values.
-    ///
-    /// `vars[0]` = X, `vars[1]` = Y, `vars[2]` = Z, `vars[3]` = W
-    #[cfg(feature = "std")]
-    #[must_use]
-    pub fn eval(&self, vars: &[f32; 4]) -> f32 {
-        match self {
-            Self::Var(i) => *vars.get(*i as usize).unwrap_or_else(|| {
-                panic!("Expr::eval: Var({}) out of bounds (max 3 for X/Y/Z/W)", i)
-            }),
-            Self::Const(c) => *c,
-            Self::Unary(op, a) => {
-                let a = a.eval(vars);
-                match op {
-                    OpKind::Neg => -a,
-                    OpKind::Sqrt => a.sqrt(),
-                    OpKind::Rsqrt => 1.0 / a.sqrt(),
-                    OpKind::Abs => a.abs(),
-                    OpKind::Recip => 1.0 / a,
-                    OpKind::Floor => a.floor(),
-                    OpKind::Ceil => a.ceil(),
-                    OpKind::Round => a.round(),
-                    OpKind::Fract => a.fract(),
-                    OpKind::Sin => a.sin(),
-                    OpKind::Cos => a.cos(),
-                    OpKind::Tan => a.tan(),
-                    OpKind::Asin => a.asin(),
-                    OpKind::Acos => a.acos(),
-                    OpKind::Atan => a.atan(),
-                    OpKind::Exp => a.exp(),
-                    OpKind::Exp2 => a.exp2(),
-                    OpKind::Ln => a.ln(),
-                    OpKind::Log2 => a.log2(),
-                    OpKind::Log10 => a.log10(),
-                    other => panic!("Expr::eval: {:?} is not a unary operation", other),
+        while let Some(node) = stack.pop() {
+            count += 1;
+            match node {
+                Self::Var(_) | Self::Const(_) | Self::Param(_) => {}
+                Self::Unary(_, a) => stack.push(a),
+                Self::Binary(_, a, b) => {
+                    stack.push(a);
+                    stack.push(b);
                 }
-            }
-            Self::Binary(op, a, b) => {
-                let a = a.eval(vars);
-                let b = b.eval(vars);
-                match op {
-                    OpKind::Add => a + b,
-                    OpKind::Sub => a - b,
-                    OpKind::Mul => a * b,
-                    OpKind::Div => a / b,
-                    OpKind::Min => a.min(b),
-                    OpKind::Max => a.max(b),
-                    OpKind::MulRsqrt => a / b.sqrt(),
-                    OpKind::Pow => a.powf(b),
-                    OpKind::Hypot => a.hypot(b),
-                    OpKind::Atan2 => a.atan2(b),
-                    OpKind::Lt => {
-                        if a < b {
-                            1.0
-                        } else {
-                            0.0
-                        }
-                    }
-                    OpKind::Le => {
-                        if a <= b {
-                            1.0
-                        } else {
-                            0.0
-                        }
-                    }
-                    OpKind::Gt => {
-                        if a > b {
-                            1.0
-                        } else {
-                            0.0
-                        }
-                    }
-                    OpKind::Ge => {
-                        if a >= b {
-                            1.0
-                        } else {
-                            0.0
-                        }
-                    }
-                    OpKind::Eq => {
-                        if (a - b).abs() < 1e-10 {
-                            1.0
-                        } else {
-                            0.0
-                        }
-                    }
-                    OpKind::Ne => {
-                        if (a - b).abs() >= 1e-10 {
-                            1.0
-                        } else {
-                            0.0
-                        }
-                    }
-                    other => panic!("Expr::eval: {:?} is not a binary operation", other),
+                Self::Ternary(_, a, b, c) => {
+                    stack.push(a);
+                    stack.push(b);
+                    stack.push(c);
                 }
-            }
-            Self::Ternary(op, a, b, c) => {
-                let a = a.eval(vars);
-                let b = b.eval(vars);
-                let c = c.eval(vars);
-                match op {
-                    OpKind::MulAdd => a.mul_add(b, c),
-                    OpKind::Select => {
-                        if a != 0.0 {
-                            b
-                        } else {
-                            c
-                        }
+                Self::Nary(_, children) => {
+                    for child in children {
+                        stack.push(child);
                     }
-                    OpKind::Clamp => a.clamp(b, c),
-                    other => panic!("Expr::eval: {:?} is not a ternary operation", other),
-                }
-            }
-            Self::Nary(op, children) => {
-                match op {
-                    OpKind::Tuple => {
-                        // Tuple evaluates to its first element
-                        children
-                            .first()
-                            .map(|c| c.eval(vars))
-                            .expect("Expr::eval: Tuple with no children")
-                    }
-                    other => panic!("Expr::eval: {:?} is not an n-ary operation", other),
                 }
             }
         }
+        count
     }
 
     /// Get the children as a slice (only works for Nary).
@@ -218,10 +172,9 @@ impl Expr {
     /// Panics for Unary, Binary, and Ternary variants since their children
     /// are stored in `Box<Expr>` fields, not a `Vec`. Use pattern matching
     /// for full access to children of these variants.
-    #[must_use]
     pub fn children(&self) -> &[Expr] {
         match self {
-            Self::Var(_) | Self::Const(_) => &[],
+            Self::Var(_) | Self::Const(_) | Self::Param(_) => &[],
             Self::Nary(_, children) => children,
             Self::Unary(op, _) => panic!(
                 "Expr::children() cannot return slice for Unary({:?}) - use pattern matching",
@@ -235,6 +188,35 @@ impl Expr {
                 "Expr::children() cannot return slice for Ternary({:?}) - use pattern matching",
                 op
             ),
+        }
+    }
+}
+
+/// S-expression format that round-trips through `parse_expr`.
+///
+/// Examples:
+///   `Var(0)`, `Const(-3.14)`, `add(Var(0), Var(1))`, `sin(Var(0))`
+///   `mul_add(Var(0), Var(1), Const(2.0))`
+#[cfg(feature = "alloc")]
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Expr::Var(i) => write!(f, "Var({})", i),
+            Expr::Const(v) => write!(f, "Const({})", v),
+            Expr::Param(i) => write!(f, "Param({})", i),
+            Expr::Unary(op, a) => write!(f, "{}({})", op.name(), a),
+            Expr::Binary(op, a, b) => write!(f, "{}({}, {})", op.name(), a, b),
+            Expr::Ternary(op, a, b, c) => write!(f, "{}({}, {}, {})", op.name(), a, b, c),
+            Expr::Nary(op, children) => {
+                write!(f, "{}(", op.name())?;
+                for (i, child) in children.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", child)?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }

@@ -335,6 +335,110 @@ impl SimdOps for F32x4 {
 
         Self(f32x4_mul(poly, scale))
     }
+
+    #[inline(always)]
+    fn sin(self) -> Self {
+        const PI: f32 = core::f32::consts::PI;
+        const TWO_PI: f32 = core::f32::consts::TAU;
+        const TWO_PI_INV: f32 = 1.0 / TWO_PI;
+        const PI_INV: f32 = 1.0 / PI;
+
+        // Range reduce to [-π, π]
+        let k = f32x4_floor(f32x4_add(
+            f32x4_mul(self.0, f32x4_splat(TWO_PI_INV)),
+            f32x4_splat(0.5),
+        ));
+        let x = f32x4_sub(self.0, f32x4_mul(k, f32x4_splat(TWO_PI)));
+        let t = f32x4_mul(x, f32x4_splat(PI_INV));
+
+        let c1 = f32x4_splat(1.6719970703125);
+        let c3 = f32x4_splat(-0.645963541666667);
+        let c5 = f32x4_splat(0.079689450);
+        let c7 = f32x4_splat(-0.0046817541);
+
+        let t2 = f32x4_mul(t, t);
+        let mut poly = f32x4_add(f32x4_mul(c7, t2), c5);
+        poly = f32x4_add(f32x4_mul(poly, t2), c3);
+        poly = f32x4_add(f32x4_mul(poly, t2), c1);
+        Self(f32x4_mul(poly, t))
+    }
+
+    #[inline(always)]
+    fn cos(self) -> Self {
+        const PI: f32 = core::f32::consts::PI;
+        const TWO_PI: f32 = core::f32::consts::TAU;
+        const TWO_PI_INV: f32 = 1.0 / TWO_PI;
+        const PI_INV: f32 = 1.0 / PI;
+
+        let k = f32x4_floor(f32x4_add(
+            f32x4_mul(self.0, f32x4_splat(TWO_PI_INV)),
+            f32x4_splat(0.5),
+        ));
+        let x = f32x4_sub(self.0, f32x4_mul(k, f32x4_splat(TWO_PI)));
+        let t = f32x4_mul(x, f32x4_splat(PI_INV));
+
+        let c0 = f32x4_splat(1.5707963267948966);
+        let c2 = f32x4_splat(-2.467401341);
+        let c4 = f32x4_splat(0.609469381);
+        let c6 = f32x4_splat(-0.038854038);
+
+        let t2 = f32x4_mul(t, t);
+        let mut poly = f32x4_add(f32x4_mul(c6, t2), c4);
+        poly = f32x4_add(f32x4_mul(poly, t2), c2);
+        Self(f32x4_add(f32x4_mul(poly, t2), c0))
+    }
+
+    #[inline(always)]
+    fn atan2(self, x: Self) -> Self {
+        const PI: f32 = core::f32::consts::PI;
+        const PI_2: f32 = core::f32::consts::FRAC_PI_2;
+
+        let y = self.0;
+        let x_val = x.0;
+
+        let r = f32x4_div(y, x_val);
+        let r_abs = f32x4_abs(r);
+
+        let c1 = f32x4_splat(0.999999999);
+        let c3 = f32x4_splat(-0.333333333);
+        let c5 = f32x4_splat(0.2);
+        let c7 = f32x4_splat(-0.142857143);
+
+        let t = r_abs;
+        let t2 = f32x4_mul(t, t);
+        let mut poly = f32x4_add(f32x4_mul(c7, t2), c5);
+        poly = f32x4_add(f32x4_mul(poly, t2), c3);
+        poly = f32x4_add(f32x4_mul(poly, t2), c1);
+        let atan_approx = f32x4_mul(poly, t);
+
+        let one = f32x4_splat(1.0);
+        let mask_large = f32x4_gt(r_abs, one);
+        let recip_r = f32x4_div(one, r_abs);
+        let atan_large = f32x4_sub(
+            f32x4_splat(PI_2),
+            f32x4_mul(recip_r, atan_approx),
+        );
+        let atan_val = v128_bitselect(atan_large, atan_approx, mask_large);
+
+        let y_abs = f32x4_abs(y);
+        let sign_y = f32x4_div(y_abs, y);
+        let atan_signed = f32x4_mul(atan_val, sign_y);
+
+        let zero = f32x4_splat(0.0);
+        let mask_neg_x = f32x4_lt(x_val, zero);
+        let correction = f32x4_mul(f32x4_splat(PI), sign_y);
+        Self(v128_bitselect(f32x4_sub(atan_signed, correction), atan_signed, mask_neg_x))
+    }
+
+    #[inline(always)]
+    fn cmp_eq(self, rhs: Self) -> Mask4 {
+        Mask4(f32x4_eq(self.0, rhs.0))
+    }
+
+    #[inline(always)]
+    fn cmp_ne(self, rhs: Self) -> Mask4 {
+        Mask4(f32x4_ne(self.0, rhs.0))
+    }
 }
 
 // ============================================================================

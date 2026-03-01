@@ -208,7 +208,7 @@ pub struct DenseFeatures {
 }
 
 impl DenseFeatures {
-    pub const COUNT: usize = 21;
+    pub const COUNT: usize = 20;
 
     pub const ADD: usize = 0;
     pub const SUB: usize = 1;
@@ -221,16 +221,15 @@ impl DenseFeatures {
     pub const MIN: usize = 8;
     pub const MAX: usize = 9;
     pub const FMA: usize = 10;
-    pub const MUL_RSQRT: usize = 11;
-    pub const NODE_COUNT: usize = 12;
-    pub const DEPTH: usize = 13;
-    pub const VAR_COUNT: usize = 14;
-    pub const CONST_COUNT: usize = 15;
-    pub const HAS_IDENTITY: usize = 16;
-    pub const HAS_SELF_CANCEL: usize = 17;
-    pub const HAS_FUSABLE: usize = 18;
-    pub const CRITICAL_PATH: usize = 19;
-    pub const MAX_WIDTH: usize = 20;
+    pub const NODE_COUNT: usize = 11;
+    pub const DEPTH: usize = 12;
+    pub const VAR_COUNT: usize = 13;
+    pub const CONST_COUNT: usize = 14;
+    pub const HAS_IDENTITY: usize = 15;
+    pub const HAS_SELF_CANCEL: usize = 16;
+    pub const HAS_FUSABLE: usize = 17;
+    pub const CRITICAL_PATH: usize = 18;
+    pub const MAX_WIDTH: usize = 19;
 
     #[inline]
     pub fn get(&self, i: usize) -> i32 {
@@ -322,7 +321,6 @@ fn extract_dense_recursive_impl(
                 }
                 OpKind::Min => { features.values[DenseFeatures::MIN] += 1; 4 }
                 OpKind::Max => { features.values[DenseFeatures::MAX] += 1; 4 }
-                OpKind::MulRsqrt => { features.values[DenseFeatures::MUL_RSQRT] += 1; 6 }
                 _ => 5,
             };
             let crit_a = extract_dense_recursive_impl(a, features, depth + 1, width_at_depth);
