@@ -48,6 +48,13 @@ use crate::ast::{BinaryOp, UnaryOp, ParamKind};
 use crate::sema::AnalyzedKernel;
 use crate::symbol::SymbolKind;
 
+/// Mode for emitting wrapper types around scalars
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WrapperMode {
+    JetWrapper,
+    NoWrapper,
+}
+
 /// Dependency classification for uniform hoisting.
 ///
 /// Forms a lattice: Const < Uniform < Varying
@@ -453,7 +460,7 @@ pub fn analyze_deps(
 pub fn emit_leveled(
     analyzed: &AnalyzedKernel,
     annotated: &AnnotatedExpr,
-    use_jet_wrapper: bool,
+    wrapper_mode: WrapperMode,
 ) -> TokenStream {
     let mut builder = LevelBuilder::new(analyzed);
     let root = builder.build(annotated);
@@ -465,7 +472,7 @@ pub fn emit_leveled(
         for (node_idx, node) in level.iter().enumerate() {
             let var_name = NodeRef::new(level_idx, node_idx).var_name();
 
-            let value = emit_node(node, use_jet_wrapper);
+            let value = emit_node(node, wrapper_mode);
             stmts.push(quote! { let #var_name = #value; });
         }
     }
@@ -481,7 +488,7 @@ pub fn emit_leveled(
 }
 
 /// Emit code for a single node
-fn emit_node(node: &LeveledNode, use_jet_wrapper: bool) -> TokenStream {
+fn emit_node(node: &LeveledNode, wrapper_mode: WrapperMode) -> TokenStream {
     match &node.kind {
         LeveledNodeKind::Param { name, kind } => {
             let name_ident = format_ident!("{}", name);
@@ -491,7 +498,7 @@ fn emit_node(node: &LeveledNode, use_jet_wrapper: bool) -> TokenStream {
                     quote! { #name_ident.eval(__p) }
                 }
                 ParamKind::Scalar(_) => {
-                    if use_jet_wrapper {
+                    if wrapper_mode == WrapperMode::JetWrapper {
                         quote! { __ScalarType::from_f32(#name_ident) }
                     } else {
                         quote! { ::pixelflow_core::Field::from(#name_ident) }
@@ -502,7 +509,7 @@ fn emit_node(node: &LeveledNode, use_jet_wrapper: bool) -> TokenStream {
 
         LeveledNodeKind::Literal { value } => {
             let lit = *value as f32;
-            if use_jet_wrapper {
+            if wrapper_mode == WrapperMode::JetWrapper {
                 quote! { __ScalarType::from_f32(#lit) }
             } else {
                 quote! { ::pixelflow_core::Field::from(#lit) }
