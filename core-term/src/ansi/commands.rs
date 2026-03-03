@@ -1,3 +1,9 @@
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CsiType {
+    Private,
+    Standard,
+}
 // src/ansi/commands.rs
 
 //! Defines the `AnsiCommand` enum representing parsed ANSI escape sequences
@@ -600,9 +606,10 @@ impl AnsiCommand {
     pub(crate) fn from_csi(
         params: Vec<u16>,
         intermediates: Vec<u8>,
-        is_private: bool,
+        csi_type: CsiType,
         final_byte: u8,
     ) -> Option<Self> {
+        let is_private = csi_type == CsiType::Private;
         let param_or = |idx: usize, default: u16| params.get(idx).copied().unwrap_or(default);
         let param_or_1 = |idx: usize| param_or(idx, 1).max(1);
 

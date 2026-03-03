@@ -840,7 +840,8 @@ pub fn compile_dag_with_ctx(expr: &Expr, ctx: EmitCtx) -> Result<CompileResult, 
         for &bits in &pool.entries {
             aarch64::emit_pool_entry(&mut code, bits);
         }
-        aarch64::patch_adr_or_adrp(&mut code, adr_pos, pool_start, needs_adrp);
+        let adr_type = if needs_adrp { aarch64::AdrType::Adrp } else { aarch64::AdrType::Adr };
+        aarch64::patch_adr_or_adrp(&mut code, adr_pos, pool_start, adr_type);
     }
 
     let exec = unsafe { executable::ExecutableCode::from_code(&code)? };

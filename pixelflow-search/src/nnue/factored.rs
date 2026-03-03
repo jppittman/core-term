@@ -1,3 +1,4 @@
+
 //! # Factored Embedding NNUE Architecture
 //!
 //! An O(ops) alternative to the O(ops²) HalfEP feature encoding.
@@ -33,7 +34,7 @@
 //! | Accumulator build | O(nodes²) | O(edges) | O(nodes) |
 //! | Incremental update | O(subtree²) | O(Δedges × K) | O(subtree) |
 
-#![allow(dead_code)] // Prototype code
+#[allow(dead_code)]
 
 extern crate alloc;
 
@@ -43,6 +44,14 @@ use libm::sqrtf;
 pub use pixelflow_ir::OpKind;
 use pixelflow_ir::Expr;
 
+
+#[derive(Clone, Copy)]
+pub struct RuleFlags {
+    pub commutative: bool,
+    pub associative: bool,
+    pub creates_sharing: bool,
+    pub expensive_op: bool,
+}
 // ============================================================================
 // Constants
 // ============================================================================
@@ -171,21 +180,18 @@ impl RuleFeatures {
         category: f32,
         lhs_nodes: usize,
         depth_delta: i8,
-        commutative: bool,
-        associative: bool,
-        creates_sharing: bool,
         match_rate: f32,
-        expensive_op: bool,
+        flags: RuleFlags,
     ) {
         self.features[rule_idx] = [
             category,
             lhs_nodes as f32 / 10.0,
             depth_delta as f32,
-            if commutative { 1.0 } else { 0.0 },
-            if associative { 1.0 } else { 0.0 },
-            if creates_sharing { 1.0 } else { 0.0 },
+            if flags.commutative { 1.0 } else { 0.0 },
+            if flags.associative { 1.0 } else { 0.0 },
+            if flags.creates_sharing { 1.0 } else { 0.0 },
             match_rate.clamp(0.0, 1.0),
-            if expensive_op { 1.0 } else { 0.0 },
+            if flags.expensive_op { 1.0 } else { 0.0 },
         ];
     }
 }
