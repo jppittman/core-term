@@ -465,6 +465,8 @@ pub fn emit(expr: &Expr, depth: u8) -> Result<(Vec<u8>, Reg), &'static str> {
             }
         }
 
+        Expr::Param(_) => Err("Param nodes must be substituted before JIT compilation — call substitute_params first"),
+
         Expr::Nary(_, _) => Err("Nary not supported in JIT"),
     }
 }
@@ -1551,10 +1553,7 @@ pub fn compile_dag(expr: &Expr) -> Result<CompileResult, &'static str> {
 /// Compile an expression to executable code (x86-64).
 #[cfg(all(feature = "alloc", target_arch = "x86_64"))]
 pub fn compile(expr: &Expr) -> Result<executable::ExecutableCode, &'static str> {
-    // Lower compound ops to primitives
-    let lowered = lower::lower(expr);
-
-    let (mut code, result_reg) = emit(&lowered, 0)?;
+    let (mut code, result_reg) = emit(expr, 0)?;
 
     // Move result to xmm0 if not already there
     if result_reg.0 != 0 {

@@ -271,6 +271,15 @@ fn optimize_expr_with_nnue(expr: Expr, nnue: &ExprNnue) -> Expr {
 
 /// Optimize an expression via e-graph with neural extraction.
 fn optimize_via_nnue(expr: &Expr, nnue: &ExprNnue) -> Expr {
+    // Blocks must preserve their structure.
+    // The e-graph inlines let bindings via var_to_eclass, but unsupported ops
+    // (like BitAnd) create opaque expressions that still reference the inlined
+    // local names. When the block is flattened, those locals no longer exist,
+    // causing "cannot find value X in this scope" compile errors.
+    if let Expr::Block(block) = expr {
+        return optimize_block_preserving_structure(block.clone(), nnue);
+    }
+
     // Try to convert AST → IR
     let ir = match ast_to_ir(expr, &std::collections::HashMap::new()) {
         Ok(ir) => ir,

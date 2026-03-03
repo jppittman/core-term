@@ -510,18 +510,34 @@ where
 }
 
 /// Mask manifold for geometry hit detection.
-kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
-    let t = geometry;
-    let t_max = 1000000.0;
-    let deriv_max = 10000.0;
+#[derive(Clone, Copy, ManifoldExpr)]
+pub struct GeometryMask<G> {
+    pub geometry: G,
+}
 
-    // Valid if: t > 0, t < max, derivatives reasonable
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
-    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+impl<G> Manifold<Jet3_4> for GeometryMask<G>
+where
+    G: ManifoldCompat<Jet3, Output = Jet3>,
+{
+    type Output = Field;
 
-    valid_t & valid_deriv
-});
+    #[inline]
+    fn eval(&self, p: Jet3_4) -> Field {
+        let (rx, ry, rz, w) = p;
+        let t = self.geometry.eval_raw(rx, ry, rz, w);
+        let t_max = Field::from(1000000.0_f32);
+        let deriv_max_sq = Field::from(100_000_000.0_f32); // 10000^2
+
+        // Valid if: t > 0 and t < t_max
+        let valid_t = t.val.gt(Field::from(0.0_f32)) & t.val.lt(t_max);
+
+        // Valid if derivatives are reasonable (surface is well-conditioned)
+        let deriv_mag_sq = (t.dx * t.dx + t.dy * t.dy + t.dz * t.dz).constant();
+        let valid_deriv = deriv_mag_sq.lt(deriv_max_sq);
+
+        valid_t & valid_deriv
+    }
+}
 
 impl<G, M> Scene for SceneObject<G, M>
 where
@@ -652,7 +668,7 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
         let r_z = d_jet_z - k * n_jet_z;
 
         // Recurse with curved reflected rays
-        self.inner.eval(r_x, r_y, r_z, w)
+        self.inner.eval_raw(r_x, r_y, r_z, w)
     }
 }
 
