@@ -1,3 +1,11 @@
+
+#[derive(Clone, Copy)]
+pub struct RuleFlags {
+    pub commutative: bool,
+    pub associative: bool,
+    pub creates_sharing: bool,
+    pub expensive_op: bool,
+}
 //! # Factored Embedding NNUE Architecture
 //!
 //! An O(ops) alternative to the O(ops²) HalfEP feature encoding.
@@ -171,11 +179,8 @@ impl RuleFeatures {
         category: f32,
         lhs_nodes: usize,
         depth_delta: i8,
-        commutative: bool,
-        associative: bool,
-        creates_sharing: bool,
         match_rate: f32,
-        expensive_op: bool,
+        flags: RuleFlags,
     ) {
         self.features[rule_idx] = [
             category,

@@ -1247,7 +1247,7 @@ mod tests {
             mgmt_count: usize,
         }
 
-        impl SchedulerHandler<i32, String, bool> for CountingHandler {
+        impl SchedulerHandler<i32, String, ()> for CountingHandler {
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.data_count += 1;
                 Ok(())
@@ -1256,7 +1256,7 @@ mod tests {
                 self.ctrl_count += 1;
                 Ok(())
             }
-            fn handle_management(&mut self, _: bool) -> HandlerResult {
+            fn handle_management(&mut self, _: ()) -> HandlerResult {
                 self.mgmt_count += 1;
                 Ok(())
             }
@@ -1280,7 +1280,7 @@ mod tests {
         tx.send(Message::Data(1)).unwrap();
         tx.send(Message::Data(2)).unwrap();
         tx.send(Message::Control("test".to_string())).unwrap();
-        tx.send(Message::Management(true)).unwrap();
+        tx.send(Message::Management(())).unwrap();
 
         thread::sleep(Duration::from_millis(50));
         drop(tx);

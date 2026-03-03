@@ -1,3 +1,9 @@
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JetWrapperMode {
+    UseWrapper,
+    NoWrapper,
+}
 //! # Leveled (BFS) Code Generation
 //!
 //! Emits code by evaluating expression trees level-by-level (breadth-first).
@@ -453,7 +459,7 @@ pub fn analyze_deps(
 pub fn emit_leveled(
     analyzed: &AnalyzedKernel,
     annotated: &AnnotatedExpr,
-    use_jet_wrapper: bool,
+    wrapper_mode: JetWrapperMode,
 ) -> TokenStream {
     let mut builder = LevelBuilder::new(analyzed);
     let root = builder.build(annotated);
@@ -481,7 +487,7 @@ pub fn emit_leveled(
 }
 
 /// Emit code for a single node
-fn emit_node(node: &LeveledNode, use_jet_wrapper: bool) -> TokenStream {
+fn emit_node(node: &LeveledNode, wrapper_mode: JetWrapperMode) -> TokenStream {
     match &node.kind {
         LeveledNodeKind::Param { name, kind } => {
             let name_ident = format_ident!("{}", name);
@@ -491,7 +497,7 @@ fn emit_node(node: &LeveledNode, use_jet_wrapper: bool) -> TokenStream {
                     quote! { #name_ident.eval(__p) }
                 }
                 ParamKind::Scalar(_) => {
-                    if use_jet_wrapper {
+                    if wrapper_mode == JetWrapperMode::UseWrapper {
                         quote! { __ScalarType::from_f32(#name_ident) }
                     } else {
                         quote! { ::pixelflow_core::Field::from(#name_ident) }
@@ -502,7 +508,7 @@ fn emit_node(node: &LeveledNode, use_jet_wrapper: bool) -> TokenStream {
 
         LeveledNodeKind::Literal { value } => {
             let lit = *value as f32;
-            if use_jet_wrapper {
+            if wrapper_mode == JetWrapperMode::UseWrapper {
                 quote! { __ScalarType::from_f32(#lit) }
             } else {
                 quote! { ::pixelflow_core::Field::from(#lit) }
