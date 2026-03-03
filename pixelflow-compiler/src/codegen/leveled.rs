@@ -1,9 +1,4 @@
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum JetWrapperMode {
-    UseWrapper,
-    NoWrapper,
-}
 //! # Leveled (BFS) Code Generation
 //!
 //! Emits code by evaluating expression trees level-by-level (breadth-first).
@@ -50,6 +45,12 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use crate::annotate::AnnotatedExpr;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JetWrapperMode {
+    UseWrapper,
+    NoWrapper,
+}
 use crate::ast::{BinaryOp, UnaryOp, ParamKind};
 use crate::sema::AnalyzedKernel;
 use crate::symbol::SymbolKind;
