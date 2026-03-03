@@ -1,45 +1,38 @@
 
-#[derive(Clone, Copy)]
-pub struct RuleFlags {
-    pub commutative: bool,
-    pub associative: bool,
-    pub creates_sharing: bool,
-    pub expensive_op: bool,
-}
-// # Factored Embedding NNUE Architecture
-//
-// An O(ops) alternative to the O(ops²) HalfEP feature encoding.
-//
-// ## The Problem
-//
-// HalfEP features encode all (perspective_op, descendant_op, depth, path) tuples:
-// - 42 ops → 42² × 8 × 256 = 3.6M possible features
-// - Feature space grows quadratically with operation count
-// - Training requires O(GB) of memory for weight matrices
-//
-// ## The Solution: Edge-based Factored Embeddings
-//
-// Instead of one-hot encoding each (parent, child) pair, we learn dense
-// embeddings for each operation and accumulate them edge-by-edge:
-//
-// ```text
-// For each parent→child edge in the expression tree:
-//     accumulator[0..K]  += E[parent_op]   // "what's above"
-//     accumulator[K..2K] += E[child_op]    // "what's below"
-// ```
-//
-// Key insight: **Position encodes role**. Parent ops contribute to the first
-// half of the accumulator, child ops to the second half. This ensures that
-// `Mul→Add` (FMA-eligible) produces a different vector than `Add→Mul` (not FMA).
-//
-// ## Complexity
-//
-// | Metric | HalfEP | Factored | Improvement |
-// |--------|--------|----------|-------------|
-// | Feature space | O(ops²) | O(ops) | O(ops) |
-// | Weight memory | ~1GB | ~10KB | 100,000× |
-// | Accumulator build | O(nodes²) | O(edges) | O(nodes) |
-// | Incremental update | O(subtree²) | O(Δedges × K) | O(subtree) |
+//! # Factored Embedding NNUE Architecture
+//!
+//! An O(ops) alternative to the O(ops²) HalfEP feature encoding.
+//!
+//! ## The Problem
+//!
+//! HalfEP features encode all (perspective_op, descendant_op, depth, path) tuples:
+//! - 42 ops → 42² × 8 × 256 = 3.6M possible features
+//! - Feature space grows quadratically with operation count
+//! - Training requires O(GB) of memory for weight matrices
+//!
+//! ## The Solution: Edge-based Factored Embeddings
+//!
+//! Instead of one-hot encoding each (parent, child) pair, we learn dense
+//! embeddings for each operation and accumulate them edge-by-edge:
+//!
+//! ```text
+//! For each parent→child edge in the expression tree:
+//!     accumulator[0..K]  += E[parent_op]   // "what's above"
+//!     accumulator[K..2K] += E[child_op]    // "what's below"
+//! ```
+//!
+//! Key insight: **Position encodes role**. Parent ops contribute to the first
+//! half of the accumulator, child ops to the second half. This ensures that
+//! `Mul→Add` (FMA-eligible) produces a different vector than `Add→Mul` (not FMA).
+//!
+//! ## Complexity
+//!
+//! | Metric | HalfEP | Factored | Improvement |
+//! |--------|--------|----------|-------------|
+//! | Feature space | O(ops²) | O(ops) | O(ops) |
+//! | Weight memory | ~1GB | ~10KB | 100,000× |
+//! | Accumulator build | O(nodes²) | O(edges) | O(nodes) |
+//! | Incremental update | O(subtree²) | O(Δedges × K) | O(subtree) |
 
 #[allow(dead_code)]
 
@@ -51,6 +44,14 @@ use libm::sqrtf;
 pub use pixelflow_ir::OpKind;
 use pixelflow_ir::Expr;
 
+
+#[derive(Clone, Copy)]
+pub struct RuleFlags {
+    pub commutative: bool,
+    pub associative: bool,
+    pub creates_sharing: bool,
+    pub expensive_op: bool,
+}
 // ============================================================================
 // Constants
 // ============================================================================
