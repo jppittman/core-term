@@ -49,6 +49,11 @@ type Field4 = (Field, Field, Field, Field);
 use super::ttf::{affine, Affine, Font, Glyph, Sum};
 use crate::Grayscale;
 
+const BUCKET_STEP_F32: f32 = 4.0;
+const BUCKET_STEP_SIZE: usize = 4;
+const MIN_BUCKET_SIZE_VAL: usize = 8;
+const BYTES_PER_PIXEL: usize = 4;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CachedGlyph: The Morphism
 // ═══════════════════════════════════════════════════════════════════════════
@@ -140,8 +145,8 @@ impl Manifold<Field4> for CachedGlyph {
 /// Uses multiples of 4 pixels for SIMD-friendly dimensions.
 fn size_bucket(size: f32) -> usize {
     // Round up to next multiple of 4, minimum 8
-    let bucket = ((size / 4.0).ceil() as usize) * 4;
-    bucket.max(8)
+    let bucket = ((size / BUCKET_STEP_F32).ceil() as usize) * BUCKET_STEP_SIZE;
+    bucket.max(MIN_BUCKET_SIZE_VAL)
 }
 
 /// Key for cached glyphs.
@@ -251,7 +256,7 @@ impl GlyphCache {
     pub fn memory_usage(&self) -> usize {
         self.entries
             .values()
-            .map(|g| g.width * g.height * 4) // f32 per pixel
+            .map(|g| g.width * g.height * BYTES_PER_PIXEL)
             .sum()
     }
 }
