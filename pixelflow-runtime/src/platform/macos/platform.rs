@@ -158,7 +158,10 @@ impl PlatformOps for MetalOps {
                             .expect("Failed to send WindowCreated event to engine");
                     }
                     Err(e) => {
-                        eprintln!("Failed to create window: {}", e);
+                        return Err(HandlerError::Fatal(format!(
+                            "Failed to create window: {}",
+                            e
+                        )));
                     }
                 }
             }

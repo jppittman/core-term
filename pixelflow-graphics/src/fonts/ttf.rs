@@ -311,7 +311,9 @@ impl<'a> R<'a> {
     fn u16(&mut self) -> Option<u16> {
         let s = self.0.get(self.1..self.1 + 2)?;
         self.1 += 2;
-        Some(u16::from_be_bytes(s.try_into().ok()?))
+        Some(u16::from_be_bytes(
+            s.try_into().expect("slice length already validated as 2"),
+        ))
     }
     fn i16(&mut self) -> Option<i16> {
         self.u16().map(|v| v as i16)
@@ -319,7 +321,9 @@ impl<'a> R<'a> {
     fn u32(&mut self) -> Option<u32> {
         let s = self.0.get(self.1..self.1 + 4)?;
         self.1 += 4;
-        Some(u32::from_be_bytes(s.try_into().ok()?))
+        Some(u32::from_be_bytes(
+            s.try_into().expect("slice length already validated as 4"),
+        ))
     }
     fn skip(&mut self, n: usize) -> Option<()> {
         self.0.get(self.1..self.1 + n)?;

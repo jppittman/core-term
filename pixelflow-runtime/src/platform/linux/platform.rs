@@ -9,7 +9,7 @@ use crate::display::ops::PlatformOps;
 use crate::error::RuntimeError;
 use crate::platform::linux::window::X11Window;
 use crate::platform::waker::X11Waker;
-use actor_scheduler::{ActorStatus, Message, SystemStatus};
+use actor_scheduler::{ActorStatus, HandlerError, Message, SystemStatus};
 use log::{error, info};
 use pixelflow_graphics::render::color::Bgra8;
 use pixelflow_graphics::render::Frame;
@@ -34,7 +34,9 @@ pub(super) static SHARED_WAKER: OnceLock<X11Waker> = OnceLock::new();
 ///
 /// Called by the troupe before creating LinuxOps.
 pub fn set_shared_waker(waker: X11Waker) {
-    SHARED_WAKER.set(waker).ok();
+    if SHARED_WAKER.set(waker).is_err() {
+        panic!("set_shared_waker called twice: initialization ordering bug");
+    }
 }
 
 /// Linux platform operations - direct X11 implementation.
@@ -70,9 +72,9 @@ impl PlatformOps for LinuxOps {
                     }
                     window.frame = returned_frame;
                     // Return buffer to engine
-                    let _sent = self
-                        .engine_handle
-                        .send(Message::Data(EngineData::PresentComplete(window)));
+                    self.engine_handle
+                        .send(Message::Data(EngineData::PresentComplete(window)))
+                        .expect("Failed to send PresentComplete to engine");
                 }
             }
         }
@@ -136,15 +138,18 @@ impl PlatformOps for LinuxOps {
                         };
 
                         // Send WindowCreated event
-                        let _sent = self
-                            .engine_handle
+                        self.engine_handle
                             .send(Message::Data(EngineData::FromDriver(
                                 DisplayEvent::WindowCreated { window: win },
-                            )));
+                            )))
+                            .expect("Failed to send WindowCreated event to engine");
                         self.window = Some(window);
                     }
                     Err(e) => {
-                        error!("Failed to create X11 window: {}", e);
+                        return Err(HandlerError::Fatal(format!(
+                            "Failed to create X11 window: {}",
+                            e
+                        )));
                     }
                 }
             }
@@ -189,9 +194,9 @@ impl PlatformOps for LinuxOps {
                     while xlib::XPending(window.display) > 0 {
                         xlib::XNextEvent(window.display, &mut event);
                         if let Some(display_event) = events::map_event(&event, window, window_id) {
-                            let _sent = self
-                                .engine_handle
-                                .send(Message::Data(EngineData::FromDriver(display_event)));
+                            self.engine_handle
+                                .send(Message::Data(EngineData::FromDriver(display_event)))
+                                .expect("failed to send engine event");
                         }
                     }
                     return Ok(ActorStatus::Busy);
