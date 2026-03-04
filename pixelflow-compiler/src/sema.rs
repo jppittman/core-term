@@ -37,6 +37,12 @@ const DSL_METHODS: &[&str] = &[
     "clone",    // clone for reuse
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelMode {
+    Named,
+    Anonymous,
+}
+
 /// The result of semantic analysis.
 #[derive(Debug)]
 pub struct AnalyzedKernel {
@@ -49,8 +55,12 @@ pub struct AnalyzedKernel {
 /// Perform semantic analysis on a parsed kernel.
 pub fn analyze(kernel: KernelDef) -> syn::Result<AnalyzedKernel> {
     // Anonymous kernels (no struct_decl) allow captured variables from environment
-    let is_anonymous = kernel.struct_decl.is_none();
-    let mut analyzer = SemanticAnalyzer::new(is_anonymous);
+    let mode = if kernel.struct_decl.is_none() {
+        KernelMode::Anonymous
+    } else {
+        KernelMode::Named
+    };
+    let mut analyzer = SemanticAnalyzer::new(mode);
 
     // Register all parameters in the symbol table
     for param in &kernel.params {
@@ -74,10 +84,10 @@ struct SemanticAnalyzer {
 }
 
 impl SemanticAnalyzer {
-    fn new(is_anonymous: bool) -> Self {
+    fn new(mode: KernelMode) -> Self {
         SemanticAnalyzer {
             symbols: SymbolTable::new(),
-            is_anonymous,
+            is_anonymous: mode == KernelMode::Anonymous,
         }
     }
 
