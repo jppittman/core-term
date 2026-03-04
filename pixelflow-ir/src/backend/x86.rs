@@ -1460,7 +1460,7 @@ impl U32x8 {
     /// Pack 8 f32 Fields (RGBA) into packed u32 pixels.
     #[allow(dead_code)]
     #[inline(always)]
-    pub(crate) fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
+    pub fn pack_rgba(r: F32x8, g: F32x8, b: F32x8, a: F32x8) -> Self {
         unsafe {
             let scale = _mm256_set1_ps(255.0);
             let zero = _mm256_setzero_ps();

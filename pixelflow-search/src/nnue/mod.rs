@@ -871,6 +871,15 @@ pub struct DepthLimitedSample {
     pub saturated: bool,
 }
 
+/// Indicates whether the search saturated before hitting the budget limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaturationStatus {
+    /// Saturated before budget limit
+    Saturated,
+    /// Hit budget limit
+    BudgetExhausted,
+}
+
 impl DepthLimitedSample {
     /// Create a new sample from an expression and saturation results.
     #[must_use]
@@ -879,7 +888,7 @@ impl DepthLimitedSample {
         initial_cost: u32,
         achievable_cost: u32,
         budget: u16,
-        saturated: bool,
+        saturation: SaturationStatus,
     ) -> Self {
         let features = extract_features(&expr);
         Self {
@@ -888,7 +897,7 @@ impl DepthLimitedSample {
             initial_cost,
             achievable_cost,
             budget,
-            saturated,
+            saturated: saturation == SaturationStatus::Saturated,
         }
     }
 
