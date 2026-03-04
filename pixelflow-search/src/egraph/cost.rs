@@ -86,11 +86,29 @@ impl Default for CostModel {
 }
 
 impl CostModel {
-    /// Create an empty cost model with zero weights.
+    /// Create a cost model populated with `OpKind::default_cost()` values.
     pub fn new() -> Self {
+        let mut costs = [0usize; OpKind::COUNT];
+        // Populate from OpKind::default_cost() for realistic instruction costs
+        let mut i = 0;
+        while i < OpKind::COUNT {
+            if let Some(op) = OpKind::from_index(i) {
+                costs[i] = op.default_cost();
+            }
+            i += 1;
+        }
+        Self {
+            costs,
+            depth_threshold: 1024, // Effectively disabled
+            depth_penalty: 0,
+        }
+    }
+
+    /// Create an empty cost model with zero weights.
+    pub fn zeroed() -> Self {
         Self {
             costs: [0usize; OpKind::COUNT],
-            depth_threshold: 1024, // Effectively disabled
+            depth_threshold: 1024,
             depth_penalty: 0,
         }
     }
@@ -194,6 +212,7 @@ impl CostModel {
             "ne" => OpKind::Ne,
             "select" => OpKind::Select,
             "clamp" => OpKind::Clamp,
+            "mul_rsqrt" | "mulrsqrt" => OpKind::MulRsqrt,
             "tuple" => OpKind::Tuple,
             _ => return self.costs[OpKind::Add.index()], // Default for unknown
         };
@@ -304,6 +323,32 @@ impl CostModel {
             // Unknown keys are silently ignored (external data format)
         }
         model
+    }
+
+    /// Create a cost model with realistic costs, including cheap FMA.
+    ///
+    /// Uses `OpKind::default_cost()` for all operations, which assigns
+    /// MulAdd the same cost as Mul (5 cycles). This makes FMA fusion
+    /// profitable since it replaces Mul(5) + Add(4) = 9 with MulAdd(5).
+    pub fn with_fma() -> Self {
+        Self::new()
+    }
+
+    /// Create a cost model where Rsqrt is cheap (hardware instruction).
+    ///
+    /// Like `with_fma()` but also makes Rsqrt cheaper than Div+Sqrt,
+    /// so `x / sqrt(y)` is rewritten to `x * rsqrt(y)`.
+    pub fn with_fast_rsqrt() -> Self {
+        let mut model = Self::with_fma();
+        model.set_cost(OpKind::Rsqrt, 3); // Cheaper than div(15) + sqrt(15)
+        model
+    }
+
+    /// Create a fully optimized cost model with all hardware ops cheap.
+    ///
+    /// Enables all algebraic rewrites: FMA fusion, rsqrt lowering, etc.
+    pub fn fully_optimized() -> Self {
+        Self::with_fast_rsqrt()
     }
 
     /// Convert to HashMap for interop.

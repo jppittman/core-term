@@ -611,6 +611,7 @@ fn op_kind_to_static(kind: OpKind) -> &'static dyn pixelflow_search::egraph::ops
         OpKind::Ne => &ops::Ne,
         OpKind::Select => &ops::Select,
         OpKind::Clamp => &ops::Clamp,
+        OpKind::MulRsqrt => &ops::MulRsqrt,
         OpKind::Tuple => &ops::Tuple,
         OpKind::Var | OpKind::Const => panic!("Var/Const should not need op conversion"),
     }

@@ -136,6 +136,9 @@ define_op!(Ne);
 define_op!(Select);
 define_op!(Clamp);
 
+// === Fused ===
+define_op!(MulRsqrt);
+
 // === Aggregates ===
 define_op!(Tuple);
 
@@ -182,6 +185,7 @@ pub fn op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
         OpKind::Ne => Some(&Ne),
         OpKind::Select => Some(&Select),
         OpKind::Clamp => Some(&Clamp),
+        OpKind::MulRsqrt => Some(&MulRsqrt),
         OpKind::Tuple => Some(&Tuple),
         // Leaves (not operations)
         OpKind::Var | OpKind::Const => None,

@@ -1605,9 +1605,9 @@ mod tests {
 
     fn optimize_code_egraph(input: proc_macro2::TokenStream, costs: &CostModel) -> String {
         let kernel = parse(input).unwrap();
-        let analyzed = analyze(kernel).unwrap();
-        let optimized = optimize_with_egraph(analyzed, costs);
-        format!("{:?}", optimized.def.body)
+        let mut analyzed = analyze(kernel).unwrap();
+        analyzed.def.body = optimize_via_egraph(&analyzed.def.body, costs);
+        format!("{:?}", analyzed.def.body)
     }
 
     #[test]

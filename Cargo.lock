@@ -1426,9 +1426,11 @@ name = "pixelflow-ml"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "libc",
  "libm",
  "pixelflow-compiler",
  "pixelflow-core",
+ "pixelflow-ir",
 ]
 
 [[package]]
@@ -1437,6 +1439,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "criterion",
+ "libc",
  "libm",
  "pixelflow-compiler",
  "pixelflow-core",

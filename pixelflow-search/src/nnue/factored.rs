@@ -384,6 +384,7 @@ impl OpEmbeddings {
             0.15,  // Ne - 3 cycles
             0.2,   // Select - 4 cycles
             0.3,   // Clamp - 6 cycles (2x compare + select)
+            0.25,  // MulRsqrt - 5 cycles (fused)
             0.0,   // Tuple - free (structural)
         ];
 

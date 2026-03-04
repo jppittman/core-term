@@ -61,13 +61,16 @@ pub enum OpKind {
     Select = 38,
     Clamp = 39,
 
+    // --- Fused ---
+    MulRsqrt = 40,
+
     // --- Structure ---
-    Tuple = 40,
+    Tuple = 41,
 }
 
 impl OpKind {
     /// Total number of operations.
-    pub const COUNT: usize = 41;
+    pub const COUNT: usize = 42;
 
     /// Convert to array index.
     #[inline]
@@ -96,7 +99,7 @@ impl OpKind {
             Self::Exp2 | Self::Ln | Self::Log2 | Self::Log10 => 1,
 
             Self::Add | Self::Sub | Self::Mul | Self::Div |
-            Self::Min | Self::Max |
+            Self::Min | Self::Max | Self::MulRsqrt |
             Self::Atan2 | Self::Pow | Self::Hypot |
             Self::Lt | Self::Le | Self::Gt | Self::Ge |
             Self::Eq | Self::Ne => 2,
@@ -148,6 +151,7 @@ impl OpKind {
             Self::Ne => "ne",
             Self::Select => "select",
             Self::Clamp => "clamp",
+            Self::MulRsqrt => "mul_rsqrt",
             Self::Tuple => "tuple",
         }
     }
@@ -195,6 +199,7 @@ impl OpKind {
             "ne" => Some(Self::Ne),
             "select" => Some(Self::Select),
             "clamp" => Some(Self::Clamp),
+            "mul_rsqrt" | "mulrsqrt" => Some(Self::MulRsqrt),
             "tuple" => Some(Self::Tuple),
             _ => None,
         }
@@ -209,7 +214,7 @@ impl OpKind {
             Self::Add | Self::Sub | Self::Min | Self::Max |
             Self::Lt | Self::Le | Self::Gt | Self::Ge |
             Self::Eq | Self::Ne | Self::Select | Self::Clamp => 4,
-            Self::Mul | Self::MulAdd | Self::Recip | Self::Rsqrt => 5,
+            Self::Mul | Self::MulAdd | Self::MulRsqrt | Self::Recip | Self::Rsqrt => 5,
             Self::Div | Self::Sqrt | Self::Sin | Self::Cos | Self::Tan |
             Self::Asin | Self::Acos | Self::Atan | Self::Atan2 |
             Self::Exp | Self::Exp2 | Self::Ln | Self::Log2 | Self::Log10 |
@@ -271,7 +276,7 @@ impl OpKind {
     pub const fn is_seed_op(self) -> bool {
         !matches!(self,
             Self::Var | Self::Const | Self::Tuple |
-            Self::MulAdd |
+            Self::MulAdd | Self::MulRsqrt |
             Self::Lt | Self::Le | Self::Gt | Self::Ge | Self::Eq | Self::Ne |
             Self::Select
         )
@@ -299,7 +304,7 @@ impl OpKind {
             Self::Div => EmitStyle::BinaryInfix("/"),
 
             // Binary method: (a).min(b)
-            Self::Min | Self::Max | Self::Atan2 | Self::Hypot | Self::Pow |
+            Self::Min | Self::Max | Self::MulRsqrt | Self::Atan2 | Self::Hypot | Self::Pow |
             Self::Lt | Self::Le | Self::Gt | Self::Ge | Self::Eq | Self::Ne => EmitStyle::BinaryMethod,
 
             // Ternary method: (a).mul_add(b, c)

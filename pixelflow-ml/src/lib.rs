@@ -9,3 +9,15 @@ extern crate alloc;
 
 #[cfg(feature = "graphics")]
 pub mod graphics;
+
+pub mod layer;
+pub mod nnue;
+pub mod nnue_trainer;
+pub mod evaluator;
+pub mod nonlinear_eval;
+pub mod benchmark;
+pub mod train;
+pub mod hce_extractor;
+
+#[cfg(feature = "egraph-training")]
+pub mod training;

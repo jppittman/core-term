@@ -11,15 +11,43 @@ workspace = true
 bench = false
 
 [features]
-default = ["graphics"]
+default = ["graphics", "std"]
+# Enable standard library support (needed for training, benchmarking)
+std = []
 # Enable graphics integration (harmonic attention, SH features) - requires pixelflow-core
 graphics = ["dep:pixelflow-core"]
+# Enable e-graph training pipeline (requires pixelflow-nnue crate - not yet available)
+egraph-training = ["std"]
 
 [dependencies]
 pixelflow-core = { path = "../pixelflow-core", optional = true }
+pixelflow-ir = { path = "../pixelflow-ir" }
 libm = "0.2.15"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 criterion = "0.5"
 pixelflow-core = { path = "../pixelflow-core" }
 pixelflow-compiler = { path = "../pixelflow-compiler" }
+
+[[example]]
+name = "guided_training"
+required-features = ["egraph-training"]
+
+[[example]]
+name = "train_factored"
+required-features = ["egraph-training"]
+
+[[example]]
+name = "collect_benchmark_costs"
+required-features = ["egraph-training"]
+
+[[example]]
+name = "learn_hce"
+required-features = ["egraph-training"]
+
+[[example]]
+name = "gen_egraph_variants"
+required-features = ["egraph-training"]

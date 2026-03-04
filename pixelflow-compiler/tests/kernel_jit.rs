@@ -1,6 +1,17 @@
 //! Integration tests for the kernel_jit! macro.
 //!
 //! These tests verify the full pipeline from macro input to executable JIT code.
+//!
+//! The JIT backend currently emits SSE2 (__m128) on x86-64 and NEON (float32x4_t)
+//! on aarch64. These tests are disabled when Field is wider (AVX2/AVX-512) because
+//! the transmute between JIT output and Field would be a size mismatch.
+#![cfg(any(
+    target_arch = "aarch64",
+    all(
+        target_arch = "x86_64",
+        not(any(target_feature = "avx2", target_feature = "avx512f"))
+    )
+))]
 
 use pixelflow_compiler::kernel_jit;
 use pixelflow_core::{Field, Manifold};
