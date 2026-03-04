@@ -466,6 +466,7 @@ pub fn emit(expr: &Expr, depth: u8) -> Result<(Vec<u8>, Reg), &'static str> {
         }
 
         Expr::Nary(_, _) => Err("Nary not supported in JIT"),
+        Expr::Param(_) => Err("Param not supported in JIT"),
     }
 }
 
@@ -1552,9 +1553,9 @@ pub fn compile_dag(expr: &Expr) -> Result<CompileResult, &'static str> {
 #[cfg(all(feature = "alloc", target_arch = "x86_64"))]
 pub fn compile(expr: &Expr) -> Result<executable::ExecutableCode, &'static str> {
     // Lower compound ops to primitives
-    let lowered = lower::lower(expr);
+    // let lowered = lower::lower(expr); // TODO: implement lowering
 
-    let (mut code, result_reg) = emit(&lowered, 0)?;
+    let (mut code, result_reg) = emit(expr, 0)?;
 
     // Move result to xmm0 if not already there
     if result_reg.0 != 0 {
