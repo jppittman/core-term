@@ -108,11 +108,7 @@ impl Jet3 {
     ) {
         let len_sq = self.dx * self.dx + self.dy * self.dy + self.dz * self.dz;
         let inv_len = len_sq.rsqrt();
-        (
-            self.dx.clone() * inv_len.clone(),
-            self.dy.clone() * inv_len.clone(),
-            self.dz.clone() * inv_len,
-        )
+        (self.dx * inv_len, self.dy * inv_len, self.dz * inv_len)
     }
 
     /// Get the raw gradient without normalization.
@@ -176,8 +172,8 @@ impl Jet3 {
         let sign = self.val / self.val.abs();
         Self::new(
             self.val.abs(),
-            self.dx * sign.clone(),
-            self.dy * sign.clone(),
+            self.dx * sign,
+            self.dy * sign,
             self.dz * sign,
         )
     }
@@ -255,8 +251,8 @@ impl Jet3Sqrt {
         let half_rsqrt = rsqrt_val * Field::from(0.5);
         Jet3::new(
             sqrt_val,
-            self.0.dx * half_rsqrt.clone(),
-            self.0.dy * half_rsqrt.clone(),
+            self.0.dx * half_rsqrt,
+            self.0.dy * half_rsqrt,
             self.0.dz * half_rsqrt,
         )
     }
@@ -286,8 +282,8 @@ impl core::ops::Div<Jet3Sqrt> for Jet3 {
 
         Jet3::new(
             result_val,
-            self.dx * rsqrt_b - self.val * b.dx * half_rsqrt_cubed.clone(),
-            self.dy * rsqrt_b - self.val * b.dy * half_rsqrt_cubed.clone(),
+            self.dx * rsqrt_b - self.val * b.dx * half_rsqrt_cubed,
+            self.dy * rsqrt_b - self.val * b.dy * half_rsqrt_cubed,
             self.dz * rsqrt_b - self.val * b.dz * half_rsqrt_cubed,
         )
     }
@@ -403,12 +399,7 @@ impl Jet3 {
     /// via operator overloads, not call raw SIMD operations directly.
     #[inline(always)]
     pub(crate) fn scale(self, s: Field) -> Jet3 {
-        Jet3::new(
-            self.val * s,
-            self.dx * s,
-            self.dy * s,
-            self.dz * s,
-        )
+        Jet3::new(self.val * s, self.dx * s, self.dy * s, self.dz * s)
     }
 }
 
@@ -419,12 +410,12 @@ impl core::ops::Div for Jet3 {
         // Quotient rule: (f / g)' = (f' * g - f * g') / g²
         let g_sq = rhs.val * rhs.val;
         let inv_g_sq = Field::from(1.0) / g_sq;
-        let scale = rhs.val.clone() * inv_g_sq.clone();
+        let scale = rhs.val * inv_g_sq;
         Self::new(
             self.val / rhs.val,
-            self.dx * scale.clone() - self.val * rhs.dx.clone() * inv_g_sq.clone(),
-            self.dy * scale.clone() - self.val * rhs.dy.clone() * inv_g_sq.clone(),
-            self.dz * scale - self.val * rhs.dz.clone() * inv_g_sq,
+            self.dx * scale - self.val * rhs.dx * inv_g_sq,
+            self.dy * scale - self.val * rhs.dy * inv_g_sq,
+            self.dz * scale - self.val * rhs.dz * inv_g_sq,
         )
     }
 }
@@ -508,8 +499,8 @@ impl Numeric for Jet3 {
         let half_rsqrt = rsqrt_val * Field::from(0.5);
         Self::new(
             sqrt_val,
-            self.dx * half_rsqrt.clone(),
-            self.dy * half_rsqrt.clone(),
+            self.dx * half_rsqrt,
+            self.dy * half_rsqrt,
             self.dz * half_rsqrt,
         )
     }
@@ -519,8 +510,8 @@ impl Numeric for Jet3 {
         let sign = self.val / self.val.abs();
         Self::new(
             self.val.abs(),
-            self.dx * sign.clone(),
-            self.dy * sign.clone(),
+            self.dx * sign,
+            self.dy * sign,
             self.dz * sign,
         )
     }
@@ -636,12 +627,12 @@ impl Numeric for Jet3 {
     fn atan2(self, x: Self) -> Self {
         let r_sq = self.val * self.val + x.val * x.val;
         let inv_r_sq = Field::from(1.0) / r_sq;
-        let dy_darg = x.val.clone() * inv_r_sq.clone();
-        let dx_darg = (-self.val).clone() * inv_r_sq;
+        let dy_darg = x.val * inv_r_sq;
+        let dx_darg = (-self.val) * inv_r_sq;
         Self::new(
             self.val.atan2(x.val),
-            self.dx * dy_darg.clone() + x.dx * dx_darg.clone(),
-            self.dy * dy_darg.clone() + x.dy * dx_darg.clone(),
+            self.dx * dy_darg + x.dx * dx_darg,
+            self.dy * dy_darg + x.dy * dx_darg,
             self.dz * dy_darg + x.dz * dx_darg,
         )
     }
@@ -655,8 +646,8 @@ impl Numeric for Jet3 {
         let coeff = exp.val.raw_mul(inv_self);
         Self::new(
             val,
-            val * (exp.dx * ln_base + coeff.clone() * self.dx),
-            val * (exp.dy * ln_base + coeff.clone() * self.dy),
+            val * (exp.dx * ln_base + coeff * self.dx),
+            val * (exp.dy * ln_base + coeff * self.dy),
             val * (exp.dz * ln_base + coeff * self.dz),
         )
     }
@@ -679,8 +670,8 @@ impl Numeric for Jet3 {
         let deriv_coeff = inv_val * log2_e;
         Self::new(
             self.val.log2(),
-            self.dx * deriv_coeff.clone(),
-            self.dy * deriv_coeff.clone(),
+            self.dx * deriv_coeff,
+            self.dy * deriv_coeff,
             self.dz * deriv_coeff,
         )
     }
@@ -694,8 +685,8 @@ impl Numeric for Jet3 {
         let deriv_coeff = exp2_val * ln_2;
         Self::new(
             exp2_val,
-            self.dx * deriv_coeff.clone(),
-            self.dy * deriv_coeff.clone(),
+            self.dx * deriv_coeff,
+            self.dy * deriv_coeff,
             self.dz * deriv_coeff,
         )
     }
@@ -719,11 +710,11 @@ impl Numeric for Jet3 {
     #[inline(always)]
     fn recip(self) -> Self {
         let inv = self.val.recip();
-        let neg_inv_sq = Field::from(0.0) - inv.clone() * inv;
+        let neg_inv_sq = Field::from(0.0) - inv * inv;
         Self::new(
             inv,
-            self.dx * neg_inv_sq.clone(),
-            self.dy * neg_inv_sq.clone(),
+            self.dx * neg_inv_sq,
+            self.dy * neg_inv_sq,
             self.dz * neg_inv_sq,
         )
     }
@@ -733,12 +724,7 @@ impl Numeric for Jet3 {
         let rsqrt_val = self.val.rsqrt();
         let rsqrt_cubed = rsqrt_val * rsqrt_val * rsqrt_val;
         let scale = Field::from(-0.5) * rsqrt_cubed;
-        Self::new(
-            rsqrt_val,
-            self.dx * scale.clone(),
-            self.dy * scale.clone(),
-            self.dz * scale,
-        )
+        Self::new(rsqrt_val, self.dx * scale, self.dy * scale, self.dz * scale)
     }
 
     #[inline(always)]
@@ -747,8 +733,8 @@ impl Numeric for Jet3 {
         let inv_val = Field::from(1.0) / self.val;
         Self::new(
             self.val.ln(),
-            self.dx * inv_val.clone(),
-            self.dy * inv_val.clone(),
+            self.dx * inv_val,
+            self.dy * inv_val,
             self.dz * inv_val,
         )
     }
@@ -761,8 +747,8 @@ impl Numeric for Jet3 {
         let deriv_coeff = inv_val * log10_e;
         Self::new(
             self.val.log10(),
-            self.dx * deriv_coeff.clone(),
-            self.dy * deriv_coeff.clone(),
+            self.dx * deriv_coeff,
+            self.dy * deriv_coeff,
             self.dz * deriv_coeff,
         )
     }
@@ -775,8 +761,8 @@ impl Numeric for Jet3 {
         let sec_sq = Field::from(1.0) / (cos_val * cos_val);
         Self::new(
             tan_val,
-            self.dx * sec_sq.clone(),
-            self.dy * sec_sq.clone(),
+            self.dx * sec_sq,
+            self.dy * sec_sq,
             self.dz * sec_sq,
         )
     }
@@ -789,8 +775,8 @@ impl Numeric for Jet3 {
         let inv_sqrt = one_minus_sq.rsqrt();
         Self::new(
             self.val.asin(),
-            self.dx * inv_sqrt.clone(),
-            self.dy * inv_sqrt.clone(),
+            self.dx * inv_sqrt,
+            self.dy * inv_sqrt,
             self.dz * inv_sqrt,
         )
     }
@@ -803,8 +789,8 @@ impl Numeric for Jet3 {
         let neg_inv_sqrt = Field::from(0.0) - one_minus_sq.rsqrt();
         Self::new(
             self.val.acos(),
-            self.dx * neg_inv_sqrt.clone(),
-            self.dy * neg_inv_sqrt.clone(),
+            self.dx * neg_inv_sqrt,
+            self.dy * neg_inv_sqrt,
             self.dz * neg_inv_sqrt,
         )
     }
@@ -815,12 +801,7 @@ impl Numeric for Jet3 {
         let one = Field::from(1.0);
         let one_plus_sq = one + self.val * self.val;
         let inv = Field::from(1.0) / one_plus_sq;
-        Self::new(
-            self.val.atan(),
-            self.dx * inv.clone(),
-            self.dy * inv.clone(),
-            self.dz * inv,
-        )
+        Self::new(self.val.atan(), self.dx * inv, self.dy * inv, self.dz * inv)
     }
 
     #[inline(always)]
@@ -844,12 +825,12 @@ impl Numeric for Jet3 {
         // hypot(x, y) = sqrt(x² + y²)
         let h = self.val.hypot(y.val);
         let inv_h = Field::from(1.0) / h;
-        let dx_coeff = self.val * inv_h.clone();
+        let dx_coeff = self.val * inv_h;
         let dy_coeff = y.val * inv_h;
         Self::new(
             h,
-            self.dx * dx_coeff.clone() + y.dx * dy_coeff.clone(),
-            self.dy * dx_coeff.clone() + y.dy * dy_coeff.clone(),
+            self.dx * dx_coeff + y.dx * dy_coeff,
+            self.dy * dx_coeff + y.dy * dy_coeff,
             self.dz * dx_coeff + y.dz * dy_coeff,
         )
     }
@@ -865,9 +846,15 @@ impl Numeric for Jet3 {
         let db_coeff = result.raw_mul(half_inv_b);
         Self::new(
             result,
-            self.dx.raw_mul(da_coeff).raw_sub(other.dx.raw_mul(db_coeff)),
-            self.dy.raw_mul(da_coeff).raw_sub(other.dy.raw_mul(db_coeff)),
-            self.dz.raw_mul(da_coeff).raw_sub(other.dz.raw_mul(db_coeff)),
+            self.dx
+                .raw_mul(da_coeff)
+                .raw_sub(other.dx.raw_mul(db_coeff)),
+            self.dy
+                .raw_mul(da_coeff)
+                .raw_sub(other.dy.raw_mul(db_coeff)),
+            self.dz
+                .raw_mul(da_coeff)
+                .raw_sub(other.dz.raw_mul(db_coeff)),
         )
     }
 
@@ -891,7 +878,12 @@ impl Numeric for Jet3 {
             lo.dz,
             Field::select_raw(mask_high, hi.dz, self.dz),
         );
-        Self { val: clamped, dx, dy, dz }
+        Self {
+            val: clamped,
+            dx,
+            dy,
+            dz,
+        }
     }
 
     #[inline(always)]

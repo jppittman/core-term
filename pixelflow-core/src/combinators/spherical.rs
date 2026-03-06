@@ -90,8 +90,8 @@ impl<const L: usize, const M: i32> Manifold<Field4> for SphericalHarmonic<L, M> 
         // Build AST for normalization - keep as graph
         let r_sq = x * x + y * y + z * z;
         let inv_r = r_sq.rsqrt();
-        let nx = x * inv_r.clone();
-        let ny = y * inv_r.clone();
+        let nx = x * inv_r;
+        let ny = y * inv_r;
         let nz = z * inv_r;
 
         // We need Field values for the recurrence in legendre_p
@@ -274,8 +274,8 @@ impl<M: Manifold<Field4, Output = (Field, Field, Field)>> Manifold<Field4> for S
         // Normalize direction - build AST, eval at boundaries
         let r_sq = dx * dx + dy * dy + dz * dz;
         let inv_r = r_sq.rsqrt();
-        let nx = eval_const(dx * inv_r.clone());
-        let ny = eval_const(dy * inv_r.clone());
+        let nx = eval_const(dx * inv_r);
+        let ny = eval_const(dy * inv_r);
         let nz = eval_const(dz * inv_r);
 
         // Evaluate SH basis and accumulate
@@ -491,24 +491,21 @@ pub fn sh2_basis_at(dir: (Field, Field, Field)) -> [Field; 9] {
     // Normalize direction - keep as AST
     let r2 = x * x + y * y + z * z;
     let inv_r = r2.rsqrt();
-    let nx = x * inv_r.clone();
-    let ny = y * inv_r.clone();
+    let nx = x * inv_r;
+    let ny = y * inv_r;
     let nz = z * inv_r;
 
     // SH basis functions - one big graph per element, eval once at boundary
     [
         Field::from(SH_NORM[0][0]),
-        eval_const(Field::from(SH_NORM[1][1]) * ny.clone()),
-        eval_const(Field::from(SH_NORM[1][0]) * nz.clone()),
-        eval_const(Field::from(SH_NORM[1][1]) * nx.clone()),
-        eval_const(Field::from(SH_NORM[2][2]) * nx.clone() * ny.clone()),
-        eval_const(Field::from(SH_NORM[2][1]) * ny.clone() * nz.clone()),
-        eval_const(
-            Field::from(SH_NORM[2][0])
-                * (Field::from(3.0) * nz.clone() * nz.clone() - Field::from(1.0)),
-        ),
-        eval_const(Field::from(SH_NORM[2][1]) * nx.clone() * nz),
-        eval_const(Field::from(SH_NORM[2][2]) * (nx.clone() * nx - ny.clone() * ny)),
+        eval_const(Field::from(SH_NORM[1][1]) * ny),
+        eval_const(Field::from(SH_NORM[1][0]) * nz),
+        eval_const(Field::from(SH_NORM[1][1]) * nx),
+        eval_const(Field::from(SH_NORM[2][2]) * nx * ny),
+        eval_const(Field::from(SH_NORM[2][1]) * ny * nz),
+        eval_const(Field::from(SH_NORM[2][0]) * (Field::from(3.0) * nz * nz - Field::from(1.0))),
+        eval_const(Field::from(SH_NORM[2][1]) * nx * nz),
+        eval_const(Field::from(SH_NORM[2][2]) * (nx * nx - ny * ny)),
     ]
 }
 

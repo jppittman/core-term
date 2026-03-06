@@ -13,3 +13,7 @@
 ## 2025-12-28 - Rasterizer Inner Loop Hoisting
 **Learning:** The inner loop of `execute_stripe` was re-evaluating `Field::sequential(start)` on every iteration, which involves multiple SIMD instructions (broadcast/load + add).
 **Action:** Hoisted the initialization of `xs` out of the loop and updated it incrementally using a pre-computed `step` vector. This reduced the inner loop overhead significantly, yielding a ~34% improvement in rasterization throughput.
+
+## 2025-01-28 - AST Optimization: Redundant Clones in Math Operations
+**Learning:** `Field` mathematical operators (such as those overriding traits in `numeric.rs` or trigonometric combinators like `cheby_cos`) heavily rely on producing new AST nodes for evaluation, rather than processing immediate data. I discovered hundreds of redundant `.clone()` invocations being called on `Field` instances which implicitly execute a cheap `Copy` or clone operation due to being a small structure in many instances, yet create redundant IR generation steps when multiplied out via macros or inside manually overloaded methods for generic math traits (e.g. `Jet2`, `Jet2h`, `Jet3` mathematical operations such as multiplication, `hypot` or `atan2`).
+**Action:** When working on types that return AST nodes (`Field`) mapped to numeric operators (`*`, `+`), rely directly on ownership transfer or implicit `Copy` operations for the base types inside trait functions rather than calling explicit `.clone()` on value types like `Jet3.dx` which is an AST handle. This reduces IR redundancy and limits stack pressure.
