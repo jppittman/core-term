@@ -4,7 +4,6 @@ use crate::ansi::commands::{Attribute, C0Control, CsiCommand};
 use crate::color::{Color, NamedColor};
 use crate::glyph::{Attributes, ContentCell, Glyph};
 use crate::keys::{KeySymbol, Modifiers};
-// use crate::term::action::{MouseButton, MouseEventType}; // Not used directly in this file anymore
 use crate::term::{
     modes::{DecModeConstant, StandardModeConstant}, // For DECTCEM test
     snapshot::SelectionRange,
@@ -24,9 +23,6 @@ use crate::term::{
     UserInputAction,
 };
 use pixelflow_runtime::input::MouseButton; // For mouse input
-
-// Default scrollback for tests, can be adjusted.
-// const TEST_SCROLLBACK_LIMIT: usize = 100;
 
 fn create_test_emulator(cols: usize, rows: usize) -> TerminalEmulator {
     TerminalEmulator::new(cols, rows)
@@ -59,7 +55,7 @@ fn extend_selection_to(col: usize, row: usize) -> UserInputAction {
     }
 }
 
-// Helper to get a Glyph from the snapshot.
+/// Helper to get a Glyph from the snapshot.
 fn get_glyph_from_snapshot(snapshot: &TerminalSnapshot, row: usize, col: usize) -> Option<Glyph> {
     if row < snapshot.dimensions.1 && col < snapshot.dimensions.0 {
         snapshot
@@ -71,7 +67,7 @@ fn get_glyph_from_snapshot(snapshot: &TerminalSnapshot, row: usize, col: usize) 
     }
 }
 
-// asserts screen content and cursor position
+/// Asserts screen content and cursor position.
 #[allow(clippy::panic_in_result_fn)] // Allow panic in this test helper
 fn assert_screen_state(
     snapshot: &TerminalSnapshot,

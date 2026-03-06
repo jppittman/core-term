@@ -19,7 +19,7 @@ fn resize_event(cols: usize, rows: usize) -> ControlEvent {
     }
 }
 
-// Helper to get a Glyph from the snapshot.
+/// Helper to get a Glyph from the snapshot.
 fn get_glyph_from_snapshot(snapshot: &TerminalSnapshot, row: usize, col: usize) -> Option<Glyph> {
     if row < snapshot.dimensions.1 && col < snapshot.dimensions.0 {
         snapshot
@@ -31,7 +31,7 @@ fn get_glyph_from_snapshot(snapshot: &TerminalSnapshot, row: usize, col: usize) 
     }
 }
 
-// asserts screen content and cursor position
+/// Asserts screen content and cursor position.
 #[allow(clippy::panic_in_result_fn)] // Allow panic in this test helper
 fn assert_screen_state(
     snapshot: &TerminalSnapshot,
@@ -46,22 +46,13 @@ fn assert_screen_state(
         snapshot.dimensions.1,
         snapshot.lines
     );
-    // if !expected_screen.is_empty() { // Initial width check commented out as it was problematic
-    //     assert!(
-    //         snapshot.dimensions.0 >= expected_screen[0].chars().map(|c| crate::term::unicode::get_char_display_width(c).max(1)).sum::<usize>(),
-    //         "Snapshot col count ({}) is less than the character-width-aware width of the first expected row ({}). Expected screen: {:?}",
-    //         snapshot.dimensions.0,
-    //         expected_screen[0].chars().map(|c| crate::term::unicode::get_char_display_width(c).max(1)).sum::<usize>(),
-    //         expected_screen[0]
-    //     );
-    // }
 
     for r in 0..snapshot.dimensions.1 {
         let expected_row_str = expected_screen.get(r).unwrap_or_else(|| {
             panic!("Expected screen data missing for row {}", r);
         });
 
-        let mut s_col = 0; // current column in the snapshot being checked
+        let mut s_col = 0;
         let mut expected_chars_iter = expected_row_str.chars().peekable();
 
         while let Some(expected_char) = expected_chars_iter.next() {
@@ -519,7 +510,7 @@ fn it_should_move_cursor_down_keeping_column_on_line_feed_if_lnm_is_off() {
     let mut term = create_test_emulator(10, 3); // LNM is off by default
                                                 // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        CsiCommand::ResetMode(20),
+        CsiCommand::ResetMode(StandardModeConstant::LinefeedNewlineMode as u16),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A'))); // Char 'A' at (0,0). Cursor at (0,1).
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
@@ -557,7 +548,7 @@ fn it_should_scroll_up_and_move_cursor_down_keeping_column_on_line_feed_at_botto
     let mut term = create_test_emulator(5, 2); // LNM is off by default
                                                // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        CsiCommand::ResetMode(20),
+        CsiCommand::ResetMode(StandardModeConstant::LinefeedNewlineMode as u16),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
@@ -586,7 +577,7 @@ fn it_should_move_cursor_down_and_to_col_0_on_line_feed_if_lnm_is_on() {
     let mut term = create_test_emulator(10, 3);
     // Enable Linefeed/Newline Mode - testing that LF does CR+LF
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
-        20,
+        StandardModeConstant::LinefeedNewlineMode as u16,
     ))));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
@@ -624,7 +615,7 @@ fn it_should_scroll_and_move_to_col_0_on_line_feed_at_bottom_if_lnm_is_on() {
     let mut term = create_test_emulator(5, 2);
     // Enable Linefeed/Newline Mode - testing that LF does CR+LF
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
-        20,
+        StandardModeConstant::LinefeedNewlineMode as u16,
     ))));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
@@ -687,7 +678,7 @@ fn it_should_not_wrap_cursor_on_backspace_at_start_of_line() {
     let mut term = create_test_emulator(10, 2);
     // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        CsiCommand::ResetMode(20),
+        CsiCommand::ResetMode(StandardModeConstant::LinefeedNewlineMode as u16),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('L')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
