@@ -7,46 +7,6 @@ use super::node::{EClassId, ENode};
 use super::ops::Op;
 use super::rewrite::{Rewrite, RewriteAction};
 
-/// Associativity: (a op b) op c → a op (b op c)
-#[allow(dead_code)]
-pub struct Associative {
-    op: &'static dyn Op,
-}
-
-impl Associative {
-    #[allow(dead_code)]
-    pub fn new(op: &'static dyn Op) -> Box<Self> {
-        Box::new(Self { op })
-    }
-}
-
-impl Rewrite for Associative {
-    fn name(&self) -> &str { "associative" }
-
-    fn apply(&self, egraph: &EGraph, _id: EClassId, node: &ENode) -> Option<RewriteAction> {
-        let node_op = node.op()?;
-        if node_op.kind() != self.op.kind() { return None; }
-
-        let (left, right) = node.binary_operands()?;
-
-        for child in egraph.nodes(left) {
-            if let Some(child_op) = child.op() {
-                if child_op.kind() == self.op.kind() {
-                    if let Some((a, b)) = child.binary_operands() {
-                        return Some(RewriteAction::Associate {
-                            op: self.op,
-                            a,
-                            b,
-                            c: right,
-                        });
-                    }
-                }
-            }
-        }
-        None
-    }
-}
-
 /// Commutativity: a op b → b op a
 pub struct Commutative {
     op: &'static dyn Op,
