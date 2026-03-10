@@ -1,6 +1,7 @@
 use crate::ansi::commands::{AnsiCommand, Attribute, C0Control, CsiCommand};
 use crate::color::{Color, NamedColor};
 use crate::glyph::{AttrFlags, Attributes, Glyph};
+use crate::term::modes::StandardModeConstant;
 use crate::term::{
     action::EmulatorAction, modes::DecModeConstant, ControlEvent, CursorShape, EmulatorInput,
     TerminalEmulator, TerminalSnapshot,
@@ -519,7 +520,7 @@ fn it_should_move_cursor_down_keeping_column_on_line_feed_if_lnm_is_off() {
     let mut term = create_test_emulator(10, 3); // LNM is off by default
                                                 // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        CsiCommand::ResetMode(20),
+        CsiCommand::ResetMode(StandardModeConstant::LinefeedNewlineMode as u16),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A'))); // Char 'A' at (0,0). Cursor at (0,1).
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
@@ -557,7 +558,7 @@ fn it_should_scroll_up_and_move_cursor_down_keeping_column_on_line_feed_at_botto
     let mut term = create_test_emulator(5, 2); // LNM is off by default
                                                // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        CsiCommand::ResetMode(20),
+        CsiCommand::ResetMode(StandardModeConstant::LinefeedNewlineMode as u16),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
@@ -586,7 +587,7 @@ fn it_should_move_cursor_down_and_to_col_0_on_line_feed_if_lnm_is_on() {
     let mut term = create_test_emulator(10, 3);
     // Enable Linefeed/Newline Mode - testing that LF does CR+LF
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
-        20,
+        StandardModeConstant::LinefeedNewlineMode as u16,
     ))));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
@@ -624,7 +625,7 @@ fn it_should_scroll_and_move_to_col_0_on_line_feed_at_bottom_if_lnm_is_on() {
     let mut term = create_test_emulator(5, 2);
     // Enable Linefeed/Newline Mode - testing that LF does CR+LF
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
-        20,
+        StandardModeConstant::LinefeedNewlineMode as u16,
     ))));
 
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
@@ -687,7 +688,7 @@ fn it_should_not_wrap_cursor_on_backspace_at_start_of_line() {
     let mut term = create_test_emulator(10, 2);
     // Explicitly disable Linefeed/Newline Mode - testing that LF doesn't do CR
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
-        CsiCommand::ResetMode(20),
+        CsiCommand::ResetMode(StandardModeConstant::LinefeedNewlineMode as u16),
     )));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('L')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
