@@ -117,7 +117,7 @@ impl Utf8Decoder {
 
     #[inline]
     fn decode_continuation_byte(&mut self, byte: u8) -> Utf8DecodeResult {
-        if !(UTF8_CONT_MIN..=UTF8_CONT_MAX).contains(&byte) {
+        if byte < UTF8_CONT_MIN || byte > UTF8_CONT_MAX {
             // Current `byte` is not a valid UTF-8 continuation.
             // The previously buffered sequence is now considered invalid.
             self.reset();
