@@ -383,10 +383,19 @@ pub fn emit_adr_x17_placeholder(code: &mut Vec<u8>) -> usize {
     pos
 }
 
+/// Specifies the type of ADR instruction to patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdrKind {
+    /// Standard ADR (±1MB range).
+    Adr,
+    /// ADRP + ADD pair (±4GB range).
+    Adrp,
+}
+
 /// Patch a previously emitted `ADR X17` placeholder at `adr_pos` to point to `target_pos`.
-/// If `is_adrp` is true, assumes 8 bytes are reserved and patches `ADRP X17` + `ADD X17`.
-pub fn patch_adr_or_adrp(code: &mut [u8], adr_pos: usize, target_pos: usize, is_adrp: bool) {
-    if is_adrp {
+/// If `kind` is `AdrKind::Adrp`, assumes 8 bytes are reserved and patches `ADRP X17` + `ADD X17`.
+pub fn patch_adr_or_adrp(code: &mut [u8], adr_pos: usize, target_pos: usize, kind: AdrKind) {
+    if kind == AdrKind::Adrp {
         assert!(
             adr_pos + 8 <= code.len(),
             "patch_adr_or_adrp: adr_pos {} + 8 exceeds code length {}",
@@ -1044,12 +1053,12 @@ pub(crate) fn emit_atan2_builtin(
     // Horner step 1: dst = c5 + c7 * t^2
     let atan_c5 = pool.push_f32(0.2_f32)?;
     emit_ldr_q_x17(code, dst, atan_c5);
-    let atan_c7 = pool.push_f32(-0.142857143_f32)?;
+    let atan_c7 = pool.push_f32(-0.142_857_15_f32)?;
     emit_ldr_q_x17(code, s3, atan_c7);          // s3 = c7 (clobbers t)
     emit_fmla(code, dst, s3, s0);                // dst = c5 + c7*t^2
 
     // Horner step 2: s3 = c3 + dst * t^2
-    let atan_c3 = pool.push_f32(-0.333333333_f32)?;
+    let atan_c3 = pool.push_f32(-0.333_333_34_f32)?;
     emit_ldr_q_x17(code, s3, atan_c3);
     emit_fmla(code, s3, dst, s0);                // s3 = c3 + poly*t^2
 
@@ -1187,6 +1196,7 @@ pub(crate) fn emit_acos_builtin(
 // =============================================================================
 
 /// Emit unary operation - dispatches to appropriate instruction(s)
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_unary(
     code: &mut Vec<u8>,
     pool: &mut super::ConstPool,
@@ -1253,6 +1263,7 @@ pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Re
 }
 
 /// Emit binary transcendental operation (needs scratch registers).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_binary_transcendental(
     code: &mut Vec<u8>,
     pool: &mut super::ConstPool,
@@ -1271,6 +1282,7 @@ pub(crate) fn emit_binary_transcendental(
 }
 
 /// Emit ternary operation
+#[allow(clippy::too_many_arguments)]
 pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c: Reg) {
     match op {
         OpKind::MulAdd => {
@@ -1377,7 +1389,7 @@ pub fn emit_b(code: &mut Vec<u8>) -> usize {
 pub fn patch_cbz_cbnz(code: &mut [u8], patch_pos: usize, target_pos: usize) {
     let offset = (target_pos as i64 - patch_pos as i64) / 4;
     assert!(
-        offset >= -(1 << 18) && offset < (1 << 18),
+        (-(1 << 18)..(1 << 18)).contains(&offset),
         "CBZ/CBNZ branch offset {} out of range (±1MB)", offset
     );
     let imm19 = (offset as u32) & 0x7FFFF;
@@ -1393,7 +1405,7 @@ pub fn patch_cbz_cbnz(code: &mut [u8], patch_pos: usize, target_pos: usize) {
 pub fn patch_b(code: &mut [u8], patch_pos: usize, target_pos: usize) {
     let offset = (target_pos as i64 - patch_pos as i64) / 4;
     assert!(
-        offset >= -(1 << 25) && offset < (1 << 25),
+        (-(1 << 25)..(1 << 25)).contains(&offset),
         "B branch offset {} out of range (±128MB)", offset
     );
     let imm26 = (offset as u32) & 0x3FFFFFF;
@@ -1410,7 +1422,7 @@ pub fn patch_b(code: &mut [u8], patch_pos: usize, target_pos: usize) {
 // =============================================================================
 
 /// Emit function prologue
-pub fn emit_prologue(code: &mut Vec<u8>) {
+pub fn emit_prologue(_code: &mut Vec<u8>) {
     // For a simple JIT kernel, we might not need much
     // Input pointer already in X0
     // Just ensure we're aligned

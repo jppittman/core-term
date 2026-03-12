@@ -28,13 +28,14 @@ fn emit_vex_128_0f(code: &mut Vec<u8>, opcode: u8, dst: Reg, src1: Reg, src2: Re
 
     code.push(0xC4);
     code.push(r | x | b | 0x01); // map = 0F
-    code.push(vvvv | 0x00);      // W=0, L=0 (128-bit), pp=00
+    code.push(vvvv);      // W=0, L=0 (128-bit), pp=00
     code.push(opcode);
     code.push(0xC0 | ((dst.0 & 7) << 3) | (src2.0 & 7)); // ModRM
 }
 
 /// Emit a VEX-encoded 3-operand instruction with an immediate byte.
 /// VEX.128.0F: dst = op(src1, src2, imm8)
+#[allow(clippy::too_many_arguments)]
 fn emit_vex_128_0f_imm(
     code: &mut Vec<u8>,
     opcode: u8,
@@ -357,7 +358,7 @@ pub fn emit_atan2_builtin(code: &mut Vec<u8>, dst: Reg, src_y: Reg, src_x: Reg, 
 
     // Load Chebyshev coefficients and evaluate Horner chain
     // poly = c7
-    emit_f32_const(code, s3, -0.142857143_f32);
+    emit_f32_const(code, s3, -0.142_857_15_f32);
 
     // poly = c7 * t² + c5
     emit_f32_const(code, s1, 0.2_f32);
@@ -365,7 +366,7 @@ pub fn emit_atan2_builtin(code: &mut Vec<u8>, dst: Reg, src_y: Reg, src_x: Reg, 
     emit_vaddps(code, s3, s3, s1);      // s3 = c7*t² + c5
 
     // poly = (c7*t²+c5) * t² + c3
-    emit_f32_const(code, s1, -0.333333333_f32);
+    emit_f32_const(code, s1, -0.333_333_34_f32);
     emit_vmulps(code, s3, s3, dst);     // s3 = prev * t²
     emit_vaddps(code, s3, s3, s1);      // s3 = prev*t² + c3
 
@@ -540,6 +541,7 @@ pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Re
 }
 
 /// Emit binary transcendental operation (needs scratch registers).
+#[allow(clippy::too_many_arguments)]
 pub fn emit_binary_transcendental(
     code: &mut Vec<u8>,
     op: OpKind,
@@ -555,6 +557,7 @@ pub fn emit_binary_transcendental(
 }
 
 /// Emit ternary operation
+#[allow(clippy::too_many_arguments)]
 pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c: Reg) {
     match op {
         OpKind::MulAdd => {
