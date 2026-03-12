@@ -117,7 +117,9 @@ impl Utf8Decoder {
 
     #[inline]
     fn decode_continuation_byte(&mut self, byte: u8) -> Utf8DecodeResult {
-        if !(UTF8_CONT_MIN..=UTF8_CONT_MAX).contains(&byte) {
+        // PERF: Using explicit `<` and `>` instead of `!(UTF8_CONT_MIN..=UTF8_CONT_MAX).contains(&byte)`
+        // avoids range instantiation overhead in this hot path.
+        if byte < UTF8_CONT_MIN || byte > UTF8_CONT_MAX {
             // Current `byte` is not a valid UTF-8 continuation.
             // The previously buffered sequence is now considered invalid.
             self.reset();
@@ -144,8 +146,10 @@ impl Utf8Decoder {
                 if let Some(c) = s.chars().next() {
                     let cp = c as u32;
                     // Final check for Unicode constraints (surrogates, max codepoint).
+                    // PERF: Using explicit `<` and `>` instead of `!(UNICODE_SURROGATE_START..=UNICODE_SURROGATE_END).contains(&cp)`
+                    // avoids range instantiation overhead in this hot path.
                     if cp <= UNICODE_MAX_CODE_POINT
-                        && !(UNICODE_SURROGATE_START..=UNICODE_SURROGATE_END).contains(&cp)
+                        && (cp < UNICODE_SURROGATE_START || cp > UNICODE_SURROGATE_END)
                     {
                         Utf8DecodeResult::Decoded(c)
                     } else {
