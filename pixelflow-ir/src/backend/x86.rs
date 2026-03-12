@@ -415,10 +415,10 @@ impl SimdOps for F32x4 {
             let t = _mm_mul_ps(x, _mm_set1_ps(PI_INV));
 
             // Chebyshev coefficients for sin
-            let c1 = _mm_set1_ps(1.6719970703125);
-            let c3 = _mm_set1_ps(-0.645963541666667);
-            let c5 = _mm_set1_ps(0.079689450);
-            let c7 = _mm_set1_ps(-0.0046817541);
+            let c1 = _mm_set1_ps(1.671_997_1);
+            let c3 = _mm_set1_ps(-0.645_963_55);
+            let c5 = _mm_set1_ps(0.079_689_45);
+            let c7 = _mm_set1_ps(-0.004_681_754);
 
             // Horner's method: ((C7*t² + C5)*t² + C3)*t² + C1)*t
             let t2 = _mm_mul_ps(t, t);
@@ -449,9 +449,9 @@ impl SimdOps for F32x4 {
             let t = _mm_mul_ps(x, _mm_set1_ps(PI_INV));
 
             // Chebyshev coefficients for cos
-            let c0 = _mm_set1_ps(1.5707963267948966);
-            let c2 = _mm_set1_ps(-2.467401341);
-            let c4 = _mm_set1_ps(0.609469381);
+            let c0 = _mm_set1_ps(core::f32::consts::FRAC_PI_2);
+            let c2 = _mm_set1_ps(-2.467_401_3);
+            let c4 = _mm_set1_ps(0.609_469_35);
             let c6 = _mm_set1_ps(-0.038854038);
 
             // Horner's method: ((C6*t² + C4)*t² + C2)*t² + C0
@@ -478,9 +478,9 @@ impl SimdOps for F32x4 {
 
             // Chebyshev coefficients for atan on [0, 1]
             let c1 = _mm_set1_ps(0.999999999);
-            let c3 = _mm_set1_ps(-0.333333333);
+            let c3 = _mm_set1_ps(-0.333_333_34);
             let c5 = _mm_set1_ps(0.2);
-            let c7 = _mm_set1_ps(-0.142857143);
+            let c7 = _mm_set1_ps(-0.142_857_15);
 
             // Horner's method
             let t = r_abs;
@@ -1151,10 +1151,10 @@ impl SimdOps for F32x8 {
             let x = _mm256_sub_ps(self.0, _mm256_mul_ps(k, _mm256_set1_ps(TWO_PI)));
             let t = _mm256_mul_ps(x, _mm256_set1_ps(PI_INV));
 
-            let c1 = _mm256_set1_ps(1.6719970703125);
-            let c3 = _mm256_set1_ps(-0.645963541666667);
-            let c5 = _mm256_set1_ps(0.079689450);
-            let c7 = _mm256_set1_ps(-0.0046817541);
+            let c1 = _mm256_set1_ps(1.671_997_1);
+            let c3 = _mm256_set1_ps(-0.645_963_55);
+            let c5 = _mm256_set1_ps(0.079_689_45);
+            let c7 = _mm256_set1_ps(-0.004_681_754);
 
             let t2 = _mm256_mul_ps(t, t);
             #[cfg(target_feature = "fma")]
@@ -1189,9 +1189,9 @@ impl SimdOps for F32x8 {
             let x = _mm256_sub_ps(self.0, _mm256_mul_ps(k, _mm256_set1_ps(TWO_PI)));
             let t = _mm256_mul_ps(x, _mm256_set1_ps(PI_INV));
 
-            let c0 = _mm256_set1_ps(1.5707963267948966);
-            let c2 = _mm256_set1_ps(-2.467401341);
-            let c4 = _mm256_set1_ps(0.609469381);
+            let c0 = _mm256_set1_ps(core::f32::consts::FRAC_PI_2);
+            let c2 = _mm256_set1_ps(-2.467_401_3);
+            let c4 = _mm256_set1_ps(0.609_469_35);
             let c6 = _mm256_set1_ps(-0.038854038);
 
             let t2 = _mm256_mul_ps(t, t);
@@ -1223,9 +1223,9 @@ impl SimdOps for F32x8 {
             let r_abs = _mm256_and_ps(r, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF)));
 
             let c1 = _mm256_set1_ps(0.999999999);
-            let c3 = _mm256_set1_ps(-0.333333333);
+            let c3 = _mm256_set1_ps(-0.333_333_34);
             let c5 = _mm256_set1_ps(0.2);
-            let c7 = _mm256_set1_ps(-0.142857143);
+            let c7 = _mm256_set1_ps(-0.142_857_15);
 
             let t = r_abs;
             let t2 = _mm256_mul_ps(t, t);

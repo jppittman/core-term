@@ -141,7 +141,7 @@ pub type KernelFn = extern "C" fn(float32x4_t, float32x4_t, float32x4_t, float32
 /// Args: X in xmm0, Y in xmm1, Z in xmm2, W in xmm3
 /// Returns: result in xmm0
 #[cfg(target_arch = "x86_64")]
-pub type KernelFn = extern "C" fn(__m128, __m128, __m128, __m128) -> __m128;
+pub type KernelFn = unsafe extern "C" fn(__m128, __m128, __m128, __m128) -> __m128;
 
 // =============================================================================
 // Tests
