@@ -383,10 +383,19 @@ pub fn emit_adr_x17_placeholder(code: &mut Vec<u8>) -> usize {
     pos
 }
 
+/// Specifies the type of ADR instruction to patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdrKind {
+    /// Standard ADR (±1MB range).
+    Adr,
+    /// ADRP + ADD pair (±4GB range).
+    Adrp,
+}
+
 /// Patch a previously emitted `ADR X17` placeholder at `adr_pos` to point to `target_pos`.
-/// If `is_adrp` is true, assumes 8 bytes are reserved and patches `ADRP X17` + `ADD X17`.
-pub fn patch_adr_or_adrp(code: &mut [u8], adr_pos: usize, target_pos: usize, is_adrp: bool) {
-    if is_adrp {
+/// If `kind` is `AdrKind::Adrp`, assumes 8 bytes are reserved and patches `ADRP X17` + `ADD X17`.
+pub fn patch_adr_or_adrp(code: &mut [u8], adr_pos: usize, target_pos: usize, kind: AdrKind) {
+    if kind == AdrKind::Adrp {
         assert!(
             adr_pos + 8 <= code.len(),
             "patch_adr_or_adrp: adr_pos {} + 8 exceeds code length {}",

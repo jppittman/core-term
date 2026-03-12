@@ -1462,7 +1462,7 @@ mod tests {
     ///
     /// The f64 computation avoids the f32 precision bottleneck where
     /// sigmoid(score) → log() loses significant digits.
-    fn policy_loss(net: &ExprNnue, acc: &EdgeAccumulator, gacc: &GraphAccumulator, rule_embed: &[f32; EMBED_DIM], _matched: bool, advantage: f32) -> f64 {
+    fn policy_loss(net: &ExprNnue, acc: &EdgeAccumulator, gacc: &GraphAccumulator, rule_embed: &[f32; EMBED_DIM], advantage: f32) -> f64 {
         let cache = forward_cached(net, acc, gacc, rule_embed);
         let s = cache.score as f64;
         // In self-play, steps are only recorded when the policy chose Action=1 (approve).
@@ -1510,13 +1510,13 @@ mod tests {
         let acc = make_test_acc();
         let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
-        let matched = true;
         let advantage = 1.5;
 
         // Analytical gradient
         let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let mut grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, 1.0, &mut grads);
+        // pass matched=true for the analytical computation to correspond to the old logic (or use advantage as is in policy_loss)
+        backward_policy(&net, &cache, &rule_embed, true, advantage, 0.0, 1.0, &mut grads);
 
         // Check a sample of interaction matrix elements
         // eps=5e-4 balances truncation error (O(eps^2)) and rounding error (O(1/eps))
@@ -1529,11 +1529,11 @@ mod tests {
             for j in [0, 7, 15, 23] {
                 let mut net_p = net.clone();
                 net_p.interaction[i][j] += eps;
-                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
+                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, advantage);
 
                 let mut net_m = net.clone();
                 net_m.interaction[i][j] -= eps;
-                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
+                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, advantage);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_interaction[i][j], num_grad);
@@ -1564,12 +1564,11 @@ mod tests {
         let acc = make_test_acc();
         let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
-        let matched = false;
         let advantage = 2.0;
 
         let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let mut grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, 1.0, &mut grads);
+        backward_policy(&net, &cache, &rule_embed, false, advantage, 0.0, 1.0, &mut grads);
 
         // eps=5e-4 balances truncation error (O(eps^2)) and rounding error (O(1/eps))
         // for the log-sigmoid policy loss in f32 arithmetic.
@@ -1582,11 +1581,11 @@ mod tests {
             for j in [0, 8, 15] {
                 let mut net_p = net.clone();
                 net_p.mask_mlp_w1[i][j] += eps;
-                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
+                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, advantage);
 
                 let mut net_m = net.clone();
                 net_m.mask_mlp_w1[i][j] -= eps;
-                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
+                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, advantage);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_mask_mlp_w1[i][j], num_grad);
@@ -1606,11 +1605,11 @@ mod tests {
             for k in [0, 12, 23] {
                 let mut net_p = net.clone();
                 net_p.mask_mlp_w2[j][k] += eps;
-                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
+                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, advantage);
 
                 let mut net_m = net.clone();
                 net_m.mask_mlp_w2[j][k] -= eps;
-                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
+                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, advantage);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_mask_mlp_w2[j][k], num_grad);
@@ -1639,12 +1638,11 @@ mod tests {
         let acc = make_test_acc();
         let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
-        let matched = true;
         let advantage = 0.8;
 
         let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let mut grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, 1.0, &mut grads);
+        backward_policy(&net, &cache, &rule_embed, true, advantage, 0.0, 1.0, &mut grads);
 
         let eps = 1e-3f32;
         let mut max_err = 0.0f64;
@@ -1656,11 +1654,11 @@ mod tests {
             for j in [0, 16, 32, 63] {
                 let mut net_p = net.clone();
                 net_p.graph_w1[i][j] += eps;
-                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
+                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, advantage);
 
                 let mut net_m = net.clone();
                 net_m.graph_w1[i][j] -= eps;
-                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
+                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, advantage);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_graph_w1[i][j], num_grad);
@@ -1682,11 +1680,11 @@ mod tests {
         for j in [0, 16, 32, 63] {
             let mut net_p = net.clone();
             net_p.graph_b1[j] += eps;
-            let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
+            let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, advantage);
 
             let mut net_m = net.clone();
             net_m.graph_b1[j] -= eps;
-            let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
+            let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, advantage);
 
             let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
             let (a, n, err) = check_gradient(grads.d_graph_b1[j], num_grad);
@@ -1705,11 +1703,11 @@ mod tests {
             for k in [0, 12, 23] {
                 let mut net_p = net.clone();
                 net_p.graph_proj_w[j][k] += eps;
-                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, matched, advantage);
+                let loss_plus = policy_loss(&net_p, &acc, &gacc, &rule_embed, advantage);
 
                 let mut net_m = net.clone();
                 net_m.graph_proj_w[j][k] -= eps;
-                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, matched, advantage);
+                let loss_minus = policy_loss(&net_m, &acc, &gacc, &rule_embed, advantage);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_graph_proj_w[j][k], num_grad);
@@ -1898,7 +1896,6 @@ mod tests {
         let acc = make_test_acc();
         let gacc = make_test_gacc();
         let rule_embed = make_test_rule_embed();
-        let matched = true;
         let advantage = 1.0;
         let target_cost = 2.0f32;
         let value_coeff = 0.5f32;
@@ -1906,19 +1903,19 @@ mod tests {
         // Compute joint gradient (both losses into same buffer)
         let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let mut joint_grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, 1.0, &mut joint_grads);
+        backward_policy(&net, &cache, &rule_embed, true, advantage, 0.0, 1.0, &mut joint_grads);
         backward_value(&net, &cache, target_cost, value_coeff, &mut joint_grads);
 
         // Compute separate gradients
         let mut policy_grads = UnifiedGradients::zero();
-        backward_policy(&net, &cache, &rule_embed, matched, advantage, 0.0, 1.0, &mut policy_grads);
+        backward_policy(&net, &cache, &rule_embed, true, advantage, 0.0, 1.0, &mut policy_grads);
 
         let mut value_grads = UnifiedGradients::zero();
         backward_value(&net, &cache, target_cost, value_coeff, &mut value_grads);
 
         // Joint loss for numerical check
         let joint_loss = |net: &ExprNnue| -> f64 {
-            policy_loss(net, &acc, &gacc, &rule_embed, matched, advantage)
+            policy_loss(net, &acc, &gacc, &rule_embed, advantage)
                 + value_loss(net, &acc, &gacc, &rule_embed, target_cost, value_coeff)
         };
 
