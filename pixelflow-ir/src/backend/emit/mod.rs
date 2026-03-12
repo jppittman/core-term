@@ -382,6 +382,7 @@ pub fn emit(expr: &Expr, depth: u8) -> Result<(Vec<u8>, Reg), &'static str> {
     use x86_64::*;
 
     match expr {
+        Expr::Param(_) => Err("Param not supported in JIT"),
         Expr::Var(i) => {
             if *i as usize >= INPUT_REGS.len() {
                 return Err("variable index out of range");
@@ -1107,7 +1108,7 @@ fn analyze_select_guards(
         vid_to_idx.insert(*vid, i);
     }
 
-    for (i, (vid, sop)) in schedule.iter().enumerate() {
+    for (i, (_vid, sop)) in schedule.iter().enumerate() {
         if let ScheduledOp::Ternary(OpKind::Select, mask_vid, true_vid, false_vid) = sop {
             // Compute transitive deps for each subtree
             let mask_deps = transitive_deps(*mask_vid, schedule);
@@ -1551,8 +1552,8 @@ pub fn compile_dag(expr: &Expr) -> Result<CompileResult, &'static str> {
 /// Compile an expression to executable code (x86-64).
 #[cfg(all(feature = "alloc", target_arch = "x86_64"))]
 pub fn compile(expr: &Expr) -> Result<executable::ExecutableCode, &'static str> {
-    // Lower compound ops to primitives
-    let lowered = lower::lower(expr);
+    // FIXME: We need lower::lower back
+    let lowered = expr.clone();
 
     let (mut code, result_reg) = emit(&lowered, 0)?;
 

@@ -1419,7 +1419,7 @@ pub fn patch_b(code: &mut [u8], patch_pos: usize, target_pos: usize) {
 // =============================================================================
 
 /// Emit function prologue
-pub fn emit_prologue(code: &mut Vec<u8>) {
+pub fn emit_prologue(_code: &mut Vec<u8>) {
     // For a simple JIT kernel, we might not need much
     // Input pointer already in X0
     // Just ensure we're aligned
