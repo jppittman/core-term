@@ -34,8 +34,8 @@ pub type QuadKernel = AnalyticalQuad;
 // Combinators
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Affine coordinate transform kernel.
-/// Computes: (X - tx) * a + (Y - ty) * b
+// Affine coordinate transform kernel.
+// Computes: (X - tx) * a + (Y - ty) * b
 kernel!(
     pub struct AffineTransform = |tx: f32, a: f32, ty: f32, b: f32|
     (X - tx) * a + (Y - ty) * b
