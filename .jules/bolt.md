@@ -14,6 +14,6 @@
 **Learning:** The inner loop of `execute_stripe` was re-evaluating `Field::sequential(start)` on every iteration, which involves multiple SIMD instructions (broadcast/load + add).
 **Action:** Hoisted the initialization of `xs` out of the loop and updated it incrementally using a pre-computed `step` vector. This reduced the inner loop overhead significantly, yielding a ~34% improvement in rasterization throughput.
 
-## 2025-05-18 - Mathematical Accuracy vs Method Chaining
-**Learning:** `sqrt().rsqrt()` computes $x^{-1/4}$, not $x^{-1/2}$. When porting or writing math-heavy code, chaining `.sqrt()` followed by `.rsqrt()` is mathematically incorrect for calculating the reciprocal square root (inverse length) and incurs redundant instruction costs.
-**Action:** When computing the inverse length or reciprocal square root using `Field` types (e.g., AST nodes) in `pixelflow-graphics`, use `.rsqrt()` directly instead of `.sqrt().rsqrt()`. The latter incorrectly computes `x^(-1/4)` instead of the intended `x^(-1/2)`, introducing mathematical errors and redundant AST node evaluation overhead.
+## 2025-05-18 - Macros vs Formatters
+**Learning:** `cargo fmt` does not fully support parsing and properly formatting custom Rust macros (like `kernel!` in `pixelflow-graphics`) and can completely break the syntax if run automatically across the workspace.
+**Action:** Avoid blindly running `cargo fmt` on packages containing complex custom macros unless it is explicitly known to be safe, or scope formatting to only the lines directly modified.
