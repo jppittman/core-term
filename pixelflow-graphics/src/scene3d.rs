@@ -365,7 +365,7 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     let valid_t = (V(t.clone()) > 0.0) & (V(t.clone()) < t_max);
     let deriv_mag_sq = DX(t.clone()) * DX(t.clone()) + DY(t.clone()) * DY(t.clone()) + DZ(t.clone()) * DZ(t.clone());
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+    let mask = valid_t.clone() & valid_deriv;
 
     // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
     let hx = X * t.clone();
@@ -373,7 +373,7 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     let hz = Z * t;
 
     // 4. Sample material at hit point, background at ray direction
-    let mat_val = material.at(hx, hy, hz, W);
+    let mat_val = material.at(hx.clone(), hy.clone(), hz.clone(), W);
     let bg_val = background;
 
     // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
@@ -391,7 +391,7 @@ kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, backgroun
     let valid_t = (V(t.clone()) > 0.0) & (V(t.clone()) < t_max);
     let deriv_mag_sq = DX(t.clone()) * DX(t.clone()) + DY(t.clone()) * DY(t.clone()) + DZ(t.clone()) * DZ(t.clone());
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+    let mask = valid_t.clone() & valid_deriv;
 
     // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
     let hx = X * t.clone();
@@ -399,7 +399,7 @@ kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, backgroun
     let hz = Z * t;
 
     // 4. Sample material at hit point, background at ray direction
-    let mat_val = material.at(hx, hy, hz, W);
+    let mat_val = material.at(hx.clone(), hy.clone(), hz.clone(), W);
     let bg_val = background;
 
     // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
@@ -520,7 +520,7 @@ kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
     let deriv_mag_sq = DX(t.clone()) * DX(t.clone()) + DY(t.clone()) * DY(t.clone()) + DZ(t.clone()) * DZ(t.clone());
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
 
-    valid_t & valid_deriv
+    valid_t.clone() & valid_deriv
 });
 
 impl<G, M> Scene for SceneObject<G, M>
