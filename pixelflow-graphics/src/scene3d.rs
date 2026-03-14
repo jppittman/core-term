@@ -365,7 +365,7 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     let valid_t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+    let mask = valid_t.clone() & valid_deriv.clone();
 
     // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
     let hx = X * t;
@@ -391,7 +391,7 @@ kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, backgroun
     let valid_t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+    let mask = valid_t.clone() & valid_deriv.clone();
 
     // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
     let hx = X * t;
