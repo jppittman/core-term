@@ -9,7 +9,7 @@ fn field4(x: f32, y: f32, z: f32, w: f32) -> Field4 {
 
 fn main() {
     let p = field4(1.0, 2.0, 3.0, 4.0);
-    
+
     // 20 different 4-param kernels (no division with Var)
     let k1 = kernel!(|a: f32, b: f32, c: f32, d: f32| X + a + Y * b);
     let k2 = kernel!(|a: f32, b: f32, c: f32, d: f32| X - a + Y * b);
@@ -31,7 +31,7 @@ fn main() {
     let k18 = kernel!(|a: f32, b: f32, c: f32, d: f32| (X * X + Y * Y).sqrt() - a);
     let k19 = kernel!(|a: f32, b: f32, c: f32, d: f32| (X * X + Y * Y + Z * Z).sqrt() - a);
     let k20 = kernel!(|a: f32, b: f32, c: f32, d: f32| { let dx = X - a; let dy = Y - b; (dx * dx + dy * dy).sqrt() });
-    
+
     // Use them all to prevent DCE
     let v = 1.0f32;
     let _ = k1(v,v,v,v).eval(p);
