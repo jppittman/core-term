@@ -134,10 +134,10 @@ impl Manifold<Field4> for AnalyticalQuad {
             // Degenerate: quadratic is a line. Solve by*t + (cy - Y) = 0
             let k = kernel!(|ax: f32, bx: f32, cx: f32, by: f32, cy: f32| {
                 let t = (Y - cy) / by;
-                let in_t = V(t.clone()).ge(0.0) & V(t.clone()).le(1.0);
+                let in_t = t.clone().ge(0.0) & t.clone().le(1.0);
 
                 // x-coordinate at intersection
-                let x_int = V(t.clone()) * V(t.clone()) * ax + V(t.clone()) * bx + cx;
+                let x_int = t.clone() * t.clone() * ax + t.clone() * bx + cx;
 
                 // Step: 1.0 if crossing is to the left of or at X
                 let crossed = (X >= x_int).select(1.0, 0.0);
