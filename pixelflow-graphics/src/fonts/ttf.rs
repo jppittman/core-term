@@ -8,7 +8,7 @@
 use crate::shapes::{square, Bounded};
 use pixelflow_core::{
     At, Field, Manifold, ManifoldCompat, ManifoldExt,
-    W, X, Y, Z,
+    W, Z,
 };
 use pixelflow_compiler::kernel;
 use std::sync::Arc;
