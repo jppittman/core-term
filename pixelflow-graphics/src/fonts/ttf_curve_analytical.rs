@@ -134,10 +134,10 @@ impl Manifold<Field4> for AnalyticalQuad {
             // Degenerate: quadratic is a line. Solve by*t + (cy - Y) = 0
             let k = kernel!(|ax: f32, bx: f32, cx: f32, by: f32, cy: f32| {
                 let t = (Y - cy) / by;
-                let in_t = t.ge(0.0) & t.le(1.0);
+                let in_t = t.clone().ge(0.0) & t.clone().le(1.0);
 
                 // x-coordinate at intersection
-                let x_int = t * t * ax + t * bx + cx;
+                let x_int = t.clone() * t.clone() * ax + t.clone() * bx + cx;
 
                 // Step: 1.0 if crossing is to the left of or at X
                 let crossed = (X >= x_int).select(1.0, 0.0);
@@ -172,8 +172,8 @@ impl Manifold<Field4> for AnalyticalQuad {
             let crossed_minus = (X >= x_minus).select(1.0, 0.0);
 
             // Validity: only count roots with t in [0, 1]
-            let valid_plus = t_plus.ge(0.0) & t_plus.le(1.0);
-            let valid_minus = t_minus.ge(0.0) & t_minus.le(1.0);
+            let valid_plus = t_plus.clone().ge(0.0) & t_plus.clone().le(1.0);
+            let valid_minus = t_minus.clone().ge(0.0) & t_minus.clone().le(1.0);
 
             // Winding sign from tangent direction
             let sign_plus = dy_plus.gt(0.0).select(-1.0, 1.0);
