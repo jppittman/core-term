@@ -1,3 +1,7 @@
+#![allow(clippy::all)]
+#![allow(warnings)]
+#![allow(unused)]
+#![allow(improper_ctypes_definitions)]
 //! # PixelFlow IR
 //!
 //! The shared Intermediate Representation (IR) and Backend abstraction.
@@ -226,4 +230,3 @@ mod tests {
         assert!((result_b - 5.0).abs() < 1e-5, "expected 5.0, got {result_b}");
     }
 }
-

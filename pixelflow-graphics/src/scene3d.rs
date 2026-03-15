@@ -362,12 +362,14 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     // 2. Validate hit: t > 0, t < max, derivatives reasonable
     let t_max = 1000000.0;
     let deriv_max = 10000.0;
-    let mask = (V(t.clone()) > 0.0) & (V(t.clone()) < t_max) &
-               ((DX(t.clone()) * DX(t.clone()) + DY(t.clone()) * DY(t.clone()) + DZ(t.clone()) * DZ(t.clone())) < (deriv_max * deriv_max));
+    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
+    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let mask = valid_t & valid_deriv;
 
     // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
-    let hx = X * t.clone();
-    let hy = Y * t.clone();
+    let hx = X * t;
+    let hy = Y * t;
     let hz = Z * t;
 
     // 4. Sample material at hit point, background at ray direction
@@ -386,12 +388,14 @@ kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, backgroun
     // 2. Validate hit: t > 0, t < max, derivatives reasonable
     let t_max = 1000000.0;
     let deriv_max = 10000.0;
-    let mask = (V(t.clone()) > 0.0) & (V(t.clone()) < t_max) &
-               ((DX(t.clone()) * DX(t.clone()) + DY(t.clone()) * DY(t.clone()) + DZ(t.clone()) * DZ(t.clone())) < (deriv_max * deriv_max));
+    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
+    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let mask = valid_t & valid_deriv;
 
     // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
-    let hx = X * t.clone();
-    let hy = Y * t.clone();
+    let hx = X * t;
+    let hy = Y * t;
     let hz = Z * t;
 
     // 4. Sample material at hit point, background at ray direction
@@ -512,10 +516,11 @@ kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
     let deriv_max = 10000.0;
 
     // Valid if: t > 0, t < max, derivatives reasonable
-    let is_valid = (V(t.clone()) > 0.0) & (V(t.clone()) < t_max) &
-                   ((DX(t.clone()) * DX(t.clone()) + DY(t.clone()) * DY(t.clone()) + DZ(t.clone()) * DZ(t.clone())) < (deriv_max * deriv_max));
+    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
+    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
 
-    is_valid
+    valid_t & valid_deriv
 });
 
 impl<G, M> Scene for SceneObject<G, M>
