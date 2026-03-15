@@ -10,8 +10,8 @@
 //! hard step (0 or 1), not a smooth ramp. Geometry::eval applies
 //! abs().min(1.0) to convert winding to inside/outside coverage.
 
-use pixelflow_compiler::kernel;
 use pixelflow_core::{Field, Manifold};
+use pixelflow_compiler::kernel;
 
 type Field4 = (Field, Field, Field, Field);
 
@@ -150,15 +150,8 @@ impl Manifold<Field4> for AnalyticalQuad {
 
         // True quadratic: solve ay*t^2 + by*t + (cy - Y) = 0
         // discriminant = by^2 - 4*ay*(cy - Y) = disc_const + disc_slope*Y
-        let k = kernel!(|ax: f32,
-                         bx: f32,
-                         cx: f32,
-                         ay: f32,
-                         by: f32,
-                         inv_2a: f32,
-                         neg_b_2a: f32,
-                         disc_const: f32,
-                         disc_slope: f32| {
+        let k = kernel!(|ax: f32, bx: f32, cx: f32, ay: f32, by: f32,
+                         inv_2a: f32, neg_b_2a: f32, disc_const: f32, disc_slope: f32| {
             let disc = Y * disc_slope + disc_const;
             let sqrt_disc = disc.clone().max(0.0).sqrt();
 
@@ -192,17 +185,7 @@ impl Manifold<Field4> for AnalyticalQuad {
             disc.ge(0.0).select(contrib_plus + contrib_minus, 0.0)
         });
 
-        k(
-            self.ax,
-            self.bx,
-            self.cx,
-            self.ay,
-            self.by,
-            self.inv_2ay,
-            self.neg_b_2a,
-            self.disc_const,
-            self.disc_slope,
-        )
-        .eval(p)
+        k(self.ax, self.bx, self.cx, self.ay, self.by,
+          self.inv_2ay, self.neg_b_2a, self.disc_const, self.disc_slope).eval(p)
     }
 }
