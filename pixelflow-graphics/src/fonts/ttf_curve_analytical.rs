@@ -10,7 +10,7 @@
 //! hard step (0 or 1), not a smooth ramp. Geometry::eval applies
 //! abs().min(1.0) to convert winding to inside/outside coverage.
 
-use pixelflow_core::{Field, Manifold};
+use pixelflow_core::{Field, Manifold, ManifoldExt, W, X, Y, Z};
 use pixelflow_compiler::kernel;
 
 type Field4 = (Field, Field, Field, Field);
@@ -134,10 +134,10 @@ impl Manifold<Field4> for AnalyticalQuad {
             // Degenerate: quadratic is a line. Solve by*t + (cy - Y) = 0
             let k = kernel!(|ax: f32, bx: f32, cx: f32, by: f32, cy: f32| {
                 let t = (Y - cy) / by;
-                let in_t = t.ge(0.0) & t.le(1.0);
+                let in_t = t.clone().ge(0.0) & t.clone().le(1.0);
 
                 // x-coordinate at intersection
-                let x_int = t * t * ax + t * bx + cx;
+                let x_int = t.clone() * t.clone() * ax + t.clone() * bx + cx;
 
                 // Step: 1.0 if crossing is to the left of or at X
                 let crossed = (X >= x_int).select(1.0, 0.0);
@@ -153,18 +153,18 @@ impl Manifold<Field4> for AnalyticalQuad {
         let k = kernel!(|ax: f32, bx: f32, cx: f32, ay: f32, by: f32,
                          inv_2a: f32, neg_b_2a: f32, disc_const: f32, disc_slope: f32| {
             let disc = Y * disc_slope + disc_const;
-            let sqrt_disc = disc.clone().max(0.0).sqrt();
+            let sqrt_disc = disc.max(0.0).sqrt();
 
             // Two roots: t = (-by +/- sqrt(disc)) / (2*ay)
-            let t_plus = sqrt_disc.clone() * inv_2a + neg_b_2a;
+            let t_plus = sqrt_disc.clone() * inv_2a.clone() + neg_b_2a.clone();
             let t_minus = sqrt_disc * -inv_2a + neg_b_2a;
 
             // X-coordinates at intersection points
-            let x_plus = t_plus.clone() * t_plus.clone() * ax + t_plus.clone() * bx + cx;
+            let x_plus = t_plus.clone() * t_plus.clone() * ax.clone() + t_plus.clone() * bx.clone() + cx.clone();
             let x_minus = t_minus.clone() * t_minus.clone() * ax + t_minus.clone() * bx + cx;
 
             // Tangent dy/dt at each root for winding direction
-            let dy_plus = t_plus.clone() * (2.0 * ay) + by;
+            let dy_plus = t_plus.clone() * (2.0 * ay.clone()) + by.clone();
             let dy_minus = t_minus.clone() * (2.0 * ay) + by;
 
             // Step: 1.0 if crossing is to the left of or at X
@@ -172,8 +172,8 @@ impl Manifold<Field4> for AnalyticalQuad {
             let crossed_minus = (X >= x_minus).select(1.0, 0.0);
 
             // Validity: only count roots with t in [0, 1]
-            let valid_plus = t_plus.ge(0.0) & t_plus.le(1.0);
-            let valid_minus = t_minus.ge(0.0) & t_minus.le(1.0);
+            let valid_plus = t_plus.clone().ge(0.0) & t_plus.clone().le(1.0);
+            let valid_minus = t_minus.clone().ge(0.0) & t_minus.clone().le(1.0);
 
             // Winding sign from tangent direction
             let sign_plus = dy_plus.gt(0.0).select(-1.0, 1.0);
