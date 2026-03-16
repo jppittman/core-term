@@ -127,6 +127,8 @@ pub struct TerminalApp {
     /// Currently pressed mouse button, tracked for motion reporting.
     /// Set on MouseClick, cleared on MouseRelease.
     pressed_mouse_button: Option<pixelflow_runtime::input::MouseButton>,
+    /// Shell's current working directory, updated via OSC 7.
+    working_directory: Option<String>,
 }
 
 /// Parameters for constructing a TerminalApp.
@@ -235,6 +237,7 @@ impl TerminalApp {
             loaded_font,
             glyph_cache,
             pressed_mouse_button: None,
+            working_directory: None,
         }
     }
 
@@ -556,6 +559,10 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                             {
                                 log::warn!("Failed to send PTY resize command: {}", e);
                             }
+                        }
+                        EmulatorAction::SetWorkingDirectory(path) => {
+                            log::debug!("Shell working directory: {}", path);
+                            self.working_directory = Some(path);
                         }
                     }
                 }
