@@ -14,7 +14,7 @@ const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
 struct KeyInput {
     symbol: pixelflow_runtime::input::KeySymbol,
     modifiers: pixelflow_runtime::input::Modifiers,
-    text: Option<String>,
+    text: Option<std::borrow::Cow<'static, str>>,
 }
 
 pub(super) fn process_user_input_action(

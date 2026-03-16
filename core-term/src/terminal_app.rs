@@ -513,7 +513,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
                 let input = EmulatorInput::User(UserInputAction::KeyInput {
                     symbol: key,
                     modifiers: mods,
-                    text,
+                    text: text.map(|s| std::borrow::Cow::Owned(s)),
                 });
 
                 if let Some(action) = self.emulator.interpret_input(input) {

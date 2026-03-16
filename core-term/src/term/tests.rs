@@ -752,7 +752,7 @@ fn test_key_event_printable_char() {
     let key_input = UserInputAction::KeyInput {
         symbol: KeySymbol::Char('x'),
         modifiers: Modifiers::SHIFT,
-        text: Some("X".to_string()),
+        text: Some(std::borrow::Cow::Borrowed("X")),
     };
     let action = term.interpret_input(EmulatorInput::User(key_input));
     assert_eq!(
