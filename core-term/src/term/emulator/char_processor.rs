@@ -71,7 +71,7 @@ impl TerminalEmulator {
     // This is a helper for print_char, so it can be private to this impl block.
     #[inline]
     fn map_char_to_active_charset(&self, ch: char) -> char {
-        let current_set = self.active_charsets[self.active_charset_g_level];
+        let current_set = self.active_charsets[self.active_charset_g_level as usize];
         match current_set {
             CharacterSet::Ascii => ch,
             CharacterSet::UkNational => {

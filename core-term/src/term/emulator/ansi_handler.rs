@@ -8,7 +8,7 @@ use crate::{
     },
     term::{
         action::EmulatorAction,
-        charset::{CharacterSet, G0, G1, G2, G3},
+        charset::{CharacterSet, GLevel},
         cursor::CursorShape,
         emulator::FocusState,
         modes::{EraseMode, Mode, ModeAction},
@@ -67,11 +67,11 @@ fn handle_c0_control(emulator: &mut TerminalEmulator, c0: C0Control) -> Option<E
             None
         }
         C0Control::SO => {
-            emulator.set_g_level(G1);
+            emulator.set_g_level(GLevel::G1);
             None
         }
         C0Control::SI => {
-            emulator.set_g_level(G0);
+            emulator.set_g_level(GLevel::G0);
             None
         }
         C0Control::BEL => Some(EmulatorAction::RingBell),
@@ -115,16 +115,16 @@ fn handle_esc_command(
         }
         EscCommand::SelectCharacterSet(intermediate_char, final_char) => {
             let g_idx = match intermediate_char {
-                '(' => G0,
-                ')' => G1,
-                '*' => G2,
-                '+' => G3,
+                '(' => GLevel::G0,
+                ')' => GLevel::G1,
+                '*' => GLevel::G2,
+                '+' => GLevel::G3,
                 _ => {
                     warn!(
                         "Unsupported G-set designator intermediate: {}",
                         intermediate_char
                     );
-                    G0
+                    GLevel::G0
                 }
             };
             emulator.designate_character_set(g_idx, CharacterSet::from_char(final_char));

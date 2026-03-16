@@ -366,6 +366,8 @@ pub fn eigen_patch(
 
     // Precompute bicubic coefficients for each subpatch
     let mut coeffs = [[[0.0f32; 16]; 3]; 3]; // [axis][subpatch][coeff]
+
+    #[allow(clippy::needless_range_loop)]
     for sub in 0..3 {
         for c in 0..16 {
             for basis in 0..k {
