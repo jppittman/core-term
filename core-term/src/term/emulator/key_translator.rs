@@ -9,7 +9,7 @@ use crate::{
 pub(super) fn translate_key_input(
     symbol: KeySymbol,
     modifiers: Modifiers,
-    text: Option<String>,
+    text: Option<std::borrow::Cow<'_, str>>,
     dec_modes: &DecPrivateModes,
 ) -> Vec<u8> {
     // Pre-allocate buffer for key sequence (most are < 16 bytes)
@@ -168,7 +168,7 @@ mod tests {
             translate_key_input(
                 KeySymbol::Char('a'),
                 Modifiers::empty(),
-                Some("a".to_string()),
+                Some(std::borrow::Cow::Borrowed("a")),
                 &modes
             ),
             vec![b'a']
@@ -267,7 +267,7 @@ mod tests {
             translate_key_input(
                 KeySymbol::Up,
                 Modifiers::empty(),
-                Some("\u{F700}".to_string()), // macOS sends this for up arrow
+                Some(std::borrow::Cow::Borrowed("\u{F700}")), // macOS sends this for up arrow
                 &modes
             ),
             b"\x1b[A".to_vec()
@@ -278,7 +278,7 @@ mod tests {
             translate_key_input(
                 KeySymbol::Down,
                 Modifiers::empty(),
-                Some("\u{F701}".to_string()), // macOS sends this for down arrow
+                Some(std::borrow::Cow::Borrowed("\u{F701}")), // macOS sends this for down arrow
                 &modes
             ),
             b"\x1b[B".to_vec()
@@ -289,7 +289,7 @@ mod tests {
             translate_key_input(
                 KeySymbol::Right,
                 Modifiers::empty(),
-                Some("\u{F703}".to_string()), // macOS sends this for right arrow
+                Some(std::borrow::Cow::Borrowed("\u{F703}")), // macOS sends this for right arrow
                 &modes
             ),
             b"\x1b[C".to_vec()
@@ -300,7 +300,7 @@ mod tests {
             translate_key_input(
                 KeySymbol::Left,
                 Modifiers::empty(),
-                Some("\u{F702}".to_string()), // macOS sends this for left arrow
+                Some(std::borrow::Cow::Borrowed("\u{F702}")), // macOS sends this for left arrow
                 &modes
             ),
             b"\x1b[D".to_vec()
