@@ -465,7 +465,7 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn test_regular_patch() {
+    fn patch_should_be_extraordinary_when_valences_are_one() {
         let obj = "
 v 0.0 0.0 0.0
 v 1.0 0.0 0.0
@@ -473,43 +473,65 @@ v 1.0 1.0 0.0
 v 0.0 1.0 0.0
 f 1 2 3 4
 ";
-        let mesh = QuadMesh::from_obj(BufReader::new(Cursor::new(obj))).unwrap();
-        let patch = SubdivisionPatch::from_mesh(&mesh, 0).unwrap();
+        let mesh = QuadMesh::from_obj(BufReader::new(Cursor::new(obj)))
+            .expect("Failed to create quad mesh from OBJ");
+        let patch = SubdivisionPatch::from_mesh(&mesh, 0)
+            .expect("Failed to create subdivision patch");
 
         // All corners have valence 1 (only one face)
         assert_eq!(patch.corner_valences, [1, 1, 1, 1]);
-        assert!(patch.is_extraordinary()); // Valence 1 is extraordinary
+        assert!(
+            patch.is_extraordinary(),
+            "Patch with valence [1, 1, 1, 1] must be extraordinary"
+        );
     }
 
     #[test]
-    fn test_limit_eval() {
+    fn patch_should_not_be_extraordinary_when_all_valences_are_four() {
         let obj = "
 v 0.0 0.0 0.0
 v 1.0 0.0 0.0
-v 1.0 1.0 0.0
+v 2.0 0.0 0.0
+v 3.0 0.0 0.0
 v 0.0 1.0 0.0
-f 1 2 3 4
+v 1.0 1.0 0.0
+v 2.0 1.0 0.0
+v 3.0 1.0 0.0
+v 0.0 2.0 0.0
+v 1.0 2.0 0.0
+v 2.0 2.0 0.0
+v 3.0 2.0 0.0
+v 0.0 3.0 0.0
+v 1.0 3.0 0.0
+v 2.0 3.0 0.0
+v 3.0 3.0 0.0
+f 1 2 6 5
+f 2 3 7 6
+f 3 4 8 7
+f 5 6 10 9
+f 6 7 11 10
+f 7 8 12 11
+f 9 10 14 13
+f 10 11 15 14
+f 11 12 16 15
 ";
-        let mesh = QuadMesh::from_obj(BufReader::new(Cursor::new(obj))).unwrap();
-        let patch = SubdivisionPatch::from_mesh(&mesh, 0).unwrap();
+        let mesh = QuadMesh::from_obj(BufReader::new(Cursor::new(obj)))
+            .expect("Failed to create quad mesh from OBJ");
 
-        // Evaluate at center (0.5, 0.5) using Jet3
-        let u = Jet3::constant(Field::from(0.5));
-        let v = Jet3::constant(Field::from(0.5));
-        let p = patch.eval_limit(&mesh, u, v);
+        // Patch 4 is the center patch (faces are 0-indexed)
+        // Its corners (6, 7, 11, 10) should all have valence 4 in this 3x3 grid
+        let patch = SubdivisionPatch::from_mesh(&mesh, 4)
+            .expect("Failed to create subdivision patch");
 
-        // Extract values (collapse AST)
-        let x = p[0].val;
-        let y = p[1].val;
-        let z = p[2].val;
-
-        // For bilinear fallback, center should be roughly (0.5, 0.5, 0.0)
-        // We can't easily check SIMD Field values in tests, so this is a smoke test
-        assert_eq!(patch.is_extraordinary(), true);
+        assert_eq!(patch.corner_valences, [4, 4, 4, 4]);
+        assert!(
+            !patch.is_extraordinary(),
+            "Patch with valence [4, 4, 4, 4] must not be extraordinary"
+        );
     }
 
     #[test]
-    fn test_surface_stats() {
+    fn surface_should_count_total_patches_when_mesh_has_multiple_faces() {
         let obj = "
 v 0.0 0.0 0.0
 v 1.0 0.0 0.0
@@ -520,10 +542,15 @@ v 2.0 1.0 0.0
 f 1 2 3 4
 f 2 5 6 3
 ";
-        let mesh = QuadMesh::from_obj(BufReader::new(Cursor::new(obj))).unwrap();
-        let surface = SubdivisionSurface::from_mesh(mesh).unwrap();
+        let mesh = QuadMesh::from_obj(BufReader::new(Cursor::new(obj)))
+            .expect("Failed to create quad mesh from OBJ");
+        let surface = SubdivisionSurface::from_mesh(mesh)
+            .expect("Failed to create subdivision surface");
         let stats = surface.stats();
 
-        assert_eq!(stats.total_patches, 2);
+        assert_eq!(
+            stats.total_patches, 2,
+            "Surface total patches should match the number of mesh faces"
+        );
     }
 }
