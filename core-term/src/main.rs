@@ -215,7 +215,9 @@ fn main() -> anyhow::Result<()> {
     {
         use core_term::io::event_monitor_actor::EventMonitorActor;
         use core_term::io::pty::{NixPty, PtyConfig};
-        use core_term::terminal_app::{spawn_terminal_app, TerminalAppParams, TerminalAppSender};
+        use core_term::terminal_app::{
+            spawn_terminal_app, TerminalAppHandles, TerminalAppParams, TerminalAppSender,
+        };
 
         // Phase 3: Spawn terminal app with UNREGISTERED handle
         // The app will call register() during its initialization
@@ -226,8 +228,11 @@ fn main() -> anyhow::Result<()> {
             unregistered_engine: unregistered_handle,
             window_config: engine_config.window.clone(),
         };
-        let (app_handle, pty_handle, _app_thread_handle) =
-            spawn_terminal_app(params).context("Failed to spawn terminal app")?;
+        let TerminalAppHandles {
+            app_handle,
+            pty_handle,
+            join_handle: _app_thread_handle,
+        } = spawn_terminal_app(params).context("Failed to spawn terminal app")?;
 
         // Create adapter for PTY parser to send to app
         let app_sender = Box::new(TerminalAppSender::new(pty_handle));
