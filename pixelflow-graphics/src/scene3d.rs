@@ -362,22 +362,22 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     // 2. Validate hit: t > 0, t < max, derivatives reasonable
     let t_max = 1000000.0;
     let deriv_max = 10000.0;
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let valid__t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+    let valid__deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let hit_mask = valid_t.clone() & valid_deriv.clone();
 
     // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
-    let hx = X * t;
-    let hy = Y * t;
-    let hz = Z * t;
+    let h_x = X * t;
+    let h_y = Y * t;
+    let h_z = Z * t;
 
     // 4. Sample material at hit point, background at ray direction
-    let mat_val = material.at(hx, hy, hz, W);
+    let mat_val = material.at(h_x, h_y, h_z, W);
     let bg_val = background;
 
     // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
-    mask.select(mat_val, bg_val)
+    (mask).select(mat_val, bg_val)
 });
 
 /// Color Surface: geometry + material + background, outputs Discrete.
@@ -388,22 +388,22 @@ kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, backgroun
     // 2. Validate hit: t > 0, t < max, derivatives reasonable
     let t_max = 1000000.0;
     let deriv_max = 10000.0;
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let valid__t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+    let valid__deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let hit_mask = valid_t.clone() & valid_deriv.clone();
 
     // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
-    let hx = X * t;
-    let hy = Y * t;
-    let hz = Z * t;
+    let h_x = X * t;
+    let h_y = Y * t;
+    let h_z = Z * t;
 
     // 4. Sample material at hit point, background at ray direction
-    let mat_val = material.at(hx, hy, hz, W);
+    let mat_val = material.at(h_x, h_y, h_z, W);
     let bg_val = background;
 
     // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
-    mask.select(mat_val, bg_val)
+    (mask).select(mat_val, bg_val)
 });
 
 // ... SCENE COMPOSITION ...
@@ -516,11 +516,11 @@ kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
     let deriv_max = 10000.0;
 
     // Valid if: t > 0, t < max, derivatives reasonable
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let valid__t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let valid__deriv = deriv_mag_sq < (deriv_max * deriv_max);
 
-    valid_t & valid_deriv
+    valid_t.clone() & valid_deriv.clone()
 });
 
 impl<G, M> Scene for SceneObject<G, M>
@@ -652,7 +652,7 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
         let r_z = d_jet_z - k * n_jet_z;
 
         // Recurse with curved reflected rays
-        self.inner.eval(r_x, r_y, r_z, w)
+        self.inner.eval((r_x, r_y, r_z, w))
     }
 }
 
