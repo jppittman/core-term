@@ -101,7 +101,7 @@ impl<M: ManifoldCompat<Field, Output = Field> + ManifoldExt> Manifold<Field4> fo
 /// - Surface<SphereAt, Reflect<world>, world>: sphere reflecting world
 /// - world = Surface<plane, Checker, Sky>: floor + sky
 #[test]
-fn test_chrome_unit_sphere() {
+fn scene3d_should_render_chrome_unit_sphere() {
     const W: usize = 400;
     const H: usize = 300;
 
@@ -174,7 +174,7 @@ fn test_chrome_unit_sphere() {
 
 /// Test: Just the sky (no geometry)
 #[test]
-fn test_sky_only() {
+fn scene3d_should_render_sky_gradient_when_sky_only() {
     const W: usize = 200;
     const H: usize = 150;
 
@@ -226,7 +226,7 @@ fn test_sky_only() {
 
 /// Test: Floor only (plane with checker pattern)
 #[test]
-fn test_floor_only() {
+fn scene3d_should_render_checker_floor_when_floor_only() {
     const W: usize = 400;
     const H: usize = 300;
 
@@ -274,7 +274,7 @@ fn test_floor_only() {
 /// Test: Color chrome sphere with blue sky (MULLET ARCHITECTURE)
 /// Geometry runs ONCE, colors flow as packed RGBA. 3x speedup!
 #[test]
-fn test_color_chrome_sphere() {
+fn scene3d_should_render_chrome_sphere_with_color_cube() {
     const W: usize = 1920;
     const H: usize = 1080;
 
@@ -364,7 +364,7 @@ fn test_color_chrome_sphere() {
 /// Test: Compare 3-channel vs mullet rendering to ensure they match.
 /// This verifies the mullet architecture produces identical results.
 #[test]
-fn test_mullet_vs_3channel_comparison() {
+fn scene3d_should_match_mullet_and_3channel_rendering() {
     const W: usize = 200;
     const H: usize = 150;
 
@@ -600,7 +600,7 @@ fn test_mullet_vs_3channel_comparison() {
 
 /// Benchmark: Compare work-stealing vs single-threaded at 1080p
 #[test]
-fn test_work_stealing_benchmark() {
+fn scene3d_should_run_work_stealing_benchmark() {
     const W: usize = 1920;
     const H: usize = 1080;
 
