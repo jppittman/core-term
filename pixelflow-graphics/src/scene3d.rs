@@ -516,8 +516,8 @@ kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
     let deriv_max = 10000.0;
 
     // Valid if: t > 0, t < max, derivatives reasonable
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
-    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
+    let valid_t = (V(t.clone()) > 0.0) & (V(t.clone()) < t_max);
+    let deriv_mag_sq = DX(t.clone()) * DX(t.clone()) + DY(t.clone()) * DY(t.clone()) + DZ(t.clone()) * DZ(t.clone());
     let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
 
     valid_t & valid_deriv
