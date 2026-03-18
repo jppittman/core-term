@@ -13,3 +13,7 @@
 ## 2025-12-28 - Rasterizer Inner Loop Hoisting
 **Learning:** The inner loop of `execute_stripe` was re-evaluating `Field::sequential(start)` on every iteration, which involves multiple SIMD instructions (broadcast/load + add).
 **Action:** Hoisted the initialization of `xs` out of the loop and updated it incrementally using a pre-computed `step` vector. This reduced the inner loop overhead significantly, yielding a ~34% improvement in rasterization throughput.
+
+## 2025-05-18 - Math Chaining in AST nodes: sqrt().rsqrt()
+**Learning:** In `pixelflow-graphics/src/scene3d.rs`, `n_len_sq.sqrt().rsqrt()` was used to compute the inverse length. Since `Field` methods return AST nodes that compute math, `sqrt().rsqrt()` correctly evaluates to `(x^(1/2))^(-1/2) = x^(-1/4)`, rather than `x^(-1/2)`. This happens because `rsqrt` calculates the reciprocal square root of its input.
+**Action:** When computing the inverse length or reciprocal square root using `Field` types (AST nodes), use `.rsqrt()` directly instead of `.sqrt().rsqrt()`. The latter incorrectly computes `x^(-1/4)` instead of the intended `x^(-1/2)`, introducing mathematical errors and redundant AST node evaluation overhead.
