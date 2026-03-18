@@ -88,8 +88,8 @@ fn it_should_process_dec_private_mode_reset_12_att610_cursor_blink() {
     let commands = process_bytes(bytes);
     assert_eq!(
         commands,
-        vec![AnsiCommand::Csi(CsiCommand::ResetModePrivate(crate::term::modes::DecModeConstant::Att610CursorBlink as u16))],
-        "Expected ResetModePrivate(Att610CursorBlink) for CSI ?12l"
+        vec![AnsiCommand::Csi(CsiCommand::ResetModePrivate(12))],
+        "Expected ResetModePrivate(12) for CSI ?12l"
     );
 }
 
@@ -99,8 +99,8 @@ fn it_should_process_dec_private_mode_set_25_text_cursor_enable() {
     let commands = process_bytes(bytes);
     assert_eq!(
         commands,
-        vec![AnsiCommand::Csi(CsiCommand::SetModePrivate(crate::term::modes::DecModeConstant::TextCursorEnable as u16))],
-        "Expected SetModePrivate(TextCursorEnable) for CSI ?25h"
+        vec![AnsiCommand::Csi(CsiCommand::SetModePrivate(25))],
+        "Expected SetModePrivate(25) for CSI ?25h"
     );
 }
 
@@ -110,8 +110,8 @@ fn it_should_process_dec_private_mode_reset_25_text_cursor_enable() {
     let commands = process_bytes(bytes);
     assert_eq!(
         commands,
-        vec![AnsiCommand::Csi(CsiCommand::ResetModePrivate(crate::term::modes::DecModeConstant::TextCursorEnable as u16))],
-        "Expected ResetModePrivate(TextCursorEnable) for CSI ?25l"
+        vec![AnsiCommand::Csi(CsiCommand::ResetModePrivate(25))],
+        "Expected ResetModePrivate(25) for CSI ?25l"
     );
 }
 
@@ -160,16 +160,16 @@ fn it_should_process_dec_private_mode_bracketed_paste_2004() {
     let commands_set = process_bytes(bytes_set);
     assert_eq!(
         commands_set,
-        vec![AnsiCommand::Csi(CsiCommand::SetModePrivate(crate::term::modes::DecModeConstant::BracketedPaste as u16))],
-        "Expected SetModePrivate(BracketedPaste) for CSI ?2004h"
+        vec![AnsiCommand::Csi(CsiCommand::SetModePrivate(2004))],
+        "Expected SetModePrivate(2004) for CSI ?2004h"
     );
 
     let bytes_reset = b"\x1b[?2004l";
     let commands_reset = process_bytes(bytes_reset);
     assert_eq!(
         commands_reset,
-        vec![AnsiCommand::Csi(CsiCommand::ResetModePrivate(crate::term::modes::DecModeConstant::BracketedPaste as u16))],
-        "Expected ResetModePrivate(BracketedPaste) for CSI ?2004l"
+        vec![AnsiCommand::Csi(CsiCommand::ResetModePrivate(2004))],
+        "Expected ResetModePrivate(2004) for CSI ?2004l"
     );
 }
 
@@ -179,16 +179,16 @@ fn it_should_process_dec_private_mode_focus_event_1004() {
     let commands_set = process_bytes(bytes_set);
     assert_eq!(
         commands_set,
-        vec![AnsiCommand::Csi(CsiCommand::SetModePrivate(crate::term::modes::DecModeConstant::FocusEvent as u16))],
-        "Expected SetModePrivate(FocusEvent) for CSI ?1004h"
+        vec![AnsiCommand::Csi(CsiCommand::SetModePrivate(1004))],
+        "Expected SetModePrivate(1004) for CSI ?1004h"
     );
 
     let bytes_reset = b"\x1b[?1004l";
     let commands_reset = process_bytes(bytes_reset);
     assert_eq!(
         commands_reset,
-        vec![AnsiCommand::Csi(CsiCommand::ResetModePrivate(crate::term::modes::DecModeConstant::FocusEvent as u16))],
-        "Expected ResetModePrivate(FocusEvent) for CSI ?1004l"
+        vec![AnsiCommand::Csi(CsiCommand::ResetModePrivate(1004))],
+        "Expected ResetModePrivate(1004) for CSI ?1004l"
     );
 }
 
@@ -198,8 +198,8 @@ fn it_should_process_dec_private_mode_uncommon_7727() {
     let commands = process_bytes(bytes);
     assert_eq!(
         commands,
-        vec![AnsiCommand::Csi(CsiCommand::ResetModePrivate(crate::term::modes::DecModeConstant::Unknown7727 as u16))],
-        "Expected ResetModePrivate(Unknown7727) for CSI ?7727l"
+        vec![AnsiCommand::Csi(CsiCommand::ResetModePrivate(7727))],
+        "Expected ResetModePrivate(7727) for CSI ?7727l"
     );
 }
 
@@ -290,7 +290,7 @@ fn it_should_process_csi_sequence_fragmented_across_intermediate_bytes() {
     let commands_frag2 = processor.process_bytes(b"25h");
     assert_eq!(
         commands_frag2,
-        vec![AnsiCommand::Csi(CsiCommand::SetModePrivate(crate::term::modes::DecModeConstant::TextCursorEnable as u16))],
+        vec![AnsiCommand::Csi(CsiCommand::SetModePrivate(25))],
         "After fragment 2 (25h)"
     );
 }
