@@ -465,7 +465,7 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn test_regular_patch() {
+    fn patch_should_be_extraordinary_when_all_corners_have_valence_1() {
         let obj = "
 v 0.0 0.0 0.0
 v 1.0 0.0 0.0
@@ -482,7 +482,7 @@ f 1 2 3 4
     }
 
     #[test]
-    fn test_limit_eval() {
+    fn eval_limit_should_produce_ast_nodes_when_evaluated_at_center() {
         let obj = "
 v 0.0 0.0 0.0
 v 1.0 0.0 0.0
@@ -505,11 +505,11 @@ f 1 2 3 4
 
         // For bilinear fallback, center should be roughly (0.5, 0.5, 0.0)
         // We can't easily check SIMD Field values in tests, so this is a smoke test
-        assert_eq!(patch.is_extraordinary(), true);
+        assert!(patch.is_extraordinary());
     }
 
     #[test]
-    fn test_surface_stats() {
+    fn stats_should_return_correct_patch_count_when_mesh_has_two_faces() {
         let obj = "
 v 0.0 0.0 0.0
 v 1.0 0.0 0.0
