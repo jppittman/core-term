@@ -5,10 +5,10 @@
 //! 2. Surface: Warps `P = ray * t` - creates tangent frame via chain rule
 //! 3. Material: Reconstructs normal from derivatives - Reflect, Checker, Sky
 
+use pixelflow_compiler::ManifoldExpr;
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, ManifoldExt};
-use pixelflow_compiler::ManifoldExpr;
 
 type Field4 = (Field, Field, Field, Field);
 type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
@@ -16,8 +16,8 @@ use pixelflow_graphics::render::color::{Rgba8, RgbaColorCube};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::scene3d::{
-    Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface, plane,
-    Reflect, ScreenToDir, sky, Surface,
+    plane, sky, Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
+    Reflect, ScreenToDir, Surface,
 };
 use std::fs::File;
 use std::io::Write;
@@ -101,7 +101,7 @@ impl<M: ManifoldCompat<Field, Output = Field> + ManifoldExt> Manifold<Field4> fo
 /// - Surface<SphereAt, Reflect<world>, world>: sphere reflecting world
 /// - world = Surface<plane, Checker, Sky>: floor + sky
 #[test]
-fn test_chrome_unit_sphere() {
+fn render_should_reflect_world_when_sphere_is_chrome() {
     const W: usize = 400;
     const H: usize = 300;
 
@@ -120,7 +120,9 @@ fn test_chrome_unit_sphere() {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: Reflect { inner: world.clone() },
+        material: Reflect {
+            inner: world.clone(),
+        },
         background: world,
     };
 
@@ -140,10 +142,11 @@ fn test_chrome_unit_sphere() {
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_chrome_unit_sphere.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
+    let mut file = File::create(&path).expect("Failed to create file");
+    writeln!(file, "P6\n{} {}\n255", W, H).expect("Failed to write header");
     for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
+        file.write_all(&[p.r(), p.g(), p.b()])
+            .expect("Failed to write pixel data");
     }
     println!("Saved: {}", path.display());
 
@@ -174,7 +177,7 @@ fn test_chrome_unit_sphere() {
 
 /// Test: Just the sky (no geometry)
 #[test]
-fn test_sky_only() {
+fn render_should_produce_gradient_when_scene_is_sky_only() {
     const W: usize = 200;
     const H: usize = 150;
 
@@ -207,10 +210,11 @@ fn test_sky_only() {
 
     // Save
     let path = std::env::temp_dir().join("pixelflow_sky_only.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
+    let mut file = File::create(&path).expect("Failed to create file");
+    writeln!(file, "P6\n{} {}\n255", W, H).expect("Failed to write header");
     for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
+        file.write_all(&[p.r(), p.g(), p.b()])
+            .expect("Failed to write pixel data");
     }
     println!("Saved: {}", path.display());
 
@@ -226,7 +230,7 @@ fn test_sky_only() {
 
 /// Test: Floor only (plane with checker pattern)
 #[test]
-fn test_floor_only() {
+fn render_should_produce_checkerboard_when_scene_is_floor_only() {
     const W: usize = 400;
     const H: usize = 300;
 
@@ -250,10 +254,11 @@ fn test_floor_only() {
 
     // Save
     let path = std::env::temp_dir().join("pixelflow_floor_only.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
+    let mut file = File::create(&path).expect("Failed to create file");
+    writeln!(file, "P6\n{} {}\n255", W, H).expect("Failed to write header");
     for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
+        file.write_all(&[p.r(), p.g(), p.b()])
+            .expect("Failed to write pixel data");
     }
     println!("Saved: {}", path.display());
 
@@ -274,7 +279,7 @@ fn test_floor_only() {
 /// Test: Color chrome sphere with blue sky (MULLET ARCHITECTURE)
 /// Geometry runs ONCE, colors flow as packed RGBA. 3x speedup!
 #[test]
-fn test_color_chrome_sphere() {
+fn render_should_produce_blue_sky_when_using_color_surface() {
     const W: usize = 1920;
     const H: usize = 1080;
 
@@ -291,7 +296,9 @@ fn test_color_chrome_sphere() {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: ColorReflect { inner: world.clone() },
+        material: ColorReflect {
+            inner: world.clone(),
+        },
         background: world,
     };
 
@@ -339,10 +346,11 @@ fn test_color_chrome_sphere() {
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_color_chrome.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
+    let mut file = File::create(&path).expect("Failed to create file");
+    writeln!(file, "P6\n{} {}\n255", W, H).expect("Failed to write header");
     for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
+        file.write_all(&[p.r(), p.g(), p.b()])
+            .expect("Failed to write pixel data");
     }
     println!("Saved: {}", path.display());
 
@@ -364,7 +372,7 @@ fn test_color_chrome_sphere() {
 /// Test: Compare 3-channel vs mullet rendering to ensure they match.
 /// This verifies the mullet architecture produces identical results.
 #[test]
-fn test_mullet_vs_3channel_comparison() {
+fn mullet_render_should_match_3channel_render_when_comparing_identical_scenes() {
     const W: usize = 200;
     const H: usize = 150;
 
@@ -450,7 +458,9 @@ fn test_mullet_vs_3channel_comparison() {
                         center: (0.0, 0.0, 4.0),
                         radius: 1.0,
                     },
-                    material: Reflect { inner: world.clone() },
+                    material: Reflect {
+                        inner: world.clone(),
+                    },
                     background: world,
                 },
             },
@@ -533,7 +543,9 @@ fn test_mullet_vs_3channel_comparison() {
                     center: (0.0, 0.0, 4.0),
                     radius: 1.0,
                 },
-                material: ColorReflect { inner: world.clone() },
+                material: ColorReflect {
+                    inner: world.clone(),
+                },
                 background: world,
             },
         },
@@ -600,7 +612,7 @@ fn test_mullet_vs_3channel_comparison() {
 
 /// Benchmark: Compare work-stealing vs single-threaded at 1080p
 #[test]
-fn test_work_stealing_benchmark() {
+fn parallel_render_should_match_single_threaded_when_using_work_stealing() {
     const W: usize = 1920;
     const H: usize = 1080;
 
@@ -616,7 +628,9 @@ fn test_work_stealing_benchmark() {
             center: (0.0, 0.0, 4.0),
             radius: 1.0,
         },
-        material: ColorReflect { inner: world.clone() },
+        material: ColorReflect {
+            inner: world.clone(),
+        },
         background: world,
     };
 
