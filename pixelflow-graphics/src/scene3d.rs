@@ -362,18 +362,18 @@ kernel!(pub struct Surface = |geometry: kernel, material: kernel, background: ke
     // 2. Validate hit: t > 0, t < max, derivatives reasonable
     let t_max = 1000000.0;
     let deriv_max = 10000.0;
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let is_valid_t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+    let is_valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let mask = is_valid_t & is_valid_deriv;
 
     // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
-    let hx = X * t;
-    let hy = Y * t;
-    let hz = Z * t;
+    let hit_x = X * t;
+    let hit_y = Y * t;
+    let hit_z = Z * t;
 
     // 4. Sample material at hit point, background at ray direction
-    let mat_val = material.at(hx, hy, hz, W);
+    let mat_val = material.at(hit_x, hit_y, hit_z, W);
     let bg_val = background;
 
     // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
@@ -388,18 +388,18 @@ kernel!(pub struct ColorSurface = |geometry: kernel, material: kernel, backgroun
     // 2. Validate hit: t > 0, t < max, derivatives reasonable
     let t_max = 1000000.0;
     let deriv_max = 10000.0;
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
+    let is_valid_t = (V(t) > 0.0) & (V(t) < t_max);
     let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
-    let mask = valid_t & valid_deriv;
+    let is_valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let mask = is_valid_t & is_valid_deriv;
 
     // 3. Hit point: P = ray * t (always computed; Select short-circuits if mask is all-false)
-    let hx = X * t;
-    let hy = Y * t;
-    let hz = Z * t;
+    let hit_x = X * t;
+    let hit_y = Y * t;
+    let hit_z = Z * t;
 
     // 4. Sample material at hit point, background at ray direction
-    let mat_val = material.at(hx, hy, hz, W);
+    let mat_val = material.at(hit_x, hit_y, hit_z, W);
     let bg_val = background;
 
     // 5. Select based on hit validity (short-circuit avoids evaluating unused branch)
@@ -500,12 +500,12 @@ where
         let t = self.geometry.eval_raw(rx, ry, rz, w);
 
         // Compute hit point: P = ray * t
-        let hx = rx * t;
-        let hy = ry * t;
-        let hz = rz * t;
+        let hit_x = rx * t.clone();
+        let hit_y = ry * t.clone();
+        let hit_z = rz * t;
 
         // Evaluate material at hit point
-        self.material.eval_raw(hx, hy, hz, w)
+        self.material.eval_raw(hit_x, hit_y, hit_z, w)
     }
 }
 
@@ -516,11 +516,11 @@ kernel!(pub struct GeometryMask = |geometry: kernel| Jet3 -> Field {
     let deriv_max = 10000.0;
 
     // Valid if: t > 0, t < max, derivatives reasonable
-    let valid_t = (V(t) > 0.0) & (V(t) < t_max);
-    let deriv_mag_sq = DX(t) * DX(t) + DY(t) * DY(t) + DZ(t) * DZ(t);
-    let valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
+    let is_valid_t = (V(t.clone()) > 0.0) & (V(t.clone()) < t_max);
+    let deriv_mag_sq = DX(t.clone()) * DX(t.clone()) + DY(t.clone()) * DY(t.clone()) + DZ(t.clone()) * DZ(t.clone());
+    let is_valid_deriv = deriv_mag_sq < (deriv_max * deriv_max);
 
-    valid_t & valid_deriv
+    (is_valid_t & is_valid_deriv).select(1.0, 0.0)
 });
 
 impl<G, M> Scene for SceneObject<G, M>
@@ -647,12 +647,12 @@ impl<M: ManifoldCompat<Jet3, Output = Field>> Manifold<Jet3_4> for Reflect<M> {
         let two = Jet3::constant(Field::from(2.0));
         let k = two * d_dot_n;
 
-        let r_x = d_jet_x - k * n_jet_x;
-        let r_y = d_jet_y - k * n_jet_y;
+        let r_x = d_jet_x - k.clone() * n_jet_x;
+        let r_y = d_jet_y - k.clone() * n_jet_y;
         let r_z = d_jet_z - k * n_jet_z;
 
         // Recurse with curved reflected rays
-        self.inner.eval(r_x, r_y, r_z, w)
+        self.inner.eval((r_x, r_y, r_z, w))
     }
 }
 
