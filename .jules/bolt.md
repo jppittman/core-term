@@ -13,3 +13,7 @@
 ## 2025-12-28 - Rasterizer Inner Loop Hoisting
 **Learning:** The inner loop of `execute_stripe` was re-evaluating `Field::sequential(start)` on every iteration, which involves multiple SIMD instructions (broadcast/load + add).
 **Action:** Hoisted the initialization of `xs` out of the loop and updated it incrementally using a pre-computed `step` vector. This reduced the inner loop overhead significantly, yielding a ~34% improvement in rasterization throughput.
+
+## 2025-12-28 - Avoid Redundant AST Nodes in Inverse Length
+**Learning:** When computing reciprocal square root in `pixelflow-graphics`, chaining `.sqrt().rsqrt()` produces a mathematically incorrect calculation (effectively `x^(-1/4)` instead of `x^(-1/2)`) and creates unnecessary AST node evaluation overhead.
+**Action:** Always compute reciprocal square root directly using `.rsqrt()` on the squared length to preserve correctness and performance.
