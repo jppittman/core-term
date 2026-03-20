@@ -1,0 +1,20 @@
+--- actor-scheduler/src/lib.rs
++++ replace ^ with | in backoff_with_jitter
+@@ -634,17 +634,17 @@
+
+     // Add jitter: random value between [min_pct%, (min_pct+range_pct)%] of backoff
+     // Use wall clock time for actual randomness (prevents thundering herd)
+     let now = std::time::SystemTime::now()
+         .duration_since(std::time::UNIX_EPOCH)
+         .unwrap_or(Duration::from_secs(0));
+
+     // Mix nanoseconds with attempt number for better distribution across threads
+-    let hash = (now.as_nanos() as u64 ^ (attempt as u64).wrapping_mul(0x517cc1b727220a95))
++    let hash = (now.as_nanos() as u64 | /* ~ changed by cargo-mutants ~ */ (attempt as u64).wrapping_mul(0x517cc1b727220a95))
+         .wrapping_mul(JITTER_HASH_CONSTANT);
+
+     let jitter_pct = params.jitter_min_pct + (hash % params.jitter_range_pct);
+     let jittered_micros = (backoff_micros * jitter_pct) / 100;
+
+     Ok(Duration::from_micros(jittered_micros))
+ }

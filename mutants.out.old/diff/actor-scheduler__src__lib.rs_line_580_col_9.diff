@@ -1,0 +1,22 @@
+--- actor-scheduler/src/lib.rs
++++ replace ActorBuilder<D, C, M>::build -> ActorScheduler<D, C, M> with Default::default()
+@@ -572,18 +572,17 @@
+     }
+
+     /// Seal the registry and return the scheduler.
+     ///
+     /// Uses default burst limits from [`SchedulerParams`].
+     /// No more producers can be added after this call.
+     #[must_use]
+     pub fn build(self) -> ActorScheduler<D, C, M> {
+-        let burst = self.params.default_data_burst_limit;
+-        self.build_with_burst(burst, ShutdownMode::default())
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+
+     /// Seal the registry with explicit burst limit and shutdown mode.
+     #[must_use]
+     pub fn build_with_burst(
+         self,
+         data_burst_limit: usize,
+         shutdown_mode: ShutdownMode,

@@ -466,16 +466,6 @@ fn test_kernel_composition_with_offset() {
 /// 1. ManifoldBind2<M1, M2, Body> that carries both manifold types
 /// 2. Explicit type annotations in the generated closure
 /// 3. A different codegen strategy (e.g., leveled evaluation)
-#[test]
-#[ignore = "two-manifold params require ManifoldBind2 implementation"]
-fn test_two_manifold_params() {
-    // Test body commented out until ManifoldBind2 is implemented
-    // See the original test for the intended behavior:
-    //
-    // let circle_sdf = kernel!(|cx: f32, cy: f32, r: f32| { ... });
-    // let sdf_union = kernel!(|a: kernel, b: kernel| a.min(b));
-    // let union = sdf_union(circle1, circle2);
-}
 
 /// Test mixed manifold and scalar parameters.
 #[test]
@@ -906,41 +896,8 @@ fn test_manual_gradient_magnitude() {
 // See Phase 5 plan for derivative accessor implementation details.
 // The kernel! macro doesn't yet add HasDerivatives bounds when derivative accessors are used.
 //
-// #[test]
-// fn test_manual_antialias() {
-//     let circle = kernel!(|| -> Jet2 { (X * X + Y * Y).sqrt() - 1.0 });
-//     let sdf = circle();
-//     let antialias = kernel!(|m: kernel| V(m) / (DX(m) * DX(m) + DY(m) * DY(m)).sqrt());
-//     let aa = antialias(sdf);
-//     let result = aa.eval(jet2_4_seeded(2.0, 0.0));
-//     assert!(fields_close(result, Field::from(1.0), 0.01));
-// }
 
 // NOTE: This test requires HasDerivatives bound detection for manifold params that use V/DX/DY.
 // See Phase 5 plan for derivative accessor implementation details.
 // The kernel! macro doesn't yet add HasDerivatives bounds when derivative accessors are used.
 //
-// #[test]
-// fn test_derivative_accessors_with_composition() {
-//     let circle_sdf = kernel!(|cx: f32, cy: f32, r: f32| -> Jet2 {
-//         let dx = X - cx;
-//         let dy = Y - cy;
-//         (dx * dx + dy * dy).sqrt() - r
-//     });
-//     let sdf = circle_sdf(0.0, 0.0, 1.0);
-//     let antialias = kernel!(|m: kernel| V(m) / (DX(m) * DX(m) + DY(m) * DY(m)).sqrt());
-//     let aa = antialias(sdf);
-//     let result = aa.eval(jet2_4_seeded(2.0, 0.0));
-//     assert!(fields_close(result, Field::from(1.0), 0.01));
-//
-//     let sdf2 = circle_sdf(0.0, 0.0, 1.0);
-//     let get_val = kernel!(|m: kernel| V(m));
-//     let get_dx = kernel!(|m: kernel| DX(m));
-//     let get_dy = kernel!(|m: kernel| DY(m));
-//     let val_result = get_val(sdf2.clone()).eval(jet2_4_seeded(2.0, 0.0));
-//     let gx_result = get_dx(sdf2.clone()).eval(jet2_4_seeded(2.0, 0.0));
-//     let gy_result = get_dy(sdf2).eval(jet2_4_seeded(2.0, 0.0));
-//     assert!(fields_close(val_result, Field::from(1.0), 0.01));
-//     assert!(fields_close(gx_result, Field::from(1.0), 0.01));
-//     assert!(fields_close(gy_result, Field::from(0.0), 0.01));
-// }

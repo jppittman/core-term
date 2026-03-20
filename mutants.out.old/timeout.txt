@@ -1,0 +1,10 @@
+actor-scheduler/src/lib.rs:626:5: replace backoff_with_jitter -> Result<Duration, SendError> with Ok(Default::default())
+actor-scheduler/src/lib.rs:631:23: replace > with < in backoff_with_jitter
+actor-scheduler/src/lib.rs:645:52: replace % with / in backoff_with_jitter
+actor-scheduler/src/lib.rs:645:52: replace % with + in backoff_with_jitter
+actor-scheduler/src/lib.rs:646:57: replace / with * in backoff_with_jitter
+actor-scheduler/src/lib.rs:710:28: replace < with > in send_with_backoff
+actor-scheduler/src/lib.rs:713:35: replace < with > in send_with_backoff
+actor-scheduler/src/lib.rs:758:9: replace ActorHandle<D, C, M>::send -> Result<(), SendError> with Ok(())
+actor-scheduler/src/lib.rs:763:9: replace ActorHandle<D, C, M>::send_message -> Result<(), SendError> with Ok(())
+actor-scheduler/src/lib.rs:812:9: replace ActorHandle<D, C, M>::wake with ()

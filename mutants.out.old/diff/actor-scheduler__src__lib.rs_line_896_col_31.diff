@@ -1,0 +1,21 @@
+--- actor-scheduler/src/lib.rs
++++ replace >= with < in ActorScheduler<D, C, M>::drain_all_with_timeout
+@@ -888,17 +888,17 @@
+
+         let deadline = Instant::now() + timeout;
+         let batch_size = 10;
+
+         loop {
+             let control_status = self
+                 .rx_control
+                 .drain(batch_size, |msg| actor.handle_control(msg))?;
+-            if Instant::now() >= deadline {
++            if Instant::now() < /* ~ changed by cargo-mutants ~ */ deadline {
+                 return Ok(());
+             }
+
+             let mgmt_status = self
+                 .rx_mgmt
+                 .drain(batch_size, |msg| actor.handle_management(msg))?;
+             if Instant::now() >= deadline {
+                 return Ok(());

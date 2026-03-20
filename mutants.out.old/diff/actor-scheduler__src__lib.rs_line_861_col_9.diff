@@ -1,0 +1,32 @@
+--- actor-scheduler/src/lib.rs
++++ replace ActorScheduler<D, C, M>::drain_control_and_management -> Result<(), HandlerError> with Ok(())
+@@ -853,28 +853,17 @@
+     ///
+     /// Used for `ShutdownMode::DrainControl` to process critical cleanup messages
+     /// while dropping lower-priority data messages.
+     fn drain_control_and_management<A>(&mut self, actor: &mut A) -> Result<(), HandlerError>
+     where
+         A: Actor<D, C, M>,
+     {
+         // Drain control completely
+-        while let DrainStatus::More = self
+-            .rx_control
+-            .drain(usize::MAX, |msg| actor.handle_control(msg))?
+-        {}
+-
+-        // Drain management completely
+-        while let DrainStatus::More = self
+-            .rx_mgmt
+-            .drain(usize::MAX, |msg| actor.handle_management(msg))?
+-        {}
+-
+-        Ok(())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+
+     /// Drain all channels (control, management, data) with timeout fallback.
+     ///
+     /// Used for `ShutdownMode::DrainAll` to process all pending messages before shutdown.
+     /// If the timeout is exceeded, remaining messages are dropped.
+     fn drain_all_with_timeout<A>(
+         &mut self,

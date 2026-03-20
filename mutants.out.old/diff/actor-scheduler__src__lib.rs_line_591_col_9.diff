@@ -1,0 +1,30 @@
+--- actor-scheduler/src/lib.rs
++++ replace ActorBuilder<D, C, M>::build_with_burst -> ActorScheduler<D, C, M> with Default::default()
+@@ -583,26 +583,17 @@
+
+     /// Seal the registry with explicit burst limit and shutdown mode.
+     #[must_use]
+     pub fn build_with_burst(
+         self,
+         data_burst_limit: usize,
+         shutdown_mode: ShutdownMode,
+     ) -> ActorScheduler<D, C, M> {
+-        ActorScheduler {
+-            rx_doorbell: self.rx_doorbell.expect("ActorBuilder::build called twice"),
+-            rx_data: self.data_inbox.build(),
+-            rx_control: self.control_inbox.build(),
+-            rx_mgmt: self.mgmt_inbox.build(),
+-            data_burst_limit,
+-            management_burst_limit: self.params.management_burst_limit(),
+-            control_burst_limit: self.params.control_burst_limit(),
+-            shutdown_mode,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+
+ /// Trait for waking a blocked actor scheduler.
+ ///
+ /// Implement this trait for platform-specific wake mechanisms (e.g., NSEvent on macOS).
+ /// When messages are sent, the wake handler is called to ensure the scheduler
+ /// processes them immediately, even if blocked on a platform event loop.

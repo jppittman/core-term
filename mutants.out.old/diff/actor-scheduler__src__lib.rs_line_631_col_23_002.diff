@@ -1,0 +1,21 @@
+--- actor-scheduler/src/lib.rs
++++ replace > with >= in backoff_with_jitter
+@@ -623,17 +623,17 @@
+ /// Uses a simple exponential backoff strategy with added jitter to prevent
+ /// thundering herd problems when multiple actors wake simultaneously.
+ fn backoff_with_jitter(attempt: u32, params: &SchedulerParams) -> Result<Duration, SendError> {
+     let base_micros = params.min_backoff.as_micros() as u64;
+     let max_micros = params.max_backoff.as_micros() as u64;
+
+     let multiplier = 2u64.saturating_pow(attempt);
+     let backoff_micros = base_micros.saturating_mul(multiplier);
+-    if backoff_micros > max_micros {
++    if backoff_micros >= /* ~ changed by cargo-mutants ~ */ max_micros {
+         return Err(SendError::Timeout);
+     }
+
+     // Add jitter: random value between [min_pct%, (min_pct+range_pct)%] of backoff
+     // Use wall clock time for actual randomness (prevents thundering herd)
+     let now = std::time::SystemTime::now()
+         .duration_since(std::time::UNIX_EPOCH)
+         .unwrap_or(Duration::from_secs(0));

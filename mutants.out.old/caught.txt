@@ -1,0 +1,22 @@
+actor-scheduler/src/lib.rs:631:23: replace > with == in backoff_with_jitter
+actor-scheduler/src/lib.rs:631:23: replace > with >= in backoff_with_jitter
+actor-scheduler/src/lib.rs:645:44: replace + with - in backoff_with_jitter
+actor-scheduler/src/lib.rs:645:44: replace + with * in backoff_with_jitter
+actor-scheduler/src/lib.rs:646:57: replace / with % in backoff_with_jitter
+actor-scheduler/src/lib.rs:646:43: replace * with + in backoff_with_jitter
+actor-scheduler/src/lib.rs:646:43: replace * with / in backoff_with_jitter
+actor-scheduler/src/lib.rs:681:9: replace <impl std::fmt::Debug for ActorHandle<D, C, M>>::fmt -> std::fmt::Result with Ok(Default::default())
+actor-scheduler/src/lib.rs:701:5: replace send_with_backoff -> Result<(), SendError> with Ok(())
+actor-scheduler/src/lib.rs:713:35: replace < with == in send_with_backoff
+actor-scheduler/src/lib.rs:713:35: replace < with <= in send_with_backoff
+actor-scheduler/src/lib.rs:713:58: replace + with - in send_with_backoff
+actor-scheduler/src/lib.rs:713:58: replace + with * in send_with_backoff
+actor-scheduler/src/lib.rs:726:49: replace - with + in send_with_backoff
+actor-scheduler/src/lib.rs:726:49: replace - with / in send_with_backoff
+actor-scheduler/src/lib.rs:726:73: replace + with - in send_with_backoff
+actor-scheduler/src/lib.rs:726:73: replace + with * in send_with_backoff
+actor-scheduler/src/lib.rs:861:9: replace ActorScheduler<D, C, M>::drain_control_and_management -> Result<(), HandlerError> with Ok(())
+actor-scheduler/src/lib.rs:887:9: replace ActorScheduler<D, C, M>::drain_all_with_timeout -> Result<(), HandlerError> with Ok(())
+actor-scheduler/src/lib.rs:889:39: replace + with - in ActorScheduler<D, C, M>::drain_all_with_timeout
+actor-scheduler/src/lib.rs:896:31: replace >= with < in ActorScheduler<D, C, M>::drain_all_with_timeout
+actor-scheduler/src/lib.rs:903:31: replace >= with < in ActorScheduler<D, C, M>::drain_all_with_timeout

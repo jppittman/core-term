@@ -1,0 +1,28 @@
+--- actor-scheduler/src/lib.rs
++++ replace ActorBuilder<D, C, M>::add_producer -> ActorHandle<D, C, M> with Default::default()
+@@ -556,24 +556,17 @@
+         }
+     }
+
+     /// Register a new producer. Returns a unique [`ActorHandle`] with dedicated
+     /// SPSC channels to this actor's three priority lanes.
+     ///
+     /// Call this once per producer during initialization, before [`build`](Self::build).
+     pub fn add_producer(&mut self) -> ActorHandle<D, C, M> {
+-        ActorHandle {
+-            tx_doorbell: self.tx_doorbell.clone(),
+-            tx_data: self.data_inbox.add_producer(),
+-            tx_control: self.control_inbox.add_producer(),
+-            tx_mgmt: self.mgmt_inbox.add_producer(),
+-            wake_handler: self.wake_handler.clone(),
+-            params: self.params,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+
+     /// Seal the registry and return the scheduler.
+     ///
+     /// Uses default burst limits from [`SchedulerParams`].
+     /// No more producers can be added after this call.
+     #[must_use]
+     pub fn build(self) -> ActorScheduler<D, C, M> {

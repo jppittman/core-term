@@ -1,0 +1,57 @@
+--- actor-scheduler/src/lib.rs
++++ replace send_with_backoff -> Result<(), SendError> with Ok(())
+@@ -693,53 +693,17 @@
+ ///
+ /// Used for control and management lanes to prevent thundering herd when
+ /// multiple senders compete for buffer space.
+ fn send_with_backoff<T>(
+     tx: &SpscSender<T>,
+     mut msg: T,
+     params: &SchedulerParams,
+ ) -> Result<(), SendError> {
+-    let mut attempt = 0u32;
+-    loop {
+-        match tx.try_send(msg) {
+-            Ok(()) => return Ok(()),
+-            Err(spsc::TrySendError::Full(returned_msg)) => {
+-                // Restore message for retry
+-                msg = returned_msg;
+-
+-                // Backoff strategy: spin → yield → sleep
+-                if attempt < params.spin_attempts {
+-                    // Phase 1: Spin (immediate retry, hot loop)
+-                    // No sleep/yield - just retry immediately
+-                } else if attempt < params.spin_attempts + params.yield_attempts {
+-                    // Phase 2: Yield (cooperative, let other threads run)
+-                    std::thread::yield_now();
+-                } else {
+-                    // Phase 3: Sleep (exponential backoff with jitter)
+-                    #[cfg(debug_assertions)]
+-                    if attempt.is_multiple_of(10) {
+-                        eprintln!(
+-                            "[ActorScheduler] Priority channel full, backing off (attempt {})",
+-                            attempt
+-                        );
+-                    }
+-
+-                    let sleep_attempt = attempt - (params.spin_attempts + params.yield_attempts);
+-                    let backoff = backoff_with_jitter(sleep_attempt, params)?;
+-                    std::thread::sleep(backoff);
+-                }
+-
+-                attempt = attempt.saturating_add(1);
+-            }
+-            Err(spsc::TrySendError::Disconnected(_)) => {
+-                return Err(SendError::Disconnected);
+-            }
+-        }
+-    }
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+
+ impl<D, C, M> ActorHandle<D, C, M> {
+     /// Sends a message to the appropriate priority lane and wakes the scheduler.
+     ///
+     /// Accepts any type that implements `IntoMessage` for this handle's message types.
+     /// Use the `impl_control_message!`, `impl_data_message!`, or `impl_management_message!`
+     /// macros to mark your message types.

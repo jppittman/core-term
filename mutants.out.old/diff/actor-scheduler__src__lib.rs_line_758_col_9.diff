@@ -1,0 +1,22 @@
+--- actor-scheduler/src/lib.rs
++++ replace ActorHandle<D, C, M>::send -> Result<(), SendError> with Ok(())
+@@ -750,18 +750,17 @@
+     /// - `Management`: Retry with exponential backoff + jitter for fairness
+     ///
+     /// Backoff on control/management prevents thundering herd when multiple
+     /// senders compete for these lanes.
+     ///
+     /// # Errors
+     /// Returns `Err` only if the receiver has been dropped.
+     pub fn send<T: Into<Message<D, C, M>>>(&self, msg: T) -> Result<(), SendError> {
+-        let msg = msg.into();
+-        self.send_message(msg)
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+
+     fn send_message(&self, msg: Message<D, C, M>) -> Result<(), SendError> {
+         match msg {
+             Message::Data(mut d) => {
+                 // Data lane: spin-yield until space available (backpressure)
+                 loop {
+                     match self.tx_data.try_send(d) {
