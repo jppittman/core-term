@@ -1,0 +1,38 @@
+--- actor-scheduler/src/lib.rs
++++ replace ActorBuilder<D, C, M>::new_with_params -> Self with Default::default()
+@@ -531,34 +531,17 @@
+
+     /// Create a new builder with explicit tuning parameters.
+     #[must_use]
+     pub fn new_with_params(
+         data_buffer_size: usize,
+         wake_handler: Option<Arc<dyn WakeHandler>>,
+         params: SchedulerParams,
+     ) -> Self {
+-        assert!(
+-            data_buffer_size > 0,
+-            "data_buffer_size must be >= 1, got {}",
+-            data_buffer_size
+-        );
+-        params.validate();
+-
+-        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
+-
+-        Self {
+-            tx_doorbell,
+-            rx_doorbell: Some(rx_doorbell),
+-            data_inbox: InboxBuilder::new(data_buffer_size),
+-            control_inbox: InboxBuilder::new(params.control_mgmt_buffer_size),
+-            mgmt_inbox: InboxBuilder::new(params.control_mgmt_buffer_size),
+-            wake_handler,
+-            params,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+
+     /// Register a new producer. Returns a unique [`ActorHandle`] with dedicated
+     /// SPSC channels to this actor's three priority lanes.
+     ///
+     /// Call this once per producer during initialization, before [`build`](Self::build).
+     pub fn add_producer(&mut self) -> ActorHandle<D, C, M> {
+         ActorHandle {

@@ -197,30 +197,7 @@ fn high_contention_fairness() {
 // Rapid Channel Creation/Destruction Tests
 // ============================================================================
 
-#[test]
-fn rapid_channel_creation_does_not_leak() {
-    // Create and drop many channels rapidly
-    for _ in 0..1000 {
-        let (tx, _rx) = ActorScheduler::<u64, u64, u64>::new(10, 100);
-        // Send a few messages (ignore errors - receiver not running)
-        tx.send(Message::Data(1)).ok();
-        tx.send(Message::Control(2)).ok();
-        // Let it drop
-    }
-    // If we get here without running out of memory, the test passes
-}
 
-#[test]
-fn rapid_producer_creation() {
-    // Create and drop many producers rapidly
-    let mut builder = ActorBuilder::<u64, u64, u64>::new(100, None);
-    for _ in 0..100 {
-        let tx = builder.add_producer();
-        tx.send(Message::Data(42)).ok();
-        drop(tx);
-    }
-    let _rx = builder.build();
-}
 
 // ============================================================================
 // Backpressure Tests

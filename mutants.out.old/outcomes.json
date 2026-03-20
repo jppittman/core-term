@@ -1,0 +1,2680 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 48.697272267,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.560613372,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:482:5: replace create_actor -> (ActorHandle<D, C, M>, ActorScheduler<D, C, M>) with (Default::default(), Default::default())",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "create_actor",
+            "return_type": "-> (ActorHandle<D, C, M>, ActorScheduler<D, C, M>)",
+            "span": {
+              "start": {
+                "line": 468,
+                "column": 1
+              },
+              "end": {
+                "line": 487,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 482,
+              "column": 5
+            },
+            "end": {
+              "line": 486,
+              "column": 6
+            }
+          },
+          "replacement": "(Default::default(), Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_482_col_5.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_482_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.553167661,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:539:9: replace ActorBuilder<D, C, M>::new_with_params -> Self with Default::default()",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorBuilder<D, C, M>::new_with_params",
+            "return_type": "-> Self",
+            "span": {
+              "start": {
+                "line": 532,
+                "column": 5
+              },
+              "end": {
+                "line": 557,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 539,
+              "column": 9
+            },
+            "end": {
+              "line": 556,
+              "column": 10
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_539_col_9.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_539_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.553385774,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:564:9: replace ActorBuilder<D, C, M>::add_producer -> ActorHandle<D, C, M> with Default::default()",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorBuilder<D, C, M>::add_producer",
+            "return_type": "-> ActorHandle<D, C, M>",
+            "span": {
+              "start": {
+                "line": 559,
+                "column": 5
+              },
+              "end": {
+                "line": 572,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 564,
+              "column": 9
+            },
+            "end": {
+              "line": 571,
+              "column": 10
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_564_col_9.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_564_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.553408984,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:580:9: replace ActorBuilder<D, C, M>::build -> ActorScheduler<D, C, M> with Default::default()",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorBuilder<D, C, M>::build",
+            "return_type": "-> ActorScheduler<D, C, M>",
+            "span": {
+              "start": {
+                "line": 574,
+                "column": 5
+              },
+              "end": {
+                "line": 582,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 580,
+              "column": 9
+            },
+            "end": {
+              "line": 581,
+              "column": 62
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_580_col_9.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_580_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.553629001,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:591:9: replace ActorBuilder<D, C, M>::build_with_burst -> ActorScheduler<D, C, M> with Default::default()",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorBuilder<D, C, M>::build_with_burst",
+            "return_type": "-> ActorScheduler<D, C, M>",
+            "span": {
+              "start": {
+                "line": 584,
+                "column": 5
+              },
+              "end": {
+                "line": 601,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 591,
+              "column": 9
+            },
+            "end": {
+              "line": 600,
+              "column": 10
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_591_col_9.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_591_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.553438704,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:626:5: replace backoff_with_jitter -> Result<Duration, SendError> with Ok(Default::default())",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 626,
+              "column": 5
+            },
+            "end": {
+              "line": 648,
+              "column": 47
+            }
+          },
+          "replacement": "Ok(Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_626_col_5.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_626_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 7.105018159,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 20.042182534,
+          "process_status": "Timeout",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:631:23: replace > with == in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 631,
+              "column": 23
+            },
+            "end": {
+              "line": 631,
+              "column": 24
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_631_col_23.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_631_col_23.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 4.938395526,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.708194848,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:631:23: replace > with < in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 631,
+              "column": 23
+            },
+            "end": {
+              "line": 631,
+              "column": 24
+            }
+          },
+          "replacement": "<",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_631_col_23_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_631_col_23_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.963150156,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 20.030305377,
+          "process_status": "Timeout",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:631:23: replace > with >= in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 631,
+              "column": 23
+            },
+            "end": {
+              "line": 631,
+              "column": 24
+            }
+          },
+          "replacement": ">=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_631_col_23_002.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_631_col_23_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.957606715,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.707010998,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:642:39: replace ^ with | in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 642,
+              "column": 39
+            },
+            "end": {
+              "line": 642,
+              "column": 40
+            }
+          },
+          "replacement": "|",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_642_col_39.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_642_col_39.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.958155908,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.511160857,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:642:39: replace ^ with & in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 642,
+              "column": 39
+            },
+            "end": {
+              "line": 642,
+              "column": 40
+            }
+          },
+          "replacement": "&",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_642_col_39_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_642_col_39_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.911344035,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.510965107,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:645:44: replace + with - in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 645,
+              "column": 44
+            },
+            "end": {
+              "line": 645,
+              "column": 45
+            }
+          },
+          "replacement": "-",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_645_col_44.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_645_col_44.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.907055809,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.707362882,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:645:44: replace + with * in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 645,
+              "column": 44
+            },
+            "end": {
+              "line": 645,
+              "column": 45
+            }
+          },
+          "replacement": "*",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_645_col_44_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_645_col_44_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.912815309,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.7074070620000001,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:645:52: replace % with / in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 645,
+              "column": 52
+            },
+            "end": {
+              "line": 645,
+              "column": 53
+            }
+          },
+          "replacement": "/",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_645_col_52.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_645_col_52.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.959519891,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 20.03579575,
+          "process_status": "Timeout",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:645:52: replace % with + in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 645,
+              "column": 52
+            },
+            "end": {
+              "line": 645,
+              "column": 53
+            }
+          },
+          "replacement": "+",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_645_col_52_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_645_col_52_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.007846106,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 20.034610021,
+          "process_status": "Timeout",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:646:57: replace / with % in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 646,
+              "column": 57
+            },
+            "end": {
+              "line": 646,
+              "column": 58
+            }
+          },
+          "replacement": "%",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_646_col_57.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_646_col_57.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.968139668,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.707448153,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:646:57: replace / with * in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 646,
+              "column": 57
+            },
+            "end": {
+              "line": 646,
+              "column": 58
+            }
+          },
+          "replacement": "*",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_646_col_57_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_646_col_57_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.010299475,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 20.03346606,
+          "process_status": "Timeout",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:646:43: replace * with + in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 646,
+              "column": 43
+            },
+            "end": {
+              "line": 646,
+              "column": 44
+            }
+          },
+          "replacement": "+",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_646_col_43.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_646_col_43.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.909822332,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.746997515,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:646:43: replace * with / in backoff_with_jitter",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "backoff_with_jitter",
+            "return_type": "-> Result<Duration, SendError>",
+            "span": {
+              "start": {
+                "line": 621,
+                "column": 1
+              },
+              "end": {
+                "line": 649,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 646,
+              "column": 43
+            },
+            "end": {
+              "line": 646,
+              "column": 44
+            }
+          },
+          "replacement": "/",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_646_col_43_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_646_col_43_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.061900983,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.7174036959999999,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:681:9: replace <impl std::fmt::Debug for ActorHandle<D, C, M>>::fmt -> std::fmt::Result with Ok(Default::default())",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "<impl std::fmt::Debug for ActorHandle<D, C, M>>::fmt",
+            "return_type": "-> std::fmt::Result",
+            "span": {
+              "start": {
+                "line": 680,
+                "column": 5
+              },
+              "end": {
+                "line": 684,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 681,
+              "column": 9
+            },
+            "end": {
+              "line": 683,
+              "column": 37
+            }
+          },
+          "replacement": "Ok(Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_681_col_9.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_681_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.538576769,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.7078494549999998,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:701:5: replace send_with_backoff -> Result<(), SendError> with Ok(())",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 701,
+              "column": 5
+            },
+            "end": {
+              "line": 737,
+              "column": 6
+            }
+          },
+          "replacement": "Ok(())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_701_col_5.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_701_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.640995834,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.40725199,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:710:28: replace < with == in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 710,
+              "column": 28
+            },
+            "end": {
+              "line": 710,
+              "column": 29
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_710_col_28.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_710_col_28.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.031411368,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.561209425,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:710:28: replace < with > in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 710,
+              "column": 28
+            },
+            "end": {
+              "line": 710,
+              "column": 29
+            }
+          },
+          "replacement": ">",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_710_col_28_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_710_col_28_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.468690977,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 20.008576663,
+          "process_status": "Timeout",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:710:28: replace < with <= in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 710,
+              "column": 28
+            },
+            "end": {
+              "line": 710,
+              "column": 29
+            }
+          },
+          "replacement": "<=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_710_col_28_002.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_710_col_28_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.472606461,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.5612673360000002,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:713:35: replace < with == in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 713,
+              "column": 35
+            },
+            "end": {
+              "line": 713,
+              "column": 36
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_713_col_35.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_713_col_35.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.517190415,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.707816811,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:713:35: replace < with > in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 713,
+              "column": 35
+            },
+            "end": {
+              "line": 713,
+              "column": 36
+            }
+          },
+          "replacement": ">",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_713_col_35_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_713_col_35_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.5167988980000002,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 20.024684045,
+          "process_status": "Timeout",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:713:35: replace < with <= in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 713,
+              "column": 35
+            },
+            "end": {
+              "line": 713,
+              "column": 36
+            }
+          },
+          "replacement": "<=",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_713_col_35_002.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_713_col_35_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.522922641,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.7080794030000002,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:713:58: replace + with - in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 713,
+              "column": 58
+            },
+            "end": {
+              "line": 713,
+              "column": 59
+            }
+          },
+          "replacement": "-",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_713_col_58.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_713_col_58.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.525783693,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.707242413,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:713:58: replace + with * in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 713,
+              "column": 58
+            },
+            "end": {
+              "line": 713,
+              "column": 59
+            }
+          },
+          "replacement": "*",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_713_col_58_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_713_col_58_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.518001442,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.707862572,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:726:49: replace - with + in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 726,
+              "column": 49
+            },
+            "end": {
+              "line": 726,
+              "column": 50
+            }
+          },
+          "replacement": "+",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_726_col_49.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_726_col_49.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.518146501,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.707729418,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:726:49: replace - with / in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 726,
+              "column": 49
+            },
+            "end": {
+              "line": 726,
+              "column": 50
+            }
+          },
+          "replacement": "/",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_726_col_49_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_726_col_49_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.468664709,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.7575686849999999,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:726:73: replace + with - in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 726,
+              "column": 73
+            },
+            "end": {
+              "line": 726,
+              "column": 74
+            }
+          },
+          "replacement": "-",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_726_col_73.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_726_col_73.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.372729178,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.707365216,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:726:73: replace + with * in send_with_backoff",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "send_with_backoff",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 687,
+                "column": 1
+              },
+              "end": {
+                "line": 738,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 726,
+              "column": 73
+            },
+            "end": {
+              "line": 726,
+              "column": 74
+            }
+          },
+          "replacement": "*",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_726_col_73_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_726_col_73_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 2.368910283,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.7109982540000002,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:758:9: replace ActorHandle<D, C, M>::send -> Result<(), SendError> with Ok(())",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorHandle<D, C, M>::send",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 741,
+                "column": 5
+              },
+              "end": {
+                "line": 760,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 758,
+              "column": 9
+            },
+            "end": {
+              "line": 759,
+              "column": 31
+            }
+          },
+          "replacement": "Ok(())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_758_col_9.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_758_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 6.23601129,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 20.047780416,
+          "process_status": "Timeout",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:763:9: replace ActorHandle<D, C, M>::send_message -> Result<(), SendError> with Ok(())",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorHandle<D, C, M>::send_message",
+            "return_type": "-> Result<(), SendError>",
+            "span": {
+              "start": {
+                "line": 762,
+                "column": 5
+              },
+              "end": {
+                "line": 802,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 763,
+              "column": 9
+            },
+            "end": {
+              "line": 801,
+              "column": 15
+            }
+          },
+          "replacement": "Ok(())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_763_col_9.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_763_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 4.989800424,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 20.048654187,
+          "process_status": "Timeout",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:812:9: replace ActorHandle<D, C, M>::wake with ()",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorHandle<D, C, M>::wake",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 804,
+                "column": 5
+              },
+              "end": {
+                "line": 824,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 812,
+              "column": 9
+            },
+            "end": {
+              "line": 823,
+              "column": 10
+            }
+          },
+          "replacement": "()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_812_col_9.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_812_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 6.43723897,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 20.018010402,
+          "process_status": "Timeout",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:861:9: replace ActorScheduler<D, C, M>::drain_control_and_management -> Result<(), HandlerError> with Ok(())",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorScheduler<D, C, M>::drain_control_and_management",
+            "return_type": "-> Result<(), HandlerError>",
+            "span": {
+              "start": {
+                "line": 852,
+                "column": 5
+              },
+              "end": {
+                "line": 873,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 861,
+              "column": 9
+            },
+            "end": {
+              "line": 872,
+              "column": 15
+            }
+          },
+          "replacement": "Ok(())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_861_col_9.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_861_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.235357587,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.707500352,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:887:9: replace ActorScheduler<D, C, M>::drain_all_with_timeout -> Result<(), HandlerError> with Ok(())",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorScheduler<D, C, M>::drain_all_with_timeout",
+            "return_type": "-> Result<(), HandlerError>",
+            "span": {
+              "start": {
+                "line": 875,
+                "column": 5
+              },
+              "end": {
+                "line": 923,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 887,
+              "column": 9
+            },
+            "end": {
+              "line": 922,
+              "column": 10
+            }
+          },
+          "replacement": "Ok(())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_887_col_9.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_887_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 3.874923805,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.7081851019999998,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:889:39: replace + with - in ActorScheduler<D, C, M>::drain_all_with_timeout",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorScheduler<D, C, M>::drain_all_with_timeout",
+            "return_type": "-> Result<(), HandlerError>",
+            "span": {
+              "start": {
+                "line": 875,
+                "column": 5
+              },
+              "end": {
+                "line": 923,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 889,
+              "column": 39
+            },
+            "end": {
+              "line": 889,
+              "column": 40
+            }
+          },
+          "replacement": "-",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_889_col_39.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_889_col_39.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.050760475,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.7074434520000001,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:889:39: replace + with * in ActorScheduler<D, C, M>::drain_all_with_timeout",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorScheduler<D, C, M>::drain_all_with_timeout",
+            "return_type": "-> Result<(), HandlerError>",
+            "span": {
+              "start": {
+                "line": 875,
+                "column": 5
+              },
+              "end": {
+                "line": 923,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 889,
+              "column": 39
+            },
+            "end": {
+              "line": 889,
+              "column": 40
+            }
+          },
+          "replacement": "*",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "Unviable",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_889_col_39_001.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_889_col_39_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 16.823284329,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:896:31: replace >= with < in ActorScheduler<D, C, M>::drain_all_with_timeout",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorScheduler<D, C, M>::drain_all_with_timeout",
+            "return_type": "-> Result<(), HandlerError>",
+            "span": {
+              "start": {
+                "line": 875,
+                "column": 5
+              },
+              "end": {
+                "line": 923,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 896,
+              "column": 31
+            },
+            "end": {
+              "line": 896,
+              "column": 33
+            }
+          },
+          "replacement": "<",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_896_col_31.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_896_col_31.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.950636158,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.770046352,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "actor-scheduler/src/lib.rs:903:31: replace >= with < in ActorScheduler<D, C, M>::drain_all_with_timeout",
+          "package": "actor-scheduler",
+          "file": "actor-scheduler/src/lib.rs",
+          "function": {
+            "function_name": "ActorScheduler<D, C, M>::drain_all_with_timeout",
+            "return_type": "-> Result<(), HandlerError>",
+            "span": {
+              "start": {
+                "line": 875,
+                "column": 5
+              },
+              "end": {
+                "line": 923,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 903,
+              "column": 31
+            },
+            "end": {
+              "line": 903,
+              "column": 33
+            }
+          },
+          "replacement": "<",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/actor-scheduler__src__lib.rs_line_903_col_31.log",
+      "diff_path": "diff/actor-scheduler__src__lib.rs_line_903_col_31.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 4.971021943,
+          "process_status": "Success",
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.7087950200000002,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/jules/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=actor-scheduler@0.1.0"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 42,
+  "missed": 4,
+  "caught": 22,
+  "timeout": 10,
+  "unviable": 6,
+  "success": 0,
+  "start_time": "2026-03-20T10:02:44.781229452Z",
+  "end_time": null,
+  "cargo_mutants_version": "27.0.0"
+}

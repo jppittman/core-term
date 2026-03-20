@@ -1,0 +1,21 @@
+--- actor-scheduler/src/lib.rs
++++ replace + with * in send_with_backoff
+@@ -718,17 +718,17 @@
+                     #[cfg(debug_assertions)]
+                     if attempt.is_multiple_of(10) {
+                         eprintln!(
+                             "[ActorScheduler] Priority channel full, backing off (attempt {})",
+                             attempt
+                         );
+                     }
+
+-                    let sleep_attempt = attempt - (params.spin_attempts + params.yield_attempts);
++                    let sleep_attempt = attempt - (params.spin_attempts * /* ~ changed by cargo-mutants ~ */ params.yield_attempts);
+                     let backoff = backoff_with_jitter(sleep_attempt, params)?;
+                     std::thread::sleep(backoff);
+                 }
+
+                 attempt = attempt.saturating_add(1);
+             }
+             Err(spsc::TrySendError::Disconnected(_)) => {
+                 return Err(SendError::Disconnected);

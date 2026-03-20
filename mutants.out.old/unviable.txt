@@ -1,0 +1,6 @@
+actor-scheduler/src/lib.rs:482:5: replace create_actor -> (ActorHandle<D, C, M>, ActorScheduler<D, C, M>) with (Default::default(), Default::default())
+actor-scheduler/src/lib.rs:539:9: replace ActorBuilder<D, C, M>::new_with_params -> Self with Default::default()
+actor-scheduler/src/lib.rs:564:9: replace ActorBuilder<D, C, M>::add_producer -> ActorHandle<D, C, M> with Default::default()
+actor-scheduler/src/lib.rs:580:9: replace ActorBuilder<D, C, M>::build -> ActorScheduler<D, C, M> with Default::default()
+actor-scheduler/src/lib.rs:591:9: replace ActorBuilder<D, C, M>::build_with_burst -> ActorScheduler<D, C, M> with Default::default()
+actor-scheduler/src/lib.rs:889:39: replace + with * in ActorScheduler<D, C, M>::drain_all_with_timeout

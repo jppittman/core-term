@@ -1,0 +1,59 @@
+--- actor-scheduler/src/lib.rs
++++ replace ActorHandle<D, C, M>::send_message -> Result<(), SendError> with Ok(())
+@@ -755,55 +755,17 @@
+     /// # Errors
+     /// Returns `Err` only if the receiver has been dropped.
+     pub fn send<T: Into<Message<D, C, M>>>(&self, msg: T) -> Result<(), SendError> {
+         let msg = msg.into();
+         self.send_message(msg)
+     }
+
+     fn send_message(&self, msg: Message<D, C, M>) -> Result<(), SendError> {
+-        match msg {
+-            Message::Data(mut d) => {
+-                // Data lane: spin-yield until space available (backpressure)
+-                loop {
+-                    match self.tx_data.try_send(d) {
+-                        Ok(()) => break,
+-                        Err(spsc::TrySendError::Full(returned_d)) => {
+-                            d = returned_d;
+-                            std::thread::yield_now();
+-                        }
+-                        Err(spsc::TrySendError::Disconnected(_)) => {
+-                            return Err(SendError::Disconnected);
+-                        }
+-                    }
+-                }
+-                self.wake();
+-            }
+-            Message::Control(ctrl_msg) => {
+-                // Control lane: retry with backoff for fairness
+-                send_with_backoff(&self.tx_control, ctrl_msg, &self.params)?;
+-                self.wake();
+-            }
+-            Message::Management(m) => {
+-                // Management lane: retry with backoff for fairness
+-                send_with_backoff(&self.tx_mgmt, m, &self.params)?;
+-                self.wake();
+-            }
+-            Message::Shutdown => {
+-                // Shutdown: blocking send to guarantee delivery
+-                // Actor must be running before calling this (doorbell will be drained)
+-                self.tx_doorbell.send(System::Shutdown)?;
+-
+-                // Also call custom wake handler if present
+-                if let Some(waker) = &self.wake_handler {
+-                    waker.wake();
+-                }
+-            }
+-        };
+-        Ok(())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+
+     /// Wake the scheduler to process messages.
+     ///
+     /// If a custom wake handler is configured, calls it first to wake the platform
+     /// event loop (e.g., sending NSEvent on macOS). Then sends a doorbell signal to
+     /// unblock ActorScheduler.run().
+     ///

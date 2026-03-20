@@ -1,0 +1,4 @@
+actor-scheduler/src/lib.rs:642:39: replace ^ with | in backoff_with_jitter
+actor-scheduler/src/lib.rs:642:39: replace ^ with & in backoff_with_jitter
+actor-scheduler/src/lib.rs:710:28: replace < with == in send_with_backoff
+actor-scheduler/src/lib.rs:710:28: replace < with <= in send_with_backoff

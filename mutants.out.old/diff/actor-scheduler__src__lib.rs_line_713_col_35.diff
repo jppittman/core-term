@@ -1,0 +1,21 @@
+--- actor-scheduler/src/lib.rs
++++ replace < with == in send_with_backoff
+@@ -705,17 +705,17 @@
+             Err(spsc::TrySendError::Full(returned_msg)) => {
+                 // Restore message for retry
+                 msg = returned_msg;
+
+                 // Backoff strategy: spin → yield → sleep
+                 if attempt < params.spin_attempts {
+                     // Phase 1: Spin (immediate retry, hot loop)
+                     // No sleep/yield - just retry immediately
+-                } else if attempt < params.spin_attempts + params.yield_attempts {
++                } else if attempt == /* ~ changed by cargo-mutants ~ */ params.spin_attempts + params.yield_attempts {
+                     // Phase 2: Yield (cooperative, let other threads run)
+                     std::thread::yield_now();
+                 } else {
+                     // Phase 3: Sleep (exponential backoff with jitter)
+                     #[cfg(debug_assertions)]
+                     if attempt.is_multiple_of(10) {
+                         eprintln!(
+                             "[ActorScheduler] Priority channel full, backing off (attempt {})",

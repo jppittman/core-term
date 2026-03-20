@@ -1,0 +1,25 @@
+--- actor-scheduler/src/lib.rs
++++ replace create_actor -> (ActorHandle<D, C, M>, ActorScheduler<D, C, M>) with (Default::default(), Default::default())
+@@ -474,21 +474,17 @@
+ /// # Arguments
+ /// * `data_buffer_size` - Size of bounded data buffer
+ /// * `wake_handler` - Optional wake handler for platform event loops
+ #[must_use]
+ pub fn create_actor<D, C, M>(
+     data_buffer_size: usize,
+     wake_handler: Option<Arc<dyn WakeHandler>>,
+ ) -> (ActorHandle<D, C, M>, ActorScheduler<D, C, M>) {
+-    ActorScheduler::new_with_wake_handler(
+-        SchedulerParams::DEFAULT.default_data_burst_limit,
+-        data_buffer_size,
+-        wake_handler,
+-    )
++    (Default::default(), Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+
+ /// Builder for multi-producer actor channels.
+ ///
+ /// Each call to [`add_producer`](ActorBuilder::add_producer) creates a dedicated
+ /// SPSC channel per lane. Call [`build`](ActorBuilder::build) to seal the registry
+ /// and get the [`ActorScheduler`].
+ ///

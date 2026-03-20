@@ -1,0 +1,32 @@
+--- actor-scheduler/src/lib.rs
++++ replace ActorHandle<D, C, M>::wake with ()
+@@ -804,28 +804,17 @@
+     /// Wake the scheduler to process messages.
+     ///
+     /// If a custom wake handler is configured, calls it first to wake the platform
+     /// event loop (e.g., sending NSEvent on macOS). Then sends a doorbell signal to
+     /// unblock ActorScheduler.run().
+     ///
+     /// Doorbell uses try_send (drops if full) - safe because one pending wake is sufficient.
+     fn wake(&self) {
+-        if let Some(waker) = &self.wake_handler {
+-            waker.wake();
+-        }
+-        match self.tx_doorbell.try_send(System::Wake) {
+-            Ok(()) => {}
+-            Err(mpsc::TrySendError::Full(_)) => {
+-                // Doorbell is bounded(1) - if full, a wake is already pending
+-            }
+-            Err(mpsc::TrySendError::Disconnected(_)) => {
+-                panic!("Doorbell receiver disconnected - scheduler dropped unexpectedly");
+-            }
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }
+
+ /// The receiver side that implements the priority scheduling logic.
+ ///
+ /// Internally uses [`ShardedInbox`] per lane: each registered producer has
+ /// a dedicated SPSC ring buffer, and the scheduler drains all shards with
+ /// round-robin fairness. The MPSC doorbell channel is kept for wake/shutdown signals.

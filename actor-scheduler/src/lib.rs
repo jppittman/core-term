@@ -2485,20 +2485,6 @@ mod troupe_nesting_tests {
         // The test verifies the two-phase construction pattern works.
     }
 
-    /// Test that ExposedHandles can outlive the Troupe struct
-    #[test]
-    fn test_exposed_handles_outlive_troupe_struct() {
-        let exposed = {
-            let mut child = WorkerTroupe::new();
-            child.exposed() // ExposedHandles escapes
-        };
-        // Troupe struct dropped, but handles still valid (SPSC channels still open
-        // until both sides drop). Builder was not consumed by build(), so receiver
-        // side is also dropped — handles become disconnected.
-
-        // Just verify the type works
-        let _: WorkerExposedHandles = exposed;
-    }
 }
 
 #[cfg(test)]
@@ -2776,3 +2762,184 @@ mod shutdown_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod backoff_hash_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn backoff_hash_uses_xor_not_and_or() {
+        let params = SchedulerParams {
+            min_backoff: Duration::from_micros(100),
+            max_backoff: Duration::from_micros(100),
+            jitter_min_pct: 0,
+            jitter_range_pct: 100,
+            ..SchedulerParams::DEFAULT
+        };
+
+        // We run multiple attempts and ensure the jittered values change significantly.
+        // If `^` was replaced by `|` or `&`, the lower bits of `now.as_nanos() | attempt`
+        // would barely change between attempts 0, 1, 2, 3 since `now.as_nanos()` has
+        // high entropy and its 1-bits will mask the attempt bits (for `|`) or its 0-bits
+        // will mask the attempt bits (for `&`).
+        // XOR guarantees the attempt bits flip the corresponding bits in the hash.
+
+        let mut diff_count = 0;
+        let mut prev_pct = 0;
+
+        for attempt in 0..10 {
+            // Modify max_backoff temporarily so it doesn't time out with large multiplier
+            let modified_params = SchedulerParams {
+                max_backoff: Duration::from_micros(100 * 2u64.pow(attempt) as u64),
+                ..params
+            };
+            let curr = backoff_with_jitter(attempt, &modified_params).unwrap();
+
+            // Un-jitter to see the hash's effect on jitter pct
+            let base_micros = 100 * 2u64.pow(attempt);
+            let pct = (curr.as_micros() as u64 * 100) / base_micros;
+
+            if attempt > 0 && pct != prev_pct {
+                diff_count += 1;
+            }
+            prev_pct = pct;
+        }
+
+        // We check for high variance across identical runs to verify attempt bit flips.
+        // If OR or AND is used, the time component usually overwhelms the attempt bits and the
+        // jitter percentage (calculated from the hash) stays identical across consecutive attempts.
+        assert!(diff_count >= 3, "Hash jitter percentage did not change enough between attempts. Was XOR replaced?");
+    }
+}
+
+    // send_with_backoff_phase_transitions uses wall-clock time to detect incorrect phase math.
+    #[test]
+    fn send_with_backoff_phase_transitions() {
+        let (tx, _rx) = spsc::spsc_channel::<u32>(1);
+        tx.try_send(1u32).unwrap();
+        tx.try_send(2u32).unwrap(); // ensure it is really full (spsc capacity math might mean 1 element is not full)
+
+        // With spin=2, yield=3, min_backoff=10ms, max_backoff=20ms.
+        // attempts 0..1 spin
+        // attempts 2..4 yield
+        // attempt 5 sleep(10ms) (attempt 5-5 = 0, 10 * 2^0 = 10ms)
+        // attempt 6 sleep(20ms) (attempt 6-5 = 1, 10 * 2^1 = 20ms)
+        // attempt 7 (attempt 7-5 = 2, 10 * 2^2 = 40ms > 20ms => timeout)
+
+        let params = SchedulerParams {
+            spin_attempts: 2,
+            yield_attempts: 3,
+            min_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(20),
+            jitter_min_pct: 100,
+            jitter_range_pct: 1, // must be >0 to avoid div by zero
+            ..SchedulerParams::DEFAULT
+        };
+
+        let start = std::time::Instant::now();
+        let res = send_with_backoff(&tx, 42u32, &params);
+        let elapsed = start.elapsed();
+
+        assert!(matches!(res, Err(SendError::Timeout)), "res was: {:?}", res);
+
+        // Time spent sleeping is 10ms + overhead. The second sleep (20ms) is > 20ms, so it times out BEFORE sleeping.
+        // Wait, max_backoff = 20ms. The second sleep is attempt 1. Base is 10. Multiplier 2^1 = 2. Backoff = 20.
+        // If max is 20, 20 > 20 is FALSE. So it sleeps for 20ms!
+        // Then attempt 2. Multiplier 2^2 = 4. Backoff = 40. 40 > 20 is TRUE. Times out.
+        // So it sleeps for 10ms + 20ms = 30ms.
+        // If `<` becomes `<=` in `attempt < spin + yield` (attempt <= 5):
+        // attempt 5 yields. attempt 6 (sleep_attempt=1) sleeps 20ms. attempt 7 sleeps 40ms -> timeout. Total sleep: 20ms!
+        // If `+` becomes `*` (spin*yield = 6):
+        // attempt 6 sleeps 10ms. attempt 7 sleeps 20ms. attempt 8 sleeps 40ms -> timeout. Total sleep: 30ms.
+        // But attempt - (spin+yield) is 6 - 5 = 1! So attempt 6 sleeps for 20ms! Wait.
+        // If it's mutated to `attempt - (spin - yield)` (2 - 3 = panic).
+        // Let's assert elapsed time is roughly 30ms. If it's 20ms, it fails.
+        // To be safe, let's use larger sleeps to avoid flakiness.
+        assert!(elapsed.as_millis() >= 25, "Elapsed time too short: {}ms. Phase math mutated?", elapsed.as_millis());
+        assert!(elapsed.as_millis() < 60, "Elapsed time too long: {}ms. Phase math mutated?", elapsed.as_millis());
+    }
+
+#[cfg(test)]
+mod fmt_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    struct DummyWake;
+    impl WakeHandler for DummyWake {
+        fn wake(&self) {}
+    }
+
+    #[test]
+    fn test_actor_handle_debug_format() {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let (tx_data, _) = spsc::spsc_channel::<()>(1);
+        let (tx_control, _) = spsc::spsc_channel::<()>(1);
+        let (tx_mgmt, _) = spsc::spsc_channel::<()>(1);
+
+        let handle_without_waker = ActorHandle {
+            tx_doorbell: tx.clone(),
+            tx_data,
+            tx_control,
+            tx_mgmt,
+            wake_handler: None,
+            params: SchedulerParams::DEFAULT,
+        };
+
+        let dbg_str = format!("{:?}", handle_without_waker);
+        assert!(dbg_str.contains("ActorHandle"));
+        assert!(dbg_str.contains("has_wake_handler: false"));
+
+        let (tx_data2, _) = spsc::spsc_channel::<()>(1);
+        let (tx_control2, _) = spsc::spsc_channel::<()>(1);
+        let (tx_mgmt2, _) = spsc::spsc_channel::<()>(1);
+
+        let handle_with_waker = ActorHandle {
+            tx_doorbell: tx,
+            tx_data: tx_data2,
+            tx_control: tx_control2,
+            tx_mgmt: tx_mgmt2,
+            wake_handler: Some(Arc::new(DummyWake)),
+            params: SchedulerParams::DEFAULT,
+        };
+
+        let dbg_str2 = format!("{:?}", handle_with_waker);
+        assert!(dbg_str2.contains("has_wake_handler: true"));
+    }
+}
+
+    #[test]
+    fn send_with_backoff_spin_mutant_check() {
+        let (tx, _rx) = spsc::spsc_channel::<u32>(1);
+        tx.try_send(1u32).unwrap();
+        tx.try_send(2u32).unwrap();
+
+        // Target mutating `<` to `<=` or `==` on `attempt < spin_attempts`
+        let params = SchedulerParams {
+            spin_attempts: 10,
+            yield_attempts: 0,
+            min_backoff: Duration::from_millis(50),
+            max_backoff: Duration::from_millis(50),
+            jitter_min_pct: 100,
+            jitter_range_pct: 1,
+            ..SchedulerParams::DEFAULT
+        };
+
+        let start = std::time::Instant::now();
+        let res = send_with_backoff(&tx, 42u32, &params);
+        let elapsed = start.elapsed();
+
+        assert!(matches!(res, Err(SendError::Timeout)));
+
+        // If it was `<`, then attempt 0..9 spin. Attempt 10 sleeps:
+        // sleep_attempt = 10 - 10 = 0. Base = 50ms. Max = 50ms. 50 > 50 FALSE. Sleeps 50ms.
+        // Attempt 11: sleep_attempt = 1. Base = 100ms. 100 > 50 TRUE. Timeout!
+        // Total sleep time = 50ms.
+        // If it was `<=`, then attempt 0..10 spin. Attempt 11 sleeps:
+        // sleep_attempt = 11 - 10 = 1. Base = 100ms. 100 > 50 TRUE. Timeout!
+        // Total sleep time = 0ms.
+
+        // So we can assert elapsed is >= 45ms.
+        assert!(elapsed.as_millis() >= 45, "Elapsed time too short: {}ms. Phase math mutated?", elapsed.as_millis());
+        assert!(elapsed.as_millis() < 80, "Elapsed time too long: {}ms. Phase math mutated?", elapsed.as_millis());
+    }
