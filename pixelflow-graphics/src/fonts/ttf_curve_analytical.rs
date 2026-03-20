@@ -134,7 +134,7 @@ impl Manifold<Field4> for AnalyticalQuad {
             // Degenerate: quadratic is a line. Solve by*t + (cy - Y) = 0
             let k = kernel!(|ax: f32, bx: f32, cx: f32, by: f32, cy: f32| {
                 let t = (Y - cy) / by;
-                let in_t = t.clone().ge(0.0) & t.clone().le(1.0);
+            let in_t = (V(t.clone()) >= 0.0) & (V(t.clone()) <= 1.0);
 
                 // x-coordinate at intersection
                 let x_int = t.clone() * t.clone() * ax + t.clone() * bx + cx;
@@ -156,33 +156,33 @@ impl Manifold<Field4> for AnalyticalQuad {
             let sqrt_disc = disc.max(0.0).sqrt();
 
             // Two roots: t = (-by +/- sqrt(disc)) / (2*ay)
-            let t_plus = sqrt_disc.clone() * inv_2a.clone() + neg_b_2a.clone();
-            let t_minus = sqrt_disc * -inv_2a + neg_b_2a;
+            let root1 = sqrt_disc.clone() * inv_2a.clone() + neg_b_2a.clone();
+            let root2 = sqrt_disc * -inv_2a + neg_b_2a;
 
             // X-coordinates at intersection points
-            let x_plus = t_plus.clone() * t_plus.clone() * ax.clone() + t_plus.clone() * bx.clone() + cx.clone();
-            let x_minus = t_minus.clone() * t_minus.clone() * ax + t_minus.clone() * bx + cx;
+            let x1 = root1.clone() * root1.clone() * ax + root1.clone() * bx + cx;
+            let x2 = root2.clone() * root2.clone() * ax + root2.clone() * bx + cx;
 
             // Tangent dy/dt at each root for winding direction
-            let dy_plus = t_plus.clone() * (2.0 * ay.clone()) + by.clone();
-            let dy_minus = t_minus.clone() * (2.0 * ay) + by;
+            let dy1 = root1.clone() * (2.0 * ay) + by;
+            let dy2 = root2.clone() * (2.0 * ay) + by;
 
             // Step: 1.0 if crossing is to the left of or at X
-            let crossed_plus = (X >= x_plus).select(1.0, 0.0);
-            let crossed_minus = (X >= x_minus).select(1.0, 0.0);
+            let c1 = (X >= x1).select(1.0, 0.0);
+            let c2 = (X >= x2).select(1.0, 0.0);
 
             // Validity: only count roots with t in [0, 1]
-            let valid_plus = t_plus.clone().ge(0.0) & t_plus.clone().le(1.0);
-            let valid_minus = t_minus.clone().ge(0.0) & t_minus.clone().le(1.0);
+            let v1 = (V(root1.clone()) >= 0.0) & (V(root1.clone()) <= 1.0);
+            let v2 = (V(root2.clone()) >= 0.0) & (V(root2.clone()) <= 1.0);
 
             // Winding sign from tangent direction
-            let sign_plus = dy_plus.gt(0.0).select(-1.0, 1.0);
-            let sign_minus = dy_minus.gt(0.0).select(-1.0, 1.0);
+            let s1 = dy1.gt(0.0).select(-1.0, 1.0);
+            let s2 = dy2.gt(0.0).select(-1.0, 1.0);
 
             // Combine: valid roots contribute signed step, masked by discriminant
-            let contrib_plus = valid_plus.select(crossed_plus * sign_plus, 0.0);
-            let contrib_minus = valid_minus.select(crossed_minus * sign_minus, 0.0);
-            disc.ge(0.0).select(contrib_plus + contrib_minus, 0.0)
+            let contrib1 = v1.select(c1 * s1, 0.0);
+            let contrib2 = v2.select(c2 * s2, 0.0);
+            disc.ge(0.0).select(contrib1 + contrib2, 0.0)
         });
 
         k(self.ax, self.bx, self.cx, self.ay, self.by,
