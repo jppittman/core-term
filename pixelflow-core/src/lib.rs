@@ -1,3 +1,5 @@
+#![allow(unused_imports, dead_code)]
+#![allow(clippy::clone_on_copy, clippy::excessive_precision, clippy::approx_constant, clippy::must_use_candidate)]
 #![recursion_limit = "2048"]
 //! # PixelFlow Core: An Algebraic Graphics Engine
 //!
