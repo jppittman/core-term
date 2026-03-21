@@ -23,10 +23,11 @@
 //! ```
 
 use crate::ast::{
-    BinaryExpr, BinaryOp, BlockExpr, Expr, IdentExpr, LetStmt, LiteralExpr, MethodCallExpr, Stmt,
+    BinaryExpr, BinaryOp, BlockExpr, CallExpr, Expr, IdentExpr, LetStmt, LiteralExpr, MethodCallExpr, Stmt,
     UnaryExpr, UnaryOp,
 };
-use crate::ir_bridge::{ast_to_ir, IRToEGraphContext};
+use crate::cost_builder;
+use crate::ir_bridge::{ast_to_ir, egraph_to_ir, ir_to_code, IRToEGraphContext};
 use crate::sema::AnalyzedKernel;
 use pixelflow_search::egraph::{
     CostModel, EClassId, EGraph, ENode, ExprTree, ExtractedDAG, Leaf, ops,
@@ -86,7 +87,7 @@ fn unique_opaque_name(prefix: &str) -> String {
 /// 5. **Fusion-enabling rewrites** (distribute, etc.)
 /// 6. **Everything else** (commutative, etc.) - apply last
 fn heuristic_score_rewrite(egraph: &EGraph, target: &pixelflow_search::egraph::RewriteTarget) -> i64 {
-
+    use pixelflow_search::egraph::RewriteTarget;
 
     // Get the rule name
     let rule_name = match egraph.rule(target.rule_idx) {
@@ -405,7 +406,7 @@ fn expr_has_opaque_refs(expr: &Expr, local_names: &std::collections::HashSet<Str
                 } else {
                     false
                 }
-            }) || b.expr.as_ref().map_or(false, |e| expr_has_opaque_refs(e, local_names))
+            }) || b.expr.as_ref().is_some_and(|e| expr_has_opaque_refs(e, local_names))
         }
 
         Expr::Ident(_) | Expr::Literal(_) => false,
@@ -437,7 +438,7 @@ fn expr_references_any(expr: &Expr, names: &std::collections::HashSet<String>) -
                 } else {
                     false
                 }
-            }) || b.expr.as_ref().map_or(false, |e| expr_references_any(e, names))
+            }) || b.expr.as_ref().is_some_and(|e| expr_references_any(e, names))
         }
         Expr::Literal(_) => false,
 
@@ -504,7 +505,7 @@ fn syn_expr_references_any(expr: &syn::Expr, names: &std::collections::HashSet<S
             block.block.stmts.iter().any(|stmt| {
                 match stmt {
                     syn::Stmt::Local(local) => {
-                        local.init.as_ref().map_or(false, |init| {
+                        local.init.as_ref().is_some_and(|init| {
                             syn_expr_references_any(&init.expr, names)
                         })
                     }
@@ -523,7 +524,7 @@ fn syn_expr_references_any(expr: &syn::Expr, names: &std::collections::HashSet<S
                         false
                     }
                 })
-                || if_expr.else_branch.as_ref().map_or(false, |(_, else_expr)| {
+                || if_expr.else_branch.as_ref().is_some_and(|(_, else_expr)| {
                     syn_expr_references_any(else_expr, names)
                 })
         }
