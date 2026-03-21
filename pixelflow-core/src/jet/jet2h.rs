@@ -930,7 +930,7 @@ impl Numeric for Jet2H {
     #[inline(always)]
     fn log10(self) -> Self {
         // log10(f) = ln(f) / ln(10)
-        let log10_e = Field::from(0.434_294_5);
+        let log10_e = Field::from(core::f32::consts::LOG10_E);
         let inv = Field::from(1.0) / self.val;
         let inv_sq = inv.clone() * inv.clone();
         let scale = inv * log10_e;

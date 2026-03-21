@@ -1,3 +1,4 @@
+#![allow(warnings)]
 #![recursion_limit = "2048"]
 //! # PixelFlow Core: An Algebraic Graphics Engine
 //!

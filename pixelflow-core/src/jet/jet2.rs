@@ -597,7 +597,7 @@ impl Numeric for Jet2 {
     fn log2(self) -> Self {
         // Chain rule: (log2 f)' = f' / (f * ln(2))
         // log2(e) = 1/ln(2) ≈ 1.4426950408889634
-        let log2_e = Field::from(1.442_695);
+        let log2_e = Field::from(core::f32::consts::LOG2_E);
         let inv_val = Field::from(1.0) / self.val;
         let deriv_coeff = inv_val * log2_e;
         Self::new(
@@ -611,7 +611,7 @@ impl Numeric for Jet2 {
     fn exp2(self) -> Self {
         // Chain rule: (2^f)' = f' * 2^f * ln(2)
         // ln(2) ≈ 0.6931471805599453
-        let ln_2 = Field::from(0.693_147_2);
+        let ln_2 = Field::from(core::f32::consts::LN_2);
         let exp2_val = self.val.exp2();
         let deriv_coeff = exp2_val * ln_2;
         Self::new(
@@ -665,7 +665,7 @@ impl Numeric for Jet2 {
     fn log10(self) -> Self {
         // Chain rule: (log10 f)' = f' / (f * ln(10))
         // 1/ln(10) ≈ 0.4342944819032518
-        let log10_e = Field::from(0.434_294_5);
+        let log10_e = Field::from(core::f32::consts::LOG10_E);
         let inv_val = Field::from(1.0) / self.val;
         let deriv_coeff = inv_val * log10_e;
         Self::new(
