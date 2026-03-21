@@ -1,3 +1,4 @@
+#![allow(warnings)]
 
 //! # PixelFlow Graphics
 //!

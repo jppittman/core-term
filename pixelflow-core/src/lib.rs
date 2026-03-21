@@ -1,3 +1,4 @@
+#![allow(warnings)]
 #![recursion_limit = "2048"]
 //! # PixelFlow Core: An Algebraic Graphics Engine
 //!
@@ -797,12 +798,14 @@ impl Field {
 
     /// Equality comparison (returns mask as Field).
     #[inline(always)]
+    #[must_use]
     pub fn eq(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_eq(rhs.0)))
     }
 
     /// Inequality comparison (returns mask as Field).
     #[inline(always)]
+    #[must_use]
     pub fn ne(self, rhs: Self) -> Self {
         Self(NativeSimd::mask_to_float(self.0.cmp_ne(rhs.0)))
     }
