@@ -1003,9 +1003,9 @@ kernel!(pub struct Checker = || Jet3 -> Field {
     let dist_to_edge = (0.5 - dx_edge).min(0.5 - dz_edge);
 
     // Gradient magnitude from Jet3 derivatives
-    let grad_x = (DX(X) * DX(X) + DY(X) * DY(X) + DZ(X) * DZ(X)).sqrt();
-    let grad_z = (DX(Z) * DX(Z) + DY(Z) * DY(Z) + DZ(Z) * DZ(Z)).sqrt();
-    let pixel_size = grad_x.max(grad_z) + 0.001;
+    let grad_x_sq = DX(X) * DX(X) + DY(X) * DY(X) + DZ(X) * DZ(X);
+    let grad_z_sq = DX(Z) * DX(Z) + DY(Z) * DY(Z) + DZ(Z) * DZ(Z);
+    let pixel_size = grad_x_sq.max(grad_z_sq).sqrt() + 0.001;
 
     // Coverage: how much of the pixel is in this cell vs neighbor
     let coverage = (dist_to_edge / pixel_size).min(1.0).max(0.0);
@@ -1129,9 +1129,9 @@ impl<C: ManifoldCompat<Field, Output = Discrete>> Manifold<Jet3_4> for ColorChec
         let dist_to_edge = (half.clone() - dx_edge).min(half - dz_edge).constant();
 
         // Gradient magnitude from Jet3 derivatives
-        let grad_x = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).sqrt().constant();
-        let grad_z = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).sqrt().constant();
-        let pixel_size = (grad_x.max(grad_z) + Field::from(0.001)).constant();
+        let grad_x_sq = (x.dx * x.dx + x.dy * x.dy + x.dz * x.dz).constant();
+        let grad_z_sq = (z.dx * z.dx + z.dy * z.dy + z.dz * z.dz).constant();
+        let pixel_size = (grad_x_sq.max(grad_z_sq).sqrt() + Field::from(0.001)).constant();
 
         // Coverage: how much of the pixel is in this cell vs neighbor
         let zero = Field::from(0.0);
