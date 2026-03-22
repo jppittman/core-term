@@ -44,9 +44,7 @@ fn find_derivative_params_inner(
             let func_str = call.func.to_string();
             // Check for derivative operations: DX, DY, DZ, V
             if matches!(func_str.as_str(), "DX" | "DY" | "DZ" | "V") {
-                if let Some(arg) = call.args.first() {
-                    // Check if the argument is a manifold param or a local bound to one
-                    if let AnnotatedExpr::Ident(ident_expr) = arg {
+                if let Some(AnnotatedExpr::Ident(ident_expr)) = call.args.first() {
                         let name_str = ident_expr.name.to_string();
                         // Local bound to manifold param (e.g., `let t = geometry;`)
                         if let Some(manifold_name) = locals_to_manifolds.get(&name_str) {
@@ -57,7 +55,6 @@ fn find_derivative_params_inner(
                                 result.insert(name_str);
                             }
                         }
-                    }
                 }
             }
             // Recurse into args
@@ -507,7 +504,7 @@ fn find_at_manifold_params_inner(
             // Determine output type, domain type, and scalar type
             let (output_type, domain_type) = match (&self.analyzed.def.domain_ty, &self.analyzed.def.return_ty) {
                 (Some(domain), Some(output)) => {
-                    let type_str = quote!{ #domain }.to_string();
+                    let _type_str = quote!{ #domain }.to_string();
                     // panic!("DEBUG: domain type is '{}'", type_str);
                     let domain_tokens = if let syn::Type::Tuple(_) = domain {
                         quote! { #domain }
@@ -645,7 +642,7 @@ fn find_at_manifold_params_inner(
         /// These are NOT pre-evaluated - they're accessed via `(&self.field).at(...)` lazily.
         /// `scalar_type` is the type used for scalar/literal conversion (e.g., `Jet3::from` instead of `Field::from`).
         /// This should be the domain's scalar type (from `Spatial::Coord`), not the output type.
-        fn emit_unified_binding(&self, at_manifold_params: &HashSet<String>, scalar_type: &TokenStream) -> (TokenStream, TokenStream) {
+        fn emit_unified_binding(&self, _at_manifold_params: &HashSet<String>, scalar_type: &TokenStream) -> (TokenStream, TokenStream) {
             let params = &self.analyzed.def.params;
 
             if params.is_empty() && self.collected_literals.is_empty() {
@@ -658,7 +655,7 @@ fn find_at_manifold_params_inner(
             // 2. There are scalar params mixed with manifolds
             let manifold_count = self.manifold_indices.len();
             let has_scalar_params = params.iter().any(|p| matches!(p.kind, ParamKind::Scalar(_)));
-            let needs_pre_eval = manifold_count > 0 &&
+            let _needs_pre_eval = manifold_count > 0 &&
                 (manifold_count > 1 || has_scalar_params);
 
             // NOTE: Manifold params are NO LONGER pre-evaluated.
