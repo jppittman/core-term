@@ -8,16 +8,6 @@ use std::ffi::c_void;
 
 // --- Helpers ---
 
-pub enum EventDequeue {
-    Dequeue,
-    Peek,
-}
-
-pub enum WindowDeferral {
-    Defer,
-    Immediate,
-}
-
 /// Convert Rust string to NSString id.
 /// Note: This returns an autoreleased object usually, or we manage it?
 /// For simplicity, we create a new NSString that we must release if we own it,
@@ -146,15 +136,10 @@ impl NSApplication {
         }
     }
 
-    pub fn activate_ignoring_other_apps(&self) {
+    pub fn activate_ignoring_other_apps(&self, ignore: bool) {
         unsafe {
-            sys::send_1::<(), BOOL>(self.0, sys::sel(b"activateIgnoringOtherApps:\0"), YES);
-        }
-    }
-
-    pub fn activate_normally(&self) {
-        unsafe {
-            sys::send_1::<(), BOOL>(self.0, sys::sel(b"activateIgnoringOtherApps:\0"), NO);
+            let val = if ignore { YES } else { NO };
+            sys::send_1::<(), BOOL>(self.0, sys::sel(b"activateIgnoringOtherApps:\0"), val);
         }
     }
 
@@ -171,12 +156,9 @@ impl NSApplication {
     }
 
     // nextEventMatchingMask:untilDate:inMode:dequeue:
-    pub fn next_event(&self, mask: u64, date: Id, mode: Id, dequeue: EventDequeue) -> NSEvent {
+    pub fn next_event(&self, mask: u64, date: Id, mode: Id, dequeue: bool) -> NSEvent {
         unsafe {
-            let d = match dequeue {
-                EventDequeue::Dequeue => YES,
-                EventDequeue::Peek => NO,
-            };
+            let d = if dequeue { YES } else { NO };
             let ptr: Id = sys::send_4(
                 self.0,
                 sys::sel(b"nextEventMatchingMask:untilDate:inMode:dequeue:\0"),
@@ -208,13 +190,10 @@ impl NSWindow {
         rect: NSRect,
         style_mask: u64,
         backing: u64,
-        defer: WindowDeferral,
+        defer: bool,
     ) -> Self {
         unsafe {
-            let d = match defer {
-                WindowDeferral::Defer => YES,
-                WindowDeferral::Immediate => NO,
-            };
+            let d = if defer { YES } else { NO };
             let ptr: Id = sys::send_4(
                 self.0,
                 sys::sel(b"initWithContentRect:styleMask:backing:defer:\0"),
@@ -287,15 +266,10 @@ impl NSView {
         }
     }
 
-    pub fn enable_layer(&self) {
+    pub fn set_wants_layer(&self, wants: bool) {
         unsafe {
-            sys::send_1::<(), BOOL>(self.0, sys::sel(b"setWantsLayer:\0"), YES);
-        }
-    }
-
-    pub fn disable_layer(&self) {
-        unsafe {
-            sys::send_1::<(), BOOL>(self.0, sys::sel(b"setWantsLayer:\0"), NO);
+            let val = if wants { YES } else { NO };
+            sys::send_1::<(), BOOL>(self.0, sys::sel(b"setWantsLayer:\0"), val);
         }
     }
 
