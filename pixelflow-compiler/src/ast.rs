@@ -65,7 +65,7 @@ pub struct KernelDef {
 pub enum ParamKind {
     /// Scalar parameter - use Let/Var binding with concrete type.
     /// Example: `r: f32` → struct field, bound via Let::new(self.r, ...)
-    Scalar(Type),
+    Scalar(Box<Type>),
     /// Manifold parameter - generic type with trait bounds.
     /// Example: `inner: kernel` → generic M0, evaluated then bound via Let
     Manifold,
