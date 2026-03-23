@@ -67,7 +67,7 @@ impl Parse for KernelDef {
                 let kind = if is_kernel_keyword(&ty) {
                     ParamKind::Manifold
                 } else {
-                    ParamKind::Scalar(ty)
+                    ParamKind::Scalar(Box::new(ty))
                 };
 
                 params.push(Param { name: ident, kind });
