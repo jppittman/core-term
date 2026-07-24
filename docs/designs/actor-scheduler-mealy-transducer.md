@@ -155,7 +155,28 @@ never find it full). The validator returns the topological order as a by-product
 the right polling order — upstream first drains a pipeline in one sweep instead of trickling one
 message per pass.
 
-### 3.2 Waking
+### 3.2 Credit-bounded edges (resolves §9.3)
+
+A credit-bounded request/response pair does not need a third [`Delivery`](../../actor-scheduler/src/mealy.rs)
+kind. It **is** a droppable port — `Credit` is the sender-side discipline that keeps the drop
+from ever actually firing:
+
+```rust
+struct Credit { available: u32, max: u32 }
+// try_consume() -> bool   before deciding whether to emit a request
+// release()               when the step handling the corresponding reply runs
+```
+
+The requester holds one `Credit` per edge in its own `self` — never shared, never atomic,
+touched only during that actor's own step. As long as `max` does not exceed the reply ring's
+capacity, and every request is gated by `try_consume`, the ring can never fill from this edge:
+the `[drop]` port is a backstop for a bug, not a path the well-behaved system ever takes.
+
+This is a straight replacement for a hand-rolled global atomic token bucket — the shape a
+request/response actor pair reaches for today (§9.1) — with per-edge, non-atomic, typed state.
+No new `Topology` primitive, no new port kind: `Credit` plus the `Delivery` that already existed.
+
+### 3.3 Waking
 
 The resume trigger is the existing wake ("target ring not-full" → wake the parked sender), which
 is a doorbell event on the **System lane** — the same lane that carries Wake/Shutdown, and the
@@ -282,6 +303,7 @@ tests over transition tables.
 | `Waker` + `GreenSender`/`green_channel`: push-then-wake, so a green actor can be fed from another thread | `actor-scheduler/src/lib.rs`, `host.rs` |
 | `ports!` generating the output word + wiring + flush from a port declaration | `actor-scheduler-macros/src/lib.rs` |
 | `Delivery` (`Blocking`/`Droppable`) as a `send_port` parameter — the runtime half of a droppable edge | `actor-scheduler/src/mealy.rs` |
+| `Credit`: sender-side budget that keeps a droppable request/response edge from ever actually dropping | `actor-scheduler/src/mealy.rs` |
 
 ### 7.1 Measured (2026-07-24)
 
@@ -369,20 +391,108 @@ Each removal made the primitive more opinionated, not less capable. That is the 
 
 ---
 
-## 9. Open questions
+## 9. Case study: auditing the pixelflow-runtime engine
 
+`pixelflow-runtime/src/engine_troupe.rs` is the intended eventual consumer of this design, and
+the stated end goal is to remove `EngineHandler` as a central mediator and let `driver`, `vsync`,
+`rasterizer`, and `app` communicate directly. Auditing that file against the DAG rule before any
+of this lands there surfaced findings worth recording so they are not rediscovered cold.
+
+### 9.1 Four real cycles, held together by hand today
+
+Every one of `EngineHandler`'s peer relationships is bidirectional:
+
+- **engine ↔ vsync** — engine sends `RenderedResponse`/`VsyncCommand`; `VsyncActor` independently
+  holds an `engine_handle` and sends `EngineData::VSync` ticks back (`vsync_actor.rs:138,261-272`).
+  The existing comment calls this "for feedback loop" (`engine_troupe.rs:47`).
+- **engine ↔ rasterizer** — engine sends `RenderRequest`; a forwarding thread reads responses and
+  calls `engine_handle.send(EngineData::RenderComplete)` (`engine_troupe.rs:341-373`). The
+  rasterizer is deliberately kept outside the `troupe!` macro's static topology via a bootstrap
+  handshake, which is itself a sign this edge doesn't fit the current model.
+- **engine ↔ app** — engine sends `RequestFrame`; app sends `EngineData::FromApp(AppData::
+  RenderSurface)` back (`engine_troupe.rs:98,108,384-402`).
+- **engine ↔ driver** — driver forwards `DisplayEvent`; engine sends `DisplayControl`/
+  `DisplayData`, and `PresentComplete` hands the `Window` buffer back so engine can reuse it —
+  the ping-pong buffer strategy is itself a resource-return cycle (`engine_troupe.rs:167-190`).
+
+All four are 2-cycles among **blocking** sends: `ActorHandle::send` spin-yields on a full Data
+ring (`lib.rs:761-775`) rather than returning or dropping. `Topology::validate` would reject
+every one of them today.
+
+This isn't hypothetical: `vsync_actor.rs:20-22` is a **global atomic token bucket**, decremented
+before a tick and incremented on frame completion — an unenforced, hand-rolled instance of
+exactly the credit-bounded edge §3.2 formalizes. `PendingRender.stale` (`engine_troupe.rs:37-
+39,129-152`) is a hand-written droppable policy: discard a render superseded by a resize. Both
+are the runtime already reaching for what `Credit` and `Delivery::Droppable` now give for free —
+this design isn't proposing new machinery so much as typing and checking machinery that already
+exists informally.
+
+### 9.2 Dropping is only safe for recoverable loss — an audit, not a rule
+
+`[drop]` is safe only for data whose loss the next message can recover from. In the current
+flow: vsync ticks themselves and a `RenderComplete` for an already-`stale` render are candidates.
+`PresentComplete` and a non-stale `RenderComplete` must never be `[drop]` — the former is the
+only path the `Window` buffer returns on (drop it and the ping-pong buffer is gone, forever,
+silently); the latter clears `pending_render` (drop it and the engine hangs waiting for a
+response that was discarded). The type system cannot tell "droppable frame" from "the only copy
+of this buffer" apart — that choice is a per-edge human decision this design does not, and
+should not try to, make automatically.
+
+### 9.3 Credit-bounded edges: resolved
+
+Was open (§10 below, formerly here): does the topology need a third edge kind for request/
+response? No — see §3.2. `Credit` plus the existing `Delivery::Droppable` is sufficient; no new
+`Topology` primitive was needed.
+
+### 9.4 What the audit reassures rather than worries about
+
+- `EngineHandler.render_threads` ("work-stealing parallelism", `engine_troupe.rs:65-66`) is a
+  real, present need for exactly the migratable/`Send`-bounded pool §5.2 carved out as the
+  opt-in exception to owned-by-default. That split wasn't speculative.
+- `VsyncActor`'s dedicated clock thread, sending explicit `Tick` messages specifically to avoid
+  depending on `park` timing (`vsync_actor.rs:6-9`), **resolves** the open question about where
+  timer ticks belong (previously listed in §10): a real actor sends ticks as ordinary messages;
+  `park` does not need to synthesize them.
+- The `Application` trait (a runtime-defined boundary wrapping an `ActorHandle`, so
+  `pixelflow-runtime` stays generic over `core-term`'s concrete app type) is not a gap: the wire
+  *message types* (`EngineEvent`, `AppData`, …) are already concrete within `pixelflow-runtime`.
+  Only the *implementation* of `Application` is erased, not the port's type — `ports!` needs
+  nothing new here.
+
+### 9.5 The real gap: priority lanes do not exist in `Node`/`Transducer`
+
+`Transducer::In` is one type; `Node` holds one inbox. There is no Control/Management/Data
+priority anywhere in the Mealy machinery, and `Host::sweep` round-robins its green nodes with no
+lane weighting either. The existing engine leans on the opposite — Control > Management > Data
+is what keeps `Quit`/resize/key-input responsive while a render is in flight, and it is core to
+the actor model as described in this repository's top-level `CLAUDE.md`. An actor migrated onto
+`Node` as it stands today would silently lose that.
+
+**Directive for closing this, given at the point this gap was found:** port the *existing*
+priority-drain algorithm — `ActorScheduler::handle_wake`'s half-control/management/half-control/
+data cycle with per-lane burst limits (`lib.rs`, the `DrainStatus`/`SystemStatus` machinery) —
+onto `Transducer`/`Node`, rather than designing new priority machinery from scratch. `Transducer`
+gains three input types (mirroring `ActorTypes`) and three step methods; `Node::poll` runs the
+same drain order before touching the continuation slot. This is scoped as its own follow-up, not
+bundled into the engine-mesh rewrite itself, since the engine rewrite needs it as a foundation.
+
+---
+
+## 10. Open questions
+
+- [ ] **Priority lanes for `Transducer`/`Node`.** The real gap found in §9.5. Port
+  `ActorScheduler::handle_wake`'s existing drain algorithm rather than redesigning one; scoped
+  as a prerequisite for the engine-mesh rewrite, not part of it.
 - [ ] **Self-port as a named verb?** First-class `yield`/continuation syntax in the macro, or
   just "a port that points home." Vocabulary vs. emergent trick. (The runtime already treats it
   as distinct — it has its own slot — which argues for naming it.)
-- [ ] **Credit-bounded edges.** The DAG rule admits droppable edges as cycle-closers; a
-  credit-bounded reply edge is the other legal form, but the topology cannot currently express
-  "this requester is limited to N outstanding" so the validator cannot check it.
 - [ ] **Burst cardinality.** A port fires at most once per step; bursts batch into one message
   (`ScreenOps(batch)`). Confirm no actor needs a port to emit a *variable number of distinct*
   messages per input (which would make that port carry a collection).
-- [ ] **`park` for the time-driven tier.** Timer ticks are just input symbols; confirm `park` on
-  the dedicated tier is the right place to synthesise them.
 - [ ] **Eliding the wake syscall.** `GreenSender` rings the doorbell on every delivery. The
   doorbell coalesces, so this is cheap and correct, but a parked/running flag on the host would
   let a producer skip the ring entirely while the host is already sweeping — the trick mio uses
   for its eventfd. Worth measuring before adding.
+
+Resolved: credit-bounded edges (§9.3, §3.2) and timer ticks for the dedicated tier (§9.4, by
+existing precedent) — kept out of this list; see the case study for why.

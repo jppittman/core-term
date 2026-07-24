@@ -292,6 +292,75 @@ where
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Credit: bounding a request without a new port kind
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Bounds how many messages a request edge may have outstanding, without needing a third
+/// [`Delivery`] kind.
+///
+/// A request/response pair — send a request, later receive its reply — is a cycle. [`Topology`]
+/// only accepts a cycle closed by an edge that structurally cannot block: a continuation, or a
+/// [`Delivery::Droppable`] port. A credit-bounded request *is* a droppable port; `Credit` is the
+/// sender-side discipline that keeps the drop from ever actually happening.
+///
+/// The requester holds one `Credit` per edge, in its own `self` — never shared, never atomic,
+/// touched only during that actor's own step:
+///
+/// - `try_consume` before deciding whether to set the request port. Refuse to emit rather than
+///   emit past budget.
+/// - `release` when the step that handles the corresponding reply runs — an ordinary input, on
+///   whatever lane the reply arrives on.
+///
+/// As long as the constructor's `max` does not exceed the reply ring's capacity, and every
+/// request is gated by `try_consume`, the physical ring can never fill from this edge — the
+/// `[drop]` port is a backstop for a bug, not a path the well-behaved system ever takes. This
+/// replaces a hand-rolled global atomic token bucket (the kind a request/response actor pair
+/// reaches for today) with per-edge, non-atomic, typed state — cheaper, because nothing here is
+/// shared across threads, and checked, because a `Credit` that runs dry stops the sender from
+/// even trying rather than trusting a convention.
+#[derive(Debug, Clone, Copy)]
+pub struct Credit {
+    available: u32,
+    max: u32,
+}
+
+impl Credit {
+    /// A fresh budget of `max` outstanding requests.
+    #[must_use]
+    pub fn new(max: u32) -> Self {
+        Self {
+            available: max,
+            max,
+        }
+    }
+
+    /// Consume one unit of budget. `false` means: do not emit this request.
+    #[must_use]
+    pub fn try_consume(&mut self) -> bool {
+        if self.available > 0 {
+            self.available -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Return one unit, on receiving the reply that corresponds to an earlier `try_consume`.
+    ///
+    /// Saturates at `max` rather than panicking on a spurious extra release — a reply that
+    /// somehow arrives twice should not poison every later request on this edge.
+    pub fn release(&mut self) {
+        self.available = (self.available + 1).min(self.max);
+    }
+
+    /// Requests currently in flight.
+    #[must_use]
+    pub fn outstanding(&self) -> u32 {
+        self.max - self.available
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Topology: blocking edges must form a DAG
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -719,6 +788,91 @@ mod tests {
         let mut port = Some(Render(1));
         assert_eq!(send_port(&mut port, &tx, Delivery::Droppable), Flush::Done);
         assert!(port.is_none());
+    }
+
+    // ── Credit: a request/response edge bounded without a new port kind ─────
+
+    #[test]
+    fn credit_exhausts_and_refuses_further_requests() {
+        let mut credit = Credit::new(2);
+        assert!(credit.try_consume());
+        assert!(credit.try_consume());
+        assert!(!credit.try_consume(), "budget of 2 must refuse the third");
+        assert_eq!(credit.outstanding(), 2);
+    }
+
+    #[test]
+    fn releasing_credit_restores_budget() {
+        let mut credit = Credit::new(1);
+        assert!(credit.try_consume());
+        assert!(!credit.try_consume());
+
+        credit.release();
+        assert!(credit.try_consume(), "released budget must be usable again");
+    }
+
+    #[test]
+    fn credit_saturates_at_max_rather_than_overflowing_on_a_spurious_release() {
+        let mut credit = Credit::new(3);
+        credit.release(); // no matching consume — must not push available above max
+        credit.release();
+        assert_eq!(credit.outstanding(), 0);
+        assert!(credit.try_consume());
+        assert!(credit.try_consume());
+        assert!(credit.try_consume());
+        assert!(!credit.try_consume(), "a spurious release must not grant extra budget");
+    }
+
+    #[test]
+    fn credit_gating_keeps_a_droppable_reply_edge_from_ever_dropping() {
+        // The property that makes a droppable port the right closer for a credit-bounded
+        // cycle: as long as every send is gated by `try_consume` and max <= ring capacity,
+        // the ring can never fill, so the drop path this test's sibling exercises is never
+        // actually taken.
+        const RING_CAPACITY: u32 = 4;
+        let (tx, mut rx) = spsc_channel::<Render>(RING_CAPACITY as usize);
+        let mut credit = Credit::new(RING_CAPACITY);
+
+        let mut sent = 0;
+        for i in 0..64u8 {
+            if !credit.try_consume() {
+                break; // well-behaved: stop rather than send past budget
+            }
+            let mut port = Some(Render(i));
+            assert_eq!(
+                send_port(&mut port, &tx, Delivery::Droppable),
+                Flush::Done,
+                "gated by credit, so the ring never fills and nothing is ever dropped"
+            );
+            assert!(port.is_none());
+            sent += 1;
+        }
+
+        assert_eq!(sent, RING_CAPACITY as usize, "stopped exactly at the ring's capacity");
+        assert_eq!(
+            std::iter::from_fn(|| rx.try_recv().ok()).count(),
+            RING_CAPACITY as usize,
+            "every gated message actually arrived — the backstop was never needed"
+        );
+    }
+
+    #[test]
+    fn without_credit_gating_the_same_droppable_port_silently_drops_instead_of_deadlocking() {
+        // The contrast case: an ungated sender that ignores the ring's real capacity does not
+        // hang the way a Blocking port would — it drops. That is the backstop `Credit` exists
+        // to make unreachable in the well-behaved case above.
+        let (tx, mut rx) = spsc_channel::<Render>(4);
+
+        for i in 0..64u8 {
+            let mut port = Some(Render(i));
+            assert_eq!(send_port(&mut port, &tx, Delivery::Droppable), Flush::Done);
+        }
+
+        let delivered = std::iter::from_fn(|| rx.try_recv().ok()).count();
+        assert!(
+            delivered < 64,
+            "an ungated sender must have overrun the ring and dropped some messages"
+        );
     }
 
     #[test]
