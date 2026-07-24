@@ -8,7 +8,7 @@
 //! JIT) against each other.
 
 use pixelflow_ir::binding::BindingTable;
-use pixelflow_ir::{Kernel, eval_scalar};
+use pixelflow_ir::{Kernel, Monoid, eval_scalar};
 
 /// Evaluate through the IR interpreter — the language's reference semantics.
 fn interp(k: &Kernel, x: f32, y: f32) -> f32 {
@@ -28,6 +28,49 @@ fn sum_over_folds_a_bounded_domain() {
 
     // An empty domain folds to the monoid identity.
     assert_eq!(interp(&Kernel::sum_over(0, |i| i.clone()), 0.0, 0.0), 0.0);
+}
+
+#[test]
+fn over_is_the_primitive_and_the_named_folds_are_helpers() {
+    // Every named fold is `over` at a different monoid — swapping the algebra
+    // is the only difference between them.
+    let body = |i: &Kernel| i.add(&Kernel::constant(1.0));
+    for (monoid, helper) in [
+        (Monoid::SUM, Kernel::sum_over(4, body) ),
+        (Monoid::PRODUCT, Kernel::product_over(4, body)),
+        (Monoid::MAX, Kernel::max_over(4, body)),
+        (Monoid::MIN, Kernel::min_over(4, body)),
+    ] {
+        let primitive = Kernel::over(monoid, 4, body);
+        assert_eq!(
+            interp(&primitive, 0.0, 0.0),
+            interp(&helper, 0.0, 0.0),
+            "{monoid:?} helper must agree with `over`"
+        );
+    }
+}
+
+#[test]
+fn mask_monoids_are_bounded_quantifiers() {
+    // ∃_{i<4} (i > X) — true iff some index exceeds X.
+    let any = Kernel::any_over(4, |i| i.gt(&Kernel::x()));
+    // A mask is "set" when nonzero; select turns it back into a number.
+    let to_num = |m: &Kernel| m.select(&Kernel::constant(1.0), &Kernel::constant(0.0));
+
+    assert_eq!(interp(&to_num(&any), 2.0, 0.0), 1.0, "3 > 2, so ∃ holds");
+    assert_eq!(interp(&to_num(&any), 9.0, 0.0), 0.0, "no index exceeds 9");
+
+    // ∀_{i<4} (i >= X) — true iff every index is at least X.
+    let all = Kernel::all_over(4, |i| i.ge(&Kernel::x()));
+    assert_eq!(interp(&to_num(&all), 0.0, 0.0), 1.0, "every i >= 0");
+    assert_eq!(interp(&to_num(&all), 1.0, 0.0), 0.0, "i = 0 fails i >= 1");
+
+    // Empty domains give each quantifier's identity: ∃ is vacuously false,
+    // ∀ vacuously true.
+    let none = Kernel::any_over(0, |i| i.ge(&Kernel::constant(0.0)));
+    let every = Kernel::all_over(0, |i| i.lt(&Kernel::constant(0.0)));
+    assert_eq!(interp(&to_num(&none), 0.0, 0.0), 0.0);
+    assert_eq!(interp(&to_num(&every), 0.0, 0.0), 1.0);
 }
 
 #[test]
@@ -196,5 +239,26 @@ mod jit {
             Kernel::sum_over(3, move |j| ix.add(&j.mul(&Kernel::y())))
         });
         assert_tiers_agree(&nested, "nested");
+    }
+
+    /// Masks are represented differently by the two tiers (the interpreter
+    /// compares to `1.0`/`0.0`, the JIT to all-set/all-clear lanes), so the
+    /// quantifier monoids are the place a tier divergence would surface. Both
+    /// must agree once the mask is selected back into a number.
+    #[test]
+    fn quantifier_monoids_agree_across_tiers() {
+        let to_num = |m: Kernel| m.select(&Kernel::constant(1.0), &Kernel::constant(0.0));
+
+        assert_tiers_agree(
+            &to_num(Kernel::any_over(4, |i| i.gt(&Kernel::x()))),
+            "any",
+        );
+        assert_tiers_agree(
+            &to_num(Kernel::all_over(4, |i| i.ge(&Kernel::x()))),
+            "all",
+        );
+        // Empty domains must produce each quantifier's identity in both tiers.
+        assert_tiers_agree(&to_num(Kernel::any_over(0, |i| i.clone())), "any-empty");
+        assert_tiers_agree(&to_num(Kernel::all_over(0, |i| i.clone())), "all-empty");
     }
 }

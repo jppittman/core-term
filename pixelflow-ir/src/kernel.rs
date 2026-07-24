@@ -92,6 +92,47 @@ fn lowest_free_index_slot(arena: &ExprArena) -> u8 {
         .expect("more than 4 live nested reductions: the index space is 4..8")
 }
 
+/// The algebra a reduction folds under: an associative combining operation
+/// together with the identity an empty domain folds to.
+///
+/// [`Kernel::over`] is parametrized by this, so the binder is one construct and
+/// the monoid is the knob — adding an algebra is adding a constant here, not a
+/// new kind of fold. The named constructors ([`Kernel::sum_over`] and friends)
+/// are helpers over that primitive.
+///
+/// Only associative operations with an identity qualify: associativity is what
+/// lets the backend reassociate and vectorize the fold, and the identity is
+/// what an empty domain denotes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Monoid(OpKind);
+
+impl Monoid {
+    /// `+`, identity `0` — contraction, integration, projection, accumulation.
+    pub const SUM: Self = Self(OpKind::Add);
+    /// `×`, identity `1`.
+    pub const PRODUCT: Self = Self(OpKind::Mul);
+    /// `max`, identity `−∞` — softmax's stabilizer, "best of a bounded set".
+    pub const MAX: Self = Self(OpKind::Max);
+    /// `min`, identity `+∞` — nearest hit over a bounded set of SDFs.
+    pub const MIN: Self = Self(OpKind::Min);
+    /// Mask `∨`, identity all-clear — the existential quantifier over a
+    /// bounded domain.
+    pub const ANY: Self = Self(OpKind::BitOr);
+    /// Mask `∧`, identity all-set — the universal quantifier over a bounded
+    /// domain.
+    pub const ALL: Self = Self(OpKind::BitAnd);
+
+    /// The combining operation. Private: the op set is an IR concept, and
+    /// consumers name algebras, not opcodes.
+    fn op(self) -> OpKind {
+        debug_assert!(
+            self.0.is_monoid(),
+            "Monoid must wrap an associative op with an identity"
+        );
+        self.0
+    }
+}
+
 /// A composed expression fragment: the front-end value.
 #[derive(Clone)]
 pub struct Kernel {
@@ -408,8 +449,12 @@ impl Kernel {
         Self::wrap(arena, root)
     }
 
-    /// `⊕_{i ∈ 0..extent} body(i)` — the reduction binder: fold `body` over a
-    /// bounded discrete domain under a monoid, eliminating that dimension.
+    /// `⊕_{i ∈ 0..extent} body(i)` — **the** reduction binder: fold `body` over
+    /// a bounded discrete domain under `monoid`, eliminating that dimension.
+    ///
+    /// This is the primitive; [`Kernel::sum_over`] and friends are one-line
+    /// helpers over it, and a new [`Monoid`] extends the language without
+    /// touching this method.
     ///
     /// The closure receives the bound index as a `Kernel` of its own, so Rust's
     /// scoping *is* the binder's scoping — an index cannot escape the fold that
@@ -421,7 +466,14 @@ impl Kernel {
     ///
     /// Nesting is supported (up to 4 live binders — the reserved index space):
     /// each fold takes the lowest index slot its body does not already bind.
-    fn fold_over(op: OpKind, extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
+    ///
+    /// ```ignore
+    /// // Σ_d q(d)·k(d) — a contraction over the shared index.
+    /// Kernel::over(Monoid::SUM, 64, |d| q.at_index(d).mul(&k.at_index(d)))
+    /// ```
+    #[must_use]
+    pub fn over(monoid: Monoid, extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
+        let op = monoid.op();
         // Build the body against a placeholder index unique to this binder,
         // then rename it to a real slot once we can see which slots the body
         // already binds. Choosing the slot up-front is impossible: the body
@@ -446,27 +498,41 @@ impl Kernel {
     /// sum over a bounded index.
     #[must_use]
     pub fn sum_over(extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
-        Self::fold_over(OpKind::Add, extent, body)
+        Self::over(Monoid::SUM, extent, body)
     }
 
     /// `Π_{i ∈ 0..extent} body(i)`.
     #[must_use]
     pub fn product_over(extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
-        Self::fold_over(OpKind::Mul, extent, body)
+        Self::over(Monoid::PRODUCT, extent, body)
     }
 
     /// `max_{i ∈ 0..extent} body(i)` — the stabilizer half of a softmax, and
     /// the shape of any "best over a bounded set" query.
     #[must_use]
     pub fn max_over(extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
-        Self::fold_over(OpKind::Max, extent, body)
+        Self::over(Monoid::MAX, extent, body)
     }
 
     /// `min_{i ∈ 0..extent} body(i)` — e.g. the nearest hit of a bounded set
     /// of SDFs.
     #[must_use]
     pub fn min_over(extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
-        Self::fold_over(OpKind::Min, extent, body)
+        Self::over(Monoid::MIN, extent, body)
+    }
+
+    /// `∃_{i ∈ 0..extent} body(i)` — a mask that is set where *any* index
+    /// satisfies `body`.
+    #[must_use]
+    pub fn any_over(extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
+        Self::over(Monoid::ANY, extent, body)
+    }
+
+    /// `∀_{i ∈ 0..extent} body(i)` — a mask that is set where *every* index
+    /// satisfies `body`.
+    #[must_use]
+    pub fn all_over(extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
+        Self::over(Monoid::ALL, extent, body)
     }
 
     /// Sample `self` at warped coordinates — contramap / `.at()`. Each of
