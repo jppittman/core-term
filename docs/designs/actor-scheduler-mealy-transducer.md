@@ -229,7 +229,29 @@ The out-of-process tier carries no transport machinery here, deliberately. The a
 process isolation (a compiler actor) are low-rate — source in, artifact out — so ordinary
 messaging suffices. A shared-memory transport was considered and dropped (§8).
 
-### 5.3 The System lane is the reactor
+### 5.3 Waking a host
+
+A host with nothing to do sleeps on its doorbell, so anything that makes a green actor
+runnable without going through the host's own lanes has to ring that bell. `Waker` is that
+capability, and `GreenSender` is the pair that must always travel together: **push the message
+into the green actor's inbox, then wake the host.**
+
+The order is load-bearing. Waking first admits a lost wakeup — the host wakes, sweeps, finds
+the inbox still empty, reports `Idle`, and goes back to sleep just as the message lands.
+Pushing first means the host either sees the message on the sweep it is already doing, or is
+still holding the pending wake that will start another one.
+
+Two properties come free from the existing doorbell: it has capacity one and **coalesces**, so
+a burst of green sends cannot back it up or fail (one pending wake is all "you have work"
+needs); and a `Waker` that outlives its scheduler is harmless, because a wake with nobody to
+receive it is a no-op rather than an error. That is the one place `Waker` deliberately differs
+from `ActorHandle::wake`, which panics on a disconnected doorbell.
+
+This makes the host's own lanes unnecessary: all three of its message types are `Infallible`,
+so a host provably has no messages of its own and routes nothing. Work goes straight to the
+actor that will handle it.
+
+### 5.4 The System lane is the reactor
 
 Wake, Shutdown, IO readiness, and timers are all System-priority events sharing one park point
 (`epoll_wait` / `kqueue`). Priority ordering is unaffected — it is applied when lanes are
@@ -257,6 +279,7 @@ tests over transition tables.
 | `poll_once` removed from the public API | `actor-scheduler/src/lib.rs` |
 | Kubelet / `PodSlot` registry / `ServiceHandle` deleted; `PodPhase` → `Exit` (two variants, both actually returned) | removed |
 | `Host`: an `Actor` whose `park` sweeps owned green `Node`s, `Busy`/`Idle` driving the thread | `actor-scheduler/src/host.rs` |
+| `Waker` + `GreenSender`/`green_channel`: push-then-wake, so a green actor can be fed from another thread | `actor-scheduler/src/lib.rs`, `host.rs` |
 
 ### 7.1 Measured (2026-07-24)
 
@@ -333,6 +356,7 @@ Each removal made the primitive more opinionated, not less capable. That is the 
   messages per input (which would make that port carry a collection).
 - [ ] **`park` for the time-driven tier.** Timer ticks are just input symbols; confirm `park` on
   the dedicated tier is the right place to synthesise them.
-- [ ] **Waking a host from outside.** A host sleeps on its doorbell, so something must ring it
-  when a green actor's inbox is fed from another thread. Today that is a message on the host's
-  own data lane, routed by `handle_data`. The System-lane reactor (§5.3) is the real answer.
+- [ ] **Eliding the wake syscall.** `GreenSender` rings the doorbell on every delivery. The
+  doorbell coalesces, so this is cheap and correct, but a parked/running flag on the host would
+  let a producer skip the ring entirely while the host is already sweeping — the trick mio uses
+  for its eventfd. Worth measuring before adding.

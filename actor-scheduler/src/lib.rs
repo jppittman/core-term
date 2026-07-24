@@ -102,7 +102,7 @@ pub mod spsc;
 
 use error::DrainStatus;
 pub use error::{HandlerError, HandlerResult, SendError};
-pub use host::{Green, Host};
+pub use host::{Green, GreenSender, Host, green_channel};
 pub use lifecycle::Exit;
 pub use params::SchedulerParams;
 
@@ -817,6 +817,69 @@ impl<D, C, M> ActorHandle<D, C, M> {
             Err(mpsc::TrySendError::Disconnected(_)) => {
                 panic!("Doorbell receiver disconnected - scheduler dropped unexpectedly");
             }
+        }
+    }
+}
+
+/// Rings an actor's doorbell without sending it a message.
+///
+/// The scheduler blocks on its doorbell when idle, so anything that makes an actor runnable
+/// *without* going through its lanes has to ring that bell itself. The green tier is the
+/// case that needs it: a producer pushes straight into a green actor's inbox
+/// ([`GreenSender`](crate::host::GreenSender)) and then wakes the host that owns it.
+///
+/// This is the same contract as a `Waker` in a futures runtime — "there is work for you now"
+/// — and it is deliberately *not* `ActorHandle::send`: a wake carries no payload and cannot
+/// back up, because the doorbell holds one pending wake and coalesces the rest.
+///
+/// # Ordering
+///
+/// **Make the work visible, then wake.** Waking first admits a lost wakeup: the host can
+/// wake, find nothing, and go back to sleep before the message lands.
+#[derive(Clone)]
+pub struct Waker {
+    tx_doorbell: SyncSender<System>,
+    wake_handler: Option<Arc<dyn WakeHandler>>,
+}
+
+impl Waker {
+    /// Signal the actor that it has work.
+    ///
+    /// Never blocks and never fails. A full doorbell means a wake is already pending, and a
+    /// disconnected one means the actor is gone — in both cases there is nothing to do.
+    pub fn wake(&self) {
+        if let Some(waker) = &self.wake_handler {
+            waker.wake();
+        }
+        match self.tx_doorbell.try_send(System::Wake) {
+            Ok(()) => {}
+            // The doorbell holds one wake and coalesces the rest: full means a wake is
+            // already pending, which is exactly the signal this call wanted to send.
+            Err(mpsc::TrySendError::Full(_)) => {}
+            // Unlike `ActorHandle::wake`, a waker outliving its scheduler is ordinary — a
+            // green actor can be fed after its host is gone. There is nobody to wake.
+            Err(mpsc::TrySendError::Disconnected(_)) => {}
+        }
+    }
+}
+
+impl std::fmt::Debug for Waker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Waker")
+            .field("has_wake_handler", &self.wake_handler.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<D, C, M> ActorHandle<D, C, M> {
+    /// A [`Waker`] for this actor's scheduler.
+    ///
+    /// Hand one to anything that can make this actor runnable without sending it a message.
+    #[must_use]
+    pub fn waker(&self) -> Waker {
+        Waker {
+            tx_doorbell: self.tx_doorbell.clone(),
+            wake_handler: self.wake_handler.clone(),
         }
     }
 }
