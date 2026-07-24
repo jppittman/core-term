@@ -581,6 +581,13 @@ fn emit_arena(arena: &ExprArena, id: ExprId, depth: u8) -> Result<(Vec<u8>, Reg)
                     Ok((code, dst))
                 }
 
+                OpKind::Gather => {
+                    // The scanline ABI repurposes the context register for the
+                    // X-array pointer, so buffer bases never reach the body.
+                    Err("scanline: bound-memory gather not supported (the \
+                         context register carries the X array here)")
+                }
+
                 _ => Err("ternary emit not implemented"),
             }
         }
@@ -3498,10 +3505,27 @@ impl IsaBackend for X86Backend {
             } => {
                 emit_shift_imm(code, *op, *dst, *src, *amount);
             }
-            ResolvedOp::Gather { .. } => {
-                // SSE2 has no native gather; the scalar-load lowering is a later
-                // slice. Only the AVX-512 path emits gather for now.
-                return Err("sse2: bound-memory gather not yet supported (AVX-512 only)");
+            ResolvedOp::Gather { dst, idx, slot } => {
+                // No AVX2 here, so no 128-bit vgatherdps: assemble the lanes
+                // from four scalar loads. The context pointer (array of buffer
+                // base pointers) is caller-provided in rdi and never touched by
+                // arithmetic/const emission, so it survives to here; rax/rcx
+                // are caller-saved and unused by the rest of the body.
+                // Both vector scratch registers are outside the allocatable
+                // range and the reload pair (see X86_BUILTIN_SCRATCH).
+                x86_64::emit_gather_scalar(
+                    code,
+                    *dst,
+                    *idx,
+                    *slot,
+                    x86_64::GatherScratch {
+                        base_gpr: 0,  // rax
+                        index_gpr: 1, // rcx
+                        ctx_gpr: 7,   // rdi
+                        idx_lanes: Reg(13),
+                        value: Reg(14),
+                    },
+                );
             }
             ResolvedOp::Binary {
                 op,
@@ -5636,17 +5660,24 @@ mod tests {
     }
 
     // =========================================================================
-    // aarch64 end-to-end: bound-memory gather through the shared driver, run
-    // on the host across 4 NEON lanes. Mirrors the avx512_driver gather tests
-    // (same coordinate spreads, same interpreter oracle) at 128-bit width.
+    // 128-bit end-to-end: bound-memory gather through the shared driver, run on
+    // the host across 4 lanes. Covers BOTH 128-bit backends — NEON's native
+    // `ld1` lanes and x86's scalar-load assembly (no AVX2 `vgatherdps` at 128
+    // bits) — against the same interpreter oracle, so the two cannot drift.
+    // Mirrors the avx512_driver gather tests at 128-bit width.
     // =========================================================================
-    #[cfg(target_arch = "aarch64")]
-    mod aarch64_gather_driver {
+    #[cfg(any(
+        target_arch = "aarch64",
+        all(target_arch = "x86_64", not(target_feature = "avx512f"))
+    ))]
+    mod gather_driver_128 {
         use super::*;
         use crate::arena::{ExprArena, ExprId};
 
         /// Run a compiled gather kernel as a `CtxKernelFn`: the context (array
-        /// of buffer base pointers) goes in x0, coords in v0..3.
+        /// of buffer base pointers) goes in the first integer argument (x0 /
+        /// rdi), coords in the first four vector registers.
+        #[cfg(target_arch = "aarch64")]
         fn run4_ctx(
             res: &CompileResult,
             ctx: &[*const f32],
@@ -5665,6 +5696,30 @@ mod tests {
                 );
                 let mut out = [0.0f32; 4];
                 vst1q_f32(out.as_mut_ptr(), r);
+                out
+            }
+        }
+
+        /// See the aarch64 variant above.
+        #[cfg(target_arch = "x86_64")]
+        fn run4_ctx(
+            res: &CompileResult,
+            ctx: &[*const f32],
+            xs: [f32; 4],
+            ys: [f32; 4],
+        ) -> [f32; 4] {
+            unsafe {
+                use core::arch::x86_64::*;
+                let f: executable::CtxKernelFn = res.code.as_fn();
+                let r = f(
+                    ctx.as_ptr(),
+                    _mm_loadu_ps(xs.as_ptr()),
+                    _mm_loadu_ps(ys.as_ptr()),
+                    _mm_setzero_ps(),
+                    _mm_setzero_ps(),
+                );
+                let mut out = [0.0f32; 4];
+                _mm_storeu_ps(out.as_mut_ptr(), r);
                 out
             }
         }
@@ -5845,7 +5900,13 @@ mod tests {
             let err = compile_arena_dag_scanline(&a, root)
                 .err()
                 .expect("scanline must reject gather");
-            assert!(err.contains("gather"), "unexpected error: {err}");
+            // Both 128-bit backends refuse, in their own words ("bound-memory
+            // gather ..." / "Buffer/Gather ..."); the property under test is
+            // the refusal, not its phrasing.
+            assert!(
+                err.to_lowercase().contains("gather"),
+                "unexpected error: {err}"
+            );
         }
     }
 
