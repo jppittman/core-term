@@ -281,7 +281,7 @@ tests over transition tables.
 | `Host`: an `Actor` whose `park` sweeps owned green `Node`s, `Busy`/`Idle` driving the thread | `actor-scheduler/src/host.rs` |
 | `Waker` + `GreenSender`/`green_channel`: push-then-wake, so a green actor can be fed from another thread | `actor-scheduler/src/lib.rs`, `host.rs` |
 | `ports!` generating the output word + wiring + flush from a port declaration | `actor-scheduler-macros/src/lib.rs` |
-| `send_port_droppable`: the runtime half of a droppable edge | `actor-scheduler/src/mealy.rs` |
+| `Delivery` (`Blocking`/`Droppable`) as a `send_port` parameter — the runtime half of a droppable edge | `actor-scheduler/src/mealy.rs` |
 
 ### 7.1 Measured (2026-07-24)
 

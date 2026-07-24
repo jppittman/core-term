@@ -745,11 +745,14 @@ fn render_ports(base: &str, ports: &[Port], self_port: Option<&Port>) -> TokenSt
     let sends = deliverable
         .iter()
         .map(|p| {
-            let f = match p.kind {
-                PortKind::Droppable => "send_port_droppable",
-                _ => "send_port",
+            let delivery = match p.kind {
+                PortKind::Droppable => "Droppable",
+                _ => "Blocking",
             };
-            format!("            ::actor_scheduler::mealy::{f}(&mut out.{0}, &self.{0}),", p.name)
+            format!(
+                "            ::actor_scheduler::mealy::send_port(&mut out.{0}, &self.{0}, ::actor_scheduler::mealy::Delivery::{delivery}),",
+                p.name
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");

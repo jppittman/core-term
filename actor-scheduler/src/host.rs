@@ -222,7 +222,7 @@ impl Actor<Infallible, Infallible, Infallible> for Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mealy::{Flush, send_port};
+    use crate::mealy::{Delivery, Flush, send_port};
     use crate::{ActorScheduler, Message};
     use crate::spsc::{SpscSender, spsc_channel};
 
@@ -238,7 +238,7 @@ mod tests {
     impl Wiring for ForwardWiring {
         type Out = Option<u32>;
         fn flush(&mut self, out: &mut Option<u32>) -> Flush {
-            send_port(out, &self.next)
+            send_port(out, &self.next, Delivery::Blocking)
         }
     }
 

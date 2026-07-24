@@ -105,41 +105,42 @@ pub trait Wiring {
     fn flush(&mut self, out: &mut Self::Out) -> Flush;
 }
 
-/// Deliver one port, restoring the message if the target is full.
+/// Whether a port's delivery may park its producer.
+///
+/// The two edge kinds [`Topology`] knows about (§3.1): a cycle among blocking edges is a
+/// bootstrap error, but a droppable edge cannot deadlock and so may legally close one. This
+/// is the runtime counterpart, and it is also what the macro's `[drop]` port attribute
+/// compiles to — one enum, not an accreting family of `send_port`/`send_port_*` functions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// Park the producer when the target is full. Propagates backpressure.
+    Blocking,
+    /// Discard when the target is full. Can never return [`Flush::Blocked`], which is what
+    /// makes it legal as the closing edge of a cycle.
+    ///
+    /// Use it for data that is only worth delivering if still current — "drop this frame if
+    /// the display is busy" — never for anything a consumer must not miss. Silence on a full
+    /// ring is the whole point, and also the whole risk.
+    Droppable,
+}
+
+/// Deliver one port according to `delivery`.
 ///
 /// The building block every generated `Wiring::flush` is made of. A disconnected target
-/// drops the message and reports success — the target is gone, so there is nothing to wait
-/// for, and blocking forever on a dead consumer would deadlock the sender.
-pub fn send_port<T>(port: &mut Option<T>, tx: &SpscSender<T>) -> Flush {
+/// drops the message and reports success either way — the target is gone, so there is
+/// nothing to wait for, and blocking forever on a dead consumer would deadlock the sender.
+pub fn send_port<T>(port: &mut Option<T>, tx: &SpscSender<T>, delivery: Delivery) -> Flush {
     let Some(msg) = port.take() else {
         return Flush::Done;
     };
-    match tx.try_send(msg) {
-        Ok(()) => Flush::Done,
-        Err(TrySendError::Full(msg)) => {
+    match (tx.try_send(msg), delivery) {
+        (Ok(()), _) | (Err(TrySendError::Disconnected(_)), _) => Flush::Done,
+        (Err(TrySendError::Full(_)), Delivery::Droppable) => Flush::Done,
+        (Err(TrySendError::Full(msg)), Delivery::Blocking) => {
             *port = Some(msg);
             Flush::Blocked
         }
-        Err(TrySendError::Disconnected(_)) => Flush::Done,
     }
-}
-
-/// Deliver one port, **discarding** the message if the target is full.
-///
-/// The runtime half of [`Topology::droppable_edge`]. This never returns [`Flush::Blocked`],
-/// so it can never park its producer — which is exactly what makes a droppable edge legal as
-/// the closing edge of a cycle (§3.1 of the design).
-///
-/// Use it for data that is only worth delivering if it is still current — "drop this frame if
-/// the display is busy" — and never for anything a consumer must not miss. Silence on a full
-/// ring is the whole point, and also the whole risk.
-pub fn send_port_droppable<T>(port: &mut Option<T>, tx: &SpscSender<T>) -> Flush {
-    if let Some(msg) = port.take() {
-        // Full and Disconnected are the same outcome here: nobody is taking this message, and
-        // a droppable port discards rather than waiting.
-        drop(tx.try_send(msg));
-    }
-    Flush::Done
 }
 
 /// Combine port outcomes: blocked if any port is blocked.
@@ -522,8 +523,8 @@ mod tests {
 
         fn flush(&mut self, out: &mut AppOut) -> Flush {
             all([
-                send_port(&mut out.engine, &self.engine),
-                send_port(&mut out.write, &self.write),
+                send_port(&mut out.engine, &self.engine, Delivery::Blocking),
+                send_port(&mut out.write, &self.write, Delivery::Blocking),
             ])
         }
     }
@@ -701,7 +702,7 @@ mod tests {
         let mut delivered = 0;
         for i in 0..32u8 {
             let mut port = Some(Render(i));
-            assert_eq!(send_port_droppable(&mut port, &tx), Flush::Done);
+            assert_eq!(send_port(&mut port, &tx, Delivery::Droppable), Flush::Done);
             assert!(port.is_none(), "a droppable port always clears");
             if rx.try_recv().is_ok() {
                 delivered += 1;
@@ -716,7 +717,7 @@ mod tests {
         drop(rx);
 
         let mut port = Some(Render(1));
-        assert_eq!(send_port_droppable(&mut port, &tx), Flush::Done);
+        assert_eq!(send_port(&mut port, &tx, Delivery::Droppable), Flush::Done);
         assert!(port.is_none());
     }
 
@@ -748,7 +749,7 @@ mod tests {
         impl Wiring for BoomWiring {
             type Out = Option<u8>;
             fn flush(&mut self, out: &mut Option<u8>) -> Flush {
-                send_port(out, &self.out)
+                send_port(out, &self.out, Delivery::Blocking)
             }
         }
         impl Transducer for Boom {
@@ -800,7 +801,7 @@ mod tests {
         fn flush(&mut self, out: &mut CountdownOut) -> Flush {
             // The self-port never reaches the wiring: `take_continuation` lifts it out first.
             debug_assert!(out.again.is_none(), "continuation must not reach the wiring");
-            send_port(&mut out.done, &self.done)
+            send_port(&mut out.done, &self.done, Delivery::Blocking)
         }
     }
 
