@@ -14,9 +14,83 @@
 //! new node is built, which is construction/bake time, not per pixel.
 
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::arena::{ExprArena, ExprId};
+use crate::arena::{ExprArena, ExprId, ExprNode};
 use crate::kind::OpKind;
+
+/// Binders currently under construction, process-wide. A binder's placeholder
+/// index is derived from this count, so nested — and concurrently built —
+/// binders never share one.
+static LIVE_BINDERS: AtomicU32 = AtomicU32::new(0);
+
+/// Placeholder indices sit above the coordinate (`0..4`) and reduction index
+/// (`4..8`) spaces. A `Kernel` never contains the compiler's manifold-param
+/// slots (the value-producing macro path rejects manifold params outright), so
+/// everything from 8 up is free.
+const PLACEHOLDER_BASE: u32 = 8;
+
+/// A reduction's bound index while its body is under construction, before a
+/// real slot (`4..8`) is chosen.
+///
+/// The placeholder must be unique among binders that are *simultaneously* being
+/// built: a nested fold renames every occurrence of its own placeholder to a
+/// real slot, so if it shared one with the fold enclosing it, it would capture
+/// the outer index — `Σ_i Σ_j f(i, j)` would silently become `Σ_i Σ_j f(j, j)`.
+/// The counter is released on drop, so the space is bounded by live nesting
+/// (at most 4 per thread) rather than by the number of kernels ever built.
+struct BinderScope(u32);
+
+impl BinderScope {
+    fn enter() -> Self {
+        // Construct the guard *before* validating, so the decrement is armed
+        // even if the assertion below unwinds.
+        let scope = Self(LIVE_BINDERS.fetch_add(1, Ordering::Relaxed));
+        assert!(
+            PLACEHOLDER_BASE + scope.0 <= u8::MAX as u32,
+            "too many kernel binders under construction at once"
+        );
+        scope
+    }
+
+    fn placeholder(&self) -> u8 {
+        (PLACEHOLDER_BASE + self.0) as u8
+    }
+}
+
+impl Drop for BinderScope {
+    fn drop(&mut self) {
+        LIVE_BINDERS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// The lowest reduction-index slot not already bound by a `Reduce` in `arena`.
+///
+/// Binders are built inside-out, so a fold sees every inner fold's slot and
+/// takes the next free one — distinct live binders never share an index.
+///
+/// # Panics
+///
+/// Panics when all four slots are live, i.e. a fifth nested reduction.
+fn lowest_free_index_slot(arena: &ExprArena) -> u8 {
+    let mut used = [false; 4];
+    for node in arena.nodes_raw() {
+        let ExprNode::Nary(OpKind::Reduce, start, len) = node else {
+            continue;
+        };
+        let children = arena.nary_children_slice(*start, *len);
+        // Child 1 is the bound index, stored as a `Const` slot number.
+        if let Some(ExprNode::Const(v)) = children.get(1).map(|id| arena.node(*id))
+            && let Some(bit) = used.get_mut(*v as usize - 4)
+        {
+            *bit = true;
+        }
+    }
+    used.iter()
+        .position(|u| !u)
+        .map(|i| i as u8 + 4)
+        .expect("more than 4 live nested reductions: the index space is 4..8")
+}
 
 /// A composed expression fragment: the front-end value.
 #[derive(Clone)]
@@ -158,6 +232,103 @@ impl Kernel {
     pub fn recip(&self) -> Self {
         self.map(OpKind::Recip)
     }
+    /// `1/√self`.
+    #[must_use]
+    pub fn rsqrt(&self) -> Self {
+        self.map(OpKind::Rsqrt)
+    }
+
+    // ────────────────────────── rounding ──────────────────────────
+
+    /// `⌊self⌋`.
+    #[must_use]
+    pub fn floor(&self) -> Self {
+        self.map(OpKind::Floor)
+    }
+    /// `⌈self⌉`.
+    #[must_use]
+    pub fn ceil(&self) -> Self {
+        self.map(OpKind::Ceil)
+    }
+    /// Round to the nearest integer.
+    #[must_use]
+    pub fn round(&self) -> Self {
+        self.map(OpKind::Round)
+    }
+    /// The fractional part, `self - ⌊self⌋`.
+    #[must_use]
+    pub fn fract(&self) -> Self {
+        self.map(OpKind::Fract)
+    }
+
+    // ───────────────────── transcendentals ────────────────────────
+
+    /// `sin self` (radians).
+    #[must_use]
+    pub fn sin(&self) -> Self {
+        self.map(OpKind::Sin)
+    }
+    /// `cos self` (radians).
+    #[must_use]
+    pub fn cos(&self) -> Self {
+        self.map(OpKind::Cos)
+    }
+    /// `tan self` (radians).
+    #[must_use]
+    pub fn tan(&self) -> Self {
+        self.map(OpKind::Tan)
+    }
+    /// `asin self`.
+    #[must_use]
+    pub fn asin(&self) -> Self {
+        self.map(OpKind::Asin)
+    }
+    /// `acos self`.
+    #[must_use]
+    pub fn acos(&self) -> Self {
+        self.map(OpKind::Acos)
+    }
+    /// `atan self`.
+    #[must_use]
+    pub fn atan(&self) -> Self {
+        self.map(OpKind::Atan)
+    }
+    /// `atan2(self, x)` — the quadrant-correct angle, i.e. the polar angle of
+    /// `(x, self)`.
+    #[must_use]
+    pub fn atan2(&self, x: &Kernel) -> Self {
+        self.combine(x, OpKind::Atan2)
+    }
+    /// `e^self`.
+    #[must_use]
+    pub fn exp(&self) -> Self {
+        self.map(OpKind::Exp)
+    }
+    /// `2^self`.
+    #[must_use]
+    pub fn exp2(&self) -> Self {
+        self.map(OpKind::Exp2)
+    }
+    /// `ln self`.
+    #[must_use]
+    pub fn ln(&self) -> Self {
+        self.map(OpKind::Ln)
+    }
+    /// `log₂ self`.
+    #[must_use]
+    pub fn log2(&self) -> Self {
+        self.map(OpKind::Log2)
+    }
+    /// `self^exponent`.
+    #[must_use]
+    pub fn pow(&self, exponent: &Kernel) -> Self {
+        self.combine(exponent, OpKind::Pow)
+    }
+    /// `√(self² + other²)` — the length of `(self, other)`.
+    #[must_use]
+    pub fn hypot(&self, other: &Kernel) -> Self {
+        self.combine(other, OpKind::Hypot)
+    }
 
     // ─────────────────────── comparisons / masks ──────────────────
 
@@ -235,6 +406,67 @@ impl Kernel {
             root = arena.push_binary(OpKind::Add, root, rhs);
         }
         Self::wrap(arena, root)
+    }
+
+    /// `⊕_{i ∈ 0..extent} body(i)` — the reduction binder: fold `body` over a
+    /// bounded discrete domain under a monoid, eliminating that dimension.
+    ///
+    /// The closure receives the bound index as a `Kernel` of its own, so Rust's
+    /// scoping *is* the binder's scoping — an index cannot escape the fold that
+    /// binds it, and a repeated index in nested folds is a genuine contraction
+    /// rather than an accident. `extent` is a static count, which is what keeps
+    /// the language total and its cost closed-form (`|D| × cost(body)`); the
+    /// backend unrolls, so the domain is bounded in practice as well as in
+    /// principle.
+    ///
+    /// Nesting is supported (up to 4 live binders — the reserved index space):
+    /// each fold takes the lowest index slot its body does not already bind.
+    fn fold_over(op: OpKind, extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
+        // Build the body against a placeholder index unique to this binder,
+        // then rename it to a real slot once we can see which slots the body
+        // already binds. Choosing the slot up-front is impossible: the body
+        // (and therefore its inner binders) does not exist yet.
+        let scope = BinderScope::enter();
+        let index = {
+            let mut a = ExprArena::new();
+            let r = a.push_var(scope.placeholder());
+            Self::wrap(a, r)
+        };
+        let body = body(&index);
+
+        let mut arena = body.inner.arena.clone();
+        let slot = lowest_free_index_slot(&arena);
+        let renamed = arena.push_var(slot);
+        let root = arena.substitute_vars_with(body.inner.root, &[(scope.placeholder(), renamed)]);
+        let root = arena.push_reduce(op, slot, extent, root);
+        Self::wrap(arena, root)
+    }
+
+    /// `Σ_{i ∈ 0..extent} body(i)` — contraction, projection, and every other
+    /// sum over a bounded index.
+    #[must_use]
+    pub fn sum_over(extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
+        Self::fold_over(OpKind::Add, extent, body)
+    }
+
+    /// `Π_{i ∈ 0..extent} body(i)`.
+    #[must_use]
+    pub fn product_over(extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
+        Self::fold_over(OpKind::Mul, extent, body)
+    }
+
+    /// `max_{i ∈ 0..extent} body(i)` — the stabilizer half of a softmax, and
+    /// the shape of any "best over a bounded set" query.
+    #[must_use]
+    pub fn max_over(extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
+        Self::fold_over(OpKind::Max, extent, body)
+    }
+
+    /// `min_{i ∈ 0..extent} body(i)` — e.g. the nearest hit of a bounded set
+    /// of SDFs.
+    #[must_use]
+    pub fn min_over(extent: u32, body: impl FnOnce(&Kernel) -> Kernel) -> Self {
+        Self::fold_over(OpKind::Min, extent, body)
     }
 
     /// Sample `self` at warped coordinates — contramap / `.at()`. Each of
