@@ -66,7 +66,6 @@ define_op!(13, Recip, "recip", 1, UnaryMethod);
 define_op!(14, Floor, "floor", 1, UnaryMethod);
 define_op!(15, Ceil, "ceil", 1, UnaryMethod);
 define_op!(16, Round, "round", 1, UnaryMethod);
-define_op!(17, Fract, "fract", 1, UnaryMethod);
 
 // --- Trigonometry ---
 define_op!(18, Sin, "sin", 1, UnaryMethod);
@@ -84,7 +83,6 @@ define_op!(27, Ln, "ln", 1, UnaryMethod);
 define_op!(28, Log2, "log2", 1, UnaryMethod);
 define_op!(29, Log10, "log10", 1, UnaryMethod);
 define_op!(30, Pow, "pow", 2, BinaryMethod);
-define_op!(31, Hypot, "hypot", 2, BinaryMethod);
 
 // --- Comparison ---
 define_op!(32, Lt, "lt", 2, BinaryMethod);
@@ -128,7 +126,7 @@ define_op!(51, RawGather, "raw_gather", 2, Special);
 define_op!(52, Reduce, "reduce", 4, Special);
 
 /// Total number of operations. Must equal [`crate::kind::OpKind::COUNT`].
-pub const OP_COUNT: usize = 52;
+pub const OP_COUNT: usize = 50;
 
 /// All operations in the IR, indexed by their INDEX constant.
 ///
@@ -151,7 +149,6 @@ pub const ALL_OPS: [&'static dyn OpMeta; OP_COUNT] = [
     &Floor,
     &Ceil,
     &Round,
-    &Fract,
     &Sin,
     &Cos,
     &Tan,
@@ -165,7 +162,6 @@ pub const ALL_OPS: [&'static dyn OpMeta; OP_COUNT] = [
     &Log2,
     &Log10,
     &Pow,
-    &Hypot,
     &Lt,
     &Le,
     &Gt,

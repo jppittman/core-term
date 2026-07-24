@@ -296,10 +296,10 @@ impl Kernel {
     pub fn round(&self) -> Self {
         self.map(OpKind::Round)
     }
-    /// The fractional part, `self - ⌊self⌋`.
+    /// The fractional part, `self - ⌊self⌋`. Library, not a primitive.
     #[must_use]
     pub fn fract(&self) -> Self {
-        self.map(OpKind::Fract)
+        self.sub(&self.floor())
     }
 
     // ───────────────────── transcendentals ────────────────────────
@@ -365,10 +365,12 @@ impl Kernel {
     pub fn pow(&self, exponent: &Kernel) -> Self {
         self.combine(exponent, OpKind::Pow)
     }
-    /// `√(self² + other²)` — the length of `(self, other)`.
+    /// `√(self² + other²)` — the length of `(self, other)`. Library, not a
+    /// primitive: no hardware computes it, so a `Hypot` node bought nothing
+    /// but a decomposition each backend had to write for itself.
     #[must_use]
     pub fn hypot(&self, other: &Kernel) -> Self {
-        self.combine(other, OpKind::Hypot)
+        self.mul(self).add(&other.mul(other)).sqrt()
     }
 
     // ─────────────────────── comparisons / masks ──────────────────

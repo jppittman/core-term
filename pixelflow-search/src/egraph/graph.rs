@@ -1557,8 +1557,6 @@ impl EGraph {
             | OpKind::Floor
             | OpKind::Ceil
             | OpKind::Round => self.add(ENode::constant(0.0)),
-            // fract(u) = u - floor(u), so d = u' almost everywhere.
-            OpKind::Fract => dwrt(self, children[0]),
             // d(sin u) = cos(u) * u'.
             OpKind::Sin => {
                 let u = children[0];
@@ -1662,17 +1660,6 @@ impl EGraph {
                 let y2 = op2(self, &ops::Mul, y, y);
                 let den = op2(self, &ops::Add, x2, y2);
                 op2(self, &ops::Div, num, den)
-            }
-            // d(hypot(a, b)) = (a*a' + b*b') / hypot(a, b).
-            OpKind::Hypot => {
-                let (a, b) = (children[0], children[1]);
-                let da = dwrt(self, a);
-                let db = dwrt(self, b);
-                let t1 = op2(self, &ops::Mul, a, da);
-                let t2 = op2(self, &ops::Mul, b, db);
-                let num = op2(self, &ops::Add, t1, t2);
-                let h = op2(self, &ops::Hypot, a, b);
-                op2(self, &ops::Div, num, h)
             }
             // d(f^g) = f^g * (g'*ln f + g*f'/f)  (Jet2's rule).
             OpKind::Pow => {
