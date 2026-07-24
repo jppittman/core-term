@@ -157,30 +157,16 @@ Rules that fall out:
   needs real preemption gets its own thread or process. A signal nudges a worker to yield at
   step boundaries; it cannot interrupt a handler mid-body (nor should it need to).
 
-### 5.1 Cross-process transport
+The out-of-process tier carries no transport machinery here, deliberately. The actors that want
+process isolation (a compiler actor) are low-rate — source in, artifact out — so ordinary
+messaging suffices. A shared-memory transport was considered and dropped (§8).
 
-Worker processes are the isolation/preemption grain. Communication stays fast because the SPSC
-ring is already pointer-free (`[MaybeUninit<T>; N]` + atomic head/tail), so it drops into a
-shared segment unchanged. The rules of shared memory:
+### 5.1 The System lane is the reactor
 
-- **A pointer in shared memory is an offset.** No `Box`/`Vec`/`Arc`/`String` across the boundary
-  — they store the creating process's addresses. Cross-process references are relative
-  (`Shared<T>` = segment + offset, resolved per-process).
-- **`ShmSafe`** marks pointer-free / relocatable types. It bounds cross-process channels and the
-  shm allocator, and it is the natural extension of the existing "Copy iff ZST" rule. Misuse is
-  a compile error, not a wild write. Intra-process actors are unconstrained; only process
-  boundaries pay the `ShmSafe` tax, and the compiler enforces it. Library consumers rarely touch
-  it (a macro allocates into the shared arena for the rare payload that outgrows a POD).
-- Shared memory is a **deliberate aperture** in the process isolation: isolate execution, share
-  specific typed regions (the rings, the framebuffer), keep them minimal.
-
-### 5.2 The System lane is the reactor
-
-Wake, Shutdown, IO readiness, timers, and cross-process signals are all System-priority events
-sharing one park point (`epoll_wait` / `kqueue`). `signalfd` folds a peer process's signal into
-that set. Priority ordering is unaffected — it is applied when lanes are drained, not at the
-reactor. Blocking IO lives on dedicated-thread actors that turn readiness into messages; a
-Tier-0 IO actor forwarding a `DataReady` message *is* a Waker in disguise.
+Wake, Shutdown, IO readiness, and timers are all System-priority events sharing one park point
+(`epoll_wait` / `kqueue`). Priority ordering is unaffected — it is applied when lanes are
+drained, not at the reactor. Blocking IO lives on dedicated-thread actors that turn readiness
+into messages; an IO actor forwarding a `DataReady` message *is* a Waker in disguise.
 
 ---
 
@@ -224,6 +210,14 @@ This design was reached by deletion. Recorded so it is not re-derived:
   threaded parameter; the return reads as more transparent (effects-as-values).
 - **A yield macro** — the self-port already yields; the type shape already forces frequent
   yielding. Nothing to enforce.
+- **A shared-memory cross-process transport** (`Shared<T>` relative pointers, a `ShmSafe`
+  marker bounding cross-process channels, an shm arena + alloc macro) — real, and it would
+  have kept the rings fast across an address-space boundary. Dropped because nothing needs it:
+  the actors that want process isolation are low-rate (a compiler actor is source in, artifact
+  out), so ordinary messaging suffices, and the framebuffer that *would* have justified a
+  shared segment is not crossing a process boundary. Adding a pointer-freeness discipline to
+  the type system to serve a bandwidth problem we do not have is exactly the machinery this
+  design keeps subtracting.
 
 Each removal made the primitive more opinionated, not less capable. That is the tell.
 
