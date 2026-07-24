@@ -134,6 +134,13 @@ impl OpKind {
             Self::Mul => Some(1.0),
             Self::Min => Some(f32::INFINITY),
             Self::Max => Some(f32::NEG_INFINITY),
+            // Mask monoids — the existential and universal quantifiers over a
+            // bounded domain. Masks are bitwise in both evaluation tiers, so
+            // the identities are the all-clear and all-set bit patterns
+            // (`BitAnd`'s is a NaN by float reading; it is never read as a
+            // number, only ANDed).
+            Self::BitOr => Some(0.0),
+            Self::BitAnd => Some(f32::from_bits(u32::MAX)),
             _ => None,
         }
     }

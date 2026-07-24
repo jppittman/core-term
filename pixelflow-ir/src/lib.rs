@@ -33,7 +33,7 @@ pub mod eval;
 pub use eval::eval_scalar;
 
 pub mod kernel;
-pub use kernel::Kernel;
+pub use kernel::{Kernel, Monoid};
 
 pub mod jit_manifold;
 pub use jit_manifold::{JitManifold, ScanlineJitManifold};
