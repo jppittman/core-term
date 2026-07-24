@@ -268,11 +268,26 @@ Sequenced but not yet scheduled:
   continuous `X/Y/Z/W` in the arena. A kernel over a product of discrete domains
   is a tensor; a kernel over one is a "vector". No storage change — pull-sampled.
   This is the substrate the binder and typed fields both stand on.
-- **P8 — the reduction binder `⊕_{i∈D}`.** One monoid-parametrized big-operator
-  node (sum, max, product) over a bounded domain, with the extent on the node so
-  the cost walk stays closed-form. Subsumes `expand_reduce`. Contraction/matmul,
-  softmax, SH projection, the AO integral all lower to it. Shared bound index =
-  contract (the shape check is scoping, not a type system).
+- **P8 — the reduction binder `⊕_{i∈D}`** *(landed 2026-07-24)*. The IR
+  substrate turned out to already exist — `Nary(Reduce, [combiner, index,
+  extent, body])` over `Var(4..8)`, reference semantics in `eval.rs`, and
+  `expand_reduce` unrolling wired into every compile entry — with **no front
+  door**: nothing outside pixelflow-ir's own tests constructed one. P8 was
+  therefore a surface, not a mechanism: `Kernel::{sum_over, product_over,
+  max_over, min_over}(extent, |i| body)`. The closure receives the bound index
+  as a `Kernel`, so **Rust's scoping is the binder's scoping** — the shape check
+  really is variable capture, not a type system, exactly as the axiom note
+  predicted. Extent is a static count, so cost stays `|D| × cost(body)`.
+  Hygiene was the one real hazard and the first draft had the bug: nested folds
+  shared a construction-time placeholder index, so the inner rename captured the
+  outer index (`Σ_i Σ_j f(i,j)` evaluated as `Σ_i Σ_j f(j,j)`). Fixed with a
+  live-binder counter (`BinderScope`) handing each in-flight fold a unique
+  placeholder. Also completed the scalar op surface the real programs need
+  (trig/exp/log/pow/hypot/rounding — softmax needs `exp`).
+  Tests: `pixelflow-ir/tests/reduction_binder.rs` builds contraction, softmax
+  (normalization + monotonicity), an AO-style sample average with `at` warps
+  inside the body, and three-deep nesting; a JIT tier checks the unrolled
+  machine code against the interpreter's native fold.
 - **P9 — typed discrete fields; the `Lattice` dissolves.** A field is a kernel
   pinned to a discrete domain and reified, typed `(domain, element kind)` with
   ground extents. `DiscreteManifold`/`collapse`/`bake` become "reify on a
