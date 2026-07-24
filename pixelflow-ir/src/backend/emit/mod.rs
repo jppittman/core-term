@@ -563,12 +563,6 @@ fn emit_arena(arena: &ExprArena, id: ExprId, depth: u8) -> Result<(Vec<u8>, Reg)
                     Ok((code, dst))
                 }
 
-                OpKind::Clamp => {
-                    // See lowering::expand_clamp — the unsorted inline
-                    // decomposition disagreed with the interpreter on
-                    // degenerate bounds, so Clamp never reaches emitters.
-                    Err("Clamp must be expanded before emission (lowering::expand_clamp)")
-                }
 
                 OpKind::Select => {
                     // select(cond, if_true, if_false): cond is an all-ones/zeros mask.
@@ -655,7 +649,6 @@ pub fn compile_arena_dag_with_ctx(
     let (arena, root) = lowering::expand_reduce_owned(&arena, root);
     let (arena, root) = lowering::expand_gather_owned(&arena, root);
     let (arena, root) = lowering::expand_transcendentals_owned(&arena, root);
-    let (arena, root) = lowering::expand_clamp_owned(&arena, root);
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses_map = arena_to_uses(&schedule);
@@ -983,12 +976,6 @@ pub fn compile_arena_dag_scanline_hoisted(
     arena: &crate::arena::ExprArena,
     root: crate::arena::ExprId,
 ) -> Result<ScanlineCompileResult, &'static str> {
-    // This path runs none of the per-batch lowering chain, but Clamp must not
-    // reach the emitters (its inline decompositions are gone — see
-    // lowering::expand_clamp), so expand it here. Identity fast-path when the
-    // arena has no Clamp.
-    let (arena_owned, root) = lowering::expand_clamp_owned(arena, root);
-    let arena = &arena_owned;
     let hoisted = arena_to_hoisted_schedule(arena, root, default_hoist_predicate);
 
     // The scanline ABI has no context argument — x0 is the X-array pointer —
@@ -3028,16 +3015,6 @@ pub fn resolve_operands(
                         if_false: c_reg,
                     }
                 }
-                OpKind::Clamp => {
-                    // Never reaches the emitters: `lowering::expand_clamp`
-                    // (last pass in every compile entry's lowering chain)
-                    // rewrites Clamp into the bound-sorting min/max sequence
-                    // that matches `OpKind::eval_ternary`. The inline
-                    // decomposition this arm used to build did NOT sort the
-                    // bounds, silently disagreeing with the interpreter on
-                    // degenerate (lo > hi) ranges.
-                    return Err("Clamp must be expanded before emission (lowering::expand_clamp)");
-                }
                 _ => return Err("unsupported ternary op in DAG compilation"),
             }
         }
@@ -3313,7 +3290,6 @@ pub fn compile_arena_dag_with_ctx(
     let (arena, root) = lowering::expand_reduce_owned(&arena, root);
     let (arena, root) = lowering::expand_gather_owned(&arena, root);
     let (arena, root) = lowering::expand_transcendentals_owned(&arena, root);
-    let (arena, root) = lowering::expand_clamp_owned(&arena, root);
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
@@ -3926,7 +3902,6 @@ pub fn compile_collapse_avx512(
     let (arena, root) = lowering::expand_reduce_owned(&arena, root);
     let (arena, root) = lowering::expand_gather_owned(&arena, root);
     let (arena, root) = lowering::expand_transcendentals_owned(&arena, root);
-    let (arena, root) = lowering::expand_clamp_owned(&arena, root);
     let arena = &arena;
 
     let schedule = arena_to_schedule(arena, root);
@@ -4028,12 +4003,6 @@ pub fn compile_arena_dag_scanline(
     arena: &ExprArena,
     root: ExprId,
 ) -> Result<ScanlineCompileResult, &'static str> {
-    // This path runs none of the per-batch lowering chain, but Clamp must not
-    // reach the tree emitter (its inline decomposition is gone — see
-    // lowering::expand_clamp), so expand it here. Identity fast-path when the
-    // arena has no Clamp.
-    let (arena_owned, root) = lowering::expand_clamp_owned(arena, root);
-    let arena = &arena_owned;
     const MAX_DEPTH: usize = 64;
     if arena.depth(root) > MAX_DEPTH {
         return Err("expression too deep");
@@ -5319,13 +5288,14 @@ mod tests {
                 assert!((got - f(xv, yv)).abs() <= 1e-6, "{op:?}({xv},{yv})");
             }
         }
-        // Clamp(X, 0.0, 1.0)
+        // clamp(X, 0.0, 1.0) — the min/max composition it denotes.
         {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let lo = a.push_const(0.0);
             let hi = a.push_const(1.0);
-            let root = a.push_ternary(OpKind::Clamp, x, lo, hi);
+            let floored = a.push_binary(OpKind::Max, x, lo);
+            let root = a.push_binary(OpKind::Min, floored, hi);
             for &xv in &[-0.5f32, 0.25, 0.9, 1.7] {
                 let got = run1(&a, root, xv);
                 assert!(

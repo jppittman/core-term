@@ -967,12 +967,20 @@ impl EGraphContext {
                             children: vec![receiver, if_true, if_false],
                         })
                     }
+                    // `clamp` is library: it enters the e-graph as the
+                    // composition it denotes, so the optimizer reasons about
+                    // min/max directly instead of needing clamp-specific
+                    // rewrite and derivative rules.
                     "clamp" => {
                         let min_val = self.expr_to_egraph(&call.args[0]);
                         let max_val = self.expr_to_egraph(&call.args[1]);
+                        let floored = self.egraph.add(ENode::Op {
+                            op: &ops::Max,
+                            children: vec![receiver, min_val],
+                        });
                         self.egraph.add(ENode::Op {
-                            op: &ops::Clamp,
-                            children: vec![receiver, min_val, max_val],
+                            op: &ops::Min,
+                            children: vec![floored, max_val],
                         })
                     }
 

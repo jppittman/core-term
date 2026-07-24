@@ -354,10 +354,13 @@ fn ast_to_arena_inner(
                     let if_false = ast_to_arena_inner(&call.args[1], ctx, locals, arena)?;
                     Ok(arena.push_ternary(OpKind::Select, receiver, if_true, if_false))
                 }
+                // `clamp` is library, not a primitive: it denotes
+                // `min(max(x, lo), hi)` and is built as that composition.
                 ("clamp", 2) => {
                     let lo = ast_to_arena_inner(&call.args[0], ctx, locals, arena)?;
                     let hi = ast_to_arena_inner(&call.args[1], ctx, locals, arena)?;
-                    Ok(arena.push_ternary(OpKind::Clamp, receiver, lo, hi))
+                    let floored = arena.push_binary(OpKind::Max, receiver, lo);
+                    Ok(arena.push_binary(OpKind::Min, floored, hi))
                 }
 
                 // Comparison methods (emitted by e-graph extraction)
@@ -790,7 +793,6 @@ fn opkind_to_tokens(kind: OpKind) -> TokenStream {
         OpKind::Eq => quote! { ::pixelflow_core::__ir::OpKind::Eq },
         OpKind::Ne => quote! { ::pixelflow_core::__ir::OpKind::Ne },
         OpKind::Select => quote! { ::pixelflow_core::__ir::OpKind::Select },
-        OpKind::Clamp => quote! { ::pixelflow_core::__ir::OpKind::Clamp },
         // Mask combination (canonical masks in both tiers).
         OpKind::BitAnd => quote! { ::pixelflow_core::__ir::OpKind::BitAnd },
         OpKind::BitOr => quote! { ::pixelflow_core::__ir::OpKind::BitOr },

@@ -997,12 +997,6 @@ pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c:
             emit_bsl(code, dst, b, c);
         }
 
-        OpKind::Clamp => {
-            // dst = clamp(a, b, c) = max(min(a, c), b)
-            emit_fmin(code, dst, a, c); // dst = min(a, hi)
-            emit_fmax(code, dst, dst, b); // dst = max(dst, lo)
-        }
-
         _ => panic!("ternary emit not implemented for {:?}", op),
     }
 }

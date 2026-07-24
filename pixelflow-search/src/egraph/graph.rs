@@ -1547,25 +1547,6 @@ impl EGraph {
                     children: vec![m, dt, df],
                 })
             }
-            // clamp(x, lo, hi) = min(max(x, lo), hi); differentiate that exact
-            // composition so masks (and ties) match the Jet2 chain.
-            OpKind::Clamp => {
-                let (x, lo, hi) = (children[0], children[1], children[2]);
-                let dx = dwrt(self, x);
-                let dlo = dwrt(self, lo);
-                let dhi = dwrt(self, hi);
-                let gt = op2(self, &ops::Gt, x, lo);
-                let dm = self.add(ENode::Op {
-                    op: &ops::Select,
-                    children: vec![gt, dx, dlo],
-                });
-                let m = op2(self, &ops::Max, x, lo);
-                let lt = op2(self, &ops::Lt, m, hi);
-                self.add(ENode::Op {
-                    op: &ops::Select,
-                    children: vec![lt, dm, dhi],
-                })
-            }
             // Masks and rounding are step functions: zero almost everywhere.
             OpKind::Lt
             | OpKind::Le

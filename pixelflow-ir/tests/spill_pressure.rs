@@ -183,14 +183,10 @@ fn nested_selects_spilled() {
     assert!(spills > 0, "scenario failed to create register pressure");
 }
 
-/// Decomposed ternaries (MulAdd, Clamp) with spilled operands.
+/// Decomposed `MulAdd` plus a min/max clamp chain, with spilled operands.
 ///
-/// Pressure note: an arena containing `Clamp` is REBUILT by
-/// `lowering::expand_clamp` in DFS order, which dissolves the "operands
-/// early, consumers late" liveness trick the other scenarios use. Pressure
-/// here must survive any schedule order, so the operands are trees DEEPER
-/// than the register budget (Sethi-Ullman number > 6 spills regardless of
-/// order).
+/// Pressure note: the operands are trees DEEPER than the register budget
+/// (Sethi-Ullman number > 6), so they spill regardless of schedule order.
 #[test]
 fn muladd_and_clamp_spilled() {
     let mut a = ExprArena::new();
@@ -205,9 +201,10 @@ fn muladd_and_clamp_spilled() {
     let fillers: Vec<ExprId> = (0..4).map(|i| tree(&mut a, 2, 500 + i * 19)).collect();
 
     let ma = a.push_ternary(OpKind::MulAdd, ma_a, ma_b, ma_c);
-    // Order lo <= hi is not guaranteed by the trees; clamp semantics still must
-    // match the interpreter exactly, whatever they are.
-    let cl = a.push_ternary(OpKind::Clamp, cl_v, cl_lo, cl_hi);
+    // Order lo <= hi is not guaranteed by the trees; the composition must
+    // match the interpreter exactly either way.
+    let cl_floored = a.push_binary(OpKind::Max, cl_v, cl_lo);
+    let cl = a.push_binary(OpKind::Min, cl_floored, cl_hi);
 
     let mut all = vec![ma, cl];
     all.extend(fillers);

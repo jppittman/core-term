@@ -120,7 +120,6 @@ impl ExprGenerator {
             OpKind::Abs => 12,
             OpKind::Sin => 8,
             OpKind::Cos => 8,
-            OpKind::Clamp => 8,
             OpKind::Max => 6,
             OpKind::Min => 4,
             OpKind::Pow => 4,

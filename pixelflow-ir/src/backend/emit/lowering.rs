@@ -217,49 +217,6 @@ pub fn expand_gather_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprI
     (owned, new_root)
 }
 
-// ─────────────────────────────── Clamp lowering ──────────────────────────────
-
-/// Lower every `Clamp(x, b, c)` reachable from `root` into the min/max
-/// sequence matching the reference semantics ([`OpKind::eval_ternary`]):
-/// bounds are SORTED first (`lo = min(b, c)`, `hi = max(b, c)`), then
-/// `min(max(x, lo), hi)`. Degenerate swapped bounds arise from e-graph
-/// extraction and from arena-composed kernels; the unsorted decomposition
-/// `max(b, min(x, c))` the emitters used to inline disagrees with the
-/// interpreter exactly there (it returns `b` whenever `b > c`), which is a
-/// silent JIT-vs-interpreter divergence. Expanding here gives every backend
-/// the sorted semantics and retires the per-ISA `Clamp` emission entirely.
-///
-/// Runs LAST in the lowering chain: [`lower_gather`] itself emits `Clamp`
-/// nodes for its index arithmetic, and those must expand too.
-pub fn expand_clamp(arena: &mut ExprArena, root: ExprId) -> ExprId {
-    rebuild_arena(arena, root, |arena, node, m| match node {
-        ExprNode::Ternary(OpKind::Clamp, x, b, c) => {
-            let (x, b, c) = (m(*x), m(*b), m(*c));
-            let lo = arena.push_binary(OpKind::Min, b, c);
-            let hi = arena.push_binary(OpKind::Max, b, c);
-            let floored = arena.push_binary(OpKind::Max, x, lo);
-            Some(arena.push_binary(OpKind::Min, floored, hi))
-        }
-        _ => None,
-    })
-}
-
-/// Owned wrapper mirroring [`expand_gather_owned`]: identity fast-path when
-/// the arena has no `Clamp`, otherwise clone-and-lower.
-#[must_use]
-pub fn expand_clamp_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
-    if !arena
-        .nodes_raw()
-        .iter()
-        .any(|n| matches!(n, ExprNode::Ternary(OpKind::Clamp, _, _, _)))
-    {
-        return (arena.clone(), root);
-    }
-    let mut owned = arena.clone();
-    let new_root = expand_clamp(&mut owned, root);
-    (owned, new_root)
-}
-
 /// Build the index arithmetic for one gather and wrap it in a `RawGather`.
 ///
 /// `buf`/`x`/`y` are already lowered nodes in `arena`; `buf` is a `Buffer` leaf.
@@ -276,11 +233,15 @@ fn lower_gather(arena: &mut ExprArena, buf: ExprId, x: ExprId, y: ExprId) -> Exp
     let max_y = arena.push_const(decl.height.saturating_sub(1) as f32);
     let width = arena.push_const(decl.width as f32);
 
-    // xi = clamp(floor(x), 0, width-1); yi = clamp(floor(y), 0, height-1)
+    // xi = clamp(floor(x), 0, width-1); yi = clamp(floor(y), 0, height-1),
+    // written as the min/max composition clamp denotes — there is no `Clamp`
+    // primitive to lower to.
     let fx = arena.push_unary(OpKind::Floor, x);
-    let xi = arena.push_ternary(OpKind::Clamp, fx, zero, max_x);
+    let xi_lo = arena.push_binary(OpKind::Max, fx, zero);
+    let xi = arena.push_binary(OpKind::Min, xi_lo, max_x);
     let fy = arena.push_unary(OpKind::Floor, y);
-    let yi = arena.push_ternary(OpKind::Clamp, fy, zero, max_y);
+    let yi_lo = arena.push_binary(OpKind::Max, fy, zero);
+    let yi = arena.push_binary(OpKind::Min, yi_lo, max_y);
 
     // idx = yi * width + xi  (float; exact for indices < 2^24, as in DiscreteManifold)
     let row = arena.push_binary(OpKind::Mul, yi, width);
@@ -558,7 +519,7 @@ fn push_deriv_children(node: &ExprNode, stack: &mut Vec<ExprId>) {
             _ => {}
         },
         ExprNode::Ternary(op, a, b, c) => match op {
-            OpKind::MulAdd | OpKind::Clamp => {
+            OpKind::MulAdd => {
                 stack.push(a);
                 stack.push(b);
                 stack.push(c);
@@ -812,18 +773,6 @@ fn diff_node(
                 let db = dchild(memo, b);
                 let dc = dchild(memo, c);
                 Ok(arena.push_ternary(OpKind::Select, a, db, dc))
-            }
-            // clamp(x, lo, hi) = min(max(x, lo), hi); differentiate that exact
-            // composition so masks (and tie behavior) match the Jet2 chain.
-            OpKind::Clamp => {
-                let dx = dchild(memo, a);
-                let dlo = dchild(memo, b);
-                let dhi = dchild(memo, c);
-                let gt = arena.push_binary(OpKind::Gt, a, b);
-                let dm = arena.push_ternary(OpKind::Select, gt, dx, dlo);
-                let m = arena.push_binary(OpKind::Max, a, b);
-                let lt = arena.push_binary(OpKind::Lt, m, c);
-                Ok(arena.push_ternary(OpKind::Select, lt, dm, dhi))
             }
             OpKind::Gather => Err("lower_dwrt: cannot differentiate a bound-memory read"),
             _ => Err("lower_dwrt: no derivative rule for this ternary op"),
@@ -1334,13 +1283,16 @@ mod dwrt_tests {
 
     #[test]
     fn d_clamp_saturates() {
-        // d/dx clamp(x·x, 0, 10): 2x inside, 0 once saturated.
+        // d/dx clamp(x·x, 0, 10): 2x inside, 0 once saturated. `clamp` is
+        // library, so this is the min/max composition and the derivative comes
+        // from the min/max rules — no clamp-specific rule exists any more.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let zero = a.push_const(0.0);
         let ten = a.push_const(10.0);
         let xx = a.push_binary(OpKind::Mul, x, x);
-        let e = a.push_ternary(OpKind::Clamp, xx, zero, ten);
+        let floored = a.push_binary(OpKind::Max, xx, zero);
+        let e = a.push_binary(OpKind::Min, floored, ten);
         let (out, root) = lowered_derivative(&a, e, 0);
         assert_close(eval(&out, root, &[2.0, 0.0, 0.0, 0.0]), 4.0, &[2.0, 0.0, 0.0, 0.0]);
         assert_close(eval(&out, root, &[5.0, 0.0, 0.0, 0.0]), 0.0, &[5.0, 0.0, 0.0, 0.0]);

@@ -325,11 +325,14 @@ mod piecewise_tests {
 
     #[test]
     fn d_clamp_saturates() {
-        // d/dx clamp(x·x, 0, 10): 2x inside, 0 saturated.
+        // d/dx clamp(x·x, 0, 10): 2x inside, 0 saturated. `clamp` is library,
+        // so this is its min/max composition and the derivative falls out of
+        // the min/max rules — there is no clamp-specific rule to exercise.
         let mut a = ExprArena::new();
-        let e = arena_pat!(&mut a, tern OpKind::Clamp,
-            (bin OpKind::Mul, (var 0), (var 0)),
-            (cst 0.0),
+        let e = arena_pat!(&mut a, bin OpKind::Min,
+            (bin OpKind::Max,
+                (bin OpKind::Mul, (var 0), (var 0)),
+                (cst 0.0)),
             (cst 10.0));
         let (out, root) = differentiate(&a, e, 0);
         assert_close(eval(&out, root, &[2.0, 0.0, 0.0, 0.0]), 4.0, &[2.0, 0.0, 0.0, 0.0]);
