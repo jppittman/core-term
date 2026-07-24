@@ -96,7 +96,6 @@ define_op!(37, Ne, "ne", 2, BinaryMethod);
 
 // --- Control Flow ---
 define_op!(38, Select, "select", 3, TernaryMethod);
-define_op!(39, Clamp, "clamp", 3, TernaryMethod);
 
 // --- Structure ---
 define_op!(40, Tuple, "tuple", 0, Special);
@@ -129,7 +128,7 @@ define_op!(51, RawGather, "raw_gather", 2, Special);
 define_op!(52, Reduce, "reduce", 4, Special);
 
 /// Total number of operations. Must equal [`crate::kind::OpKind::COUNT`].
-pub const OP_COUNT: usize = 53;
+pub const OP_COUNT: usize = 52;
 
 /// All operations in the IR, indexed by their INDEX constant.
 ///
@@ -174,7 +173,6 @@ pub const ALL_OPS: [&'static dyn OpMeta; OP_COUNT] = [
     &Eq,
     &Ne,
     &Select,
-    &Clamp,
     &Tuple,
     &TruncToInt,
     &IntToFloat,

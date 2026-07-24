@@ -828,15 +828,6 @@ pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c:
             emit_addps(code, dst, c);
         }
 
-        OpKind::Clamp => {
-            // max(min(a, c), b)
-            if dst.0 != a.0 {
-                emit_sse_rr(code, None, &[0x0F, 0x28], dst, a);
-            }
-            emit_minps(code, dst, c);
-            emit_maxps(code, dst, b);
-        }
-
         _ => panic!("x86_64 ternary emit not implemented for {:?}", op),
     }
 }

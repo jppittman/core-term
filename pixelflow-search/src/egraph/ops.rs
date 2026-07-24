@@ -134,7 +134,6 @@ define_op!(Ne);
 
 // === Control Flow ===
 define_op!(Select);
-define_op!(Clamp);
 
 // === Aggregates ===
 define_op!(Tuple);
@@ -189,7 +188,6 @@ pub fn op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
         OpKind::Eq => Some(&Eq),
         OpKind::Ne => Some(&Ne),
         OpKind::Select => Some(&Select),
-        OpKind::Clamp => Some(&Clamp),
         OpKind::Tuple => Some(&Tuple),
         // Autodiff operator: lives in the e-graph, rewritten by the chain rule.
         OpKind::Dwrt => Some(&Dwrt),

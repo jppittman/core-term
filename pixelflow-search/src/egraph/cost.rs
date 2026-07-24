@@ -77,7 +77,6 @@ pub const LATENCY_PRIOR_CYCLES: [usize; OpKind::COUNT] = [
     3,  // Eq
     3,  // Ne
     4,  // Select
-    6,  // Clamp - 2x compare + select
     0,  // Tuple - free (structural)
     // Bit-manip primitives: single cheap integer/convert instructions.
     1, // TruncToInt - cvttps2dq
@@ -311,7 +310,6 @@ impl CostModel {
             "eq" => OpKind::Eq,
             "ne" => OpKind::Ne,
             "select" => OpKind::Select,
-            "clamp" => OpKind::Clamp,
             "tuple" => OpKind::Tuple,
             _ => panic!("CostModel::cost_by_name: unknown op name {name:?}"),
         };

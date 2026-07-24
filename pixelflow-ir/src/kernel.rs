@@ -411,10 +411,17 @@ impl Kernel {
     pub fn select(&self, if_true: &Kernel, if_false: &Kernel) -> Self {
         self.combine3(if_true, if_false, OpKind::Select)
     }
-    /// `clamp(self, lo, hi)`.
+    /// `clamp(self, lo, hi)` = `min(max(self, lo), hi)`.
+    ///
+    /// Library, not a primitive: this builds the composition it denotes, so
+    /// there is exactly one definition of clamping and every tier evaluates
+    /// the same nodes. (It used to be an IR node that three backends and the
+    /// e-graph's derivative rule each re-decomposed by hand, and they
+    /// disagreed on degenerate `lo > hi` bounds.) Passing `lo > hi` yields
+    /// `hi`, as the composition says.
     #[must_use]
     pub fn clamp(&self, lo: &Kernel, hi: &Kernel) -> Self {
-        self.combine3(lo, hi, OpKind::Clamp)
+        self.max(lo).min(hi)
     }
 
     // ───────────────────────── composition ────────────────────────

@@ -59,7 +59,6 @@ pub enum OpKind {
 
     // --- Control Flow ---
     Select = 38,
-    Clamp = 39,
 
     // --- Structure ---
     Tuple = 40,
@@ -122,7 +121,7 @@ pub enum OpKind {
 
 impl OpKind {
     /// Total number of operations.
-    pub const COUNT: usize = 53;
+    pub const COUNT: usize = 52;
 
     /// Monoid identity for an op usable as a reduction combiner
     /// (`Add`→0, `Mul`→1, `Min`→+∞, `Max`→−∞). `None` if `self` is not a valid
@@ -221,7 +220,7 @@ impl OpKind {
             | Self::Dwrt
             | Self::RawGather => 2,
 
-            Self::MulAdd | Self::Select | Self::Clamp | Self::Gather => 3,
+            Self::MulAdd | Self::Select | Self::Gather => 3,
 
             // N-ary: [combiner, reduce_var, extent, body].
             Self::Reduce => 4,
@@ -271,7 +270,6 @@ impl OpKind {
             Self::Eq => "eq",
             Self::Ne => "ne",
             Self::Select => "select",
-            Self::Clamp => "clamp",
             Self::Tuple => "tuple",
             Self::TruncToInt => "trunc_to_int",
             Self::IntToFloat => "int_to_float",
@@ -331,7 +329,6 @@ impl OpKind {
             "eq" => Some(Self::Eq),
             "ne" => Some(Self::Ne),
             "select" => Some(Self::Select),
-            "clamp" => Some(Self::Clamp),
             "tuple" => Some(Self::Tuple),
             "trunc_to_int" => Some(Self::TruncToInt),
             "int_to_float" => Some(Self::IntToFloat),
@@ -372,7 +369,7 @@ impl OpKind {
             | Self::Eq
             | Self::Ne
             | Self::Select
-            | Self::Clamp => 4,
+            => 4,
             Self::Mul | Self::MulAdd | Self::Recip | Self::Rsqrt => 5,
             // Bit-manip primitives: single cheap integer/convert instructions.
             Self::TruncToInt
@@ -544,7 +541,7 @@ impl OpKind {
             Self::Reduce => EmitStyle::Special,
 
             // Ternary method: (a).mul_add(b, c)
-            Self::MulAdd | Self::Select | Self::Clamp => EmitStyle::TernaryMethod,
+            Self::MulAdd | Self::Select => EmitStyle::TernaryMethod,
         }
     }
 
@@ -625,13 +622,6 @@ impl OpKind {
         match self {
             Self::MulAdd => Some(x * y + z),
             Self::Select => Some(if x != 0.0 { y } else { z }),
-            Self::Clamp => {
-                // Guard against degenerate clamp where min > max
-                // (can arise from e-graph extraction with swapped bounds).
-                let lo = y.min(z);
-                let hi = y.max(z);
-                Some(x.clamp(lo, hi))
-            }
             _ => None,
         }
     }
