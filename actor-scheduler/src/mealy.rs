@@ -39,7 +39,7 @@
 //! message back. No coroutine, no `async`, no program counter — just a self-edge.
 
 use crate::HandlerError;
-use crate::lifecycle::PodPhase;
+use crate::lifecycle::Exit;
 use crate::spsc::{SpscSender, TryRecvError, TrySendError};
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ pub enum Step {
     /// No input available. Nothing to do until a message arrives.
     Idle,
     /// Terminal. The actor is done and should be removed (and possibly restarted).
-    Halted(PodPhase),
+    Halted(Exit),
 }
 
 /// The scheduler side of one actor: the machine, its inbox, its wiring, and its outbox.
@@ -250,13 +250,13 @@ where
             None => match self.inbox.take() {
                 Ok(input) => input,
                 Err(TryRecvError::Empty) => return Step::Idle,
-                Err(TryRecvError::Disconnected) => return Step::Halted(PodPhase::Completed),
+                Err(TryRecvError::Disconnected) => return Step::Halted(Exit::Completed),
             },
         };
 
         let mut out = match self.actor.step(input) {
             Ok(out) => out,
-            Err(HandlerError::Recoverable(msg)) => return Step::Halted(PodPhase::Failed(msg)),
+            Err(HandlerError::Recoverable(msg)) => return Step::Halted(Exit::Failed(msg)),
             Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
         };
         self.steps += 1;
@@ -690,7 +690,7 @@ mod tests {
         );
 
         drop(tx_in);
-        assert_eq!(node.poll(), Step::Halted(PodPhase::Completed));
+        assert_eq!(node.poll(), Step::Halted(Exit::Completed));
     }
 
     #[test]
@@ -720,7 +720,7 @@ mod tests {
         tx_in.try_send(1).unwrap();
         assert_eq!(
             node.poll(),
-            Step::Halted(PodPhase::Failed("boom".into())),
+            Step::Halted(Exit::Failed("boom".into())),
             "a failed transition reports the failure"
         );
         assert!(

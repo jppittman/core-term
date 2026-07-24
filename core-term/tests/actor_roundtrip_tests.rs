@@ -903,7 +903,7 @@ fn pty_writer_completes_on_handle_drop() {
         }
     };
 
-    assert_eq!(phase, actor_scheduler::PodPhase::Completed);
+    assert_eq!(phase, actor_scheduler::Exit::Completed);
     assert_eq!(probe.received, vec![WriterEvent::Write(b"last words".to_vec())]);
 }
 

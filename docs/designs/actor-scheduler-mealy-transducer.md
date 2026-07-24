@@ -187,22 +187,49 @@ The actor is logical. Where it runs is a separate, one-line decision on the *sam
 
 | Placement | Mechanism | Use for |
 |-----------|-----------|---------|
-| **Multiplexed** (default) | Cooperative on a shared worker; the actor step is the quantum | The common case; cheap, no thread |
+| **Green** (default) | Owned by a host actor; the step is the quantum | The common case; cheap, no thread |
 | **Dedicated thread** | Own OS thread, kernel-preempted | Blocking-in-`park` (epoll, platform loop) or latency-critical |
 | **Own process** | Separate address space, kernel-preempted, fault-isolated, `SIGSTOP`-pausable | CPU-heavy or untrusted (e.g. a compiler actor) |
 
 Rules that fall out:
-- A multiplexed actor **may not block** — not in a handler, not in `park`. Blocking on the OS
-  forces the dedicated tier. (This is why `park` stays: it is the OS-bridge hook for that tier.)
-- Preemption granularity is the process/thread, never the multiplexed green actor. Anything that
-  needs real preemption gets its own thread or process. A signal nudges a worker to yield at
-  step boundaries; it cannot interrupt a handler mid-body (nor should it need to).
+- A green actor **may not block** — not in a handler, not in `park`. Blocking on the OS forces
+  the dedicated tier. (This is why `park` stays: it is the OS-bridge hook for that tier.)
+- Preemption granularity is the process/thread, never the green actor. Anything that needs real
+  preemption gets its own thread or process. A signal nudges a worker to yield at step
+  boundaries; it cannot interrupt a handler mid-body (nor should it need to).
+
+### 5.1 The two tiers compose by self-hosting
+
+The green tier is not a second runtime. A **host** is an ordinary `Actor`, run by the ordinary
+`ActorScheduler` on an ordinary OS thread; what makes it a worker is that its `park` sweeps a
+set of green `Node`s instead of bridging to the OS. The existing scheduler is kept, not
+replaced — it is the thing the green tier runs *on*.
+
+`Actor::park` already returns `ActorStatus`, and the scheduler already honours it, so the
+important behavior is free: the host returns `Busy` while any green actor ran (the scheduler
+keeps sweeping without blocking) and `Idle` once they are all quiet (the scheduler blocks on the
+doorbell and **the thread sleeps at 0% CPU**). That contract was in the trait all along.
+
+### 5.2 Ownership, not migration
+
+A host *owns* its green actors; they never move to another thread. The measured win (§7.1) comes
+from co-locating a pipeline so a message walks it in one sweep with no cross-thread hop — a
+shared run queue that could pull a green actor onto any worker would trade that away for load
+balancing nothing has yet asked for. Sweep order is adoption order, so adopting in the
+topological order `Topology::validate` returns makes one sweep push a message the whole length
+of a pipeline.
+
+Ownership also buys a smaller API: a green actor that never migrates is never sent between
+threads, so **it needs no `Send` bound** and may hold `Rc`, `RefCell`, or a pointer into a
+thread-local arena. A host is therefore built where it runs. If a shared pool is ever added for
+genuinely independent work, `Send` is exactly the bound that separates the two — the type
+carries the distinction, not a convention.
 
 The out-of-process tier carries no transport machinery here, deliberately. The actors that want
 process isolation (a compiler actor) are low-rate — source in, artifact out — so ordinary
 messaging suffices. A shared-memory transport was considered and dropped (§8).
 
-### 5.1 The System lane is the reactor
+### 5.3 The System lane is the reactor
 
 Wake, Shutdown, IO readiness, and timers are all System-priority events sharing one park point
 (`epoll_wait` / `kqueue`). Priority ordering is unaffected — it is applied when lanes are
@@ -228,7 +255,8 @@ tests over transition tables.
 | Typed-handle macro retargets generated calls from *ring send* to *output-port assignment* | `actor-scheduler-macros` |
 | Scheduler owns staging + partial flush + park-on-full; wake on ring-not-full | `actor-scheduler/src/lib.rs` |
 | `poll_once` removed from the public API | `actor-scheduler/src/lib.rs` |
-| Supervisor (restart/frequency-gate) survives as a plain concern, decoupled from scheduling | `actor-scheduler/src/kubelet.rs` (to be de-Kubernetes-ified) |
+| Kubelet / `PodSlot` registry / `ServiceHandle` deleted; `PodPhase` → `Exit` (two variants, both actually returned) | removed |
+| `Host`: an `Actor` whose `park` sweeps owned green `Node`s, `Busy`/`Idle` driving the thread | `actor-scheduler/src/host.rs` |
 
 ### 7.1 Measured (2026-07-24)
 
@@ -268,6 +296,17 @@ This design was reached by deletion. Recorded so it is not re-derived:
   threaded parameter; the return reads as more transparent (effects-as-values).
 - **A yield macro** — the self-port already yields; the type shape already forces frequent
   yielding. Nothing to enforce.
+- **The Kubernetes supervision machinery** (`Kubelet`, `PodSlot`/`PodRegistry`, `ServiceHandle`,
+  `RestartPolicy`, `PodPhase`'s unreachable phases) — ~1 500 lines implementing a cluster
+  metaphor for a handful of in-process actors. Deleted outright rather than renamed: the restart
+  policy and frequency gate can return as a plain supervisor reading `Host::exits()` when
+  something actually needs restarting. `PodPhase` survives as `Exit` with only the two variants
+  `run` can return.
+- **A shared work-stealing run queue for green actors** — the obvious way to balance load, and
+  the wrong default here. The measured win is *locality* (§7.1): co-locating a pipeline removes
+  the cross-thread hop entirely. A shared queue reintroduces that hop for any edge whose
+  endpoints land on different workers, and on a serially-dependent chain there is no parallelism
+  to win back. Deferred until a workload shows real imbalance; ownership stays the default.
 - **A shared-memory cross-process transport** (`Shared<T>` relative pointers, a `ShmSafe`
   marker bounding cross-process channels, an shm arena + alloc macro) — real, and it would
   have kept the rings fast across an address-space boundary. Dropped because nothing needs it:
@@ -294,5 +333,6 @@ Each removal made the primitive more opinionated, not less capable. That is the 
   messages per input (which would make that port carry a collection).
 - [ ] **`park` for the time-driven tier.** Timer ticks are just input symbols; confirm `park` on
   the dedicated tier is the right place to synthesise them.
-- [ ] **De-Kubernetes-ify the supervisor.** What the restart/frequency-gate logic is called and
-  where it lives once "kubelet/pod" vocabulary is gone.
+- [ ] **Waking a host from outside.** A host sleeps on its doorbell, so something must ring it
+  when a green actor's inbox is fed from another thread. Today that is a message on the host's
+  own data lane, routed by `handle_data`. The System-lane reactor (§5.3) is the real answer.
