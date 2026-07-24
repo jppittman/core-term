@@ -107,7 +107,7 @@ pub use lifecycle::Exit;
 pub use params::SchedulerParams;
 
 // Re-export macros from the proc-macro crate
-pub use actor_scheduler_macros::{actor_impl, troupe};
+pub use actor_scheduler_macros::{actor_impl, ports, troupe};
 
 use sharded::{InboxBuilder, ShardedInbox};
 use spsc::SpscSender;

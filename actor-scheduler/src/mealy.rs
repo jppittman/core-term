@@ -124,6 +124,24 @@ pub fn send_port<T>(port: &mut Option<T>, tx: &SpscSender<T>) -> Flush {
     }
 }
 
+/// Deliver one port, **discarding** the message if the target is full.
+///
+/// The runtime half of [`Topology::droppable_edge`]. This never returns [`Flush::Blocked`],
+/// so it can never park its producer — which is exactly what makes a droppable edge legal as
+/// the closing edge of a cycle (§3.1 of the design).
+///
+/// Use it for data that is only worth delivering if it is still current — "drop this frame if
+/// the display is busy" — and never for anything a consumer must not miss. Silence on a full
+/// ring is the whole point, and also the whole risk.
+pub fn send_port_droppable<T>(port: &mut Option<T>, tx: &SpscSender<T>) -> Flush {
+    if let Some(msg) = port.take() {
+        // Full and Disconnected are the same outcome here: nobody is taking this message, and
+        // a droppable port discards rather than waiting.
+        drop(tx.try_send(msg));
+    }
+    Flush::Done
+}
+
 /// Combine port outcomes: blocked if any port is blocked.
 #[must_use]
 pub fn all(outcomes: impl IntoIterator<Item = Flush>) -> Flush {
@@ -672,6 +690,34 @@ mod tests {
             delivered >= 3,
             "write port should have kept flowing past the engine ring's capacity, got {delivered}"
         );
+    }
+
+    #[test]
+    fn a_droppable_port_never_blocks_and_never_keeps_a_message() {
+        // The runtime half of `Topology::droppable_edge`: because it cannot park its
+        // producer, it cannot take part in a deadlock, which is what lets it close a cycle.
+        let (tx, mut rx) = spsc_channel::<Render>(2);
+
+        let mut delivered = 0;
+        for i in 0..32u8 {
+            let mut port = Some(Render(i));
+            assert_eq!(send_port_droppable(&mut port, &tx), Flush::Done);
+            assert!(port.is_none(), "a droppable port always clears");
+            if rx.try_recv().is_ok() {
+                delivered += 1;
+            }
+        }
+        assert!(delivered > 0, "some messages must actually get through");
+    }
+
+    #[test]
+    fn a_droppable_port_to_a_dead_target_is_still_done() {
+        let (tx, rx) = spsc_channel::<Render>(4);
+        drop(rx);
+
+        let mut port = Some(Render(1));
+        assert_eq!(send_port_droppable(&mut port, &tx), Flush::Done);
+        assert!(port.is_none());
     }
 
     #[test]

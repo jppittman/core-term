@@ -280,6 +280,8 @@ tests over transition tables.
 | Kubelet / `PodSlot` registry / `ServiceHandle` deleted; `PodPhase` → `Exit` (two variants, both actually returned) | removed |
 | `Host`: an `Actor` whose `park` sweeps owned green `Node`s, `Busy`/`Idle` driving the thread | `actor-scheduler/src/host.rs` |
 | `Waker` + `GreenSender`/`green_channel`: push-then-wake, so a green actor can be fed from another thread | `actor-scheduler/src/lib.rs`, `host.rs` |
+| `ports!` generating the output word + wiring + flush from a port declaration | `actor-scheduler-macros/src/lib.rs` |
+| `send_port_droppable`: the runtime half of a droppable edge | `actor-scheduler/src/mealy.rs` |
 
 ### 7.1 Measured (2026-07-24)
 
@@ -297,6 +299,30 @@ Caveat both ways: the transducer arm needs no waker because the actors are co-lo
 multi-worker runtime will add some back; and the stages are cheap, so this measures coordination
 overhead, not parallel speedup. It argues for co-locating cheap actors, not for abolishing
 threads.
+
+### 7.2 `ports!`
+
+The output word and its wiring are pure boilerplate, and one of them is quietly dangerous: a
+port omitted from a hand-written `flush` is a message that vanishes with no error anywhere.
+`ports!` generates both from a declaration:
+
+```rust
+ports! {
+    App {
+        engine: Render,        // blocking: parks the actor when full
+        write: Echo [drop],    // droppable: discards when full, never parks
+        again: u32 [self],     // continuation: goes to the slot, not the wiring
+    }
+}
+```
+
+The port kinds are exactly the three delivery disciplines §3.1 needs, so the DAG rule becomes
+something an actor *declares* rather than something a reviewer has to notice. A `[self]` port
+gets **no wiring field at all** — a continuation cannot be attached to a queue even by
+mistake, and the generated `flush` `debug_assert!`s that the scheduler lifted it first.
+
+More than one `[self]` port is a compile-time panic, because the continuation slot holds
+exactly one message.
 
 Recommended first step: prove the runtime **before** touching the macro. Hand-write one actor in
 the `handle → Out struct` form that fans out and parks on a full downstream ring, and confirm the
