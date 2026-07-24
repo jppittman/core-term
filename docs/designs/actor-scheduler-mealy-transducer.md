@@ -97,8 +97,21 @@ return. The scheduler runs everyone else, comes back, feeds you your own message
 on the next step. That is the "yield on send" this design chased for weeks — with no coroutine,
 no `async`, no `pc`. It is a self-edge in the machine. Cooperative yield is an ordinary output.
 
-Open question (§9): whether the self-port is a *named verb* in the macro or just "a port that
-happens to point home."
+**The continuation slot.** A self-edge routed through a *queue* deadlocks the moment that queue
+fills: the only actor that can drain it is the one parked on writing to it. Making the queue
+unbounded does not fix this — *there is no such thing as an unbounded queue, only a queue whose
+bound you have not written down.* So the self-port does not go through `Wiring` at all. The
+scheduler lifts it out of the output word into a dedicated slot of capacity **one**, drained
+before the inbox:
+
+- a step consumes at most one continuation and produces at most one (the output word has a
+  single slot per port), and
+- the slot is emptied immediately before the step that could refill it.
+
+So the slot can never be full when written, can never block, and can never park. The bound is
+one message, and it is written down. Draining continuation-first also means a machine finishes
+the work unit it started before accepting new work, which bounds half-finished computations at
+one.
 
 ---
 
@@ -115,6 +128,34 @@ The scheduler is the only thing that sends. On each step it:
    backpressure: an actor cannot outrun its slowest consumer; it just parks).
 5. On `Err(e)`, runs the existing error/restart path. `Err` carries no output — "emit *and*
    warn" is a message variant, not an error. The mutual exclusion keeps a step legible.
+
+### 3.1 Blocking edges must form a DAG
+
+The self-edge is the degenerate case of a general hazard: two actors that can each block
+sending to the other deadlock the same way. A is parked because B's inbox is full, B is parked
+because A's inbox is full, and the only actor that can drain either inbox is the one parked on
+the other. Bounded dataflow networks call this *artificial deadlock*; the classical fix (Parks
+1995 — detect global deadlock at runtime, then grow the smallest blocked buffer) buys generality
+at the price of a runtime deadlock detector and buffers that silently grow. Growing the buffer
+is just declining to write the bound down again.
+
+A static topology does not need to pay that. The graph is known before anything runs, so the
+cycle is rejected at bootstrap by a topological sort — no runtime cost, no detector, no growth:
+
+> **Blocking edges must form a DAG. A cycle may only be closed by an edge that cannot block.**
+
+Two edges cannot block, and so are exempt:
+- the **continuation** (§2.3), which has a dedicated one-message slot;
+- a **droppable** edge, which discards on a full target instead of parking — the "drop this
+  frame if the display is busy" policy, which belongs on the Data lane anyway.
+
+Request/response therefore remains expressible: the reply edge is droppable, or credit-bounded
+(the requester never has more outstanding requests than the reply ring holds, so the reply can
+never find it full). The validator returns the topological order as a by-product, which is also
+the right polling order — upstream first drains a pipeline in one sweep instead of trickling one
+message per pass.
+
+### 3.2 Waking
 
 The resume trigger is the existing wake ("target ring not-full" → wake the parked sender), which
 is a doorbell event on the **System lane** — the same lane that carries Wake/Shutdown, and the
@@ -189,6 +230,23 @@ tests over transition tables.
 | `poll_once` removed from the public API | `actor-scheduler/src/lib.rs` |
 | Supervisor (restart/frequency-gate) survives as a plain concern, decoupled from scheduling | `actor-scheduler/src/kubelet.rs` (to be de-Kubernetes-ified) |
 
+### 7.1 Measured (2026-07-24)
+
+The prototype (`actor-scheduler/src/mealy.rs`) is benchmarked against the existing path in
+`docs/results/2026-07-24-mealy-vs-actor.md`:
+
+- **Dispatch** (one actor, one thread, same work): ~24 ns → ~13 ns per message, **1.8× faster**.
+  Returning output instead of sending it is not a tax — a step skips the `Message` wrapping,
+  the doorbell, the burst-limited drain loop, and the per-wake `park()`.
+- **Three-stage pipeline** at 100 k messages: ~112 ns → ~17 ns per message, **6.5×**, by
+  collapsing three OS threads onto one worker polled in topological order. The two cross-thread
+  hops cost ~95 ns/message of pure coordination.
+
+Caveat both ways: the transducer arm needs no waker because the actors are co-located, so a
+multi-worker runtime will add some back; and the stages are cheap, so this measures coordination
+overhead, not parallel speedup. It argues for co-locating cheap actors, not for abolishing
+threads.
+
 Recommended first step: prove the runtime **before** touching the macro. Hand-write one actor in
 the `handle → Out struct` form that fans out and parks on a full downstream ring, and confirm the
 scheduler stages, partial-flushes, and resumes it correctly. Then generate that shape.
@@ -226,7 +284,11 @@ Each removal made the primitive more opinionated, not less capable. That is the 
 ## 9. Open questions
 
 - [ ] **Self-port as a named verb?** First-class `yield`/continuation syntax in the macro, or
-  just "a port that points home." Vocabulary vs. emergent trick.
+  just "a port that points home." Vocabulary vs. emergent trick. (The runtime already treats it
+  as distinct — it has its own slot — which argues for naming it.)
+- [ ] **Credit-bounded edges.** The DAG rule admits droppable edges as cycle-closers; a
+  credit-bounded reply edge is the other legal form, but the topology cannot currently express
+  "this requester is limited to N outstanding" so the validator cannot check it.
 - [ ] **Burst cardinality.** A port fires at most once per step; bursts batch into one message
   (`ScreenOps(batch)`). Confirm no actor needs a port to emit a *variable number of distinct*
   messages per input (which would make that port carry a collection).
