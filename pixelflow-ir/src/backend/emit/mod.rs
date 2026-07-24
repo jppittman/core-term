@@ -535,13 +535,10 @@ fn emit_arena(arena: &ExprArena, id: ExprId, depth: u8) -> Result<(Vec<u8>, Reg)
                 (code, r, l)
             };
 
-            match op {
-                OpKind::Atan2 | OpKind::Pow | OpKind::Hypot => {
-                    let scratch = [Reg(12), Reg(13), Reg(14), Reg(15)];
-                    x86_64::emit_binary_transcendental(&mut code, *op, dst, src1, src2, scratch);
-                }
-                _ => emit_binary(&mut code, *op, dst, src1, src2),
-            }
+            // Every transcendental is expanded to arithmetic by
+            // `expand_transcendentals` before codegen, so only primitives
+            // reach here.
+            emit_binary(&mut code, *op, dst, src1, src2);
             Ok((code, dst))
         }
 
@@ -3116,13 +3113,12 @@ fn emit_instruction_plan(
             dst,
             left,
             right,
-        } => match op {
-            OpKind::Pow | OpKind::Hypot | OpKind::Atan2 => {
-                let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
-                aarch64::emit_binary_transcendental(code, pool, *op, *dst, *left, *right, scratch)?;
-            }
-            _ => emit_binary(code, *op, *dst, *left, *right),
-        },
+        } => {
+            // Every transcendental is expanded to arithmetic by
+            // `expand_transcendentals` before codegen, so only primitives
+            // reach here.
+            emit_binary(code, *op, *dst, *left, *right);
+        }
         ResolvedOp::FusedMulAdd { dst, a, b } => {
             // setup_mov already placed c into dst
             emit_fmla(code, *dst, *a, *b);
@@ -3508,12 +3504,7 @@ impl IsaBackend for X86Backend {
                 dst,
                 left,
                 right,
-            } => match op {
-                OpKind::Atan2 | OpKind::Pow | OpKind::Hypot => {
-                    emit_binary_transcendental(code, *op, *dst, *left, *right, X86_BUILTIN_SCRATCH);
-                }
-                _ => emit_binary_safe(code, *op, *dst, *left, *right),
-            },
+            } => emit_binary_safe(code, *op, *dst, *left, *right),
             ResolvedOp::Select {
                 dst,
                 if_true,
@@ -5123,12 +5114,6 @@ mod tests {
                 &[-2.4, -0.4, 0.4, 1.5, 2.6],
                 1e-6,
             ),
-            (
-                OpKind::Fract,
-                |x| x - x.floor(),
-                &[-2.3, 0.1, 0.9, 3.75],
-                1e-5,
-            ),
             // sin/cos: 4-term Chebyshev — accurate well inside [-π, π].
             (
                 OpKind::Sin,
@@ -5259,12 +5244,15 @@ mod tests {
                 assert!(err <= 5e-3, "pow({xv},{yv}): {got} vs {want} err={err}");
             }
         }
-        // hypot(X, Y)
+        // hypot(X, Y) — the sqrt(x² + y²) composition it denotes.
         {
             let mut a = ExprArena::new();
             let x = a.push_var(0);
             let y = a.push_var(1);
-            let root = a.push_binary(OpKind::Hypot, x, y);
+            let xx = a.push_binary(OpKind::Mul, x, x);
+            let yy = a.push_binary(OpKind::Mul, y, y);
+            let sum = a.push_binary(OpKind::Add, xx, yy);
+            let root = a.push_unary(OpKind::Sqrt, sum);
             for &(xv, yv) in &[(3.0f32, 4.0f32), (1.0, 1.0), (0.0, 2.0)] {
                 let got = unsafe { run2(&a, root, xv, yv) };
                 let want = xv.hypot(yv);

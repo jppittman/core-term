@@ -358,7 +358,7 @@ pub fn find_hoistable_arena_nodes(
             ExprNode::Unary(_, _) => 1,
             ExprNode::Binary(op, _, _) => match *op {
                 OpKind::Div => 2, // Division is expensive
-                OpKind::Pow | OpKind::Atan2 | OpKind::Hypot => 3,
+                OpKind::Pow | OpKind::Atan2 => 3,
                 _ => 1, // Add, Sub, Mul are cheap
             },
             _ => 1,

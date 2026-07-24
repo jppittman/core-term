@@ -820,10 +820,17 @@ impl EGraphContext {
                         op: &ops::Round,
                         children: vec![receiver],
                     }),
-                    "fract" => self.egraph.add(ENode::Op {
-                        op: &ops::Fract,
-                        children: vec![receiver],
-                    }),
+                    // Library: fract(x) = x - floor(x).
+                    "fract" => {
+                        let f = self.egraph.add(ENode::Op {
+                            op: &ops::Floor,
+                            children: vec![receiver],
+                        });
+                        self.egraph.add(ENode::Op {
+                            op: &ops::Sub,
+                            children: vec![receiver, f],
+                        })
+                    }
                     "sin" => self.egraph.add(ENode::Op {
                         op: &ops::Sin,
                         children: vec![receiver],
@@ -898,11 +905,24 @@ impl EGraphContext {
                             children: vec![receiver, arg],
                         })
                     }
+                    // Library: hypot(x, y) = sqrt(x² + y²).
                     "hypot" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
+                        let xx = self.egraph.add(ENode::Op {
+                            op: &ops::Mul,
+                            children: vec![receiver, receiver],
+                        });
+                        let yy = self.egraph.add(ENode::Op {
+                            op: &ops::Mul,
+                            children: vec![arg, arg],
+                        });
+                        let sum = self.egraph.add(ENode::Op {
+                            op: &ops::Add,
+                            children: vec![xx, yy],
+                        });
                         self.egraph.add(ENode::Op {
-                            op: &ops::Hypot,
-                            children: vec![receiver, arg],
+                            op: &ops::Sqrt,
+                            children: vec![sum],
                         })
                     }
 

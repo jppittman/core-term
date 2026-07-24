@@ -123,7 +123,6 @@ impl ExprGenerator {
             OpKind::Max => 6,
             OpKind::Min => 4,
             OpKind::Pow => 4,
-            OpKind::Fract => 4,
             OpKind::Floor => 3,
             OpKind::Sqrt => 4,
             OpKind::Exp => 3,
@@ -139,7 +138,6 @@ impl ExprGenerator {
             OpKind::Atan2 => 1,
             OpKind::Asin => 1,
             OpKind::Acos => 1,
-            OpKind::Hypot => 1,
             OpKind::Ceil => 1,
             OpKind::Round => 1,
             _ => 0,
@@ -676,6 +674,11 @@ impl BwdGenerator {
             /// children are already on the results stack at combine time, so
             /// the guard is applied here in post-order.
             PowGuardBase,
+            /// Hypot — pop left then right, push `sqrt(a² + b²)`. `hypot` is
+            /// library, not an op, so the corpus generates the composition it
+            /// denotes; the sampled expressions are the same mathematics the
+            /// generator always covered, now in primitives.
+            Hypot,
             /// Unary op — pop one child, no guard.
             Unary(OpKind),
             /// Unary op — pop one child, apply `guard_positive_nonzero`, then push op.
@@ -770,7 +773,7 @@ impl BwdGenerator {
                             work.push(WorkItem::Decide { depth: depth + 1 }); // raw_base
                         }
                         9 => {
-                            work.push(WorkItem::Combine(Combine::Binary(OpKind::Hypot)));
+                            work.push(WorkItem::Combine(Combine::Hypot));
                             work.push(WorkItem::Decide { depth: depth + 1 }); // b
                             work.push(WorkItem::Decide { depth: depth + 1 }); // a
                         }
@@ -851,6 +854,14 @@ impl BwdGenerator {
                             let b = results.pop().expect("BUG: missing right child for Binary");
                             let a = results.pop().expect("BUG: missing left child for Binary");
                             self.arena.push_binary(op, a, b)
+                        }
+                        Combine::Hypot => {
+                            let b = results.pop().expect("BUG: missing right child for Hypot");
+                            let a = results.pop().expect("BUG: missing left child for Hypot");
+                            let aa = self.arena.push_binary(OpKind::Mul, a, a);
+                            let bb = self.arena.push_binary(OpKind::Mul, b, b);
+                            let sum = self.arena.push_binary(OpKind::Add, aa, bb);
+                            self.arena.push_unary(OpKind::Sqrt, sum)
                         }
                         Combine::DivGuardDenom => {
                             // Pushed order: num (left), raw_denom (right).

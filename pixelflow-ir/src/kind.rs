@@ -29,7 +29,6 @@ pub enum OpKind {
     Floor = 14,
     Ceil = 15,
     Round = 16,
-    Fract = 17,
 
     // --- Trigonometry ---
     Sin = 18,
@@ -47,7 +46,6 @@ pub enum OpKind {
     Log2 = 28,
     Log10 = 29,
     Pow = 30,
-    Hypot = 31,
 
     // --- Comparison ---
     Lt = 32,
@@ -121,7 +119,7 @@ pub enum OpKind {
 
 impl OpKind {
     /// Total number of operations.
-    pub const COUNT: usize = 52;
+    pub const COUNT: usize = 50;
 
     /// Monoid identity for an op usable as a reduction combiner
     /// (`Add`→0, `Mul`→1, `Min`→+∞, `Max`→−∞). `None` if `self` is not a valid
@@ -182,7 +180,6 @@ impl OpKind {
             | Self::Floor
             | Self::Ceil
             | Self::Round
-            | Self::Fract
             | Self::Sin
             | Self::Cos
             | Self::Tan
@@ -205,7 +202,6 @@ impl OpKind {
             | Self::Max
             | Self::Atan2
             | Self::Pow
-            | Self::Hypot
             | Self::Lt
             | Self::Le
             | Self::Gt
@@ -248,7 +244,6 @@ impl OpKind {
             Self::Floor => "floor",
             Self::Ceil => "ceil",
             Self::Round => "round",
-            Self::Fract => "fract",
             Self::Sin => "sin",
             Self::Cos => "cos",
             Self::Tan => "tan",
@@ -262,7 +257,6 @@ impl OpKind {
             Self::Log2 => "log2",
             Self::Log10 => "log10",
             Self::Pow => "pow",
-            Self::Hypot => "hypot",
             Self::Lt => "lt",
             Self::Le => "le",
             Self::Gt => "gt",
@@ -307,7 +301,6 @@ impl OpKind {
             "floor" => Some(Self::Floor),
             "ceil" => Some(Self::Ceil),
             "round" => Some(Self::Round),
-            "fract" => Some(Self::Fract),
             "sin" => Some(Self::Sin),
             "cos" => Some(Self::Cos),
             "tan" => Some(Self::Tan),
@@ -321,7 +314,6 @@ impl OpKind {
             "log2" => Some(Self::Log2),
             "log10" => Some(Self::Log10),
             "pow" | "powf" => Some(Self::Pow),
-            "hypot" => Some(Self::Hypot),
             "lt" => Some(Self::Lt),
             "le" => Some(Self::Le),
             "gt" => Some(Self::Gt),
@@ -357,7 +349,7 @@ impl OpKind {
             // Reduction is lowered (unrolled) away before costing; price the
             // node itself at zero so a stray one never dominates extraction.
             Self::Reduce => 0,
-            Self::Neg | Self::Abs | Self::Floor | Self::Ceil | Self::Round | Self::Fract => 1,
+            Self::Neg | Self::Abs | Self::Floor | Self::Ceil | Self::Round => 1,
             Self::Add
             | Self::Sub
             | Self::Min
@@ -397,8 +389,7 @@ impl OpKind {
             | Self::Ln
             | Self::Log2
             | Self::Log10
-            | Self::Pow
-            | Self::Hypot => 15,
+            | Self::Pow => 15,
         }
     }
 
@@ -492,7 +483,6 @@ impl OpKind {
             | Self::Floor
             | Self::Ceil
             | Self::Round
-            | Self::Fract
             | Self::Sin
             | Self::Cos
             | Self::Tan
@@ -517,7 +507,6 @@ impl OpKind {
             Self::Min
             | Self::Max
             | Self::Atan2
-            | Self::Hypot
             | Self::Pow
             | Self::Lt
             | Self::Le
@@ -562,7 +551,6 @@ impl OpKind {
             Self::Floor => Some(x.floor()),
             Self::Ceil => Some(x.ceil()),
             Self::Round => Some(x.round()),
-            Self::Fract => Some(x.fract()),
             Self::Sin => Some(x.sin()),
             Self::Cos => Some(x.cos()),
             Self::Tan => Some(x.tan()),
@@ -592,7 +580,6 @@ impl OpKind {
             Self::Max => Some(x.max(y)),
             Self::Atan2 => Some(x.atan2(y)),
             Self::Pow => Some(x.powf(y)),
-            Self::Hypot => Some(x.hypot(y)),
             Self::Lt => Some(if x < y { 1.0 } else { 0.0 }),
             Self::Le => Some(if x <= y { 1.0 } else { 0.0 }),
             Self::Gt => Some(if x > y { 1.0 } else { 0.0 }),

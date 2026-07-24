@@ -49,7 +49,7 @@ fn is_transcendental_unary(op: OpKind) -> bool {
 
 /// Whether `op` is a binary transcendental this pass expands.
 fn is_transcendental_binary(op: OpKind) -> bool {
-    matches!(op, OpKind::Atan2)
+    matches!(op, OpKind::Atan2 | OpKind::Pow)
 }
 
 /// Post-order rebuild of the arena reachable from `root`, one lowering pass.
@@ -509,7 +509,6 @@ fn push_deriv_children(node: &ExprNode, stack: &mut Vec<ExprId>) {
             | OpKind::Min
             | OpKind::Max
             | OpKind::Atan2
-            | OpKind::Hypot
             | OpKind::Pow => {
                 stack.push(a);
                 stack.push(b);
@@ -592,8 +591,6 @@ fn diff_node(
                     let sign = arena.push_binary(OpKind::Div, a, au);
                     Ok(d_mul(arena, sign, du))
                 }
-                // fract(u) = u − floor(u), so d = u' a.e.
-                OpKind::Fract => Ok(du),
                 OpKind::Sin => {
                     let c = arena.push_unary(OpKind::Cos, a);
                     Ok(d_mul(arena, c, du))
@@ -720,19 +717,6 @@ fn diff_node(
                 let x2 = arena.push_binary(OpKind::Mul, b, b);
                 let den = arena.push_binary(OpKind::Add, x2, y2);
                 Ok(arena.push_binary(OpKind::Div, num, den))
-            }
-            // d(hypot(a, b)) = (a·a' + b·b') / hypot(a, b).
-            OpKind::Hypot => {
-                let da = dchild(memo, a);
-                let db = dchild(memo, b);
-                let t1 = d_mul(arena, a, da);
-                let t2 = d_mul(arena, b, db);
-                let num = d_add(arena, t1, t2);
-                if is_const_zero(arena, num) {
-                    return Ok(num);
-                }
-                let h = arena.push_binary(OpKind::Hypot, a, b);
-                Ok(arena.push_binary(OpKind::Div, num, h))
             }
             // d(f^g) = f^g · (g'·ln f + g·f'/f)  (Jet2's rule).
             OpKind::Pow => {
@@ -923,6 +907,14 @@ fn expand_unary(arena: &mut ExprArena, op: OpKind, arg: ExprId) -> ExprId {
 fn expand_binary(arena: &mut ExprArena, op: OpKind, a: ExprId, b: ExprId) -> ExprId {
     match op {
         OpKind::Atan2 => expand_atan2(arena, a, b),
+        // pow(a, b) = 2^(b·log2 a) — the same identity the backends' `pow`
+        // builtins each implemented by calling their own log2/exp2 bodies.
+        // Expanding here is what lets those bodies leave the assemblers.
+        OpKind::Pow => {
+            let l = expand_log2(arena, a);
+            let scaled = arena.push_binary(OpKind::Mul, b, l);
+            expand_exp2(arena, scaled)
+        }
         _ => unreachable!("expand_binary called on non-transcendental {op:?}"),
     }
 }

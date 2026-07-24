@@ -104,7 +104,6 @@ define_op!(MulAdd);
 define_op!(Floor);
 define_op!(Ceil);
 define_op!(Round);
-define_op!(Fract);
 
 // === Trigonometry ===
 define_op!(Sin);
@@ -122,7 +121,6 @@ define_op!(Ln);
 define_op!(Log2);
 define_op!(Log10);
 define_op!(Pow);
-define_op!(Hypot);
 
 // === Comparison ===
 define_op!(Lt);
@@ -166,7 +164,6 @@ pub fn op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
         OpKind::Floor => Some(&Floor),
         OpKind::Ceil => Some(&Ceil),
         OpKind::Round => Some(&Round),
-        OpKind::Fract => Some(&Fract),
         OpKind::Sin => Some(&Sin),
         OpKind::Cos => Some(&Cos),
         OpKind::Tan => Some(&Tan),
@@ -180,7 +177,6 @@ pub fn op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
         OpKind::Log2 => Some(&Log2),
         OpKind::Log10 => Some(&Log10),
         OpKind::Pow => Some(&Pow),
-        OpKind::Hypot => Some(&Hypot),
         OpKind::Lt => Some(&Lt),
         OpKind::Le => Some(&Le),
         OpKind::Gt => Some(&Gt),
