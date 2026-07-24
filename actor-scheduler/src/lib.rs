@@ -95,6 +95,7 @@
 mod error;
 pub mod kubelet;
 mod lifecycle;
+pub mod mealy;
 mod params;
 pub mod registry;
 pub mod service;
