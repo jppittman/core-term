@@ -6,6 +6,7 @@
 use actor_scheduler::mealy::{Flush, Node, Step, Transducer, Wiring};
 use actor_scheduler::spsc::spsc_channel;
 use actor_scheduler::{Exit, HandlerError, ports};
+use std::convert::Infallible;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Fan-out to two differently-typed targets — the terminal's echo-and-draw shape
@@ -28,10 +29,12 @@ struct App {
 }
 
 impl Transducer for App {
-    type In = u8;
+    type Control = Infallible;
+    type Management = Infallible;
+    type Data = u8;
     type Out = AppOut;
 
-    fn step(&mut self, byte: u8) -> Result<AppOut, HandlerError> {
+    fn step_data(&mut self, byte: u8) -> Result<AppOut, HandlerError> {
         self.seen += 1;
         if byte == 0 {
             return Ok(AppOut::default()); // the silent transition
@@ -177,10 +180,12 @@ struct Countdown {
 }
 
 impl Transducer for Countdown {
-    type In = u32;
+    type Control = Infallible;
+    type Management = Infallible;
+    type Data = u32;
     type Out = CountdownOut;
 
-    fn step(&mut self, n: u32) -> Result<CountdownOut, HandlerError> {
+    fn step_data(&mut self, n: u32) -> Result<CountdownOut, HandlerError> {
         if n == 0 {
             self.finished = Some(0);
             return Ok(CountdownOut {
@@ -246,10 +251,12 @@ ports! {
 struct Batcher;
 
 impl Transducer for Batcher {
-    type In = u8;
+    type Control = Infallible;
+    type Management = Infallible;
+    type Data = u8;
     type Out = BatcherOut;
 
-    fn step(&mut self, byte: u8) -> Result<BatcherOut, HandlerError> {
+    fn step_data(&mut self, byte: u8) -> Result<BatcherOut, HandlerError> {
         Ok(BatcherOut {
             out: Some(vec![byte; 3]),
         })

@@ -304,6 +304,7 @@ tests over transition tables.
 | `ports!` generating the output word + wiring + flush from a port declaration | `actor-scheduler-macros/src/lib.rs` |
 | `Delivery` (`Blocking`/`Droppable`) as a `send_port` parameter — the runtime half of a droppable edge | `actor-scheduler/src/mealy.rs` |
 | `Credit`: sender-side budget that keeps a droppable request/response edge from ever actually dropping | `actor-scheduler/src/mealy.rs` |
+| `Transducer` gains `Control`/`Management`/`Data` + `step_control`/`step_management` (defaulted); `Node` gains three lanes (`Lanes`, `NoLane`, `Slot` cycle) reusing `SchedulerParams` | `actor-scheduler/src/mealy.rs` |
 
 ### 7.1 Measured (2026-07-24)
 
@@ -459,30 +460,36 @@ response? No — see §3.2. `Credit` plus the existing `Delivery::Droppable` is 
   Only the *implementation* of `Application` is erased, not the port's type — `ports!` needs
   nothing new here.
 
-### 9.5 The real gap: priority lanes do not exist in `Node`/`Transducer`
+### 9.5 Priority lanes: closed
 
-`Transducer::In` is one type; `Node` holds one inbox. There is no Control/Management/Data
-priority anywhere in the Mealy machinery, and `Host::sweep` round-robins its green nodes with no
-lane weighting either. The existing engine leans on the opposite — Control > Management > Data
-is what keeps `Quit`/resize/key-input responsive while a render is in flight, and it is core to
-the actor model as described in this repository's top-level `CLAUDE.md`. An actor migrated onto
-`Node` as it stands today would silently lose that.
+Was the real gap: `Transducer::In` was one type, `Node` held one inbox — no Control/Management/
+Data priority anywhere in the Mealy machinery, while the existing engine leans on exactly that
+ordering to keep `Quit`/resize/key-input responsive under render load.
 
-**Directive for closing this, given at the point this gap was found:** port the *existing*
-priority-drain algorithm — `ActorScheduler::handle_wake`'s half-control/management/half-control/
-data cycle with per-lane burst limits (`lib.rs`, the `DrainStatus`/`SystemStatus` machinery) —
-onto `Transducer`/`Node`, rather than designing new priority machinery from scratch. `Transducer`
-gains three input types (mirroring `ActorTypes`) and three step methods; `Node::poll` runs the
-same drain order before touching the continuation slot. This is scoped as its own follow-up, not
-bundled into the engine-mesh rewrite itself, since the engine rewrite needs it as a foundation.
+Closed by porting `ActorScheduler::handle_wake`'s drain algorithm rather than designing a new
+one, per the direction given at the point this gap was found. `Transducer` now has `Control`/
+`Management`/`Data` associated types (mirroring `ActorTypes`) and three step methods —
+`step_control`/`step_management` default to the silent transition, so a single-lane actor still
+writes one method and two `type X = Infallible;` lines, exactly as `Host` already does for its
+own `Actor` impl. `Node` holds three lanes (`RC`/`RM` default to [`NoLane`], a permanently-
+disconnected stand-in, so every existing call site — `Node::new(actor, data, wiring)` — is
+unchanged) and cycles Control(half) → Management → Control(half) → Data via a `Slot` state
+machine, reusing `SchedulerParams` verbatim for the limits.
+
+The one real translation decision: the old algorithm drains a *burst* of messages per lane per
+wake, because nothing else shares that OS thread. `Node::poll` still does at most one message
+per call — draining a burst here would let one green actor hog its `Host` for as long as its
+burst limit allowed, which is exactly what `Host::sweep`'s per-node fairness exists to prevent.
+So the same cycle is spread across many `poll()` calls instead of batched into one: the *ratio*
+of attention across lanes is preserved, the *granularity* is not.
+
+A continuation always resumes on the data lane — it is more work, not a control or management
+signal — and still bypasses the lane cycle entirely, exactly as before.
 
 ---
 
 ## 10. Open questions
 
-- [ ] **Priority lanes for `Transducer`/`Node`.** The real gap found in §9.5. Port
-  `ActorScheduler::handle_wake`'s existing drain algorithm rather than redesigning one; scoped
-  as a prerequisite for the engine-mesh rewrite, not part of it.
 - [ ] **Self-port as a named verb?** First-class `yield`/continuation syntax in the macro, or
   just "a port that points home." Vocabulary vs. emergent trick. (The runtime already treats it
   as distinct — it has its own slot — which argues for naming it.)
@@ -493,6 +500,12 @@ bundled into the engine-mesh rewrite itself, since the engine rewrite needs it a
   doorbell coalesces, so this is cheap and correct, but a parked/running flag on the host would
   let a producer skip the ring entirely while the host is already sweeping — the trick mio uses
   for its eventfd. Worth measuring before adding.
+- [ ] **`ports!` and three lanes.** The macro still only generates `Out`/`Wiring` from a port
+  declaration; it does not yet touch `Transducer`'s `Control`/`Management`/`Data` associated
+  types or the three `step_*` methods, which are still hand-written. Whether that is worth
+  generating (e.g. from an `in { control: X, management: Y, data: Z }` block) depends on how
+  verbose lane-aware actors turn out to be in practice.
 
-Resolved: credit-bounded edges (§9.3, §3.2) and timer ticks for the dedicated tier (§9.4, by
-existing precedent) — kept out of this list; see the case study for why.
+Resolved: credit-bounded edges (§9.3, §3.2), timer ticks for the dedicated tier (§9.4, by
+existing precedent), and priority lanes for `Transducer`/`Node` (§9.5) — kept out of this list;
+see the case study for why.

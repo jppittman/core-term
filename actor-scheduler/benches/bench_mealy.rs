@@ -18,6 +18,7 @@ use actor_scheduler::{
     Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
 };
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use std::convert::Infallible;
 
 const MESSAGES: [usize; 3] = [1_000, 10_000, 100_000];
 
@@ -94,10 +95,12 @@ impl Wiring for AppWiring {
 }
 
 impl Transducer for SteppingActor {
-    type In = u8;
+    type Control = Infallible;
+    type Management = Infallible;
+    type Data = u8;
     type Out = AppOut;
 
-    fn step(&mut self, byte: u8) -> Result<AppOut, HandlerError> {
+    fn step_data(&mut self, byte: u8) -> Result<AppOut, HandlerError> {
         self.seen += 1;
         Ok(AppOut {
             engine: Some(Render(byte)),
@@ -219,10 +222,12 @@ impl Wiring for ForwardWiring {
 }
 
 impl Transducer for ForwardStep {
-    type In = u8;
+    type Control = Infallible;
+    type Management = Infallible;
+    type Data = u8;
     type Out = Option<u8>;
 
-    fn step(&mut self, byte: u8) -> Result<Option<u8>, HandlerError> {
+    fn step_data(&mut self, byte: u8) -> Result<Option<u8>, HandlerError> {
         self.seen += 1;
         Ok(Some(byte.wrapping_add(1)))
     }

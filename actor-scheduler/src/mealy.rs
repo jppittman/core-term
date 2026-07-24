@@ -17,20 +17,31 @@
 //! # Status
 //!
 //! Prototype. This module proves the runtime semantics (stage → partial flush → park →
-//! resume, and self-port yield) by hand, before the `troupe!`/typed-handle macros are
-//! retargeted to generate the port structs. It is additive: the existing
-//! [`Actor`](crate::Actor) / [`ActorScheduler`](crate::ActorScheduler) path is untouched.
+//! resume, self-port yield, and Control/Management/Data priority) by hand, before the
+//! `troupe!`/typed-handle macros are retargeted to generate the port structs. It is additive:
+//! the existing [`Actor`](crate::Actor) / [`ActorScheduler`](crate::ActorScheduler) path is
+//! untouched.
 //!
 //! # The three pieces
 //!
 //! | Piece | Role |
 //! |-------|------|
-//! | [`Transducer`] | The actor: one pure step, `(state, input) → (state, output)` |
+//! | [`Transducer`] | The actor: one pure step per lane, `(state, input) → (state, output)` |
 //! | [`Wiring`] | Where the output ports go. Delivers set ports; leaves blocked ones in place |
-//! | [`Node`] | Scheduler-side: owns actor + inbox + wiring + the parked outbox |
+//! | [`Node`] | Scheduler-side: actor + three lanes + wiring + the parked outbox |
 //!
 //! Splitting `Transducer` from `Wiring` is what makes the step pure: the actor produces
 //! *values* and never holds a sender, so it is table-testable with no scheduler in the loop.
+//!
+//! # Priority
+//!
+//! `Node` drains its three lanes in the same Control > Management > Data order, with the same
+//! burst-limit ratio, as [`ActorScheduler`](crate::ActorScheduler)'s `handle_wake` — ported,
+//! not redesigned, because a green actor that needs input responsiveness under load has
+//! exactly the same starvation hazard a dedicated-thread one does. The only difference is
+//! granularity: the OS-thread scheduler drains a whole burst per wake; `Node::poll` drains one
+//! message per call, so a green actor sharing a [`Host`](crate::Host) with others never holds
+//! the worker for longer than one step.
 //!
 //! # Yielding
 //!
@@ -38,7 +49,10 @@
 //! yourself and returning lets the scheduler run everyone else before feeding you your own
 //! message back. No coroutine, no `async`, no program counter — just a self-edge.
 
+use std::marker::PhantomData;
+
 use crate::HandlerError;
+use crate::SchedulerParams;
 use crate::lifecycle::Exit;
 use crate::spsc::{SpscSender, TryRecvError, TrySendError};
 
@@ -46,7 +60,8 @@ use crate::spsc::{SpscSender, TryRecvError, TrySendError};
 // The actor
 // ────────────────────────────────────────────────────────────────────────────
 
-/// A Mealy machine: one input symbol in, one output word out, state mutated in place.
+/// A Mealy machine on three priority lanes: one input symbol in, one output word out, state
+/// mutated in place.
 ///
 /// It is Mealy rather than Moore because the output is a function of state *and* input —
 /// you echo the byte you just received. Moore would only see state.
@@ -54,25 +69,50 @@ use crate::spsc::{SpscSender, TryRecvError, TrySendError};
 /// The step is pure in the sense that matters: it performs no effects. `Ok(out)` describes
 /// what should be emitted; `Err(e)` is a failed transition and emits nothing. "Emit *and*
 /// warn" is deliberately not expressible — that is a message variant, not an error.
+///
+/// # Three lanes, not one
+///
+/// A step is triggered by whichever lane [`Node::poll`] drains from — Control, Management, or
+/// Data — the same three lanes and the same priority ordering (Control > Management > Data)
+/// as [`Actor`](crate::Actor)/[`ActorScheduler`](crate::ActorScheduler). Only `step_data` is
+/// required; `step_control` and `step_management` default to the silent transition, so a
+/// single-lane actor writes `type Control = Infallible; type Management = Infallible;` and one
+/// method, exactly as [`Host`](crate::Host) already does for its own [`Actor`](crate::Actor)
+/// impl.
 pub trait Transducer {
-    /// The input symbol.
-    type In;
+    /// The control-lane input. Highest priority — set to `Infallible` if unused.
+    type Control;
+    /// The management-lane input. Middle priority — set to `Infallible` if unused.
+    type Management;
+    /// The data-lane input. Lowest priority, and the only lane every actor has.
+    type Data;
 
     /// The output word: a struct with one optional, typed slot per downstream port.
     ///
     /// `Default` is the silent transition (all ports unset), which is the common case.
     type Out: Default;
 
-    /// Advance one step.
-    fn step(&mut self, input: Self::In) -> Result<Self::Out, HandlerError>;
+    /// Advance one step from the data lane.
+    fn step_data(&mut self, msg: Self::Data) -> Result<Self::Out, HandlerError>;
+
+    /// Advance one step from the control lane. Defaults to the silent transition.
+    fn step_control(&mut self, _msg: Self::Control) -> Result<Self::Out, HandlerError> {
+        Ok(Self::Out::default())
+    }
+
+    /// Advance one step from the management lane. Defaults to the silent transition.
+    fn step_management(&mut self, _msg: Self::Management) -> Result<Self::Out, HandlerError> {
+        Ok(Self::Out::default())
+    }
 
     /// Take the self-addressed continuation out of an output word, if this machine yields.
     ///
     /// The default is `None`: no self-port, no yielding. A machine that yields overrides this
     /// to hand back its self-port, and the [`Node`] routes it to a dedicated single slot
     /// rather than through [`Wiring`] — see [`Node::poll`] for why that is the only way a
-    /// self-edge can be deadlock-free.
-    fn take_continuation(_out: &mut Self::Out) -> Option<Self::In> {
+    /// self-edge can be deadlock-free. A continuation always resumes on the data lane: it is
+    /// more work, not a control or management signal.
+    fn take_continuation(_out: &mut Self::Out) -> Option<Self::Data> {
         None
     }
 }
@@ -172,30 +212,6 @@ pub enum Step {
     Halted(Exit),
 }
 
-/// The scheduler side of one actor: the machine, its inbox, its wiring, and its outbox.
-///
-/// The outbox is the entire suspension state. Because a step runs to completion, a parked
-/// actor's `self` is always consistent — there is no half-finished handler to resume, only
-/// undelivered messages to retry. That is why this design needs no coroutine machinery.
-pub struct Node<T: Transducer, W: Wiring<Out = T::Out>, R> {
-    actor: T,
-    inbox: R,
-    wiring: W,
-    /// Undelivered ports from the last step. `Some` means parked.
-    outbox: Option<T::Out>,
-    /// The self-addressed continuation: capacity exactly one, drained before the inbox.
-    ///
-    /// This is the whole of the deadlock argument. A step consumes at most one continuation
-    /// and produces at most one (the output word has a single slot per port), and the slot is
-    /// emptied immediately before the step that could refill it — so it can never be full
-    /// when written, can never block, and can never park. A self-edge routed through a
-    /// *queue* instead would deadlock the moment that queue filled: the only actor that can
-    /// drain it is the one parked on writing to it.
-    continuation: Option<T::In>,
-    /// Steps taken. Lets tests assert that a parked actor is genuinely not stepped.
-    steps: u64,
-}
-
 /// Pulling one input symbol. Implemented for the SPSC receiver; a trait so tests can drive a
 /// node from a plain queue, and so an in-process worker can later use a non-atomic inbox.
 pub trait Inbox {
@@ -213,21 +229,146 @@ impl<T> Inbox for crate::spsc::SpscReceiver<T> {
     }
 }
 
-impl<T, W, R> Node<T, W, R>
+/// An inbox with no producer: always reports [`TryRecvError::Disconnected`].
+///
+/// Stands in for a lane a [`Transducer`] does not use, so [`Node::new`] can wire a data-only
+/// actor without a real control or management channel. Disconnected, not merely empty, is the
+/// honest state — there is not, and will never be, a sender for this lane — and it is what
+/// makes [`Node`]'s halt condition ("every lane disconnected") correct for a single-lane actor:
+/// it reduces to exactly "the data lane disconnected," since control/management already report
+/// disconnected unconditionally.
+pub struct NoLane<T>(PhantomData<T>);
+
+impl<T> NoLane<T> {
+    /// A permanently empty lane.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<T> Default for NoLane<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> Inbox for NoLane<T> {
+    type Item = T;
+
+    fn take(&mut self) -> Result<T, TryRecvError> {
+        Err(TryRecvError::Disconnected)
+    }
+}
+
+/// Which of the three lanes [`Node::poll`] is currently favoring, and for how long, before it
+/// rotates to the next.
+///
+/// Mirrors `ActorScheduler::handle_wake`'s exact cycle — control (half budget) → management
+/// (full budget) → control (half budget again) → data (full budget) — ported to run one
+/// message at a time across many `poll()` calls instead of batched into one call. Control gets
+/// two turns per cycle so that anything arriving while management is favored is still seen
+/// promptly, without giving control the whole cycle and starving data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Control1,
+    Management,
+    Control2,
+    Data,
+}
+
+impl Slot {
+    fn next(self) -> Self {
+        match self {
+            Slot::Control1 => Slot::Management,
+            Slot::Management => Slot::Control2,
+            Slot::Control2 => Slot::Data,
+            Slot::Data => Slot::Control1,
+        }
+    }
+}
+
+/// The three inbox lanes a lane-aware [`Node`] reads from, bundled so
+/// [`Node::new_with_lanes`] takes one argument instead of three.
+pub struct Lanes<RC, RM, RD> {
+    /// Highest priority.
+    pub control: RC,
+    /// Middle priority.
+    pub management: RM,
+    /// Lowest priority, and the only lane every actor has.
+    pub data: RD,
+}
+
+/// The scheduler side of one actor: the machine, its three lanes, its wiring, and its outbox.
+///
+/// The outbox is the entire suspension state. Because a step runs to completion, a parked
+/// actor's `self` is always consistent — there is no half-finished handler to resume, only
+/// undelivered messages to retry. That is why this design needs no coroutine machinery.
+///
+/// `RC`/`RM` default to [`NoLane`] — a data-only actor is `Node<T, W, RD>`, exactly the call
+/// shape every single-lane actor already uses. A lane-aware actor spells out all five
+/// parameters (or, in practice, just calls [`Node::new_with_lanes`] and lets inference fill
+/// them in).
+pub struct Node<T: Transducer, W: Wiring<Out = T::Out>, RD, RC = NoLane<<T as Transducer>::Control>, RM = NoLane<<T as Transducer>::Management>>
+{
+    actor: T,
+    control: RC,
+    management: RM,
+    data: RD,
+    wiring: W,
+    /// Undelivered ports from the last step. `Some` means parked.
+    outbox: Option<T::Out>,
+    /// The self-addressed continuation: capacity exactly one, drained before any lane.
+    ///
+    /// This is the whole of the deadlock argument. A step consumes at most one continuation
+    /// and produces at most one (the output word has a single slot per port), and the slot is
+    /// emptied immediately before the step that could refill it — so it can never be full
+    /// when written, can never block, and can never park. A self-edge routed through a
+    /// *queue* instead would deadlock the moment that queue filled: the only actor that can
+    /// drain it is the one parked on writing to it.
+    continuation: Option<T::Data>,
+    /// Steps taken. Lets tests assert that a parked actor is genuinely not stepped.
+    steps: u64,
+    /// Current position in the control/management/control/data cycle.
+    slot: Slot,
+    /// Messages taken in the current `slot` visit, toward that slot's limit.
+    slot_progress: usize,
+    control_half_limit: usize,
+    management_limit: usize,
+    data_limit: usize,
+}
+
+impl<T, W, RD, RC, RM> Node<T, W, RD, RC, RM>
 where
     T: Transducer,
     W: Wiring<Out = T::Out>,
-    R: Inbox<Item = T::In>,
+    RD: Inbox<Item = T::Data>,
+    RC: Inbox<Item = T::Control>,
+    RM: Inbox<Item = T::Management>,
 {
-    /// Wire an actor to an inbox and a set of output ports.
-    pub fn new(actor: T, inbox: R, wiring: W) -> Self {
+    /// Wire an actor to all three lanes, its output ports, and burst-limit config.
+    ///
+    /// Reuses [`SchedulerParams`] verbatim, including its `default_data_burst_limit` — the
+    /// same config type, the same `control_burst_limit()`/`management_burst_limit()` the
+    /// dedicated-thread scheduler uses — so a lane-aware green actor is tuned exactly like an
+    /// OS-thread one, rather than by a second, parallel set of knobs. Override the data limit
+    /// the same way any `SchedulerParams` field is overridden: `SchedulerParams { default_data_
+    /// burst_limit: n, ..SchedulerParams::DEFAULT }`.
+    pub fn new_with_lanes(actor: T, lanes: Lanes<RC, RM, RD>, wiring: W, params: SchedulerParams) -> Self {
         Self {
             actor,
-            inbox,
+            control: lanes.control,
+            management: lanes.management,
+            data: lanes.data,
             wiring,
             outbox: None,
             continuation: None,
             steps: 0,
+            slot: Slot::Control1,
+            slot_progress: 0,
+            control_half_limit: (params.control_burst_limit() / 2).max(1),
+            management_limit: params.management_burst_limit(),
+            data_limit: params.default_data_burst_limit.max(1),
         }
     }
 
@@ -243,7 +384,8 @@ where
         &self.actor
     }
 
-    /// Drain the outbox, then take at most one input and step.
+    /// Drain the outbox, then take at most one input — from the continuation slot, or from
+    /// whichever lane the priority cycle currently favors — and step.
     ///
     /// Ordering is the whole contract:
     ///
@@ -251,10 +393,13 @@ where
     ///    outbox is non-empty. That is what makes backpressure propagate — a fast producer
     ///    stops advancing until its slow consumer catches up, without spinning and without
     ///    losing a message.
-    /// 2. **Take the continuation before the inbox**, so a machine finishes the work unit it
+    /// 2. **Take the continuation before any lane**, so a machine finishes the work unit it
     ///    started before accepting new work. That bounds the number of half-finished
     ///    computations in flight at one.
-    /// 3. **Lift the continuation out of the output word before flushing**, so the self-edge
+    /// 3. **Consult lanes in Control > Management > Data order**, budget-limited exactly like
+    ///    `ActorScheduler::handle_wake`, so control cannot starve data forever but does not
+    ///    wait behind it either.
+    /// 4. **Lift the continuation out of the output word before flushing**, so the self-edge
     ///    never reaches [`Wiring`] and so the slot is empty at the moment it is written.
     pub fn poll(&mut self) -> Step {
         if let Some(pending) = &mut self.outbox {
@@ -264,23 +409,99 @@ where
             self.outbox = None;
         }
 
-        let input = match self.continuation.take() {
-            Some(resumed) => resumed,
-            None => match self.inbox.take() {
-                Ok(input) => input,
-                Err(TryRecvError::Empty) => return Step::Idle,
-                Err(TryRecvError::Disconnected) => return Step::Halted(Exit::Completed),
-            },
-        };
+        if let Some(resumed) = self.continuation.take() {
+            return self.dispatch(|actor| actor.step_data(resumed));
+        }
 
-        let mut out = match self.actor.step(input) {
+        // One full lap visits Control1, Management, Control2, and Data exactly once,
+        // regardless of which slot the cycle happens to be sitting on when this call starts —
+        // Slot::next() is a 4-cycle, so four steps always covers all four positions.
+        let mut control_disconnected = false;
+        let mut management_disconnected = false;
+        let mut data_disconnected = false;
+
+        for _ in 0..4 {
+            let limit = match self.slot {
+                Slot::Control1 | Slot::Control2 => self.control_half_limit,
+                Slot::Management => self.management_limit,
+                Slot::Data => self.data_limit,
+            };
+
+            if self.slot_progress >= limit {
+                self.slot = self.slot.next();
+                self.slot_progress = 0;
+                continue;
+            }
+
+            match self.slot {
+                Slot::Control1 | Slot::Control2 => match self.control.take() {
+                    Ok(msg) => {
+                        self.slot_progress += 1;
+                        return self.dispatch(|actor| actor.step_control(msg));
+                    }
+                    Err(TryRecvError::Empty) => {
+                        self.slot = self.slot.next();
+                        self.slot_progress = 0;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        control_disconnected = true;
+                        self.slot = self.slot.next();
+                        self.slot_progress = 0;
+                    }
+                },
+                Slot::Management => match self.management.take() {
+                    Ok(msg) => {
+                        self.slot_progress += 1;
+                        return self.dispatch(|actor| actor.step_management(msg));
+                    }
+                    Err(TryRecvError::Empty) => {
+                        self.slot = self.slot.next();
+                        self.slot_progress = 0;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        management_disconnected = true;
+                        self.slot = self.slot.next();
+                        self.slot_progress = 0;
+                    }
+                },
+                Slot::Data => match self.data.take() {
+                    Ok(msg) => {
+                        self.slot_progress += 1;
+                        return self.dispatch(|actor| actor.step_data(msg));
+                    }
+                    Err(TryRecvError::Empty) => {
+                        self.slot = self.slot.next();
+                        self.slot_progress = 0;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        data_disconnected = true;
+                        self.slot = self.slot.next();
+                        self.slot_progress = 0;
+                    }
+                },
+            }
+        }
+
+        if control_disconnected && management_disconnected && data_disconnected {
+            Step::Halted(Exit::Completed)
+        } else {
+            Step::Idle
+        }
+    }
+
+    /// Run one step, advance the step counter, extract the continuation, and flush.
+    ///
+    /// The one path every lane and the continuation resume through, so "step, then flush,
+    /// then maybe park" is written once rather than four times.
+    fn dispatch(&mut self, step: impl FnOnce(&mut T) -> Result<T::Out, HandlerError>) -> Step {
+        let mut out = match step(&mut self.actor) {
             Ok(out) => out,
             Err(HandlerError::Recoverable(msg)) => return Step::Halted(Exit::Failed(msg)),
             Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
         };
         self.steps += 1;
 
-        // The slot was emptied above, so this write can never overflow.
+        // The slot was emptied before dispatch runs, so this write can never overflow.
         self.continuation = T::take_continuation(&mut out);
 
         if self.wiring.flush(&mut out) == Flush::Blocked {
@@ -288,6 +509,31 @@ where
         }
 
         Step::Ran
+    }
+}
+
+impl<T, W, RD> Node<T, W, RD>
+where
+    T: Transducer,
+    W: Wiring<Out = T::Out>,
+    RD: Inbox<Item = T::Data>,
+{
+    /// A data-only node: no control or management lane.
+    ///
+    /// The common case, and the same three-argument call every single-lane actor already
+    /// uses — `RC`/`RM` default to [`NoLane`], so this is `new_with_lanes` with both extra
+    /// lanes disconnected and default burst parameters.
+    pub fn new(actor: T, data: RD, wiring: W) -> Self {
+        Self::new_with_lanes(
+            actor,
+            Lanes {
+                control: NoLane::new(),
+                management: NoLane::new(),
+                data,
+            },
+            wiring,
+            SchedulerParams::DEFAULT,
+        )
     }
 }
 
@@ -564,6 +810,7 @@ impl Topology {
 mod tests {
     use super::*;
     use crate::spsc::spsc_channel;
+    use std::convert::Infallible;
 
     // ── An actor that fans out to two differently-typed targets ─────────────
     //
@@ -604,10 +851,12 @@ mod tests {
     }
 
     impl Transducer for App {
-        type In = u8;
+        type Control = Infallible;
+        type Management = Infallible;
+        type Data = u8;
         type Out = AppOut;
 
-        fn step(&mut self, byte: u8) -> Result<AppOut, HandlerError> {
+        fn step_data(&mut self, byte: u8) -> Result<AppOut, HandlerError> {
             self.seen += 1;
             if byte == 0 {
                 return Ok(AppOut::default());
@@ -625,11 +874,11 @@ mod tests {
         // with no scheduler, no wiring, and no mocked senders in the loop.
         let mut app = App { seen: 0 };
 
-        let out = app.step(b'x').unwrap();
+        let out = app.step_data(b'x').unwrap();
         assert_eq!(out.engine, Some(Render(b'x')));
         assert_eq!(out.write, Some(Echo(b'x')));
 
-        let quiet = app.step(0).unwrap();
+        let quiet = app.step_data(0).unwrap();
         assert!(quiet.engine.is_none() && quiet.write.is_none());
 
         assert_eq!(app.seen, 2, "state advanced on both inputs");
@@ -907,9 +1156,11 @@ mod tests {
             }
         }
         impl Transducer for Boom {
-            type In = u8;
+            type Control = Infallible;
+            type Management = Infallible;
+            type Data = u8;
             type Out = Option<u8>;
-            fn step(&mut self, _: u8) -> Result<Option<u8>, HandlerError> {
+            fn step_data(&mut self, _: u8) -> Result<Option<u8>, HandlerError> {
                 Err(HandlerError::Recoverable("boom".into()))
             }
         }
@@ -960,10 +1211,12 @@ mod tests {
     }
 
     impl Transducer for Countdown {
-        type In = u32;
+        type Control = Infallible;
+        type Management = Infallible;
+        type Data = u32;
         type Out = CountdownOut;
 
-        fn step(&mut self, n: u32) -> Result<CountdownOut, HandlerError> {
+        fn step_data(&mut self, n: u32) -> Result<CountdownOut, HandlerError> {
             if n == 0 {
                 self.finished = Some(0);
                 return Ok(CountdownOut {
@@ -1107,6 +1360,182 @@ mod tests {
             3,
             "the other actor made progress in between — no monopolisation"
         );
+    }
+
+    // ── Priority lanes: ported from ActorScheduler::handle_wake ─────────────
+
+    /// Records which lane each step came from. `Out = ()`: these tests are about input
+    /// ordering, not output, so there is nothing to wire.
+    struct LaneLog {
+        seen: Vec<&'static str>,
+    }
+
+    struct NoWiring;
+    impl Wiring for NoWiring {
+        type Out = ();
+        fn flush(&mut self, (): &mut ()) -> Flush {
+            Flush::Done
+        }
+    }
+
+    impl Transducer for LaneLog {
+        type Control = ();
+        type Management = ();
+        type Data = ();
+        type Out = ();
+
+        fn step_data(&mut self, (): ()) -> Result<(), HandlerError> {
+            self.seen.push("D");
+            Ok(())
+        }
+
+        fn step_control(&mut self, (): ()) -> Result<(), HandlerError> {
+            self.seen.push("C");
+            Ok(())
+        }
+
+        fn step_management(&mut self, (): ()) -> Result<(), HandlerError> {
+            self.seen.push("M");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn one_message_per_lane_drains_control_then_management_then_data() {
+        let (tx_c, rx_c) = spsc_channel::<()>(4);
+        let (tx_m, rx_m) = spsc_channel::<()>(4);
+        let (tx_d, rx_d) = spsc_channel::<()>(4);
+
+        let mut node = Node::new_with_lanes(
+            LaneLog { seen: Vec::new() },
+            Lanes {
+                control: rx_c,
+                management: rx_m,
+                data: rx_d,
+            },
+            NoWiring,
+            SchedulerParams::DEFAULT,
+        );
+
+        tx_c.try_send(()).unwrap();
+        tx_m.try_send(()).unwrap();
+        tx_d.try_send(()).unwrap();
+
+        for _ in 0..3 {
+            assert_eq!(node.poll(), Step::Ran);
+        }
+        assert_eq!(
+            node.actor().seen,
+            vec!["C", "M", "D"],
+            "one message per lane must drain in priority order"
+        );
+    }
+
+    #[test]
+    fn control_backlog_does_not_starve_data_forever() {
+        // The property `ActorScheduler::handle_wake`'s half-control/mgmt/half-control/data
+        // split exists for: with control_burst_limit=2 (half=1) and no management traffic,
+        // control gets two turns per cycle (Control1, Control2) before data gets one — so
+        // data is guaranteed a turn every cycle, however deep the control backlog runs.
+        let params = SchedulerParams {
+            control_mgmt_buffer_size: 1,
+            control_burst_multiplier: 2, // control_burst_limit = 2, half = 1
+            management_burst_multiplier: 1,
+            default_data_burst_limit: 1,
+            ..SchedulerParams::DEFAULT
+        };
+
+        let (tx_c, rx_c) = spsc_channel::<()>(64);
+        let (_tx_m, rx_m) = spsc_channel::<()>(4);
+        let (tx_d, rx_d) = spsc_channel::<()>(4);
+
+        let mut node = Node::new_with_lanes(
+            LaneLog { seen: Vec::new() },
+            Lanes {
+                control: rx_c,
+                management: rx_m,
+                data: rx_d,
+            },
+            NoWiring,
+            params,
+        );
+
+        for _ in 0..5 {
+            tx_c.try_send(()).unwrap();
+        }
+        tx_d.try_send(()).unwrap();
+
+        for _ in 0..3 {
+            assert_eq!(node.poll(), Step::Ran);
+        }
+        assert_eq!(
+            node.actor().seen,
+            vec!["C", "C", "D"],
+            "data must be served after one cycle (2 control), not after the whole backlog"
+        );
+    }
+
+    // Regression: half_control = control_burst_limit / 2 used to truncate to 0 when the
+    // burst limit was 1, and a zero-limit slot could never make progress (mirrors
+    // control_lane_progresses_with_burst_limit_one in lib.rs for the OS-thread scheduler).
+    #[test]
+    fn control_lane_progresses_with_burst_limit_one() {
+        let params = SchedulerParams {
+            control_mgmt_buffer_size: 1,
+            control_burst_multiplier: 1, // control_burst_limit == 1
+            ..SchedulerParams::DEFAULT
+        };
+        assert_eq!(params.control_burst_limit(), 1);
+
+        let (tx_c, rx_c) = spsc_channel::<()>(4);
+        let (_tx_m, rx_m) = spsc_channel::<()>(4);
+        let (_tx_d, rx_d) = spsc_channel::<()>(4);
+
+        let mut node = Node::new_with_lanes(
+            LaneLog { seen: Vec::new() },
+            Lanes {
+                control: rx_c,
+                management: rx_m,
+                data: rx_d,
+            },
+            NoWiring,
+            params,
+        );
+
+        tx_c.try_send(()).unwrap();
+        assert_eq!(node.poll(), Step::Ran);
+        assert_eq!(
+            node.actor().seen,
+            vec!["C"],
+            "control message was never processed with control_burst_limit == 1"
+        );
+    }
+
+    #[test]
+    fn halts_only_once_every_lane_is_disconnected() {
+        let (tx_c, rx_c) = spsc_channel::<()>(4);
+        let (tx_m, rx_m) = spsc_channel::<()>(4);
+        let (tx_d, rx_d) = spsc_channel::<()>(4);
+
+        let mut node = Node::new_with_lanes(
+            LaneLog { seen: Vec::new() },
+            Lanes {
+                control: rx_c,
+                management: rx_m,
+                data: rx_d,
+            },
+            NoWiring,
+            SchedulerParams::DEFAULT,
+        );
+
+        drop(tx_c);
+        drop(tx_m);
+        // data's sender is still alive but has sent nothing: Empty, not Disconnected, so the
+        // node must stay Idle rather than halt on a partial disconnect.
+        assert_eq!(node.poll(), Step::Idle);
+
+        drop(tx_d);
+        assert_eq!(node.poll(), Step::Halted(Exit::Completed));
     }
 
     // ── Topology: cycles are a bootstrap error, not a runtime deadlock ──────

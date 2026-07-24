@@ -49,11 +49,13 @@ pub trait Green {
     fn poll(&mut self) -> Step;
 }
 
-impl<T, W, R> Green for Node<T, W, R>
+impl<T, W, RD, RC, RM> Green for Node<T, W, RD, RC, RM>
 where
     T: Transducer,
     W: Wiring<Out = T::Out>,
-    R: Inbox<Item = T::In>,
+    RD: Inbox<Item = T::Data>,
+    RC: Inbox<Item = T::Control>,
+    RM: Inbox<Item = T::Management>,
 {
     fn poll(&mut self) -> Step {
         Node::poll(self)
@@ -243,10 +245,12 @@ mod tests {
     }
 
     impl Transducer for Forward {
-        type In = u32;
+        type Control = Infallible;
+        type Management = Infallible;
+        type Data = u32;
         type Out = Option<u32>;
 
-        fn step(&mut self, n: u32) -> Result<Option<u32>, HandlerError> {
+        fn step_data(&mut self, n: u32) -> Result<Option<u32>, HandlerError> {
             self.seen += 1;
             Ok(Some(n + 1))
         }
