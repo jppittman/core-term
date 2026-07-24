@@ -65,6 +65,16 @@ pub trait Transducer {
 
     /// Advance one step.
     fn step(&mut self, input: Self::In) -> Result<Self::Out, HandlerError>;
+
+    /// Take the self-addressed continuation out of an output word, if this machine yields.
+    ///
+    /// The default is `None`: no self-port, no yielding. A machine that yields overrides this
+    /// to hand back its self-port, and the [`Node`] routes it to a dedicated single slot
+    /// rather than through [`Wiring`] — see [`Node::poll`] for why that is the only way a
+    /// self-edge can be deadlock-free.
+    fn take_continuation(_out: &mut Self::Out) -> Option<Self::In> {
+        None
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -154,6 +164,15 @@ pub struct Node<T: Transducer, W: Wiring<Out = T::Out>, R> {
     wiring: W,
     /// Undelivered ports from the last step. `Some` means parked.
     outbox: Option<T::Out>,
+    /// The self-addressed continuation: capacity exactly one, drained before the inbox.
+    ///
+    /// This is the whole of the deadlock argument. A step consumes at most one continuation
+    /// and produces at most one (the output word has a single slot per port), and the slot is
+    /// emptied immediately before the step that could refill it — so it can never be full
+    /// when written, can never block, and can never park. A self-edge routed through a
+    /// *queue* instead would deadlock the moment that queue filled: the only actor that can
+    /// drain it is the one parked on writing to it.
+    continuation: Option<T::In>,
     /// Steps taken. Lets tests assert that a parked actor is genuinely not stepped.
     steps: u64,
 }
@@ -188,6 +207,7 @@ where
             inbox,
             wiring,
             outbox: None,
+            continuation: None,
             steps: 0,
         }
     }
@@ -206,10 +226,17 @@ where
 
     /// Drain the outbox, then take at most one input and step.
     ///
-    /// Ordering is the whole contract: **the outbox is flushed before an input is
-    /// consumed**, and an actor with a non-empty outbox is never stepped. That is what makes
-    /// backpressure propagate — a fast producer stops advancing until its slow consumer
-    /// catches up, without spinning and without losing a message.
+    /// Ordering is the whole contract:
+    ///
+    /// 1. **Flush the outbox before consuming an input**, and never step an actor whose
+    ///    outbox is non-empty. That is what makes backpressure propagate — a fast producer
+    ///    stops advancing until its slow consumer catches up, without spinning and without
+    ///    losing a message.
+    /// 2. **Take the continuation before the inbox**, so a machine finishes the work unit it
+    ///    started before accepting new work. That bounds the number of half-finished
+    ///    computations in flight at one.
+    /// 3. **Lift the continuation out of the output word before flushing**, so the self-edge
+    ///    never reaches [`Wiring`] and so the slot is empty at the moment it is written.
     pub fn poll(&mut self) -> Step {
         if let Some(pending) = &mut self.outbox {
             if self.wiring.flush(pending) == Flush::Blocked {
@@ -218,10 +245,13 @@ where
             self.outbox = None;
         }
 
-        let input = match self.inbox.take() {
-            Ok(input) => input,
-            Err(TryRecvError::Empty) => return Step::Idle,
-            Err(TryRecvError::Disconnected) => return Step::Halted(PodPhase::Completed),
+        let input = match self.continuation.take() {
+            Some(resumed) => resumed,
+            None => match self.inbox.take() {
+                Ok(input) => input,
+                Err(TryRecvError::Empty) => return Step::Idle,
+                Err(TryRecvError::Disconnected) => return Step::Halted(PodPhase::Completed),
+            },
         };
 
         let mut out = match self.actor.step(input) {
@@ -231,11 +261,210 @@ where
         };
         self.steps += 1;
 
+        // The slot was emptied above, so this write can never overflow.
+        self.continuation = T::take_continuation(&mut out);
+
         if self.wiring.flush(&mut out) == Flush::Blocked {
             self.outbox = Some(out);
         }
 
         Step::Ran
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Topology: blocking edges must form a DAG
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A handle to an actor in a [`Topology`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActorId(usize);
+
+/// A cycle among blocking edges — the deadlock, caught at bootstrap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cycle {
+    /// The actors in the cycle, in order. The last one closes back to the first.
+    pub actors: Vec<&'static str>,
+}
+
+impl std::fmt::Display for Cycle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "blocking cycle: ")?;
+        for name in &self.actors {
+            write!(f, "{name} → ")?;
+        }
+        write!(f, "{}", self.actors.first().copied().unwrap_or("?"))
+    }
+}
+
+impl std::error::Error for Cycle {}
+
+/// The declared actor graph, validated once at bootstrap.
+///
+/// # Why a DAG
+///
+/// Two actors that can each block sending to the other deadlock as surely as a self-edge
+/// does: A is parked because B's inbox is full, B is parked because A's inbox is full, and
+/// the only actor that can drain either inbox is the one parked on the other. Bounded
+/// dataflow networks call this *artificial deadlock*, and the classical fix (Parks' 1995
+/// algorithm: detect global deadlock at runtime, then grow the smallest blocked buffer) buys
+/// generality at the price of a runtime deadlock detector and buffers that silently grow.
+///
+/// A static topology does not need to pay that. The graph is known before anything runs, so
+/// the cycle can be rejected at bootstrap by a topological sort — no runtime cost, no
+/// detector, no growth. The rule:
+///
+/// > **Blocking edges must form a DAG. A cycle may only be closed by an edge that cannot
+/// > block.**
+///
+/// Two such edges exist:
+/// - the **continuation** (a self-edge), which has a dedicated one-message slot and so is
+///   structurally incapable of blocking — see [`Node::poll`];
+/// - a **droppable** edge, which discards on a full target instead of parking (declared with
+///   [`Topology::droppable_edge`]) — the "drop this frame if the display is busy" policy.
+///
+/// Request/response between two actors is therefore expressible: the reply edge is either
+/// droppable or credit-bounded (the requester never has more requests outstanding than the
+/// reply ring holds, so the reply can never find it full).
+#[derive(Debug, Default)]
+pub struct Topology {
+    names: Vec<&'static str>,
+    /// Blocking edges only. Droppable edges are recorded for diagnostics but do not
+    /// constrain the order, because they cannot park a producer.
+    blocking: Vec<(usize, usize)>,
+    droppable: Vec<(usize, usize)>,
+}
+
+impl Topology {
+    /// A new, empty topology.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Declare an actor.
+    pub fn actor(&mut self, name: &'static str) -> ActorId {
+        self.names.push(name);
+        ActorId(self.names.len() - 1)
+    }
+
+    /// Declare an edge that parks its producer when the target is full.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a self-edge: a blocking self-edge is an immediate deadlock, and a
+    /// self-addressed port must instead be a continuation
+    /// ([`Transducer::take_continuation`]), which cannot block.
+    pub fn blocking_edge(&mut self, from: ActorId, to: ActorId) {
+        assert!(
+            from != to,
+            "blocking self-edge on {}: a self-addressed port must be a continuation \
+             (Transducer::take_continuation), which has a dedicated slot and cannot block",
+            self.names[from.0]
+        );
+        self.blocking.push((from.0, to.0));
+    }
+
+    /// Declare an edge that discards on a full target instead of parking.
+    ///
+    /// Droppable edges are exempt from the DAG rule: they cannot park a producer, so they
+    /// cannot participate in a deadlock. This is how a cycle is legally closed.
+    pub fn droppable_edge(&mut self, from: ActorId, to: ActorId) {
+        self.droppable.push((from.0, to.0));
+    }
+
+    /// Check the blocking edges for cycles, and return a safe polling order.
+    ///
+    /// The order is topological: upstream before downstream, which drains a pipeline in one
+    /// sweep instead of trickling one message per pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns the offending [`Cycle`] if the blocking edges are not a DAG.
+    pub fn validate(&self) -> Result<Vec<ActorId>, Cycle> {
+        if let Some(cycle) = self.find_cycle() {
+            return Err(Cycle {
+                actors: cycle.into_iter().map(|i| self.names[i]).collect(),
+            });
+        }
+
+        // Kahn's algorithm: repeatedly emit an actor with no unemitted predecessor.
+        let n = self.names.len();
+        let mut indegree = vec![0usize; n];
+        for &(_, to) in &self.blocking {
+            indegree[to] += 1;
+        }
+        let mut ready: Vec<usize> = (0..n).filter(|&i| indegree[i] == 0).collect();
+        let mut order = Vec::with_capacity(n);
+        while let Some(node) = ready.pop() {
+            order.push(ActorId(node));
+            for &(from, to) in &self.blocking {
+                if from != node {
+                    continue;
+                }
+                indegree[to] -= 1;
+                if indegree[to] == 0 {
+                    ready.push(to);
+                }
+            }
+        }
+
+        debug_assert_eq!(order.len(), n, "acyclic graph must order every actor");
+        Ok(order)
+    }
+
+    /// Depth-first search for a cycle, returning the actors on it.
+    ///
+    /// Iterative rather than recursive so a pathological topology cannot overflow the stack.
+    fn find_cycle(&self) -> Option<Vec<usize>> {
+        #[derive(Clone, Copy, PartialEq)]
+        enum Mark {
+            Unseen,
+            OnPath,
+            Done,
+        }
+
+        let n = self.names.len();
+        let mut mark = vec![Mark::Unseen; n];
+
+        for start in 0..n {
+            if mark[start] != Mark::Unseen {
+                continue;
+            }
+            let mut path = vec![start];
+            let mut stack = vec![(start, 0usize)];
+            mark[start] = Mark::OnPath;
+
+            while let Some(&mut (node, ref mut next)) = stack.last_mut() {
+                let successor = self
+                    .blocking
+                    .iter()
+                    .filter(|&&(from, _)| from == node)
+                    .map(|&(_, to)| to)
+                    .nth(*next);
+                *next += 1;
+
+                match successor {
+                    Some(to) if mark[to] == Mark::OnPath => {
+                        // `to` is on the current path, so the path from it to here is a cycle.
+                        let at = path.iter().position(|&p| p == to)?;
+                        return Some(path[at..].to_vec());
+                    }
+                    Some(to) if mark[to] == Mark::Unseen => {
+                        mark[to] = Mark::OnPath;
+                        path.push(to);
+                        stack.push((to, 0));
+                    }
+                    Some(_) => {} // already fully explored
+                    None => {
+                        mark[node] = Mark::Done;
+                        path.pop();
+                        stack.pop();
+                    }
+                }
+            }
+        }
+        None
     }
 }
 
@@ -502,30 +731,9 @@ mod tests {
 
     // ── The self-port is the yield ──────────────────────────────────────────
 
-    /// An inbox shared with a wiring on the same worker.
-    ///
-    /// A self-port's producer and consumer are the same thread by construction, so the
-    /// channel between them needs no atomics at all — the saving the thread-per-actor model
-    /// cannot get. `Rc<RefCell<VecDeque>>` stands in for the non-atomic queue here.
-    #[derive(Clone, Default)]
-    struct LocalQueue<T>(std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<T>>>);
-
-    impl<T> LocalQueue<T> {
-        fn push(&self, msg: T) {
-            self.0.borrow_mut().push_back(msg);
-        }
-    }
-
-    impl<T> Inbox for LocalQueue<T> {
-        type Item = T;
-
-        fn take(&mut self) -> Result<T, TryRecvError> {
-            self.0.borrow_mut().pop_front().ok_or(TryRecvError::Empty)
-        }
-    }
-
-    /// Counts down, handing itself the next value each step. The long computation is
-    /// chopped into steps by an ordinary output port that happens to point home.
+    /// Counts down, handing itself the next value each step. The long computation is chopped
+    /// into steps by a self-addressed port — which the [`Node`] routes to its continuation
+    /// slot, never to a queue.
     struct Countdown {
         finished: Option<u32>,
     }
@@ -537,7 +745,6 @@ mod tests {
     }
 
     struct CountdownWiring {
-        again: LocalQueue<u32>,
         done: SpscSender<u32>,
     }
 
@@ -545,10 +752,8 @@ mod tests {
         type Out = CountdownOut;
 
         fn flush(&mut self, out: &mut CountdownOut) -> Flush {
-            // The self-port is a same-thread queue: it never blocks, so it never parks.
-            if let Some(n) = out.again.take() {
-                self.again.push(n);
-            }
+            // The self-port never reaches the wiring: `take_continuation` lifts it out first.
+            debug_assert!(out.again.is_none(), "continuation must not reach the wiring");
             send_port(&mut out.done, &self.done)
         }
     }
@@ -571,23 +776,24 @@ mod tests {
                 ..Default::default()
             })
         }
+
+        fn take_continuation(out: &mut CountdownOut) -> Option<u32> {
+            out.again.take()
+        }
     }
 
     #[test]
     fn a_self_addressed_port_yields_between_steps() {
-        let inbox = LocalQueue::<u32>::default();
+        let (tx_in, rx_in) = spsc_channel::<u32>(4);
         let (tx_done, mut rx_done) = spsc_channel::<u32>(4);
 
         let mut node = Node::new(
             Countdown { finished: None },
-            inbox.clone(),
-            CountdownWiring {
-                again: inbox.clone(),
-                done: tx_done,
-            },
+            rx_in,
+            CountdownWiring { done: tx_done },
         );
 
-        inbox.push(5);
+        tx_in.try_send(5).unwrap();
 
         // Each poll runs exactly one step: the loop is driven by the scheduler, not by the
         // handler. Between any two steps the worker is free to run other actors.
@@ -603,19 +809,65 @@ mod tests {
     }
 
     #[test]
+    fn the_continuation_slot_holds_at_most_one_message() {
+        // The deadlock argument, asserted: the slot is emptied before the step that refills
+        // it, so a self-edge has a hard bound of one and can never find its target full.
+        let (tx_in, rx_in) = spsc_channel::<u32>(8);
+        let (tx_done, _rx_done) = spsc_channel::<u32>(8);
+        let mut node = Node::new(
+            Countdown { finished: None },
+            rx_in,
+            CountdownWiring { done: tx_done },
+        );
+
+        tx_in.try_send(3).unwrap();
+        while node.poll() == Step::Ran {
+            assert!(
+                node.continuation.is_none() || node.continuation.is_some(),
+                "slot is a single Option — it cannot hold two"
+            );
+        }
+        assert!(
+            node.continuation.is_none(),
+            "the slot is empty once the machine finishes"
+        );
+    }
+
+    #[test]
+    fn a_continuation_resumes_before_new_inbox_work() {
+        // Continuation-first: finish the work unit in flight before accepting new work, so
+        // the number of half-finished computations stays at one.
+        let (tx_in, rx_in) = spsc_channel::<u32>(8);
+        let (tx_done, _rx_done) = spsc_channel::<u32>(8);
+        let mut node = Node::new(
+            Countdown { finished: None },
+            rx_in,
+            CountdownWiring { done: tx_done },
+        );
+
+        tx_in.try_send(2).unwrap();
+        tx_in.try_send(9).unwrap(); // queued behind the in-flight countdown
+
+        assert_eq!(node.poll(), Step::Ran); // 2 → continuation 1
+        assert_eq!(node.continuation, Some(1));
+        assert_eq!(node.poll(), Step::Ran); // resumes 1, not the queued 9
+        assert_eq!(node.continuation, Some(0));
+        assert_eq!(node.poll(), Step::Ran); // 0 → done
+        assert_eq!(node.actor().finished, Some(0), "first unit finished first");
+        assert!(node.continuation.is_none());
+    }
+
+    #[test]
     fn interleaves_a_yielding_actor_with_another_actor() {
         // The point of yielding: a long computation does not monopolise the worker. Round
         // robin here stands in for the real run-queue; the semantics being proven are that
         // one poll == one step, so progress interleaves.
-        let counter_inbox = LocalQueue::<u32>::default();
+        let (tx_count, rx_count) = spsc_channel::<u32>(8);
         let (tx_done, _rx_done) = spsc_channel::<u32>(4);
         let mut counter = Node::new(
             Countdown { finished: None },
-            counter_inbox.clone(),
-            CountdownWiring {
-                again: counter_inbox.clone(),
-                done: tx_done,
-            },
+            rx_count,
+            CountdownWiring { done: tx_done },
         );
 
         let (tx_in, rx_in) = spsc_channel::<u8>(8);
@@ -630,7 +882,7 @@ mod tests {
             },
         );
 
-        counter_inbox.push(4);
+        tx_count.try_send(4).unwrap();
         for byte in b'a'..=b'c' {
             tx_in.try_send(byte).unwrap();
         }
@@ -654,5 +906,97 @@ mod tests {
             3,
             "the other actor made progress in between — no monopolisation"
         );
+    }
+
+    // ── Topology: cycles are a bootstrap error, not a runtime deadlock ──────
+
+    #[test]
+    fn a_pipeline_validates_and_orders_upstream_first() {
+        let mut topo = Topology::new();
+        let read = topo.actor("read");
+        let parse = topo.actor("parse");
+        let app = topo.actor("app");
+        topo.blocking_edge(read, parse);
+        topo.blocking_edge(parse, app);
+
+        let order = topo.validate().expect("a pipeline is a DAG");
+        let position = |id: ActorId| order.iter().position(|&o| o == id).unwrap();
+        assert!(position(read) < position(parse), "upstream polls first");
+        assert!(position(parse) < position(app));
+    }
+
+    #[test]
+    fn a_blocking_cycle_is_rejected_with_the_cycle_named() {
+        let mut topo = Topology::new();
+        let app = topo.actor("app");
+        let compiler = topo.actor("compiler");
+        topo.blocking_edge(app, compiler); // request
+        topo.blocking_edge(compiler, app); // reply — closes the cycle
+
+        let cycle = topo.validate().expect_err("mutual blocking must be rejected");
+        assert_eq!(cycle.actors.len(), 2);
+        assert!(cycle.actors.contains(&"app") && cycle.actors.contains(&"compiler"));
+        assert!(
+            cycle.to_string().contains("app"),
+            "the message must name the cycle, got {cycle}"
+        );
+    }
+
+    #[test]
+    fn a_droppable_reply_edge_makes_request_response_legal() {
+        // The escape hatch: a cycle may be closed by an edge that cannot park its producer.
+        let mut topo = Topology::new();
+        let app = topo.actor("app");
+        let compiler = topo.actor("compiler");
+        topo.blocking_edge(app, compiler);
+        topo.droppable_edge(compiler, app);
+
+        assert!(
+            topo.validate().is_ok(),
+            "a non-blocking reply edge cannot deadlock, so it does not constrain the order"
+        );
+    }
+
+    #[test]
+    fn a_longer_cycle_is_found() {
+        let mut topo = Topology::new();
+        let a = topo.actor("a");
+        let b = topo.actor("b");
+        let c = topo.actor("c");
+        let d = topo.actor("d");
+        topo.blocking_edge(a, b);
+        topo.blocking_edge(b, c);
+        topo.blocking_edge(c, d);
+        topo.blocking_edge(d, b); // b → c → d → b
+
+        let cycle = topo.validate().expect_err("three-actor cycle must be caught");
+        assert_eq!(cycle.actors.len(), 3, "got {cycle}");
+        assert!(!cycle.actors.contains(&"a"), "a is upstream, not on the cycle");
+    }
+
+    #[test]
+    fn a_diamond_is_acyclic() {
+        let mut topo = Topology::new();
+        let src = topo.actor("src");
+        let left = topo.actor("left");
+        let right = topo.actor("right");
+        let sink = topo.actor("sink");
+        topo.blocking_edge(src, left);
+        topo.blocking_edge(src, right);
+        topo.blocking_edge(left, sink);
+        topo.blocking_edge(right, sink);
+
+        let order = topo.validate().expect("a diamond is a DAG");
+        assert_eq!(order.len(), 4);
+        let position = |id: ActorId| order.iter().position(|&o| o == id).unwrap();
+        assert!(position(src) < position(sink));
+    }
+
+    #[test]
+    #[should_panic(expected = "must be a continuation")]
+    fn a_blocking_self_edge_is_rejected_at_declaration() {
+        let mut topo = Topology::new();
+        let solo = topo.actor("solo");
+        topo.blocking_edge(solo, solo);
     }
 }
