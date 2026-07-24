@@ -347,6 +347,115 @@ fn emit_vcvtdq2ps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     emit_vex(code, 0, 1, 0, dst, Reg(0), src, 0x5B); // VEX.128.0F.WIG 5B /r
 }
 
+// ─────────────────────────── bound-memory gather ────────────────────────────
+//
+// This build has no AVX2, so there is no `vgatherdps` at 128 bits. A gather is
+// therefore four independent scalar loads assembled into a lane vector:
+// extract each lane's integer index to a GPR, load that element, and insert it
+// into the destination lane. All four instructions below are plain AVX (the
+// VEX encodings of SSE4.1 ops), the same tier the rest of this backend already
+// emits (`vroundps`, `vandnps`).
+
+/// Third VEX byte with W=0 and `vvvv` unused (encoded inverted, so all ones);
+/// OR in the `pp` field for the operand-size prefix.
+const VEX_W0_NO_VVVV: u8 = 0xF << 3;
+/// `pp = 01` — the `66` prefix.
+const PP_66: u8 = 1;
+/// `pp = 10` — the `F3` prefix.
+const PP_F3: u8 = 2;
+
+/// `mov dstGPR, [ctxGPR + disp32]` — load a buffer base pointer out of the
+/// context struct. Mirrors the AVX-512 backend's loader.
+pub fn emit_load_ptr_from_ctx(code: &mut Vec<u8>, dst_gpr: u8, ctx_gpr: u8, disp: i32) {
+    debug_assert!(
+        dst_gpr < 8 && ctx_gpr < 8,
+        "emit_load_ptr_from_ctx: GPR8 only"
+    );
+    // REX.W ; 8B ; mod=10 reg=dst r/m=ctx ; disp32
+    code.push(0x48);
+    code.push(0x8B);
+    code.push(0x80 | ((dst_gpr & 7) << 3) | (ctx_gpr & 7));
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+/// `vpextrd r32, xmmSRC, lane` — move one 32-bit lane into a GP register.
+fn emit_vpextrd_to_gpr(code: &mut Vec<u8>, dst_gpr: u8, src: Reg, lane: u8) {
+    debug_assert!(dst_gpr < 8, "emit_vpextrd_to_gpr: GPR8 only");
+    debug_assert!(lane < 4, "vpextrd lane must be 0..4");
+    // VEX.128.66.0F3A.W0 16 /r ib — note the *xmm* is the ModRM.reg operand and
+    // the GPR is r/m, the reverse of the usual direction.
+    let rbit = if src.0 >= 8 { 0x00 } else { 0x80 };
+    code.push(0xC4);
+    code.push(rbit | 0x40 | 0x20 | 3); // R X B mmmmm=0F3A (GPR8 => B set)
+    code.push(VEX_W0_NO_VVVV | PP_66);
+    code.push(0x16);
+    code.push(0xC0 | ((src.0 & 7) << 3) | (dst_gpr & 7));
+    code.push(lane);
+}
+
+/// `vmovss xmmDST, [baseGPR + indexGPR*4]` — load one f32 element, zeroing the
+/// upper lanes.
+fn emit_vmovss_load_scaled(code: &mut Vec<u8>, dst: Reg, base_gpr: u8, index_gpr: u8) {
+    debug_assert!(base_gpr < 8 && index_gpr < 8, "GPR8 only");
+    debug_assert!(base_gpr != 5, "base rbp/r13 would force a disp form");
+    // VEX.LIG.F3.0F.WIG 10 /r, mod=00 rm=100 (SIB), SIB scale=4.
+    let rbit = if dst.0 >= 8 { 0x00 } else { 0x80 };
+    code.push(0xC4);
+    code.push(rbit | 0x40 | 0x20 | 1); // mmmmm=0F
+    code.push(VEX_W0_NO_VVVV | PP_F3);
+    code.push(0x10);
+    code.push(((dst.0 & 7) << 3) | 0b100); // mod=00, rm=SIB
+    code.push((0b10 << 6) | ((index_gpr & 7) << 3) | (base_gpr & 7)); // scale=4
+}
+
+/// `vinsertps xmmDST, xmmSRC1, xmmSRC2, imm8` — place lane 0 of `src2` into
+/// lane `dst_lane` of the result, keeping `src1`'s other lanes.
+fn emit_vinsertps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg, dst_lane: u8) {
+    debug_assert!(dst_lane < 4, "vinsertps lane must be 0..4");
+    // VEX.128.66.0F3A.WIG 21 /r ib. imm8: [7:6] source lane, [5:4] dest lane,
+    // [3:0] zero mask (none).
+    emit_vex(code, 1, 3, 0, dst, src1, src2, 0x21);
+    code.push(dst_lane << 4);
+}
+
+/// Scratch the scalar gather sequence clobbers. The vector pair must be
+/// distinct from each other and from the gather's index operand; the GPRs must
+/// be free across the sequence.
+#[derive(Clone, Copy)]
+pub struct GatherScratch {
+    /// GPR receiving the buffer base pointer.
+    pub base_gpr: u8,
+    /// GPR receiving each lane's element index.
+    pub index_gpr: u8,
+    /// GPR holding the caller's context pointer (read-only).
+    pub ctx_gpr: u8,
+    /// Vector register for the truncated integer indices.
+    pub idx_lanes: Reg,
+    /// Vector register for one loaded element.
+    pub value: Reg,
+}
+
+/// `dst = base[idx_lane]` for each lane — the whole gather sequence.
+///
+/// `idx` holds the *float* indices (the lowering already clamped them in
+/// range). `dst` may alias `idx`: the indices are converted into scratch before
+/// the first write to `dst`.
+pub fn emit_gather_scalar(code: &mut Vec<u8>, dst: Reg, idx: Reg, slot: u16, s: GatherScratch) {
+    debug_assert!(s.idx_lanes.0 != s.value.0 && s.idx_lanes.0 != idx.0);
+    emit_vcvttps2dq(code, s.idx_lanes, idx);
+    emit_load_ptr_from_ctx(code, s.base_gpr, s.ctx_gpr, i32::from(slot) * 8);
+    for lane in 0..4u8 {
+        emit_vpextrd_to_gpr(code, s.index_gpr, s.idx_lanes, lane);
+        if lane == 0 {
+            // Lane 0 seeds the vector (vmovss zeroes lanes 1..4).
+            emit_vmovss_load_scaled(code, dst, s.base_gpr, s.index_gpr);
+        } else {
+            emit_vmovss_load_scaled(code, s.value, s.base_gpr, s.index_gpr);
+            emit_vinsertps(code, dst, dst, s.value, lane);
+        }
+    }
+}
+
 /// VPADDD dst, src1, src2 — packed i32 add.
 fn emit_vpaddd(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
     emit_vex(code, 1, 1, 0, dst, src1, src2, 0xFE); // VEX.128.66.0F.WIG FE /r
