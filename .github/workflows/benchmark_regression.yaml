@@ -1,12 +1,16 @@
 name: Benchmark Regression Check
 
 on:
+  pull_request:
+    branches: [ "main" ]
   push:
     branches: [ "main" ]
 
 permissions:
   # Required to push to gh-pages
   contents: write
+  # Required to comment on benchmark regressions in pull requests
+  pull-requests: write
   # Required to open issues
   issues: write
 
@@ -21,12 +25,28 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # The workspace includes the Linux X11 runtime. Cargo resolves and builds
+      # it while running the workspace benchmarks, even if a benchmark does not
+      # open a window.
+      - name: Install X11 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+
       # 1. Run Benchmarks
       - name: Run Cargo Bench
         run: |
           set -o pipefail
           mkdir -p benchmark_results
           cargo bench --workspace -- --output-format bencher | tee benchmark_results/output.txt
+
+      - name: Upload benchmark output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: benchmark_results/output.txt
+          if-no-files-found: error
 
       # 2. Compare against History
       - name: Check for Regression
@@ -39,15 +59,18 @@ jobs:
           alert-threshold: '115%'    # Alert if 15% slower
           fail-on-alert: true        # Fail step to trigger the issue creation
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          comment-on-alert: true
+          # PRs compare against history without mutating it. Postsubmit pushes
+          # advance the baseline on gh-pages.
+          auto-push: ${{ github.event_name == 'push' }}
+          comment-on-alert: ${{ github.event_name == 'pull_request' }}
 
       # 3. Open Issue on Regression
       - name: Create Performance Issue
-        if: failure() && steps.benchmark_check.outcome == 'failure'
+        if: failure() && github.event_name == 'push' && steps.benchmark_check.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           # Get the author of the commit to tag them
           AUTHOR=$(git log -1 --pretty=format:'%an')
           SHA=$(git rev-parse --short HEAD)
@@ -63,6 +86,4 @@ jobs:
             
             [View Benchmark Logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
             
-            Please investigate to determine if this slowdown is expected." \
-            --label "performance-regression" \
-            --assignee "${{ github.actor }}"
+            Please investigate to determine if this slowdown is expected."
