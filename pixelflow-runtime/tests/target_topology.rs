@@ -53,11 +53,17 @@ fn the_target_engine_mesh_is_a_dag() {
     // The one edge that stays genuinely Blocking: discrete, non-idempotent input and
     // window-lifecycle events. Nothing else in this graph is Blocking, so this alone cannot
     // form a cycle with anything below.
-    topo.blocking_edge(driver, engine); // DisplayEvent, minus PasteData
+    //
+    // `WindowCreated`/`Resized` notify engine over this edge as `WindowMeta` (scalar, `Copy`)
+    // purely so engine can relay dimensions to app. No frame buffer travels here, and the
+    // render pipeline does not consume these at all — the driver keeps the window and hands it
+    // out on request (§8, "The shape"), so nothing downstream needs telling that it was resized.
+    topo.blocking_edge(driver, engine); // DisplayEvent (window lifecycle as WindowMeta)
 
-    // Idempotent "latest wins" state pushes: no credit needed at all. Present/PresentComplete
-    // used to live here too — they moved to the rasterizer <-> driver edges below, since
-    // rasterizer is what actually presents once engine no longer mediates.
+    // Idempotent "latest wins" state pushes: no credit needed at all. `Present` used to live
+    // here too; it is now a rasterizer -> driver edge below. `PresentComplete` is gone as a
+    // message entirely: the driver is now the window's resting owner, so `Present` *is* the
+    // return and no separate acknowledgement is needed (§8, "The shape").
     topo.droppable_edge(engine, driver); // SetTitle / SetSize / SetCursor / Copy
 
     // RequestPaste / PasteData: plain droppable, deliberately *not* credit-bounded — see §3.2.
@@ -73,18 +79,41 @@ fn the_target_engine_mesh_is_a_dag() {
     topo.droppable_edge(vsync, engine); // vsync tick (Credit-gated)
     topo.droppable_edge(engine, app); // RequestFrame (Credit-gated)
 
-    // The render pipeline, now wired directly instead of through engine (§7 of the migration
-    // doc). rasterizer is where §7's chosen design puts the window/manifold pairing: driver
-    // pushes a window the moment one is free (created, or returned from a prior Present) and
-    // app pushes its latest manifold; rasterizer renders when both are held and its own
-    // Credit(1) allows it, then presents directly and tells vsync.
-    topo.droppable_edge(driver, rasterizer); // window available (created, or returned)
+    // The render pipeline, wired directly instead of through engine (§7/§8). The window is
+    // *pulled*, not pushed (§8, "The shape"): the driver keeps and allocates it, and rasterizer asks for
+    // one only when it holds a manifold and is not already holding a window.
+    //
+    // There is no Credit on this loop: ownership of the single Window is already the bound
+    // (§8, "The judgment calls"). An actor cannot send a window it does not hold, so "at most one grant in flight"
+    // and "at most one Present in flight" are properties of the type, not of a counter — and
+    // each ring is provisioned >= 1, so neither is ever full when sent. Their droppable
+    // backstops are dead code. That matters because `Window` moves by value: an actually
+    // reachable drop would destroy the sole framebuffer, not delay a frame.
+    //
+    // The request is the one genuinely losable message here — it carries no resource, so a drop
+    // costs one frame and the next vsync tick re-asks.
+    //
+    // Note there is no resize edge at all. The driver owns the buffer and resizes it locally,
+    // deferring to `Present` if the window is out at the time (§8, "The judgment calls"), so no resize message
+    // exists that could be dropped.
+    // The coordinator is reactive — it acts only on messages it receives. A tick edge is what
+    // makes "re-request until granted" implementable at all: without it, a dropped request could
+    // only be retried if another manifold happened to arrive, and the app may legitimately send
+    // nothing for many frames. Droppable and genuinely losable: the next tick is the retry.
+    topo.droppable_edge(vsync, rasterizer); // tick — drives request retries
+
+    // Requests ride the Management lane, `Present` the Data lane — deliberately different rings
+    // (§8, "Known-unsettled"). Both are rasterizer -> driver, so sharing one inbox would let queued retries fill
+    // it and force a `Present` drop, destroying the sole buffer. Ownership bounds the
+    // window-bearing traffic; it says nothing about unrelated messages in the same ring.
+    topo.droppable_edge(rasterizer, driver); // window request (Management lane; carries nothing)
+    topo.droppable_edge(driver, rasterizer); // window grant (unreachable: can't grant unheld)
     topo.droppable_edge(app, rasterizer); // manifold submission (keep-latest, as today)
-    topo.droppable_edge(rasterizer, driver); // Present, once rendered
+    topo.droppable_edge(rasterizer, driver); // Present (unreachable: can't present unheld)
     topo.droppable_edge(rasterizer, vsync); // RenderedResponse (FPS telemetry only)
     topo.droppable_edge(app, vsync); // ReturnToken — previously an engine->vsync Control-lane
-                                      // send this proof never modeled separately; modeled here
-                                      // now that it travels a new edge anyway.
+                                     // send this proof never modeled separately; modeled here
+                                     // now that it travels a new edge anyway.
 
     let order = topo.validate().expect(
         "every blocking edge has no return path and every reply is droppable, so this must be \

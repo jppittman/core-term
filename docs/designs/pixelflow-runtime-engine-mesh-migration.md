@@ -332,76 +332,91 @@ exists, and shrinks the surface the collapse has to move. Only then do `window` 
 
 ---
 
-## 8. The render pipeline's actual edges — proven before wiring anything
+## 8. Moving the render pipeline off `engine`
 
-§7 decided where `EngineHandler`'s *state* goes. It didn't decide who performs the one
-remaining piece of logic that isn't state: matching "a window is free" against "a manifold is
-waiting" to decide when to render. That decision, and the edges it implies, needed the same
-treatment every edge in §3 got — proven before any live actor changes — because it invents two
-edges (`driver` ↔ `rasterizer`) that never existed in the mesh before.
+Deleting the mediator means `driver`, `rasterizer`, `vsync` and `app` talk directly. This section
+is **context, not specification** — the protocol lives in the code, and
+`pixelflow-runtime/tests/target_topology.rs` is the machine-checked statement of the graph. What
+follows is the part you can't recover by reading either.
 
-**The match logic lives in `rasterizer`.** `driver` pushes a window the moment one is free
-(`WindowCreated`, or a window returned from a prior `Present`) rather than tracking whether a
-manifold is waiting — it stays exactly as stateless about the render pipeline as §7.3 already
-said. `app` pushes its latest manifold (droppable, keep-latest, same semantics as today).
-`rasterizer` holds both, and renders when it has a window, a manifold, and its own `Credit(1)`
-allows it — colocated with the credit that already gates rendering, rather than split across an
-actor that only relays.
+### The shape
 
-The resulting edges, added to `pixelflow-runtime/tests/target_topology.rs`:
+The window is **pulled, not pushed**: the driver owns the framebuffer and hands it out on
+request; the coordinator asks when it has something to draw, renders, and gives it back.
 
-| Edge | Direction | Kind |
-|---|---|---|
-| Window available (created, or returned from Present) | driver → rasterizer | Droppable, no credit |
-| Manifold submission | app → rasterizer | Droppable, keep-latest |
-| Present | rasterizer → driver | Droppable, shares the ping-pong buffer's Credit(1) |
-| Frame-rendered notice (FPS telemetry) | rasterizer → vsync | Droppable, no credit |
-| `ReturnToken` | app → vsync | Droppable, no credit |
+That direction isn't arbitrary. The OS decides window size, so the driver is the size authority —
+and the intended design is **zero-copy, the renderer writing directly into the OS framebuffer**,
+under which the driver is the only actor that can obtain the memory at all. Put allocation
+anywhere else and size information has to chase the buffer across the mesh, over edges that are
+either unreliable or block the main thread. (The current backends still copy — `Vec<P>` plus
+`replaceRegion:`/`XPutImage`. That's a known defect against the design, not a constraint on it.)
 
-Two of these delete an existing edge rather than add one: `engine → driver` (`Present`) and
-`driver → engine` (`PresentComplete`) are gone — `rasterizer` presents directly now. `engine ↔
-rasterizer` and `engine → vsync` (`RenderedResponse`) are gone entirely; nothing uses that pair
-any more. `app → engine` (`AppData::RenderSurface`) is also gone: the message that used to
-double as both "here is the manifold" and "return my vsync token" now travels as two direct
-sends, to the two actors that actually need each half.
+The `rasterizer` node in the topology is a **runtime-side coordinator**, not
+`pixelflow-graphics`'s `RasterizerActor` — that crate is runtime-agnostic and can't name `Window`.
+The graphics actor sits behind it as a leaf worker, collapsed into one node in the proof. An
+earlier draft justified that by "a leaf whose only peer is its caller can't cycle" — which is
+false, and `regressed_render_pipeline_framing_is_cyclic` in the proof demonstrates exactly that
+two-actor shape. **The real condition is that one direction of the internal exchange must be
+non-blocking**, and it is: the worker replies over an unbounded `mpsc::Sender`, which cannot
+block or fill. If that ever becomes a bounded/`SyncSender` channel — or the worker gains a peer
+— the collapse is invalid and it needs its own node in the proof.
 
-`ReturnToken` closes a small pre-existing gap in this proof: it was already an `engine → vsync`
-Control-lane send, but never modeled as its own edge — modeled now, since it travels a new edge
-anyway.
+**The coordinator owns the point→pixel warp.** The scene is authored in point space; the frame
+is the platform's sample lattice and may be denser (Retina). `trigger_render_with_window`
+currently contramaps the manifold by the measured points/pixels ratio per axis before handing it
+to the rasterizer. That responsibility has to land somewhere explicit when `EngineHandler` goes —
+forwarding the manifold straight to the graphics worker renders at the wrong scale on any HiDPI
+display, and the bug is invisible on a 1:1 monitor. It stays in `pixelflow-runtime`: it's runtime
+coordinate mapping, not general rasterization (`CLAUDE.md` — no terminal-adjacent logic in the
+graphics crate). Worth a test at a non-1:1 logical/frame ratio, which nothing currently covers.
 
-`the_target_engine_mesh_is_a_dag` is **updated in place**, not duplicated, matching this file's
-own stated purpose of staying valid across the rollout. A new `regressed_render_pipeline_
-framing_is_cyclic` test records the shape of mistake most likely to recur here: treating "only
-one window ever circulates" as license to make the driver ↔ rasterizer hand-off synchronous in
-both directions. It's the identical error §3.1 caught for driver ↔ engine, just with a fresh
-pair of actors — two blocking edges between the same pair is a cycle regardless of whether the
-conversations are logically unrelated.
+### The judgment calls
 
-### 8.1 Explicitly out of scope for this slice
+`Topology` proves acyclicity. It cannot tell you what may be lost — that's per-edge judgment, and
+it's the reason this doc exists at all:
 
-`engine` remains a node in the proven graph — this is a render-pipeline-only cut, not the full
-deletion. Left alone, and routed through `engine` exactly as today:
+- **`[drop]` has two very different justifications.** *Structurally unreachable* (the drop path is
+  dead code) versus *genuinely acceptable loss* (dropping is normal). Conflating them is how a
+  catastrophic edge gets marked safe because it superficially resembles a harmless one.
+- **Droppable is not keep-latest.** A full ring discards the *newest* message; keep-latest needs
+  the *oldest* gone. Safe only where a subsequent message genuinely replaces the lost one.
+- **A moved resource can't be "retried."** Buffers move by value — a drop destroys them, and the
+  sender kept nothing to resend. Only messages carrying descriptions are recoverable by retry.
+- **Ownership already bounds what a `Credit` would count.** You can't send a buffer you don't
+  hold. Reach for `Credit` where the bound *isn't* ownership — outstanding request counts, permits
+  that don't move a value.
+- **A buffer is destroyed only by its owner, deliberately** — resize legitimately replaces one —
+  **never by a delivery failure**, which destroys something nobody chose to and leaves both sides
+  believing the other has it.
 
-- Input-event forwarding (`driver → engine`, Blocking).
-- `AppManagement` commands — `SetTitle`, `SetSize`, `SetCursor`, `Copy`, `RequestPaste`,
-  `CreateWindow` — and their replies (`PasteData`).
-- The vsync-tick → `RequestFrame` relay (`vsync → engine → app`).
+### Known-unsettled
 
-Moving these is a separate, later slice: none of them touch the state this doc's §7 already
-redistributed, and folding them in here would make one change cover two independent decisions.
+Recorded so they aren't mistaken for solved. Each needs to be answered in code, where it can be
+checked:
 
-### 8.2 What implementing this actually requires
+- **Lane separation.** Requests and `Present` share a `rasterizer → driver` direction; if they
+  share a ring, queued retries can force a `Present` drop. `Topology` doesn't model lanes, so
+  nothing currently checks this.
+- **Disconnected receivers.** `send_port` treats `Disconnected` as success and drops the payload
+  regardless of delivery kind — so a coordinator restart can destroy the buffer. Ring capacity
+  arguments don't cover this; it needs a stated terminal-failure policy.
+- **Credit-bearing replies that can be dropped.** `ReturnToken` releases vsync's tick budget; if
+  its edge can lose messages, the budget shrinks permanently. Same shape as the paste deadlock
+  in §3.2 — worth checking every credit whose release travels a droppable edge.
+- **Keep-latest for manifold submission.** §3 and §7.3 delete `pending_manifold` on the grounds
+  that the droppable port *is* the staleness policy — but droppable discards the **newest**
+  message, not the oldest. If the app's final state change is the one dropped and subsequent
+  frame requests return `Skipped`, a stale surface stays on screen indefinitely. Needs either a
+  real drop-oldest delivery or an explicit coalescing slot before that state is removed.
+- **Stale-return protocol under pull.** §7.2 has the *coordinator* detect a stale render by
+  comparing against the current window — but under pull the coordinator never learns dimensions,
+  and the driver alone knows a resize is pending. Nothing yet defines how the driver rejects the
+  old-size frame, swaps the buffer, and triggers a new grant. §7.2 is superseded on this point
+  and the replacement is unwritten; the generation stamping in `EngineHandler` is the closest
+  existing mechanism.
+- **Zero-copy.** Tracked separately; the copy in both backends is a defect, not the target.
 
-Wiring these edges for real is a larger change than §7's field deletions were, and is scoped as
-its own follow-up rather than bundled with the proof:
+### Out of scope here
 
-- `rasterizer`'s bootstrap (today `EngineHandler::spawn_rasterizer`) moves out of
-  `EngineHandler` entirely — the rasterizer becomes a directly-wired mesh participant with its
-  own initialization, not something the mediator stands up on the mediator's behalf.
-- A new piece of runtime-side state holds `latest_window`, the render `Credit(1)`, and performs
-  the point-space → pixel-space dimap warp that `trigger_render_with_window` does today — this
-  logic stays in `pixelflow-runtime`, not `pixelflow-graphics`, since it's runtime coordinate
-  mapping, not general rasterization (`CLAUDE.md`: no terminal-adjacent logic in the graphics
-  crate).
-- `app`'s handle setup gains a second target: today `Application` only reaches `engine`; it
-  needs a way to reach `rasterizer` (manifold) and `vsync` (`ReturnToken`) directly.
+`engine` remains a node for input-event forwarding, `AppManagement` commands, and the
+vsync-tick → `RequestFrame` relay. Those move in a later slice.

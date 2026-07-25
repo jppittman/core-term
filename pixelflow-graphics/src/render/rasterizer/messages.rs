@@ -46,8 +46,11 @@ pub struct RenderRequest<P: Pixel, Meta = ()> {
 pub struct RenderResponse<P: Pixel, Meta = ()> {
     /// The rendered frame.
     pub frame: Frame<P>,
-    /// Time taken to render the frame.
-    pub render_time: Duration,
+    /// Time taken to render, or `None` if the rasterizer was paused and did not render.
+    ///
+    /// The frame comes back either way — see [`RenderRequest::frame`]. Whether it was *rendered*
+    /// is the optional part; whether the caller gets its buffer back never was.
+    pub render_time: Option<Duration>,
     /// The [`RenderRequest::meta`] payload, returned exactly as it was given.
     pub meta: Meta,
 }
