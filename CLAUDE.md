@@ -46,15 +46,24 @@ on every target actually does:
 | Op | x86 | aarch64 | combinator tier |
 |---|---|---|---|
 | `Min`, `Max` (NaN operand) | `(a OP b) ? a : b` → the **second** operand | `FMIN`/`FMAX` **propagate** NaN | — |
+| `Min`, `Max` (opposite-signed zeros) | operand order → the **second** zero | `FMIN` picks `-0.0`, `FMAX` picks `+0.0` | — |
 | `Gt`, `Ge` (NaN operand) | unordered (imm8 6/5) — **true** | `FCMGT`/`FCMGE` ordered — **false** | ordered — **false** |
 | `Round` (exact tie) | nearest-**even** (imm 0x00) → `round(2.5) == 2` | `FRINTA` ties-**away** → `3` | `(x+0.5).floor()` → `3`, but `round(-1.5) == -1` |
 
 `min(NaN, 1.0)` is `1.0` on x86 and `NaN` on aarch64. x86 has no ties-away
 rounding mode, so unifying `Round` costs extra instructions in the hot path.
 "Hardware semantics" is not one answer when the hardware differs — so the
-language promises none, marked by `OpKind::nan_result_is_platform_specific` and
-`tie_result_is_platform_specific`. Do not write a test, a rewrite rule, or a
-fold that depends on one target's answer.
+language promises none, marked by `OpKind::fold_is_platform_specific(args)`,
+which is value-aware because the divergence is: `min(1.0, 2.0)` is perfectly
+foldable, `min(-0.0, 0.0)` is not. Do not write a test, a rewrite rule, or a
+fold that depends on one target's answer — and note that `==` cannot see the
+signed-zero case (`-0.0 == 0.0`), so compare bit patterns; `1.0 / x` turns it
+into `+inf` versus `-inf`.
+
+Constant folding must **decline** for these, and the reason is sharper than
+optimizer consistency: the folder runs on the *build host* at macro-expansion
+time while the constant executes on the *target*, so folding bakes the build
+machine's arithmetic into a binary that may run elsewhere.
 
 Corollary worth stating because it is easy to get wrong: **unspecified means the
 optimizer may legitimately produce a different answer than the unoptimized code.**
