@@ -62,8 +62,8 @@ fn the_target_engine_mesh_is_a_dag() {
 
     // Idempotent "latest wins" state pushes: no credit needed at all. `Present` used to live
     // here too; it is now a rasterizer -> driver edge below. `PresentComplete` is gone as a
-    // message entirely — the driver never gives the window away permanently, so there is
-    // nothing to hand back (§8.5).
+    // message entirely: the driver is now the window's resting owner, so `Present` *is* the
+    // return and no separate acknowledgement is needed (§8.5).
     topo.droppable_edge(engine, driver); // SetTitle / SetSize / SetCursor / Copy
 
     // RequestPaste / PasteData: plain droppable, deliberately *not* credit-bounded — see §3.2.
@@ -81,22 +81,25 @@ fn the_target_engine_mesh_is_a_dag() {
 
     // The render pipeline, wired directly instead of through engine (§7/§8). The window is
     // *pulled*, not pushed (§8.5): the driver keeps and allocates it, and rasterizer asks for
-    // one only when it holds a manifold and its Credit(1) allows.
+    // one only when it holds a manifold and is not already holding a window.
     //
-    // The single credit spans the WHOLE round trip — consumed at the request, released only
-    // when `Present` puts the window back with the driver. So at most one message carrying the
-    // window is in flight across these three edges at any instant, each ring is provisioned
-    // >= 1, and the droppable backstop is therefore unreachable by construction (§3's
-    // "structurally unreachable" category). That is the only thing making these safe: `Window`
-    // moves by value, so a drop would destroy the sole framebuffer outright — no sender can
-    // "resend" something it moved away.
+    // There is no Credit on this loop: ownership of the single Window is already the bound
+    // (§8.6). An actor cannot send a window it does not hold, so "at most one grant in flight"
+    // and "at most one Present in flight" are properties of the type, not of a counter — and
+    // each ring is provisioned >= 1, so neither is ever full when sent. Their droppable
+    // backstops are dead code. That matters because `Window` moves by value: an actually
+    // reachable drop would destroy the sole framebuffer, not delay a frame.
     //
-    // Note there is no resize edge at all. On resize the driver swaps its own buffer and tells
-    // nobody, so there is no resize message that can be dropped.
-    topo.droppable_edge(rasterizer, driver); // window request (consumes Credit(1))
-    topo.droppable_edge(driver, rasterizer); // window grant, correctly sized (credit still held)
+    // The request is the one genuinely losable message here — it carries no resource, so a drop
+    // costs one frame and the next vsync tick re-asks.
+    //
+    // Note there is no resize edge at all. The driver owns the buffer and resizes it locally,
+    // deferring to `Present` if the window is out at the time (§8.7), so no resize message
+    // exists that could be dropped.
+    topo.droppable_edge(rasterizer, driver); // window request (losable; carries nothing)
+    topo.droppable_edge(driver, rasterizer); // window grant (unreachable: can't grant unheld)
     topo.droppable_edge(app, rasterizer); // manifold submission (keep-latest, as today)
-    topo.droppable_edge(rasterizer, driver); // Present, once rendered (releases the credit)
+    topo.droppable_edge(rasterizer, driver); // Present (unreachable: can't present unheld)
     topo.droppable_edge(rasterizer, vsync); // RenderedResponse (FPS telemetry only)
     topo.droppable_edge(app, vsync); // ReturnToken — previously an engine->vsync Control-lane
                                      // send this proof never modeled separately; modeled here
