@@ -90,6 +90,12 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
                 sender.send(self.last_fps).ok();
                 self.log(&format!("fps_requested:sent={:.1}", self.last_fps));
             }
+            VsyncCommand::ReturnToken => {
+                if self.tokens < MAX_TOKENS {
+                    self.tokens += 1;
+                    self.log(&format!("token_returned:tokens={}", self.tokens));
+                }
+            }
             VsyncCommand::Shutdown => {
                 self.running = false;
                 self.log("shutdown");

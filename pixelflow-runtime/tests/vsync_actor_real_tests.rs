@@ -7,33 +7,24 @@
 //!
 //! This closes it by constructing a real `EngineActorHandle` via
 //! `api::private::create_engine_actor` and draining it with a small collector actor, so the
-//! real `VsyncActor` has somewhere real to send its ticks. It exists specifically to serve as a
-//! before/after regression harness for converting `VsyncActor`'s internals onto
-//! `Transducer`/`Credit` (`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5 step 2):
-//! run against the unconverted actor first to prove it passes, then again after the refactor to
-//! prove nothing observable changed (except the one documented, intentional behavior flip
-//! noted below).
+//! real `VsyncActor` has somewhere real to send its ticks. It was written *before*
+//! `VsyncActor`'s internals moved onto `Transducer`/`Credit`
+//! (`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5 step 2) as a before/after
+//! regression harness, and now exercises the real message-based `ReturnToken` that the refactor
+//! added — previously untestable from outside the crate, since the only thing that returned a
+//! token reached directly into a same-process global static.
 //!
-//! # Why this is one `#[test]`, not several
-//!
-//! `VSYNC_TOKEN_BUCKET` is one process-wide global static — not per-`VsyncActor` state. Every
-//! `VsyncActor` instance in this test **binary** shares the exact same atomic, it only ever
-//! decreases (nothing reachable from an integration test replenishes it — see below), and
-//! cargo runs `#[test]` functions in parallel and in unspecified order by default. Splitting
-//! this into separate tests asserting exact counts (e.g. "exhausts at exactly 100") would pass
-//! or fail depending on what *other* tests in this binary happened to run first and how much of
-//! the shared bucket they'd already spent — a real, deterministic cross-test coupling bug, not
-//! flakiness to paper over with longer timeouts. One test, one `VsyncActor`, sequential
-//! sections, is the only way to get a clean measurement against a bucket that starts full.
-//!
-//! (This coupling is itself evidence for the migration: converting the bucket to per-instance
-//! `Credit` removes it entirely — each actor gets its own, unshared state, and this whole
-//! caveat stops applying.)
+//! What it deliberately does *not* do: re-check "never exceeds the cap" or "`RenderedResponse`
+//! doesn't return a token" by sleeping a fixed duration and rechecking a count. Those are
+//! already proven deterministically, with no thread/clock/sleep involved, by `VsyncCore`'s own
+//! unit tests in `vsync_actor.rs`. See `real_vsync_actor_token_bucket_behavior`'s doc comment
+//! for why this file only asserts things eventually happening (via a poll-until-true with a
+//! generous deadline), never things *not* happening by some wall-clock deadline.
 
 use actor_scheduler::{Actor, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus};
 use pixelflow_runtime::api::private::{EngineControl, EngineData, create_engine_actor};
 use pixelflow_runtime::api::public::AppManagement;
-use pixelflow_runtime::vsync_actor::{RenderedResponse, VsyncActor, VsyncCommand};
+use pixelflow_runtime::vsync_actor::{VsyncActor, VsyncCommand};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -78,13 +69,24 @@ fn wait_for_at_least(ticks: &Arc<Mutex<Vec<Instant>>>, n: usize, deadline: Insta
 }
 
 /// Exercises a single real `VsyncActor` end to end: starts, ticks, saturates its token bucket
-/// under sustained demand, and confirms `RenderedResponse` does not (today) return a token.
+/// under sustained demand, and confirms `ReturnToken` unblocks exactly one more.
 ///
-/// 1000Hz is far faster than any real display, specifically to blow through `MAX_TOKENS` well
-/// within the test's timeout. Deadlines are generous throughout: the clock thread's *actual*
-/// tick rate under a shared/sandboxed scheduler can fall well short of the requested 1000Hz
-/// (`recv_timeout`'s real granularity, CPU contention from other tests in the binary) — these
-/// are correctness properties (does it cap, does it stay capped), not timing ones.
+/// Deliberately does *not* re-prove "never exceeds the cap" or "`RenderedResponse` doesn't
+/// return a token" here by sleeping some fixed duration and rechecking the count — that's an
+/// assertion about event ordering racing against a real background clock thread, and it can
+/// only ever be as good as how long you were willing to wait. Both invariants are already
+/// proven deterministically, with no thread/clock/sleep in the loop, by `VsyncCore`'s own unit
+/// tests in `vsync_actor.rs` (`credit_caps_ticks_at_max_tokens_with_no_clock_involved`,
+/// `rendered_response_does_not_return_a_token`). This test's job is only to prove the real
+/// wiring reaches that same core: a real `Start` produces a real tick, sustained real demand
+/// reaches exactly the cap, and a real `ReturnToken` message unblocks a real tick — all
+/// positive, "did this eventually happen" assertions via `wait_for_at_least`'s poll-until-true
+/// (bounded by a generous deadline), never "did this NOT happen by the time I checked."
+///
+/// 1000Hz is far faster than any real display, specifically to reach `MAX_TOKENS` well within
+/// the test's timeout. Deadlines are generous throughout: the clock thread's *actual* tick rate
+/// under a shared/sandboxed scheduler can fall well short of the requested 1000Hz
+/// (`recv_timeout`'s real granularity, CPU contention from other tests in the binary).
 #[test]
 fn real_vsync_actor_token_bucket_behavior() {
     let (engine_handle, mut engine_sched) = create_engine_actor(None);
@@ -106,43 +108,28 @@ fn real_vsync_actor_token_bucket_behavior() {
     let first = wait_for_at_least(&ticks, 1, Instant::now() + Duration::from_secs(5));
     assert!(first > 0, "a started VsyncActor must tick at least once");
 
-    // 2. Sustained demand saturates the bucket at exactly its cap, never beyond.
+    // 2. Sustained demand reaches exactly the cap — `wait_for_at_least` returns as soon as the
+    //    count crosses `MAX_TOKENS`, so an exact-equality check here already catches the bucket
+    //    overshooting, with no separate "wait longer, recheck" step needed.
     let saturated = wait_for_at_least(&ticks, MAX_TOKENS, Instant::now() + Duration::from_secs(30));
     assert_eq!(
         saturated, MAX_TOKENS,
         "bucket should saturate at exactly its cap under sustained demand"
     );
 
-    // Give the clock thread ample further opportunity; it must not exceed the cap.
-    thread::sleep(Duration::from_millis(200));
-    assert_eq!(
-        ticks.lock().unwrap().len(),
-        MAX_TOKENS,
-        "must not tick again once the bucket is empty"
-    );
-
-    // 3. `RenderedResponse` does **not** replenish the bucket today — a real, slightly
-    //    surprising finding, not a guess. `VsyncActor::handle_data`'s own comment says "Token
-    //    management is now handled via atomic bucket"; the only thing that actually calls
-    //    `return_vsync_token()` is `engine_troupe.rs`'s `handle_app_data`, reaching directly
-    //    into the same-process global static — a path this test cannot reach (the function is
-    //    `pub(crate)`, and the global it touches is a same-process implementation detail).
-    //    Documented here as *current, about-to-change* behavior: converting the bucket to a
-    //    real `Credit` means the return must become an actual message (there is no
-    //    process-global left to reach into), which is expected to flip this specific
-    //    assertion once that lands — the intended fix, not a regression.
+    // 3. `ReturnToken` — a real message, not a same-process global mutation — unblocks exactly
+    //    one more real tick. This is the capability the refactor added: previously the only
+    //    thing that returned a token was `engine_troupe.rs` reaching directly into a
+    //    process-global static, a path no test outside the crate could exercise.
     vsync
-        .send(Message::Data(RenderedResponse {
-            frame_number: 1,
-            rendered_at: Instant::now(),
-        }))
+        .send(Message::Control(VsyncCommand::ReturnToken))
         .unwrap();
-    thread::sleep(Duration::from_secs(2));
+    let after_return =
+        wait_for_at_least(&ticks, MAX_TOKENS + 1, Instant::now() + Duration::from_secs(30));
     assert_eq!(
-        ticks.lock().unwrap().len(),
-        MAX_TOKENS,
-        "RenderedResponse must not affect the token bucket today — only engine_troupe.rs's \
-         direct global-static call does, which this test cannot reach"
+        after_return,
+        MAX_TOKENS + 1,
+        "ReturnToken must unblock exactly one more tick"
     );
 
     vsync.send(Message::Control(VsyncCommand::Shutdown)).unwrap();

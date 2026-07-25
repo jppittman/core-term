@@ -8,66 +8,43 @@
 //! clock thread that sends explicit `Tick` messages to the actor. This ensures
 //! the actor wakes up reliably regardless of other system load, without relying
 //! on blocking `park` calls that could stall the actor scheduler.
+//!
+//! # `VsyncCore`: the decision logic as a `Transducer`
+//!
+//! Rollout step 2 of `docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5. The actual
+//! vsync decision logic — should this tick fire, has the refresh rate changed, is FPS due for
+//! an update — lives in [`VsyncCore`], a pure [`actor_scheduler::mealy::Transducer`]: it takes
+//! a message and returns what to emit, touching no threads, no channels, no `EngineActorHandle`.
+//! `VsyncActor` (below) is now a thin adapter: it owns the clock thread and the engine handle,
+//! and turns `VsyncCore`'s `Some(tick)` output into the actual `engine_handle.send(...)` call.
+//!
+//! This is deliberately *not yet* wired onto a real `Node`/`Host` — `VsyncActor` still runs on
+//! its own dedicated OS thread via the old `Actor`/`ActorScheduler`, exactly as before, so
+//! `EngineHandler` needs zero changes to its field types. Only the *internals* moved onto the
+//! new primitive. See the design doc for why that split is deliberate, not a shortcut.
+//!
+//! # `Credit` replaces the global token bucket
+//!
+//! The former `VSYNC_TOKEN_BUCKET` was a process-wide `AtomicU32`, decremented by vsync itself
+//! but *returned* by `engine_troupe.rs` calling a free function directly — reaching into
+//! vsync's state without a message, the exact hazard the mesh migration exists to remove (see
+//! the design doc's case study). `VsyncCore` now holds a private, non-atomic
+//! [`actor_scheduler::mealy::Credit`], consumed in [`Transducer::step_management`] and released
+//! only in [`Transducer::step_control`] on a new [`VsyncCommand::ReturnToken`] — a real message,
+//! not a shared global. `engine_troupe.rs`'s two call sites become sends of that command.
 
-use actor_scheduler::{
-    Actor, ActorBuilder, ActorHandle, HandlerError, HandlerResult, SystemStatus,
-};
+use actor_scheduler::mealy::{Credit, Transducer};
+use actor_scheduler::{Actor, ActorBuilder, ActorHandle, HandlerError, HandlerResult, SystemStatus};
 use log::info;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Global VSync token bucket - controls frame request rate.
-/// VSync decrements before sending ticks, engine/app increments when manifold ready.
-/// This is separate from FPS measurement (which counts actual rasterization).
-static VSYNC_TOKEN_BUCKET: AtomicU32 = AtomicU32::new(MAX_TOKENS);
-
 /// Default refresh rate in Hz.
 const DEFAULT_REFRESH_RATE: f64 = 60.0;
 
-/// Try to consume a VSync token. Returns true if token was available.
-#[inline]
-pub(crate) fn try_consume_vsync_token() -> bool {
-    VSYNC_TOKEN_BUCKET
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |tokens| {
-            if tokens > 0 {
-                Some(tokens - 1)
-            } else {
-                None
-            }
-        })
-        .is_ok()
-}
-
-/// Return a VSync token to the bucket (up to MAX_TOKENS).
-#[inline]
-pub(crate) fn return_vsync_token() {
-    let prev = VSYNC_TOKEN_BUCKET.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |tokens| {
-        if tokens < MAX_TOKENS {
-            Some(tokens + 1)
-        } else {
-            None
-        }
-    });
-
-    // Rate-limit warning to 1% of calls to avoid log spam
-    if prev.is_err() {
-        static WARN_COUNTER: AtomicU32 = AtomicU32::new(0);
-        if WARN_COUNTER
-            .fetch_add(1, Ordering::Relaxed)
-            .is_multiple_of(100)
-        {
-            log::warn!("VSync token bucket already at max capacity");
-        }
-    }
-}
-
-/// Get current token count (for debugging).
-#[inline]
-pub(crate) fn vsync_token_count() -> u32 {
-    VSYNC_TOKEN_BUCKET.load(Ordering::Relaxed)
-}
+/// Vsync tick request budget. Was `VSYNC_TOKEN_BUCKET`'s cap; now `Credit`'s `max`.
+const MAX_TOKENS: u32 = 100;
 
 /// Configuration for VsyncActor
 #[derive(Debug, Clone)]
@@ -94,6 +71,12 @@ pub enum VsyncCommand {
     UpdateRefreshRate(f64),
     /// Request current FPS stats
     RequestCurrentFPS(Sender<f64>),
+    /// Return a previously-consumed vsync token, allowing another tick through.
+    ///
+    /// Replaces the old `return_vsync_token()` free function — the same event (app responded
+    /// to a frame request, rasterization no longer bottlenecks the tick rate), now a real
+    /// message instead of a same-process global mutation.
+    ReturnToken,
     /// Shutdown the actor
     #[default]
     Shutdown,
@@ -133,11 +116,31 @@ enum ClockCommand {
     Stop,
 }
 
-/// VSync actor - generates periodic vsync timing signals.
-pub struct VsyncActor {
-    engine_handle: Option<crate::api::private::EngineActorHandle>,
+// ────────────────────────────────────────────────────────────────────────────
+// VsyncCore: the pure decision logic
+// ────────────────────────────────────────────────────────────────────────────
 
-    // VSync state
+/// What a tick decides to emit: the payload of `EngineData::VSync`, without depending on
+/// `EngineData` itself — `VsyncCore` knows nothing about the engine's wire types, only that it
+/// produces a timestamp triple.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VsyncTick {
+    pub(crate) timestamp: Instant,
+    pub(crate) target_timestamp: Instant,
+    pub(crate) refresh_interval: Duration,
+}
+
+/// Output word for [`VsyncCore`]: at most one tick per step. `Default` (no tick) is the common
+/// case — most steps (Start/Stop/FPS tracking/etc.) emit nothing.
+#[derive(Debug, Default)]
+pub(crate) struct VsyncCoreOut {
+    pub(crate) tick: Option<VsyncTick>,
+}
+
+/// Pure vsync decision core. No threads, no channels, no `EngineActorHandle` — a `step_*` call
+/// takes a message and returns what to emit, so it is table-testable with no scheduler, no
+/// clock thread, and no actor machinery in the loop.
+pub(crate) struct VsyncCore {
     refresh_rate: f64,
     interval: Duration,
     running: bool,
@@ -148,11 +151,160 @@ pub struct VsyncActor {
     fps_start: Instant,
     last_fps: f64,
 
-    // Control for the clock thread
-    clock_control: Option<Sender<ClockCommand>>,
+    credit: Credit,
 }
 
-const MAX_TOKENS: u32 = 100;
+impl VsyncCore {
+    fn new(refresh_rate: f64) -> Self {
+        Self {
+            refresh_rate,
+            interval: Duration::from_secs_f64(1.0 / refresh_rate),
+            running: false,
+            next_vsync: Instant::now(),
+            frame_count: 0,
+            fps_start: Instant::now(),
+            last_fps: 0.0,
+            credit: Credit::new(MAX_TOKENS),
+        }
+    }
+
+    /// Current tick interval, for the adapter to hand to the clock thread.
+    fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    /// Applied on `SetConfig`: set the rate and auto-start. Distinct from the plain
+    /// `UpdateRefreshRate` command, which changes the rate without affecting `running` — this
+    /// mirrors the original code's "auto-start after configuration" comment exactly.
+    fn configure(&mut self, refresh_rate: f64) {
+        self.refresh_rate = refresh_rate;
+        self.interval = Duration::from_secs_f64(1.0 / refresh_rate);
+        self.running = true;
+        self.next_vsync = Instant::now();
+    }
+
+    fn set_refresh_rate(&mut self, new_rate: f64) {
+        self.refresh_rate = new_rate;
+        self.interval = Duration::from_secs_f64(1.0 / new_rate);
+    }
+
+    fn update_fps(&mut self) {
+        let elapsed = self.fps_start.elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            self.last_fps = self.frame_count as f64 / elapsed.as_secs_f64();
+            self.frame_count = 0;
+            self.fps_start = Instant::now();
+        }
+    }
+}
+
+impl Transducer for VsyncCore {
+    type Control = VsyncCommand;
+    type Management = VsyncManagement;
+    type Data = RenderedResponse;
+    type Out = VsyncCoreOut;
+
+    fn step_data(&mut self, response: RenderedResponse) -> Result<VsyncCoreOut, HandlerError> {
+        // Count actual rendered frames for accurate FPS measurement. Deliberately does not
+        // touch `credit` — see the module doc: replenishment is `ReturnToken`, a separate,
+        // explicit command, not implied by a frame having rendered.
+        self.frame_count += 1;
+        log::trace!("VsyncActor: Frame {} rendered", response.frame_number);
+        self.update_fps();
+        Ok(VsyncCoreOut::default())
+    }
+
+    fn step_control(&mut self, cmd: VsyncCommand) -> Result<VsyncCoreOut, HandlerError> {
+        match cmd {
+            VsyncCommand::Start => {
+                self.running = true;
+                self.next_vsync = Instant::now(); // Reset timing
+                info!("VsyncActor: Started");
+            }
+            VsyncCommand::Stop => {
+                self.running = false;
+                info!("VsyncActor: Stopped");
+            }
+            VsyncCommand::UpdateRefreshRate(new_rate) => {
+                self.set_refresh_rate(new_rate);
+                info!(
+                    "VsyncActor: Updated refresh rate to {:.2} Hz ({:.2}ms interval)",
+                    self.refresh_rate,
+                    self.interval.as_secs_f64() * 1000.0
+                );
+                // Pushing the new interval to the clock thread is the adapter's job — this
+                // core has no clock thread to push it to.
+            }
+            VsyncCommand::RequestCurrentFPS(sender) => {
+                info!("VsyncActor: FPS requested - {:.2} fps", self.last_fps);
+                if let Err(e) = sender.send(self.last_fps) {
+                    log::warn!("VsyncActor: Failed to send FPS response: {:?}", e);
+                }
+            }
+            VsyncCommand::ReturnToken => {
+                self.credit.release();
+                log::trace!("VsyncActor: Token returned");
+            }
+            VsyncCommand::Shutdown => {
+                info!("VsyncActor: Shutting down");
+                // Stopping the clock thread is the adapter's job — this core owns no thread.
+            }
+        }
+        Ok(VsyncCoreOut::default())
+    }
+
+    fn step_management(&mut self, msg: VsyncManagement) -> Result<VsyncCoreOut, HandlerError> {
+        match msg {
+            VsyncManagement::Tick => {
+                if !self.running {
+                    return Ok(VsyncCoreOut::default());
+                }
+
+                let now = Instant::now();
+                if now < self.next_vsync {
+                    return Ok(VsyncCoreOut::default());
+                }
+
+                if !self.credit.try_consume() {
+                    log::trace!("VsyncActor: No tokens available, skipping vsync");
+                    return Ok(VsyncCoreOut::default());
+                }
+
+                let timestamp = now;
+                let target_timestamp = now + self.interval;
+                self.next_vsync = timestamp + self.interval; // no cumulative drift
+                Ok(VsyncCoreOut {
+                    tick: Some(VsyncTick {
+                        timestamp,
+                        target_timestamp,
+                        refresh_interval: self.interval,
+                    }),
+                })
+            }
+            VsyncManagement::SetConfig { .. } => {
+                // Intercepted by the adapter before it ever reaches the core (see
+                // `VsyncActor::handle_management`) — configuring engine_handle/self_handle and
+                // spawning the clock thread are adapter concerns the core has no fields for.
+                Ok(VsyncCoreOut::default())
+            }
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// VsyncActor: the thin adapter — clock thread, engine handle, real sends
+// ────────────────────────────────────────────────────────────────────────────
+
+/// VSync actor - generates periodic vsync timing signals.
+///
+/// Owns exactly the things [`VsyncCore`] cannot: the engine handle, the clock thread. Every
+/// `handle_*` call delegates the decision to `core`, then turns `Some(tick)` into the one real
+/// side effect this whole actor performs — `engine_handle.send(...)`.
+pub struct VsyncActor {
+    engine_handle: Option<crate::api::private::EngineActorHandle>,
+    clock_control: Option<Sender<ClockCommand>>,
+    core: VsyncCore,
+}
 
 impl VsyncActor {
     /// Helper to spawn the clock thread.
@@ -191,14 +343,8 @@ impl VsyncActor {
     pub fn new_empty() -> Self {
         Self {
             engine_handle: None,
-            refresh_rate: DEFAULT_REFRESH_RATE,
-            interval: Duration::from_secs_f64(1.0 / DEFAULT_REFRESH_RATE),
-            running: false,
-            next_vsync: Instant::now(),
-            frame_count: 0,
-            fps_start: Instant::now(),
-            last_fps: 0.0,
             clock_control: None,
+            core: VsyncCore::new(DEFAULT_REFRESH_RATE),
         }
     }
 
@@ -222,14 +368,8 @@ impl VsyncActor {
 
         Self {
             engine_handle: Some(engine_handle),
-            refresh_rate,
-            interval,
-            running: false,
-            next_vsync: Instant::now(),
-            frame_count: 0,
-            fps_start: Instant::now(),
-            last_fps: 0.0,
             clock_control: Some(clock_tx),
+            core: VsyncCore::new(refresh_rate),
         }
     }
 
@@ -257,146 +397,88 @@ impl VsyncActor {
         handle
     }
 
-    fn send_vsync(&mut self) {
+    /// Turn a `VsyncCore` output word into the one real send this actor makes.
+    fn emit(&mut self, out: VsyncCoreOut) {
+        let Some(tick) = out.tick else {
+            return;
+        };
         let Some(ref engine_handle) = self.engine_handle else {
             return; // Not configured yet
         };
-
-        let now = Instant::now();
-        let timestamp = now;
-        let target_timestamp = now + self.interval;
 
         use crate::api::private::EngineData;
         use actor_scheduler::Message;
 
         if engine_handle
             .send(Message::Data(EngineData::VSync {
-                timestamp,
-                target_timestamp,
-                refresh_interval: self.interval,
+                timestamp: tick.timestamp,
+                target_timestamp: tick.target_timestamp,
+                refresh_interval: tick.refresh_interval,
             }))
-            .is_ok()
+            .is_err()
         {
-            // Calculate next vsync (no cumulative drift)
-            self.next_vsync = timestamp + self.interval;
-        } else {
             // Engine dropped the receiver
             info!("VsyncActor: Engine disconnected");
-        }
-    }
-
-    fn update_fps(&mut self) {
-        let elapsed = self.fps_start.elapsed();
-        if elapsed >= Duration::from_secs(1) {
-            self.last_fps = self.frame_count as f64 / elapsed.as_secs_f64();
-            info!("VsyncActor: Current FPS: {:.2}", self.last_fps);
-            self.frame_count = 0;
-            self.fps_start = Instant::now();
-        }
-    }
-
-    fn handle_tick(&mut self) {
-        if !self.running {
-            return;
-        }
-
-        let now = Instant::now();
-
-        // If it's time for next vsync (or close enough/past due), check token bucket and send
-        if now >= self.next_vsync {
-            if try_consume_vsync_token() {
-                log::trace!(
-                    "VsyncActor: Token consumed, {} remaining",
-                    vsync_token_count()
-                );
-                self.send_vsync();
-            } else {
-                // No tokens available - backpressure engaged
-                log::trace!("VsyncActor: No tokens available, skipping vsync");
-            }
         }
     }
 }
 
 impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
     fn handle_data(&mut self, response: RenderedResponse) -> HandlerResult {
-        // Count actual rendered frames for accurate FPS measurement
-        // (Token management is now handled via atomic bucket)
-        self.frame_count += 1;
-        log::trace!("VsyncActor: Frame {} rendered", response.frame_number);
-        self.update_fps();
+        let out = self.core.step_data(response)?;
+        self.emit(out);
         Ok(())
     }
 
     fn handle_control(&mut self, cmd: VsyncCommand) -> HandlerResult {
-        match cmd {
-            VsyncCommand::Start => {
-                self.running = true;
-                self.next_vsync = Instant::now(); // Reset timing
-                info!("VsyncActor: Started");
-            }
-            VsyncCommand::Stop => {
-                self.running = false;
-                info!("VsyncActor: Stopped");
-            }
-            VsyncCommand::UpdateRefreshRate(new_rate) => {
-                self.refresh_rate = new_rate;
-                self.interval = Duration::from_secs_f64(1.0 / self.refresh_rate);
-                info!(
-                    "VsyncActor: Updated refresh rate to {:.2} Hz ({:.2}ms interval)",
-                    self.refresh_rate,
-                    self.interval.as_secs_f64() * 1000.0
-                );
+        // UpdateRefreshRate and Shutdown need an adapter-level side effect (the clock thread)
+        // in addition to the core's state change — decide that up front, then delegate once.
+        let update_clock_interval = matches!(cmd, VsyncCommand::UpdateRefreshRate(_));
+        let stop_clock = matches!(cmd, VsyncCommand::Shutdown);
 
-                // Update clock thread
-                if let Some(ref tx) = self.clock_control {
-                    tx.send(ClockCommand::SetInterval(self.interval))
-                        .expect("Failed to update clock thread interval");
-                }
-            }
-            VsyncCommand::RequestCurrentFPS(sender) => {
-                info!("VsyncActor: FPS requested - {:.2} fps", self.last_fps);
-                if let Err(e) = sender.send(self.last_fps) {
-                    log::warn!("VsyncActor: Failed to send FPS response: {:?}", e);
-                }
-            }
-            VsyncCommand::Shutdown => {
-                info!("VsyncActor: Shutting down");
-                if let Some(ref tx) = self.clock_control {
-                    tx.send(ClockCommand::Stop)
-                        .expect("Failed to stop clock thread on shutdown");
-                }
-                // Scheduler will exit when all senders are dropped
-                // We should probably drop our own handles if we held any that loop back?
-                // But we don't hold loopback handles in struct, only for clock thread.
+        let out = self.core.step_control(cmd)?;
+
+        if update_clock_interval {
+            if let Some(ref tx) = self.clock_control {
+                tx.send(ClockCommand::SetInterval(self.core.interval()))
+                    .expect("Failed to update clock thread interval");
             }
         }
+        if stop_clock {
+            if let Some(ref tx) = self.clock_control {
+                tx.send(ClockCommand::Stop)
+                    .expect("Failed to stop clock thread on shutdown");
+            }
+        }
+
+        self.emit(out);
         Ok(())
     }
 
     fn handle_management(&mut self, msg: VsyncManagement) -> HandlerResult {
         match msg {
-            VsyncManagement::Tick => self.handle_tick(),
+            VsyncManagement::Tick => {
+                let out = self.core.step_management(VsyncManagement::Tick)?;
+                self.emit(out);
+            }
             VsyncManagement::SetConfig {
                 config,
                 engine_handle,
                 self_handle,
             } => {
-                // Configure the vsync actor (called via Management after construction)
+                // Configure the vsync actor (called via Management after construction).
+                // Engine handle + clock thread are adapter-only state; the core just gets the
+                // refresh rate and auto-starts, mirroring the original "auto-start after
+                // configuration" behavior (avoids a priority inversion where Start on Control
+                // could otherwise run before SetConfig on Management).
                 self.engine_handle = Some(*engine_handle);
-                self.refresh_rate = config.refresh_rate;
-                self.interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
+                self.core.configure(config.refresh_rate);
 
                 info!("VsyncActor: Configured with {:.2} Hz", config.refresh_rate);
 
-                // Spawn clock thread
-                let clock_tx = Self::spawn_clock_thread(self.interval, *self_handle);
+                let clock_tx = Self::spawn_clock_thread(self.core.interval(), *self_handle);
                 self.clock_control = Some(clock_tx);
 
-                // Auto-start after configuration (clock thread is ready now)
-                // This avoids priority inversion where Start (Control) runs before SetConfig (Management)
-                self.running = true;
-                self.next_vsync = Instant::now();
                 info!("VsyncActor: Auto-started after configuration");
             }
         }
@@ -423,5 +505,125 @@ impl actor_scheduler::ActorTypes for VsyncActor {
 impl<Dir> actor_scheduler::TroupeActor<Dir> for VsyncActor {
     fn new(_dir: Dir) -> Self {
         Self::new_empty()
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Tests: VsyncCore in isolation — no threads, no clock, no scheduler
+// ────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tick_before_start_emits_nothing() {
+        let mut core = VsyncCore::new(60.0);
+        let out = core.step_management(VsyncManagement::Tick).unwrap();
+        assert!(out.tick.is_none(), "must not tick while stopped");
+    }
+
+    #[test]
+    fn start_then_tick_emits_exactly_one_tick() {
+        let mut core = VsyncCore::new(60.0);
+        core.step_control(VsyncCommand::Start).unwrap();
+        let out = core.step_management(VsyncManagement::Tick).unwrap();
+        assert!(out.tick.is_some(), "a started core must tick when due");
+    }
+
+    #[test]
+    fn stop_silences_further_ticks() {
+        let mut core = VsyncCore::new(60.0);
+        core.step_control(VsyncCommand::Start).unwrap();
+        core.step_control(VsyncCommand::Stop).unwrap();
+        let out = core.step_management(VsyncManagement::Tick).unwrap();
+        assert!(out.tick.is_none(), "must not tick after Stop");
+    }
+
+    /// Forces `next_vsync` into the past immediately before a `Tick`, so the time gate is open
+    /// regardless of clock resolution — a prior version of these tests instead used an absurdly
+    /// high refresh rate (1GHz, a ~1ns interval) hoping any real work between calls would exceed
+    /// it. That depends on the platform's clock reading finer than 1ns, which isn't guaranteed
+    /// under a virtualized CI runner: back-to-back `Instant::now()` calls returning an identical
+    /// value made the time gate spuriously block ticks that should only have been gated by
+    /// credit (seen as flaky `left: 79/81, right: 100` failures on macOS CI). Overriding
+    /// `next_vsync` directly has no such dependency — it isolates the credit gate exactly.
+    fn force_tick_due(core: &mut VsyncCore) {
+        core.next_vsync = Instant::now() - Duration::from_secs(1);
+    }
+
+    /// Force the gate open, then take one `Tick` — the two steps every test below needs.
+    fn ticked(core: &mut VsyncCore) -> bool {
+        force_tick_due(core);
+        core.step_management(VsyncManagement::Tick)
+            .unwrap()
+            .tick
+            .is_some()
+    }
+
+    #[test]
+    fn credit_caps_ticks_at_max_tokens_with_no_clock_involved() {
+        // The whole point of extracting VsyncCore: this needs no thread, no clock, no sleep —
+        // just call step_management as many times as we like and count.
+        let mut core = VsyncCore::new(60.0);
+        core.step_control(VsyncCommand::Start).unwrap();
+        let mut count = 0;
+        for _ in 0..(MAX_TOKENS as usize * 2) {
+            if ticked(&mut core) {
+                count += 1;
+            }
+        }
+        assert_eq!(
+            count, MAX_TOKENS as usize,
+            "must cap at exactly the credit bound, not the number of Tick calls"
+        );
+    }
+
+    #[test]
+    fn return_token_command_unblocks_exactly_one_more_tick() {
+        let mut core = VsyncCore::new(60.0);
+        core.step_control(VsyncCommand::Start).unwrap();
+
+        let exhausted = (0..MAX_TOKENS).filter(|_| ticked(&mut core)).count();
+        assert_eq!(exhausted, MAX_TOKENS as usize);
+
+        // Starved: one more Tick call ticks nothing.
+        assert!(
+            !ticked(&mut core),
+            "must be starved once the bound is spent"
+        );
+
+        // A real message, not a shared global — this is the fix.
+        core.step_control(VsyncCommand::ReturnToken).unwrap();
+
+        assert!(
+            ticked(&mut core),
+            "returning one token via a message must unblock exactly one more tick"
+        );
+    }
+
+    #[test]
+    fn rendered_response_does_not_return_a_token() {
+        // Matches the documented, intentional behavior in vsync_actor_real_tests.rs: frame
+        // completion and credit return are deliberately separate signals.
+        let mut core = VsyncCore::new(60.0);
+        core.step_control(VsyncCommand::Start).unwrap();
+
+        let exhausted = (0..MAX_TOKENS).filter(|_| ticked(&mut core)).count();
+        assert_eq!(
+            exhausted, MAX_TOKENS as usize,
+            "must actually exhaust the bound, or the check below proves nothing"
+        );
+
+        core.step_data(RenderedResponse {
+            frame_number: 1,
+            rendered_at: Instant::now(),
+        })
+        .unwrap();
+
+        assert!(
+            !ticked(&mut core),
+            "RenderedResponse must not affect the credit bound — only ReturnToken does"
+        );
     }
 }

@@ -38,6 +38,7 @@ use super::messages::{
 };
 use super::rasterize;
 use crate::render::Pixel;
+use actor_scheduler::mealy::Transducer;
 use actor_scheduler::{
     Actor, ActorScheduler, ActorStatus, ActorTypes, HandlerError, HandlerResult, SystemStatus,
 };
@@ -45,20 +46,219 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
+// ────────────────────────────────────────────────────────────────────────────
+// RasterCore: the pure decision logic
+// ────────────────────────────────────────────────────────────────────────────
+
+/// What a render request decides to emit. `Default` (no response) covers the paused case —
+/// mirrors `VsyncCoreOut` in `vsync_actor.rs`: at most one output value per step.
+pub(crate) struct RasterCoreOut<P: Pixel> {
+    pub(crate) response: Option<RenderResponse<P>>,
+}
+
+// Hand-written rather than `#[derive(Default)]`: the derive macro would add a spurious
+// `P: Default` bound even though `Option<RenderResponse<P>>` needs no such bound on `P`.
+impl<P: Pixel> Default for RasterCoreOut<P> {
+    fn default() -> Self {
+        Self { response: None }
+    }
+}
+
+/// Pure rasterizer decision core: pause/resume, thread-count, and the actual `rasterize` call,
+/// with no channel or bootstrap-handshake machinery in it — a `step_*` call takes a message and
+/// returns what to emit, table-testable with no actor scheduler in the loop. Rollout step 3 of
+/// `docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5, following the same
+/// core/adapter split step 2 established for `vsync_actor.rs`'s `VsyncCore`.
+pub(crate) struct RasterCore<P: Pixel> {
+    num_threads: usize,
+    paused: bool,
+    _pixel: std::marker::PhantomData<P>,
+}
+
+impl<P: Pixel> RasterCore<P> {
+    fn new(num_threads: usize) -> Self {
+        Self {
+            num_threads: num_threads.max(1),
+            paused: false,
+            _pixel: std::marker::PhantomData,
+        }
+    }
+
+    fn config(&self) -> RasterConfig {
+        RasterConfig {
+            num_threads: self.num_threads,
+            paused: self.paused,
+        }
+    }
+}
+
+impl<P: Pixel> Transducer for RasterCore<P> {
+    type Control = RasterControl;
+    type Management = RasterManagement;
+    type Data = RenderRequest<P>;
+    type Out = RasterCoreOut<P>;
+
+    fn step_data(&mut self, request: RenderRequest<P>) -> Result<RasterCoreOut<P>, HandlerError> {
+        if self.paused {
+            log::debug!("Rasterizer paused, dropping render request");
+            return Ok(RasterCoreOut::default());
+        }
+
+        let RenderRequest {
+            manifold,
+            mut frame,
+        } = request;
+
+        let start = Instant::now();
+        rasterize(&manifold, &mut frame, self.num_threads);
+        let render_time = start.elapsed();
+
+        log::trace!(
+            "Rendered {}x{} frame in {:?} ({} threads)",
+            frame.width,
+            frame.height,
+            render_time,
+            self.num_threads
+        );
+
+        Ok(RasterCoreOut {
+            response: Some(RenderResponse { frame, render_time }),
+        })
+    }
+
+    fn step_control(&mut self, ctrl: RasterControl) -> Result<RasterCoreOut<P>, HandlerError> {
+        match ctrl {
+            RasterControl::Pause => {
+                log::info!("Rasterizer paused");
+                self.paused = true;
+            }
+            RasterControl::Resume => {
+                log::info!("Rasterizer resumed");
+                self.paused = false;
+            }
+        }
+        Ok(RasterCoreOut::default())
+    }
+
+    fn step_management(
+        &mut self,
+        mgmt: RasterManagement,
+    ) -> Result<RasterCoreOut<P>, HandlerError> {
+        match mgmt {
+            RasterManagement::SetThreadCount(count) => {
+                let new_count = count.max(1);
+                log::info!(
+                    "Rasterizer thread count updated: {} -> {}",
+                    self.num_threads,
+                    new_count
+                );
+                self.num_threads = new_count;
+            }
+            RasterManagement::GetConfig { response_tx } => {
+                // Receiver may be dropped if requester cancelled, that's fine.
+                response_tx.send(self.config()).ok();
+            }
+        }
+        Ok(RasterCoreOut::default())
+    }
+}
+
+#[cfg(test)]
+mod core_tests {
+    //! `RasterCore` in isolation — no threads, no bootstrap handshake, no scheduler. Mirrors
+    //! `vsync_actor.rs`'s `mod tests` for `VsyncCore`.
+
+    use super::*;
+    use crate::render::color::Rgba8;
+    use crate::render::frame::Frame;
+    use crate::render::Color;
+    use std::sync::Arc;
+    use std::sync::mpsc;
+
+    fn request(size: u32) -> RenderRequest<Rgba8> {
+        RenderRequest {
+            manifold: Arc::new(Color::Rgb(255, 0, 0)),
+            frame: Frame::new(size, size),
+        }
+    }
+
+    #[test]
+    fn an_unpaused_core_renders_and_emits_a_response() {
+        let mut core = RasterCore::<Rgba8>::new(1);
+        let out = core.step_data(request(8)).unwrap();
+        let response = out.response.expect("must render when not paused");
+        assert_eq!(response.frame.width, 8);
+        assert_eq!(response.frame.height, 8);
+    }
+
+    #[test]
+    fn a_paused_core_drops_the_request_without_rendering() {
+        let mut core = RasterCore::<Rgba8>::new(1);
+        core.step_control(RasterControl::Pause).unwrap();
+        let out = core.step_data(request(8)).unwrap();
+        assert!(
+            out.response.is_none(),
+            "a paused core must not render or emit a response"
+        );
+    }
+
+    #[test]
+    fn resume_after_pause_allows_rendering_again() {
+        let mut core = RasterCore::<Rgba8>::new(1);
+        core.step_control(RasterControl::Pause).unwrap();
+        core.step_control(RasterControl::Resume).unwrap();
+        let out = core.step_data(request(8)).unwrap();
+        assert!(out.response.is_some(), "resume must unblock rendering");
+    }
+
+    #[test]
+    fn set_thread_count_is_reflected_in_config() {
+        let mut core = RasterCore::<Rgba8>::new(1);
+        core.step_management(RasterManagement::SetThreadCount(4))
+            .unwrap();
+
+        let (response_tx, response_rx) = mpsc::channel();
+        core.step_management(RasterManagement::GetConfig { response_tx })
+            .unwrap();
+
+        let config = response_rx.recv().unwrap();
+        assert_eq!(config.num_threads, 4);
+        assert!(!config.paused);
+    }
+
+    #[test]
+    fn zero_thread_count_is_clamped_to_one() {
+        let mut core = RasterCore::<Rgba8>::new(1);
+        core.step_management(RasterManagement::SetThreadCount(0))
+            .unwrap();
+
+        let (response_tx, response_rx) = mpsc::channel();
+        core.step_management(RasterManagement::GetConfig { response_tx })
+            .unwrap();
+
+        assert_eq!(
+            response_rx.recv().unwrap().num_threads,
+            1,
+            "a thread count of 0 would never render — clamp to at least 1"
+        );
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// RasterizerActor: the thin adapter — bootstrap handshake, real sends
+// ────────────────────────────────────────────────────────────────────────────
+
 /// Rasterizer actor for parallel frame rendering.
 ///
-/// This actor manages a pool of worker threads for rendering frames via
-/// work-stealing parallelism. It processes rendering requests asynchronously
-/// while allowing dynamic reconfiguration of thread count.
+/// Owns exactly what [`RasterCore`] cannot: the response channel and the bootstrap handshake
+/// that sets it up. Every decision (pause/resume, thread count, whether to actually render) is
+/// [`RasterCore`]'s job; this type only turns its `Out` into the real `response_tx.send(...)`.
 ///
 /// Use [`spawn_with_setup`](Self::spawn_with_setup) to create and start the actor.
 pub struct RasterizerActor<P: Pixel> {
-    /// Number of threads for work-stealing parallelism.
-    num_threads: usize,
-    /// Whether rendering is currently paused.
-    paused: bool,
     /// Channel to send completed frames back. Set during bootstrap.
     response_tx: Sender<RenderResponse<P>>,
+    core: RasterCore<P>,
 }
 
 impl<P: Pixel + Send + 'static> ActorTypes for RasterizerActor<P> {
@@ -121,12 +321,14 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
 
             // PHASE 3: Create actor and run
             let mut actor = RasterizerActor {
-                num_threads: num_threads.max(1),
-                paused: false,
                 response_tx,
+                core: RasterCore::new(num_threads),
             };
 
-            log::info!("RasterizerActor started with {} threads", actor.num_threads);
+            log::info!(
+                "RasterizerActor started with {} threads",
+                actor.core.num_threads
+            );
 
             scheduler.run(&mut actor);
         });
@@ -135,86 +337,29 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
         let setup_handle = RasterizerSetupHandle::new(setup_tx);
         (setup_handle, join_handle)
     }
-
-    /// Get current configuration.
-    fn config(&self) -> RasterConfig {
-        RasterConfig {
-            num_threads: self.num_threads,
-            paused: self.paused,
-        }
-    }
 }
 
 impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
     for RasterizerActor<P>
 {
     fn handle_data(&mut self, request: RenderRequest<P>) -> HandlerResult {
-        // Skip rendering if paused
-        if self.paused {
-            log::debug!("Rasterizer paused, dropping render request");
-            return Ok(());
-        }
-
-        let RenderRequest {
-            manifold,
-            mut frame,
-        } = request;
-
-        // Render the frame
-        let start = Instant::now();
-        rasterize(&manifold, &mut frame, self.num_threads);
-        let render_time = start.elapsed();
-
-        log::trace!(
-            "Rendered {}x{} frame in {:?} ({} threads)",
-            frame.width,
-            frame.height,
-            render_time,
-            self.num_threads
-        );
-
-        // Send response back - receiver may be dropped if display was shutdown
-        let response = RenderResponse { frame, render_time };
-        match self.response_tx.send(response) {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                // Response receiver dropped is expected during shutdown
+        let out = self.core.step_data(request)?;
+        if let Some(response) = out.response {
+            // Receiver may be dropped if display was shutdown - that's expected.
+            if self.response_tx.send(response).is_err() {
                 log::debug!("Render response receiver dropped");
-                Ok(())
-            }
-        }
-    }
-
-    fn handle_control(&mut self, ctrl: RasterControl) -> HandlerResult {
-        match ctrl {
-            RasterControl::Pause => {
-                log::info!("Rasterizer paused");
-                self.paused = true;
-            }
-            RasterControl::Resume => {
-                log::info!("Rasterizer resumed");
-                self.paused = false;
             }
         }
         Ok(())
     }
 
+    fn handle_control(&mut self, ctrl: RasterControl) -> HandlerResult {
+        self.core.step_control(ctrl)?;
+        Ok(())
+    }
+
     fn handle_management(&mut self, mgmt: RasterManagement) -> HandlerResult {
-        match mgmt {
-            RasterManagement::SetThreadCount(count) => {
-                let new_count = count.max(1);
-                log::info!(
-                    "Rasterizer thread count updated: {} -> {}",
-                    self.num_threads,
-                    new_count
-                );
-                self.num_threads = new_count;
-            }
-            RasterManagement::GetConfig { response_tx } => {
-                // Receiver may be dropped if requester cancelled, that's fine
-                response_tx.send(self.config()).ok();
-            }
-        }
+        self.core.step_management(mgmt)?;
         Ok(())
     }
 
