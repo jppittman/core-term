@@ -108,7 +108,12 @@ fn the_target_engine_mesh_is_a_dag() {
     // window-bearing traffic; it says nothing about unrelated messages in the same ring.
     topo.droppable_edge(rasterizer, driver); // window request (Management lane; carries nothing)
     topo.droppable_edge(driver, rasterizer); // window grant (unreachable: can't grant unheld)
-    topo.droppable_edge(app, rasterizer); // manifold submission (keep-latest, as today)
+    // Blocking, not droppable: keeping a slot on the receiver does not help if the *newest*
+    // submission is lost in transit — nothing then arrives to overwrite it, and the coordinator
+    // renders a stale kernel indefinitely if the app has nothing further to send. An app parking
+    // behind a busy coordinator is correct backpressure. There is no rasterizer -> app edge, so
+    // one blocking direction here cannot cycle.
+    topo.blocking_edge(app, rasterizer); // manifold submission
     topo.droppable_edge(rasterizer, driver); // Present (unreachable: can't present unheld)
     topo.droppable_edge(rasterizer, vsync); // RenderedResponse (FPS telemetry only)
     topo.droppable_edge(app, vsync); // ReturnToken — previously an engine->vsync Control-lane
