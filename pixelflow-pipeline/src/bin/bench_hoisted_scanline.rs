@@ -84,8 +84,14 @@ fn build_psychedelic_arena() -> (ExprArena, ExprId) {
 /// Thin wrapper around JitManifold that implements Manifold.
 struct JitWrapper(pixelflow_ir::JitManifold);
 
-#[cfg(target_arch = "x86_64")]
+// The vector type of the JIT's call ABI on *this build*, which must track the
+// emitted width rather than assume one. Hard-coding `__m128` pinned this
+// benchmark to SSE2, so it stopped compiling on any build wide enough to be
+// worth benchmarking.
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 type JitLane = core::arch::x86_64::__m128;
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+type JitLane = core::arch::x86_64::__m512;
 #[cfg(target_arch = "aarch64")]
 type JitLane = core::arch::aarch64::float32x4_t;
 
