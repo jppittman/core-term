@@ -1039,6 +1039,21 @@ mod platform_specific_fold_tests {
         assert_eq!(folds(&ops::Round, &[2.6]), Some(3.0));
     }
 
+    /// Non-tie inputs in `[-0.5, -0.0]` round to `-0.0` in both JIT tiers but
+    /// to `+0.0` through the combinator tier's `(x + 0.5).floor()`, so the
+    /// folder must decline there too — `1.0 / x` makes the difference `-inf`
+    /// versus `+inf`.
+    #[test]
+    fn declines_round_folds_that_lose_the_sign_of_zero() {
+        assert_eq!(folds(&ops::Round, &[-0.2]), None);
+        assert_eq!(folds(&ops::Round, &[-0.4]), None);
+        assert_eq!(folds(&ops::Round, &[-0.0]), None);
+        // Past -0.5 the result is -1.0 in every tier, so folding is fine again.
+        assert_eq!(folds(&ops::Round, &[-0.6]), Some(-1.0));
+        // And positive inputs never had the ambiguity.
+        assert_eq!(folds(&ops::Round, &[0.2]).map(f32::to_bits), Some(0.0f32.to_bits()));
+    }
+
     #[test]
     fn declines_platform_specific_nan_min_max() {
         let nan = f32::NAN;
