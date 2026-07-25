@@ -52,13 +52,13 @@ use std::time::Instant;
 
 /// What a render request decides to emit. `Default` (no response) covers the paused case —
 /// mirrors `VsyncCoreOut` in `vsync_actor.rs`: at most one output value per step.
-pub(crate) struct RasterCoreOut<P: Pixel> {
-    pub(crate) response: Option<RenderResponse<P>>,
+pub(crate) struct RasterCoreOut<P: Pixel, Meta = ()> {
+    pub(crate) response: Option<RenderResponse<P, Meta>>,
 }
 
 // Hand-written rather than `#[derive(Default)]`: the derive macro would add a spurious
 // `P: Default` bound even though `Option<RenderResponse<P>>` needs no such bound on `P`.
-impl<P: Pixel> Default for RasterCoreOut<P> {
+impl<P: Pixel, Meta> Default for RasterCoreOut<P, Meta> {
     fn default() -> Self {
         Self { response: None }
     }
@@ -69,13 +69,13 @@ impl<P: Pixel> Default for RasterCoreOut<P> {
 /// returns what to emit, table-testable with no actor scheduler in the loop. Rollout step 3 of
 /// `docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5, following the same
 /// core/adapter split step 2 established for `vsync_actor.rs`'s `VsyncCore`.
-pub(crate) struct RasterCore<P: Pixel> {
+pub(crate) struct RasterCore<P: Pixel, Meta = ()> {
     num_threads: usize,
     paused: bool,
-    _pixel: std::marker::PhantomData<P>,
+    _pixel: std::marker::PhantomData<(P, Meta)>,
 }
 
-impl<P: Pixel> RasterCore<P> {
+impl<P: Pixel, Meta> RasterCore<P, Meta> {
     fn new(num_threads: usize) -> Self {
         Self {
             num_threads: num_threads.max(1),
@@ -92,13 +92,16 @@ impl<P: Pixel> RasterCore<P> {
     }
 }
 
-impl<P: Pixel> Transducer for RasterCore<P> {
+impl<P: Pixel, Meta> Transducer for RasterCore<P, Meta> {
     type Control = RasterControl;
     type Management = RasterManagement;
-    type Data = RenderRequest<P>;
-    type Out = RasterCoreOut<P>;
+    type Data = RenderRequest<P, Meta>;
+    type Out = RasterCoreOut<P, Meta>;
 
-    fn step_data(&mut self, request: RenderRequest<P>) -> Result<RasterCoreOut<P>, HandlerError> {
+    fn step_data(
+        &mut self,
+        request: RenderRequest<P, Meta>,
+    ) -> Result<RasterCoreOut<P, Meta>, HandlerError> {
         if self.paused {
             log::debug!("Rasterizer paused, dropping render request");
             return Ok(RasterCoreOut::default());
@@ -107,6 +110,7 @@ impl<P: Pixel> Transducer for RasterCore<P> {
         let RenderRequest {
             manifold,
             mut frame,
+            meta,
         } = request;
 
         let start = Instant::now();
@@ -122,11 +126,19 @@ impl<P: Pixel> Transducer for RasterCore<P> {
         );
 
         Ok(RasterCoreOut {
-            response: Some(RenderResponse { frame, render_time }),
+            // `meta` is handed straight back, never inspected — see `RenderRequest::meta`.
+            response: Some(RenderResponse {
+                frame,
+                render_time,
+                meta,
+            }),
         })
     }
 
-    fn step_control(&mut self, ctrl: RasterControl) -> Result<RasterCoreOut<P>, HandlerError> {
+    fn step_control(
+        &mut self,
+        ctrl: RasterControl,
+    ) -> Result<RasterCoreOut<P, Meta>, HandlerError> {
         match ctrl {
             RasterControl::Pause => {
                 log::info!("Rasterizer paused");
@@ -143,7 +155,7 @@ impl<P: Pixel> Transducer for RasterCore<P> {
     fn step_management(
         &mut self,
         mgmt: RasterManagement,
-    ) -> Result<RasterCoreOut<P>, HandlerError> {
+    ) -> Result<RasterCoreOut<P, Meta>, HandlerError> {
         match mgmt {
             RasterManagement::SetThreadCount(count) => {
                 let new_count = count.max(1);
@@ -179,7 +191,46 @@ mod core_tests {
         RenderRequest {
             manifold: Arc::new(Color::Rgb(255, 0, 0)),
             frame: Frame::new(size, size),
+            meta: (),
         }
+    }
+
+    /// The property `meta` exists for: a caller that must split a value apart to send the frame
+    /// can send the rest of it along and get it back, instead of stashing it and reassembling
+    /// on completion. `pixelflow-runtime`'s `pending_render` is exactly that stash.
+    #[test]
+    fn meta_round_trips_untouched_through_a_render() {
+        #[derive(Debug, PartialEq)]
+        struct WindowMeta {
+            id: u64,
+            width_px: u32,
+            scale: f64,
+        }
+
+        let mut core = RasterCore::<Rgba8, WindowMeta>::new(1);
+        let out = core
+            .step_data(RenderRequest {
+                manifold: Arc::new(Color::Rgb(0, 255, 0)),
+                frame: Frame::new(8, 8),
+                meta: WindowMeta {
+                    id: 42,
+                    width_px: 1920,
+                    scale: 2.0,
+                },
+            })
+            .unwrap();
+
+        let response = out.response.expect("must render when not paused");
+        assert_eq!(
+            response.meta,
+            WindowMeta {
+                id: 42,
+                width_px: 1920,
+                scale: 2.0
+            },
+            "meta must come back exactly as it went in"
+        );
+        assert_eq!(response.frame.width, 8, "and the frame is still rendered");
     }
 
     #[test]
@@ -255,19 +306,19 @@ mod core_tests {
 /// [`RasterCore`]'s job; this type only turns its `Out` into the real `response_tx.send(...)`.
 ///
 /// Use [`spawn_with_setup`](Self::spawn_with_setup) to create and start the actor.
-pub struct RasterizerActor<P: Pixel> {
+pub struct RasterizerActor<P: Pixel, Meta = ()> {
     /// Channel to send completed frames back. Set during bootstrap.
-    response_tx: Sender<RenderResponse<P>>,
-    core: RasterCore<P>,
+    response_tx: Sender<RenderResponse<P, Meta>>,
+    core: RasterCore<P, Meta>,
 }
 
-impl<P: Pixel + Send + 'static> ActorTypes for RasterizerActor<P> {
-    type Data = RenderRequest<P>;
+impl<P: Pixel + Send + 'static, Meta: Send + 'static> ActorTypes for RasterizerActor<P, Meta> {
+    type Data = RenderRequest<P, Meta>;
     type Control = RasterControl;
     type Management = RasterManagement;
 }
 
-impl<P: Pixel + Send + 'static> RasterizerActor<P> {
+impl<P: Pixel + Send + 'static, Meta: Send + 'static> RasterizerActor<P, Meta> {
     /// Spawn the rasterizer actor with a bootstrap handshake.
     ///
     /// This is the **primary way** to create a rasterizer. It spawns the actor
@@ -295,9 +346,11 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
     /// // Now you can send render requests via `rasterizer`
     /// ```
     #[must_use]
-    pub fn spawn_with_setup(num_threads: usize) -> (RasterizerSetupHandle<P>, JoinHandle<()>) {
+    pub fn spawn_with_setup(
+        num_threads: usize,
+    ) -> (RasterizerSetupHandle<P, Meta>, JoinHandle<()>) {
         // Create the setup channel (buffer=1, only one setup message ever)
-        let (setup_tx, setup_rx) = mpsc::sync_channel::<RasterSetup<P>>(1);
+        let (setup_tx, setup_rx) = mpsc::sync_channel::<RasterSetup<P, Meta>>(1);
 
         // Spawn the actor thread
         let join_handle = thread::spawn(move || {
@@ -312,7 +365,9 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
 
             // PHASE 2: Create the actor scheduler
             let (handle, mut scheduler) =
-                ActorScheduler::<RenderRequest<P>, RasterControl, RasterManagement>::new(64, 16);
+                ActorScheduler::<RenderRequest<P, Meta>, RasterControl, RasterManagement>::new(
+                    64, 16,
+                );
 
             // Send the full handle back to the caller
             reply_tx
@@ -339,10 +394,10 @@ impl<P: Pixel + Send + 'static> RasterizerActor<P> {
     }
 }
 
-impl<P: Pixel + Send> Actor<RenderRequest<P>, RasterControl, RasterManagement>
-    for RasterizerActor<P>
+impl<P: Pixel + Send, Meta> Actor<RenderRequest<P, Meta>, RasterControl, RasterManagement>
+    for RasterizerActor<P, Meta>
 {
-    fn handle_data(&mut self, request: RenderRequest<P>) -> HandlerResult {
+    fn handle_data(&mut self, request: RenderRequest<P, Meta>) -> HandlerResult {
         let out = self.core.step_data(request)?;
         if let Some(response) = out.response {
             // Receiver may be dropped if display was shutdown - that's expected.
@@ -394,6 +449,7 @@ mod tests {
         let request = RenderRequest {
             manifold: Arc::new(red),
             frame,
+            meta: (),
         };
 
         // Send render request
@@ -477,6 +533,7 @@ mod tests {
         let request = RenderRequest {
             manifold: Arc::new(blue),
             frame,
+            meta: (),
         };
 
         handle

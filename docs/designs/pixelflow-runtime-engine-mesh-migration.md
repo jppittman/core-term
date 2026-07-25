@@ -271,3 +271,61 @@ their declared kinds and asserts `Topology::validate()` succeeds. This is delibe
 from the *same* five actor names and *same* edge classification this doc commits to, so a
 future change to either has to touch both or the proof drifts from the plan it's supposed to
 prove.
+
+---
+
+## 7. Step 5: where `EngineHandler`'s state goes
+
+§3 deliberately left this open — the mediator holds real state, so deleting it means that state
+moves somewhere, and deciding before the satellites spoke the new protocol would have been
+architecture on paper. Steps 2–4 have landed, so this is now answerable from the code.
+
+The useful discovery is that **most of it isn't coordination state at all.** Two of the five
+fields dissolve rather than relocate.
+
+### 7.1 `pending_render` is half of a torn `Window`
+
+`trigger_render_with_window` destructures `Window { id, frame, width_px, height_px, scale }`,
+sends **only `frame`** to the rasterizer, and stashes the remaining four fields in
+`pending_render` so `RenderComplete` can reassemble a `Window` from the cooked frame plus the
+metadata. The field exists solely because a value is split apart and put back together across an
+actor boundary.
+
+It does not need an owner. It needs to not be created: if the request carries the metadata and
+the response returns it untouched, there is nothing to stash. `RenderRequest`/`RenderResponse`
+live in `pixelflow-graphics`, which must stay runtime-agnostic and so cannot name `Window` — but
+it does not have to. An opaque round-trip payload (`RenderRequest<P, Meta>` →
+`RenderResponse<P, Meta>`, `Meta` passed through untouched) keeps the rasterizer a pure
+`(manifold, frame, meta) -> (frame, render_time, meta)` and lets the runtime put a `Window`'s
+metadata in it. `pending_render` is then deleted, not moved.
+
+### 7.2 `stale` is a comparison, not a flag
+
+`stale` is set by the resize handler reaching **into** an in-flight `pending_render` to mutate
+it, and read once at completion. With metadata riding along, completion can compare the returned
+dimensions against the current window's directly: they differ ⟺ a resize happened mid-render.
+Same decision, no mutable flag, and no cross-message reach-in — which is the same class of
+coupling as the `VSYNC_TOKEN_BUCKET` global that step 2 removed, just local instead of static.
+
+### 7.3 The rest
+
+| Field | Goes to | Why |
+|---|---|---|
+| `pending_manifold` | the app → rasterizer edge, as a droppable keep-latest port | §3 already called this: the *port is* the staleness policy, so the hand-rolled "keep newest, drop old" logic is deleted along with the field. |
+| `window` | **driver** | It already creates the window (`WindowCreated`) and presents it. With the mediator gone the buffer circulates driver → rasterizer → driver; the driver is the only actor that outlives every stage of that loop. |
+| `frame_number` | **rasterizer** | It is a count of completed renders, and its only consumer is the FPS telemetry edge to vsync. It belongs to the thing doing the counting. |
+| `render_threads` | **nowhere — already duplicated** | `RasterCore::num_threads` is the real one; the engine's copy exists only to pass at spawn. |
+| `driver` / `vsync` / `rasterizer` / `app_handle` / `self_handle` / `rasterizer_forward_handle` | topology edges | Handles are what a mediator is made of. They are the thing being deleted, not state needing a home. |
+
+So `EngineHandler` collapses to: two fields deleted outright (`pending_render`, `render_threads`),
+one flag replaced by a comparison (`stale`), one absorbed into a port's semantics
+(`pending_manifold`), and two genuine relocations (`window` → driver, `frame_number` →
+rasterizer). Nothing needs a new home invented for it, which is the sign the mediator was
+holding state on behalf of actors that should have held it themselves.
+
+### 7.4 Order
+
+The metadata round-trip (7.1/7.2) is a `pixelflow-graphics` change and lands first, on its own —
+it is independently correct, deletes `pending_render` and `stale` while `EngineHandler` still
+exists, and shrinks the surface the collapse has to move. Only then do `window` and
+`frame_number` relocate and the mediator go away.
