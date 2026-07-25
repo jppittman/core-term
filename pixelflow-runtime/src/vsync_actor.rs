@@ -506,13 +506,12 @@ mod tests {
     }
 
     /// Forces `next_vsync` into the past immediately before a `Tick`, so the time gate is open
-    /// regardless of clock resolution — a prior version of these tests instead used an absurdly
-    /// high refresh rate (1GHz, a ~1ns interval) hoping any real work between calls would exceed
-    /// it. That depends on the platform's clock reading finer than 1ns, which isn't guaranteed
-    /// under a virtualized CI runner: back-to-back `Instant::now()` calls returning an identical
-    /// value made the time gate spuriously block ticks that should only have been gated by
-    /// credit (seen as flaky `left: 79/81, right: 100` failures on macOS CI). Overriding
-    /// `next_vsync` directly has no such dependency — it isolates the credit gate exactly.
+    /// regardless of clock resolution or how much real time elapses between calls. `VsyncCore`
+    /// exposes no public command that backdates `next_vsync`, so this reaches into the private
+    /// field directly (STYLE.md "Flexibility": the alternative is a test that depends on the
+    /// platform's clock granularity, which is not guaranteed to advance between two back-to-back
+    /// `Instant::now()` calls under a virtualized CI runner). This isolates the credit gate,
+    /// which is what every test below actually means to exercise, from timing sensitivity.
     fn force_tick_due(core: &mut VsyncCore) {
         core.next_vsync = Instant::now() - Duration::from_secs(1);
     }

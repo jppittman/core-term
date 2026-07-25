@@ -1215,7 +1215,7 @@ mod tests {
         let mut screen = create_test_screen(10, 5);
         let start_point = Point { x: 1, y: 1 };
         screen.dirty.fill(0);
-        screen.start_selection(start_point, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(start_point, SelectionMode::Cell);
         assert_eq!(
             screen.selection.range,
             Some(SelectionRange {
@@ -1232,7 +1232,7 @@ mod tests {
         let mut screen = create_test_screen(10, 5);
         let start_point = Point { x: 1, y: 1 };
         let update_point = Point { x: 5, y: 2 };
-        screen.start_selection(start_point, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(start_point, SelectionMode::Cell);
         screen.dirty.fill(0);
         screen.mark_line_dirty(start_point.y);
         screen.update_selection(update_point);
@@ -1244,7 +1244,7 @@ mod tests {
     #[test]
     fn update_selection_marks_old_and_new_lines_dirty() {
         let mut screen = create_test_screen(10, 5);
-        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 3, y: 1 });
         screen.dirty.fill(0);
         screen.update_selection(Point { x: 5, y: 2 });
@@ -1255,7 +1255,7 @@ mod tests {
     #[test]
     fn update_selection_when_not_active() {
         let mut screen = create_test_screen(10, 5);
-        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell);
         screen.selection.is_active = false;
         let original_selection_state = screen.selection;
         screen.update_selection(Point { x: 5, y: 2 });
@@ -1265,7 +1265,7 @@ mod tests {
     #[test]
     fn verify_end_selection() {
         let mut screen = create_test_screen(10, 5);
-        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell);
         screen.end_selection();
         assert!(!screen.selection.is_active);
     }
@@ -1273,7 +1273,7 @@ mod tests {
     #[test]
     fn verify_clear_selection() {
         let mut screen = create_test_screen(10, 5);
-        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 3, y: 2 });
         screen.dirty.fill(0);
         screen.clear_selection();
@@ -1291,7 +1291,7 @@ mod tests {
     #[test]
     fn is_selected_normal_single_line() {
         let mut screen = create_test_screen(10, 5);
-        screen.start_selection(Point { x: 2, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 2, y: 1 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 5, y: 1 });
         assert!(!screen.is_selected(Point { x: 1, y: 1 }));
         assert!(screen.is_selected(Point { x: 2, y: 1 }));
@@ -1302,7 +1302,7 @@ mod tests {
     #[test]
     fn is_selected_normal_multi_line() {
         let mut screen = create_test_screen(10, 5);
-        screen.start_selection(Point { x: 3, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 3, y: 1 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 2, y: 3 });
         assert!(screen.is_selected(Point { x: 4, y: 1 }));
         assert!(screen.is_selected(Point { x: 1, y: 2 }));
@@ -1314,7 +1314,7 @@ mod tests {
     #[test]
     fn is_selected_normal_multi_line_selection_ends_at_width_minus_1() {
         let mut screen = create_test_screen(10, 5);
-        screen.start_selection(Point { x: 8, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 8, y: 0 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 2, y: 2 });
         assert!(screen.is_selected(Point { x: 9, y: 0 }));
         assert!(screen.is_selected(Point { x: 0, y: 1 }));
@@ -1326,7 +1326,7 @@ mod tests {
     #[test]
     fn is_selected_normal_reverse_selection_points() {
         let mut screen = create_test_screen(10, 5);
-        screen.start_selection(Point { x: 5, y: 2 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 5, y: 2 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 1, y: 1 });
         assert!(screen.is_selected(Point { x: 1, y: 1 }));
         assert!(screen.is_selected(Point { x: 3, y: 1 }));
@@ -1339,7 +1339,7 @@ mod tests {
     #[test]
     fn is_selected_point_equals_start_or_end() {
         let mut screen = create_test_screen(10, 5);
-        screen.start_selection(Point { x: 2, y: 2 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 2, y: 2 }, SelectionMode::Cell);
         assert!(screen.is_selected(Point { x: 2, y: 2 }));
         screen.update_selection(Point { x: 4, y: 2 });
         assert!(screen.is_selected(Point { x: 2, y: 2 }));
@@ -1349,7 +1349,7 @@ mod tests {
     #[test]
     fn is_selected_out_of_bounds_point() {
         let mut screen = create_test_screen(10, 5);
-        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell);
         screen.update_selection(Point {
             x: screen.width - 1,
             y: screen.height - 1,
@@ -1397,7 +1397,7 @@ mod tests {
     fn get_selected_text_normal_single_char() {
         let mut screen = create_test_screen(5, 3);
         fill_screen_with_pattern(&mut screen);
-        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell);
         assert_eq!(screen.get_selected_text(), Some("c".to_string()));
     }
 
@@ -1405,7 +1405,7 @@ mod tests {
     fn get_selected_text_normal_single_line_partial() {
         let mut screen = create_test_screen(5, 3);
         fill_screen_with_pattern(&mut screen);
-        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 3, y: 0 });
         assert_eq!(screen.get_selected_text(), Some("bcd".to_string()));
     }
@@ -1414,7 +1414,7 @@ mod tests {
     fn get_selected_text_normal_single_line_full() {
         let mut screen = create_test_screen(5, 3);
         fill_screen_with_pattern(&mut screen);
-        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell);
         screen.update_selection(Point {
             x: screen.width - 1,
             y: 0,
@@ -1426,7 +1426,7 @@ mod tests {
     fn get_selected_text_normal_multi_line() {
         let mut screen = create_test_screen(3, 3);
         fill_screen_with_pattern(&mut screen);
-        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 1, y: 2 });
         assert_eq!(screen.get_selected_text(), Some("bc\nbcd\ncd".to_string()));
     }
@@ -1435,7 +1435,7 @@ mod tests {
     fn get_selected_text_normal_multi_line_reversed_points() {
         let mut screen = create_test_screen(3, 3);
         fill_screen_with_pattern(&mut screen);
-        screen.start_selection(Point { x: 1, y: 2 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 1, y: 2 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 1, y: 0 });
         assert_eq!(screen.get_selected_text(), Some("bc\nbcd\ncd".to_string()));
     }
@@ -1500,11 +1500,11 @@ mod tests {
             });
         }
 
-        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 4, y: 0 });
         assert_eq!(screen.get_selected_text(), Some("aa   ".to_string()));
 
-        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 1, y: 1 });
         assert_eq!(screen.get_selected_text(), Some("aa\nbb".to_string()));
     }
@@ -1608,7 +1608,7 @@ mod tests {
     #[test]
     fn selection_cleared_on_resize() {
         let mut screen = create_test_screen(10, 5);
-        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
+        screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell);
         screen.update_selection(Point { x: 5, y: 2 });
         assert!(screen.selection.range.is_some());
         screen.resize(20, 10);

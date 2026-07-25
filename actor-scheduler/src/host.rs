@@ -341,6 +341,7 @@ mod tests {
             ForwardWiring { next: tx_out },
         ));
         assert_eq!(host.len(), 1);
+        assert!(!host.is_empty(), "an adopted, still-running actor is not empty");
 
         drop(tx_in); // the green actor's inbox disconnects
         host.sweep();

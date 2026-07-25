@@ -155,13 +155,8 @@ mod tests {
     use super::*;
     use crate::kind::OpKind;
 
-    fn circle_arena(garbage: bool) -> (ExprArena, ExprId) {
+    fn circle_arena() -> (ExprArena, ExprId) {
         let mut a = ExprArena::new();
-        if garbage {
-            // Construction garbage: unreachable nodes must not perturb the key.
-            let g = a.push_const(123.0);
-            let _ = a.push_unary(OpKind::Sqrt, g);
-        }
         let x = a.push_var(0);
         let y = a.push_var(1);
         let x2 = a.push_binary(OpKind::Mul, x, x);
@@ -171,10 +166,37 @@ mod tests {
         (a, root)
     }
 
+    /// Same circle expression, preceded by unreachable nodes that a correct
+    /// cache key must ignore.
+    fn circle_arena_with_construction_garbage() -> (ExprArena, ExprId) {
+        let mut a = ExprArena::new();
+        let g = a.push_const(123.0);
+        let _ = a.push_unary(OpKind::Sqrt, g);
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let x2 = a.push_binary(OpKind::Mul, x, x);
+        let y2 = a.push_binary(OpKind::Mul, y, y);
+        let s = a.push_binary(OpKind::Add, x2, y2);
+        let root = a.push_unary(OpKind::Sqrt, s);
+        (a, root)
+    }
+
+    /// Same circle expression with the final `Add`'s operands flipped.
+    fn circle_arena_with_operands_flipped() -> (ExprArena, ExprId) {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let x2 = a.push_binary(OpKind::Mul, x, x);
+        let y2 = a.push_binary(OpKind::Mul, y, y);
+        let s = a.push_binary(OpKind::Add, y2, x2);
+        let root = a.push_unary(OpKind::Sqrt, s);
+        (a, root)
+    }
+
     #[test]
     fn identical_kernels_share_code() {
-        let (a1, r1) = circle_arena(false);
-        let (a2, r2) = circle_arena(true);
+        let (a1, r1) = circle_arena();
+        let (a2, r2) = circle_arena_with_construction_garbage();
         let m1 = compile_cached(&a1, r1).expect("compile");
         let m2 = compile_cached(&a2, r2).expect("compile");
         assert!(
@@ -185,7 +207,7 @@ mod tests {
 
     #[test]
     fn distinct_kernels_do_not_collide() {
-        let (a1, r1) = circle_arena(false);
+        let (a1, r1) = circle_arena();
         let mut a2 = ExprArena::new();
         let x = a2.push_var(0);
         let y = a2.push_var(1);
@@ -196,18 +218,14 @@ mod tests {
     }
 
     #[test]
-    fn key_is_garbage_insensitive_and_structure_sensitive() {
-        let (a1, r1) = circle_arena(false);
-        let (a2, r2) = circle_arena(true);
-        assert_eq!(canonical_key(&a1, r1), canonical_key(&a2, r2));
-
-        let mut a3 = ExprArena::new();
-        let x = a3.push_var(0);
-        let y = a3.push_var(1);
-        let x2 = a3.push_binary(OpKind::Mul, x, x);
-        let y2 = a3.push_binary(OpKind::Mul, y, y);
-        let s = a3.push_binary(OpKind::Add, y2, x2); // operand order flipped
-        let r3 = a3.push_unary(OpKind::Sqrt, s);
-        assert_ne!(canonical_key(&a1, r1), canonical_key(&a3, r3));
+    fn operand_order_produces_a_distinct_compiled_region() {
+        let (a1, r1) = circle_arena();
+        let (a2, r2) = circle_arena_with_operands_flipped();
+        let m1 = compile_cached(&a1, r1).expect("compile");
+        let m2 = compile_cached(&a2, r2).expect("compile");
+        assert!(
+            !Arc::ptr_eq(&m1, &m2),
+            "flipping the Add's operands changes the expression's structure"
+        );
     }
 }
