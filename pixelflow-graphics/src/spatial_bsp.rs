@@ -348,6 +348,60 @@ mod tests {
         }
     }
 
+    /// Packed pixel value a solid color evaluates to, for comparison against sampled BSPs.
+    fn packed(color: &SolidColor) -> u32 {
+        use pixelflow_core::{PARALLELISM, materialize_discrete};
+        let mut buf = [0u32; PARALLELISM];
+        materialize_discrete(color, 0.0, 0.0, &mut buf);
+        buf[0]
+    }
+
+    /// Sample a BSP at a point through the public `Manifold` contract.
+    fn sample(bsp: &SpatialBSP<SolidColor>, x: f32, y: f32) -> u32 {
+        use pixelflow_core::{PARALLELISM, materialize_discrete};
+        let mut buf = [0u32; PARALLELISM];
+        materialize_discrete(bsp, x, y, &mut buf);
+        buf[0]
+    }
+
+    /// Build a BSP from `items`/`colors` and assert that querying the center of every
+    /// item's own bounds returns that item's own color — the actual contract `eval()`
+    /// promises. This exercises axis selection, threshold placement, and interior-node
+    /// wiring all at once, entirely through the public API: a bad index panics, and an
+    /// unreachable leaf or misrouted split returns the wrong (or another item's) color.
+    /// Where an item's bounds are constant on one axis and varying on the other, only
+    /// the correct split axis can route it correctly, so this also proves axis selection
+    /// without reading the private tree.
+    fn build_and_assert_every_item_routes_to_its_own_color(
+        items: &[(f32, f32, f32, f32)],
+        colors: &[(u8, u8, u8, u8)],
+    ) -> SpatialBSP<SolidColor> {
+        assert_eq!(items.len(), colors.len());
+        let expected: Vec<u32> = colors.iter().map(|&(r, g, b, a)| packed(&SolidColor::new(r, g, b, a))).collect();
+        let positioned = items
+            .iter()
+            .zip(colors)
+            .map(|(&bounds, &(r, g, b, a))| Positioned {
+                bounds,
+                leaf: SolidColor::new(r, g, b, a),
+            })
+            .collect();
+
+        let bsp = SpatialBSP::from_positioned(positioned);
+
+        for (i, &bounds) in items.iter().enumerate() {
+            let cx = (bounds.0 + bounds.2) * 0.5;
+            let cy = (bounds.1 + bounds.3) * 0.5;
+            let got = sample(&bsp, cx, cy);
+            assert_eq!(
+                got, expected[i],
+                "item {i} at center ({cx}, {cy}) did not route to its own color"
+            );
+        }
+
+        bsp
+    }
+
     #[test]
     fn single_leaf() {
         let bsp = SpatialBSP::single(SolidColor::new(255, 0, 0, 255));
@@ -477,80 +531,36 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn threshold_split_semantics_left_is_less_than() {
-        // Create two items split at x=50
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 25.0, 100.0),
-                leaf: SolidColor::new(255, 0, 0, 255), // Left (red)
-            },
-            Positioned {
-                bounds: (75.0, 0.0, 100.0, 100.0),
-                leaf: SolidColor::new(0, 0, 255, 255), // Right (blue)
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
+    fn separated_on_x_routes_each_item_to_its_own_color() {
+        // Identical Y range, separated on X: only an X-axis split routes these correctly,
+        // so this proves axis selection without reading the private tree.
+        let bsp = build_and_assert_every_item_routes_to_its_own_color(
+            &[(0.0, 0.0, 25.0, 100.0), (75.0, 0.0, 100.0, 100.0)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
+        );
         assert_eq!(
             bsp.interior_count(),
             1,
-            "Two non-overlapping items need exactly one split"
-        );
-
-        // Verify the split axis and threshold are correct
-        // Left item spans [0, 25], right item spans [75, 100]
-        // Threshold should be in the gap (25, 75), ideally around 50
-        let root = &bsp.interiors[0];
-        assert_eq!(
-            root.axis,
-            Axis::X,
-            "Should split on X axis for horizontal separation"
-        );
-        assert!(
-            root.threshold >= 25.0 && root.threshold <= 75.0,
-            "Threshold must be in gap between items: {} should be in [25, 75]",
-            root.threshold
+            "two non-overlapping items need exactly one split"
         );
     }
 
     #[test]
-    fn vertical_split_when_height_exceeds_width() {
-        // Tall narrow items should split on Y axis
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 10.0, 50.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (0.0, 50.0, 10.0, 100.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-        let root = &bsp.interiors[0];
-
-        assert_eq!(root.axis, Axis::Y, "Should split on Y for tall items");
+    fn tall_items_split_on_y_route_each_item_to_its_own_color() {
+        // Identical X range, separated on Y: only a Y-axis split routes these correctly.
+        build_and_assert_every_item_routes_to_its_own_color(
+            &[(0.0, 0.0, 10.0, 50.0), (0.0, 50.0, 10.0, 100.0)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
+        );
     }
 
     #[test]
-    fn horizontal_split_when_width_exceeds_height() {
-        // Wide short items should split on X axis
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 50.0, 10.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (50.0, 0.0, 100.0, 10.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-        let root = &bsp.interiors[0];
-
-        assert_eq!(root.axis, Axis::X, "Should split on X for wide items");
+    fn wide_items_split_on_x_route_each_item_to_its_own_color() {
+        // Identical Y range, separated on X: only an X-axis split routes these correctly.
+        build_and_assert_every_item_routes_to_its_own_color(
+            &[(0.0, 0.0, 50.0, 10.0), (50.0, 0.0, 100.0, 10.0)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
+        );
     }
 
     // ========================================================================
@@ -643,49 +653,23 @@ mod tests {
 
     #[test]
     fn negative_coordinates_handled_correctly() {
-        let items = vec![
-            Positioned {
-                bounds: (-100.0, -100.0, -50.0, -50.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (-50.0, -50.0, 0.0, 0.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-
-        assert_eq!(bsp.leaf_count(), 2, "Should have 2 leaves");
-        assert_eq!(bsp.interior_count(), 1, "Two items need exactly one split");
-
-        // Verify threshold is in the gap between items
-        // Left item spans [-100, -50], right item spans [-50, 0]
-        let root = &bsp.interiors[0];
-        assert!(
-            root.threshold >= -100.0 && root.threshold <= 0.0,
-            "Threshold must separate the items: {} should be in [-100, 0]",
-            root.threshold
+        let bsp = build_and_assert_every_item_routes_to_its_own_color(
+            &[(-100.0, -100.0, -50.0, -50.0), (-50.0, -50.0, 0.0, 0.0)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
         );
+        assert_eq!(bsp.leaf_count(), 2, "should have 2 leaves");
+        assert_eq!(bsp.interior_count(), 1, "two items need exactly one split");
     }
 
     #[test]
     fn large_coordinates_handled_correctly() {
-        let items = vec![
-            Positioned {
-                bounds: (1e6, 1e6, 2e6, 2e6),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (3e6, 3e6, 4e6, 4e6),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-
+        // A threshold that lost precision at this magnitude (e.g. collapsed to 0, or to
+        // one item's own bound) would misroute one of these probes.
+        let bsp = build_and_assert_every_item_routes_to_its_own_color(
+            &[(1e6, 1e6, 2e6, 2e6), (3e6, 3e6, 4e6, 4e6)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
+        );
         assert_eq!(bsp.leaf_count(), 2);
-        assert!(bsp.interiors[0].threshold > 1e6);
     }
 
     #[test]
@@ -910,75 +894,6 @@ mod tests {
     }
 
     // ========================================================================
-    // Node Reference Tests
-    // ========================================================================
-
-    #[test]
-    fn node_ref_types_are_distinct() {
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 50.0, 100.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (50.0, 0.0, 100.0, 100.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-
-        // Tree should have 1 interior node pointing to 2 leaves
-        assert_eq!(bsp.interior_count(), 1);
-        assert_eq!(bsp.leaf_count(), 2);
-
-        let root = &bsp.interiors[0];
-
-        // Both children should be leaves (not interiors)
-        matches!(root.left, NodeRef::Leaf(_));
-        matches!(root.right, NodeRef::Leaf(_));
-    }
-
-    #[test]
-    fn three_levels_deep_has_interior_children() {
-        // 4 items will create a 3-level tree
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 25.0, 100.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (25.0, 0.0, 50.0, 100.0),
-                leaf: SolidColor::new(0, 255, 0, 255),
-            },
-            Positioned {
-                bounds: (50.0, 0.0, 75.0, 100.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-            Positioned {
-                bounds: (75.0, 0.0, 100.0, 100.0),
-                leaf: SolidColor::new(255, 255, 0, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-
-        assert_eq!(bsp.interior_count(), 3);
-        assert_eq!(bsp.leaf_count(), 4);
-
-        // Root should be last interior
-        let root = &bsp.interiors[2];
-
-        // At least one child should be an interior node
-        let has_interior_child =
-            matches!(root.left, NodeRef::Interior(_)) || matches!(root.right, NodeRef::Interior(_));
-        assert!(
-            has_interior_child,
-            "3-level tree should have interior children"
-        );
-    }
-
-    // ========================================================================
     // Overlapping Bounds Tests
     // ========================================================================
 
@@ -1004,7 +919,12 @@ mod tests {
 
     #[test]
     fn fully_contained_bounds_creates_valid_tree() {
-        // One item fully contains another
+        // One item fully contains another. Both bounding-box centers coincide at
+        // (50, 50), so the center-based median split cannot carve out a nested region
+        // for the inner item — this BSP is a half-plane space partition, not a
+        // containment-aware one. There is no well-defined "correct" leaf for a query
+        // exactly at the shared center, so this only asserts the tree is still valid
+        // (no panic, right leaf/interior counts), not any particular per-pixel color.
         let items = vec![
             Positioned {
                 bounds: (0.0, 0.0, 100.0, 100.0),
@@ -1020,6 +940,7 @@ mod tests {
 
         assert_eq!(bsp.leaf_count(), 2);
         assert_eq!(bsp.interior_count(), 1);
+        let _ = sample(&bsp, 50.0, 50.0); // must not panic
     }
 
     // ========================================================================
@@ -1060,58 +981,32 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn square_bounds_splits_on_either_axis() {
-        // When width == height, should split on X (width >= height)
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 50.0, 50.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (50.0, 50.0, 100.0, 100.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-        let root = &bsp.interiors[0];
-
-        // Based on line 148: width >= height, so square splits on X
-        assert_eq!(root.axis, Axis::X);
+    fn diagonally_separated_square_items_route_correctly() {
+        // Both axes separate these items equally (a tie in the split heuristic), so
+        // either axis choice is correct here; this only checks eval() still routes
+        // each item to its own color, not which axis the tie-break picked.
+        build_and_assert_every_item_routes_to_its_own_color(
+            &[(0.0, 0.0, 50.0, 50.0), (50.0, 50.0, 100.0, 100.0)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
+        );
     }
 
     #[test]
-    fn slightly_wider_splits_on_x() {
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 100.0, 99.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (100.0, 0.0, 200.0, 99.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-        assert_eq!(bsp.interiors[0].axis, Axis::X);
+    fn slightly_wider_than_tall_items_route_correctly() {
+        // Identical Y range: only an X-axis split routes these correctly.
+        build_and_assert_every_item_routes_to_its_own_color(
+            &[(0.0, 0.0, 100.0, 99.0), (100.0, 0.0, 200.0, 99.0)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
+        );
     }
 
     #[test]
-    fn slightly_taller_splits_on_y() {
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 99.0, 100.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (0.0, 100.0, 99.0, 200.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-        assert_eq!(bsp.interiors[0].axis, Axis::Y);
+    fn slightly_taller_than_wide_items_route_correctly() {
+        // Identical X range: only a Y-axis split routes these correctly.
+        build_and_assert_every_item_routes_to_its_own_color(
+            &[(0.0, 0.0, 99.0, 100.0), (0.0, 100.0, 99.0, 200.0)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
+        );
     }
 
     // ========================================================================
@@ -1120,71 +1015,44 @@ mod tests {
 
     #[test]
     fn threshold_between_non_overlapping_items() {
-        // Two items with a gap between them
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 40.0, 100.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (60.0, 0.0, 100.0, 100.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-        let root = &bsp.interiors[0];
-
-        // Threshold should be between 40.0 and 60.0 (in the gap)
-        assert!(
-            root.threshold >= 40.0 && root.threshold <= 60.0,
-            "Threshold {} should be in gap [40, 60]",
-            root.threshold
+        // Two items with a gap between them: a threshold outside [40, 60] would
+        // misroute at least one of these probes.
+        build_and_assert_every_item_routes_to_its_own_color(
+            &[(0.0, 0.0, 40.0, 100.0), (60.0, 0.0, 100.0, 100.0)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
         );
     }
 
     #[test]
     fn threshold_calculation_with_touching_items() {
-        // Two items that touch at x=50
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 50.0, 100.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (50.0, 0.0, 100.0, 100.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-        let root = &bsp.interiors[0];
-
-        // Threshold should be at or very close to 50.0
-        assert!(
-            (root.threshold - 50.0).abs() < 1.0,
-            "Threshold {} should be near touching point 50.0",
-            root.threshold
+        // Two items that touch at x=50: threshold = (50.0 + 50.0) / 2.0 = 50.0 exactly
+        // (see build_tree's median formula), so probes just off either side of the
+        // touch point pin the boundary down to sub-pixel precision.
+        let bsp = build_and_assert_every_item_routes_to_its_own_color(
+            &[(0.0, 0.0, 50.0, 100.0), (50.0, 0.0, 100.0, 100.0)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
+        );
+        assert_eq!(
+            sample(&bsp, 49.9, 50.0),
+            sample(&bsp, 0.0, 50.0),
+            "just below the touch point must still resolve to the left item's color"
+        );
+        assert_eq!(
+            sample(&bsp, 50.1, 50.0),
+            sample(&bsp, 99.0, 50.0),
+            "just above the touch point must still resolve to the right item's color"
         );
     }
 
     #[test]
     fn threshold_with_very_small_items() {
-        // Items with very small dimensions
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 0.01, 0.01),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (0.02, 0.02, 0.03, 0.03),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
+        // A non-finite or collapsed threshold at this scale would misroute one of these
+        // probes (NaN compares false against everything, always routing right).
+        let bsp = build_and_assert_every_item_routes_to_its_own_color(
+            &[(0.0, 0.0, 0.01, 0.01), (0.02, 0.02, 0.03, 0.03)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
+        );
         assert_eq!(bsp.leaf_count(), 2);
-        assert!(bsp.interiors[0].threshold.is_finite());
     }
 
     // ========================================================================
@@ -1192,86 +1060,40 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn eval_exactly_at_threshold_goes_right() {
-        // Test the boundary condition: coord < threshold goes left, >= goes right
+    fn eval_at_and_around_the_threshold_respects_left_lt_right_ge_semantics() {
+        // Two items touching at x=50 give a threshold of exactly 50.0 (see
+        // threshold_calculation_with_touching_items), so the boundary condition
+        // (coord < threshold goes left, coord >= threshold goes right) is pinned down
+        // without reading the private tree.
+        let red = SolidColor::new(255, 0, 0, 255);
+        let blue = SolidColor::new(0, 0, 255, 255);
         let items = vec![
             Positioned {
                 bounds: (0.0, 0.0, 50.0, 100.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
+                leaf: red.clone(),
             },
             Positioned {
                 bounds: (50.0, 0.0, 100.0, 100.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
+                leaf: blue.clone(),
             },
         ];
-
         let bsp = SpatialBSP::from_positioned(items);
-        let threshold = bsp.interiors[0].threshold;
 
-        // Sample exactly at threshold (should go right, >= threshold)
-        let result = bsp.eval_raw(
-            Field::from(threshold),
-            Field::from(50.0),
-            Field::from(0.0),
-            Field::from(0.0),
+        assert_eq!(
+            sample(&bsp, 50.0, 50.0),
+            packed(&blue),
+            "exactly at the threshold must go right (>=)"
         );
-
-        // Should return a valid result without panicking
-        let _ = result;
-    }
-
-    #[test]
-    fn eval_just_below_threshold_goes_left() {
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 50.0, 100.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (50.0, 0.0, 100.0, 100.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-        let threshold = bsp.interiors[0].threshold;
-
-        // Sample just below threshold
-        let result = bsp.eval_raw(
-            Field::from(threshold - 0.1),
-            Field::from(50.0),
-            Field::from(0.0),
-            Field::from(0.0),
+        assert_eq!(
+            sample(&bsp, 49.9, 50.0),
+            packed(&red),
+            "just below the threshold must go left (<)"
         );
-
-        let _ = result;
-    }
-
-    #[test]
-    fn eval_just_above_threshold_goes_right() {
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 50.0, 100.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (50.0, 0.0, 100.0, 100.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-        let threshold = bsp.interiors[0].threshold;
-
-        // Sample just above threshold
-        let result = bsp.eval_raw(
-            Field::from(threshold + 0.1),
-            Field::from(50.0),
-            Field::from(0.0),
-            Field::from(0.0),
+        assert_eq!(
+            sample(&bsp, 50.1, 50.0),
+            packed(&blue),
+            "just above the threshold must go right (>=)"
         );
-
-        let _ = result;
     }
 
     // ========================================================================
@@ -1330,40 +1152,6 @@ mod tests {
 
         let bsp = SpatialBSP::from_positioned(items);
         assert_eq!(bsp.leaf_count(), 2);
-    }
-
-    // ========================================================================
-    // Root Node Location Tests
-    // ========================================================================
-
-    #[test]
-    fn root_is_last_interior_node() {
-        // Verify the assumption that root is at interiors.len() - 1
-        let items: Vec<_> = (0..8)
-            .map(|i| {
-                let x = (i as f32) * 10.0;
-                Positioned {
-                    bounds: (x, 0.0, x + 5.0, 10.0),
-                    leaf: SolidColor::new(255, 0, 0, 255),
-                }
-            })
-            .collect();
-
-        let bsp = SpatialBSP::from_positioned(items);
-
-        // The tree is built recursively, with the root added last
-        // So root should be at index interiors.len() - 1
-        assert!(bsp.interior_count() > 0);
-
-        // Evaluate at a known point to ensure root is being used
-        let result = bsp.eval_raw(
-            Field::from(25.0),
-            Field::from(5.0),
-            Field::from(0.0),
-            Field::from(0.0),
-        );
-
-        let _ = result;
     }
 
     // ========================================================================
@@ -1464,260 +1252,40 @@ mod tests {
     }
 
     // ========================================================================
-    // Structural Invariant Tests - These MUST hold or the tree is broken
+    // Structural Invariant Tests - a broken tree (bad index, unreachable leaf,
+    // misplaced threshold, self-referencing node) shows up as a wrong color or a
+    // panic/hang here, exercised purely through the public eval() contract.
     // ========================================================================
 
     #[test]
-    fn all_interior_node_indices_are_valid() {
-        let items: Vec<_> = (0..10)
+    fn every_item_in_a_16_item_row_routes_to_its_own_color() {
+        let items: Vec<_> = (0..16u8)
             .map(|i| {
-                let x = (i as f32) * 10.0;
-                Positioned {
-                    bounds: (x, 0.0, x + 5.0, 10.0),
-                    leaf: SolidColor::new(255, 0, 0, 255),
-                }
+                let x = f32::from(i) * 10.0;
+                ((x, 0.0, x + 5.0, 10.0), (i * 16, 0, 0, 255))
             })
             .collect();
+        let (bounds, colors): (Vec<_>, Vec<_>) = items.into_iter().unzip();
 
-        let bsp = SpatialBSP::from_positioned(items);
-        let num_interiors = bsp.interior_count();
-        let num_leaves = bsp.leaf_count();
-
-        // Every interior node must point to valid indices
-        for interior in bsp.interiors.iter() {
-            match interior.left {
-                NodeRef::Interior(i) => {
-                    assert!(
-                        (i as usize) < num_interiors,
-                        "Left interior index {} out of bounds (max {})",
-                        i,
-                        num_interiors - 1
-                    );
-                }
-                NodeRef::Leaf(i) => {
-                    assert!(
-                        (i as usize) < num_leaves,
-                        "Left leaf index {} out of bounds (max {})",
-                        i,
-                        num_leaves - 1
-                    );
-                }
-            }
-
-            match interior.right {
-                NodeRef::Interior(i) => {
-                    assert!(
-                        (i as usize) < num_interiors,
-                        "Right interior index {} out of bounds (max {})",
-                        i,
-                        num_interiors - 1
-                    );
-                }
-                NodeRef::Leaf(i) => {
-                    assert!(
-                        (i as usize) < num_leaves,
-                        "Right leaf index {} out of bounds (max {})",
-                        i,
-                        num_leaves - 1
-                    );
-                }
-            }
-        }
+        let bsp = build_and_assert_every_item_routes_to_its_own_color(&bounds, &colors);
+        assert_eq!(bsp.interior_count(), 15);
     }
 
     #[test]
-    fn all_leaves_are_reachable_from_root() {
-        let items: Vec<_> = (0..8)
+    fn every_item_in_a_4x4_grid_routes_to_its_own_color() {
+        // A 2D grid forces splits to alternate between X and Y, exercising both axes'
+        // worth of interior-node wiring in one tree.
+        let items: Vec<_> = (0..16u8)
             .map(|i| {
-                let x = (i as f32) * 10.0;
-                Positioned {
-                    bounds: (x, 0.0, x + 5.0, 10.0),
-                    leaf: SolidColor::new((i * 32) as u8, 0, 0, 255),
-                }
+                let x = f32::from(i % 4) * 25.0;
+                let y = f32::from(i / 4) * 25.0;
+                ((x, y, x + 20.0, y + 20.0), (0, i * 16, 0, 255))
             })
             .collect();
+        let (bounds, colors): (Vec<_>, Vec<_>) = items.into_iter().unzip();
 
-        let bsp = SpatialBSP::from_positioned(items);
-
-        // Traverse tree and collect all reachable leaf indices
-        let mut reachable_leaves = std::collections::HashSet::new();
-
-        fn collect_leaves<L>(
-            bsp: &SpatialBSP<L>,
-            node: NodeRef,
-            reachable: &mut std::collections::HashSet<u32>,
-        ) {
-            match node {
-                NodeRef::Leaf(i) => {
-                    reachable.insert(i);
-                }
-                NodeRef::Interior(i) => {
-                    let interior = &bsp.interiors[i as usize];
-                    collect_leaves(bsp, interior.left, reachable);
-                    collect_leaves(bsp, interior.right, reachable);
-                }
-            }
-        }
-
-        if bsp.interior_count() > 0 {
-            // Start from root (last interior)
-            let root = NodeRef::Interior((bsp.interior_count() - 1) as u32);
-            collect_leaves(&bsp, root, &mut reachable_leaves);
-        } else if bsp.leaf_count() > 0 {
-            // Single leaf case
-            reachable_leaves.insert(0);
-        }
-
-        // All leaves must be reachable
-        for i in 0..bsp.leaf_count() {
-            assert!(
-                reachable_leaves.contains(&(i as u32)),
-                "Leaf {} is not reachable from root",
-                i
-            );
-        }
-    }
-
-    #[test]
-    fn threshold_correctly_partitions_item_centers() {
-        // Create items with known centers
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 10.0, 10.0), // center: (5, 5)
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (20.0, 0.0, 30.0, 10.0), // center: (25, 5)
-                leaf: SolidColor::new(0, 255, 0, 255),
-            },
-            Positioned {
-                bounds: (40.0, 0.0, 50.0, 10.0), // center: (45, 5)
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-            Positioned {
-                bounds: (60.0, 0.0, 70.0, 10.0), // center: (65, 5)
-                leaf: SolidColor::new(255, 255, 0, 255),
-            },
-        ];
-
-        let centers = vec![5.0, 25.0, 45.0, 65.0];
-        let bsp = SpatialBSP::from_positioned(items);
-
-        // Verify each interior node's threshold correctly partitions
-        fn verify_partition<L>(bsp: &SpatialBSP<L>, node: NodeRef, centers: &[f32], depth: usize) {
-            if let NodeRef::Interior(i) = node {
-                let interior = &bsp.interiors[i as usize];
-                let threshold = interior.threshold;
-                let axis = interior.axis;
-
-                // Collect centers from left and right subtrees
-                let mut left_centers = Vec::with_capacity(centers.len() / 2);
-                let mut right_centers = Vec::with_capacity(centers.len() / 2);
-
-                fn collect_centers<L>(
-                    bsp: &SpatialBSP<L>,
-                    node: NodeRef,
-                    centers: &[f32],
-                    output: &mut Vec<f32>,
-                ) {
-                    match node {
-                        NodeRef::Leaf(i) => {
-                            if (i as usize) < centers.len() {
-                                output.push(centers[i as usize]);
-                            }
-                        }
-                        NodeRef::Interior(i) => {
-                            let interior = &bsp.interiors[i as usize];
-                            collect_centers(bsp, interior.left, centers, output);
-                            collect_centers(bsp, interior.right, centers, output);
-                        }
-                    }
-                }
-
-                collect_centers(bsp, interior.left, centers, &mut left_centers);
-                collect_centers(bsp, interior.right, centers, &mut right_centers);
-
-                // For X axis, all left centers should be < threshold
-                // For Y axis, this test uses X-aligned items so we skip Y checks
-                if axis == Axis::X {
-                    for &center in &left_centers {
-                        assert!(
-                            center < threshold,
-                            "Left child center {} should be < threshold {} (depth {})",
-                            center,
-                            threshold,
-                            depth
-                        );
-                    }
-                    for &center in &right_centers {
-                        assert!(
-                            center >= threshold,
-                            "Right child center {} should be >= threshold {} (depth {})",
-                            center,
-                            threshold,
-                            depth
-                        );
-                    }
-                }
-
-                // Recursively verify children
-                verify_partition(bsp, interior.left, centers, depth + 1);
-                verify_partition(bsp, interior.right, centers, depth + 1);
-            }
-        }
-
-        if bsp.interior_count() > 0 {
-            let root = NodeRef::Interior((bsp.interior_count() - 1) as u32);
-            verify_partition(&bsp, root, &centers, 0);
-        }
-    }
-
-    #[test]
-    fn each_interior_node_has_distinct_children() {
-        let items: Vec<_> = (0..16)
-            .map(|i| {
-                let x = (i as f32) * 10.0;
-                Positioned {
-                    bounds: (x, 0.0, x + 5.0, 10.0),
-                    leaf: SolidColor::new(255, 0, 0, 255),
-                }
-            })
-            .collect();
-
-        let bsp = SpatialBSP::from_positioned(items);
-
-        // Interior nodes shouldn't point to themselves or have identical children
-        for (idx, interior) in bsp.interiors.iter().enumerate() {
-            // Left and right must be different
-            let left_is_self = matches!(interior.left, NodeRef::Interior(i) if i as usize == idx);
-            let right_is_self = matches!(interior.right, NodeRef::Interior(i) if i as usize == idx);
-
-            assert!(
-                !left_is_self,
-                "Interior {} points to itself as left child",
-                idx
-            );
-            assert!(
-                !right_is_self,
-                "Interior {} points to itself as right child",
-                idx
-            );
-
-            // Left and right should not be identical
-            match (interior.left, interior.right) {
-                (NodeRef::Interior(l), NodeRef::Interior(r)) => {
-                    assert_ne!(l, r, "Interior {} has identical left/right children", idx);
-                }
-                (NodeRef::Leaf(l), NodeRef::Leaf(r)) => {
-                    assert_ne!(
-                        l, r,
-                        "Interior {} has identical left/right leaf children",
-                        idx
-                    );
-                }
-                _ => {} // One interior, one leaf - always distinct
-            }
-        }
+        let bsp = build_and_assert_every_item_routes_to_its_own_color(&bounds, &colors);
+        assert_eq!(bsp.interior_count(), 15);
     }
 
     #[test]
@@ -1743,31 +1311,6 @@ mod tests {
                 n,
                 n - 1,
                 bsp.interior_count()
-            );
-        }
-    }
-
-    #[test]
-    fn threshold_is_finite() {
-        let items = vec![
-            Positioned {
-                bounds: (0.0, 0.0, 50.0, 100.0),
-                leaf: SolidColor::new(255, 0, 0, 255),
-            },
-            Positioned {
-                bounds: (50.0, 0.0, 100.0, 100.0),
-                leaf: SolidColor::new(0, 0, 255, 255),
-            },
-        ];
-
-        let bsp = SpatialBSP::from_positioned(items);
-
-        for (idx, interior) in bsp.interiors.iter().enumerate() {
-            assert!(
-                interior.threshold.is_finite(),
-                "Interior {} has non-finite threshold: {}",
-                idx,
-                interior.threshold
             );
         }
     }
