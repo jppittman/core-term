@@ -92,6 +92,7 @@
 //! tx.send(Message::Control("high priority control".to_string())).unwrap();
 //! ```
 
+pub mod actors;
 mod error;
 pub mod host;
 mod lifecycle;

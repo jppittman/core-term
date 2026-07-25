@@ -48,8 +48,11 @@ fn the_target_engine_mesh_is_a_dag() {
     // Idempotent "latest wins" state pushes: no credit needed at all.
     topo.droppable_edge(engine, driver); // SetTitle / SetSize / SetCursor / Copy
 
-    // RequestPaste / PasteData: its own small credit-bounded pair, weaker guarantee than the
-    // window buffer (usage-based bound, not an engineered invariant) — see §3.1.
+    // RequestPaste / PasteData: plain droppable, deliberately *not* credit-bounded — see §3.2.
+    // A reply is not merely rare-to-lose here, it is routinely absent: X11 answers a paste
+    // request against an unowned clipboard with `property == None`, which the driver correctly
+    // turns into no event at all. A Credit(1) released only by the reply would therefore be
+    // spent forever the first time a user pastes from an empty clipboard.
     topo.droppable_edge(engine, driver); // RequestPaste
     topo.droppable_edge(driver, engine); // PasteData
 

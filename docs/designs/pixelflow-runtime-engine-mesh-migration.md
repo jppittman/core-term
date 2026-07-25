@@ -36,8 +36,8 @@ not by re-reading it), and only then touch a live actor.
 | `Present` | engine → driver | **Credit(1) + Droppable backstop** | Not a judgment call this doc is inventing: `DisplayData::Present`'s own doc comment already specifies the receiver's contract as "3. NOT block the sender (use backpressure if buffer full)". The original table lumped it into a generic "commands, never lose" bucket and missed that the code already disagrees. Exactly one window is ever in flight (the ping-pong buffer), so this is the *same* structurally-unreachable shape as the row below, not a new risk. |
 | `PresentComplete` (window return) | driver → engine | **Credit(1) + Droppable backstop** | The reply half of `Present`, sharing its credit. Exactly one window is ever in flight, so the reply ring's capacity is provisioned ≥ 1 and can **never actually be full** when the reply lands — the droppable backstop exists for `Topology`'s proof, but is unreachable by construction, not merely rare. Not the same case as a true "acceptable loss" droppable edge (§9.2) — safe only because the credit bound is airtight. |
 | `SetTitle` / `SetSize` / `SetCursor` / `Copy` | engine → driver | **Droppable, no credit needed** | Idempotent, "latest write wins" state — the exact shape already handled for `pending_manifold` below. Two queued `SetTitle`s only ever needed the second one anyway. |
-| `RequestPaste` | engine → driver | **Credit(1) + Droppable backstop** | Paired with `PasteData` below; engine never has more than one outstanding paste request. |
-| `PasteData` (reply to `RequestPaste`) | driver → engine | **Credit(1) + Droppable backstop, shared with `RequestPaste`** | A dropped reply here just means one failed paste, recoverable by the user pressing paste again — closer to "acceptable loss" than "unreachable," since the 1-outstanding bound comes from usage, not an engineered invariant like the window buffer. Recorded as that weaker guarantee on purpose, not conflated with `PresentComplete`. |
+| `RequestPaste` | engine → driver | **Droppable, no credit** — *revised, see §3.2* | Originally planned as Credit(1); that would deadlock paste permanently. |
+| `PasteData` (reply to `RequestPaste`) | driver → engine | **Droppable, no credit** — *revised, see §3.2* | The reply is not merely losable, it is *routinely absent*: pasting from an empty clipboard produces no reply at all, by design. A credit released only by the reply would never come back. |
 | `Create` (window creation) | engine → driver | **Not part of the steady-state graph — see §3.1** | One-shot bootstrap per window, not a member of the continuously-live mesh at all. |
 | VSync tick | vsync → engine | **Credit(100) + Droppable backstop** | Direct replacement for `VSYNC_TOKEN_BUCKET`. A dropped tick under a bug is a missed/late frame, genuinely tolerable — this *is* an ordinary acceptable-loss droppable edge, unlike the row above. |
 | Frame-rendered notice (`RenderedResponse`, FPS tracking only) | engine → vsync | **Droppable, no credit needed** | Pure telemetry. Losing a sample changes nothing but a displayed FPS number. |
@@ -79,9 +79,10 @@ already established for other actors:
 - **`SetTitle`/`SetSize`/`SetCursor`/`Copy` are idempotent state pushes** — exactly the
   "keep latest, drop stale" shape `pending_manifold` already implements by hand elsewhere in
   this file. Plain `[drop]`, no credit needed, nothing new invented.
-- **`RequestPaste`/`PasteData` is its own tiny 1:1 request/reply**, structurally identical to
-  every other credit-bounded pair in §3, just lower-stakes (a dropped reply costs one retried
-  keystroke, not a lost buffer).
+- **`RequestPaste`/`PasteData` is its own tiny 1:1 request/reply** — originally classified here
+  as "structurally identical to every other credit-bounded pair, just lower-stakes." That was
+  wrong, and §3.2 corrects it: the reply is *routinely absent*, so a credit released only by the
+  reply is a deadlock, not a bound.
 - **`Create` is a bootstrap-phase message**, not a steady-state one — the same category the
   *current* code already puts the rasterizer's handshake in (`engine_troupe.rs`: "Rasterizer is
   NOT in the troupe - it uses a bootstrap handshake pattern"). `Topology`'s DAG check governs the
@@ -94,11 +95,46 @@ direction between a pair is never a cycle by itself. Nothing that matters was ma
 get there: every discrete, non-idempotent, must-not-lose message (input, window lifecycle) stays
 exactly as reliable as it is today.
 
-The one edge worth flagging as a deliberately *weaker* guarantee than its siblings:
-`PasteData`'s credit bound comes from how paste is actually used (nobody issues a second
-`RequestPaste` before the first replies), not from an engineered invariant like the single
-window buffer. If that assumption is ever wrong, the failure mode is a dropped paste, not a
-hang — an explicit, accepted trade, not an oversight.
+### 3.2 The paste credit was a deadlock, not a weaker guarantee
+
+§3.1 originally flagged `RequestPaste`/`PasteData` as carrying a *weaker* credit bound than its
+siblings — "nobody issues a second `RequestPaste` before the first replies" — and accepted that
+as a recorded trade-off. Implementation found that framing to be wrong in kind, not just in
+degree, and this section is the correction.
+
+**A reply is not merely rare to lose here. It is routinely, correctly absent.** Pasting from an
+empty or unowned clipboard produces *no reply at all*, by design and at the protocol level. On
+X11, `request_paste()` issues an async `XConvertSelection`; when nothing owns the selection the
+server answers `SelectionNotify` with `property == None`, and
+`platform/linux/events.rs::handle_selection_notify` correctly returns `None` rather than
+inventing an empty `PasteData`. That is the normal, specified path for "clipboard is empty" —
+not an error, not an edge case worth engineering around.
+
+A `Credit(1)` released only by `PasteData` would therefore be consumed and never returned the
+first time a user hits paste with an empty clipboard, and **every subsequent paste for the life
+of the process would be silently gated off**. The bound's failure mode is not "a dropped paste";
+it is "paste stops working permanently." That is strictly worse than the unbounded status quo.
+
+The fix is to *subtract*, not to add a rescue mechanism. A timeout that releases the credit when
+no reply arrives would work, but it answers a question this edge never needed to ask: `Credit`
+exists to make a droppable edge's drop **unreachable**, and it earns its keep only where the
+drop would be catastrophic (`PresentComplete` losing the sole window buffer). Here the drop is
+*already* the acceptable outcome — §3.1's own words, "a dropped reply costs one retried
+keystroke" — so there is nothing for a credit to protect. The edge is plain Droppable, exactly
+like `SetTitle`/`SetSize`/`SetCursor`/`Copy`: lose it and the user presses paste again.
+
+This is the two-category distinction from §3 doing its job in the direction it was meant to.
+Those categories — *structurally unreachable* vs. *genuinely acceptable loss* — exist so that
+"safe to `[drop]`" is never allowed to blur into one word. Paste was filed under the first and
+belongs under the second; a credit bolted onto an acceptable-loss edge bought no safety and
+introduced a hang.
+
+Worth noting what did *not* change: `pixelflow-runtime/tests/target_topology.rs` needed no edit
+to its edges for this correction, because `Credit` is a sender-side discipline and not a
+`Topology` concept at all — both directions were already `droppable_edge`. The proof was
+indifferent to a distinction the prose had gotten wrong, which is a useful reminder that the
+mechanical check constrains the *shape* of the graph and never the judgment about what may be
+lost.
 
 ## 4. Placement
 
