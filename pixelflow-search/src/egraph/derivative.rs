@@ -90,33 +90,14 @@ mod tests {
     use crate::arena_pat;
     use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
-    /// Evaluate an arena subtree at the given variable values.
+    /// Evaluate an arena expression via the reference interpreter.
+    ///
+    /// Delegates to `pixelflow_ir::eval_scalar` rather than walking the arena
+    /// here: that is the language's semantics (it lowers transcendentals to the
+    /// expansion the compiler emits), and a private walker would be a second
+    /// definition free to drift from it.
     fn eval(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
-        match *arena.node(id) {
-            ExprNode::Var(i) => vars[i as usize],
-            ExprNode::Const(c) => c,
-            ExprNode::Param(p) => panic!("Param({p}) in extracted derivative"),
-            ExprNode::Buffer(b) => panic!("Buffer({}) in extracted derivative", b.0),
-            ExprNode::Unary(op, a) => {
-                let a = eval(arena, a, vars);
-                op.eval_unary(a)
-                    .unwrap_or_else(|| panic!("eval_unary {op:?}"))
-            }
-            ExprNode::Binary(op, a, b) => {
-                let a = eval(arena, a, vars);
-                let b = eval(arena, b, vars);
-                op.eval_binary(a, b)
-                    .unwrap_or_else(|| panic!("eval_binary {op:?}"))
-            }
-            ExprNode::Ternary(op, a, b, c) => {
-                let a = eval(arena, a, vars);
-                let b = eval(arena, b, vars);
-                let c = eval(arena, c, vars);
-                op.eval_ternary(a, b, c)
-                    .unwrap_or_else(|| panic!("eval_ternary {op:?}"))
-            }
-            ExprNode::Nary(op, ..) => panic!("Nary {op:?} in extracted derivative"),
-        }
+        pixelflow_ir::eval_scalar(arena, id, vars, &pixelflow_ir::binding::BindingTable::empty())
     }
 
     /// Saturate `D(differentiand, var)` with the full rule set, extract the
@@ -223,16 +204,21 @@ mod tests {
 
     #[test]
     fn d_sin_is_cos() {
-        // d/dx sin(x) = cos(x).
+        // d/dx sin(x) = cos(x), where `cos` means the language's cos — built
+        // as an arena expression and evaluated the same way, not `f32::cos`.
+        // The rule is exact; the polynomial `cos` is expanded from
+        // `sin(x + π/2)` and carries its own approximation error, which
+        // comparing against libm would charge to the chain rule.
         let mut a = ExprArena::new();
         let e = arena_pat!(&mut a, un OpKind::Sin, (var 0));
+        let expected = arena_pat!(&mut a, un OpKind::Cos, (var 0));
         let (out, root) = differentiate(&a, e, 0);
         for p in &[
             [0.0, 0.0, 0.0, 0.0],
             [0.7, 0.0, 0.0, 0.0],
             [-1.2, 0.0, 0.0, 0.0],
         ] {
-            assert_close(eval(&out, root, p), p[0].cos(), p);
+            assert_close(eval(&out, root, p), eval(&a, expected, p), p);
         }
     }
 }

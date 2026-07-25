@@ -551,17 +551,21 @@ impl OpKind {
             Self::Floor => Some(x.floor()),
             Self::Ceil => Some(x.ceil()),
             Self::Round => Some(x.round()),
-            Self::Sin => Some(x.sin()),
-            Self::Cos => Some(x.cos()),
-            Self::Tan => Some(x.tan()),
-            Self::Asin => Some(x.asin()),
-            Self::Acos => Some(x.acos()),
-            Self::Atan => Some(x.atan()),
-            Self::Exp => Some(x.exp()),
-            Self::Exp2 => Some(x.exp2()),
-            Self::Ln => Some(x.ln()),
-            Self::Log2 => Some(x.log2()),
-            Self::Log10 => Some(x.log10()),
+            // Integer-domain primitives. A lane holds an f32 bit pattern; these
+            // reinterpret it as i32, exactly as the hardware instructions do
+            // (`cvttps2dq` / `cvtdq2ps`). They exist so exp/log can lower to
+            // arithmetic, and the interpreter needs them for the same reason —
+            // it evaluates that lowering.
+            Self::TruncToInt => Some(f32::from_bits((x as i32) as u32)),
+            Self::IntToFloat => Some((x.to_bits() as i32) as f32),
+
+            // Transcendentals have no arm on purpose. `f32::sin` and friends
+            // are std-only (absent from `core`) and would be a *second*
+            // definition of a function the compiler already defines by
+            // expansion. Callers lower first — `expand_transcendentals` — and
+            // then only the primitives above are ever evaluated. Same
+            // discipline as `Dwrt`, which is also lowered rather than
+            // interpreted.
             _ => None,
         }
     }
@@ -578,8 +582,6 @@ impl OpKind {
             Self::Div => Some(x / y),
             Self::Min => Some(x.min(y)),
             Self::Max => Some(x.max(y)),
-            Self::Atan2 => Some(x.atan2(y)),
-            Self::Pow => Some(x.powf(y)),
             Self::Lt => Some(if x < y { 1.0 } else { 0.0 }),
             Self::Le => Some(if x <= y { 1.0 } else { 0.0 }),
             Self::Gt => Some(if x > y { 1.0 } else { 0.0 }),
@@ -594,6 +596,15 @@ impl OpKind {
             } else {
                 0.0
             }),
+            // Integer-domain binaries on lane bit patterns. The shift count is
+            // the RHS `Const`'s numeric value (the schedule reads it as
+            // `*v as u32 as u8`), and both shifts are logical — `vpslld` /
+            // `vpsrld`, zero-filling.
+            Self::IAdd => Some(f32::from_bits(
+                (x.to_bits() as i32).wrapping_add(y.to_bits() as i32) as u32,
+            )),
+            Self::Shl => Some(f32::from_bits(x.to_bits() << (y as u32 & 31))),
+            Self::Shr => Some(f32::from_bits(x.to_bits() >> (y as u32 & 31))),
             // Bitwise on lane bit patterns, matching the SIMD backends. On
             // canonical masks (1.0/0.0 here, all-ones/zero in the JIT) this
             // is logical AND/OR in both representations.

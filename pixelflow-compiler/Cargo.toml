@@ -25,6 +25,7 @@ pixelflow-search = { path = "../pixelflow-search" }
 
 [dev-dependencies]
 pixelflow-core = { path = "../pixelflow-core" }
+pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
 criterion = "0.5"
 
 [[bench]]
