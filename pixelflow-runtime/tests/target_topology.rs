@@ -81,16 +81,22 @@ fn the_target_engine_mesh_is_a_dag() {
 
     // The render pipeline, wired directly instead of through engine (§7/§8). The window is
     // *pulled*, not pushed (§8.5): the driver keeps and allocates it, and rasterizer asks for
-    // one only when it holds a manifold and its Credit(1) allows. That is what makes every
-    // droppable edge here recoverable rather than merely idempotent-sounding — a dropped
-    // message costs one frame, and the sender still holds the authoritative copy to resend.
+    // one only when it holds a manifold and its Credit(1) allows.
+    //
+    // The single credit spans the WHOLE round trip — consumed at the request, released only
+    // when `Present` puts the window back with the driver. So at most one message carrying the
+    // window is in flight across these three edges at any instant, each ring is provisioned
+    // >= 1, and the droppable backstop is therefore unreachable by construction (§3's
+    // "structurally unreachable" category). That is the only thing making these safe: `Window`
+    // moves by value, so a drop would destroy the sole framebuffer outright — no sender can
+    // "resend" something it moved away.
     //
     // Note there is no resize edge at all. On resize the driver swaps its own buffer and tells
     // nobody, so there is no resize message that can be dropped.
-    topo.droppable_edge(rasterizer, driver); // window request (Credit(1))
-    topo.droppable_edge(driver, rasterizer); // window grant, correctly sized (shares credit)
+    topo.droppable_edge(rasterizer, driver); // window request (consumes Credit(1))
+    topo.droppable_edge(driver, rasterizer); // window grant, correctly sized (credit still held)
     topo.droppable_edge(app, rasterizer); // manifold submission (keep-latest, as today)
-    topo.droppable_edge(rasterizer, driver); // Present, once rendered
+    topo.droppable_edge(rasterizer, driver); // Present, once rendered (releases the credit)
     topo.droppable_edge(rasterizer, vsync); // RenderedResponse (FPS telemetry only)
     topo.droppable_edge(app, vsync); // ReturnToken — previously an engine->vsync Control-lane
                                      // send this proof never modeled separately; modeled here
