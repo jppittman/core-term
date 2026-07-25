@@ -438,26 +438,27 @@ the DAG result either way.
 The moment that stops being true — if the worker ever gains a handle to a third actor — it stops
 being collapsible and has to enter the proof as its own node. That is the tripwire.
 
-### 8.5 The window is pulled, not pushed — and why §8 needed three tries
+### 8.5 The window is pulled, not pushed — and why the first attempts failed
 
 This section replaces two earlier ones (a "tear the Window, send metadata to engine and the
 buffer to rasterizer" split, and a follow-up "resize must not mint a window" patch). Both are
 deleted rather than annotated, because keeping a chain of superseded fixes would obscure what
 turned out to be a single wrong decision underneath all three.
 
-**What went wrong, three times.** Automated review caught each in turn: (1) a `rasterizer → app`
-edge invented to avoid a frame-buffer clone that was never an acceptable option to begin with;
-(2) resize windows sent over a droppable edge, where a full ring discards the *new* message and
-keep-latest requires discarding the *old* one — so the only correctly-sized buffer could be lost
-with no replacement until the next resize; (3) the fix for (2) left the coordinator responsible
-for reallocating on resize while giving it no edge over which to learn the dimensions had
-changed, and routing that metadata over a droppable edge would have reproduced (2) exactly.
+**What went wrong.** Automated review caught a run of defects that all turned out to share one
+cause: a `rasterizer → app` edge invented to dodge a frame-buffer clone that was never an
+acceptable option; resize windows sent over a droppable edge, where a full ring discards the
+*new* message while keep-latest requires discarding the *old* one, losing the only
+correctly-sized buffer with no replacement until the next resize; and then a fix for *that* which
+left the coordinator responsible for reallocating on resize without any edge over which to learn
+the dimensions had changed — where routing that metadata over a droppable edge would have
+reproduced the previous defect exactly.
 
-Three patches, each exposing the next problem, is a decomposition error rather than a detail
-error. **The root cause: frame allocation was on the coordinator, but window size is
-driver-authoritative** — the OS decides it. Putting the allocator on the side that doesn't know
-the size forces size information to chase it across the mesh, and every route it can take is
-either unreliable (droppable, loses state permanently) or blocks the main thread.
+Each patch exposing the next is a decomposition error rather than a detail error. **The root
+cause: frame allocation was on the coordinator, but window size is driver-authoritative** — the
+OS decides it. Putting the allocator on the side that doesn't know the size forces size
+information to chase it across the mesh, and every route it can take is either unreliable
+(droppable, loses state permanently) or blocks the main thread.
 
 **The fix is to move allocation, not to route information better.** The driver keeps the window
 between frames and remains its allocator. The coordinator *pulls* one when it actually has work:
@@ -507,8 +508,12 @@ no reallocation logic, no dimension tracking. It still performs the point→pixe
 the dimensions of the window it was handed.
 
 **Consequence for `Present`/`PresentComplete`.** `PresentComplete` disappears entirely as a
-message. The driver never gave the window away permanently, so there is nothing to hand back —
-the "return" half of the ping-pong is just the driver keeping what it always owned. That also
-retires an invariant §3 had been asserting but not holding: "exactly one window circulates" was
-untrue while resize could mint a second one mid-flight. Now exactly one window *exists*, and it
-never leaves the driver except for the duration of a single render.
+message. Previously the window made a full circuit — `Present` carried it to the driver and
+`PresentComplete` carried it back to the engine, which was its resting owner between frames. Now
+the **driver** is the resting owner, so `Present` *is* the return: it hands the window back to
+the actor that already keeps it, and no separate acknowledgement is needed. The window still
+moves by value on every hop; what's gone is the second hop.
+
+That also retires an invariant §3 had been asserting but not holding: "exactly one window
+circulates" was untrue while resize could mint a second one mid-flight. Now exactly one window
+*exists*, and it is away from the driver only for the duration of a single render.
