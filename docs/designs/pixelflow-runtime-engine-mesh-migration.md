@@ -353,9 +353,13 @@ either unreliable or block the main thread. (The current backends still copy —
 
 The `rasterizer` node in the topology is a **runtime-side coordinator**, not
 `pixelflow-graphics`'s `RasterizerActor` — that crate is runtime-agnostic and can't name `Window`.
-The graphics actor sits behind it as a leaf worker. It's collapsed into one node in the proof
-because a leaf whose only peer is its caller can't participate in a cycle; **if it ever gains a
-handle to a third actor, that stops being true and it needs its own node.**
+The graphics actor sits behind it as a leaf worker, collapsed into one node in the proof. An
+earlier draft justified that by "a leaf whose only peer is its caller can't cycle" — which is
+false, and `regressed_render_pipeline_framing_is_cyclic` in the proof demonstrates exactly that
+two-actor shape. **The real condition is that one direction of the internal exchange must be
+non-blocking**, and it is: the worker replies over an unbounded `mpsc::Sender`, which cannot
+block or fill. If that ever becomes a bounded/`SyncSender` channel — or the worker gains a peer
+— the collapse is invalid and it needs its own node in the proof.
 
 ### The judgment calls
 
@@ -390,6 +394,11 @@ checked:
 - **Credit-bearing replies that can be dropped.** `ReturnToken` releases vsync's tick budget; if
   its edge can lose messages, the budget shrinks permanently. Same shape as the paste deadlock
   in §3.2 — worth checking every credit whose release travels a droppable edge.
+- **Keep-latest for manifold submission.** §3 and §7.3 delete `pending_manifold` on the grounds
+  that the droppable port *is* the staleness policy — but droppable discards the **newest**
+  message, not the oldest. If the app's final state change is the one dropped and subsequent
+  frame requests return `Skipped`, a stale surface stays on screen indefinitely. Needs either a
+  real drop-oldest delivery or an explicit coalescing slot before that state is removed.
 - **Zero-copy.** Tracked separately; the copy in both backends is a defect, not the target.
 
 ### Out of scope here
