@@ -53,7 +53,13 @@ fn the_target_engine_mesh_is_a_dag() {
     // The one edge that stays genuinely Blocking: discrete, non-idempotent input and
     // window-lifecycle events. Nothing else in this graph is Blocking, so this alone cannot
     // form a cycle with anything below.
-    topo.blocking_edge(driver, engine); // DisplayEvent, minus PasteData
+    //
+    // `WindowCreated`/`Resized` still notify engine over this edge, but carry `WindowMeta`
+    // (scalar, `Copy`) rather than the `Window` — the same tearing §7.1 already established
+    // for the render request. The `Window` itself *moves* to rasterizer on the edge below. So
+    // both consumers are served with no copy of the frame buffer anywhere: engine gets the
+    // few scalars it needs to relay to app, rasterizer gets ownership of the buffer.
+    topo.blocking_edge(driver, engine); // DisplayEvent (window lifecycle as WindowMeta)
 
     // Idempotent "latest wins" state pushes: no credit needed at all. Present/PresentComplete
     // used to live here too — they moved to the rasterizer <-> driver edges below, since
@@ -83,8 +89,8 @@ fn the_target_engine_mesh_is_a_dag() {
     topo.droppable_edge(rasterizer, driver); // Present, once rendered
     topo.droppable_edge(rasterizer, vsync); // RenderedResponse (FPS telemetry only)
     topo.droppable_edge(app, vsync); // ReturnToken — previously an engine->vsync Control-lane
-                                      // send this proof never modeled separately; modeled here
-                                      // now that it travels a new edge anyway.
+                                     // send this proof never modeled separately; modeled here
+                                     // now that it travels a new edge anyway.
 
     let order = topo.validate().expect(
         "every blocking edge has no return path and every reply is droppable, so this must be \
