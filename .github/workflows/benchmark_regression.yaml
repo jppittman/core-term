@@ -34,7 +34,10 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p benchmark_results
-          cargo bench --workspace -- --output-format bencher | tee benchmark_results/output.txt
+          # Restrict Cargo to declared benchmark targets. Without --benches,
+          # Cargo also invokes library and binary test harnesses, which do not
+          # accept Criterion's bencher-format argument.
+          cargo bench --workspace --benches -- --output-format bencher | tee benchmark_results/output.txt
 
       - name: Upload benchmark output
         if: always()
