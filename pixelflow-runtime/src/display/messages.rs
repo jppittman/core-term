@@ -24,6 +24,35 @@ pub struct Window {
     pub scale: f64,
 }
 
+/// Which buffer a [`Window`] is, among the ones the driver has handed over.
+///
+/// A resize does not modify a window in place — the driver allocates a whole new correctly-sized
+/// one and sends it while the previous buffer is still circulating through the rasterizer or the
+/// compositor. So more than one can be in flight, and "is this one still current?" is not
+/// answerable from the buffer itself: dimensions repeat (resize out and back), and "is a render
+/// outstanding?" only says *some* buffer is busy, not which. It is a generation, so it is
+/// carried as one — stamped by the engine when the driver hands the buffer over, and returned
+/// untouched in [`WindowMeta`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Generation(u64);
+
+impl Generation {
+    /// Before the driver has produced a window at all. No buffer ever carries this.
+    pub const NONE: Self = Self(0);
+
+    /// The generation of the next buffer to arrive.
+    #[must_use]
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+impl std::fmt::Display for Generation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// The half of a [`Window`] that isn't the frame buffer.
 ///
 /// Rendering has to take the `Window` apart — the rasterizer needs the `Frame` and knows
@@ -36,6 +65,9 @@ pub struct WindowMeta {
     pub width_px: u32,
     pub height_px: u32,
     pub scale: f64,
+    /// Which buffer this render was aimed at, so a completion arriving after a resize can be
+    /// recognised as aimed at a buffer that no longer exists.
+    pub generation: Generation,
 }
 
 /// Data messages for the display driver (high throughput, high priority).
