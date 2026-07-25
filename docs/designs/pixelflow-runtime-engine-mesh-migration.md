@@ -361,6 +361,15 @@ non-blocking**, and it is: the worker replies over an unbounded `mpsc::Sender`, 
 block or fill. If that ever becomes a bounded/`SyncSender` channel — or the worker gains a peer
 — the collapse is invalid and it needs its own node in the proof.
 
+**The coordinator owns the point→pixel warp.** The scene is authored in point space; the frame
+is the platform's sample lattice and may be denser (Retina). `trigger_render_with_window`
+currently contramaps the manifold by the measured points/pixels ratio per axis before handing it
+to the rasterizer. That responsibility has to land somewhere explicit when `EngineHandler` goes —
+forwarding the manifold straight to the graphics worker renders at the wrong scale on any HiDPI
+display, and the bug is invisible on a 1:1 monitor. It stays in `pixelflow-runtime`: it's runtime
+coordinate mapping, not general rasterization (`CLAUDE.md` — no terminal-adjacent logic in the
+graphics crate). Worth a test at a non-1:1 logical/frame ratio, which nothing currently covers.
+
 ### The judgment calls
 
 `Topology` proves acyclicity. It cannot tell you what may be lost — that's per-edge judgment, and
@@ -399,6 +408,12 @@ checked:
   message, not the oldest. If the app's final state change is the one dropped and subsequent
   frame requests return `Skipped`, a stale surface stays on screen indefinitely. Needs either a
   real drop-oldest delivery or an explicit coalescing slot before that state is removed.
+- **Stale-return protocol under pull.** §7.2 has the *coordinator* detect a stale render by
+  comparing against the current window — but under pull the coordinator never learns dimensions,
+  and the driver alone knows a resize is pending. Nothing yet defines how the driver rejects the
+  old-size frame, swaps the buffer, and triggers a new grant. §7.2 is superseded on this point
+  and the replacement is unwritten; the generation stamping in `EngineHandler` is the closest
+  existing mechanism.
 - **Zero-copy.** Tracked separately; the copy in both backends is a defect, not the target.
 
 ### Out of scope here
