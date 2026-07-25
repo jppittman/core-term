@@ -131,11 +131,27 @@ Big-bang replacement of a live, running actor system is the risk this whole doc 
 Order of attack, each step independently shippable and reviewable:
 
 1. **This doc + the topology proof** (§6) — no live code changes. *Landed.*
-2. **`vsync` first**: smallest actor, already isolated, already has the credit-shaped token
-   bucket crying out to become real `Credit`. Convert to `Transducer`/`Node`, replace
-   `VSYNC_TOKEN_BUCKET` with `Credit`, keep talking to the *unconverted* engine across an
-   adapter that speaks the old `ActorHandle` shape on the engine-facing side. Proves the pattern
-   on the smallest possible surface.
+2. **`vsync` first**: smallest actor, already isolated, already had the credit-shaped token
+   bucket crying out to become real `Credit`. *Landed, in two slices:*
+   - **2a.** A real-`VsyncActor` regression harness, before touching any production code —
+     `vsync_actor_tests.rs` admitted outright it only ever tested a hand-rolled mock, never
+     the actual implementation. Writing it surfaced that the bucket is one process-wide
+     global (a real cross-test coupling bug, not flakiness) and that `RenderedResponse` never
+     actually returned a token — the return happened via a raw global-static call from
+     `engine_troupe.rs`, bypassing vsync's message interface entirely.
+   - **2b.** `VsyncActor`'s decision logic extracted into `VsyncCore`, a real `Transducer` —
+     pure, table-tested, no thread/clock/scheduler in the loop. `VSYNC_TOKEN_BUCKET` replaced
+     by a `Credit` field; the raw global mutation replaced by a real message
+     (`VsyncCommand::ReturnToken`), which is what the cross-actor state-poking actually
+     required once it could no longer reach into a shared global. `VsyncActor` itself stays
+     on the old `Actor`/`ActorScheduler` shell — a thin adapter translating `VsyncCore`'s
+     output into the one real send it still makes — so `EngineHandler`'s field types don't
+     change at all; only `engine_troupe.rs`'s two `return_vsync_token()` call sites become
+     message sends. Not yet on a real `Node`/`Host`; that migration is deferred until the
+     adapter pattern earns its keep on more than one actor. The step-2a harness, run
+     unmodified against the refactored code, passed without a single assertion changing —
+     proof nothing observable broke — plus one new capability it can now check for the first
+     time: `ReturnToken` genuinely unblocking a tick, previously untestable.
 3. **`rasterizer`**: same shape as vsync (request/reply, already isolated via its bootstrap
    handshake — which was itself a symptom of not fitting the old static-topology model, so this
    should *simplify*, not complicate).

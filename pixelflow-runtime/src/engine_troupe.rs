@@ -13,7 +13,7 @@ use crate::error::RuntimeError;
 use crate::input::MouseButton;
 use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{
-    return_vsync_token, RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
+    RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
 };
 use actor_scheduler::{
     Actor, ActorHandle, ActorStatus, ActorTypes, HandlerError, HandlerResult, Message,
@@ -385,9 +385,12 @@ impl EngineHandler {
         match app_data {
             AppData::RenderSurface(manifold) | AppData::RenderSurfaceU32(manifold) => {
                 log::debug!("Engine: Received RenderSurface from app");
-                // Return token to VSync bucket - app has provided compute graph (fast)
-                // This allows VSync to keep requesting at 60Hz regardless of rasterization speed
-                return_vsync_token();
+                // Return a vsync token - app has provided a compute graph (fast). This allows
+                // VSync to keep requesting at 60Hz regardless of rasterization speed. A real
+                // message now, not a same-process global mutation.
+                self.vsync
+                    .send(Message::Control(VsyncCommand::ReturnToken))
+                    .expect("Failed to return vsync token");
 
                 if let Some(window) = self.window.take() {
                     // Window available - render immediately
@@ -401,7 +404,9 @@ impl EngineHandler {
             }
             AppData::Skipped => {
                 // App says nothing to render - return token anyway
-                return_vsync_token();
+                self.vsync
+                    .send(Message::Control(VsyncCommand::ReturnToken))
+                    .expect("Failed to return vsync token");
             }
         }
     }

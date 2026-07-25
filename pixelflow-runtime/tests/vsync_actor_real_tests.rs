@@ -7,12 +7,14 @@
 //!
 //! This closes it by constructing a real `EngineActorHandle` via
 //! `api::private::create_engine_actor` and draining it with a small collector actor, so the
-//! real `VsyncActor` has somewhere real to send its ticks. It exists specifically to serve as a
-//! before/after regression harness for converting `VsyncActor`'s internals onto
-//! `Transducer`/`Credit` (`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5 step 2):
-//! run against the unconverted actor first to prove it passes, then again after the refactor to
-//! prove nothing observable changed (except the one documented, intentional behavior flip
-//! noted below).
+//! real `VsyncActor` has somewhere real to send its ticks. It was written *before*
+//! `VsyncActor`'s internals moved onto `Transducer`/`Credit`
+//! (`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5 step 2) specifically as a
+//! before/after regression harness: run against the unconverted actor first to prove it
+//! passes, then again after the refactor to prove nothing observable changed. It still passes,
+//! unmodified — steps 1–3 below assert exactly what they asserted before the refactor. Step 4
+//! is new: `ReturnToken`, a real message, replacing what used to be an untestable same-process
+//! global mutation.
 //!
 //! # Why this is one `#[test]`, not several
 //!
@@ -143,6 +145,22 @@ fn real_vsync_actor_token_bucket_behavior() {
         MAX_TOKENS,
         "RenderedResponse must not affect the token bucket today — only engine_troupe.rs's \
          direct global-static call does, which this test cannot reach"
+    );
+
+    // 4. What engine_troupe.rs's direct global-static call could never let this test exercise:
+    //    a genuine credit return, now that it travels as a real message instead. Exactly one
+    //    more tick must land, not a flood — the same single-token semantics as before, finally
+    //    provable from outside the crate.
+    vsync
+        .send(Message::Control(VsyncCommand::ReturnToken))
+        .unwrap();
+    let after_return =
+        wait_for_at_least(&ticks, MAX_TOKENS + 1, Instant::now() + Duration::from_secs(30));
+    assert_eq!(
+        after_return,
+        MAX_TOKENS + 1,
+        "ReturnToken must unblock exactly one more tick — this is the capability the refactor \
+         added: a real, externally-testable credit return"
     );
 
     vsync.send(Message::Control(VsyncCommand::Shutdown)).unwrap();
