@@ -61,15 +61,6 @@ where
     }
 }
 
-/// An OS-thread actor that owns green actors and runs them in its `park`.
-///
-/// A host has **no messages of its own**: all three lane types are [`Infallible`], so the
-/// compiler knows its handlers are unreachable and the `match msg {}` bodies below are total.
-/// Work reaches a hosted actor by being pushed straight into that actor's inbox with a
-/// [`GreenSender`], which then rings the host's doorbell. The host routes nothing; it hosts.
-///
-/// `Message::Shutdown` still stops it, because shutdown travels on the doorbell rather than a
-/// lane.
 /// Stable identity for an adopted green actor.
 ///
 /// Deliberately not a position: `Host` removes halted nodes with `Vec::remove`, so any index
@@ -117,6 +108,15 @@ pub struct Sweep {
     pub stuck: Vec<Supervision>,
 }
 
+/// An OS-thread actor that owns green actors and runs them in its `park`.
+///
+/// A host has **no messages of its own**: all three lane types are [`Infallible`], so the
+/// compiler knows its handlers are unreachable and the `match msg {}` bodies below are total.
+/// Work reaches a hosted actor by being pushed straight into that actor's inbox with a
+/// [`GreenSender`], which then rings the host's doorbell. The host routes nothing; it hosts.
+///
+/// `Message::Shutdown` still stops it, because shutdown travels on the doorbell rather than a
+/// lane.
 #[derive(Default)]
 pub struct Host {
     nodes: Vec<(NodeId, Box<dyn Green>)>,
@@ -132,10 +132,32 @@ impl Host {
     }
 
     /// Take ownership of a green actor. Sweep order is adoption order.
-    pub fn adopt(&mut self, node: impl Green + 'static) {
+    /// Returns the actor's [`NodeId`], which is how a supervisor later names it — an event
+    /// reporting an actor you cannot identify is not actionable.
+    pub fn adopt(&mut self, node: impl Green + 'static) -> NodeId {
         let id = NodeId(self.next_id);
         self.next_id += 1;
         self.nodes.push((id, Box::new(node)));
+        id
+    }
+
+    /// Stop hosting one green actor, returning whether it was found.
+    ///
+    /// The minimum a supervisor needs to act on a [`Supervision`] event. Retrying a
+    /// [`Stuck::TargetGone`] node in place only reaches the same dead sender, so the recovery
+    /// available today is to take it out — deliberately, rather than by dropping the whole host.
+    ///
+    /// The node's retained outbox goes with it. Handing that payload back to the supervisor
+    /// needs `Green` to expose more than `poll`, which is deferred until something concrete
+    /// wants it rather than guessed at now.
+    pub fn remove(&mut self, id: NodeId) -> bool {
+        // `retain`-style removal, not `swap_remove`: sweep order is adoption order and load
+        // bearing, so survivors keep their relative positions.
+        let Some(pos) = self.nodes.iter().position(|(node_id, _)| *node_id == id) else {
+            return false;
+        };
+        self.nodes.remove(pos);
+        true
     }
 
     /// How many green actors are still running.
@@ -436,6 +458,12 @@ mod tests {
         );
         assert_eq!(sweep.stuck[0].reason, Stuck::TargetGone);
         assert_eq!(host.len(), 1, "and the node is kept, not silently discarded");
+
+        // The identity has to be actionable, or reporting it is theatre: retrying in place only
+        // reaches the same dead sender, so taking the node out is the recovery available today.
+        assert!(host.remove(sweep.stuck[0].node), "the reported id names a real node");
+        assert!(host.is_empty());
+        assert!(!host.remove(sweep.stuck[0].node), "and removing it twice is not a panic");
     }
 
     #[test]
