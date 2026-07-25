@@ -221,7 +221,7 @@ fn tune(benchmarks: &[Benchmark]) -> CostWeights {
 **User-facing workflow**:
 ```bash
 # Ship with reasonable defaults, but allow local tuning
-cargo xtask tune          # Benchmark for ~30s, emit costs_local.rs
+cargo run -p xtask --release -- tune  # Benchmark for ~30s, emit costs_local.rs
 cargo build --release     # Builds with tuned costs
 ```
 
