@@ -192,13 +192,74 @@ Order of attack, each step independently shippable and reviewable:
    handshake — which was itself a symptom of not fitting the old static-topology model, so this
    should *simplify*, not complicate).
 4. **`driver`**: convert the command/event edges; window-return `Credit` last, since it's the
-   one edge where getting the bound wrong is worst.
+   one edge where getting the bound wrong is worst. **See §5.1 — the shape of this step is not
+   what steps 2–3 assumed.**
 5. **`app`-facing edge + delete `EngineHandler`**: once every satellite speaks the new
    protocol directly to its real peer, the mediator has nothing left to route and is deleted,
    not refactored down.
 
 Each of steps 2–5 lands as its own PR with its own before/after behavioral tests against the
 running terminal, not just unit tests of the actor in isolation.
+
+### 5.1 Step 4 extracts the *send*, not a decision core
+
+Steps 2 and 3 both worked the same way: find the decision logic tangled up with I/O, pull it out
+into a pure `Transducer` (`VsyncCore`, `RasterCore`), leave a thin adapter holding the channels.
+Applying that template to the driver looks, at first, like it fails — `DriverActor` is a pure
+delegation shell with no state and no decisions, and the real logic lives in `PlatformOps` impls
+doing raw X11 and Cocoa calls, which will never be a pure transducer over a `*mut xlib::Display`.
+
+That reads as "step 4 is harder." It is the opposite, and the reason is worth writing down:
+**there is no decision core to extract because the platform state is already properly
+encapsulated.** `LinuxOps` holds `window: Option<X11Window>` and a waker; `MetalOps` holds
+`app`, `windows`, `window_map`. That is all OS resource, already owned by exactly the thing that
+should own it. Nothing wants moving.
+
+What the Mealy conversion actually asks for here is the *other* half of its rule — **effects are
+return values, not calls** — and the effect in question is the one thing these types do that
+couples them to another actor: `engine_handle.send(...)`. That is the whole of step 4.
+
+The sites are few and mechanical:
+
+| Impl | Site | Emits |
+|---|---|---|
+| `LinuxOps` | `handle_data` (Present) | `PresentComplete(window)` |
+| `LinuxOps` | `handle_management` (Create) | `FromDriver(WindowCreated)` |
+| `LinuxOps` | `park` — event pump | `FromDriver(event)` |
+| `LinuxOps` | `park` — drain loop | `FromDriver(event)` × N |
+| `MetalOps` | 7 sites, same two shapes | — |
+
+So: `PlatformOps`' methods stop sending and start yielding their outbound events, and
+`PlatformActor` — which **already exists as exactly this adapter**, wrapping `PlatformOps` into
+an `Actor` — performs the sends. Identical in shape to steps 2 and 3, with less work, because
+the encapsulation those steps had to create is already present here.
+
+The payoff is concrete and testable: `EngineActorHandle` disappears from `PlatformOps` entirely.
+Today every platform impl holds a live handle to the engine and can only be exercised with one
+running; afterwards they return `DisplayEvent`s and can be tested with no engine at all.
+
+Two real constraints on the implementation, neither a blocker:
+
+- **`park` emits *N* events**, not zero-or-one — the drain loop pulls every pending X11 event.
+  That does *not* make `Out` a list: it stays one output word, `DriverOut { events: Vec<..> }`,
+  exactly like `VsyncCoreOut { tick: Option<..> }` and `RasterCoreOut { response: Option<..> }`.
+  The struct's *fields* are the ports; a step still returns one `Out`. Keeping that uniform
+  matters more than it looks — `Out` being sometimes-a-word and sometimes-a-sequence is the kind
+  of special case that later has to be handled everywhere `Out` is touched.
+
+  This also disposes of an allocation concern that turned out not to exist. An earlier draft of
+  this section had the adapter own a reusable buffer for the ops to push into, on the grounds
+  that `park` runs every frame and `CLAUDE.md` forbids per-frame heap allocation. But an empty
+  `Vec` never touches the heap — `Vec::new()` allocates on first push, not on construction —
+  and the overwhelming majority of frames have no input events at all. Those frames allocate
+  nothing. A frame where the user actually types or moves the mouse pays one small amortized
+  growth, which is not a per-frame cost. The sink was machinery to solve a problem that
+  measurement of the type's own semantics dissolves, and it is deleted before being written.
+- **Only two impls exist** (`LinuxOps`, `MetalOps`) — headless and web still use the older
+  `DisplayDriver` trait and are untouched by this. Both are covered by CI (ubuntu + macOS), but
+  only the X11 half compiles on a Linux dev box, so the macOS half is verified in CI rather than
+  locally. That is the reason to land this as one deliberate PR rather than piecemeal: a
+  half-converted `PlatformOps` trait breaks the platform that cannot be compiled locally.
 
 ---
 
