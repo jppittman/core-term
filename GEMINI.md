@@ -45,7 +45,7 @@ The project is a Rust workspace with the following key members:
 *   **Benchmarks:** `cargo bench -p pixelflow-core`
 
 ### Build Profiles
-*   **`dev`**: `opt-level = 1` (Required to prevent stack overflows from deep Manifold recursion).
+*   **`dev`**: `opt-level = 0`, `panic = "abort"`. The former opt-level 1-2 workaround for deeply nested expression-template types is obsolete: the JIT-first `Kernel`/`ExprArena` architecture superseded that layer (see `docs/plans/2026-07-20-kernel-unification.md`).
 *   **`release`**: `opt-level = 3`, `panic = "abort"`.
 *   **`bench`**: `lto = true`, `codegen-units = 1`.
 *   **`dist`**: inherits `release`, adds `lto = true`, `codegen-units = 1`, `strip = true`.

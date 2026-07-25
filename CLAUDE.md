@@ -115,7 +115,7 @@ cargo bundle-run --features profiling  # Flamegraph on exit
 
 ### Build Profiles
 
-- **dev** - opt-level=1 because deep Manifold recursion causes stack overflow without inlining. panic=abort.
+- **dev** - opt-level=0, panic=abort. The former opt-level=1/2 workaround for deeply nested expression-template types is obsolete: the JIT-first `Kernel`/`ExprArena` architecture superseded that layer (see `docs/plans/2026-07-20-kernel-unification.md`).
 - **release** - opt-level=3, panic=abort
 - **bench** - LTO, codegen-units=1
 - **dist** - LTO, strip, codegen-units=1, panic=abort
