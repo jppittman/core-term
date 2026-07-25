@@ -237,4 +237,4 @@ The goal: prove that **pure algebra** scales to real-time graphics without GPU c
 
 ## License
 
-[MIT License](LICENSE.md)
+[Apache License 2.0](LICENSE.md)
