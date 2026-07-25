@@ -342,8 +342,8 @@ edges (`driver` ↔ `rasterizer`) that never existed in the mesh before.
 
 **The match logic lives in `rasterizer`, and the window is pulled rather than pushed** (§8.5
 explains why). `app` pushes its latest manifold (droppable, keep-latest, same semantics as
-today). `rasterizer` holds that manifold and a `Credit(1)`; when it has work and the credit
-allows, it *requests* a window. `driver` keeps the window between frames, stays its allocator,
+today). `rasterizer` holds that manifold; when it has work and is not already holding a window
+or awaiting one, it *requests* a window. `driver` keeps the window between frames, stays its allocator,
 and grants the one it already holds — always correctly sized, because the driver resized it in
 place when the OS said so. `rasterizer` renders into it and `Present`s it back; the driver
 presents and retains it for the next request.
@@ -505,9 +505,10 @@ the window is still out being rendered, and the driver would have nothing to gra
 **Droppable is safe when the drop cannot occur, or when the message is genuinely replaceable.**
 Never because a sender "could resend" something it moved away.
 
-**Consequence for the coordinator.** It shrinks: manifold plus `Credit(1)`, no `latest_window`,
-no reallocation logic, no dimension tracking. It still performs the point→pixel dimap warp, using
-the dimensions of the window it was handed.
+**Consequence for the coordinator.** It shrinks: the latest manifold plus a "request
+outstanding" flag — no `latest_window`, no reallocation logic, no dimension tracking, and (per
+§8.6) no `Credit`. It still performs the point→pixel dimap warp, using the dimensions of the
+window it was handed.
 
 **Consequence for `Present`/`PresentComplete`.** `PresentComplete` disappears entirely as a
 message. Previously the window made a full circuit — `Present` carried it to the driver and
