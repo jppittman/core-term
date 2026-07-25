@@ -296,11 +296,43 @@ mod tests {
     use alloc::vec;
     use pixelflow_core::Sh2;
 
+    /// Acceptable absolute error when comparing extracted `Field` lanes.
+    const FIELD_TOLERANCE: f32 = 1e-4;
+
+    /// Looser tolerance for values that pass through `Field::sqrt`/reciprocal,
+    /// which are polynomial SIMD approximations rather than exact IEEE ops.
+    const SH_PROJECT_TOLERANCE: f32 = 1e-3;
+
+    /// Extract the first SIMD lane of a `Field` for scalar assertions.
+    ///
+    /// `Field` is `#[repr(transparent)]` over its SIMD storage, so reading the
+    /// leading `f32` is sound; this mirrors the pattern already used by
+    /// `pixelflow-core`'s own integration tests (`tests/test_log2.rs`), since
+    /// `Field`'s storage is `pub(crate)` and offers no public extraction API.
+    fn first_lane(f: Field) -> f32 {
+        unsafe { *(&f as *const Field as *const f32) }
+    }
+
     #[test]
-    fn elu_feature_positive() {
-        let f = EluFeature;
-        let result = f.apply(Field::from(0.0));
-        let _ = result;
+    fn elu_feature_matches_formula_at_zero() {
+        // ELU(0) + 1 = max(0, 0) + exp(min(0, 0)) = 0 + 1 = 1
+        let result = first_lane(EluFeature.apply(Field::from(0.0)));
+        assert!((result - 1.0).abs() < FIELD_TOLERANCE);
+    }
+
+    #[test]
+    fn elu_feature_matches_formula_for_positive_input() {
+        // ELU(2) + 1 = max(2, 0) + exp(min(2, 0)) = 2 + 1 = 3
+        let result = first_lane(EluFeature.apply(Field::from(2.0)));
+        assert!((result - 3.0).abs() < FIELD_TOLERANCE);
+    }
+
+    #[test]
+    fn elu_feature_matches_formula_for_negative_input() {
+        // ELU(-1) + 1 = max(-1, 0) + exp(min(-1, 0)) = 0 + exp(-1)
+        let expected = (-1.0f32).exp();
+        let result = first_lane(EluFeature.apply(Field::from(-1.0)));
+        assert!((result - expected).abs() < FIELD_TOLERANCE);
     }
 
     #[test]
@@ -319,19 +351,68 @@ mod tests {
     fn random_fourier_feature_dimension_correct() {
         let rff = RandomFourierFeature::new(vec![1.0, 2.0, 3.0]);
         assert_eq!(rff.num_features, 6);
+        assert_eq!(rff.frequencies, vec![1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn harmonic_attention_accumulate() {
-        let mut attn: HarmonicAttention<9> = HarmonicAttention::new(3);
+        let mut attn: HarmonicAttention<9> = HarmonicAttention::new(2);
         let key_sh = Sh2 {
-            coeffs: [0.282, 0.0, 0.489, 0.0, 0.0, 0.0, 0.315, 0.0, 0.0],
+            coeffs: [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
-        let value = [1.0, 0.5, 0.0];
-        attn.accumulate(&key_sh, &value);
-        let mut output = [0.0f32; 3];
+        attn.accumulate(&key_sh, &[10.0, 20.0]);
+
+        assert_eq!(
+            attn.accumulated[0].coeffs,
+            [10.0, 20.0, 30.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            attn.accumulated[1].coeffs,
+            [20.0, 40.0, 60.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            attn.denominator.coeffs,
+            [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn harmonic_attention_accumulate_ignores_values_past_value_dim() {
+        // value_dim = 2, but 3 values are supplied: the 3rd must be dropped,
+        // not written out of bounds.
+        let mut attn: HarmonicAttention<9> = HarmonicAttention::new(2);
+        let key_sh = Sh2 {
+            coeffs: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        };
+        attn.accumulate(&key_sh, &[1.0, 1.0, 1.0]);
+        assert_eq!(attn.accumulated.len(), 2);
+    }
+
+    #[test]
+    fn harmonic_attention_query_normalizes_by_denominator() {
+        let mut attn: HarmonicAttention<9> = HarmonicAttention::new(1);
+        let key_sh = Sh2 {
+            coeffs: [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        };
+        attn.accumulate(&key_sh, &[10.0]);
+
+        // norm = 1*1 + 2*2 + 3*3 = 14
+        // out[0] = (1*10 + 2*20 + 3*30) / 14 = 140 / 14 = 10
+        let mut output = [0.0f32; 1];
         attn.query(&key_sh, &mut output);
-        assert!(output[0] > 0.5);
+        assert!((output[0] - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn harmonic_attention_query_ignores_slots_past_accumulated_len() {
+        let attn: HarmonicAttention<9> = HarmonicAttention::new(1);
+        let key_sh = Sh2 {
+            coeffs: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        };
+        let mut output = [0.0f32, f32::NAN];
+        attn.query(&key_sh, &mut output);
+        // Second slot is past `accumulated.len()` (1) and must be left untouched.
+        assert!(output[1].is_nan());
     }
 
     #[test]
@@ -347,13 +428,46 @@ mod tests {
                 assert!(coeff.abs() < 1e-10);
             }
         }
+        for &coeff in &attn.denominator.coeffs {
+            assert!(coeff.abs() < 1e-10);
+        }
+    }
+
+    /// Project along a coordinate axis and extract the resulting SH coefficients.
+    fn project_lanes(x: f32, y: f32, z: f32) -> [f32; 9] {
+        let result = ShFeatureMap::<9>::project(Field::from(x), Field::from(y), Field::from(z));
+        result.map(first_lane)
     }
 
     #[test]
-    fn sh_feature_map_projects_direction() {
-        let result =
-            ShFeatureMap::<9>::project(Field::from(0.0), Field::from(0.0), Field::from(1.0));
-        assert_eq!(result.len(), 9);
+    fn sh_feature_map_projects_z_axis() {
+        let result = project_lanes(0.0, 0.0, 1.0);
+        let expected = [0.282095, 0.0, 0.488602, 0.0, 0.0, 0.0, 0.630783, 0.0, 0.0];
+        for (got, want) in result.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < SH_PROJECT_TOLERANCE, "{result:?} vs {expected:?}");
+        }
+    }
+
+    #[test]
+    fn sh_feature_map_projects_x_axis() {
+        let result = project_lanes(1.0, 0.0, 0.0);
+        let expected = [
+            0.282095, 0.0, 0.0, 0.488602, 0.0, 0.0, -0.315392, 0.0, 0.546274,
+        ];
+        for (got, want) in result.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < SH_PROJECT_TOLERANCE, "{result:?} vs {expected:?}");
+        }
+    }
+
+    #[test]
+    fn sh_feature_map_projects_diagonal() {
+        let result = project_lanes(1.0, 1.0, 1.0);
+        let expected = [
+            0.282095, 0.282095, 0.282095, 0.282095, 0.182091, 0.364183, 0.0, 0.364183, 0.0,
+        ];
+        for (got, want) in result.iter().zip(expected.iter()) {
+            assert!((got - want).abs() < SH_PROJECT_TOLERANCE, "{result:?} vs {expected:?}");
+        }
     }
 
     #[test]
@@ -361,6 +475,18 @@ mod tests {
         let attn = LinearAttention::new(EluFeature, 4, 3);
         assert_eq!(attn.feature_dim, 4);
         assert_eq!(attn.value_dim, 3);
+        assert_eq!(attn.kv_state, vec![0.0; 12]);
+        assert_eq!(attn.k_state, vec![0.0; 4]);
+    }
+
+    #[test]
+    fn linear_attention_reset_zeroes_state() {
+        let mut attn = LinearAttention::new(EluFeature, 2, 2);
+        attn.kv_state.fill(1.0);
+        attn.k_state.fill(1.0);
+        attn.reset();
+        assert_eq!(attn.kv_state, vec![0.0; 4]);
+        assert_eq!(attn.k_state, vec![0.0; 2]);
     }
 
     #[test]
