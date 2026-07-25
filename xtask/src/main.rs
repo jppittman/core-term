@@ -309,8 +309,27 @@ fn isa_matrix(with_clippy: bool) {
             };
             println!("isa-matrix: RUSTFLAGS=\"{rustflags}\"");
 
+            // Each level's RUSTFLAGS produce a disjoint artifact set (the
+            // flags feed -C metadata), so levels sharing a target dir
+            // accumulate ~one full workspace build EACH — three levels
+            // exhausted a 21 GB disk the first time this ran for real.
+            // Every level therefore builds in one dedicated dir, wiped
+            // before each level: peak disk is a single artifact set, and
+            // the developer's own target/ (their incremental cache) is
+            // never touched.
+            let matrix_target = workspace_root.join("target/isa-matrix");
+            if matrix_target.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&matrix_target) {
+                    panic!(
+                        "isa-matrix: could not clear {}: {e}",
+                        matrix_target.display()
+                    );
+                }
+            }
+
             let test_ok = run_with_rustflags(
                 &workspace_root,
+                &matrix_target,
                 &rustflags,
                 &["test", "--workspace", "--no-fail-fast"],
             );
@@ -324,6 +343,7 @@ fn isa_matrix(with_clippy: bool) {
             if with_clippy {
                 let clippy_ok = run_with_rustflags(
                     &workspace_root,
+                    &matrix_target,
                     &rustflags,
                     &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
                 );
@@ -365,14 +385,20 @@ fn isa_matrix(with_clippy: bool) {
 }
 
 /// Run `cargo <args>` from the workspace root with `RUSTFLAGS` set to
-/// `rustflags`, streaming output straight through. Returns whether it
-/// succeeded.
+/// `rustflags` and artifacts confined to `target_dir`, streaming output
+/// straight through. Returns whether it succeeded.
 #[cfg(target_arch = "x86_64")]
-fn run_with_rustflags(workspace_root: &std::path::Path, rustflags: &str, args: &[&str]) -> bool {
+fn run_with_rustflags(
+    workspace_root: &std::path::Path,
+    target_dir: &std::path::Path,
+    rustflags: &str,
+    args: &[&str],
+) -> bool {
     Command::new("cargo")
         .current_dir(workspace_root)
         .args(args)
         .env("RUSTFLAGS", rustflags)
+        .env("CARGO_TARGET_DIR", target_dir)
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
