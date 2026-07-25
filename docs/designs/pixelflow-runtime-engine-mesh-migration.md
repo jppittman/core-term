@@ -352,18 +352,16 @@ The resulting edges, added to `pixelflow-runtime/tests/target_topology.rs`:
 
 | Edge | Direction | Kind |
 |---|---|---|
-| Window request ("I have work, give me a buffer") | rasterizer → driver | Droppable, **Credit(1) consumed here** |
-| Window grant (correctly sized, driver-allocated) | driver → rasterizer | Droppable, same credit still held |
-| `Present` | rasterizer → driver | Droppable, **credit released here** |
+| Window request ("I have work, give me a buffer") | rasterizer → driver | Droppable — genuinely losable, carries nothing |
+| Window grant (correctly sized, driver-allocated) | driver → rasterizer | Droppable, **unreachable**: driver can't grant what it doesn't hold |
+| `Present` | rasterizer → driver | Droppable, **unreachable**: coordinator can't present what it doesn't hold |
 | Manifold submission | app → rasterizer | Droppable, keep-latest |
 | Frame-rendered notice (FPS telemetry) | rasterizer → vsync | Droppable, no credit |
 | `ReturnToken` | app → vsync | Droppable, no credit |
 
-**The one credit spans the entire round trip** — request → grant → render → `Present` — and is
-released only when the window is back with the driver. It is emphatically *not* released at the
-grant: doing so would let a second manifold trigger a request the driver cannot satisfy, since
-it no longer holds a window to give. See §8.5; this is what makes the three droppable backstops
-structurally unreachable rather than merely unlikely.
+**There is no `Credit` on this loop.** Ownership of the single `Window` is already the bound —
+see §8.6. Rust will not let an actor send a window it does not hold, so "at most one in flight"
+is a property of the type rather than a counter that has to be kept in sync with it.
 
 Two of these delete an existing edge rather than add one: `engine → driver` (`Present`) and
 `driver → engine` (`PresentComplete`) are gone — `rasterizer` presents directly now. `engine ↔
@@ -517,3 +515,72 @@ moves by value on every hop; what's gone is the second hop.
 That also retires an invariant §3 had been asserting but not holding: "exactly one window
 circulates" was untrue while resize could mint a second one mid-flight. Now exactly one window
 *exists*, and it is away from the driver only for the duration of a single render.
+
+### 8.6 Ownership is the bound — delete the credit
+
+§8.5 put a `Credit(1)` on the render loop, consumed at the request and released when `Present`
+returned the window. Review showed that cannot work, and the reason is worth keeping:
+
+**`Credit` is requester-local, and `send_port` reports `Flush::Done` whether it delivered or
+dropped.** So the coordinator can never learn that its `Present` arrived. Release the credit when
+*emitting* `Present` and a dropped delivery restores the credit while destroying the only window
+— which makes the drop-impossibility argument circular, since it assumed the credit bounded the
+edge. Never release it and rendering halts after one frame. With a coordinator-local credit and
+no acknowledgement, there is no third option.
+
+The available fixes were to reinstate a `PresentComplete` acknowledgement, or invent a
+transferable permit. Both are machinery. **The subtraction is to notice the credit was modelling
+something the type system already guarantees: you cannot send a `Window` you do not hold.**
+
+There is exactly one `Window`, and it is moved, never copied. Therefore:
+
+- **The driver can only grant while it holds the window.** Having granted, it holds nothing and
+  cannot grant again until `Present` returns it. At most one grant is ever in flight, and the
+  ring is provisioned ≥ 1 — so the grant ring is never full, and its droppable backstop is dead
+  code. No counter required; `Option<Window>` *is* the counter.
+- **The coordinator can only `Present` while it holds the window**, which it does only between a
+  grant and that `Present`. Same argument, same conclusion.
+- **The request carries no resource**, so it is the one genuinely losable message here. A dropped
+  request costs one frame and the next vsync tick issues another — *actual* acceptable loss, of
+  the kind §3 distinguishes from structural unreachability.
+
+The coordinator's gate becomes a plain question about its own state: *do I hold a manifold, am I
+not currently holding a window, and is no request outstanding?* The middle clause is what covers
+the render window — while rendering it holds the window, so it cannot request another regardless
+of how many manifolds arrive. That is the concern §8.5's round-trip credit was introduced to
+address, handled by ownership instead of by a counter.
+
+**Rule.** Where a resource is unique and moved rather than copied, ownership already enforces
+the bound a `Credit` would encode. Adding one duplicates the invariant into a place it can drift
+out of sync with — and, as here, into a place that needs an acknowledgement message to maintain.
+Reach for `Credit` when the bound is *not* expressible as ownership: a count of outstanding
+requests (vsync's tick budget), or a permit held across actors that never move a value.
+
+### 8.7 Resize while the window is out being rendered
+
+§8.5 said "on resize the driver swaps its held buffer." That is only true when it *has* one.
+Between granting and `Present`, the driver holds nothing — and a resize in that gap is not a
+corner case: it is the race today's `stale` flag exists to handle, and `engine_troupe.rs`
+explicitly handles resizes arriving during both rendering and presentation.
+
+Following §8.5 literally leaves two bad options: ignore the resize and reuse the stale-sized
+buffer indefinitely, or allocate a second window and break the exactly-one invariant §8.6 now
+depends on.
+
+**The driver records pending dimensions instead of acting immediately.** It is already the size
+authority and the allocator, so remembering "the OS told me 1920×1080 while the buffer was out"
+is state that belongs to it:
+
+- Resize while the driver **holds** the window: swap the buffer now, as §8.5 said.
+- Resize while the window is **out**: store the new dimensions. Do nothing else.
+- On `Present` with pending dimensions set: the returned frame was rendered at the old size, so
+  **skip the blit** — presenting it would show a stretched or clipped frame — then replace the
+  buffer with a correctly-sized one and clear the pending dimensions. The next grant is correct.
+
+That reproduces today's behaviour exactly. The `stale` flag §7.2 deleted did precisely this job
+from the engine's side; the work does not disappear, it moves to the actor that owns the buffer,
+where it needs no cross-actor flag to coordinate — the driver observes the mismatch locally by
+comparing what it stored against what came back.
+
+One dropped frame per resize, same as today. The alternative — presenting a wrong-sized frame —
+is visibly worse and is what today's code already declines to do.
