@@ -23,7 +23,8 @@ This is production code driving a real, running terminal renderer, not a prototy
 (§9) found four real bidirectional cycles held together today by an untyped global atomic and a
 hand-rolled `stale` flag. Reclassifying each edge is a per-edge *judgment call* about what may be
 lost — the audit was explicit that the type system cannot make this call automatically
-(`PresentComplete` dropped is catastrophic; `SetTitle` dropped is nothing, since another follows). Getting one of these wrong is worse than the status quo, not better.
+(`PresentComplete` dropped is catastrophic; a dropped vsync tick is nothing, because the clock
+emits another). Getting one of these wrong is worse than the status quo, not better.
 So: classify every edge on paper first, prove the resulting graph is actually a DAG (mechanically,
 not by re-reading it), and only then touch a live actor.
 
@@ -52,10 +53,17 @@ makes that backstop unreachable by construction. **Two different reasons an edge
 
 - **Structurally unreachable** (window return, render complete): the credit bound is airtight,
   so the drop path is dead code in the well-behaved system and only fires on an actual bug.
-- **Genuinely acceptable loss** (vsync tick, FPS notice, idempotent state pushes): dropping is a
-  normal, expected outcome, not a bug symptom. Manifold submission looks like it belongs here and
-  does not — see its row: if the app's *last* submission is the dropped one, nothing follows to
-  correct it.
+- **Genuinely acceptable loss** (vsync tick, FPS notice): dropping is a normal, expected
+  outcome, not a bug symptom.
+
+**The line between them is not "is this message important" — it is *does something else regenerate
+it*.** Periodic traffic is safe because a clock or a sampler emits the next one regardless. *Edge
+triggered* state is not, however idempotent it looks: `SetTitle`, `SetSize`, `SetCursor`, `Copy`
+and manifold submission all fire on a change, so if the *last* one is dropped nothing follows to
+correct it and the stale value stands indefinitely. "Latest wins" only helps when there is a
+later. Manifold submission is `Blocking` for exactly this reason; the `engine → driver` state
+pushes have the same shape at lower stakes and are flagged in Known-unsettled rather than quietly
+grandfathered.
 
 Conflating these two would be exactly the mistake §9.2 warned against.
 
@@ -320,8 +328,8 @@ coupling as the `VSYNC_TOKEN_BUCKET` global that step 2 removed, just local inst
 
 So `EngineHandler` collapses to: two fields deleted outright (`pending_render`, `render_threads`),
 one flag replaced by a comparison (`stale`), one absorbed into a port's semantics
-(`pending_manifold` — *corrected: it relocates rather than dissolving*), and two genuine
-relocations (`window` → driver, `frame_number` →
+and three genuine relocations (`pending_manifold` → the coordinator as an explicit slot,
+`window` → driver, `frame_number` →
 rasterizer). Nothing needs a new home invented for it, which is the sign the mediator was
 holding state on behalf of actors that should have held it themselves.
 
@@ -430,6 +438,12 @@ it's the reason this doc exists at all:
   **never by a delivery failure**, which destroys something nobody chose to and leaves both sides
   believing the other has it.
 
+**§7.2 is superseded.** It has render completion compare returned *dimensions* against the
+coordinator's current window. Under the pull protocol the coordinator has no current window to
+compare against, and dimensions are not an identity anyway — resize out and back and they repeat.
+The check is the driver's, against buffer identity (the existing generation stamp), not the
+coordinator's against size.
+
 ### Known-unsettled
 
 Recorded so they aren't mistaken for solved. Each needs to be answered in code, where it can be
@@ -444,6 +458,10 @@ checked:
 - **Credit-bearing replies that can be dropped.** `ReturnToken` releases vsync's tick budget; if
   its edge can lose messages, the budget shrinks permanently. Same shape as the paste deadlock
   in §3.2 — worth checking every credit whose release travels a droppable edge.
+- **`engine → driver` state pushes.** `SetTitle`/`SetSize`/`SetCursor`/`Copy` are edge-triggered,
+  so a dropped *final* update stands forever — the same failure that made manifold submission
+  `Blocking`, at lower stakes (a wrong title, not a wrong screen). Currently plain `Droppable`.
+  Either they take the same treatment or the reason they differ needs writing down.
 - **Zero-copy.** Tracked separately; the copy in both backends is a defect, not the target.
 
 ### Out of scope here
