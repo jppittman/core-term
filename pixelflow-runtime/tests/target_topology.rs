@@ -57,13 +57,13 @@ fn the_target_engine_mesh_is_a_dag() {
     // `WindowCreated`/`Resized` notify engine over this edge as `WindowMeta` (scalar, `Copy`)
     // purely so engine can relay dimensions to app. No frame buffer travels here, and the
     // render pipeline does not consume these at all — the driver keeps the window and hands it
-    // out on request (§8.5), so nothing downstream needs telling that it was resized.
+    // out on request (§8, "The shape"), so nothing downstream needs telling that it was resized.
     topo.blocking_edge(driver, engine); // DisplayEvent (window lifecycle as WindowMeta)
 
     // Idempotent "latest wins" state pushes: no credit needed at all. `Present` used to live
     // here too; it is now a rasterizer -> driver edge below. `PresentComplete` is gone as a
     // message entirely: the driver is now the window's resting owner, so `Present` *is* the
-    // return and no separate acknowledgement is needed (§8.5).
+    // return and no separate acknowledgement is needed (§8, "The shape").
     topo.droppable_edge(engine, driver); // SetTitle / SetSize / SetCursor / Copy
 
     // RequestPaste / PasteData: plain droppable, deliberately *not* credit-bounded — see §3.2.
@@ -80,11 +80,11 @@ fn the_target_engine_mesh_is_a_dag() {
     topo.droppable_edge(engine, app); // RequestFrame (Credit-gated)
 
     // The render pipeline, wired directly instead of through engine (§7/§8). The window is
-    // *pulled*, not pushed (§8.5): the driver keeps and allocates it, and rasterizer asks for
+    // *pulled*, not pushed (§8, "The shape"): the driver keeps and allocates it, and rasterizer asks for
     // one only when it holds a manifold and is not already holding a window.
     //
     // There is no Credit on this loop: ownership of the single Window is already the bound
-    // (§8.6). An actor cannot send a window it does not hold, so "at most one grant in flight"
+    // (§8, "The judgment calls"). An actor cannot send a window it does not hold, so "at most one grant in flight"
     // and "at most one Present in flight" are properties of the type, not of a counter — and
     // each ring is provisioned >= 1, so neither is ever full when sent. Their droppable
     // backstops are dead code. That matters because `Window` moves by value: an actually
@@ -94,7 +94,7 @@ fn the_target_engine_mesh_is_a_dag() {
     // costs one frame and the next vsync tick re-asks.
     //
     // Note there is no resize edge at all. The driver owns the buffer and resizes it locally,
-    // deferring to `Present` if the window is out at the time (§8.7), so no resize message
+    // deferring to `Present` if the window is out at the time (§8, "The judgment calls"), so no resize message
     // exists that could be dropped.
     // The coordinator is reactive — it acts only on messages it receives. A tick edge is what
     // makes "re-request until granted" implementable at all: without it, a dropped request could
@@ -103,7 +103,7 @@ fn the_target_engine_mesh_is_a_dag() {
     topo.droppable_edge(vsync, rasterizer); // tick — drives request retries
 
     // Requests ride the Management lane, `Present` the Data lane — deliberately different rings
-    // (§8.9). Both are rasterizer -> driver, so sharing one inbox would let queued retries fill
+    // (§8, "Known-unsettled"). Both are rasterizer -> driver, so sharing one inbox would let queued retries fill
     // it and force a `Present` drop, destroying the sole buffer. Ownership bounds the
     // window-bearing traffic; it says nothing about unrelated messages in the same ring.
     topo.droppable_edge(rasterizer, driver); // window request (Management lane; carries nothing)
