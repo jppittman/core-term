@@ -74,6 +74,8 @@ where
 pub struct Host {
     nodes: Vec<Box<dyn Green>>,
     exits: Vec<Exit>,
+    /// Indices of nodes whose flush hit a gone target, in the order it happened.
+    disconnected: Vec<usize>,
 }
 
 impl Host {
@@ -98,6 +100,24 @@ impl Host {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    /// Green actors that hit a gone target while flushing, in the order it happened.
+    ///
+    /// Each entry is the node's index at the time. The node is **still adopted** and its outbox
+    /// **still holds the undelivered payload**, so a supervisor can retry it, take the value
+    /// elsewhere, or drop the node deliberately. Without this the disconnection would be
+    /// invisible: [`sweep`](Host::sweep) reports `Idle` for such a node — deliberately, since
+    /// reporting `Busy` would spin the scheduler against a peer that is never coming back — and
+    /// the outer loop would then block on its doorbell with the payload stranded.
+    #[must_use]
+    pub fn disconnected(&self) -> &[usize] {
+        &self.disconnected
+    }
+
+    /// Clear the recorded disconnections, after a supervisor has dealt with them.
+    pub fn clear_disconnected(&mut self) {
+        self.disconnected.clear();
     }
 
     /// The exits of green actors that have halted, in the order they halted.
@@ -126,11 +146,19 @@ impl Host {
                 }
                 Step::Blocked | Step::Idle => i += 1,
                 // A peer is gone and the payload is retained in the node's outbox. `Host` has
-                // no supervision policy to apply — it keeps the node alive rather than
-                // dropping it, so whatever the outbox holds stays recoverable, and does not
-                // count the node as having run, so a dead peer cannot spin the sweep.
-                // Choosing retry/escalate/graceful-shutdown belongs a layer up.
-                Step::Disconnected => i += 1,
+                // no supervision policy to apply — it keeps the node alive rather than dropping
+                // it, so whatever the outbox holds stays recoverable, and does not count it as
+                // having run, so a dead peer cannot spin the sweep against a peer that is never
+                // coming back. But it must *record* the fact: choosing retry, handoff or
+                // graceful shutdown belongs a layer up, and that layer can only choose if it is
+                // told. Reported via `disconnected()`, not by the `ActorStatus` return, which
+                // has no way to say "stuck, not idle".
+                Step::Disconnected => {
+                    if !self.disconnected.contains(&i) {
+                        self.disconnected.push(i);
+                    }
+                    i += 1;
+                }
                 Step::Halted(exit) => {
                     self.exits.push(exit);
                     // `remove`, not `swap_remove`: sweep order is load-bearing, so the
@@ -333,6 +361,37 @@ mod tests {
             3,
             "one sweep should have carried the message through all three stages"
         );
+    }
+
+    #[test]
+    fn a_gone_target_is_recorded_and_the_payload_survives() {
+        // The point of `Step::Disconnected` is that a supervisor can act on it. If `Host`
+        // swallowed the signal — as an earlier revision did, treating it like `Idle` — the
+        // scheduler would go back to sleep on its doorbell with the node's payload stranded in
+        // its outbox and nothing able to observe that it happened.
+        let (tx_in, rx_in) = spsc_channel::<u32>(8);
+        let (tx_out, rx_out) = spsc_channel::<u32>(8);
+
+        let mut host = Host::new();
+        host.adopt(Node::new(
+            Forward { seen: 0 },
+            rx_in,
+            ForwardWiring { next: tx_out },
+        ));
+
+        drop(rx_out); // the *downstream* target dies, not this actor's own inbox
+        tx_in.try_send(0).unwrap();
+        host.sweep();
+
+        assert_eq!(
+            host.disconnected(),
+            &[0],
+            "a supervisor must be able to see which node hit a gone peer"
+        );
+        assert_eq!(host.len(), 1, "and the node is kept, not silently discarded");
+
+        host.clear_disconnected();
+        assert!(host.disconnected().is_empty());
     }
 
     #[test]
