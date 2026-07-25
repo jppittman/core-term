@@ -8,26 +8,25 @@
 //! kinds — this file is deliberately actor-agnostic, so it stays valid across the rollout in
 //! the plan's §5 regardless of which actor is mid-conversion.
 //!
-//! # Status: driver ↔ engine is a known-open gap, not a passing proof
+//! # History: the first version of this proof failed, on purpose left visible
 //!
-//! Writing the "does the whole mesh validate" test found that it doesn't: input events and
-//! display commands were both specified Blocking, and two independent blocking edges between
-//! the same pair of actors are a cycle regardless of the flows being logically unrelated (§3.1
-//! of the migration doc). Fixing that requires a real behavioral trade-off — which stream may
-//! lose messages under backpressure, or whether a ring can be proven never to fill — not a
-//! mechanical edit, so it is **not resolved here**. The two tests below say so directly: one
-//! proves everything *except* that pair is already a valid DAG, the other proves that pair, as
-//! currently specified, is not.
+//! The first cut declared `DisplayEvent` and "display commands" as one aggregate edge each,
+//! both Blocking, and the proof immediately failed: two blocking edges between the same pair
+//! are a cycle regardless of the flows being logically unrelated (§3.1 of the migration doc).
+//! The fix wasn't picking one side to weaken — it was noticing "display commands" was never
+//! one thing. Decomposed per message, it turned out to already fit the same Credit/Droppable
+//! vocabulary every other edge in §3 uses (`Present` even has its own non-blocking contract in
+//! the code already, which the aggregate framing had simply missed). `regressed_aggregate_
+//! framing_is_cyclic` below keeps that mistake on record so it isn't repeated.
 
 use actor_scheduler::mealy::Topology;
 
-/// Every edge from §3 of the migration doc except driver↔engine, which is not yet resolved
-/// (see the module doc and §3.1). Confirms the four satellite relationships — vsync,
-/// rasterizer, app, and driver's *own* structurally-unreachable window-return edge — validate
-/// as specified, so the rollout in §5 can proceed on those independent of how driver↔engine is
-/// eventually settled.
+/// Every edge from §3 of the migration doc, decomposed per message rather than lumped into
+/// "input events" / "display commands". `Create` (bootstrap-only, §3.1) is deliberately not
+/// part of this graph at all — the same way the rasterizer's bootstrap handshake isn't part of
+/// today's `troupe!` topology.
 #[test]
-fn the_resolved_part_of_the_target_mesh_is_a_dag() {
+fn the_target_engine_mesh_is_a_dag() {
     let mut topo = Topology::new();
 
     let driver = topo.actor("driver");
@@ -36,46 +35,55 @@ fn the_resolved_part_of_the_target_mesh_is_a_dag() {
     let rasterizer = topo.actor("rasterizer");
     let app = topo.actor("app");
 
-    // driver -> engine (input events) and engine -> driver (display commands) are
-    // deliberately NOT declared here — see `driver_and_engine_are_not_yet_resolved` below.
+    // The one edge that stays genuinely Blocking: discrete, non-idempotent input and
+    // window-lifecycle events. Nothing on the engine -> driver side is Blocking any more, so
+    // this alone cannot form a cycle with anything below.
+    topo.blocking_edge(driver, engine); // DisplayEvent, minus PasteData
 
-    // Structurally-unreachable droppable backstops: exactly one request ever outstanding,
-    // so the ring can never actually be full when the reply lands (migration doc §3).
-    topo.droppable_edge(driver, engine); // PresentComplete (window return)
+    // Present / PresentComplete: structurally-unreachable droppable backstop, Credit(1) via
+    // the single ping-pong window buffer.
+    topo.droppable_edge(engine, driver); // Present
+    topo.droppable_edge(driver, engine); // PresentComplete
+
+    // Idempotent "latest wins" state pushes: no credit needed at all.
+    topo.droppable_edge(engine, driver); // SetTitle / SetSize / SetCursor / Copy
+
+    // RequestPaste / PasteData: its own small credit-bounded pair, weaker guarantee than the
+    // window buffer (usage-based bound, not an engineered invariant) — see §3.1.
+    topo.droppable_edge(engine, driver); // RequestPaste
+    topo.droppable_edge(driver, engine); // PasteData
+
+    // The other three satellite relationships, unchanged from the first draft of this proof.
     topo.droppable_edge(engine, rasterizer); // render request
     topo.droppable_edge(rasterizer, engine); // render complete
-
-    // Genuinely acceptable loss: dropping is a normal outcome, not a bug symptom.
     topo.droppable_edge(vsync, engine); // vsync tick (Credit-gated)
     topo.droppable_edge(engine, vsync); // RenderedResponse (FPS telemetry only)
     topo.droppable_edge(engine, app); // RequestFrame (Credit-gated)
     topo.droppable_edge(app, engine); // AppData::RenderSurface (already "keep latest" today)
 
     let order = topo.validate().expect(
-        "every edge here is droppable, so this must already be a DAG — if it isn't, an edge \
-         above needs reclassifying before any live actor is converted",
+        "every engine -> driver edge is droppable and driver -> engine is the only Blocking \
+         one, so this must be a DAG — if it isn't, an edge above needs reclassifying before \
+         any live actor is converted",
     );
     assert_eq!(order.len(), 5);
 }
 
-/// The open finding itself, kept as a running test rather than a comment: as currently
-/// specified (both directions Blocking), driver and engine form a real cycle. This should keep
-/// failing to validate until someone makes the actual decision in §3.1 of the migration doc —
-/// at which point this test should be rewritten to assert the *chosen* resolution validates,
-/// not deleted.
+/// The mistake the first draft of this proof made, kept as a permanent regression test rather
+/// than deleted once fixed: declaring *both* directions between driver and engine Blocking —
+/// even for logically unrelated message flows — is a real cycle, not a false positive from an
+/// overly strict checker.
 #[test]
-fn driver_and_engine_are_not_yet_resolved() {
+fn regressed_aggregate_framing_is_cyclic() {
     let mut topo = Topology::new();
     let driver = topo.actor("driver");
     let engine = topo.actor("engine");
 
-    topo.blocking_edge(driver, engine); // input events — must not be lost
-    topo.blocking_edge(engine, driver); // display commands — must not be lost
+    topo.blocking_edge(driver, engine); // input events
+    topo.blocking_edge(engine, driver); // "display commands", undifferentiated
 
-    let cycle = topo.validate().expect_err(
-        "driver<->engine validates now — §3.1 of the migration doc has been resolved; \
-         replace this test with one asserting the chosen fix (a droppable/coalesced stream, \
-         a provably-bounded ring, or a split into blocking + droppable command streams)",
-    );
+    let cycle = topo
+        .validate()
+        .expect_err("two blocking edges between the same pair must be rejected");
     assert!(cycle.actors.contains(&"driver") && cycle.actors.contains(&"engine"));
 }
