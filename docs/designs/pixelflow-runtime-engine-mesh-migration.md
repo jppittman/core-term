@@ -241,10 +241,20 @@ running; afterwards they return `DisplayEvent`s and can be tested with no engine
 Two real constraints on the implementation, neither a blocker:
 
 - **`park` emits *N* events**, not zero-or-one — the drain loop pulls every pending X11 event.
-  So the output is a sequence, unlike `VsyncCoreOut`/`RasterCoreOut`'s `Option`. Since `park`
-  runs every frame, this must not allocate per call (`CLAUDE.md`: "no per-frame heap
-  allocation"); the adapter owns one reusable buffer that the ops push into, so allocation is
-  amortized to zero in steady state rather than paid per frame.
+  That does *not* make `Out` a list: it stays one output word, `DriverOut { events: Vec<..> }`,
+  exactly like `VsyncCoreOut { tick: Option<..> }` and `RasterCoreOut { response: Option<..> }`.
+  The struct's *fields* are the ports; a step still returns one `Out`. Keeping that uniform
+  matters more than it looks — `Out` being sometimes-a-word and sometimes-a-sequence is the kind
+  of special case that later has to be handled everywhere `Out` is touched.
+
+  This also disposes of an allocation concern that turned out not to exist. An earlier draft of
+  this section had the adapter own a reusable buffer for the ops to push into, on the grounds
+  that `park` runs every frame and `CLAUDE.md` forbids per-frame heap allocation. But an empty
+  `Vec` never touches the heap — `Vec::new()` allocates on first push, not on construction —
+  and the overwhelming majority of frames have no input events at all. Those frames allocate
+  nothing. A frame where the user actually types or moves the mouse pays one small amortized
+  growth, which is not a per-frame cost. The sink was machinery to solve a problem that
+  measurement of the type's own semantics dissolves, and it is deleted before being written.
 - **Only two impls exist** (`LinuxOps`, `MetalOps`) — headless and web still use the older
   `DisplayDriver` trait and are untouched by this. Both are covered by CI (ubuntu + macOS), but
   only the X11 half compiles on a Linux dev box, so the macOS half is verified in CI rather than

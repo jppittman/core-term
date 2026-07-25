@@ -764,15 +764,15 @@ impl TroupeActor<Directory> for DriverActor<ActivePlatform> {
         #[cfg(target_os = "macos")]
         {
             use crate::platform::MetalOps;
-            let ops = MetalOps::new(dir.engine).expect("Failed to create Metal ops");
-            let platform = PlatformActor::new(ops);
+            let ops = MetalOps::new().expect("Failed to create Metal ops");
+            let platform = PlatformActor::new(ops, dir.engine);
             DriverActor::new(platform)
         }
         #[cfg(target_os = "linux")]
         {
             use crate::platform::linux::LinuxOps;
-            let ops = LinuxOps::new(dir.engine).expect("Failed to create Linux ops");
-            let platform = PlatformActor::new(ops);
+            let ops = LinuxOps::new().expect("Failed to create Linux ops");
+            let platform = PlatformActor::new(ops, dir.engine);
             DriverActor::new(platform)
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
