@@ -32,9 +32,13 @@ not by re-reading it), and only then touch a live actor.
 
 | Edge | Direction | Kind | Why |
 |------|-----------|------|-----|
-| Input events (`DisplayEvent`) | driver → engine | **Blocking — ⚠️ see §3.1** | Input must never be lost. |
-| Display commands (`SetTitle`/`SetSize`/`Present`/…) | engine → driver | **Blocking — ⚠️ see §3.1** | Commands must never be lost. |
-| Window return (`PresentComplete`) | driver → engine | **Credit(1) + Droppable backstop** | The *reply* half of Present. Exactly one window is ever in flight (the ping-pong buffer), so the reply ring's capacity is provisioned ≥ 1 and can **never actually be full** when the reply lands — the droppable backstop exists for `Topology`'s proof, but is unreachable by construction, not merely rare. This is *not* the same case as a true "acceptable loss" droppable edge (§9.2) — it is safe only because the credit bound is airtight. |
+| Input + window-lifecycle events (`DisplayEvent` minus `PasteData`: key, mouse, scroll, focus, resize, close, scale, window created/destroyed, clipboard-data-requested) | driver → engine | **Blocking** | Discrete, non-idempotent events. None may be lost, and none coalesce with another. |
+| `Present` | engine → driver | **Credit(1) + Droppable backstop** | Not a judgment call this doc is inventing: `DisplayData::Present`'s own doc comment already specifies the receiver's contract as "3. NOT block the sender (use backpressure if buffer full)". The original table lumped it into a generic "commands, never lose" bucket and missed that the code already disagrees. Exactly one window is ever in flight (the ping-pong buffer), so this is the *same* structurally-unreachable shape as the row below, not a new risk. |
+| `PresentComplete` (window return) | driver → engine | **Credit(1) + Droppable backstop** | The reply half of `Present`, sharing its credit. Exactly one window is ever in flight, so the reply ring's capacity is provisioned ≥ 1 and can **never actually be full** when the reply lands — the droppable backstop exists for `Topology`'s proof, but is unreachable by construction, not merely rare. Not the same case as a true "acceptable loss" droppable edge (§9.2) — safe only because the credit bound is airtight. |
+| `SetTitle` / `SetSize` / `SetCursor` / `Copy` | engine → driver | **Droppable, no credit needed** | Idempotent, "latest write wins" state — the exact shape already handled for `pending_manifold` below. Two queued `SetTitle`s only ever needed the second one anyway. |
+| `RequestPaste` | engine → driver | **Credit(1) + Droppable backstop** | Paired with `PasteData` below; engine never has more than one outstanding paste request. |
+| `PasteData` (reply to `RequestPaste`) | driver → engine | **Credit(1) + Droppable backstop, shared with `RequestPaste`** | A dropped reply here just means one failed paste, recoverable by the user pressing paste again — closer to "acceptable loss" than "unreachable," since the 1-outstanding bound comes from usage, not an engineered invariant like the window buffer. Recorded as that weaker guarantee on purpose, not conflated with `PresentComplete`. |
+| `Create` (window creation) | engine → driver | **Not part of the steady-state graph — see §3.1** | One-shot bootstrap per window, not a member of the continuously-live mesh at all. |
 | VSync tick | vsync → engine | **Credit(100) + Droppable backstop** | Direct replacement for `VSYNC_TOKEN_BUCKET`. A dropped tick under a bug is a missed/late frame, genuinely tolerable — this *is* an ordinary acceptable-loss droppable edge, unlike the row above. |
 | Frame-rendered notice (`RenderedResponse`, FPS tracking only) | engine → vsync | **Droppable, no credit needed** | Pure telemetry. Losing a sample changes nothing but a displayed FPS number. |
 | Render request | engine → rasterizer | **Credit(1) + Droppable backstop** | Mirrors the window-return case: `pending_render` tracks exactly one outstanding render, so ring capacity ≥ 1 makes the backstop unreachable by construction. |
@@ -54,36 +58,47 @@ makes that backstop unreachable by construction. **Two different reasons an edge
 
 Conflating these two would be exactly the mistake §9.2 warned against.
 
-### 3.1 Open finding: driver ↔ engine is not yet a DAG
+### 3.1 driver ↔ engine: resolved by decomposing, not by picking an excuse
 
-`pixelflow-runtime/tests/target_topology.rs` was written to prove the table above validates —
-and instead it proved the table wrong. Input events and display commands were both marked
-Blocking on the reasoning "genuinely one-way, nothing here closes a cycle." That reasoning was
-false: `Topology` correctly rejects it, because **two independent blocking edges between the
-same pair of actors are a cycle regardless of whether the two message flows are logically
-unrelated.** driver blocked pushing an event into a full engine inbox, at the same moment
-engine is blocked pushing a command into a full driver inbox, is the identical deadlock shape
-as the app↔compiler example the Mealy doc uses to motivate the DAG rule in the first place —
-"they're different conversations" does not save it.
+`pixelflow-runtime/tests/target_topology.rs` was first written with `DisplayEvent` and "display
+commands" each as one aggregate edge, both Blocking — and immediately proved that wrong.
+`Topology` correctly rejects it: **two independent blocking edges between the same pair of
+actors are a cycle regardless of whether the two message flows are logically unrelated.** driver
+blocked pushing an event into a full engine inbox, at the same moment engine is blocked pushing a
+command into a full driver inbox, is the identical shape to the app↔compiler example the Mealy
+doc uses to motivate the DAG rule — "they're different conversations" does not save it.
 
-This is deliberately left **unresolved in this doc**, not quietly patched, because every fix
-available is a real behavioral trade-off, not a mechanical one:
+The fix is not picking one lucky excuse to drop the whole aggregate — it's noticing "display
+commands" was never one thing. Per-message, it decomposes entirely into edge kinds this doc had
+already established for other actors:
 
-- Mark `DisplayEvent` droppable — user input can be silently lost under backpressure.
-- Mark display commands droppable — a `Present` can be silently skipped, or `SetTitle`/`SetSize`
-  coalesced to "latest wins" (plausible for those two; almost certainly wrong for `Present`).
-- Deepen one ring so it is provisioned never to fill under realistic load, the way the
-  window-return edge is provisioned at exactly 1 — plausible if input volume is bounded and
-  measurable, but "provably never fills" needs an actual argument, not a big number.
-- Split display commands into a genuinely droppable stream (`SetTitle`, cursor, coalescible
-  state) and a separate, still-blocking one for `Present` alone, if `Present` turns out to be
-  the only command that truly cannot tolerate loss.
+- **`Present` already has a non-blocking contract in the code itself** (`DisplayData`'s own doc
+  comment — see the table), which the original aggregate framing simply missed by lumping it in
+  with "commands, must never be lost." It's the same Credit(1) shape as `PresentComplete`,
+  because the ping-pong buffer means the two were always one relationship, not two.
+- **`SetTitle`/`SetSize`/`SetCursor`/`Copy` are idempotent state pushes** — exactly the
+  "keep latest, drop stale" shape `pending_manifold` already implements by hand elsewhere in
+  this file. Plain `[drop]`, no credit needed, nothing new invented.
+- **`RequestPaste`/`PasteData` is its own tiny 1:1 request/reply**, structurally identical to
+  every other credit-bounded pair in §3, just lower-stakes (a dropped reply costs one retried
+  keystroke, not a lost buffer).
+- **`Create` is a bootstrap-phase message**, not a steady-state one — the same category the
+  *current* code already puts the rasterizer's handshake in (`engine_troupe.rs`: "Rasterizer is
+  NOT in the troupe - it uses a bootstrap handshake pattern"). `Topology`'s DAG check governs the
+  continuously-live mesh; a message sent once per window before that mesh is even fully up
+  doesn't belong in the same graph, the same way the rasterizer handshake doesn't today.
 
-**This is a decision for a human, not a default the DAG checker should pick.** Recorded here so
-step 4 of the rollout (§5) starts from a known question instead of rediscovering it, and so
-`target_topology.rs`'s test for the full mesh does not silently paper over it — it currently
-tests everything except this pair, plus a dedicated test proving the pair really is cyclic as
-specified, so the gap stays visible in `cargo test` output rather than in a comment.
+With every engine → driver edge now either Credit+Droppable, plain Droppable, or bootstrap-only,
+**driver → engine is the only edge left that's genuinely Blocking** — and a single blocking
+direction between a pair is never a cycle by itself. Nothing that matters was made droppable to
+get there: every discrete, non-idempotent, must-not-lose message (input, window lifecycle) stays
+exactly as reliable as it is today.
+
+The one edge worth flagging as a deliberately *weaker* guarantee than its siblings:
+`PasteData`'s credit bound comes from how paste is actually used (nobody issues a second
+`RequestPaste` before the first replies), not from an engineered invariant like the single
+window buffer. If that assumption is ever wrong, the failure mode is a dropped paste, not a
+hang — an explicit, accepted trade, not an oversight.
 
 ## 4. Placement
 
