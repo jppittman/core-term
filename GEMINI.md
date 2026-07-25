@@ -58,7 +58,12 @@ The project is a Rust workspace with the following key members:
 *   **Types are Shaders:** Use the type system to build compute graphs.
 *   **Platform Isolation:** Platform-specific code (macOS/Linux/Web) goes in `pixelflow-runtime`.
 
-### Coding Style (See `docs/STYLE.md`)
+### Coding Style
+
+[`docs/STYLE.md`](docs/STYLE.md) is the canonical style guide. Make all style
+changes there so contributors and automated agents follow a single source of
+truth.
+
 *   **Comments:**
     *   **Public API (`///`):** Document **WHAT** and **HOW**.
     *   **Implementation (`//`):** Document **WHY**. Explain design rationale, not obvious logic.
