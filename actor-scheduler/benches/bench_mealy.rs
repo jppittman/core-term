@@ -12,12 +12,13 @@
 //! The second is the honest measure of the design: the dispatch delta is small either way,
 //! but the thread-hop that disappears is not.
 
-use actor_scheduler::mealy::{Flush, Node, Step, Transducer, Wiring, all, send_port};
+use actor_scheduler::mealy::{Delivery, Flush, Node, Step, Transducer, Wiring, all, send_port};
 use actor_scheduler::spsc::{SpscSender, spsc_channel};
 use actor_scheduler::{
     Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
 };
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use std::convert::Infallible;
 
 const MESSAGES: [usize; 3] = [1_000, 10_000, 100_000];
 
@@ -87,17 +88,19 @@ impl Wiring for AppWiring {
     type Out = AppOut;
     fn flush(&mut self, out: &mut AppOut) -> Flush {
         all([
-            send_port(&mut out.engine, &self.engine),
-            send_port(&mut out.write, &self.write),
+            send_port(&mut out.engine, &self.engine, Delivery::Blocking),
+            send_port(&mut out.write, &self.write, Delivery::Blocking),
         ])
     }
 }
 
 impl Transducer for SteppingActor {
-    type In = u8;
+    type Control = Infallible;
+    type Management = Infallible;
+    type Data = u8;
     type Out = AppOut;
 
-    fn step(&mut self, byte: u8) -> Result<AppOut, HandlerError> {
+    fn step_data(&mut self, byte: u8) -> Result<AppOut, HandlerError> {
         self.seen += 1;
         Ok(AppOut {
             engine: Some(Render(byte)),
@@ -214,15 +217,17 @@ struct ForwardWiring {
 impl Wiring for ForwardWiring {
     type Out = Option<u8>;
     fn flush(&mut self, out: &mut Option<u8>) -> Flush {
-        send_port(out, &self.next)
+        send_port(out, &self.next, Delivery::Blocking)
     }
 }
 
 impl Transducer for ForwardStep {
-    type In = u8;
+    type Control = Infallible;
+    type Management = Infallible;
+    type Data = u8;
     type Out = Option<u8>;
 
-    fn step(&mut self, byte: u8) -> Result<Option<u8>, HandlerError> {
+    fn step_data(&mut self, byte: u8) -> Result<Option<u8>, HandlerError> {
         self.seen += 1;
         Ok(Some(byte.wrapping_add(1)))
     }

@@ -155,7 +155,28 @@ never find it full). The validator returns the topological order as a by-product
 the right polling order — upstream first drains a pipeline in one sweep instead of trickling one
 message per pass.
 
-### 3.2 Waking
+### 3.2 Credit-bounded edges (resolves §9.3)
+
+A credit-bounded request/response pair does not need a third [`Delivery`](../../actor-scheduler/src/mealy.rs)
+kind. It **is** a droppable port — `Credit` is the sender-side discipline that keeps the drop
+from ever actually firing:
+
+```rust
+struct Credit { available: u32, max: u32 }
+// try_consume() -> bool   before deciding whether to emit a request
+// release()               when the step handling the corresponding reply runs
+```
+
+The requester holds one `Credit` per edge in its own `self` — never shared, never atomic,
+touched only during that actor's own step. As long as `max` does not exceed the reply ring's
+capacity, and every request is gated by `try_consume`, the ring can never fill from this edge:
+the `[drop]` port is a backstop for a bug, not a path the well-behaved system ever takes.
+
+This is a straight replacement for a hand-rolled global atomic token bucket — the shape a
+request/response actor pair reaches for today (§9.1) — with per-edge, non-atomic, typed state.
+No new `Topology` primitive, no new port kind: `Credit` plus the `Delivery` that already existed.
+
+### 3.3 Waking
 
 The resume trigger is the existing wake ("target ring not-full" → wake the parked sender), which
 is a doorbell event on the **System lane** — the same lane that carries Wake/Shutdown, and the
@@ -229,7 +250,29 @@ The out-of-process tier carries no transport machinery here, deliberately. The a
 process isolation (a compiler actor) are low-rate — source in, artifact out — so ordinary
 messaging suffices. A shared-memory transport was considered and dropped (§8).
 
-### 5.3 The System lane is the reactor
+### 5.3 Waking a host
+
+A host with nothing to do sleeps on its doorbell, so anything that makes a green actor
+runnable without going through the host's own lanes has to ring that bell. `Waker` is that
+capability, and `GreenSender` is the pair that must always travel together: **push the message
+into the green actor's inbox, then wake the host.**
+
+The order is load-bearing. Waking first admits a lost wakeup — the host wakes, sweeps, finds
+the inbox still empty, reports `Idle`, and goes back to sleep just as the message lands.
+Pushing first means the host either sees the message on the sweep it is already doing, or is
+still holding the pending wake that will start another one.
+
+Two properties come free from the existing doorbell: it has capacity one and **coalesces**, so
+a burst of green sends cannot back it up or fail (one pending wake is all "you have work"
+needs); and a `Waker` that outlives its scheduler is harmless, because a wake with nobody to
+receive it is a no-op rather than an error. That is the one place `Waker` deliberately differs
+from `ActorHandle::wake`, which panics on a disconnected doorbell.
+
+This makes the host's own lanes unnecessary: all three of its message types are `Infallible`,
+so a host provably has no messages of its own and routes nothing. Work goes straight to the
+actor that will handle it.
+
+### 5.4 The System lane is the reactor
 
 Wake, Shutdown, IO readiness, and timers are all System-priority events sharing one park point
 (`epoll_wait` / `kqueue`). Priority ordering is unaffected — it is applied when lanes are
@@ -257,6 +300,11 @@ tests over transition tables.
 | `poll_once` removed from the public API | `actor-scheduler/src/lib.rs` |
 | Kubelet / `PodSlot` registry / `ServiceHandle` deleted; `PodPhase` → `Exit` (two variants, both actually returned) | removed |
 | `Host`: an `Actor` whose `park` sweeps owned green `Node`s, `Busy`/`Idle` driving the thread | `actor-scheduler/src/host.rs` |
+| `Waker` + `GreenSender`/`green_channel`: push-then-wake, so a green actor can be fed from another thread | `actor-scheduler/src/lib.rs`, `host.rs` |
+| `ports!` generating the output word + wiring + flush from a port declaration | `actor-scheduler-macros/src/lib.rs` |
+| `Delivery` (`Blocking`/`Droppable`) as a `send_port` parameter — the runtime half of a droppable edge | `actor-scheduler/src/mealy.rs` |
+| `Credit`: sender-side budget that keeps a droppable request/response edge from ever actually dropping | `actor-scheduler/src/mealy.rs` |
+| `Transducer` gains `Control`/`Management`/`Data` + `step_control`/`step_management` (defaulted); `Node` gains three lanes (`Lanes`, `NoLane`, `Slot` cycle) reusing `SchedulerParams` | `actor-scheduler/src/mealy.rs` |
 
 ### 7.1 Measured (2026-07-24)
 
@@ -274,6 +322,30 @@ Caveat both ways: the transducer arm needs no waker because the actors are co-lo
 multi-worker runtime will add some back; and the stages are cheap, so this measures coordination
 overhead, not parallel speedup. It argues for co-locating cheap actors, not for abolishing
 threads.
+
+### 7.2 `ports!`
+
+The output word and its wiring are pure boilerplate, and one of them is quietly dangerous: a
+port omitted from a hand-written `flush` is a message that vanishes with no error anywhere.
+`ports!` generates both from a declaration:
+
+```rust
+ports! {
+    App {
+        engine: Render,        // blocking: parks the actor when full
+        write: Echo [drop],    // droppable: discards when full, never parks
+        again: u32 [self],     // continuation: goes to the slot, not the wiring
+    }
+}
+```
+
+The port kinds are exactly the three delivery disciplines §3.1 needs, so the DAG rule becomes
+something an actor *declares* rather than something a reviewer has to notice. A `[self]` port
+gets **no wiring field at all** — a continuation cannot be attached to a queue even by
+mistake, and the generated `flush` `debug_assert!`s that the scheduler lifted it first.
+
+More than one `[self]` port is a compile-time panic, because the continuation slot holds
+exactly one message.
 
 Recommended first step: prove the runtime **before** touching the macro. Hand-write one actor in
 the `handle → Out struct` form that fans out and parks on a full downstream ring, and confirm the
@@ -320,19 +392,130 @@ Each removal made the primitive more opinionated, not less capable. That is the 
 
 ---
 
-## 9. Open questions
+## 9. Case study: auditing the pixelflow-runtime engine
+
+`pixelflow-runtime/src/engine_troupe.rs` is the intended eventual consumer of this design, and
+the stated end goal is to remove `EngineHandler` as a central mediator and let `driver`, `vsync`,
+`rasterizer`, and `app` communicate directly. Auditing that file against the DAG rule before any
+of this lands there surfaced findings worth recording so they are not rediscovered cold.
+
+### 9.1 Four real cycles, held together by hand today
+
+Every one of `EngineHandler`'s peer relationships is bidirectional:
+
+- **engine ↔ vsync** — engine sends `RenderedResponse`/`VsyncCommand`; `VsyncActor` independently
+  holds an `engine_handle` and sends `EngineData::VSync` ticks back (`vsync_actor.rs:138,261-272`).
+  The existing comment calls this "for feedback loop" (`engine_troupe.rs:47`).
+- **engine ↔ rasterizer** — engine sends `RenderRequest`; a forwarding thread reads responses and
+  calls `engine_handle.send(EngineData::RenderComplete)` (`engine_troupe.rs:341-373`). The
+  rasterizer is deliberately kept outside the `troupe!` macro's static topology via a bootstrap
+  handshake, which is itself a sign this edge doesn't fit the current model.
+- **engine ↔ app** — engine sends `RequestFrame`; app sends `EngineData::FromApp(AppData::
+  RenderSurface)` back (`engine_troupe.rs:98,108,384-402`).
+- **engine ↔ driver** — driver forwards `DisplayEvent`; engine sends `DisplayControl`/
+  `DisplayData`, and `PresentComplete` hands the `Window` buffer back so engine can reuse it —
+  the ping-pong buffer strategy is itself a resource-return cycle (`engine_troupe.rs:167-190`).
+
+All four are 2-cycles among **blocking** sends: `ActorHandle::send` spin-yields on a full Data
+ring (`lib.rs:761-775`) rather than returning or dropping. `Topology::validate` would reject
+every one of them today.
+
+This isn't hypothetical: `vsync_actor.rs:20-22` is a **global atomic token bucket**, decremented
+before a tick and incremented on frame completion — an unenforced, hand-rolled instance of
+exactly the credit-bounded edge §3.2 formalizes. `PendingRender.stale` (`engine_troupe.rs:37-
+39,129-152`) is a hand-written droppable policy: discard a render superseded by a resize. Both
+are the runtime already reaching for what `Credit` and `Delivery::Droppable` now give for free —
+this design isn't proposing new machinery so much as typing and checking machinery that already
+exists informally.
+
+### 9.2 Dropping is only safe for recoverable loss — an audit, not a rule
+
+`[drop]` is safe only for data whose loss the next message can recover from. In the current
+flow: vsync ticks themselves and a `RenderComplete` for an already-`stale` render are candidates.
+`PresentComplete` and a non-stale `RenderComplete` must never be `[drop]` — the former is the
+only path the `Window` buffer returns on (drop it and the ping-pong buffer is gone, forever,
+silently); the latter clears `pending_render` (drop it and the engine hangs waiting for a
+response that was discarded). The type system cannot tell "droppable frame" from "the only copy
+of this buffer" apart — that choice is a per-edge human decision this design does not, and
+should not try to, make automatically.
+
+### 9.3 Credit-bounded edges: resolved
+
+Was open (§10 below, formerly here): does the topology need a third edge kind for request/
+response? No — see §3.2. `Credit` plus the existing `Delivery::Droppable` is sufficient; no new
+`Topology` primitive was needed.
+
+### 9.4 What the audit reassures rather than worries about
+
+- `EngineHandler.render_threads` ("work-stealing parallelism", `engine_troupe.rs:65-66`) is a
+  real, present need for exactly the migratable/`Send`-bounded pool §5.2 carved out as the
+  opt-in exception to owned-by-default. That split wasn't speculative.
+- `VsyncActor`'s dedicated clock thread, sending explicit `Tick` messages specifically to avoid
+  depending on `park` timing (`vsync_actor.rs:6-9`), **resolves** the open question about where
+  timer ticks belong (previously listed in §10): a real actor sends ticks as ordinary messages;
+  `park` does not need to synthesize them.
+- The `Application` trait (a runtime-defined boundary wrapping an `ActorHandle`, so
+  `pixelflow-runtime` stays generic over `core-term`'s concrete app type) is not a gap: the wire
+  *message types* (`EngineEvent`, `AppData`, …) are already concrete within `pixelflow-runtime`.
+  Only the *implementation* of `Application` is erased, not the port's type — `ports!` needs
+  nothing new here.
+
+### 9.5 Priority lanes: closed
+
+Was the real gap: `Transducer::In` was one type, `Node` held one inbox — no Control/Management/
+Data priority anywhere in the Mealy machinery, while the existing engine leans on exactly that
+ordering to keep `Quit`/resize/key-input responsive under render load.
+
+Closed by porting `ActorScheduler::handle_wake`'s drain algorithm rather than designing a new
+one, per the direction given at the point this gap was found. `Transducer` now has `Control`/
+`Management`/`Data` associated types (mirroring `ActorTypes`) and three step methods —
+`step_control`/`step_management` default to the silent transition, so a single-lane actor still
+writes one method and two `type X = Infallible;` lines, exactly as `Host` already does for its
+own `Actor` impl. `Node` holds three lanes (`RC`/`RM` default to [`NoLane`], a permanently-
+disconnected stand-in, so every existing call site — `Node::new(actor, data, wiring)` — is
+unchanged) and cycles Control(half) → Management → Control(half) → Data via a `Slot` state
+machine, reusing `SchedulerParams` verbatim for the limits.
+
+The one real translation decision: the old algorithm drains a *burst* of messages per lane per
+wake, because nothing else shares that OS thread. `Node::poll` still does at most one message
+per call — draining a burst here would let one green actor hog its `Host` for as long as its
+burst limit allowed, which is exactly what `Host::sweep`'s per-node fairness exists to prevent.
+So the same cycle is spread across many `poll()` calls instead of batched into one: the *ratio*
+of attention across lanes is preserved, the *granularity* is not.
+
+A continuation always resumes on the data lane — it is more work, not a control or management
+signal — and still bypasses the lane cycle entirely, exactly as before.
+
+**A bug the unit tests missed, that a benchmark caught.** A slot that finished a `poll()` sitting
+exactly at its budget limit used to advance lazily — only when the *next* call found it still
+there. With small limits and idle other lanes, that costs the wraparound its one spare
+iteration, and a message could sit queued while `poll()` reported `Idle`. The existing tests
+used small message counts and never wrapped a full cycle within them; `bench_priority.rs`'s
+drain-to-completion loop did, immediately. Fixed by `Node::advance_if_exhausted`: roll over the
+instant the budget is spent, not on the next call's discovery of it. See
+`docs/results/2026-07-24-mealy-vs-actor.md` for the full account and the regression test added
+alongside it.
+
+---
+
+## 10. Open questions
 
 - [ ] **Self-port as a named verb?** First-class `yield`/continuation syntax in the macro, or
   just "a port that points home." Vocabulary vs. emergent trick. (The runtime already treats it
   as distinct — it has its own slot — which argues for naming it.)
-- [ ] **Credit-bounded edges.** The DAG rule admits droppable edges as cycle-closers; a
-  credit-bounded reply edge is the other legal form, but the topology cannot currently express
-  "this requester is limited to N outstanding" so the validator cannot check it.
 - [ ] **Burst cardinality.** A port fires at most once per step; bursts batch into one message
   (`ScreenOps(batch)`). Confirm no actor needs a port to emit a *variable number of distinct*
   messages per input (which would make that port carry a collection).
-- [ ] **`park` for the time-driven tier.** Timer ticks are just input symbols; confirm `park` on
-  the dedicated tier is the right place to synthesise them.
-- [ ] **Waking a host from outside.** A host sleeps on its doorbell, so something must ring it
-  when a green actor's inbox is fed from another thread. Today that is a message on the host's
-  own data lane, routed by `handle_data`. The System-lane reactor (§5.3) is the real answer.
+- [ ] **Eliding the wake syscall.** `GreenSender` rings the doorbell on every delivery. The
+  doorbell coalesces, so this is cheap and correct, but a parked/running flag on the host would
+  let a producer skip the ring entirely while the host is already sweeping — the trick mio uses
+  for its eventfd. Worth measuring before adding.
+- [ ] **`ports!` and three lanes.** The macro still only generates `Out`/`Wiring` from a port
+  declaration; it does not yet touch `Transducer`'s `Control`/`Management`/`Data` associated
+  types or the three `step_*` methods, which are still hand-written. Whether that is worth
+  generating (e.g. from an `in { control: X, management: Y, data: Z }` block) depends on how
+  verbose lane-aware actors turn out to be in practice.
+
+Resolved: credit-bounded edges (§9.3, §3.2), timer ticks for the dedicated tier (§9.4, by
+existing precedent), and priority lanes for `Transducer`/`Node` (§9.5) — kept out of this list;
+see the case study for why.

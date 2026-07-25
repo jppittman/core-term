@@ -34,11 +34,11 @@
 //! by one stage.
 
 use std::convert::Infallible;
-use std::marker::PhantomData;
 
 use crate::lifecycle::Exit;
 use crate::mealy::{Inbox, Node, Step, Transducer, Wiring};
-use crate::{Actor, ActorStatus, HandlerError, HandlerResult, SystemStatus};
+use crate::spsc::{SpscReceiver, SpscSender, TrySendError, spsc_channel};
+use crate::{Actor, ActorStatus, HandlerError, HandlerResult, SystemStatus, Waker};
 
 /// A hosted green actor with its types erased, so one host can own a heterogeneous set.
 ///
@@ -49,11 +49,13 @@ pub trait Green {
     fn poll(&mut self) -> Step;
 }
 
-impl<T, W, R> Green for Node<T, W, R>
+impl<T, W, RD, RC, RM> Green for Node<T, W, RD, RC, RM>
 where
     T: Transducer,
     W: Wiring<Out = T::Out>,
-    R: Inbox<Item = T::In>,
+    RD: Inbox<Item = T::Data>,
+    RC: Inbox<Item = T::Control>,
+    RM: Inbox<Item = T::Management>,
 {
     fn poll(&mut self) -> Step {
         Node::poll(self)
@@ -62,30 +64,24 @@ where
 
 /// An OS-thread actor that owns green actors and runs them in its `park`.
 ///
-/// The host has no control or management messages of its own — those type parameters are
-/// [`Infallible`], so the compiler knows the handlers are unreachable and the `match msg {}`
-/// bodies below are total. Its data lane carries whatever the hosted actors are fed with:
-/// `handle_data` hands each inbound message to the `deliver` closure, which pushes it into
-/// the right green actor's inbox.
-pub struct Host<D, F> {
+/// A host has **no messages of its own**: all three lane types are [`Infallible`], so the
+/// compiler knows its handlers are unreachable and the `match msg {}` bodies below are total.
+/// Work reaches a hosted actor by being pushed straight into that actor's inbox with a
+/// [`GreenSender`], which then rings the host's doorbell. The host routes nothing; it hosts.
+///
+/// `Message::Shutdown` still stops it, because shutdown travels on the doorbell rather than a
+/// lane.
+#[derive(Default)]
+pub struct Host {
     nodes: Vec<Box<dyn Green>>,
-    deliver: F,
     exits: Vec<Exit>,
-    _pd: PhantomData<D>,
 }
 
-impl<D, F> Host<D, F>
-where
-    F: FnMut(D),
-{
-    /// A host that routes its inbound messages with `deliver`.
-    pub fn new(deliver: F) -> Self {
-        Self {
-            nodes: Vec::new(),
-            deliver,
-            exits: Vec::new(),
-            _pd: PhantomData,
-        }
+impl Host {
+    /// A host with no green actors yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Take ownership of a green actor. Sweep order is adoption order.
@@ -147,13 +143,65 @@ where
     }
 }
 
-impl<D, F> Actor<D, Infallible, Infallible> for Host<D, F>
-where
-    F: FnMut(D),
-{
-    fn handle_data(&mut self, msg: D) -> HandlerResult {
-        (self.deliver)(msg);
+// ────────────────────────────────────────────────────────────────────────────
+// Feeding a green actor from outside its host
+// ────────────────────────────────────────────────────────────────────────────
+
+/// The sending end of a green actor's inbox, paired with its host's [`Waker`].
+///
+/// A green actor has no thread of its own, so nothing about pushing into its inbox will wake
+/// the host that owns it. This pairs the two halves that must always go together: **push the
+/// message, then ring the bell.**
+///
+/// The order is not stylistic. Waking first admits a lost wakeup — the host can wake, sweep,
+/// find the inbox still empty, report `Idle`, and go back to sleep just before the message
+/// lands. Pushing first means the host either sees the message on the sweep it is already
+/// doing, or is still holding the pending wake that will start another one.
+///
+/// A failed push is not followed by a wake: there is no new work to announce.
+pub struct GreenSender<T> {
+    tx: SpscSender<T>,
+    waker: Waker,
+}
+
+impl<T> GreenSender<T> {
+    /// Pair an inbox sender with the waker of the host that owns the receiving actor.
+    #[must_use]
+    pub fn new(tx: SpscSender<T>, waker: Waker) -> Self {
+        Self { tx, waker }
+    }
+
+    /// Deliver a message to the green actor and wake its host.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrySendError::Full`] if the actor's inbox is full — the caller's
+    /// backpressure signal — or [`TrySendError::Disconnected`] if the actor is gone.
+    pub fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
+        self.tx.try_send(msg)?;
+        self.waker.wake();
         Ok(())
+    }
+}
+
+impl<T> std::fmt::Debug for GreenSender<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GreenSender").finish_non_exhaustive()
+    }
+}
+
+/// An inbox for a green actor, whose sender wakes `waker` on every delivery.
+///
+/// The receiver goes to the [`Node`]; the sender goes to whoever feeds it.
+#[must_use]
+pub fn green_channel<T>(capacity: usize, waker: Waker) -> (GreenSender<T>, SpscReceiver<T>) {
+    let (tx, rx) = spsc_channel(capacity);
+    (GreenSender::new(tx, waker), rx)
+}
+
+impl Actor<Infallible, Infallible, Infallible> for Host {
+    fn handle_data(&mut self, msg: Infallible) -> HandlerResult {
+        match msg {}
     }
 
     fn handle_control(&mut self, msg: Infallible) -> HandlerResult {
@@ -176,7 +224,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mealy::{Flush, send_port};
+    use crate::mealy::{Delivery, Flush, send_port};
+    use crate::{ActorScheduler, Message};
     use crate::spsc::{SpscSender, spsc_channel};
 
     /// A stage that forwards its input onward, counting what it saw.
@@ -191,15 +240,17 @@ mod tests {
     impl Wiring for ForwardWiring {
         type Out = Option<u32>;
         fn flush(&mut self, out: &mut Option<u32>) -> Flush {
-            send_port(out, &self.next)
+            send_port(out, &self.next, Delivery::Blocking)
         }
     }
 
     impl Transducer for Forward {
-        type In = u32;
+        type Control = Infallible;
+        type Management = Infallible;
+        type Data = u32;
         type Out = Option<u32>;
 
-        fn step(&mut self, n: u32) -> Result<Option<u32>, HandlerError> {
+        fn step_data(&mut self, n: u32) -> Result<Option<u32>, HandlerError> {
             self.seen += 1;
             Ok(Some(n + 1))
         }
@@ -210,7 +261,7 @@ mod tests {
         let (tx_in, rx_in) = spsc_channel::<u32>(8);
         let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
 
-        let mut host = Host::new(|_: u32| {});
+        let mut host = Host::new();
         host.adopt(Node::new(
             Forward { seen: 0 },
             rx_in,
@@ -229,7 +280,7 @@ mod tests {
         let (tx_in, rx_in) = spsc_channel::<u32>(8);
         let (tx_out, _rx_out) = spsc_channel::<u32>(8);
 
-        let mut host = Host::new(|_: u32| {});
+        let mut host = Host::new();
         host.adopt(Node::new(
             Forward { seen: 0 },
             rx_in,
@@ -253,7 +304,7 @@ mod tests {
         let (tx_23, rx_23) = spsc_channel::<u32>(8);
         let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
 
-        let mut host = Host::new(|_: u32| {});
+        let mut host = Host::new();
         host.adopt(Node::new(
             Forward { seen: 0 },
             rx_in,
@@ -284,7 +335,7 @@ mod tests {
         let (tx_in, rx_in) = spsc_channel::<u32>(8);
         let (tx_out, _rx_out) = spsc_channel::<u32>(8);
 
-        let mut host = Host::new(|_: u32| {});
+        let mut host = Host::new();
         host.adopt(Node::new(
             Forward { seen: 0 },
             rx_in,
@@ -309,7 +360,7 @@ mod tests {
         let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
         let (tx_sink, _rx_sink) = spsc_channel::<u32>(8);
 
-        let mut host = Host::new(|_: u32| {});
+        let mut host = Host::new();
         // Adopted: [stage1, doomed, stage2]. The doomed actor sits between the two stages.
         host.adopt(Node::new(
             Forward { seen: 0 },
@@ -339,30 +390,92 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_host_routes_its_own_inbound_messages_into_a_green_inbox() {
-        // End to end through the real scheduler: a message on the host's data lane is routed
-        // by `handle_data` into a green actor's inbox, and the following `park` sweep runs it.
-        use crate::{ActorScheduler, Message};
+    // ── Waking a sleeping host ──────────────────────────────────────────────
 
-        let (tx_in, rx_in) = spsc_channel::<u32>(8);
+    #[test]
+    fn a_green_send_wakes_a_host_asleep_on_its_doorbell() {
+        // The real thing, on a real thread: the host is blocked in `run()` with nothing to do
+        // — no message can reach it through its own lanes, because it has none — and a push
+        // into a green actor's inbox has to be what wakes it.
+        use std::time::{Duration, Instant};
+
+        let (handle, mut sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+        let (tx_green, rx_green) = green_channel::<u32>(8, handle.waker());
         let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
 
-        let mut host = Host::new(move |n: u32| {
-            tx_in.try_send(n).expect("green inbox sized for the test");
+        // The host is built on the thread that runs it: an owned green actor never migrates,
+        // so it is never required to be `Send`.
+        let worker = std::thread::spawn(move || {
+            let mut host = Host::new();
+            host.adopt(Node::new(
+                Forward { seen: 0 },
+                rx_green,
+                ForwardWiring { next: tx_out },
+            ));
+            sched.run(&mut host);
         });
-        host.adopt(Node::new(
-            Forward { seen: 0 },
-            rx_in,
-            ForwardWiring { next: tx_out },
-        ));
 
-        let (handle, mut sched) = ActorScheduler::<u32, Infallible, Infallible>::new(16, 16);
-        handle.send(Message::Data(41)).unwrap();
+        // Let the host reach its doorbell and block before sending, so this exercises the
+        // wake path rather than racing the host to its first sweep.
+        std::thread::sleep(Duration::from_millis(50));
+        tx_green.try_send(41).expect("green inbox has room");
 
-        // One scheduler wake: drains the data lane (routing 41 into the green inbox), then
-        // parks — and the park is the sweep that runs the green actor.
-        assert!(sched.poll_once(&mut host).is_none(), "still running");
-        assert_eq!(rx_out.try_recv().unwrap(), 42);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let got = loop {
+            if let Ok(v) = rx_out.try_recv() {
+                break v;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "host never woke: a green send did not ring the doorbell"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(got, 42);
+
+        handle.send(Message::Shutdown).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn many_green_sends_coalesce_into_one_pending_wake() {
+        // The doorbell holds one wake and coalesces the rest, so a burst cannot back it up or
+        // fail — the host sweeps everything that arrived once it gets there.
+        let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+        let (tx_green, mut rx_green) = green_channel::<u32>(64, handle.waker());
+
+        for i in 0..64 {
+            tx_green
+                .try_send(i)
+                .expect("a burst of wakes must not fail the send");
+        }
+
+        let drained = std::iter::from_fn(|| rx_green.try_recv().ok()).count();
+        assert_eq!(drained, 64, "every message landed despite one pending wake");
+    }
+
+    #[test]
+    fn a_failed_send_reports_backpressure() {
+        // A full green inbox is the caller's backpressure signal, and no wake is announced
+        // for work that was not accepted.
+        let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+        let (tx_green, _rx_green) = green_channel::<u32>(2, handle.waker());
+
+        let mut sent = 0;
+        while tx_green.try_send(1).is_ok() {
+            sent += 1;
+            assert!(sent < 1024, "a bounded inbox must eventually refuse");
+        }
+    }
+
+    #[test]
+    fn a_waker_outliving_its_scheduler_is_harmless() {
+        // A green actor can be fed after its host is gone; there is simply nobody to wake.
+        let waker = {
+            let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+            handle.waker()
+        };
+        waker.wake();
+        waker.wake();
     }
 }
