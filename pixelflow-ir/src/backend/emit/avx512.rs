@@ -710,6 +710,9 @@ mod tests {
         use crate::backend::emit::executable::ExecutableCode;
         use core::arch::x86_64::*;
 
+        // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
+        // not-FFI-safe is a false positive here, as for `executable`'s aliases.
+        #[allow(improper_ctypes_definitions)]
         type K = unsafe extern "C" fn(__m512, __m512, __m512, __m512) -> __m512;
 
         fn run(body: &[u8], xs: [f32; 16], ys: [f32; 16], zs: [f32; 16]) -> [f32; 16] {
@@ -758,10 +761,13 @@ mod tests {
         const Y: Reg = Reg(1);
         const Z: Reg = Reg(2);
 
+        /// One row of the binary-op table: the op and its scalar reference.
+        type BinaryCase = (OpKind, fn(f32, f32) -> f32);
+
         #[test]
         fn binary_ops() {
             let (xs, ys, zs) = lanes();
-            let cases: &[(OpKind, fn(f32, f32) -> f32)] = &[
+            let cases: &[BinaryCase] = &[
                 (OpKind::Add, |a, b| a + b),
                 (OpKind::Sub, |a, b| a - b),
                 (OpKind::Mul, |a, b| a * b),
@@ -829,6 +835,9 @@ mod tests {
             // JIT a function: fn(*const f32 base [rdi], __m512 idx_float [zmm0]) -> __m512
             // that truncates the float indices, sets the mask, and gathers
             // base[idx] per lane. Validates the VSIB vgatherdps bytes on hardware.
+            // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
+            // not-FFI-safe is a false positive here, as for `executable`'s aliases.
+            #[allow(improper_ctypes_definitions)]
             type G = unsafe extern "C" fn(*const f32, __m512) -> __m512;
 
             let mut c = Vec::new();

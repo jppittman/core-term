@@ -81,16 +81,18 @@ impl FieldStorage for f32 {
 // Storage Implementation for bool (Mask)
 // ============================================================================
 
-/// Native SIMD mask storage type for the current platform.
-///
-/// This is the native mask type from the IR backend:
-/// - AVX-512: `Mask16` (k-register, runs on separate execution unit)
-/// - AVX2: `Mask8` (float-encoded in YMM registers)
-/// - SSE2: `Mask4` (float-encoded in XMM registers)
-/// - NEON: `Mask4`
-/// - Scalar: `MaskScalar`
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+// Native SIMD mask storage type for the current platform — the native mask type
+// from the IR backend, one `cfg`'d alias per width:
+//   AVX-512: `Mask16` (k-register, runs on a separate execution unit)
+//   AVX2:    `Mask8`  (float-encoded in YMM registers)
+//   SSE2:    `Mask4`  (float-encoded in XMM registers)
+//   NEON:    `Mask4`
+// Deliberately a plain comment, not a doc comment: it describes the whole
+// family, but rustdoc would attach it to whichever single alias this build
+// enables and merge it with that alias's own `///` line.
+
 /// Native mask storage for AVX-512.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
 pub type NativeMaskStorage = crate::backend::x86::Mask16;
 
 #[cfg(all(

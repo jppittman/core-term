@@ -110,6 +110,7 @@ impl JitManifold {
     /// The caller must ensure the SIMD types match the platform ABI the emitter
     /// generated code for (x86-64 AVX-512: `__m512`).
     #[inline(always)]
+    #[must_use]
     pub unsafe fn call(
         &self,
         x: core::arch::x86_64::__m512,
