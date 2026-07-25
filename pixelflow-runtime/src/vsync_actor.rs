@@ -33,9 +33,11 @@
 //! only in [`Transducer::step_control`] on a new [`VsyncCommand::ReturnToken`] — a real message,
 //! not a shared global. `engine_troupe.rs`'s two call sites become sends of that command.
 
+use actor_scheduler::actors::{Schedule, Timer};
 use actor_scheduler::mealy::{Credit, Transducer};
 use actor_scheduler::{Actor, ActorBuilder, ActorHandle, HandlerError, HandlerResult, SystemStatus};
 use log::info;
+use std::ops::ControlFlow;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -106,15 +108,6 @@ pub enum VsyncManagement {
     },
 }
 actor_scheduler::impl_management_message!(VsyncManagement);
-
-/// Internal commands sent to the clock thread
-#[derive(Debug)]
-enum ClockCommand {
-    /// Update the tick interval
-    SetInterval(Duration),
-    /// Stop the clock thread
-    Stop,
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // VsyncCore: the pure decision logic
@@ -302,40 +295,26 @@ impl Transducer for VsyncCore {
 /// side effect this whole actor performs — `engine_handle.send(...)`.
 pub struct VsyncActor {
     engine_handle: Option<crate::api::private::EngineActorHandle>,
-    clock_control: Option<Sender<ClockCommand>>,
+    clock: Option<Timer>,
     core: VsyncCore,
 }
 
 impl VsyncActor {
-    /// Helper to spawn the clock thread.
-    fn spawn_clock_thread(
+    /// Spawn the clock: a plain [`Timer`] whose callback is the one thing this actor's clock
+    /// ever did — send itself a `Tick`. The hand-rolled `recv_timeout` loop this replaces was
+    /// a timer with a vsync-shaped name on it; nothing about waiting on a duration was
+    /// specific to vsync.
+    fn spawn_clock(
         interval: Duration,
         self_handle: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
-    ) -> Sender<ClockCommand> {
-        let (clock_tx, clock_rx) = std::sync::mpsc::channel();
-
-        thread::Builder::new()
-            .name("vsync-clock".to_string())
-            .spawn(move || {
-                let mut current_interval = interval;
-                loop {
-                    match clock_rx.recv_timeout(current_interval) {
-                        Ok(ClockCommand::Stop) => break,
-                        Ok(ClockCommand::SetInterval(d)) => current_interval = d,
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            // Time to tick
-                            if self_handle.send(VsyncManagement::Tick).is_err() {
-                                // Actor is gone
-                                break;
-                            }
-                        }
-                        Err(_) => break, // Channel disconnected
-                    }
-                }
-            })
-            .expect("Failed to spawn vsync clock thread");
-
-        clock_tx
+    ) -> Timer {
+        Timer::spawn("vsync-clock", Schedule::Every(interval), move || {
+            match self_handle.send(VsyncManagement::Tick) {
+                Ok(()) => ControlFlow::Continue(()),
+                // The actor is gone; there is nobody left to tick.
+                Err(_) => ControlFlow::Break(()),
+            }
+        })
     }
 
     /// Create empty VsyncActor for troupe pattern - configured via SetConfig management message.
@@ -343,7 +322,7 @@ impl VsyncActor {
     pub fn new_empty() -> Self {
         Self {
             engine_handle: None,
-            clock_control: None,
+            clock: None,
             core: VsyncCore::new(DEFAULT_REFRESH_RATE),
         }
     }
@@ -363,12 +342,12 @@ impl VsyncActor {
             MAX_TOKENS
         );
 
-        // Spawn the clock thread — self_handle is a dedicated SPSC channel
-        let clock_tx = Self::spawn_clock_thread(interval, self_handle);
+        // Spawn the clock — self_handle is a dedicated SPSC channel
+        let clock = Self::spawn_clock(interval, self_handle);
 
         Self {
             engine_handle: Some(engine_handle),
-            clock_control: Some(clock_tx),
+            clock: Some(clock),
             core: VsyncCore::new(refresh_rate),
         }
     }
@@ -439,15 +418,15 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
         let out = self.core.step_control(cmd)?;
 
         if update_clock_interval {
-            if let Some(ref tx) = self.clock_control {
-                tx.send(ClockCommand::SetInterval(self.core.interval()))
-                    .expect("Failed to update clock thread interval");
+            if let Some(ref clock) = self.clock {
+                clock.set_interval(self.core.interval());
             }
         }
         if stop_clock {
-            if let Some(ref tx) = self.clock_control {
-                tx.send(ClockCommand::Stop)
-                    .expect("Failed to stop clock thread on shutdown");
+            // `stop` consumes the Timer and joins its thread, so once this returns no further
+            // Tick can land — the shutdown is complete, not merely requested.
+            if let Some(clock) = self.clock.take() {
+                clock.stop();
             }
         }
 
@@ -476,8 +455,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
 
                 info!("VsyncActor: Configured with {:.2} Hz", config.refresh_rate);
 
-                let clock_tx = Self::spawn_clock_thread(self.core.interval(), *self_handle);
-                self.clock_control = Some(clock_tx);
+                self.clock = Some(Self::spawn_clock(self.core.interval(), *self_handle));
 
                 info!("VsyncActor: Auto-started after configuration");
             }
