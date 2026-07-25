@@ -187,23 +187,80 @@ fn min_max_nan_handling_agrees_between_tiers() {
     assert_tiers_agree_binary("max", &Kernel::x().max(&Kernel::y()), OpKind::Max);
 }
 
+/// Gt/Ge are the unordered predicates (true for NaN); Lt/Le are ordered. The
+/// asymmetry is the hardware's, and the oracle records it.
+///
+/// Compared bit-for-bit against the raw comparison — no `select` wrapper and no
+/// NaN escape hatch — because the *bit pattern* is the contract, not merely
+/// which branch it would pick. An all-ones lane is a NaN, so a NaN-tolerant
+/// comparison would accept `f32::NAN` where the hardware writes `0xFFFFFFFF`
+/// and both would still "agree".
 #[test]
 fn nan_comparisons_agree_between_tiers() {
     use pixelflow_ir::OpKind;
-    // Gt/Ge are the unordered predicates (true for NaN); Lt/Le are ordered.
-    // The asymmetry is the hardware's, and the oracle now records it.
-    let one = Kernel::constant(1.0);
-    let zero = Kernel::constant(0.0);
+    let nan = f32::NAN;
     for (name, op, k) in [
         ("gt", OpKind::Gt, Kernel::x().gt(&Kernel::y())),
         ("ge", OpKind::Ge, Kernel::x().ge(&Kernel::y())),
         ("lt", OpKind::Lt, Kernel::x().lt(&Kernel::y())),
         ("le", OpKind::Le, Kernel::x().le(&Kernel::y())),
     ] {
-        // Masks are not numbers; select turns one back into 1.0/0.0 so the
-        // comparison against the oracle's 1.0/0.0 is meaningful.
-        assert_tiers_agree_binary(name, &k.select(&one, &zero), op);
+        let (arena, root) = k.parts();
+        let jit = jit_cache::compile_cached(arena, root).unwrap_or_else(|e| panic!("{name}: {e}"));
+        for (x, y) in [
+            (1.0f32, nan),
+            (nan, 1.0f32),
+            (nan, nan),
+            (1.0, 2.0),
+            (2.0, 1.0),
+            (2.5, 2.5),
+            (-0.0, 0.0),
+        ] {
+            if op.fold_is_platform_specific(&[x, y]) {
+                continue;
+            }
+            let got = call_xy(&jit, x, y);
+            let want = op.eval_binary(x, y).expect("oracle covers this op");
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "{name}({x}, {y}): JIT wrote {:#010x}, oracle {:#010x} — a mask \
+                 lane is all-ones or all-zero in both tiers or it is not a mask",
+                got.to_bits(),
+                want.to_bits()
+            );
+        }
     }
+}
+
+/// A folded comparison must be substitutable for an executed one.
+///
+/// `Select` and `BitAnd` are bitwise on every backend, so a mask lane that is
+/// merely *truthy* corrupts them: with `1.0` (`0x3f800000`) standing in for
+/// true, `runtime_mask & 1.0` is `0x3f800000`, and blending `7.0` against `9.0`
+/// through that pattern yields `4.5` — a value neither branch held. This is the
+/// end-to-end shape: one operand of the `&` is a constant the folder produced,
+/// the other is computed at runtime.
+#[test]
+fn a_folded_mask_blends_like_a_computed_one() {
+    use pixelflow_ir::OpKind;
+
+    // The folder's answer for `0.5 != nextafter(0.5)` — true, and (since the
+    // epsilon fix) reachable for ordinary finite values.
+    let near = f32::from_bits(0.5f32.to_bits() + 1);
+    let folded = OpKind::Ne
+        .eval_binary(0.5, near)
+        .expect("oracle covers Ne");
+
+    let k = Kernel::x()
+        .gt(&Kernel::constant(0.0))
+        .and(&Kernel::constant(folded))
+        .select(&Kernel::constant(7.0), &Kernel::constant(9.0));
+    let (arena, root) = k.parts();
+    let jit = jit_cache::compile_cached(arena, root).expect("mask kernel compiles");
+
+    assert_eq!(call_x(&jit, 1.0), 7.0, "mask true must select if_true exactly");
+    assert_eq!(call_x(&jit, -1.0), 9.0, "mask false must select if_false exactly");
 }
 
 #[test]
@@ -244,6 +301,28 @@ fn platform_specific_ops_are_classified() {
             "{op:?} agrees across targets and should remain foldable"
         );
     }
+
+    // Estimate instructions: no argument is safe, because an estimate is only
+    // guaranteed close and the three targets are not close to each other.
+    for op in [OpKind::Recip, OpKind::Rsqrt] {
+        for x in [2.0f32, 3.0, 0.5, 1.0] {
+            assert!(
+                op.fold_is_platform_specific(&[x]),
+                "{op:?}({x}) is an estimate and must never fold"
+            );
+        }
+    }
+
+    // MulAdd is value-aware: one rounding or two, and most inputs cannot tell.
+    let fused_differs = [1.000_000_1f32, 4097.0, 4097.0];
+    assert!(
+        OpKind::MulAdd.fold_is_platform_specific(&fused_differs),
+        "an input where FMA and mul-then-add disagree must not fold"
+    );
+    assert!(
+        !OpKind::MulAdd.fold_is_platform_specific(&[2.0, 3.0, 4.0]),
+        "exact inputs are the same either way and stay foldable"
+    );
 }
 
 /// `Eq`/`Ne` are exact in every emitter, so the oracle must be too. The old
@@ -259,14 +338,16 @@ fn eq_ne_are_exact_not_epsilon() {
     assert_ne!(0.5f32, near, "the two values really are distinct f32s");
     assert!((0.5f32 - near).abs() < f32::EPSILON, "and closer than EPSILON");
 
-    assert_eq!(OpKind::Eq.eval_binary(0.5, near), Some(0.0));
-    assert_eq!(OpKind::Ne.eval_binary(0.5, near), Some(1.0));
-    assert_eq!(OpKind::Eq.eval_binary(0.5, 0.5), Some(1.0));
+    let t = OpKind::mask(true);
+    let f = OpKind::mask(false);
+    assert_eq!(OpKind::Eq.eval_binary(0.5, near).map(f32::to_bits), Some(f.to_bits()));
+    assert_eq!(OpKind::Ne.eval_binary(0.5, near).map(f32::to_bits), Some(t.to_bits()));
+    assert_eq!(OpKind::Eq.eval_binary(0.5, 0.5).map(f32::to_bits), Some(t.to_bits()));
 
     // NaN: never equal, always unequal — agreed by every emitter.
     let nan = f32::NAN;
-    assert_eq!(OpKind::Eq.eval_binary(nan, nan), Some(0.0));
-    assert_eq!(OpKind::Ne.eval_binary(nan, nan), Some(1.0));
+    assert_eq!(OpKind::Eq.eval_binary(nan, nan).map(f32::to_bits), Some(f.to_bits()));
+    assert_eq!(OpKind::Ne.eval_binary(nan, nan).map(f32::to_bits), Some(t.to_bits()));
 
     // `Kernel` exposes no eq/ne constructor, so there is no JIT side to compare
     // against here — the folder IS the consumer that was wrong, and these

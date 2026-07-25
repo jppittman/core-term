@@ -493,8 +493,16 @@ pub fn ast_to_runtime_arena(
             pixelflow_ir::arena::ExprNode::Var(i) => {
                 quote! { ::pixelflow_core::__ir::arena::ExprNode::Var(#i) }
             }
+            // By bit pattern, not as a decimal literal: `quote`'s `f32`
+            // impl goes through `Literal::f32_suffixed`, which asserts
+            // `is_finite()` — and non-finite constants are ordinary here. A
+            // true comparison mask is all-ones (`OpKind::mask`), which is
+            // `BitAnd`'s monoid identity and therefore `all_over`'s seed, and
+            // the folder now produces those. Bits also roundtrip exactly, with
+            // no decimal-formatting question to get wrong.
             pixelflow_ir::arena::ExprNode::Const(v) => {
-                quote! { ::pixelflow_core::__ir::arena::ExprNode::Const(#v) }
+                let bits = v.to_bits();
+                quote! { ::pixelflow_core::__ir::arena::ExprNode::Const(f32::from_bits(#bits)) }
             }
             pixelflow_ir::arena::ExprNode::Param(i) => {
                 quote! { ::pixelflow_core::__ir::arena::ExprNode::Param(#i) }
