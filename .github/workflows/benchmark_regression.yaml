@@ -1,13 +1,17 @@
 name: Benchmark Regression Check
 
 on:
+  pull_request:
+    branches: [ "main" ]
   push:
     branches: [ "main" ]
 
 permissions:
   # Required to push the baseline to gh-pages
   contents: write
-  # Required to open issues on regression
+  # Required to comment on benchmark regressions in pull requests
+  pull-requests: write
+  # Required to open issues
   issues: write
 
 # Baselines must land in commit order: never run two baseline updates at
@@ -101,11 +105,13 @@ jobs:
           alert-threshold: '125%'
           fail-on-alert: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          comment-on-alert: true
+          # PRs compare against history without mutating it. Postsubmit pushes
+          # advance the baseline on gh-pages.
+          auto-push: ${{ github.event_name == 'push' }}
+          comment-on-alert: ${{ github.event_name == 'pull_request' }}
 
       - name: Open performance regression issue
-        if: failure() && steps.benchmark_check.outcome == 'failure'
+        if: failure() && github.event_name == 'push' && steps.benchmark_check.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
