@@ -25,7 +25,6 @@ fn nanos_now() -> u64 {
         // Silicon: the timebase is 125/3 (one tick = 41.67ns; 1:1 only holds
         // on Intel Macs and under Rosetta). Convert via mach_timebase_info,
         // queried once. See pixelflow-pipeline/src/jit_bench.rs::nanos_now
-        // and docs/results/2026-07-20-jit-compile-cost.md for the same fix
         // applied to the shared JIT bench harness.
         static TIMEBASE: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
         let (numer, denom) = *TIMEBASE.get_or_init(|| {

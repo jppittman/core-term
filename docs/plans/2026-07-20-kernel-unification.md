@@ -111,8 +111,7 @@ to-be-retired backend, tracked until that backend dies.
 
 ## Phases
 
-- **P0 — ground truth** *(in flight)*: JIT compile-cost bench
-  (docs/results/2026-07-20-jit-compile-cost.md) settles load-time compile
+- **P0 — ground truth** *(in flight)*: JIT compile-cost benchmarks inform load-time compile
   budgets; golden coverage-lattice fixtures for the warm-ASCII font set are the
   visual regression guard for every backend switch.
 - **P0.5 — e-graph type stability** *(in flight)*: extraction must be

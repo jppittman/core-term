@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**PixelFlow** is a research project demonstrating a novel paradigm for real-time graphics: **pull-based rendering** with **SIMD as algebra**. It achieves high performance (155 FPS at 1080p) on pure CPU without a GPU.
+**PixelFlow** is a research project exploring **pull-based rendering** with **SIMD as algebra** on pure CPU without a GPU.
 
 **`core-term`** is the primary consumer application: a high-performance, correct terminal emulator built entirely on the PixelFlow engine.
 

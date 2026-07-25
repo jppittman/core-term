@@ -62,11 +62,7 @@ static OPTIMIZATION_MODEL: OnceLock<ExprNnue> = OnceLock::new();
 ///
 /// ## Default: static latency-prior extraction
 ///
-/// The recorded 3-way benchmark (docs/results/2026-07-08-extraction-3way.md)
-/// measured NNUE extraction ~6.7% slower (geomean) than the handcrafted
-/// latency prior at ~31x the extraction-time cost, while extraction itself
-/// (prior vs no-swap) was worth ~33%. Per the Phase 2 gate in
-/// docs/plans/2026-07-07-guided-saturation-redesign.md, the static
+/// Per the Phase 2 gate in docs/plans/2026-07-07-guided-saturation-redesign.md, the static
 /// [`CostModel::latency_prior`] is therefore the default and the learned
 /// model is opt-in only.
 ///
@@ -1692,9 +1688,7 @@ mod tests {
     }
 
     /// The default production path (no `PIXELFLOW_NNUE_WEIGHTS` set) must use
-    /// static latency-prior extraction — the Phase 2 gate decision recorded in
-    /// docs/results/2026-07-08-extraction-3way.md (NNUE lost to the prior by
-    /// ~6.7% geomean at ~31x extraction cost).
+    /// static latency-prior extraction.
     ///
     /// We verify the default `optimize()` entry point is byte-identical to
     /// explicitly running `Extraction::Static(CostModel::latency_prior())` —

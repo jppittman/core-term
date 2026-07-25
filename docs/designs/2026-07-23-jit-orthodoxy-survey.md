@@ -25,9 +25,7 @@ knowledge those VMs lack and we have by construction.
 | **Code cache** | All of them cache and share compiled code aggressively | **Missing — a real orthodoxy gap** | Repeated builder-closure calls with identical (arena, params) re-lower and re-JIT identical code. Tracked as follow-up work; keyed on (arena bytes, root, substituted params) → shared `ExecutableCode`. Note P0's finding applies: codegen dominates compile cost, so a *result* cache is the right lever where buffer pooling was not. |
 
 Where we *do* match the VM world is backend discipline: linear-scan register
-allocation (Maglev and LuaJIT's allocators are the same family), µs-scale
-compile times (P0 measured ~5µs for small kernels — LuaJIT's ballpark, orders
-of magnitude below TurboFan/C2), and correct executable-memory hygiene
+allocation (Maglev and LuaJIT's allocators are the same family), and correct executable-memory hygiene
 (W^X, `MAP_JIT` + `pthread_jit_write_protect_np`, icache invalidation).
 
 ## The actual peer group: staged kernel DSLs
@@ -112,8 +110,7 @@ scheduling vocabulary, rather than baking more policy into the emitters.
    IR, visible to the optimizer and register allocator, one scalar ABI. A jet
    ABI would triple register pressure and fork every backend. Orthodox for
    compilers, even though it is unorthodox for AD *libraries*.
-2. **Fusion at roots, not per-leaf compilation.** P0 killed per-leaf JIT with
-   data (~5µs floor vs ~1µs budget). Composition therefore splices IR
+2. **Fusion at roots, not per-leaf compilation.** Composition splices IR
    fragments (`HasIr`) into one fused root before a single compile — which is
    Halide's fusion story and XLA's, not a VM inlining story. If per-leaf or
    per-frame compilation ever becomes real, the orthodox escape hatch is a

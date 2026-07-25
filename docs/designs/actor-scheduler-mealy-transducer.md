@@ -306,21 +306,12 @@ tests over transition tables.
 | `Credit`: sender-side budget that keeps a droppable request/response edge from ever actually dropping | `actor-scheduler/src/mealy.rs` |
 | `Transducer` gains `Control`/`Management`/`Data` + `step_control`/`step_management` (defaulted); `Node` gains three lanes (`Lanes`, `NoLane`, `Slot` cycle) reusing `SchedulerParams` | `actor-scheduler/src/mealy.rs` |
 
-### 7.1 Measured (2026-07-24)
+### 7.1 Benchmarking
 
-The prototype (`actor-scheduler/src/mealy.rs`) is benchmarked against the existing path in
-`docs/results/2026-07-24-mealy-vs-actor.md`:
-
-- **Dispatch** (one actor, one thread, same work): ~24 ns → ~13 ns per message, **1.8× faster**.
-  Returning output instead of sending it is not a tax — a step skips the `Message` wrapping,
-  the doorbell, the burst-limited drain loop, and the per-wake `park()`.
-- **Three-stage pipeline** at 100 k messages: ~112 ns → ~17 ns per message, **6.5×**, by
-  collapsing three OS threads onto one worker polled in topological order. The two cross-thread
-  hops cost ~95 ns/message of pure coordination.
-
-Caveat both ways: the transducer arm needs no waker because the actors are co-located, so a
-multi-worker runtime will add some back; and the stages are cheap, so this measures coordination
-overhead, not parallel speedup. It argues for co-locating cheap actors, not for abolishing
+Benchmark the prototype (`actor-scheduler/src/mealy.rs`) against the existing path whenever
+the scheduler or runtime topology changes. The comparison should cover dispatch and multi-stage
+pipelines. The transducer arm needs no waker while actors are co-located, while a multi-worker
+runtime adds coordination. This can inform co-location decisions, but does not argue for abolishing
 threads.
 
 ### 7.2 `ports!`
@@ -492,9 +483,8 @@ there. With small limits and idle other lanes, that costs the wraparound its one
 iteration, and a message could sit queued while `poll()` reported `Idle`. The existing tests
 used small message counts and never wrapped a full cycle within them; `bench_priority.rs`'s
 drain-to-completion loop did, immediately. Fixed by `Node::advance_if_exhausted`: roll over the
-instant the budget is spent, not on the next call's discovery of it. See
-`docs/results/2026-07-24-mealy-vs-actor.md` for the full account and the regression test added
-alongside it.
+instant the budget is spent, not on the next call's discovery of it. A regression test was added
+alongside the fix.
 
 ---
 

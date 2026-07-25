@@ -175,37 +175,16 @@ Training happens in a separate loop at the trajectory level, not in the per-step
 ### Benchmark Methodology
 - `eval100!` macro: 100 function calls fully unrolled, zero loop counter overhead
 - 20 timed samples, take median
-- `mach_absolute_time()` on macOS — **correction (2026-07-20): NOT 1:1 with
-  nanoseconds on native Apple Silicon.** The timebase is 125/3 (1 tick =
-  41.67ns; 1:1 only held on Intel Macs / under Rosetta). The shared harness
-  timer (`pixelflow-pipeline/src/jit_bench.rs::nanos_now`) now converts via
-  `mach_timebase_info`. Every absolute-ns figure below that predates this fix
-  is under-scaled 41.67x; see docs/results/2026-07-20-jit-compile-cost.md.
+- The macOS timer converts `mach_absolute_time()` using `mach_timebase_info`.
 - `benchmark_jit` divides by INNER_ITERS to return per-eval nanoseconds
 
-The loop counter bias (~0.3ns/iter) was corrupting the additive cost model — small expressions appeared proportionally more expensive. Full unrolling eliminates this.
+Loop counter bias can corrupt the additive cost model by making small expressions appear proportionally more expensive. Full unrolling avoids this.
 
 ### Critic Architecture
 Causal Decision Transformer with 3 layers, 4 attention heads, 128-dim. The `/step` endpoint does predict + one backprop per round — keeping the critic current without expensive full retrains. The critic's forward pass produces advantages `A_t = R_T - V_t` where `R_T = -log(final_cost_ns)`.
 
 ### Expression Generator
 Op weights match ShaderToy shader analysis: 36% mul, 18% add, 14% sub, 6% div, with moderate abs/sin/cos/clamp and rare exotic ops. Default depth 8, leaf probability 0.2.
-
-## Results
-
-> **⚠ Correction (2026-07-20)**: the absolute ns figures below predate the
-> `nanos_now` timebase fix and are under-scaled 41.67x on native Apple
-> Silicon (e.g. "0.420ns/eval" was really ~17.5ns/eval). Ratios (speedups,
-> cross-channel CSE factor) are unaffected. See
-> docs/results/2026-07-20-jit-compile-cost.md.
-
-- **Synthetic expressions**: 95%+ achieve >1x speedup, median 1.05x
-- **Psychedelic shader (3-channel)**:
-  - JIT: 0.420ns/eval
-  - LLVM (random NNUE): 0.458ns/eval
-  - LLVM (trained NNUE): 0.447ns/eval
-  - Cross-channel CSE: 2.3x faster than 3 separate channels
-- **Never anti-optimizes**: Extraction starts from original, only accepts NNUE-certified improvements
 
 ## File Map
 

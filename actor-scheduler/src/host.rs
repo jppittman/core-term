@@ -11,13 +11,12 @@
 //! `Busy` means "more work, do not block", `Idle` means "nothing to do, block on the
 //! doorbell". So a host that returns `Busy` while any green actor ran, and `Idle` once they
 //! are all quiet, gets the behaviour that matters for free — **a host with nothing to do
-//! sleeps at 0% CPU**, and wakes when a message arrives, exactly like every other actor.
+//! sleeps instead of polling**, and wakes when a message arrives, exactly like every other actor.
 //!
 //! # Ownership, not migration
 //!
 //! A host *owns* its green actors; they never move to another thread. That is deliberate:
-//! the measured win (`docs/results/2026-07-24-mealy-vs-actor.md`) comes from co-locating a
-//! pipeline so a message walks it in one sweep with no cross-thread hop. A shared queue that
+//! co-locating a pipeline lets a message walk it in one sweep with no cross-thread hop. A shared queue that
 //! could pull a green actor onto any worker would trade that away for load balancing nobody
 //! has asked for yet.
 //!

@@ -1,6 +1,6 @@
 # PixelFlow — Pull-Based Functional Graphics on CPU SIMD
 
-**A GPU-free graphics engine proving that elegant algebraic abstractions can achieve 155 FPS at 1080p on pure CPU.**
+**A GPU-free graphics engine exploring algebraic abstractions for rendering on pure CPU.**
 
 PixelFlow is a research project demonstrating a novel paradigm for real-time graphics: **pull-based rendering** with **SIMD as algebra**. Nothing computes until a coordinate arrives. Pixels are sampled, not pushed. The type system builds compute graphs. The compiler emits optimal vector assembly.
 
@@ -64,7 +64,7 @@ Code written with the `kernel!` macro doesn't compile directly to assembly—it 
 Source → Lexer → Parser → Sema → Optimize (e-graph) → Codegen → Rust TokenStream
 ```
 
-The optimizer builds an e-graph from the expression, saturates it with rewrite rules (associativity, FMA fusion, etc.), and extracts the minimum-cost implementation using a handwritten, latency-prior cost model (the default). A learned NNUE cost model exists as an opt-in experiment but hasn't beaten the handwritten model in benchmarks, so it isn't the default. See CLAUDE.md's "Cost-Model Training" section for details.
+The optimizer builds an e-graph from the expression, saturates it with rewrite rules (associativity, FMA fusion, etc.), and extracts an implementation using the configured cost model. See CLAUDE.md's "Cost-Model Training" section for details.
 
 ## The Manifold Abstraction
 
@@ -83,13 +83,10 @@ Manifolds compose via operator overloading, and the type tree *is* the compute g
 
 **Writing manifolds by hand is a legacy pattern.** The intended way to write PixelFlow code today is the `kernel!` macro, which compiles an expression through the e-graph optimizer and codegen pipeline instead of relying on hand-composed combinator types (see [Extending PixelFlow](#extending-pixelflow) below).
 
-## Performance
+## Execution
 
-- **Throughput:** 155 FPS at 1080p (~5 nanoseconds per pixel)
 - **Backend:** Pure CPU, no GPU required. SIMD: AVX-512, SSE2, NEON
-- **Memory:** Zero allocation per frame (ping-pong buffer strategy)
-- **Compilation:** Entire scene monomorphizes into fused kernels
-- **Latency:** <5ms input-to-render (actor model)
+- **Compilation:** Scenes compile into fused kernels
 
 ## Getting Started with PixelFlow
 
@@ -166,7 +163,7 @@ This eliminates:
 - Primitive list parsing
 - Conditional branching in the hot loop
 
-### Actor Model for Zero-Latency Input
+### Actor Model for Input
 
 Three-thread architecture:
 
