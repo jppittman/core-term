@@ -602,18 +602,18 @@ The invariants above were written as "don't lose the *only* window." That unders
 constraint. **The ping-pong buffer exists so the framebuffer is reused rather than reallocated
 every frame.**
 
-*Stated precisely, because an earlier draft of this paragraph overreached:* today `Frame<P>` owns
-an ordinary `Vec<P>` and presentation **copies** it into the platform's surface — macOS via
-`replaceRegion:mipmapLevel:withBytes:bytesPerRow:`, X11 via `XPutImage`. So the driver is *not*
-currently the only actor that could allocate it. The intended direction is a pull-based renderer
-writing **directly into the OS framebuffer, zero-copy**, and under *that* the driver becomes the
-only actor able to obtain the memory at all — which is why keeping allocation there now is worth
-doing even though nothing yet forces it.
+**The design is zero-copy: the renderer writes directly into the OS framebuffer.** Under that,
+the driver is the only actor that can obtain the memory at all, which is why buffer allocation
+belongs to it and why a buffer lost in transit is not "one dropped frame" but a lost allocation
+in the one place this design is trying never to allocate.
 
-The ownership rule does not rest on that future, though, and shouldn't be read as if it does.
-It stands on what is true today: there is exactly one buffer, it is reused every frame, and a
-buffer lost in transit is a lost allocation that must be remade — in the one place this design is
-trying never to allocate.
+*Known deviation, tracked separately:* the current backends do not yet honour this. `Frame<P>`
+owns an ordinary `Vec<P>` and presentation **copies** it into the platform surface — macOS via
+`replaceRegion:mipmapLevel:withBytes:bytesPerRow:`, X11 via `XPutImage`. That is a defect against
+the intended design, not a constraint on it, and this section is written against the design. An
+earlier draft of this paragraph made the opposite mistake — reading the current copy as ground
+truth and concluding the driver "is not the only actor that could allocate," which would have
+weakened the ownership rule to match a bug.
 
 So the rule is stronger than uniqueness — but it is not "never destroy a buffer," because §8.7
 *requires* destroying one: on resize the old buffer is the wrong size and must be replaced. The
@@ -687,3 +687,21 @@ carries only window-bearing messages, of which ownership guarantees at most one.
 about one message class only holds if that class has the channel to itself.* Sharing a ring with
 unbounded traffic silently converts "unreachable" into "unlikely," and unlikely is not what
 §3 means by structurally unreachable.
+
+### 8.10 Generations, not inference, decide whether a returned buffer is live
+
+§8.7 had the driver detect a superseded buffer by comparing stored dimensions against what came
+back. Implementation went further and better (`825a7d46`): buffers carry a **`Generation`**, and
+the driver decides from that rather than inferring.
+
+The inference it replaces was the weak point. Asking "is a render outstanding?" only establishes
+that *some* buffer is busy, not *which* — and dimensions alone can't distinguish a stale buffer
+from a live one that happens to match a size the window has since returned to. A generation is
+explicit: the driver stamps each buffer it allocates, tracks `current_generation`, and a returned
+buffer is live exactly when its stamp matches. No comparison of proxies, no ambiguity when sizes
+repeat.
+
+This supersedes §8.7's dimension comparison as the *mechanism*; §8.7's policy is unchanged — a
+superseded buffer's contents are not presented, and the driver replaces it before the next grant.
+Where §7.2 removed a `stale` flag one actor set inside another's record, the generation is the
+same decision made locally by the actor that owns the buffer, from data the buffer carries.
