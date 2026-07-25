@@ -34,15 +34,15 @@ not by re-reading it), and only then touch a live actor.
 |------|-----------|------|-----|
 | Input + window-lifecycle events (`DisplayEvent` minus `PasteData`: key, mouse, scroll, focus, resize, close, scale, window created/destroyed, clipboard-data-requested) | driver → engine | **Blocking** | Discrete, non-idempotent events. None may be lost, and none coalesce with another. |
 | `Present` | engine → driver | **Credit(1) + Droppable backstop** | Not a judgment call this doc is inventing: `DisplayData::Present`'s own doc comment already specifies the receiver's contract as "3. NOT block the sender (use backpressure if buffer full)". The original table lumped it into a generic "commands, never lose" bucket and missed that the code already disagrees. Exactly one window is ever in flight (the ping-pong buffer), so this is the *same* structurally-unreachable shape as the row below, not a new risk. |
-| `PresentComplete` (window return) | driver → engine | **Credit(1) + Droppable backstop** | The reply half of `Present`, sharing its credit. Exactly one window is ever in flight, so the reply ring's capacity is provisioned ≥ 1 and can **never actually be full** when the reply lands — the droppable backstop exists for `Topology`'s proof, but is unreachable by construction, not merely rare. Not the same case as a true "acceptable loss" droppable edge (§9.2) — safe only because the credit bound is airtight. |
-| `SetTitle` / `SetSize` / `SetCursor` / `Copy` | engine → driver | **Droppable, no credit needed** | Idempotent, "latest write wins" state — the exact shape already handled for `pending_manifold` below. Two queued `SetTitle`s only ever needed the second one anyway. |
+| `PresentComplete` (window return) | driver → engine | **Credit(1) + Droppable backstop** | The reply half of `Present`, sharing its credit. Exactly one window is ever in flight, so the reply ring's capacity is provisioned ≥ 1 and can **never actually be full** when the reply lands — the droppable backstop exists for `Topology`'s proof, but is unreachable by construction, not merely rare. Not the same case as a true "acceptable loss" droppable edge (§9.2 of the Mealy doc) — safe only because the credit bound is airtight. |
+| `SetTitle` / `SetSize` / `SetCursor` / `Copy` | engine → driver | **Droppable — flagged, see Known-unsettled** | What the code does today, *not* an endorsement. This row used to justify itself as "latest write wins, the same shape as `pending_manifold`" — and that precedent has since gone the other way: manifold submission is `Blocking` precisely because a dropped *final* update has nothing following it. These have identical shape at lower stakes (a wrong title, not a wrong screen), so they are recorded as unresolved rather than grandfathered on an argument this table no longer accepts. |
 | `RequestPaste` | engine → driver | **Droppable, no credit** — *revised, see §3.2* | Originally planned as Credit(1); that would deadlock paste permanently. |
 | `PasteData` (reply to `RequestPaste`) | driver → engine | **Droppable, no credit** — *revised, see §3.2* | The reply is not merely losable, it is *routinely absent*: pasting from an empty clipboard produces no reply at all, by design. A credit released only by the reply would never come back. |
 | `Create` (window creation) | engine → driver | **Not part of the steady-state graph — see §3.1** | One-shot bootstrap per window, not a member of the continuously-live mesh at all. |
 | VSync tick | vsync → engine | **Credit(100) + Droppable backstop** | Direct replacement for `VSYNC_TOKEN_BUCKET`. A dropped tick under a bug is a missed/late frame, genuinely tolerable — this *is* an ordinary acceptable-loss droppable edge, unlike the row above. |
 | Frame-rendered notice (`RenderedResponse`, FPS tracking only) | engine → vsync | **Droppable, no credit needed** | Pure telemetry. Losing a sample changes nothing but a displayed FPS number. |
-| Render request | engine → rasterizer | **Credit(1) + Droppable backstop** | Mirrors the window-return case: `pending_render` tracks exactly one outstanding render, so ring capacity ≥ 1 makes the backstop unreachable by construction. |
-| Render complete | rasterizer → engine | **Credit(1) + Droppable backstop** (same credit as above; it's the reply half) | Same reasoning as `PresentComplete`. If this bound is ever wrong (more than 1 outstanding), the failure mode changes from "spin-forever under adversarial timing" (today) to "one dropped frame, `pending_render` never clears, next resize/vsync recovers" — recorded as an explicit design trade-off, not an oversight. |
+| Render request | engine → rasterizer | **Credit(1) + Droppable backstop** | Mirrors the window-return case: the edge carries exactly one outstanding render, so ring capacity ≥ 1 makes the backstop unreachable by construction. (`pending_render` was the field tracking that when this row was written; it is now a real `Credit` — §7.1.) |
+| Render complete | rasterizer → engine | **Credit(1) + Droppable backstop** (same credit as above; it's the reply half) | Same reasoning as `PresentComplete`. If this bound is ever wrong (more than 1 outstanding), the failure mode changes from "spin-forever under adversarial timing" (today) to "one dropped frame, the credit never returns, next resize/vsync recovers" — recorded as an explicit design trade-off, not an oversight. |
 | Frame request (`RequestFrame`) | engine → app | **Credit(N) + Droppable backstop** | N-outstanding-requests bound; a dropped request is recovered by the next vsync tick. |
 | Manifold submission (`AppData::RenderSurface`) | app → engine | **Blocking** — *revised* | Two earlier revisions got this wrong. It is not droppable-because-another-follows: if the app's *last* state change is the dropped one, none follows, and the coordinator renders a stale kernel forever. Nor does keeping the receiver's slot fix it — a dropped message never reaches the slot to overwrite it. An app parking behind a busy coordinator is correct backpressure. The receiver **still keeps its `pending_manifold` slot** (overwritten on arrival), since a droppable port discards the *newest* message and so can never be the staleness policy. |
 
@@ -65,7 +65,7 @@ later. Manifold submission is `Blocking` for exactly this reason; the `engine �
 pushes have the same shape at lower stakes and are flagged in Known-unsettled rather than quietly
 grandfathered.
 
-Conflating these two would be exactly the mistake §9.2 warned against.
+Conflating these two would be exactly the mistake the Mealy doc's §9.2 warned against.
 
 ### 3.1 driver ↔ engine: resolved by decomposing, not by picking an excuse
 
@@ -156,8 +156,7 @@ lost.
   `Send`-bounded migratable-pool exception the Mealy doc's §5.2 carved out, not the owned-green
   default.
 - **engine**: ceases to exist as a distinct actor. `EngineHandler` today isn't a pure router —
-  it holds real coordination state (`window`, `pending_render`, `pending_manifold`,
-  `frame_number`) and makes real decisions (stale-render discarding, catch-up rendering).
+  it holds real coordination state (`window`, `pending_manifold`, `frame_number`) and makes real decisions (stale-render discarding, catch-up rendering).
   Deleting it means that state and logic goes *somewhere*: split across the actor that
   naturally owns each piece (driver already owns window lifecycle; app already owns the
   manifold it produces), or a new, deliberately small coordinator that does only the glue
