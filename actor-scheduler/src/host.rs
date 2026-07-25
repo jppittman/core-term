@@ -70,12 +70,58 @@ where
 ///
 /// `Message::Shutdown` still stops it, because shutdown travels on the doorbell rather than a
 /// lane.
+/// Stable identity for an adopted green actor.
+///
+/// Deliberately not a position: `Host` removes halted nodes with `Vec::remove`, so any index
+/// recorded in one sweep names a *different* actor by the next. An earlier revision reported
+/// disconnections by index and had exactly that bug.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeId(u64);
+
+/// Why a green actor is stuck — i.e. alive, holding work, and unable to make progress alone.
+///
+/// One variant today, deliberately. Adding reasons later is additive; inventing a family for
+/// stucks nobody has hit would be machinery ahead of need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stuck {
+    /// A flush target is gone. The node's outbox **still holds the undelivered payload**, so
+    /// whatever it carries is recoverable — retry it, take the value elsewhere, or drop the node
+    /// deliberately.
+    TargetGone,
+}
+
+/// A green actor needs supervision. Returned by [`Host::sweep`], never sent.
+///
+/// This is a *returned value*, not a message the host pushes through a handle it holds. Giving
+/// `Host` a supervisor handle would reintroduce exactly the coupling the transducer model
+/// exists to remove: an actor reaching out mid-step instead of describing what happened and
+/// letting its wiring decide where that goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Supervision {
+    pub node: NodeId,
+    pub reason: Stuck,
+}
+
+/// What one [`sweep`](Host::sweep) did.
+#[derive(Debug)]
+#[must_use = "a sweep can report actors needing supervision; dropping it discards them"]
+pub struct Sweep {
+    /// `Busy` if any green actor ran, so the scheduler keeps sweeping; `Idle` when they are all
+    /// quiet and the thread may sleep.
+    pub status: ActorStatus,
+    /// Actors that are stuck. Empty on the common path.
+    ///
+    /// Returned rather than accumulated in the host, so it cannot be missed by a caller that
+    /// never thinks to ask — the previous revision stored these and exposed an accessor, which
+    /// nothing on the `sched.run(&mut host)` path could ever reach.
+    pub stuck: Vec<Supervision>,
+}
+
 #[derive(Default)]
 pub struct Host {
-    nodes: Vec<Box<dyn Green>>,
+    nodes: Vec<(NodeId, Box<dyn Green>)>,
     exits: Vec<Exit>,
-    /// Indices of nodes whose flush hit a gone target, in the order it happened.
-    disconnected: Vec<usize>,
+    next_id: u64,
 }
 
 impl Host {
@@ -87,7 +133,9 @@ impl Host {
 
     /// Take ownership of a green actor. Sweep order is adoption order.
     pub fn adopt(&mut self, node: impl Green + 'static) {
-        self.nodes.push(Box::new(node));
+        let id = NodeId(self.next_id);
+        self.next_id += 1;
+        self.nodes.push((id, Box::new(node)));
     }
 
     /// How many green actors are still running.
@@ -102,24 +150,6 @@ impl Host {
         self.nodes.is_empty()
     }
 
-    /// Green actors that hit a gone target while flushing, in the order it happened.
-    ///
-    /// Each entry is the node's index at the time. The node is **still adopted** and its outbox
-    /// **still holds the undelivered payload**, so a supervisor can retry it, take the value
-    /// elsewhere, or drop the node deliberately. Without this the disconnection would be
-    /// invisible: [`sweep`](Host::sweep) reports `Idle` for such a node — deliberately, since
-    /// reporting `Busy` would spin the scheduler against a peer that is never coming back — and
-    /// the outer loop would then block on its doorbell with the payload stranded.
-    #[must_use]
-    pub fn disconnected(&self) -> &[usize] {
-        &self.disconnected
-    }
-
-    /// Clear the recorded disconnections, after a supervisor has dealt with them.
-    pub fn clear_disconnected(&mut self) {
-        self.disconnected.clear();
-    }
-
     /// The exits of green actors that have halted, in the order they halted.
     ///
     /// A supervisor reads this to decide what to restart. The host itself has no restart
@@ -131,32 +161,33 @@ impl Host {
 
     /// Advance every green actor by at most one step, in adoption order.
     ///
-    /// Returns `Busy` if any of them ran, so the scheduler keeps sweeping without blocking;
-    /// `Idle` when they are all quiet — parked on backpressure or out of input — so the
-    /// scheduler blocks on the doorbell and the thread sleeps.
-    pub fn sweep(&mut self) -> ActorStatus {
+    /// Returns what happened, including any actors that are stuck — see [`Sweep`]. The host
+    /// *describes*; it does not act. Restart, retry and shutdown are supervision policy, and a
+    /// host that hosts should not also decide them.
+    pub fn sweep(&mut self) -> Sweep {
         let mut ran = false;
+        let mut stuck = Vec::new();
         let mut i = 0;
 
         while i < self.nodes.len() {
-            match self.nodes[i].poll() {
+            let (id, node) = &mut self.nodes[i];
+            let id = *id;
+            match node.poll() {
                 Step::Ran => {
                     ran = true;
                     i += 1;
                 }
                 Step::Blocked | Step::Idle => i += 1,
-                // A peer is gone and the payload is retained in the node's outbox. `Host` has
-                // no supervision policy to apply — it keeps the node alive rather than dropping
-                // it, so whatever the outbox holds stays recoverable, and does not count it as
-                // having run, so a dead peer cannot spin the sweep against a peer that is never
-                // coming back. But it must *record* the fact: choosing retry, handoff or
-                // graceful shutdown belongs a layer up, and that layer can only choose if it is
-                // told. Reported via `disconnected()`, not by the `ActorStatus` return, which
-                // has no way to say "stuck, not idle".
+                // A peer is gone and the payload is retained in the node's outbox. Keep the
+                // node — whatever the outbox holds stays recoverable — and do *not* count it as
+                // having run, so a dead peer cannot spin the sweep against something that is
+                // never coming back. Report it upward instead: the layer that chooses retry,
+                // handoff or graceful shutdown can only choose if it is told.
                 Step::Disconnected => {
-                    if !self.disconnected.contains(&i) {
-                        self.disconnected.push(i);
-                    }
+                    stuck.push(Supervision {
+                        node: id,
+                        reason: Stuck::TargetGone,
+                    });
                     i += 1;
                 }
                 Step::Halted(exit) => {
@@ -168,11 +199,13 @@ impl Host {
             }
         }
 
-        if ran {
+        let status = if ran {
             ActorStatus::Busy
         } else {
             ActorStatus::Idle
-        }
+        };
+
+        Sweep { status, stuck }
     }
 }
 
@@ -245,8 +278,21 @@ impl Actor<Infallible, Infallible, Infallible> for Host {
         match msg {}
     }
 
+    /// Sweeps, and **discards any supervision events**, because this signature has nowhere to
+    /// put them.
+    ///
+    /// That is the honest limit of running a `Host` through the old `Actor`/`ActorScheduler`
+    /// shell: `park` returns an `ActorStatus`, which can say "busy" or "idle" and cannot say
+    /// "one of my actors is stuck holding a payload". Callers that need supervision must drive
+    /// [`sweep`](Host::sweep) directly and read [`Sweep::stuck`].
+    ///
+    /// Closing this properly means `Host` becoming a transducer whose `Out` carries supervision
+    /// events, so its wiring delivers them like any other output and `Topology` checks that edge
+    /// — the same conversion vsync and the rasterizer already went through. Until then a `Host`
+    /// under `sched.run` is unsupervised, and this comment is the warning rather than a silent
+    /// drop.
     fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
-        Ok(self.sweep())
+        Ok(self.sweep().status)
     }
 }
 
@@ -302,7 +348,7 @@ mod tests {
         ));
 
         tx_in.try_send(1).unwrap();
-        assert_eq!(host.sweep(), ActorStatus::Busy, "a green actor had work");
+        assert_eq!(host.sweep().status, ActorStatus::Busy, "a green actor had work");
         assert_eq!(rx_out.try_recv().unwrap(), 2);
     }
 
@@ -320,11 +366,11 @@ mod tests {
             ForwardWiring { next: tx_out },
         ));
 
-        assert_eq!(host.sweep(), ActorStatus::Idle, "no input, nothing ran");
+        assert_eq!(host.sweep().status, ActorStatus::Idle, "no input, nothing ran");
 
         tx_in.try_send(7).unwrap();
-        assert_eq!(host.sweep(), ActorStatus::Busy);
-        assert_eq!(host.sweep(), ActorStatus::Idle, "quiet again after draining");
+        assert_eq!(host.sweep().status, ActorStatus::Busy);
+        assert_eq!(host.sweep().status, ActorStatus::Idle, "quiet again after draining");
     }
 
     #[test]
@@ -355,7 +401,7 @@ mod tests {
         ));
 
         tx_in.try_send(0).unwrap();
-        assert_eq!(host.sweep(), ActorStatus::Busy);
+        assert_eq!(host.sweep().status, ActorStatus::Busy);
         assert_eq!(
             rx_out.try_recv().unwrap(),
             3,
@@ -381,17 +427,15 @@ mod tests {
 
         drop(rx_out); // the *downstream* target dies, not this actor's own inbox
         tx_in.try_send(0).unwrap();
-        host.sweep();
 
+        let sweep = host.sweep();
         assert_eq!(
-            host.disconnected(),
-            &[0],
-            "a supervisor must be able to see which node hit a gone peer"
+            sweep.stuck.len(),
+            1,
+            "a supervisor must be told which node hit a gone peer"
         );
+        assert_eq!(sweep.stuck[0].reason, Stuck::TargetGone);
         assert_eq!(host.len(), 1, "and the node is kept, not silently discarded");
-
-        host.clear_disconnected();
-        assert!(host.disconnected().is_empty());
     }
 
     #[test]
@@ -408,7 +452,8 @@ mod tests {
         assert_eq!(host.len(), 1);
 
         drop(tx_in); // the green actor's inbox disconnects
-        host.sweep();
+        let sweep = host.sweep(); // this test is about exits, not supervision
+        assert!(sweep.stuck.is_empty());
 
         assert!(host.is_empty(), "a halted green actor is removed");
         assert_eq!(host.exits(), &[Exit::Completed]);
@@ -444,7 +489,8 @@ mod tests {
 
         drop(tx_dead);
         tx_a.try_send(0).unwrap();
-        host.sweep();
+        let sweep = host.sweep(); // this test is about sweep order, not supervision
+        assert!(sweep.stuck.is_empty());
 
         assert_eq!(host.len(), 2);
         assert_eq!(

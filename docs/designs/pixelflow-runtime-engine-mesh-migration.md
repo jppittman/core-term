@@ -23,8 +23,7 @@ This is production code driving a real, running terminal renderer, not a prototy
 (§9) found four real bidirectional cycles held together today by an untyped global atomic and a
 hand-rolled `stale` flag. Reclassifying each edge is a per-edge *judgment call* about what may be
 lost — the audit was explicit that the type system cannot make this call automatically
-(`PresentComplete` dropped is catastrophic; `AppData::RenderSurface` dropped is nothing, the code
-already treats it that way). Getting one of these wrong is worse than the status quo, not better.
+(`PresentComplete` dropped is catastrophic; `SetTitle` dropped is nothing, since another follows). Getting one of these wrong is worse than the status quo, not better.
 So: classify every edge on paper first, prove the resulting graph is actually a DAG (mechanically,
 not by re-reading it), and only then touch a live actor.
 
@@ -53,8 +52,10 @@ makes that backstop unreachable by construction. **Two different reasons an edge
 
 - **Structurally unreachable** (window return, render complete): the credit bound is airtight,
   so the drop path is dead code in the well-behaved system and only fires on an actual bug.
-- **Genuinely acceptable loss** (vsync tick, FPS notice, manifold submission): dropping is a
-  normal, expected outcome, not a bug symptom.
+- **Genuinely acceptable loss** (vsync tick, FPS notice, idempotent state pushes): dropping is a
+  normal, expected outcome, not a bug symptom. Manifold submission looks like it belongs here and
+  does not — see its row: if the app's *last* submission is the dropped one, nothing follows to
+  correct it.
 
 Conflating these two would be exactly the mistake §9.2 warned against.
 
@@ -395,13 +396,20 @@ let sx = frame.logical_w / frame.width as f32;   // everything from the buffer i
 At { inner: kernel, x: X * sx, y: Y * sy, z: Z, w: W }
 ```
 
-**Therefore there is no such thing as a wrong-sized frame.** The kernel was warped to *that*
-buffer, so blitting it is always correct for the buffer it was drawn into. A resize means the
-next buffer carries different numbers and the kernel adapts on the next rasterisation. **The
-driver stays dumb: it blits what arrives.** No size check, no discard, no pending dimensions.
+This makes the frame's *contents* correct for the frame — but **not** for the window, and an
+earlier draft of this paragraph claimed otherwise. If a resize lands while a buffer is out, the
+buffer is still the old size when it returns; the pixels in it are internally consistent and the
+native window is a different shape. Blitting it is wrong however carefully the kernel was bound.
 
-What this deletes, rather than solves: stale-render detection, generation stamping, driver-side
-resize bookkeeping, and the size comparison that would otherwise have to live in the driver.
+So one identity check survives: **the driver blits a returned buffer only if it is still the
+buffer it currently wants.** That is what the existing generation stamping does, and the same
+draft wrongly listed it among the deletions. Kernel-frame binding removes the need to *repair* a
+mismatched buffer — there is no rescaling, no partial redraw, just discard and re-grant, because
+the next rasterisation is already correct by construction. It does not remove the need to notice.
+
+What this genuinely deletes: stale-render *detection* in the coordinator (it never needs to know),
+driver-side pending-dimension bookkeeping, and any rescale-on-mismatch path. What it keeps: one
+comparison in the driver, against state the driver already owns.
 
 ### The judgment calls
 
