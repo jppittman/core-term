@@ -44,7 +44,7 @@ not by re-reading it), and only then touch a live actor.
 | Render request | engine → rasterizer | **Credit(1) + Droppable backstop** | Mirrors the window-return case: `pending_render` tracks exactly one outstanding render, so ring capacity ≥ 1 makes the backstop unreachable by construction. |
 | Render complete | rasterizer → engine | **Credit(1) + Droppable backstop** (same credit as above; it's the reply half) | Same reasoning as `PresentComplete`. If this bound is ever wrong (more than 1 outstanding), the failure mode changes from "spin-forever under adversarial timing" (today) to "one dropped frame, `pending_render` never clears, next resize/vsync recovers" — recorded as an explicit design trade-off, not an oversight. |
 | Frame request (`RequestFrame`) | engine → app | **Credit(N) + Droppable backstop** | N-outstanding-requests bound; a dropped request is recovered by the next vsync tick. |
-| Manifold submission (`AppData::RenderSurface`) | app → engine | **Droppable, no credit needed** | The *existing* code already implements "always keep the most recent, drop old ones" for `pending_manifold` by hand. This edge doesn't need `Credit` — it needs to be declared `[drop]` and the hand-rolled staleness logic deleted, because the port *is* the staleness policy. |
+| Manifold submission (`AppData::RenderSurface`) | app → engine | **Droppable, no credit needed** | Losing one submission is fine — another follows. But the receiver **keeps its `pending_manifold` slot and overwrites it**: a droppable port discards the *newest* message, which is the opposite of keep-latest, so the port cannot be the staleness policy. An earlier revision said it could and had the field deleted. |
 
 Every reply edge above is the closing edge of a cycle; every one is legal under the DAG rule
 (§3.1 of the Mealy doc) specifically because it's Droppable, whether or not `Credit` additionally
@@ -311,7 +311,7 @@ coupling as the `VSYNC_TOKEN_BUCKET` global that step 2 removed, just local inst
 
 | Field | Goes to | Why |
 |---|---|---|
-| `pending_manifold` | the app → rasterizer edge, as a droppable keep-latest port | §3 already called this: the *port is* the staleness policy, so the hand-rolled "keep newest, drop old" logic is deleted along with the field. |
+| `pending_manifold` | **stays** — moves to the coordinator, unchanged | Not deletable. A droppable port drops the *newest* message; keep-latest requires dropping the *oldest*. If the app's last state change were the dropped one and later frame requests returned `Skipped`, a stale surface would sit on screen indefinitely. An overwritten slot is a few lines and obviously correct; making the channel do it would mean a new delivery mode in the protocol to avoid them. |
 | `window` | **driver** | It already creates the window (`WindowCreated`) and presents it. With the mediator gone the buffer circulates driver → rasterizer → driver; the driver is the only actor that outlives every stage of that loop. |
 | `frame_number` | **rasterizer** | It is a count of completed renders, and its only consumer is the FPS telemetry edge to vsync. It belongs to the thing doing the counting. |
 | `render_threads` | **bootstrap config, needs a real owner** | *Corrected during implementation.* This row first claimed the field was a redundant copy of `RasterCore::num_threads`, deletable outright. It isn't: the engine passes it to `spawn_with_setup` at bootstrap, so it is the *source* of the rasterizer's value, not a duplicate of it. It has to be supplied by whoever spawns the rasterizer once the engine no longer does — small, but a genuine open question rather than a deletion. |
@@ -319,7 +319,8 @@ coupling as the `VSYNC_TOKEN_BUCKET` global that step 2 removed, just local inst
 
 So `EngineHandler` collapses to: two fields deleted outright (`pending_render`, `render_threads`),
 one flag replaced by a comparison (`stale`), one absorbed into a port's semantics
-(`pending_manifold`), and two genuine relocations (`window` → driver, `frame_number` →
+(`pending_manifold` — *corrected: it relocates rather than dissolving*), and two genuine
+relocations (`window` → driver, `frame_number` →
 rasterizer). Nothing needs a new home invented for it, which is the sign the mediator was
 holding state on behalf of actors that should have held it themselves.
 
@@ -403,11 +404,6 @@ checked:
 - **Credit-bearing replies that can be dropped.** `ReturnToken` releases vsync's tick budget; if
   its edge can lose messages, the budget shrinks permanently. Same shape as the paste deadlock
   in §3.2 — worth checking every credit whose release travels a droppable edge.
-- **Keep-latest for manifold submission.** §3 and §7.3 delete `pending_manifold` on the grounds
-  that the droppable port *is* the staleness policy — but droppable discards the **newest**
-  message, not the oldest. If the app's final state change is the one dropped and subsequent
-  frame requests return `Skipped`, a stale surface stays on screen indefinitely. Needs either a
-  real drop-oldest delivery or an explicit coalescing slot before that state is removed.
 - **Stale-return protocol under pull.** §7.2 has the *coordinator* detect a stale render by
   comparing against the current window — but under pull the coordinator never learns dimensions,
   and the driver alone knows a resize is pending. Nothing yet defines how the driver rejects the
