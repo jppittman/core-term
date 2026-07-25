@@ -589,3 +589,38 @@ comparing what it stored against what came back.
 
 One dropped frame per resize, same as today. The alternative — presenting a wrong-sized frame —
 is visibly worse and is what today's code already declines to do.
+
+### 8.8 Never drop a buffer — the ping-pong exists to reuse it
+
+The invariants above were written as "don't lose the *only* window." That undersells the
+constraint. **The ping-pong buffer exists so the framebuffer is reused rather than reallocated
+every frame**, and the direction of travel is a pull-based renderer writing *directly into the OS
+framebuffer, zero-copy.* Under that goal the driver is not merely a convenient allocator — it is
+the only actor that can obtain OS-backed memory at all, and a dropped buffer is not "one lost
+frame," it is a lost allocation that must be remade, in the one place the design is trying to
+never allocate.
+
+So the rule is stronger than uniqueness: **a buffer is never dropped, on any path.** Two places
+currently violate it, both found by review:
+
+**1. A dropped request stalls rendering forever.** An earlier draft gated requests on an
+"outstanding request" flag, cleared only by a grant. Since the request edge is droppable, a
+dropped request leaves the flag set with no grant coming — the coordinator never asks again and
+the driver holds the window while rendering halts. Fixed by deleting the flag: the coordinator
+re-requests every tick while it holds a manifold and no buffer, and duplicate requests are
+harmless because the driver can only grant what it holds.
+
+**2. The graphics worker destroys the frame when paused.** `RasterCore::step_data` currently
+returns `RasterCoreOut::default()` on the paused path, consuming the `RenderRequest` — and the
+granted frame with it. Nothing then returns it to the driver. This is the same class as the outer
+edges, but *inside* the coordinator/worker pair, which is exactly why §8.6's ownership argument
+has to name the pair rather than the coordinator alone.
+
+**Required change (`pixelflow-graphics`):** every accepted `RenderRequest` must return its frame,
+including the pause path and any future error path. Paused should hand the frame back unrendered
+rather than swallow it. The worker never owns the caller's buffer — it borrows it for the
+duration of one render and is obliged to give it back regardless of outcome.
+
+That obligation is worth stating as the general form: **an actor that accepts a buffer owes it
+back on every exit path.** "Drop the work" is a safe policy for a request that carries only a
+description; it is never safe for one that carries a resource.
