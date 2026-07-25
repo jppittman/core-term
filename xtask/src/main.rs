@@ -413,11 +413,12 @@ fn run_with_rustflags(
         .args(args)
         .env("RUSTFLAGS", rustflags)
         .env("CARGO_TARGET_DIR", target_dir)
-        // Deep-Manifold tests (raymarch_sphere, scene3d) recurse near the
-        // stack limit by design (see CLAUDE.md's dev-profile note); 8- and
-        // 16-lane builds have 2-4x larger frames and overflowed the default
-        // 2 MiB test-thread stack on GitHub runners while passing locally.
-        // Pin the floor so the matrix behaves identically everywhere.
+        // Deep-Manifold tests recurse near the stack limit by design (see
+        // CLAUDE.md's dev-profile note), and 8-/16-lane builds have
+        // proportionally larger frames. This raises the floor for libtest's
+        // own threads; worker threads that set `stack_size` explicitly are
+        // NOT covered by it and must size themselves (see
+        // `rasterizer::parallel::STACK_SIZE`).
         .env("RUST_MIN_STACK", "16777216")
         .status()
         .map(|s| s.success())
