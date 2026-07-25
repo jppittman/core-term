@@ -94,18 +94,24 @@ pub struct Supervision {
 }
 
 /// What one [`sweep`](Host::sweep) did.
+///
+/// Borrows the host for as long as it is held, because the buffer behind `stuck` belongs to the
+/// host and is reused across sweeps — a sweep on a hot path must not allocate. Read what you
+/// need out of it ([`Supervision`] is `Copy`) and let it go before acting on the host.
 #[derive(Debug)]
 #[must_use = "a sweep can report actors needing supervision; dropping it discards them"]
-pub struct Sweep {
+pub struct Sweep<'a> {
     /// `Busy` if any green actor ran, so the scheduler keeps sweeping; `Idle` when they are all
     /// quiet and the thread may sleep.
     pub status: ActorStatus,
     /// Actors that are stuck. Empty on the common path.
     ///
-    /// Returned rather than accumulated in the host, so it cannot be missed by a caller that
-    /// never thinks to ask — the previous revision stored these and exposed an accessor, which
-    /// nothing on the `sched.run(&mut host)` path could ever reach.
-    pub stuck: Vec<Supervision>,
+    /// Handed back from each sweep rather than accumulated behind an accessor, so it cannot be
+    /// missed by a caller that never thinks to ask — the previous revision stored these and
+    /// exposed a getter, which nothing on the `sched.run(&mut host)` path could ever reach. The
+    /// slice is only valid until the next sweep, which is the same window in which acting on it
+    /// makes sense.
+    pub stuck: &'a [Supervision],
 }
 
 /// An OS-thread actor that owns green actors and runs them in its `park`.
@@ -122,6 +128,10 @@ pub struct Host {
     nodes: Vec<(NodeId, Box<dyn Green>)>,
     exits: Vec<Exit>,
     next_id: u64,
+    /// Scratch for [`sweep`](Host::sweep), cleared and refilled each call. A sweep runs whenever
+    /// the thread has work, so building this fresh each time would allocate on the hot path for
+    /// a buffer that is empty almost every sweep and never grows past the node count.
+    stuck: Vec<Supervision>,
 }
 
 impl Host {
@@ -186,15 +196,18 @@ impl Host {
     /// Returns what happened, including any actors that are stuck — see [`Sweep`]. The host
     /// *describes*; it does not act. Restart, retry and shutdown are supervision policy, and a
     /// host that hosts should not also decide them.
-    pub fn sweep(&mut self) -> Sweep {
+    pub fn sweep(&mut self) -> Sweep<'_> {
         let mut ran = false;
-        let mut stuck = Vec::new();
+        self.stuck.clear();
         let mut i = 0;
 
         while i < self.nodes.len() {
             let (id, node) = &mut self.nodes[i];
             let id = *id;
-            match node.poll() {
+            // Poll before the match so the borrow of `self.nodes` ends here and the arms below
+            // are free to touch `self.stuck` and `self.exits`.
+            let step = node.poll();
+            match step {
                 Step::Ran => {
                     ran = true;
                     i += 1;
@@ -206,7 +219,7 @@ impl Host {
                 // never coming back. Report it upward instead: the layer that chooses retry,
                 // handoff or graceful shutdown can only choose if it is told.
                 Step::Disconnected => {
-                    stuck.push(Supervision {
+                    self.stuck.push(Supervision {
                         node: id,
                         reason: Stuck::TargetGone,
                     });
@@ -227,7 +240,10 @@ impl Host {
             ActorStatus::Idle
         };
 
-        Sweep { status, stuck }
+        Sweep {
+            status,
+            stuck: &self.stuck,
+        }
     }
 }
 
@@ -450,20 +466,57 @@ mod tests {
         drop(rx_out); // the *downstream* target dies, not this actor's own inbox
         tx_in.try_send(0).unwrap();
 
-        let sweep = host.sweep();
-        assert_eq!(
-            sweep.stuck.len(),
-            1,
-            "a supervisor must be told which node hit a gone peer"
-        );
-        assert_eq!(sweep.stuck[0].reason, Stuck::TargetGone);
+        let reported = {
+            let sweep = host.sweep();
+            assert_eq!(
+                sweep.stuck.len(),
+                1,
+                "a supervisor must be told which node hit a gone peer"
+            );
+            assert_eq!(sweep.stuck[0].reason, Stuck::TargetGone);
+            sweep.stuck[0]
+        };
         assert_eq!(host.len(), 1, "and the node is kept, not silently discarded");
 
         // The identity has to be actionable, or reporting it is theatre: retrying in place only
         // reaches the same dead sender, so taking the node out is the recovery available today.
-        assert!(host.remove(sweep.stuck[0].node), "the reported id names a real node");
+        assert!(host.remove(reported.node), "the reported id names a real node");
         assert!(host.is_empty());
-        assert!(!host.remove(sweep.stuck[0].node), "and removing it twice is not a panic");
+        assert!(!host.remove(reported.node), "and removing it twice is not a panic");
+    }
+
+    #[test]
+    fn each_sweep_reports_only_its_own_stuck_actors() {
+        // The failure mode introduced by reusing one buffer across sweeps: forget to clear it
+        // and a supervisor that removed a node keeps being told about it forever, or a
+        // recovered node stays reported. `stuck` describes *this* sweep, not the history.
+        let (tx_in, rx_in) = spsc_channel::<u32>(8);
+        let (tx_out, rx_out) = spsc_channel::<u32>(8);
+
+        let mut host = Host::new();
+        host.adopt(Node::new(
+            Forward { seen: 0 },
+            rx_in,
+            ForwardWiring { next: tx_out },
+        ));
+
+        drop(rx_out);
+        tx_in.try_send(0).unwrap();
+        let stuck = {
+            let sweep = host.sweep();
+            assert_eq!(sweep.stuck.len(), 1);
+            sweep.stuck[0].node
+        };
+
+        // A sweep *does* keep re-reporting a node that is still stuck — the retained outbox is
+        // re-flushed and hits the same dead sender. What must not survive is the report of a
+        // node the supervisor has already dealt with.
+        assert_eq!(host.sweep().stuck.len(), 1, "still stuck, still reported");
+        assert!(host.remove(stuck));
+        assert!(
+            host.sweep().stuck.is_empty(),
+            "the supervised node is gone; the sweep must not re-report it from the last one"
+        );
     }
 
     #[test]
@@ -480,8 +533,7 @@ mod tests {
         assert_eq!(host.len(), 1);
 
         drop(tx_in); // the green actor's inbox disconnects
-        let sweep = host.sweep(); // this test is about exits, not supervision
-        assert!(sweep.stuck.is_empty());
+        assert!(host.sweep().stuck.is_empty(), "a halt is not a stuck actor");
 
         assert!(host.is_empty(), "a halted green actor is removed");
         assert_eq!(host.exits(), &[Exit::Completed]);
@@ -517,8 +569,7 @@ mod tests {
 
         drop(tx_dead);
         tx_a.try_send(0).unwrap();
-        let sweep = host.sweep(); // this test is about sweep order, not supervision
-        assert!(sweep.stuck.is_empty());
+        assert!(host.sweep().stuck.is_empty(), "a halt is not a stuck actor");
 
         assert_eq!(host.len(), 2);
         assert_eq!(
