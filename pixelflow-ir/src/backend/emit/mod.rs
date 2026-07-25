@@ -32,6 +32,8 @@
 pub mod aarch64;
 pub mod avx2;
 pub mod avx512;
+#[cfg(test)]
+pub(crate) mod coverage;
 pub mod executable;
 pub mod lowering;
 pub mod regalloc;
@@ -6636,6 +6638,135 @@ mod tests {
                 let res = compile_arena_dag_avx512(&a, root).expect("avx512 compile");
                 check(run16(&res, xs, ones, ones), |i| f(xs[i]), tag);
             }
+        }
+    }
+
+    // =========================================================================
+    // Backend op-coverage completeness (docs/designs/2026-07-25-two-level-ir-
+    // and-backend-completeness.md)
+    // =========================================================================
+    //
+    // Turns "backend X silently doesn't support op Y" into a named, itemized
+    // test failure instead of a gap nobody notices until something happens to
+    // exercise it (this is exactly how AVX-512's binary-op dispatch sat at
+    // 6-of-15 required ops — nothing enumerated "the ops every backend must
+    // support" anywhere, so the hole was invisible until 36 tests failed by
+    // accident the first time someone compiled with `-C target-feature=
+    // +avx512f`).
+    //
+    // Each test below is scoped to a backend this build ACTUALLY compiles —
+    // `x86_backend_covers_required_ops` always runs on x86-64,
+    // `aarch64_backend_covers_required_ops` always runs on aarch64, and
+    // `avx512_backend_covers_required_ops` only compiles (and only needs to
+    // pass) when built with `avx512f` — the same feature gate
+    // `compile_arena_dag_with_ctx` uses to select `Avx512Backend` in
+    // production. On a default `cargo test --workspace` (no RUSTFLAGS) on
+    // this x86-64 host, that means: the SSE2 test runs and must be green
+    // (it is: X86Backend already covers every required op), and the AVX-512
+    // test does not even compile — it isn't lying about passing, it simply
+    // isn't part of this build. The moment someone builds with
+    // `+avx512f` (exactly the multi-ISA completion work tracked separately),
+    // this same test starts running and will fail loudly, by name, for every
+    // op `avx512::emit_unary`/`emit_binary`/`emit_plan` doesn't yet cover —
+    // rather than waiting for an unrelated test to trip over the gap.
+    mod backend_op_coverage {
+        use super::super::coverage::*;
+        use super::*;
+
+        /// Run one `ResolvedOp` through a backend and report whether it
+        /// emitted without error. Backends disagree on failure signaling
+        /// today (avx512 returns `Err`; x86-64/aarch64's leaf encoders
+        /// `panic!` on an unhandled op) — `catch_unwind` treats both as the
+        /// same "not supported" signal so this test doesn't have to care
+        /// which convention a given backend uses.
+        fn try_emit<B: IsaBackend>(backend: &mut B, op: ResolvedOp) -> bool {
+            let plan = InstructionPlan {
+                reloads: alloc::vec::Vec::new(),
+                op,
+                setup_mov: None,
+                store: None,
+            };
+            let mut code = alloc::vec::Vec::new();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                backend.emit_plan(&mut code, &plan)
+            }))
+            .map(|r| r.is_ok())
+            .unwrap_or(false)
+        }
+
+        /// Sweep the required unary/binary/shift op lists plus the two
+        /// bespoke ternary shapes (`MulAdd`, `Select`) against `backend`,
+        /// collecting every failure instead of stopping at the first one —
+        /// a completeness gap is much cheaper to fix as an itemized list
+        /// than rediscovered one `cargo test` run per missing op.
+        fn assert_covers_required_ops<B: IsaBackend>(backend_name: &str, backend: &mut B) {
+            // The two explicit `try_emit` calls below for MulAdd/Select are
+            // this constant, unrolled by hand (each needs its own
+            // `ResolvedOp` shape, so they aren't worth a generic loop) — kept
+            // in sync deliberately rather than by a shared loop.
+            debug_assert_eq!(REQUIRED_TERNARY_OPS, &[OpKind::MulAdd, OpKind::Select]);
+            let mut missing = alloc::vec::Vec::new();
+
+            for &op in REQUIRED_UNARY_OPS {
+                if !try_emit(backend, ResolvedOp::Unary { op, dst: Reg(4), src: Reg(5) }) {
+                    missing.push(alloc::format!("unary {:?}", op));
+                }
+            }
+            for &op in REQUIRED_BINARY_OPS {
+                if !try_emit(
+                    backend,
+                    ResolvedOp::Binary { op, dst: Reg(4), left: Reg(4), right: Reg(5) },
+                ) {
+                    missing.push(alloc::format!("binary {:?}", op));
+                }
+            }
+            for &op in REQUIRED_SHIFT_OPS {
+                if !try_emit(
+                    backend,
+                    ResolvedOp::ShiftImm { op, dst: Reg(4), src: Reg(4), amount: 1 },
+                ) {
+                    missing.push(alloc::format!("shift {:?}", op));
+                }
+            }
+            if !try_emit(backend, ResolvedOp::FusedMulAdd { dst: Reg(4), a: Reg(5), b: Reg(6) }) {
+                missing.push(alloc::string::String::from("ternary MulAdd"));
+            }
+            if !try_emit(
+                backend,
+                ResolvedOp::Select { dst: Reg(4), if_true: Reg(5), if_false: Reg(6) },
+            ) {
+                missing.push(alloc::string::String::from("ternary Select"));
+            }
+
+            assert!(
+                missing.is_empty(),
+                "{backend_name} is missing required ops: {missing:?} (see \
+                 pixelflow-ir/src/backend/emit/coverage.rs for the full \
+                 completeness contract)"
+            );
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        #[test]
+        fn x86_backend_covers_required_ops() {
+            assert_covers_required_ops("X86Backend (SSE2)", &mut X86Backend::default());
+        }
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+        #[test]
+        fn avx512_backend_covers_required_ops() {
+            assert_covers_required_ops("Avx512Backend", &mut Avx512Backend);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn aarch64_backend_covers_required_ops() {
+            let mut backend = Aarch64Backend {
+                pool: ConstPool::new(),
+                adr_patch_pos: 0,
+                max_regs: EmitCtx::default().max_regs,
+            };
+            assert_covers_required_ops("Aarch64Backend", &mut backend);
         }
     }
 }
