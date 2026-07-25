@@ -58,9 +58,6 @@ type NativeF32Storage = crate::backend::x86::F32x4;
 #[cfg(target_arch = "aarch64")]
 type NativeF32Storage = crate::backend::arm::F32x4;
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-type NativeF32Storage = crate::backend::scalar::ScalarF32;
-
 impl FieldStorage for f32 {
     type Storage = NativeF32Storage;
 
@@ -117,10 +114,6 @@ pub type NativeMaskStorage = crate::backend::x86::Mask4;
 /// Native mask storage for ARM NEON.
 pub type NativeMaskStorage = crate::backend::arm::Mask4;
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-/// Native mask storage for scalar fallback.
-pub type NativeMaskStorage = crate::backend::scalar::MaskScalar;
-
 impl FieldStorage for bool {
     type Storage = NativeMaskStorage;
 
@@ -170,9 +163,6 @@ type NativeU32Storage = crate::backend::x86::U32x4;
 
 #[cfg(target_arch = "aarch64")]
 type NativeU32Storage = crate::backend::arm::U32x4;
-
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-type NativeU32Storage = crate::backend::scalar::ScalarU32;
 
 impl FieldStorage for u32 {
     type Storage = NativeU32Storage;

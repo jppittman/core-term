@@ -24,6 +24,20 @@ pub struct Window {
     pub scale: f64,
 }
 
+/// The half of a [`Window`] that isn't the frame buffer.
+///
+/// Rendering has to take the `Window` apart — the rasterizer needs the `Frame` and knows
+/// nothing about windows — so this is what's left. It travels with the render request as
+/// `RenderRequest::meta` and comes back untouched in `RenderResponse::meta`, which is what lets
+/// the `Window` be reassembled at completion instead of stashed somewhere in the meantime.
+#[derive(Debug, Clone, Copy)]
+pub struct WindowMeta {
+    pub id: WindowId,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub scale: f64,
+}
+
 /// Data messages for the display driver (high throughput, high priority).
 ///
 /// Data messages are used for continuous, high-frequency operations like frame presentation.

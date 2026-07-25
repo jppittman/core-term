@@ -1,13 +1,13 @@
-use crate::api::private::{EngineActorHandle, EngineData, WindowId};
+use crate::api::private::WindowId;
 use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Window};
-use crate::display::ops::PlatformOps;
+use crate::display::ops::{DriverOut, PlatformOps};
 use crate::error::RuntimeError;
 use crate::platform::macos::cocoa::{self, event_type, NSApplication, NSPasteboard};
 use crate::platform::macos::events;
 use crate::platform::macos::sys;
 use crate::platform::macos::window::MacWindow;
 use crate::platform::PlatformPixel;
-use actor_scheduler::{ActorStatus, HandlerError, HandlerResult, Message, SystemStatus};
+use actor_scheduler::{ActorStatus, HandlerError, HandlerResult, SystemStatus};
 use pixelflow_graphics::render::Frame;
 
 use std::collections::HashMap;
@@ -23,13 +23,12 @@ pub struct MetalOps {
     // Note: NSWindow is a wrapper around Id, so we cast Id to usize or wrap generic
     window_map: HashMap<usize, WindowId>,
     // Handle to send events back to the engine
-    event_tx: EngineActorHandle,
 }
 
 unsafe impl Send for MetalOps {}
 
 impl MetalOps {
-    pub fn new(event_tx: EngineActorHandle) -> Result<Self, RuntimeError> {
+    pub fn new() -> Result<Self, RuntimeError> {
         // Initialize Cocoa Application
         let app = unsafe {
             // Pool:
@@ -54,13 +53,12 @@ impl MetalOps {
             app,
             windows: HashMap::new(),
             window_map: HashMap::new(),
-            event_tx,
         })
     }
 }
 
 impl PlatformOps for MetalOps {
-    fn handle_data(&mut self, msg: DisplayData) -> HandlerResult {
+    fn handle_data(&mut self, msg: DisplayData, out: &mut DriverOut) -> HandlerResult {
         match msg {
             DisplayData::Present { mut window } => {
                 log::trace!("MetalOps: Presenting frame for window {:?}", window.id);
@@ -75,15 +73,13 @@ impl PlatformOps for MetalOps {
                     );
                 }
                 // Return the window to the engine for reuse
-                self.event_tx
-                    .send(Message::Data(EngineData::PresentComplete(window)))
-                    .expect("Failed to send PresentComplete to engine");
+                out.present_complete(window);
             }
         }
         Ok(())
     }
 
-    fn handle_control(&mut self, msg: DisplayControl) -> HandlerResult {
+    fn handle_control(&mut self, msg: DisplayControl, _out: &mut DriverOut) -> HandlerResult {
         match msg {
             DisplayControl::SetTitle { id, title } => {
                 if let Some(win) = self.windows.get_mut(&id) {
@@ -130,7 +126,7 @@ impl PlatformOps for MetalOps {
         Ok(())
     }
 
-    fn handle_management(&mut self, msg: DisplayMgmt) -> HandlerResult {
+    fn handle_management(&mut self, msg: DisplayMgmt, out: &mut DriverOut) -> HandlerResult {
         match msg {
             DisplayMgmt::Create { settings } => {
                 match MacWindow::new(settings) {
@@ -159,11 +155,7 @@ impl PlatformOps for MetalOps {
                         };
 
                         // Emit WindowCreated event so Engine knows initial size
-                        self.event_tx
-                            .send(Message::Data(EngineData::FromDriver(
-                                DisplayEvent::WindowCreated { window },
-                            )))
-                            .expect("Failed to send WindowCreated event to engine");
+                        out.event(DisplayEvent::WindowCreated { window });
                     }
                     Err(e) => {
                         eprintln!("Failed to create window: {}", e);
@@ -182,7 +174,11 @@ impl PlatformOps for MetalOps {
         Ok(())
     }
 
-    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(
+        &mut self,
+        status: SystemStatus,
+        out: &mut DriverOut,
+    ) -> Result<ActorStatus, HandlerError> {
         // Logic for event loop interaction
         // The CocoaWaker posts an NSEvent when messages arrive, so distantFuture is safe.
         unsafe {
@@ -224,11 +220,7 @@ impl PlatformOps for MetalOps {
                         height_px: height,
                         scale: mac_window.scale_factor(),
                     };
-                    self.event_tx
-                        .send(Message::Data(EngineData::FromDriver(
-                            DisplayEvent::Resized { window },
-                        )))
-                        .expect("Failed to send Resized event to engine");
+                    out.event(DisplayEvent::Resized { window });
                 }
             }
 
@@ -274,11 +266,7 @@ impl PlatformOps for MetalOps {
                                 };
 
                                 if let Some(ev) = events::map_event(event, height) {
-                                    // Dispatch ev!
-                                    // We send it to the Engine via event_tx
-                                    self.event_tx
-                                        .send(Message::Data(EngineData::FromDriver(ev)))
-                                        .expect("Failed to send display event to engine");
+                                    out.event(ev);
                                 }
                             }
                         }
@@ -305,11 +293,7 @@ impl PlatformOps for MetalOps {
                 if let Some(id) = self.window_map.remove(&ptr) {
                     self.windows.remove(&id);
                     processed_any = true;
-                    self.event_tx
-                        .send(Message::Data(EngineData::FromDriver(
-                            DisplayEvent::CloseRequested { id },
-                        )))
-                        .expect("Failed to send CloseRequested to engine");
+                    out.event(DisplayEvent::CloseRequested { id });
                 }
             }
 
@@ -337,16 +321,8 @@ impl PlatformOps for MetalOps {
                         scale,
                     };
                     processed_any = true;
-                    self.event_tx
-                        .send(Message::Data(EngineData::FromDriver(
-                            DisplayEvent::Resized { window },
-                        )))
-                        .expect("Failed to send Resized (scale change) to engine");
-                    self.event_tx
-                        .send(Message::Data(EngineData::FromDriver(
-                            DisplayEvent::ScaleChanged { id, scale },
-                        )))
-                        .expect("Failed to send ScaleChanged to engine");
+                    out.event(DisplayEvent::Resized { window });
+                    out.event(DisplayEvent::ScaleChanged { id, scale });
                 }
             }
 

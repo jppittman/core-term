@@ -49,9 +49,6 @@ type NativeSimd = crate::backend::x86::F32x4;
 #[cfg(target_arch = "aarch64")]
 type NativeSimd = crate::backend::arm::F32x4;
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-type NativeSimd = crate::backend::scalar::ScalarF32;
-
 /// A SIMD batch of boolean values using native mask storage.
 ///
 /// This is conceptually `Field<bool>`. On AVX-512, this uses the dedicated

@@ -158,12 +158,21 @@ fn discrete_manifold_round_trip() {
 #[test]
 fn collapse_with_add_constant() {
     let value = 2.5f32;
-    let lattice = Lattice::frame(8, 4, 0.0);
+    // Width must be a whole number of batches for every lane to see the same
+    // number of contributions: a partial batch is masked to the monoid identity
+    // in its out-of-range lanes, so lanes would disagree and the single
+    // `expected_per_lane` below would not exist. Deriving the width from
+    // `PARALLELISM` keeps that true at every SIMD width — hard-coding 8 held
+    // only while a batch was 4 wide, and silently computed `4 * (8 / 16) == 0`
+    // on a 16-lane build. Tail behaviour has its own test below.
+    const BATCHES_PER_ROW: usize = 2;
+    const HEIGHT: usize = 4;
+    let width = PARALLELISM * BATCHES_PER_ROW;
+    let lattice = Lattice::frame(width, HEIGHT, 0.0);
     let result = lattice.collapse_with(ReduceOp::Add, &Constant(value));
 
-    // Each SIMD eval adds `value` to each lane. The number of evals
-    // per lane = height * (width / PARALLELISM) since width=8 is aligned.
-    let evals_per_lane = 4 * (8 / PARALLELISM);
+    // One eval per batch per row, each adding `value` to every lane.
+    let evals_per_lane = HEIGHT * BATCHES_PER_ROW;
     let expected_per_lane = evals_per_lane as f32 * value;
 
     let mut out = [0.0f32; PARALLELISM];

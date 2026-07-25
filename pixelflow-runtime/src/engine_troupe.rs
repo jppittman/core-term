@@ -7,16 +7,19 @@ use crate::api::public::{
 };
 use crate::config::EngineConfig;
 use crate::display::driver::DriverActor;
-use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Window};
+use crate::display::messages::{
+    DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Window, WindowMeta,
+};
 use crate::display::platform::PlatformActor;
 use crate::error::RuntimeError;
 use crate::input::MouseButton;
 use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{
-    return_vsync_token, RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
+    RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
 };
+use actor_scheduler::mealy::Credit;
 use actor_scheduler::{
-    Actor, ActorHandle, ActorStatus, ActorTypes, HandlerError, HandlerResult, Message,
+    Actor, ActorHandle, ActorStatus, ActorTypes, HandlerError, HandlerResult, Message, SendError,
     SystemStatus, TroupeActor,
 };
 use pixelflow_core::{At, Discrete, Manifold, W, X, Y, Z};
@@ -28,17 +31,6 @@ use std::time::Instant;
 
 const LOG_FRAME_INTERVAL: u64 = 60;
 
-/// Metadata for a window being rendered (frame extracted, waiting for response).
-struct PendingRender {
-    id: crate::api::public::WindowId,
-    width_px: u32,
-    height_px: u32,
-    scale: f64,
-    /// True if a resize event arrived while this render was in progress.
-    /// Stale renders are discarded because the frame dimensions don't match the window.
-    stale: bool,
-}
-
 /// Engine handler - coordinates app, rendering, display.
 pub struct EngineHandler {
     /// Handle to the display driver actor.
@@ -46,7 +38,7 @@ pub struct EngineHandler {
     /// Handle to the vsync actor (for feedback loop).
     vsync: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
     /// Handle to the rasterizer actor (set after bootstrap completes).
-    rasterizer: Option<RasterizerHandle<PlatformPixel>>,
+    rasterizer: Option<RasterizerHandle<PlatformPixel, WindowMeta>>,
     /// Handle to self (for shutdown).
     self_handle: Option<ActorHandle<EngineData, EngineControl, AppManagement>>,
     /// Pre-created dedicated SPSC handle for rasterizer response forwarding thread.
@@ -58,10 +50,14 @@ pub struct EngineHandler {
     frame_number: u64,
     /// The active window (owns frame buffer, returned by driver after presentation).
     window: Option<Window>,
-    /// Window metadata for the frame currently being rendered.
-    /// When we send a frame to the rasterizer, we store the window metadata here.
-    /// When the render completes, we combine the cooked frame with this metadata.
-    pending_render: Option<PendingRender>,
+    /// The one-outstanding-render bound on the engine → rasterizer edge.
+    ///
+    /// `pending_render` used to serve double duty: carrying the torn-off window metadata *and*
+    /// standing in as an "is a render in flight" flag. The metadata now rides with the request,
+    /// leaving only the bound — which the target topology already specifies as `Credit(1)`
+    /// (`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §3), so it is that, rather
+    /// than an `Option` being checked for `is_none`.
+    render_credit: Credit,
     /// Number of render threads for work-stealing parallelism.
     render_threads: usize,
     /// Latest manifold from app - always keep the most recent, drop old ones.
@@ -124,44 +120,39 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                 }
             }
             EngineData::RenderComplete(response) => {
-                // Reconstruct Window from pending_render metadata + cooked frame
-                if let Some(pending) = self.pending_render.take() {
-                    if pending.stale {
-                        // Resize happened during this render - frame dimensions are wrong.
-                        // Discard the stale frame. The correct window is already in self.window
-                        // (set by the resize handler).
-                        log::debug!(
-                            "Discarding stale render ({}x{}) - resize happened during render",
-                            pending.width_px,
-                            pending.height_px
-                        );
-                        // Don't present the stale frame - just drop it.
-                        // Now check if we have a pending manifold to render with correct dimensions.
-                        if let Some(manifold) = self.pending_manifold.take() {
-                            if let Some(window) = self.window.take() {
-                                log::debug!(
-                                    "Triggering render with correct dimensions after stale discard: {}x{}",
-                                    window.width_px,
-                                    window.height_px
-                                );
-                                self.trigger_render_with_window(manifold, window);
-                            } else {
-                                // Window not available yet - keep manifold pending
-                                self.pending_manifold = Some(manifold);
-                            }
-                        }
+                // The render is done, so the edge's one credit is free again.
+                self.render_credit.release();
+
+                // Staleness is now something we *observe* rather than something the resize
+                // handler reaches in and marks. The engine hands its window to the rasterizer
+                // by value, so `self.window` is None for the whole duration of a render — the
+                // only way it can be Some here is if a resize delivered a newer one meanwhile.
+                // That is exactly the condition the `stale` flag encoded, read off the state
+                // that already implies it.
+                if let Some(current) = self.window.take() {
+                    log::debug!(
+                        "Discarding stale render ({}x{}) - resize to {}x{} happened during render",
+                        response.meta.width_px,
+                        response.meta.height_px,
+                        current.width_px,
+                        current.height_px
+                    );
+                    // Drop the stale frame and re-render at the correct size.
+                    if let Some(manifold) = self.pending_manifold.take() {
+                        self.trigger_render_with_window(manifold, current);
                     } else {
-                        let window = Window {
-                            id: pending.id,
-                            frame: response.frame,
-                            width_px: pending.width_px,
-                            height_px: pending.height_px,
-                            scale: pending.scale,
-                        };
-                        self.present_cooked_frame(response.render_time, window);
+                        self.window = Some(current);
                     }
                 } else {
-                    log::warn!("RenderComplete received but no pending_render metadata");
+                    // Reassembled from the metadata that travelled with the request.
+                    let window = Window {
+                        id: response.meta.id,
+                        frame: response.frame,
+                        width_px: response.meta.width_px,
+                        height_px: response.meta.height_px,
+                        scale: response.meta.scale,
+                    };
+                    self.present_cooked_frame(response.render_time, window);
                 }
             }
             EngineData::PresentComplete(returned_window) => {
@@ -333,6 +324,13 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
 }
 
 impl EngineHandler {
+    fn return_vsync_token(&self) {
+        match self.vsync.send(Message::Control(VsyncCommand::ReturnToken)) {
+            Ok(()) | Err(SendError::Disconnected) => {}
+            Err(SendError::Timeout) => panic!("Timed out returning vsync token"),
+        }
+    }
+
     /// Spawn the rasterizer actor with bootstrap handshake.
     ///
     /// This sets up:
@@ -352,11 +350,11 @@ impl EngineHandler {
 
         // Step 1: Spawn rasterizer with setup handle
         let (setup_handle, _rasterizer_thread) =
-            RasterizerActor::<PlatformPixel>::spawn_with_setup(self.render_threads);
+            RasterizerActor::<PlatformPixel, WindowMeta>::spawn_with_setup(self.render_threads);
 
         // Step 2: Create response channel (engine receives render results here)
         let (response_tx, response_rx) =
-            std::sync::mpsc::channel::<RenderResponse<PlatformPixel>>();
+            std::sync::mpsc::channel::<RenderResponse<PlatformPixel, WindowMeta>>();
 
         // Step 3: Start forwarding thread - receives responses and sends to engine
         std::thread::spawn(move || {
@@ -385,9 +383,9 @@ impl EngineHandler {
         match app_data {
             AppData::RenderSurface(manifold) | AppData::RenderSurfaceU32(manifold) => {
                 log::debug!("Engine: Received RenderSurface from app");
-                // Return token to VSync bucket - app has provided compute graph (fast)
-                // This allows VSync to keep requesting at 60Hz regardless of rasterization speed
-                return_vsync_token();
+                // The app has provided its compute graph, so permit VSync to request another
+                // frame without waiting for rasterization to finish.
+                self.return_vsync_token();
 
                 if let Some(window) = self.window.take() {
                     // Window available - render immediately
@@ -401,7 +399,7 @@ impl EngineHandler {
             }
             AppData::Skipped => {
                 // App says nothing to render - return token anyway
-                return_vsync_token();
+                self.return_vsync_token();
             }
         }
     }
@@ -421,14 +419,13 @@ impl EngineHandler {
             scale,
         } = window;
 
-        // Store window metadata - will be combined with cooked frame when render completes
-        self.pending_render = Some(PendingRender {
-            id,
-            width_px,
-            height_px,
-            scale,
-            stale: false,
-        });
+        // Take the edge's single credit. Callers already gate on `outstanding()`, so this
+        // failing means a second render was started while one was in flight — the bound the
+        // topology declares, now enforced rather than implied by an Option being Some.
+        if !self.render_credit.try_consume() {
+            log::warn!("Render already in flight, dropping request");
+            return;
+        }
 
         // The scene is authored in point space; the frame is the platform's
         // sample lattice and may be denser (device pixels on HiDPI displays).
@@ -456,19 +453,28 @@ impl EngineHandler {
                 })
             };
 
-        // Build render request (no response_tx - rasterizer uses registered channel)
-        let request = RenderRequest { manifold, frame };
+        // The window's other half travels with the frame instead of being stashed here.
+        let request = RenderRequest {
+            manifold,
+            frame,
+            meta: WindowMeta {
+                id,
+                width_px,
+                height_px,
+                scale,
+            },
+        };
 
-        // Send to rasterizer
+        // Send to rasterizer. On any failure the render never happens, so give the credit back
+        // — otherwise the edge would be permanently blocked by a request that was never sent.
         if let Some(rasterizer) = &self.rasterizer {
             if let Err(e) = rasterizer.send(Message::Data(request)) {
                 log::warn!("Failed to send render request to rasterizer: {}", e);
-                // Restore pending_render on failure so we don't lose the metadata
-                self.pending_render = None;
+                self.render_credit.release();
             }
         } else {
             log::warn!("Rasterizer not initialized, dropping render request");
-            self.pending_render = None;
+            self.render_credit.release();
         }
     }
 
@@ -546,28 +552,17 @@ impl EngineHandler {
                 let width_px = window.width_px;
                 let height_px = window.height_px;
 
-                // Mark any in-progress render as stale - its frame dimensions won't match
-                if let Some(pending) = &mut self.pending_render {
-                    log::debug!(
-                        "Resize during render: marking stale (was {}x{}, now {}x{})",
-                        pending.width_px,
-                        pending.height_px,
-                        width_px,
-                        height_px
-                    );
-                    pending.stale = true;
-                }
+                // Nothing to mark: storing the new window below *is* the staleness signal, and
+                // `RenderComplete` reads it off that rather than off a flag set from here.
 
                 // Update window with new one from driver
                 self.window = Some(window);
 
-                // DON'T start a new render here if one is already in flight.
-                // The stale render will complete, be discarded, and then we can
-                // render with the correct dimensions. Starting a new render now
-                // would overwrite pending_render metadata for the in-flight render.
-                //
-                // If no render is in flight and we have a pending manifold, render now.
-                if self.pending_render.is_none() {
+                // DON'T start a new render here if one is already in flight. The stale render
+                // will complete, be discarded, and then we render at the correct dimensions.
+                // Starting one now would be refused by the credit anyway — this check is what
+                // keeps that from becoming a dropped frame and a warning.
+                if self.render_credit.outstanding() == 0 {
                     if let Some(manifold) = self.pending_manifold.take() {
                         if let Some(window) = self.window.take() {
                             self.trigger_render_with_window(manifold, window);
@@ -746,7 +741,7 @@ impl TroupeActor<Directory> for EngineHandler {
             app_handle: None,
             frame_number: 0,
             window: None,
-            pending_render: None,
+            render_credit: Credit::new(1),
             render_threads: 1, // Default, will be set by Configure message
             pending_manifold: None,
         }
@@ -759,15 +754,15 @@ impl TroupeActor<Directory> for DriverActor<ActivePlatform> {
         #[cfg(target_os = "macos")]
         {
             use crate::platform::MetalOps;
-            let ops = MetalOps::new(dir.engine).expect("Failed to create Metal ops");
-            let platform = PlatformActor::new(ops);
+            let ops = MetalOps::new().expect("Failed to create Metal ops");
+            let platform = PlatformActor::new(ops, dir.engine);
             DriverActor::new(platform)
         }
         #[cfg(target_os = "linux")]
         {
             use crate::platform::linux::LinuxOps;
-            let ops = LinuxOps::new(dir.engine).expect("Failed to create Linux ops");
-            let platform = PlatformActor::new(ops);
+            let ops = LinuxOps::new().expect("Failed to create Linux ops");
+            let platform = PlatformActor::new(ops, dir.engine);
             DriverActor::new(platform)
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]

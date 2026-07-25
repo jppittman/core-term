@@ -477,6 +477,18 @@ pub type CollapseKernelFn = extern "C" fn(*const *const f32, *const f32, *mut f3
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub type KernelFn = extern "C" fn(__m128, __m128, __m128, __m128) -> __m128;
 
+/// JIT-compiled kernel that reads bound memory (x86-64, 128-bit).
+///
+/// Identical to [`KernelFn`] plus a leading context pointer: an array of buffer
+/// base pointers, one per declared [`BufferId`](crate::arena::BufferId) in slot
+/// order. System V places this integer-class pointer in `rdi`, disjoint from the
+/// coordinate vectors in `xmm0..3`, so the emitted body is byte-for-byte the
+/// same as a `KernelFn` — only kernels containing a `Gather` read `rdi`. The
+/// caller picks this type iff the arena declared buffers.
+#[allow(improper_ctypes_definitions)]
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+pub type CtxKernelFn = extern "C" fn(*const *const f32, __m128, __m128, __m128, __m128) -> __m128;
+
 /// JIT-compiled scanline kernel signature for x86-64 (128-bit; the scanline
 /// emitter is SSE2 only, independent of the per-batch width).
 #[allow(improper_ctypes_definitions)]

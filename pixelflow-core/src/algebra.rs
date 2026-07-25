@@ -276,95 +276,13 @@ impl Algebra for f32 {
     }
 }
 
-// NOTE: Transcendental for f32 is only implemented on scalar fallback platforms
-// where libm is available. On x86_64/aarch64, transcendental operations happen
-// through SIMD Field types, not scalar f32.
+// `Transcendental` has no scalar `f32` implementation. Transcendentals are
+// reached through `Field`, which is SIMD on every target the JIT emits for
+// (x86-64, aarch64). A scalar-f32 impl would only be reachable on targets with
+// no backend at all, and it existed solely to satisfy `libm` there.
 //
-// This is intentional: the Algebra trait provides ring operations that work
-// everywhere, while Transcendental is for the SIMD-accelerated compute path.
-
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-impl Transcendental for f32 {
-    #[inline(always)]
-    fn sqrt(self) -> Self {
-        libm::sqrtf(self)
-    }
-
-    #[inline(always)]
-    fn abs(self) -> Self {
-        libm::fabsf(self)
-    }
-
-    #[inline(always)]
-    fn recip(self) -> Self {
-        1.0 / self
-    }
-
-    #[inline(always)]
-    fn rsqrt(self) -> Self {
-        1.0 / libm::sqrtf(self)
-    }
-
-    #[inline(always)]
-    fn sin(self) -> Self {
-        libm::sinf(self)
-    }
-
-    #[inline(always)]
-    fn cos(self) -> Self {
-        libm::cosf(self)
-    }
-
-    #[inline(always)]
-    fn atan2(self, x: Self) -> Self {
-        libm::atan2f(self, x)
-    }
-
-    #[inline(always)]
-    fn exp(self) -> Self {
-        libm::expf(self)
-    }
-
-    #[inline(always)]
-    fn ln(self) -> Self {
-        libm::logf(self)
-    }
-
-    #[inline(always)]
-    fn exp2(self) -> Self {
-        libm::exp2f(self)
-    }
-
-    #[inline(always)]
-    fn log2(self) -> Self {
-        libm::log2f(self)
-    }
-
-    #[inline(always)]
-    fn pow(self, exp: Self) -> Self {
-        libm::powf(self, exp)
-    }
-
-    #[inline(always)]
-    fn floor(self) -> Self {
-        libm::floorf(self)
-    }
-
-    #[inline(always)]
-    fn min(self, rhs: Self) -> Self {
-        if self < rhs { self } else { rhs }
-    }
-
-    #[inline(always)]
-    fn max(self, rhs: Self) -> Self {
-        if self > rhs { self } else { rhs }
-    }
-
-    #[inline(always)]
-    fn mul_add(self, a: Self, b: Self) -> Self {
-        libm::fmaf(self, a, b)
-    }
-}
+// `Algebra` still covers `f32`: ring operations work everywhere and need no
+// runtime library.
 
 impl Algebra for bool {
     type Mask = bool;
