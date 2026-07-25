@@ -403,7 +403,7 @@ its own follow-up rather than bundled with the proof:
 - `rasterizer`'s bootstrap (today `EngineHandler::spawn_rasterizer`) moves out of
   `EngineHandler` entirely — the rasterizer becomes a directly-wired mesh participant with its
   own initialization, not something the mediator stands up on the mediator's behalf.
-- A new piece of runtime-side state holds the latest manifold and a "request outstanding" flag,
+- A new piece of runtime-side state holds the latest manifold (no request flag — see §8.8),
   and performs the point-space → pixel-space dimap warp that `trigger_render_with_window` does
   today — using the dimensions of whichever window it was granted, since under §8.5 it holds no
   window of its own between frames and never allocates one. No `Credit`: §8.6 explains why
@@ -423,7 +423,7 @@ the point→pixel dimap warp in `pixelflow-runtime`. Left implicit, this reads a
 windows straight to `RasterizerActor`," which is not implementable and not what was proven.
 
 So `rasterizer` in the graph is a **runtime-side coordinator**: it holds the latest manifold and
-a "request outstanding" flag; it does the coordinate warp; it owns the graphics
+no request flag (§8.8); it does the coordinate warp; it owns the graphics
 `RasterizerActor` as a worker behind it, via the same bootstrap handshake used today. It does
 *not* hold a window between frames — §8.5 explains why that would put the allocator on the wrong
 side — and carries no `Credit`, since §8.6 shows ownership of the window already bounds the loop.
@@ -463,9 +463,11 @@ information to chase it across the mesh, and every route it can take is either u
 **The fix is to move allocation, not to route information better.** The driver keeps the window
 between frames and remains its allocator. The coordinator *pulls* one when it actually has work:
 
-1. `rasterizer → driver`: window request, sent when a manifold is held, no window is held, and
-   no request is already outstanding. (An earlier draft gated this on a `Credit(1)` held across
-   the round trip; §8.6 shows why that cannot work and why ownership already suffices.)
+1. `rasterizer → driver`: window request, re-sent on every tick while a manifold is held and no
+   buffer is in hand or out at the worker. Deliberately **not** gated on an outstanding-request
+   flag — §8.8 explains why that stalls forever the first time a request is dropped. (An earlier
+   draft gated it on a `Credit(1)` held across the round trip; §8.6 shows why that cannot work
+   and why ownership already suffices.)
 2. `driver → rasterizer`: the window it already holds — always correctly sized, because the
    driver resized it in place when the OS said so.
 3. `rasterizer → driver`: `Present` once rendered. The driver presents it and retains it, ready
@@ -543,17 +545,20 @@ There is exactly one `Window`, and it is moved, never copied. Therefore:
   cannot grant again until `Present` returns it. At most one grant is ever in flight, and the
   ring is provisioned ≥ 1 — so the grant ring is never full, and its droppable backstop is dead
   code. No counter required; `Option<Window>` *is* the counter.
-- **The coordinator can only `Present` while it holds the window**, which it does only between a
-  grant and that `Present`. Same argument, same conclusion.
+- **The coordinator *and its worker* hold the buffer for the whole interval between a grant and
+  the matching `Present`.** An earlier draft said "the coordinator holds it," which is false:
+  §7.1 tears the granted `Window` into the request's `frame` and `meta`, and the frame is inside
+  the request the graphics worker owns while rendering. The bound survives — but only because the
+  *pair* holds it, which puts a real obligation on the internal hand-off (§8.8).
 - **The request carries no resource**, so it is the one genuinely losable message here. A dropped
-  request costs one frame and the next vsync tick issues another — *actual* acceptable loss, of
-  the kind §3 distinguishes from structural unreachability.
+  request costs one frame and the next tick issues another — *actual* acceptable loss, of the
+  kind §3 distinguishes from structural unreachability.
 
-The coordinator's gate becomes a plain question about its own state: *do I hold a manifold, am I
-not currently holding a window, and is no request outstanding?* The middle clause is what covers
-the render window — while rendering it holds the window, so it cannot request another regardless
-of how many manifolds arrive. That is the concern §8.5's round-trip credit was introduced to
-address, handled by ownership instead of by a counter.
+The coordinator's gate becomes a plain question about its own state: *do I hold a manifold, and
+is no buffer currently in hand or out at the worker?* Deliberately **not** "is a request
+outstanding" — see §8.8: a flag only a grant could clear stalls forever the first time a request
+is dropped. Re-requesting every tick is safe because the driver can only grant what it holds, so
+a duplicate finds nothing to give.
 
 **Rule.** Where a resource is unique and moved rather than copied, ownership already enforces
 the bound a `Credit` would encode. Adding one duplicates the invariant into a place it can drift
@@ -600,8 +605,18 @@ the only actor that can obtain OS-backed memory at all, and a dropped buffer is 
 frame," it is a lost allocation that must be remade, in the one place the design is trying to
 never allocate.
 
-So the rule is stronger than uniqueness: **a buffer is never dropped, on any path.** Two places
-currently violate it, both found by review:
+So the rule is stronger than uniqueness — but it is not "never destroy a buffer," because §8.7
+*requires* destroying one: on resize the old buffer is the wrong size and must be replaced. The
+distinction is **who decides**:
+
+- **Deliberate replacement by the owner** is correct and necessary. The driver holds the buffer,
+  observes the OS changed the size, frees it, allocates the right one. Nothing is lost, because
+  the actor responsible for the buffer chose this and knows the new state.
+- **Accidental loss in transit** is what must never happen. A message drop destroys a buffer that
+  *nobody decided* to destroy, and — worse — leaves both parties believing the other has it.
+
+**So: a buffer is only ever destroyed by the actor that owns it, deliberately, never by a
+delivery failure.** Two places currently violate that, both found by review:
 
 **1. A dropped request stalls rendering forever.** An earlier draft gated requests on an
 "outstanding request" flag, cleared only by a grant. Since the request edge is droppable, a
