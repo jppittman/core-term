@@ -110,14 +110,7 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                 }
 
                 // Delegate rendering to rasterizer if we have a manifold and a window
-                if let Some(manifold) = self.pending_manifold.take() {
-                    if let Some(window) = self.window.take() {
-                        self.trigger_render_with_window(manifold, window);
-                    } else {
-                        // Window unavailable, keep manifold pending
-                        self.pending_manifold = Some(manifold);
-                    }
-                }
+                self.render_if_ready();
             }
             EngineData::RenderComplete(response) => {
                 // The render is done, so the edge's one credit is free again.
@@ -128,8 +121,9 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                 // by value, so `self.window` is None for the whole duration of a render — the
                 // only way it can be Some here is if a resize delivered a newer one meanwhile.
                 // That is exactly the condition the `stale` flag encoded, read off the state
-                // that already implies it.
-                if let Some(current) = self.window.take() {
+                // that already implies it. `PresentComplete` upholds the other half of that
+                // reading by refusing to park a superseded buffer here.
+                if let Some(current) = self.window.as_ref() {
                     log::debug!(
                         "Discarding stale render ({}x{}) - resize to {}x{} happened during render",
                         response.meta.width_px,
@@ -138,11 +132,8 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                         current.height_px
                     );
                     // Drop the stale frame and re-render at the correct size.
-                    if let Some(manifold) = self.pending_manifold.take() {
-                        self.trigger_render_with_window(manifold, current);
-                    } else {
-                        self.window = Some(current);
-                    }
+                    drop(response);
+                    self.render_if_ready();
                 } else {
                     // Reassembled from the metadata that travelled with the request.
                     let window = Window {
@@ -156,20 +147,25 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                 }
             }
             EngineData::PresentComplete(returned_window) => {
-                // Driver returned the window after presentation.
-                // IMPORTANT: If a resize happened while presenting, self.window already
-                // contains the NEW resized window from the driver. Don't overwrite it
-                // with the stale returned window - that would lose the new dimensions forever.
-                if self.window.is_none() {
-                    self.window = Some(returned_window);
-                } else {
-                    // A resize happened - we already have the new window.
-                    // Discard the old returned window (its dimensions are stale).
+                // Driver returned the window it just presented. Keeping it is only correct if
+                // nothing newer has replaced it, because a resize delivers a whole new
+                // correctly-sized window from the driver — and that newer window is then in one
+                // of exactly two places: still held here, or already out with a render. Both
+                // say the same thing about this one, so both have to be checked.
+                //
+                // Checking only the first (`self.window.is_none()`) parks an old-size buffer
+                // here while a render is in flight, which `RenderComplete` then reads as "a
+                // resize happened" — discarding a perfectly good new-size frame and re-rendering
+                // into the stale window, permanently.
+                let superseded = self.window.is_some() || self.render_credit.outstanding() > 0;
+                if superseded {
                     log::debug!(
                         "Discarding stale window from PresentComplete (resize happened): {}x{}",
                         returned_window.width_px,
                         returned_window.height_px
                     );
+                } else {
+                    self.window = Some(returned_window);
                 }
 
                 // Notify VSync for FPS tracking (actual rasterization completion)
@@ -180,12 +176,8 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                     }))
                     .expect("Failed to notify VSync of completed frame");
 
-                // Check if we have a pending manifold waiting for this window
-                if let Some(manifold) = self.pending_manifold.take() {
-                    let window = self.window.take().unwrap();
-                    log::trace!("Engine: Catching up - rendering pending manifold");
-                    self.trigger_render_with_window(manifold, window);
-                }
+                // Catch up on whatever arrived while the buffer was with the driver.
+                self.render_if_ready();
             }
         }
         Ok(())
@@ -324,6 +316,25 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
 }
 
 impl EngineHandler {
+    /// Start a render if both halves of one are in hand: a manifold to draw, and a window to
+    /// draw it into.
+    ///
+    /// Every path that acquires either half ends here, so "can we render yet?" is asked in one
+    /// place instead of being open-coded at each arrival. Nothing is consumed unless a render
+    /// actually starts — a refused render puts both back (see `trigger_render_with_window`),
+    /// which is what lets the next completion pick them up.
+    fn render_if_ready(&mut self) {
+        if self.pending_manifold.is_none() || self.window.is_none() {
+            return;
+        }
+        let manifold = self
+            .pending_manifold
+            .take()
+            .expect("pending_manifold checked Some above");
+        let window = self.window.take().expect("window checked Some above");
+        self.trigger_render_with_window(manifold, window);
+    }
+
     fn return_vsync_token(&self) {
         match self.vsync.send(Message::Control(VsyncCommand::ReturnToken)) {
             Ok(()) | Err(SendError::Disconnected) => {}
@@ -387,15 +398,10 @@ impl EngineHandler {
                 // frame without waiting for rasterization to finish.
                 self.return_vsync_token();
 
-                if let Some(window) = self.window.take() {
-                    // Window available - render immediately
-                    log::debug!("Engine: Window available, triggering render");
-                    self.trigger_render_with_window(manifold, window);
-                } else {
-                    // Window still with driver - queue manifold
-                    self.pending_manifold = Some(manifold);
-                    log::debug!("Engine: Window busy, manifold queued");
-                }
+                // Keep-latest port: the newest compute graph replaces any frame that hasn't
+                // started rendering yet, and renders now if a window is free to draw into.
+                self.pending_manifold = Some(manifold);
+                self.render_if_ready();
             }
             AppData::Skipped => {
                 // App says nothing to render - return token anyway
@@ -410,7 +416,27 @@ impl EngineHandler {
         manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>,
         window: Window,
     ) {
-        // Extract frame from window for rasterization, store metadata for later
+        // Take the edge's single credit *before* taking the window apart — a refusal has to
+        // hand both halves back intact.
+        //
+        // A refusal here is ordinary backpressure, not an error: vsync keeps asking for frames
+        // at 60Hz while a render is in flight, so a frame arriving mid-render is the common
+        // case. Dropping the pair would be the expensive kind of mistake — the window in hand
+        // during an in-flight render is by definition the *resized* one (see `RenderComplete`),
+        // so losing it strands the terminal at the old size for good. Both go back where they
+        // came from and the next `release()` re-drives them.
+        if !self.render_credit.try_consume() {
+            log::debug!(
+                "Render in flight; deferring frame for window {}x{} until it completes",
+                window.width_px,
+                window.height_px
+            );
+            self.window = Some(window);
+            self.pending_manifold = Some(manifold);
+            return;
+        }
+
+        // Extract frame from window for rasterization; the rest travels with the request.
         let Window {
             id,
             frame,
@@ -418,14 +444,6 @@ impl EngineHandler {
             height_px,
             scale,
         } = window;
-
-        // Take the edge's single credit. Callers already gate on `outstanding()`, so this
-        // failing means a second render was started while one was in flight — the bound the
-        // topology declares, now enforced rather than implied by an Option being Some.
-        if !self.render_credit.try_consume() {
-            log::warn!("Render already in flight, dropping request");
-            return;
-        }
 
         // The scene is authored in point space; the frame is the platform's
         // sample lattice and may be denser (device pixels on HiDPI displays).
@@ -519,15 +537,8 @@ impl EngineHandler {
                 self.window = Some(window);
                 log::debug!("Engine: Window stored from WindowCreated");
 
-                // Check if we have a pending manifold waiting for this window
-                if let Some(manifold) = self.pending_manifold.take() {
-                    log::debug!("Engine: Found pending manifold, triggering render");
-                    if let Some(window) = self.window.take() {
-                        self.trigger_render_with_window(manifold, window);
-                    }
-                } else {
-                    log::debug!("Engine: No pending manifold");
-                }
+                // Render straight away if the app already handed us a frame to draw.
+                self.render_if_ready();
 
                 // Relay WindowCreated event to app
                 if let Some(app) = &self.app_handle {
@@ -558,17 +569,11 @@ impl EngineHandler {
                 // Update window with new one from driver
                 self.window = Some(window);
 
-                // DON'T start a new render here if one is already in flight. The stale render
-                // will complete, be discarded, and then we render at the correct dimensions.
-                // Starting one now would be refused by the credit anyway — this check is what
-                // keeps that from becoming a dropped frame and a warning.
-                if self.render_credit.outstanding() == 0 {
-                    if let Some(manifold) = self.pending_manifold.take() {
-                        if let Some(window) = self.window.take() {
-                            self.trigger_render_with_window(manifold, window);
-                        }
-                    }
-                }
+                // No gate on "is a render in flight" here. The credit is the single arbiter:
+                // if one is in flight it refuses, and the refusal is now a deferral that leaves
+                // this window and the queued manifold exactly where they are, to be re-driven
+                // when the stale render completes and releases.
+                self.render_if_ready();
 
                 // Relay resize event to app
                 if let Some(app) = &self.app_handle {
@@ -845,5 +850,324 @@ impl Troupe {
     pub fn raw_engine_handle(&mut self) -> crate::api::private::EngineActorHandle {
         let handles = self.exposed();
         handles.engine
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The engine's window bookkeeping, driven directly.
+    //!
+    //! `EngineHandler` is exercised here without a troupe, a display, or a thread: the handles
+    //! it holds are real channel endpoints whose schedulers stay in the fixture, so every
+    //! message the engine emits is observable by polling the corresponding spy. That makes the
+    //! races these tests are about — a resize landing between a render request and its
+    //! response — expressible as a plain sequence of `handle_data` calls.
+
+    use super::*;
+    use crate::platform::ColorCube;
+    use actor_scheduler::ActorScheduler;
+    use pixelflow_graphics::render::rasterizer::{RasterControl, RasterManagement};
+    use pixelflow_graphics::render::Frame;
+    use std::time::Duration;
+
+    /// Scheduler tuning for the fixture: nothing here approaches the buffer, and the burst
+    /// limit only has to be big enough that one `poll_once` drains a test's worth of messages.
+    const LANE_BURST: usize = 16;
+    const LANE_BUFFER: usize = 16;
+
+    /// A window size, as the tests talk about them.
+    type Size = (u32, u32);
+
+    #[derive(Default)]
+    struct RasterizerSpy {
+        /// The `WindowMeta` of every render request the engine sent, in order.
+        requests: Vec<Size>,
+    }
+
+    impl Actor<RenderRequest<PlatformPixel, WindowMeta>, RasterControl, RasterManagement>
+        for RasterizerSpy
+    {
+        fn handle_data(&mut self, req: RenderRequest<PlatformPixel, WindowMeta>) -> HandlerResult {
+            self.requests.push((req.meta.width_px, req.meta.height_px));
+            Ok(())
+        }
+        fn handle_control(&mut self, _msg: RasterControl) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _msg: RasterManagement) -> HandlerResult {
+            Ok(())
+        }
+        fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
+        }
+    }
+
+    #[derive(Default)]
+    struct DriverSpy {
+        /// The size of every frame the engine asked the driver to present, in order.
+        presented: Vec<Size>,
+    }
+
+    impl Actor<DisplayData, DisplayControl, DisplayMgmt> for DriverSpy {
+        fn handle_data(&mut self, msg: DisplayData) -> HandlerResult {
+            match msg {
+                DisplayData::Present { window } => {
+                    self.presented.push((window.width_px, window.height_px));
+                }
+            }
+            Ok(())
+        }
+        fn handle_control(&mut self, _msg: DisplayControl) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _msg: DisplayMgmt) -> HandlerResult {
+            Ok(())
+        }
+        fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
+        }
+    }
+
+    struct Rig {
+        engine: EngineHandler,
+        raster_sched: ActorScheduler<
+            RenderRequest<PlatformPixel, WindowMeta>,
+            RasterControl,
+            RasterManagement,
+        >,
+        raster_spy: RasterizerSpy,
+        driver_sched: ActorScheduler<DisplayData, DisplayControl, DisplayMgmt>,
+        driver_spy: DriverSpy,
+        /// Never polled: vsync's token returns and FPS reports are not what these tests are
+        /// about. It is held only so the engine's sends to it stay connected.
+        _vsync_sched: ActorScheduler<RenderedResponse, VsyncCommand, VsyncManagement>,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let (driver, driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+            let (vsync, _vsync_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+            let (rasterizer, raster_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+
+            let engine = EngineHandler {
+                driver,
+                vsync,
+                rasterizer: Some(rasterizer),
+                self_handle: None,
+                rasterizer_forward_handle: None,
+                app_handle: None,
+                frame_number: 0,
+                window: None,
+                render_credit: Credit::new(1),
+                render_threads: 1,
+                pending_manifold: None,
+            };
+
+            Self {
+                engine,
+                raster_sched,
+                raster_spy: RasterizerSpy::default(),
+                driver_sched,
+                driver_spy: DriverSpy::default(),
+                _vsync_sched,
+            }
+        }
+
+        fn feed(&mut self, data: EngineData) {
+            self.engine
+                .handle_data(data)
+                .expect("engine handled the message");
+        }
+
+        /// Everything the driver was created with, then a frame from the app.
+        fn window_created(&mut self, size: Size) {
+            self.feed(EngineData::FromDriver(DisplayEvent::WindowCreated {
+                window: window(size),
+            }));
+        }
+
+        fn resized(&mut self, size: Size) {
+            self.feed(EngineData::FromDriver(DisplayEvent::Resized {
+                window: window(size),
+            }));
+        }
+
+        fn app_frame(&mut self) {
+            self.feed(EngineData::FromApp(AppData::RenderSurface(manifold())));
+        }
+
+        fn render_completed(&mut self, size: Size) {
+            self.feed(EngineData::RenderComplete(RenderResponse {
+                frame: Frame::new(size.0, size.1),
+                render_time: Duration::from_millis(1),
+                meta: meta(size),
+            }));
+        }
+
+        fn present_completed(&mut self, size: Size) {
+            self.feed(EngineData::PresentComplete(window(size)));
+        }
+
+        /// Render requests emitted since the last call.
+        fn render_requests(&mut self) -> Vec<Size> {
+            let _ = self.raster_sched.poll_once(&mut self.raster_spy);
+            std::mem::take(&mut self.raster_spy.requests)
+        }
+
+        /// Frames handed to the driver since the last call.
+        fn presented(&mut self) -> Vec<Size> {
+            let _ = self.driver_sched.poll_once(&mut self.driver_spy);
+            std::mem::take(&mut self.driver_spy.presented)
+        }
+    }
+
+    fn window((width_px, height_px): Size) -> Window {
+        Window {
+            id: WindowId(1),
+            frame: Frame::new(width_px, height_px),
+            width_px,
+            height_px,
+            scale: 1.0,
+        }
+    }
+
+    fn meta((width_px, height_px): Size) -> WindowMeta {
+        WindowMeta {
+            id: WindowId(1),
+            width_px,
+            height_px,
+            scale: 1.0,
+        }
+    }
+
+    /// A constant black scene — these tests care about which window a render is aimed at, not
+    /// what is in it.
+    fn manifold() -> Arc<dyn Manifold<Output = Discrete> + Send + Sync> {
+        Arc::new(ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32))
+    }
+
+    /// The steady state, as a baseline for the race tests below: one render per app frame,
+    /// each presented, with the buffer circulating back through `PresentComplete`.
+    #[test]
+    fn frames_circulate_through_render_present_and_back() {
+        let mut rig = Rig::new();
+        rig.window_created((100, 100));
+
+        rig.app_frame();
+        assert_eq!(rig.render_requests(), vec![(100, 100)]);
+
+        rig.render_completed((100, 100));
+        assert_eq!(rig.presented(), vec![(100, 100)]);
+
+        // Frame arrives while the buffer is still with the driver: queued, not dropped.
+        rig.app_frame();
+        assert!(rig.render_requests().is_empty());
+
+        rig.present_completed((100, 100));
+        assert_eq!(rig.render_requests(), vec![(100, 100)]);
+    }
+
+    /// The bug this test pins: vsync keeps asking for frames at 60Hz regardless of how long a
+    /// render takes, so an `AppData::RenderSurface` routinely arrives while one is in flight.
+    /// If a resize landed first, the window that arrival carries is the *new* one, and refusing
+    /// the render used to drop it — after which `RenderComplete` saw `window == None`, read its
+    /// own old-size frame as current, and the resized window was gone for good.
+    #[test]
+    fn a_frame_refused_mid_render_keeps_the_resized_window() {
+        let mut rig = Rig::new();
+        rig.window_created((100, 100));
+
+        rig.app_frame();
+        assert_eq!(rig.render_requests(), vec![(100, 100)]);
+
+        // Resize lands while that render is still in flight.
+        rig.resized((200, 200));
+        assert!(
+            rig.render_requests().is_empty(),
+            "the in-flight render holds the edge's only credit"
+        );
+
+        // Vsync asks again and the app answers, still mid-render.
+        rig.app_frame();
+        assert!(
+            rig.render_requests().is_empty(),
+            "still no credit — but the refusal must not consume anything"
+        );
+
+        // The old-size render finally completes.
+        rig.render_completed((100, 100));
+        assert_eq!(
+            rig.render_requests(),
+            vec![(200, 200)],
+            "the deferred frame re-renders at the resized dimensions"
+        );
+        assert!(
+            rig.presented().is_empty(),
+            "the old-size frame is stale and must not reach the driver"
+        );
+    }
+
+    /// The same failure from the other side. `RenderComplete` reads staleness off
+    /// `self.window` being `Some`, which only means "a resize happened" if nothing *else* can
+    /// park a window there mid-render. A buffer coming back from the driver can, and it is the
+    /// old one — so parking it made the engine discard the good new-size frame and re-render
+    /// into the stale window instead.
+    #[test]
+    fn a_buffer_returning_mid_render_is_not_mistaken_for_a_resize() {
+        let mut rig = Rig::new();
+        rig.window_created((100, 100));
+
+        rig.app_frame();
+        assert_eq!(rig.render_requests(), vec![(100, 100)]);
+        rig.render_completed((100, 100));
+        assert_eq!(rig.presented(), vec![(100, 100)]);
+
+        // Resize arrives before the driver hands the presented buffer back.
+        rig.resized((200, 200));
+        rig.app_frame();
+        assert_eq!(
+            rig.render_requests(),
+            vec![(200, 200)],
+            "the resized window is free to render into"
+        );
+
+        // Now the old buffer comes back, mid-render.
+        rig.present_completed((100, 100));
+        assert!(
+            rig.engine.window.is_none(),
+            "a superseded buffer must not be parked as the current window"
+        );
+
+        rig.render_completed((200, 200));
+        assert_eq!(
+            rig.presented(),
+            vec![(200, 200)],
+            "the new-size frame is current and must be presented"
+        );
+        assert!(
+            rig.render_requests().is_empty(),
+            "nothing to re-render: that frame was not stale"
+        );
+    }
+
+    /// A resize with no render in flight renders immediately, at the new size.
+    #[test]
+    fn a_resize_between_frames_renders_at_the_new_size() {
+        let mut rig = Rig::new();
+        rig.window_created((100, 100));
+
+        rig.app_frame();
+        assert_eq!(rig.render_requests(), vec![(100, 100)]);
+        rig.render_completed((100, 100));
+        rig.present_completed((100, 100));
+
+        rig.app_frame();
+        assert_eq!(rig.render_requests(), vec![(100, 100)]);
+        rig.render_completed((100, 100));
+
+        // Buffer is with the driver; the resize brings its own.
+        rig.resized((200, 200));
+        rig.app_frame();
+        assert_eq!(rig.render_requests(), vec![(200, 200)]);
     }
 }
