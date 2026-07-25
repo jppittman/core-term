@@ -21,8 +21,8 @@ fn main() {
         eprintln!("Commands:");
         eprintln!("  bundle-run    Build and run the bundled macOS app");
         eprintln!("  bake-eigen    Parse Stam's eigenstructure binary → Rust consts");
-        eprintln!("  isa-matrix    Run the workspace test suite at every x86-64 ISA");
-        eprintln!("                level this host actually supports (SSE2/AVX2/AVX-512)");
+        eprintln!("  isa-matrix    Build+lint every x86-64 ISA level (SSE2/AVX2/AVX-512);");
+        eprintln!("                run the tests for those this host can execute");
         eprintln!("                [--clippy to also run clippy per level]");
         std::process::exit(1);
     }
@@ -198,11 +198,24 @@ fn bundle_run(extra_args: &[String]) {
 // `.cargo/config.toml` sets no `target-cpu`/`target-feature`, so a plain
 // `cargo build`/`cargo test` always produces SSE2 code on x86-64 — even on a
 // machine with AVX2 or AVX-512 available. Nothing in the default CI pipeline
-// ever exercised the wider JIT backends. This runs the workspace test suite
-// (and optionally clippy) once per x86-64 ISA level the CURRENT HOST actually
-// supports, via explicit `-C target-feature` flags rather than
-// `-C target-cpu=native` (which bakes in whatever the build machine happens
-// to be and isn't reproducible across machines/CI runners).
+// ever exercised the wider JIT backends. This walks every x86-64 ISA level via
+// explicit `-C target-feature` flags — not `-C target-cpu=native`, which bakes
+// in whatever the build machine happens to be and is not reproducible across
+// machines or CI runners.
+//
+// Build and execute are separated deliberately, because they have different
+// requirements. COMPILING for a target feature needs no matching hardware;
+// only RUNNING the result does. So every level is built and linted
+// unconditionally — that is what catches cfg mistakes, missing backend ops and
+// lints, none of which need the CPU — and only the execution step is gated on
+// `is_x86_feature_detected!`. A level the host cannot run therefore reports
+// BUILT+LINT, not SKIP: an AVX-512-less runner still type-checks and lints the
+// AVX-512 build, which is most of the value.
+//
+// Note the gate is per-LEVEL, not per-test: the whole workspace is compiled
+// with the level's target-feature, so rustc may emit those instructions
+// anywhere in the binary. It is not sufficient that an individual test avoids
+// them.
 
 /// One row of the ISA test matrix: a human-readable name, the
 /// `-C target-feature` value to pass (empty = the SSE2 baseline, no flag),
@@ -264,12 +277,14 @@ fn host_has_feature(feature: &str) -> bool {
 
 /// Outcome of attempting one [`IsaLevel`].
 enum LevelResult {
-    /// Test suite (and clippy, if requested) both succeeded.
+    /// Compiled, linted, and the test binaries ran.
     Passed,
-    /// A command ran and failed; the bool distinguishes which one for the summary.
-    Failed { clippy: bool },
-    /// Host lacks a required CPU feature; skipped cleanly, not a failure.
-    Skipped { missing: &'static str },
+    /// Compiled and linted, but the tests were not executed: the host CPU
+    /// cannot run this level's instructions. NOT a skip — everything that can
+    /// be checked without the hardware was checked.
+    BuiltNotRun { missing: &'static str },
+    /// A command failed; `stage` names which for the summary.
+    Failed { stage: &'static str },
 }
 
 /// Run the workspace test suite (`cargo test --workspace`), and optionally
@@ -304,20 +319,6 @@ fn isa_matrix(with_clippy: bool) {
         for level in ISA_LEVELS {
             println!("\n=== ISA level: {} ===", level.name);
 
-            let missing = level
-                .requires
-                .iter()
-                .find(|&&feat| !host_has_feature(feat));
-            if let Some(&feat) = missing {
-                println!(
-                    "isa-matrix: skipping {} — host CPU lacks {feat} \
-                     (checked via is_x86_feature_detected!)",
-                    level.name
-                );
-                results.push((level.name, LevelResult::Skipped { missing: feat }));
-                continue;
-            }
-
             let rustflags = if level.target_feature.is_empty() {
                 FP_CONTRACT.to_string()
             } else {
@@ -325,14 +326,12 @@ fn isa_matrix(with_clippy: bool) {
             };
             println!("isa-matrix: RUSTFLAGS=\"{rustflags}\"");
 
-            // Each level's RUSTFLAGS produce a disjoint artifact set (the
-            // flags feed -C metadata), so levels sharing a target dir
-            // accumulate ~one full workspace build EACH — three levels
-            // exhausted a 21 GB disk the first time this ran for real.
-            // Every level therefore builds in one dedicated dir, wiped
-            // before each level: peak disk is a single artifact set, and
-            // the developer's own target/ (their incremental cache) is
-            // never touched.
+            // Each level's RUSTFLAGS produce a disjoint artifact set (the flags
+            // feed -C metadata), so levels sharing a target dir accumulate one
+            // full workspace build EACH — three levels filled this container's
+            // disk the first time it ran for real. One dedicated dir, wiped per
+            // level: peak disk is a single artifact set, and the developer's
+            // own target/ (their incremental cache) is never touched.
             let matrix_target = workspace_root.join("target/isa-matrix");
             if matrix_target.exists() {
                 if let Err(e) = std::fs::remove_dir_all(&matrix_target) {
@@ -343,18 +342,24 @@ fn isa_matrix(with_clippy: bool) {
                 }
             }
 
-            let test_ok = run_with_rustflags(
+            // COMPILING a level needs no special hardware — only running the
+            // result does. So build and lint every level unconditionally: that
+            // is what catches cfg mistakes (a backend compiled out of a wide
+            // build, a coverage sweep referring to a struct that no longer
+            // exists there), missing ops, and lints, none of which need an
+            // AVX-512 CPU to detect. Skipping a level outright, as this used to,
+            // threw all of that away because the runner lacked one CPU flag.
+            if !run_with_rustflags(
                 &workspace_root,
                 &matrix_target,
                 &rustflags,
-                &["test", "--workspace", "--no-fail-fast"],
-            );
-            if !test_ok {
-                println!("isa-matrix: {} — cargo test FAILED", level.name);
-                results.push((level.name, LevelResult::Failed { clippy: false }));
+                &["test", "--workspace", "--no-run"],
+            ) {
+                println!("isa-matrix: {} — test build FAILED", level.name);
+                results.push((level.name, LevelResult::Failed { stage: "build" }));
                 continue;
             }
-            println!("isa-matrix: {} — cargo test passed", level.name);
+            println!("isa-matrix: {} — test build ok", level.name);
 
             if with_clippy {
                 let clippy_ok = run_with_rustflags(
@@ -365,11 +370,41 @@ fn isa_matrix(with_clippy: bool) {
                 );
                 if !clippy_ok {
                     println!("isa-matrix: {} — cargo clippy FAILED", level.name);
-                    results.push((level.name, LevelResult::Failed { clippy: true }));
+                    results.push((level.name, LevelResult::Failed { stage: "clippy" }));
                     continue;
                 }
                 println!("isa-matrix: {} — cargo clippy passed", level.name);
             }
+
+            // Executing is the part that genuinely needs the CPU. Note the
+            // whole workspace is built with this level's target-feature, so
+            // rustc may emit those instructions anywhere in the binary — it is
+            // not enough that a given test avoids them.
+            if let Some(&feat) = level
+                .requires
+                .iter()
+                .find(|&&feat| !host_has_feature(feat))
+            {
+                println!(
+                    "isa-matrix: {} — built and linted; NOT running tests \
+                     (host CPU lacks {feat})",
+                    level.name
+                );
+                results.push((level.name, LevelResult::BuiltNotRun { missing: feat }));
+                continue;
+            }
+
+            if !run_with_rustflags(
+                &workspace_root,
+                &matrix_target,
+                &rustflags,
+                &["test", "--workspace", "--no-fail-fast"],
+            ) {
+                println!("isa-matrix: {} — cargo test FAILED", level.name);
+                results.push((level.name, LevelResult::Failed { stage: "test" }));
+                continue;
+            }
+            println!("isa-matrix: {} — cargo test passed", level.name);
 
             results.push((level.name, LevelResult::Passed));
         }
@@ -379,16 +414,12 @@ fn isa_matrix(with_clippy: bool) {
         for (name, result) in &results {
             let line = match result {
                 LevelResult::Passed => "PASS".to_string(),
-                LevelResult::Failed { clippy } => {
+                LevelResult::Failed { stage } => {
                     any_failed = true;
-                    if *clippy {
-                        "FAIL (clippy)".to_string()
-                    } else {
-                        "FAIL (test)".to_string()
-                    }
+                    format!("FAIL ({stage})")
                 }
-                LevelResult::Skipped { missing } => {
-                    format!("SKIP (host lacks {missing})")
+                LevelResult::BuiltNotRun { missing } => {
+                    format!("BUILT+LINT (not run: host lacks {missing})")
                 }
             };
             println!("  {name:<20} {line}");
