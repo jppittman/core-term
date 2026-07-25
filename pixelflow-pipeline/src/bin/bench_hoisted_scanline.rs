@@ -87,9 +87,19 @@ struct JitWrapper(pixelflow_ir::JitManifold);
 // The vector type of the JIT's call ABI on *this build*, which must track the
 // emitted width rather than assume one. Hard-coding `__m128` pinned this
 // benchmark to SSE2, so it stopped compiling on any build wide enough to be
-// worth benchmarking.
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+// worth benchmarking. Mirrors `pixelflow_ir::JIT_VECTOR_BYTES`'s 3-way split.
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 type JitLane = core::arch::x86_64::__m128;
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(target_feature = "avx512f")
+))]
+type JitLane = core::arch::x86_64::__m256;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type JitLane = core::arch::x86_64::__m512;
 #[cfg(target_arch = "aarch64")]

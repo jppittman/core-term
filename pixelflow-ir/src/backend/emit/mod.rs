@@ -30,6 +30,7 @@
 //! - This lets ML models learn register pressure vs spill tradeoffs
 
 pub mod aarch64;
+pub mod avx2;
 pub mod avx512;
 pub mod executable;
 pub mod lowering;
@@ -3289,11 +3290,17 @@ pub fn compile_arena_dag_with_ctx(
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
+    // Three-way build-width split, matching `pixelflow_ir::JIT_VECTOR_BYTES`
+    // and `pixelflow-core`'s `Field` storage: AVX-512 > AVX2 > SSE2.
     #[cfg(target_feature = "avx512f")]
     {
         compile_dag_via_backend(schedule, uses, &mut Avx512Backend)
     }
-    #[cfg(not(target_feature = "avx512f"))]
+    #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
+    {
+        compile_dag_via_backend(schedule, uses, &mut Avx2Backend)
+    }
+    #[cfg(not(any(target_feature = "avx512f", target_feature = "avx2")))]
     {
         compile_dag_via_backend(schedule, uses, &mut X86Backend::default())
     }
@@ -3324,18 +3331,36 @@ const X86_SCHED_NUM_REGS: u8 = 6;
 
 /// Fixed scratch outside the allocatable range / reload regs: used for the
 /// binary two-operand hazard and as the select blend temp.
-#[cfg(target_arch = "x86_64")]
+///
+/// SSE2-only (like the rest of this section down to `X86Backend`): dead under
+/// a build that selects `Avx2Backend`/`Avx512Backend` instead, so gated off
+/// those widths — otherwise it (and `X86Backend`) would be unreachable dead
+/// code under `+avx2`/`+avx512f`, which the test-matrix's per-ISA clippy pass
+/// would then flag as a *new* failure on those levels only.
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 const X86_SCRATCH: Reg = Reg(10);
 
 /// Scratch quad for builtins (sin/cos/exp/atan2/...), which need FOUR distinct
 /// scratch registers. Clear of the allocatable range (4-9) and the reload regs
 /// (11,12). Includes `X86_SCRATCH` (xmm10): builtins don't use it for the
 /// hazard/select roles, so it is free as a fourth scratch here.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 const X86_BUILTIN_SCRATCH: [Reg; 4] = [Reg(10), Reg(13), Reg(14), Reg(15)];
 
 /// Map a `FrameLayout` spill offset to a red-zone `[rsp+disp8]` displacement.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 fn x86_redzone_disp(offset: u32) -> Result<i8, &'static str> {
     // Slots live below rsp: offset 0 -> [rsp-16], 16 -> [rsp-32], ...
     // Only called in red-zone mode (the prologue switches to an allocated
@@ -3355,7 +3380,11 @@ fn x86_redzone_disp(offset: u32) -> Result<i8, &'static str> {
 /// when `dst == right` and `dst != left`. The allocator may assign `dst ==
 /// right`, so handle it: swap for commutative ops, otherwise stash `right` in
 /// the fixed scratch.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 fn emit_binary_safe(code: &mut Vec<u8>, op: OpKind, dst: Reg, left: Reg, right: Reg) {
     use x86_64::*;
     let commutative = matches!(
@@ -3378,13 +3407,21 @@ fn emit_binary_safe(code: &mut Vec<u8>, op: OpKind, dst: Reg, left: Reg, right: 
 /// `frame_bytes` is set by `prologue`: 0 = spills fit the 128-byte red zone
 /// (no frame is allocated), otherwise the size of the allocated frame and
 /// spill slots are `[rsp + offset]`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 #[derive(Default)]
 struct X86Backend {
     frame_bytes: u32,
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 impl X86Backend {
     fn spill_store(&self, code: &mut Vec<u8>, src: Reg, offset: u32) {
         if self.frame_bytes == 0 {
@@ -3405,7 +3442,11 @@ impl X86Backend {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 impl IsaBackend for X86Backend {
     /// rel32 field offset of the branch (uniform for jcc/jmp on x86).
     type Branch = usize;
@@ -3856,6 +3897,255 @@ impl IsaBackend for Avx512Backend {
         }
         avx512::emit_ret(code);
     }
+}
+
+// =============================================================================
+// AVX2 backend: the leaf emit for the SHARED driver, 256-bit (ymm) kernels.
+// =============================================================================
+//
+// The middle width between `X86Backend` (128-bit) and `Avx512Backend`
+// (512-bit). Register roles are IDENTICAL to `X86Backend` — same input/
+// allocatable/scratch/reload layout (ymm0-15 is the same physical file as
+// xmm0-15) — only the leaf encodings differ (VEX.256 instead of legacy SSE).
+// VEX is 3-operand like EVEX, so — like `Avx512Backend` — there is no
+// two-operand hazard to route around.
+//
+// Spills use a real stack frame (mirrors `Avx512Backend`'s reasoning): a ymm
+// slot is 32 bytes, so `FrameLayout`'s 16-byte-unit offsets are scaled ×2.
+
+/// Scale a `FrameLayout` 16-byte slot offset to a 32-byte ymm frame offset.
+#[cfg(target_arch = "x86_64")]
+fn avx2_slot_disp(offset: u32) -> i32 {
+    (offset as i32 / 16) * 32
+}
+
+/// Total ymm frame bytes for a `FrameLayout.frame_size` (16-byte units).
+#[cfg(target_arch = "x86_64")]
+fn avx2_frame_bytes(frame_size: u32) -> u32 {
+    (frame_size / 16) * 32
+}
+
+/// AVX2 implementation of the shared driver's leaf operations.
+#[cfg(target_arch = "x86_64")]
+struct Avx2Backend;
+
+#[cfg(target_arch = "x86_64")]
+impl Avx2Backend {
+    fn reload(code: &mut Vec<u8>, reload: &Reload) {
+        match reload {
+            Reload::FromStack { target, offset } => {
+                avx2::emit_load_rsp(code, *target, avx2_slot_disp(*offset));
+            }
+            Reload::Const { target, val_bits } => {
+                avx2::emit_const(code, *target, f32::from_bits(*val_bits));
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl IsaBackend for Avx2Backend {
+    type Branch = usize;
+
+    fn num_regs(&self) -> u8 {
+        X86_SCHED_NUM_REGS // same 6 allocatable (ymm4-9)
+    }
+
+    fn begin(
+        &mut self,
+        _schedule: &[(regalloc::ValueId, ScheduledOp)],
+    ) -> Result<(), &'static str> {
+        Ok(()) // const broadcast is self-contained; no pool.
+    }
+
+    fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32) {
+        let bytes = avx2_frame_bytes(frame_size);
+        if bytes > 0 {
+            avx2::emit_sub_rsp(code, bytes);
+        }
+    }
+
+    fn emit_plan(
+        &mut self,
+        code: &mut Vec<u8>,
+        plan: &InstructionPlan,
+    ) -> Result<(), &'static str> {
+        for r in &plan.reloads {
+            Self::reload(code, r);
+        }
+        if let Some((dst, src)) = plan.setup_mov {
+            avx2::emit_mov(code, dst, src);
+        }
+        match &plan.op {
+            ResolvedOp::Nop => {}
+            ResolvedOp::LoadConst { dst, val_bits } => {
+                avx2::emit_const(code, *dst, f32::from_bits(*val_bits));
+            }
+            ResolvedOp::Unary { op, dst, src } => {
+                avx2::emit_unary(code, *op, *dst, *src)?;
+            }
+            ResolvedOp::ShiftImm {
+                op,
+                dst,
+                src,
+                amount,
+            } => {
+                avx2::emit_shift_imm(code, *op, *dst, *src, *amount)?;
+            }
+            ResolvedOp::Gather { dst, idx, slot } => {
+                // Context pointer (array of buffer base pointers) arrives in
+                // rdi; arithmetic/const emit never touches rdi, so it
+                // survives to here. ymm13/14 mirror X86Backend's gather
+                // scratch; ymm8/9 are the AVX2-only high-half scratch this
+                // two-half gather needs (see `avx2::emit_gather_scalar`).
+                avx2::emit_gather_scalar(
+                    code,
+                    *dst,
+                    *idx,
+                    *slot,
+                    x86_64::GatherScratch {
+                        base_gpr: 0,  // rax
+                        index_gpr: 1, // rcx
+                        ctx_gpr: 7,   // rdi
+                        idx_lanes: Reg(13),
+                        value: Reg(14),
+                    },
+                    Reg(9),
+                    Reg(8),
+                );
+            }
+            ResolvedOp::Binary {
+                op,
+                dst,
+                left,
+                right,
+            } => {
+                // VEX 3-operand: no two-operand hazard, emit directly.
+                avx2::emit_binary(code, *op, *dst, *left, *right)?;
+            }
+            ResolvedOp::FusedMulAdd { dst, a, b } => {
+                avx2::emit_fmadd_c_in_dst(code, *dst, *a, *b);
+            }
+            ResolvedOp::DecomposedMulAdd {
+                dst,
+                a,
+                b,
+                c,
+                c_deferred,
+            } => {
+                avx2::emit_binary(code, OpKind::Mul, *dst, *a, *b)?;
+                match c_deferred {
+                    Some(DeferredReload::FromStack(off)) => {
+                        avx2::emit_load_rsp(code, *c, avx2_slot_disp(*off));
+                    }
+                    Some(DeferredReload::Const(bits)) => {
+                        avx2::emit_const(code, *c, f32::from_bits(*bits));
+                    }
+                    None => {}
+                }
+                avx2::emit_binary(code, OpKind::Add, *dst, *dst, *c)?;
+            }
+            ResolvedOp::Select {
+                dst,
+                if_true,
+                if_false,
+            } => {
+                // setup_mov already placed the vector mask in dst.
+                avx2::emit_select(code, *dst, *if_true, *if_false);
+            }
+        }
+        if let Some(store) = &plan.store {
+            avx2::emit_store_rsp(code, store.src, avx2_slot_disp(store.offset));
+        }
+        Ok(())
+    }
+
+    fn emit_mov(&mut self, code: &mut Vec<u8>, dst: Reg, src: Reg) {
+        avx2::emit_mov(code, dst, src);
+    }
+
+    fn emit_store(
+        &mut self,
+        code: &mut Vec<u8>,
+        src: Reg,
+        offset: u32,
+    ) -> Result<(), &'static str> {
+        avx2::emit_store_rsp(code, src, avx2_slot_disp(offset));
+        Ok(())
+    }
+
+    fn emit_resolve(
+        &mut self,
+        code: &mut Vec<u8>,
+        vid: regalloc::ValueId,
+        target: Reg,
+        reg_for: &[Option<Reg>],
+        spill_for: &[Option<u32>],
+        remat_for: &[Option<u32>],
+    ) -> Reg {
+        let idx = vid.0 as usize;
+        if let Some(Some(reg)) = reg_for.get(idx) {
+            *reg
+        } else if let Some(Some(bits)) = remat_for.get(idx) {
+            avx2::emit_const(code, target, f32::from_bits(*bits));
+            target
+        } else if let Some(Some(offset)) = spill_for.get(idx) {
+            avx2::emit_load_rsp(code, target, avx2_slot_disp(*offset));
+            target
+        } else {
+            panic!(
+                "value {:?} has no register, spill slot, or rematerialize entry",
+                vid
+            );
+        }
+    }
+
+    // Select short-circuit guards: vmovmskps -> eax[7:0], same shape as
+    // X86Backend's MOVMSKPS guards but 8 lanes wide (al == 0xFF for
+    // all-true, not 0x0F — see `avx2::emit_cmp_al_imm8`'s doc for why the
+    // sign-extending `cmp eax, imm8` X86Backend uses doesn't work here).
+    fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        avx2::emit_movmskps_eax(code, mask_reg);
+        x86_64::emit_test_eax(code);
+        x86_64::emit_jcc_rel32(code, 0x84) // jz: taken when eax == 0 (all lanes false)
+    }
+
+    fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        avx2::emit_movmskps_eax(code, mask_reg);
+        avx2::emit_cmp_al_imm8(code, 0xFF);
+        x86_64::emit_jcc_rel32(code, 0x84) // je: taken when al == 0xFF (all lanes true)
+    }
+
+    fn emit_jump(&mut self, code: &mut Vec<u8>) -> usize {
+        x86_64::emit_jmp_rel32(code)
+    }
+    fn patch_branch(&mut self, code: &mut Vec<u8>, branch: usize, target: usize) {
+        x86_64::patch_rel32(code, branch, target);
+    }
+
+    fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32) {
+        if result_reg.0 != 0 {
+            avx2::emit_mov(code, Reg(0), result_reg);
+        }
+        let bytes = avx2_frame_bytes(frame_size);
+        if bytes > 0 {
+            avx2::emit_add_rsp(code, bytes);
+        }
+        avx2::emit_ret(code);
+    }
+}
+
+/// Compile an arena DAG to an AVX2 (256-bit, 8-lane ymm) kernel via the shared
+/// driver. Same arg shape as [`compile_arena_dag`] but the kernel's ABI is
+/// `__m256` (one pixel per lane, 8 pixels per call).
+#[cfg(target_arch = "x86_64")]
+pub fn compile_arena_dag_avx2(
+    arena: &ExprArena,
+    root: ExprId,
+) -> Result<CompileResult, &'static str> {
+    let schedule = arena_to_schedule(arena, root);
+    let uses = arena_to_uses(&schedule);
+    compile_dag_via_backend(schedule, uses, &mut Avx2Backend)
 }
 
 /// Compile an arena DAG to an AVX-512 (512-bit, 16-lane zmm) kernel via the

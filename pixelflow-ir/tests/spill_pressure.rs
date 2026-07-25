@@ -23,6 +23,23 @@ use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval_scalar;
 use pixelflow_ir::jit_manifold::JitManifold;
 
+// JitManifold::call's ABI tracks the build's selected width (SSE2/AVX2; this
+// file is gated off avx512f above), so the splat/extract pair must match:
+// __m256 under +avx2, else __m128.
+#[cfg(target_feature = "avx2")]
+fn jit_eval(jit: &JitManifold, x: f32, y: f32, z: f32, w: f32) -> f32 {
+    use core::arch::x86_64::*;
+    unsafe {
+        _mm256_cvtss_f32(jit.call(
+            _mm256_set1_ps(x),
+            _mm256_set1_ps(y),
+            _mm256_set1_ps(z),
+            _mm256_set1_ps(w),
+        ))
+    }
+}
+
+#[cfg(not(target_feature = "avx2"))]
 fn jit_eval(jit: &JitManifold, x: f32, y: f32, z: f32, w: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
