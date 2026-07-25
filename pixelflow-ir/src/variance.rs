@@ -1,43 +1,52 @@
 //! # Variance Analysis
 //!
-//! 4-bit bitset tracking which coordinates an expression depends on.
-//! This is the shared type used by both the e-graph analysis
-//! (`pixelflow-search`) and the compiler codegen (`pixelflow-compiler`).
+//! Which variables an expression depends on, as a bitset. This is the shared
+//! type used by both the e-graph analysis (`pixelflow-search`) and the compiler
+//! codegen (`pixelflow-compiler`).
 //!
-//! ## Coordinate Mapping
+//! ## Variable Mapping
 //!
 //! - Bit 0 (X): pixel column — varies per pixel
 //! - Bit 1 (Y): pixel row — varies per scanline
 //! - Bit 2 (Z): time/frame — varies per frame
 //! - Bit 3 (W): layer/channel — varies per instance
+//! - Bits 4..8: the four reduction index slots — vary per step of the binder
+//!   that binds them
 //!
-//! ## Evaluation Scopes
+//! ## Scopes are binders
 //!
-//! The variance bitset maps to evaluation scopes via the Lattice type:
+//! A scope is something that binds a variable, and the bitset says which scopes
+//! enclose an expression. Coordinates are bound by the lattice nest, reduction
+//! indices by [`Kernel::over`](crate::Kernel::over) — the same kind of thing,
+//! so they share the bitset.
 //!
 //! | Variance | Scope | Meaning |
 //! |----------|-------|---------|
-//! | `0b0000` | Const | Compile-time constant |
-//! | `0b1000` | Frame | W-only, compute once per frame |
-//! | `0b0100` | Frame | Z-only, compute once per frame |
-//! | `0b0010` | Scanline | Y-only, compute once per scanline |
-//! | `0b0001` | Pixel | X-dependent, compute per pixel |
-//! | `0b0111` | Pixel | X+Y+Z, full spatial varying |
+//! | `0b0000_0000` | Const | Compile-time constant |
+//! | `0b0000_1000` | Frame | W-only, compute once per frame |
+//! | `0b0000_0100` | Frame | Z-only, compute once per frame |
+//! | `0b0000_0010` | Scanline | Y-only, compute once per scanline |
+//! | `0b0000_0001` | Pixel | X-dependent, compute per pixel |
+//! | `0b0001_0000` | Binder | varies with reduction slot 4 only |
 //!
-//! The rule: the shallowest scope that binds all variables in the bitset.
+//! The rule: the shallowest scope that binds every variable in the bitset. That
+//! one rule is loop-invariant code motion, hoisting out of a reduction, and
+//! constant folding — see `docs/designs/lattice-scheduling-types.md`.
 
-/// 4-bit variance bitset: which coordinates an expression depends on.
+/// Which variables an expression depends on: one bit per variable.
 ///
-/// X=bit0, Y=bit1, Z=bit2, W=bit3. Operations:
+/// Coordinates X=bit0, Y=bit1, Z=bit2, W=bit3; reduction index slots `4..8` in
+/// bits `4..8`. Operations:
 /// - `union`: bitwise OR (join — a binary op depends on both operands' vars)
 /// - `meet`: minimum across e-class representatives (pick lowest-deps form)
+/// - `without`: set difference — what a binder does to its own index
 ///
 /// This type is `no_std` compatible and zero-cost (single `u8`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct Variance(u8);
 
-/// Bit positions for each coordinate variable.
+/// Bit positions for each variable.
 impl Variance {
     /// No dependencies — compile-time constant.
     pub const CONST: Self = Self(0);
@@ -55,28 +64,36 @@ impl Variance {
     pub const W: Self = Self(1 << 3);
 
     /// All spatial coordinates (X, Y, Z). Common for per-pixel expressions.
-    pub const SPATIAL: Self = Self(0b0111);
+    pub const SPATIAL: Self = Self(0b0000_0111);
 
-    /// All coordinates (X, Y, Z, W).
-    pub const ALL: Self = Self(0b1111);
+    /// The four coordinates the lattice nest binds (X, Y, Z, W).
+    pub const COORDS: Self = Self(0b0000_1111);
 
-    /// Create from a variable index (0=X, 1=Y, 2=Z, 3=W).
+    /// The four reduction index slots a binder can bind.
+    pub const BINDERS: Self = Self(0b1111_0000);
+
+    /// Every variable — the top of the lattice, and the answer whenever the
+    /// analysis cannot prove something narrower.
+    pub const ALL: Self = Self(0b1111_1111);
+
+    /// Create from a variable index: `0..4` are the coordinates X/Y/Z/W,
+    /// `4..8` the reduction index slots.
     ///
     /// # Panics
     ///
-    /// Panics if `var_idx >= 4`.
+    /// Panics if `var_idx >= 8`.
     #[inline]
     #[must_use]
     pub const fn from_var(var_idx: u8) -> Self {
-        assert!(var_idx < 4, "variable index must be 0..4");
+        assert!(var_idx < 8, "variable index must be 0..8");
         Self(1 << var_idx)
     }
 
-    /// Create from raw bits. Only the low 4 bits are used.
+    /// Create from raw bits. All eight bits are meaningful.
     #[inline]
     #[must_use]
     pub const fn from_bits(bits: u8) -> Self {
-        Self(bits & 0b1111)
+        Self(bits)
     }
 
     /// Get the raw bits.
@@ -94,6 +111,22 @@ impl Variance {
     #[must_use]
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+
+    /// Set difference: drop `other`'s variables from this set.
+    ///
+    /// This is what a binder does. Every other node either preserves its
+    /// children's variance or unions it; `⊕_{i∈D}` is the only construct that
+    /// *shrinks* the set, because it binds `i` and so `i` is no longer free in
+    /// the result:
+    ///
+    /// ```text
+    /// deps(⊕_{i∈D} body) = deps(body) \ {i}
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
     }
 
     /// Meet: the minimum-variance representative.
@@ -126,6 +159,33 @@ impl Variance {
         self.0 == 0
     }
 
+    /// True if this depends on variable `var_idx` — i.e. it must be evaluated
+    /// inside the scope that binds it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `var_idx >= 8`.
+    #[inline]
+    #[must_use]
+    pub const fn depends_on(self, var_idx: u8) -> bool {
+        self.0 & Self::from_var(var_idx).0 != 0
+    }
+
+    /// True if this can be hoisted out of the scope binding `var_idx`.
+    ///
+    /// The one question the schedule asks, at every level: the X loop asks it of
+    /// `0`, a scanline of `1`, a reduction of its own index slot. `is_x_invariant`
+    /// is this with `0` written in.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `var_idx >= 8`.
+    #[inline]
+    #[must_use]
+    pub const fn is_invariant_in(self, var_idx: u8) -> bool {
+        !self.depends_on(var_idx)
+    }
+
     /// True if depends on X (must be in the inner pixel loop).
     #[inline]
     #[must_use]
@@ -138,6 +198,14 @@ impl Variance {
     #[must_use]
     pub const fn is_x_invariant(self) -> bool {
         !self.depends_on_x()
+    }
+
+    /// True if this depends on any reduction index — it lives inside a binder
+    /// body and cannot be hoisted past it.
+    #[inline]
+    #[must_use]
+    pub const fn depends_on_binder(self) -> bool {
+        self.0 & Self::BINDERS.0 != 0
     }
 
     /// True if depends on Y.
@@ -161,13 +229,16 @@ impl Variance {
         self.0 & Self::W.0 != 0
     }
 
-    /// True if this is "uniform" in the older three-level sense: depends only on W
-    /// (or is const). Compatible with the old `Deps::is_uniform()`.
+    /// True if this can be computed once per frame: depends only on W (or is
+    /// const). Compatible with the old `Deps::is_uniform()`.
+    ///
+    /// A binder index disqualifies it as surely as a spatial coordinate does —
+    /// a value that changes per step of a reduction cannot be lifted to frame
+    /// scope, which sits outside the binder.
     #[inline]
     #[must_use]
     pub const fn is_frame_uniform(self) -> bool {
-        // No spatial bits (X, Y, Z) set
-        self.0 & Self::SPATIAL.0 == 0
+        self.0 & (Self::SPATIAL.0 | Self::BINDERS.0) == 0
     }
 
     /// True if this is "varying" in the older three-level sense: depends on any
@@ -178,7 +249,7 @@ impl Variance {
         self.0 & Self::SPATIAL.0 != 0
     }
 
-    /// Number of coordinates this expression depends on (0-4).
+    /// Number of variables this expression depends on (0-8).
     #[inline]
     #[must_use]
     pub const fn popcount(self) -> u32 {
@@ -193,13 +264,22 @@ impl core::fmt::Debug for Variance {
         }
         write!(f, "Variance{{")?;
         let mut first = true;
-        for (bit, name) in [(0, 'X'), (1, 'Y'), (2, 'Z'), (3, 'W')] {
-            if self.0 & (1 << bit) != 0 {
-                if !first {
-                    write!(f, ",")?;
-                }
-                write!(f, "{name}")?;
-                first = false;
+        for bit in 0..8u8 {
+            if self.0 & (1 << bit) == 0 {
+                continue;
+            }
+            if !first {
+                write!(f, ",")?;
+            }
+            first = false;
+            match bit {
+                0 => write!(f, "X")?,
+                1 => write!(f, "Y")?,
+                2 => write!(f, "Z")?,
+                3 => write!(f, "W")?,
+                // Reduction index slots print as the slot they bind, so a
+                // variance set reads back as the binders that enclose the node.
+                slot => write!(f, "i{slot}")?,
             }
         }
         write!(f, "}}")
@@ -226,6 +306,7 @@ use alloc::vec::Vec;
 #[must_use]
 pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> {
     use crate::arena::{ExprId, ExprNode};
+    use crate::kind::OpKind;
 
     let n = arena.len();
     let mut result = Vec::with_capacity(n);
@@ -233,8 +314,10 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
     for i in 0..n {
         let id = ExprId(i as u32);
         let v = match arena.node(id) {
+            // Coordinates (0..4) and reduction index slots (4..8) each get their
+            // own bit. Anything above that is not a variable this analysis knows.
             ExprNode::Var(idx) => {
-                if *idx < 4 {
+                if *idx < 8 {
                     Variance::from_var(*idx)
                 } else {
                     Variance::ALL
@@ -254,6 +337,17 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
             ExprNode::Ternary(_, a, b, c) => result[a.0 as usize]
                 .union(result[b.0 as usize])
                 .union(result[c.0 as usize]),
+            // A binder is the only node that shrinks the set: it binds its index,
+            // so the index is not free in the result.
+            ExprNode::Nary(OpKind::Reduce, start, len) => {
+                let children = arena.nary_children_slice(*start, *len);
+                let body = children.get(3).map_or(Variance::ALL, |c| result[c.0 as usize]);
+                match bound_index_slot(arena, children) {
+                    Some(slot) => body.without(Variance::from_var(slot)),
+                    // Malformed binder — refuse to claim invariance we cannot prove.
+                    None => Variance::ALL,
+                }
+            }
             ExprNode::Nary(_, start, len) => {
                 let children = arena.nary_children_slice(*start, *len);
                 let mut v = Variance::CONST;
@@ -269,16 +363,52 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
     result
 }
 
+/// The index slot a `Reduce`'s children bind, read from child 1 (a `Const`
+/// holding the slot number). `None` if the node is not a well-formed binder.
+fn bound_index_slot(
+    arena: &crate::arena::ExprArena,
+    children: &[crate::arena::ExprId],
+) -> Option<u8> {
+    let Some(crate::arena::ExprNode::Const(v)) = children.get(1).map(|id| arena.node(*id)) else {
+        return None;
+    };
+    let slot = *v as u8;
+    (4..8).contains(&slot).then_some(slot)
+}
+
 /// Find arena nodes that should be hoisted out of the X-loop.
 ///
-/// Returns up to `max` `ExprId`s that are:
-/// 1. X-invariant (don't depend on X)
-/// 2. Non-trivial (not Var or Const — actual computation worth hoisting)
-/// 3. Used by at least one X-dependent node (worth the register cost)
-///
-/// Results are sorted by estimated cost (transcendentals first).
+/// [`find_hoistable_out_of`] with `0` — the pixel loop's question.
 #[must_use]
 pub fn find_hoistable_arena_nodes(
+    arena: &crate::arena::ExprArena,
+    root: crate::arena::ExprId,
+    variance: &[Variance],
+    max: usize,
+) -> Vec<crate::arena::ExprId> {
+    find_hoistable_out_of(0, arena, root, variance, max)
+}
+
+/// Find arena nodes that should be hoisted out of the scope binding `var`.
+///
+/// Returns up to `max` `ExprId`s that are:
+/// 1. invariant in `var` (so hoisting is legal)
+/// 2. non-trivial (not Var or Const — actual computation worth hoisting)
+/// 3. used by at least one `var`-dependent node (so hoisting pays)
+///
+/// Results are sorted by estimated cost (transcendentals first).
+///
+/// One function serves every level of the nest, because "can this leave the
+/// loop" is one question asked of different variables: `0` for the pixel loop,
+/// `1` for a scanline, a reduction's own slot for hoisting out of the fold —
+/// which is the rewrite `⊕_i (f(i) · c) = c · ⊕_i f(i)` stated as an analysis.
+///
+/// # Panics
+///
+/// Panics if `var >= 8`.
+#[must_use]
+pub fn find_hoistable_out_of(
+    var: u8,
     arena: &crate::arena::ExprArena,
     root: crate::arena::ExprId,
     variance: &[Variance],
@@ -287,6 +417,7 @@ pub fn find_hoistable_arena_nodes(
     use crate::arena::{ExprId, ExprNode};
     use crate::kind::OpKind;
 
+    assert!(var < 8, "variable index must be 0..8");
     let n = arena.len();
 
     // Mark which nodes are reachable from root
@@ -303,17 +434,17 @@ pub fn find_hoistable_arena_nodes(
         }
     }
 
-    // Mark which reachable nodes have at least one X-dependent parent
-    let mut has_x_dependent_parent = alloc::vec![false; n];
+    // Mark which reachable nodes are consumed by a `var`-dependent node: those
+    // are the ones whose value has to cross the loop boundary to be useful.
+    let mut feeds_dependent = alloc::vec![false; n];
     for i in 0..n {
         if !reachable[i] {
             continue;
         }
         let id = ExprId(i as u32);
-        if variance[i].depends_on_x() {
-            // This node depends on X — mark all its children as "used by X-dependent"
+        if variance[i].depends_on(var) {
             for child in arena.children(id) {
-                has_x_dependent_parent[child.0 as usize] = true;
+                feeds_dependent[child.0 as usize] = true;
             }
         }
     }
@@ -321,12 +452,12 @@ pub fn find_hoistable_arena_nodes(
     // Collect hoistable candidates
     let mut candidates: Vec<(ExprId, u8)> = Vec::new(); // (id, priority)
     for i in 0..n {
-        if !reachable[i] || !has_x_dependent_parent[i] {
+        if !reachable[i] || !feeds_dependent[i] {
             continue;
         }
         let v = variance[i];
-        if !v.is_x_invariant() || v.is_const() {
-            continue; // Must be X-invariant and non-const
+        if !v.is_invariant_in(var) || v.is_const() {
+            continue; // Must be invariant in `var` and non-const
         }
         let id = ExprId(i as u32);
         let node = arena.node(id);
@@ -383,6 +514,16 @@ mod tests {
         assert_eq!(Variance::from_var(1), Variance::Y);
         assert_eq!(Variance::from_var(2), Variance::Z);
         assert_eq!(Variance::from_var(3), Variance::W);
+        // The reduction index slots are variables in the same space, so the
+        // hoisting question can be asked of them too.
+        assert_eq!(
+            Variance::from_var(4)
+                .union(Variance::from_var(5))
+                .union(Variance::from_var(6))
+                .union(Variance::from_var(7)),
+            Variance::BINDERS
+        );
+        assert!(Variance::COORDS.union(Variance::BINDERS) == Variance::ALL);
     }
 
     #[test]
@@ -439,7 +580,14 @@ mod tests {
             format!("{:?}", Variance::X.union(Variance::Z)),
             "Variance{X,Z}"
         );
-        assert_eq!(format!("{:?}", Variance::ALL), "Variance{X,Y,Z,W}");
+        assert_eq!(format!("{:?}", Variance::COORDS), "Variance{X,Y,Z,W}");
+        // Binder slots print as the slot they bind.
+        assert_eq!(format!("{:?}", Variance::from_var(4)), "Variance{i4}");
+        assert_eq!(
+            format!("{:?}", Variance::Y.union(Variance::from_var(5))),
+            "Variance{Y,i5}"
+        );
+        assert_eq!(format!("{:?}", Variance::ALL), "Variance{X,Y,Z,W,i4,i5,i6,i7}");
     }
 
     #[test]
@@ -447,7 +595,9 @@ mod tests {
         assert_eq!(Variance::CONST.popcount(), 0);
         assert_eq!(Variance::X.popcount(), 1);
         assert_eq!(Variance::X.union(Variance::Y).popcount(), 2);
-        assert_eq!(Variance::ALL.popcount(), 4);
+        assert_eq!(Variance::COORDS.popcount(), 4);
+        assert_eq!(Variance::BINDERS.popcount(), 4);
+        assert_eq!(Variance::ALL.popcount(), 8);
     }
 
     #[test]
@@ -479,6 +629,117 @@ mod tests {
         assert_eq!(
             v[result.0 as usize],
             Variance::X.union(Variance::Y).union(Variance::Z)
+        );
+    }
+
+    /// `deps(⊕_{i∈D} body) = deps(body) \ {i}` — REDUCTIONS_AND_FOLDS.md:32.
+    /// The binder is the only construct that shrinks the set.
+    #[test]
+    fn binder_consumes_its_index() {
+        use crate::Kernel;
+
+        // Σ_{i<4} (i + X) depends on X, not on the index it binds.
+        let k = Kernel::sum_over(4, |i| i.add(&Kernel::x()));
+        let (arena, root) = k.parts();
+        let v = super::compute_arena_variance(arena);
+        assert_eq!(v[root.0 as usize], Variance::X);
+
+        // Σ_{i<4} i depends on nothing at all: the index is bound, and it was
+        // the body's only variable. This is the case that used to come back as
+        // ALL — the analysis claimed maximal dependency for a closed term.
+        let closed = Kernel::sum_over(4, Clone::clone);
+        let (arena, root) = closed.parts();
+        let v = super::compute_arena_variance(arena);
+        assert!(
+            v[root.0 as usize].is_const(),
+            "Σ_i i has no free variables, got {:?}",
+            v[root.0 as usize]
+        );
+    }
+
+    /// Inside the body, the index IS free — and it is distinct from the
+    /// coordinates, so `Y`-invariance and index-invariance are separate facts.
+    #[test]
+    fn binder_index_is_a_variable_like_any_other() {
+        use crate::Kernel;
+        use crate::arena::ExprNode;
+        use crate::kind::OpKind;
+
+        // Σ_{i<4} (i · Y): the product depends on both the index and Y.
+        let k = Kernel::sum_over(4, |i| i.mul(&Kernel::y()));
+        let (arena, root) = k.parts();
+        let v = super::compute_arena_variance(arena);
+
+        // Find the body's multiply — the node just under the Reduce.
+        let ExprNode::Nary(OpKind::Reduce, start, len) = arena.node(root) else {
+            panic!("expected a Reduce at the root");
+        };
+        let body = arena.nary_children_slice(*start, *len)[3];
+        let body_v = v[body.0 as usize];
+
+        assert!(body_v.depends_on_binder(), "body reads the index: {body_v:?}");
+        assert!(body_v.depends_on(4), "slot 4 is the only live binder");
+        assert!(body_v.depends_on_y());
+        assert!(body_v.is_x_invariant(), "nothing here reads X");
+        assert!(
+            !body_v.is_frame_uniform(),
+            "a value that changes per fold step cannot lift to frame scope"
+        );
+        // The result, by contrast, has lost the index.
+        assert_eq!(v[root.0 as usize], Variance::Y);
+    }
+
+    /// Nested binders occupy distinct slots, and each consumes exactly its own.
+    #[test]
+    fn nested_binders_consume_one_index_each() {
+        use crate::Kernel;
+
+        // Σ_{i<3} Σ_{j<4} (i + j + X) — both indices bound, X survives.
+        let k = Kernel::sum_over(3, |i| {
+            let i = i.clone();
+            Kernel::sum_over(4, move |j| i.add(j).add(&Kernel::x()))
+        });
+        let (arena, root) = k.parts();
+        let v = super::compute_arena_variance(arena);
+        assert_eq!(v[root.0 as usize], Variance::X);
+    }
+
+    /// The LICM rule and the reduction-hoisting rule are one query at different
+    /// variables: `⊕_i (f(i) · c) = c · ⊕_i f(i)` when `deps(c) ∩ {i} = {}`
+    /// (REDUCTIONS_AND_FOLDS.md:109) is `find_hoistable_out_of(i, …)`.
+    #[test]
+    fn hoisting_out_of_a_binder_is_the_same_query_as_licm() {
+        use crate::Kernel;
+        use crate::arena::ExprNode;
+        use crate::kind::OpKind;
+
+        // Σ_{i<8} (i · sin(Y)) — sin(Y) is invariant in the index, so it can
+        // leave the fold; it is NOT invariant in Y.
+        let k = Kernel::sum_over(8, |i| i.mul(&Kernel::y().sin()));
+        let (arena, root) = k.parts();
+        let v = super::compute_arena_variance(arena);
+
+        let ExprNode::Nary(OpKind::Reduce, start, len) = arena.node(root) else {
+            panic!("expected a Reduce at the root");
+        };
+        let body = arena.nary_children_slice(*start, *len)[3];
+
+        let out_of_binder = super::find_hoistable_out_of(4, arena, body, &v, 8);
+        let sin = out_of_binder
+            .iter()
+            .find(|id| matches!(arena.node(**id), ExprNode::Unary(OpKind::Sin, _)));
+        assert!(
+            sin.is_some(),
+            "sin(Y) must be hoistable out of the fold, got {out_of_binder:?}"
+        );
+
+        // Asking about Y instead finds nothing: sin(Y) cannot cross that scope.
+        let out_of_y = super::find_hoistable_out_of(1, arena, body, &v, 8);
+        assert!(
+            !out_of_y
+                .iter()
+                .any(|id| matches!(arena.node(*id), ExprNode::Unary(OpKind::Sin, _))),
+            "sin(Y) must not be hoistable out of Y, got {out_of_y:?}"
         );
     }
 
