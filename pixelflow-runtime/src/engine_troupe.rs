@@ -19,7 +19,7 @@ use crate::vsync_actor::{
 };
 use actor_scheduler::mealy::Credit;
 use actor_scheduler::{
-    Actor, ActorHandle, ActorStatus, ActorTypes, HandlerError, HandlerResult, Message,
+    Actor, ActorHandle, ActorStatus, ActorTypes, HandlerError, HandlerResult, Message, SendError,
     SystemStatus, TroupeActor,
 };
 use pixelflow_core::{At, Discrete, Manifold, W, X, Y, Z};
@@ -324,6 +324,13 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
 }
 
 impl EngineHandler {
+    fn return_vsync_token(&self) {
+        match self.vsync.send(Message::Control(VsyncCommand::ReturnToken)) {
+            Ok(()) | Err(SendError::Disconnected) => {}
+            Err(SendError::Timeout) => panic!("Timed out returning vsync token"),
+        }
+    }
+
     /// Spawn the rasterizer actor with bootstrap handshake.
     ///
     /// This sets up:
@@ -376,12 +383,9 @@ impl EngineHandler {
         match app_data {
             AppData::RenderSurface(manifold) | AppData::RenderSurfaceU32(manifold) => {
                 log::debug!("Engine: Received RenderSurface from app");
-                // Return a vsync token - app has provided a compute graph (fast). This allows
-                // VSync to keep requesting at 60Hz regardless of rasterization speed. A real
-                // message now, not a same-process global mutation.
-                self.vsync
-                    .send(Message::Control(VsyncCommand::ReturnToken))
-                    .expect("Failed to return vsync token");
+                // The app has provided its compute graph, so permit VSync to request another
+                // frame without waiting for rasterization to finish.
+                self.return_vsync_token();
 
                 if let Some(window) = self.window.take() {
                     // Window available - render immediately
@@ -395,9 +399,7 @@ impl EngineHandler {
             }
             AppData::Skipped => {
                 // App says nothing to render - return token anyway
-                self.vsync
-                    .send(Message::Control(VsyncCommand::ReturnToken))
-                    .expect("Failed to return vsync token");
+                self.return_vsync_token();
             }
         }
     }
