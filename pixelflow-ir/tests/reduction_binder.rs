@@ -125,6 +125,34 @@ fn nested_binders_do_not_capture() {
     assert_eq!(interp(&k, 0.0, 0.0), 28.0);
 }
 
+/// Placeholder claims are process-wide, so two threads building nested binders
+/// at the same time must not be handed the same index. They release out of
+/// order — thread A finishes its outer fold while B is still inside its own —
+/// which is exactly the interleaving a depth counter gets wrong: it would
+/// re-issue a placeholder that is still live and silently turn `Σ_i Σ_j f(i,j)`
+/// into `Σ_i Σ_j f(j,j)`. This test failed roughly one run in three before the
+/// claim became a set.
+#[test]
+fn concurrently_built_binders_do_not_capture() {
+    // Σ_{i<3} Σ_{j<4} (10i + j) = 138, the two-deep case above, built from many
+    // threads at once with the nesting held open long enough to interleave.
+    let build_and_check = || {
+        for _ in 0..2_000 {
+            let k = Kernel::sum_over(3, |i| {
+                let scaled = i.mul(&Kernel::constant(10.0));
+                Kernel::sum_over(4, move |j| scaled.add(j))
+            });
+            assert_eq!(interp(&k, 0.0, 0.0), 138.0);
+        }
+    };
+
+    std::thread::scope(|s| {
+        for _ in 0..8 {
+            let _ = s.spawn(build_and_check);
+        }
+    });
+}
+
 #[test]
 fn contraction_is_a_sum_over_a_shared_index() {
     // A matmul row·column: Σ_d q(d)·k(d) with q(d) = d + X, k(d) = 2d.

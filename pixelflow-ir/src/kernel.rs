@@ -14,15 +14,18 @@
 //! new node is built, which is construction/bake time, not per pixel.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::arena::{ExprArena, ExprId, ExprNode};
 use crate::kind::OpKind;
 
-/// Binders currently under construction, process-wide. A binder's placeholder
-/// index is derived from this count, so nested — and concurrently built —
-/// binders never share one.
-static LIVE_BINDERS: AtomicU32 = AtomicU32::new(0);
+/// One bit per placeholder index, set while that index is claimed by a binder
+/// under construction. Claims are taken and released in any order, so this is a
+/// set — not a depth counter. A counter would be correct only if every release
+/// were the most recent claim, which holds within one thread's nesting and
+/// fails the moment two threads build binders at once: thread A releases ticket
+/// 0 while B still holds 1, and the next claim hands out 1 again.
+static PLACEHOLDERS_IN_USE: AtomicU64 = AtomicU64::new(0);
 
 /// Placeholder indices sit above the coordinate (`0..4`) and reduction index
 /// (`4..8`) spaces. A `Kernel` never contains the compiler's manifold-param
@@ -37,20 +40,33 @@ const PLACEHOLDER_BASE: u32 = 8;
 /// built: a nested fold renames every occurrence of its own placeholder to a
 /// real slot, so if it shared one with the fold enclosing it, it would capture
 /// the outer index — `Σ_i Σ_j f(i, j)` would silently become `Σ_i Σ_j f(j, j)`.
-/// The counter is released on drop, so the space is bounded by live nesting
-/// (at most 4 per thread) rather than by the number of kernels ever built.
+/// The claim is released on drop, so the space is bounded by how many binders
+/// are open at this instant, not by how many kernels have ever been built.
+///
+/// [`lowest_free_index_slot`] caps nesting at 4, so the 64 placeholders here
+/// admit 16 fully-nested concurrent constructions; exhaustion panics rather
+/// than aliasing an index.
 struct BinderScope(u32);
 
 impl BinderScope {
     fn enter() -> Self {
-        // Construct the guard *before* validating, so the decrement is armed
-        // even if the assertion below unwinds.
-        let scope = Self(LIVE_BINDERS.fetch_add(1, Ordering::Relaxed));
-        assert!(
-            PLACEHOLDER_BASE + scope.0 <= u8::MAX as u32,
-            "too many kernel binders under construction at once"
-        );
-        scope
+        let mut in_use = PLACEHOLDERS_IN_USE.load(Ordering::Relaxed);
+        loop {
+            let bit = (!in_use).trailing_zeros();
+            assert!(
+                bit < u64::BITS,
+                "too many kernel binders under construction at once"
+            );
+            match PLACEHOLDERS_IN_USE.compare_exchange_weak(
+                in_use,
+                in_use | (1 << bit),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Self(bit),
+                Err(observed) => in_use = observed,
+            }
+        }
     }
 
     fn placeholder(&self) -> u8 {
@@ -60,7 +76,7 @@ impl BinderScope {
 
 impl Drop for BinderScope {
     fn drop(&mut self) {
-        LIVE_BINDERS.fetch_sub(1, Ordering::Relaxed);
+        PLACEHOLDERS_IN_USE.fetch_and(!(1 << self.0), Ordering::Relaxed);
     }
 }
 
