@@ -194,6 +194,37 @@ fn vrsqrt14ps(c: &mut Vec<u8>, d: u8, s: u8) {
     evex_rrr(c, Map::M0F38, Pp::P66, false, 0x4E, d, UNUSED_VVVV, s);
 }
 
+// --- integer-domain primitives (exp/log lowering) ---
+// Same opcodes as the AVX2 backend's VEX forms, EVEX-wrapped at 512 bits.
+
+/// vcvttps2dq zmmD, zmmS — EVEX.512.F3.0F.W0 5B /r ; vvvv unused.
+fn vcvttps2dq(c: &mut Vec<u8>, d: u8, s: u8) {
+    evex_rrr(c, Map::M0F, Pp::F3, false, 0x5B, d, UNUSED_VVVV, s);
+}
+
+/// vcvtdq2ps zmmD, zmmS — EVEX.512.0F.W0 5B /r ; vvvv unused.
+fn vcvtdq2ps(c: &mut Vec<u8>, d: u8, s: u8) {
+    evex_rrr(c, Map::M0F, Pp::None, false, 0x5B, d, UNUSED_VVVV, s);
+}
+
+/// vpaddd zmmD, zmmS1, zmmS2 — EVEX.512.66.0F.W0 FE /r.
+fn vpaddd(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
+    evex_rrr(c, Map::M0F, Pp::P66, false, 0xFE, d, s1, s2);
+}
+
+/// vpslld zmmD, zmmS, imm8 — EVEX.512.66.0F.W0 72 /6 ib. The shift-by-imm
+/// group encodes the operation in ModRM.reg (/6 = left) and the DESTINATION
+/// in vvvv, with the source in r/m — reg/vvvv swap roles vs. ordinary rrr.
+fn vpslld_imm(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
+    evex_rrr_imm(c, Map::M0F, Pp::P66, false, 0x72, 6, d, s, imm);
+}
+
+/// vpsrld zmmD, zmmS, imm8 — EVEX.512.66.0F.W0 72 /2 ib (logical, zero-fill).
+fn vpsrld_imm(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
+    evex_rrr_imm(c, Map::M0F, Pp::P66, false, 0x72, 2, d, s, imm);
+}
+
+
 // --- FMA (0F38, 66 prefix, W0). 213: dst = src1*dst + src2. ---
 fn vfmadd213ps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
     evex_rrr(c, Map::M0F38, Pp::P66, false, 0xA8, d, s1, s2);
@@ -314,6 +345,8 @@ pub fn emit_binary(
         OpKind::Max => vmaxps(code, d, s1, s2),
         OpKind::BitAnd => vandps(code, d, s1, s2),
         OpKind::BitOr => vorps(code, d, s1, s2),
+        // Integer add on lane bit patterns (exp/log exponent arithmetic).
+        OpKind::IAdd => vpaddd(code, d, s1, s2),
         _ => return Err("avx512: binary op not in Stage-1 subset"),
     }
     Ok(())
@@ -456,6 +489,24 @@ pub fn emit_mask_flags(code: &mut Vec<u8>, mask: Reg) {
 }
 
 /// Emit `dst = op(src)` for a unary op (Stage-1 subset).
+/// Emit `dst = src << amount` / `dst = src >> amount` (logical, zero-fill)
+/// on lane bit patterns. The amount is a compile-time immediate — the
+/// schedule folds the `Const` RHS out (`ScheduledOp::ShiftImm`).
+pub fn emit_shift_imm(
+    code: &mut Vec<u8>,
+    op: OpKind,
+    dst: Reg,
+    src: Reg,
+    amount: u8,
+) -> Result<(), &'static str> {
+    match op {
+        OpKind::Shl => vpslld_imm(code, dst.0, src.0, amount),
+        OpKind::Shr => vpsrld_imm(code, dst.0, src.0, amount),
+        _ => return Err("avx512: emit_shift_imm requires Shl or Shr"),
+    }
+    Ok(())
+}
+
 pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) -> Result<(), &'static str> {
     match op {
         OpKind::Sqrt => vsqrtps(code, dst.0, src.0),
@@ -479,6 +530,10 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) -> Result<
         OpKind::Round => vrndscaleps(code, dst.0, src.0, 0x00),
         OpKind::Recip => vrcp14ps(code, dst.0, src.0),
         OpKind::Rsqrt => vrsqrt14ps(code, dst.0, src.0),
+        // Int/float domain crossings, exactly the hardware's cvttps2dq /
+        // cvtdq2ps — the primitives exp/log lower to.
+        OpKind::TruncToInt => vcvttps2dq(code, dst.0, src.0),
+        OpKind::IntToFloat => vcvtdq2ps(code, dst.0, src.0),
         _ => return Err("avx512: unary op not in Stage-1 subset"),
     }
     Ok(())

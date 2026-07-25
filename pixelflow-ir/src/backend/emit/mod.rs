@@ -3758,10 +3758,13 @@ impl IsaBackend for Avx512Backend {
             ResolvedOp::Unary { op, dst, src } => {
                 avx512::emit_unary(code, *op, *dst, *src)?;
             }
-            ResolvedOp::ShiftImm { .. } => {
-                // EVEX integer shift not wired yet -> exp/log don't lower on the
-                // AVX-512 path. Reject loudly rather than miscompile.
-                return Err("avx512: bit-shift (exp/log lowering) not yet supported");
+            ResolvedOp::ShiftImm {
+                op,
+                dst,
+                src,
+                amount,
+            } => {
+                avx512::emit_shift_imm(code, *op, *dst, *src, *amount)?;
             }
             ResolvedOp::Gather { dst, idx, slot } => {
                 // dst = buffer[slot][idx]. The context pointer (array of buffer
@@ -6746,7 +6749,15 @@ mod tests {
             );
         }
 
-        #[cfg(target_arch = "x86_64")]
+        // Same gate as the struct itself: the SSE2 backend only exists on the
+        // baseline build (the wide builds compile it out entirely), so this
+        // sweep runs exactly when there is a backend to sweep. The default
+        // build is the baseline, so CI's default job always runs it.
+        #[cfg(all(
+            target_arch = "x86_64",
+            not(target_feature = "avx2"),
+            not(target_feature = "avx512f")
+        ))]
         #[test]
         fn x86_backend_covers_required_ops() {
             assert_covers_required_ops("X86Backend (SSE2)", &mut X86Backend::default());
