@@ -332,376 +332,67 @@ exists, and shrinks the surface the collapse has to move. Only then do `window` 
 
 ---
 
-## 8. The render pipeline's actual edges — proven before wiring anything
-
-§7 decided where `EngineHandler`'s *state* goes. It didn't decide who performs the one
-remaining piece of logic that isn't state: matching "a window is free" against "a manifold is
-waiting" to decide when to render. That decision, and the edges it implies, needed the same
-treatment every edge in §3 got — proven before any live actor changes — because it invents two
-edges (`driver` ↔ `rasterizer`) that never existed in the mesh before.
-
-**The match logic lives in `rasterizer`, and the window is pulled rather than pushed** (§8.5
-explains why). `app` pushes its latest manifold (droppable, keep-latest, same semantics as
-today). `rasterizer` holds that manifold; when it has work and is not already holding a window
-or awaiting one, it *requests* a window. `driver` keeps the window between frames, stays its allocator,
-and grants the one it already holds — always correctly sized, because the driver resized it in
-place when the OS said so. `rasterizer` renders into it and `Present`s it back; the driver
-presents and retains it for the next request.
-
-The resulting edges, added to `pixelflow-runtime/tests/target_topology.rs`:
-
-| Edge | Direction | Kind |
-|---|---|---|
-| Tick (drives request retries) | vsync → rasterizer | Droppable — genuinely losable, next tick retries |
-| Window request ("I have work, give me a buffer") | rasterizer → driver | Droppable, **Management lane** — genuinely losable, carries nothing |
-| Window grant (correctly sized, driver-allocated) | driver → rasterizer | Droppable, **unreachable**: driver can't grant what it doesn't hold |
-| `Present` | rasterizer → driver | Droppable, **Data lane**, **unreachable** — see §8.9 for why the lane matters |
-| Manifold submission | app → rasterizer | Droppable, keep-latest |
-| Frame-rendered notice (FPS telemetry) | rasterizer → vsync | Droppable, no credit |
-| `ReturnToken` | app → vsync | Droppable, no credit |
-
-**There is no `Credit` on this loop.** Ownership of the single `Window` is already the bound —
-see §8.6. Rust will not let an actor send a window it does not hold, so "at most one in flight"
-is a property of the type rather than a counter that has to be kept in sync with it.
-
-Two of these delete an existing edge rather than add one: `engine → driver` (`Present`) and
-`driver → engine` (`PresentComplete`) are gone — `rasterizer` presents directly now. `engine ↔
-rasterizer` and `engine → vsync` (`RenderedResponse`) are gone entirely; nothing uses that pair
-any more. `app → engine` (`AppData::RenderSurface`) is also gone: the message that used to
-double as both "here is the manifold" and "return my vsync token" now travels as two direct
-sends, to the two actors that actually need each half.
-
-`ReturnToken` closes a small pre-existing gap in this proof: it was already an `engine → vsync`
-Control-lane send, but never modeled as its own edge — modeled now, since it travels a new edge
-anyway.
-
-`the_target_engine_mesh_is_a_dag` is **updated in place**, not duplicated, matching this file's
-own stated purpose of staying valid across the rollout. A new `regressed_render_pipeline_
-framing_is_cyclic` test records the shape of mistake most likely to recur here: treating "only
-one window ever circulates" as license to make the driver ↔ rasterizer hand-off synchronous in
-both directions. It's the identical error §3.1 caught for driver ↔ engine, just with a fresh
-pair of actors — two blocking edges between the same pair is a cycle regardless of whether the
-conversations are logically unrelated.
-
-### 8.1 Explicitly out of scope for this slice
-
-`engine` remains a node in the proven graph — this is a render-pipeline-only cut, not the full
-deletion. Left alone, and routed through `engine` exactly as today:
-
-- Input-event forwarding (`driver → engine`, Blocking).
-- `AppManagement` commands — `SetTitle`, `SetSize`, `SetCursor`, `Copy`, `RequestPaste`,
-  `CreateWindow` — and their replies (`PasteData`).
-- The vsync-tick → `RequestFrame` relay (`vsync → engine → app`).
-
-Moving these is a separate, later slice: none of them touch the state this doc's §7 already
-redistributed, and folding them in here would make one change cover two independent decisions.
-
-### 8.2 What implementing this actually requires
-
-Wiring these edges for real is a larger change than §7's field deletions were, and is scoped as
-its own follow-up rather than bundled with the proof:
-
-- `rasterizer`'s bootstrap (today `EngineHandler::spawn_rasterizer`) moves out of
-  `EngineHandler` entirely — the rasterizer becomes a directly-wired mesh participant with its
-  own initialization, not something the mediator stands up on the mediator's behalf.
-- A new piece of runtime-side state holds the latest manifold (no request flag — see §8.8),
-  and performs the point-space → pixel-space dimap warp that `trigger_render_with_window` does
-  today — using the dimensions of whichever window it was granted, since under §8.5 it holds no
-  window of its own between frames and never allocates one. No `Credit`: §8.6 explains why
-  ownership of the window already carries that bound. This
-  logic stays in `pixelflow-runtime`, not `pixelflow-graphics`, since it's runtime coordinate
-  mapping, not general rasterization (`CLAUDE.md`: no terminal-adjacent logic in the graphics
-  crate).
-- `app`'s handle setup gains a second target: today `Application` only reaches `engine`; it
-  needs a way to reach `rasterizer` (manifold) and `vsync` (`ReturnToken`) directly.
-
-### 8.4 What the `rasterizer` node actually is
-
-The proof's `rasterizer` node is **not** `pixelflow-graphics`'s `RasterizerActor`. It can't be:
-that crate is deliberately runtime-agnostic and names no runtime concept — no `Window`, no
-`driver`, no `vsync`, no `Application` — and §8.2 already places the window/manifold pairing and
-the point→pixel dimap warp in `pixelflow-runtime`. Left implicit, this reads as "driver sends
-windows straight to `RasterizerActor`," which is not implementable and not what was proven.
-
-So `rasterizer` in the graph is a **runtime-side coordinator**: it holds the latest manifold and
-no request flag (§8.8); it does the coordinate warp; it owns the graphics
-`RasterizerActor` as a worker behind it, via the same bootstrap handshake used today. It does
-*not* hold a window between frames — §8.5 explains why that would put the allocator on the wrong
-side — and carries no `Credit`, since §8.6 shows ownership of the window already bounds the loop.
-
-Collapsing those two into one node is sound rather than convenient, and the reason is worth
-stating because it's the property that must not silently change: **`RasterizerActor` is a leaf.**
-Its only outbound channel is `response_tx`, back to whoever registered it — it holds no handle to
-any other actor and initiates contact with nobody. A node whose sole peer is its caller, with a
-droppable reply, cannot participate in a cycle with the rest of the graph, so it cannot affect
-the DAG result either way.
-
-The moment that stops being true — if the worker ever gains a handle to a third actor — it stops
-being collapsible and has to enter the proof as its own node. That is the tripwire.
-
-### 8.5 The window is pulled, not pushed — and why the first attempts failed
-
-This section replaces two earlier ones (a "tear the Window, send metadata to engine and the
-buffer to rasterizer" split, and a follow-up "resize must not mint a window" patch). Both are
-deleted rather than annotated, because keeping a chain of superseded fixes would obscure what
-turned out to be a single wrong decision underneath all three.
-
-**What went wrong.** Automated review caught a run of defects that all turned out to share one
-cause: a `rasterizer → app` edge invented to dodge a frame-buffer clone that was never an
-acceptable option; resize windows sent over a droppable edge, where a full ring discards the
-*new* message while keep-latest requires discarding the *old* one, losing the only
-correctly-sized buffer with no replacement until the next resize; and then a fix for *that* which
-left the coordinator responsible for reallocating on resize without any edge over which to learn
-the dimensions had changed — where routing that metadata over a droppable edge would have
-reproduced the previous defect exactly.
-
-Each patch exposing the next is a decomposition error rather than a detail error. **The root
-cause: frame allocation was on the coordinator, but window size is driver-authoritative** — the
-OS decides it. Putting the allocator on the side that doesn't know the size forces size
-information to chase it across the mesh, and every route it can take is either unreliable
-(droppable, loses state permanently) or blocks the main thread.
-
-**The fix is to move allocation, not to route information better.** The driver keeps the window
-between frames and remains its allocator. The coordinator *pulls* one when it actually has work:
-
-1. `rasterizer → driver`: window request, re-sent on every tick while a manifold is held and no
-   buffer is in hand or out at the worker. Deliberately **not** gated on an outstanding-request
-   flag — §8.8 explains why that stalls forever the first time a request is dropped. (An earlier
-   draft gated it on a `Credit(1)` held across the round trip; §8.6 shows why that cannot work
-   and why ownership already suffices.)
-2. `driver → rasterizer`: the window it already holds — always correctly sized, because the
-   driver resized it in place when the OS said so.
-3. `rasterizer → driver`: `Present` once rendered. The driver presents it and retains it, ready
-   for the next request — and now holds the window again, which is what re-enables the next
-   grant.
-
-**There is no resize notification anywhere in the render pipeline, so none can be dropped.** On
-resize the driver swaps its held buffer for a correctly-sized one and tells nobody. The
-coordinator never learns dimensions because it never allocates. The problem isn't solved, it's
-absent.
-
-**Why the credit must span the round trip, and why "recoverable" was the wrong justification.**
-
-An earlier draft of this section argued the droppable edges were safe because a dropped message
-costs one frame and *the sender still holds the authoritative copy to resend*. **That argument is
-false**, and review was right to reject it: `Window` owns the framebuffer and is sent **by
-value**. `send_port` destroys the message on a full droppable ring. So a dropped grant leaves the
-driver with nothing — it moved the window out — and a dropped `Present` leaves nobody holding it.
-The sole render buffer is destroyed, permanently, not delayed by a frame. There is exactly one
-`Window`; no edge carrying it is ever safe on "recovery" grounds.
-
-Safety here comes from the drop being **impossible**, which is §3's *structurally unreachable*
-category — the argument this doc already established for `Present`/`PresentComplete` and which
-the "recoverable" framing needlessly abandoned:
-
-- The coordinator cannot request without consuming the single credit.
-- The credit is not released until the window is back with the driver, so **at most one message
-  carrying the window is in flight across all three edges at any instant.**
-- Each ring is provisioned ≥ 1. A ring holding at most one message, sent only when the previous
-  round trip completed, is never full at the moment of sending.
-
-So the droppable backstop on all three edges is dead code in the well-behaved system, exactly as
-§3 intends — present for `Topology`'s proof, unreachable by construction. Releasing the credit at
-the *grant* instead would break this directly: a second manifold could trigger a request while
-the window is still out being rendered, and the driver would have nothing to grant.
-
-**Droppable is safe when the drop cannot occur, or when the message is genuinely replaceable.**
-Never because a sender "could resend" something it moved away.
-
-**Consequence for the coordinator.** It shrinks to the latest manifold and whether a buffer is
-currently in hand — no `latest_window`, no reallocation logic, no dimension tracking, no
-`Credit` (§8.6), and no outstanding-request flag (§8.8). It still performs the point→pixel dimap
-warp, using the dimensions of the window it was handed.
-
-**Consequence for `Present`/`PresentComplete`.** `PresentComplete` disappears entirely as a
-message. Previously the window made a full circuit — `Present` carried it to the driver and
-`PresentComplete` carried it back to the engine, which was its resting owner between frames. Now
-the **driver** is the resting owner, so `Present` *is* the return: it hands the window back to
-the actor that already keeps it, and no separate acknowledgement is needed. The window still
-moves by value on every hop; what's gone is the second hop.
-
-That also retires an invariant §3 had been asserting but not holding: "exactly one window
-circulates" was untrue while resize could mint a second one mid-flight. Now exactly one window
-*exists*, and it is away from the driver only for the duration of a single render.
-
-### 8.6 Ownership is the bound — delete the credit
-
-§8.5 put a `Credit(1)` on the render loop, consumed at the request and released when `Present`
-returned the window. Review showed that cannot work, and the reason is worth keeping:
-
-**`Credit` is requester-local, and `send_port` reports `Flush::Done` whether it delivered or
-dropped.** So the coordinator can never learn that its `Present` arrived. Release the credit when
-*emitting* `Present` and a dropped delivery restores the credit while destroying the only window
-— which makes the drop-impossibility argument circular, since it assumed the credit bounded the
-edge. Never release it and rendering halts after one frame. With a coordinator-local credit and
-no acknowledgement, there is no third option.
-
-The available fixes were to reinstate a `PresentComplete` acknowledgement, or invent a
-transferable permit. Both are machinery. **The subtraction is to notice the credit was modelling
-something the type system already guarantees: you cannot send a `Window` you do not hold.**
-
-There is exactly one `Window`, and it is moved, never copied. Therefore:
-
-- **The driver can only grant while it holds the window.** Having granted, it holds nothing and
-  cannot grant again until `Present` returns it. At most one grant is ever in flight, and the
-  ring is provisioned ≥ 1 — so the grant ring is never full, and its droppable backstop is dead
-  code. No counter required; `Option<Window>` *is* the counter.
-- **The coordinator *and its worker* hold the buffer for the whole interval between a grant and
-  the matching `Present`.** An earlier draft said "the coordinator holds it," which is false:
-  §7.1 tears the granted `Window` into the request's `frame` and `meta`, and the frame is inside
-  the request the graphics worker owns while rendering. The bound survives — but only because the
-  *pair* holds it, which puts a real obligation on the internal hand-off (§8.8).
-- **The request carries no resource**, so it is the one genuinely losable message here. A dropped
-  request costs one frame and the next tick issues another — *actual* acceptable loss, of the
-  kind §3 distinguishes from structural unreachability.
-
-The coordinator's gate becomes a plain question about its own state: *do I hold a manifold, and
-is no buffer currently in hand or out at the worker?* Deliberately **not** "is a request
-outstanding" — see §8.8: a flag only a grant could clear stalls forever the first time a request
-is dropped. Re-requesting every tick is safe because the driver can only grant what it holds, so
-a duplicate finds nothing to give.
-
-**Rule.** Where a resource is unique and moved rather than copied, ownership already enforces
-the bound a `Credit` would encode. Adding one duplicates the invariant into a place it can drift
-out of sync with — and, as here, into a place that needs an acknowledgement message to maintain.
-Reach for `Credit` when the bound is *not* expressible as ownership: a count of outstanding
-requests (vsync's tick budget), or a permit held across actors that never move a value.
-
-### 8.7 Resize while the window is out being rendered
-
-§8.5 said "on resize the driver swaps its held buffer." That is only true when it *has* one.
-Between granting and `Present`, the driver holds nothing — and a resize in that gap is not a
-corner case: it is the race today's `stale` flag exists to handle, and `engine_troupe.rs`
-explicitly handles resizes arriving during both rendering and presentation.
-
-Following §8.5 literally leaves two bad options: ignore the resize and reuse the stale-sized
-buffer indefinitely, or allocate a second window and break the exactly-one invariant §8.6 now
-depends on.
-
-**The driver records pending dimensions instead of acting immediately.** It is already the size
-authority and the allocator, so remembering "the OS told me 1920×1080 while the buffer was out"
-is state that belongs to it:
-
-- Resize while the driver **holds** the window: swap the buffer now, as §8.5 said.
-- Resize while the window is **out**: store the new dimensions. Do nothing else.
-- On `Present` with pending dimensions set: the returned frame was rendered at the old size, so
-  **skip the blit** — presenting it would show a stretched or clipped frame — then replace the
-  buffer with a correctly-sized one and clear the pending dimensions. The next grant is correct.
-
-That reproduces today's behaviour exactly. The `stale` flag §7.2 deleted did precisely this job
-from the engine's side; the work does not disappear, it moves to the actor that owns the buffer,
-where it needs no cross-actor flag to coordinate — the driver observes the mismatch locally by
-comparing what it stored against what came back.
-
-One dropped frame per resize, same as today. The alternative — presenting a wrong-sized frame —
-is visibly worse and is what today's code already declines to do.
-
-### 8.8 Never drop a buffer — the ping-pong exists to reuse it
-
-The invariants above were written as "don't lose the *only* window." That undersells the
-constraint. **The ping-pong buffer exists so the framebuffer is reused rather than reallocated
-every frame.**
-
-**The design is zero-copy: the renderer writes directly into the OS framebuffer.** Under that,
-the driver is the only actor that can obtain the memory at all, which is why buffer allocation
-belongs to it and why a buffer lost in transit is not "one dropped frame" but a lost allocation
-in the one place this design is trying never to allocate.
-
-*Known deviation, tracked separately:* the current backends do not yet honour this. `Frame<P>`
-owns an ordinary `Vec<P>` and presentation **copies** it into the platform surface — macOS via
-`replaceRegion:mipmapLevel:withBytes:bytesPerRow:`, X11 via `XPutImage`. That is a defect against
-the intended design, not a constraint on it, and this section is written against the design. An
-earlier draft of this paragraph made the opposite mistake — reading the current copy as ground
-truth and concluding the driver "is not the only actor that could allocate," which would have
-weakened the ownership rule to match a bug.
-
-So the rule is stronger than uniqueness — but it is not "never destroy a buffer," because §8.7
-*requires* destroying one: on resize the old buffer is the wrong size and must be replaced. The
-distinction is **who decides**:
-
-- **Deliberate replacement by the owner** is correct and necessary. The driver holds the buffer,
-  observes the OS changed the size, frees it, allocates the right one. Nothing is lost, because
-  the actor responsible for the buffer chose this and knows the new state.
-- **Accidental loss in transit** is what must never happen. A message drop destroys a buffer that
-  *nobody decided* to destroy, and — worse — leaves both parties believing the other has it.
-
-**So: a buffer is only ever destroyed by the actor that owns it, deliberately, never by a
-delivery failure.** Two places currently violate that, both found by review:
-
-**1. A dropped request stalls rendering forever.** An earlier draft gated requests on an
-"outstanding request" flag, cleared only by a grant. Since the request edge is droppable, a
-dropped request leaves the flag set with no grant coming — the coordinator never asks again and
-the driver holds the window while rendering halts. Fixed by deleting the flag: the coordinator
-re-requests while it holds a manifold and no buffer, and duplicate requests are harmless because
-the driver can only grant what it holds.
-
-That fix needed a second half. "Re-requests every tick" is not implementable unless a tick
-actually reaches the coordinator — it is a reactive actor, waking only on messages it receives,
-and the proven graph gave it only manifolds and grants. A dropped request could then be retried
-only if the app happened to submit another manifold, which it may legitimately not do for many
-frames. So the graph gains a **`vsync → rasterizer` tick edge**: droppable and genuinely
-losable, because the next tick is the retry. This is also the shape a pull-based renderer wants
-anyway — the thing that decides when to draw should hear from the clock directly rather than
-inferring it from data arriving.
-
-**2. The graphics worker destroys the frame when paused.** `RasterCore::step_data` currently
-returns `RasterCoreOut::default()` on the paused path, consuming the `RenderRequest` — and the
-granted frame with it. Nothing then returns it to the driver. This is the same class as the outer
-edges, but *inside* the coordinator/worker pair, which is exactly why §8.6's ownership argument
-has to name the pair rather than the coordinator alone.
-
-**Required change (`pixelflow-graphics`):** every accepted `RenderRequest` must return its frame,
-including the pause path and any future error path. Paused should hand the frame back unrendered
-rather than swallow it. The worker never owns the caller's buffer — it borrows it for the
-duration of one render and is obliged to give it back regardless of outcome.
-
-That obligation is worth stating as the general form: **an actor that accepts a buffer owes it
-back on every exit path.** "Drop the work" is a safe policy for a request that carries only a
-description; it is never safe for one that carries a resource.
-
-### 8.9 `Present` and the retry requests must not share a ring
-
-§8.6 argued that ownership bounds the window-bearing messages to one in flight, so their rings
-are never full. That argument is sound about *window-bearing* traffic and silent about everything
-else — and review found the gap: **window requests and `Present` are both `rasterizer → driver`,
-so by default they share the driver's Data inbox.**
-
-Retries accumulate there. The coordinator stops requesting once a buffer is in hand, so no *new*
-request is generated during a render — but requests already queued from earlier ticks are still
-sitting in the ring when the render finishes. `Present` then arrives at a ring occupied by stale
-requests, is dropped, and destroys the sole buffer. Ownership bounds the resource; it does not
-bound the unrelated traffic sharing the resource's channel.
-
-**Fix: put them on different lanes.** The actor model already provides three
-(Control > Management > Data), each with its own ring:
-
-- **`Present` → Data lane.** It carries the frame; it is the bulk path, and it must never be
-  crowded out.
-- **Window request → Management lane.** Tiny, control-shaped, and genuinely losable. Retries
-  piling up there cannot touch the Data ring.
-
-That restores §8.6's argument by making its precondition true rather than assumed: the Data ring
-carries only window-bearing messages, of which ownership guarantees at most one.
-
-**The general form**, worth carrying into implementation: *a structural-unreachability argument
-about one message class only holds if that class has the channel to itself.* Sharing a ring with
-unbounded traffic silently converts "unreachable" into "unlikely," and unlikely is not what
-§3 means by structurally unreachable.
-
-### 8.10 Generations, not inference, decide whether a returned buffer is live
-
-§8.7 had the driver detect a superseded buffer by comparing stored dimensions against what came
-back. Implementation went further and better (`825a7d46`): buffers carry a **`Generation`**, and
-the driver decides from that rather than inferring.
-
-The inference it replaces was the weak point. Asking "is a render outstanding?" only establishes
-that *some* buffer is busy, not *which* — and dimensions alone can't distinguish a stale buffer
-from a live one that happens to match a size the window has since returned to. A generation is
-explicit: the driver stamps each buffer it allocates, tracks `current_generation`, and a returned
-buffer is live exactly when its stamp matches. No comparison of proxies, no ambiguity when sizes
-repeat.
-
-This supersedes §8.7's dimension comparison as the *mechanism*; §8.7's policy is unchanged — a
-superseded buffer's contents are not presented, and the driver replaces it before the next grant.
-Where §7.2 removed a `stale` flag one actor set inside another's record, the generation is the
-same decision made locally by the actor that owns the buffer, from data the buffer carries.
+## 8. Moving the render pipeline off `engine`
+
+Deleting the mediator means `driver`, `rasterizer`, `vsync` and `app` talk directly. This section
+is **context, not specification** — the protocol lives in the code, and
+`pixelflow-runtime/tests/target_topology.rs` is the machine-checked statement of the graph. What
+follows is the part you can't recover by reading either.
+
+### The shape
+
+The window is **pulled, not pushed**: the driver owns the framebuffer and hands it out on
+request; the coordinator asks when it has something to draw, renders, and gives it back.
+
+That direction isn't arbitrary. The OS decides window size, so the driver is the size authority —
+and the intended design is **zero-copy, the renderer writing directly into the OS framebuffer**,
+under which the driver is the only actor that can obtain the memory at all. Put allocation
+anywhere else and size information has to chase the buffer across the mesh, over edges that are
+either unreliable or block the main thread. (The current backends still copy — `Vec<P>` plus
+`replaceRegion:`/`XPutImage`. That's a known defect against the design, not a constraint on it.)
+
+The `rasterizer` node in the topology is a **runtime-side coordinator**, not
+`pixelflow-graphics`'s `RasterizerActor` — that crate is runtime-agnostic and can't name `Window`.
+The graphics actor sits behind it as a leaf worker. It's collapsed into one node in the proof
+because a leaf whose only peer is its caller can't participate in a cycle; **if it ever gains a
+handle to a third actor, that stops being true and it needs its own node.**
+
+### The judgment calls
+
+`Topology` proves acyclicity. It cannot tell you what may be lost — that's per-edge judgment, and
+it's the reason this doc exists at all:
+
+- **`[drop]` has two very different justifications.** *Structurally unreachable* (the drop path is
+  dead code) versus *genuinely acceptable loss* (dropping is normal). Conflating them is how a
+  catastrophic edge gets marked safe because it superficially resembles a harmless one.
+- **Droppable is not keep-latest.** A full ring discards the *newest* message; keep-latest needs
+  the *oldest* gone. Safe only where a subsequent message genuinely replaces the lost one.
+- **A moved resource can't be "retried."** Buffers move by value — a drop destroys them, and the
+  sender kept nothing to resend. Only messages carrying descriptions are recoverable by retry.
+- **Ownership already bounds what a `Credit` would count.** You can't send a buffer you don't
+  hold. Reach for `Credit` where the bound *isn't* ownership — outstanding request counts, permits
+  that don't move a value.
+- **A buffer is destroyed only by its owner, deliberately** — resize legitimately replaces one —
+  **never by a delivery failure**, which destroys something nobody chose to and leaves both sides
+  believing the other has it.
+
+### Known-unsettled
+
+Recorded so they aren't mistaken for solved. Each needs to be answered in code, where it can be
+checked:
+
+- **Lane separation.** Requests and `Present` share a `rasterizer → driver` direction; if they
+  share a ring, queued retries can force a `Present` drop. `Topology` doesn't model lanes, so
+  nothing currently checks this.
+- **Disconnected receivers.** `send_port` treats `Disconnected` as success and drops the payload
+  regardless of delivery kind — so a coordinator restart can destroy the buffer. Ring capacity
+  arguments don't cover this; it needs a stated terminal-failure policy.
+- **Credit-bearing replies that can be dropped.** `ReturnToken` releases vsync's tick budget; if
+  its edge can lose messages, the budget shrinks permanently. Same shape as the paste deadlock
+  in §3.2 — worth checking every credit whose release travels a droppable edge.
+- **Zero-copy.** Tracked separately; the copy in both backends is a defect, not the target.
+
+### Out of scope here
+
+`engine` remains a node for input-event forwarding, `AppManagement` commands, and the
+vsync-tick → `RequestFrame` relay. Those move in a later slice.
