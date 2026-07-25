@@ -430,3 +430,25 @@ application to forward window metadata it doesn't otherwise care about.
 
 The general rule this is the second instance of: **when two actors need different parts of one
 value, split the value — don't duplicate it, and don't reroute one consumer through the other.**
+
+### 8.4 What the `rasterizer` node actually is
+
+The proof's `rasterizer` node is **not** `pixelflow-graphics`'s `RasterizerActor`. It can't be:
+that crate is deliberately runtime-agnostic and names no runtime concept — no `Window`, no
+`driver`, no `vsync`, no `Application` — and §8.2 already places the window/manifold pairing and
+the point→pixel dimap warp in `pixelflow-runtime`. Left implicit, this reads as "driver sends
+windows straight to `RasterizerActor`," which is not implementable and not what was proven.
+
+So `rasterizer` in the graph is a **runtime-side coordinator**: it holds `latest_window`, the
+latest manifold, and the render `Credit(1)`; it does the coordinate warp; it owns the graphics
+`RasterizerActor` as a worker behind it, via the same bootstrap handshake used today.
+
+Collapsing those two into one node is sound rather than convenient, and the reason is worth
+stating because it's the property that must not silently change: **`RasterizerActor` is a leaf.**
+Its only outbound channel is `response_tx`, back to whoever registered it — it holds no handle to
+any other actor and initiates contact with nobody. A node whose sole peer is its caller, with a
+droppable reply, cannot participate in a cycle with the rest of the graph, so it cannot affect
+the DAG result either way.
+
+The moment that stops being true — if the worker ever gains a handle to a third actor — it stops
+being collapsible and has to enter the proof as its own node. That is the tripwire.
