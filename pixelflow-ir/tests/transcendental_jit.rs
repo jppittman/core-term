@@ -166,13 +166,15 @@ fn assert_tiers_agree_binary(name: &str, k: &Kernel, op: pixelflow_ir::OpKind) {
         // NaN; x86's Gt/Ge are unordered while ARM's are ordered. CI caught
         // this on macos-latest: `min(NaN, 1)` gave NaN on aarch64 against an
         // oracle written from x86's behavior.
-        if op.nan_result_is_platform_specific() && (x.is_nan() || y.is_nan()) {
+        if op.fold_is_platform_specific(&[x, y]) {
             continue;
         }
         let got = call_xy(&jit, x, y);
         let want = op.eval_binary(x, y).expect("oracle covers this op");
+        // Bit-exact, not `==`: `-0.0 == 0.0` would hide a signed-zero
+        // disagreement, which is observable downstream as `1.0/x` = ∓inf.
         assert!(
-            got == want || (got.is_nan() && want.is_nan()),
+            got.to_bits() == want.to_bits() || (got.is_nan() && want.is_nan()),
             "{name}({x}, {y}): JIT gave {got}, oracle gave {want} — tiers must agree"
         );
     }
@@ -213,7 +215,7 @@ fn round_agrees_between_tiers_away_from_ties() {
     // Non-ties only. At a tie the three tiers disagree by design (x86
     // nearest-even, aarch64 FRINTA ties-away, combinator `(x+0.5).floor()`), so
     // there is no answer to assert — see `tie_result_is_platform_specific`.
-    assert!(OpKind::Round.tie_result_is_platform_specific());
+    assert!(OpKind::Round.fold_is_platform_specific(&[2.5]));
     for x in [2.4f32, 2.6, -2.4, -2.6, 0.2, 7.0, -7.0] {
         let got = call_x(&jit, x);
         let want = OpKind::Round.eval_unary(x).expect("oracle covers Round");
@@ -231,14 +233,14 @@ fn platform_specific_ops_are_classified() {
     use pixelflow_ir::OpKind;
     for op in [OpKind::Min, OpKind::Max, OpKind::Gt, OpKind::Ge] {
         assert!(
-            op.nan_result_is_platform_specific(),
+            op.fold_is_platform_specific(&[f32::NAN, 1.0]),
             "{op:?} diverges between x86 and aarch64 on NaN"
         );
     }
     // The ones both hardwares agree on stay foldable.
     for op in [OpKind::Lt, OpKind::Le, OpKind::Eq, OpKind::Ne, OpKind::Add] {
         assert!(
-            !op.nan_result_is_platform_specific(),
+            !op.fold_is_platform_specific(&[f32::NAN, 1.0]),
             "{op:?} agrees across targets and should remain foldable"
         );
     }

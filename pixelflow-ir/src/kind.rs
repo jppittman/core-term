@@ -142,46 +142,51 @@ impl OpKind {
         }
     }
 
-    /// Whether this op's result is **platform-specific when an operand is NaN**.
+    /// Whether folding this op on `args` would bake in a **platform-specific**
+    /// answer.
     ///
     /// The FP contract (CLAUDE.md, "Floating point at the edges") is hardware
-    /// semantics — but the hardwares themselves disagree here, so for these ops
-    /// with a NaN operand the language promises *nothing*:
+    /// semantics — but the hardwares disagree in specific places, so for these
+    /// (op, operand) combinations the language promises nothing:
     ///
-    /// - `Min`/`Max`: x86 `minps`/`maxps` compute `(a OP b) ? a : b`, yielding
-    ///   the SECOND operand when either is NaN; ARM `FMIN`/`FMAX` propagate the
-    ///   NaN. `min(NaN, 1.0)` is therefore `1.0` on x86 and `NaN` on aarch64.
-    /// - `Gt`/`Ge`: x86 uses the unordered predicates (imm8 6/5), TRUE for NaN;
-    ///   ARM `FCMGT`/`FCMGE` are ordered, FALSE for NaN.
+    /// - `Min`/`Max` with a NaN operand: x86 `minps`/`maxps` compute
+    ///   `(a OP b) ? a : b`, yielding the SECOND operand; aarch64 `FMIN`/`FMAX`
+    ///   propagate the NaN. `min(NaN, 1.0)` is `1.0` on x86, `NaN` on aarch64.
+    /// - `Min`/`Max` on **opposite-signed zeros**: the same operand-order rule
+    ///   returns the second zero on x86 (since `-0.0 < 0.0` is false), while
+    ///   `FMIN` selects `-0.0` and `FMAX` selects `+0.0`. `==` cannot see this
+    ///   — `-0.0 == 0.0` — but `1.0 / x` turns it into `+inf` vs `-inf`.
+    /// - `Gt`/`Ge` with a NaN operand: x86 uses the unordered predicates
+    ///   (imm8 6/5), TRUE for NaN; aarch64 `FCMGT`/`FCMGE` are ordered, FALSE.
+    /// - `Round` at an exact tie: nearest-even on x86 (`vroundps` imm 0x00),
+    ///   ties-away on aarch64 (`FRINTA`), and `(x + 0.5).floor()` in the
+    ///   combinator tier — three answers at `±n.5`.
     ///
-    /// `Lt`/`Le`/`Eq` are ordered on both, `Ne` unordered on both, and `Round`
-    /// is nearest-even on both — those agree and are pinned by tests.
+    /// x86 has no ties-away rounding mode and NaN/zero blending costs extra
+    /// instructions, so unifying any of these would spend hot-path work on
+    /// cases the language does not promise.
     ///
-    /// Callers that must produce one answer for all targets (constant folding
-    /// above all: a folded result that differs from the runtime one is a
-    /// miscompile) have to DECLINE rather than pick a platform's answer. That
-    /// is what this predicate is for; `eval_binary` still returns a value,
-    /// which is this build's behavior and no promise about any other.
+    /// **Why a fold in particular must decline:** constant folding happens on
+    /// the BUILD host at macro-expansion time, but the constant it produces
+    /// executes on the TARGET. Folding one of these bakes the build machine's
+    /// arithmetic into a binary that may run somewhere computing differently —
+    /// so this is not merely an optimized-vs-unoptimized discrepancy.
+    ///
+    /// `eval_unary`/`eval_binary` still return a value for these; it is this
+    /// build's behavior and no promise about any other.
     #[must_use]
-    pub const fn nan_result_is_platform_specific(self) -> bool {
-        matches!(self, Self::Min | Self::Max | Self::Gt | Self::Ge)
-    }
-
-    /// Whether this op's result is **platform-specific on an exact tie**
-    /// (a half-integer input), independently of NaN.
-    ///
-    /// `Round` is: nearest-even on x86 (`vroundps`/`vrndscaleps` imm 0x00),
-    /// ties-away on aarch64 (`FRINTA`), and `(x + 0.5).floor()` in the
-    /// combinator tier (`SimdVector::round`) — three behaviors, disagreeing at
-    /// `±n.5`. `round(2.5)` is 2, 3 and 3 respectively; `round(-1.5)` is -2, -2
-    /// and -1.
-    ///
-    /// x86 has no ties-away rounding mode, so unifying them costs extra
-    /// instructions in the hot path — which the FP contract declines to spend.
-    /// The result at a tie is therefore unspecified.
-    #[must_use]
-    pub const fn tie_result_is_platform_specific(self) -> bool {
-        matches!(self, Self::Round)
+    pub fn fold_is_platform_specific(self, args: &[f32]) -> bool {
+        match self {
+            Self::Min | Self::Max => match args {
+                // Equal but distinguishable is exactly ±0.0: x86 picks by
+                // operand order, ARM by sign.
+                [a, b] => a.is_nan() || b.is_nan() || (a == b && a.to_bits() != b.to_bits()),
+                _ => false,
+            },
+            Self::Gt | Self::Ge => args.iter().any(|a| a.is_nan()),
+            Self::Round => args.iter().any(|a| a.fract().abs() == 0.5),
+            _ => false,
+        }
     }
 
     /// Whether `self` is a valid reduction combiner (an associative monoid op
@@ -595,7 +600,7 @@ impl OpKind {
             // x86's answer (`vroundps` imm 0x00 is nearest-even). aarch64
             // `FRINTA` is ties-away and the combinator tier is
             // `(x + 0.5).floor()`, so at a tie this is one of three behaviors
-            // and no promise — see `tie_result_is_platform_specific`.
+            // and no promise — see `fold_is_platform_specific`.
             Self::Round => Some(x.round_ties_even()),
             // Integer-domain primitives. A lane holds an f32 bit pattern; these
             // reinterpret it as i32, exactly as the hardware instructions do
@@ -628,7 +633,7 @@ impl OpKind {
             Self::Div => Some(x / y),
             // `minps`/`maxps` semantics on x86: `(a OP b) ? a : b`, so a NaN in
             // EITHER operand yields the second. aarch64 `FMIN`/`FMAX` propagate
-            // the NaN instead — see `nan_result_is_platform_specific`. This arm
+            // the NaN instead — see `fold_is_platform_specific`. This arm
             // is x86's answer and is not a promise for other targets.
             Self::Min => Some(if x < y { x } else { y }),
             Self::Max => Some(if x > y { x } else { y }),
@@ -637,7 +642,7 @@ impl OpKind {
             // Gt/Ge are x86's UNORDERED predicates (imm8 6 = NLE_US, 5 =
             // NLT_US), so unlike Lt/Le they are TRUE when either operand is
             // NaN. ARM's FCMGT/FCMGE are ordered and give FALSE — see
-            // `nan_result_is_platform_specific`.
+            // `fold_is_platform_specific`.
             Self::Gt => Some(if x <= y { 0.0 } else { 1.0 }),
             Self::Ge => Some(if x < y { 0.0 } else { 1.0 }),
             // Exact, as every emitter compares. The old `(x-y).abs() < EPSILON`

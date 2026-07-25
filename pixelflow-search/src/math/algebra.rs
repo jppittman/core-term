@@ -910,24 +910,16 @@ impl Rewrite for ConstantFold {
         // matters more than a same-machine consistency nicety: the folder runs
         // on the BUILD host at macro-expansion time, while the folded constant
         // executes on the TARGET, so folding here bakes the build machine's
-        // answer into code that may run somewhere that computes differently.
+        // arithmetic into code that may run somewhere that computes
+        // differently. `fold_is_platform_specific` owns the classification
+        // (NaN and signed-zero Min/Max, NaN Gt/Ge, Round at a tie) so it lives
+        // in one place next to the semantics rather than as conditions here.
         //
-        // - `Round` at an exact tie: x86 nearest-even (2.5 -> 2), aarch64
-        //   `FRINTA` ties-away (-> 3). Round is unary, so declining is a
-        //   COMPLETE fix — there is no rewrite that can reintroduce the fold.
-        // - `Min`/`Max` with a NaN operand: x86 yields the second operand,
-        //   aarch64 propagates the NaN. Declining is only PARTIAL here: the
-        //   e-graph installs commutativity for these ops, so `min(1.0, NaN)`
-        //   can still be commuted to `min(NaN, 1.0)` and folded. That is
-        //   permitted (the result is unspecified — see CLAUDE.md) but this
-        //   still removes the direct path, and claiming otherwise would be
-        //   the overreach an earlier revision of this guard was reverted for.
-        if kind.nan_result_is_platform_specific() && args.iter().any(|a| a.is_nan()) {
-            return None;
-        }
-        if kind.tie_result_is_platform_specific()
-            && args.iter().any(|a| a.fract().abs() == 0.5)
-        {
+        // Complete for `Round` (unary — no rewrite can reintroduce the fold).
+        // Partial for `Min`/`Max`: the e-graph installs commutativity for them,
+        // so a commuted form can still be folded. That is permitted, since the
+        // result is unspecified, but this removes the direct path.
+        if kind.fold_is_platform_specific(&args) {
             return None;
         }
 
@@ -1057,5 +1049,18 @@ mod platform_specific_fold_tests {
         // Without a NaN the targets agree and folding proceeds.
         assert_eq!(folds(&ops::Min, &[1.0, 2.0]), Some(1.0));
         assert_eq!(folds(&ops::Max, &[1.0, 2.0]), Some(2.0));
+    }
+
+    /// Opposite-signed zeros are the non-NaN case where Min/Max still diverge:
+    /// x86 picks by operand order (`-0.0 < 0.0` is false, so the second wins),
+    /// aarch64 `FMIN` picks `-0.0` and `FMAX` picks `+0.0`. `==` cannot tell
+    /// them apart, but `1.0 / x` makes it `+inf` versus `-inf`.
+    #[test]
+    fn declines_signed_zero_min_max() {
+        assert_eq!(folds(&ops::Min, &[-0.0, 0.0]), None);
+        assert_eq!(folds(&ops::Min, &[0.0, -0.0]), None);
+        assert_eq!(folds(&ops::Max, &[-0.0, 0.0]), None);
+        // Same-signed zeros are indistinguishable, so folding is fine.
+        assert_eq!(folds(&ops::Min, &[0.0, 0.0]).map(f32::to_bits), Some(0.0f32.to_bits()));
     }
 }
