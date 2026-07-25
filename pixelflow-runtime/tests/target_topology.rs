@@ -96,6 +96,12 @@ fn the_target_engine_mesh_is_a_dag() {
     // Note there is no resize edge at all. The driver owns the buffer and resizes it locally,
     // deferring to `Present` if the window is out at the time (§8.7), so no resize message
     // exists that could be dropped.
+    // The coordinator is reactive — it acts only on messages it receives. A tick edge is what
+    // makes "re-request until granted" implementable at all: without it, a dropped request could
+    // only be retried if another manifold happened to arrive, and the app may legitimately send
+    // nothing for many frames. Droppable and genuinely losable: the next tick is the retry.
+    topo.droppable_edge(vsync, rasterizer); // tick — drives request retries
+
     topo.droppable_edge(rasterizer, driver); // window request (losable; carries nothing)
     topo.droppable_edge(driver, rasterizer); // window grant (unreachable: can't grant unheld)
     topo.droppable_edge(app, rasterizer); // manifold submission (keep-latest, as today)

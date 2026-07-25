@@ -507,10 +507,10 @@ the window is still out being rendered, and the driver would have nothing to gra
 **Droppable is safe when the drop cannot occur, or when the message is genuinely replaceable.**
 Never because a sender "could resend" something it moved away.
 
-**Consequence for the coordinator.** It shrinks: the latest manifold plus a "request
-outstanding" flag — no `latest_window`, no reallocation logic, no dimension tracking, and (per
-§8.6) no `Credit`. It still performs the point→pixel dimap warp, using the dimensions of the
-window it was handed.
+**Consequence for the coordinator.** It shrinks to the latest manifold and whether a buffer is
+currently in hand — no `latest_window`, no reallocation logic, no dimension tracking, no
+`Credit` (§8.6), and no outstanding-request flag (§8.8). It still performs the point→pixel dimap
+warp, using the dimensions of the window it was handed.
 
 **Consequence for `Present`/`PresentComplete`.** `PresentComplete` disappears entirely as a
 message. Previously the window made a full circuit — `Present` carried it to the driver and
@@ -622,8 +622,17 @@ delivery failure.** Two places currently violate that, both found by review:
 "outstanding request" flag, cleared only by a grant. Since the request edge is droppable, a
 dropped request leaves the flag set with no grant coming — the coordinator never asks again and
 the driver holds the window while rendering halts. Fixed by deleting the flag: the coordinator
-re-requests every tick while it holds a manifold and no buffer, and duplicate requests are
-harmless because the driver can only grant what it holds.
+re-requests while it holds a manifold and no buffer, and duplicate requests are harmless because
+the driver can only grant what it holds.
+
+That fix needed a second half. "Re-requests every tick" is not implementable unless a tick
+actually reaches the coordinator — it is a reactive actor, waking only on messages it receives,
+and the proven graph gave it only manifolds and grants. A dropped request could then be retried
+only if the app happened to submit another manifold, which it may legitimately not do for many
+frames. So the graph gains a **`vsync → rasterizer` tick edge**: droppable and genuinely
+losable, because the next tick is the retry. This is also the shape a pull-based renderer wants
+anyway — the thing that decides when to draw should hear from the clock directly rather than
+inferring it from data arriving.
 
 **2. The graphics worker destroys the frame when paused.** `RasterCore::step_data` currently
 returns `RasterCoreOut::default()` on the paused path, consuming the `RenderRequest` — and the
