@@ -21,63 +21,65 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Floating point at the edges
 
-**The contract is hardware semantics, not IEEE-754 conformance.** Floating point
-should behave the way someone who is not a computer scientist would expect;
-IEEE is over-specified for a renderer, and matching it exactly costs
-instructions in the hot path for cases the language does not promise. So where
-a SIMD instruction and scalar Rust disagree at the edges, **the instruction
-wins** and the reference semantics are written to match it — never the reverse.
+**Rust already ships reasonably fast IEEE-754 arithmetic.** `f32::min`,
+`f32::round`, ordered comparisons — correct, conformant, and quick enough for
+almost everything. Reaching for pixelflow *is* the decision that "almost
+everything" excludes you: the library exists because conformant-and-quick was
+judged inadequate on performance grounds. So the trade is made deliberately and
+in one direction — **the language gives you the instruction.** Edge-case IEEE
+conformance is not on offer, and code that needs it should compute that part in
+scalar `f32` where it is already available and already fast.
 
-Consequences, all pinned by `pixelflow-ir/tests/transcendental_jit.rs`:
+That is the whole contract. The tables below are reference material for what the
+instructions do, not a list of defects, and nothing here should be "fixed" by
+spending hot-path instructions to match scalar Rust.
 
-There are **three** evaluation tiers — the combinator `Field` ops, the JIT, and
-`OpKind::eval_*` (the differential oracle *and* the e-graph's constant folder) —
-and they do not all agree at the edges. What is promised is only what every tier
-on every target actually does:
+Behavior every target agrees on, pinned by
+`pixelflow-ir/tests/transcendental_jit.rs`:
 
 | Op | Behavior |
 |---|---|
 | `Lt`, `Le` | ordered — false for NaN |
-| `Eq`, `Ne` | **exact** comparison (not epsilon); NaN never equal, always unequal |
+| `Eq`, `Ne` | **exact** comparison; NaN never equal, always unequal |
 | `exp`, `exp2` | saturate past ±126 exponents rather than overflowing to `inf` |
 
-**Unspecified — the targets disagree, so rely on neither:**
+Behavior that differs by target, because the instructions do:
 
 | Op | x86 | aarch64 | combinator tier |
 |---|---|---|---|
 | `Min`, `Max` (NaN operand) | `(a OP b) ? a : b` → the **second** operand | `FMIN`/`FMAX` **propagate** NaN | — |
 | `Min`, `Max` (opposite-signed zeros) | operand order → the **second** zero | `FMIN` picks `-0.0`, `FMAX` picks `+0.0` | — |
 | `Gt`, `Ge` (NaN operand) | unordered (imm8 6/5) — **true** | `FCMGT`/`FCMGE` ordered — **false** | ordered — **false** |
-| `Round` (exact tie) | nearest-**even** (imm 0x00) → `round(2.5) == 2` | `FRINTA` ties-**away** → `3` | `(x+0.5).floor()` → `3`, but `round(-1.5) == -1` |
+| `Round` (exact tie) | nearest-**even** (imm 0x00) → `round(2.5) == 2` | `FRINTA` ties-**away** → `3` | `(x+0.5).floor()` → `3` |
+| `Round` (`-0.5 ≤ x ≤ -0.0`) | `-0.0` (sign preserved) | `-0.0` | `+0.0` |
 
-`min(NaN, 1.0)` is `1.0` on x86 and `NaN` on aarch64. x86 has no ties-away
-rounding mode, so unifying `Round` costs extra instructions in the hot path.
-"Hardware semantics" is not one answer when the hardware differs — so the
-language promises none, marked by `OpKind::fold_is_platform_specific(args)`,
-which is value-aware because the divergence is: `min(1.0, 2.0)` is perfectly
-foldable, `min(-0.0, 0.0)` is not. Do not write a test, a rewrite rule, or a
-fold that depends on one target's answer — and note that `==` cannot see the
-signed-zero case (`-0.0 == 0.0`), so compare bit patterns; `1.0 / x` turns it
-into `+inf` versus `-inf`.
+Unifying any row costs instructions — x86 has no ties-away rounding mode, and
+NaN or signed-zero blending is a compare plus a select — so none of them are
+unified. Portable code should not depend on a single row's answer;
+`OpKind::fold_is_platform_specific(args)` marks them, and is value-aware because
+the divergence is: `min(1.0, 2.0)` is perfectly foldable, `min(-0.0, 0.0)` is
+not. Note `==` cannot see the signed-zero case (`-0.0 == 0.0`), so compare bit
+patterns — `1.0 / x` turns it into `+inf` versus `-inf`.
 
-Constant folding must **decline** for these, and the reason is sharper than
-optimizer consistency: the folder runs on the *build host* at macro-expansion
-time while the constant executes on the *target*, so folding bakes the build
-machine's arithmetic into a binary that may run elsewhere.
+**The one thing this does not license: folding on the wrong machine.** Constant
+folding runs on the *build host* at macro-expansion time while the constant
+executes on the *target*, so folding a row from the second table bakes the build
+machine's answer into a binary that runs somewhere else. That is not a
+speed-for-conformance trade — it is simply the wrong value for that target — so
+`ConstantFold` declines those cases. Everything else folds.
 
-Corollary worth stating because it is easy to get wrong: **unspecified means the
-optimizer may legitimately produce a different answer than the unoptimized code.**
-`Min`/`Max` are not commutative on NaN (`min(1.0, NaN)` vs `min(NaN, 1.0)`
-differ on x86), yet the e-graph installs commutativity for them. That is sound
-only because the result is unspecified; it would be a miscompile the moment
-anything promised a value.
+Corollary, easy to get wrong: **within a target, the optimizer may still produce
+a different answer than the unoptimized code.** `Min`/`Max` are not commutative
+on NaN (`min(1.0, NaN)` vs `min(NaN, 1.0)` differ on x86), yet the e-graph
+installs commutativity for them. That is sound precisely because no value was
+promised; it would be a miscompile the moment anything promised one.
 
-**What this does NOT license: the two tiers disagreeing.** `OpKind::eval_unary`
-/ `eval_binary` are the differential oracle *and* the e-graph's constant
-folder, so if they diverge from the emitted code, a folded expression computes
-differently from the same expression at runtime — a miscompile, not an edge
-case. When you touch either an encoder or the oracle, change both and extend
-the tests above.
+The combinator tier's `Round` is a genuine bug rather than an instance of this
+trade: `(x + 0.5).floor()` is two instructions where `roundps` is one, and it is
+not any IEEE rounding mode (`round(-1.5)` is -1 there, -2 everywhere else). It
+is slower *and* wrong, so it should be replaced with the target's rounding
+instruction — the trade only ever justifies taking what the hardware gives, never
+hand-rolling something worse.
 
 ### Philosophy
 

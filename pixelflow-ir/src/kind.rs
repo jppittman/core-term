@@ -161,6 +161,11 @@ impl OpKind {
     /// - `Round` at an exact tie: nearest-even on x86 (`vroundps` imm 0x00),
     ///   ties-away on aarch64 (`FRINTA`), and `(x + 0.5).floor()` in the
     ///   combinator tier — three answers at `±n.5`.
+    /// - `Round` on `-0.5 <= x <= -0.0`: both JIT tiers round to `-0.0`,
+    ///   preserving the sign, while the combinator formula yields `+0.0`.
+    ///   Not a tie, so it needs its own condition. `(x + 0.5).floor()` is not
+    ///   any IEEE rounding mode — `round(-1.5)` is -1 there against -2
+    ///   everywhere else — so the real repair is in that tier, not here.
     ///
     /// x86 has no ties-away rounding mode and NaN/zero blending costs extra
     /// instructions, so unifying any of these would spend hot-path work on
@@ -184,7 +189,15 @@ impl OpKind {
                 _ => false,
             },
             Self::Gt | Self::Ge => args.iter().any(|a| a.is_nan()),
-            Self::Round => args.iter().any(|a| a.fract().abs() == 0.5),
+            // Ties (x86 nearest-even vs aarch64 ties-away), plus the interval
+            // where the combinator formula loses the sign of zero: for
+            // `-0.5 <= x <= -0.0` both JIT tiers round to `-0.0` (sign
+            // preserved) while `(x + 0.5).floor()` gives `+0.0`. `1.0 / x`
+            // makes that `-inf` versus `+inf`. `-0.5` is already covered as a
+            // tie; the rest of the interval is not.
+            Self::Round => args
+                .iter()
+                .any(|a| a.fract().abs() == 0.5 || (a.is_sign_negative() && *a > -0.5)),
             _ => false,
         }
     }
