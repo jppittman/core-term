@@ -10,7 +10,7 @@ use crate::pixel::PlatformPixel;
 // Re-export WindowId from public API for backward compatibility
 pub use crate::api::public::WindowId;
 
-use crate::display::messages::{DisplayEvent, Window};
+use crate::display::messages::{DisplayEvent, Window, WindowMeta};
 
 /// Commands sent to the Display Driver.
 #[derive(Debug)]
@@ -56,9 +56,9 @@ pub enum EngineData {
         refresh_interval: std::time::Duration,
     },
     PresentComplete(Window),
-    /// Render complete - carries the render response (cooked frame + timing).
-    /// Window is reconstructed from pending_render metadata in the engine.
-    RenderComplete(RenderResponse<PlatformPixel>),
+    /// Render complete - carries the cooked frame, timing, and the window metadata that
+    /// travelled out with the request, from which the `Window` is reassembled.
+    RenderComplete(RenderResponse<PlatformPixel, WindowMeta>),
 }
 
 impl std::fmt::Debug for EngineData {
