@@ -95,6 +95,7 @@ Manifolds compose via operator overloading, and the type tree *is* the compute g
 
 ### Documentation
 
+- **[docs/README.md](docs/README.md)** — Documentation landing page, status taxonomy, and index
 - **[CLAUDE.md](CLAUDE.md)** — Architectural constraints, workspace structure, and development guidelines
 - **[docs/STYLE.md](docs/STYLE.md)** — Code style guide and design principles
 - **[docs/designs/](docs/designs/)** — Design docs for the compiler, e-graph search, and actor scheduler
