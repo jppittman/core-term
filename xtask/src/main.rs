@@ -21,6 +21,9 @@ fn main() {
         eprintln!("Commands:");
         eprintln!("  bundle-run    Build and run the bundled macOS app");
         eprintln!("  bake-eigen    Parse Stam's eigenstructure binary → Rust consts");
+        eprintln!("  isa-matrix    Run the workspace test suite at every x86-64 ISA");
+        eprintln!("                level this host actually supports (SSE2/AVX2/AVX-512)");
+        eprintln!("                [--clippy to also run clippy per level]");
         std::process::exit(1);
     }
 
@@ -32,6 +35,10 @@ fn main() {
         }
         "bake-eigen" => {
             bake_eigen();
+        }
+        "isa-matrix" => {
+            let with_clippy = args[2..].iter().any(|a| a == "--clippy");
+            isa_matrix(with_clippy);
         }
         _ => {
             eprintln!("Unknown command: {}", args[1]);

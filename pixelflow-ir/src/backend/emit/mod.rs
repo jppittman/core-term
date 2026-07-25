@@ -5189,7 +5189,11 @@ mod tests {
     // 128-bit under the default build; gated off `+avx512f` where `KernelFn` is
     // `__m512` (the AVX-512 per-batch path is covered by the `avx512` tests).
     #[test]
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn scanline_matches_per_batch_x86() {
         use core::arch::x86_64::*;
 
@@ -5254,7 +5258,11 @@ mod tests {
     /// Run a per-batch arena kernel at `x` (Y/Z/W = 0) and return lane 0.
     /// 128-bit `KernelFn`; the builtin-parity tests below use it. Gated off
     /// `+avx512f` (those builtins aren't in the AVX-512 op set yet anyway).
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn run1(arena: &ExprArena, root: ExprId, x: f32) -> f32 {
         use core::arch::x86_64::*;
         let r = compile_arena_dag(arena, root).expect("compile failed");
@@ -5267,7 +5275,11 @@ mod tests {
 
     /// Per-batch eval at (X=x, Y=y, Z=W=0), lane 0. 128-bit `KernelFn`, so gated
     /// off `+avx512f` like `run1`.
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn run_xy(arena: &ExprArena, root: ExprId, x: f32, y: f32) -> f32 {
         use core::arch::x86_64::*;
         let r = compile_arena_dag(arena, root).expect("compile failed");
@@ -5282,7 +5294,11 @@ mod tests {
     /// runs `lower_dwrt`, so `D(√(x²+y²), x)` compiles to `x / √(x²+y²)`
     /// without the caller ever seeing the derivative machinery.
     #[test]
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn dwrt_compiles_to_analytic_derivative() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -5330,7 +5346,11 @@ mod tests {
     /// all pushed before any is consumed, so dozens are simultaneously live
     /// against 6 allocatable registers.
     #[test]
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn spill_frame_beyond_red_zone_compiles_correctly() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -5371,7 +5391,11 @@ mod tests {
     /// reference across a range of inputs — these exercise `emit_arena` →
     /// `emit_unary` directly (not the compiler's lowering).
     #[test]
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn x86_unary_builtins_match_scalar() {
         // Tolerances reflect the shared (with aarch64) minimax-polynomial
         // accuracy over a sensible input range; exact ops use tight bounds.
@@ -5485,7 +5509,11 @@ mod tests {
 
     /// Binary transcendentals + comparisons + ternaries, JIT vs scalar.
     #[test]
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn x86_binary_ternary_builtins_match_scalar() {
         use core::arch::x86_64::*;
         // Helper: compile f(X, Y) and eval at (x, y).
@@ -5606,7 +5634,11 @@ mod tests {
     /// Transcendental lowering: sin/cos/tan JIT through the per-batch path with
     /// no backend ever emitting a transcendental (they expand to arithmetic in
     /// `lowering`). Validated against `f32` on the default (128-bit) build.
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     mod lowering_tests {
         use super::*;
         use crate::arena::ExprArena;
@@ -5766,7 +5798,11 @@ mod tests {
     // =========================================================================
     // Calls kernels through the per-batch `KernelFn` (128-bit here); gated off
     // `+avx512f` where that ABI is `__m512` (AVX-512 covered by `avx512_driver`).
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     mod sched {
         use super::*;
         use crate::arena::ExprArena;
@@ -5916,7 +5952,11 @@ mod tests {
     // =========================================================================
     #[cfg(any(
         target_arch = "aarch64",
-        all(target_arch = "x86_64", not(target_feature = "avx512f"))
+        all(
+            target_arch = "x86_64",
+            not(target_feature = "avx512f"),
+            not(target_feature = "avx2")
+        )
     ))]
     mod gather_driver_128 {
         use super::*;
