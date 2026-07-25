@@ -506,6 +506,18 @@ fn terminal_app_roundtrip_priority_ordering() {
     let keypress_clone = keypress_count.clone();
     let frame_clone = frame_count.clone();
 
+    // Enqueue all three *before* anything is draining them. Priority selection can only be
+    // observed among messages the actor has to choose between; sending while it is already
+    // running tests arrival order instead, and the actor is then free to handle the keypress
+    // before the resize has even been sent. That is what this test used to do, and it lost the
+    // race on CI — `x` arrived where `RESIZE:800x600` was asserted.
+    tx.send(Message::Data(TestEngineData::FrameRequest))
+        .unwrap();
+    tx.send(Message::Management(TestEngineManagement::KeyPress('x')))
+        .unwrap();
+    tx.send(Message::Control(TestEngineControl::Resize(800, 600)))
+        .unwrap();
+
     let handle = thread::spawn(move || {
         let mut actor = TestTerminalAppActor {
             pty_output_tx: pty_tx,
@@ -516,30 +528,20 @@ fn terminal_app_roundtrip_priority_ordering() {
         rx.run(&mut actor);
     });
 
-    // Send in reverse priority order
-    tx.send(Message::Data(TestEngineData::FrameRequest))
-        .unwrap();
-    tx.send(Message::Management(TestEngineManagement::KeyPress('x')))
-        .unwrap();
-    tx.send(Message::Control(TestEngineControl::Resize(800, 600)))
-        .unwrap();
+    // Control before Management, whatever order they were sent in. Blocking on the output is
+    // the synchronisation — no sleep to be too short on a loaded runner.
+    let first = pty_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(first, b"RESIZE:800x600");
+    let second = pty_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(second, vec![b'x']);
 
-    thread::sleep(Duration::from_millis(100));
     drop(tx);
     handle.join().unwrap();
 
-    // Verify all processed
+    // Every lane ran, including Data, which emits nothing to the pty.
     assert_eq!(resize_count.load(Ordering::SeqCst), 1);
     assert_eq!(keypress_count.load(Ordering::SeqCst), 1);
     assert_eq!(frame_count.load(Ordering::SeqCst), 1);
-
-    // Control should be processed first (resize)
-    let first = pty_rx.recv_timeout(Duration::from_millis(100)).unwrap();
-    assert_eq!(first, b"RESIZE:800x600");
-
-    // Then management (keypress)
-    let second = pty_rx.recv_timeout(Duration::from_millis(100)).unwrap();
-    assert_eq!(second, vec![b'x']);
 }
 
 // =============================================================================
