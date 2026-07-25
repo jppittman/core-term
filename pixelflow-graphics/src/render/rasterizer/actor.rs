@@ -50,8 +50,12 @@ use std::time::Instant;
 // RasterCore: the pure decision logic
 // ────────────────────────────────────────────────────────────────────────────
 
-/// What a render request decides to emit. `Default` (no response) covers the paused case —
-/// mirrors `VsyncCoreOut` in `vsync_actor.rs`: at most one output value per step.
+/// What a step decides to emit. `Default` (no response) is for the control and management steps,
+/// which legitimately emit nothing — mirrors `VsyncCoreOut` in `vsync_actor.rs`.
+///
+/// **`step_data` never uses the `None` case.** A render always returns its frame, paused or not;
+/// see [`RasterCore::render`], where the return type makes that a compile-time obligation rather
+/// than a convention.
 pub(crate) struct RasterCoreOut<P: Pixel, Meta = ()> {
     pub(crate) response: Option<RenderResponse<P, Meta>>,
 }
@@ -84,6 +88,54 @@ impl<P: Pixel, Meta> RasterCore<P, Meta> {
         }
     }
 
+    /// Render a request, **always returning its frame**.
+    ///
+    /// The obligation is in the signature rather than in a comment: this returns
+    /// `RenderResponse`, which requires a `Frame`, and the only frame in scope is the one that
+    /// arrived in `request`. A paused early-return that dropped the request would leave nothing
+    /// to build the return value from, so it does not compile. That matters because the frame is
+    /// the caller's sole render buffer — losing it is not a dropped frame, it is a lost
+    /// allocation the caller can never recover.
+    ///
+    /// Infallible on purpose. Rasterisation writes pixels into a buffer and has no failure mode,
+    /// and a `Result` here would reintroduce exactly the hole this signature closes: an `Err`
+    /// path carrying no frame.
+    fn render(&mut self, request: RenderRequest<P, Meta>) -> RenderResponse<P, Meta> {
+        let RenderRequest {
+            manifold,
+            mut frame,
+            meta,
+        } = request;
+
+        if self.paused {
+            log::debug!("Rasterizer paused; returning the frame unrendered");
+            return RenderResponse {
+                frame,
+                render_time: None,
+                meta,
+            };
+        }
+
+        let start = Instant::now();
+        rasterize(&manifold, &mut frame, self.num_threads);
+        let render_time = start.elapsed();
+
+        log::trace!(
+            "Rendered {}x{} frame in {:?} ({} threads)",
+            frame.width,
+            frame.height,
+            render_time,
+            self.num_threads
+        );
+
+        // `meta` is handed straight back, never inspected — see `RenderRequest::meta`.
+        RenderResponse {
+            frame,
+            render_time: Some(render_time),
+            meta,
+        }
+    }
+
     fn config(&self) -> RasterConfig {
         RasterConfig {
             num_threads: self.num_threads,
@@ -98,40 +150,14 @@ impl<P: Pixel, Meta> Transducer for RasterCore<P, Meta> {
     type Data = RenderRequest<P, Meta>;
     type Out = RasterCoreOut<P, Meta>;
 
+    /// Delegates to [`RasterCore::render`], which is where the frame-return obligation is
+    /// enforced. Deliberately a one-liner: there is no branch here that could lose a frame.
     fn step_data(
         &mut self,
         request: RenderRequest<P, Meta>,
     ) -> Result<RasterCoreOut<P, Meta>, HandlerError> {
-        if self.paused {
-            log::debug!("Rasterizer paused, dropping render request");
-            return Ok(RasterCoreOut::default());
-        }
-
-        let RenderRequest {
-            manifold,
-            mut frame,
-            meta,
-        } = request;
-
-        let start = Instant::now();
-        rasterize(&manifold, &mut frame, self.num_threads);
-        let render_time = start.elapsed();
-
-        log::trace!(
-            "Rendered {}x{} frame in {:?} ({} threads)",
-            frame.width,
-            frame.height,
-            render_time,
-            self.num_threads
-        );
-
         Ok(RasterCoreOut {
-            // `meta` is handed straight back, never inspected — see `RenderRequest::meta`.
-            response: Some(RenderResponse {
-                frame,
-                render_time,
-                meta,
-            }),
+            response: Some(self.render(request)),
         })
     }
 
@@ -243,14 +269,23 @@ mod core_tests {
     }
 
     #[test]
-    fn a_paused_core_drops_the_request_without_rendering() {
+    fn a_paused_core_returns_the_frame_unrendered() {
+        // Previously this asserted the response was `None` — i.e. that pausing *dropped* the
+        // request. That destroyed the caller's sole render buffer, which is a lost allocation
+        // rather than a skipped frame. The frame now comes back either way; only `render_time`
+        // reports whether it was drawn into.
         let mut core = RasterCore::<Rgba8>::new(1);
         core.step_control(RasterControl::Pause).unwrap();
+
         let out = core.step_data(request(8)).unwrap();
+        let response = out
+            .response
+            .expect("a paused core must still return the caller's frame");
         assert!(
-            out.response.is_none(),
-            "a paused core must not render or emit a response"
+            response.render_time.is_none(),
+            "and must report that it did not render"
         );
+        assert_eq!(response.frame.width, 8, "the frame comes back intact");
     }
 
     #[test]
@@ -465,7 +500,10 @@ mod tests {
         // Verify frame was rendered
         assert_eq!(response.frame.width, 64);
         assert_eq!(response.frame.height, 64);
-        assert!(response.render_time.as_nanos() > 0);
+        assert!(
+            response.render_time.is_some_and(|d| d.as_nanos() > 0),
+            "an unpaused rasterizer reports the time it spent"
+        );
 
         // Shutdown
         handle
@@ -540,10 +578,15 @@ mod tests {
             .send(Message::Data(request))
             .expect("Failed to send render request");
 
-        // Should timeout because rendering is paused
-        assert!(response_rx
-            .recv_timeout(std::time::Duration::from_millis(100))
-            .is_err());
+        // The frame comes back even while paused — losing it would cost the caller its only
+        // render buffer. `render_time: None` is how "not drawn into" is reported.
+        let response = response_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a paused rasterizer must still return the frame");
+        assert!(
+            response.render_time.is_none(),
+            "paused means not rendered, not buffer withheld"
+        );
 
         // Resume
         handle
