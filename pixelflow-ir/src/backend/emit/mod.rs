@@ -3331,6 +3331,23 @@ pub fn compile_arena_dag_with_ctx(
 #[cfg(target_arch = "x86_64")]
 const X86_SCHED_NUM_REGS: u8 = 6;
 
+/// Allocatable scratch register count handed to `linear_scan` on AVX2 (ymm4-7).
+///
+/// Two fewer than SSE2's six. AVX2's gather splits into 128-bit halves and so
+/// needs two scratch registers beyond the pair SSE2 uses (ymm13/14) to hold the
+/// high-half indices and the high-half result across the recombine. Those live
+/// in ymm8/ymm9, which must therefore sit OUTSIDE the allocator's range: with
+/// six allocatable (ymm4-9) the allocator could hand `dst` or `idx` an ymm8/9
+/// that the gather then overwrites mid-sequence, silently returning wrong
+/// lanes — reachable whenever five values stay live across a gather.
+///
+/// The cost is more spilling in AVX2 kernels generally, to fix a bug on the
+/// gather path specifically. Spilling the two half-temporaries to the red zone
+/// instead would restore the sixth register; that is a contained change to
+/// `avx2::emit_gather_scalar` and is the better long-term fix.
+#[cfg(target_arch = "x86_64")]
+const AVX2_SCHED_NUM_REGS: u8 = 4;
+
 /// Fixed scratch outside the allocatable range / reload regs: used for the
 /// binary two-operand hazard and as the select blend temp.
 ///
@@ -3953,7 +3970,7 @@ impl IsaBackend for Avx2Backend {
     type Branch = usize;
 
     fn num_regs(&self) -> u8 {
-        X86_SCHED_NUM_REGS // same 6 allocatable (ymm4-9)
+        AVX2_SCHED_NUM_REGS
     }
 
     fn begin(
@@ -4003,6 +4020,9 @@ impl IsaBackend for Avx2Backend {
                 // survives to here. ymm13/14 mirror X86Backend's gather
                 // scratch; ymm8/9 are the AVX2-only high-half scratch this
                 // two-half gather needs (see `avx2::emit_gather_scalar`).
+                // ymm8/9 are non-allocatable by construction — see
+                // `AVX2_SCHED_NUM_REGS`, which caps the pool at ymm4-7 so the
+                // allocator can never place `dst`/`idx` where this clobbers.
                 avx2::emit_gather_scalar(
                     code,
                     *dst,
@@ -6212,6 +6232,9 @@ mod tests {
         use super::*;
         use crate::arena::ExprArena;
 
+        // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
+        // not-FFI-safe is a false positive here, as for `executable`'s aliases.
+        #[allow(improper_ctypes_definitions)]
         type K = unsafe extern "C" fn(
             core::arch::x86_64::__m512,
             core::arch::x86_64::__m512,
@@ -6249,12 +6272,12 @@ mod tests {
         }
 
         fn check(got: [f32; 16], want: impl Fn(usize) -> f32, tag: &str) {
-            for i in 0..16 {
+            for (i, &g) in got.iter().enumerate() {
                 let w = want(i);
                 assert!(
-                    (got[i] - w).abs() <= 1e-3,
+                    (g - w).abs() <= 1e-3,
                     "{tag} lane {i}: got {} want {}",
-                    got[i],
+                    g,
                     w
                 );
             }
@@ -6262,6 +6285,9 @@ mod tests {
 
         // ---- Bound-memory gather: JIT vs reference interpreter ----
 
+        // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
+        // not-FFI-safe is a false positive here, as for `executable`'s aliases.
+        #[allow(improper_ctypes_definitions)]
         type CtxK = unsafe extern "C" fn(
             *const *const f32,
             core::arch::x86_64::__m512,
@@ -6310,10 +6336,10 @@ mod tests {
             let got = run16_ctx(&res, &ctx, xs, ys);
 
             let bindings = crate::binding::BindingTable::bind(arena, buffers).unwrap();
-            for i in 0..16 {
+            for (i, &g) in got.iter().enumerate() {
                 let want =
                     crate::eval::eval_scalar(arena, root, &[xs[i], ys[i], 0.0, 0.0], &bindings);
-                assert_eq!(got[i], want, "{tag} lane {i} (x={}, y={})", xs[i], ys[i]);
+                assert_eq!(g, want, "{tag} lane {i} (x={}, y={})", xs[i], ys[i]);
             }
         }
 
@@ -6444,10 +6470,10 @@ mod tests {
             // Compare every output lane to the reference interpreter.
             let bindings =
                 crate::binding::BindingTable::bind(&a, &[w.as_slice(), input.as_slice()]).unwrap();
-            for jj in 0..out_dim {
+            for (jj, &got) in out.iter().enumerate().take(out_dim) {
                 let want =
                     crate::eval::eval_scalar(&a, root, &[jj as f32, 0.0, 0.0, 0.0], &bindings);
-                assert_eq!(out[jj], want, "collapse out[{jj}]");
+                assert_eq!(got, want, "collapse out[{jj}]");
             }
         }
 

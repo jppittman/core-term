@@ -226,9 +226,14 @@ const ISA_LEVELS: &[IsaLevel] = &[
         requires: &["avx2", "fma"],
     },
     IsaLevel {
-        name: "avx512f",
-        target_feature: "+avx512f",
-        requires: &["avx512f"],
+        // DQ, not just F: `avx512::emit_compare` materializes a mask with
+        // `vpmovm2d`, which is AVX-512DQ. An AVX-512F-only part (Knights
+        // Landing) would take an illegal-instruction fault on any kernel
+        // containing a comparison, so probing for F alone would "support" a
+        // level that cannot run.
+        name: "avx512f+dq",
+        target_feature: "+avx512f,+avx512dq",
+        requires: &["avx512f", "avx512dq"],
     },
 ];
 
@@ -242,6 +247,7 @@ fn host_has_feature(feature: &str) -> bool {
         "avx2" => std::is_x86_feature_detected!("avx2"),
         "fma" => std::is_x86_feature_detected!("fma"),
         "avx512f" => std::is_x86_feature_detected!("avx512f"),
+        "avx512dq" => std::is_x86_feature_detected!("avx512dq"),
         other => panic!("isa-matrix: unknown feature {other:?} in ISA_LEVELS::requires"),
     }
 }
@@ -399,6 +405,12 @@ fn run_with_rustflags(
         .args(args)
         .env("RUSTFLAGS", rustflags)
         .env("CARGO_TARGET_DIR", target_dir)
+        // Deep-Manifold tests (raymarch_sphere, scene3d) recurse near the
+        // stack limit by design (see CLAUDE.md's dev-profile note); 8- and
+        // 16-lane builds have 2-4x larger frames and overflowed the default
+        // 2 MiB test-thread stack on GitHub runners while passing locally.
+        // Pin the floor so the matrix behaves identically everywhere.
+        .env("RUST_MIN_STACK", "16777216")
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
