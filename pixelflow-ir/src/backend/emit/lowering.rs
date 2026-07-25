@@ -27,6 +27,7 @@
 
 use crate::arena::{ExprArena, ExprId, ExprNode};
 use crate::kind::OpKind;
+use crate::variance::Variance;
 use alloc::vec::Vec;
 
 /// Whether `op` is a unary transcendental this pass expands.
@@ -318,11 +319,22 @@ fn unroll_reduce(
         return arena.push_const(id);
     }
 
+    // Which of the body's nodes actually vary with the index. Everything else
+    // is shared across all N terms rather than copied into each of them: the
+    // rewrite `⊕_i (f(i) · c) = c · ⊕_i f(i)` obtained by not duplicating `c`
+    // in the first place. Computed once here, before the substitutions start
+    // appending; every node reachable from `body` predates that point, so the
+    // table covers each id the substitution asks about.
+    let variance = crate::variance::compute_arena_variance(arena);
+
     // acc = body[var:=0]; then acc = combiner(acc, body[var:=k]) for k in 1..N.
-    let mut acc = substitute_var(arena, body, var_idx, 0.0);
+    let term = |arena: &mut ExprArena, k: usize| {
+        Substitution::new(arena, var_idx, k as f32, &variance).apply(arena, body)
+    };
+    let mut acc = term(arena, 0);
     for k in 1..n {
-        let term = substitute_var(arena, body, var_idx, k as f32);
-        acc = arena.push_binary(combiner_op, acc, term);
+        let next = term(arena, k);
+        acc = arena.push_binary(combiner_op, acc, next);
     }
     acc
 }
@@ -335,60 +347,79 @@ fn const_val(arena: &ExprArena, id: ExprId, what: &str) -> f32 {
     }
 }
 
-/// Clone the subtree at `root`, replacing every `Var(var)` with `Const(value)`.
-/// Shared nodes are rebuilt once (memoized), so a DAG body stays a DAG.
-fn substitute_var(arena: &mut ExprArena, root: ExprId, var: u8, value: f32) -> ExprId {
-    let n = arena.nodes_raw().len();
-    let mut memo: Vec<Option<ExprId>> = alloc::vec![None; n];
-    subst_rec(arena, root, var, value, &mut memo)
-}
-
-fn subst_rec(
-    arena: &mut ExprArena,
-    id: ExprId,
+/// One unrolled term of a fold: the body with the bound index replaced by a
+/// literal step.
+///
+/// The variance table is what makes this cheap. A subtree that does not depend
+/// on the index would be rebuilt unchanged, so it is not rebuilt at all — the
+/// original node is returned and all N terms share it. That is the rewrite
+/// `⊕_i (f(i) · c) = c · ⊕_i f(i)` obtained by declining to duplicate `c`.
+struct Substitution<'a> {
+    /// The index being replaced, and the step to replace it with.
     var: u8,
     value: f32,
-    memo: &mut Vec<Option<ExprId>>,
-) -> ExprId {
-    let idx = id.0 as usize;
-    if let Some(Some(m)) = memo.get(idx) {
-        return *m;
+    /// Variance for every node the body can reach, indexed by `ExprId`.
+    variance: &'a [Variance],
+    /// Rebuilt nodes, so a shared subtree is rebuilt once and stays shared.
+    memo: Vec<Option<ExprId>>,
+}
+
+impl<'a> Substitution<'a> {
+    fn new(arena: &ExprArena, var: u8, value: f32, variance: &'a [Variance]) -> Self {
+        Self {
+            var,
+            value,
+            variance,
+            memo: alloc::vec![None; arena.nodes_raw().len()],
+        }
     }
-    let new = match arena.node(id).clone() {
-        ExprNode::Var(i) if i == var => arena.push_const(value),
-        ExprNode::Var(i) => arena.push_var(i),
-        ExprNode::Const(v) => arena.push_const(v),
-        ExprNode::Param(i) => arena.push_param(i),
-        ExprNode::Buffer(b) => arena.push_buffer(b),
-        ExprNode::Unary(op, a) => {
-            let a = subst_rec(arena, a, var, value, memo);
-            arena.push_unary(op, a)
+
+    fn apply(&mut self, arena: &mut ExprArena, id: ExprId) -> ExprId {
+        let idx = id.0 as usize;
+        if let Some(Some(m)) = self.memo.get(idx) {
+            return *m;
         }
-        ExprNode::Binary(op, a, b) => {
-            let a = subst_rec(arena, a, var, value, memo);
-            let b = subst_rec(arena, b, var, value, memo);
-            arena.push_binary(op, a, b)
+        if self
+            .variance
+            .get(idx)
+            .is_some_and(|v| v.is_invariant_in(self.var))
+        {
+            return id;
         }
-        ExprNode::Ternary(op, a, b, c) => {
-            let a = subst_rec(arena, a, var, value, memo);
-            let b = subst_rec(arena, b, var, value, memo);
-            let c = subst_rec(arena, c, var, value, memo);
-            arena.push_ternary(op, a, b, c)
+        let new = match arena.node(id).clone() {
+            ExprNode::Var(i) if i == self.var => arena.push_const(self.value),
+            ExprNode::Var(i) => arena.push_var(i),
+            ExprNode::Const(v) => arena.push_const(v),
+            ExprNode::Param(i) => arena.push_param(i),
+            ExprNode::Buffer(b) => arena.push_buffer(b),
+            ExprNode::Unary(op, a) => {
+                let a = self.apply(arena, a);
+                arena.push_unary(op, a)
+            }
+            ExprNode::Binary(op, a, b) => {
+                let a = self.apply(arena, a);
+                let b = self.apply(arena, b);
+                arena.push_binary(op, a, b)
+            }
+            ExprNode::Ternary(op, a, b, c) => {
+                let a = self.apply(arena, a);
+                let b = self.apply(arena, b);
+                let c = self.apply(arena, c);
+                arena.push_ternary(op, a, b, c)
+            }
+            ExprNode::Nary(op, start, len) => {
+                let (s, l) = (start as usize, len as usize);
+                let children: Vec<ExprId> = arena.nary_children_raw()[s..s + l].to_vec();
+                let mapped: Vec<ExprId> =
+                    children.into_iter().map(|ch| self.apply(arena, ch)).collect();
+                arena.push_nary(op, &mapped)
+            }
+        };
+        if let Some(slot) = self.memo.get_mut(idx) {
+            *slot = Some(new);
         }
-        ExprNode::Nary(op, start, len) => {
-            let (s, l) = (start as usize, len as usize);
-            let children: Vec<ExprId> = arena.nary_children_raw()[s..s + l].to_vec();
-            let mapped: Vec<ExprId> = children
-                .into_iter()
-                .map(|ch| subst_rec(arena, ch, var, value, memo))
-                .collect();
-            arena.push_nary(op, &mapped)
-        }
-    };
-    if idx < memo.len() {
-        memo[idx] = Some(new);
+        new
     }
-    new
 }
 
 // ─────────────────────────────── Dwrt lowering ───────────────────────────────

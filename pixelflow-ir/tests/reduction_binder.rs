@@ -125,6 +125,58 @@ fn nested_binders_do_not_capture() {
     assert_eq!(interp(&k, 0.0, 0.0), 28.0);
 }
 
+/// Unrolling must not duplicate work that does not vary with the index.
+///
+/// `⊕_i (f(i) · c) = c · ⊕_i f(i)` when `deps(c) ∩ {i} = {}`
+/// (docs/designs/REDUCTIONS_AND_FOLDS.md:109). Unrolling gets this for free by
+/// *not copying* `c` into each of the N terms — so the rewrite shows up as one
+/// `Sin` node in the lowered arena rather than N of them. Before the variance
+/// analysis could see binders, every reduction index read as depending on
+/// everything, nothing in a body was ever invariant, and `Σ_{i<16} i·sin(Y)+X`
+/// emitted 5882 bytes instead of 962.
+#[test]
+fn unrolling_shares_index_invariant_work() {
+    use pixelflow_ir::backend::emit::lowering;
+    use pixelflow_ir::{ExprNode, OpKind};
+
+    // Count only nodes the root reaches: `expand_reduce` rebuilds in place and
+    // leaves the pre-rebuild nodes behind, so the raw arena over-counts.
+    let count_sin = |k: &Kernel| {
+        let (arena, root) = k.parts();
+        let (lowered, new_root) = lowering::expand_reduce_owned(arena, root);
+        let mut live = vec![false; lowered.len()];
+        let mut stack = vec![new_root];
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut live[id.0 as usize], true) {
+                continue;
+            }
+            stack.extend(lowered.children(id));
+        }
+        (0..lowered.len())
+            .filter(|i| live[*i])
+            .filter(|i| {
+                matches!(
+                    lowered.node(pixelflow_ir::ExprId(*i as u32)),
+                    ExprNode::Unary(OpKind::Sin, _)
+                )
+            })
+            .count()
+    };
+
+    // sin(Y) is invariant in the index: one copy serves all 16 terms.
+    let invariant = Kernel::sum_over(16, |i| i.mul(&Kernel::y().sin()));
+    assert_eq!(count_sin(&invariant), 1, "sin(Y) must be shared, not copied");
+
+    // sin(X + i) genuinely varies with the index: N copies is correct, and the
+    // sharing must not be so eager that it collapses distinct terms.
+    let varying = Kernel::sum_over(16, |i| Kernel::x().add(i).sin());
+    assert_eq!(count_sin(&varying), 16, "sin(X+i) differs per term");
+
+    // Semantics are unchanged by the sharing: Σ_{i<4} i·sin(0) = 0, and
+    // Σ_{i<4} (i + Y) = 6 + 4Y, checked at Y = 2 → 14.
+    assert_eq!(interp(&Kernel::sum_over(4, |i| i.add(&Kernel::y())), 0.0, 2.0), 14.0);
+}
+
 /// Placeholder claims are process-wide, so two threads building nested binders
 /// at the same time must not be handed the same index. They release out of
 /// order — thread A finishes its outer fold while B is still inside its own —
