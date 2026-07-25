@@ -44,7 +44,7 @@ not by re-reading it), and only then touch a live actor.
 | Render request | engine → rasterizer | **Credit(1) + Droppable backstop** | Mirrors the window-return case: `pending_render` tracks exactly one outstanding render, so ring capacity ≥ 1 makes the backstop unreachable by construction. |
 | Render complete | rasterizer → engine | **Credit(1) + Droppable backstop** (same credit as above; it's the reply half) | Same reasoning as `PresentComplete`. If this bound is ever wrong (more than 1 outstanding), the failure mode changes from "spin-forever under adversarial timing" (today) to "one dropped frame, `pending_render` never clears, next resize/vsync recovers" — recorded as an explicit design trade-off, not an oversight. |
 | Frame request (`RequestFrame`) | engine → app | **Credit(N) + Droppable backstop** | N-outstanding-requests bound; a dropped request is recovered by the next vsync tick. |
-| Manifold submission (`AppData::RenderSurface`) | app → engine | **Droppable, no credit needed** | Losing one submission is fine — another follows. But the receiver **keeps its `pending_manifold` slot and overwrites it**: a droppable port discards the *newest* message, which is the opposite of keep-latest, so the port cannot be the staleness policy. An earlier revision said it could and had the field deleted. |
+| Manifold submission (`AppData::RenderSurface`) | app → engine | **Blocking** — *revised* | Two earlier revisions got this wrong. It is not droppable-because-another-follows: if the app's *last* state change is the dropped one, none follows, and the coordinator renders a stale kernel forever. Nor does keeping the receiver's slot fix it — a dropped message never reaches the slot to overwrite it. An app parking behind a busy coordinator is correct backpressure. The receiver **still keeps its `pending_manifold` slot** (overwritten on arrival), since a droppable port discards the *newest* message and so can never be the staleness policy. |
 
 Every reply edge above is the closing edge of a cycle; every one is legal under the DAG rule
 (§3.1 of the Mealy doc) specifically because it's Droppable, whether or not `Credit` additionally
@@ -433,11 +433,6 @@ checked:
   nothing outside can observe the record while it is running. Needs a real notification path
   (callback, channel, or an `ActorStatus` that can say "stuck, not idle"); that is a supervision
   API decision, not a mechanical one.
-- **Manifold submission delivery.** Keeping the receiver's slot does not help if the *newest*
-  submission is dropped in transit — nothing arrives to overwrite it, and the coordinator renders
-  a stale kernel indefinitely if the app has nothing further to send. Wants `Blocking` (an app
-  parking behind a busy coordinator is correct backpressure, and `ActorHandle`'s backoff
-  effectively does this today) rather than plain `Droppable`.
 - **Credit-bearing replies that can be dropped.** `ReturnToken` releases vsync's tick budget; if
   its edge can lose messages, the budget shrinks permanently. Same shape as the paste deadlock
   in §3.2 — worth checking every credit whose release travels a droppable edge.
