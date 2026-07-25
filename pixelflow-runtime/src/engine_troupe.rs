@@ -166,13 +166,22 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                         "two live buffers of generation {}: one held, one just rendered",
                         response.meta.generation
                     );
-                    self.present_cooked_frame(
-                        response.render_time,
-                        StampedWindow {
-                            generation: response.meta.generation,
-                            window,
-                        },
-                    );
+                    let stamped = StampedWindow {
+                        generation: response.meta.generation,
+                        window,
+                    };
+                    match response.render_time {
+                        Some(render_time) => self.present_cooked_frame(render_time, stamped),
+                        // The rasterizer was paused, so it handed the buffer back unrendered.
+                        // Presenting it would blit whatever stale pixels it still holds; keeping
+                        // it is the whole point of the frame coming back at all. This arm exists
+                        // because `render_time: Option<Duration>` forces the question — the
+                        // buffer's return is unconditional, its having been drawn into is not.
+                        None => {
+                            log::debug!("Render skipped (paused); retaining the buffer unpresented");
+                            self.window = Some(stamped);
+                        }
+                    }
                 }
             }
             EngineData::PresentComplete(returned_window) => {
@@ -1087,7 +1096,7 @@ mod tests {
                 .expect("a render must be outstanding to complete");
             self.feed(EngineData::RenderComplete(RenderResponse {
                 frame: Frame::new(meta.width_px, meta.height_px),
-                render_time: Duration::from_millis(1),
+                render_time: Some(Duration::from_millis(1)),
                 meta,
             }));
         }
