@@ -314,7 +314,7 @@ coupling as the `VSYNC_TOKEN_BUCKET` global that step 2 removed, just local inst
 | `pending_manifold` | the app → rasterizer edge, as a droppable keep-latest port | §3 already called this: the *port is* the staleness policy, so the hand-rolled "keep newest, drop old" logic is deleted along with the field. |
 | `window` | **driver** | It already creates the window (`WindowCreated`) and presents it. With the mediator gone the buffer circulates driver → rasterizer → driver; the driver is the only actor that outlives every stage of that loop. |
 | `frame_number` | **rasterizer** | It is a count of completed renders, and its only consumer is the FPS telemetry edge to vsync. It belongs to the thing doing the counting. |
-| `render_threads` | **nowhere — already duplicated** | `RasterCore::num_threads` is the real one; the engine's copy exists only to pass at spawn. |
+| `render_threads` | **bootstrap config, needs a real owner** | *Corrected during implementation.* This row first claimed the field was a redundant copy of `RasterCore::num_threads`, deletable outright. It isn't: the engine passes it to `spawn_with_setup` at bootstrap, so it is the *source* of the rasterizer's value, not a duplicate of it. It has to be supplied by whoever spawns the rasterizer once the engine no longer does — small, but a genuine open question rather than a deletion. |
 | `driver` / `vsync` / `rasterizer` / `app_handle` / `self_handle` / `rasterizer_forward_handle` | topology edges | Handles are what a mediator is made of. They are the thing being deleted, not state needing a home. |
 
 So `EngineHandler` collapses to: two fields deleted outright (`pending_render`, `render_threads`),
