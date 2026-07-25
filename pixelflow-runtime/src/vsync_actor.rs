@@ -9,33 +9,24 @@
 //! the actor wakes up reliably regardless of other system load, without relying
 //! on blocking `park` calls that could stall the actor scheduler.
 //!
-//! # `VsyncCore`: the decision logic as a `Transducer`
+//! # Decision logic
 //!
-//! Rollout step 2 of `docs/designs/pixelflow-runtime-engine-mesh-migration.md` §5. The actual
-//! vsync decision logic — should this tick fire, has the refresh rate changed, is FPS due for
-//! an update — lives in [`VsyncCore`], a pure [`actor_scheduler::mealy::Transducer`]: it takes
-//! a message and returns what to emit, touching no threads, no channels, no `EngineActorHandle`.
-//! `VsyncActor` (below) is now a thin adapter: it owns the clock thread and the engine handle,
-//! and turns `VsyncCore`'s `Some(tick)` output into the actual `engine_handle.send(...)` call.
+//! [`VsyncCore`] implements the pure [`actor_scheduler::mealy::Transducer`] that decides whether
+//! a tick should fire and when FPS updates are due. It does not interact with threads, channels,
+//! or the engine handle. [`VsyncActor`] owns those runtime resources and forwards the core's
+//! output to the engine.
 //!
-//! This is deliberately *not yet* wired onto a real `Node`/`Host` — `VsyncActor` still runs on
-//! its own dedicated OS thread via the old `Actor`/`ActorScheduler`, exactly as before, so
-//! `EngineHandler` needs zero changes to its field types. Only the *internals* moved onto the
-//! new primitive. See the design doc for why that split is deliberate, not a shortcut.
+//! # Backpressure
 //!
-//! # `Credit` replaces the global token bucket
-//!
-//! The former `VSYNC_TOKEN_BUCKET` was a process-wide `AtomicU32`, decremented by vsync itself
-//! but *returned* by `engine_troupe.rs` calling a free function directly — reaching into
-//! vsync's state without a message, the exact hazard the mesh migration exists to remove (see
-//! the design doc's case study). `VsyncCore` now holds a private, non-atomic
-//! [`actor_scheduler::mealy::Credit`], consumed in [`Transducer::step_management`] and released
-//! only in [`Transducer::step_control`] on a new [`VsyncCommand::ReturnToken`] — a real message,
-//! not a shared global. `engine_troupe.rs`'s two call sites become sends of that command.
+//! [`VsyncCore`] owns a [`actor_scheduler::mealy::Credit`] budget. Management ticks consume
+//! credit, and [`VsyncCommand::ReturnToken`] replenishes it after the application responds to a
+//! frame request.
 
 use actor_scheduler::actors::{Schedule, Timer};
 use actor_scheduler::mealy::{Credit, Transducer};
-use actor_scheduler::{Actor, ActorBuilder, ActorHandle, HandlerError, HandlerResult, SystemStatus};
+use actor_scheduler::{
+    Actor, ActorBuilder, ActorHandle, HandlerError, HandlerResult, SystemStatus,
+};
 use log::info;
 use std::ops::ControlFlow;
 use std::sync::mpsc::Sender;
@@ -45,7 +36,7 @@ use std::time::{Duration, Instant};
 /// Default refresh rate in Hz.
 const DEFAULT_REFRESH_RATE: f64 = 60.0;
 
-/// Vsync tick request budget. Was `VSYNC_TOKEN_BUCKET`'s cap; now `Credit`'s `max`.
+/// Maximum number of outstanding VSync tick requests.
 const MAX_TOKENS: u32 = 100;
 
 /// Configuration for VsyncActor
@@ -73,11 +64,7 @@ pub enum VsyncCommand {
     UpdateRefreshRate(f64),
     /// Request current FPS stats
     RequestCurrentFPS(Sender<f64>),
-    /// Return a previously-consumed vsync token, allowing another tick through.
-    ///
-    /// Replaces the old `return_vsync_token()` free function — the same event (app responded
-    /// to a frame request, rasterization no longer bottlenecks the tick rate), now a real
-    /// message instead of a same-process global mutation.
+    /// Return a previously consumed VSync token, allowing another tick through.
     ReturnToken,
     /// Shutdown the actor
     #[default]
