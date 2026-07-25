@@ -1928,6 +1928,18 @@ trait IsaBackend {
     /// after the body is produced and can only prepend bytes.
     fn frame_ready(&mut self, _frame_size: u32) {}
 
+    /// Bytes actually reserved on the stack for a `frame_size`-byte *logical*
+    /// spill frame.
+    ///
+    /// `FrameLayout` counts 16-byte slots because that is the narrowest vector
+    /// any backend spills; a backend whose vector is wider reserves
+    /// proportionally more in its prologue, and must report the real figure so
+    /// `CompileResult::spill_bytes` describes the code that was actually
+    /// emitted. Identity for the 16-byte backends (SSE2, NEON).
+    fn frame_bytes(&self, frame_size: u32) -> u32 {
+        frame_size
+    }
+
     /// Function prologue (allocate the spill frame, set up any pool anchor).
     fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32);
 
@@ -2206,7 +2218,12 @@ fn compile_dag_via_backend<B: IsaBackend>(
     Ok(CompileResult {
         code: exec,
         spill_count,
-        spill_bytes: frame_size,
+        // The backend's own figure, not the logical one: an AVX2 slot is 32
+        // bytes and an AVX-512 slot 64, so reporting `frame_size` here claimed
+        // 16 bytes per spill while the prologue reserved 2x/4x that. The
+        // number feeds the cost model's training metadata and frame-size
+        // thresholds, so the discrepancy was silently mistraining them.
+        spill_bytes: backend.frame_bytes(frame_size),
         max_regs: backend.num_regs(),
     })
 }
@@ -3742,6 +3759,10 @@ impl IsaBackend for Avx512Backend {
         X86_SCHED_NUM_REGS // same 6 allocatable (zmm4-9)
     }
 
+    fn frame_bytes(&self, frame_size: u32) -> u32 {
+        avx512_frame_bytes(frame_size)
+    }
+
     fn begin(
         &mut self,
         _schedule: &[(regalloc::ValueId, ScheduledOp)],
@@ -3971,6 +3992,10 @@ impl IsaBackend for Avx2Backend {
 
     fn num_regs(&self) -> u8 {
         AVX2_SCHED_NUM_REGS
+    }
+
+    fn frame_bytes(&self, frame_size: u32) -> u32 {
+        avx2_frame_bytes(frame_size)
     }
 
     fn begin(
