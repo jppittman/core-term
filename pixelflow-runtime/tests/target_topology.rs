@@ -84,7 +84,11 @@ fn the_target_engine_mesh_is_a_dag() {
     // pushes a window the moment one is free (created, or returned from a prior Present) and
     // app pushes its latest manifold; rasterizer renders when both are held and its own
     // Credit(1) allows it, then presents directly and tells vsync.
-    topo.droppable_edge(driver, rasterizer); // window available (created, or returned)
+    // Carries `PresentComplete` (the buffer coming back) and the one bootstrap
+    // `WindowCreated`. Deliberately NOT resize windows — see §8.5: a droppable ring drops the
+    // *new* message on overflow, which for a freshly-sized resize buffer is unrecoverable,
+    // where keep-latest would need the *old* one dropped. Resize sends metadata only.
+    topo.droppable_edge(driver, rasterizer); // PresentComplete + bootstrap WindowCreated
     topo.droppable_edge(app, rasterizer); // manifold submission (keep-latest, as today)
     topo.droppable_edge(rasterizer, driver); // Present, once rendered
     topo.droppable_edge(rasterizer, vsync); // RenderedResponse (FPS telemetry only)
