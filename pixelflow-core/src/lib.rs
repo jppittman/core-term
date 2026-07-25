@@ -184,6 +184,12 @@ pub mod lattice;
 // Re-exports (The "Prelude")
 // ============================================================================
 
+// Macro plumbing: `kernel!`/`kernel_jit!` expansions construct pixelflow-ir
+// arenas and JIT manifolds in the *consumer's* crate, which depends on
+// pixelflow-core but not necessarily on pixelflow-ir. Not public API.
+#[doc(hidden)]
+pub use pixelflow_ir as __ir;
+
 pub use algebra::{Algebra, Transcendental};
 pub use backend::fastmath::FastMathGuard;
 pub use combinators::*;
@@ -191,6 +197,8 @@ pub use domain::{Head, LetExtended, Spatial, Tail};
 pub use dual::{Dual, Dual1, Dual2, Dual3};
 pub use ext::*;
 pub use mask::Mask;
+
+pub use pixelflow_ir::{Kernel, Lower, LowerEnv, Monoid};
 pub use storage::{FieldStorage, NativeMaskStorage};
 // Jet2/Jet3 accessible via pixelflow_core::jet::{Jet2, Jet3} for internal use
 pub use manifold::*;
@@ -283,10 +291,16 @@ type NativeSimd = <backend::arm::Neon as Backend>::F32;
 #[cfg(target_arch = "aarch64")]
 type NativeU32Simd = <backend::arm::Neon as Backend>::U32;
 
+// No scalar fallback: the JIT (`compile_arena_dag`, and therefore
+// `Lattice::bake`) exists only on x86-64 and aarch64, and there is no
+// interpreter render path. A target without a JIT could compile a `Field` but
+// could not render anything, so it fails here, loudly, rather than silently
+// building something inert.
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-type NativeSimd = <backend::scalar::Scalar as Backend>::F32;
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-type NativeU32Simd = <backend::scalar::Scalar as Backend>::U32;
+compile_error!(
+    "pixelflow-core supports x86-64 and aarch64 only: rendering goes through \
+     the JIT, which has no other targets and no interpreter fallback"
+);
 
 /// The computational substrate for continuous values (intermediate representation).
 ///
@@ -866,29 +880,6 @@ impl Field<u32> {
         {
             Self(backend::x86::U32x4::pack_rgba(r.0, g.0, b.0, a.0))
         }
-    }
-
-    /// Pack 4 Fields (RGBA, 0.0-1.0) into packed u32 pixels.
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    #[inline(always)]
-    pub fn pack(r: Field, g: Field, b: Field, _a: Field) -> Self {
-        // Scalar fallback - only packs first element
-        let mut r_buf = [0.0f32; 1];
-        let mut g_buf = [0.0f32; 1];
-        let mut b_buf = [0.0f32; 1];
-        let mut a_buf = [0.0f32; 1];
-        r.store(&mut r_buf);
-        g.store(&mut g_buf);
-        b.store(&mut b_buf);
-        _a.store(&mut a_buf);
-
-        let r_u8 = (r_buf[0].clamp(0.0, 1.0) * 255.0) as u32;
-        let g_u8 = (g_buf[0].clamp(0.0, 1.0) * 255.0) as u32;
-        let b_u8 = (b_buf[0].clamp(0.0, 1.0) * 255.0) as u32;
-        let a_u8 = (a_buf[0].clamp(0.0, 1.0) * 255.0) as u32;
-        let packed = r_u8 | (g_u8 << 8) | (b_u8 << 16) | (a_u8 << 24);
-
-        Self(backend::scalar::ScalarU32::splat(packed))
     }
 
     /// Branchless select: returns `if_true` where mask is set, `if_false` elsewhere.

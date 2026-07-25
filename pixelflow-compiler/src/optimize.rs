@@ -820,10 +820,17 @@ impl EGraphContext {
                         op: &ops::Round,
                         children: vec![receiver],
                     }),
-                    "fract" => self.egraph.add(ENode::Op {
-                        op: &ops::Fract,
-                        children: vec![receiver],
-                    }),
+                    // Library: fract(x) = x - floor(x).
+                    "fract" => {
+                        let f = self.egraph.add(ENode::Op {
+                            op: &ops::Floor,
+                            children: vec![receiver],
+                        });
+                        self.egraph.add(ENode::Op {
+                            op: &ops::Sub,
+                            children: vec![receiver, f],
+                        })
+                    }
                     "sin" => self.egraph.add(ENode::Op {
                         op: &ops::Sin,
                         children: vec![receiver],
@@ -898,11 +905,24 @@ impl EGraphContext {
                             children: vec![receiver, arg],
                         })
                     }
+                    // Library: hypot(x, y) = sqrt(x² + y²).
                     "hypot" => {
                         let arg = self.expr_to_egraph(&call.args[0]);
+                        let xx = self.egraph.add(ENode::Op {
+                            op: &ops::Mul,
+                            children: vec![receiver, receiver],
+                        });
+                        let yy = self.egraph.add(ENode::Op {
+                            op: &ops::Mul,
+                            children: vec![arg, arg],
+                        });
+                        let sum = self.egraph.add(ENode::Op {
+                            op: &ops::Add,
+                            children: vec![xx, yy],
+                        });
                         self.egraph.add(ENode::Op {
-                            op: &ops::Hypot,
-                            children: vec![receiver, arg],
+                            op: &ops::Sqrt,
+                            children: vec![sum],
                         })
                     }
 
@@ -967,12 +987,20 @@ impl EGraphContext {
                             children: vec![receiver, if_true, if_false],
                         })
                     }
+                    // `clamp` is library: it enters the e-graph as the
+                    // composition it denotes, so the optimizer reasons about
+                    // min/max directly instead of needing clamp-specific
+                    // rewrite and derivative rules.
                     "clamp" => {
                         let min_val = self.expr_to_egraph(&call.args[0]);
                         let max_val = self.expr_to_egraph(&call.args[1]);
+                        let floored = self.egraph.add(ENode::Op {
+                            op: &ops::Max,
+                            children: vec![receiver, min_val],
+                        });
                         self.egraph.add(ENode::Op {
-                            op: &ops::Clamp,
-                            children: vec![receiver, min_val, max_val],
+                            op: &ops::Min,
+                            children: vec![floored, max_val],
                         })
                     }
 

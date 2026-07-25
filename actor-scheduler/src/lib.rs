@@ -93,24 +93,21 @@
 //! ```
 
 mod error;
-pub mod kubelet;
+pub mod host;
 mod lifecycle;
+pub mod mealy;
 mod params;
-pub mod registry;
-pub mod service;
 pub mod sharded;
 pub mod spsc;
 
 use error::DrainStatus;
 pub use error::{HandlerError, HandlerResult, SendError};
-pub use kubelet::{Kubelet, KubeletBuilder, SpawnedPod, spawn_managed};
-pub use lifecycle::{PodPhase, RestartPolicy};
+pub use host::{Green, GreenSender, Host, green_channel};
+pub use lifecycle::Exit;
 pub use params::SchedulerParams;
-pub use registry::{PodGone, PodSlot};
-pub use service::{ServiceError, ServiceHandle};
 
 // Re-export macros from the proc-macro crate
-pub use actor_scheduler_macros::{actor_impl, troupe};
+pub use actor_scheduler_macros::{actor_impl, ports, troupe};
 
 use sharded::{InboxBuilder, ShardedInbox};
 use spsc::SpscSender;
@@ -824,6 +821,69 @@ impl<D, C, M> ActorHandle<D, C, M> {
     }
 }
 
+/// Rings an actor's doorbell without sending it a message.
+///
+/// The scheduler blocks on its doorbell when idle, so anything that makes an actor runnable
+/// *without* going through its lanes has to ring that bell itself. The green tier is the
+/// case that needs it: a producer pushes straight into a green actor's inbox
+/// ([`GreenSender`](crate::host::GreenSender)) and then wakes the host that owns it.
+///
+/// This is the same contract as a `Waker` in a futures runtime — "there is work for you now"
+/// — and it is deliberately *not* `ActorHandle::send`: a wake carries no payload and cannot
+/// back up, because the doorbell holds one pending wake and coalesces the rest.
+///
+/// # Ordering
+///
+/// **Make the work visible, then wake.** Waking first admits a lost wakeup: the host can
+/// wake, find nothing, and go back to sleep before the message lands.
+#[derive(Clone)]
+pub struct Waker {
+    tx_doorbell: SyncSender<System>,
+    wake_handler: Option<Arc<dyn WakeHandler>>,
+}
+
+impl Waker {
+    /// Signal the actor that it has work.
+    ///
+    /// Never blocks and never fails. A full doorbell means a wake is already pending, and a
+    /// disconnected one means the actor is gone — in both cases there is nothing to do.
+    pub fn wake(&self) {
+        if let Some(waker) = &self.wake_handler {
+            waker.wake();
+        }
+        match self.tx_doorbell.try_send(System::Wake) {
+            Ok(()) => {}
+            // The doorbell holds one wake and coalesces the rest: full means a wake is
+            // already pending, which is exactly the signal this call wanted to send.
+            Err(mpsc::TrySendError::Full(_)) => {}
+            // Unlike `ActorHandle::wake`, a waker outliving its scheduler is ordinary — a
+            // green actor can be fed after its host is gone. There is nobody to wake.
+            Err(mpsc::TrySendError::Disconnected(_)) => {}
+        }
+    }
+}
+
+impl std::fmt::Debug for Waker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Waker")
+            .field("has_wake_handler", &self.wake_handler.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<D, C, M> ActorHandle<D, C, M> {
+    /// A [`Waker`] for this actor's scheduler.
+    ///
+    /// Hand one to anything that can make this actor runnable without sending it a message.
+    #[must_use]
+    pub fn waker(&self) -> Waker {
+        Waker {
+            tx_doorbell: self.tx_doorbell.clone(),
+            wake_handler: self.wake_handler.clone(),
+        }
+    }
+}
+
 /// The receiver side that implements the priority scheduling logic.
 ///
 /// Internally uses [`ShardedInbox`] per lane: each registered producer has
@@ -1063,26 +1123,26 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// Blocks on the doorbell channel. Drains priority lanes in order:
     /// Shutdown > Control > Management > Data.
     ///
-    /// Returns a [`PodPhase`] describing why the scheduler exited, so a
+    /// Returns a [`Exit`] describing why the scheduler exited, so a
     /// supervisor can decide whether to restart the pod:
     ///
     /// | Exit reason | Returned phase |
     /// |-------------|----------------|
-    /// | `Message::Shutdown` received | `PodPhase::Completed` |
-    /// | All sender handles dropped | `PodPhase::Completed` |
-    /// | `HandlerError::Recoverable` | `PodPhase::Failed(msg)` |
+    /// | `Message::Shutdown` received | `Exit::Completed` |
+    /// | All sender handles dropped | `Exit::Completed` |
+    /// | `HandlerError::Recoverable` | `Exit::Failed(msg)` |
     /// | `HandlerError::Fatal` | panics — never returns |
     ///
     /// The return value is intentionally not `#[must_use]` so existing call
     /// sites that don't supervise actors don't need to change. Supervisors
-    /// should inspect it via [`RestartPolicy::should_restart`].
-    pub fn run<A>(&mut self, actor: &mut A) -> PodPhase
+    /// should inspect it via [`Exit::is_failed`].
+    pub fn run<A>(&mut self, actor: &mut A) -> Exit
     where
         A: Actor<D, C, M>,
     {
         match self.run_inner(actor) {
-            Ok(()) => PodPhase::Completed,
-            Err(HandlerError::Recoverable(msg)) => PodPhase::Failed(msg),
+            Ok(()) => Exit::Completed,
+            Err(HandlerError::Recoverable(msg)) => Exit::Failed(msg),
             Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
         }
     }
@@ -1102,7 +1162,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     ///
     /// The Kubelet must continue calling `poll_once()` after a `Disconnected`
     /// doorbell until `Some` is returned — buffered SPSC messages need draining.
-    pub fn poll_once<A>(&mut self, actor: &mut A) -> Option<PodPhase>
+    pub fn poll_once<A>(&mut self, actor: &mut A) -> Option<Exit>
     where
         A: Actor<D, C, M>,
     {
@@ -1113,8 +1173,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         match signal {
             Ok(System::Shutdown) => {
                 let phase = match self.handle_shutdown(actor) {
-                    Ok(()) => PodPhase::Completed,
-                    Err(HandlerError::Recoverable(msg)) => PodPhase::Failed(msg),
+                    Ok(()) => Exit::Completed,
+                    Err(HandlerError::Recoverable(msg)) => Exit::Failed(msg),
                     Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
                 };
                 Some(phase)
@@ -1123,8 +1183,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             Ok(System::Wake) | Err(TryRecvError::Empty) => {
                 match self.handle_wake(actor) {
                     Ok(Some(_)) => None,                   // still running
-                    Ok(None) => Some(PodPhase::Completed), // all disconnected
-                    Err(HandlerError::Recoverable(msg)) => Some(PodPhase::Failed(msg)),
+                    Ok(None) => Some(Exit::Completed), // all disconnected
+                    Err(HandlerError::Recoverable(msg)) => Some(Exit::Failed(msg)),
                     Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
                 }
             }
@@ -1133,8 +1193,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                 // All handles dropped — drain one batch, report done when empty
                 match self.handle_wake(actor) {
                     Ok(Some(_)) => None, // more buffered work; caller polls again
-                    Ok(None) => Some(PodPhase::Completed),
-                    Err(HandlerError::Recoverable(msg)) => Some(PodPhase::Failed(msg)),
+                    Ok(None) => Some(Exit::Completed),
+                    Err(HandlerError::Recoverable(msg)) => Some(Exit::Failed(msg)),
                     Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
                 }
             }
@@ -1488,7 +1548,7 @@ mod poll_once_tests {
                 break p;
             }
         };
-        assert_eq!(phase, PodPhase::Completed);
+        assert_eq!(phase, Exit::Completed);
     }
 
     #[test]
@@ -1538,7 +1598,7 @@ mod poll_once_tests {
                 break p;
             }
         };
-        assert_eq!(phase, PodPhase::Completed);
+        assert_eq!(phase, Exit::Completed);
     }
 }
 

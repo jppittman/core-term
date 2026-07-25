@@ -806,46 +806,9 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     emit_frinta(code, dst, src);
 }
 
-/// fract(x) = x - floor(x).
-pub fn emit_fract_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
-    let s0 = scratch[0];
-    emit_frintm(code, s0, src); // s0 = floor(x)
-    emit_fsub(code, dst, src, s0); // dst = x - floor(x)
-}
-
 // =============================================================================
 // Binary Transcendental Builtins
 // =============================================================================
-
-/// pow(x, y) = exp2(y * log2(x)).
-#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn emit_pow_builtin(
-    code: &mut Vec<u8>,
-    pool: &mut super::ConstPool,
-    dst: Reg,
-    src1: Reg,
-    src2: Reg,
-    scratch: [Reg; 4],
-) -> Result<(), &'static str> {
-    let s3 = scratch[3];
-    // log2(x) → s3 (uses s0, s1, s2 as scratch, reads src1)
-    emit_log2_builtin(code, pool, s3, src1, scratch)?;
-    // s3 = y * log2(x)
-    emit_fmul(code, s3, src2, s3);
-    // exp2(s3) → dst (uses s0, s1, s2 as scratch)
-    emit_exp2_builtin(code, pool, dst, s3, scratch)
-}
-
-/// hypot(x, y) = sqrt(x*x + y*y).
-pub fn emit_hypot_builtin(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    // dst = x * x
-    emit_fmul(code, dst, src1, src1);
-    // dst = dst + y * y  (FMLA: dst += y * y)
-    emit_fmla(code, dst, src2, src2);
-    // dst = sqrt(dst)
-    emit_fsqrt(code, dst, dst);
-}
 
 // =============================================================================
 // Compound Operations (emit full instruction sequences)
@@ -871,7 +834,6 @@ pub(crate) fn emit_unary(
         OpKind::Floor => emit_frintm(code, dst, src),
         OpKind::Ceil => emit_frintp(code, dst, src),
         OpKind::Round => emit_round_builtin(code, dst, src),
-        OpKind::Fract => emit_fract_builtin(code, dst, src, scratch),
 
         // Bit-manip primitives (integer-domain conversions).
         OpKind::TruncToInt => emit_fcvtzs(code, dst, src), // f32 -> i32 (truncate)
@@ -933,30 +895,6 @@ pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Re
     }
 }
 
-/// Emit binary transcendental operation (needs scratch registers).
-#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn emit_binary_transcendental(
-    code: &mut Vec<u8>,
-    pool: &mut super::ConstPool,
-    op: OpKind,
-    dst: Reg,
-    src1: Reg,
-    src2: Reg,
-    scratch: [Reg; 4],
-) -> Result<(), &'static str> {
-    match op {
-        OpKind::Pow => emit_pow_builtin(code, pool, dst, src1, src2, scratch),
-        OpKind::Hypot => {
-            emit_hypot_builtin(code, dst, src1, src2);
-            Ok(())
-        }
-        // Atan2 is lowered to arithmetic before codegen; only Pow/Hypot still
-        // reach a backend (not yet lowered).
-        _ => Err("binary transcendental emit not implemented for this op"),
-    }
-}
-
 /// Emit ternary operation
 #[allow(clippy::too_many_arguments)]
 pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c: Reg) {
@@ -995,12 +933,6 @@ pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c:
                 );
             }
             emit_bsl(code, dst, b, c);
-        }
-
-        OpKind::Clamp => {
-            // dst = clamp(a, b, c) = max(min(a, c), b)
-            emit_fmin(code, dst, a, c); // dst = min(a, hi)
-            emit_fmax(code, dst, dst, b); // dst = max(dst, lo)
         }
 
         _ => panic!("ternary emit not implemented for {:?}", op),

@@ -29,7 +29,6 @@ pub enum OpKind {
     Floor = 14,
     Ceil = 15,
     Round = 16,
-    Fract = 17,
 
     // --- Trigonometry ---
     Sin = 18,
@@ -47,7 +46,6 @@ pub enum OpKind {
     Log2 = 28,
     Log10 = 29,
     Pow = 30,
-    Hypot = 31,
 
     // --- Comparison ---
     Lt = 32,
@@ -59,7 +57,6 @@ pub enum OpKind {
 
     // --- Control Flow ---
     Select = 38,
-    Clamp = 39,
 
     // --- Structure ---
     Tuple = 40,
@@ -86,9 +83,10 @@ pub enum OpKind {
     // --- Differentiation ---
     /// Symbolic derivative `∂(child0)/∂(var)` where `child1` is a `Const` whose
     /// value is the variable index (0=X, 1=Y, 2=Z, 3=W). The e-graph pushes
-    /// `Dwrt` toward the leaves via the chain rule, computing the derivative
-    /// analytically; whatever cannot be decomposed survives as a residual `Dwrt`
-    /// (the jet fallback — not yet wired). It must never reach a backend.
+    /// `Dwrt` toward the leaves via the chain rule at optimization time;
+    /// whatever survives (budget miss, unsupported op) falls to the runtime
+    /// `lower_dwrt` pass, which either eliminates it or refuses to compile.
+    /// It must never reach a backend.
     Dwrt = 48,
 
     // --- Bound memory (lattices) ---
@@ -121,7 +119,7 @@ pub enum OpKind {
 
 impl OpKind {
     /// Total number of operations.
-    pub const COUNT: usize = 53;
+    pub const COUNT: usize = 50;
 
     /// Monoid identity for an op usable as a reduction combiner
     /// (`Add`→0, `Mul`→1, `Min`→+∞, `Max`→−∞). `None` if `self` is not a valid
@@ -133,6 +131,13 @@ impl OpKind {
             Self::Mul => Some(1.0),
             Self::Min => Some(f32::INFINITY),
             Self::Max => Some(f32::NEG_INFINITY),
+            // Mask monoids — the existential and universal quantifiers over a
+            // bounded domain. Masks are bitwise in both evaluation tiers, so
+            // the identities are the all-clear and all-set bit patterns
+            // (`BitAnd`'s is a NaN by float reading; it is never read as a
+            // number, only ANDed).
+            Self::BitOr => Some(0.0),
+            Self::BitAnd => Some(f32::from_bits(u32::MAX)),
             _ => None,
         }
     }
@@ -175,7 +180,6 @@ impl OpKind {
             | Self::Floor
             | Self::Ceil
             | Self::Round
-            | Self::Fract
             | Self::Sin
             | Self::Cos
             | Self::Tan
@@ -198,7 +202,6 @@ impl OpKind {
             | Self::Max
             | Self::Atan2
             | Self::Pow
-            | Self::Hypot
             | Self::Lt
             | Self::Le
             | Self::Gt
@@ -213,7 +216,7 @@ impl OpKind {
             | Self::Dwrt
             | Self::RawGather => 2,
 
-            Self::MulAdd | Self::Select | Self::Clamp | Self::Gather => 3,
+            Self::MulAdd | Self::Select | Self::Gather => 3,
 
             // N-ary: [combiner, reduce_var, extent, body].
             Self::Reduce => 4,
@@ -241,7 +244,6 @@ impl OpKind {
             Self::Floor => "floor",
             Self::Ceil => "ceil",
             Self::Round => "round",
-            Self::Fract => "fract",
             Self::Sin => "sin",
             Self::Cos => "cos",
             Self::Tan => "tan",
@@ -255,7 +257,6 @@ impl OpKind {
             Self::Log2 => "log2",
             Self::Log10 => "log10",
             Self::Pow => "pow",
-            Self::Hypot => "hypot",
             Self::Lt => "lt",
             Self::Le => "le",
             Self::Gt => "gt",
@@ -263,7 +264,6 @@ impl OpKind {
             Self::Eq => "eq",
             Self::Ne => "ne",
             Self::Select => "select",
-            Self::Clamp => "clamp",
             Self::Tuple => "tuple",
             Self::TruncToInt => "trunc_to_int",
             Self::IntToFloat => "int_to_float",
@@ -301,7 +301,6 @@ impl OpKind {
             "floor" => Some(Self::Floor),
             "ceil" => Some(Self::Ceil),
             "round" => Some(Self::Round),
-            "fract" => Some(Self::Fract),
             "sin" => Some(Self::Sin),
             "cos" => Some(Self::Cos),
             "tan" => Some(Self::Tan),
@@ -315,7 +314,6 @@ impl OpKind {
             "log2" => Some(Self::Log2),
             "log10" => Some(Self::Log10),
             "pow" | "powf" => Some(Self::Pow),
-            "hypot" => Some(Self::Hypot),
             "lt" => Some(Self::Lt),
             "le" => Some(Self::Le),
             "gt" => Some(Self::Gt),
@@ -323,7 +321,6 @@ impl OpKind {
             "eq" => Some(Self::Eq),
             "ne" => Some(Self::Ne),
             "select" => Some(Self::Select),
-            "clamp" => Some(Self::Clamp),
             "tuple" => Some(Self::Tuple),
             "trunc_to_int" => Some(Self::TruncToInt),
             "int_to_float" => Some(Self::IntToFloat),
@@ -352,7 +349,7 @@ impl OpKind {
             // Reduction is lowered (unrolled) away before costing; price the
             // node itself at zero so a stray one never dominates extraction.
             Self::Reduce => 0,
-            Self::Neg | Self::Abs | Self::Floor | Self::Ceil | Self::Round | Self::Fract => 1,
+            Self::Neg | Self::Abs | Self::Floor | Self::Ceil | Self::Round => 1,
             Self::Add
             | Self::Sub
             | Self::Min
@@ -364,7 +361,7 @@ impl OpKind {
             | Self::Eq
             | Self::Ne
             | Self::Select
-            | Self::Clamp => 4,
+            => 4,
             Self::Mul | Self::MulAdd | Self::Recip | Self::Rsqrt => 5,
             // Bit-manip primitives: single cheap integer/convert instructions.
             Self::TruncToInt
@@ -392,8 +389,7 @@ impl OpKind {
             | Self::Ln
             | Self::Log2
             | Self::Log10
-            | Self::Pow
-            | Self::Hypot => 15,
+            | Self::Pow => 15,
         }
     }
 
@@ -487,7 +483,6 @@ impl OpKind {
             | Self::Floor
             | Self::Ceil
             | Self::Round
-            | Self::Fract
             | Self::Sin
             | Self::Cos
             | Self::Tan
@@ -512,7 +507,6 @@ impl OpKind {
             Self::Min
             | Self::Max
             | Self::Atan2
-            | Self::Hypot
             | Self::Pow
             | Self::Lt
             | Self::Le
@@ -536,7 +530,7 @@ impl OpKind {
             Self::Reduce => EmitStyle::Special,
 
             // Ternary method: (a).mul_add(b, c)
-            Self::MulAdd | Self::Select | Self::Clamp => EmitStyle::TernaryMethod,
+            Self::MulAdd | Self::Select => EmitStyle::TernaryMethod,
         }
     }
 
@@ -557,18 +551,21 @@ impl OpKind {
             Self::Floor => Some(x.floor()),
             Self::Ceil => Some(x.ceil()),
             Self::Round => Some(x.round()),
-            Self::Fract => Some(x.fract()),
-            Self::Sin => Some(x.sin()),
-            Self::Cos => Some(x.cos()),
-            Self::Tan => Some(x.tan()),
-            Self::Asin => Some(x.asin()),
-            Self::Acos => Some(x.acos()),
-            Self::Atan => Some(x.atan()),
-            Self::Exp => Some(x.exp()),
-            Self::Exp2 => Some(x.exp2()),
-            Self::Ln => Some(x.ln()),
-            Self::Log2 => Some(x.log2()),
-            Self::Log10 => Some(x.log10()),
+            // Integer-domain primitives. A lane holds an f32 bit pattern; these
+            // reinterpret it as i32, exactly as the hardware instructions do
+            // (`cvttps2dq` / `cvtdq2ps`). They exist so exp/log can lower to
+            // arithmetic, and the interpreter needs them for the same reason —
+            // it evaluates that lowering.
+            Self::TruncToInt => Some(f32::from_bits((x as i32) as u32)),
+            Self::IntToFloat => Some((x.to_bits() as i32) as f32),
+
+            // Transcendentals have no arm on purpose. `f32::sin` and friends
+            // are std-only (absent from `core`) and would be a *second*
+            // definition of a function the compiler already defines by
+            // expansion. Callers lower first — `expand_transcendentals` — and
+            // then only the primitives above are ever evaluated. Same
+            // discipline as `Dwrt`, which is also lowered rather than
+            // interpreted.
             _ => None,
         }
     }
@@ -585,9 +582,6 @@ impl OpKind {
             Self::Div => Some(x / y),
             Self::Min => Some(x.min(y)),
             Self::Max => Some(x.max(y)),
-            Self::Atan2 => Some(x.atan2(y)),
-            Self::Pow => Some(x.powf(y)),
-            Self::Hypot => Some(x.hypot(y)),
             Self::Lt => Some(if x < y { 1.0 } else { 0.0 }),
             Self::Le => Some(if x <= y { 1.0 } else { 0.0 }),
             Self::Gt => Some(if x > y { 1.0 } else { 0.0 }),
@@ -602,6 +596,20 @@ impl OpKind {
             } else {
                 0.0
             }),
+            // Integer-domain binaries on lane bit patterns. The shift count is
+            // the RHS `Const`'s numeric value (the schedule reads it as
+            // `*v as u32 as u8`), and both shifts are logical — `vpslld` /
+            // `vpsrld`, zero-filling.
+            Self::IAdd => Some(f32::from_bits(
+                (x.to_bits() as i32).wrapping_add(y.to_bits() as i32) as u32,
+            )),
+            Self::Shl => Some(f32::from_bits(x.to_bits() << (y as u32 & 31))),
+            Self::Shr => Some(f32::from_bits(x.to_bits() >> (y as u32 & 31))),
+            // Bitwise on lane bit patterns, matching the SIMD backends. On
+            // canonical masks (1.0/0.0 here, all-ones/zero in the JIT) this
+            // is logical AND/OR in both representations.
+            Self::BitAnd => Some(f32::from_bits(x.to_bits() & y.to_bits())),
+            Self::BitOr => Some(f32::from_bits(x.to_bits() | y.to_bits())),
             _ => None,
         }
     }
@@ -612,13 +620,6 @@ impl OpKind {
         match self {
             Self::MulAdd => Some(x * y + z),
             Self::Select => Some(if x != 0.0 { y } else { z }),
-            Self::Clamp => {
-                // Guard against degenerate clamp where min > max
-                // (can arise from e-graph extraction with swapped bounds).
-                let lo = y.min(z);
-                let hi = y.max(z);
-                Some(x.clamp(lo, hi))
-            }
             _ => None,
         }
     }

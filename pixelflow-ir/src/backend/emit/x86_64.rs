@@ -33,14 +33,6 @@ fn emit_vex_128_0f(code: &mut Vec<u8>, opcode: u8, dst: Reg, src1: Reg, src2: Re
     code.push(0xC0 | ((dst.0 & 7) << 3) | (src2.0 & 7)); // ModRM
 }
 
-/// Emit a VEX-encoded 3-operand instruction with an immediate byte.
-/// VEX.128.0F: dst = op(src1, src2, imm8)
-#[allow(clippy::too_many_arguments)]
-fn emit_vex_128_0f_imm(code: &mut Vec<u8>, opcode: u8, dst: Reg, src1: Reg, src2: Reg, imm8: u8) {
-    emit_vex_128_0f(code, opcode, dst, src1, src2);
-    code.push(imm8);
-}
-
 /// Emit SSE instruction (legacy encoding, 2-operand: dst op= src)
 fn emit_sse_rr(code: &mut Vec<u8>, prefix: Option<u8>, opcode: &[u8], dst: Reg, src: Reg) {
     if let Some(p) = prefix {
@@ -158,27 +150,6 @@ pub fn emit_maxps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 // Arithmetic (VEX 3-operand)
 // =============================================================================
 
-/// VADDPS dst, src1, src2
-fn emit_vaddps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit_vex_128_0f(code, 0x58, dst, src1, src2);
-}
-
-/// VSUBPS dst, src1, src2
-fn emit_vsubps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit_vex_128_0f(code, 0x5C, dst, src1, src2);
-}
-
-/// VMULPS dst, src1, src2
-fn emit_vmulps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit_vex_128_0f(code, 0x59, dst, src1, src2);
-}
-
-/// VSQRTPS dst, src (VEX unary — src1 field is 0b1111 i.e. unused)
-fn emit_vsqrtps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    // For unary VEX, vvvv = 0b1111 (src1 = Reg(15) inverted → all ones)
-    emit_vex_128_0f(code, 0x51, dst, Reg(0), src);
-}
-
 // =============================================================================
 // Bitwise (VEX 3-operand)
 // =============================================================================
@@ -224,14 +195,6 @@ pub fn emit_andps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 /// VCMPPS predicates
 const CMP_LT: u8 = 1; // Less than (ordered, non-signaling)
 const CMP_NLE: u8 = 6; // Not less-or-equal, i.e. greater than (unordered)
-
-/// VCMPPS dst, src1, src2, imm8 — packed float comparison
-///
-/// Result is all-ones mask where predicate is true, all-zeros where false.
-/// Predicate 1 = LT, Predicate 6 = NLE (greater than).
-fn emit_vcmpps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg, predicate: u8) {
-    emit_vex_128_0f_imm(code, 0xC2, dst, src1, src2, predicate);
-}
 
 // =============================================================================
 // Constants
@@ -347,14 +310,118 @@ fn emit_vcvtdq2ps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     emit_vex(code, 0, 1, 0, dst, Reg(0), src, 0x5B); // VEX.128.0F.WIG 5B /r
 }
 
+// ─────────────────────────── bound-memory gather ────────────────────────────
+//
+// This build has no AVX2, so there is no `vgatherdps` at 128 bits. A gather is
+// therefore four independent scalar loads assembled into a lane vector:
+// extract each lane's integer index to a GPR, load that element, and insert it
+// into the destination lane. All four instructions below are plain AVX (the
+// VEX encodings of SSE4.1 ops), the same tier the rest of this backend already
+// emits (`vroundps`, `vandnps`).
+
+/// Third VEX byte with W=0 and `vvvv` unused (encoded inverted, so all ones);
+/// OR in the `pp` field for the operand-size prefix.
+const VEX_W0_NO_VVVV: u8 = 0xF << 3;
+/// `pp = 01` — the `66` prefix.
+const PP_66: u8 = 1;
+/// `pp = 10` — the `F3` prefix.
+const PP_F3: u8 = 2;
+
+/// `mov dstGPR, [ctxGPR + disp32]` — load a buffer base pointer out of the
+/// context struct. Mirrors the AVX-512 backend's loader.
+pub fn emit_load_ptr_from_ctx(code: &mut Vec<u8>, dst_gpr: u8, ctx_gpr: u8, disp: i32) {
+    debug_assert!(
+        dst_gpr < 8 && ctx_gpr < 8,
+        "emit_load_ptr_from_ctx: GPR8 only"
+    );
+    // REX.W ; 8B ; mod=10 reg=dst r/m=ctx ; disp32
+    code.push(0x48);
+    code.push(0x8B);
+    code.push(0x80 | ((dst_gpr & 7) << 3) | (ctx_gpr & 7));
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+/// `vpextrd r32, xmmSRC, lane` — move one 32-bit lane into a GP register.
+fn emit_vpextrd_to_gpr(code: &mut Vec<u8>, dst_gpr: u8, src: Reg, lane: u8) {
+    debug_assert!(dst_gpr < 8, "emit_vpextrd_to_gpr: GPR8 only");
+    debug_assert!(lane < 4, "vpextrd lane must be 0..4");
+    // VEX.128.66.0F3A.W0 16 /r ib — note the *xmm* is the ModRM.reg operand and
+    // the GPR is r/m, the reverse of the usual direction.
+    let rbit = if src.0 >= 8 { 0x00 } else { 0x80 };
+    code.push(0xC4);
+    code.push(rbit | 0x40 | 0x20 | 3); // R X B mmmmm=0F3A (GPR8 => B set)
+    code.push(VEX_W0_NO_VVVV | PP_66);
+    code.push(0x16);
+    code.push(0xC0 | ((src.0 & 7) << 3) | (dst_gpr & 7));
+    code.push(lane);
+}
+
+/// `vmovss xmmDST, [baseGPR + indexGPR*4]` — load one f32 element, zeroing the
+/// upper lanes.
+fn emit_vmovss_load_scaled(code: &mut Vec<u8>, dst: Reg, base_gpr: u8, index_gpr: u8) {
+    debug_assert!(base_gpr < 8 && index_gpr < 8, "GPR8 only");
+    debug_assert!(base_gpr != 5, "base rbp/r13 would force a disp form");
+    // VEX.LIG.F3.0F.WIG 10 /r, mod=00 rm=100 (SIB), SIB scale=4.
+    let rbit = if dst.0 >= 8 { 0x00 } else { 0x80 };
+    code.push(0xC4);
+    code.push(rbit | 0x40 | 0x20 | 1); // mmmmm=0F
+    code.push(VEX_W0_NO_VVVV | PP_F3);
+    code.push(0x10);
+    code.push(((dst.0 & 7) << 3) | 0b100); // mod=00, rm=SIB
+    code.push((0b10 << 6) | ((index_gpr & 7) << 3) | (base_gpr & 7)); // scale=4
+}
+
+/// `vinsertps xmmDST, xmmSRC1, xmmSRC2, imm8` — place lane 0 of `src2` into
+/// lane `dst_lane` of the result, keeping `src1`'s other lanes.
+fn emit_vinsertps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg, dst_lane: u8) {
+    debug_assert!(dst_lane < 4, "vinsertps lane must be 0..4");
+    // VEX.128.66.0F3A.WIG 21 /r ib. imm8: [7:6] source lane, [5:4] dest lane,
+    // [3:0] zero mask (none).
+    emit_vex(code, 1, 3, 0, dst, src1, src2, 0x21);
+    code.push(dst_lane << 4);
+}
+
+/// Scratch the scalar gather sequence clobbers. The vector pair must be
+/// distinct from each other and from the gather's index operand; the GPRs must
+/// be free across the sequence.
+#[derive(Clone, Copy)]
+pub struct GatherScratch {
+    /// GPR receiving the buffer base pointer.
+    pub base_gpr: u8,
+    /// GPR receiving each lane's element index.
+    pub index_gpr: u8,
+    /// GPR holding the caller's context pointer (read-only).
+    pub ctx_gpr: u8,
+    /// Vector register for the truncated integer indices.
+    pub idx_lanes: Reg,
+    /// Vector register for one loaded element.
+    pub value: Reg,
+}
+
+/// `dst = base[idx_lane]` for each lane — the whole gather sequence.
+///
+/// `idx` holds the *float* indices (the lowering already clamped them in
+/// range). `dst` may alias `idx`: the indices are converted into scratch before
+/// the first write to `dst`.
+pub fn emit_gather_scalar(code: &mut Vec<u8>, dst: Reg, idx: Reg, slot: u16, s: GatherScratch) {
+    debug_assert!(s.idx_lanes.0 != s.value.0 && s.idx_lanes.0 != idx.0);
+    emit_vcvttps2dq(code, s.idx_lanes, idx);
+    emit_load_ptr_from_ctx(code, s.base_gpr, s.ctx_gpr, i32::from(slot) * 8);
+    for lane in 0..4u8 {
+        emit_vpextrd_to_gpr(code, s.index_gpr, s.idx_lanes, lane);
+        if lane == 0 {
+            // Lane 0 seeds the vector (vmovss zeroes lanes 1..4).
+            emit_vmovss_load_scaled(code, dst, s.base_gpr, s.index_gpr);
+        } else {
+            emit_vmovss_load_scaled(code, s.value, s.base_gpr, s.index_gpr);
+            emit_vinsertps(code, dst, dst, s.value, lane);
+        }
+    }
+}
+
 /// VPADDD dst, src1, src2 — packed i32 add.
 fn emit_vpaddd(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
     emit_vex(code, 1, 1, 0, dst, src1, src2, 0xFE); // VEX.128.66.0F.WIG FE /r
-}
-
-/// VPSUBD dst, src1, src2 — packed i32 subtract.
-fn emit_vpsubd(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
-    emit_vex(code, 1, 1, 0, dst, src1, src2, 0xFA); // VEX.128.66.0F.WIG FA /r
 }
 
 /// VPSLLD dst, src, imm8 — packed i32 shift-left-logical by immediate.
@@ -398,80 +465,6 @@ const CMP_GE: u8 = 5; // NLT_US (>=)
 //   src  — input register (read-only; never clobbered)
 //   scratch[0..4] — clobbered scratch (4 distinct registers)
 
-/// log2(x) core — exponent extraction + mantissa reduction + 5-term Horner.
-#[allow(clippy::too_many_arguments)]
-fn emit_log2_body(code: &mut Vec<u8>, dst: Reg, src: Reg, s0: Reg, s1: Reg, s2: Reg) {
-    // Phase 1: n = float(exponent_bits - 127)
-    emit_vpsrld_imm(code, s0, src, 23); // s0 = bits >> 23
-    emit_f32_const(code, s2, f32::from_bits(127)); // s2 = 127 (int splat)
-    emit_vpsubd(code, s0, s0, s2); // s0 = exp - 127
-    emit_vcvtdq2ps(code, dst, s0); // dst = n
-
-    // Phase 2: f = mantissa in [1, 2)
-    emit_f32_const(code, s2, f32::from_bits(0x007F_FFFF));
-    emit_vandps(code, s1, src, s2); // s1 = mantissa bits
-    emit_f32_const(code, s2, f32::from_bits(0x3F80_0000));
-    emit_vorps(code, s1, s1, s2); // s1 = f
-
-    // Phase 3: branchless reduction to [√2/2, √2]
-    // mask = (f >= √2); adjust = 1.0 & mask; n += adjust; f *= (1 - 0.5*adjust)
-    emit_f32_const(code, s2, core::f32::consts::SQRT_2);
-    emit_vcmpps(code, s2, s1, s2, CMP_GE); // s2 = mask(f >= √2)
-    emit_f32_const(code, s0, 1.0);
-    emit_vandps(code, s0, s0, s2); // s0 = adjust (1.0 or 0.0)
-    emit_vaddps(code, dst, dst, s0); // n += adjust
-    emit_f32_const(code, s2, 0.5);
-    emit_vmulps(code, s2, s0, s2); // s2 = 0.5*adjust
-    emit_f32_const(code, s0, 1.0);
-    emit_vsubps(code, s2, s0, s2); // s2 = 1 - 0.5*adjust = factor
-    emit_vmulps(code, s1, s1, s2); // f *= factor   (s1 = reduced f)
-
-    // Phase 4: poly = ((((c4*f + c3)*f + c2)*f + c1)*f + c0); result = n + poly
-    emit_f32_const(code, s0, -0.320_043_52_f32);
-    emit_f32_const(code, s2, 1.797_496_9_f32);
-    emit_vmulps(code, s0, s0, s1);
-    emit_vaddps(code, s0, s0, s2);
-    emit_f32_const(code, s2, -4.198_804_6_f32);
-    emit_vmulps(code, s0, s0, s1);
-    emit_vaddps(code, s0, s0, s2);
-    emit_f32_const(code, s2, 5.727_023_f32);
-    emit_vmulps(code, s0, s0, s1);
-    emit_vaddps(code, s0, s0, s2);
-    emit_f32_const(code, s2, -3.005_614_7_f32);
-    emit_vmulps(code, s0, s0, s1);
-    emit_vaddps(code, s0, s0, s2);
-    emit_vaddps(code, dst, dst, s0); // n + poly
-}
-
-/// exp2(x) core — floor/frac split + 5-term Horner + 2^n bit scaling.
-#[allow(clippy::too_many_arguments)]
-fn emit_exp2_body(code: &mut Vec<u8>, dst: Reg, src: Reg, s0: Reg, s1: Reg, s2: Reg) {
-    emit_vroundps(code, s0, src, 1); // s0 = n = floor(x)
-    emit_vsubps(code, s1, src, s0); // s1 = f = x - n
-
-    // poly (accumulator s2): ((((c4*f + c3)*f + c2)*f + c1)*f + c0)
-    emit_f32_const(code, s2, 0.013_555_7_f32);
-    emit_f32_const(code, dst, 0.052_032_3_f32);
-    emit_vmulps(code, s2, s2, s1);
-    emit_vaddps(code, s2, s2, dst);
-    emit_f32_const(code, dst, 0.241_379_3_f32);
-    emit_vmulps(code, s2, s2, s1);
-    emit_vaddps(code, s2, s2, dst);
-    emit_f32_const(code, dst, core::f32::consts::LN_2);
-    emit_vmulps(code, s2, s2, s1);
-    emit_vaddps(code, s2, s2, dst);
-    emit_f32_const(code, dst, 1.0_f32);
-    emit_vmulps(code, s2, s2, s1);
-    emit_vaddps(code, s2, s2, dst); // s2 = poly(2^f)
-
-    // 2^n = reinterpret((int(n) + 127) << 23)
-    emit_vcvttps2dq(code, s1, s0); // s1 = int(n)
-    emit_f32_const(code, dst, f32::from_bits(127)); // 127 (int splat)
-    emit_vpaddd(code, s1, s1, dst);
-    emit_vpslld_imm(code, s1, s1, 23); // s1 = 2^n bits
-    emit_vmulps(code, dst, s2, s1); // dst = poly * 2^n
-}
-
 /// MOVUPS [rsp+disp8], xmm — red-zone spill store (unaligned, leaf-safe).
 pub fn emit_movups_store_rsp(code: &mut Vec<u8>, src: Reg, disp: i8) {
     if src.0 >= 8 {
@@ -482,6 +475,43 @@ pub fn emit_movups_store_rsp(code: &mut Vec<u8>, src: Reg, disp: i8) {
     code.push(0x44 | ((src.0 & 7) << 3)); // mod=01, reg=src, rm=100 (SIB)
     code.push(0x24); // SIB: base=rsp, no index
     code.push(disp as u8);
+}
+
+/// MOVUPS [rsp+disp32], xmm — spill store into an allocated frame.
+pub fn emit_movups_store_rsp32(code: &mut Vec<u8>, src: Reg, disp: i32) {
+    if src.0 >= 8 {
+        code.push(0x44); // REX.R
+    }
+    code.push(0x0F);
+    code.push(0x11);
+    code.push(0x84 | ((src.0 & 7) << 3)); // mod=10, reg=src, rm=100 (SIB)
+    code.push(0x24); // SIB: base=rsp, no index
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+/// MOVUPS xmm, [rsp+disp32] — reload from an allocated frame.
+pub fn emit_movups_load_rsp32(code: &mut Vec<u8>, dst: Reg, disp: i32) {
+    if dst.0 >= 8 {
+        code.push(0x44); // REX.R
+    }
+    code.push(0x0F);
+    code.push(0x10);
+    code.push(0x84 | ((dst.0 & 7) << 3)); // mod=10, reg=dst, rm=100 (SIB)
+    code.push(0x24); // SIB: base=rsp, no index
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+/// `sub rsp, imm32` — allocate a spill frame (kernels stay leaf functions;
+/// no base pointer, offsets are rsp-relative).
+pub fn emit_sub_rsp(code: &mut Vec<u8>, size: u32) {
+    code.extend_from_slice(&[0x48, 0x81, 0xEC]);
+    code.extend_from_slice(&size.to_le_bytes());
+}
+
+/// `add rsp, imm32` — release the spill frame before `ret`.
+pub fn emit_add_rsp(code: &mut Vec<u8>, size: u32) {
+    code.extend_from_slice(&[0x48, 0x81, 0xC4]);
+    code.extend_from_slice(&size.to_le_bytes());
 }
 
 /// MOVUPS xmm, [rsp+disp8] — red-zone reload (unaligned, leaf-safe).
@@ -510,26 +540,6 @@ pub fn emit_ceil_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 
 pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     emit_vroundps(code, dst, src, 0); // round to nearest (even)
-}
-
-pub fn emit_fract_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, sc: [Reg; 4]) {
-    emit_vroundps(code, sc[0], src, 1); // floor
-    emit_vsubps(code, dst, src, sc[0]); // x - floor(x)
-}
-
-/// pow(x, y) = exp2(y * log2(x)).
-pub fn emit_pow_builtin(code: &mut Vec<u8>, dst: Reg, base: Reg, exp: Reg, sc: [Reg; 4]) {
-    emit_log2_body(code, sc[3], base, sc[0], sc[1], sc[2]); // sc[3] = log2(x)
-    emit_vmulps(code, sc[3], sc[3], exp); // sc[3] = y * log2(x)
-    emit_exp2_body(code, dst, sc[3], sc[0], sc[1], sc[2]); // dst = 2^(...)
-}
-
-/// hypot(x, y) = sqrt(x² + y²).
-pub fn emit_hypot_builtin(code: &mut Vec<u8>, dst: Reg, x: Reg, y: Reg, sc: [Reg; 4]) {
-    emit_vmulps(code, sc[0], x, x);
-    emit_vmulps(code, dst, y, y);
-    emit_vaddps(code, dst, dst, sc[0]);
-    emit_vsqrtps(code, dst, dst);
 }
 
 /// select(cond, if_true, if_false) — bit blend (`cond` is an all-ones/zeros mask).
@@ -572,7 +582,6 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: [
         OpKind::Floor => emit_floor_builtin(code, dst, src),
         OpKind::Ceil => emit_ceil_builtin(code, dst, src),
         OpKind::Round => emit_round_builtin(code, dst, src),
-        OpKind::Fract => emit_fract_builtin(code, dst, src, scratch),
 
         // Bit-manip primitives (integer-domain). Single instructions.
         OpKind::TruncToInt => emit_vcvttps2dq(code, dst, src),
@@ -647,28 +656,6 @@ fn emit_cmp_tail(code: &mut Vec<u8>, dst: Reg, src2: Reg, pred: u8) {
     code.push(pred);
 }
 
-/// Emit binary transcendental operation (needs scratch registers).
-#[allow(clippy::too_many_arguments)]
-pub fn emit_binary_transcendental(
-    code: &mut Vec<u8>,
-    op: OpKind,
-    dst: Reg,
-    src1: Reg,
-    src2: Reg,
-    scratch: [Reg; 4],
-) {
-    match op {
-        // Atan2 is lowered to arithmetic before codegen; only Pow/Hypot still
-        // reach a backend (not yet lowered).
-        OpKind::Pow => emit_pow_builtin(code, dst, src1, src2, scratch),
-        OpKind::Hypot => emit_hypot_builtin(code, dst, src1, src2, scratch),
-        _ => panic!(
-            "x86_64 binary transcendental emit not implemented for {:?}",
-            op
-        ),
-    }
-}
-
 /// Emit ternary operation
 #[allow(clippy::too_many_arguments)]
 pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c: Reg) {
@@ -680,15 +667,6 @@ pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c:
             }
             emit_mulps(code, dst, b);
             emit_addps(code, dst, c);
-        }
-
-        OpKind::Clamp => {
-            // max(min(a, c), b)
-            if dst.0 != a.0 {
-                emit_sse_rr(code, None, &[0x0F, 0x28], dst, a);
-            }
-            emit_minps(code, dst, c);
-            emit_maxps(code, dst, b);
         }
 
         _ => panic!("x86_64 ternary emit not implemented for {:?}", op),

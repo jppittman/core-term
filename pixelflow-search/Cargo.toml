@@ -11,6 +11,11 @@ pixelflow-ir = { path = "../pixelflow-ir", default-features = false, features = 
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 
+[dev-dependencies]
+# Rewrite-soundness tests check a rule's two sides numerically against the
+# language's own semantics; `oracle` is what exposes that walker.
+pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
+
 [features]
 std = ["rand/std", "dep:serde", "dep:serde_json"]
 default = ["std"]
