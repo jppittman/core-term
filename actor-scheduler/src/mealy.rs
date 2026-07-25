@@ -178,9 +178,20 @@ pub enum Delivery {
 
 /// Deliver one port according to `delivery`.
 ///
-/// The building block every generated `Wiring::flush` is made of. A disconnected target
-/// drops the message and reports success either way — the target is gone, so there is
-/// nothing to wait for, and blocking forever on a dead consumer would deadlock the sender.
+/// The building block every generated `Wiring::flush` is made of.
+///
+/// Outcomes:
+/// - **Delivered**, or the port was empty → [`Flush::Done`].
+/// - **Target full**, [`Delivery::Droppable`] → the message is discarded, [`Flush::Done`].
+///   Silence on a full ring is the whole point of that delivery kind, and also its whole risk.
+/// - **Target full**, [`Delivery::Blocking`] → the message is put back in `port`,
+///   [`Flush::Blocked`]. Retry when the ring drains.
+/// - **Target gone** (either delivery kind) → the message is **put back in `port`**,
+///   [`Flush::Disconnected`]. It is deliberately *not* dropped: for a port carrying a moved
+///   resource, dropping here would destroy it with nobody having decided to, while the sender
+///   believed it was delivered. Blocking forever on a dead consumer would deadlock, so this
+///   reports rather than parks — the caller decides whether to retry, hand off, or shut down,
+///   and can do any of them because the value is still in hand.
 pub fn send_port<T>(port: &mut Option<T>, tx: &SpscSender<T>, delivery: Delivery) -> Flush {
     let Some(msg) = port.take() else {
         return Flush::Done;
@@ -204,15 +215,21 @@ pub fn send_port<T>(port: &mut Option<T>, tx: &SpscSender<T>, delivery: Delivery
 /// Combine port outcomes. `Disconnected` outranks `Blocked` outranks `Done` — a dead peer is
 /// news the caller needs even if another port merely filled up, and it does not resolve by
 /// waiting the way backpressure does.
+///
+/// **Consumes the iterator fully; never short-circuits.** A hand-written `Wiring::flush` may
+/// pass a lazy iterator of [`send_port`] calls, so returning early would skip the sends that
+/// hadn't been evaluated yet. Since a disconnected port stays set in the outbox and is retried
+/// from the front every time, those later ports would be starved permanently — which is exactly
+/// the independent-port partial flush this module promises.
 #[must_use]
 pub fn all(outcomes: impl IntoIterator<Item = Flush>) -> Flush {
     let mut worst = Flush::Done;
     for outcome in outcomes {
-        match outcome {
-            Flush::Disconnected => return Flush::Disconnected,
-            Flush::Blocked => worst = Flush::Blocked,
-            Flush::Done => {}
-        }
+        worst = match (worst, outcome) {
+            (Flush::Disconnected, _) | (_, Flush::Disconnected) => Flush::Disconnected,
+            (Flush::Blocked, _) | (_, Flush::Blocked) => Flush::Blocked,
+            (Flush::Done, Flush::Done) => Flush::Done,
+        };
     }
     worst
 }
