@@ -125,6 +125,12 @@ impl Host {
                     i += 1;
                 }
                 Step::Blocked | Step::Idle => i += 1,
+                // A peer is gone and the payload is retained in the node's outbox. `Host` has
+                // no supervision policy to apply — it keeps the node alive rather than
+                // dropping it, so whatever the outbox holds stays recoverable, and does not
+                // count the node as having run, so a dead peer cannot spin the sweep.
+                // Choosing retry/escalate/graceful-shutdown belongs a layer up.
+                Step::Disconnected => i += 1,
                 Step::Halted(exit) => {
                     self.exits.push(exit);
                     // `remove`, not `swap_remove`: sweep order is load-bearing, so the
