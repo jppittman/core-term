@@ -352,11 +352,15 @@ The resulting edges, added to `pixelflow-runtime/tests/target_topology.rs`:
 
 | Edge | Direction | Kind |
 |---|---|---|
-| Window available (created, or returned from Present) | driver → rasterizer | Droppable, no credit |
+| Window request ("I have work, give me a buffer") | rasterizer → driver | Droppable, Credit(1) |
+| Window grant (correctly sized, driver-allocated) | driver → rasterizer | Droppable, shares that credit |
 | Manifold submission | app → rasterizer | Droppable, keep-latest |
-| Present | rasterizer → driver | Droppable, shares the ping-pong buffer's Credit(1) |
+| `Present` | rasterizer → driver | Droppable |
 | Frame-rendered notice (FPS telemetry) | rasterizer → vsync | Droppable, no credit |
 | `ReturnToken` | app → vsync | Droppable, no credit |
+
+**The window is pulled, not pushed** — see §8.5 for why that specific choice, which is what
+makes every "Droppable" in this table honest rather than asserted.
 
 Two of these delete an existing edge rather than add one: `engine → driver` (`Present`) and
 `driver → engine` (`PresentComplete`) are gone — `rasterizer` presents directly now. `engine ↔
@@ -406,31 +410,6 @@ its own follow-up rather than bundled with the proof:
 - `app`'s handle setup gains a second target: today `Application` only reaches `engine`; it
   needs a way to reach `rasterizer` (manifold) and `vsync` (`ReturnToken`) directly.
 
-### 8.3 Window-lifecycle events: tear, don't copy, and don't reroute
-
-`WindowCreated`/`Resized` have two consumers with genuinely different needs: `app` wants to know
-the new dimensions, and the render pipeline wants the buffer. A first pass at §8 handled this by
-adding a `rasterizer → app` edge — rasterizer would open the `Window`, pull the metadata out, and
-relay it onward — on the reasoning that feeding both consumers otherwise meant cloning the frame
-buffer, which `Frame: Clone` makes silently possible and which would be a real per-frame cost.
-
-That reasoning was wrong at its root: **a frame buffer copy was never an option to weigh.** The
-`Window` circulates by ownership transfer; that *is* the ping-pong buffer. Treating a clone as
-one arm of a trade-off, even to reject it, is how a copy eventually ends up in the render loop.
-
-The correct answer is the one §7.1 already established, applied a second time: a `Window` tears
-into `WindowMeta` (four scalars, `Copy`) and `Frame` (expensive, moves). So the driver sends
-**metadata** to engine over the existing Blocking `DisplayEvent` edge — engine relays to app
-exactly as it does today, unchanged — and sends **the window** to rasterizer. Both consumers are
-served, nothing is copied, and the graph gains no edge at all.
-
-This also keeps `rasterizer` from learning about `app`, which the discarded version required.
-Colocating a relay with the data sounds tidy until it means the renderer holds a handle to the
-application to forward window metadata it doesn't otherwise care about.
-
-The general rule this is the second instance of: **when two actors need different parts of one
-value, split the value — don't duplicate it, and don't reroute one consumer through the other.**
-
 ### 8.4 What the `rasterizer` node actually is
 
 The proof's `rasterizer` node is **not** `pixelflow-graphics`'s `RasterizerActor`. It can't be:
@@ -453,49 +432,61 @@ the DAG result either way.
 The moment that stops being true — if the worker ever gains a handle to a third actor — it stops
 being collapsible and has to enter the proof as its own node. That is the tripwire.
 
-### 8.5 Resize must not mint a window — droppable is the opposite of keep-latest
+### 8.5 The window is pulled, not pushed — and why §8 needed three tries
 
-Automated review (Codex, on #920) caught a real defect in §8.3's split, and it is worth recording
-in full because it is the *third* instance this session of the same underlying mistake.
+This section replaces two earlier ones (a "tear the Window, send metadata to engine and the
+buffer to rasterizer" split, and a follow-up "resize must not mint a window" patch). Both are
+deleted rather than annotated, because keeping a chain of superseded fixes would obscure what
+turned out to be a single wrong decision underneath all three.
 
-**The defect.** `send_port` with `Delivery::Droppable` discards the **new** message when the ring
-is full (`actor-scheduler/src/mealy.rs`: `Err(TrySendError::Full(_)) => Flush::Done`, payload
-dropped). Keep-latest semantics need the **old** one dropped. Those are opposites. For manifold
-submission the difference is harmless — another manifold arrives next frame — but the platform
-mints a *fresh, correctly sized* `Frame` on every `Resized`/scale-change
-(`Frame::<PlatformPixel>::new(px_w, px_h)`, in two places). Dropping that message discards the
-only correctly-sized buffer in existence, and nothing replaces it until the next resize. The app
-would be told the new dimensions over the reliable Blocking edge while the rasterizer kept
-rendering at the old size. Reachable during any resize drag, since rasterization is synchronous.
+**What went wrong, three times.** Automated review caught each in turn: (1) a `rasterizer → app`
+edge invented to avoid a frame-buffer clone that was never an acceptable option to begin with;
+(2) resize windows sent over a droppable edge, where a full ring discards the *new* message and
+keep-latest requires discarding the *old* one — so the only correctly-sized buffer could be lost
+with no replacement until the next resize; (3) the fix for (2) left the coordinator responsible
+for reallocating on resize while giving it no edge over which to learn the dimensions had
+changed, and routing that metadata over a droppable edge would have reproduced (2) exactly.
 
-This is precisely the §3 distinction — *structurally unreachable* vs *genuinely acceptable loss*
-— applied wrongly: the window edge was filed under the second when it belonged under neither.
+Three patches, each exposing the next problem, is a decomposition error rather than a detail
+error. **The root cause: frame allocation was on the coordinator, but window size is
+driver-authoritative** — the OS decides it. Putting the allocator on the side that doesn't know
+the size forces size information to chase it across the mesh, and every route it can take is
+either unreliable (droppable, loses state permanently) or blocks the main thread.
 
-**The fix is to stop minting windows on resize, not to change how delivery works.** A resize does
-not produce a rendered buffer; it produces *new dimensions* plus an empty allocation. Sending an
-empty correctly-sized buffer is an expensive way to communicate two integers. `Frame<P>` is a
-plain `Vec<P>` — verified: no XShm segment, no IOSurface, nothing platform-backed; X11's
-`present` merely points an `XImage` at the `Vec`'s data — so there is no reason the *driver* must
-be the allocator.
+**The fix is to move allocation, not to route information better.** The driver keeps the window
+between frames and remains its allocator. The coordinator *pulls* one when it actually has work:
 
-So: on resize the driver sends **metadata only** (`WindowMeta`, `Copy`, over the existing
-reliable edge). The rasterizer coordinator owns `latest_window` and reallocates its own frame
-when it observes the dimensions changed, before the next render.
+1. `rasterizer → driver`: window request, sent when a manifold is held and `Credit(1)` allows.
+2. `driver → rasterizer`: the window it already holds — always correctly sized, because the
+   driver resized it in place when the OS said so.
+3. `rasterizer → driver`: `Present` once rendered. The driver presents it and **retains it**,
+   ready for the next request.
 
-Two things fall out, and the second is the one that matters:
+**There is no resize notification anywhere in the render pipeline, so none can be dropped.** On
+resize the driver swaps its held buffer for a correctly-sized one and tells nobody. The
+coordinator never learns dimensions because it never allocates. The problem isn't solved, it's
+absent.
 
-1. **The bug is gone by construction.** No window travels on resize, so there is no window to
-   drop. Delivery semantics didn't need changing.
-2. **"Exactly one window circulates" becomes actually true.** It wasn't. Today a resize mints a
-   second `Window` while another may still be in flight to or from the rasterizer — which
-   quietly invalidated the `Credit(1)` reasoning that §3 rests on for `Present`/`PresentComplete`.
-   The invariant was being asserted, not held. Now windows travel on exactly three occasions:
-   `WindowCreated` (bootstrap, one-shot), `Present`, and `PresentComplete`.
+This also makes every droppable edge here safe for the *stated* reason rather than an asserted
+one, satisfying the test §8.5's predecessor articulated — losing a message must be recoverable by
+a subsequent one:
 
-The graph is unchanged — `driver → rasterizer` still exists, it just carries `PresentComplete`
-and the one bootstrap `WindowCreated` rather than resize windows. No edge added, none removed.
+- A dropped **request** costs one frame; the next vsync tick issues another.
+- A dropped **grant** costs one frame; the credit is released and the next request re-asks.
+- A dropped **`Present`** costs one frame; the driver still holds a valid window.
 
-**The general lesson, third instance.** "Droppable" is not a synonym for "keep-latest." An edge
-is only safe to declare droppable if losing *that specific message* is recoverable by a
-subsequent one. Where the message is the sole carrier of unique state, dropping it is
-unrecoverable no matter how idempotent the *concept* sounds.
+In every case the *sender retains the authoritative copy*. That is the property that was missing
+before: the original design had the driver send its only window and forget it, which is what made
+a dropped message unrecoverable. **Droppable is safe when the sender can resend** — not when the
+message merely sounds idempotent.
+
+**Consequence for the coordinator.** It shrinks: manifold plus `Credit(1)`, no `latest_window`,
+no reallocation logic, no dimension tracking. It still performs the point→pixel dimap warp, using
+the dimensions of the window it was handed.
+
+**Consequence for `Present`/`PresentComplete`.** `PresentComplete` disappears entirely as a
+message. The driver never gave the window away permanently, so there is nothing to hand back —
+the "return" half of the ping-pong is just the driver keeping what it always owned. That also
+retires an invariant §3 had been asserting but not holding: "exactly one window circulates" was
+untrue while resize could mint a second one mid-flight. Now exactly one window *exists*, and it
+never leaves the driver except for the duration of a single render.
