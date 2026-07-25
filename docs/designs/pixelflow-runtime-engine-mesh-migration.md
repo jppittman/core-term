@@ -340,27 +340,30 @@ waiting" to decide when to render. That decision, and the edges it implies, need
 treatment every edge in §3 got — proven before any live actor changes — because it invents two
 edges (`driver` ↔ `rasterizer`) that never existed in the mesh before.
 
-**The match logic lives in `rasterizer`.** `driver` pushes a window the moment one is free
-(`WindowCreated`, or a window returned from a prior `Present`) rather than tracking whether a
-manifold is waiting — it stays exactly as stateless about the render pipeline as §7.3 already
-said. `app` pushes its latest manifold (droppable, keep-latest, same semantics as today).
-`rasterizer` holds both, and renders when it has a window, a manifold, and its own `Credit(1)`
-allows it — colocated with the credit that already gates rendering, rather than split across an
-actor that only relays.
+**The match logic lives in `rasterizer`, and the window is pulled rather than pushed** (§8.5
+explains why). `app` pushes its latest manifold (droppable, keep-latest, same semantics as
+today). `rasterizer` holds that manifold and a `Credit(1)`; when it has work and the credit
+allows, it *requests* a window. `driver` keeps the window between frames, stays its allocator,
+and grants the one it already holds — always correctly sized, because the driver resized it in
+place when the OS said so. `rasterizer` renders into it and `Present`s it back; the driver
+presents and retains it for the next request.
 
 The resulting edges, added to `pixelflow-runtime/tests/target_topology.rs`:
 
 | Edge | Direction | Kind |
 |---|---|---|
-| Window request ("I have work, give me a buffer") | rasterizer → driver | Droppable, Credit(1) |
-| Window grant (correctly sized, driver-allocated) | driver → rasterizer | Droppable, shares that credit |
+| Window request ("I have work, give me a buffer") | rasterizer → driver | Droppable, **Credit(1) consumed here** |
+| Window grant (correctly sized, driver-allocated) | driver → rasterizer | Droppable, same credit still held |
+| `Present` | rasterizer → driver | Droppable, **credit released here** |
 | Manifold submission | app → rasterizer | Droppable, keep-latest |
-| `Present` | rasterizer → driver | Droppable |
 | Frame-rendered notice (FPS telemetry) | rasterizer → vsync | Droppable, no credit |
 | `ReturnToken` | app → vsync | Droppable, no credit |
 
-**The window is pulled, not pushed** — see §8.5 for why that specific choice, which is what
-makes every "Droppable" in this table honest rather than asserted.
+**The one credit spans the entire round trip** — request → grant → render → `Present` — and is
+released only when the window is back with the driver. It is emphatically *not* released at the
+grant: doing so would let a second manifold trigger a request the driver cannot satisfy, since
+it no longer holds a window to give. See §8.5; this is what makes the three droppable backstops
+structurally unreachable rather than merely unlikely.
 
 Two of these delete an existing edge rather than add one: `engine → driver` (`Present`) and
 `driver → engine` (`PresentComplete`) are gone — `rasterizer` presents directly now. `engine ↔
@@ -460,28 +463,44 @@ either unreliable (droppable, loses state permanently) or blocks the main thread
 between frames and remains its allocator. The coordinator *pulls* one when it actually has work:
 
 1. `rasterizer → driver`: window request, sent when a manifold is held and `Credit(1)` allows.
+   **The credit is consumed here and held for the whole round trip.**
 2. `driver → rasterizer`: the window it already holds — always correctly sized, because the
    driver resized it in place when the OS said so.
-3. `rasterizer → driver`: `Present` once rendered. The driver presents it and **retains it**,
-   ready for the next request.
+3. `rasterizer → driver`: `Present` once rendered. The driver presents it and retains it, ready
+   for the next request. **The credit is released only here**, once the window is home.
 
 **There is no resize notification anywhere in the render pipeline, so none can be dropped.** On
 resize the driver swaps its held buffer for a correctly-sized one and tells nobody. The
 coordinator never learns dimensions because it never allocates. The problem isn't solved, it's
 absent.
 
-This also makes every droppable edge here safe for the *stated* reason rather than an asserted
-one, satisfying the test §8.5's predecessor articulated — losing a message must be recoverable by
-a subsequent one:
+**Why the credit must span the round trip, and why "recoverable" was the wrong justification.**
 
-- A dropped **request** costs one frame; the next vsync tick issues another.
-- A dropped **grant** costs one frame; the credit is released and the next request re-asks.
-- A dropped **`Present`** costs one frame; the driver still holds a valid window.
+An earlier draft of this section argued the droppable edges were safe because a dropped message
+costs one frame and *the sender still holds the authoritative copy to resend*. **That argument is
+false**, and review was right to reject it: `Window` owns the framebuffer and is sent **by
+value**. `send_port` destroys the message on a full droppable ring. So a dropped grant leaves the
+driver with nothing — it moved the window out — and a dropped `Present` leaves nobody holding it.
+The sole render buffer is destroyed, permanently, not delayed by a frame. There is exactly one
+`Window`; no edge carrying it is ever safe on "recovery" grounds.
 
-In every case the *sender retains the authoritative copy*. That is the property that was missing
-before: the original design had the driver send its only window and forget it, which is what made
-a dropped message unrecoverable. **Droppable is safe when the sender can resend** — not when the
-message merely sounds idempotent.
+Safety here comes from the drop being **impossible**, which is §3's *structurally unreachable*
+category — the argument this doc already established for `Present`/`PresentComplete` and which
+the "recoverable" framing needlessly abandoned:
+
+- The coordinator cannot request without consuming the single credit.
+- The credit is not released until the window is back with the driver, so **at most one message
+  carrying the window is in flight across all three edges at any instant.**
+- Each ring is provisioned ≥ 1. A ring holding at most one message, sent only when the previous
+  round trip completed, is never full at the moment of sending.
+
+So the droppable backstop on all three edges is dead code in the well-behaved system, exactly as
+§3 intends — present for `Topology`'s proof, unreachable by construction. Releasing the credit at
+the *grant* instead would break this directly: a second manifold could trigger a request while
+the window is still out being rendered, and the driver would have nothing to grant.
+
+**Droppable is safe when the drop cannot occur, or when the message is genuinely replaceable.**
+Never because a sender "could resend" something it moved away.
 
 **Consequence for the coordinator.** It shrinks: manifold plus `Credit(1)`, no `latest_window`,
 no reallocation logic, no dimension tracking. It still performs the point→pixel dimap warp, using
