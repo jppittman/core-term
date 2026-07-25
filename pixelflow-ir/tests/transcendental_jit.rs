@@ -159,6 +159,16 @@ fn assert_tiers_agree_binary(name: &str, k: &Kernel, op: pixelflow_ir::OpKind) {
         (2.0, 1.0),
         (f32::INFINITY, 1.0),
     ] {
+        // Where the two hardwares disagree, the language promises nothing, so
+        // there is no answer to assert — only that the folder declines to pick
+        // one (checked by `folder_declines_platform_specific_nan_cases`).
+        // x86 `minps` yields the second operand while ARM `FMIN` propagates the
+        // NaN; x86's Gt/Ge are unordered while ARM's are ordered. CI caught
+        // this on macos-latest: `min(NaN, 1)` gave NaN on aarch64 against an
+        // oracle written from x86's behavior.
+        if op.nan_result_is_platform_specific() && (x.is_nan() || y.is_nan()) {
+            continue;
+        }
         let got = call_xy(&jit, x, y);
         let want = op.eval_binary(x, y).expect("oracle covers this op");
         assert!(
@@ -195,17 +205,66 @@ fn nan_comparisons_agree_between_tiers() {
 }
 
 #[test]
-fn round_breaks_ties_to_even_in_both_tiers() {
+fn round_agrees_between_tiers_away_from_ties() {
     use pixelflow_ir::OpKind;
     let rounded = Kernel::x().round();
     let (arena, root) = rounded.parts();
     let jit = jit_cache::compile_cached(arena, root).expect("round compiles");
-    for x in [0.5f32, 1.5, 2.5, 3.5, -0.5, -1.5, -2.5, 2.4, 2.6] {
+    // Non-ties only. At a tie the three tiers disagree by design (x86
+    // nearest-even, aarch64 FRINTA ties-away, combinator `(x+0.5).floor()`), so
+    // there is no answer to assert — see `tie_result_is_platform_specific`.
+    assert!(OpKind::Round.tie_result_is_platform_specific());
+    for x in [2.4f32, 2.6, -2.4, -2.6, 0.2, 7.0, -7.0] {
         let got = call_x(&jit, x);
         let want = OpKind::Round.eval_unary(x).expect("oracle covers Round");
         assert_eq!(got, want, "round({x}): JIT {got} vs oracle {want}");
     }
-    // And the contract itself: nearest-even, so 2.5 -> 2, not 3.
-    assert_eq!(call_x(&jit, 2.5), 2.0);
-    assert_eq!(call_x(&jit, 3.5), 4.0);
+}
+
+/// The ops whose NaN answer is platform-specific must not be constant-folded
+/// with a NaN operand: folding bakes in the building target's answer, and the
+/// same expression computed at runtime on another target would differ.
+#[test]
+fn folder_declines_platform_specific_nan_cases() {
+    use pixelflow_ir::OpKind;
+    for op in [OpKind::Min, OpKind::Max, OpKind::Gt, OpKind::Ge] {
+        assert!(
+            op.nan_result_is_platform_specific(),
+            "{op:?} diverges between x86 and aarch64 on NaN"
+        );
+    }
+    // The ones both hardwares agree on stay foldable.
+    for op in [OpKind::Lt, OpKind::Le, OpKind::Eq, OpKind::Ne, OpKind::Add] {
+        assert!(
+            !op.nan_result_is_platform_specific(),
+            "{op:?} agrees across targets and should remain foldable"
+        );
+    }
+}
+
+/// `Eq`/`Ne` are exact in every emitter, so the oracle must be too. The old
+/// `(x-y).abs() < f32::EPSILON` form folded 0.5 and its next representable
+/// neighbour to "equal" while the hardware said "not equal" — a fold-vs-runtime
+/// miscompile on ordinary finite values, with no NaN or platform difference
+/// involved.
+#[test]
+fn eq_ne_are_exact_not_epsilon() {
+    use pixelflow_ir::OpKind;
+
+    let near = f32::from_bits(0.5f32.to_bits() + 1);
+    assert_ne!(0.5f32, near, "the two values really are distinct f32s");
+    assert!((0.5f32 - near).abs() < f32::EPSILON, "and closer than EPSILON");
+
+    assert_eq!(OpKind::Eq.eval_binary(0.5, near), Some(0.0));
+    assert_eq!(OpKind::Ne.eval_binary(0.5, near), Some(1.0));
+    assert_eq!(OpKind::Eq.eval_binary(0.5, 0.5), Some(1.0));
+
+    // NaN: never equal, always unequal — agreed by every emitter.
+    let nan = f32::NAN;
+    assert_eq!(OpKind::Eq.eval_binary(nan, nan), Some(0.0));
+    assert_eq!(OpKind::Ne.eval_binary(nan, nan), Some(1.0));
+
+    // `Kernel` exposes no eq/ne constructor, so there is no JIT side to compare
+    // against here — the folder IS the consumer that was wrong, and these
+    // assertions are what pins it.
 }

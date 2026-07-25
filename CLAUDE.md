@@ -30,17 +30,38 @@ wins** and the reference semantics are written to match it — never the reverse
 
 Consequences, all pinned by `pixelflow-ir/tests/transcendental_jit.rs`:
 
-| Op | Behavior | Not |
-|---|---|---|
-| `Gt`, `Ge` | unordered — **true** if either operand is NaN (imm8 6/5 = `NLE_US`/`NLT_US`) | scalar `>`/`>=`, false for NaN |
-| `Lt`, `Le`, `Eq` | ordered — false for NaN | — |
-| `Ne` | true for NaN | — |
-| `Min`, `Max` | `(a OP b) ? a : b`, so NaN in *either* operand yields the second | `f32::min`/`max`, which return the numeric operand |
-| `Round` | nearest-**even**, so `round(2.5) == 2` | `f32::round`, ties away from zero |
-| `exp`, `exp2` | saturate past ±126 exponents | overflow to `inf` |
+There are **three** evaluation tiers — the combinator `Field` ops, the JIT, and
+`OpKind::eval_*` (the differential oracle *and* the e-graph's constant folder) —
+and they do not all agree at the edges. What is promised is only what every tier
+on every target actually does:
 
-The asymmetry (`Gt` unordered while `Lt` ordered) is the hardware's, not a
-choice — it is what a single `cmpps` gives for free.
+| Op | Behavior |
+|---|---|
+| `Lt`, `Le` | ordered — false for NaN |
+| `Eq`, `Ne` | **exact** comparison (not epsilon); NaN never equal, always unequal |
+| `exp`, `exp2` | saturate past ±126 exponents rather than overflowing to `inf` |
+
+**Unspecified — the targets disagree, so rely on neither:**
+
+| Op | x86 | aarch64 | combinator tier |
+|---|---|---|---|
+| `Min`, `Max` (NaN operand) | `(a OP b) ? a : b` → the **second** operand | `FMIN`/`FMAX` **propagate** NaN | — |
+| `Gt`, `Ge` (NaN operand) | unordered (imm8 6/5) — **true** | `FCMGT`/`FCMGE` ordered — **false** | ordered — **false** |
+| `Round` (exact tie) | nearest-**even** (imm 0x00) → `round(2.5) == 2` | `FRINTA` ties-**away** → `3` | `(x+0.5).floor()` → `3`, but `round(-1.5) == -1` |
+
+`min(NaN, 1.0)` is `1.0` on x86 and `NaN` on aarch64. x86 has no ties-away
+rounding mode, so unifying `Round` costs extra instructions in the hot path.
+"Hardware semantics" is not one answer when the hardware differs — so the
+language promises none, marked by `OpKind::nan_result_is_platform_specific` and
+`tie_result_is_platform_specific`. Do not write a test, a rewrite rule, or a
+fold that depends on one target's answer.
+
+Corollary worth stating because it is easy to get wrong: **unspecified means the
+optimizer may legitimately produce a different answer than the unoptimized code.**
+`Min`/`Max` are not commutative on NaN (`min(1.0, NaN)` vs `min(NaN, 1.0)`
+differ on x86), yet the e-graph installs commutativity for them. That is sound
+only because the result is unspecified; it would be a miscompile the moment
+anything promised a value.
 
 **What this does NOT license: the two tiers disagreeing.** `OpKind::eval_unary`
 / `eval_binary` are the differential oracle *and* the e-graph's constant
