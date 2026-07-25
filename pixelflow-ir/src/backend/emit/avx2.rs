@@ -339,9 +339,31 @@ pub fn emit_cmp_al_imm8(code: &mut Vec<u8>, imm: u8) {
     code.push(imm);
 }
 
-/// Fused multiply-add via software mul+add (no hardware FMA dependency: this
-/// backend is gated on `avx2` alone, not `avx2,fma`, and VIA/older Zen
-/// chips have shipped AVX2 without FMA3). `dst` already holds `c`.
+/// `vfmadd231ps ymmD, ymmA, ymmB` — `dst = a*b + dst` (231 form: dst is the
+/// addend going in, `a`/`b` the product). VEX.256.66.0F38.W0 B8 /r, same
+/// opcode as `avx512.rs`'s EVEX form, just VEX-encoded at 256 bits. Requires
+/// `target_feature = "fma"` (FMA3) — not implied by `avx2` alone.
+#[cfg(target_feature = "fma")]
+fn vfmadd231ps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
+    vex256(c, 1, 2, 0, 0xB8, d, s1, s2);
+}
+
+/// Fused multiply-add: `dst` already holds `c`; computes `dst = a*b + dst`.
+///
+/// Uses real hardware FMA when the build has `+fma` (rounds once, exactly
+/// matching the reference interpreter under `fp-contract=fast` — see the
+/// regression this fixed: `eval_scalar`'s scalar `a*b+c` gets contracted to
+/// an `fma` instruction by LLVM under `+fma` too, so a software two-step
+/// mul-then-add here would round twice and disagree in the last bit).
+/// Falls back to software mul+add otherwise (this backend is gated on `avx2`
+/// alone, not `avx2,fma` — VIA/older Zen chips shipped AVX2 without FMA3).
+#[cfg(target_feature = "fma")]
+pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
+    vfmadd231ps(code, dst.0, a.0, b.0);
+}
+
+/// See the `+fma` variant above.
+#[cfg(not(target_feature = "fma"))]
 pub fn emit_fmadd_c_in_dst(code: &mut Vec<u8>, dst: Reg, a: Reg, b: Reg) {
     let tmp = UNARY_SCRATCH;
     vmulps(code, tmp.0, a.0, b.0);
@@ -398,6 +420,7 @@ mod tests {
         use crate::backend::emit::executable::ExecutableCode;
         use core::arch::x86_64::*;
 
+        #[allow(improper_ctypes_definitions)]
         type K = unsafe extern "C" fn(__m256, __m256, __m256, __m256) -> __m256;
 
         fn run(body: &[u8], xs: [f32; 8], ys: [f32; 8], zs: [f32; 8]) -> [f32; 8] {
@@ -442,6 +465,22 @@ mod tests {
             }
         }
 
+        /// Bit-exact check for mask results: an all-ones/all-zeros lane is
+        /// NaN under float subtraction, so `check`'s epsilon comparison can't
+        /// be used for compares/selects' underlying mask bit pattern.
+        fn check_bits(got: [f32; 8], want: impl Fn(usize) -> u32, tag: &str) {
+            for i in 0..8 {
+                let w = want(i);
+                assert_eq!(
+                    got[i].to_bits(),
+                    w,
+                    "{tag} lane {i}: got {:#x} want {:#x}",
+                    got[i].to_bits(),
+                    w
+                );
+            }
+        }
+
         const X: Reg = Reg(0);
         const Y: Reg = Reg(1);
         const Z: Reg = Reg(2);
@@ -469,9 +508,9 @@ mod tests {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_binary(&mut c, OpKind::Lt, X, X, Y).unwrap();
-            check(
+            check_bits(
                 run(&c, xs, ys, zs),
-                |i| if xs[i] < ys[i] { f32::from_bits(0xFFFF_FFFF) } else { 0.0 },
+                |i| if xs[i] < ys[i] { 0xFFFF_FFFF } else { 0 },
                 "lt mask",
             );
         }
@@ -537,7 +576,13 @@ mod tests {
 
         #[test]
         fn gather_from_buffer() {
-            type G = unsafe extern "C" fn(*const f32, __m256) -> __m256;
+            // Matches the production ABI (mod.rs's ResolvedOp::Gather): the
+            // first arg is a context pointer to an ARRAY of buffer base
+            // pointers (one per slot), not a buffer pointer directly —
+            // `x86_64::emit_gather_scalar` loads `[ctx_gpr + slot*8]` to get
+            // the real base. `emit_load_ptr_from_ctx`'s doc calls this out.
+            #[allow(improper_ctypes_definitions)]
+            type G = unsafe extern "C" fn(*const *const f32, __m256) -> __m256;
 
             let mut c = Vec::new();
             // idx (zmm/ymm0) -> int truncate happens inside emit_gather_scalar.
@@ -553,11 +598,12 @@ mod tests {
 
             let buf: Vec<f32> = (0..64).map(|i| (i as f32) * 1.5 + 0.25).collect();
             let idx: [f32; 8] = [0.0, 63.0, 1.0, 2.0, 10.0, 5.0, 32.0, 7.0];
+            let ctx: [*const f32; 1] = [buf.as_ptr()];
 
             let exec = unsafe { ExecutableCode::from_code(&c).expect("mmap") };
             let out = unsafe {
                 let f: G = exec.as_fn();
-                let r = f(buf.as_ptr(), _mm256_loadu_ps(idx.as_ptr()));
+                let r = f(ctx.as_ptr(), _mm256_loadu_ps(idx.as_ptr()));
                 let mut out = [0.0f32; 8];
                 _mm256_storeu_ps(out.as_mut_ptr(), r);
                 out

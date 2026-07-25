@@ -66,12 +66,31 @@ fn assert_jit_matches_interp(arena: &ExprArena, root: ExprId, label: &str) -> u3
             let want = eval_scalar(arena, root, &[x, y, 0.1, 0.9], &BindingTable::empty());
             let got = jit_eval(&jit, x, y, 0.1, 0.9);
             assert!(
-                (want.is_nan() && got.is_nan()) || want == got,
+                (want.is_nan() && got.is_nan()) || floats_agree(want, got),
                 "{label}: JIT {got} != interp {want} at ({x}, {y}) [spills={spills}]"
             );
         }
     }
     spills
+}
+
+/// Bit-exact under every build this file was originally tested with (no
+/// hardware FMA target feature => `fp-contract=fast` has nothing to contract
+/// into, so both tiers round identically). Under `+avx2,+fma`, `eval_scalar`'s
+/// scalar `a*b+c` gets contracted by LLVM into one rounding (a real `fma`
+/// instruction); a `DecomposedMulAdd` (register pressure forced `a`/`b` apart
+/// from `c` — see `muladd_and_clamp_spilled`, which deliberately builds
+/// operands deeper than the register budget) is architecturally a two-step
+/// mul-then-add and rounds twice, regardless of backend. That is a genuine
+/// last-bit IEEE-754 rounding difference, not a miscompile, so this tolerates
+/// a few ULPs of f32 relative error instead of weakening to a coarse epsilon
+/// that would also hide a real one.
+fn floats_agree(want: f32, got: f32) -> bool {
+    if want == got {
+        return true;
+    }
+    let ulp = f32::EPSILON * want.abs().max(f32::MIN_POSITIVE);
+    (want - got).abs() <= 4.0 * ulp
 }
 
 /// A "wide" balanced expression tree: needs ~depth registers transiently, so a
