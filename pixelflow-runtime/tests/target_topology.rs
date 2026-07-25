@@ -54,16 +54,16 @@ fn the_target_engine_mesh_is_a_dag() {
     // window-lifecycle events. Nothing else in this graph is Blocking, so this alone cannot
     // form a cycle with anything below.
     //
-    // `WindowCreated`/`Resized` still notify engine over this edge, but carry `WindowMeta`
-    // (scalar, `Copy`) rather than the `Window` — the same tearing §7.1 already established
-    // for the render request. The `Window` itself *moves* to rasterizer on the edge below. So
-    // both consumers are served with no copy of the frame buffer anywhere: engine gets the
-    // few scalars it needs to relay to app, rasterizer gets ownership of the buffer.
+    // `WindowCreated`/`Resized` notify engine over this edge as `WindowMeta` (scalar, `Copy`)
+    // purely so engine can relay dimensions to app. No frame buffer travels here, and the
+    // render pipeline does not consume these at all — the driver keeps the window and hands it
+    // out on request (§8.5), so nothing downstream needs telling that it was resized.
     topo.blocking_edge(driver, engine); // DisplayEvent (window lifecycle as WindowMeta)
 
-    // Idempotent "latest wins" state pushes: no credit needed at all. Present/PresentComplete
-    // used to live here too — they moved to the rasterizer <-> driver edges below, since
-    // rasterizer is what actually presents once engine no longer mediates.
+    // Idempotent "latest wins" state pushes: no credit needed at all. `Present` used to live
+    // here too; it is now a rasterizer -> driver edge below. `PresentComplete` is gone as a
+    // message entirely — the driver never gives the window away permanently, so there is
+    // nothing to hand back (§8.5).
     topo.droppable_edge(engine, driver); // SetTitle / SetSize / SetCursor / Copy
 
     // RequestPaste / PasteData: plain droppable, deliberately *not* credit-bounded — see §3.2.
@@ -79,16 +79,16 @@ fn the_target_engine_mesh_is_a_dag() {
     topo.droppable_edge(vsync, engine); // vsync tick (Credit-gated)
     topo.droppable_edge(engine, app); // RequestFrame (Credit-gated)
 
-    // The render pipeline, now wired directly instead of through engine (§7 of the migration
-    // doc). rasterizer is where §7's chosen design puts the window/manifold pairing: driver
-    // pushes a window the moment one is free (created, or returned from a prior Present) and
-    // app pushes its latest manifold; rasterizer renders when both are held and its own
-    // Credit(1) allows it, then presents directly and tells vsync.
-    // Carries `PresentComplete` (the buffer coming back) and the one bootstrap
-    // `WindowCreated`. Deliberately NOT resize windows — see §8.5: a droppable ring drops the
-    // *new* message on overflow, which for a freshly-sized resize buffer is unrecoverable,
-    // where keep-latest would need the *old* one dropped. Resize sends metadata only.
-    topo.droppable_edge(driver, rasterizer); // PresentComplete + bootstrap WindowCreated
+    // The render pipeline, wired directly instead of through engine (§7/§8). The window is
+    // *pulled*, not pushed (§8.5): the driver keeps and allocates it, and rasterizer asks for
+    // one only when it holds a manifold and its Credit(1) allows. That is what makes every
+    // droppable edge here recoverable rather than merely idempotent-sounding — a dropped
+    // message costs one frame, and the sender still holds the authoritative copy to resend.
+    //
+    // Note there is no resize edge at all. On resize the driver swaps its own buffer and tells
+    // nobody, so there is no resize message that can be dropped.
+    topo.droppable_edge(rasterizer, driver); // window request (Credit(1))
+    topo.droppable_edge(driver, rasterizer); // window grant, correctly sized (shares credit)
     topo.droppable_edge(app, rasterizer); // manifold submission (keep-latest, as today)
     topo.droppable_edge(rasterizer, driver); // Present, once rendered
     topo.droppable_edge(rasterizer, vsync); // RenderedResponse (FPS telemetry only)
