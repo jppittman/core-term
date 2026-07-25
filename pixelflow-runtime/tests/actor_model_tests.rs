@@ -172,139 +172,16 @@ impl Actor<(), (), ()> for ParkTrackingActor {
 // ============================================================================
 // Priority Ordering Tests
 // ============================================================================
-
-#[test]
-fn control_messages_processed_before_earlier_data_messages() {
-    let (tx, mut rx) = ActorScheduler::new(10, 100);
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let log_clone = log.clone();
-
-    let handle = thread::spawn(move || {
-        let mut actor = OrderingActor { log: log_clone };
-        rx.run(&mut actor);
-    });
-
-    // Send data first, then control
-    tx.send(Message::Data("first".to_string())).unwrap();
-    tx.send(Message::Data("second".to_string())).unwrap();
-    tx.send(Message::Control("priority".to_string())).unwrap();
-    tx.send(Message::Data("third".to_string())).unwrap();
-
-    thread::sleep(Duration::from_millis(50));
-    drop(tx);
-    handle.join().unwrap();
-
-    let messages = log.lock().unwrap();
-    let ctrl_idx = messages.iter().position(|(s, _)| s.starts_with("C:"));
-    let first_data_idx = messages
-        .iter()
-        .position(|(s, _)| s == "D:first")
-        .unwrap_or(usize::MAX);
-
-    // Control should be processed before any data that arrived before it
-    assert!(
-        ctrl_idx.unwrap() < first_data_idx,
-        "Control message should be processed before earlier data messages. Got: {:?}",
-        messages.iter().map(|(s, _)| s).collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn management_messages_processed_before_data_messages() {
-    let (tx, mut rx) = ActorScheduler::new(10, 100);
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let log_clone = log.clone();
-
-    let handle = thread::spawn(move || {
-        let mut actor = OrderingActor { log: log_clone };
-        rx.run(&mut actor);
-    });
-
-    // Send data, then management
-    tx.send(Message::Data("data1".to_string())).unwrap();
-    tx.send(Message::Management("mgmt".to_string())).unwrap();
-    tx.send(Message::Data("data2".to_string())).unwrap();
-
-    thread::sleep(Duration::from_millis(50));
-    drop(tx);
-    handle.join().unwrap();
-
-    let messages = log.lock().unwrap();
-    let mgmt_idx = messages.iter().position(|(s, _)| s.starts_with("M:"));
-    let data1_idx = messages
-        .iter()
-        .position(|(s, _)| s == "D:data1")
-        .unwrap_or(usize::MAX);
-
-    assert!(
-        mgmt_idx.unwrap() < data1_idx,
-        "Management should be processed before earlier data. Got: {:?}",
-        messages.iter().map(|(s, _)| s).collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn control_processed_before_management() {
-    // This test verifies that when control and management messages are both
-    // queued, control is processed first. We check which one triggers processing
-    // FIRST by having the actor track the first message of each type it sees.
-    let (tx, mut rx) = ActorScheduler::new(10, 100);
-    let control_first = Arc::new(AtomicBool::new(false));
-    let management_first = Arc::new(AtomicBool::new(false));
-    let control_first_clone = control_first.clone();
-    let management_first_clone = management_first.clone();
-
-    let handle = thread::spawn(move || {
-        struct FirstWinsActor {
-            control_first: Arc<AtomicBool>,
-            management_first: Arc<AtomicBool>,
-            control_seen: bool,
-            management_seen: bool,
-        }
-        impl Actor<(), (), ()> for FirstWinsActor {
-            fn handle_control(&mut self, _: ()) -> HandlerResult {
-                if !self.control_seen && !self.management_seen {
-                    self.control_first.store(true, Ordering::SeqCst);
-                }
-                self.control_seen = true;
-                Ok(())
-            }
-            fn handle_management(&mut self, _: ()) -> HandlerResult {
-                if !self.control_seen && !self.management_seen {
-                    self.management_first.store(true, Ordering::SeqCst);
-                }
-                self.management_seen = true;
-                Ok(())
-            }
-            fn handle_data(&mut self, _: ()) -> HandlerResult {
-                Ok(())
-            }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                Ok(ActorStatus::Idle)
-            }
-        }
-        let mut actor = FirstWinsActor {
-            control_first: control_first_clone,
-            management_first: management_first_clone,
-            control_seen: false,
-            management_seen: false,
-        };
-        rx.run(&mut actor);
-    });
-
-    // Send both control and management rapidly to ensure they're queued before processing
-    tx.send(Message::Management(())).unwrap();
-    tx.send(Message::Control(())).unwrap();
-
-    thread::sleep(Duration::from_millis(50));
-    drop(tx);
-    handle.join().unwrap();
-
-    assert!(
-        control_first.load(Ordering::SeqCst),
-        "Control message should be processed before management message"
-    );
-}
+//
+// Cross-lane ordering is BEST EFFORT and is deliberately not asserted here.
+// Priority lanes reorder messages that are *simultaneously pending*; they
+// cannot retroactively preempt one the actor has already dequeued. Four tests
+// asserting otherwise were deleted: each spawned the consumer before sending,
+// so the actor was already draining and could legitimately process an early
+// data message before a control message had even been sent. They passed by
+// timing luck and failed under load — one of them broke a CI run, which is how
+// they were found. What IS guaranteed, and is still tested below: FIFO within a
+// single lane, delivery of every message, and no starvation of a lower lane.
 
 #[test]
 fn fifo_ordering_within_same_lane() {
@@ -1061,68 +938,6 @@ fn concurrent_senders_stress_test() {
         count.load(Ordering::SeqCst),
         num_senders * msgs_per_sender,
         "All messages from all senders should be processed"
-    );
-}
-
-#[test]
-fn priority_maintained_when_both_lanes_have_messages() {
-    // This test verifies that when BOTH control and data are queued,
-    // control is processed first. It does NOT test that control sent LATER
-    // interrupts data processing - that's not how the scheduler works.
-    //
-    // The scheduler checks priority at the start of each batch, so if
-    // data is sent first and control second, some data may be processed
-    // before control arrives. This is expected.
-
-    let (tx, mut rx) = ActorScheduler::new(50, 500);
-    let first_message_type = Arc::new(Mutex::new(None::<&'static str>));
-
-    let first_clone = first_message_type.clone();
-
-    let handle = thread::spawn(move || {
-        struct FirstChecker {
-            first: Arc<Mutex<Option<&'static str>>>,
-        }
-        impl Actor<i32, i32, i32> for FirstChecker {
-            fn handle_data(&mut self, _: i32) -> HandlerResult {
-                let mut first = self.first.lock().unwrap();
-                if first.is_none() {
-                    *first = Some("data");
-                }
-                Ok(())
-            }
-            fn handle_control(&mut self, _: i32) -> HandlerResult {
-                let mut first = self.first.lock().unwrap();
-                if first.is_none() {
-                    *first = Some("control");
-                }
-                Ok(())
-            }
-            fn handle_management(&mut self, _: i32) -> HandlerResult {
-                Ok(())
-            }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                Ok(ActorStatus::Idle)
-            }
-        }
-        rx.run(&mut FirstChecker { first: first_clone });
-    });
-
-    // Send both control and data before scheduler processes anything
-    // by sending them quickly
-    tx.send(Message::Data(1)).unwrap();
-    tx.send(Message::Control(1)).unwrap();
-
-    thread::sleep(Duration::from_millis(100));
-    drop(tx);
-    handle.join().unwrap();
-
-    // Control should be processed first since it has higher priority
-    let first = first_message_type.lock().unwrap();
-    assert_eq!(
-        *first,
-        Some("control"),
-        "Control should be processed before data when both are queued"
     );
 }
 
