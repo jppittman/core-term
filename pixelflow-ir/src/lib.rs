@@ -61,12 +61,42 @@ pub use traits::{EmitStyle, Op, OpMeta};
 /// at compile time, turning any width disagreement into a clear build error
 /// rather than a raw `transmute` size error (or, worse, a silent miscompile).
 ///
-/// 64 (512-bit, AVX-512) when compiled with `target_feature = "avx512f"`, where
-/// `compile_arena_dag` routes to `Avx512Backend` and `KernelFn` is `__m512`;
-/// otherwise 16 (128-bit, SSE2/NEON). This matches `pixelflow-core`'s `Field`
-/// width under the same build flags, so the `kernel_jit!` assert holds.
+/// A genuine 3-way split, checked only against `target_feature` (the flag
+/// that actually governs what the compiler may emit into this crate) — NOT
+/// ANDed against a build.rs host-detected cfg the way `pixelflow-core`'s
+/// `storage.rs` gates `NativeF32Storage`. That AND is a real safety net over
+/// there (see its comment): it guards against a build host whose CPU lacks
+/// the feature it was explicitly told to target, which would emit
+/// AVX-512/AVX2 instructions the box running the build can't execute. This
+/// crate has no build script of its own to reproduce that host probe — it is
+/// `no_std`-first and carries no `is_x86_feature_detected!` machinery — and
+/// duplicating pixelflow-core's `pixelflow_avx512f`/`pixelflow_avx2` cfg here
+/// would only recreate the mismatch it's meant to catch (a build script is
+/// per-crate; a cfg it emits does not cross a crate boundary). Every other
+/// `target_feature = "avx512f"` gate already in this crate (`x86.rs`,
+/// `emit/mod.rs`, `emit/executable.rs`, `jit_manifold.rs`) is bare
+/// `target_feature`, so this stays consistent with the rest of the crate
+/// rather than inventing a second rule for one const.
+///
+/// 64 (512-bit, AVX-512) when compiled with `target_feature = "avx512f"`,
+/// where `compile_arena_dag` routes to `Avx512Backend` and `KernelFn` is
+/// `__m512`; 32 (256-bit, AVX2) when compiled with `target_feature = "avx2"`
+/// and not `"avx512f"`, routing to `Avx2Backend` (`KernelFn` = `__m256`);
+/// otherwise 16 (128-bit, SSE2/NEON). This matches `pixelflow-core`'s
+/// `Field` width under the same build flags, so the `kernel_jit!` assert
+/// holds.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub const JIT_VECTOR_BYTES: usize = 64;
 /// See the AVX-512 variant above.
-#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(target_feature = "avx512f")
+))]
+pub const JIT_VECTOR_BYTES: usize = 32;
+/// See the AVX-512 variant above.
+#[cfg(not(any(
+    all(target_arch = "x86_64", target_feature = "avx512f"),
+    all(target_arch = "x86_64", target_feature = "avx2")
+)))]
 pub const JIT_VECTOR_BYTES: usize = 16;

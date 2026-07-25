@@ -19,6 +19,9 @@ fn main() {
         eprintln!("Commands:");
         eprintln!("  bundle-run    Build and run the bundled macOS app");
         eprintln!("  bake-eigen    Parse Stam's eigenstructure binary → Rust consts");
+        eprintln!("  isa-matrix    Run the workspace test suite at every x86-64 ISA");
+        eprintln!("                level this host actually supports (SSE2/AVX2/AVX-512)");
+        eprintln!("                [--clippy to also run clippy per level]");
         std::process::exit(1);
     }
 
@@ -30,6 +33,10 @@ fn main() {
         }
         "bake-eigen" => {
             bake_eigen();
+        }
+        "isa-matrix" => {
+            let with_clippy = args[2..].iter().any(|a| a == "--clippy");
+            isa_matrix(with_clippy);
         }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
@@ -180,6 +187,193 @@ fn bundle_run(extra_args: &[String]) {
 
     println!("CoreTerm.app launched successfully!");
     println!("Monitor logs with: tail -f /tmp/core-term.log");
+}
+
+// ============================================================================
+// ISA test matrix
+// ============================================================================
+//
+// `.cargo/config.toml` sets no `target-cpu`/`target-feature`, so a plain
+// `cargo build`/`cargo test` always produces SSE2 code on x86-64 — even on a
+// machine with AVX2 or AVX-512 available. Nothing in the default CI pipeline
+// ever exercised the wider JIT backends. This runs the workspace test suite
+// (and optionally clippy) once per x86-64 ISA level the CURRENT HOST actually
+// supports, via explicit `-C target-feature` flags rather than
+// `-C target-cpu=native` (which bakes in whatever the build machine happens
+// to be and isn't reproducible across machines/CI runners).
+
+/// One row of the ISA test matrix: a human-readable name, the
+/// `-C target-feature` value to pass (empty = the SSE2 baseline, no flag),
+/// and the `is_x86_feature_detected!` names that must all be present on this
+/// host to attempt the level at all.
+struct IsaLevel {
+    name: &'static str,
+    target_feature: &'static str,
+    requires: &'static [&'static str],
+}
+
+const ISA_LEVELS: &[IsaLevel] = &[
+    IsaLevel {
+        name: "sse2 (baseline)",
+        target_feature: "",
+        requires: &[],
+    },
+    IsaLevel {
+        name: "avx2+fma",
+        target_feature: "+avx2,+fma",
+        requires: &["avx2", "fma"],
+    },
+    IsaLevel {
+        name: "avx512f",
+        target_feature: "+avx512f",
+        requires: &["avx512f"],
+    },
+];
+
+/// Whether the host CPU has all the features an [`IsaLevel`] requires.
+/// `is_x86_feature_detected!` only accepts a literal feature name, so this is
+/// a fixed match rather than a generic lookup — extend it if `ISA_LEVELS`
+/// grows a level needing a feature not listed here.
+#[cfg(target_arch = "x86_64")]
+fn host_has_feature(feature: &str) -> bool {
+    match feature {
+        "avx2" => std::is_x86_feature_detected!("avx2"),
+        "fma" => std::is_x86_feature_detected!("fma"),
+        "avx512f" => std::is_x86_feature_detected!("avx512f"),
+        other => panic!("isa-matrix: unknown feature {other:?} in ISA_LEVELS::requires"),
+    }
+}
+
+/// Outcome of attempting one [`IsaLevel`].
+enum LevelResult {
+    /// Test suite (and clippy, if requested) both succeeded.
+    Passed,
+    /// A command ran and failed; the bool distinguishes which one for the summary.
+    Failed { clippy: bool },
+    /// Host lacks a required CPU feature; skipped cleanly, not a failure.
+    Skipped { missing: &'static str },
+}
+
+/// Run the workspace test suite (`cargo test --workspace`), and optionally
+/// `cargo clippy --workspace --all-targets -- -D warnings`, at every x86-64
+/// ISA level this host supports. Non-x86-64 hosts (aarch64/NEON) have a
+/// single ISA level already, so there is nothing to matrix — this prints a
+/// note and exits 0 rather than silently doing nothing.
+fn isa_matrix(with_clippy: bool) {
+    let workspace_root = find_workspace_root();
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = workspace_root;
+        println!(
+            "isa-matrix: host is not x86-64 (no SSE2/AVX2/AVX-512 split to test here — \
+             e.g. aarch64/NEON has one ISA level already)."
+        );
+        return;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        println!("isa-matrix: workspace root {}", workspace_root.display());
+        // The base flag every build in this repo already gets from
+        // `.cargo/config.toml`'s `[build] rustflags`. Setting RUSTFLAGS in the
+        // environment REPLACES (does not merge with) that config-file value,
+        // so every level below must repeat it explicitly.
+        const FP_CONTRACT: &str = "-C llvm-args=-fp-contract=fast";
+
+        let mut results: Vec<(&str, LevelResult)> = Vec::new();
+
+        for level in ISA_LEVELS {
+            println!("\n=== ISA level: {} ===", level.name);
+
+            let missing = level
+                .requires
+                .iter()
+                .find(|&&feat| !host_has_feature(feat));
+            if let Some(&feat) = missing {
+                println!(
+                    "isa-matrix: skipping {} — host CPU lacks {feat} \
+                     (checked via is_x86_feature_detected!)",
+                    level.name
+                );
+                results.push((level.name, LevelResult::Skipped { missing: feat }));
+                continue;
+            }
+
+            let rustflags = if level.target_feature.is_empty() {
+                FP_CONTRACT.to_string()
+            } else {
+                format!("{FP_CONTRACT} -C target-feature={}", level.target_feature)
+            };
+            println!("isa-matrix: RUSTFLAGS=\"{rustflags}\"");
+
+            let test_ok = run_with_rustflags(
+                &workspace_root,
+                &rustflags,
+                &["test", "--workspace", "--no-fail-fast"],
+            );
+            if !test_ok {
+                println!("isa-matrix: {} — cargo test FAILED", level.name);
+                results.push((level.name, LevelResult::Failed { clippy: false }));
+                continue;
+            }
+            println!("isa-matrix: {} — cargo test passed", level.name);
+
+            if with_clippy {
+                let clippy_ok = run_with_rustflags(
+                    &workspace_root,
+                    &rustflags,
+                    &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
+                );
+                if !clippy_ok {
+                    println!("isa-matrix: {} — cargo clippy FAILED", level.name);
+                    results.push((level.name, LevelResult::Failed { clippy: true }));
+                    continue;
+                }
+                println!("isa-matrix: {} — cargo clippy passed", level.name);
+            }
+
+            results.push((level.name, LevelResult::Passed));
+        }
+
+        println!("\n=== ISA matrix summary ===");
+        let mut any_failed = false;
+        for (name, result) in &results {
+            let line = match result {
+                LevelResult::Passed => "PASS".to_string(),
+                LevelResult::Failed { clippy } => {
+                    any_failed = true;
+                    if *clippy {
+                        "FAIL (clippy)".to_string()
+                    } else {
+                        "FAIL (test)".to_string()
+                    }
+                }
+                LevelResult::Skipped { missing } => {
+                    format!("SKIP (host lacks {missing})")
+                }
+            };
+            println!("  {name:<20} {line}");
+        }
+
+        if any_failed {
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Run `cargo <args>` from the workspace root with `RUSTFLAGS` set to
+/// `rustflags`, streaming output straight through. Returns whether it
+/// succeeded.
+#[cfg(target_arch = "x86_64")]
+fn run_with_rustflags(workspace_root: &std::path::Path, rustflags: &str, args: &[&str]) -> bool {
+    Command::new("cargo")
+        .current_dir(workspace_root)
+        .args(args)
+        .env("RUSTFLAGS", rustflags)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 // ============================================================================

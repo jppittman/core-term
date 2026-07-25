@@ -316,8 +316,9 @@ fn benchmark_exec_code(
             use pixelflow_ir::backend::emit::executable::KernelFn;
             let func: KernelFn = exec_code.as_fn();
 
-            // Inputs at the KernelFn's SIMD width: __m512 under +avx512f, else
-            // __m128 (SSE2). eval100! is width-agnostic (just calls func).
+            // Inputs at the KernelFn's SIMD width: __m512 under +avx512f, __m256
+            // under +avx2 (and not +avx512f), else __m128 (SSE2). eval100! is
+            // width-agnostic (just calls func).
             #[cfg(target_feature = "avx512f")]
             let (x, y, z, w) = (
                 _mm512_set1_ps(0.5),
@@ -325,7 +326,14 @@ fn benchmark_exec_code(
                 _mm512_set1_ps(1.3),
                 _mm512_set1_ps(-0.2),
             );
-            #[cfg(not(target_feature = "avx512f"))]
+            #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
+            let (x, y, z, w) = (
+                _mm256_set1_ps(0.5),
+                _mm256_set1_ps(0.7),
+                _mm256_set1_ps(1.3),
+                _mm256_set1_ps(-0.2),
+            );
+            #[cfg(not(any(target_feature = "avx512f", target_feature = "avx2")))]
             let (x, y, z, w) = (
                 _mm_set1_ps(0.5),
                 _mm_set1_ps(0.7),
@@ -346,7 +354,13 @@ fn benchmark_exec_code(
                 _mm512_storeu_ps(wide.as_mut_ptr(), out);
                 output.copy_from_slice(&wide[..4]);
             }
-            #[cfg(not(target_feature = "avx512f"))]
+            #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
+            {
+                let mut wide = [0.0f32; 8];
+                _mm256_storeu_ps(wide.as_mut_ptr(), out);
+                output.copy_from_slice(&wide[..4]);
+            }
+            #[cfg(not(any(target_feature = "avx512f", target_feature = "avx2")))]
             _mm_storeu_ps(output.as_mut_ptr(), out);
 
             let mut times = [0u64; TIMED_RUNS];
