@@ -221,11 +221,13 @@ fn round_agrees_between_tiers_away_from_ties() {
     }
 }
 
-/// The ops whose NaN answer is platform-specific must not be constant-folded
-/// with a NaN operand: folding bakes in the building target's answer, and the
-/// same expression computed at runtime on another target would differ.
+/// Which ops carry the platform-specific marker. The marker's *effect* on
+/// constant folding is covered where the folder lives
+/// (`pixelflow-search::math::algebra`, `platform_specific_fold_tests`) — this
+/// only pins the classification, which is what the emitters and the contract
+/// table in CLAUDE.md are written against.
 #[test]
-fn folder_declines_platform_specific_nan_cases() {
+fn platform_specific_ops_are_classified() {
     use pixelflow_ir::OpKind;
     for op in [OpKind::Min, OpKind::Max, OpKind::Gt, OpKind::Ge] {
         assert!(
