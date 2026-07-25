@@ -452,3 +452,50 @@ the DAG result either way.
 
 The moment that stops being true — if the worker ever gains a handle to a third actor — it stops
 being collapsible and has to enter the proof as its own node. That is the tripwire.
+
+### 8.5 Resize must not mint a window — droppable is the opposite of keep-latest
+
+Automated review (Codex, on #920) caught a real defect in §8.3's split, and it is worth recording
+in full because it is the *third* instance this session of the same underlying mistake.
+
+**The defect.** `send_port` with `Delivery::Droppable` discards the **new** message when the ring
+is full (`actor-scheduler/src/mealy.rs`: `Err(TrySendError::Full(_)) => Flush::Done`, payload
+dropped). Keep-latest semantics need the **old** one dropped. Those are opposites. For manifold
+submission the difference is harmless — another manifold arrives next frame — but the platform
+mints a *fresh, correctly sized* `Frame` on every `Resized`/scale-change
+(`Frame::<PlatformPixel>::new(px_w, px_h)`, in two places). Dropping that message discards the
+only correctly-sized buffer in existence, and nothing replaces it until the next resize. The app
+would be told the new dimensions over the reliable Blocking edge while the rasterizer kept
+rendering at the old size. Reachable during any resize drag, since rasterization is synchronous.
+
+This is precisely the §3 distinction — *structurally unreachable* vs *genuinely acceptable loss*
+— applied wrongly: the window edge was filed under the second when it belonged under neither.
+
+**The fix is to stop minting windows on resize, not to change how delivery works.** A resize does
+not produce a rendered buffer; it produces *new dimensions* plus an empty allocation. Sending an
+empty correctly-sized buffer is an expensive way to communicate two integers. `Frame<P>` is a
+plain `Vec<P>` — verified: no XShm segment, no IOSurface, nothing platform-backed; X11's
+`present` merely points an `XImage` at the `Vec`'s data — so there is no reason the *driver* must
+be the allocator.
+
+So: on resize the driver sends **metadata only** (`WindowMeta`, `Copy`, over the existing
+reliable edge). The rasterizer coordinator owns `latest_window` and reallocates its own frame
+when it observes the dimensions changed, before the next render.
+
+Two things fall out, and the second is the one that matters:
+
+1. **The bug is gone by construction.** No window travels on resize, so there is no window to
+   drop. Delivery semantics didn't need changing.
+2. **"Exactly one window circulates" becomes actually true.** It wasn't. Today a resize mints a
+   second `Window` while another may still be in flight to or from the rasterizer — which
+   quietly invalidated the `Credit(1)` reasoning that §3 rests on for `Present`/`PresentComplete`.
+   The invariant was being asserted, not held. Now windows travel on exactly three occasions:
+   `WindowCreated` (bootstrap, one-shot), `Present`, and `PresentComplete`.
+
+The graph is unchanged — `driver → rasterizer` still exists, it just carries `PresentComplete`
+and the one bootstrap `WindowCreated` rather than resize windows. No edge added, none removed.
+
+**The general lesson, third instance.** "Droppable" is not a synonym for "keep-latest." An edge
+is only safe to declare droppable if losing *that specific message* is recoverable by a
+subsequent one. Where the message is the sole carrier of unique state, dropping it is
+unrecoverable no matter how idempotent the *concept* sounds.
