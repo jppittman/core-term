@@ -146,9 +146,7 @@ fn page_size() -> usize {
 /// A reusable region of executable memory for JIT compilation.
 ///
 /// Allocates a single page (or multiple pages) once via `mmap`, then reuses it
-/// across compiles. This eliminates the ~10-20µs mmap/munmap syscall overhead
-/// per compile, replacing it with cheaper mprotect toggles (~2-5µs) or
-/// `pthread_jit_write_protect_np` on Apple Silicon (~0.5µs).
+/// across compiles to avoid repeated allocation and mapping work.
 ///
 /// # Usage
 ///
@@ -340,8 +338,7 @@ impl Drop for CodeBuffer {
 /// When `writable` is true, the current thread can write to MAP_JIT memory.
 /// When false, the memory is executable but not writable (W^X).
 ///
-/// This is much cheaper than mprotect (~0.5µs vs ~5µs) and is per-thread,
-/// so it doesn't affect other threads' ability to execute the code.
+/// This is per-thread, so it doesn't affect other threads' ability to execute the code.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JitWriteState {

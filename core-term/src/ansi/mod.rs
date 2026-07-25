@@ -143,19 +143,6 @@
 //! // No buffered state
 //! ```
 //!
-//! ## Performance Characteristics
-//!
-//! | Operation | Time | Notes |
-//! |-----------|------|-------|
-//! | UTF-8 decode | ~1-5 ns per byte | Table-driven, branch-free |
-//! | CSI parameter parse | ~10-50 ns per param | Deferred until final byte |
-//! | Total per byte | ~5-20 ns | Depends on sequence type |
-//!
-//! For a typical terminal (80 chars/line, 24 lines, 30 FPS):
-//! - ~2000 bytes per frame
-//! - ~20-40 microseconds for parsing
-//! - **Negligible** overhead (< 0.1% of frame time at 60 FPS)
-//!
 //! ## Design Decisions
 //!
 //! ### Why Two-Stage?
@@ -287,11 +274,6 @@ pub trait AnsiParser {
 /// - Fixed overhead: ~500 bytes (state machines, buffers)
 /// - Grows with: Max parameter count in CSI (typically 0-10)
 /// - No unbounded growth (all strings are capped)
-///
-/// # Performance
-///
-/// Single-byte processing: ~10-20 nanoseconds per byte
-/// For typical terminal output (2000 bytes/frame): ~20-40 microseconds
 ///
 /// # Example
 ///

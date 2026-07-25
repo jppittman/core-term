@@ -7,8 +7,7 @@
 //! The cost function encodes two kinds of knowledge:
 //!
 //! 1. **Measured metrics** — latency, throughput, fairness under synthetic load
-//! 2. **Domain constraints** — invariants that follow from the system's role
-//!    as a real-time terminal scheduler at 155 FPS
+//! 2. **Domain constraints** — invariants supplied for the target workload
 //!
 //! The domain constraints use multiplicative penalties so the optimizer cannot
 //! trade a constraint violation for a metric improvement. A configuration that
@@ -38,7 +37,7 @@ fn flush() {
 // Domain constraint penalties
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// These encode knowledge about the target system (a 155 FPS terminal emulator)
+// These encode knowledge about the target workload
 // that raw performance metrics cannot capture. Each penalty is >= 0, with 0
 // meaning "no violation." They feed into a multiplicative cost scaling factor
 // so the optimizer cannot compensate for a constraint violation with raw
@@ -46,13 +45,12 @@ fn flush() {
 
 /// Penalty for `min_backoff` exceeding the frame budget.
 ///
-/// At 155 FPS, one frame ≈ 6.45ms. If the first backoff sleep exceeds this,
-/// the sender drops at least one frame on the *first sign* of contention.
-/// This is the most visible failure mode — a keystroke vanishes.
+/// If the first backoff sleep exceeds this budget, the sender can become
+/// unresponsive on the first sign of contention.
 ///
 /// Returns 0.0 when min_backoff ≤ frame_budget, scales linearly above.
 fn frame_budget_penalty(params: &SchedulerParams) -> f64 {
-    const FRAME_BUDGET_US: f64 = 6_450.0; // 155 FPS
+    const FRAME_BUDGET_US: f64 = 6_450.0;
     let min_backoff_us = params.min_backoff.as_micros() as f64;
     let ratio = min_backoff_us / FRAME_BUDGET_US;
     if ratio <= 1.0 { 0.0 } else { ratio - 1.0 }

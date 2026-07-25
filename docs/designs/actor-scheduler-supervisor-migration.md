@@ -632,7 +632,7 @@ consumer migrations that can run in parallel.
 
 | Alternative | Pros | Cons | Why Not |
 |-------------|------|------|---------|
-| Seqlock `ActorRef` (indirection on every send) | True `OneForOne` within troupe | ~15–30ns per send on hot path, breaks wait-free guarantee | Overhead unacceptable; lazy reconnect is free |
+| Seqlock `ActorRef` (indirection on every send) | True `OneForOne` within troupe | Adds indirection on the hot path and breaks the wait-free guarantee | Prefer lazy reconnect |
 | Supervisor as an Actor (OTP style) | Familiar Erlang model | Circular handle problem; all supervision over priority lanes | Priority lanes are for application messages, not system signals |
 | Per-pod controller thread | Simpler per-pod logic | One OS thread per pod just for lifecycle watching — expensive | Kubelet amortizes cost across all pods |
 | Dynamic topology at runtime | More flexible | Impossible with static SPSC pre-allocation; breaks DHCP model | Explicitly non-goal |

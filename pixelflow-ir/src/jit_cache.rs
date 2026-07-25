@@ -1,9 +1,7 @@
 //! Global JIT compile cache: identical kernels compile once.
 //!
-//! P0 (docs/results/2026-07-20-jit-compile-cost.md) showed codegen — not
-//! executable-memory management — is the compile-cost floor, so the lever
-//! that actually pays is skipping codegen entirely for a kernel that was
-//! already compiled. The macro-emitted builders hit this constantly: every
+//! Skipping codegen entirely avoids recompiling a kernel that was already
+//! compiled. The macro-emitted builders can hit this frequently: every
 //! call of an N-param builder with the same arguments (window resizes), and
 //! every structurally identical glyph kernel in a bake sweep, produces a
 //! byte-identical schedule.

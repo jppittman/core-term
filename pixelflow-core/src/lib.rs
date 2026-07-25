@@ -118,9 +118,8 @@
 //! - **Why Fields Are Hidden**: See [`Field`] documentation
 //! - **Automatic Differentiation**: See [`jet`] module
 //!
-//! ## Performance Notes
+//! ## Execution Notes
 //!
-//! - **Target**: ~5 ns per pixel (155 FPS at 1080p on modern CPUs)
 //! - **Parallelism**: 4–16 SIMD lanes (depending on CPU target: AVX-512, AVX2, SSE, NEON, or scalar)
 //! - **Optimization**: All composition overhead erased by monomorphization and inlining
 //! - **No Allocation**: Manifolds are typically zero-sized types

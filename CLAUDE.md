@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**core-term** is a GPU-free terminal emulator built on PixelFlow, a pull-based functional graphics engine using CPU SIMD. The project demonstrates that elegant algebraic abstractions can achieve 155 FPS at 1080p on pure CPU.
+**core-term** is a GPU-free terminal emulator built on PixelFlow, a pull-based functional graphics engine using CPU SIMD.
 **pixelflow** is an eDSL built on rust isomorphic to the typed lambda calculus.
 **pixelflow-graphics** is a graphic library built using the aforementioned eDSL.
 **pixelflow-runtime** offers a platform agnostic runtime for applications using pixelflow rendering.
@@ -63,7 +63,7 @@ conditionals are performed using Select or postfix (ManifoldExt) `.select`
 
 ### Actor Model
 
-Three-thread architecture for zero-latency input:
+The actor architecture separates input from rendering:
 
 Priority lanes: **Control > Management > Data**
 
@@ -85,9 +85,7 @@ The compiler uses e-graphs (equality graphs) to find optimal instruction sequenc
    (`CostModel::latency_prior()` — handwritten per-op cycle estimates, the DEFAULT)
 
 A learned NNUE cost model exists as **opt-in only** (`PIXELFLOW_NNUE_WEIGHTS` env var, read
-at proc-macro expansion time; hard-fails on bad weights). The recorded 3-way benchmark
-(docs/results/2026-07-08-extraction-3way.md) measured NNUE extraction slower than the
-latency prior, so the handwritten model is the production default. The e-graph also records
+at proc-macro expansion time; hard-fails on bad weights). The e-graph also records
 **rule provenance** (node origins + union journal, `pixelflow-search/src/egraph/provenance.rs`),
 enabling hindsight labeling of which rule applications were load-bearing for an extraction
 (`labeler.rs`) — the substrate for guided-saturation research
@@ -214,9 +212,8 @@ handle.send(Message::Data(MyDataMsg))?;           // Lowest (backpressure)
 - **Complex Manifold trait bounds**: Add explicit type annotations, break into named intermediates.
 - **"method not found" on Manifold**: Import `use pixelflow_core::Manifold;` and extension traits.
 
-## Performance
+## Execution Notes
 
-- **Target:** 155 FPS at 1080p, ~5ns per pixel
 - **Hot paths:** `#[inline(always)]` on eval methods in Manifold implementations
 - **Glyph caching:** Categorical morphisms ensure glyphs computed once (`fonts/combinators.rs`)
 - **Antialiasing:** Automatic differentiation via `Jet2` dual numbers
@@ -233,8 +230,6 @@ docs/plans/2026-07-07-guided-saturation-redesign.md.
 What remains is simple and supervised:
 - `gen_bench_corpus` / `bootstrap_extraction_head` (pixelflow-pipeline, `--features training`):
   mint (expression, measured-ns) pairs via the JIT bench harness (`jit_bench.rs`,
-  median-of-samples) and regress the extraction head on them. A full retrain is ~1 minute.
-- `bench_extraction_3way`: the recorded extraction-policy benchmark (NNUE vs latency prior
-  vs no-swap). Any new cost model must beat the latency prior here before becoming default.
+  median-of-samples) and regress the extraction head on them.
 - Guided-saturation research (the Guide / rule-masking direction) trains on hindsight
   provenance labels from `pixelflow-search`'s `egraph::labeler` — no critic, no RL.

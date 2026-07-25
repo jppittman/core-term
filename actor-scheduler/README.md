@@ -8,46 +8,11 @@ Most actor frameworks treat message passing as a solved problem: throw messages 
 
 `actor-scheduler` solves this with three priority lanes, sharded SPSC channels, and Bayesian-optimized scheduling parameters — all in ~1,500 lines of `std`-only Rust.
 
-## Performance
+## Benchmarks
 
-Measured on CI hardware (Linux 4.4.0). Run `cargo bench -p actor-scheduler` to reproduce.
-
-### Channel throughput
-
-| Benchmark | SPSC | std mpsc | Speedup |
-|-----------|------|----------|---------|
-| 1M messages (single producer) | 95.2M msg/s | 49.0M msg/s | **1.9x** |
-| 200K messages (4 producers) | 16.4M msg/s | 7.8M msg/s | **2.1x** |
-| 400K messages (8 producers) | 13.5M msg/s | 4.1M msg/s | **3.3x** |
-
-Sharded SPSC scales linearly with producer count. MPSC degrades under contention.
-
-### Send latency
-
-| Scenario | SPSC | std mpsc | Speedup |
-|----------|------|----------|---------|
-| Uncontended | **12ns** | 34ns | 2.8x |
-| 2 contenders (sharded) | **1.5ns** | 10ns | 7x |
-| 4 contenders (sharded) | **1.4ns** | 10ns | 7x |
-
-Sharded SPSC sends are wait-free: a single `AtomicUsize::store(Release)`. No CAS, no retry loop, no contention between producers.
-
-### Full scheduler (3-lane priority)
-
-| Metric | Result |
-|--------|--------|
-| Data throughput (100K msgs) | 15.7M msg/s |
-| Control throughput (10K msgs) | 7.0M msg/s |
-| Mixed workload (30K msgs) | 12.0M msg/s |
-| Roundtrip latency (SPSC) | 9.6us |
-| Control latency under data flood | 9.9us |
-| Management latency under control flood | 473ns |
-
-All measured through the full priority scheduler with burst limiting, starvation protection, and doorbell wake signaling.
-
-### Adversarial resilience
-
-Under continuous control flood from 4 concurrent attackers, the data lane maintains **100% delivery** with no starvation. Burst limiting caps each lane per wake cycle, guaranteeing forward progress on all lanes.
+Run `cargo bench -p actor-scheduler` to measure the scheduler on the current
+codebase and hardware. The benchmark suites cover channel throughput, send and
+roundtrip latency, priority-lane behavior, and adversarial workloads.
 
 ## Architecture
 
@@ -98,14 +63,10 @@ let mut scheduler = builder.build();    // seals — no more producers
 
 ### Bayesian-optimized parameters
 
-The default `SchedulerParams` were found by Bayesian optimization (Gaussian Process surrogate + Expected Improvement acquisition) over 8 weighted metrics with hard domain constraints:
-
-- **Frame budget**: min backoff under 6.45ms (one frame at 155 FPS)
-- **Degradation window**: total backoff cascade under 12s
-- **Jitter effectiveness**: spread >= 20% for thundering herd prevention
-- **Backpressure delay**: buffer <= 128 for fast overload detection
-
-Results vs hand-tuned baseline: 73% latency reduction under load, 89% control throughput improvement, 100% fairness maintained, all constraint penalties zero.
+The benchmark tooling can use Bayesian optimization (Gaussian Process surrogate
+and Expected Improvement acquisition) to explore `SchedulerParams`. Re-run the
+optimizer when scheduler behavior or target workloads change rather than relying
+on previously recorded results.
 
 ## Usage
 
@@ -195,11 +156,11 @@ ShutdownMode::DrainAll { timeout: Duration::from_secs(1) };
 
 ## Design decisions
 
-**Why SPSC over mpsc?** Lock-free sends (12ns vs 34ns), linear scaling with producers, no contention on the hot path. The tradeoff is that producers must be registered at init time.
+**Why SPSC over mpsc?** Lock-free sends avoid contention between producers. The tradeoff is that producers must be registered at init time.
 
 **Why not crossbeam/flume/tokio?** Zero dependencies. The SPSC ring buffer is ~200 lines. The entire crate is ~1,500 lines. We need a priority scheduler, not a general-purpose channel — building it lets us fuse priority scheduling directly into the drain loop.
 
-**Why Bayesian optimization?** 10 interacting parameters with non-linear constraints (frame budget, degradation window, jitter spread). Grid search is exponential. Manual tuning found local optima. BO with domain constraint penalties found configurations that are strictly better on every metric.
+**Why Bayesian optimization?** The parameters interact through non-linear constraints, making exhaustive grid search impractical. Bayesian optimization provides a way to explore the configuration space for the current workload.
 
 **Why burst limiting?** Without it, a control flood starves data completely. With it, the scheduler guarantees forward progress on all lanes every cycle. The burst budget is the fundamental fairness knob.
 
