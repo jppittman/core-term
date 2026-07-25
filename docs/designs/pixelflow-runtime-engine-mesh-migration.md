@@ -405,3 +405,28 @@ its own follow-up rather than bundled with the proof:
   crate).
 - `app`'s handle setup gains a second target: today `Application` only reaches `engine`; it
   needs a way to reach `rasterizer` (manifold) and `vsync` (`ReturnToken`) directly.
+
+### 8.3 Window-lifecycle events: tear, don't copy, and don't reroute
+
+`WindowCreated`/`Resized` have two consumers with genuinely different needs: `app` wants to know
+the new dimensions, and the render pipeline wants the buffer. A first pass at §8 handled this by
+adding a `rasterizer → app` edge — rasterizer would open the `Window`, pull the metadata out, and
+relay it onward — on the reasoning that feeding both consumers otherwise meant cloning the frame
+buffer, which `Frame: Clone` makes silently possible and which would be a real per-frame cost.
+
+That reasoning was wrong at its root: **a frame buffer copy was never an option to weigh.** The
+`Window` circulates by ownership transfer; that *is* the ping-pong buffer. Treating a clone as
+one arm of a trade-off, even to reject it, is how a copy eventually ends up in the render loop.
+
+The correct answer is the one §7.1 already established, applied a second time: a `Window` tears
+into `WindowMeta` (four scalars, `Copy`) and `Frame` (expensive, moves). So the driver sends
+**metadata** to engine over the existing Blocking `DisplayEvent` edge — engine relays to app
+exactly as it does today, unchanged — and sends **the window** to rasterizer. Both consumers are
+served, nothing is copied, and the graph gains no edge at all.
+
+This also keeps `rasterizer` from learning about `app`, which the discarded version required.
+Colocating a relay with the data sounds tidy until it means the renderer holds a handle to the
+application to forward window metadata it doesn't otherwise care about.
+
+The general rule this is the second instance of: **when two actors need different parts of one
+value, split the value — don't duplicate it, and don't reroute one consumer through the other.**
