@@ -7,12 +7,7 @@ on:
     branches: [ "main" ]
 
 permissions:
-  # Required to push to gh-pages
-  contents: write
-  # Required to comment on benchmark regressions in pull requests
-  pull-requests: write
-  # Required to open issues
-  issues: write
+  contents: read
 
 jobs:
   benchmark:
@@ -21,6 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -48,25 +44,75 @@ jobs:
           path: benchmark_results/output.txt
           if-no-files-found: error
 
-      # 2. Compare against History
-      - name: Check for Regression
+      - name: Check for existing benchmark baseline
+        if: github.event_name == 'pull_request'
+        id: benchmark_baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              echo "Failed to check for the gh-pages benchmark baseline" >&2
+              exit "$status"
+            fi
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check pull request for regression
+        if: github.event_name == 'pull_request' && steps.benchmark_baseline.outputs.exists == 'true'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'cargo'
+          output-file-path: benchmark_results/output.txt
+          gh-pages-branch: gh-pages
+          alert-threshold: '115%'
+          fail-on-alert: true
+          auto-push: false
+          comment-on-alert: false
+
+      - name: Report missing benchmark baseline
+        if: github.event_name == 'pull_request' && steps.benchmark_baseline.outputs.exists != 'true'
+        run: echo "::notice::No benchmark history exists yet; benchmarks passed, but regression comparison was skipped."
+
+  publish-benchmark:
+    name: Publish benchmark baseline
+    if: github.event_name == 'push'
+    needs: benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout trusted main revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download benchmark output
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: benchmark_results
+
+      - name: Publish baseline and check for regression
         id: benchmark_check
         uses: benchmark-action/github-action-benchmark@v1
         with:
           tool: 'cargo'
           output-file-path: benchmark_results/output.txt
           gh-pages-branch: gh-pages
-          alert-threshold: '115%'    # Alert if 15% slower
-          fail-on-alert: true        # Fail step to trigger the issue creation
+          alert-threshold: '115%'
+          fail-on-alert: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # PRs compare against history without mutating it. Postsubmit pushes
-          # advance the baseline on gh-pages.
-          auto-push: ${{ github.event_name == 'push' }}
-          comment-on-alert: ${{ github.event_name == 'pull_request' }}
+          auto-push: true
+          comment-on-alert: false
 
-      # 3. Open Issue on Regression
       - name: Create Performance Issue
-        if: failure() && github.event_name == 'push' && steps.benchmark_check.outcome == 'failure'
+        if: failure() && steps.benchmark_check.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
