@@ -137,13 +137,13 @@ cargo run --release -p core-term
 
 #### macOS (bundled app)
 ```bash
-cargo xtask bundle-run
+cargo bundle-run
 ```
 Builds and launches `CoreTerm.app` with native macOS integration.
 
 #### With Profiling
 ```bash
-cargo xtask bundle-run --features profiling
+cargo bundle-run --features profiling
 ```
 Writes flamegraph on exit.
 

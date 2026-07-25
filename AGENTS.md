@@ -9,7 +9,7 @@ Use the stable Rust toolchain from `rust-toolchain.toml`.
 - `cargo build --workspace`: build all workspace crates.
 - `cargo test --workspace`: run the full test suite.
 - `cargo run --release -p core-term`: launch the terminal directly.
-- `cargo xtask bundle-run`: build and run the macOS app bundle.
+- `cargo bundle-run`: build and run the macOS app bundle.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`: enforce lint rules.
 - `cargo bench -p pixelflow-core` or `cargo bench -p actor-scheduler`: run focused benchmarks.
 

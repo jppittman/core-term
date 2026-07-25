@@ -40,7 +40,7 @@ The project is a Rust workspace with the following key members:
 
 *   **Build Release:** `cargo build --release`
 *   **Run Terminal:** `cargo run --release -p core-term`
-*   **Run macOS App:** `cargo xtask bundle-run` (Bundles and runs `CoreTerm.app`)
+*   **Run macOS App:** `cargo bundle-run` (Bundles and runs `CoreTerm.app`)
 *   **Run Tests:** `cargo test --workspace`
 *   **Benchmarks:** `cargo bench -p pixelflow-core`
 
