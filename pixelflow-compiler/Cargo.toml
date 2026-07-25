@@ -8,6 +8,10 @@ license = "Apache-2.0"
 
 [lib]
 proc-macro = true
+# The workspace benchmark command passes Criterion's --output-format argument
+# to every runnable target. This proc-macro library has no libtest benchmarks,
+# so exclude its default test harness; macro_bench remains the benchmark target.
+bench = false
 
 [features]
 # P3 transition scaffolding (docs/plans/2026-07-20-kernel-unification.md):
