@@ -371,6 +371,38 @@ display, and the bug is invisible on a 1:1 monitor. It stays in `pixelflow-runti
 coordinate mapping, not general rasterization (`CLAUDE.md` — no terminal-adjacent logic in the
 graphics crate). Worth a test at a non-1:1 logical/frame ratio, which nothing currently covers.
 
+### Nothing is decided before it's drawn
+
+Two decisions that between them delete most of the machinery earlier drafts of this section
+accumulated. Both are the same move — don't commit early and then validate, derive at the moment
+of use — which is the engine's own principle applied to its coordination.
+
+**The coordinator holds the latest kernel, not a queued frame.** A tick or a new kernel arriving
+with no buffer available does nothing but overwrite the slot. When a buffer comes back, whatever
+kernel is current *then* is what gets rasterised. Because kernels are lazy, "render later" and
+"render the current frame" are the same operation — there is no stale pixel data to detect,
+because there are no pixels until something samples. Frame skipping falls out for free: falling
+behind means fewer rasterisations, each of the then-current kernel, which is exactly the
+drop-and-catch-up behaviour, with no skip logic anywhere.
+
+**The kernel is bound to the frame at draw time.** The sampling `Lattice`'s extent comes from the
+buffer being filled, and the point→pixel warp is derived from that same buffer — so the buffer
+carries its own logical extent, and the contramap is a pure function of the thing you were
+handed:
+
+```rust
+let sx = frame.logical_w / frame.width as f32;   // everything from the buffer itself
+At { inner: kernel, x: X * sx, y: Y * sy, z: Z, w: W }
+```
+
+**Therefore there is no such thing as a wrong-sized frame.** The kernel was warped to *that*
+buffer, so blitting it is always correct for the buffer it was drawn into. A resize means the
+next buffer carries different numbers and the kernel adapts on the next rasterisation. **The
+driver stays dumb: it blits what arrives.** No size check, no discard, no pending dimensions.
+
+What this deletes, rather than solves: stale-render detection, generation stamping, driver-side
+resize bookkeeping, and the size comparison that would otherwise have to live in the driver.
+
 ### The judgment calls
 
 `Topology` proves acyclicity. It cannot tell you what may be lost — that's per-edge judgment, and
@@ -395,21 +427,20 @@ it's the reason this doc exists at all:
 Recorded so they aren't mistaken for solved. Each needs to be answered in code, where it can be
 checked:
 
-- **Lane separation.** Requests and `Present` share a `rasterizer → driver` direction; if they
-  share a ring, queued retries can force a `Present` drop. `Topology` doesn't model lanes, so
-  nothing currently checks this.
-- **Disconnected receivers.** `send_port` treats `Disconnected` as success and drops the payload
-  regardless of delivery kind — so a coordinator restart can destroy the buffer. Ring capacity
-  arguments don't cover this; it needs a stated terminal-failure policy.
+- **Supervision of a disconnected peer.** `send_port` now reports `Flush::Disconnected` and
+  retains the payload rather than destroying it, and `Node` surfaces `Step::Disconnected` — but
+  `Host` runs under `sched.run(&mut host)`, which holds the borrow and blocks on the doorbell, so
+  nothing outside can observe the record while it is running. Needs a real notification path
+  (callback, channel, or an `ActorStatus` that can say "stuck, not idle"); that is a supervision
+  API decision, not a mechanical one.
+- **Manifold submission delivery.** Keeping the receiver's slot does not help if the *newest*
+  submission is dropped in transit — nothing arrives to overwrite it, and the coordinator renders
+  a stale kernel indefinitely if the app has nothing further to send. Wants `Blocking` (an app
+  parking behind a busy coordinator is correct backpressure, and `ActorHandle`'s backoff
+  effectively does this today) rather than plain `Droppable`.
 - **Credit-bearing replies that can be dropped.** `ReturnToken` releases vsync's tick budget; if
   its edge can lose messages, the budget shrinks permanently. Same shape as the paste deadlock
   in §3.2 — worth checking every credit whose release travels a droppable edge.
-- **Stale-return protocol under pull.** §7.2 has the *coordinator* detect a stale render by
-  comparing against the current window — but under pull the coordinator never learns dimensions,
-  and the driver alone knows a resize is pending. Nothing yet defines how the driver rejects the
-  old-size frame, swaps the buffer, and triggers a new grant. §7.2 is superseded on this point
-  and the replacement is unwritten; the generation stamping in `EngineHandler` is the closest
-  existing mechanism.
 - **Zero-copy.** Tracked separately; the copy in both backends is a defect, not the target.
 
 ### Out of scope here
