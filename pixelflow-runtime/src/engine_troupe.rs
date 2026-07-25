@@ -461,8 +461,14 @@ impl EngineHandler {
                 })
             };
 
-        // Build render request (no response_tx - rasterizer uses registered channel)
-        let request = RenderRequest { manifold, frame };
+        // Build render request (no response_tx - rasterizer uses registered channel).
+        // `meta` stays () until the follow-up slice moves `pending_render`'s contents into it
+        // (docs/designs/pixelflow-runtime-engine-mesh-migration.md §7.1).
+        let request = RenderRequest {
+            manifold,
+            frame,
+            meta: (),
+        };
 
         // Send to rasterizer
         if let Some(rasterizer) = &self.rasterizer {

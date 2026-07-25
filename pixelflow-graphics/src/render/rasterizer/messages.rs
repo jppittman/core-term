@@ -27,19 +27,29 @@ use std::time::Duration;
 ///
 /// The Data lane is designed for high-volume work items and will block
 /// senders when the buffer is full, providing natural backpressure.
-pub struct RenderRequest<P: Pixel> {
+pub struct RenderRequest<P: Pixel, Meta = ()> {
     /// The color manifold to render.
     pub manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>,
     /// The frame buffer to render into.
     pub frame: Frame<P>,
+    /// Caller-owned payload, returned untouched in the [`RenderResponse`].
+    ///
+    /// The rasterizer never reads this. It exists so a caller that has to split a larger value
+    /// apart to send the frame here can send the *rest of it* along too, instead of stashing it
+    /// somewhere and reassembling on completion — the state that gets stashed is not
+    /// coordination state, it is half of a torn value. Defaults to `()` for callers with
+    /// nothing to carry.
+    pub meta: Meta,
 }
 
 /// Completed frame rendering response.
-pub struct RenderResponse<P: Pixel> {
+pub struct RenderResponse<P: Pixel, Meta = ()> {
     /// The rendered frame.
     pub frame: Frame<P>,
     /// Time taken to render the frame.
     pub render_time: Duration,
+    /// The [`RenderRequest::meta`] payload, returned exactly as it was given.
+    pub meta: Meta,
 }
 
 /// Control messages (Control lane - highest priority, sleep-based fairness).
@@ -89,31 +99,32 @@ pub struct RasterConfig {
 /// This message is sent through a dedicated setup channel, separate from
 /// the actor's normal message lanes. The rasterizer blocks on this channel
 /// before entering its main run loop.
-pub struct RasterSetup<P: Pixel> {
+pub struct RasterSetup<P: Pixel, Meta = ()> {
     /// Channel where completed frames will be sent.
-    pub response_tx: Sender<RenderResponse<P>>,
+    pub response_tx: Sender<RenderResponse<P, Meta>>,
     /// Channel to send back the full actor handle.
-    pub(crate) reply_tx: SyncSender<RasterizerHandle<P>>,
+    pub(crate) reply_tx: SyncSender<RasterizerHandle<P, Meta>>,
 }
 
 /// Handle returned after successful bootstrap - now you can send render requests.
 ///
 /// This is the full actor handle that allows sending Data, Control, and Management
 /// messages. You can only obtain this by completing the bootstrap handshake.
-pub type RasterizerHandle<P> = ActorHandle<RenderRequest<P>, RasterControl, RasterManagement>;
+pub type RasterizerHandle<P, Meta = ()> =
+    ActorHandle<RenderRequest<P, Meta>, RasterControl, RasterManagement>;
 
 /// Handle for initial setup - can ONLY register the response channel.
 ///
 /// This is a capability-restricted handle. The only thing you can do with it
 /// is call `register()` to complete the bootstrap handshake and receive
 /// the full `RasterizerHandle`.
-pub struct RasterizerSetupHandle<P: Pixel> {
-    setup_tx: SyncSender<RasterSetup<P>>,
+pub struct RasterizerSetupHandle<P: Pixel, Meta = ()> {
+    setup_tx: SyncSender<RasterSetup<P, Meta>>,
 }
 
-impl<P: Pixel> RasterizerSetupHandle<P> {
+impl<P: Pixel, Meta> RasterizerSetupHandle<P, Meta> {
     /// Create a new setup handle with the given channel.
-    pub(crate) fn new(setup_tx: SyncSender<RasterSetup<P>>) -> Self {
+    pub(crate) fn new(setup_tx: SyncSender<RasterSetup<P, Meta>>) -> Self {
         Self { setup_tx }
     }
 
@@ -128,7 +139,7 @@ impl<P: Pixel> RasterizerSetupHandle<P> {
     ///
     /// Panics if the rasterizer thread has died before completing setup.
     #[must_use]
-    pub fn register(self, response_tx: Sender<RenderResponse<P>>) -> RasterizerHandle<P> {
+    pub fn register(self, response_tx: Sender<RenderResponse<P, Meta>>) -> RasterizerHandle<P, Meta> {
         // Create reply channel for this handshake
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
 
