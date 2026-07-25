@@ -218,6 +218,16 @@ const ISA_LEVELS: &[IsaLevel] = &[
         target_feature: "",
         requires: &[],
     },
+    // Two AVX2 rows, because `Avx2Backend` is gated on `avx2` ALONE and carries
+    // a documented software mul+add fallback for parts that shipped AVX2
+    // without FMA3 (VIA, early Zen). Requiring both features would skip this
+    // configuration entirely on such a host and never exercise that fallback —
+    // so the matrix would not, in fact, cover every level the host supports.
+    IsaLevel {
+        name: "avx2 (no fma)",
+        target_feature: "+avx2",
+        requires: &["avx2"],
+    },
     IsaLevel {
         name: "avx2+fma",
         target_feature: "+avx2,+fma",
