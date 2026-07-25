@@ -6752,6 +6752,17 @@ mod tests {
             assert_covers_required_ops("X86Backend (SSE2)", &mut X86Backend::default());
         }
 
+        // Gated on arch alone, not `target_feature = "avx2"`: the sweep only
+        // *encodes* — bytes into a Vec, never executed — so it needs no AVX2
+        // hardware or build flags. Running it on every x86-64 build means a
+        // coverage gap in the AVX2 backend fails the default CI job, not just
+        // the one ISA-matrix leg that selects it.
+        #[cfg(target_arch = "x86_64")]
+        #[test]
+        fn avx2_backend_covers_required_ops() {
+            assert_covers_required_ops("Avx2Backend", &mut Avx2Backend);
+        }
+
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
         #[test]
         fn avx512_backend_covers_required_ops() {
