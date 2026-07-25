@@ -1045,6 +1045,29 @@ mod tests {
     }
 
     #[test]
+    fn y_axis_threshold_calculation_with_touching_items() {
+        // Same as threshold_calculation_with_touching_items but split on Y: items touch
+        // at y=50, so threshold = (50.0 + 50.0) / 2.0 = 50.0 exactly. Center-only probes
+        // (as in tall_items_split_on_y_route_each_item_to_its_own_color) stay far enough
+        // from the boundary to tolerate a miscalculated threshold; probing right at the
+        // touch point does not.
+        let bsp = build_and_assert_every_item_routes_to_its_own_color(
+            &[(0.0, 0.0, 10.0, 50.0), (0.0, 50.0, 10.0, 100.0)],
+            &[(255, 0, 0, 255), (0, 0, 255, 255)],
+        );
+        assert_eq!(
+            sample(&bsp, 5.0, 49.9),
+            sample(&bsp, 5.0, 0.0),
+            "just below the touch point must still resolve to the top item's color"
+        );
+        assert_eq!(
+            sample(&bsp, 5.0, 50.1),
+            sample(&bsp, 5.0, 99.0),
+            "just above the touch point must still resolve to the bottom item's color"
+        );
+    }
+
+    #[test]
     fn threshold_with_very_small_items() {
         // A non-finite or collapsed threshold at this scale would misroute one of these
         // probes (NaN compares false against everything, always routing right).
