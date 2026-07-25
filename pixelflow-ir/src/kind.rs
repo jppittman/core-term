@@ -142,6 +142,48 @@ impl OpKind {
         }
     }
 
+    /// Whether this op's result is **platform-specific when an operand is NaN**.
+    ///
+    /// The FP contract (CLAUDE.md, "Floating point at the edges") is hardware
+    /// semantics — but the hardwares themselves disagree here, so for these ops
+    /// with a NaN operand the language promises *nothing*:
+    ///
+    /// - `Min`/`Max`: x86 `minps`/`maxps` compute `(a OP b) ? a : b`, yielding
+    ///   the SECOND operand when either is NaN; ARM `FMIN`/`FMAX` propagate the
+    ///   NaN. `min(NaN, 1.0)` is therefore `1.0` on x86 and `NaN` on aarch64.
+    /// - `Gt`/`Ge`: x86 uses the unordered predicates (imm8 6/5), TRUE for NaN;
+    ///   ARM `FCMGT`/`FCMGE` are ordered, FALSE for NaN.
+    ///
+    /// `Lt`/`Le`/`Eq` are ordered on both, `Ne` unordered on both, and `Round`
+    /// is nearest-even on both — those agree and are pinned by tests.
+    ///
+    /// Callers that must produce one answer for all targets (constant folding
+    /// above all: a folded result that differs from the runtime one is a
+    /// miscompile) have to DECLINE rather than pick a platform's answer. That
+    /// is what this predicate is for; `eval_binary` still returns a value,
+    /// which is this build's behavior and no promise about any other.
+    #[must_use]
+    pub const fn nan_result_is_platform_specific(self) -> bool {
+        matches!(self, Self::Min | Self::Max | Self::Gt | Self::Ge)
+    }
+
+    /// Whether this op's result is **platform-specific on an exact tie**
+    /// (a half-integer input), independently of NaN.
+    ///
+    /// `Round` is: nearest-even on x86 (`vroundps`/`vrndscaleps` imm 0x00),
+    /// ties-away on aarch64 (`FRINTA`), and `(x + 0.5).floor()` in the
+    /// combinator tier (`SimdVector::round`) — three behaviors, disagreeing at
+    /// `±n.5`. `round(2.5)` is 2, 3 and 3 respectively; `round(-1.5)` is -2, -2
+    /// and -1.
+    ///
+    /// x86 has no ties-away rounding mode, so unifying them costs extra
+    /// instructions in the hot path — which the FP contract declines to spend.
+    /// The result at a tie is therefore unspecified.
+    #[must_use]
+    pub const fn tie_result_is_platform_specific(self) -> bool {
+        matches!(self, Self::Round)
+    }
+
     /// Whether `self` is a valid reduction combiner (an associative monoid op
     /// with an identity).
     #[must_use]
@@ -550,10 +592,10 @@ impl OpKind {
             Self::Recip => Some(1.0 / x),
             Self::Floor => Some(x.floor()),
             Self::Ceil => Some(x.ceil()),
-            // Nearest-EVEN, not ties-away: this is what `vroundps`/`vrndscaleps`
-            // imm 0x00 does on every backend, and the folder must agree with the
-            // code it folds. `f32::round` (ties-away) would make `round(2.5)`
-            // fold to 3 and compute to 2. See the FP contract in CLAUDE.md.
+            // x86's answer (`vroundps` imm 0x00 is nearest-even). aarch64
+            // `FRINTA` is ties-away and the combinator tier is
+            // `(x + 0.5).floor()`, so at a tie this is one of three behaviors
+            // and no promise — see `tie_result_is_platform_specific`.
             Self::Round => Some(x.round_ties_even()),
             // Integer-domain primitives. A lane holds an f32 bit pattern; these
             // reinterpret it as i32, exactly as the hardware instructions do
@@ -584,29 +626,29 @@ impl OpKind {
             Self::Sub => Some(x - y),
             Self::Mul => Some(x * y),
             Self::Div => Some(x / y),
-            // `minps`/`maxps` semantics, NOT `f32::min`/`f32::max`: the hardware
-            // computes `(a OP b) ? a : b`, so a NaN in EITHER operand yields the
-            // second one. `f32::min` instead returns the numeric operand, which
-            // would make `min(1.0, NaN)` fold to 1.0 and compute to NaN.
+            // `minps`/`maxps` semantics on x86: `(a OP b) ? a : b`, so a NaN in
+            // EITHER operand yields the second. aarch64 `FMIN`/`FMAX` propagate
+            // the NaN instead — see `nan_result_is_platform_specific`. This arm
+            // is x86's answer and is not a promise for other targets.
             Self::Min => Some(if x < y { x } else { y }),
             Self::Max => Some(if x > y { x } else { y }),
             Self::Lt => Some(if x < y { 1.0 } else { 0.0 }),
             Self::Le => Some(if x <= y { 1.0 } else { 0.0 }),
-            // Gt/Ge are the UNORDERED predicates (imm8 6 = NLE_US, 5 = NLT_US),
-            // so unlike Lt/Le they are TRUE when either operand is NaN. Written
-            // as the negations the hardware actually evaluates.
+            // Gt/Ge are x86's UNORDERED predicates (imm8 6 = NLE_US, 5 =
+            // NLT_US), so unlike Lt/Le they are TRUE when either operand is
+            // NaN. ARM's FCMGT/FCMGE are ordered and give FALSE — see
+            // `nan_result_is_platform_specific`.
             Self::Gt => Some(if x <= y { 0.0 } else { 1.0 }),
             Self::Ge => Some(if x < y { 0.0 } else { 1.0 }),
-            Self::Eq => Some(if (x - y).abs() < f32::EPSILON {
-                1.0
-            } else {
-                0.0
-            }),
-            Self::Ne => Some(if (x - y).abs() >= f32::EPSILON {
-                1.0
-            } else {
-                0.0
-            }),
+            // Exact, as every emitter compares. The old `(x-y).abs() < EPSILON`
+            // made the folder disagree with the JIT for ordinary finite values:
+            // 0.5 and its next representable neighbour differ by less than
+            // EPSILON, so folding said "equal" where the hardware says "not".
+            // NaN is false here and in `cmpps`/`FCMEQ` alike.
+            Self::Eq => Some(if x == y { 1.0 } else { 0.0 }),
+            // Exact, and true for NaN — matching `NEQ_UQ` and an inverted
+            // `FCMEQ`. Same epsilon bug as `Eq` above.
+            Self::Ne => Some(if x == y { 0.0 } else { 1.0 }),
             // Integer-domain binaries on lane bit patterns. The shift count is
             // the RHS `Const`'s numeric value (the schedule reads it as
             // `*v as u32 as u8`), and both shifts are logical — `vpslld` /
