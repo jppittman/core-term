@@ -18,10 +18,25 @@
 //! vocabulary every other edge in §3 uses (`Present` even has its own non-blocking contract in
 //! the code already, which the aggregate framing had simply missed). `regressed_aggregate_
 //! framing_is_cyclic` below keeps that mistake on record so it isn't repeated.
+//!
+//! # §7: the render pipeline moves off `engine` entirely
+//!
+//! Deleting `EngineHandler` means its render-pipeline edges (window hand-off, manifold
+//! submission, present, FPS telemetry, token return) need to become direct edges among
+//! `driver`, `rasterizer`, `vsync`, and `app` — and those specific edges were never checked.
+//! Every edge through `engine` up to this point was individually proven; a direct
+//! `driver` ↔ `rasterizer` edge was not, because it didn't exist yet. `the_target_engine_mesh_
+//! is_a_dag` below is updated in place (not duplicated) to the corrected edge set, per this
+//! file's own stated purpose of staying valid across the rollout rather than accumulating a
+//! stale copy per step.
+//!
+//! `engine` remains a node for what this slice deliberately leaves alone: input-event
+//! forwarding, `AppManagement` commands (`SetTitle`/`CreateWindow`/etc.), and the
+//! vsync-tick → `RequestFrame` relay. Those are a separate, later slice.
 
 use actor_scheduler::mealy::Topology;
 
-/// Every edge from §3 of the migration doc, decomposed per message rather than lumped into
+/// Every edge from §3/§7 of the migration doc, decomposed per message rather than lumped into
 /// "input events" / "display commands". `Create` (bootstrap-only, §3.1) is deliberately not
 /// part of this graph at all — the same way the rasterizer's bootstrap handshake isn't part of
 /// today's `troupe!` topology.
@@ -36,16 +51,13 @@ fn the_target_engine_mesh_is_a_dag() {
     let app = topo.actor("app");
 
     // The one edge that stays genuinely Blocking: discrete, non-idempotent input and
-    // window-lifecycle events. Nothing on the engine -> driver side is Blocking any more, so
-    // this alone cannot form a cycle with anything below.
+    // window-lifecycle events. Nothing else in this graph is Blocking, so this alone cannot
+    // form a cycle with anything below.
     topo.blocking_edge(driver, engine); // DisplayEvent, minus PasteData
 
-    // Present / PresentComplete: structurally-unreachable droppable backstop, Credit(1) via
-    // the single ping-pong window buffer.
-    topo.droppable_edge(engine, driver); // Present
-    topo.droppable_edge(driver, engine); // PresentComplete
-
-    // Idempotent "latest wins" state pushes: no credit needed at all.
+    // Idempotent "latest wins" state pushes: no credit needed at all. Present/PresentComplete
+    // used to live here too — they moved to the rasterizer <-> driver edges below, since
+    // rasterizer is what actually presents once engine no longer mediates.
     topo.droppable_edge(engine, driver); // SetTitle / SetSize / SetCursor / Copy
 
     // RequestPaste / PasteData: plain droppable, deliberately *not* credit-bounded — see §3.2.
@@ -56,20 +68,50 @@ fn the_target_engine_mesh_is_a_dag() {
     topo.droppable_edge(engine, driver); // RequestPaste
     topo.droppable_edge(driver, engine); // PasteData
 
-    // The other three satellite relationships, unchanged from the first draft of this proof.
-    topo.droppable_edge(engine, rasterizer); // render request
-    topo.droppable_edge(rasterizer, engine); // render complete
+    // vsync-tick -> RequestFrame relay: unchanged, still routed through engine. Out of scope
+    // for this slice (§7.4's remaining-work note).
     topo.droppable_edge(vsync, engine); // vsync tick (Credit-gated)
-    topo.droppable_edge(engine, vsync); // RenderedResponse (FPS telemetry only)
     topo.droppable_edge(engine, app); // RequestFrame (Credit-gated)
-    topo.droppable_edge(app, engine); // AppData::RenderSurface (already "keep latest" today)
+
+    // The render pipeline, now wired directly instead of through engine (§7 of the migration
+    // doc). rasterizer is where §7's chosen design puts the window/manifold pairing: driver
+    // pushes a window the moment one is free (created, or returned from a prior Present) and
+    // app pushes its latest manifold; rasterizer renders when both are held and its own
+    // Credit(1) allows it, then presents directly and tells vsync.
+    topo.droppable_edge(driver, rasterizer); // window available (created, or returned)
+    topo.droppable_edge(app, rasterizer); // manifold submission (keep-latest, as today)
+    topo.droppable_edge(rasterizer, driver); // Present, once rendered
+    topo.droppable_edge(rasterizer, vsync); // RenderedResponse (FPS telemetry only)
+    topo.droppable_edge(app, vsync); // ReturnToken — previously an engine->vsync Control-lane
+                                      // send this proof never modeled separately; modeled here
+                                      // now that it travels a new edge anyway.
 
     let order = topo.validate().expect(
-        "every engine -> driver edge is droppable and driver -> engine is the only Blocking \
-         one, so this must be a DAG — if it isn't, an edge above needs reclassifying before \
-         any live actor is converted",
+        "every blocking edge has no return path and every reply is droppable, so this must be \
+         a DAG — if it isn't, an edge above needs reclassifying before any live actor is \
+         converted",
     );
     assert_eq!(order.len(), 5);
+}
+
+/// The same mistake `regressed_aggregate_framing_is_cyclic` records, in the shape someone
+/// converting the render pipeline is likely to make fresh: treating "exactly one window
+/// circulates" as license to make the hand-off synchronous in both directions. It doesn't
+/// matter that "hand me a window" and "here's your rendered frame" are logically distinct
+/// conversations — two blocking edges between the same pair is a cycle regardless.
+#[test]
+fn regressed_render_pipeline_framing_is_cyclic() {
+    let mut topo = Topology::new();
+    let driver = topo.actor("driver");
+    let rasterizer = topo.actor("rasterizer");
+
+    topo.blocking_edge(driver, rasterizer); // "hand off the window synchronously"
+    topo.blocking_edge(rasterizer, driver); // "and block until it's presented"
+
+    let cycle = topo
+        .validate()
+        .expect_err("two blocking edges between the same pair must be rejected");
+    assert!(cycle.actors.contains(&"driver") && cycle.actors.contains(&"rasterizer"));
 }
 
 /// The mistake the first draft of this proof made, kept as a permanent regression test rather
