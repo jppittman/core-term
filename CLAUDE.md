@@ -19,6 +19,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Minimal public API** - Do NOT change visibility of internal APIs without explicit permission. Keep `pub(crate)` and private items encapsulated. Use Manifold composition instead of exposing internals.
 - **Subtract before you add.** The good version of a primitive is reached by removing machinery, not stacking it. If a type's signature already refuses the wrong shape, you don't need a macro, a lint, or a doc to forbid it — the opinion lives in the types. Reach for a new dependency or a new abstraction only after subtraction has failed.
 
+### Floating point at the edges
+
+**The contract is hardware semantics, not IEEE-754 conformance.** Floating point
+should behave the way someone who is not a computer scientist would expect;
+IEEE is over-specified for a renderer, and matching it exactly costs
+instructions in the hot path for cases the language does not promise. So where
+a SIMD instruction and scalar Rust disagree at the edges, **the instruction
+wins** and the reference semantics are written to match it — never the reverse.
+
+Consequences, all pinned by `pixelflow-ir/tests/transcendental_jit.rs`:
+
+| Op | Behavior | Not |
+|---|---|---|
+| `Gt`, `Ge` | unordered — **true** if either operand is NaN (imm8 6/5 = `NLE_US`/`NLT_US`) | scalar `>`/`>=`, false for NaN |
+| `Lt`, `Le`, `Eq` | ordered — false for NaN | — |
+| `Ne` | true for NaN | — |
+| `Min`, `Max` | `(a OP b) ? a : b`, so NaN in *either* operand yields the second | `f32::min`/`max`, which return the numeric operand |
+| `Round` | nearest-**even**, so `round(2.5) == 2` | `f32::round`, ties away from zero |
+| `exp`, `exp2` | saturate past ±126 exponents | overflow to `inf` |
+
+The asymmetry (`Gt` unordered while `Lt` ordered) is the hardware's, not a
+choice — it is what a single `cmpps` gives for free.
+
+**What this does NOT license: the two tiers disagreeing.** `OpKind::eval_unary`
+/ `eval_binary` are the differential oracle *and* the e-graph's constant
+folder, so if they diverge from the emitted code, a folded expression computes
+differently from the same expression at runtime — a miscompile, not an edge
+case. When you touch either an encoder or the oracle, change both and extend
+the tests above.
+
 ### Philosophy
 
 - **Pull-based rendering**: Pixels are sampled, not pushed. Nothing computes until coordinates arrive.
