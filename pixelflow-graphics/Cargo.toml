@@ -7,7 +7,10 @@ edition = "2021"
 workspace = true
 
 [lib]
-bench = true
+# The library uses Rust's built-in benchmark harness, which cannot parse
+# Criterion's `--output-format bencher` argument used by the regression job.
+# The dedicated Criterion targets below are the complete graphics benchmark set.
+bench = false
 
 [dependencies]
 # Core dependencies
