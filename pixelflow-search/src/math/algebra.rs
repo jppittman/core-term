@@ -906,6 +906,31 @@ impl Rewrite for ConstantFold {
             args.push(found_const?);
         }
 
+        // Refuse to fold anything whose answer is platform-specific. This
+        // matters more than a same-machine consistency nicety: the folder runs
+        // on the BUILD host at macro-expansion time, while the folded constant
+        // executes on the TARGET, so folding here bakes the build machine's
+        // answer into code that may run somewhere that computes differently.
+        //
+        // - `Round` at an exact tie: x86 nearest-even (2.5 -> 2), aarch64
+        //   `FRINTA` ties-away (-> 3). Round is unary, so declining is a
+        //   COMPLETE fix — there is no rewrite that can reintroduce the fold.
+        // - `Min`/`Max` with a NaN operand: x86 yields the second operand,
+        //   aarch64 propagates the NaN. Declining is only PARTIAL here: the
+        //   e-graph installs commutativity for these ops, so `min(1.0, NaN)`
+        //   can still be commuted to `min(NaN, 1.0)` and folded. That is
+        //   permitted (the result is unspecified — see CLAUDE.md) but this
+        //   still removes the direct path, and claiming otherwise would be
+        //   the overreach an earlier revision of this guard was reverted for.
+        if kind.nan_result_is_platform_specific() && args.iter().any(|a| a.is_nan()) {
+            return None;
+        }
+        if kind.tie_result_is_platform_specific()
+            && args.iter().any(|a| a.fract().abs() == 0.5)
+        {
+            return None;
+        }
+
         // Evaluate based on arity
         let result = match args.len() {
             1 => kind.eval_unary(args[0])?,
@@ -987,4 +1012,50 @@ pub fn algebra_rules() -> Vec<Box<dyn Rewrite>> {
     let mut rules = inverse_pair_rules();
     rules.extend(basic_algebra_rules());
     rules
+}
+
+#[cfg(test)]
+mod platform_specific_fold_tests {
+    use super::*;
+    use crate::egraph::{EGraph, ENode};
+    use crate::egraph::rewrite::{Rewrite, RewriteAction};
+
+    /// Drive `ConstantFold::apply` directly on `op(consts...)` and report
+    /// whether it produced a folded constant.
+    fn folds(op: &'static dyn Op, args: &[f32]) -> Option<f32> {
+        let mut eg = EGraph::new();
+        let children: Vec<_> = args.iter().map(|&v| eg.add(ENode::constant(v))).collect();
+        let node = ENode::Op { op, children };
+        let id = eg.add(node.clone());
+        match ConstantFold.apply(&eg, id, &node) {
+            Some(RewriteAction::Create(ENode::Const(bits))) => Some(f32::from_bits(bits)),
+            _ => None,
+        }
+    }
+
+    /// The folder runs on the BUILD host; the constant it bakes in executes on
+    /// the TARGET. For ops whose answer differs between targets it must decline,
+    /// or a cross-compile silently ships the build machine's arithmetic.
+    #[test]
+    fn declines_platform_specific_rounding_ties() {
+        // x86 nearest-even says 2, aarch64 FRINTA says 3 — so neither.
+        assert_eq!(folds(&ops::Round, &[2.5]), None);
+        assert_eq!(folds(&ops::Round, &[-1.5]), None);
+        assert_eq!(folds(&ops::Round, &[0.5]), None);
+        // Away from a tie every target agrees, so folding is still allowed.
+        assert_eq!(folds(&ops::Round, &[2.4]), Some(2.0));
+        assert_eq!(folds(&ops::Round, &[2.6]), Some(3.0));
+    }
+
+    #[test]
+    fn declines_platform_specific_nan_min_max() {
+        let nan = f32::NAN;
+        // x86 yields the second operand, aarch64 propagates the NaN.
+        assert_eq!(folds(&ops::Min, &[nan, 1.0]), None);
+        assert_eq!(folds(&ops::Min, &[1.0, nan]), None);
+        assert_eq!(folds(&ops::Max, &[nan, 1.0]), None);
+        // Without a NaN the targets agree and folding proceeds.
+        assert_eq!(folds(&ops::Min, &[1.0, 2.0]), Some(1.0));
+        assert_eq!(folds(&ops::Max, &[1.0, 2.0]), Some(2.0));
+    }
 }
