@@ -352,9 +352,10 @@ The resulting edges, added to `pixelflow-runtime/tests/target_topology.rs`:
 
 | Edge | Direction | Kind |
 |---|---|---|
-| Window request ("I have work, give me a buffer") | rasterizer → driver | Droppable — genuinely losable, carries nothing |
+| Tick (drives request retries) | vsync → rasterizer | Droppable — genuinely losable, next tick retries |
+| Window request ("I have work, give me a buffer") | rasterizer → driver | Droppable, **Management lane** — genuinely losable, carries nothing |
 | Window grant (correctly sized, driver-allocated) | driver → rasterizer | Droppable, **unreachable**: driver can't grant what it doesn't hold |
-| `Present` | rasterizer → driver | Droppable, **unreachable**: coordinator can't present what it doesn't hold |
+| `Present` | rasterizer → driver | Droppable, **Data lane**, **unreachable** — see §8.9 for why the lane matters |
 | Manifold submission | app → rasterizer | Droppable, keep-latest |
 | Frame-rendered notice (FPS telemetry) | rasterizer → vsync | Droppable, no credit |
 | `ReturnToken` | app → vsync | Droppable, no credit |
@@ -599,11 +600,20 @@ is visibly worse and is what today's code already declines to do.
 
 The invariants above were written as "don't lose the *only* window." That undersells the
 constraint. **The ping-pong buffer exists so the framebuffer is reused rather than reallocated
-every frame**, and the direction of travel is a pull-based renderer writing *directly into the OS
-framebuffer, zero-copy.* Under that goal the driver is not merely a convenient allocator — it is
-the only actor that can obtain OS-backed memory at all, and a dropped buffer is not "one lost
-frame," it is a lost allocation that must be remade, in the one place the design is trying to
-never allocate.
+every frame.**
+
+*Stated precisely, because an earlier draft of this paragraph overreached:* today `Frame<P>` owns
+an ordinary `Vec<P>` and presentation **copies** it into the platform's surface — macOS via
+`replaceRegion:mipmapLevel:withBytes:bytesPerRow:`, X11 via `XPutImage`. So the driver is *not*
+currently the only actor that could allocate it. The intended direction is a pull-based renderer
+writing **directly into the OS framebuffer, zero-copy**, and under *that* the driver becomes the
+only actor able to obtain the memory at all — which is why keeping allocation there now is worth
+doing even though nothing yet forces it.
+
+The ownership rule does not rest on that future, though, and shouldn't be read as if it does.
+It stands on what is true today: there is exactly one buffer, it is reused every frame, and a
+buffer lost in transit is a lost allocation that must be remade — in the one place this design is
+trying never to allocate.
 
 So the rule is stronger than uniqueness — but it is not "never destroy a buffer," because §8.7
 *requires* destroying one: on resize the old buffer is the wrong size and must be replaced. The
@@ -648,3 +658,32 @@ duration of one render and is obliged to give it back regardless of outcome.
 That obligation is worth stating as the general form: **an actor that accepts a buffer owes it
 back on every exit path.** "Drop the work" is a safe policy for a request that carries only a
 description; it is never safe for one that carries a resource.
+
+### 8.9 `Present` and the retry requests must not share a ring
+
+§8.6 argued that ownership bounds the window-bearing messages to one in flight, so their rings
+are never full. That argument is sound about *window-bearing* traffic and silent about everything
+else — and review found the gap: **window requests and `Present` are both `rasterizer → driver`,
+so by default they share the driver's Data inbox.**
+
+Retries accumulate there. The coordinator stops requesting once a buffer is in hand, so no *new*
+request is generated during a render — but requests already queued from earlier ticks are still
+sitting in the ring when the render finishes. `Present` then arrives at a ring occupied by stale
+requests, is dropped, and destroys the sole buffer. Ownership bounds the resource; it does not
+bound the unrelated traffic sharing the resource's channel.
+
+**Fix: put them on different lanes.** The actor model already provides three
+(Control > Management > Data), each with its own ring:
+
+- **`Present` → Data lane.** It carries the frame; it is the bulk path, and it must never be
+  crowded out.
+- **Window request → Management lane.** Tiny, control-shaped, and genuinely losable. Retries
+  piling up there cannot touch the Data ring.
+
+That restores §8.6's argument by making its precondition true rather than assumed: the Data ring
+carries only window-bearing messages, of which ownership guarantees at most one.
+
+**The general form**, worth carrying into implementation: *a structural-unreachability argument
+about one message class only holds if that class has the channel to itself.* Sharing a ring with
+unbounded traffic silently converts "unreachable" into "unlikely," and unlikely is not what
+§3 means by structurally unreachable.

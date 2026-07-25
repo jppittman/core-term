@@ -102,7 +102,11 @@ fn the_target_engine_mesh_is_a_dag() {
     // nothing for many frames. Droppable and genuinely losable: the next tick is the retry.
     topo.droppable_edge(vsync, rasterizer); // tick — drives request retries
 
-    topo.droppable_edge(rasterizer, driver); // window request (losable; carries nothing)
+    // Requests ride the Management lane, `Present` the Data lane — deliberately different rings
+    // (§8.9). Both are rasterizer -> driver, so sharing one inbox would let queued retries fill
+    // it and force a `Present` drop, destroying the sole buffer. Ownership bounds the
+    // window-bearing traffic; it says nothing about unrelated messages in the same ring.
+    topo.droppable_edge(rasterizer, driver); // window request (Management lane; carries nothing)
     topo.droppable_edge(driver, rasterizer); // window grant (unreachable: can't grant unheld)
     topo.droppable_edge(app, rasterizer); // manifold submission (keep-latest, as today)
     topo.droppable_edge(rasterizer, driver); // Present (unreachable: can't present unheld)
