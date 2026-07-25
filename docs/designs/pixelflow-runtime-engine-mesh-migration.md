@@ -403,10 +403,11 @@ its own follow-up rather than bundled with the proof:
 - `rasterizer`'s bootstrap (today `EngineHandler::spawn_rasterizer`) moves out of
   `EngineHandler` entirely — the rasterizer becomes a directly-wired mesh participant with its
   own initialization, not something the mediator stands up on the mediator's behalf.
-- A new piece of runtime-side state holds the latest manifold and the render `Credit(1)`, and
-  performs the point-space → pixel-space dimap warp that `trigger_render_with_window` does today
-  — using the dimensions of whichever window it was granted, since under §8.5 it holds no window
-  of its own between frames and never allocates one. This
+- A new piece of runtime-side state holds the latest manifold and a "request outstanding" flag,
+  and performs the point-space → pixel-space dimap warp that `trigger_render_with_window` does
+  today — using the dimensions of whichever window it was granted, since under §8.5 it holds no
+  window of its own between frames and never allocates one. No `Credit`: §8.6 explains why
+  ownership of the window already carries that bound. This
   logic stays in `pixelflow-runtime`, not `pixelflow-graphics`, since it's runtime coordinate
   mapping, not general rasterization (`CLAUDE.md`: no terminal-adjacent logic in the graphics
   crate).
@@ -422,9 +423,10 @@ the point→pixel dimap warp in `pixelflow-runtime`. Left implicit, this reads a
 windows straight to `RasterizerActor`," which is not implementable and not what was proven.
 
 So `rasterizer` in the graph is a **runtime-side coordinator**: it holds the latest manifold and
-the render `Credit(1)`; it does the coordinate warp; it owns the graphics `RasterizerActor` as a
-worker behind it, via the same bootstrap handshake used today. It does *not* hold a window
-between frames — §8.5 explains why that would put the allocator on the wrong side.
+a "request outstanding" flag; it does the coordinate warp; it owns the graphics
+`RasterizerActor` as a worker behind it, via the same bootstrap handshake used today. It does
+*not* hold a window between frames — §8.5 explains why that would put the allocator on the wrong
+side — and carries no `Credit`, since §8.6 shows ownership of the window already bounds the loop.
 
 Collapsing those two into one node is sound rather than convenient, and the reason is worth
 stating because it's the property that must not silently change: **`RasterizerActor` is a leaf.**
@@ -461,12 +463,14 @@ information to chase it across the mesh, and every route it can take is either u
 **The fix is to move allocation, not to route information better.** The driver keeps the window
 between frames and remains its allocator. The coordinator *pulls* one when it actually has work:
 
-1. `rasterizer → driver`: window request, sent when a manifold is held and `Credit(1)` allows.
-   **The credit is consumed here and held for the whole round trip.**
+1. `rasterizer → driver`: window request, sent when a manifold is held, no window is held, and
+   no request is already outstanding. (An earlier draft gated this on a `Credit(1)` held across
+   the round trip; §8.6 shows why that cannot work and why ownership already suffices.)
 2. `driver → rasterizer`: the window it already holds — always correctly sized, because the
    driver resized it in place when the OS said so.
 3. `rasterizer → driver`: `Present` once rendered. The driver presents it and retains it, ready
-   for the next request. **The credit is released only here**, once the window is home.
+   for the next request — and now holds the window again, which is what re-enables the next
+   grant.
 
 **There is no resize notification anywhere in the render pipeline, so none can be dropped.** On
 resize the driver swaps its held buffer for a correctly-sized one and tells nobody. The
