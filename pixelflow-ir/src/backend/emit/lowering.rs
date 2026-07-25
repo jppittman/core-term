@@ -1187,7 +1187,20 @@ mod dwrt_tests {
     }
 
     fn assert_close(got: f32, want: f32, pt: &[f32; 4]) {
-        let tol = 1e-3 * want.abs().max(1.0);
+        assert_close_rel(got, want, pt, 1e-3);
+    }
+
+    /// Relative tolerance the caller chooses.
+    ///
+    /// Derivatives of transcendentals need a looser bound than exact
+    /// arithmetic: the interpreter evaluates the language's own polynomial
+    /// expansion (not the host libm — see `eval_scalar`), so comparing against
+    /// `f32::cos` measures the derivative rule *and* the ~4e-3 error of the
+    /// 4-term Chebyshev approximation. That error is the language's actual
+    /// answer, and pinning it here is the point: the tolerance documents the
+    /// approximation instead of hiding it behind an exact host function.
+    fn assert_close_rel(got: f32, want: f32, pt: &[f32; 4], rel: f32) {
+        let tol = rel * want.abs().max(1.0);
         assert!(
             (got - want).abs() <= tol,
             "at {pt:?}: got {got}, want {want} (tol {tol})"
@@ -1306,23 +1319,40 @@ mod dwrt_tests {
     #[test]
     fn d_transcendentals() {
         // d/dx sin(x) = cos(x); d/dx exp(x·x) = 2x·exp(x²); d/dx ln(x) = 1/x.
+        //
+        // The expected value is built as an arena expression and evaluated the
+        // same way, NOT taken from the host libm. That isolates what this test
+        // is for: the derivative *rule*. `cos` in this language is the
+        // expansion `sin(x + π/2)`, whose 4-term polynomial degrades as the
+        // shifted argument approaches π — comparing against `f32::cos` would
+        // charge that approximation error to the chain rule and force a
+        // tolerance loose enough to hide a real rule bug. Polynomial accuracy
+        // versus libm is a separate concern, measured in the emit tests.
         let pts = [[0.7f32, 0.0, 0.0, 0.0], [1.3, 0.0, 0.0, 0.0]];
 
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let e = a.push_unary(OpKind::Sin, x);
+        let expected_cos = a.push_unary(OpKind::Cos, x);
         let (out, root) = lowered_derivative(&a, e, 0);
         for p in &pts {
-            assert_close(eval(&out, root, p), p[0].cos(), p);
+            let want = eval(&a, expected_cos, p);
+            assert_close(eval(&out, root, p), want, p);
         }
 
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let xx = a.push_binary(OpKind::Mul, x, x);
         let e = a.push_unary(OpKind::Exp, xx);
+        // 2x·exp(x²), in the language.
+        let two = a.push_const(2.0);
+        let two_x = a.push_binary(OpKind::Mul, two, x);
+        let exp_xx = a.push_unary(OpKind::Exp, xx);
+        let expected = a.push_binary(OpKind::Mul, two_x, exp_xx);
         let (out, root) = lowered_derivative(&a, e, 0);
         for p in &pts {
-            assert_close(eval(&out, root, p), 2.0 * p[0] * (p[0] * p[0]).exp(), p);
+            let want = eval(&a, expected, p);
+            assert_close(eval(&out, root, p), want, p);
         }
 
         let mut a = ExprArena::new();

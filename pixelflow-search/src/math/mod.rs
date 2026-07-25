@@ -213,33 +213,14 @@ mod tests {
         }
     }
 
-    /// Evaluate an arena subtree at the given variable values.
+    /// Evaluate an arena expression via the reference interpreter.
+    ///
+    /// Delegates to `pixelflow_ir::eval_scalar` rather than walking the arena
+    /// here: that is the language's semantics (it lowers transcendentals to the
+    /// expansion the compiler emits), and a private walker would be a second
+    /// definition free to drift from it.
     fn eval_arena(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
-        match *arena.node(id) {
-            ExprNode::Var(i) => vars[i as usize],
-            ExprNode::Const(c) => c,
-            ExprNode::Param(_) => panic!("Param in eval_arena"),
-            ExprNode::Buffer(_) => panic!("Buffer in eval_arena (memory not bindable here)"),
-            ExprNode::Unary(op, a) => {
-                let a = eval_arena(arena, a, vars);
-                op.eval_unary(a)
-                    .unwrap_or_else(|| panic!("eval_unary failed for {op:?}"))
-            }
-            ExprNode::Binary(op, a, b) => {
-                let a = eval_arena(arena, a, vars);
-                let b = eval_arena(arena, b, vars);
-                op.eval_binary(a, b)
-                    .unwrap_or_else(|| panic!("eval_binary failed for {op:?}"))
-            }
-            ExprNode::Ternary(op, a, b, c) => {
-                let a = eval_arena(arena, a, vars);
-                let b = eval_arena(arena, b, vars);
-                let c = eval_arena(arena, c, vars);
-                op.eval_ternary(a, b, c)
-                    .unwrap_or_else(|| panic!("eval_ternary failed for {op:?}"))
-            }
-            ExprNode::Nary(..) => panic!("Nary in eval_arena"),
-        }
+        pixelflow_ir::eval_scalar(arena, id, vars, &pixelflow_ir::binding::BindingTable::empty())
     }
 
     /// Run an expression through the egraph optimizer and check that the

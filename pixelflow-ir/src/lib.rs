@@ -29,7 +29,12 @@ pub use lower::{Lower, LowerEnv};
 pub mod binding;
 pub use binding::{BindError, BindingTable};
 
+// The differential-testing oracle, not an execution tier: PixelFlow is
+// JIT-only, so nothing in a shipped build may reach a tree-walking evaluator.
+// Gating it here is what enforces that — `cargo build` cannot name it.
+#[cfg(any(test, feature = "oracle"))]
 pub mod eval;
+#[cfg(any(test, feature = "oracle"))]
 pub use eval::eval_scalar;
 
 pub mod kernel;
