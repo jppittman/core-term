@@ -550,7 +550,11 @@ impl OpKind {
             Self::Recip => Some(1.0 / x),
             Self::Floor => Some(x.floor()),
             Self::Ceil => Some(x.ceil()),
-            Self::Round => Some(x.round()),
+            // Nearest-EVEN, not ties-away: this is what `vroundps`/`vrndscaleps`
+            // imm 0x00 does on every backend, and the folder must agree with the
+            // code it folds. `f32::round` (ties-away) would make `round(2.5)`
+            // fold to 3 and compute to 2. See the FP contract in CLAUDE.md.
+            Self::Round => Some(x.round_ties_even()),
             // Integer-domain primitives. A lane holds an f32 bit pattern; these
             // reinterpret it as i32, exactly as the hardware instructions do
             // (`cvttps2dq` / `cvtdq2ps`). They exist so exp/log can lower to
@@ -580,12 +584,19 @@ impl OpKind {
             Self::Sub => Some(x - y),
             Self::Mul => Some(x * y),
             Self::Div => Some(x / y),
-            Self::Min => Some(x.min(y)),
-            Self::Max => Some(x.max(y)),
+            // `minps`/`maxps` semantics, NOT `f32::min`/`f32::max`: the hardware
+            // computes `(a OP b) ? a : b`, so a NaN in EITHER operand yields the
+            // second one. `f32::min` instead returns the numeric operand, which
+            // would make `min(1.0, NaN)` fold to 1.0 and compute to NaN.
+            Self::Min => Some(if x < y { x } else { y }),
+            Self::Max => Some(if x > y { x } else { y }),
             Self::Lt => Some(if x < y { 1.0 } else { 0.0 }),
             Self::Le => Some(if x <= y { 1.0 } else { 0.0 }),
-            Self::Gt => Some(if x > y { 1.0 } else { 0.0 }),
-            Self::Ge => Some(if x >= y { 1.0 } else { 0.0 }),
+            // Gt/Ge are the UNORDERED predicates (imm8 6 = NLE_US, 5 = NLT_US),
+            // so unlike Lt/Le they are TRUE when either operand is NaN. Written
+            // as the negations the hardware actually evaluates.
+            Self::Gt => Some(if x <= y { 0.0 } else { 1.0 }),
+            Self::Ge => Some(if x < y { 0.0 } else { 1.0 }),
             Self::Eq => Some(if (x - y).abs() < f32::EPSILON {
                 1.0
             } else {
