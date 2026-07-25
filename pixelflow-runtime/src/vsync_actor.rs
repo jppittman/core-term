@@ -540,56 +540,56 @@ mod tests {
         assert!(out.tick.is_none(), "must not tick after Stop");
     }
 
-    /// 1 GHz: every successful tick advances `next_vsync` by ~1ns, far less than a real
-    /// wall-clock nanosecond of actual instruction execution between two back-to-back calls —
-    /// so the time gate is always satisfied and `Credit` is the only thing left limiting how
-    /// many ticks fire. At 60Hz (a real display's rate) the time gate itself would be the
-    /// limiting factor for a tight synchronous loop like this: the first successful tick pushes
-    /// `next_vsync` a whole ~16ms into the future, which a synchronous loop with no real sleep
-    /// never catches up to — that isn't a `VsyncCore` bug, it's what these tests must avoid
-    /// conflating with the credit bound they intend to isolate.
-    const FAST_ENOUGH_TO_ISOLATE_CREDIT_FROM_THE_TIME_GATE: f64 = 1_000_000_000.0;
+    /// Forces `next_vsync` into the past immediately before a `Tick`, so the time gate is open
+    /// regardless of clock resolution — a prior version of these tests instead used an absurdly
+    /// high refresh rate (1GHz, a ~1ns interval) hoping any real work between calls would exceed
+    /// it. That depends on the platform's clock reading finer than 1ns, which isn't guaranteed
+    /// under a virtualized CI runner: back-to-back `Instant::now()` calls returning an identical
+    /// value made the time gate spuriously block ticks that should only have been gated by
+    /// credit (seen as flaky `left: 79/81, right: 100` failures on macOS CI). Overriding
+    /// `next_vsync` directly has no such dependency — it isolates the credit gate exactly.
+    fn force_tick_due(core: &mut VsyncCore) {
+        core.next_vsync = Instant::now() - Duration::from_secs(1);
+    }
+
+    /// Force the gate open, then take one `Tick` — the two steps every test below needs.
+    fn ticked(core: &mut VsyncCore) -> bool {
+        force_tick_due(core);
+        core.step_management(VsyncManagement::Tick)
+            .unwrap()
+            .tick
+            .is_some()
+    }
 
     #[test]
     fn credit_caps_ticks_at_max_tokens_with_no_clock_involved() {
         // The whole point of extracting VsyncCore: this needs no thread, no clock, no sleep —
         // just call step_management as many times as we like and count.
-        let mut core = VsyncCore::new(FAST_ENOUGH_TO_ISOLATE_CREDIT_FROM_THE_TIME_GATE);
+        let mut core = VsyncCore::new(60.0);
         core.step_control(VsyncCommand::Start).unwrap();
-        let mut ticked = 0;
+        let mut count = 0;
         for _ in 0..(MAX_TOKENS as usize * 2) {
-            let out = core.step_management(VsyncManagement::Tick).unwrap();
-            if out.tick.is_some() {
-                ticked += 1;
+            if ticked(&mut core) {
+                count += 1;
             }
         }
         assert_eq!(
-            ticked, MAX_TOKENS as usize,
+            count, MAX_TOKENS as usize,
             "must cap at exactly the credit bound, not the number of Tick calls"
         );
     }
 
     #[test]
     fn return_token_command_unblocks_exactly_one_more_tick() {
-        let mut core = VsyncCore::new(FAST_ENOUGH_TO_ISOLATE_CREDIT_FROM_THE_TIME_GATE);
+        let mut core = VsyncCore::new(60.0);
         core.step_control(VsyncCommand::Start).unwrap();
 
-        let exhausted = (0..MAX_TOKENS)
-            .filter(|_| {
-                core.step_management(VsyncManagement::Tick)
-                    .unwrap()
-                    .tick
-                    .is_some()
-            })
-            .count();
+        let exhausted = (0..MAX_TOKENS).filter(|_| ticked(&mut core)).count();
         assert_eq!(exhausted, MAX_TOKENS as usize);
 
         // Starved: one more Tick call ticks nothing.
         assert!(
-            core.step_management(VsyncManagement::Tick)
-                .unwrap()
-                .tick
-                .is_none(),
+            !ticked(&mut core),
             "must be starved once the bound is spent"
         );
 
@@ -597,10 +597,7 @@ mod tests {
         core.step_control(VsyncCommand::ReturnToken).unwrap();
 
         assert!(
-            core.step_management(VsyncManagement::Tick)
-                .unwrap()
-                .tick
-                .is_some(),
+            ticked(&mut core),
             "returning one token via a message must unblock exactly one more tick"
         );
     }
@@ -609,17 +606,10 @@ mod tests {
     fn rendered_response_does_not_return_a_token() {
         // Matches the documented, intentional behavior in vsync_actor_real_tests.rs: frame
         // completion and credit return are deliberately separate signals.
-        let mut core = VsyncCore::new(FAST_ENOUGH_TO_ISOLATE_CREDIT_FROM_THE_TIME_GATE);
+        let mut core = VsyncCore::new(60.0);
         core.step_control(VsyncCommand::Start).unwrap();
 
-        let exhausted = (0..MAX_TOKENS)
-            .filter(|_| {
-                core.step_management(VsyncManagement::Tick)
-                    .unwrap()
-                    .tick
-                    .is_some()
-            })
-            .count();
+        let exhausted = (0..MAX_TOKENS).filter(|_| ticked(&mut core)).count();
         assert_eq!(
             exhausted, MAX_TOKENS as usize,
             "must actually exhaust the bound, or the check below proves nothing"
@@ -631,9 +621,8 @@ mod tests {
         })
         .unwrap();
 
-        let out = core.step_management(VsyncManagement::Tick).unwrap();
         assert!(
-            out.tick.is_none(),
+            !ticked(&mut core),
             "RenderedResponse must not affect the credit bound — only ReturnToken does"
         );
     }
