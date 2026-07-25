@@ -594,9 +594,20 @@ mod tests;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 struct RealizedKernel(alloc::sync::Arc<pixelflow_ir::JitManifold>);
 
-/// The vector type of the JIT's call ABI on this build.
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+/// The vector type of the JIT's call ABI on this build. Mirrors
+/// `pixelflow_ir::JIT_VECTOR_BYTES`'s 3-way split (SSE2/AVX2/AVX-512).
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 type JitVec = core::arch::x86_64::__m128;
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(target_feature = "avx512f")
+))]
+type JitVec = core::arch::x86_64::__m256;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type JitVec = core::arch::x86_64::__m512;
 #[cfg(target_arch = "aarch64")]

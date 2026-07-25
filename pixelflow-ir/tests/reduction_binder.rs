@@ -276,6 +276,26 @@ mod jit {
     use pixelflow_ir::backend::emit::compile_arena_dag;
     use pixelflow_ir::jit_manifold::JitManifold;
 
+    // JitManifold::call's ABI tracks the build's selected width (SSE2/AVX2;
+    // this module is gated off avx512f above), so the splat/extract pair must
+    // match: __m256 under +avx2, else __m128.
+    #[cfg(target_feature = "avx2")]
+    fn jit_eval(k: &Kernel, x: f32, y: f32) -> f32 {
+        use core::arch::x86_64::*;
+        let (arena, root) = k.parts();
+        let compiled = compile_arena_dag(arena, root).expect("reduction JIT compile");
+        let jit = JitManifold::new(compiled.code);
+        unsafe {
+            _mm256_cvtss_f32(jit.call(
+                _mm256_set1_ps(x),
+                _mm256_set1_ps(y),
+                _mm256_set1_ps(0.0),
+                _mm256_set1_ps(0.0),
+            ))
+        }
+    }
+
+    #[cfg(not(target_feature = "avx2"))]
     fn jit_eval(k: &Kernel, x: f32, y: f32) -> f32 {
         use core::arch::x86_64::*;
         let (arena, root) = k.parts();
