@@ -402,8 +402,10 @@ its own follow-up rather than bundled with the proof:
 - `rasterizer`'s bootstrap (today `EngineHandler::spawn_rasterizer`) moves out of
   `EngineHandler` entirely — the rasterizer becomes a directly-wired mesh participant with its
   own initialization, not something the mediator stands up on the mediator's behalf.
-- A new piece of runtime-side state holds `latest_window`, the render `Credit(1)`, and performs
-  the point-space → pixel-space dimap warp that `trigger_render_with_window` does today — this
+- A new piece of runtime-side state holds the latest manifold and the render `Credit(1)`, and
+  performs the point-space → pixel-space dimap warp that `trigger_render_with_window` does today
+  — using the dimensions of whichever window it was granted, since under §8.5 it holds no window
+  of its own between frames and never allocates one. This
   logic stays in `pixelflow-runtime`, not `pixelflow-graphics`, since it's runtime coordinate
   mapping, not general rasterization (`CLAUDE.md`: no terminal-adjacent logic in the graphics
   crate).
@@ -418,9 +420,10 @@ that crate is deliberately runtime-agnostic and names no runtime concept — no 
 the point→pixel dimap warp in `pixelflow-runtime`. Left implicit, this reads as "driver sends
 windows straight to `RasterizerActor`," which is not implementable and not what was proven.
 
-So `rasterizer` in the graph is a **runtime-side coordinator**: it holds `latest_window`, the
-latest manifold, and the render `Credit(1)`; it does the coordinate warp; it owns the graphics
-`RasterizerActor` as a worker behind it, via the same bootstrap handshake used today.
+So `rasterizer` in the graph is a **runtime-side coordinator**: it holds the latest manifold and
+the render `Credit(1)`; it does the coordinate warp; it owns the graphics `RasterizerActor` as a
+worker behind it, via the same bootstrap handshake used today. It does *not* hold a window
+between frames — §8.5 explains why that would put the allocator on the wrong side.
 
 Collapsing those two into one node is sound rather than convenient, and the reason is worth
 stating because it's the property that must not silently change: **`RasterizerActor` is a leaf.**
