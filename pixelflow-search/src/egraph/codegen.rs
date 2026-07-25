@@ -39,7 +39,12 @@ use pixelflow_ir::EmitStyle;
 /// Format a constant value as Rust code.
 fn format_const(v: f32) -> String {
     if v.is_nan() {
-        "f32::NAN".to_string()
+        // By bits, not `f32::NAN`: NaN is a family of bit patterns and the one
+        // that matters here is all-ones, the true comparison mask
+        // (`OpKind::mask`) and `BitAnd`'s monoid identity. `f32::NAN` is
+        // `0x7fc00000`, so emitting it would turn a mask into a pattern that
+        // blends to garbage rather than to `if_true`.
+        format!("f32::from_bits({:#010x})", v.to_bits())
     } else if v.is_infinite() {
         if v.is_sign_positive() {
             "f32::INFINITY".to_string()

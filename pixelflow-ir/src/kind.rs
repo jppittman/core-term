@@ -166,6 +166,14 @@ impl OpKind {
     ///   Not a tie, so it needs its own condition. `(x + 0.5).floor()` is not
     ///   any IEEE rounding mode — `round(-1.5)` is -1 there against -2
     ///   everywhere else — so the real repair is in that tier, not here.
+    /// - `Recip`/`Rsqrt` **always**: these are estimate instructions and the
+    ///   estimates differ — `rcpps` ~12 bits, `vrcp14ps` ~14, aarch64
+    ///   `FRECPE` + one `FRECPS` refinement. The exact `1.0 / x` the folder
+    ///   computes is not any of those answers.
+    /// - `MulAdd` where one rounding differs from two: `vfmadd`/`FMLA` round
+    ///   the product and sum together, SSE2's `mulps`+`addps` rounds twice.
+    ///   `mul_add(1.0000001, 4097.0, 4097.0)` is `8194.001` fused, `8194.0`
+    ///   split.
     ///
     /// x86 has no ties-away rounding mode and NaN/zero blending costs extra
     /// instructions, so unifying any of these would spend hot-path work on
@@ -198,6 +206,21 @@ impl OpKind {
             Self::Round => args
                 .iter()
                 .any(|a| a.fract().abs() == 0.5 || (a.is_sign_negative() && *a > -0.5)),
+            // Reciprocal ESTIMATES, and every target estimates differently:
+            // SSE2/AVX2 `rcpps`/`vrcpps` give ~12 bits, AVX-512 `vrcp14ps`
+            // ~14, and aarch64 emits `FRECPE` plus one `FRECPS` Newton step.
+            // `eval_unary`'s exact `1.0 / x` matches none of them, so there is
+            // no host whose answer is worth baking. Unconditional: an estimate
+            // is only guaranteed close, never equal, so no argument is safe.
+            Self::Recip | Self::Rsqrt => true,
+            // One rounding or two. `mul_add` is the single-rounding FMA every
+            // first-class target has (`vfmadd`, `FMLA`); `x * y + z` is what
+            // SSE2 emits without one. Value-aware, because they agree for most
+            // inputs and folding is worth keeping where they do.
+            Self::MulAdd => match args {
+                [x, y, z] => x.mul_add(*y, *z).to_bits() != (x * y + z).to_bits(),
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -634,6 +657,55 @@ impl OpKind {
         }
     }
 
+    /// A comparison lane: all bits set for true, all clear for false.
+    ///
+    /// This is not a stylistic choice about how to spell a boolean — it is the
+    /// only representation the consumers accept. `Select` is a *bitwise* blend
+    /// on every backend (`andps`/`andnps`/`orps` on SSE2 and AVX2, one
+    /// `vpternlogd 0xCA` on AVX-512, `BSL` on aarch64), and `BitAnd`/`BitOr`
+    /// are literal bitwise ops, so a mask lane's job is to be a per-bit
+    /// stencil. `1.0` is not one: `0xFFFFFFFF & 0x3f800000` is `0x3f800000`,
+    /// and blending `7.0` against `9.0` through that pattern gives `4.5` — a
+    /// value neither branch ever held.
+    ///
+    /// Every tier that *executes* a comparison already writes all-ones —
+    /// `cmpps`, `FCMEQ`, and the combinator tier's SIMD compares alike. Folding
+    /// in the same representation is what makes a folded comparison and an
+    /// executed one interchangeable as operands.
+    #[must_use]
+    pub const fn mask(condition: bool) -> f32 {
+        if condition { f32::from_bits(u32::MAX) } else { 0.0 }
+    }
+
+    /// Whether this op's result is a lane **bit pattern** rather than a number.
+    ///
+    /// Comparisons produce masks ([`Self::mask`] — all-ones, which reads as
+    /// NaN); the integer-domain primitives reinterpret lanes as `i32` and are
+    /// how exp/log lower to arithmetic; `Select`/`BitAnd`/`BitOr` pass patterns
+    /// through. For all of them a non-finite float reading is the intended
+    /// output rather than an overflow, which is what separates them from
+    /// `1e38 * 1e38` — the case a folder is right to refuse.
+    #[must_use]
+    pub const fn is_bitwise_domain(self) -> bool {
+        matches!(
+            self,
+            Self::Lt
+                | Self::Le
+                | Self::Gt
+                | Self::Ge
+                | Self::Eq
+                | Self::Ne
+                | Self::Select
+                | Self::BitAnd
+                | Self::BitOr
+                | Self::TruncToInt
+                | Self::IntToFloat
+                | Self::IAdd
+                | Self::Shl
+                | Self::Shr
+        )
+    }
+
     /// Evaluate a binary operation on constant arguments.
     ///
     /// Returns `None` for non-binary operations.
@@ -650,23 +722,26 @@ impl OpKind {
             // is x86's answer and is not a promise for other targets.
             Self::Min => Some(if x < y { x } else { y }),
             Self::Max => Some(if x > y { x } else { y }),
-            Self::Lt => Some(if x < y { 1.0 } else { 0.0 }),
-            Self::Le => Some(if x <= y { 1.0 } else { 0.0 }),
+            Self::Lt => Some(Self::mask(x < y)),
+            Self::Le => Some(Self::mask(x <= y)),
             // Gt/Ge are x86's UNORDERED predicates (imm8 6 = NLE_US, 5 =
             // NLT_US), so unlike Lt/Le they are TRUE when either operand is
             // NaN. ARM's FCMGT/FCMGE are ordered and give FALSE — see
             // `fold_is_platform_specific`.
-            Self::Gt => Some(if x <= y { 0.0 } else { 1.0 }),
-            Self::Ge => Some(if x < y { 0.0 } else { 1.0 }),
+            // Spelled as the ordered comparison plus the unordered case rather
+            // than as `!(x <= y)`: same answer, but it says which part is the
+            // NaN behavior instead of hiding it inside a negation.
+            Self::Gt => Some(Self::mask(x > y || x.is_nan() || y.is_nan())),
+            Self::Ge => Some(Self::mask(x >= y || x.is_nan() || y.is_nan())),
             // Exact, as every emitter compares. The old `(x-y).abs() < EPSILON`
             // made the folder disagree with the JIT for ordinary finite values:
             // 0.5 and its next representable neighbour differ by less than
             // EPSILON, so folding said "equal" where the hardware says "not".
             // NaN is false here and in `cmpps`/`FCMEQ` alike.
-            Self::Eq => Some(if x == y { 1.0 } else { 0.0 }),
+            Self::Eq => Some(Self::mask(x == y)),
             // Exact, and true for NaN — matching `NEQ_UQ` and an inverted
             // `FCMEQ`. Same epsilon bug as `Eq` above.
-            Self::Ne => Some(if x == y { 0.0 } else { 1.0 }),
+            Self::Ne => Some(Self::mask(x != y)),
             // Integer-domain binaries on lane bit patterns. The shift count is
             // the RHS `Const`'s numeric value (the schedule reads it as
             // `*v as u32 as u8`), and both shifts are logical — `vpslld` /
@@ -689,8 +764,18 @@ impl OpKind {
     #[must_use]
     pub fn eval_ternary(self, x: f32, y: f32, z: f32) -> Option<f32> {
         match self {
+            // Two roundings, which is what a target without FMA emits (SSE2:
+            // `mulps` then `addps`). AVX2+FMA, AVX-512 and aarch64 all round
+            // once (`vfmadd`, `FMLA`), so the answers differ by target and
+            // `fold_is_platform_specific` declines exactly where they do.
             Self::MulAdd => Some(x * y + z),
-            Self::Select => Some(if x != 0.0 { y } else { z }),
+            // The bitwise blend every backend emits — `andps`/`andnps`/`orps`
+            // on SSE2 and AVX2, one `vpternlogd 0xCA` on AVX-512, `BSL` on
+            // aarch64. Spelling it `if x != 0.0` would be right only for a
+            // canonical [`Self::mask`] and silently wrong for anything else.
+            Self::Select => Some(f32::from_bits(
+                (x.to_bits() & y.to_bits()) | (!x.to_bits() & z.to_bits()),
+            )),
             _ => None,
         }
     }

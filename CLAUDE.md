@@ -41,7 +41,18 @@ Behavior every target agrees on, pinned by
 |---|---|
 | `Lt`, `Le` | ordered — false for NaN |
 | `Eq`, `Ne` | **exact** comparison; NaN never equal, always unequal |
+| every comparison's *result* | an **all-ones** lane for true, all-zero for false — a mask, never `1.0` |
 | `exp`, `exp2` | saturate past ±126 exponents rather than overflowing to `inf` |
+
+A mask is a bit pattern, not a number, and that is a load-bearing distinction:
+`Select` is a bitwise blend on every backend (`andps`/`andnps`/`orps`,
+`vpternlogd 0xCA`, `BSL`) and `BitAnd`/`BitOr` are literal bitwise ops. Spell a
+true mask `1.0` and `mask & 1.0` is `0x3f800000`, which blends `7.0` against
+`9.0` into `4.5` — a value neither branch held. `OpKind::mask(bool)` is the only
+constructor, `OpKind::is_bitwise_domain()` marks the ops whose results are
+patterns, and the folder's "refuse non-finite results" guard exempts them —
+otherwise an all-ones mask reads as NaN and comparison folding switches itself
+off while looking like a safety check.
 
 Behavior that differs by target, because the instructions do:
 
@@ -52,6 +63,16 @@ Behavior that differs by target, because the instructions do:
 | `Gt`, `Ge` (NaN operand) | unordered (imm8 6/5) — **true** | `FCMGT`/`FCMGE` ordered — **false** | ordered — **false** |
 | `Round` (exact tie) | nearest-**even** (imm 0x00) → `round(2.5) == 2` | `FRINTA` ties-**away** → `3` | `(x+0.5).floor()` → `3` |
 | `Round` (`-0.5 ≤ x ≤ -0.0`) | `-0.0` (sign preserved) | `-0.0` | `+0.0` |
+| `Recip`, `Rsqrt` | `rcpps` ~12 bits; `vrcp14ps` ~14 | `FRECPE` + one `FRECPS` step | estimate + NR |
+| `MulAdd` | **one** rounding with `+fma`, **two** without (`mulps`+`addps`) | one (`FMLA`) | one |
+
+The last two rows are the reminder that "target" is finer than "architecture":
+`Recip` and `MulAdd` differ between *ISA levels of the same machine*, which is
+what `cargo xtask isa-matrix` exists to keep honest. `Recip`/`Rsqrt` are
+estimates — only ever guaranteed close, never equal — so no argument to them is
+ever foldable; `MulAdd` is value-aware, since one rounding and two agree on most
+inputs (`mul_add(1.0000001, 4097.0, 4097.0)` is one of the inputs where they
+don't).
 
 Unifying any row costs instructions — x86 has no ties-away rounding mode, and
 NaN or signed-zero blending is a compare plus a select — so none of them are

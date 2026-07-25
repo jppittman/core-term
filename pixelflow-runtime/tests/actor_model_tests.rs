@@ -180,8 +180,39 @@ impl Actor<(), (), ()> for ParkTrackingActor {
 // so the actor was already draining and could legitimately process an early
 // data message before a control message had even been sent. They passed by
 // timing luck and failed under load — one of them broke a CI run, which is how
-// they were found. What IS guaranteed, and is still tested below: FIFO within a
-// single lane, delivery of every message, and no starvation of a lower lane.
+// they were found. What IS guaranteed, and is still tested below: the drain
+// order of messages that ARE simultaneously pending, FIFO within a single lane,
+// delivery of every message, and no starvation of a lower lane.
+
+/// The guarantee the deleted tests were reaching for, stated so it can actually
+/// hold: among messages **already pending**, a drain pass takes Control, then
+/// Management, then Data.
+///
+/// No consumer thread — `poll_once` drains on this thread, so all three messages
+/// are provably enqueued before the actor sees any of them. Sending in reverse
+/// priority order means FIFO across lanes would produce exactly the opposite
+/// log, so the assertion has something to fail on.
+#[test]
+fn pending_messages_drain_in_priority_order() {
+    let (tx, mut rx) = ActorScheduler::new(10, 100);
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut actor = OrderingActor { log: log.clone() };
+
+    tx.send(Message::Data("d".to_string())).unwrap();
+    tx.send(Message::Management("m".to_string())).unwrap();
+    tx.send(Message::Control("c".to_string())).unwrap();
+
+    // Keep polling until every message has been handled; the drain may batch.
+    while log.lock().unwrap().len() < 3 {
+        assert!(
+            rx.poll_once(&mut actor).is_none(),
+            "the scheduler exited before draining the three pending messages"
+        );
+    }
+
+    let order: Vec<String> = log.lock().unwrap().iter().map(|(s, _)| s.clone()).collect();
+    assert_eq!(order, vec!["C:c", "M:m", "D:d"]);
+}
 
 #[test]
 fn fifo_ordering_within_same_lane() {
