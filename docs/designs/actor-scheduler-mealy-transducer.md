@@ -486,6 +486,16 @@ of attention across lanes is preserved, the *granularity* is not.
 A continuation always resumes on the data lane — it is more work, not a control or management
 signal — and still bypasses the lane cycle entirely, exactly as before.
 
+**A bug the unit tests missed, that a benchmark caught.** A slot that finished a `poll()` sitting
+exactly at its budget limit used to advance lazily — only when the *next* call found it still
+there. With small limits and idle other lanes, that costs the wraparound its one spare
+iteration, and a message could sit queued while `poll()` reported `Idle`. The existing tests
+used small message counts and never wrapped a full cycle within them; `bench_priority.rs`'s
+drain-to-completion loop did, immediately. Fixed by `Node::advance_if_exhausted`: roll over the
+instant the budget is spent, not on the next call's discovery of it. See
+`docs/results/2026-07-24-mealy-vs-actor.md` for the full account and the regression test added
+alongside it.
+
 ---
 
 ## 10. Open questions

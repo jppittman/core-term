@@ -415,7 +415,11 @@ where
 
         // One full lap visits Control1, Management, Control2, and Data exactly once,
         // regardless of which slot the cycle happens to be sitting on when this call starts —
-        // Slot::next() is a 4-cycle, so four steps always covers all four positions.
+        // Slot::next() is a 4-cycle, so four steps always covers all four positions. This
+        // relies on `advance_if_exhausted` never leaving `self.slot` pointing at an
+        // already-spent slot between calls; without it, the first iteration of the *next*
+        // call would be spent discovering that instead of checking a lane, and one of the
+        // four real positions would go unchecked.
         let mut control_disconnected = false;
         let mut management_disconnected = false;
         let mut data_disconnected = false;
@@ -437,6 +441,7 @@ where
                 Slot::Control1 | Slot::Control2 => match self.control.take() {
                     Ok(msg) => {
                         self.slot_progress += 1;
+                        self.advance_if_exhausted(limit);
                         return self.dispatch(|actor| actor.step_control(msg));
                     }
                     Err(TryRecvError::Empty) => {
@@ -452,6 +457,7 @@ where
                 Slot::Management => match self.management.take() {
                     Ok(msg) => {
                         self.slot_progress += 1;
+                        self.advance_if_exhausted(limit);
                         return self.dispatch(|actor| actor.step_management(msg));
                     }
                     Err(TryRecvError::Empty) => {
@@ -467,6 +473,7 @@ where
                 Slot::Data => match self.data.take() {
                     Ok(msg) => {
                         self.slot_progress += 1;
+                        self.advance_if_exhausted(limit);
                         return self.dispatch(|actor| actor.step_data(msg));
                     }
                     Err(TryRecvError::Empty) => {
@@ -486,6 +493,22 @@ where
             Step::Halted(Exit::Completed)
         } else {
             Step::Idle
+        }
+    }
+
+    /// Roll over to the next slot the instant the current one's budget is spent.
+    ///
+    /// Load-bearing for the loop in `poll`: it visits at most 4 slots per call on the
+    /// assumption that whichever slot `self.slot` names when a call *begins* still has room
+    /// (so checking it costs one iteration, not one to discover it's exhausted and a second
+    /// to actually check the slot after it). A successful take is the only place progress
+    /// grows, so it is the only place this can be left undone — advancing lazily, only when
+    /// the *next* call finds the old slot still sitting at its limit, costs the extra
+    /// iteration that visiting all 4 slots doesn't have room for.
+    fn advance_if_exhausted(&mut self, limit: usize) {
+        if self.slot_progress >= limit {
+            self.slot = self.slot.next();
+            self.slot_progress = 0;
         }
     }
 
@@ -1536,6 +1559,56 @@ mod tests {
 
         drop(tx_d);
         assert_eq!(node.poll(), Step::Halted(Exit::Completed));
+    }
+
+    // Regression: a slot that finishes a poll() sitting exactly at its limit (e.g. Data,
+    // after delivering the one message its budget allowed) used to advance lazily — only
+    // when the *next* call found it still there. With small limits and idle control/
+    // management lanes, that costs the wraparound its one spare iteration: the call that
+    // should re-check Data instead spends its four iterations on Control1 (advance off the
+    // exhausted slot), Management, Control2, and lands back on a *fresh* Data one iteration
+    // too late to actually check it — reporting Idle with a message still queued. Caught by
+    // `bench_priority.rs`'s drain loop, which (unlike the small fixed poll counts above)
+    // keeps calling `poll` until every message is gone and so was long enough to wrap.
+    #[test]
+    fn many_data_messages_drain_steadily_with_idle_control_and_management() {
+        let params = SchedulerParams {
+            control_mgmt_buffer_size: 1,
+            control_burst_multiplier: 2,
+            management_burst_multiplier: 1,
+            default_data_burst_limit: 1,
+            ..SchedulerParams::DEFAULT
+        };
+
+        let (_tx_c, rx_c) = spsc_channel::<()>(4);
+        let (_tx_m, rx_m) = spsc_channel::<()>(4);
+        let (tx_d, rx_d) = spsc_channel::<()>(64);
+
+        let mut node = Node::new_with_lanes(
+            LaneLog { seen: Vec::new() },
+            Lanes {
+                control: rx_c,
+                management: rx_m,
+                data: rx_d,
+            },
+            NoWiring,
+            params,
+        );
+
+        const MESSAGES: usize = 50;
+        for _ in 0..MESSAGES {
+            tx_d.try_send(()).unwrap();
+        }
+
+        for i in 0..MESSAGES {
+            assert_eq!(
+                node.poll(),
+                Step::Ran,
+                "message {i} of {MESSAGES}: control/management are merely empty, not \
+                 disconnected, so this must never report Idle with data still queued"
+            );
+        }
+        assert_eq!(node.actor().seen.len(), MESSAGES);
     }
 
     // ── Topology: cycles are a bootstrap error, not a runtime deadlock ──────
