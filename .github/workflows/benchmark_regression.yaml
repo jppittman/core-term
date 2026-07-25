@@ -12,6 +12,10 @@ permissions:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    # Full workspace benchmarks are intentionally long, but PR-controlled
+    # benchmark code must not hold a hosted runner for GitHub's multi-hour
+    # default when it deadlocks.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,6 +50,7 @@ jobs:
           name: benchmark-results-${{ github.sha }}
           path: benchmark_results/output.txt
           if-no-files-found: error
+          overwrite: true
 
       - name: Check for existing benchmark baseline
         if: github.event_name == 'pull_request'
