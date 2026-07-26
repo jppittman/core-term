@@ -4,11 +4,16 @@
 //! targets the full `zmm0..zmm31` register file via EVEX, so it can also use the
 //! extended registers (`zmm16..31`) that VEX cannot reach.
 //!
-//! Scope (Stage 1): arithmetic, FMA, sqrt/recip/rsqrt, min/max, bitwise, and
-//! constant broadcast — enough for the arithmetic core of a kernel. Comparison
-//! masks / select (the k-register class) and the transcendental polynomials are
-//! separate stages; the backend rejects those up front so nothing here is
-//! reached for an unsupported op.
+//! Scope (Stage 1): arithmetic, FMA, sqrt/recip/rsqrt, min/max, bitwise,
+//! comparisons, select, and constant broadcast — covers everything
+//! `Select`/`Clamp`/glyph coverage kernels need. Comparisons go through the
+//! k-register class (`vcmpps` -> `vpmovm2d`, see `emit_compare` below) so
+//! every downstream consumer still sees an ordinary all-ones/all-zeros
+//! vector, exactly like every other backend — the allocator never learns
+//! k-registers exist. The transcendental polynomials and the integer
+//! bit-shift lowering exp/log needs (`ShiftImm`) are still separate stages;
+//! the backend rejects those up front so nothing here is reached for an
+//! unsupported op.
 //!
 //! Spills use a real stack frame (a `zmm` is 64 bytes — far past the 128-byte
 //! red zone the SSE2 path relies on).
@@ -174,6 +179,52 @@ fn vrndscaleps(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
     evex_rrr_imm(c, Map::M0F3A, Pp::P66, false, 0x08, d, UNUSED_VVVV, s, imm);
 }
 
+/// vrcp14ps zmmD, zmmS — EVEX.512.66.0F38.W0 4C /r ; vvvv unused. AVX-512F's
+/// replacement for AVX's `vrcpps` (EVEX has no `0F 53` form); ~2^-14 relative
+/// error, matching `Recip`'s existing "approximate reciprocal" contract on
+/// every other backend (SSE2's `rcpps`, AVX2's `vrcpps`).
+fn vrcp14ps(c: &mut Vec<u8>, d: u8, s: u8) {
+    evex_rrr(c, Map::M0F38, Pp::P66, false, 0x4C, d, UNUSED_VVVV, s);
+}
+
+/// vrsqrt14ps zmmD, zmmS — EVEX.512.66.0F38.W0 4E /r ; vvvv unused.
+/// AVX-512F's replacement for AVX's `vrsqrtps`, same accuracy tier as
+/// `vrcp14ps` above.
+fn vrsqrt14ps(c: &mut Vec<u8>, d: u8, s: u8) {
+    evex_rrr(c, Map::M0F38, Pp::P66, false, 0x4E, d, UNUSED_VVVV, s);
+}
+
+// --- integer-domain primitives (exp/log lowering) ---
+// Same opcodes as the AVX2 backend's VEX forms, EVEX-wrapped at 512 bits.
+
+/// vcvttps2dq zmmD, zmmS — EVEX.512.F3.0F.W0 5B /r ; vvvv unused.
+fn vcvttps2dq(c: &mut Vec<u8>, d: u8, s: u8) {
+    evex_rrr(c, Map::M0F, Pp::F3, false, 0x5B, d, UNUSED_VVVV, s);
+}
+
+/// vcvtdq2ps zmmD, zmmS — EVEX.512.0F.W0 5B /r ; vvvv unused.
+fn vcvtdq2ps(c: &mut Vec<u8>, d: u8, s: u8) {
+    evex_rrr(c, Map::M0F, Pp::None, false, 0x5B, d, UNUSED_VVVV, s);
+}
+
+/// vpaddd zmmD, zmmS1, zmmS2 — EVEX.512.66.0F.W0 FE /r.
+fn vpaddd(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
+    evex_rrr(c, Map::M0F, Pp::P66, false, 0xFE, d, s1, s2);
+}
+
+/// vpslld zmmD, zmmS, imm8 — EVEX.512.66.0F.W0 72 /6 ib. The shift-by-imm
+/// group encodes the operation in ModRM.reg (/6 = left) and the DESTINATION
+/// in vvvv, with the source in r/m — reg/vvvv swap roles vs. ordinary rrr.
+fn vpslld_imm(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
+    evex_rrr_imm(c, Map::M0F, Pp::P66, false, 0x72, 6, d, s, imm);
+}
+
+/// vpsrld zmmD, zmmS, imm8 — EVEX.512.66.0F.W0 72 /2 ib (logical, zero-fill).
+fn vpsrld_imm(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
+    evex_rrr_imm(c, Map::M0F, Pp::P66, false, 0x72, 2, d, s, imm);
+}
+
+
 // --- FMA (0F38, 66 prefix, W0). 213: dst = src1*dst + src2. ---
 fn vfmadd213ps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
     evex_rrr(c, Map::M0F38, Pp::P66, false, 0xA8, d, s1, s2);
@@ -292,6 +343,10 @@ pub fn emit_binary(
         OpKind::Div => vdivps(code, d, s1, s2),
         OpKind::Min => vminps(code, d, s1, s2),
         OpKind::Max => vmaxps(code, d, s1, s2),
+        OpKind::BitAnd => vandps(code, d, s1, s2),
+        OpKind::BitOr => vorps(code, d, s1, s2),
+        // Integer add on lane bit patterns (exp/log exponent arithmetic).
+        OpKind::IAdd => vpaddd(code, d, s1, s2),
         _ => return Err("avx512: binary op not in Stage-1 subset"),
     }
     Ok(())
@@ -434,6 +489,24 @@ pub fn emit_mask_flags(code: &mut Vec<u8>, mask: Reg) {
 }
 
 /// Emit `dst = op(src)` for a unary op (Stage-1 subset).
+/// Emit `dst = src << amount` / `dst = src >> amount` (logical, zero-fill)
+/// on lane bit patterns. The amount is a compile-time immediate — the
+/// schedule folds the `Const` RHS out (`ScheduledOp::ShiftImm`).
+pub fn emit_shift_imm(
+    code: &mut Vec<u8>,
+    op: OpKind,
+    dst: Reg,
+    src: Reg,
+    amount: u8,
+) -> Result<(), &'static str> {
+    match op {
+        OpKind::Shl => vpslld_imm(code, dst.0, src.0, amount),
+        OpKind::Shr => vpsrld_imm(code, dst.0, src.0, amount),
+        _ => return Err("avx512: emit_shift_imm requires Shl or Shr"),
+    }
+    Ok(())
+}
+
 pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) -> Result<(), &'static str> {
     match op {
         OpKind::Sqrt => vsqrtps(code, dst.0, src.0),
@@ -455,6 +528,12 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) -> Result<
         OpKind::Floor => vrndscaleps(code, dst.0, src.0, 0x01),
         OpKind::Ceil => vrndscaleps(code, dst.0, src.0, 0x02),
         OpKind::Round => vrndscaleps(code, dst.0, src.0, 0x00),
+        OpKind::Recip => vrcp14ps(code, dst.0, src.0),
+        OpKind::Rsqrt => vrsqrt14ps(code, dst.0, src.0),
+        // Int/float domain crossings, exactly the hardware's cvttps2dq /
+        // cvtdq2ps — the primitives exp/log lower to.
+        OpKind::TruncToInt => vcvttps2dq(code, dst.0, src.0),
+        OpKind::IntToFloat => vcvtdq2ps(code, dst.0, src.0),
         _ => return Err("avx512: unary op not in Stage-1 subset"),
     }
     Ok(())
@@ -631,6 +710,9 @@ mod tests {
         use crate::backend::emit::executable::ExecutableCode;
         use core::arch::x86_64::*;
 
+        // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
+        // not-FFI-safe is a false positive here, as for `executable`'s aliases.
+        #[allow(improper_ctypes_definitions)]
         type K = unsafe extern "C" fn(__m512, __m512, __m512, __m512) -> __m512;
 
         fn run(body: &[u8], xs: [f32; 16], ys: [f32; 16], zs: [f32; 16]) -> [f32; 16] {
@@ -679,10 +761,13 @@ mod tests {
         const Y: Reg = Reg(1);
         const Z: Reg = Reg(2);
 
+        /// One row of the binary-op table: the op and its scalar reference.
+        type BinaryCase = (OpKind, fn(f32, f32) -> f32);
+
         #[test]
         fn binary_ops() {
             let (xs, ys, zs) = lanes();
-            let cases: &[(OpKind, fn(f32, f32) -> f32)] = &[
+            let cases: &[BinaryCase] = &[
                 (OpKind::Add, |a, b| a + b),
                 (OpKind::Sub, |a, b| a - b),
                 (OpKind::Mul, |a, b| a * b),
@@ -750,6 +835,9 @@ mod tests {
             // JIT a function: fn(*const f32 base [rdi], __m512 idx_float [zmm0]) -> __m512
             // that truncates the float indices, sets the mask, and gathers
             // base[idx] per lane. Validates the VSIB vgatherdps bytes on hardware.
+            // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
+            // not-FFI-safe is a false positive here, as for `executable`'s aliases.
+            #[allow(improper_ctypes_definitions)]
             type G = unsafe extern "C" fn(*const f32, __m512) -> __m512;
 
             let mut c = Vec::new();

@@ -609,6 +609,105 @@ pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount
     }
 }
 
+// =============================================================================
+// Instruction selection: OpKind -> a closed set of binary-op mnemonics
+// =============================================================================
+//
+// This used to be one flat `match OpKind { Add => emit_addps(...), ...,
+// _ => panic!() }`: "which ops exist" and "how do I encode this op" were the
+// same match, so a missing arm only showed up as a runtime panic on whatever
+// input happened to exercise it — exactly how AVX-512's binary-op match sat
+// at 6-of-15 ops for a release (see avx512.rs `emit_binary`, and
+// docs/designs/2026-07-25-two-level-ir-and-backend-completeness.md).
+// Splitting selection from encoding makes "does this backend support op Y"
+// a question with one authoritative answer, not an emergent property of a
+// match arm nobody re-checked:
+//
+//   1. **Selection** (`X86BinaryInsn::select`): OpKind -> Option<X86BinaryInsn>.
+//      Still partial over the full `OpKind` (most of its variants are unary,
+//      ternary, or eliminated by `lowering` before they ever reach a backend
+//      — see `lowering.rs`), so this keeps a `_ => None`. But every op this
+//      backend claims to encode is named exactly once, here, as data — a
+//      completeness test enumerates against this function directly instead
+//      of poking the flat dispatch and hoping to hit every case.
+//   2. **Encoding** (`X86BinaryInsn::encode`): X86BinaryInsn -> bytes. This
+//      match has NO wildcard: it is exhaustive over the closed mnemonic
+//      enum, so adding a variant without teaching `encode` how to emit it is
+//      a compile error, not a silently-missing arm.
+//
+// An instruction is a value, not a function call: constructing
+// `X86BinaryInsn::AddPs` and encoding it are two separate steps, so
+// selection (which op maps to which mnemonic) is testable independently of
+// encoding (which mnemonic maps to which bytes).
+
+/// A binary SSE mnemonic this backend knows how to encode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum X86BinaryInsn {
+    AddPs,
+    SubPs,
+    MulPs,
+    DivPs,
+    MinPs,
+    MaxPs,
+    /// `vcmpps` ordered predicate immediate (`CMP_EQ`/`CMP_LT`/...).
+    CmpPs(u8),
+    /// Packed i32 lane add (`IAdd`).
+    PAddD,
+    AndPs,
+    OrPs,
+}
+
+impl X86BinaryInsn {
+    /// Select the mnemonic for `op`, or `None` if this backend has no binary
+    /// encoding for it. `None` covers every non-binary `OpKind` (unary,
+    /// ternary, structural) as well as ops eliminated by `lowering` before
+    /// scheduling (transcendentals, `Dwrt`, `Reduce`, `Gather`) — none of
+    /// those can reach `emit_binary` from a correctly-lowered arena, so
+    /// `None` reaching a caller is an upstream invariant violation, not a
+    /// missing feature.
+    pub(crate) const fn select(op: OpKind) -> Option<Self> {
+        match op {
+            OpKind::Add => Some(Self::AddPs),
+            OpKind::Sub => Some(Self::SubPs),
+            OpKind::Mul => Some(Self::MulPs),
+            OpKind::Div => Some(Self::DivPs),
+            OpKind::Min => Some(Self::MinPs),
+            OpKind::Max => Some(Self::MaxPs),
+            OpKind::Eq => Some(Self::CmpPs(CMP_EQ)),
+            OpKind::Ne => Some(Self::CmpPs(CMP_NEQ)),
+            OpKind::Lt => Some(Self::CmpPs(CMP_LT)),
+            OpKind::Le => Some(Self::CmpPs(CMP_LE)),
+            OpKind::Gt => Some(Self::CmpPs(CMP_NLE)),
+            OpKind::Ge => Some(Self::CmpPs(CMP_GE)),
+            OpKind::IAdd => Some(Self::PAddD),
+            OpKind::BitAnd => Some(Self::AndPs),
+            OpKind::BitOr => Some(Self::OrPs),
+            _ => None,
+        }
+    }
+
+    /// Encode `dst = dst <mnemonic> src2` (the two-operand SSE setup —
+    /// `dst` already holding `src1` — runs in the caller, `emit_binary`).
+    /// Exhaustive over the closed `X86BinaryInsn` set: no wildcard arm.
+    fn encode(self, code: &mut Vec<u8>, dst: Reg, src2: Reg) {
+        match self {
+            Self::AddPs => emit_addps(code, dst, src2),
+            Self::SubPs => emit_subps(code, dst, src2),
+            Self::MulPs => emit_mulps(code, dst, src2),
+            Self::DivPs => emit_divps(code, dst, src2),
+            Self::MinPs => emit_minps(code, dst, src2),
+            Self::MaxPs => emit_maxps(code, dst, src2),
+            // Comparisons -> all-ones / all-zeros mask (ordered predicates).
+            Self::CmpPs(pred) => emit_cmp_tail(code, dst, src2, pred),
+            // Bit-manip primitives: the VEX 3-operand encoders take `dst` as
+            // the vvvv source, so this is in-place (dst already holds src1).
+            Self::PAddD => emit_vpaddd(code, dst, dst, src2),
+            Self::AndPs => emit_vandps(code, dst, dst, src2),
+            Self::OrPs => emit_vorps(code, dst, dst, src2),
+        }
+    }
+}
+
 /// Emit binary operation
 pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Reg) {
     // SSE is 2-operand, so we may need to move first
@@ -616,30 +715,9 @@ pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Re
         emit_sse_rr(code, None, &[0x0F, 0x28], dst, src1); // MOVAPS dst, src1
     }
 
-    match op {
-        OpKind::Add => emit_addps(code, dst, src2),
-        OpKind::Sub => emit_subps(code, dst, src2),
-        OpKind::Mul => emit_mulps(code, dst, src2),
-        OpKind::Div => emit_divps(code, dst, src2),
-        OpKind::Min => emit_minps(code, dst, src2),
-        OpKind::Max => emit_maxps(code, dst, src2),
-
-        // Comparisons → all-ones / all-zeros mask (ordered predicates).
-        // `dst` already holds src1 (moved above), so compare in place.
-        OpKind::Eq => emit_cmp_tail(code, dst, src2, CMP_EQ),
-        OpKind::Ne => emit_cmp_tail(code, dst, src2, CMP_NEQ),
-        OpKind::Lt => emit_cmp_tail(code, dst, src2, CMP_LT),
-        OpKind::Le => emit_cmp_tail(code, dst, src2, CMP_LE),
-        OpKind::Gt => emit_cmp_tail(code, dst, src2, CMP_NLE),
-        OpKind::Ge => emit_cmp_tail(code, dst, src2, CMP_GE),
-
-        // Bit-manip primitives. `dst` already holds src1 (moved above); the VEX
-        // 3-operand encoders take it as the vvvv source so this is in-place.
-        OpKind::IAdd => emit_vpaddd(code, dst, dst, src2),
-        OpKind::BitAnd => emit_vandps(code, dst, dst, src2),
-        OpKind::BitOr => emit_vorps(code, dst, dst, src2),
-
-        _ => panic!("x86_64 binary emit not implemented for {:?}", op),
+    match X86BinaryInsn::select(op) {
+        Some(insn) => insn.encode(code, dst, src2),
+        None => panic!("x86_64 binary emit not implemented for {:?}", op),
     }
 }
 
@@ -743,4 +821,32 @@ pub fn emit_test_eax(code: &mut Vec<u8>) {
 /// CMP eax, imm8 (sign-extended).
 pub fn emit_cmp_eax_imm8(code: &mut Vec<u8>, imm: u8) {
     code.extend_from_slice(&[0x83, 0xF8, imm]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `X86BinaryInsn::select` is `emit_binary`'s completeness contract made
+    /// checkable: every op `pixelflow_ir::backend::emit::coverage::
+    /// REQUIRED_BINARY_OPS` lists must select `Some`, or this backend would
+    /// panic the moment the scheduler handed it that op. Cheaper and more
+    /// precise than the emit-and-catch-panic sweep in `emit/mod.rs`'s
+    /// `backend_op_coverage` tests, because it checks the *selection* step
+    /// directly instead of inferring "not supported" from a caught panic.
+    #[test]
+    fn selects_every_required_binary_op() {
+        use crate::backend::emit::coverage::REQUIRED_BINARY_OPS;
+
+        let unselected: alloc::vec::Vec<OpKind> = REQUIRED_BINARY_OPS
+            .iter()
+            .copied()
+            .filter(|&op| X86BinaryInsn::select(op).is_none())
+            .collect();
+
+        assert!(
+            unselected.is_empty(),
+            "X86BinaryInsn::select has no mnemonic for: {unselected:?}"
+        );
+    }
 }

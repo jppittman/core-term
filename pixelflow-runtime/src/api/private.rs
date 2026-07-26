@@ -55,7 +55,12 @@ pub enum EngineData {
         target_timestamp: std::time::Instant,
         refresh_interval: std::time::Duration,
     },
-    PresentComplete(Window),
+    /// The driver granted the window buffer in answer to a `DisplayMgmt::RequestWindow`.
+    ///
+    /// Replaces `PresentComplete`. The driver is the buffer's resting owner now, so `Present`
+    /// *is* the return and there is nothing to acknowledge; what remains is the outbound half —
+    /// the driver handing the buffer out to be drawn into.
+    WindowGranted(Window),
     /// Render complete - carries the cooked frame, timing, and the window metadata that
     /// travelled out with the request, from which the `Window` is reassembled.
     RenderComplete(RenderResponse<PlatformPixel, WindowMeta>),
@@ -76,8 +81,8 @@ impl std::fmt::Debug for EngineData {
                 .field("target_timestamp", target_timestamp)
                 .field("refresh_interval", refresh_interval)
                 .finish(),
-            Self::PresentComplete(window) => {
-                f.debug_tuple("PresentComplete").field(window).finish()
+            Self::WindowGranted(window) => {
+                f.debug_tuple("WindowGranted").field(window).finish()
             }
             Self::RenderComplete(response) => f
                 .debug_struct("RenderComplete")

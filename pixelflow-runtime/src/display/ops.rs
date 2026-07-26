@@ -1,17 +1,20 @@
 use super::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Window};
 use actor_scheduler::{ActorStatus, HandlerError, HandlerResult, SystemStatus};
 
-/// One thing the driver emits toward the engine.
+/// One thing a [`PlatformOps`] step produced.
 ///
-/// These are exactly the two `driver → engine` edges in the target topology
-/// (`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §3): the blocking input and
-/// window-lifecycle event stream, and the window return that closes the `Present` loop.
+/// Not all of these leave the driver. `Event` is the blocking `driver → engine` edge in the
+/// target topology; `Blitted` goes no further than `PlatformActor`, which puts the buffer back
+/// at rest. There is no window *return* message any more: under the pull protocol the driver is
+/// the buffer's resting owner, so `Present` **is** the return (§8 of
+/// `docs/designs/pixelflow-runtime-engine-mesh-migration.md`).
 #[derive(Debug)]
 pub enum DriverEmit {
     /// An input or window-lifecycle event.
     Event(DisplayEvent),
-    /// A window handed back after presentation, for reuse by the next frame.
-    PresentComplete(Window),
+    /// The buffer, after its pixels reached the screen. Handed back to the driver's keeper, not
+    /// sent anywhere.
+    Blitted(Window),
 }
 
 /// Output word for a [`PlatformOps`] step.
@@ -34,9 +37,9 @@ impl DriverOut {
         self.emits.push(DriverEmit::Event(event));
     }
 
-    /// Queue a window return.
-    pub fn present_complete(&mut self, window: Window) {
-        self.emits.push(DriverEmit::PresentComplete(window));
+    /// Hand the buffer back after blitting it.
+    pub fn blitted(&mut self, window: Window) {
+        self.emits.push(DriverEmit::Blitted(window));
     }
 }
 

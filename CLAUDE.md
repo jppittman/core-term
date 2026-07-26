@@ -19,6 +19,89 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Minimal public API** - Do NOT change visibility of internal APIs without explicit permission. Keep `pub(crate)` and private items encapsulated. Use Manifold composition instead of exposing internals.
 - **Subtract before you add.** The good version of a primitive is reached by removing machinery, not stacking it. If a type's signature already refuses the wrong shape, you don't need a macro, a lint, or a doc to forbid it — the opinion lives in the types. Reach for a new dependency or a new abstraction only after subtraction has failed.
 
+### Floating point at the edges
+
+**Rust already ships reasonably fast IEEE-754 arithmetic.** `f32::min`,
+`f32::round`, ordered comparisons — correct, conformant, and quick enough for
+almost everything. Reaching for pixelflow *is* the decision that "almost
+everything" excludes you: the library exists because conformant-and-quick was
+judged inadequate on performance grounds. So the trade is made deliberately and
+in one direction — **the language gives you the instruction.** Edge-case IEEE
+conformance is not on offer, and code that needs it should compute that part in
+scalar `f32` where it is already available and already fast.
+
+That is the whole contract. The tables below are reference material for what the
+instructions do, not a list of defects, and nothing here should be "fixed" by
+spending hot-path instructions to match scalar Rust.
+
+Behavior every target agrees on, pinned by
+`pixelflow-ir/tests/transcendental_jit.rs`:
+
+| Op | Behavior |
+|---|---|
+| `Lt`, `Le` | ordered — false for NaN |
+| `Eq`, `Ne` | **exact** comparison; NaN never equal, always unequal |
+| every comparison's *result* | an **all-ones** lane for true, all-zero for false — a mask, never `1.0` |
+| `exp`, `exp2` | saturate past ±126 exponents rather than overflowing to `inf` |
+
+A mask is a bit pattern, not a number, and that is a load-bearing distinction:
+`Select` is a bitwise blend on every backend (`andps`/`andnps`/`orps`,
+`vpternlogd 0xCA`, `BSL`) and `BitAnd`/`BitOr` are literal bitwise ops. Spell a
+true mask `1.0` and `mask & 1.0` is `0x3f800000`, which blends `7.0` against
+`9.0` into `4.5` — a value neither branch held. `OpKind::mask(bool)` is the only
+constructor, `OpKind::is_bitwise_domain()` marks the ops whose results are
+patterns, and the folder's "refuse non-finite results" guard exempts them —
+otherwise an all-ones mask reads as NaN and comparison folding switches itself
+off while looking like a safety check.
+
+Behavior that differs by target, because the instructions do:
+
+| Op | x86 | aarch64 | combinator tier |
+|---|---|---|---|
+| `Min`, `Max` (NaN operand) | `(a OP b) ? a : b` → the **second** operand | `FMIN`/`FMAX` **propagate** NaN | — |
+| `Min`, `Max` (opposite-signed zeros) | operand order → the **second** zero | `FMIN` picks `-0.0`, `FMAX` picks `+0.0` | — |
+| `Gt`, `Ge` (NaN operand) | unordered (imm8 6/5) — **true** | `FCMGT`/`FCMGE` ordered — **false** | ordered — **false** |
+| `Round` (exact tie) | nearest-**even** (imm 0x00) → `round(2.5) == 2` | `FRINTA` ties-**away** → `3` | `(x+0.5).floor()` → `3` |
+| `Round` (`-0.5 ≤ x ≤ -0.0`) | `-0.0` (sign preserved) | `-0.0` | `+0.0` |
+| `Recip`, `Rsqrt` | `rcpps` ~12 bits; `vrcp14ps` ~14 | `FRECPE` + one `FRECPS` step | estimate + NR |
+| `MulAdd` | **one** rounding with `+fma`, **two** without (`mulps`+`addps`) | one (`FMLA`) | one |
+
+The last two rows are the reminder that "target" is finer than "architecture":
+`Recip` and `MulAdd` differ between *ISA levels of the same machine*, which is
+what `cargo xtask isa-matrix` exists to keep honest. `Recip`/`Rsqrt` are
+estimates — only ever guaranteed close, never equal — so no argument to them is
+ever foldable; `MulAdd` is value-aware, since one rounding and two agree on most
+inputs (`mul_add(1.0000001, 4097.0, 4097.0)` is one of the inputs where they
+don't).
+
+Unifying any row costs instructions — x86 has no ties-away rounding mode, and
+NaN or signed-zero blending is a compare plus a select — so none of them are
+unified. Portable code should not depend on a single row's answer;
+`OpKind::fold_is_platform_specific(args)` marks them, and is value-aware because
+the divergence is: `min(1.0, 2.0)` is perfectly foldable, `min(-0.0, 0.0)` is
+not. Note `==` cannot see the signed-zero case (`-0.0 == 0.0`), so compare bit
+patterns — `1.0 / x` turns it into `+inf` versus `-inf`.
+
+**The one thing this does not license: folding on the wrong machine.** Constant
+folding runs on the *build host* at macro-expansion time while the constant
+executes on the *target*, so folding a row from the second table bakes the build
+machine's answer into a binary that runs somewhere else. That is not a
+speed-for-conformance trade — it is simply the wrong value for that target — so
+`ConstantFold` declines those cases. Everything else folds.
+
+Corollary, easy to get wrong: **within a target, the optimizer may still produce
+a different answer than the unoptimized code.** `Min`/`Max` are not commutative
+on NaN (`min(1.0, NaN)` vs `min(NaN, 1.0)` differ on x86), yet the e-graph
+installs commutativity for them. That is sound precisely because no value was
+promised; it would be a miscompile the moment anything promised one.
+
+The combinator tier's `Round` is a genuine bug rather than an instance of this
+trade: `(x + 0.5).floor()` is two instructions where `roundps` is one, and it is
+not any IEEE rounding mode (`round(-1.5)` is -1 there, -2 everywhere else). It
+is slower *and* wrong, so it should be replaced with the target's rounding
+instruction — the trade only ever justifies taking what the hardware gives, never
+hand-rolling something worse.
+
 ### Philosophy
 
 - **Pull-based rendering**: Pixels are sampled, not pushed. Nothing computes until coordinates arrive.

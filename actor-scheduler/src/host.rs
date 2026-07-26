@@ -61,6 +61,59 @@ where
     }
 }
 
+/// Stable identity for an adopted green actor.
+///
+/// Deliberately not a position: `Host` removes halted nodes with `Vec::remove`, so any index
+/// recorded in one sweep names a *different* actor by the next. An earlier revision reported
+/// disconnections by index and had exactly that bug.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeId(u64);
+
+/// Why a green actor is stuck — i.e. alive, holding work, and unable to make progress alone.
+///
+/// One variant today, deliberately. Adding reasons later is additive; inventing a family for
+/// stucks nobody has hit would be machinery ahead of need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stuck {
+    /// A flush target is gone. The node's outbox **still holds the undelivered payload**, so
+    /// whatever it carries is recoverable — retry it, take the value elsewhere, or drop the node
+    /// deliberately.
+    TargetGone,
+}
+
+/// A green actor needs supervision. Returned by [`Host::sweep`], never sent.
+///
+/// This is a *returned value*, not a message the host pushes through a handle it holds. Giving
+/// `Host` a supervisor handle would reintroduce exactly the coupling the transducer model
+/// exists to remove: an actor reaching out mid-step instead of describing what happened and
+/// letting its wiring decide where that goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Supervision {
+    pub node: NodeId,
+    pub reason: Stuck,
+}
+
+/// What one [`sweep`](Host::sweep) did.
+///
+/// Borrows the host for as long as it is held, because the buffer behind `stuck` belongs to the
+/// host and is reused across sweeps — a sweep on a hot path must not allocate. Read what you
+/// need out of it ([`Supervision`] is `Copy`) and let it go before acting on the host.
+#[derive(Debug)]
+#[must_use = "a sweep can report actors needing supervision; dropping it discards them"]
+pub struct Sweep<'a> {
+    /// `Busy` if any green actor ran, so the scheduler keeps sweeping; `Idle` when they are all
+    /// quiet and the thread may sleep.
+    pub status: ActorStatus,
+    /// Actors that are stuck. Empty on the common path.
+    ///
+    /// Handed back from each sweep rather than accumulated behind an accessor, so it cannot be
+    /// missed by a caller that never thinks to ask — the previous revision stored these and
+    /// exposed a getter, which nothing on the `sched.run(&mut host)` path could ever reach. The
+    /// slice is only valid until the next sweep, which is the same window in which acting on it
+    /// makes sense.
+    pub stuck: &'a [Supervision],
+}
+
 /// An OS-thread actor that owns green actors and runs them in its `park`.
 ///
 /// A host has **no messages of its own**: all three lane types are [`Infallible`], so the
@@ -72,8 +125,13 @@ where
 /// lane.
 #[derive(Default)]
 pub struct Host {
-    nodes: Vec<Box<dyn Green>>,
+    nodes: Vec<(NodeId, Box<dyn Green>)>,
     exits: Vec<Exit>,
+    next_id: u64,
+    /// Scratch for [`sweep`](Host::sweep), cleared and refilled each call. A sweep runs whenever
+    /// the thread has work, so building this fresh each time would allocate on the hot path for
+    /// a buffer that is empty almost every sweep and never grows past the node count.
+    stuck: Vec<Supervision>,
 }
 
 impl Host {
@@ -84,8 +142,32 @@ impl Host {
     }
 
     /// Take ownership of a green actor. Sweep order is adoption order.
-    pub fn adopt(&mut self, node: impl Green + 'static) {
-        self.nodes.push(Box::new(node));
+    /// Returns the actor's [`NodeId`], which is how a supervisor later names it — an event
+    /// reporting an actor you cannot identify is not actionable.
+    pub fn adopt(&mut self, node: impl Green + 'static) -> NodeId {
+        let id = NodeId(self.next_id);
+        self.next_id += 1;
+        self.nodes.push((id, Box::new(node)));
+        id
+    }
+
+    /// Stop hosting one green actor, returning whether it was found.
+    ///
+    /// The minimum a supervisor needs to act on a [`Supervision`] event. Retrying a
+    /// [`Stuck::TargetGone`] node in place only reaches the same dead sender, so the recovery
+    /// available today is to take it out — deliberately, rather than by dropping the whole host.
+    ///
+    /// The node's retained outbox goes with it. Handing that payload back to the supervisor
+    /// needs `Green` to expose more than `poll`, which is deferred until something concrete
+    /// wants it rather than guessed at now.
+    pub fn remove(&mut self, id: NodeId) -> bool {
+        // `retain`-style removal, not `swap_remove`: sweep order is adoption order and load
+        // bearing, so survivors keep their relative positions.
+        let Some(pos) = self.nodes.iter().position(|(node_id, _)| *node_id == id) else {
+            return false;
+        };
+        self.nodes.remove(pos);
+        true
     }
 
     /// How many green actors are still running.
@@ -111,20 +193,38 @@ impl Host {
 
     /// Advance every green actor by at most one step, in adoption order.
     ///
-    /// Returns `Busy` if any of them ran, so the scheduler keeps sweeping without blocking;
-    /// `Idle` when they are all quiet — parked on backpressure or out of input — so the
-    /// scheduler blocks on the doorbell and the thread sleeps.
-    pub fn sweep(&mut self) -> ActorStatus {
+    /// Returns what happened, including any actors that are stuck — see [`Sweep`]. The host
+    /// *describes*; it does not act. Restart, retry and shutdown are supervision policy, and a
+    /// host that hosts should not also decide them.
+    pub fn sweep(&mut self) -> Sweep<'_> {
         let mut ran = false;
+        self.stuck.clear();
         let mut i = 0;
 
         while i < self.nodes.len() {
-            match self.nodes[i].poll() {
+            let (id, node) = &mut self.nodes[i];
+            let id = *id;
+            // Poll before the match so the borrow of `self.nodes` ends here and the arms below
+            // are free to touch `self.stuck` and `self.exits`.
+            let step = node.poll();
+            match step {
                 Step::Ran => {
                     ran = true;
                     i += 1;
                 }
                 Step::Blocked | Step::Idle => i += 1,
+                // A peer is gone and the payload is retained in the node's outbox. Keep the
+                // node — whatever the outbox holds stays recoverable — and do *not* count it as
+                // having run, so a dead peer cannot spin the sweep against something that is
+                // never coming back. Report it upward instead: the layer that chooses retry,
+                // handoff or graceful shutdown can only choose if it is told.
+                Step::Disconnected => {
+                    self.stuck.push(Supervision {
+                        node: id,
+                        reason: Stuck::TargetGone,
+                    });
+                    i += 1;
+                }
                 Step::Halted(exit) => {
                     self.exits.push(exit);
                     // `remove`, not `swap_remove`: sweep order is load-bearing, so the
@@ -134,10 +234,15 @@ impl Host {
             }
         }
 
-        if ran {
+        let status = if ran {
             ActorStatus::Busy
         } else {
             ActorStatus::Idle
+        };
+
+        Sweep {
+            status,
+            stuck: &self.stuck,
         }
     }
 }
@@ -211,8 +316,21 @@ impl Actor<Infallible, Infallible, Infallible> for Host {
         match msg {}
     }
 
+    /// Sweeps, and **discards any supervision events**, because this signature has nowhere to
+    /// put them.
+    ///
+    /// That is the honest limit of running a `Host` through the old `Actor`/`ActorScheduler`
+    /// shell: `park` returns an `ActorStatus`, which can say "busy" or "idle" and cannot say
+    /// "one of my actors is stuck holding a payload". Callers that need supervision must drive
+    /// [`sweep`](Host::sweep) directly and read [`Sweep::stuck`].
+    ///
+    /// Closing this properly means `Host` becoming a transducer whose `Out` carries supervision
+    /// events, so its wiring delivers them like any other output and `Topology` checks that edge
+    /// — the same conversion vsync and the rasterizer already went through. Until then a `Host`
+    /// under `sched.run` is unsupervised, and this comment is the warning rather than a silent
+    /// drop.
     fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
-        Ok(self.sweep())
+        Ok(self.sweep().status)
     }
 }
 
@@ -268,7 +386,7 @@ mod tests {
         ));
 
         tx_in.try_send(1).unwrap();
-        assert_eq!(host.sweep(), ActorStatus::Busy, "a green actor had work");
+        assert_eq!(host.sweep().status, ActorStatus::Busy, "a green actor had work");
         assert_eq!(rx_out.try_recv().unwrap(), 2);
     }
 
@@ -286,11 +404,11 @@ mod tests {
             ForwardWiring { next: tx_out },
         ));
 
-        assert_eq!(host.sweep(), ActorStatus::Idle, "no input, nothing ran");
+        assert_eq!(host.sweep().status, ActorStatus::Idle, "no input, nothing ran");
 
         tx_in.try_send(7).unwrap();
-        assert_eq!(host.sweep(), ActorStatus::Busy);
-        assert_eq!(host.sweep(), ActorStatus::Idle, "quiet again after draining");
+        assert_eq!(host.sweep().status, ActorStatus::Busy);
+        assert_eq!(host.sweep().status, ActorStatus::Idle, "quiet again after draining");
     }
 
     #[test]
@@ -321,11 +439,83 @@ mod tests {
         ));
 
         tx_in.try_send(0).unwrap();
-        assert_eq!(host.sweep(), ActorStatus::Busy);
+        assert_eq!(host.sweep().status, ActorStatus::Busy);
         assert_eq!(
             rx_out.try_recv().unwrap(),
             3,
             "one sweep should have carried the message through all three stages"
+        );
+    }
+
+    #[test]
+    fn a_gone_target_is_recorded_and_the_payload_survives() {
+        // The point of `Step::Disconnected` is that a supervisor can act on it. If `Host`
+        // swallowed the signal — as an earlier revision did, treating it like `Idle` — the
+        // scheduler would go back to sleep on its doorbell with the node's payload stranded in
+        // its outbox and nothing able to observe that it happened.
+        let (tx_in, rx_in) = spsc_channel::<u32>(8);
+        let (tx_out, rx_out) = spsc_channel::<u32>(8);
+
+        let mut host = Host::new();
+        host.adopt(Node::new(
+            Forward { seen: 0 },
+            rx_in,
+            ForwardWiring { next: tx_out },
+        ));
+
+        drop(rx_out); // the *downstream* target dies, not this actor's own inbox
+        tx_in.try_send(0).unwrap();
+
+        let reported = {
+            let sweep = host.sweep();
+            assert_eq!(
+                sweep.stuck.len(),
+                1,
+                "a supervisor must be told which node hit a gone peer"
+            );
+            assert_eq!(sweep.stuck[0].reason, Stuck::TargetGone);
+            sweep.stuck[0]
+        };
+        assert_eq!(host.len(), 1, "and the node is kept, not silently discarded");
+
+        // The identity has to be actionable, or reporting it is theatre: retrying in place only
+        // reaches the same dead sender, so taking the node out is the recovery available today.
+        assert!(host.remove(reported.node), "the reported id names a real node");
+        assert!(host.is_empty());
+        assert!(!host.remove(reported.node), "and removing it twice is not a panic");
+    }
+
+    #[test]
+    fn each_sweep_reports_only_its_own_stuck_actors() {
+        // The failure mode introduced by reusing one buffer across sweeps: forget to clear it
+        // and a supervisor that removed a node keeps being told about it forever, or a
+        // recovered node stays reported. `stuck` describes *this* sweep, not the history.
+        let (tx_in, rx_in) = spsc_channel::<u32>(8);
+        let (tx_out, rx_out) = spsc_channel::<u32>(8);
+
+        let mut host = Host::new();
+        host.adopt(Node::new(
+            Forward { seen: 0 },
+            rx_in,
+            ForwardWiring { next: tx_out },
+        ));
+
+        drop(rx_out);
+        tx_in.try_send(0).unwrap();
+        let stuck = {
+            let sweep = host.sweep();
+            assert_eq!(sweep.stuck.len(), 1);
+            sweep.stuck[0].node
+        };
+
+        // A sweep *does* keep re-reporting a node that is still stuck — the retained outbox is
+        // re-flushed and hits the same dead sender. What must not survive is the report of a
+        // node the supervisor has already dealt with.
+        assert_eq!(host.sweep().stuck.len(), 1, "still stuck, still reported");
+        assert!(host.remove(stuck));
+        assert!(
+            host.sweep().stuck.is_empty(),
+            "the supervised node is gone; the sweep must not re-report it from the last one"
         );
     }
 
@@ -344,7 +534,7 @@ mod tests {
         assert!(!host.is_empty(), "an adopted, still-running actor is not empty");
 
         drop(tx_in); // the green actor's inbox disconnects
-        host.sweep();
+        assert!(host.sweep().stuck.is_empty(), "a halt is not a stuck actor");
 
         assert!(host.is_empty(), "a halted green actor is removed");
         assert_eq!(host.exits(), &[Exit::Completed]);
@@ -380,7 +570,7 @@ mod tests {
 
         drop(tx_dead);
         tx_a.try_send(0).unwrap();
-        host.sweep();
+        assert!(host.sweep().stuck.is_empty(), "a halt is not a stuck actor");
 
         assert_eq!(host.len(), 2);
         assert_eq!(

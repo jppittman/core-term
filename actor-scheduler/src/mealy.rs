@@ -129,6 +129,18 @@ pub enum Flush {
     /// At least one port could not be delivered (target full). The undelivered ports are
     /// still set in the output word, which the [`Node`] keeps as its parked outbox.
     Blocked,
+    /// At least one target is **gone**. Like [`Blocked`](Flush::Blocked), the undelivered ports
+    /// are **retained** in the output word — that is the load-bearing half of this variant.
+    ///
+    /// Previously a disconnected target was reported as [`Done`](Flush::Done), which consumed
+    /// the message. For a port carrying a moved resource — the render pipeline's sole frame
+    /// buffer, say — that silently destroyed it, and left the sender believing it had been
+    /// delivered. Retaining the payload keeps every recovery open: retry, hand off, escalate,
+    /// or shut down gracefully with the resource still in hand.
+    ///
+    /// This variant deliberately carries no policy. What to do about a dead peer is the
+    /// supervisor's call, not the port's; see [`Step::Disconnected`].
+    Disconnected,
 }
 
 /// Where an actor's output ports go.
@@ -166,15 +178,32 @@ pub enum Delivery {
 
 /// Deliver one port according to `delivery`.
 ///
-/// The building block every generated `Wiring::flush` is made of. A disconnected target
-/// drops the message and reports success either way — the target is gone, so there is
-/// nothing to wait for, and blocking forever on a dead consumer would deadlock the sender.
+/// The building block every generated `Wiring::flush` is made of.
+///
+/// Outcomes:
+/// - **Delivered**, or the port was empty → [`Flush::Done`].
+/// - **Target full**, [`Delivery::Droppable`] → the message is discarded, [`Flush::Done`].
+///   Silence on a full ring is the whole point of that delivery kind, and also its whole risk.
+/// - **Target full**, [`Delivery::Blocking`] → the message is put back in `port`,
+///   [`Flush::Blocked`]. Retry when the ring drains.
+/// - **Target gone** (either delivery kind) → the message is **put back in `port`**,
+///   [`Flush::Disconnected`]. It is deliberately *not* dropped: for a port carrying a moved
+///   resource, dropping here would destroy it with nobody having decided to, while the sender
+///   believed it was delivered. Blocking forever on a dead consumer would deadlock, so this
+///   reports rather than parks — the caller decides whether to retry, hand off, or shut down,
+///   and can do any of them because the value is still in hand.
 pub fn send_port<T>(port: &mut Option<T>, tx: &SpscSender<T>, delivery: Delivery) -> Flush {
     let Some(msg) = port.take() else {
         return Flush::Done;
     };
     match (tx.try_send(msg), delivery) {
-        (Ok(()), _) | (Err(TrySendError::Disconnected(_)), _) => Flush::Done,
+        (Ok(()), _) => Flush::Done,
+        // The target is gone. Put the message back rather than dropping it: for a port carrying
+        // a moved resource, dropping here destroys it with nobody having decided to.
+        (Err(TrySendError::Disconnected(msg)), _) => {
+            *port = Some(msg);
+            Flush::Disconnected
+        }
         (Err(TrySendError::Full(_)), Delivery::Droppable) => Flush::Done,
         (Err(TrySendError::Full(msg)), Delivery::Blocking) => {
             *port = Some(msg);
@@ -183,15 +212,26 @@ pub fn send_port<T>(port: &mut Option<T>, tx: &SpscSender<T>, delivery: Delivery
     }
 }
 
-/// Combine port outcomes: blocked if any port is blocked.
+/// Combine port outcomes. `Disconnected` outranks `Blocked` outranks `Done` — a dead peer is
+/// news the caller needs even if another port merely filled up, and it does not resolve by
+/// waiting the way backpressure does.
+///
+/// **Consumes the iterator fully; never short-circuits.** A hand-written `Wiring::flush` may
+/// pass a lazy iterator of [`send_port`] calls, so returning early would skip the sends that
+/// hadn't been evaluated yet. Since a disconnected port stays set in the outbox and is retried
+/// from the front every time, those later ports would be starved permanently — which is exactly
+/// the independent-port partial flush this module promises.
 #[must_use]
 pub fn all(outcomes: impl IntoIterator<Item = Flush>) -> Flush {
+    let mut worst = Flush::Done;
     for outcome in outcomes {
-        if outcome == Flush::Blocked {
-            return Flush::Blocked;
-        }
+        worst = match (worst, outcome) {
+            (Flush::Disconnected, _) | (_, Flush::Disconnected) => Flush::Disconnected,
+            (Flush::Blocked, _) | (_, Flush::Blocked) => Flush::Blocked,
+            (Flush::Done, Flush::Done) => Flush::Done,
+        };
     }
-    Flush::Done
+    worst
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -210,6 +250,15 @@ pub enum Step {
     Idle,
     /// Terminal. The actor is done and should be removed (and possibly restarted).
     Halted(Exit),
+    /// A target is gone. The outbox **still holds the undelivered ports**, so whatever they
+    /// carry is recoverable.
+    ///
+    /// Distinct from [`Blocked`](Step::Blocked) because backpressure resolves by waiting and
+    /// this does not — retrying a dead peer forever is a hang, and dropping the payload is data
+    /// loss. Surfaced rather than handled here on purpose: retry, escalate, or shut down
+    /// gracefully is a supervision decision, and the caller can make any of them because the
+    /// resource is still in hand.
+    Disconnected,
 }
 
 /// Pulling one input symbol. Implemented for the SPSC receiver; a trait so tests can drive a
@@ -403,8 +452,10 @@ where
     ///    never reaches [`Wiring`] and so the slot is empty at the moment it is written.
     pub fn poll(&mut self) -> Step {
         if let Some(pending) = &mut self.outbox {
-            if self.wiring.flush(pending) == Flush::Blocked {
-                return Step::Blocked;
+            match self.wiring.flush(pending) {
+                Flush::Blocked => return Step::Blocked,
+                Flush::Disconnected => return Step::Disconnected,
+                Flush::Done => {}
             }
             self.outbox = None;
         }
@@ -527,8 +578,16 @@ where
         // The slot was emptied before dispatch runs, so this write can never overflow.
         self.continuation = T::take_continuation(&mut out);
 
-        if self.wiring.flush(&mut out) == Flush::Blocked {
-            self.outbox = Some(out);
+        match self.wiring.flush(&mut out) {
+            Flush::Blocked => {
+                self.outbox = Some(out);
+            }
+            Flush::Disconnected => {
+                // Retained, not dropped — the payload is still in `out`.
+                self.outbox = Some(out);
+                return Step::Disconnected;
+            }
+            Flush::Done => {}
         }
 
         Step::Ran
@@ -1053,13 +1112,39 @@ mod tests {
     }
 
     #[test]
-    fn a_droppable_port_to_a_dead_target_is_still_done() {
-        let (tx, rx) = spsc_channel::<Render>(4);
-        drop(rx);
+    fn a_port_to_a_dead_target_reports_it_and_keeps_the_payload() {
+        // This previously asserted `Flush::Done` with the payload consumed — a dead peer was
+        // indistinguishable from a successful send. For a port carrying a moved resource that
+        // silently destroyed it while the sender believed it had been delivered. Retention is
+        // the point of the variant; the caller can still retry, hand off, or shut down with the
+        // value in hand.
+        for delivery in [Delivery::Droppable, Delivery::Blocking] {
+            let (tx, rx) = spsc_channel::<Render>(4);
+            drop(rx);
 
-        let mut port = Some(Render(1));
-        assert_eq!(send_port(&mut port, &tx, Delivery::Droppable), Flush::Done);
-        assert!(port.is_none());
+            let mut port = Some(Render(1));
+            assert_eq!(
+                send_port(&mut port, &tx, delivery),
+                Flush::Disconnected,
+                "a gone target is reported, not silently swallowed ({delivery:?})"
+            );
+            assert!(
+                port.is_some(),
+                "and the payload stays recoverable ({delivery:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn disconnected_outranks_blocked_when_combining_outcomes() {
+        // Backpressure resolves by waiting; a dead peer does not. If both happen in one flush
+        // the caller needs to hear the one that won't fix itself.
+        assert_eq!(
+            all([Flush::Done, Flush::Blocked, Flush::Disconnected]),
+            Flush::Disconnected
+        );
+        assert_eq!(all([Flush::Done, Flush::Blocked]), Flush::Blocked);
+        assert_eq!(all([Flush::Done, Flush::Done]), Flush::Done);
     }
 
     // ── Credit: a request/response edge bounded without a new port kind ─────

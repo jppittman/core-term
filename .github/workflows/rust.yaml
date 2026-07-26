@@ -102,3 +102,45 @@ jobs:
       - name: Run doctests
         shell: bash
         run: cargo test --workspace --doc
+
+  isa-matrix:
+    name: ISA matrix (SSE2/AVX2/AVX-512)
+    runs-on: ubuntu-latest
+    # Three full `cargo test --workspace` + `cargo clippy` passes (one per
+    # supported ISA level) in one job; each pass alone can take several
+    # minutes on a cold cache.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install X11 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-isa-matrix-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-isa-matrix-
+
+      # .cargo/config.toml sets no target-cpu/target-feature, so the jobs
+      # above only ever exercise whichever ISA level SSE2-baseline codegen
+      # happens to be. This runs cargo test + clippy again under +avx2,+fma
+      # and +avx512f -- skipping cleanly (not silently) whichever of those
+      # ubuntu-latest's actual hardware doesn't support; see
+      # `xtask isa-matrix`'s own doc comment for the per-level detection.
+      - name: Run ISA matrix (test + clippy per supported level)
+        shell: bash
+        run: cargo run -p xtask -- isa-matrix --clippy

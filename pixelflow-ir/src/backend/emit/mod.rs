@@ -30,7 +30,10 @@
 //! - This lets ML models learn register pressure vs spill tradeoffs
 
 pub mod aarch64;
+pub mod avx2;
 pub mod avx512;
+#[cfg(test)]
+pub(crate) mod coverage;
 pub mod executable;
 pub mod lowering;
 pub mod regalloc;
@@ -1925,6 +1928,18 @@ trait IsaBackend {
     /// after the body is produced and can only prepend bytes.
     fn frame_ready(&mut self, _frame_size: u32) {}
 
+    /// Bytes actually reserved on the stack for a `frame_size`-byte *logical*
+    /// spill frame.
+    ///
+    /// `FrameLayout` counts 16-byte slots because that is the narrowest vector
+    /// any backend spills; a backend whose vector is wider reserves
+    /// proportionally more in its prologue, and must report the real figure so
+    /// `CompileResult::spill_bytes` describes the code that was actually
+    /// emitted. Identity for the 16-byte backends (SSE2, NEON).
+    fn frame_bytes(&self, frame_size: u32) -> u32 {
+        frame_size
+    }
+
     /// Function prologue (allocate the spill frame, set up any pool anchor).
     fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32);
 
@@ -2203,7 +2218,12 @@ fn compile_dag_via_backend<B: IsaBackend>(
     Ok(CompileResult {
         code: exec,
         spill_count,
-        spill_bytes: frame_size,
+        // The backend's own figure, not the logical one: an AVX2 slot is 32
+        // bytes and an AVX-512 slot 64, so reporting `frame_size` here claimed
+        // 16 bytes per spill while the prologue reserved 2x/4x that. The
+        // number feeds the cost model's training metadata and frame-size
+        // thresholds, so the discrepancy was silently mistraining them.
+        spill_bytes: backend.frame_bytes(frame_size),
         max_regs: backend.num_regs(),
     })
 }
@@ -3289,11 +3309,17 @@ pub fn compile_arena_dag_with_ctx(
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
+    // Three-way build-width split, matching `pixelflow_ir::JIT_VECTOR_BYTES`
+    // and `pixelflow-core`'s `Field` storage: AVX-512 > AVX2 > SSE2.
     #[cfg(target_feature = "avx512f")]
     {
         compile_dag_via_backend(schedule, uses, &mut Avx512Backend)
     }
-    #[cfg(not(target_feature = "avx512f"))]
+    #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
+    {
+        compile_dag_via_backend(schedule, uses, &mut Avx2Backend)
+    }
+    #[cfg(not(any(target_feature = "avx512f", target_feature = "avx2")))]
     {
         compile_dag_via_backend(schedule, uses, &mut X86Backend::default())
     }
@@ -3322,20 +3348,55 @@ pub fn compile_arena_dag_with_ctx(
 #[cfg(target_arch = "x86_64")]
 const X86_SCHED_NUM_REGS: u8 = 6;
 
+/// Allocatable scratch register count handed to `linear_scan` on AVX2 (ymm4-7).
+///
+/// Two fewer than SSE2's six. AVX2's gather splits into 128-bit halves and so
+/// needs two scratch registers beyond the pair SSE2 uses (ymm13/14) to hold the
+/// high-half indices and the high-half result across the recombine. Those live
+/// in ymm8/ymm9, which must therefore sit OUTSIDE the allocator's range: with
+/// six allocatable (ymm4-9) the allocator could hand `dst` or `idx` an ymm8/9
+/// that the gather then overwrites mid-sequence, silently returning wrong
+/// lanes — reachable whenever five values stay live across a gather.
+///
+/// The cost is more spilling in AVX2 kernels generally, to fix a bug on the
+/// gather path specifically. Spilling the two half-temporaries to the red zone
+/// instead would restore the sixth register; that is a contained change to
+/// `avx2::emit_gather_scalar` and is the better long-term fix.
+#[cfg(target_arch = "x86_64")]
+const AVX2_SCHED_NUM_REGS: u8 = 4;
+
 /// Fixed scratch outside the allocatable range / reload regs: used for the
 /// binary two-operand hazard and as the select blend temp.
-#[cfg(target_arch = "x86_64")]
+///
+/// SSE2-only (like the rest of this section down to `X86Backend`): dead under
+/// a build that selects `Avx2Backend`/`Avx512Backend` instead, so gated off
+/// those widths — otherwise it (and `X86Backend`) would be unreachable dead
+/// code under `+avx2`/`+avx512f`, which the test-matrix's per-ISA clippy pass
+/// would then flag as a *new* failure on those levels only.
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 const X86_SCRATCH: Reg = Reg(10);
 
 /// Scratch quad for builtins (sin/cos/exp/atan2/...), which need FOUR distinct
 /// scratch registers. Clear of the allocatable range (4-9) and the reload regs
 /// (11,12). Includes `X86_SCRATCH` (xmm10): builtins don't use it for the
 /// hazard/select roles, so it is free as a fourth scratch here.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 const X86_BUILTIN_SCRATCH: [Reg; 4] = [Reg(10), Reg(13), Reg(14), Reg(15)];
 
 /// Map a `FrameLayout` spill offset to a red-zone `[rsp+disp8]` displacement.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 fn x86_redzone_disp(offset: u32) -> Result<i8, &'static str> {
     // Slots live below rsp: offset 0 -> [rsp-16], 16 -> [rsp-32], ...
     // Only called in red-zone mode (the prologue switches to an allocated
@@ -3355,7 +3416,11 @@ fn x86_redzone_disp(offset: u32) -> Result<i8, &'static str> {
 /// when `dst == right` and `dst != left`. The allocator may assign `dst ==
 /// right`, so handle it: swap for commutative ops, otherwise stash `right` in
 /// the fixed scratch.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 fn emit_binary_safe(code: &mut Vec<u8>, op: OpKind, dst: Reg, left: Reg, right: Reg) {
     use x86_64::*;
     let commutative = matches!(
@@ -3378,13 +3443,21 @@ fn emit_binary_safe(code: &mut Vec<u8>, op: OpKind, dst: Reg, left: Reg, right: 
 /// `frame_bytes` is set by `prologue`: 0 = spills fit the 128-byte red zone
 /// (no frame is allocated), otherwise the size of the allocated frame and
 /// spill slots are `[rsp + offset]`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 #[derive(Default)]
 struct X86Backend {
     frame_bytes: u32,
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 impl X86Backend {
     fn spill_store(&self, code: &mut Vec<u8>, src: Reg, offset: u32) {
         if self.frame_bytes == 0 {
@@ -3405,7 +3478,11 @@ impl X86Backend {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 impl IsaBackend for X86Backend {
     /// rel32 field offset of the branch (uniform for jcc/jmp on x86).
     type Branch = usize;
@@ -3682,6 +3759,10 @@ impl IsaBackend for Avx512Backend {
         X86_SCHED_NUM_REGS // same 6 allocatable (zmm4-9)
     }
 
+    fn frame_bytes(&self, frame_size: u32) -> u32 {
+        avx512_frame_bytes(frame_size)
+    }
+
     fn begin(
         &mut self,
         _schedule: &[(regalloc::ValueId, ScheduledOp)],
@@ -3715,10 +3796,13 @@ impl IsaBackend for Avx512Backend {
             ResolvedOp::Unary { op, dst, src } => {
                 avx512::emit_unary(code, *op, *dst, *src)?;
             }
-            ResolvedOp::ShiftImm { .. } => {
-                // EVEX integer shift not wired yet -> exp/log don't lower on the
-                // AVX-512 path. Reject loudly rather than miscompile.
-                return Err("avx512: bit-shift (exp/log lowering) not yet supported");
+            ResolvedOp::ShiftImm {
+                op,
+                dst,
+                src,
+                amount,
+            } => {
+                avx512::emit_shift_imm(code, *op, *dst, *src, *amount)?;
             }
             ResolvedOp::Gather { dst, idx, slot } => {
                 // dst = buffer[slot][idx]. The context pointer (array of buffer
@@ -3856,6 +3940,262 @@ impl IsaBackend for Avx512Backend {
         }
         avx512::emit_ret(code);
     }
+}
+
+// =============================================================================
+// AVX2 backend: the leaf emit for the SHARED driver, 256-bit (ymm) kernels.
+// =============================================================================
+//
+// The middle width between `X86Backend` (128-bit) and `Avx512Backend`
+// (512-bit). Register roles are IDENTICAL to `X86Backend` — same input/
+// allocatable/scratch/reload layout (ymm0-15 is the same physical file as
+// xmm0-15) — only the leaf encodings differ (VEX.256 instead of legacy SSE).
+// VEX is 3-operand like EVEX, so — like `Avx512Backend` — there is no
+// two-operand hazard to route around.
+//
+// Spills use a real stack frame (mirrors `Avx512Backend`'s reasoning): a ymm
+// slot is 32 bytes, so `FrameLayout`'s 16-byte-unit offsets are scaled ×2.
+
+/// Scale a `FrameLayout` 16-byte slot offset to a 32-byte ymm frame offset.
+#[cfg(target_arch = "x86_64")]
+fn avx2_slot_disp(offset: u32) -> i32 {
+    (offset as i32 / 16) * 32
+}
+
+/// Total ymm frame bytes for a `FrameLayout.frame_size` (16-byte units).
+#[cfg(target_arch = "x86_64")]
+fn avx2_frame_bytes(frame_size: u32) -> u32 {
+    (frame_size / 16) * 32
+}
+
+/// AVX2 implementation of the shared driver's leaf operations.
+#[cfg(target_arch = "x86_64")]
+struct Avx2Backend;
+
+#[cfg(target_arch = "x86_64")]
+impl Avx2Backend {
+    fn reload(code: &mut Vec<u8>, reload: &Reload) {
+        match reload {
+            Reload::FromStack { target, offset } => {
+                avx2::emit_load_rsp(code, *target, avx2_slot_disp(*offset));
+            }
+            Reload::Const { target, val_bits } => {
+                avx2::emit_const(code, *target, f32::from_bits(*val_bits));
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl IsaBackend for Avx2Backend {
+    type Branch = usize;
+
+    fn num_regs(&self) -> u8 {
+        AVX2_SCHED_NUM_REGS
+    }
+
+    fn frame_bytes(&self, frame_size: u32) -> u32 {
+        avx2_frame_bytes(frame_size)
+    }
+
+    fn begin(
+        &mut self,
+        _schedule: &[(regalloc::ValueId, ScheduledOp)],
+    ) -> Result<(), &'static str> {
+        Ok(()) // const broadcast is self-contained; no pool.
+    }
+
+    fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32) {
+        let bytes = avx2_frame_bytes(frame_size);
+        if bytes > 0 {
+            avx2::emit_sub_rsp(code, bytes);
+        }
+    }
+
+    fn emit_plan(
+        &mut self,
+        code: &mut Vec<u8>,
+        plan: &InstructionPlan,
+    ) -> Result<(), &'static str> {
+        for r in &plan.reloads {
+            Self::reload(code, r);
+        }
+        if let Some((dst, src)) = plan.setup_mov {
+            avx2::emit_mov(code, dst, src);
+        }
+        match &plan.op {
+            ResolvedOp::Nop => {}
+            ResolvedOp::LoadConst { dst, val_bits } => {
+                avx2::emit_const(code, *dst, f32::from_bits(*val_bits));
+            }
+            ResolvedOp::Unary { op, dst, src } => {
+                avx2::emit_unary(code, *op, *dst, *src)?;
+            }
+            ResolvedOp::ShiftImm {
+                op,
+                dst,
+                src,
+                amount,
+            } => {
+                avx2::emit_shift_imm(code, *op, *dst, *src, *amount)?;
+            }
+            ResolvedOp::Gather { dst, idx, slot } => {
+                // Context pointer (array of buffer base pointers) arrives in
+                // rdi; arithmetic/const emit never touches rdi, so it
+                // survives to here. ymm13/14 mirror X86Backend's gather
+                // scratch; ymm8/9 are the AVX2-only high-half scratch this
+                // two-half gather needs (see `avx2::emit_gather_scalar`).
+                // ymm8/9 are non-allocatable by construction — see
+                // `AVX2_SCHED_NUM_REGS`, which caps the pool at ymm4-7 so the
+                // allocator can never place `dst`/`idx` where this clobbers.
+                avx2::emit_gather_scalar(
+                    code,
+                    *dst,
+                    *idx,
+                    *slot,
+                    x86_64::GatherScratch {
+                        base_gpr: 0,  // rax
+                        index_gpr: 1, // rcx
+                        ctx_gpr: 7,   // rdi
+                        idx_lanes: Reg(13),
+                        value: Reg(14),
+                    },
+                    Reg(9),
+                    Reg(8),
+                );
+            }
+            ResolvedOp::Binary {
+                op,
+                dst,
+                left,
+                right,
+            } => {
+                // VEX 3-operand: no two-operand hazard, emit directly.
+                avx2::emit_binary(code, *op, *dst, *left, *right)?;
+            }
+            ResolvedOp::FusedMulAdd { dst, a, b } => {
+                avx2::emit_fmadd_c_in_dst(code, *dst, *a, *b);
+            }
+            ResolvedOp::DecomposedMulAdd {
+                dst,
+                a,
+                b,
+                c,
+                c_deferred,
+            } => {
+                avx2::emit_binary(code, OpKind::Mul, *dst, *a, *b)?;
+                match c_deferred {
+                    Some(DeferredReload::FromStack(off)) => {
+                        avx2::emit_load_rsp(code, *c, avx2_slot_disp(*off));
+                    }
+                    Some(DeferredReload::Const(bits)) => {
+                        avx2::emit_const(code, *c, f32::from_bits(*bits));
+                    }
+                    None => {}
+                }
+                avx2::emit_binary(code, OpKind::Add, *dst, *dst, *c)?;
+            }
+            ResolvedOp::Select {
+                dst,
+                if_true,
+                if_false,
+            } => {
+                // setup_mov already placed the vector mask in dst.
+                avx2::emit_select(code, *dst, *if_true, *if_false);
+            }
+        }
+        if let Some(store) = &plan.store {
+            avx2::emit_store_rsp(code, store.src, avx2_slot_disp(store.offset));
+        }
+        Ok(())
+    }
+
+    fn emit_mov(&mut self, code: &mut Vec<u8>, dst: Reg, src: Reg) {
+        avx2::emit_mov(code, dst, src);
+    }
+
+    fn emit_store(
+        &mut self,
+        code: &mut Vec<u8>,
+        src: Reg,
+        offset: u32,
+    ) -> Result<(), &'static str> {
+        avx2::emit_store_rsp(code, src, avx2_slot_disp(offset));
+        Ok(())
+    }
+
+    fn emit_resolve(
+        &mut self,
+        code: &mut Vec<u8>,
+        vid: regalloc::ValueId,
+        target: Reg,
+        reg_for: &[Option<Reg>],
+        spill_for: &[Option<u32>],
+        remat_for: &[Option<u32>],
+    ) -> Reg {
+        let idx = vid.0 as usize;
+        if let Some(Some(reg)) = reg_for.get(idx) {
+            *reg
+        } else if let Some(Some(bits)) = remat_for.get(idx) {
+            avx2::emit_const(code, target, f32::from_bits(*bits));
+            target
+        } else if let Some(Some(offset)) = spill_for.get(idx) {
+            avx2::emit_load_rsp(code, target, avx2_slot_disp(*offset));
+            target
+        } else {
+            panic!(
+                "value {:?} has no register, spill slot, or rematerialize entry",
+                vid
+            );
+        }
+    }
+
+    // Select short-circuit guards: vmovmskps -> eax[7:0], same shape as
+    // X86Backend's MOVMSKPS guards but 8 lanes wide (al == 0xFF for
+    // all-true, not 0x0F — see `avx2::emit_cmp_al_imm8`'s doc for why the
+    // sign-extending `cmp eax, imm8` X86Backend uses doesn't work here).
+    fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        avx2::emit_movmskps_eax(code, mask_reg);
+        x86_64::emit_test_eax(code);
+        x86_64::emit_jcc_rel32(code, 0x84) // jz: taken when eax == 0 (all lanes false)
+    }
+
+    fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+        avx2::emit_movmskps_eax(code, mask_reg);
+        avx2::emit_cmp_al_imm8(code, 0xFF);
+        x86_64::emit_jcc_rel32(code, 0x84) // je: taken when al == 0xFF (all lanes true)
+    }
+
+    fn emit_jump(&mut self, code: &mut Vec<u8>) -> usize {
+        x86_64::emit_jmp_rel32(code)
+    }
+    fn patch_branch(&mut self, code: &mut Vec<u8>, branch: usize, target: usize) {
+        x86_64::patch_rel32(code, branch, target);
+    }
+
+    fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32) {
+        if result_reg.0 != 0 {
+            avx2::emit_mov(code, Reg(0), result_reg);
+        }
+        let bytes = avx2_frame_bytes(frame_size);
+        if bytes > 0 {
+            avx2::emit_add_rsp(code, bytes);
+        }
+        avx2::emit_ret(code);
+    }
+}
+
+/// Compile an arena DAG to an AVX2 (256-bit, 8-lane ymm) kernel via the shared
+/// driver. Same arg shape as [`compile_arena_dag`] but the kernel's ABI is
+/// `__m256` (one pixel per lane, 8 pixels per call).
+#[cfg(target_arch = "x86_64")]
+pub fn compile_arena_dag_avx2(
+    arena: &ExprArena,
+    root: ExprId,
+) -> Result<CompileResult, &'static str> {
+    let schedule = arena_to_schedule(arena, root);
+    let uses = arena_to_uses(&schedule);
+    compile_dag_via_backend(schedule, uses, &mut Avx2Backend)
 }
 
 /// Compile an arena DAG to an AVX-512 (512-bit, 16-lane zmm) kernel via the
@@ -4899,7 +5239,11 @@ mod tests {
     // 128-bit under the default build; gated off `+avx512f` where `KernelFn` is
     // `__m512` (the AVX-512 per-batch path is covered by the `avx512` tests).
     #[test]
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn scanline_matches_per_batch_x86() {
         use core::arch::x86_64::*;
 
@@ -4964,7 +5308,11 @@ mod tests {
     /// Run a per-batch arena kernel at `x` (Y/Z/W = 0) and return lane 0.
     /// 128-bit `KernelFn`; the builtin-parity tests below use it. Gated off
     /// `+avx512f` (those builtins aren't in the AVX-512 op set yet anyway).
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn run1(arena: &ExprArena, root: ExprId, x: f32) -> f32 {
         use core::arch::x86_64::*;
         let r = compile_arena_dag(arena, root).expect("compile failed");
@@ -4977,7 +5325,11 @@ mod tests {
 
     /// Per-batch eval at (X=x, Y=y, Z=W=0), lane 0. 128-bit `KernelFn`, so gated
     /// off `+avx512f` like `run1`.
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn run_xy(arena: &ExprArena, root: ExprId, x: f32, y: f32) -> f32 {
         use core::arch::x86_64::*;
         let r = compile_arena_dag(arena, root).expect("compile failed");
@@ -4992,7 +5344,11 @@ mod tests {
     /// runs `lower_dwrt`, so `D(√(x²+y²), x)` compiles to `x / √(x²+y²)`
     /// without the caller ever seeing the derivative machinery.
     #[test]
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn dwrt_compiles_to_analytic_derivative() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -5040,7 +5396,11 @@ mod tests {
     /// all pushed before any is consumed, so dozens are simultaneously live
     /// against 6 allocatable registers.
     #[test]
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn spill_frame_beyond_red_zone_compiles_correctly() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -5081,7 +5441,11 @@ mod tests {
     /// reference across a range of inputs — these exercise `emit_arena` →
     /// `emit_unary` directly (not the compiler's lowering).
     #[test]
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn x86_unary_builtins_match_scalar() {
         // Tolerances reflect the shared (with aarch64) minimax-polynomial
         // accuracy over a sensible input range; exact ops use tight bounds.
@@ -5195,7 +5559,11 @@ mod tests {
 
     /// Binary transcendentals + comparisons + ternaries, JIT vs scalar.
     #[test]
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     fn x86_binary_ternary_builtins_match_scalar() {
         use core::arch::x86_64::*;
         // Helper: compile f(X, Y) and eval at (x, y).
@@ -5316,7 +5684,11 @@ mod tests {
     /// Transcendental lowering: sin/cos/tan JIT through the per-batch path with
     /// no backend ever emitting a transcendental (they expand to arithmetic in
     /// `lowering`). Validated against `f32` on the default (128-bit) build.
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     mod lowering_tests {
         use super::*;
         use crate::arena::ExprArena;
@@ -5476,7 +5848,11 @@ mod tests {
     // =========================================================================
     // Calls kernels through the per-batch `KernelFn` (128-bit here); gated off
     // `+avx512f` where that ABI is `__m512` (AVX-512 covered by `avx512_driver`).
-    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
     mod sched {
         use super::*;
         use crate::arena::ExprArena;
@@ -5626,7 +6002,11 @@ mod tests {
     // =========================================================================
     #[cfg(any(
         target_arch = "aarch64",
-        all(target_arch = "x86_64", not(target_feature = "avx512f"))
+        all(
+            target_arch = "x86_64",
+            not(target_feature = "avx512f"),
+            not(target_feature = "avx2")
+        )
     ))]
     mod gather_driver_128 {
         use super::*;
@@ -5877,6 +6257,9 @@ mod tests {
         use super::*;
         use crate::arena::ExprArena;
 
+        // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
+        // not-FFI-safe is a false positive here, as for `executable`'s aliases.
+        #[allow(improper_ctypes_definitions)]
         type K = unsafe extern "C" fn(
             core::arch::x86_64::__m512,
             core::arch::x86_64::__m512,
@@ -5914,12 +6297,12 @@ mod tests {
         }
 
         fn check(got: [f32; 16], want: impl Fn(usize) -> f32, tag: &str) {
-            for i in 0..16 {
+            for (i, &g) in got.iter().enumerate() {
                 let w = want(i);
                 assert!(
-                    (got[i] - w).abs() <= 1e-3,
+                    (g - w).abs() <= 1e-3,
                     "{tag} lane {i}: got {} want {}",
-                    got[i],
+                    g,
                     w
                 );
             }
@@ -5927,6 +6310,9 @@ mod tests {
 
         // ---- Bound-memory gather: JIT vs reference interpreter ----
 
+        // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
+        // not-FFI-safe is a false positive here, as for `executable`'s aliases.
+        #[allow(improper_ctypes_definitions)]
         type CtxK = unsafe extern "C" fn(
             *const *const f32,
             core::arch::x86_64::__m512,
@@ -5975,10 +6361,10 @@ mod tests {
             let got = run16_ctx(&res, &ctx, xs, ys);
 
             let bindings = crate::binding::BindingTable::bind(arena, buffers).unwrap();
-            for i in 0..16 {
+            for (i, &g) in got.iter().enumerate() {
                 let want =
                     crate::eval::eval_scalar(arena, root, &[xs[i], ys[i], 0.0, 0.0], &bindings);
-                assert_eq!(got[i], want, "{tag} lane {i} (x={}, y={})", xs[i], ys[i]);
+                assert_eq!(g, want, "{tag} lane {i} (x={}, y={})", xs[i], ys[i]);
             }
         }
 
@@ -6109,10 +6495,10 @@ mod tests {
             // Compare every output lane to the reference interpreter.
             let bindings =
                 crate::binding::BindingTable::bind(&a, &[w.as_slice(), input.as_slice()]).unwrap();
-            for jj in 0..out_dim {
+            for (jj, &got) in out.iter().enumerate().take(out_dim) {
                 let want =
                     crate::eval::eval_scalar(&a, root, &[jj as f32, 0.0, 0.0, 0.0], &bindings);
-                assert_eq!(out[jj], want, "collapse out[{jj}]");
+                assert_eq!(got, want, "collapse out[{jj}]");
             }
         }
 
@@ -6306,6 +6692,154 @@ mod tests {
                 let res = compile_arena_dag_avx512(&a, root).expect("avx512 compile");
                 check(run16(&res, xs, ones, ones), |i| f(xs[i]), tag);
             }
+        }
+    }
+
+    // =========================================================================
+    // Backend op-coverage completeness (docs/designs/2026-07-25-two-level-ir-
+    // and-backend-completeness.md)
+    // =========================================================================
+    //
+    // Turns "backend X silently doesn't support op Y" into a named, itemized
+    // test failure instead of a gap nobody notices until something happens to
+    // exercise it (this is exactly how AVX-512's binary-op dispatch sat at
+    // 6-of-15 required ops — nothing enumerated "the ops every backend must
+    // support" anywhere, so the hole was invisible until 36 tests failed by
+    // accident the first time someone compiled with `-C target-feature=
+    // +avx512f`).
+    //
+    // Each test below is scoped to a backend this build ACTUALLY compiles —
+    // `x86_backend_covers_required_ops` always runs on x86-64,
+    // `aarch64_backend_covers_required_ops` always runs on aarch64, and
+    // `avx512_backend_covers_required_ops` only compiles (and only needs to
+    // pass) when built with `avx512f` — the same feature gate
+    // `compile_arena_dag_with_ctx` uses to select `Avx512Backend` in
+    // production. On a default `cargo test --workspace` (no RUSTFLAGS) on
+    // this x86-64 host, that means: the SSE2 test runs and must be green
+    // (it is: X86Backend already covers every required op), and the AVX-512
+    // test does not even compile — it isn't lying about passing, it simply
+    // isn't part of this build. The moment someone builds with
+    // `+avx512f` (exactly the multi-ISA completion work tracked separately),
+    // this same test starts running and will fail loudly, by name, for every
+    // op `avx512::emit_unary`/`emit_binary`/`emit_plan` doesn't yet cover —
+    // rather than waiting for an unrelated test to trip over the gap.
+    mod backend_op_coverage {
+        use super::super::coverage::*;
+        use super::*;
+
+        /// Run one `ResolvedOp` through a backend and report whether it
+        /// emitted without error. Backends disagree on failure signaling
+        /// today (avx512 returns `Err`; x86-64/aarch64's leaf encoders
+        /// `panic!` on an unhandled op) — `catch_unwind` treats both as the
+        /// same "not supported" signal so this test doesn't have to care
+        /// which convention a given backend uses.
+        fn try_emit<B: IsaBackend>(backend: &mut B, op: ResolvedOp) -> bool {
+            let plan = InstructionPlan {
+                reloads: alloc::vec::Vec::new(),
+                op,
+                setup_mov: None,
+                store: None,
+            };
+            let mut code = alloc::vec::Vec::new();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                backend.emit_plan(&mut code, &plan)
+            }))
+            .map(|r| r.is_ok())
+            .unwrap_or(false)
+        }
+
+        /// Sweep the required unary/binary/shift op lists plus the two
+        /// bespoke ternary shapes (`MulAdd`, `Select`) against `backend`,
+        /// collecting every failure instead of stopping at the first one —
+        /// a completeness gap is much cheaper to fix as an itemized list
+        /// than rediscovered one `cargo test` run per missing op.
+        fn assert_covers_required_ops<B: IsaBackend>(backend_name: &str, backend: &mut B) {
+            // The two explicit `try_emit` calls below for MulAdd/Select are
+            // this constant, unrolled by hand (each needs its own
+            // `ResolvedOp` shape, so they aren't worth a generic loop) — kept
+            // in sync deliberately rather than by a shared loop.
+            debug_assert_eq!(REQUIRED_TERNARY_OPS, &[OpKind::MulAdd, OpKind::Select]);
+            let mut missing = alloc::vec::Vec::new();
+
+            for &op in REQUIRED_UNARY_OPS {
+                if !try_emit(backend, ResolvedOp::Unary { op, dst: Reg(4), src: Reg(5) }) {
+                    missing.push(alloc::format!("unary {:?}", op));
+                }
+            }
+            for &op in REQUIRED_BINARY_OPS {
+                if !try_emit(
+                    backend,
+                    ResolvedOp::Binary { op, dst: Reg(4), left: Reg(4), right: Reg(5) },
+                ) {
+                    missing.push(alloc::format!("binary {:?}", op));
+                }
+            }
+            for &op in REQUIRED_SHIFT_OPS {
+                if !try_emit(
+                    backend,
+                    ResolvedOp::ShiftImm { op, dst: Reg(4), src: Reg(4), amount: 1 },
+                ) {
+                    missing.push(alloc::format!("shift {:?}", op));
+                }
+            }
+            if !try_emit(backend, ResolvedOp::FusedMulAdd { dst: Reg(4), a: Reg(5), b: Reg(6) }) {
+                missing.push(alloc::string::String::from("ternary MulAdd"));
+            }
+            if !try_emit(
+                backend,
+                ResolvedOp::Select { dst: Reg(4), if_true: Reg(5), if_false: Reg(6) },
+            ) {
+                missing.push(alloc::string::String::from("ternary Select"));
+            }
+
+            assert!(
+                missing.is_empty(),
+                "{backend_name} is missing required ops: {missing:?} (see \
+                 pixelflow-ir/src/backend/emit/coverage.rs for the full \
+                 completeness contract)"
+            );
+        }
+
+        // Same gate as the struct itself: the SSE2 backend only exists on the
+        // baseline build (the wide builds compile it out entirely), so this
+        // sweep runs exactly when there is a backend to sweep. The default
+        // build is the baseline, so CI's default job always runs it.
+        #[cfg(all(
+            target_arch = "x86_64",
+            not(target_feature = "avx2"),
+            not(target_feature = "avx512f")
+        ))]
+        #[test]
+        fn x86_backend_covers_required_ops() {
+            assert_covers_required_ops("X86Backend (SSE2)", &mut X86Backend::default());
+        }
+
+        // Gated on arch alone, not `target_feature = "avx2"`: the sweep only
+        // *encodes* — bytes into a Vec, never executed — so it needs no AVX2
+        // hardware or build flags. Running it on every x86-64 build means a
+        // coverage gap in the AVX2 backend fails the default CI job, not just
+        // the one ISA-matrix leg that selects it.
+        #[cfg(target_arch = "x86_64")]
+        #[test]
+        fn avx2_backend_covers_required_ops() {
+            assert_covers_required_ops("Avx2Backend", &mut Avx2Backend);
+        }
+
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+        #[test]
+        fn avx512_backend_covers_required_ops() {
+            assert_covers_required_ops("Avx512Backend", &mut Avx512Backend);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        #[test]
+        fn aarch64_backend_covers_required_ops() {
+            let mut backend = Aarch64Backend {
+                pool: ConstPool::new(),
+                adr_patch_pos: 0,
+                max_regs: EmitCtx::default().max_regs,
+            };
+            assert_covers_required_ops("Aarch64Backend", &mut backend);
         }
     }
 }

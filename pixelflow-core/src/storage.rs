@@ -37,21 +37,20 @@ pub trait FieldStorage: Algebra {
 // Storage Implementation for f32
 // ============================================================================
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeF32Storage = crate::backend::x86::F32x16;
 
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    pixelflow_avx2
+    not(target_feature = "avx512f")
 ))]
 type NativeF32Storage = crate::backend::x86::F32x8;
 
 #[cfg(all(
     target_arch = "x86_64",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    not(all(target_feature = "avx2", pixelflow_avx2))
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
 ))]
 type NativeF32Storage = crate::backend::x86::F32x4;
 
@@ -81,31 +80,32 @@ impl FieldStorage for f32 {
 // Storage Implementation for bool (Mask)
 // ============================================================================
 
-/// Native SIMD mask storage type for the current platform.
-///
-/// This is the native mask type from the IR backend:
-/// - AVX-512: `Mask16` (k-register, runs on separate execution unit)
-/// - AVX2: `Mask8` (float-encoded in YMM registers)
-/// - SSE2: `Mask4` (float-encoded in XMM registers)
-/// - NEON: `Mask4`
-/// - Scalar: `MaskScalar`
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+// Native SIMD mask storage type for the current platform — the native mask type
+// from the IR backend, one `cfg`'d alias per width:
+//   AVX-512: `Mask16` (k-register, runs on a separate execution unit)
+//   AVX2:    `Mask8`  (float-encoded in YMM registers)
+//   SSE2:    `Mask4`  (float-encoded in XMM registers)
+//   NEON:    `Mask4`
+// Deliberately a plain comment, not a doc comment: it describes the whole
+// family, but rustdoc would attach it to whichever single alias this build
+// enables and merge it with that alias's own `///` line.
+
 /// Native mask storage for AVX-512.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub type NativeMaskStorage = crate::backend::x86::Mask16;
 
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    pixelflow_avx2
+    not(target_feature = "avx512f")
 ))]
 /// Native mask storage for AVX2.
 pub type NativeMaskStorage = crate::backend::x86::Mask8;
 
 #[cfg(all(
     target_arch = "x86_64",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    not(all(target_feature = "avx2", pixelflow_avx2))
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
 ))]
 /// Native mask storage for SSE2 (fallback).
 pub type NativeMaskStorage = crate::backend::x86::Mask4;
@@ -143,21 +143,20 @@ impl FieldStorage for bool {
 // Storage Implementation for u32
 // ============================================================================
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeU32Storage = crate::backend::x86::U32x16;
 
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    pixelflow_avx2
+    not(target_feature = "avx512f")
 ))]
 type NativeU32Storage = crate::backend::x86::U32x8;
 
 #[cfg(all(
     target_arch = "x86_64",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    not(all(target_feature = "avx2", pixelflow_avx2))
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
 ))]
 type NativeU32Storage = crate::backend::x86::U32x4;
 

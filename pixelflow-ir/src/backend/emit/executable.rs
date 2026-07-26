@@ -376,6 +376,12 @@ use core::arch::aarch64::float32x4_t;
 
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::__m128;
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(target_feature = "avx512f")
+))]
+use core::arch::x86_64::__m256;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 use core::arch::x86_64::__m512;
 
@@ -436,9 +442,10 @@ pub type ScanlineKernelFn = extern "C" fn(
 /// Args: X/Y/Z/W in the first four vector registers; returns the result in the
 /// first. One call computes one pixel per lane; the caller loops.
 ///
-/// The width tracks the build's selected SIMD: 512-bit `__m512` (16 lanes) when
-/// compiled with AVX-512, else 128-bit `__m128` (4 lanes, SSE2). This MUST match
-/// `pixelflow-core`'s `Field`; the `kernel_jit!` wrapper const-asserts
+/// The width tracks the build's selected SIMD: 512-bit `__m512` (16 lanes) with
+/// AVX-512, 256-bit `__m256` (8 lanes) with AVX2 (and not AVX-512), else
+/// 128-bit `__m128` (4 lanes, SSE2). This MUST match `pixelflow-core`'s
+/// `Field`; the `kernel_jit!` wrapper const-asserts
 /// `size_of::<Field>() == JIT_VECTOR_BYTES`. The looping variant is
 /// `ScanlineKernelFn`, which stays 128-bit (the scanline emitter is still SSE2).
 #[allow(improper_ctypes_definitions)]
@@ -470,8 +477,35 @@ pub type CtxKernelFn = extern "C" fn(*const *const f32, __m512, __m512, __m512, 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub type CollapseKernelFn = extern "C" fn(*const *const f32, *const f32, *mut f32, usize);
 
+/// JIT-compiled per-batch kernel signature for x86-64 AVX2 (256-bit, 8 lanes).
+/// See [`KernelFn`] (the AVX-512 variant) for the ABI contract; this is the
+/// same shape at the AVX2 width, selected when the build has `avx2` but not
+/// `avx512f`.
 #[allow(improper_ctypes_definitions)]
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(target_feature = "avx512f")
+))]
+pub type KernelFn = extern "C" fn(__m256, __m256, __m256, __m256) -> __m256;
+
+/// JIT-compiled kernel that reads bound memory (x86-64 AVX2). See the
+/// AVX-512 [`CtxKernelFn`] doc for the context-pointer contract; `rdi` is
+/// still disjoint from the coordinate vectors (now `ymm0..3`).
+#[allow(improper_ctypes_definitions)]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(target_feature = "avx512f")
+))]
+pub type CtxKernelFn = extern "C" fn(*const *const f32, __m256, __m256, __m256, __m256) -> __m256;
+
+#[allow(improper_ctypes_definitions)]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 pub type KernelFn = extern "C" fn(__m128, __m128, __m128, __m128) -> __m128;
 
 /// JIT-compiled kernel that reads bound memory (x86-64, 128-bit).
@@ -483,7 +517,11 @@ pub type KernelFn = extern "C" fn(__m128, __m128, __m128, __m128) -> __m128;
 /// same as a `KernelFn` — only kernels containing a `Gather` read `rdi`. The
 /// caller picks this type iff the arena declared buffers.
 #[allow(improper_ctypes_definitions)]
-#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 pub type CtxKernelFn = extern "C" fn(*const *const f32, __m128, __m128, __m128, __m128) -> __m128;
 
 /// JIT-compiled scanline kernel signature for x86-64 (128-bit; the scanline
@@ -504,10 +542,15 @@ pub type ScanlineKernelFn = extern "C" fn(
 // =============================================================================
 
 // These tests hand-assemble SSE2 byte sequences and call them through the
-// 128-bit `KernelFn`, so they are specific to the non-AVX-512 ABI. Under
-// `+avx512f`, `KernelFn` is `__m512` and these `__m128` call sites don't type
-// check; the AVX-512 path is covered by the `avx512` tests in `mod.rs`.
-#[cfg(all(test, not(target_feature = "avx512f")))]
+// 128-bit `KernelFn`, so they are specific to the SSE2 (no AVX2, no AVX-512)
+// ABI. Under `+avx512f` or `+avx2`, `KernelFn` is `__m512`/`__m256` and these
+// `__m128` call sites don't type check; those paths are covered by the
+// `avx512`/`avx2` tests in `mod.rs`.
+#[cfg(all(
+    test,
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 mod tests {
     // These tests hand-assemble instruction words as `base | Rd | (Rn << 5) | ...`;
     // the `| 0` / `(0 << 5)` terms document zero register fields on purpose.

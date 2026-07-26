@@ -23,6 +23,23 @@ use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval_scalar;
 use pixelflow_ir::jit_manifold::JitManifold;
 
+// JitManifold::call's ABI tracks the build's selected width (SSE2/AVX2; this
+// file is gated off avx512f above), so the splat/extract pair must match:
+// __m256 under +avx2, else __m128.
+#[cfg(target_feature = "avx2")]
+fn jit_eval(jit: &JitManifold, x: f32, y: f32, z: f32, w: f32) -> f32 {
+    use core::arch::x86_64::*;
+    unsafe {
+        _mm256_cvtss_f32(jit.call(
+            _mm256_set1_ps(x),
+            _mm256_set1_ps(y),
+            _mm256_set1_ps(z),
+            _mm256_set1_ps(w),
+        ))
+    }
+}
+
+#[cfg(not(target_feature = "avx2"))]
 fn jit_eval(jit: &JitManifold, x: f32, y: f32, z: f32, w: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
@@ -49,12 +66,31 @@ fn assert_jit_matches_interp(arena: &ExprArena, root: ExprId, label: &str) -> u3
             let want = eval_scalar(arena, root, &[x, y, 0.1, 0.9], &BindingTable::empty());
             let got = jit_eval(&jit, x, y, 0.1, 0.9);
             assert!(
-                (want.is_nan() && got.is_nan()) || want == got,
+                (want.is_nan() && got.is_nan()) || floats_agree(want, got),
                 "{label}: JIT {got} != interp {want} at ({x}, {y}) [spills={spills}]"
             );
         }
     }
     spills
+}
+
+/// Bit-exact under every build this file was originally tested with (no
+/// hardware FMA target feature => `fp-contract=fast` has nothing to contract
+/// into, so both tiers round identically). Under `+avx2,+fma`, `eval_scalar`'s
+/// scalar `a*b+c` gets contracted by LLVM into one rounding (a real `fma`
+/// instruction); a `DecomposedMulAdd` (register pressure forced `a`/`b` apart
+/// from `c` — see `muladd_and_clamp_spilled`, which deliberately builds
+/// operands deeper than the register budget) is architecturally a two-step
+/// mul-then-add and rounds twice, regardless of backend. That is a genuine
+/// last-bit IEEE-754 rounding difference, not a miscompile, so this tolerates
+/// a few ULPs of f32 relative error instead of weakening to a coarse epsilon
+/// that would also hide a real one.
+fn floats_agree(want: f32, got: f32) -> bool {
+    if want == got {
+        return true;
+    }
+    let ulp = f32::EPSILON * want.abs().max(f32::MIN_POSITIVE);
+    (want - got).abs() <= 4.0 * ulp
 }
 
 /// A "wide" balanced expression tree: needs ~depth registers transiently, so a
