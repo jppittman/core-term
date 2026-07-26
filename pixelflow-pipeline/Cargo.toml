@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 description = "Training and data generation pipeline for PixelFlow"
 
+[lib]
+# The regression job passes Criterion's Bencher output flag to declared
+# benchmark targets. The library has no benchmarks of its own and Rust's
+# built-in harness rejects that flag after the Criterion suites finish.
+bench = false
+
 [features]
 default = []
 training = ["pixelflow-search/std"]
@@ -29,6 +35,12 @@ pixelflow-compiler = { path = "../pixelflow-compiler" }
 [[bench]]
 name = "nnue_training_suite"
 harness = false
+
+[[bin]]
+name = "bench_hoisted_scanline"
+path = "src/bin/bench_hoisted_scanline.rs"
+# This is a standalone profiling utility, not a Criterion bench target.
+bench = false
 
 
 [[bin]]
