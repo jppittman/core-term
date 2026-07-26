@@ -77,8 +77,7 @@ use crate::spsc::{SpscSender, TryRecvError, TrySendError};
 /// as [`Actor`](crate::Actor)/[`ActorScheduler`](crate::ActorScheduler). Only `step_data` is
 /// required; `step_control` and `step_management` default to the silent transition, so a
 /// single-lane actor writes `type Control = Infallible; type Management = Infallible;` and one
-/// method, exactly as [`Host`](crate::Host) already does for its own [`Actor`](crate::Actor)
-/// impl.
+/// method, exactly as [`Host`](crate::Host) does.
 pub trait Transducer {
     /// The control-lane input. Highest priority — set to `Infallible` if unused.
     type Control;
