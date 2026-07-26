@@ -140,7 +140,7 @@ jobs:
       # happens to be. This runs target-specific builds under +avx2,+fma and
       # +avx512f; the separate Clippy job validates linting without passing
       # wide ISA flags to host build scripts. Unsupported runtime levels are
-      # still built and linted, then reported explicitly; see
+      # still built, then reported explicitly; see
       # `xtask isa-matrix`'s own doc comment for the per-level detection.
       - name: Run ISA matrix
         shell: bash

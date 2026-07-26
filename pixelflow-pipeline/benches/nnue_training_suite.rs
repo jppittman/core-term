@@ -3,7 +3,7 @@
 //! This benchmark generates training data for NNUE by running diverse kernels
 //! and collecting (Expr features, actual SIMD runtime) pairs.
 //!
-//! Run with: cargo bench -p pixelflow-pipeline --bench nnue_training_suite
+//! Run with: cargo bench -p pixelflow-pipeline --features training --bench nnue_training_suite
 //!
 //! The results can be processed to create NNUE training data.
 
