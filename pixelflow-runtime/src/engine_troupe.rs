@@ -129,10 +129,6 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                 // and it has to be asked there regardless, because a resize can land after this
                 // point too. Asking it in both places would be two answers that can disagree.
                 let window = Window::rejoin(response.frame, response.meta);
-                debug_assert!(
-                    self.window.is_none(),
-                    "two live buffers: one held, one just rendered"
-                );
                 match response.render_time {
                     Some(render_time) => self.present_cooked_frame(render_time, window),
                     // The rasterizer was paused, so it handed the buffer back unrendered.
@@ -142,16 +138,12 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                     // return is unconditional, its having been drawn into is not.
                     None => {
                         log::debug!("Render skipped (paused); retaining the buffer unpresented");
-                        self.window = Some(window);
+                        self.hold(window);
                     }
                 }
             }
             EngineData::WindowGranted(window) => {
-                debug_assert!(
-                    self.window.is_none(),
-                    "granted a second buffer while still holding one"
-                );
-                self.window = Some(window);
+                self.hold(window);
                 self.render_if_ready();
             }
         }
@@ -293,6 +285,22 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
 impl EngineHandler {
     /// Take delivery of a buffer from the driver, as the newest generation.
     ///
+    /// Take the buffer into hand.
+    ///
+    /// Every path that acquires one goes through here so the "at most one buffer" invariant has
+    /// a single home rather than an assertion repeated at each arrival. It is a real `assert!`,
+    /// not a `debug_assert!`, because the release-build alternative is worse than a crash: the
+    /// buffer being overwritten is the driver's only current one, and losing it leaves a
+    /// terminal that never draws again and cannot recover without being killed.
+    fn hold(&mut self, window: Window) {
+        assert!(
+            self.window.is_none(),
+            "a second buffer (generation {}) arrived while one was already in hand",
+            window.generation
+        );
+        self.window = Some(window);
+    }
+
     /// Render if both halves of one are in hand, and otherwise go and get the missing half.
     ///
     /// Every path that acquires either half ends here, so "can we render yet?" is asked in one
@@ -307,7 +315,17 @@ impl EngineHandler {
             return;
         }
         let Some(window) = self.window.take() else {
-            self.request_window();
+            // Only ask for a buffer we could actually draw into *now*. Asking while a render is
+            // in flight looks harmless — the answer is normally "nothing free" — but a resize
+            // allocates a replacement, which would answer the outstanding ask and leave a second
+            // buffer in hand while the first is still out. The completion then arrives with
+            // nowhere to put its buffer, and a *paused* completion overwrites the replacement,
+            // stranding the driver's only current buffer and freezing the display.
+            //
+            // The credit already knows: it is the one-outstanding-render bound.
+            if self.render_credit.outstanding() == 0 {
+                self.request_window();
+            }
             return;
         };
         let manifold = self
@@ -429,7 +447,7 @@ impl EngineHandler {
                 window.width_px,
                 window.height_px
             );
-            self.window = Some(window);
+            self.hold(window);
             self.pending_manifold = Some(manifold);
             return;
         }
@@ -1204,6 +1222,47 @@ mod tests {
         rig.surface((200, 200));
         rig.app_frame();
         assert_eq!(rig.render_requests(), vec![(200, 200)]);
+    }
+
+    /// A resize while a render is in flight, *with a frame already queued behind it*. The queued
+    /// frame makes the engine ask for a buffer it cannot yet use; the resize then allocates one,
+    /// so the ask is answered immediately and the engine is holding a second buffer while the
+    /// first is still out. The old completion then arrives with nowhere to go.
+    ///
+    /// In a debug build that trips the "one buffer" assertion. In release, a *paused*
+    /// completion — the arm that keeps its buffer rather than presenting it — overwrites the
+    /// replacement, and since the driver has already handed its only current buffer over, the
+    /// terminal never draws again.
+    #[test]
+    fn a_resize_does_not_grant_a_second_buffer_mid_render() {
+        let mut rig = Rig::new();
+        rig.surface((100, 100));
+
+        rig.app_frame();
+        assert_eq!(rig.render_requests(), vec![(100, 100)]);
+
+        // A second frame queues behind the in-flight render, and asks for a buffer.
+        rig.app_frame();
+        // The resize allocates one, which could answer that ask.
+        rig.surface((200, 200));
+
+        assert!(
+            rig.engine.window.is_none(),
+            "a buffer is already out with the renderer; a second one must not be granted"
+        );
+
+        // The original render completes into an engine that still has exactly one buffer's
+        // worth of state to reconcile.
+        rig.complete_render();
+        assert!(
+            rig.blitted().is_empty(),
+            "the old-size frame is superseded"
+        );
+        assert_eq!(
+            rig.render_requests(),
+            vec![(200, 200)],
+            "and the queued frame renders into the resize's buffer"
+        );
     }
 
     /// Two buffers can never be out at once — the old fixture had to model that possibility and
