@@ -366,7 +366,14 @@ fn isa_matrix(with_clippy: bool) {
                     &workspace_root,
                     &matrix_target,
                     &rustflags,
-                    &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
+                    &[
+                        "clippy",
+                        "--workspace",
+                        "--all-targets",
+                        "--",
+                        "-D",
+                        "warnings",
+                    ],
                 );
                 if !clippy_ok {
                     println!("isa-matrix: {} — cargo clippy FAILED", level.name);
@@ -446,6 +453,10 @@ fn run_with_rustflags(
         .current_dir(workspace_root)
         .args(args)
         .env("CARGO_TARGET_DIR", target_dir)
+        // Propagate the requested ISA to pixelflow-core's build script. Cargo
+        // executes that script for the host, so its CARGO_CFG_TARGET_FEATURE
+        // is not a reliable description of the explicit target build.
+        .env("PIXELFLOW_ISA_TARGET_FEATURES", rustflags)
         // Deep-Manifold tests recurse near the stack limit by design (see
         // CLAUDE.md's dev-profile note), and 8-/16-lane builds have
         // proportionally larger frames. This raises the floor for libtest's
