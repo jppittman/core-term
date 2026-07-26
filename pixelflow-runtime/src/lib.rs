@@ -10,6 +10,7 @@ pub mod frame;
 pub mod input;
 pub mod pixel;
 pub mod platform;
+pub mod render_coordinator;
 pub mod render_pool;
 pub mod testing;
 pub mod traits;
