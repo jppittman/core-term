@@ -17,12 +17,11 @@ use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{
     RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
 };
-use actor_scheduler::mealy::Credit;
 use actor_scheduler::{
     Actor, ActorHandle, ActorStatus, ActorTypes, HandlerError, HandlerResult, Message, SendError,
     SystemStatus, TroupeActor,
 };
-use pixelflow_core::{At, Discrete, Manifold, W, X, Y, Z};
+use crate::render_coordinator::{Completed, RenderCoordinator, Step};
 use pixelflow_graphics::render::rasterizer::{
     RasterizerActor, RasterizerHandle, RenderRequest, RenderResponse,
 };
@@ -47,33 +46,20 @@ pub struct EngineHandler {
     /// Handle to the application (for event forwarding).
     app_handle: Option<Arc<dyn Application + Send + Sync>>,
     /// Frame counter for VSync feedback.
+    ///
+    /// Stays here for now. §7.3 sends it to the rasterizer, whose only consumer is the FPS
+    /// telemetry edge — but that edge is `rasterizer → vsync`, which does not exist until the
+    /// coordinator is its own node, so the move belongs with that slice rather than this one.
     frame_number: u64,
-    /// The window buffer, while it is on loan from the driver.
-    ///
-    /// Borrowed, not owned: it arrives via `WindowGranted` in answer to a request and goes back
-    /// with `Present`. Holding it is the whole of "a render can start" — there is no separate
-    /// flag, and no generation kept alongside it, because the buffer carries its own.
-    ///
-    window: Option<Window>,
-    /// A `RequestWindow` has been sent and not yet answered.
-    ///
-    /// Paired with the driver's own latch: it holds an unanswered request until a buffer frees,
-    /// so asking twice cannot make an answer come sooner — it only leaves a request alive past
-    /// the grant that satisfied it, and the next buffer to appear gets handed over unasked.
-    awaiting_grant: bool,
-    /// The one-outstanding-render bound on the engine → rasterizer edge.
-    ///
-    /// `pending_render` used to serve double duty: carrying the torn-off window metadata *and*
-    /// standing in as an "is a render in flight" flag. The metadata now rides with the request,
-    /// leaving only the bound — which the target topology already specifies as `Credit(1)`
-    /// (`docs/designs/pixelflow-runtime-engine-mesh-migration.md` §3), so it is that, rather
-    /// than an `Option` being checked for `is_none`.
-    render_credit: Credit,
     /// Number of render threads for work-stealing parallelism.
     render_threads: usize,
-    /// Latest manifold from app - always keep the most recent, drop old ones.
-    /// App sends manifolds fast (cheap algebra), engine rasterizes slow (expensive).
-    pending_manifold: Option<Arc<dyn Manifold<Output = Discrete> + Send + Sync>>,
+    /// When to render and what to render into.
+    ///
+    /// All of it — the borrowed buffer, the outstanding-request latch, the one-render credit,
+    /// and the keep-latest kernel slot — lives behind this, and none of it is reachable from the
+    /// mediator's other responsibilities. What remains of `EngineHandler` on this path is
+    /// delivering the [`Step`]s it hands back.
+    render: RenderCoordinator,
 }
 
 // ActorTypes impls - required for troupe! macro
@@ -120,35 +106,33 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                     .expect("failed to send to app. it probably crashed");
                 }
 
-                // Delegate rendering to rasterizer if we have a manifold and a window
-                self.render_if_ready();
+                // The tick is also what retries a request that was dropped in transit.
+                let step = self.render.advance();
+                self.deliver(step);
             }
             EngineData::RenderComplete(response) => {
-                // The render is done, so the edge's one credit is free again.
-                self.render_credit.release();
-
                 // No staleness check here any more. Whether this buffer is still the one the
                 // driver wants is the driver's question, asked against state the driver owns —
                 // and it has to be asked there regardless, because a resize can land after this
                 // point too. Asking it in both places would be two answers that can disagree.
-                let window = Window::rejoin(response.frame, response.meta);
-                match response.render_time {
-                    Some(render_time) => self.present_cooked_frame(render_time, window),
+                let Completed { present, next } = self.render.completed(response);
+                match present {
+                    Some((window, render_time)) => {
+                        self.present_cooked_frame(render_time, window)
+                    }
                     // The rasterizer was paused, so it handed the buffer back unrendered.
                     // Presenting it would blit whatever stale pixels it still holds; keeping it
-                    // is the whole point of the frame coming back at all. This arm exists
-                    // because `render_time: Option<Duration>` forces the question — the buffer's
-                    // return is unconditional, its having been drawn into is not.
+                    // is the whole point of the frame coming back at all. The coordinator has
+                    // retained it.
                     None => {
-                        log::debug!("Render skipped (paused); retaining the buffer unpresented");
-                        self.hold(window);
+                        log::debug!("Render skipped (paused); retaining the buffer unpresented")
                     }
                 }
+                self.deliver(next);
             }
             EngineData::WindowGranted(window) => {
-                self.awaiting_grant = false;
-                self.hold(window);
-                self.render_if_ready();
+                let step = self.render.granted(window);
+                self.deliver(step);
             }
         }
         Ok(())
@@ -296,75 +280,51 @@ impl EngineHandler {
     /// not a `debug_assert!`, because the release-build alternative is worse than a crash: the
     /// buffer being overwritten is the driver's only current one, and losing it leaves a
     /// terminal that never draws again and cannot recover without being killed.
-    fn hold(&mut self, window: Window) {
-        assert!(
-            self.window.is_none(),
-            "a second buffer (generation {}) arrived while one was already in hand",
-            window.generation
-        );
-        self.window = Some(window);
+    /// Deliver whatever the coordinator decided.
+    ///
+    /// The single place the render protocol reaches the wire, so the coordinator can stay
+    /// handle-free and every send failure is handled once rather than at each call site.
+    fn deliver(&mut self, step: Step) {
+        match step {
+            Step::Idle => {}
+            Step::RequestWindow => {
+                // A refused ask is not lost: the driver latches it and answers when a buffer
+                // frees. A send that fails leaves the latch clear, so the next tick retries —
+                // the latch only covers requests that actually arrived.
+                match self
+                    .driver
+                    .send(Message::Management(DisplayMgmt::RequestWindow))
+                {
+                    Ok(()) => self.render.request_sent(),
+                    Err(e) => {
+                        log::debug!(
+                            "Window request not delivered ({e}); retrying on the next tick"
+                        );
+                    }
+                }
+            }
+            Step::Render(request) => self.send_render(request),
+        }
     }
 
-    /// Render if both halves of one are in hand, and otherwise go and get the missing half.
+    /// Hand a bound frame to the rasterizer.
     ///
-    /// Every path that acquires either half ends here, so "can we render yet?" is asked in one
-    /// place instead of being open-coded at each arrival. Nothing is consumed unless a render
-    /// actually starts — a refused render puts both back (see `trigger_render_with_window`),
-    /// which is what lets the next completion pick them up.
-    fn render_if_ready(&mut self) {
-        if self.pending_manifold.is_none() {
-            // Nothing to draw. Deliberately does *not* ask for the buffer: holding it idle would
-            // block nothing today, but it makes "who has the buffer?" stop meaning "who is
-            // drawing?", and that equivalence is what bounds the loop.
-            return;
-        }
-        let Some(window) = self.window.take() else {
-            // Only ask for a buffer we could actually draw into *now*. Asking while a render is
-            // in flight looks harmless — the answer is normally "nothing free" — but a resize
-            // allocates a replacement, which would answer the outstanding ask and leave a second
-            // buffer in hand while the first is still out. The completion then arrives with
-            // nowhere to put its buffer, and a *paused* completion overwrites the replacement,
-            // stranding the driver's only current buffer and freezing the display.
-            //
-            // The credit already knows: it is the one-outstanding-render bound.
-            if self.render_credit.outstanding() == 0 {
-                self.request_window();
-            }
+    /// NOTE: this send carries the framebuffer, and `ActorHandle::send` takes the message by
+    /// value while `SendError` carries nothing back — so a failure here destroys the driver's
+    /// only buffer and the display can never recover. Releasing the credit keeps the *edge*
+    /// usable, but there is no buffer left to use it with. Pre-existing, and deliberately left
+    /// as-is by the extraction that moved this code rather than changed mid-refactor; the
+    /// `Present` send takes the opposite stance (`.expect`) for the same hazard, so the two
+    /// disagree and one of them is wrong.
+    fn send_render(&mut self, request: RenderRequest<PlatformPixel, WindowMeta>) {
+        let Some(rasterizer) = &self.rasterizer else {
+            log::warn!("Rasterizer not initialized, dropping render request");
+            self.render.render_send_failed();
             return;
         };
-        let manifold = self
-            .pending_manifold
-            .take()
-            .expect("pending_manifold checked Some above");
-        self.trigger_render_with_window(manifold, window);
-    }
-
-    /// Ask the driver for the buffer, unless we are already waiting on an answer.
-    ///
-    /// A refused ask is not lost: the driver latches it and answers when a buffer frees. So a
-    /// *second* ask does not speed anything up — it outlives the grant that answered the first,
-    /// and the next buffer to appear is handed over unasked, to an engine that already has one.
-    ///
-    /// This is the flag an earlier revision deleted, with the argument that ownership is the
-    /// bound. That was wrong in a specific way worth keeping: ownership bounds how many
-    /// *buffers* exist, and says nothing about how many *requests* do. One surplus request is
-    /// all it takes, because the driver cannot tell a fresh ask from a duplicate of one it has
-    /// already satisfied.
-    ///
-    /// A send that fails deliberately leaves the flag clear, so the next tick retries — the
-    /// latch only covers requests that actually arrived.
-    fn request_window(&mut self) {
-        if self.awaiting_grant {
-            return;
-        }
-        match self
-            .driver
-            .send(Message::Management(DisplayMgmt::RequestWindow))
-        {
-            Ok(()) => self.awaiting_grant = true,
-            Err(e) => {
-                log::debug!("Window request not delivered ({e}); retrying on the next tick");
-            }
+        if let Err(e) = rasterizer.send(Message::Data(request)) {
+            log::warn!("Failed to send render request to rasterizer: {}", e);
+            self.render.render_send_failed();
         }
     }
 
@@ -433,8 +393,8 @@ impl EngineHandler {
 
                 // Keep-latest port: the newest compute graph replaces any frame that hasn't
                 // started rendering yet, and renders now if a window is free to draw into.
-                self.pending_manifold = Some(manifold);
-                self.render_if_ready();
+                let step = self.render.submit(manifold);
+                self.deliver(step);
             }
             AppData::Skipped => {
                 // App says nothing to render - return token anyway
@@ -443,89 +403,10 @@ impl EngineHandler {
         }
     }
 
-    /// Trigger asynchronous rendering on the rasterizer actor with a Window.
-    fn trigger_render_with_window(
-        &mut self,
-        manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>,
-        window: Window,
-    ) {
-        // Take the edge's single credit *before* taking the window apart — a refusal has to
-        // hand both halves back intact.
-        //
-        // A refusal here is ordinary backpressure, not an error: vsync keeps asking for frames
-        // at 60Hz while a render is in flight, so a frame arriving mid-render is the common
-        // case. Dropping the pair would be the expensive kind of mistake — the window in hand
-        // during an in-flight render is the live buffer, so losing it strands the terminal at
-        // whatever the in-flight render happens to produce. Both go back where they came from
-        // and the next `release()` re-drives them.
-        if !self.render_credit.try_consume() {
-            log::debug!(
-                "Render in flight; deferring frame for buffer {} ({}x{}) until it completes",
-                window.generation,
-                window.width_px,
-                window.height_px
-            );
-            self.hold(window);
-            self.pending_manifold = Some(manifold);
-            return;
-        }
-
-        // The frame goes to the rasterizer; the rest travels with the request and comes back
-        // untouched, so nothing has to be stashed here in the meantime.
-        let (frame, meta) = window.tear();
-        let WindowMeta {
-            width_px, height_px, ..
-        } = meta;
-
-        // The scene is authored in point space; the frame is the platform's
-        // sample lattice and may be denser (device pixels on HiDPI displays).
-        // The lattice embedding is the measured ratio points/pixels per axis —
-        // identity when the platform samples 1:1 (X11, non-Retina macOS).
-        // Contramapping here keeps the app scale-agnostic: platform = dimap.
-        assert!(
-            frame.width > 0 && frame.height > 0,
-            "cannot render into an empty frame ({}x{})",
-            frame.width,
-            frame.height
-        );
-        let point_per_px_x = width_px as f32 / frame.width as f32;
-        let point_per_px_y = height_px as f32 / frame.height as f32;
-        let manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync> =
-            if point_per_px_x == 1.0 && point_per_px_y == 1.0 {
-                manifold
-            } else {
-                Arc::new(At {
-                    inner: manifold,
-                    x: X * point_per_px_x,
-                    y: Y * point_per_px_y,
-                    z: Z,
-                    w: W,
-                })
-            };
-
-        let request = RenderRequest {
-            manifold,
-            frame,
-            meta,
-        };
-
-        // Send to rasterizer. On any failure the render never happens, so give the credit back
-        // — otherwise the edge would be permanently blocked by a request that was never sent.
-        if let Some(rasterizer) = &self.rasterizer {
-            if let Err(e) = rasterizer.send(Message::Data(request)) {
-                log::warn!("Failed to send render request to rasterizer: {}", e);
-                self.render_credit.release();
-            }
-        } else {
-            log::warn!("Rasterizer not initialized, dropping render request");
-            self.render_credit.release();
-        }
-    }
-
     /// Hand the drawn buffer back to the driver to be shown.
     ///
     /// This *is* the return: the driver is the buffer's resting owner, so there is no separate
-    /// acknowledgement to wait for and nothing to remember about what went out. The engine
+    /// acknowledgement to wait for and nothing to remember about what went out. The coordinator
     /// simply has no buffer again afterwards, and asks for one when it next has something to
     /// draw.
     fn present_cooked_frame(&mut self, render_time: std::time::Duration, window: Window) {
@@ -553,10 +434,6 @@ impl EngineHandler {
                 send_time
             );
         }
-
-        // Catch up on whatever arrived while the render was in flight. The buffer has just gone
-        // to the driver, so in practice this asks for it back.
-        self.render_if_ready();
     }
 
     /// Handle events from the display driver
@@ -576,7 +453,8 @@ impl EngineHandler {
 
                 // The app may already have handed us something to draw, in which case this is
                 // the first moment a buffer can exist to draw it into.
-                self.render_if_ready();
+                let step = self.render.advance();
+                self.deliver(step);
 
                 if let Some(app) = &self.app_handle {
                     app.send(EngineEvent::Control(EngineEventControl::WindowCreated {
@@ -600,7 +478,8 @@ impl EngineHandler {
                 // here: it goes back on the next `Present` and the driver recognises it as
                 // superseded. Rendering into it once more first is harmless and one frame
                 // cheaper than reaching for the new one mid-flight.
-                self.render_if_ready();
+                let step = self.render.advance();
+                self.deliver(step);
 
                 if let Some(app) = &self.app_handle {
                     app.send(EngineEvent::Control(EngineEventControl::Resized {
@@ -771,11 +650,8 @@ impl TroupeActor<Directory> for EngineHandler {
             rasterizer_forward_handle: None, // Set via SetRasterizerForwardHandle message
             app_handle: None,
             frame_number: 0,
-            window: None,
-            awaiting_grant: false,
-            render_credit: Credit::new(1),
+            render: RenderCoordinator::new(),
             render_threads: 1, // Default, will be set by Configure message
-            pending_manifold: None,
         }
     }
 }
@@ -894,6 +770,7 @@ mod tests {
     //! the interaction between the two sides, not the behaviour of either alone.
 
     use super::*;
+    use pixelflow_core::{Discrete, Manifold};
     use crate::display::messages::Surface;
     use crate::display::window_keeper::{Presented, WindowKeeper};
     use crate::platform::ColorCube;
@@ -1016,11 +893,8 @@ mod tests {
                 rasterizer_forward_handle: None,
                 app_handle: None,
                 frame_number: 0,
-                window: None,
-                awaiting_grant: false,
-                render_credit: Credit::new(1),
+                render: RenderCoordinator::new(),
                 render_threads: 1,
-                pending_manifold: None,
             };
 
             Self {
@@ -1175,7 +1049,7 @@ mod tests {
         rig.tick();
         assert!(rig.render_requests().is_empty());
         assert!(
-            rig.engine.window.is_none(),
+            !rig.engine.render.holds_buffer(),
             "no manifold to draw, so no reason to be holding the buffer"
         );
     }
@@ -1274,7 +1148,7 @@ mod tests {
         rig.surface((200, 200));
 
         assert!(
-            rig.engine.window.is_none(),
+            !rig.engine.render.holds_buffer(),
             "a buffer is already out with the renderer; a second one must not be granted"
         );
 
@@ -1318,7 +1192,7 @@ mod tests {
         // A resize now allocates a buffer that a stale ask would collect.
         rig.surface((200, 200));
         assert!(
-            rig.engine.window.is_none(),
+            !rig.engine.render.holds_buffer(),
             "the buffer is out with the renderer; an unanswered duplicate ask must not \
              collect the resize's replacement"
         );
@@ -1350,7 +1224,7 @@ mod tests {
             rig.tick();
         }
         assert!(
-            rig.engine.window.is_none(),
+            !rig.engine.render.holds_buffer(),
             "no grant can arrive while the buffer is out, however often it is requested"
         );
 
