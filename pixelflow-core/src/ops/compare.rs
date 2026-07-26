@@ -346,6 +346,20 @@ mod tests {
     }
 
     #[test]
+    fn soft_gt_mid_transition_divides_diff_by_sharpness() {
+        // diff = left - right = 1.0, sharpness = 2.0 -> t = (1.0/2.0 + 1)/2 = 0.75
+        // (unclamped, since 0 <= 0.75 <= 1), result = 3t^2 - 2t^3 = 0.84375.
+        // A `diff * sharpness` bug would give t = (2.0 + 1)/2 = 1.5, clamped to
+        // 1.0, so this distinguishes division from multiplication by sharpness.
+        let mid = SoftGt {
+            left: Jet2::constant(Field::from(6.0)),
+            right: Jet2::constant(Field::from(5.0)),
+            sharpness: 2.0,
+        };
+        assert!((first_lane(mid.eval(jet_domain(0.0)).val) - 0.84375).abs() < 1e-5);
+    }
+
+    #[test]
     fn soft_gt_at_boundary_is_half() {
         let at_boundary = SoftGt {
             left: Jet2::constant(Field::from(5.0)),

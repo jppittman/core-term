@@ -422,6 +422,40 @@ mod tests {
     }
 
     #[test]
+    fn write_before_bind_is_flushed_at_bind() {
+        // Data sent on the writer handle before spawn() (before Bind lands)
+        // must queue and flush once bound, not be dropped.
+        let pty = NixPty::spawn_with_config(&PtyConfig {
+            command_executable: "/bin/cat",
+            args: &[],
+            initial_cols: 80,
+            initial_rows: 24,
+        })
+        .expect("pty");
+        let sink = CaptureSink::default();
+        let mut troupe = PtyTroupe::new(pty).expect("troupe");
+        let writer = troupe.writer_handle();
+
+        writer
+            .send(Message::Data(b"queued-before-bind".to_vec()))
+            .expect("early write");
+
+        let handle = troupe
+            .spawn(Box::new(sink.clone()), Box::new(sink.clone()))
+            .expect("spawn");
+
+        assert!(
+            sink.wait_for(Duration::from_secs(5), |s| s
+                .printed_text()
+                .contains("queued-before-bind")),
+            "writer should flush data queued before bind"
+        );
+
+        drop(writer);
+        drop(handle);
+    }
+
+    #[test]
     fn resize_before_bind_is_applied() {
         // A resize sent on the writer handle immediately (likely before the
         // Bind lands, since Control outranks Management) must not be lost or
