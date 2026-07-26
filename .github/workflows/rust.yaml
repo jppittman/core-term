@@ -106,9 +106,9 @@ jobs:
   isa-matrix:
     name: ISA matrix (SSE2/AVX2/AVX-512)
     runs-on: ubuntu-latest
-    # Three full `cargo test --workspace` + `cargo clippy` passes (one per
-    # supported ISA level) in one job; each pass alone can take several
-    # minutes on a cold cache.
+    # Three full workspace ISA builds plus the supported runtime passes can
+    # take several minutes on a cold cache. The separate Clippy job owns
+    # linting: clippy's host build scripts cannot safely inherit AVX-512 flags.
     timeout-minutes: 45
     steps:
       - name: Checkout code
@@ -137,15 +137,16 @@ jobs:
 
       # .cargo/config.toml sets no target-cpu/target-feature, so the jobs
       # above only ever exercise whichever ISA level SSE2-baseline codegen
-      # happens to be. This runs cargo test + clippy again under +avx2,+fma
-      # and +avx512f -- skipping cleanly (not silently) whichever of those
-      # ubuntu-latest's actual hardware doesn't support; see
+      # happens to be. This runs target-specific builds under +avx2,+fma and
+      # +avx512f; the separate Clippy job validates linting without passing
+      # wide ISA flags to host build scripts. Unsupported runtime levels are
+      # still built and linted, then reported explicitly; see
       # `xtask isa-matrix`'s own doc comment for the per-level detection.
-      - name: Run ISA matrix (test + clippy per supported level)
+      - name: Run ISA matrix
         shell: bash
         run: |
           set -o pipefail
-          cargo run -p xtask -- isa-matrix --clippy 2>&1 | tee isa-matrix-output.txt
+          cargo run -p xtask -- isa-matrix 2>&1 | tee isa-matrix-output.txt
 
       - name: Upload ISA matrix output
         if: always()

@@ -35,6 +35,9 @@ pixelflow-compiler = { path = "../pixelflow-compiler" }
 [[bench]]
 name = "nnue_training_suite"
 harness = false
+# Training-data generation is intentionally expensive; opt in when collecting
+# NNUE data rather than running it as a bounded postsubmit regression bench.
+required-features = ["training"]
 
 [[bin]]
 name = "bench_hoisted_scanline"
