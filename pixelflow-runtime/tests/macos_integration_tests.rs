@@ -42,17 +42,25 @@ mod tests {
             .park(SystemStatus::Busy, &mut out)
             .expect("park failed");
 
-        let found_window_id = out.emits.iter().find_map(|emit| match emit {
-            DriverEmit::Event(DisplayEvent::WindowCreated { window }) => Some(window.id),
+        // Geometry only: since step 5a the driver owns the buffer, so `WindowCreated` reports
+        // the surface the platform chose and carries no frame.
+        let found = out.emits.iter().find_map(|emit| match emit {
+            DriverEmit::Event(DisplayEvent::WindowCreated { surface }) => Some(*surface),
             _ => None,
         });
+        let Some(surface) = found else {
+            panic!("Expected WindowCreated event, found: {:?}", out.emits);
+        };
         assert!(
-            found_window_id.is_some(),
-            "Expected WindowCreated event, found: {:?}",
-            out.emits
+            surface.frame_width >= surface.width_px,
+            "the lattice is at least as dense as the layout ({}x{} points, {}x{} pixels)",
+            surface.width_px,
+            surface.height_px,
+            surface.frame_width,
+            surface.frame_height
         );
 
-        let win_id = found_window_id.expect("checked immediately above");
+        let win_id = surface.id;
         ops.handle_control(
             DisplayControl::SetTitle {
                 id: win_id,
