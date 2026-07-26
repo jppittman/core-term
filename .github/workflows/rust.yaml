@@ -143,4 +143,15 @@ jobs:
       # `xtask isa-matrix`'s own doc comment for the per-level detection.
       - name: Run ISA matrix (test + clippy per supported level)
         shell: bash
-        run: cargo run -p xtask -- isa-matrix --clippy
+        run: |
+          set -o pipefail
+          cargo run -p xtask -- isa-matrix --clippy 2>&1 | tee isa-matrix-output.txt
+
+      - name: Upload ISA matrix output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isa-matrix-output-${{ github.sha }}
+          path: isa-matrix-output.txt
+          if-no-files-found: error
+          overwrite: true
