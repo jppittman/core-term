@@ -431,43 +431,9 @@ fn isa_matrix(with_clippy: bool) {
     }
 }
 
-/// The triple this machine builds for, from `rustc -vV`.
-///
-/// Needed because `--target` must be passed *explicitly* to keep `RUSTFLAGS` off host
-/// artifacts — see [`run_with_rustflags`]. Naming the host triple is a no-op for what gets
-/// built; it is the act of specifying `--target` at all that cargo keys the behaviour on.
-#[cfg(target_arch = "x86_64")]
-fn host_triple() -> String {
-    let out = Command::new("rustc")
-        .arg("-vV")
-        .output()
-        .expect("isa-matrix: could not run `rustc -vV` to discover the host triple");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .expect("isa-matrix: `rustc -vV` printed no `host:` line")
-        .trim()
-        .to_string()
-}
-
-/// Run `cargo <args>` from the workspace root with `RUSTFLAGS` set to
-/// `rustflags` and artifacts confined to `target_dir`, streaming output
+/// Run `cargo <args>` from the workspace root with ISA flags applied only to
+/// target crates and artifacts confined to `target_dir`, streaming output
 /// straight through. Returns whether it succeeded.
-///
-/// # Why `--target` is always passed
-///
-/// Without it, `RUSTFLAGS` applies to **host** artifacts too — build scripts and proc macros —
-/// and those are compiled *and then executed* by cargo on the machine doing the build. A level
-/// that names an ISA the build machine lacks therefore kills the build script with `SIGILL`
-/// before any of this workspace is even compiled. `proc-macro2`'s build script died exactly
-/// that way on a CI runner without AVX-512.
-///
-/// Passing `--target` explicitly is what makes cargo apply `RUSTFLAGS` to target artifacts only.
-/// The triple is the host's own, so nothing about the build changes except that host tooling
-/// stops being compiled for a CPU that is not going to run it. This is what makes the matrix's
-/// "compiling a level needs no special hardware" claim actually true: it is true of *this*
-/// workspace's code, and was quietly false for everything cargo runs on the way there.
 #[cfg(target_arch = "x86_64")]
 fn run_with_rustflags(
     workspace_root: &std::path::Path,
@@ -475,16 +441,10 @@ fn run_with_rustflags(
     rustflags: &str,
     args: &[&str],
 ) -> bool {
-    // Before any `--`, or it would be forwarded to the tool behind the separator (clippy's lint
-    // arguments) instead of being read by cargo.
-    let split = args.iter().position(|a| *a == "--").unwrap_or(args.len());
-    Command::new("cargo")
+    let mut command = Command::new("cargo");
+    command
         .current_dir(workspace_root)
-        .args(&args[..split])
-        .arg("--target")
-        .arg(host_triple())
-        .args(&args[split..])
-        .env("RUSTFLAGS", rustflags)
+        .args(args)
         .env("CARGO_TARGET_DIR", target_dir)
         // Deep-Manifold tests recurse near the stack limit by design (see
         // CLAUDE.md's dev-profile note), and 8-/16-lane builds have
@@ -492,10 +452,26 @@ fn run_with_rustflags(
         // own threads; worker threads that set `stack_size` explicitly are
         // NOT covered by it and must size themselves (see
         // `rasterizer::parallel::STACK_SIZE`).
-        .env("RUST_MIN_STACK", "16777216")
+        .env("RUST_MIN_STACK", "16777216");
+
+    // `RUSTFLAGS` is inherited by host build scripts as well as target
+    // crates. On a hosted runner that can compile AVX-512 but cannot execute
+    // it in every process context, that makes dependency build scripts fault
+    // with SIGILL before our tests even start. An explicit target keeps build
+    // scripts and proc macros on the host defaults while applying the ISA
+    // flags to the workspace under test.
+    #[cfg(target_os = "linux")]
+    command
+        .args(["--target", "x86_64-unknown-linux-gnu"])
+        .env("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS", rustflags);
+
+    #[cfg(not(target_os = "linux"))]
+    command.env("RUSTFLAGS", rustflags);
+
+    command
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .unwrap_or_else(|error| panic!("isa-matrix: failed to run cargo: {error}"))
+        .success()
 }
 
 // ============================================================================
