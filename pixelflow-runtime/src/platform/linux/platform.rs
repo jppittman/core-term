@@ -2,7 +2,9 @@
 //!
 //! Bridge to X11DisplayDriver using the new PlatformOps trait.
 
-use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, WindowId};
+use crate::display::messages::{
+    DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Surface, WindowId,
+};
 use crate::display::ops::{DriverOut, PlatformOps};
 use crate::error::RuntimeError;
 use crate::platform::linux::window::X11Window;
@@ -10,7 +12,6 @@ use crate::platform::waker::X11Waker;
 use actor_scheduler::{ActorStatus, SystemStatus};
 use log::{error, info};
 use pixelflow_graphics::render::color::Bgra8;
-use pixelflow_graphics::render::Frame;
 use std::mem;
 use std::sync::OnceLock;
 use x11::xlib;
@@ -72,8 +73,7 @@ impl PlatformOps for LinuxOps {
                         error!("X11: Present failed: {:?}", e);
                     }
                     window.frame = returned_frame;
-                    // Return buffer to engine
-                    out.present_complete(window);
+                    out.blitted(window);
                 }
             }
         }
@@ -128,20 +128,18 @@ impl PlatformOps for LinuxOps {
                 );
                 match X11Window::new(&settings, &self.waker) {
                     Ok(window) => {
-                        let id = WindowId(window.window);
-                        // Allocate initial frame buffer
-                        let frame = Frame::<LinuxPixel>::new(window.width, window.height);
-
-                        let win = crate::display::messages::Window {
-                            id,
-                            frame,
-                            width_px: window.width,
-                            height_px: window.height,
-                            scale: window.scale_factor,
-                        };
-
-                        // Emit WindowCreated event
-                        out.event(DisplayEvent::WindowCreated { window: win });
+                        // Geometry only — the driver allocates the buffer from this. X11 samples
+                        // 1:1, so the lattice and the point extent are the same numbers.
+                        out.event(DisplayEvent::WindowCreated {
+                            surface: Surface {
+                                id: WindowId(window.window),
+                                width_px: window.width,
+                                height_px: window.height,
+                                frame_width: window.width,
+                                frame_height: window.height,
+                                scale: window.scale_factor,
+                            },
+                        });
                         self.window = Some(window);
                     }
                     Err(e) => {
@@ -153,6 +151,8 @@ impl PlatformOps for LinuxOps {
                 // Drop window to close it
                 self.window = None;
             }
+            // Answered by `PlatformActor` from its keeper; the ops hold no buffer.
+            DisplayMgmt::RequestWindow => {}
         }
         Ok(())
     }

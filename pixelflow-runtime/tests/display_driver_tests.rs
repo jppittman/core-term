@@ -39,25 +39,27 @@ fn display_control_clone_works() {
 // ============================================================================
 
 #[test]
-fn display_event_window_created_carries_dimensions() {
-    use pixelflow_graphics::render::Frame;
-    use pixelflow_runtime::display::messages::Window;
-    use pixelflow_runtime::pixel::PlatformPixel;
+fn display_event_window_created_carries_both_extents() {
+    use pixelflow_runtime::display::messages::Surface;
 
+    // A 2x display: the app lays out in points, the driver allocates in device pixels. The
+    // event carries both because neither can be derived from the other without trusting a
+    // scale factor tracked somewhere else.
     let event = DisplayEvent::WindowCreated {
-        window: Window {
+        surface: Surface {
             id: WindowId::PRIMARY,
-            width_px: 1920,
-            height_px: 1080,
+            width_px: 960,
+            height_px: 540,
+            frame_width: 1920,
+            frame_height: 1080,
             scale: 2.0,
-            frame: Frame::<PlatformPixel>::new(1920, 1080),
         },
     };
 
-    if let DisplayEvent::WindowCreated { window } = event {
-        assert_eq!(window.width_px, 1920);
-        assert_eq!(window.height_px, 1080);
-        assert!((window.scale - 2.0).abs() < 0.001);
+    if let DisplayEvent::WindowCreated { surface } = event {
+        assert_eq!((surface.width_px, surface.height_px), (960, 540));
+        assert_eq!((surface.frame_width, surface.frame_height), (1920, 1080));
+        assert!((surface.scale - 2.0).abs() < 0.001);
     } else {
         panic!("Wrong variant");
     }

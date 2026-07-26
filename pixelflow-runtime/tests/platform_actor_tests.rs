@@ -106,6 +106,7 @@ fn platform_actor_delegation() {
                 width_px: 100,
                 height_px: 100,
                 scale: 1.0,
+                generation: Default::default(),
             },
         })
         .expect("handle_data should succeed");
@@ -140,8 +141,8 @@ fn platform_ops_emit_without_an_engine() {
     impl PlatformOps for EmittingOps {
         fn handle_data(&mut self, msg: DisplayData, out: &mut DriverOut) -> HandlerResult {
             let DisplayData::Present { window } = msg;
-            // The window-return edge: handed back for reuse instead of sent.
-            out.present_complete(window);
+            // The buffer, after its pixels reached the screen: handed back rather than sent.
+            out.blitted(window);
             Ok(())
         }
         fn handle_control(&mut self, _: DisplayControl, _out: &mut DriverOut) -> HandlerResult {
@@ -176,8 +177,8 @@ fn platform_ops_emit_without_an_engine() {
     assert!(matches!(out.emits[0], DriverEmit::Event(DisplayEvent::FocusGained { .. })));
     assert!(matches!(out.emits[1], DriverEmit::Event(DisplayEvent::FocusLost { .. })));
 
-    // The window-return edge travels as a value, so the test can inspect the window itself
-    // rather than needing an engine to receive it.
+    // The buffer travels back as a value, so the test can inspect it directly rather than
+    // needing an engine to receive it.
     out.emits.clear();
     let window = Window {
         id: WindowId(7),
@@ -185,10 +186,11 @@ fn platform_ops_emit_without_an_engine() {
         width_px: 4,
         height_px: 4,
         scale: 1.0,
+        generation: Default::default(),
     };
     ops.handle_data(DisplayData::Present { window }, &mut out).unwrap();
     match &out.emits[..] {
-        [DriverEmit::PresentComplete(returned)] => assert_eq!(returned.id, WindowId(7)),
-        other => panic!("expected exactly one window return, got {:?}", other),
+        [DriverEmit::Blitted(returned)] => assert_eq!(returned.id, WindowId(7)),
+        other => panic!("expected exactly one buffer hand-back, got {:?}", other),
     }
 }

@@ -7,6 +7,7 @@
 // pub mod generic;
 pub mod ops;
 pub mod platform;
+pub mod window_keeper;
 
 pub mod driver;
 pub mod drivers;

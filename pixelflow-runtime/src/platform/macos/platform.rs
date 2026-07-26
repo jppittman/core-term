@@ -1,14 +1,12 @@
 use crate::api::private::WindowId;
-use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Window};
+use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Surface};
 use crate::display::ops::{DriverOut, PlatformOps};
 use crate::error::RuntimeError;
 use crate::platform::macos::cocoa::{self, event_type, NSApplication, NSPasteboard};
 use crate::platform::macos::events;
 use crate::platform::macos::sys;
 use crate::platform::macos::window::MacWindow;
-use crate::platform::PlatformPixel;
 use actor_scheduler::{ActorStatus, HandlerError, HandlerResult, SystemStatus};
-use pixelflow_graphics::render::Frame;
 
 use std::collections::HashMap;
 
@@ -72,8 +70,7 @@ impl PlatformOps for MetalOps {
                         window.id
                     );
                 }
-                // Return the window to the engine for reuse
-                out.present_complete(window);
+                out.blitted(window);
             }
         }
         Ok(())
@@ -145,17 +142,18 @@ impl PlatformOps for MetalOps {
                         self.windows.insert(id, win);
                         self.window_map.insert(ptr as usize, id);
 
-                        // Create Window with initial frame buffer
-                        let window = Window {
-                            id,
-                            frame: Frame::<PlatformPixel>::new(px_w, px_h),
-                            width_px: width,
-                            height_px: height,
-                            scale,
-                        };
-
-                        // Emit WindowCreated event so Engine knows initial size
-                        out.event(DisplayEvent::WindowCreated { window });
+                        // Geometry only — the driver allocates the buffer from this. The two
+                        // extents differ on Retina: layout is in points, the lattice in pixels.
+                        out.event(DisplayEvent::WindowCreated {
+                            surface: Surface {
+                                id,
+                                width_px: width,
+                                height_px: height,
+                                frame_width: px_w,
+                                frame_height: px_h,
+                                scale,
+                            },
+                        });
                     }
                     Err(e) => {
                         eprintln!("Failed to create window: {}", e);
@@ -170,6 +168,8 @@ impl PlatformOps for MetalOps {
                     self.window_map.remove(&(win.window.0 as usize));
                 }
             }
+            // Answered by `PlatformActor` from its keeper; the ops hold no buffer.
+            DisplayMgmt::RequestWindow => {}
         }
         Ok(())
     }
@@ -210,17 +210,17 @@ impl PlatformOps for MetalOps {
             // Poll for window resize
             for (id, mac_window) in self.windows.iter_mut() {
                 if let Some((width, height)) = mac_window.poll_resize() {
-                    // Create new Window with resized frame buffer
-                    // (device pixels; width_px/height_px are points)
                     let (px_w, px_h) = mac_window.pixel_size();
-                    let window = Window {
-                        id: *id,
-                        frame: Frame::<PlatformPixel>::new(px_w, px_h),
-                        width_px: width,
-                        height_px: height,
-                        scale: mac_window.scale_factor(),
-                    };
-                    out.event(DisplayEvent::Resized { window });
+                    out.event(DisplayEvent::Resized {
+                        surface: Surface {
+                            id: *id,
+                            width_px: width,
+                            height_px: height,
+                            frame_width: px_w,
+                            frame_height: px_h,
+                            scale: mac_window.scale_factor(),
+                        },
+                    });
                 }
             }
 
@@ -302,10 +302,10 @@ impl PlatformOps for MetalOps {
             // pass is already out of window_map, so its scale event is dropped.
             //
             // A scale change keeps the point-space bounds but changes the
-            // sample lattice, so the circulating frame has the wrong pixel
-            // density. Emit Resized with a fresh pixel-sized frame (the engine
-            // marks any in-flight render stale and swaps buffers), then
-            // ScaleChanged so the app can re-bake density-keyed resources.
+            // sample lattice, so a circulating buffer has the wrong pixel
+            // density. Emit Resized — which is what makes the driver allocate
+            // at the new density and retire the old buffer — then ScaleChanged
+            // so the app can re-bake density-keyed resources.
             for (ptr, scale) in crate::platform::macos::window::drain_scale_changes() {
                 if let Some(id) = self.window_map.get(&ptr).copied() {
                     let win = self
@@ -313,15 +313,17 @@ impl PlatformOps for MetalOps {
                         .get(&id)
                         .expect("window_map entry without a matching window");
                     let (px_w, px_h) = win.pixel_size();
-                    let window = Window {
-                        id,
-                        frame: Frame::<PlatformPixel>::new(px_w, px_h),
-                        width_px: win.current_width,
-                        height_px: win.current_height,
-                        scale,
-                    };
                     processed_any = true;
-                    out.event(DisplayEvent::Resized { window });
+                    out.event(DisplayEvent::Resized {
+                        surface: Surface {
+                            id,
+                            width_px: win.current_width,
+                            height_px: win.current_height,
+                            frame_width: px_w,
+                            frame_height: px_h,
+                            scale,
+                        },
+                    });
                     out.event(DisplayEvent::ScaleChanged { id, scale });
                 }
             }

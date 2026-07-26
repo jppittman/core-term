@@ -4,12 +4,12 @@ use crate::input::{KeySymbol, Modifiers};
 use crate::pixel::PlatformPixel;
 use pixelflow_graphics::render::Frame;
 
-/// A window with its associated frame buffer.
+/// A frame buffer together with everything needed to identify it.
 ///
-/// This struct bundles the window identity with its rendering surface,
-/// ensuring the driver always has full context when presenting frames.
-/// The platform assigns the window ID (e.g., from the native window handle),
-/// and the frame buffer is owned by the window for the render loop.
+/// The driver allocates this and is its resting owner; it is lent out to be drawn into and
+/// handed straight back. It moves by value the whole way round, so exactly one actor holds it
+/// at any moment and "how many buffers are in flight?" is a property of the type rather than of
+/// a counter someone has to maintain.
 #[derive(Debug)]
 pub struct Window {
     /// Platform-assigned window identifier.
@@ -22,6 +22,76 @@ pub struct Window {
     pub height_px: u32,
     /// Display scale factor (e.g., 2.0 for Retina).
     pub scale: f64,
+    /// Which buffer this is. Carried by the buffer rather than tracked alongside it: a returned
+    /// buffer has to be able to answer "am I still the one you want?" on its own, and a queue of
+    /// generations kept in send order can only answer that while nothing is ever discarded.
+    pub generation: Generation,
+}
+
+impl Window {
+    /// Take the buffer out to be drawn into, keeping what is needed to put it back.
+    ///
+    /// Rendering has to split this apart — the rasterizer wants a `Frame` and knows nothing
+    /// about windows — and the two halves have to meet again afterwards. Naming both directions
+    /// is what stops the metadata from being stashed in the coordinator in between, which is the
+    /// field `pending_render` used to be (§7.1 of the migration doc).
+    #[must_use]
+    pub fn tear(self) -> (Frame<PlatformPixel>, WindowMeta) {
+        let Window {
+            id,
+            frame,
+            width_px,
+            height_px,
+            scale,
+            generation,
+        } = self;
+        (
+            frame,
+            WindowMeta {
+                id,
+                width_px,
+                height_px,
+                scale,
+                generation,
+            },
+        )
+    }
+
+    /// The inverse of [`tear`](Self::tear).
+    #[must_use]
+    pub fn rejoin(frame: Frame<PlatformPixel>, meta: WindowMeta) -> Self {
+        Self {
+            id: meta.id,
+            frame,
+            width_px: meta.width_px,
+            height_px: meta.height_px,
+            scale: meta.scale,
+            generation: meta.generation,
+        }
+    }
+}
+
+/// The geometry the platform reported for a window.
+///
+/// Two extents, deliberately both named: the scene is authored in **point space**, and the
+/// buffer is the platform's **sample lattice**, which is denser on a HiDPI display. They are
+/// equal on X11 and on a 1:1 Mac, which is exactly what makes conflating them a bug that only
+/// appears on hardware the author may not have. Carrying both is what lets the driver allocate
+/// the right buffer and the coordinator derive the point→pixel warp from the buffer it is
+/// handed, rather than from a scale factor tracked somewhere on the side.
+#[derive(Debug, Clone, Copy)]
+pub struct Surface {
+    pub id: WindowId,
+    /// Logical width in points — what the app lays out in.
+    pub width_px: u32,
+    /// Logical height in points.
+    pub height_px: u32,
+    /// Frame-buffer width in device pixels.
+    pub frame_width: u32,
+    /// Frame-buffer height in device pixels.
+    pub frame_height: u32,
+    /// Display scale factor (e.g. 2.0 for Retina).
+    pub scale: f64,
 }
 
 /// Which buffer a [`Window`] is, among the ones the driver has handed over.
@@ -31,13 +101,14 @@ pub struct Window {
 /// compositor. So more than one can be in flight, and "is this one still current?" is not
 /// answerable from the buffer itself: dimensions repeat (resize out and back), and "is a render
 /// outstanding?" only says *some* buffer is busy, not which. It is a generation, so it is
-/// carried as one — stamped by the engine when the driver hands the buffer over, and returned
-/// untouched in [`WindowMeta`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// carried as one — stamped by the driver when it allocates the buffer, and returned untouched
+/// however far round the loop the buffer travels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Generation(u64);
 
 impl Generation {
-    /// Before the driver has produced a window at all. No buffer ever carries this.
+    /// Before the driver has produced a window at all. No buffer ever carries this, which is
+    /// what makes it the right `Default`: a keeper that has allocated nothing matches nothing.
     pub const NONE: Self = Self(0);
 
     /// The generation of the next buffer to arrive.
@@ -53,12 +124,11 @@ impl std::fmt::Display for Generation {
     }
 }
 
-/// The half of a [`Window`] that isn't the frame buffer.
+/// The half of a [`Window`] that isn't the frame buffer — see [`Window::tear`].
 ///
-/// Rendering has to take the `Window` apart — the rasterizer needs the `Frame` and knows
-/// nothing about windows — so this is what's left. It travels with the render request as
-/// `RenderRequest::meta` and comes back untouched in `RenderResponse::meta`, which is what lets
-/// the `Window` be reassembled at completion instead of stashed somewhere in the meantime.
+/// It travels with the render request as `RenderRequest::meta` and comes back untouched in
+/// `RenderResponse::meta`, which is what lets the `Window` be reassembled at completion instead
+/// of stashed somewhere in the meantime.
 #[derive(Debug, Clone, Copy)]
 pub struct WindowMeta {
     pub id: WindowId,
@@ -342,6 +412,21 @@ pub enum DisplayMgmt {
     /// ```
     Create { settings: WindowDescriptor },
 
+    /// Ask for the window buffer, if it is free.
+    ///
+    /// # Contract
+    ///
+    /// **Sender**: Has something to draw and is not already holding the buffer.
+    ///
+    /// **Receiver**: Hands the buffer over if it is resting, and otherwise does nothing at all.
+    /// There is deliberately no refusal reply and no queued request: the driver cannot hold a
+    /// request without also deciding *when* to reconsider it, which is scheduling policy that
+    /// belongs to whoever is drawing. An unanswered request is retried by the next tick.
+    ///
+    /// Carries nothing, which is why it is safe on a droppable edge — a lost request costs one
+    /// frame, where a lost buffer would destroy the only one there is.
+    RequestWindow,
+
     /// Destroy an existing window.
     ///
     /// # Contract
@@ -375,18 +460,22 @@ pub enum DisplayMgmt {
 pub enum DisplayEvent {
     /// A new window was created by the platform.
     ///
-    /// The `Window` contains the platform-assigned ID and initial frame buffer.
+    /// Geometry only. No frame buffer travels on this edge: the driver allocates and keeps the
+    /// buffer, and hands it out on [`DisplayMgmt::RequestWindow`]. What is left is what the
+    /// event always actually was — the platform reporting the size it chose.
     WindowCreated {
-        window: Window,
+        surface: Surface,
     },
     WindowDestroyed {
         id: WindowId,
     },
     /// Window was resized (by user or programmatically).
     ///
-    /// The `Window` contains an appropriately-sized frame buffer.
+    /// Geometry only, as for `WindowCreated`. Nothing downstream has to act on this to keep
+    /// rendering correct: the driver has already replaced its buffer by the time this is
+    /// observed, and a renderer holding the old one finds out when it hands it back.
     Resized {
-        window: Window,
+        surface: Surface,
     },
     ScaleChanged {
         id: WindowId,
