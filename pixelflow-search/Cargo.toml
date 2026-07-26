@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "A generic graph search framework for algebraic optimization and scheduling"
 
+[lib]
+# This crate has no Criterion benchmark target; do not run its libtest harness
+# as part of the Bencher-format regression sweep.
+bench = false
+
 [dependencies]
 libm = "0.2.15"
 rand = "0.8"

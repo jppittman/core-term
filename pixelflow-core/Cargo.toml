@@ -19,3 +19,9 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "core_benches"
 harness = false
+
+[[bin]]
+name = "calibrate_costs"
+path = "src/bin/calibrate_costs.rs"
+# Standalone calibration utility, not a Criterion regression benchmark.
+bench = false

@@ -7,6 +7,11 @@ description = "Unified Intermediate Representation and SIMD Backends for PixelFl
 [lints]
 workspace = true
 
+[lib]
+# This crate has no Criterion benchmark target; the Rust harness cannot accept
+# the regression workflow's `--output-format bencher` argument.
+bench = false
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"], optional = true }
 libm = "0.2.15"
