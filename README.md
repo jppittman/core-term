@@ -1,237 +1,173 @@
-# PixelFlow — Pull-Based Functional Graphics on CPU SIMD
+# PixelFlow — Pull-Based Graphics on CPU SIMD
 
-**A GPU-free graphics engine exploring algebraic abstractions for rendering on pure CPU.**
+PixelFlow is an experimental CPU graphics and kernel-language stack built around
+two ideas: pixels pull values from functions over coordinates, and SIMD is part of the
+algebra rather than an optimization added afterward.
 
-PixelFlow is a research project demonstrating a novel paradigm for real-time graphics: **pull-based rendering** with **SIMD as algebra**. Nothing computes until a coordinate arrives. Pixels are sampled, not pushed. The type system builds compute graphs. The compiler emits optimal vector assembly.
+`core-term` is its first application: a terminal emulator whose font, compositing, runtime,
+and concurrency requirements exercise the libraries as a system.
 
-**`core-term`** is the first consumer application—a high-performance, correct terminal emulator built entirely on PixelFlow.
+## What is current
 
-## Vision
+PixelFlow is under active architectural development. The current direction is JIT-first:
+a [`Kernel`](pixelflow-ir/src/kernel.rs) is an immutable handle to an `ExprArena` fragment,
+and composition (`add`, `select`, `at`, bounded reductions, derivatives) splices fragments
+into a larger arena. A root is lowered and emitted for the host CPU, or evaluated by the IR
+interpreter as a reference implementation.
 
-PixelFlow answers three questions:
-
-1. **What if we stopped pushing pixels and started pulling them?** In traditional rasterization, every primitive computes its contribution to every pixel. In PixelFlow, pixels ask "what color am I?" and only that computation happens.
-
-2. **What if SIMD was algebra, not an optimization?** Instead of SIMD as a lower-level concern, PixelFlow treats SIMD vectors as the natural representation of continuous fields over coordinates.
-
-3. **What if the type system compiled graphics?** Expressions written with the `kernel!` macro are compiled through an e-graph optimizer and codegen pipeline, monomorphizing into fused kernels with zero runtime dispatch.
-
-## The Stack
-
-```
-┌─────────────────────────────────────────┐
-│          core-term (App)                │  First consumer: Terminal emulator
-├─────────────────────────────────────────┤
-│ pixelflow-runtime (Platform)            │  Cocoa/X11/Web display drivers,
-│ actor-scheduler (Concurrency)           │  input handling, render loop
-├─────────────────────────────────────────┤
-│ pixelflow-graphics (Materialization)    │  Colors, fonts, compositing,
-│                                         │  rasterization to pixels
-├─────────────────────────────────────────┤
-│ pixelflow-compiler (Frontend)           │  kernel! macro: lexer, parser, sema,
-│                                         │  codegen
-│ pixelflow-search (Optimization)         │  E-graph saturation, rewrite rules,
-│                                         │  cost-model extraction
-│ pixelflow-ir (IR)                       │  ExprArena, OpKind, backend traits
-├─────────────────────────────────────────┤
-│ pixelflow-core (Algebra)                │  Field, Manifold, coordinates,
-│                                         │  no_std, SIMD abstraction
-└─────────────────────────────────────────┘
+```text
+kernel_value! source ── parse / sema / e-graph ──┐
+                                                 ▼
+direct Kernel construction ── arena splicing ── ExprArena
+                                                 │
+                                      lowering and emission
+                                           ┌─────┴─────┐
+                                           ▼           ▼
+                                        CPU JIT   interpreter
 ```
 
-## Crates at a Glance
+This migration is not finished. `kernel_value!` builds arena-backed `Kernel` values today,
+and the font pipeline composes and bakes them end to end. The older `kernel!` surface still
+defaults to its type-level combinator emitter while arena-backend parity and remaining
+consumers are completed. The plan of record is
+[One Kernel Language](docs/plans/2026-07-20-kernel-unification.md); the current language
+axiom and intended cost boundary are described in
+[Totality and the Cost Model](docs/designs/2026-07-24-totality-and-the-cost-model.md).
 
-| Crate | Edition | Purpose |
-|-------|---------|---------|
-| `pixelflow-core` | 2024 | Pure algebra. `Field`, `Manifold`, coordinate variables. No I/O, no colors. |
-| `pixelflow-compiler` | 2024 | Proc-macro compiler: `kernel!` macro, lexer, parser, sema, codegen. |
-| `pixelflow-ir` | 2024 | Shared IR. `ExprArena`, `OpKind`, backend execution traits, JIT manifold. |
-| `pixelflow-search` | 2024 | E-graph optimization: rewrite rules, saturation, cost-model extraction. |
-| `pixelflow-pipeline` | 2024 | Cost-model tooling: JIT bench harness, corpus generation, extraction benchmarks. |
-| `pixelflow-graphics` | 2021 | Colors (`Rgba8`), fonts, rasterization, antialiasing via automatic differentiation. |
-| `pixelflow-ml` | 2024 | Graphics ML experiments (harmonic attention, spherical-harmonic feature maps). |
-| `pixelflow-runtime` | 2021 | Display drivers (Cocoa/X11/Web), input handling, render orchestration. |
-| `actor-scheduler` | 2024 | Priority message passing with `troupe!` macro for lock-free concurrent actors. |
-| `actor-scheduler-macros` | 2024 | Procedural macros for the actor system. |
-| `core-term` | 2021 | Terminal emulator. ANSI parsing, PTY management, state machine. The first PixelFlow consumer. |
-| `xtask` | 2021 | Build tooling: macOS app bundling, codegen tasks. |
+## Why pull-based rendering
 
-### Compiler Pipeline
+In an immediate raster pipeline, primitives push contributions into a framebuffer. In
+PixelFlow, a pixel samples a function at its coordinate. This makes coordinate transforms,
+composition, differentiation, and sampling explicit algebraic operations. Depending on the
+scene and backend, it can avoid work such as off-sample primitive evaluation and intermediate
+buffers; it does not promise that all scenes are free of overdraw or branches.
 
-Code written with the `kernel!` macro doesn't compile directly to assembly—it flows through an optimization pipeline:
+## Workspace
 
-```
-Source → Lexer → Parser → Sema → Optimize (e-graph) → Codegen → Rust TokenStream
-```
+| Crate | Purpose |
+|---|---|
+| `pixelflow-core` | `no_std` SIMD fields, the `Manifold` substrate, coordinates, combinators, and compatibility layer |
+| `pixelflow-ir` | `Kernel`, `ExprArena`, operations, lowering, interpreter, and CPU emitters |
+| `pixelflow-compiler` | `kernel!`, `kernel_value!`, and related parser/sema/optimization front ends |
+| `pixelflow-search` | E-graphs, rewrite rules, extraction, provenance, and guided-search experiments |
+| `pixelflow-pipeline` | Benchmark, corpus, and cost-model research tooling |
+| `pixelflow-graphics` | Colors, font kernels and caches, scene composition, and framebuffer materialization |
+| `pixelflow-ml` | Experimental ML and spherical-harmonic consumers of the kernel language |
+| `pixelflow-runtime` | Cocoa/X11/Web display integration, input, and render orchestration |
+| `actor-scheduler` | Priority OS-thread actors plus hosted Mealy transducers (“green actors”) |
+| `actor-scheduler-macros` | Procedural macros for actor groups and typed transducer ports |
+| `core-term` | ANSI parsing, PTY management, terminal state, and the application UI |
+| `xtask` | Repository build and macOS bundle tasks |
 
-The optimizer builds an e-graph from the expression, saturates it with rewrite rules (associativity, FMA fusion, etc.), and extracts an implementation using the configured cost model. See CLAUDE.md's "Cost-Model Training" section for details.
+Terminal-specific behavior remains in `core-term`; PixelFlow crates are intended to stay
+general-purpose.
 
-## The Manifold Abstraction
+## A Kernel value
 
-Everything in PixelFlow is a `Manifold`—a domain-generic function from coordinates to a value:
+`kernel_value!` runs parsing, semantic analysis, and e-graph optimization at macro expansion,
+then returns an uncompiled arena fragment. Scalar parameters are folded into the fragment;
+larger programs compose as `Kernel` values and compile at a materialization boundary.
 
 ```rust
-trait Manifold<P = (Field, Field, Field, Field)>: Send + Sync {
-    type Output;
-    fn eval(&self, p: P) -> Self::Output;
-}
+use pixelflow_compiler::kernel_value;
+use pixelflow_core::Kernel;
+
+let circle = kernel_value!(|cx: f32, cy: f32, radius: f32| {
+    let dx = X - cx;
+    let dy = Y - cy;
+    (dx * dx + dy * dy).sqrt() - radius
+});
+
+let left = circle(-0.5, 0.0, 1.0);
+let right = circle(0.5, 0.0, 1.0);
+let pair = left.min(&right);
 ```
 
-`P` is the domain the manifold operates on—`(Field, Field)` for a 2D kernel, `(Jet2, Jet2)` for 2D with automatic differentiation, and so on. A 2D kernel only pays for the coordinates it declares; there's no tax for unused dimensions.
+`Kernel` currently supports arithmetic, comparisons and selection, coordinate substitution
+with `at`, symbolic `Dwrt` derivatives, and bounded monoid reductions. It intentionally does
+not expose unbounded loops. Typed discrete fields and a closed-form cost interpretation are
+plan-of-record work, not completed features.
 
-Manifolds compose via operator overloading, and the type tree *is* the compute graph—when `eval` is called, the compiler monomorphizes and inlines the whole tree into a single fused kernel.
+## Graphics
 
-**Writing manifolds by hand is a legacy pattern.** The intended way to write PixelFlow code today is the `kernel!` macro, which compiles an expression through the e-graph optimizer and codegen pipeline instead of relying on hand-composed combinator types (see [Extending PixelFlow](#extending-pixelflow) below).
+The graphics crate turns kernels and manifolds into pixels. Its current font path parses TTF
+outlines directly into fused coverage `Kernel`s, resolves antialiasing through symbolic
+derivatives, and bakes reusable glyph lattices through the JIT. The ray-tracing modules remain
+a useful application of the older polymorphic `Manifold` layer, including derivative-derived
+surface normals.
 
-## Execution
+See [pixelflow-graphics](pixelflow-graphics/README.md) for the current boundary between these
+paths.
 
-- **Backend:** Pure CPU, no GPU required. SIMD: AVX-512, SSE2, NEON
-- **Compilation:** Scenes compile into fused kernels
+## Concurrency
 
-## Getting Started with PixelFlow
+`actor-scheduler` has two composable tiers:
 
-### Documentation
+- Dedicated OS-thread actors use three priority lanes (Control, Management, Data) over
+  producer-sharded SPSC queues.
+- `Transducer`/`Node` green actors run one transition at a time inside a `Host`, propagate
+  backpressure through typed ports, and share the same priority semantics.
 
-- **[docs/README.md](docs/README.md)** — Documentation landing page, status taxonomy, and index
-- **[CLAUDE.md](CLAUDE.md)** — Architectural constraints, workspace structure, and development guidelines
-- **[docs/STYLE.md](docs/STYLE.md)** — Code style guide and design principles
-- **[docs/designs/](docs/designs/)** — Design docs for the compiler, e-graph search, and actor scheduler
-- **[docs/plans/](docs/plans/)** — In-flight design and migration plans
+A `Host` is itself an ordinary actor, so hosting can be nested in principle. Dynamic topology,
+migration, and a separate green-thread runtime are deliberately outside the current design.
+See [actor-scheduler](actor-scheduler/README.md) and the
+[Mealy-transducer design](docs/designs/actor-scheduler-mealy-transducer.md).
 
-### Prerequisites
+## Build and run
 
-- **Rust:** Stable (see `rust-toolchain.toml`)
-- **Platform dependencies:**
-  - **macOS:** Native Cocoa support
-  - **Linux:** X11 development headers
-    ```bash
-    sudo apt-get install libx11-dev libxext-dev libxft-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev
-    ```
+Use the stable toolchain selected by `rust-toolchain.toml`.
 
-### Building
-
-Standard Rust build:
 ```bash
-cargo build --release
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-Run tests:
-```bash
-cargo test
-```
+Run the terminal directly:
 
-Run benchmarks:
-```bash
-cargo bench -p pixelflow-core
-cargo bench -p pixelflow-graphics
-```
-
-### Running core-term
-
-#### Standard
 ```bash
 cargo run --release -p core-term
 ```
 
-#### macOS (bundled app)
+On macOS, build and launch the application bundle:
+
 ```bash
 cargo bundle-run
 ```
-Builds and launches `CoreTerm.app` with native macOS integration.
 
-#### With Profiling
+Focused benchmarks are available without treating any recorded result as permanent:
+
 ```bash
-cargo bundle-run --features profiling
-```
-Writes flamegraph on exit.
-
-## Architecture Overview
-
-### Pull-Based Rendering
-
-Traditional GPU pipeline: **push** every primitive to every pixel.
-
-PixelFlow: **pull** each pixel samples what it needs.
-
-```rust
-// A pixel asks: "What color am I?"
-// The manifold computes only what's necessary.
-let color = manifold.eval((x, y));
+cargo bench -p pixelflow-core
+cargo bench -p pixelflow-graphics
+cargo bench -p actor-scheduler
 ```
 
-This eliminates:
-- Overdraw
-- Primitive list parsing
-- Conditional branching in the hot loop
+Platform packages for Linux builds include X11, Xft, Fontconfig, FreeType, and xkbcommon
+development headers.
 
-### Actor Model for Input
+## Documentation status
 
-Three-thread architecture:
+[docs/README.md](docs/README.md) classifies documents as current architecture, plan of
+record, experiment/result, or historical/superseded. Read status metadata before treating a
+design document as an implementation contract. In particular, the learned guided-saturation
+work is research with explicit decision gates; the deterministic e-graph and static extraction
+path do not depend on that research succeeding.
 
-```
-Main Thread (Display)          Orchestrator Thread          PTY I/O Thread
-├─ Cocoa/X11 event loop       ├─ Terminal state machine   ├─ kqueue/epoll
-├─ Platform events            ├─ ANSI parser              ├─ PTY read/write
-└─ Render commands            └─ Scene generation         └─ I/O events
-    (BackendEvent)                (Render command)            (IOEvent)
-         ↓                              ↓                          ↓
-    Three-lane priority channel (Control > Management > Data)
-```
+Additional repository guidance:
 
-Input latency is decoupled from render latency.
+- [AGENTS.md](AGENTS.md) — repository boundaries, commands, and review conventions
+- [docs/STYLE.md](docs/STYLE.md) — code style and design principles
+- [docs/designs/](docs/designs/) — architecture and design records
+- [docs/plans/](docs/plans/) — active and superseded implementation plans
+- [docs/results/](docs/results/) — point-in-time measurements and experiment reports
 
-### Crate Separation Philosophy
+## Research context
 
-PixelFlow is extracted from core-term because:
-
-1. **No terminal logic in PixelFlow.** Graphics library stays general-purpose.
-2. **Gradual extraction:** Each crate is independently useful.
-3. **Future applications:** PixelFlow can power other renderers (UI toolkits, games, simulations).
-
-## Extending PixelFlow
-
-### Writing a Kernel
-
-The `kernel!` macro is the intended way to write PixelFlow code: it compiles your expression through the e-graph optimizer instead of relying on hand-composed combinator types.
-
-```rust
-use pixelflow_compiler::kernel;
-use pixelflow_core::{Field, Manifold};
-
-// A parameterized kernel: instantiating it with concrete params returns a manifold
-let circle = kernel!(|cx: f32, cy: f32, r: f32| {
-    let dx = X - cx;
-    let dy = Y - cy;
-    (dx * dx + dy * dy).sqrt() - r
-});
-
-let unit_circle = circle(0.0, 0.0, 1.0);
-
-// Evaluate at a point
-let p = (Field::from(1.5), Field::from(2.0), Field::from(0.0), Field::from(0.0));
-let result = unit_circle.eval(p);
-```
-
-Hand-writing `Manifold` impls directly (composing `X`, `Y` with operators and combinators like `.at()` or `.select()`) still works and is used internally, but it's a legacy pattern being phased out in favor of `kernel!`.
-
-## Contributing
-
-See [CLAUDE.md](CLAUDE.md) for architectural constraints and development guidelines.
-
-Key points:
-- **Code style:** Follow Rust idioms. See [STYLE.md](docs/STYLE.md).
-- **No magic in PixelFlow:** Keep the algebra pure and portable.
-- **Tests:** Public API changes require test updates.
-
-## Research Context
-
-PixelFlow is inspired by:
-- [Conal Elliott's denotational design](http://conal.net/papers/icfp97/)
-- [Halide](https://halide-lang.org/) (pull-based, algebraic composition)
-- [Elm](https://elm-lang.org/) and pure functional graphics
-- [Seamless.js](https://github.com/scttnlsn/seamless) (algebraic surfaces)
-
-The goal: prove that **pure algebra** scales to real-time graphics without GPU compromise.
+PixelFlow draws from denotational functional graphics, Halide-style separation of algorithm
+and schedule, e-graphs, SIMD code generation, and automatic differentiation. The repository
+records both successful designs and discarded approaches; historical documents are retained
+to preserve the evidence behind current choices.
 
 ## License
 
