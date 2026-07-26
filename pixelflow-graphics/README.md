@@ -1,220 +1,164 @@
 # PixelFlow Graphics
 
-**Composable 3D Rendering as Manifold Expressions**
+`pixelflow-graphics` turns PixelFlow programs into pixels. It contains color and pixel types,
+TTF outline compilation, glyph and text caching, framebuffer rasterization, and experimental
+2D/3D scene components.
 
-Extends pixelflow-core with colors, fonts, and 3D scene composition. Everything stays compositional—no pre-computed geometry, no intermediate buffers.
+The crate currently spans two representation layers:
+
+- The font pipeline is arena-native: outlines become fused `Kernel` values, symbolic
+  derivatives provide coverage antialiasing, and `Lattice::bake` compiles and caches the
+  result.
+- Existing color, cached-image, and 3D composition code uses `Manifold` combinators. This is
+  still a supported execution substrate while the workspace completes its JIT-first
+  migration.
+
+That boundary is intentional and visible; consumers should not manipulate `ExprArena`
+directly.
+
+## Pipeline
+
+```text
+             continuous programs
+         ┌──────────┴───────────┐
+         │                      │
+   coverage Kernel       color/scene Manifold
+         │                      │
+    JIT + Lattice          SIMD evaluation
+         │                      │
+         └──────────┬───────────┘
+                    ▼
+             sampled pixels
+                    ▼
+       Frame<Rgba8> / Frame<Bgra8>
+```
+
+The principal modules are:
+
+| Module | Role |
+|---|---|
+| `fonts` | TTF parsing, glyph coverage kernels, text layout, and baked glyph caches |
+| `render` | Semantic colors, pixel formats, frames, and rasterization |
+| `scene3d` | Ray/surface/material experiments over derivative-carrying manifolds |
+| `shapes`, `transform`, `image`, `mesh` | Additional graphics primitives and composition utilities |
+
+## Fonts: TTF outlines as kernels
+
+`Font::parse` reads the supported TrueType tables. A glyph is compiled directly into one
+coverage `Kernel`: line and quadratic-curve crossing terms are combined under the non-zero
+winding rule, bounded, scaled, and translated in the arena.
 
 ```rust
-use pixelflow_graphics::scene3d::{Surface, ScreenToDir, Reflect};
-use pixelflow_core::{At, Select, Manifold, Jet3};
+use pixelflow_graphics::Font;
 
-// Geometry: ray-sphere intersection (returns t)
-let sphere_geom = Sphere { center: origin, radius: 100.0 };
-
-// Material: fresnel reflection at hit point
-let material = Reflect {
-    inner: &sphere_geom,
-};
-
-// Background: sky gradient at ray direction (if miss)
-let background = Sky { /* ... */ };
-
-// Compose: blend material (at hit) with background (at ray) based on hit validity
-let scene = Surface {
-    geometry: sphere_geom,
-    material,
-    background,
-};
-
-// Render: evaluates fully as a manifold
-let color = scene.eval_raw(rx, ry, rz, w);
+let font = Font::parse(font_bytes).expect("invalid or unsupported TTF");
+let glyph = font
+    .glyph_kernel_scaled('A', 32.0)
+    .expect("font has no glyph for A");
 ```
 
-## Architecture: The "Mullet" Approach
+Coverage antialiasing is intrinsic to these kernels. Curve leaves construct a
+gradient-normalized ramp using `DX`/`DY`; those become `Dwrt` expressions and are resolved
+when the kernel compiles. Coordinate warps therefore carry the ramp width into screen space
+without a separate antialiasing wrapper or jet-valued JIT ABI.
 
-Three-layer pull-based architecture:
+### Glyph cache
 
-1. **Geometry** (expensive): Compute once per pixel via `Jet3` (with 3D derivatives for normals)
-2. **Surface**: Warp coordinates from ray to hit point using the computed `t`
-3. **Material**: Evaluate colors at hit point using derivatives for shading
-
-Result: One geometric computation, colors flow as opaque `Discrete` (packed RGBA).
-
-```
-Manifold<Jet3, Output = Jet3>     (geometry: returns t with derivatives)
-    ↓
-Jet3 → At { inner: material, ... } (evaluates material at warped coords)
-    ↓
-Select with At { background, ... } (blends material/background as manifolds)
-    ↓
-Manifold<Jet3, Output = Discrete> (fully composed color)
-```
-
-## Philosophy: Pure Composition
-
-**The idiomatic style**: Keep everything as manifolds. Compose at the type level.
-
-✅ **Idiomatic**: All parts stay as manifolds
-```rust
-// Surface and ColorSurface use At + Select composition
-let scene = At { inner: &material, x: hx, y: hy, z: hz, w };
-let result = mask.select(scene, fallback);
-```
-
-❌ **Not idiomatic**: Materializing to intermediate values
-```rust
-// Don't do this - loses the compositional structure
-let hit_point = t.eval_raw(...);  // Materialized!
-let color_at_hit = material.eval_raw(hit_point);  // Lost context!
-```
-
-## Key Concepts
-
-### Scene3D: Root of the Composition
-
-Three variants:
-
-- **Surface<G, M, B>**: Returns `Field` (single scalar per pixel)
-- **ColorSurface<G, M, B>**: Returns `Discrete` (packed RGBA)
-
-Both use the same pattern:
-1. Evaluate geometry to get hit distance `t`
-2. Validate `t` (positive, not too large, derivatives sensible)
-3. Warp: compute hit point `P = ray * t`
-4. Use `At` combinator to pin material/background to different coordinates
-5. Use `Select` to blend based on hit validity
+Analytically evaluating every outline at every sample is unnecessary after a glyph is stable.
+`GlyphCache` quantizes the size and display-density keys, bakes the fused kernel once, and
+stores `f32` coverage. Read-back is bilinear so fractional placement interpolates cached
+coverage.
 
 ```rust
-impl<G, M, B> Manifold<Jet3> for Surface<G, M, B> {
-    fn eval_raw(&self, rx: Jet3, ry: Jet3, rz: Jet3, w: Jet3) -> Field {
-        let t = self.geometry.eval_raw(rx, ry, rz, w);
-        let mask = validate_t(t);  // Is this a valid hit?
+use pixelflow_graphics::{Font, GlyphCache};
 
-        // Warp ray to hit point
-        let safe_t = sanitize(t, mask);
-        let hx = rx * safe_t;
-        let hy = ry * safe_t;
-        let hz = rz * safe_t;
+let font = Font::parse(font_bytes).expect("invalid or unsupported TTF");
+let mut cache = GlyphCache::new();
+cache.warm_ascii(&font, 16.0, 2.0);
 
-        // Compose as manifolds - no materialization!
-        let mat = At { inner: &self.material, x: hx, y: hy, z: hz, w };
-        let bg = At { inner: &self.background, x: rx, y: ry, z: rz, w };
-
-        // Select blends while staying compositional
-        Select { cond: FieldMask(mask), if_true: mat, if_false: bg }
-            .eval_raw(rx, ry, rz, w)
-    }
-}
+let glyph = cache
+    .get(&font, 'A', 16.0, 2.0)
+    .expect("font has no glyph for A");
 ```
 
-### Reflect: The Crown Jewel
+`fonts::text` lays a string out as one analytical `Kernel`. `CachedText` instead composes
+cached glyph samplers with advances and kerning. Both represent coverage in `[0, 1]`; mapping
+coverage to foreground/background color is a separate operation.
 
-Reconstructs surface normals from the tangent frame implied by `Jet3` derivatives.
+Supported outline coverage currently targets TrueType quadratic glyphs, cmap formats 4 and
+12, and horizontal `kern` format 0. This is not a general shaping engine.
 
-When you pin a manifold at a hit point using `At`, the derivatives tell you how the surface changes—that's the normal!
+## Colors and frames
+
+The render module separates semantic color from platform pixel layout:
+
+- `Color` and `NamedColor` represent ANSI, indexed, and RGB choices.
+- `ColorCube`, `Grayscale`, and related manifolds map continuous values to packed color.
+- `Rgba8` and `Bgra8` define framebuffer byte layout.
+- `Frame<P>` owns a row-major pixel buffer.
+
+`render::rasterize` pulls a color manifold at pixel coordinates into a frame and can divide
+the work across threads:
 
 ```rust
-pub struct Reflect<M> {
-    pub inner: M,  // Manifold<Jet3, Output = Field>
-}
+use pixelflow_graphics::render::{rasterize, Frame, Rgba8};
 
-impl<M> Manifold<Jet3> for Reflect<M> {
-    fn eval_raw(&self, x: Jet3, y: Jet3, z: Jet3, w: Jet3) -> Field {
-        // x.dx, x.dy, x.dz form the tangent frame
-        // Normal = normalize(tangent_u × tangent_v)
-    }
-}
+let mut frame = Frame::<Rgba8>::new(800, 600);
+rasterize(&color_manifold, &mut frame, 4);
 ```
 
-## Compositionality Benefits
+The exact SIMD width and platform pixel alias are backend details. Consumers should use the
+pixel types rather than assume a byte order or lane count.
 
-1. **Kernel fusion**: At + Select + geometry all inline into one SIMD kernel
-2. **Genericity**: Works with `Field` (preview), `Jet3` (production), future types
-3. **No intermediate buffers**: Rays don't materialize to hit points—they flow through the type system
-4. **Automatic differentiation**: Derivatives propagate through all combinators
+## Ray tracing and the “mullet”
 
-## Examples
+`scene3d` is an application of the polymorphic `Manifold` layer rather than the complete
+architecture of this crate. Its useful three-stage pattern is:
 
-### Simple Sphere
+1. Evaluate geometry over `Jet3` ray coordinates to obtain hit distance and derivatives.
+2. Warp the ray coordinate to the hit point (`P = ray × t`).
+3. Evaluate the material at the hit point and the background at the ray direction, selecting
+   according to hit validity.
 
-```rust
-use pixelflow_graphics::scene3d::{Surface, Sphere};
-use pixelflow_core::Manifold;
+The geometry is the expensive front; color is the discrete back—hence the internal “mullet”
+name.
 
-let sphere = Sphere {
-    center: Field::from(0.0),
-    radius: Field::from(100.0),
-};
+`Reflect` and `ColorReflect` reconstruct a normal from the tangent frame carried by the warped
+coordinate derivatives. The cross product of the two screen-space tangent directions produces
+the surface normal used for Householder reflection. This remains a compact demonstration of
+automatic differentiation carrying geometric information through composition.
 
-let material = ConstantColor { rgb: (1.0, 0.0, 0.0) };
-let background = Sky { };
+This path still uses jets and combinator manifolds. It should not be read as evidence that all
+graphics consumers have moved to arena-backed `Kernel` values.
 
-let scene = Surface {
-    geometry: sphere,
-    material,
-    background,
-};
+## Materialization boundaries
 
-// Evaluate at screen coordinates
-let color = scene.eval_raw(x_jet, y_jet, z_jet, w_jet);
+PixelFlow distinguishes composition from storage:
+
+- Compose analytical font work as `Kernel` values, then bake at a glyph or text-cache boundary.
+- Compose cached glyphs, images, and platform-backed values as ordinary manifolds.
+- Rasterize the final color manifold into a `Frame<P>` at the application boundary.
+
+Intermediate storage is allowed when it is the requested representation—a glyph cache or a
+framebuffer—not hidden as an accidental compiler fallback.
+
+## Status and validation
+
+Font kernel goldens compare JIT execution with the interpreter on the same arena. Additional
+tests cover antialiasing behavior, curve parsing, cache coordinates, color conversion, and
+rendering. Performance claims are intentionally omitted from this README; run the benchmark
+targets on the hardware and revision being evaluated.
+
+```bash
+cargo test -p pixelflow-graphics
+cargo bench -p pixelflow-graphics
+cargo bench -p pixelflow-graphics --bench font_rendering
+cargo bench -p pixelflow-graphics --bench kernel_bench
 ```
 
-### Reflective Sphere
-
-```rust
-use pixelflow_graphics::scene3d::{Surface, Sphere, Reflect};
-use pixelflow_core::Manifold;
-
-let sphere = Sphere { /* ... */ };
-
-// Material applies reflection (normal-based shading)
-let material = Reflect {
-    inner: LambertianShader {
-        albedo: Field::from(0.8),
-        normal_source: sphere,  // Computes normal from Jet3 derivatives
-    },
-};
-
-let scene = Surface {
-    geometry: sphere,
-    material,
-    background: Sky { },
-};
-```
-
-## Coordinate Types
-
-All manifolds are generic over the input coordinate type `I`:
-
-- **Field**: Concrete SIMD values (for evaluation)
-- **Jet2**: 2D automatic differentiation (gradients)
-- **Jet3**: 3D automatic differentiation (normals for 3D surfaces)
-
-The same expression works with all three—no rewrite needed.
-
-## No Pre-Computation
-
-The key rule: **Don't materialize intermediate results.**
-
-❌ Bad:
-```rust
-let hit_point_x = hx.eval_raw(rx, ry, rz, w);  // Materialized!
-```
-
-✅ Good:
-```rust
-let mat_at_hit = At { inner: &material, x: hx, y: hy, z: hz, w };
-// hx stays as a Jet3 expression, composes into the kernel
-```
-
-## Integration with pixelflow-core
-
-This crate builds on top of `pixelflow-core`:
-
-- Uses `Manifold`, `Select`, `At`, `Jet3`, etc. from core
-- Adds scene-specific types: `Surface`, `ColorSurface`, `Reflect`
-- All composition happens at the core manifold level
+The current compiler migration is tracked in
+[`2026-07-20-kernel-unification.md`](../docs/plans/2026-07-20-kernel-unification.md).
 
 ## License
 
-MIT
+[Apache License 2.0](../LICENSE.md)
