@@ -103,7 +103,7 @@ pub mod spsc;
 
 use error::DrainStatus;
 pub use error::{HandlerError, HandlerResult, SendError};
-pub use host::{Green, GreenSender, Host, green_channel};
+pub use host::{Green, GreenSender, GreenThread, Host, HostOut, RunSweep, green_channel};
 pub use lifecycle::Exit;
 pub use params::SchedulerParams;
 
