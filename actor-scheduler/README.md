@@ -1,184 +1,203 @@
 # actor-scheduler
 
-A blazingly fast, priority-aware actor scheduler built on wait-free SPSC channels. Zero external dependencies beyond `std`.
+`actor-scheduler` is a priority-aware actor runtime for workloads where control traffic must
+remain responsive while data traffic is busy. It provides two layers that share the same
+three-lane scheduling model:
 
-## Why
+1. Dedicated OS-thread actors backed by producer-sharded SPSC queues.
+2. Hosted Mealy transducers (“green actors”) that run one transition at a time inside an
+   ordinary actor.
 
-Most actor frameworks treat message passing as a solved problem: throw messages into an mpsc channel, drain them in order, done. This breaks down when you need **priority**. A terminal emulator receiving a million bytes of `ls -R` output must still process your keystroke instantly. A render loop must never miss a vsync signal because the data pipe is full.
+The runtime crate uses `std` plus the workspace `actor-scheduler-macros` proc-macro crate.
+Criterion is used by its benchmark targets.
 
-`actor-scheduler` solves this with three priority lanes, sharded SPSC channels, and Bayesian-optimized scheduling parameters — all in ~1,500 lines of `std`-only Rust.
+## Dedicated-thread scheduler
 
-## Benchmarks
+Each producer registered with `ActorBuilder` receives a dedicated SPSC queue for every lane.
+The consumer drains those shards round-robin, avoiding a shared producer-side queue lock and
+isolating a full shard to its producer.
 
-Run `cargo bench -p actor-scheduler` to measure the scheduler on the current
-codebase and hardware. The benchmark suites cover channel throughput, send and
-roundtrip latency, priority-lane behavior, and adversarial workloads.
+| Lane | Priority | Typical use |
+|---|---|---|
+| Control | Highest | Keystrokes, resize, close |
+| Management | Middle | Configuration and lifecycle |
+| Data | Lowest | PTY bytes and frame data |
 
-## Architecture
+One scheduling cycle visits Control, Management, Control again, then Data. Every visit is
+burst-limited: Control gets lower latency without being allowed to prevent Data from making
+forward progress.
 
-```
-Producer A ──[SPSC]──┐
-Producer B ──[SPSC]──┤  ShardedInbox (Control)
-Producer C ──[SPSC]──┘       │
-                             ├──→ Scheduler ──→ Actor
-Producer A ──[SPSC]──┐      │
-Producer B ──[SPSC]──┤  ShardedInbox (Data)
-Producer C ──[SPSC]──┘       │
-                             │
-       Doorbell (mpsc, cap=1) ───┘  Wake/Shutdown signals
-```
-
-### Three priority lanes
-
-| Lane | Priority | Backpressure | Use case |
-|------|----------|--------------|----------|
-| **Control** | Highest | Exponential backoff + jitter | Keystrokes, resize, close |
-| **Management** | Medium | Exponential backoff + jitter | Config changes, lifecycle |
-| **Data** | Lowest | Spin-yield (bounded buffer) | PTY output, frame data |
-
-### Scheduling loop
-
-```
-loop {
-    1. Drain Control    (half burst budget)
-    2. Drain Management (burst budget)
-    3. Drain Control    (remaining budget)
-    4. Drain Data       (burst budget)
-    5. park()           — actor yields to OS / event loop
-}
+```text
+producer A ── SPSC shards ──┐
+producer B ── SPSC shards ──┼── ShardedInbox ── ActorScheduler ── Actor
+producer C ── SPSC shards ──┘                         ▲
+                                                      │
+                                             bounded doorbell
 ```
 
-Control gets two passes per cycle for priority, but all lanes are burst-limited to prevent monopolization.
+Producers are registered before `build()` seals the scheduler. Topology is static after that
+point.
 
-### Sharded SPSC
-
-Instead of N producers contending on one mpsc lock, each producer gets a dedicated wait-free SPSC ring buffer. The consumer drains all shards round-robin. Like shuffle-sharding in a load balancer: a noisy producer fills its own shard but cannot affect others.
-
-```rust
-let mut builder = ActorBuilder::<Data, Control, Mgmt>::new(1024, None);
-let handle_a = builder.add_producer();  // dedicated SPSC channels
-let handle_b = builder.add_producer();  // independent, no contention
-let mut scheduler = builder.build();    // seals — no more producers
-```
-
-### Bayesian-optimized parameters
-
-The benchmark tooling can use Bayesian optimization (Gaussian Process surrogate
-and Expected Improvement acquisition) to explore `SchedulerParams`. Re-run the
-optimizer when scheduler behavior or target workloads change rather than relying
-on previously recorded results.
-
-## Usage
-
-### Single-producer actor
+### Single producer
 
 ```rust
 use actor_scheduler::{
-    ActorScheduler, Message, Actor,
-    ActorStatus, SystemStatus, HandlerResult, HandlerError,
+    Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
 };
 
-struct MyActor;
+struct Counter(u64);
 
-impl Actor<String, String, String> for MyActor {
-    fn handle_data(&mut self, msg: String) -> HandlerResult {
-        println!("data: {msg}");
+impl Actor<u64, (), ()> for Counter {
+    fn handle_data(&mut self, value: u64) -> HandlerResult {
+        self.0 += value;
         Ok(())
     }
-    fn handle_control(&mut self, msg: String) -> HandlerResult {
-        println!("control: {msg}");
+
+    fn handle_control(&mut self, _msg: ()) -> HandlerResult {
         Ok(())
     }
-    fn handle_management(&mut self, msg: String) -> HandlerResult {
-        println!("mgmt: {msg}");
+
+    fn handle_management(&mut self, _msg: ()) -> HandlerResult {
         Ok(())
     }
-    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
 
-let (tx, mut rx) = ActorScheduler::<String, String, String>::new(100, 1024);
+let (handle, mut scheduler) = ActorScheduler::<u64, (), ()>::new(100, 1024);
 
 std::thread::spawn(move || {
-    let mut actor = MyActor;
-    rx.run(&mut actor);
+    let mut counter = Counter(0);
+    let exit = scheduler.run(&mut counter);
+    assert!(!exit.is_failed(), "counter stopped: {exit}");
 });
 
-tx.send(Message::Control("resize".into())).unwrap();
-tx.send(Message::Data("bytes".into())).unwrap();
+handle.send(Message::Data(1)).unwrap();
 ```
 
-### Multi-producer (troupe pattern)
+For multiple producers, register each one explicitly:
 
 ```rust
-use actor_scheduler::{ActorBuilder, Message, ShutdownMode};
+use actor_scheduler::ActorBuilder;
 
 let mut builder = ActorBuilder::<Vec<u8>, (), ()>::new(4096, None);
-
-let pty_handle = builder.add_producer();     // PTY reader thread
-let input_handle = builder.add_producer();   // input thread
-let timer_handle = builder.add_producer();   // vsync timer
-
-let mut scheduler = builder.build();
-// Each handle has zero-contention SPSC channels to the actor
+let pty = builder.add_producer();
+let input = builder.add_producer();
+let scheduler = builder.build();
 ```
 
-### Troupe macro (actor groups)
+`troupe!` builds statically declared actor groups on top of this layer. It creates the actor
+directory and dedicated SPSC handles at startup; it is not a dynamic actor registry.
+
+## Hosted Mealy transducers
+
+The green layer represents an actor as a typed state machine:
 
 ```rust
-use actor_scheduler::troupe;
+pub trait Transducer {
+    type Control;
+    type Management;
+    type Data;
+    type Out: Default;
 
-troupe! {
-    engine: EngineActor [expose],    // handle exposed to parent
-    vsync: VsyncActor,               // internal only
-    display: DisplayActor [main],    // runs on calling thread
+    fn step_data(&mut self, msg: Self::Data) -> Result<Self::Out, HandlerError>;
 }
-
-run().expect("troupe failed");
 ```
 
-### Shutdown modes
+A `Node` owns a `Transducer`, its inbox lanes, typed output `Wiring`, and at most one pending
+output word. `Node::poll()` performs at most one transition. It always retries a blocked
+outbox before consuming another input, so downstream backpressure stops the producer without
+suspending a partially executed handler.
+
+The `ports!` macro generates an output word and matching wiring. Ports are blocking by
+default; `[drop]` ports deliberately discard on a full target, and one `[self]` port may carry
+a continuation without entering a queue.
 
 ```rust
-use actor_scheduler::ShutdownMode;
-use std::time::Duration;
+use actor_scheduler::ports;
 
-// Drop everything immediately (default)
-ShutdownMode::Immediate;
+struct RenderCommand;
+struct ParserInput;
 
-// Process remaining control + management, drop data
-ShutdownMode::DrainControl;
-
-// Process all pending messages, with timeout fallback
-ShutdownMode::DrainAll { timeout: Duration::from_secs(1) };
+ports! {
+    Parser {
+        render: RenderCommand,
+        write: Vec<u8> [drop],
+        continue_parse: ParserInput [self],
+    }
+}
 ```
 
-## Design decisions
+`Topology` validates the static graph before it runs. A cycle made entirely of blocking edges
+is rejected; a cycle closed by a droppable edge or continuation cannot park every participant
+on a full queue.
 
-**Why SPSC over mpsc?** Lock-free sends avoid contention between producers. The tradeoff is that producers must be registered at init time.
+## Host: green actors on the existing runtime
 
-**Why not crossbeam/flume/tokio?** Zero dependencies. The SPSC ring buffer is ~200 lines. The entire crate is ~1,500 lines. We need a priority scheduler, not a general-purpose channel — building it lets us fuse priority scheduling directly into the drain loop.
+`Host` is an ordinary dedicated-thread `Actor` whose `park` method sweeps owned `Node`s. There
+is no second thread pool or coroutine runtime:
 
-**Why Bayesian optimization?** The parameters interact through non-linear constraints, making exhaustive grid search impractical. Bayesian optimization provides a way to explore the configuration space for the current workload.
+```text
+ActorScheduler on one OS thread
+              │
+             Host
+       ┌──────┼──────┐
+       ▼      ▼      ▼
+     Node A Node B Node C
+```
 
-**Why burst limiting?** Without it, a control flood starves data completely. With it, the scheduler guarantees forward progress on all lanes every cycle. The burst budget is the fundamental fairness knob.
+The host owns a heterogeneous set of green actors. They do not migrate between threads and
+therefore do not need to be `Send`; sweep order is adoption order. Adopting a pipeline in
+topological order lets one host sweep carry a message through several local stages.
 
-## Benchmarks
+External producers use `green_channel`/`GreenSender`, which first pushes the message and then
+wakes the host. A quiet host reports `Idle`, allowing its OS thread to sleep on the ordinary
+scheduler doorbell.
+
+Because a `Host` is itself an actor, a green actor may conceptually contain another host. That
+recursive placement is preserved as a deferred capability for future larger static systems.
+The current scope does not add dynamic spawning, migration, work stealing, or automatic
+hierarchical topology construction.
+
+The full design and its non-goals are recorded in
+[`docs/designs/actor-scheduler-mealy-transducer.md`](../docs/designs/actor-scheduler-mealy-transducer.md).
+
+## Lifecycle and shutdown
+
+Green actors return `Exit` values when they halt. A host records those exits, but restart
+policy belongs to a supervisor rather than the host itself.
+
+Dedicated-thread schedulers support:
+
+- `ShutdownMode::Immediate`
+- `ShutdownMode::DrainControl`
+- `ShutdownMode::DrainAll { timeout }`
+
+## Tuning and benchmarks
+
+`SchedulerParams` is shared by both scheduling tiers. The repository contains benchmark
+tooling, including a Bayesian parameter search, but no recorded parameter set or throughput
+number is treated as portable across machines and workloads.
 
 ```bash
-# All benchmarks
 cargo bench -p actor-scheduler
-
-# Individual suites
 cargo bench -p actor-scheduler --bench bench_throughput
 cargo bench -p actor-scheduler --bench bench_latency
 cargo bench -p actor-scheduler --bench bench_adversarial
-cargo bench -p actor-scheduler --bench bench_spsc_vs_mpsc
-
-# Bayesian parameter optimization (slow, ~minutes)
+cargo bench -p actor-scheduler --bench bench_mealy
 cargo bench -p actor-scheduler --bench bench_optimize
 ```
+
+## Design constraints
+
+- Register dedicated-thread producers during initialization.
+- Keep hosted topology static while a host is running.
+- Treat a droppable port as a semantic declaration that stale output may be lost.
+- Keep transition handlers run-to-completion; suspension state belongs in the outbox.
+- Validate cyclic backpressure at topology construction rather than discovering deadlock at
+  runtime.
 
 ## License
 

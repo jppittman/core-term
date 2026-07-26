@@ -250,7 +250,22 @@ The out-of-process tier carries no transport machinery here, deliberately. The a
 process isolation (a compiler actor) are low-rate — source in, artifact out — so ordinary
 messaging suffices. A shared-memory transport was considered and dropped (§8).
 
-### 5.3 Waking a host
+### 5.3 Deferred: hosts may nest
+
+The recursive shape is intentional: a host is itself an actor, so it may run as a green actor
+inside another host rather than directly on an OS-thread scheduler. A host is therefore both a
+bounded locality domain for its children and one schedulable node in its parent's domain. A
+large static topology can scale by nesting bounded local groups instead of putting every actor
+in one global run queue: only the roots of that hierarchy need dedicated OS threads.
+
+Nothing needs that hierarchy today, so this design does **not** add nested-host construction,
+automatic partitioning, recursive wake propagation, or scheduling policy between levels. Those
+mechanics are deliberately cut from the current work. What is preserved is the closure property
+that leaves the option open: the green tier runs on the existing actor runtime, and a group of
+green actors can later be presented to its parent as one green actor without replacing either
+runtime.
+
+### 5.4 Waking a host
 
 A host with nothing to do sleeps on its doorbell, so anything that makes a green actor
 runnable without going through the host's own lanes has to ring that bell. `Waker` is that
@@ -272,7 +287,7 @@ This makes the host's own lanes unnecessary: all three of its message types are 
 so a host provably has no messages of its own and routes nothing. Work goes straight to the
 actor that will handle it.
 
-### 5.4 The System lane is the reactor
+### 5.5 The System lane is the reactor
 
 Wake, Shutdown, IO readiness, and timers are all System-priority events sharing one park point
 (`epoll_wait` / `kqueue`). Priority ordering is unaffected — it is applied when lanes are
