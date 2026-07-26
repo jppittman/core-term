@@ -54,10 +54,13 @@ pub struct EngineHandler {
     /// with `Present`. Holding it is the whole of "a render can start" — there is no separate
     /// flag, and no generation kept alongside it, because the buffer carries its own.
     ///
-    /// There is deliberately no "a request is outstanding" flag either. Re-asking is harmless: a
-    /// grant requires the driver to be holding the buffer, and there is exactly one, so no
-    /// number of requests can produce two grants. Ownership is the bound.
     window: Option<Window>,
+    /// A `RequestWindow` has been sent and not yet answered.
+    ///
+    /// Paired with the driver's own latch: it holds an unanswered request until a buffer frees,
+    /// so asking twice cannot make an answer come sooner — it only leaves a request alive past
+    /// the grant that satisfied it, and the next buffer to appear gets handed over unasked.
+    awaiting_grant: bool,
     /// The one-outstanding-render bound on the engine → rasterizer edge.
     ///
     /// `pending_render` used to serve double duty: carrying the torn-off window metadata *and*
@@ -143,6 +146,7 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                 }
             }
             EngineData::WindowGranted(window) => {
+                self.awaiting_grant = false;
                 self.hold(window);
                 self.render_if_ready();
             }
@@ -335,18 +339,32 @@ impl EngineHandler {
         self.trigger_render_with_window(manifold, window);
     }
 
-    /// Ask the driver for the buffer.
+    /// Ask the driver for the buffer, unless we are already waiting on an answer.
     ///
-    /// Unanswered if the buffer is out — there is no refusal to handle, by design. The next
-    /// vsync tick calls `render_if_ready` again, which asks again; that retry is why the request
-    /// is allowed to be lost in the first place (it carries nothing, so losing it costs a frame
-    /// rather than the only framebuffer).
-    fn request_window(&self) {
-        if let Err(e) = self
+    /// A refused ask is not lost: the driver latches it and answers when a buffer frees. So a
+    /// *second* ask does not speed anything up — it outlives the grant that answered the first,
+    /// and the next buffer to appear is handed over unasked, to an engine that already has one.
+    ///
+    /// This is the flag an earlier revision deleted, with the argument that ownership is the
+    /// bound. That was wrong in a specific way worth keeping: ownership bounds how many
+    /// *buffers* exist, and says nothing about how many *requests* do. One surplus request is
+    /// all it takes, because the driver cannot tell a fresh ask from a duplicate of one it has
+    /// already satisfied.
+    ///
+    /// A send that fails deliberately leaves the flag clear, so the next tick retries — the
+    /// latch only covers requests that actually arrived.
+    fn request_window(&mut self) {
+        if self.awaiting_grant {
+            return;
+        }
+        match self
             .driver
             .send(Message::Management(DisplayMgmt::RequestWindow))
         {
-            log::debug!("Window request not delivered ({e}); retrying on the next tick");
+            Ok(()) => self.awaiting_grant = true,
+            Err(e) => {
+                log::debug!("Window request not delivered ({e}); retrying on the next tick");
+            }
         }
     }
 
@@ -754,6 +772,7 @@ impl TroupeActor<Directory> for EngineHandler {
             app_handle: None,
             frame_number: 0,
             window: None,
+            awaiting_grant: false,
             render_credit: Credit::new(1),
             render_threads: 1, // Default, will be set by Configure message
             pending_manifold: None,
@@ -998,6 +1017,7 @@ mod tests {
                 app_handle: None,
                 frame_number: 0,
                 window: None,
+                awaiting_grant: false,
                 render_credit: Credit::new(1),
                 render_threads: 1,
                 pending_manifold: None,
@@ -1081,8 +1101,15 @@ mod tests {
         }
 
         fn app_frame(&mut self) {
-            self.feed(EngineData::FromApp(AppData::RenderSurface(manifold())));
+            self.queue_frame();
             self.pump();
+        }
+
+        /// A frame, without letting anything be delivered. Two of these back to back is one
+        /// scheduler pass in which the engine reacts twice before the driver reacts once —
+        /// which is ordinary, since they are separate actors.
+        fn queue_frame(&mut self) {
+            self.feed(EngineData::FromApp(AppData::RenderSurface(manifold())));
         }
 
         /// A vsync tick, which is what re-drives a request the driver could not answer.
@@ -1262,6 +1289,48 @@ mod tests {
             rig.render_requests(),
             vec![(200, 200)],
             "and the queued frame renders into the resize's buffer"
+        );
+    }
+
+    /// The same failure one step earlier in the conversation: two asks issued *before* the
+    /// driver has answered either. The credit guard cannot see this one — no render is in flight
+    /// yet, so both asks are legitimate at the moment they are made.
+    ///
+    /// The driver answers the first and has nothing for the second, which leaves its "somebody
+    /// is waiting" latch set with nobody actually waiting any more. The next buffer to appear —
+    /// a resize allocation, while the granted one is out being drawn into — is then handed over
+    /// unasked, and the engine is holding two.
+    #[test]
+    fn a_second_ask_before_the_first_is_answered_does_not_earn_a_second_grant() {
+        let mut rig = Rig::new();
+        rig.surface((100, 100));
+
+        // Two asks in one scheduler pass, before the driver reacts to either.
+        rig.queue_frame();
+        rig.queue_frame();
+        rig.pump();
+        assert_eq!(
+            rig.render_requests(),
+            vec![(100, 100)],
+            "the grant that did arrive is rendering"
+        );
+
+        // A resize now allocates a buffer that a stale ask would collect.
+        rig.surface((200, 200));
+        assert!(
+            rig.engine.window.is_none(),
+            "the buffer is out with the renderer; an unanswered duplicate ask must not \
+             collect the resize's replacement"
+        );
+
+        // The old buffer goes back and is discarded as superseded; the app answers the resize
+        // with a new frame, which asks properly and gets the replacement.
+        rig.complete_render();
+        rig.app_frame();
+        assert_eq!(
+            rig.render_requests(),
+            vec![(200, 200)],
+            "and the next frame draws into the replacement, asked for properly"
         );
     }
 
