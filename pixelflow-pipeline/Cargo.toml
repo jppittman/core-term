@@ -39,6 +39,10 @@ harness = false
 # NNUE data rather than running it as a bounded postsubmit regression bench.
 required-features = ["training"]
 
+[[bench]]
+name = "macro_bench"
+harness = false
+
 [[bin]]
 name = "bench_hoisted_scanline"
 path = "src/bin/bench_hoisted_scanline.rs"
