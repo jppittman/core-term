@@ -431,9 +431,43 @@ fn isa_matrix(with_clippy: bool) {
     }
 }
 
+/// The triple this machine builds for, from `rustc -vV`.
+///
+/// Needed because `--target` must be passed *explicitly* to keep `RUSTFLAGS` off host
+/// artifacts — see [`run_with_rustflags`]. Naming the host triple is a no-op for what gets
+/// built; it is the act of specifying `--target` at all that cargo keys the behaviour on.
+#[cfg(target_arch = "x86_64")]
+fn host_triple() -> String {
+    let out = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .expect("isa-matrix: could not run `rustc -vV` to discover the host triple");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .expect("isa-matrix: `rustc -vV` printed no `host:` line")
+        .trim()
+        .to_string()
+}
+
 /// Run `cargo <args>` from the workspace root with `RUSTFLAGS` set to
 /// `rustflags` and artifacts confined to `target_dir`, streaming output
 /// straight through. Returns whether it succeeded.
+///
+/// # Why `--target` is always passed
+///
+/// Without it, `RUSTFLAGS` applies to **host** artifacts too — build scripts and proc macros —
+/// and those are compiled *and then executed* by cargo on the machine doing the build. A level
+/// that names an ISA the build machine lacks therefore kills the build script with `SIGILL`
+/// before any of this workspace is even compiled. `proc-macro2`'s build script died exactly
+/// that way on a CI runner without AVX-512.
+///
+/// Passing `--target` explicitly is what makes cargo apply `RUSTFLAGS` to target artifacts only.
+/// The triple is the host's own, so nothing about the build changes except that host tooling
+/// stops being compiled for a CPU that is not going to run it. This is what makes the matrix's
+/// "compiling a level needs no special hardware" claim actually true: it is true of *this*
+/// workspace's code, and was quietly false for everything cargo runs on the way there.
 #[cfg(target_arch = "x86_64")]
 fn run_with_rustflags(
     workspace_root: &std::path::Path,
@@ -441,9 +475,15 @@ fn run_with_rustflags(
     rustflags: &str,
     args: &[&str],
 ) -> bool {
+    // Before any `--`, or it would be forwarded to the tool behind the separator (clippy's lint
+    // arguments) instead of being read by cargo.
+    let split = args.iter().position(|a| *a == "--").unwrap_or(args.len());
     Command::new("cargo")
         .current_dir(workspace_root)
-        .args(args)
+        .args(&args[..split])
+        .arg("--target")
+        .arg(host_triple())
+        .args(&args[split..])
         .env("RUSTFLAGS", rustflags)
         .env("CARGO_TARGET_DIR", target_dir)
         // Deep-Manifold tests recurse near the stack limit by design (see
