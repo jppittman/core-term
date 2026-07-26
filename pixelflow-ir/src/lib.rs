@@ -61,22 +61,21 @@ pub use traits::{EmitStyle, Op, OpMeta};
 /// at compile time, turning any width disagreement into a clear build error
 /// rather than a raw `transmute` size error (or, worse, a silent miscompile).
 ///
-/// A genuine 3-way split, checked only against `target_feature` (the flag
-/// that actually governs what the compiler may emit into this crate) — NOT
-/// ANDed against a build.rs host-detected cfg the way `pixelflow-core`'s
-/// `storage.rs` gates `NativeF32Storage`. That AND is a real safety net over
-/// there (see its comment): it guards against a build host whose CPU lacks
-/// the feature it was explicitly told to target, which would emit
-/// AVX-512/AVX2 instructions the box running the build can't execute. This
-/// crate has no build script of its own to reproduce that host probe — it is
-/// `no_std`-first and carries no `is_x86_feature_detected!` machinery — and
-/// duplicating pixelflow-core's `pixelflow_avx512f`/`pixelflow_avx2` cfg here
-/// would only recreate the mismatch it's meant to catch (a build script is
-/// per-crate; a cfg it emits does not cross a crate boundary). Every other
-/// `target_feature = "avx512f"` gate already in this crate (`x86.rs`,
-/// `emit/mod.rs`, `emit/executable.rs`, `jit_manifold.rs`) is bare
-/// `target_feature`, so this stays consistent with the rest of the crate
-/// rather than inventing a second rule for one const.
+/// A genuine 3-way split, checked against `target_feature` — the flag that
+/// actually governs what the compiler may emit. `pixelflow-core` gates
+/// `NativeF32Storage` on exactly the same predicate, which is what keeps the
+/// two crates' widths in step.
+///
+/// They once did not. `pixelflow-core` used to AND in a build-script cfg set by
+/// probing the *build host's* CPU, on the theory that it was a safety net
+/// against a host told to target a feature it lacks. It was not: a build script
+/// is per-crate and the cfg it emits does not cross a crate boundary, so this
+/// crate went on emitting 512-bit code while core's `Field` quietly narrowed to
+/// 256 — the disagreement that net was supposed to prevent, caused by the net
+/// itself. Building `+avx512f` on a non-AVX-512 host failed on the `transmute`
+/// in core's `lattice`. Host CPU is the wrong question for a target decision;
+/// running wide code on a narrow host is gated by `cargo xtask isa-matrix`,
+/// which builds every level and runs only what `host_has_feature` allows.
 ///
 /// 64 (512-bit, AVX-512) when compiled with `target_feature = "avx512f"`,
 /// where `compile_arena_dag` routes to `Avx512Backend` and `KernelFn` is

@@ -37,21 +37,20 @@ pub trait FieldStorage: Algebra {
 // Storage Implementation for f32
 // ============================================================================
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeF32Storage = crate::backend::x86::F32x16;
 
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    pixelflow_avx2
+    not(target_feature = "avx512f")
 ))]
 type NativeF32Storage = crate::backend::x86::F32x8;
 
 #[cfg(all(
     target_arch = "x86_64",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    not(all(target_feature = "avx2", pixelflow_avx2))
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
 ))]
 type NativeF32Storage = crate::backend::x86::F32x4;
 
@@ -92,22 +91,21 @@ impl FieldStorage for f32 {
 // enables and merge it with that alias's own `///` line.
 
 /// Native mask storage for AVX-512.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub type NativeMaskStorage = crate::backend::x86::Mask16;
 
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    pixelflow_avx2
+    not(target_feature = "avx512f")
 ))]
 /// Native mask storage for AVX2.
 pub type NativeMaskStorage = crate::backend::x86::Mask8;
 
 #[cfg(all(
     target_arch = "x86_64",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    not(all(target_feature = "avx2", pixelflow_avx2))
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
 ))]
 /// Native mask storage for SSE2 (fallback).
 pub type NativeMaskStorage = crate::backend::x86::Mask4;
@@ -145,21 +143,20 @@ impl FieldStorage for bool {
 // Storage Implementation for u32
 // ============================================================================
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeU32Storage = crate::backend::x86::U32x16;
 
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    pixelflow_avx2
+    not(target_feature = "avx512f")
 ))]
 type NativeU32Storage = crate::backend::x86::U32x8;
 
 #[cfg(all(
     target_arch = "x86_64",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    not(all(target_feature = "avx2", pixelflow_avx2))
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
 ))]
 type NativeU32Storage = crate::backend::x86::U32x4;
 
