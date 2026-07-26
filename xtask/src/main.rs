@@ -387,11 +387,7 @@ fn isa_matrix(with_clippy: bool) {
             // whole workspace is built with this level's target-feature, so
             // rustc may emit those instructions anywhere in the binary — it is
             // not enough that a given test avoids them.
-            if let Some(&feat) = level
-                .requires
-                .iter()
-                .find(|&&feat| !host_has_feature(feat))
-            {
+            if let Some(&feat) = level.requires.iter().find(|&&feat| !host_has_feature(feat)) {
                 println!(
                     "isa-matrix: {} — built and linted; NOT running tests \
                      (host CPU lacks {feat})",
@@ -441,6 +437,10 @@ fn isa_matrix(with_clippy: bool) {
 /// Run `cargo <args>` from the workspace root with ISA flags applied only to
 /// target crates and artifacts confined to `target_dir`, streaming output
 /// straight through. Returns whether it succeeded.
+///
+/// The explicit target is necessary on every x86-64 host: without it,
+/// `RUSTFLAGS` also compiles runnable build scripts and proc macros with the
+/// requested ISA, which can fault before Cargo reaches the target crates.
 #[cfg(target_arch = "x86_64")]
 fn run_with_rustflags(
     workspace_root: &std::path::Path,
@@ -448,10 +448,26 @@ fn run_with_rustflags(
     rustflags: &str,
     args: &[&str],
 ) -> bool {
+    let host_triple = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .unwrap_or_else(|error| panic!("isa-matrix: could not run `rustc -vV`: {error}"));
+    let host_triple = String::from_utf8_lossy(&host_triple.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .unwrap_or_else(|| panic!("isa-matrix: `rustc -vV` printed no host triple"))
+        .trim()
+        .to_owned();
+    let split = args
+        .iter()
+        .position(|arg| *arg == "--")
+        .unwrap_or(args.len());
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace_root)
-        .args(args)
+        .args(&args[..split])
+        .args(["--target", host_triple.as_str()])
+        .args(&args[split..])
         .env("CARGO_TARGET_DIR", target_dir)
         // Propagate the requested ISA to pixelflow-core's build script. Cargo
         // executes that script for the host, so its CARGO_CFG_TARGET_FEATURE
@@ -465,18 +481,6 @@ fn run_with_rustflags(
         // `rasterizer::parallel::STACK_SIZE`).
         .env("RUST_MIN_STACK", "16777216");
 
-    // `RUSTFLAGS` is inherited by host build scripts as well as target
-    // crates. On a hosted runner that can compile AVX-512 but cannot execute
-    // it in every process context, that makes dependency build scripts fault
-    // with SIGILL before our tests even start. An explicit target keeps build
-    // scripts and proc macros on the host defaults while applying the ISA
-    // flags to the workspace under test.
-    #[cfg(target_os = "linux")]
-    command
-        .args(["--target", "x86_64-unknown-linux-gnu"])
-        .env("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS", rustflags);
-
-    #[cfg(not(target_os = "linux"))]
     command.env("RUSTFLAGS", rustflags);
 
     command
