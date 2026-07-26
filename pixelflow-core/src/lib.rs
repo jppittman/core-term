@@ -248,40 +248,50 @@ pub use lattice::{DiscreteManifold, Lattice, ReduceOp};
 
 use backend::{Backend, MaskOps, SimdOps, SimdU32Ops};
 
-// Backend selection: Use target-cpu=native intrinsics with build.rs preference hints.
-// Build.rs detects the build machine's CPU and emits pixelflow_* flags for optimal selection.
-// The actual backend availability still requires target_feature (enabled by target-cpu=native).
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+// Backend selection is governed by `target_feature` alone — the flag that
+// actually decides what the compiler may emit — and `-C target-cpu=native` sets
+// it, so nothing extra is needed to pick up the build box's own width.
+//
+// Deliberately NOT ANDed against a build-script probe of the build host's CPU.
+// That probe used to exist here, and it made the width depend on the machine
+// doing the compiling: on a host without AVX-512, `+avx512f` silently produced a
+// 256-bit `Field` while `pixelflow-ir` — which has no build script and gates on
+// bare `target_feature` — still emitted 512-bit code, so the two crates
+// disagreed and the build failed on the `transmute` in `lattice`. It also broke
+// cross-compilation, where the host CPU says nothing about the target's.
+//
+// Executing wide code on a narrow host is a *run* concern, and it is already
+// handled where it belongs: `cargo xtask isa-matrix` builds every ISA level
+// unconditionally and gates only running on `host_has_feature`.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeSimd = <backend::x86::Avx512 as Backend>::F32;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeU32Simd = <backend::x86::Avx512 as Backend>::U32;
 
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    pixelflow_avx2
+    not(target_feature = "avx512f")
 ))]
 type NativeSimd = <backend::x86::Avx2 as Backend>::F32;
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    pixelflow_avx2
+    not(target_feature = "avx512f")
 ))]
 type NativeU32Simd = <backend::x86::Avx2 as Backend>::U32;
 
 // Fallback to SSE2 (always available on x86_64)
 #[cfg(all(
     target_arch = "x86_64",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    not(all(target_feature = "avx2", pixelflow_avx2))
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
 ))]
 type NativeSimd = <backend::x86::Sse2 as Backend>::F32;
 #[cfg(all(
     target_arch = "x86_64",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    not(all(target_feature = "avx2", pixelflow_avx2))
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
 ))]
 type NativeU32Simd = <backend::x86::Sse2 as Backend>::U32;
 

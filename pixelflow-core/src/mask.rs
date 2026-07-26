@@ -28,21 +28,20 @@ use crate::storage::NativeMaskStorage;
 use core::ops::{BitAnd, BitOr, Not};
 
 // Re-import NativeSimd for conversions
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f", pixelflow_avx512f))]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 type NativeSimd = crate::backend::x86::F32x16;
 
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx2",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    pixelflow_avx2
+    not(target_feature = "avx512f")
 ))]
 type NativeSimd = crate::backend::x86::F32x8;
 
 #[cfg(all(
     target_arch = "x86_64",
-    not(all(target_feature = "avx512f", pixelflow_avx512f)),
-    not(all(target_feature = "avx2", pixelflow_avx2))
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
 ))]
 type NativeSimd = crate::backend::x86::F32x4;
 
