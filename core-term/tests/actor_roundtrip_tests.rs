@@ -70,7 +70,7 @@ impl Actor<Vec<u8>, (), ()> for TestParserActor {
         Ok(())
     }
 
-    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -326,7 +326,7 @@ impl Actor<TestEngineData, TestEngineControl, TestEngineManagement> for TestTerm
         Ok(())
     }
 
-    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -592,7 +592,7 @@ fn multi_actor_chain_roundtrip() {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -664,7 +664,7 @@ fn roundtrip_handles_actor_panic_gracefully() {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -724,7 +724,7 @@ fn roundtrip_sender_dropped_during_processing() {
             fn handle_management(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -787,7 +787,7 @@ impl Actor<Vec<u8>, WriterControl, ()> for WriterProbe {
     fn handle_management(&mut self, _msg: ()) -> HandlerResult {
         Ok(())
     }
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }

@@ -57,12 +57,12 @@ impl PlatformOps for MockOps {
         Ok(())
     }
 
-    fn park(
+    fn handle_os(
         &mut self,
         _status: SystemStatus,
         _out: &mut DriverOut,
     ) -> Result<ActorStatus, HandlerError> {
-        self.push_log("Park");
+        self.push_log("HandleOs");
         Ok(ActorStatus::Idle)
     }
 }
@@ -111,8 +111,8 @@ fn platform_actor_delegation() {
         })
         .expect("handle_data should succeed");
 
-    // Test Park
-    actor.park(SystemStatus::Busy).expect("park should succeed");
+    // Test HandleOs
+    actor.handle_os(SystemStatus::Busy).expect("handle_os should succeed");
 
     // 4. Verify Log
     let log = log_ref.lock().unwrap();
@@ -120,7 +120,7 @@ fn platform_actor_delegation() {
     assert_eq!(log[0], "Create");
     assert!(log[1].contains("SetTitle WindowId(1) Test Window"));
     assert!(log[2].contains("Present WindowId(1)"));
-    assert_eq!(log[3], "Park");
+    assert_eq!(log[3], "HandleOs");
 }
 
 
@@ -151,12 +151,12 @@ fn platform_ops_emit_without_an_engine() {
         fn handle_management(&mut self, _: DisplayMgmt, _out: &mut DriverOut) -> HandlerResult {
             Ok(())
         }
-        fn park(
+        fn handle_os(
             &mut self,
             _status: SystemStatus,
             out: &mut DriverOut,
         ) -> Result<ActorStatus, HandlerError> {
-            // `park` is the reason `DriverOut` carries a Vec rather than an Option: draining
+            // `handle_os` is the reason `DriverOut` carries a Vec rather than an Option: draining
             // the OS queue yields N events from one step.
             out.event(DisplayEvent::FocusGained { id: WindowId(1) });
             out.event(DisplayEvent::FocusLost { id: WindowId(1) });
@@ -172,8 +172,8 @@ fn platform_ops_emit_without_an_engine() {
     assert!(out.emits.is_empty(), "a step that does nothing must emit nothing");
 
     // One step, N events.
-    ops.park(SystemStatus::Idle, &mut out).unwrap();
-    assert_eq!(out.emits.len(), 2, "park drains N events in a single step");
+    ops.handle_os(SystemStatus::Idle, &mut out).unwrap();
+    assert_eq!(out.emits.len(), 2, "handle_os drains N events in a single step");
     assert!(matches!(out.emits[0], DriverEmit::Event(DisplayEvent::FocusGained { .. })));
     assert!(matches!(out.emits[1], DriverEmit::Event(DisplayEvent::FocusLost { .. })));
 

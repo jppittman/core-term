@@ -20,10 +20,10 @@ pub enum DriverEmit {
 /// Output word for a [`PlatformOps`] step.
 ///
 /// One `Out` per step, matching `VsyncCoreOut`/`RasterCoreOut` — the struct's *fields* are the
-/// ports, so a step never returns "sometimes a value, sometimes a list." `park` is the reason
+/// ports, so a step never returns "sometimes a value, sometimes a list." `handle_os` is the reason
 /// this field is a `Vec` rather than an `Option`: draining the OS event queue yields N events.
 ///
-/// `Vec` is not a per-frame allocation despite `park` running every frame: an empty `Vec` never
+/// `Vec` is not a per-frame allocation despite `handle_os` running every frame: an empty `Vec` never
 /// touches the heap, and the overwhelming majority of frames carry no input at all. Only a
 /// frame where the user actually did something pays one small amortized growth.
 #[derive(Debug, Default)]
@@ -54,7 +54,7 @@ pub trait PlatformOps: Send + 'static {
     fn handle_data(&mut self, data: DisplayData, out: &mut DriverOut) -> HandlerResult;
     fn handle_control(&mut self, ctrl: DisplayControl, out: &mut DriverOut) -> HandlerResult;
     fn handle_management(&mut self, mgmt: DisplayMgmt, out: &mut DriverOut) -> HandlerResult;
-    fn park(
+    fn handle_os(
         &mut self,
         status: SystemStatus,
         out: &mut DriverOut,

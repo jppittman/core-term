@@ -113,8 +113,8 @@ impl<Ops: PlatformOps> Actor<DisplayData, DisplayControl, DisplayMgmt> for Platf
         result
     }
 
-    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
-        let result = self.ops.park(status, &mut self.out);
+    fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        let result = self.ops.handle_os(status, &mut self.out);
         self.flush();
         result
     }

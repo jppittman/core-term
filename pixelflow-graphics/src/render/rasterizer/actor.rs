@@ -453,8 +453,8 @@ impl<P: Pixel + Send, Meta> Actor<RenderRequest<P, Meta>, RasterControl, RasterM
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
-        // No external work to do during park, just wait for messages
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        // No external work to do during handle_os, just wait for messages
         Ok(ActorStatus::Idle)
     }
 }

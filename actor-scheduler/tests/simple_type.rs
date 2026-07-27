@@ -15,7 +15,7 @@ impl Actor<(), (), ()> for SimpleActor {
     fn handle_management(&mut self, _: ()) -> HandlerResult {
         Ok(())
     }
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }

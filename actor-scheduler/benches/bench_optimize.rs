@@ -274,7 +274,7 @@ impl Actor<(), (), ()> for LatencyActor {
         self.response_tx.send(()).ok();
         Ok(())
     }
-    fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(match h {
             SystemStatus::Idle => ActorStatus::Idle,
             SystemStatus::Busy => ActorStatus::Busy,
@@ -360,7 +360,7 @@ impl Actor<i32, (), ()> for CountingActor {
         self.mgmt_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
-    fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(match h {
             SystemStatus::Idle => ActorStatus::Idle,
             SystemStatus::Busy => ActorStatus::Busy,
@@ -498,7 +498,7 @@ fn measure_latency_under_load(params: &SchedulerParams) -> f64 {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(match h {
                 SystemStatus::Idle => ActorStatus::Idle,
                 SystemStatus::Busy => ActorStatus::Busy,
@@ -583,7 +583,7 @@ fn measure_burst_recovery(params: &SchedulerParams) -> f64 {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(match h {
                 SystemStatus::Idle => ActorStatus::Idle,
                 SystemStatus::Busy => ActorStatus::Busy,

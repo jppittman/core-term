@@ -54,7 +54,7 @@ impl Actor<String, String, String> for OrderingActor {
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -111,7 +111,7 @@ impl Actor<i32, i32, i32> for CountingActor {
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -141,18 +141,18 @@ impl Actor<String, String, String> for SlowActor {
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
 
 /// Actor that tracks SystemStatus hints from the scheduler.
-struct ParkTrackingActor {
-    park_hints: Arc<Mutex<Vec<SystemStatus>>>,
+struct HandleOsTrackingActor {
+    os_hints: Arc<Mutex<Vec<SystemStatus>>>,
     return_status: ActorStatus,
 }
 
-impl Actor<(), (), ()> for ParkTrackingActor {
+impl Actor<(), (), ()> for HandleOsTrackingActor {
     fn handle_data(&mut self, _msg: ()) -> HandlerResult {
         Ok(())
     }
@@ -163,8 +163,8 @@ impl Actor<(), (), ()> for ParkTrackingActor {
         Ok(())
     }
 
-    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
-        self.park_hints.lock().unwrap().push(status);
+    fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        self.os_hints.lock().unwrap().push(status);
         Ok(self.return_status)
     }
 }
@@ -283,7 +283,7 @@ fn mixed_priority_messages_all_delivered() {
                 self.0 .2.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -343,7 +343,7 @@ fn no_starvation_with_continuous_high_priority() {
             fn handle_management(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -400,7 +400,7 @@ fn management_burst_limit_prevents_starvation() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -506,7 +506,7 @@ fn multiple_senders_all_messages_delivered() {
                 self.0.management_count.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -567,7 +567,7 @@ fn actor_run_exits_when_all_senders_dropped() {
             fn handle_management(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -612,7 +612,7 @@ fn cloned_handle_works_after_original_dropped() {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -646,8 +646,8 @@ fn park_hint_wait_when_queues_empty() {
     let hints_clone = hints.clone();
 
     let handle = thread::spawn(move || {
-        let mut actor = ParkTrackingActor {
-            park_hints: hints_clone,
+        let mut actor = HandleOsTrackingActor {
+            os_hints: hints_clone,
             return_status: ActorStatus::Idle,
         };
         rx.run(&mut actor);
@@ -677,8 +677,8 @@ fn park_hint_poll_when_burst_limit_hit() {
     let hints_clone = hints.clone();
 
     let handle = thread::spawn(move || {
-        let mut actor = ParkTrackingActor {
-            park_hints: hints_clone,
+        let mut actor = HandleOsTrackingActor {
+            os_hints: hints_clone,
             return_status: ActorStatus::Idle,
         };
         rx.run(&mut actor);
@@ -709,8 +709,8 @@ fn actor_can_override_park_hint_to_poll() {
     let hints_clone = hints.clone();
 
     let handle = thread::spawn(move || {
-        let mut actor = ParkTrackingActor {
-            park_hints: hints_clone,
+        let mut actor = HandleOsTrackingActor {
+            os_hints: hints_clone,
             return_status: ActorStatus::Busy,
         };
         rx.run(&mut actor);
@@ -725,10 +725,10 @@ fn actor_can_override_park_hint_to_poll() {
 
     let hints = hints.lock().unwrap();
     // Actor returned Poll, so scheduler should keep working
-    // This means park() gets called multiple times
+    // This means handle_os() gets called multiple times
     assert!(
         hints.len() > 1,
-        "Actor overriding to Poll should cause multiple park() calls. Got: {}",
+        "Actor overriding to Poll should cause multiple handle_os() calls. Got: {}",
         hints.len()
     );
 }
@@ -774,7 +774,7 @@ fn different_message_types_per_lane() {
                 self.0.lock().unwrap().2 = true;
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -824,7 +824,7 @@ fn handle_clone_is_independent() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -878,7 +878,7 @@ fn high_throughput_single_sender() {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -929,7 +929,7 @@ fn concurrent_senders_stress_test() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -992,7 +992,7 @@ fn empty_message_types_work() {
             fn handle_management(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -1032,7 +1032,7 @@ fn zero_size_type_messages() {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -1076,7 +1076,7 @@ fn large_message_type_works() {
             fn handle_management(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -1111,7 +1111,7 @@ fn immediate_shutdown_no_messages() {
             fn handle_management(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -1150,7 +1150,7 @@ fn custom_burst_and_buffer_sizes() {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -1187,7 +1187,7 @@ fn large_burst_and_buffer_sizes() {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }

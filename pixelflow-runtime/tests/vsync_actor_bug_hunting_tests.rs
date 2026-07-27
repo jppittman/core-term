@@ -68,7 +68,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker 
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -181,7 +181,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TokenTracker {
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -411,7 +411,7 @@ fn shutdown_command_stops_tick_processing() {
                 }
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -479,7 +479,7 @@ fn fps_request_handles_dropped_receiver() {
             fn handle_management(&mut self, _: VsyncManagement) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -565,7 +565,7 @@ fn refresh_rate_update_during_ticks_is_safe() {
                 }
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }

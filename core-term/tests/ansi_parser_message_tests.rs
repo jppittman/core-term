@@ -41,7 +41,7 @@ impl Actor<Vec<u8>, (), ()> for RealParserActor {
     fn handle_management(&mut self, _: ()) -> HandlerResult {
         Ok(())
     }
-    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
