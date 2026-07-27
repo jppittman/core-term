@@ -12,8 +12,7 @@ and concurrency requirements exercise the libraries as a system.
 PixelFlow is under active architectural development. The current direction is JIT-first:
 a [`Kernel`](pixelflow-ir/src/kernel.rs) is an immutable handle to an `ExprArena` fragment,
 and composition (`add`, `select`, `at`, bounded reductions, derivatives) splices fragments
-into a larger arena. A root is lowered and emitted for the host CPU, or evaluated by the IR
-interpreter as a reference implementation.
+into a larger arena. A root is lowered and emitted for the host CPU.
 
 ```text
 kernel_value! source ── parse / sema / e-graph ──┐
@@ -21,9 +20,9 @@ kernel_value! source ── parse / sema / e-graph ──┐
 direct Kernel construction ── arena splicing ── ExprArena
                                                  │
                                       lowering and emission
-                                           ┌─────┴─────┐
-                                           ▼           ▼
-                                        CPU JIT   interpreter
+                                                 │
+                                                 ▼
+                                              CPU JIT
 ```
 
 This migration is not finished. `kernel_value!` builds arena-backed `Kernel` values today,
@@ -47,7 +46,7 @@ buffers; it does not promise that all scenes are free of overdraw or branches.
 | Crate | Purpose |
 |---|---|
 | `pixelflow-core` | `no_std` SIMD fields, the `Manifold` substrate, coordinates, combinators, and compatibility layer |
-| `pixelflow-ir` | `Kernel`, `ExprArena`, operations, lowering, interpreter, and CPU emitters |
+| `pixelflow-ir` | `Kernel`, `ExprArena`, operations, lowering, and CPU emitters |
 | `pixelflow-compiler` | `kernel!`, `kernel_value!`, and related parser/sema/optimization front ends |
 | `pixelflow-search` | E-graphs, rewrite rules, extraction, provenance, and guided-search experiments |
 | `pixelflow-pipeline` | Benchmark, corpus, and cost-model research tooling |
