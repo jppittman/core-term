@@ -8,7 +8,7 @@
 //! before Data by construction.
 //!
 //! Writes are nonblocking. If the kernel PTY buffer fills (a stopped shell mid
-//! large paste), the unwritten tail is queued in `pending` and `park()` waits
+//! large paste), the unwritten tail is queued in `pending` and `handle_os()` waits
 //! for `EPOLLOUT` — with the waker registered alongside, so Resize and
 //! Shutdown still get through while the queue drains.
 //!
@@ -60,7 +60,7 @@ struct BoundWriter {
 impl BoundWriter {
     fn bind(pty: NixPty, waker: Arc<FdWaker>) -> anyhow::Result<Self> {
         let monitor = EventMonitor::new()?;
-        // Registered permanently; park() only polls while `pending` is
+        // Registered permanently; handle_os() only polls while `pending` is
         // non-empty, so level-triggered "always writable" costs nothing.
         monitor.add(&pty, TOKEN_PTY, EventFlags::EPOLLOUT)?;
         monitor.add(&*waker, TOKEN_WAKER, EventFlags::EPOLLIN)?;
@@ -145,7 +145,7 @@ impl Actor<Vec<u8>, WriterControl, WriterManagement> for PtyWriter {
         }
         self.pending.push_back(bytes);
         // Common case (bound, queue was empty, PTY writable): flushes inline
-        // and park() never needs to poll. Unbound: stays queued.
+        // and handle_os() never needs to poll. Unbound: stays queued.
         self.flush_pending();
         Ok(())
     }
@@ -170,7 +170,7 @@ impl Actor<Vec<u8>, WriterControl, WriterManagement> for PtyWriter {
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         if self.broken || self.pending.is_empty() {
             // Message-driven: let the scheduler block on the doorbell. With
             // the waker unarmed, sends to this actor cost no wake syscall —

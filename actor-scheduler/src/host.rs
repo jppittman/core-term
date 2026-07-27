@@ -11,7 +11,7 @@
 //! host can be a green actor inside another host. Same sweep either way; what differs is where
 //! its findings can go.
 //!
-//! - [`Actor`] impl — `park` sweeps, and reports only `Busy`/`Idle`. Simplest, and enough
+//! - [`Actor`] impl — `handle_os` sweeps, and reports only `Busy`/`Idle`. Simplest, and enough
 //!   whenever the green actors have nowhere to escalate to.
 //! - [`Transducer`] impl — [`RunSweep`] on the data lane, [`HostOut`] carrying supervision out a
 //!   port that its wiring delivers and [`Topology`](crate::mealy::Topology) can check.
@@ -19,12 +19,12 @@
 //! - [`sweep`](Host::sweep) — called directly, findings as a return value.
 //!
 //! Supervision needs one of the last two, because [`ActorStatus`] is `Busy | Idle` and has no
-//! room for "node 3 is stuck holding a framebuffer". The sweep behind `park` computes those
+//! room for "node 3 is stuck holding a framebuffer". The sweep behind `handle_os` computes those
 //! events and then drops them, and no amount of improving how the sweep *reports* them changes
 //! that — the discard is in the signature. That is a limit of the hook, not a defect in it:
-//! `park` exists to invert control flow around an external event source you do not own — an
+//! `handle_os` exists to invert control flow around an external event source you do not own — an
 //! epoll set, a PTY, `XNextEvent`, a Cocoa event queue — and `Busy`/`Idle` is exactly the
-//! vocabulary that job needs. Reach for `park` when you *have* to give up the loop; reach for a
+//! vocabulary that job needs. Reach for `handle_os` when you *have* to give up the loop; reach for a
 //! port when you have something to say.
 //!
 //! The sleep behaviour survives the move: on the wired path it is the self-addressed
@@ -362,14 +362,14 @@ pub fn green_channel<T>(capacity: usize, waker: Waker) -> (GreenSender<T>, SpscR
 /// Runs a [`Host`] on an OS thread under the ordinary [`ActorScheduler`](crate::ActorScheduler).
 ///
 /// The green tier needs one thing from the OS tier that it cannot supply itself: something has
-/// to notice that the doorbell rang and turn that into an input. That is `park`'s actual job —
+/// to notice that the doorbell rang and turn that into an input. That is `handle_os`'s actual job —
 /// bridging the outside world to a message — and it is all this does. It feeds one [`RunSweep`],
 /// advances the host until quiet, and reports whether the thread may sleep.
 ///
-/// What it deliberately does **not** do is carry supervision. By the time `park` returns, any
+/// What it deliberately does **not** do is carry supervision. By the time `handle_os` returns, any
 /// event has already left over the host's own wiring, so there is nothing for an
 /// `ActorStatus` to fail to express. That is the whole difference from the `impl Actor for Host`
-/// this replaces, which computed events inside `park` and dropped them for want of a channel.
+/// this replaces, which computed events inside `handle_os` and dropped them for want of a channel.
 pub struct GreenThread<W: Wiring<Out = HostOut>> {
     node: Node<Host, W, SpscReceiver<RunSweep>>,
     /// Feeds the sweep that a doorbell wake implies. Capacity one: a sweep already queued is as
@@ -406,13 +406,13 @@ impl<W: Wiring<Out = HostOut>> Actor<Infallible, Infallible, Infallible> for Gre
         match msg {}
     }
 
-    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
         match self.tick.try_send(RunSweep) {
             Ok(()) => {}
             // Full: a sweep is already queued, which is what this was going to ask for —
             // `RunSweep` carries nothing to distinguish a second one from the first.
             // Disconnected: unreachable, since this owns both ends of `tick`.
-            // Neither is worth failing a park over, and the poll below runs either way.
+            // Neither is worth failing a handle_os over, and the poll below runs either way.
             Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {}
         }
 
@@ -458,7 +458,7 @@ impl Actor<Infallible, Infallible, Infallible> for Host {
     /// When they matter, use the [`Transducer`] impl — the same host, wired, emitting
     /// [`HostOut::supervision`] over a port — via [`GreenThread`] to run it on a thread, or
     /// [`sweep`](Host::sweep) to read them directly. All three are the same sweep.
-    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(self.sweep().status)
     }
 }
@@ -663,11 +663,11 @@ mod tests {
     }
 
     // ────────────────────────────────────────────────────────────────────────
-    // The host as a transducer: supervision over an edge, not through `park`
+    // The host as a transducer: supervision over an edge, not through `handle_os`
     // ────────────────────────────────────────────────────────────────────────
 
     /// Delivers a host's supervision events onward, which is the whole point of the conversion:
-    /// under the old `park` they were computed and dropped.
+    /// under the old `handle_os` they were computed and dropped.
     struct SupervisionWiring {
         supervisor: SpscSender<Supervision>,
     }
@@ -691,7 +691,7 @@ mod tests {
         (node, tx_sweep, rx_sup)
     }
 
-    /// The conversion's reason for existing. Under `park` this event was computed and discarded
+    /// The conversion's reason for existing. Under `handle_os` this event was computed and discarded
     /// because `Result<ActorStatus, _>` had nowhere to put it; here it arrives at a supervisor
     /// as an ordinary message.
     #[test]
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(event.reason, Stuck::TargetGone);
     }
 
-    /// The sleep contract `park` used to provide, in the transducer's own vocabulary: a sweep
+    /// The sleep contract `handle_os` used to provide, in the transducer's own vocabulary: a sweep
     /// that ran something yields a continuation and is stepped straight back; a quiet one does
     /// not, so the node reports `Idle` and the driving thread may block.
     #[test]

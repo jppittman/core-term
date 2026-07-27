@@ -157,7 +157,7 @@ impl PlatformOps for LinuxOps {
         Ok(())
     }
 
-    fn park(
+    fn handle_os(
         &mut self,
         status: SystemStatus,
         out: &mut DriverOut,

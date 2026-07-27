@@ -7,7 +7,7 @@
 //! To avoid scheduling starvation, the VSync timing is driven by a dedicated
 //! clock thread that sends explicit `Tick` messages to the actor. This ensures
 //! the actor wakes up reliably regardless of other system load, without relying
-//! on blocking `park` calls that could stall the actor scheduler.
+//! on blocking `handle_os` calls that could stall the actor scheduler.
 //!
 //! # Decision logic
 //!
@@ -450,7 +450,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for VsyncActor {
         Ok(())
     }
 
-    fn park(
+    fn handle_os(
         &mut self,
         _status: SystemStatus,
     ) -> Result<actor_scheduler::ActorStatus, HandlerError> {

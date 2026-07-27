@@ -76,7 +76,7 @@
 //!         println!("Management: {}", msg);
 //!         Ok(())
 //!     }
-//!     fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> { Ok(ActorStatus::Idle) }
+//!     fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> { Ok(ActorStatus::Idle) }
 //! }
 //!
 //! let (tx, mut rx) = ActorScheduler::<String, String, String>::new(10, 100);
@@ -176,7 +176,7 @@ use std::time::Duration;
 ///   2. Drain Management messages (capped at burst limit)
 ///   3. Drain Control messages again (priority recheck)
 ///   4. Drain Data messages (capped at burst limit)
-///   5. Call park() - let actor/OS do other work
+///   5. Call handle_os() - let actor/OS do other work
 ///   6. Repeat
 /// ```
 ///
@@ -339,14 +339,14 @@ macro_rules! impl_management_message {
     };
 }
 
-/// Actor status returned from park() to hint the scheduler about blocking behavior.
+/// Actor status returned from handle_os() to hint the scheduler about blocking behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActorStatus {
     Idle, // Actor has no unfinished work. Scheduler can block. (0% CPU)
     Busy, // Actor has unfinished work (yielding). Scheduler should poll.
 }
 
-/// Status provided to the actor's park method indicating the state of the scheduler's queues.
+/// Status provided to the actor's handle_os method indicating the state of the scheduler's queues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemStatus {
     Idle, // Scheduler queues are empty
@@ -386,7 +386,7 @@ pub trait Actor<D, C, M> {
     ///
     /// Returns actor status: Busy if yielding with unfinished work, Idle if done.
     /// Can return `HandlerError::Fatal` to trigger shutdown.
-    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError>;
+    fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError>;
 }
 
 /// Legacy alias for backward compatibility
@@ -444,7 +444,7 @@ pub trait ActorTypes {
 ///     fn handle_data(&mut self, msg: EngineData) { }
 ///     fn handle_control(&mut self, msg: EngineControl) { }
 ///     fn handle_management(&mut self, msg: EngineManagement) { }
-///     fn park(&mut self, status: SystemStatus) -> ActorStatus { ActorStatus::Idle }
+///     fn handle_os(&mut self, status: SystemStatus) -> ActorStatus { ActorStatus::Idle }
 /// }
 /// ```
 pub trait TroupeActor<Dir>:
@@ -1041,7 +1041,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             SystemStatus::Idle
         };
 
-        let returned_hint = actor.park(system_status)?;
+        let returned_hint = actor.handle_os(system_status)?;
 
         let status = if more_work || returned_hint == ActorStatus::Busy {
             SchedulerLoopStatus::Working
@@ -1273,7 +1273,7 @@ mod tests {
             Ok(())
         }
 
-        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -1406,7 +1406,7 @@ mod tests {
                 self.mgmt_count += 1;
                 Ok(())
             }
-            fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -1458,7 +1458,7 @@ mod tests {
                 fn handle_management(&mut self, _: ()) -> HandlerResult {
                     Ok(())
                 }
-                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Idle)
                 }
             }
@@ -1502,7 +1502,7 @@ mod poll_once_tests {
         fn handle_management(&mut self, _: i32) -> HandlerResult {
             Ok(())
         }
-        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -1567,7 +1567,7 @@ mod poll_once_tests {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -1760,7 +1760,7 @@ mod handle_wake_targeted_tests {
     };
     use std::time::Duration;
 
-    // An actor that records the last `SystemStatus` handed to `park`. Since `park`
+    // An actor that records the last `SystemStatus` handed to `handle_os`. Since `handle_os`
     // is called unconditionally at the end of every `handle_wake`, its argument is
     // an observable proxy for the private `more_work` computation.
     struct StatusRecorder {
@@ -1776,7 +1776,7 @@ mod handle_wake_targeted_tests {
         fn handle_management(&mut self, _: i32) -> HandlerResult {
             Ok(())
         }
-        fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
             self.last_status = Some(status);
             Ok(ActorStatus::Idle)
         }
@@ -1790,7 +1790,7 @@ mod handle_wake_targeted_tests {
     // drains the last 1 (0 remain -> not More), data is empty (not More). Only the
     // *first* term is More, so more_work is true iff the chain is a plain OR — any
     // of the three `||`s replaced by `&&` collapses the result to false, flipping
-    // the SystemStatus handed to `park` from Busy to Idle.
+    // the SystemStatus handed to `handle_os` from Busy to Idle.
     #[test]
     fn more_work_is_true_when_only_first_control_pass_hits_burst_limit() {
         let params = SchedulerParams {
@@ -1870,13 +1870,13 @@ mod handle_wake_targeted_tests {
     // `let status = if more_work || returned_hint == ActorStatus::Busy { Working } else { Idle }`.
     //
     // `more_work` is false throughout (a single control message, nowhere near any
-    // burst limit). `park` returns Busy on its first call only. Correct code: the
+    // burst limit). `handle_os` returns Busy on its first call only. Correct code: the
     // Busy hint alone makes the first handle_wake report Working, so run_inner
-    // retries without blocking and calls handle_wake (and therefore park) a second
-    // time before it finally blocks on the doorbell — park called exactly twice.
+    // retries without blocking and calls handle_wake (and therefore handle_os) a second
+    // time before it finally blocks on the doorbell — handle_os called exactly twice.
     // Under either mutant, `more_work || <busy-check>` collapses to false on the
     // first call, handle_wake reports Idle immediately, and run_inner blocks
-    // before ever calling park a second time.
+    // before ever calling handle_os a second time.
     #[test]
     fn busy_park_hint_forces_one_extra_wake_before_blocking() {
         let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(100, 100);
@@ -1894,7 +1894,7 @@ mod handle_wake_targeted_tests {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 let n = self.park_calls.fetch_add(1, Ordering::SeqCst);
                 if n == 0 {
                     Ok(ActorStatus::Busy)
@@ -1917,7 +1917,7 @@ mod handle_wake_targeted_tests {
         assert_eq!(
             park_calls.load(Ordering::SeqCst),
             2,
-            "Busy park hint alone should force exactly one extra non-blocking wake"
+            "Busy handle_os hint alone should force exactly one extra non-blocking wake"
         );
 
         drop(tx);
@@ -1950,7 +1950,7 @@ mod drain_all_targeted_tests {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -2046,7 +2046,7 @@ mod drain_all_targeted_tests {
                 self.mgmt.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
-            fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -2104,7 +2104,7 @@ mod drain_all_targeted_tests {
                 self.mgmt.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
-            fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -2167,7 +2167,7 @@ mod drain_all_targeted_tests {
             fn handle_management(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -2218,7 +2218,7 @@ mod drain_all_targeted_tests {
                 self.mgmt.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
-            fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -2292,7 +2292,7 @@ mod troupe_tests {
         fn handle_management(&mut self, _msg: EngineManagement) -> HandlerResult {
             Ok(())
         }
-        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -2337,7 +2337,7 @@ mod troupe_tests {
         fn handle_management(&mut self, _msg: DisplayManagement) -> HandlerResult {
             Ok(())
         }
-        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -2439,7 +2439,7 @@ mod troupe_tests {
                 fn handle_management(&mut self, _: ()) -> HandlerResult {
                     Ok(())
                 }
-                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Busy)
                 }
             }
@@ -2538,7 +2538,7 @@ mod troupe_tests {
                 fn handle_management(&mut self, _: ()) -> HandlerResult {
                     Ok(())
                 }
-                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Busy)
                 }
             }
@@ -2639,7 +2639,7 @@ mod troupe_tests {
                 fn handle_management(&mut self, _: ()) -> HandlerResult {
                     Ok(())
                 }
-                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Busy)
                 }
             }
@@ -2738,7 +2738,7 @@ mod troupe_tests {
                     thread::sleep(Duration::from_millis(2));
                     Ok(())
                 }
-                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Busy)
                 }
             }
@@ -2824,7 +2824,7 @@ mod troupe_nesting_tests {
         fn handle_management(&mut self, _msg: WorkerManagement) -> HandlerResult {
             Ok(())
         }
-        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -2962,7 +2962,7 @@ mod shutdown_tests {
             Ok(())
         }
 
-        fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
             match status {
                 SystemStatus::Idle => Ok(ActorStatus::Idle),
                 SystemStatus::Busy => Ok(ActorStatus::Busy),
@@ -3154,7 +3154,7 @@ mod shutdown_tests {
                 Ok(())
             }
 
-            fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 match status {
                     SystemStatus::Idle => Ok(ActorStatus::Idle),
                     SystemStatus::Busy => Ok(ActorStatus::Busy),

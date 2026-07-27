@@ -9,7 +9,7 @@ use std::sync::{Mutex, OnceLock};
 /// platform pump has not yet reported to the engine. AppKit invokes the
 /// delegate synchronously on the main thread while the pump routes the click
 /// through `sendEvent:`; the pump drains this queue at the end of the same
-/// park pass and emits `DisplayEvent::CloseRequested`.
+/// handle_os pass and emits `DisplayEvent::CloseRequested`.
 static CLOSED_WINDOWS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 /// Take all windows closed since the last drain.

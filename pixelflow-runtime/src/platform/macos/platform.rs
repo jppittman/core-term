@@ -174,7 +174,7 @@ impl PlatformOps for MetalOps {
         Ok(())
     }
 
-    fn park(
+    fn handle_os(
         &mut self,
         status: SystemStatus,
         out: &mut DriverOut,
@@ -184,10 +184,10 @@ impl PlatformOps for MetalOps {
         unsafe {
             // Only the FIRST wait may block (when the scheduler says Idle).
             // Everything already queued is then drained without blocking:
-            // a park pass must empty the NSEvent queue, or wake events pile
+            // a handle_os pass must empty the NSEvent queue, or wake events pile
             // up ahead of real input and a KeyDown can sit behind an
             // unbounded backlog (the "can't Ctrl-C out of `yes`" wedge).
-            // This mirrors LinuxOps::park's `while XPending > 0` drain.
+            // This mirrors LinuxOps::handle_os's `while XPending > 0` drain.
             let first_until_date: sys::Id = match status {
                 SystemStatus::Idle => {
                     // Block until an event arrives (waker will post NSEvent when messages come)

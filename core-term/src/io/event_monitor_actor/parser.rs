@@ -85,7 +85,7 @@ impl Actor<FilledBuf, ParserControl, ParserManagement> for PtyParser {
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         // Purely message-driven; the scheduler may block on the doorbell.
         Ok(ActorStatus::Idle)
     }

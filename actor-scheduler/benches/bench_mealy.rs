@@ -63,7 +63,7 @@ impl Actor<u8, (), ()> for SendingActor {
     fn handle_management(&mut self, (): ()) -> HandlerResult {
         Ok(())
     }
-    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -200,7 +200,7 @@ impl Actor<u8, (), ()> for ForwardActor {
     fn handle_management(&mut self, (): ()) -> HandlerResult {
         Ok(())
     }
-    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }

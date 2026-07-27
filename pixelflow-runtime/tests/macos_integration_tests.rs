@@ -39,8 +39,8 @@ mod tests {
 
         // Emulate a run-loop step, which drains the Cocoa event queue.
         let _status = ops
-            .park(SystemStatus::Busy, &mut out)
-            .expect("park failed");
+            .handle_os(SystemStatus::Busy, &mut out)
+            .expect("handle_os failed");
 
         // Geometry only: since step 5a the driver owns the buffer, so `WindowCreated` reports
         // the surface the platform chose and carries no frame.
