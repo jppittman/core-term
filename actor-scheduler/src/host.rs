@@ -4,31 +4,34 @@
 //! advances them a step at a time. There is no second runtime — the green tier is a thing an
 //! actor *does*.
 //!
-//! # Why the sweep is message-driven, not a `park` hook
+//! # Three ways to drive one, and when supervision needs the wired one
 //!
-//! It used to be a `park` hook, and that was the wrong shape for one reason: **`park` answers
-//! exactly one question, and supervision is a different question.**
+//! A host is an ordinary [`Actor`], so an ordinary [`ActorScheduler`](crate::ActorScheduler) runs
+//! one on a thread and the tiers nest with no second runtime. It is *also* a [`Transducer`], so a
+//! host can be a green actor inside another host. Same sweep either way; what differs is where
+//! its findings can go.
 //!
-//! [`Actor::park`] returns [`ActorStatus`] — `Busy` or `Idle`, meaning "keep going" or "the
-//! thread may sleep". That is the whole information content of the OS-bridge contract, and it is
-//! the right contract for blocking on `XNextEvent` or a Cocoa event queue, which is what `park`
-//! exists for. It has nowhere to put "node 3 is stuck holding a framebuffer". So a host sweeping
-//! inside `park` had to compute supervision events and then throw them away, and no amount of
-//! improving how the sweep *reported* them could change that, because the discard was in the
-//! signature rather than in the reporting.
+//! - [`Actor`] impl — `park` sweeps, and reports only `Busy`/`Idle`. Simplest, and enough
+//!   whenever the green actors have nowhere to escalate to.
+//! - [`Transducer`] impl — [`RunSweep`] on the data lane, [`HostOut`] carrying supervision out a
+//!   port that its wiring delivers and [`Topology`](crate::mealy::Topology) can check.
+//!   [`GreenThread`] runs this one on a thread.
+//! - [`sweep`](Host::sweep) — called directly, findings as a return value.
 //!
-//! So the sweep is an input instead: [`RunSweep`] arrives on the data lane, and [`HostOut`]
-//! carries supervision out a port like any other transducer's output — delivered by its wiring,
-//! checkable by [`Topology`](crate::mealy::Topology). The sleep behaviour that `park` gave for
-//! free is not lost; it moves to the self-addressed continuation, which is the transducer
-//! model's own way of saying "more work": a sweep in which something ran yields
-//! [`HostOut::again`] and is stepped straight back, and one where nothing ran yields `None`, so
-//! the node goes [`Idle`](Step::Idle) and the thread driving it may block. **A host with nothing
-//! to do still sleeps instead of polling** — it just says so in the same vocabulary as every
-//! other actor, and can say more than that when it needs to.
+//! Supervision needs one of the last two, because [`ActorStatus`] is `Busy | Idle` and has no
+//! room for "node 3 is stuck holding a framebuffer". The sweep behind `park` computes those
+//! events and then drops them, and no amount of improving how the sweep *reports* them changes
+//! that — the discard is in the signature. That is a limit of the hook, not a defect in it:
+//! `park` exists to invert control flow around an external event source you do not own — an
+//! epoll set, a PTY, `XNextEvent`, a Cocoa event queue — and `Busy`/`Idle` is exactly the
+//! vocabulary that job needs. Reach for `park` when you *have* to give up the loop; reach for a
+//! port when you have something to say.
 //!
-//! Driving one is therefore [`Node::poll`], or [`sweep`](Host::sweep) called directly when a
-//! caller wants the events as a return value rather than over an edge.
+//! The sleep behaviour survives the move: on the wired path it is the self-addressed
+//! continuation, the transducer model's own way of saying "more work". A sweep in which
+//! something ran yields [`HostOut::again`] and is stepped straight back; one where nothing ran
+//! yields `None`, the node goes [`Idle`](Step::Idle), and the driver may block. **A host with
+//! nothing to do sleeps instead of polling either way.**
 //!
 //! # Ownership, not migration
 //!
@@ -426,6 +429,37 @@ impl<W: Wiring<Out = HostOut>> Actor<Infallible, Infallible, Infallible> for Gre
                 Step::Blocked | Step::Disconnected => return Ok(ActorStatus::Busy),
             }
         }
+    }
+}
+
+impl Actor<Infallible, Infallible, Infallible> for Host {
+    fn handle_data(&mut self, msg: Infallible) -> HandlerResult {
+        match msg {}
+    }
+
+    fn handle_control(&mut self, msg: Infallible) -> HandlerResult {
+        match msg {}
+    }
+
+    fn handle_management(&mut self, msg: Infallible) -> HandlerResult {
+        match msg {}
+    }
+
+    /// Sweep, and report only whether the thread may sleep.
+    ///
+    /// This is the plain hierarchical composition: a host is an ordinary [`Actor`], so an
+    /// ordinary [`ActorScheduler`](crate::ActorScheduler) can run one on a thread and the two
+    /// tiers nest without a second runtime. Keep reaching for it when a host's green actors
+    /// have nowhere to escalate to — most do not.
+    ///
+    /// It cannot carry supervision, and that is a property of the signature rather than an
+    /// oversight: `ActorStatus` is `Busy | Idle`, which answers "may this thread sleep?" and has
+    /// no room for "node 3 is stuck holding a payload". Findings are therefore dropped here.
+    /// When they matter, use the [`Transducer`] impl — the same host, wired, emitting
+    /// [`HostOut::supervision`] over a port — via [`GreenThread`] to run it on a thread, or
+    /// [`sweep`](Host::sweep) to read them directly. All three are the same sweep.
+    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        Ok(self.sweep().status)
     }
 }
 
@@ -900,6 +934,49 @@ mod tests {
 
     // ── Waking a sleeping host ──────────────────────────────────────────────
 
+    /// The same wake, on the wired path. `GreenThread` is what turns a doorbell wake into the
+    /// `RunSweep` the transducer needs, so a host that reports supervision over a port keeps the
+    /// same 0%-CPU behaviour as the plain `Actor` one.
+    #[test]
+    fn a_green_send_wakes_a_wired_host_too() {
+        use std::time::{Duration, Instant};
+
+        let (handle, mut sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+        let (tx_green, rx_green) = green_channel::<u32>(8, handle.waker());
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
+        let (tx_sup, _rx_sup) = spsc_channel::<Supervision>(8);
+
+        let worker = std::thread::spawn(move || {
+            let mut host = Host::new();
+            host.adopt(Node::new(
+                Forward { seen: 0 },
+                rx_green,
+                ForwardWiring { next: tx_out },
+            ));
+            let mut thread = GreenThread::new(host, SupervisionWiring { supervisor: tx_sup });
+            sched.run(&mut thread);
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+        tx_green.try_send(41).expect("green inbox has room");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let got = loop {
+            if let Ok(v) = rx_out.try_recv() {
+                break v;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "wired host never woke: a green send did not reach a sweep"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(got, 42);
+
+        handle.send(Message::Shutdown).unwrap();
+        worker.join().unwrap();
+    }
+
     #[test]
     fn a_green_send_wakes_a_host_asleep_on_its_doorbell() {
         // The real thing, on a real thread: the host is blocked in `run()` with nothing to do
@@ -920,11 +997,7 @@ mod tests {
                 rx_green,
                 ForwardWiring { next: tx_out },
             ));
-            // The supervision port has no reader in this test; nothing here goes stuck, so it
-            // stays empty. `GreenThread` is what turns the doorbell wake into a `RunSweep`.
-            let (tx_sup, _rx_sup) = spsc_channel::<Supervision>(8);
-            let mut thread = GreenThread::new(host, SupervisionWiring { supervisor: tx_sup });
-            sched.run(&mut thread);
+            sched.run(&mut host);
         });
 
         // Let the host reach its doorbell and block before sending, so this exercises the
