@@ -41,7 +41,7 @@ pub mod kernel;
 pub use kernel::{Kernel, Monoid};
 
 pub mod jit_manifold;
-pub use jit_manifold::{JitManifold, ScanlineJitManifold};
+pub use jit_manifold::JitManifold;
 
 #[cfg(all(feature = "std", any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub mod jit_cache;
