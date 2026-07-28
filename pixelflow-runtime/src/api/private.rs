@@ -107,17 +107,32 @@ impl From<DisplayEvent>
     }
 }
 
+/// The green vsync host's three handles, handed to the engine in one message by
+/// `EngineControl::VsyncActorReady`: the two inbound edges (data, control) plus a handle to the
+/// host itself for the shutdown cascade.
+type VsyncBootstrap = (
+    actor_scheduler::GreenSender<crate::vsync_actor::RenderedResponse>,
+    actor_scheduler::GreenSender<crate::vsync_actor::VsyncCommand>,
+    actor_scheduler::ActorHandle<
+        std::convert::Infallible,
+        std::convert::Infallible,
+        std::convert::Infallible,
+    >,
+);
+
 // Engine control message (low frequency, configuration/lifecycle)
 #[derive(Debug, Default)]
 pub enum EngineControl {
     UpdateRefreshRate(f64),
-    VsyncActorReady(
-        actor_scheduler::ActorHandle<
-            crate::vsync_actor::RenderedResponse,
-            crate::vsync_actor::VsyncCommand,
-            crate::vsync_actor::VsyncManagement,
-        >,
-    ),
+    /// The green vsync host is up. Carries all three handles at once because there is exactly
+    /// one send site (`Troupe::with_config`) and one delivery (the shell intercept below) — a
+    /// single message beats three that would otherwise need to race each other into place
+    /// first. Boxed: the tuple is far larger than every other variant, and `Quit`/`DriverAck`
+    /// are the hot ones.
+    VsyncActorReady(Box<VsyncBootstrap>),
+    /// A green node got stuck (design doc, `Host::sweep`'s `Supervision`). Logged for now;
+    /// policy is a later slice.
+    GreenStuck(actor_scheduler::host::Supervision),
     #[default]
     Quit,
     DriverAck,

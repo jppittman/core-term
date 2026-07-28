@@ -123,14 +123,6 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
                     self.fps_start = Instant::now();
                 }
             }
-            VsyncManagement::SetConfig { config, .. } => {
-                self.refresh_rate = config.refresh_rate;
-                self.running = true;
-                self.log(&format!(
-                    "config:rate={:.1},auto_started",
-                    config.refresh_rate
-                ));
-            }
         }
         Ok(())
     }
@@ -481,61 +473,6 @@ fn tick_resumes_after_stop_and_start() {
         tick_logs.len(),
         2,
         "Should have 2 ticks (before stop + after restart)"
-    );
-}
-
-// ============================================================================
-// VsyncManagement::SetConfig Tests
-// ============================================================================
-
-#[test]
-fn set_config_auto_starts_actor() {
-    use pixelflow_runtime::vsync_actor::VsyncConfig;
-
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let log_clone = log.clone();
-
-    // Use ActorBuilder to create two producers (tx + self_handle)
-    let mut builder =
-        ActorBuilder::<RenderedResponse, VsyncCommand, VsyncManagement>::new(100, None);
-    let tx = builder.add_producer();
-    let self_handle = builder.add_producer();
-    let mut rx = builder.build();
-
-    // We need a dummy engine handle for SetConfig - create but won't be used
-    let (engine_handle, _) = actor_scheduler::ActorScheduler::<
-        pixelflow_runtime::api::private::EngineData,
-        pixelflow_runtime::api::private::EngineControl,
-        pixelflow_runtime::api::public::AppManagement,
-    >::new(10, 100);
-
-    let handle = thread::spawn(move || {
-        let mut actor = MockVsyncActor::new(log_clone);
-        rx.run(&mut actor);
-    });
-
-    tx.send(Message::Management(VsyncManagement::SetConfig {
-        config: VsyncConfig { refresh_rate: 90.0 },
-        engine_handle: Box::new(engine_handle),
-        self_handle: Box::new(self_handle),
-    }))
-    .unwrap();
-
-    // After SetConfig, should auto-start - ticks should work
-    tx.send(Message::Management(VsyncManagement::Tick)).unwrap();
-
-    thread::sleep(Duration::from_millis(50));
-    drop(tx);
-    handle.join().unwrap();
-
-    let log = log.lock().unwrap();
-    assert!(
-        log.iter().any(|s| s.contains("auto_started")),
-        "SetConfig should auto-start the actor"
-    );
-    assert!(
-        log.iter().any(|s| s.starts_with("tick:")),
-        "Ticks should work after SetConfig"
     );
 }
 
