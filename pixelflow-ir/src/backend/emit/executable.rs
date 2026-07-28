@@ -374,7 +374,13 @@ unsafe fn toggle_jit_write(state: JitWriteState) {
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::float32x4_t;
 
-#[cfg(target_arch = "x86_64")]
+// __m128 is only the kernel width on the SSE2 build: the deleted scanline
+// ABI was the last 128-bit-at-every-width user.
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
 use core::arch::x86_64::__m128;
 #[cfg(all(
     target_arch = "x86_64",
