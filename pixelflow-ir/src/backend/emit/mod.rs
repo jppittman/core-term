@@ -4507,7 +4507,10 @@ pub fn compile_arena_dag_avx512(
 /// [`CollapseKernelFn`](executable::CollapseKernelFn) ABI
 /// `(ctx, out, groups, x0, y, z, w)`.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub fn compile_collapse(arena: &ExprArena, root: ExprId) -> Result<CompileResult, &'static str> {
+pub fn compile_collapse(
+    arena: &crate::arena::ExprArena,
+    root: crate::arena::ExprId,
+) -> Result<CompileResult, &'static str> {
     let (arena, root) = lowering::lower_dwrt_owned(arena, root)?;
     let (arena, root) = lowering::expand_reduce_owned(&arena, root);
     let (arena, root) = lowering::expand_gather_owned(&arena, root);
