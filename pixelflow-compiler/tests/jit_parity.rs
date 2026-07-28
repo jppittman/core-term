@@ -350,37 +350,33 @@ fn jit_font_coverage_matches_truth() {
     }
 }
 
-/// P2 acceptance (part 2): the JIT'd `Dwrt` kernel matches the combinator
-/// backend evaluating the same source over `Jet2` (forward-mode autodiff with
-/// unit screen-space seeds) — the path `lower_dwrt` replaces.
+/// P2 acceptance (part 2): the JIT'd `Dwrt` kernel matches the IR interpreter
+/// evaluating the same lowered arena — the language's semantic ground truth,
+/// the same oracle the real-glyph goldens use (kernel_glyph_golden.rs).
+/// Formerly this compared against the combinator backend evaluating the same
+/// source over `Jet2`; that oracle retires with the combinator emitter, and
+/// part 1 above already pins the closed form.
 #[test]
-fn jit_font_coverage_matches_combinator_over_jet2() {
-    use pixelflow_core::jet::Jet2;
-    use pixelflow_compiler::kernel;
+fn jit_font_coverage_matches_interpreter() {
+    use pixelflow_core::{Lower, LowerEnv};
+    use pixelflow_ir::backend::emit::lowering::lower_dwrt_owned;
+    use pixelflow_ir::{BindingTable, ExprArena, eval_scalar};
 
     let (x0, y0, k, dir, mg) = COVERAGE_PARAMS;
     let jit = coverage_body!(kernel_jit)(x0, y0, k, dir, mg);
 
-    // Same body, combinator backend, stamped for the Jet2 domain like the
-    // fonts do (`-> Jet2`).
-    let comb = kernel!(|x0: f32, y0: f32, dx_over_dy: f32, dir: f32, min_grad: f32| -> Jet2 {
-        let d = X - ((Y - y0) * dx_over_dy + x0);
-        let grad = (DX(d.clone()) * DX(d.clone()) + DY(d.clone()) * DY(d.clone())).sqrt();
-        let coverage = (V(d) / (grad + V(min_grad)) + V(0.5))
-            .max(V(0.0))
-            .min(V(1.0));
-        coverage * V(dir)
-    })(x0, y0, k, dir, mg);
+    // The wrapper carries its composed pre-lowering arena; lower the Dwrt
+    // calculus the same way the JIT compile entries do, then interpret.
+    let mut arena = ExprArena::new();
+    let root = jit
+        .lower(&mut arena, &mut LowerEnv::default())
+        .expect("kernel_jit wrapper lowers by splicing its own arena");
+    let (lowered, lroot) = lower_dwrt_owned(&arena, root).expect("dwrt lowering");
 
     for &(x, y) in COVERAGE_GRID {
         let got = eval(&jit, (x, y, 0.0, 0.0));
-        let want = lane0(comb.eval((
-            Jet2::x(Field::from(x)),
-            Jet2::y(Field::from(y)),
-            Jet2::constant(Field::from(0.0)),
-            Jet2::constant(Field::from(0.0)),
-        )));
-        check("font_coverage_vs_jet2", got, want, 1e-4, 1e-4);
+        let want = eval_scalar(&lowered, lroot, &[x, y, 0.0, 0.0], &BindingTable::empty());
+        check("font_coverage_vs_interpreter", got, want, 1e-4, 1e-4);
     }
 }
 
