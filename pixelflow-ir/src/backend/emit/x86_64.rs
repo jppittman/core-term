@@ -526,6 +526,23 @@ pub fn emit_movups_load_rsp(code: &mut Vec<u8>, dst: Reg, disp: i8) {
     code.push(disp as u8);
 }
 
+/// MOVUPS [base64], xmm — unaligned store to a GP-register base (mod=00).
+///
+/// `base_gpr` must not be rsp/rbp/r12/r13 (those encodings require SIB or a
+/// displacement form).
+pub fn emit_movups_store_base(code: &mut Vec<u8>, src: Reg, base_gpr: u8) {
+    debug_assert!(
+        base_gpr & 7 != 4 && base_gpr & 7 != 5,
+        "emit_movups_store_base: base must not be rsp/rbp/r12/r13"
+    );
+    if src.0 >= 8 || base_gpr >= 8 {
+        code.push(0x40 | (((src.0 >> 3) & 1) << 2) | ((base_gpr >> 3) & 1)); // REX.R/B
+    }
+    code.push(0x0F);
+    code.push(0x11);
+    code.push(((src.0 & 7) << 3) | (base_gpr & 7)); // mod=00
+}
+
 // ---------------------------------------------------------------------------
 // Public unary builtin entry points
 // ---------------------------------------------------------------------------

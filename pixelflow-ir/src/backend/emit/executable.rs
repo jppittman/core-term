@@ -412,6 +412,22 @@ pub type CtxKernelFn = extern "C" fn(
     float32x4_t,
 ) -> float32x4_t;
 
+/// JIT-compiled *collapse* kernel (ARM64). See the AVX-512
+/// [`CollapseKernelFn`] doc for the contract. AAPCS64 argument registers:
+/// `x0` = context, `x1` = `out`, `x2` = `groups`, `v0..3` = x0/y/z/w. Batch
+/// width is 4 lanes; the per-iteration X step is 4.0.
+#[allow(improper_ctypes_definitions)]
+#[cfg(target_arch = "aarch64")]
+pub type CollapseKernelFn = extern "C" fn(
+    *const *const f32,
+    *mut f32,
+    usize,
+    float32x4_t,
+    float32x4_t,
+    float32x4_t,
+    float32x4_t,
+);
+
 /// JIT-compiled scanline kernel signature for ARM64.
 ///
 /// Processes an entire scanline in a single call with no per-batch Rust-JIT boundary.
@@ -464,18 +480,21 @@ pub type KernelFn = extern "C" fn(__m512, __m512, __m512, __m512) -> __m512;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub type CtxKernelFn = extern "C" fn(*const *const f32, __m512, __m512, __m512, __m512) -> __m512;
 
-/// JIT-compiled *collapse* kernel (x86-64 AVX-512): the whole lattice domain
-/// loop is inside the emitted code, so one call fills the entire output — no
-/// per-batch Rust↔JIT boundary. This is the internal-loop realization of the
-/// lattice: coordinates are induction values, not arguments.
+/// JIT-compiled *collapse* kernel (x86-64 AVX-512): the whole row loop is
+/// inside the emitted code, so one call fills `groups` output batches — no
+/// per-batch Rust↔JIT boundary. X is an induction value: the kernel starts
+/// from the caller's lane-sequential `x0` and adds the batch width (16.0)
+/// per iteration; Y/Z/W are loop-invariant arguments.
 ///
-/// SysV argument registers: `rdi` = context (array of buffer base pointers),
-/// `rsi` = `xs` (domain X coordinates, 16-lane groups), `rdx` = `out` (output,
-/// 16-lane groups), `rcx` = `groups` (number of 16-lane groups). Y/Z/W are zero
-/// inside the kernel. `xs`/`out` are read/written 64 bytes at a time and must
-/// hold at least `groups * 16` f32s.
+/// SysV argument registers: `rdi` = context (array of buffer base pointers,
+/// one per declared buffer — pass a dangling-free null-less array or anything
+/// when the arena declares none; a buffer-free kernel never reads it),
+/// `rsi` = `out` (output, written 64 bytes at a time; must hold at least
+/// `groups * 16` f32s), `rdx` = `groups`, `zmm0..3` = x0/y/z/w.
+#[allow(improper_ctypes_definitions)]
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-pub type CollapseKernelFn = extern "C" fn(*const *const f32, *const f32, *mut f32, usize);
+pub type CollapseKernelFn =
+    extern "C" fn(*const *const f32, *mut f32, usize, __m512, __m512, __m512, __m512);
 
 /// JIT-compiled per-batch kernel signature for x86-64 AVX2 (256-bit, 8 lanes).
 /// See [`KernelFn`] (the AVX-512 variant) for the ABI contract; this is the
@@ -500,6 +519,18 @@ pub type KernelFn = extern "C" fn(__m256, __m256, __m256, __m256) -> __m256;
 ))]
 pub type CtxKernelFn = extern "C" fn(*const *const f32, __m256, __m256, __m256, __m256) -> __m256;
 
+/// JIT-compiled *collapse* kernel (x86-64 AVX2). See the AVX-512
+/// [`CollapseKernelFn`] doc for the contract; batch width is 8 lanes and the
+/// per-iteration X step is 8.0.
+#[allow(improper_ctypes_definitions)]
+#[cfg(all(
+    target_arch = "x86_64",
+    target_feature = "avx2",
+    not(target_feature = "avx512f")
+))]
+pub type CollapseKernelFn =
+    extern "C" fn(*const *const f32, *mut f32, usize, __m256, __m256, __m256, __m256);
+
 #[allow(improper_ctypes_definitions)]
 #[cfg(all(
     target_arch = "x86_64",
@@ -523,6 +554,18 @@ pub type KernelFn = extern "C" fn(__m128, __m128, __m128, __m128) -> __m128;
     not(target_feature = "avx2")
 ))]
 pub type CtxKernelFn = extern "C" fn(*const *const f32, __m128, __m128, __m128, __m128) -> __m128;
+
+/// JIT-compiled *collapse* kernel (x86-64, 128-bit). See the AVX-512
+/// [`CollapseKernelFn`] doc for the contract; batch width is 4 lanes and the
+/// per-iteration X step is 4.0.
+#[allow(improper_ctypes_definitions)]
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    not(target_feature = "avx2")
+))]
+pub type CollapseKernelFn =
+    extern "C" fn(*const *const f32, *mut f32, usize, __m128, __m128, __m128, __m128);
 
 /// JIT-compiled scanline kernel signature for x86-64 (128-bit; the scanline
 /// emitter is SSE2 only, independent of the per-batch width).
