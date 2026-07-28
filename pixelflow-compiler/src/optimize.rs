@@ -28,16 +28,14 @@ use crate::ast::{
 };
 use crate::sema::AnalyzedKernel;
 use pixelflow_search::egraph::{
-    CostModel, EClassId, EGraph, ENode, ExtractedDAG, IncrementalExtractor, Rewrite,
-    build_extracted_dag_from_choices, compute_ref_counts, extract_dag, ops,
+    EClassId, EGraph, ENode, ExtractedDAG, ExtractionPolicy, Rewrite,
+    build_extracted_dag_from_choices, compute_ref_counts, config_for_node_count,
+    env_extraction_policy, ops, saturate_with_full_budget,
 };
 use pixelflow_search::math::all_rules as search_all_rules;
-use pixelflow_search::nnue::ExprNnue;
 use proc_macro2::Span;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
 use syn::{Ident, Lit};
 
 // ============================================================================
@@ -55,191 +53,10 @@ pub fn standard_rules() -> Vec<Box<dyn Rewrite>> {
 /// Counter for generating unique opaque variable names.
 static OPAQUE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Optimization model for AOT extraction.
-static OPTIMIZATION_MODEL: OnceLock<ExprNnue> = OnceLock::new();
-
-/// Which cost model drives e-graph extraction.
-///
-/// ## Default: static latency-prior extraction
-///
-/// Per the Phase 2 gate in docs/plans/2026-07-07-guided-saturation-redesign.md, the static
-/// [`CostModel::latency_prior`] is therefore the default and the learned
-/// model is opt-in only.
-///
-/// ## Opt-in: `PIXELFLOW_NNUE_WEIGHTS`
-///
-/// Set this env var (read at proc-macro expansion time, i.e. compile time of
-/// the *consuming* crate) to the path of a trained weights file to enable
-/// learned extraction. Any failure to load — missing file, wrong magic, wrong
-/// length — is a hard compile failure (`panic!`) with a precise diagnostic.
-/// There is no silent fallback on this path: if you asked for learned
-/// weights, you get them or the build fails.
-pub(crate) enum Extraction<'a> {
-    /// Opt-in learned extraction (`PIXELFLOW_NNUE_WEIGHTS` set).
-    Nnue(&'a ExprNnue),
-    /// Default: static per-op latency-prior costs. Boxed — `CostModel` is far
-    /// larger than the `Nnue` reference, so an unboxed variant bloats the enum.
-    Static(Box<CostModel>),
-}
-
-impl Extraction<'_> {
-    /// Per-e-class extraction choices under this policy.
-    fn choices(&self, egraph: &EGraph, root: EClassId) -> Vec<Option<usize>> {
-        match self {
-            Extraction::Nnue(model) => {
-                let extractor = IncrementalExtractor::new(model, 8);
-                extractor.extract_choices_only(egraph, root).1
-            }
-            Extraction::Static(costs) => extract_dag(egraph, root, costs.as_ref()).choices,
-        }
-    }
-}
-
-fn get_extraction() -> Extraction<'static> {
-    match std::env::var("PIXELFLOW_NNUE_WEIGHTS") {
-        Ok(path) => Extraction::Nnue(OPTIMIZATION_MODEL.get_or_init(|| load_opt_in_weights(&path))),
-        Err(_) => Extraction::Static(Box::new(CostModel::latency_prior())),
-    }
-}
-
-/// Load NNUE weights from an opt-in path set via `PIXELFLOW_NNUE_WEIGHTS`.
-///
-/// Hard-fails the compile on any error, per the repo's no-silent-failures
-/// rule: the caller explicitly asked for learned weights, so a failure to
-/// honor that request must not be swallowed.
-fn load_opt_in_weights(path: &str) -> ExprNnue {
-    let bytes = std::fs::read(path).unwrap_or_else(|e| {
-        panic!(
-            "pixelflow: PIXELFLOW_NNUE_WEIGHTS={path:?} could not be read: {e}. \
-             The env var must point to a valid NNUE weights file produced by \
-             pixelflow-pipeline training."
-        )
-    });
-
-    const EXPECTED_MAGIC: &[u8; 4] = b"TRID";
-    let found_magic = bytes.get(0..4);
-    match ExprNnue::from_bytes(&bytes) {
-        Ok(model) => model,
-        Err(e) => {
-            let magic_desc = match found_magic {
-                Some(m) => format!("{:?} ({})", m, String::from_utf8_lossy(m)),
-                None => format!("<file too short: {} bytes>", bytes.len()),
-            };
-            panic!(
-                "pixelflow: PIXELFLOW_NNUE_WEIGHTS={path:?} failed to load: {e}. \
-                 Expected magic {:?} ({}), found magic {}. File length: {} bytes.",
-                EXPECTED_MAGIC,
-                String::from_utf8_lossy(EXPECTED_MAGIC),
-                magic_desc,
-                bytes.len()
-            )
-        }
-    }
-}
-
 /// Generate a unique name for an opaque expression (unknown method call, etc.)
 fn unique_opaque_name(prefix: &str) -> String {
     let id = OPAQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("__{}{}", prefix, id)
-}
-
-/// Time-controlled saturation configuration.
-///
-/// Controls how long e-graph saturation runs before giving up.
-/// Named after chess time controls: blitz (fast), rapid (medium), classical (thorough).
-struct SaturationConfig {
-    /// Maximum number of rewrite iterations.
-    max_iterations: usize,
-    /// Hard wall-clock timeout.
-    hard_timeout: Duration,
-    /// Maximum e-classes before stopping (memory safety valve).
-    max_classes: usize,
-}
-
-impl SaturationConfig {
-    /// Blitz: fast, for trivial expressions (0-10 nodes).
-    fn blitz() -> Self {
-        Self {
-            max_iterations: 20,
-            hard_timeout: Duration::from_millis(10),
-            max_classes: 500,
-        }
-    }
-
-    /// Rapid: balanced, for normal expressions (11-50 nodes).
-    fn rapid() -> Self {
-        Self {
-            max_iterations: 50,
-            hard_timeout: Duration::from_millis(50),
-            max_classes: 2000,
-        }
-    }
-
-    /// Classical: thorough, for complex expressions (51+ nodes).
-    fn classical() -> Self {
-        Self {
-            max_iterations: 100,
-            hard_timeout: Duration::from_millis(200),
-            max_classes: 5000,
-        }
-    }
-}
-
-/// E-graph saturation with chess-style time control.
-///
-/// Uses iterative saturation with time and size limits:
-/// - Time budget (hard timeout): Stop immediately
-/// - Size limit (max classes): Prevent memory explosion
-/// - Iteration limit (max iterations): Budget control
-///
-/// ## Chess Time Management
-///
-/// Like chess engines, we use multiple limits to ensure the compiler
-/// never hangs, even on expressions that cause exponential e-graph growth.
-///
-/// Returns true if saturated (optimal), false if limit hit (best-effort).
-fn saturate_with_time_control(egraph: &mut EGraph, config: &SaturationConfig) -> bool {
-    let start = Instant::now();
-
-    // Iterative saturation with time and size checks
-    for _iteration in 0..config.max_iterations {
-        let elapsed = start.elapsed();
-
-        // HARD LIMIT: Stop immediately
-        if elapsed >= config.hard_timeout {
-            return false;
-        }
-
-        // SIZE LIMIT: Stop if e-graph exploded
-        if egraph.num_classes() > config.max_classes {
-            return false;
-        }
-
-        // Apply one round of rewrites (all matching rules)
-        let changes = egraph.apply_rules_once(10_000);
-
-        // Saturated if no changes
-        if changes == 0 {
-            return true;
-        }
-    }
-
-    false // Budget exhausted
-}
-
-/// Select the saturation config based on expression node count.
-///
-/// | Nodes | Config | Rationale |
-/// |-------|--------|-----------|
-/// | 0-10 | blitz | Trivial expressions need minimal optimization |
-/// | 11-50 | rapid | Normal complexity, balanced approach |
-/// | 51+ | classical | Complex expressions need thorough search |
-fn config_for_node_count(node_count: usize) -> SaturationConfig {
-    match node_count {
-        0..=10 => SaturationConfig::blitz(),
-        11..=50 => SaturationConfig::rapid(),
-        _ => SaturationConfig::classical(),
-    }
 }
 
 /// Count AST nodes (rough measure of expression complexity).
@@ -283,13 +100,13 @@ pub fn optimize(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
 /// Optimize an analyzed kernel using cost-guided extraction (static
 /// latency prior by default; learned NNUE via `PIXELFLOW_NNUE_WEIGHTS`).
 pub fn optimize_with_model(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
-    let extraction = get_extraction();
+    let extraction = env_extraction_policy();
     analyzed.def.body = optimize_expr_with_model(analyzed.def.body, &extraction);
     analyzed
 }
 
 /// Optimize a single expression using e-graph saturation and cost-guided extraction.
-fn optimize_expr_with_model(expr: Expr, extraction: &Extraction<'_>) -> Expr {
+fn optimize_expr_with_model(expr: Expr, extraction: &ExtractionPolicy<'_>) -> Expr {
     // Blocks: pass directly to optimize_via_model. The e-graph's expr_to_egraph
     // already handles Block by adding each let-binding to var_to_eclass, so
     // references share e-classes. Let-bindings are CSE hints. The e-graph sees
@@ -319,12 +136,18 @@ fn optimize_expr_with_model(expr: Expr, extraction: &Extraction<'_>) -> Expr {
 /// expressions correctly (returns the expression without a block wrapper),
 /// so the old "no sharing — simple tree" fallback is unnecessary and
 /// removed. CSE is always preserved.
-fn optimize_via_model(expr: &Expr, extraction: &Extraction<'_>) -> Expr {
+fn optimize_via_model(expr: &Expr, extraction: &ExtractionPolicy<'_>) -> Expr {
     let mut ctx = EGraphContext::new();
     let root = ctx.expr_to_egraph(expr);
 
     let node_count = count_ast_nodes(expr);
-    saturate_with_time_control(&mut ctx.egraph, &config_for_node_count(node_count));
+    let config = config_for_node_count(node_count);
+    saturate_with_full_budget(
+        &mut ctx.egraph,
+        config.max_iterations,
+        config.max_classes,
+        config.hard_timeout,
+    );
 
     // Extract via arena path (CSE-preserving) then convert choices → DAG.
     let choices = extraction.choices(&ctx.egraph, root);
@@ -611,7 +434,7 @@ fn is_coordinate_intrinsic(name: &str) -> bool {
 /// Optimize a block while preserving its structure.
 ///
 /// Each let binding and the final expression are optimized independently.
-fn optimize_block_preserving_structure(mut block: BlockExpr, extraction: &Extraction<'_>) -> Expr {
+fn optimize_block_preserving_structure(mut block: BlockExpr, extraction: &ExtractionPolicy<'_>) -> Expr {
     for stmt in &mut block.stmts {
         if let Stmt::Let(let_stmt) = stmt {
             let init = std::mem::replace(&mut let_stmt.init, make_literal(0.0, Span::call_site()));
@@ -1575,6 +1398,8 @@ mod tests {
     use super::*;
     use crate::parser::parse;
     use crate::sema::analyze;
+    use pixelflow_search::egraph::CostModel;
+    use pixelflow_search::nnue::ExprNnue;
     use quote::quote;
 
     // ========================================================================
@@ -1592,7 +1417,7 @@ mod tests {
         // Use neural optimizer
         let model = ExprNnue::new_random(42);
         let optimized =
-            optimize_expr_with_model(analyzed.def.body.clone(), &Extraction::Nnue(&model));
+            optimize_expr_with_model(analyzed.def.body.clone(), &ExtractionPolicy::Nnue(&model));
 
         let debug = format!("{:?}", optimized);
         eprintln!("DAG optimized sin(X)*sin(X): {}", debug);
@@ -1617,7 +1442,7 @@ mod tests {
 
         let model = ExprNnue::new_random(42);
         let optimized =
-            optimize_expr_with_model(analyzed.def.body.clone(), &Extraction::Nnue(&model));
+            optimize_expr_with_model(analyzed.def.body.clone(), &ExtractionPolicy::Nnue(&model));
 
         let debug = format!("{:?}", optimized);
         eprintln!("DAG optimized sqrt(X)*sqrt(X)+sqrt(X): {}", debug);
@@ -1636,7 +1461,7 @@ mod tests {
 
         let model = ExprNnue::new_random(42);
         let optimized =
-            optimize_expr_with_model(analyzed.def.body.clone(), &Extraction::Nnue(&model));
+            optimize_expr_with_model(analyzed.def.body.clone(), &ExtractionPolicy::Nnue(&model));
 
         let debug = format!("{:?}", optimized);
         eprintln!("DAG optimized X+Y: {}", debug);
@@ -1691,7 +1516,7 @@ mod tests {
     /// static latency-prior extraction.
     ///
     /// We verify the default `optimize()` entry point is byte-identical to
-    /// explicitly running `Extraction::Static(CostModel::latency_prior())` —
+    /// explicitly running `ExtractionPolicy::Static(CostModel::latency_prior())` —
     /// proving the default neither silently picks up learned weights nor
     /// silently degrades to a zero-cost (no-op) model.
     #[test]
@@ -1715,7 +1540,7 @@ mod tests {
         // expression through the optimizer must match exactly.
         let kernel = parse(input).unwrap();
         let mut analyzed_for_static_path = analyze(kernel).unwrap();
-        let static_extraction = Extraction::Static(Box::new(CostModel::latency_prior()));
+        let static_extraction = ExtractionPolicy::Static(Box::new(CostModel::latency_prior()));
         analyzed_for_static_path.def.body = optimize_expr(analyzed_for_static_path.def.body);
         analyzed_for_static_path.def.body =
             optimize_expr_with_model(analyzed_for_static_path.def.body, &static_extraction);
@@ -1724,7 +1549,7 @@ mod tests {
         assert_eq!(
             default_output, explicit_static_output,
             "default optimize() path must be byte-identical to explicitly \
-             using Extraction::Static(CostModel::latency_prior()) — the \
+             using ExtractionPolicy::Static(CostModel::latency_prior()) — the \
              default must not silently pick up learned weights or degrade \
              to a zero-cost model"
         );

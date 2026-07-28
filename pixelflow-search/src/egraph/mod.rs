@@ -9,17 +9,27 @@
 //! - [`cost`]: Cost model for extraction
 //! - [`rewrite`]: Rewrite rule infrastructure
 //! - [`extract`]: Expression tree extraction, including DAG-aware extraction
+//! - [`extraction`]: Cost-model policy selection (static latency-prior vs.
+//!   opt-in NNUE) shared by the AOT macro tier and [`crate::runtime`]
+//! - [`saturate`]: Budget-limited saturation, plus the size-based
+//!   [`saturate::SaturationConfig`] presets both tiers drive it with
 //! - [`graph`]: The EGraph itself
 //! - [`deps`]: Dependency analysis for uniform hoisting
 //! - [`codegen`]: Code generation from extracted expressions (tree & DAG)
 //!
 //! Mathematical rewrite rules are now in the [`crate::math`] module.
+//!
+//! This module is the compile-time-agnostic core: it optimizes an e-graph
+//! regardless of when it was built. [`crate::runtime`] is the runtime-facing
+//! front door — insert an [`pixelflow_ir::arena::ExprArena`] directly, no AST
+//! involved.
 
 pub mod codegen;
 pub(crate) mod cost;
 pub mod deps;
 pub mod derivative;
 pub(crate) mod extract;
+pub mod extraction;
 mod graph;
 mod labeler;
 mod node;
@@ -36,6 +46,7 @@ pub use extract::{
     ExtractedDAG, IncrementalExtractor, build_extracted_dag_from_choices, choices_to_arena,
     compute_ref_counts, extract, extract_dag, extract_neural_to_arena,
 };
+pub use extraction::{ExtractionPolicy, env_extraction_policy};
 pub use graph::{ApplyResult, EGraph, EGraphBatch, RewriteTarget};
 pub use labeler::{EpisodeLabels, EpisodeResult, Label, RuleStats, run_episode};
 pub use node::{EClassId, ENode};
@@ -45,7 +56,10 @@ pub use provenance::{
     derivation_ancestors, format_derivation_trace,
 };
 pub use rewrite::{Rewrite, RewriteAction};
-pub use saturate::{SaturationResult, achievable_cost_within_budget, saturate_with_budget};
+pub use saturate::{
+    SaturationConfig, SaturationResult, achievable_cost_within_budget, config_for_node_count,
+    saturate_with_budget, saturate_with_full_budget,
+};
 
 // Re-export rule types from math module for backward compatibility
 pub use crate::math::{
