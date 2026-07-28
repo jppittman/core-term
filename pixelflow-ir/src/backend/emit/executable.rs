@@ -428,31 +428,6 @@ pub type CollapseKernelFn = extern "C" fn(
     float32x4_t,
 );
 
-/// JIT-compiled scanline kernel signature for ARM64.
-///
-/// Processes an entire scanline in a single call with no per-batch Rust-JIT boundary.
-/// Y/Z/W stay in registers across the entire loop (loop-invariant hoisting by construction).
-///
-/// Args:
-///   x0 = pointer to input X array (128-bit aligned `float32x4_t` values)
-///   v1 = Y (broadcast, loop-invariant)
-///   v2 = Z (broadcast, loop-invariant)
-///   v3 = W (broadcast, loop-invariant)
-///   x1 = pointer to output array (128-bit aligned `float32x4_t` values)
-///   x2 = count (number of SIMD groups to process)
-// SIMD vector types are not nominally FFI-safe, but both sides of this
-// boundary are our own JIT-emitted code using the platform vector ABI.
-#[allow(improper_ctypes_definitions)]
-#[cfg(target_arch = "aarch64")]
-pub type ScanlineKernelFn = extern "C" fn(
-    *const float32x4_t, // x_array
-    float32x4_t,        // y (broadcast)
-    float32x4_t,        // z (broadcast)
-    float32x4_t,        // w (broadcast)
-    *mut float32x4_t,   // output array
-    usize,              // count
-);
-
 /// JIT-compiled per-batch kernel signature for x86-64.
 ///
 /// Args: X/Y/Z/W in the first four vector registers; returns the result in the
@@ -463,7 +438,7 @@ pub type ScanlineKernelFn = extern "C" fn(
 /// 128-bit `__m128` (4 lanes, SSE2). This MUST match `pixelflow-core`'s
 /// `Field`; the `kernel_jit!` wrapper const-asserts
 /// `size_of::<Field>() == JIT_VECTOR_BYTES`. The looping variant is
-/// `ScanlineKernelFn`, which stays 128-bit (the scanline emitter is still SSE2).
+/// [`CollapseKernelFn`], at the same width.
 #[allow(improper_ctypes_definitions)]
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub type KernelFn = extern "C" fn(__m512, __m512, __m512, __m512) -> __m512;
@@ -566,19 +541,6 @@ pub type CtxKernelFn = extern "C" fn(*const *const f32, __m128, __m128, __m128, 
 ))]
 pub type CollapseKernelFn =
     extern "C" fn(*const *const f32, *mut f32, usize, __m128, __m128, __m128, __m128);
-
-/// JIT-compiled scanline kernel signature for x86-64 (128-bit; the scanline
-/// emitter is SSE2 only, independent of the per-batch width).
-#[allow(improper_ctypes_definitions)]
-#[cfg(target_arch = "x86_64")]
-pub type ScanlineKernelFn = extern "C" fn(
-    *const __m128, // x_array
-    __m128,        // y (broadcast)
-    __m128,        // z (broadcast)
-    __m128,        // w (broadcast)
-    *mut __m128,   // output array
-    usize,         // count
-);
 
 // =============================================================================
 // Tests
