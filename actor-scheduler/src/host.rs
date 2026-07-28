@@ -568,6 +568,37 @@ mod tests {
     }
 
     #[test]
+    fn a_sweep_advances_at_most_one_step_per_actor() {
+        // The doc contract on `Host::sweep`: "advance every green actor by at most one step".
+        // Queue two messages for a single actor and take one sweep — only the first may be
+        // forwarded, leaving the second for the next sweep rather than draining the actor in
+        // one call.
+        let (tx_in, rx_in) = spsc_channel::<u32>(8);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
+
+        let mut host = Host::new();
+        host.adopt(Node::new(
+            Forward { seen: 0 },
+            rx_in,
+            ForwardWiring { next: tx_out },
+        ));
+        assert!(!host.is_empty(), "a host with an adopted actor is not empty");
+
+        tx_in.try_send(1).unwrap();
+        tx_in.try_send(2).unwrap();
+
+        assert_eq!(host.sweep().status, ActorStatus::Busy);
+        assert_eq!(rx_out.try_recv().unwrap(), 2, "only the first message is stepped");
+        assert!(
+            rx_out.try_recv().is_err(),
+            "the second message must wait for the next sweep"
+        );
+
+        assert_eq!(host.sweep().status, ActorStatus::Busy);
+        assert_eq!(rx_out.try_recv().unwrap(), 3, "the second message steps on the next sweep");
+    }
+
+    #[test]
     fn a_quiet_host_reports_idle_so_the_thread_can_sleep() {
         // The 0%-CPU contract: with nothing to do, the host tells the scheduler to block on
         // the doorbell rather than spin.
@@ -1062,5 +1093,12 @@ mod tests {
         };
         waker.wake();
         waker.wake();
+    }
+
+    #[test]
+    fn green_sender_debug_names_its_type() {
+        let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+        let (tx_green, _rx_green) = green_channel::<u32>(2, handle.waker());
+        assert!(format!("{:?}", tx_green).contains("GreenSender"));
     }
 }
