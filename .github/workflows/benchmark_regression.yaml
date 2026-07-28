@@ -5,14 +5,27 @@ on:
     branches: [ "main" ]
 
 permissions:
-  # Required to push to gh-pages
+  # Required to push the baseline to gh-pages
   contents: write
-  # Required to open issues
+  # Required to open issues on regression
   issues: write
+
+# Baselines must land in commit order: never run two baseline updates at
+# once, and never skip a commit (skipping would attribute a regression to
+# the wrong commit).
+concurrency:
+  group: benchmark-baseline
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    # Full workspace benchmarks are intentionally long, but a deadlocked
+    # bench must not hold the runner for GitHub's multi-hour default.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,48 +34,90 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # 1. Run Benchmarks
-      - name: Run Cargo Bench
+      # The workspace includes the Linux X11 runtime; cargo builds it even
+      # though no benchmark opens a window.
+      - name: Install X11 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      # --benches restricts cargo to declared benchmark targets. Library and
+      # binary targets run under the libtest harness, which rejects
+      # Criterion's `--output-format bencher`; every [lib] in the workspace
+      # therefore sets `bench = false` and every [[bench]] is Criterion with
+      # `harness = false`.
+      - name: Run benchmarks
         run: |
           set -o pipefail
           mkdir -p benchmark_results
-          cargo bench --workspace -- --output-format bencher | tee benchmark_results/output.txt
+          cargo bench --workspace --benches -- --output-format bencher | tee benchmark_results/output.txt
 
-      # 2. Compare against History
-      - name: Check for Regression
+      - name: Upload benchmark output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: benchmark_results/output.txt
+          if-no-files-found: error
+
+      - name: Compare against baseline and publish
         id: benchmark_check
         uses: benchmark-action/github-action-benchmark@v1
         with:
           tool: 'cargo'
           output-file-path: benchmark_results/output.txt
           gh-pages-branch: gh-pages
-          alert-threshold: '115%'    # Alert if 15% slower
-          fail-on-alert: true        # Fail step to trigger the issue creation
+          # Hosted runners are noisy neighbors; 15% is within observed
+          # run-to-run variance and alerted on infrastructure, not code.
+          alert-threshold: '125%'
+          fail-on-alert: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           comment-on-alert: true
 
-      # 3. Open Issue on Regression
-      - name: Create Performance Issue
+      - name: Open performance regression issue
         if: failure() && steps.benchmark_check.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Get the author of the commit to tag them
+          set -euo pipefail
+          gh label create "performance-regression" -f \
+            --color "D93F0B" --description "Postsubmit benchmark regression"
+
           AUTHOR=$(git log -1 --pretty=format:'%an')
           SHA=$(git rev-parse --short HEAD)
-          
-          gh issue create \
-            --title "⚠️ Performance Regression Detected in $SHA" \
-            --body "### 🚨 Benchmark Regression Report
-            
-            **Commit:** $SHA
-            **Author:** $AUTHOR
-            
-            A performance regression of **>15%** was detected compared to the previous baseline.
-            
-            [View Benchmark Logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-            
-            Please investigate to determine if this slowdown is expected." \
-            --label "performance-regression" \
-            --assignee "${{ github.actor }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          BODY="### Benchmark regression report
+
+          **Commit:** $SHA
+          **Author:** $AUTHOR
+
+          One or more benchmarks regressed by more than **25%** against the previous baseline.
+
+          [View benchmark logs]($RUN_URL)
+
+          If the slowdown is expected (e.g. an intentional trade), close this issue with a note; otherwise fix or revert."
+
+          # One open issue at a time: pile new reports onto the existing one
+          # instead of spamming a fresh issue per commit.
+          EXISTING=$(gh issue list --label performance-regression --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create \
+              --title "Performance regression detected on main ($SHA)" \
+              --body "$BODY" \
+              --label "performance-regression"
+          fi
