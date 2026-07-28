@@ -195,6 +195,15 @@ to-be-retired backend, tracked until that backend dies.
   proper: restructure `Sum`/`Geometry`/`Glyph` as combinator compositions
   (per the stated end goal — zero hand-written `Manifold` evals in graphics),
   switch `CachedGlyph::new` to `realize`, fused-vs-combinator golden.
+
+  **Correction (2026-07-28):** the boundary described above did not survive
+  the 2026-07-24 Kernel-value pivot. pixelflow-core today ships **no**
+  per-generator `Lower` impls (the trait lives in pixelflow-ir; its
+  implementors are `f32`, the emitter's named-struct bridge, and the
+  `kernel_jit!` wrapper), and `Lattice::realize` does not exist — the
+  consumer verb is `Lattice::bake(&Kernel)`. A bare `At`/`Select` combinator
+  cannot splice into an arena. Plan P6 work from the code, not from the
+  paragraph above.
 - **P6 — deprecate and delete** the combinator emitter once P2–P5 cover the
   surface (parity suite + goldens green on arena-only).
 
@@ -256,6 +265,27 @@ to-be-retired backend, tracked until that backend dies.
   What remains of P6: delete the combinator *emitter* in pixelflow-compiler
   (and the ZST expression-template layer in core) once the remaining
   `kernel!` consumers migrate — fonts no longer depend on it.
+
+  **P6 progress 2026-07-28.** The fonts' actual last emitter dependency was
+  the glyph-cache read-back: `Bilinear` — a `kernel!` named struct over
+  `DiscreteManifold` — was `CachedGlyph`'s stored sampler. Replaced by
+  `pixelflow_core::BilinearSampler`: the 4-tap blend as one bound-memory
+  arena (four `Gather`s plus weight arithmetic) compiled through the normal
+  backend and bound to the buffer per call via the context-pointer ABI
+  (`JitManifold::call_bound` — the first production use of bound buffers).
+  `render/bilinear.rs` is deleted; fonts are now emitter-free in library
+  code. Also landed: the last load-bearing `-> Jet2` combinator kernel
+  (jit_parity.rs's coverage oracle) re-anchored on the IR interpreter, and
+  1,053 lines of orphaned compiler sources deleted (`codegen/leveled.rs`,
+  `codegen/binding.rs`, `fold.rs`, `lexer.rs`). Remaining emitter consumers
+  in library code, ranked by unblocking order: `scene3d.rs`'s Jet3 surface
+  structs (the long pole — `Dwrt` has no proven story for the 3D tangent
+  frame), `Discrete`/color returns (`ColorSurface`, examples), manifold-param
+  and named-struct forms in tests/examples, and `transform.rs`'s `Jet2`
+  stamp. The ZST-layer deletion additionally requires migrating ~15
+  downstream files that use `At`/`Select`/ops-as-types with no `kernel!`
+  involvement (graphics color/shapes/subdiv, runtime coordinator, core-term
+  surfaces, pixelflow-ml spherical harmonics).
 
 ## Beyond P6 — the language the totality axiom demands
 
