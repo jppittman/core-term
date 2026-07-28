@@ -102,6 +102,43 @@ slow parallel path.
    per-batch kernel (and the interpreter) across arithmetic, selects,
    transcendentals, gather, reduce, and forced spills.
 
+**Landed 2026-07-28 (second wave): X-invariant LICM in the collapse kernel.**
+
+The FreeType gap is algorithmic: FreeType solves each scanline's curve
+intersections once (the active edge list), while dense evaluation re-derived
+them per pixel batch. But post-Dwrt-lowering, a winding kernel's per-scanline
+math — band masks (`Y >= y_min`), curve roots `f(Y)`, gradient factors
+`f'(Y)` — is exactly the X-*invariant* sub-DAG, so the active-edge economics
+is a compiler pass, not a rasterizer rewrite:
+
+- `plan_collapse_hoist` (emit/mod.rs) partitions the collapse schedule by
+  `Variance` (`schedule_variance` — the `variance.rs` substrate's first
+  production consumer). A hoist root is an X-invariant, non-leaf value with an
+  X-dependent consumer; the prologue schedule is the roots' operand closure,
+  the body schedule treats roots as pre-spilled leaves.
+- The prologue is emitted once per row-call by the same `emit_dag_body`
+  driver (`HoistCtx::Prologue`), parking each root in a dedicated stack slot
+  above the scaffold's coordinate slots; the body (`HoistCtx::Body`) skips
+  the roots' defs and its consumers reload through the ordinary spill
+  machinery — no new instruction forms, no per-backend emission changes, all
+  four scaffolds just splice the prologue bytes and reserve the slots.
+- Both emissions share one frame region (`max` of the two spill frames,
+  pre-sized via the pure `linear_scan`/`FrameLayout` pair) with a 144-byte
+  floor forcing x86's SSE2 backend out of red-zone mode so hoist-slot
+  addressing agrees on both sides.
+- Two deliberate scope cuts: select-guard short-circuits are disabled inside
+  the prologue (a uniform mask would skip a hoist root's def, leaving its
+  slot garbage for the whole row — and the prologue runs once, so guards buy
+  nothing), and `Gather`s never hoist (hoisting would move a load out of any
+  guard arm it sits in; arithmetic speculation is free, memory speculation is
+  a policy decision deferred until something needs it).
+- Hoisting reorders nothing within a value's own computation, so results are
+  bit-exact against the per-batch kernel: pinned by four new cases in
+  `tests/collapse_loop.rs` (hoisted sqrt/div chains, fully-invariant root
+  degenerating to a store loop, a hoisted select whose slot must fill
+  unguarded, prologue-side spill pressure) across all four ISAs, plus the
+  glyph goldens.
+
 **Remaining, in order:**
 
 1. **`Reduce`'s loop lowering.** `expand_reduce` statically unrolls; a large
@@ -113,10 +150,11 @@ slow parallel path.
    a `Reduce` loop is the first, and they can share the backend loop
    primitives.
 2. **The Y loop (2D collapse).** One call per frame instead of per row; the
-   scaffold grows an outer loop stepping the Y slot. This is also where LICM
-   lands: `variance.rs` (kept for exactly this) identifies Y/Z/W-only
-   subexpressions to hoist out of the inner loop — aarch64 can pin them in
-   v8-v15 with a save/restore prologue, x86 uses stack slots.
+   scaffold grows an outer loop stepping the Y slot. The X-loop LICM above is
+   the per-row half of the hoisting story; the Y loop adds the per-frame half
+   (Z/W-only values hoist past it, and the per-row prologue stops paying the
+   call boundary). `find_hoistable_out_of(1, …)` is the same question asked
+   of Y.
 3. **The e-graph gap — landed 2026-07-28 for the Reduce-free population.**
    `pixelflow-search/src/runtime.rs`'s `optimize_runtime_arena(arena, root)`
    inserts an arbitrary runtime `ExprArena` into a fresh `EGraph` (memoized by
