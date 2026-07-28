@@ -26,8 +26,9 @@ use crate::egraph::{
     EClassId, EGraph, ENode, all_rules, choices_to_arena, config_for_node_count,
     env_extraction_policy,
 };
-use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
+use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId, ExprNode};
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 /// Optimize a runtime-built arena via bounded e-graph saturation, using the
 /// same rule set and extraction policy (static latency-prior by default,
@@ -47,8 +48,34 @@ use std::collections::HashMap;
 ///
 /// Callers compile the original arena unchanged in that case — `optimize_runtime_arena`
 /// is strictly an optimization, never required for correctness.
+///
+/// Cached by the structural shape of the reachable subgraph (mirroring
+/// `pixelflow_ir::jit_cache`'s own canonical-key cache): a caller that bakes
+/// the same `Kernel` across many frames — every glyph, on the common path
+/// through `GlyphCache` — pays saturation once, not once per bake. Skipping
+/// this cache would make `optimize_runtime_arena` slower than not optimizing
+/// at all for any repeatedly-baked kernel, since the JIT compile it feeds is
+/// itself cached downstream.
 #[must_use]
 pub fn optimize_runtime_arena(arena: &ExprArena, root: ExprId) -> Option<(ExprArena, ExprId)> {
+    static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Option<(ExprArena, ExprId)>>>> = OnceLock::new();
+
+    let key = canonical_key(arena, root);
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().expect("optimize_runtime_arena: lock poisoned").get(&key) {
+        return hit.clone();
+    }
+
+    let result = optimize_runtime_arena_uncached(arena, root);
+    cache
+        .lock()
+        .expect("optimize_runtime_arena: lock poisoned")
+        .entry(key)
+        .or_insert(result)
+        .clone()
+}
+
+fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(ExprArena, ExprId)> {
     let mut egraph = EGraph::with_rules(all_rules());
     let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
     let root_class = arena_to_egraph(arena, root, &mut egraph, &mut memo)?;
@@ -65,6 +92,95 @@ pub fn optimize_runtime_arena(arena: &ExprArena, root: ExprId) -> Option<(ExprAr
     let policy = env_extraction_policy();
     let choices = policy.choices(&egraph, root_class);
     Some(choices_to_arena(&egraph, root_class, &choices))
+}
+
+/// Canonical serialization of the subgraph reachable from `root`: nodes in
+/// ascending original id order (the arena is append-only, so children always
+/// precede parents), child references remapped to dense indices — the same
+/// shape as `pixelflow_ir::jit_cache`'s private `canonical_key`, reimplemented
+/// here since that one isn't exported and this cache's correctness condition
+/// is different (it needs a key for *every* reachable node kind, including
+/// `Buffer`/`Nary`, to memoize the bail-out case too, not just the
+/// e-graph-representable ones).
+fn canonical_key(arena: &ExprArena, root: ExprId) -> Vec<u8> {
+    let len = arena.nodes_raw().len();
+    let mut reachable = vec![false; len];
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if core::mem::replace(&mut reachable[id.0 as usize], true) {
+            continue;
+        }
+        stack.extend(arena.children(id));
+    }
+
+    let mut dense: Vec<u32> = vec![u32::MAX; len];
+    let mut next = 0u32;
+    let mut key: Vec<u8> = Vec::with_capacity(len * 8);
+
+    let push_id = |key: &mut Vec<u8>, dense: &[u32], id: ExprId| {
+        let d = dense[id.0 as usize];
+        debug_assert_ne!(d, u32::MAX, "canonical_key: child densified before parent");
+        key.extend_from_slice(&d.to_le_bytes());
+    };
+
+    for idx in 0..len {
+        if !reachable[idx] {
+            continue;
+        }
+        let id = ExprId(idx as u32);
+        match arena.node(id) {
+            &ExprNode::Var(i) => {
+                key.push(0);
+                key.push(i);
+            }
+            &ExprNode::Const(v) => {
+                key.push(1);
+                key.extend_from_slice(&v.to_bits().to_le_bytes());
+            }
+            &ExprNode::Param(i) => {
+                key.push(2);
+                key.push(i);
+            }
+            &ExprNode::Buffer(b) => {
+                key.push(3);
+                key.extend_from_slice(&b.0.to_le_bytes());
+                let BufferDecl { width, height } = *arena.buffer_decl(b);
+                key.extend_from_slice(&width.to_le_bytes());
+                key.extend_from_slice(&height.to_le_bytes());
+            }
+            &ExprNode::Unary(op, a) => {
+                key.push(4);
+                key.push(op as u8);
+                push_id(&mut key, &dense, a);
+            }
+            &ExprNode::Binary(op, a, b) => {
+                key.push(5);
+                key.push(op as u8);
+                push_id(&mut key, &dense, a);
+                push_id(&mut key, &dense, b);
+            }
+            &ExprNode::Ternary(op, a, b, c) => {
+                key.push(6);
+                key.push(op as u8);
+                push_id(&mut key, &dense, a);
+                push_id(&mut key, &dense, b);
+                push_id(&mut key, &dense, c);
+            }
+            &ExprNode::Nary(op, start, n) => {
+                key.push(7);
+                key.push(op as u8);
+                key.extend_from_slice(&n.to_le_bytes());
+                let (s, l) = (start as usize, n as usize);
+                for &child in &arena.nary_children_raw()[s..s + l] {
+                    push_id(&mut key, &dense, child);
+                }
+            }
+        }
+        dense[idx] = next;
+        next += 1;
+    }
+
+    key
 }
 
 /// Insert the subgraph reachable from `id` into `egraph`, memoized by
@@ -204,6 +320,61 @@ mod tests {
                 "optimize_runtime_arena changed semantics at ({x},{y},{z},{w}): {want} != {got}"
             );
         }
+    }
+
+    #[test]
+    fn repeated_bake_of_the_same_kernel_hits_the_cache() {
+        // The exact regression this cache exists to close: Lattice::bake
+        // calls optimize_runtime_arena on EVERY bake of a Kernel, but real
+        // callers (GlyphCache, and criterion benches that measure "the JIT
+        // compile is cached, so iterations measure tabulation") bake the
+        // *same* kernel repeatedly. Without caching, every one of those
+        // calls re-runs full saturation from scratch — slower than not
+        // optimizing at all, since the downstream JIT compile was already
+        // cached and free.
+        //
+        // Build something big enough to land in the "classical" budget
+        // (>50 nodes) with real rewriting work to do (redundant
+        // sub-multiplications an FMA pass and commutativity/associativity
+        // actually have to chew on), so a cold run takes measurably longer
+        // than a hash lookup.
+        fn build_arena() -> (ExprArena, ExprId) {
+            let mut a = ExprArena::new();
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let mut acc = a.push_const(0.0);
+            for k in 0..15 {
+                let c = a.push_const(1.0 + k as f32 * 0.37);
+                let xc = a.push_binary(OpKind::Mul, x, c);
+                let yc = a.push_binary(OpKind::Mul, y, c);
+                let term = a.push_binary(OpKind::Add, xc, yc);
+                acc = a.push_binary(OpKind::Add, acc, term);
+            }
+            (a, acc)
+        }
+
+        let (a1, r1) = build_arena();
+        let cold_start = std::time::Instant::now();
+        let (opt1, _) = optimize_runtime_arena(&a1, r1).expect("must optimize");
+        let cold = cold_start.elapsed();
+
+        // A freshly built, structurally identical (but not reused) arena:
+        // proves the cache keys on shape, not on the first call's identity.
+        let (a2, r2) = build_arena();
+        let warm_start = std::time::Instant::now();
+        let (opt2, _) = optimize_runtime_arena(&a2, r2).expect("must optimize");
+        let warm = warm_start.elapsed();
+
+        assert_eq!(
+            opt1.nodes_raw().len(),
+            opt2.nodes_raw().len(),
+            "cached and fresh optimization must agree on the result shape"
+        );
+        assert!(
+            warm < cold / 2 || warm < std::time::Duration::from_micros(200),
+            "expected the second call to hit the cache (warm {warm:?} vs cold {cold:?}) — \
+             a regression here means optimize_runtime_arena is re-saturating every bake"
+        );
     }
 
     #[test]
