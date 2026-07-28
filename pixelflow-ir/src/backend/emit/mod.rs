@@ -71,19 +71,6 @@ impl ConstPool {
         }
     }
 
-    /// Build a constant pool from a schedule, pre-seeding constants that need pool entries.
-    fn from_schedule(schedule: &[(regalloc::ValueId, ScheduledOp)]) -> Result<Self, &'static str> {
-        let mut pool = Self::new();
-        for (_, op) in schedule {
-            if let ScheduledOp::Const(val) = op
-                && aarch64::needs_const_pool(*val)
-            {
-                pool.push_f32(*val)?;
-            }
-        }
-        Ok(pool)
-    }
-
     /// Insert an f32 into the pool (deduplicating by bit pattern) and return
     /// the byte offset for an `LDR Qt, [X17, #offset]` load.
     ///
@@ -739,6 +726,7 @@ trait IsaBackend {
     /// once per call, after the coordinate stores and before the loop, parking
     /// its results in `hoist_slots` vector slots directly above the coordinate
     /// slots — the scaffold reserves them in its frame allocation.
+    #[allow(clippy::too_many_arguments)] // the scaffold's full framing contract
     fn emit_collapse_loop(
         &mut self,
         hoist: &[u8],
@@ -1103,7 +1091,21 @@ impl IsaBackend for Aarch64Backend {
     }
 
     fn begin(&mut self, schedule: &[(regalloc::ValueId, ScheduledOp)]) -> Result<(), &'static str> {
-        self.pool = ConstPool::from_schedule(schedule)?;
+        // Seed by APPENDING into the existing pool, never replacing it: a
+        // collapse compile emits two bodies through one backend (the LICM
+        // prologue, then the loop body), and the prologue's bytes have the
+        // first pool's X17-relative offsets baked in — resetting here left
+        // them pointing into the body's rebuilt pool (wrong constants; the
+        // macOS glyph-ink regression). `push_f32` dedups, and each compile
+        // constructs a fresh backend, so appending is reset-equivalent for
+        // single-body compiles.
+        for (_, op) in schedule {
+            if let ScheduledOp::Const(val) = op
+                && aarch64::needs_const_pool(*val)
+            {
+                self.pool.push_f32(*val)?;
+            }
+        }
         // Builtins add up to ~60 polynomial coefficients during emission; bail
         // if the expression constants + headroom would exceed the 12-bit LDR
         // offset limit.
