@@ -407,7 +407,7 @@ impl Lattice {
         let (arena, root) = kernel.parts();
         let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root);
         let (arena, root) = optimized
-            .as_ref()
+            .as_deref()
             .map(|(a, r)| (a, *r))
             .unwrap_or((arena, root));
         let jit = pixelflow_ir::jit_cache::compile_collapse_cached(arena, root)

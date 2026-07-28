@@ -28,7 +28,7 @@ use crate::egraph::{
 };
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId, ExprNode};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Optimize a runtime-built arena via bounded e-graph saturation, using the
 /// same rule set and extraction policy (static latency-prior by default,
@@ -56,9 +56,17 @@ use std::sync::{Mutex, OnceLock};
 /// this cache would make `optimize_runtime_arena` slower than not optimizing
 /// at all for any repeatedly-baked kernel, since the JIT compile it feeds is
 /// itself cached downstream.
+///
+/// The cached value is `Arc`-wrapped for the same reason `jit_cache` hands
+/// back `Arc<JitManifold>` rather than owned code: a hit must be an atomic
+/// refcount bump, not a deep clone of the (potentially large — real glyph
+/// arenas run to thousands of nodes once construction garbage is counted)
+/// optimized `ExprArena`. Returning an owned tuple here would silently
+/// reintroduce a per-call cost the cache exists to eliminate.
 #[must_use]
-pub fn optimize_runtime_arena(arena: &ExprArena, root: ExprId) -> Option<(ExprArena, ExprId)> {
-    static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Option<(ExprArena, ExprId)>>>> = OnceLock::new();
+pub fn optimize_runtime_arena(arena: &ExprArena, root: ExprId) -> Option<Arc<(ExprArena, ExprId)>> {
+    static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Option<Arc<(ExprArena, ExprId)>>>>> =
+        OnceLock::new();
 
     let key = canonical_key(arena, root);
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -66,7 +74,7 @@ pub fn optimize_runtime_arena(arena: &ExprArena, root: ExprId) -> Option<(ExprAr
         return hit.clone();
     }
 
-    let result = optimize_runtime_arena_uncached(arena, root);
+    let result = optimize_runtime_arena_uncached(arena, root).map(Arc::new);
     cache
         .lock()
         .expect("optimize_runtime_arena: lock poisoned")
@@ -355,14 +363,16 @@ mod tests {
 
         let (a1, r1) = build_arena();
         let cold_start = std::time::Instant::now();
-        let (opt1, _) = optimize_runtime_arena(&a1, r1).expect("must optimize");
+        let arc1 = optimize_runtime_arena(&a1, r1).expect("must optimize");
+        let opt1 = &arc1.0;
         let cold = cold_start.elapsed();
 
         // A freshly built, structurally identical (but not reused) arena:
         // proves the cache keys on shape, not on the first call's identity.
         let (a2, r2) = build_arena();
         let warm_start = std::time::Instant::now();
-        let (opt2, _) = optimize_runtime_arena(&a2, r2).expect("must optimize");
+        let arc2 = optimize_runtime_arena(&a2, r2).expect("must optimize");
+        let opt2 = &arc2.0;
         let warm = warm_start.elapsed();
 
         assert_eq!(
@@ -388,8 +398,9 @@ mod tests {
         let mul = a.push_binary(OpKind::Mul, x, y);
         let root = a.push_binary(OpKind::Add, mul, z);
 
-        let (opt_arena, opt_root) = optimize_runtime_arena(&a, root)
+        let arc = optimize_runtime_arena(&a, root)
             .expect("pure arithmetic arena must optimize");
+        let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
 
         assert_semantics_preserved(&a, root, &(opt_arena.clone(), opt_root));
         assert!(
@@ -410,8 +421,8 @@ mod tests {
         let sq = a.push_binary(OpKind::Mul, s, s);
         let root = a.push_binary(OpKind::Add, sq, s);
 
-        let (opt_arena, opt_root) =
-            optimize_runtime_arena(&a, root).expect("trig arena must optimize");
+        let arc = optimize_runtime_arena(&a, root).expect("trig arena must optimize");
+        let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
         assert_semantics_preserved(&a, root, &(opt_arena, opt_root));
     }
 
@@ -433,8 +444,8 @@ mod tests {
         let var_x = a.push_const(0.0); // Dwrt's second child is the var index, wrt X (0)
         let dx = a.push_binary(OpKind::Dwrt, d, var_x);
 
-        let (opt_arena, opt_root) =
-            optimize_runtime_arena(&a, dx).expect("Dwrt-bearing arena must optimize");
+        let arc = optimize_runtime_arena(&a, dx).expect("Dwrt-bearing arena must optimize");
+        let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
 
         // eval_scalar refuses a raw Dwrt (the interpreter evaluates the
         // post-calculus program, same as the JIT) — lower both sides before
@@ -493,8 +504,8 @@ mod tests {
         let times_one = a.push_binary(OpKind::Mul, plus_zero, one);
         let root = times_one;
 
-        let (opt_arena, opt_root) =
-            optimize_runtime_arena(&a, root).expect("identity arena must optimize");
+        let arc = optimize_runtime_arena(&a, root).expect("identity arena must optimize");
+        let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
         assert_semantics_preserved(&a, root, &(opt_arena.clone(), opt_root));
         // x + 0.0, then * 1.0 should collapse to bare X.
         assert!(

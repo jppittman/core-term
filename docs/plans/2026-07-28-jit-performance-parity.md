@@ -54,9 +54,13 @@ batch:
   spills and reloads around every call. This dominant cost is invisible in the
   JIT'd bytes.
 - Loop-invariant recomputation: Y/Z/W-only subexpressions re-execute per
-  batch. Variance analysis + hoisting exist (`variance.rs`,
-  `arena_to_hoisted_schedule`) but only feed the aarch64 scanline path, which
-  nothing in production uses.
+  batch. Variance analysis + hoisting exist (`variance.rs`) but feed nothing
+  in production yet — the collapse loop's Y dimension (item 2 in "Remaining,
+  in order" below) is where this substrate gets its first real consumer.
+  (Historical note: this previously said the hoisting fed an
+  `arena_to_hoisted_schedule`-driven aarch64 scanline path; that whole path
+  was deleted 2026-07-28 along with the rest of the scanline tier — see the
+  `over` plan section.)
 - Constant re-materialization per call (AVX-512: stack round-trip per
   occurrence; aarch64: literal-pool re-anchor).
 - `Lattice::collapse` additionally stores each batch to a scratch array and
@@ -148,6 +152,36 @@ slow parallel path.
    `Buffer`/`Gather` and `Reduce`. Font goldens (`kernel_glyph_golden.rs` et
    al.) are unaffected — optimization preserves semantics by construction —
    and now compile through the fused form.
+
+   **Measured cost, and where it lands.** The optimization result is cached
+   by structural arena shape (`Arc`-wrapped, so a hit is an atomic refcount
+   bump, not a deep arena clone — matching how `jit_cache` hands back
+   `Arc<JitManifold>`), so saturation runs once per distinct kernel shape,
+   not once per bake. What remains on *every* call, hit or miss, is
+   computing that structural key — an O(reachable-arena-size) walk, same
+   shape as `jit_cache`'s own existing canonical-key cache. Direct
+   measurement on real glyphs (`pixelflow-graphics/benches/font_rendering.rs`,
+   `cargo bench -p pixelflow-graphics`): baking 'A' (1084 total arena nodes,
+   277 reachable — most of the gap is construction garbage from splicing,
+   not real content) went from ~16µs to ~20µs; the `cache_warmup_alphabet`
+   bench (26 distinct glyphs, fresh `GlyphCache` per iteration — explicitly
+   the one-time warm-up cost, per its own doc comment) went from ~4.7ms to
+   ~5.5ms. The `cached_HELLO` bench — steady-state rendering through an
+   already-warm `GlyphCache`, which never calls `bake` — is unchanged across
+   every measurement, confirming the added cost lands *only* in the
+   one-time per-glyph-bucket bake, never in the per-frame render path.
+   `GlyphCache::get` bakes a given `(codepoint, size_bucket, density_bucket)`
+   at most once for the cache's lifetime, so this reads as a few-to-tens-of-
+   microseconds one-time tax per distinct glyph a real application ever
+   renders — negligible against startup/warm-up, and it buys correctness-
+   preserving CSE/FMA fusion that the loop-in-JIT and future NNUE-guided
+   extraction work compounds with. Left deliberately unoptimized further
+   (e.g. a pointer-identity fast path keyed on the `Kernel`'s own `Arc`
+   would remove the structural walk on repeat calls to the *same* object,
+   but needs the cache to hold a weak/strong reference to avoid an
+   address-reuse hazard on an unbounded `'static` cache) — no measured
+   caller pays this on a hot path, so per the "subtract before you add"
+   rule there's nothing here to subtract yet.
 
 ## Measurement plan (do this first)
 
