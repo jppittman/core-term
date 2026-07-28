@@ -26,9 +26,9 @@
 //! per-actor [`FdWaker`], and the app-facing [`PtySender`]s — can't ride the
 //! `Directory` (which only knows troupe-internal handles), so they arrive via
 //! a `Bind` management message once the troupe is running. This mirrors how
-//! `VsyncActor` is configured post-construction. Management drains before Data
-//! in every scheduler wake, so an actor is always bound before it handles its
-//! first byte.
+//! pixelflow-runtime's vsync green node receives its engine/clock edges post-construction.
+//! Management drains before Data in every scheduler wake, so an actor is always bound before
+//! it handles its first byte.
 //!
 //! **Blocking model.** The reader and writer bridge to the OS inside `handle_os()`,
 //! blocking in `epoll_wait`/`kevent` on `{pty, waker}`; each is a `[waker]`

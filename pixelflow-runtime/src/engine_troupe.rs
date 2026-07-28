@@ -14,26 +14,49 @@ use crate::display::platform::PlatformActor;
 use crate::engine_core::{EngineCore, EngineOut};
 use crate::error::RuntimeError;
 use crate::platform::{ActivePlatform, PlatformPixel};
-use crate::vsync_actor::{
-    RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
-};
-use actor_scheduler::mealy::Transducer;
+use crate::vsync_actor::{RenderedResponse, VsyncCommand, VsyncCore, VsyncManagement, VsyncWiring};
+use actor_scheduler::actors::{Schedule, Timer};
+use actor_scheduler::host::{GreenThread, Host, HostOut};
+use actor_scheduler::mealy::{Flush, Lanes, Node, Transducer, Wiring};
 use actor_scheduler::{
-    Actor, ActorBuilder, ActorHandle, ActorScheduler, ActorStatus, ActorTypes, HandlerError,
-    HandlerResult, Message, SendError, SystemStatus, TroupeActor,
+    Actor, ActorBuilder, ActorHandle, ActorScheduler, ActorStatus, ActorTypes, GreenSender,
+    HandlerError, HandlerResult, Message, SchedulerParams, SystemStatus, TroupeActor,
+    TrySendError, green_channel,
 };
 use pixelflow_graphics::render::rasterizer::{
     RasterizerActor, RasterizerHandle, RenderRequest, RenderResponse,
 };
 use std::convert::Infallible;
+use std::ops::ControlFlow;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Deliver a message on a credit-bounded green edge (design doc §3.2): the ring is provisioned
+/// to never fill from that edge alone, so `Disconnected` is an ordinary shutdown race but `Full`
+/// means the provisioning broke. Factored out because `vsync_data` and `vsync_control` make
+/// exactly this argument for exactly this reason.
+fn expect_credit_bounded_send<T: std::fmt::Debug>(
+    result: Result<(), TrySendError<T>>,
+    full_msg: &str,
+) {
+    match result {
+        Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+        Err(err @ TrySendError::Full(_)) => panic!("{full_msg}: {err:?}"),
+    }
+}
 
 /// Engine handler - coordinates app, rendering, display.
 pub struct EngineHandler {
     /// Handle to the display driver actor.
     driver: ActorHandle<DisplayData, DisplayControl, DisplayMgmt>,
-    /// Handle to the vsync actor (for feedback loop).
-    vsync: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+    /// The vsync green node's data edge (rendered-frame feedback for FPS telemetry). `None`
+    /// until `EngineControl::VsyncActorReady` arrives.
+    vsync_data: Option<GreenSender<RenderedResponse>>,
+    /// The vsync green node's control edge (`UpdateRefreshRate`, `ReturnToken`, ...).
+    vsync_control: Option<GreenSender<VsyncCommand>>,
+    /// A handle to the green host itself, for the shutdown cascade — sending it
+    /// `Message::Shutdown` stops the vsync node along with everything else the host owns.
+    vsync_host: Option<ActorHandle<Infallible, Infallible, Infallible>>,
     /// Handle to the rasterizer actor (set after bootstrap completes).
     rasterizer: Option<RasterizerHandle<PlatformPixel, WindowMeta>>,
     /// Handle to self (for shutdown).
@@ -72,7 +95,6 @@ impl ActorTypes for DriverActor<ActivePlatform> {
 actor_scheduler::troupe! {
     driver: DriverActor<ActivePlatform> [main],
     engine: EngineHandler [expose],
-    vsync: VsyncActor [expose],
 }
 
 // Implement Actor for EngineHandler
@@ -87,8 +109,11 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
         // Handle-carrying: intercepted before the core ever sees it, since a pure core has no
         // field to hold an `ActorHandle` in.
         let ctrl = match ctrl {
-            EngineControl::VsyncActorReady(handle) => {
-                self.vsync = handle;
+            EngineControl::VsyncActorReady(triple) => {
+                let (data, control, host) = *triple;
+                self.vsync_data = Some(data);
+                self.vsync_control = Some(control);
+                self.vsync_host = Some(host);
                 return Ok(());
             }
             other => other,
@@ -246,9 +271,16 @@ impl EngineHandler {
         }
 
         if let Some(response) = out.vsync_data {
-            self.vsync
-                .send(Message::Data(response))
-                .expect("Failed to notify VSync of completed frame");
+            if let Some(tx) = &self.vsync_data {
+                // The ring is provisioned >= MAX_TOKENS worth of outstanding frames (bootstrap
+                // `with_config`), so `Full` here means that provisioning broke, not ordinary
+                // backpressure — same credit argument as `send_vsync_control` below (design doc
+                // §3.2).
+                expect_credit_bounded_send(
+                    tx.try_send(response),
+                    "vsync data ring unexpectedly full",
+                );
+            }
         }
 
         if let Some(cmd) = out.vsync_control {
@@ -288,23 +320,15 @@ impl EngineHandler {
         }
     }
 
-    /// The `vsync_control` port. `ReturnToken` tolerates a disconnected vsync (shutdown races
-    /// are ordinary here); `UpdateRefreshRate` does not, matching each variant's original
-    /// handling before the two were merged into one port.
+    /// The `vsync_control` port — `ReturnToken` (a credit return: the ring holds `>= MAX_TOKENS`,
+    /// design doc §3.2) and `UpdateRefreshRate` alike. Both tolerate a disconnected vsync
+    /// (shutdown races are ordinary), and both treat `Full` as a bug rather than backpressure to
+    /// wait out, since the ring was sized to never fill from this edge.
     fn send_vsync_control(&mut self, cmd: VsyncCommand) {
-        match cmd {
-            VsyncCommand::ReturnToken => {
-                match self.vsync.send(Message::Control(VsyncCommand::ReturnToken)) {
-                    Ok(()) | Err(SendError::Disconnected) => {}
-                    Err(SendError::Timeout) => panic!("Timed out returning vsync token"),
-                }
-            }
-            other => {
-                self.vsync
-                    .send(Message::Control(other))
-                    .expect("failed to update refresh rate");
-            }
-        }
+        let Some(tx) = &self.vsync_control else {
+            return; // Not configured yet, or the green host has already shut down.
+        };
+        expect_credit_bounded_send(tx.try_send(cmd), "vsync control ring unexpectedly full");
     }
 
     /// Hand a bound frame to the rasterizer.
@@ -333,9 +357,14 @@ impl EngineHandler {
     /// forwarder, drop the app handle, driver, then self. Any app notification for a
     /// `CloseRequested` has already gone out via the `app` port earlier in [`Self::flush`].
     fn shut_down(&mut self) {
-        self.vsync
-            .send(Message::Shutdown)
-            .expect("Failed to shutdown vsync on Quit");
+        if let Some(host) = &self.vsync_host {
+            host.send(Message::Shutdown)
+                .expect("Failed to shutdown vsync host on Quit");
+        }
+        // The host shutting down drops its lanes' receivers; drop our ends too so nothing
+        // downstream mistakes a dead node for one still configured.
+        self.vsync_data = None;
+        self.vsync_control = None;
         if let Some(rasterizer) = &self.rasterizer {
             rasterizer
                 .send(Message::Shutdown)
@@ -421,7 +450,9 @@ impl TroupeActor<Directory> for EngineHandler {
     fn new(dir: Directory) -> Self {
         Self {
             driver: dir.driver,
-            vsync: dir.vsync,
+            vsync_data: None, // Set via EngineControl::VsyncActorReady once the green host is up
+            vsync_control: None,
+            vsync_host: None,
             rasterizer: None, // Set up separately via bootstrap
             self_handle: Some(dir.engine),
             rasterizer_forward_handle: None, // Set via SetRasterizerForwardHandle message
@@ -458,8 +489,52 @@ impl TroupeActor<Directory> for DriverActor<ActivePlatform> {
     }
 }
 
+/// Delivers a [`Host`]'s supervision findings to the engine — the wired half of "Host as
+/// transducer" (design doc §5.4): a real port with a real consumer, where `handle_os` could only
+/// compute the event and drop it.
+///
+/// `HostOut::again` is the host's own continuation; it never reaches wiring at all — see the
+/// `debug_assert!` in [`Wiring::flush`](Wiring::flush), which is what makes that a checkable fact
+/// rather than a comment.
+struct EngineHostWiring {
+    engine: crate::api::private::EngineActorHandle,
+}
+
+impl Wiring for EngineHostWiring {
+    type Out = HostOut;
+
+    fn flush(&mut self, out: &mut HostOut) -> Flush {
+        debug_assert!(
+            out.again.is_none(),
+            "GreenThread drains its own continuation; wiring never sees it"
+        );
+
+        let Some(event) = out.supervision else {
+            return Flush::Done;
+        };
+
+        match self
+            .engine
+            .try_send(Message::Control(EngineControl::GreenStuck(event)))
+        {
+            Ok(()) => {
+                out.supervision = None;
+                Flush::Done
+            }
+            // Neither clears `out.supervision` — it is already `Some`, so leaving it be is
+            // putting it back, exactly like `VsyncWiring`'s tick port.
+            Err(TrySendError::Full(_)) => Flush::Blocked,
+            Err(TrySendError::Disconnected(_)) => Flush::Disconnected,
+        }
+    }
+}
+
 impl Troupe {
-    /// Create troupe and configure vsync actor.
+    /// Create troupe, configure the engine, and bring vsync up as the first green node
+    /// (docs/designs/actor-scheduler-mealy-transducer.md §5): one "green-host" thread runs a
+    /// [`Host`] hosting the vsync [`Node`], stepped by its own [`GreenThread`] rather than
+    /// living on a dedicated OS thread of its own. The one thread this bootstrap still spawns
+    /// for vsync is the [`Timer`] clock — a green actor may not block, and a clock has to wait.
     pub fn with_config(config: EngineConfig) -> Result<Self, RuntimeError> {
         // Create troupe with platform-specific waker for the main (driver) actor
         #[cfg(target_os = "macos")]
@@ -479,10 +554,10 @@ impl Troupe {
         let mut troupe = Self::new();
 
         // Create SPSC handles for initialization (each exposed() creates unique channels)
-        let init = troupe.exposed(); // engine + vsync handles for sending config messages
-        let vsync_engine = troupe.exposed(); // engine handle for vsync→engine
-        let clock_vsync = troupe.exposed(); // vsync handle for clock→vsync
+        let init = troupe.exposed(); // engine handle for sending config messages
         let rasterizer_fwd = troupe.exposed(); // engine handle for rasterizer→engine
+        let vsync_engine = troupe.exposed(); // dedicated engine producer for vsync ticks
+        let host_engine = troupe.exposed(); // dedicated engine producer for host supervision
 
         // Send rasterizer forwarding handle BEFORE Configure
         init.engine
@@ -500,16 +575,83 @@ impl Troupe {
             )))
             .map_err(|e| RuntimeError::InitError(format!("Failed to configure engine: {}", e)))?;
 
-        // Configure vsync with target FPS (auto-starts after configuration)
-        init.vsync
-            .send(Message::Management(VsyncManagement::SetConfig {
-                config: VsyncConfig {
-                    refresh_rate: config.performance.target_fps as f64,
-                },
-                engine_handle: Box::new(vsync_engine.engine),
-                self_handle: Box::new(clock_vsync.vsync),
-            }))
-            .map_err(|e| RuntimeError::InitError(format!("Failed to configure vsync: {}", e)))?;
+        // ── VSync: the first green node ─────────────────────────────────────────────────
+        //
+        // A host has no lanes of its own (all three types are `Infallible`); work reaches it by
+        // pushing straight into an adopted node's inbox with a `GreenSender` and ringing the
+        // host's doorbell. `host_shutdown` is kept (handed to the engine below, for the shutdown
+        // cascade); `host_kick` only lends its `Waker` to the green channels and gives the
+        // scheduler its initial kick once the thread is running.
+        let mut host_builder = ActorBuilder::<Infallible, Infallible, Infallible>::new(1, None);
+        let host_shutdown = host_builder.add_producer();
+        let host_kick = host_builder.add_producer();
+        let mut host_sched = host_builder.build();
+
+        let waker = host_kick.waker();
+        // Capacities >= MAX_TOKENS (100, `vsync_actor.rs`): the credit argument (design doc
+        // §3.2) needs the ring to hold every possible outstanding tick/`ReturnToken`, so `Full`
+        // on either is provably a bug rather than backpressure to tolerate.
+        let (vsync_data_tx, vsync_data_rx) = green_channel::<RenderedResponse>(128, waker.clone());
+        let (vsync_control_tx, vsync_control_rx) = green_channel::<VsyncCommand>(128, waker.clone());
+        // Capacity 1 is enough: a queued tick is as good as a fresh one, and the clock is the
+        // only producer.
+        let (tick_tx, tick_rx) = green_channel::<VsyncManagement>(2, waker);
+
+        init.engine
+            .send(Message::Control(EngineControl::VsyncActorReady(Box::new(
+                (vsync_data_tx, vsync_control_tx, host_shutdown),
+            ))))
+            .map_err(|e| {
+                RuntimeError::InitError(format!("Failed to hand vsync handles to engine: {}", e))
+            })?;
+
+        let refresh_rate = config.performance.target_fps as f64;
+        let tick_interval = Duration::from_secs_f64(1.0 / refresh_rate);
+
+        // Built here, on the calling thread, then moved into the green-host thread below —
+        // `Timer` is `Send`, so this doesn't need to happen on the thread that owns it.
+        let clock = Timer::spawn("vsync-clock", Schedule::Every(tick_interval), move || {
+            match tick_tx.try_send(VsyncManagement::Tick) {
+                Ok(()) => ControlFlow::Continue(()),
+                // A queued tick is as good as this one.
+                Err(TrySendError::Full(_)) => ControlFlow::Continue(()),
+                Err(TrySendError::Disconnected(_)) => ControlFlow::Break(()),
+            }
+        });
+
+        std::thread::Builder::new()
+            .name("green-host".to_string())
+            .spawn(move || {
+                let mut host = Host::new();
+                let core = VsyncCore::started(refresh_rate);
+                let wiring = VsyncWiring {
+                    engine: vsync_engine.engine,
+                    clock,
+                };
+                let node = Node::new_with_lanes(
+                    core,
+                    Lanes {
+                        control: vsync_control_rx,
+                        management: tick_rx,
+                        data: vsync_data_rx,
+                    },
+                    wiring,
+                    SchedulerParams::DEFAULT,
+                );
+                host.adopt(node);
+
+                let mut green_thread = GreenThread::new(
+                    host,
+                    EngineHostWiring {
+                        engine: host_engine.engine,
+                    },
+                );
+                host_sched.run(&mut green_thread);
+            })
+            .expect("failed to spawn green host thread");
+        // The scheduler blocks on its doorbell until woken; ring it once to start the sweep
+        // loop, the same kick `spawn_rasterizer`'s `RasterizerForwarder` gives itself.
+        host_kick.waker().wake();
 
         Ok(troupe)
     }
@@ -650,8 +792,11 @@ mod tests {
         driver_sched: ActorScheduler<DisplayData, DisplayControl, DisplayMgmt>,
         driver_spy: DriverSpy,
         /// Never polled: vsync's token returns and FPS reports are not what these tests are
-        /// about. It is held only so the engine's sends to it stay connected.
-        _vsync_sched: ActorScheduler<RenderedResponse, VsyncCommand, VsyncManagement>,
+        /// about. Held directly (no green host, no thread) only so the engine's sends have
+        /// somewhere to land — replaces the `ActorScheduler` spy the dedicated-thread
+        /// `VsyncActor` needed, since a `GreenSender`'s receiving end is a plain `SpscReceiver`.
+        _vsync_data_rx: actor_scheduler::spsc::SpscReceiver<RenderedResponse>,
+        _vsync_control_rx: actor_scheduler::spsc::SpscReceiver<VsyncCommand>,
         /// Renders the rasterizer has been asked for and not yet answered, oldest first.
         in_flight: VecDeque<WindowMeta>,
         request_log: Vec<Size>,
@@ -660,12 +805,26 @@ mod tests {
     impl Rig {
         fn new() -> Self {
             let (driver, driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
-            let (vsync, _vsync_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
             let (rasterizer, raster_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+
+            // A `Waker` with nobody listening is harmless (host.rs's own tests prove it), so a
+            // throwaway scheduler that is dropped immediately after minting one is enough — the
+            // green channels below never need a real host to wake.
+            let waker = {
+                let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
+                handle.waker()
+            };
+            // Same provisioning as the real bootstrap (>= MAX_TOKENS): the engine panics on a
+            // full vsync ring by the credit argument, so an undersized test ring would turn a
+            // long test into a spurious "provisioning broke" panic.
+            let (vsync_data, vsync_data_rx) = green_channel::<RenderedResponse>(128, waker.clone());
+            let (vsync_control, vsync_control_rx) = green_channel::<VsyncCommand>(128, waker);
 
             let engine = EngineHandler {
                 driver,
-                vsync,
+                vsync_data: Some(vsync_data),
+                vsync_control: Some(vsync_control),
+                vsync_host: None,
                 rasterizer: Some(rasterizer),
                 self_handle: None,
                 rasterizer_forward_handle: None,
@@ -681,7 +840,8 @@ mod tests {
                 raster_spy: RasterizerSpy::default(),
                 driver_sched,
                 driver_spy: DriverSpy::default(),
-                _vsync_sched,
+                _vsync_data_rx: vsync_data_rx,
+                _vsync_control_rx: vsync_control_rx,
                 in_flight: VecDeque::new(),
                 request_log: Vec::new(),
             }
