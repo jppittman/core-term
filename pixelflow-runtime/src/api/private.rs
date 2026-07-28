@@ -1,6 +1,5 @@
 use actor_scheduler::{ActorHandle, ActorScheduler};
 use pixelflow_graphics::render::frame::Frame;
-use pixelflow_graphics::render::rasterizer::RenderResponse;
 use std::sync::Arc;
 
 use crate::api::public::CursorIcon;
@@ -10,7 +9,7 @@ use crate::pixel::PlatformPixel;
 // Re-export WindowId from public API for backward compatibility
 pub use crate::api::public::WindowId;
 
-use crate::display::messages::{DisplayEvent, Window, WindowMeta};
+use crate::display::messages::{DisplayEvent, Window};
 
 /// Commands sent to the Display Driver.
 #[derive(Debug)]
@@ -61,9 +60,6 @@ pub enum EngineData {
     /// *is* the return and there is nothing to acknowledge; what remains is the outbound half —
     /// the driver handing the buffer out to be drawn into.
     WindowGranted(Window),
-    /// Render complete - carries the cooked frame, timing, and the window metadata that
-    /// travelled out with the request, from which the `Window` is reassembled.
-    RenderComplete(RenderResponse<PlatformPixel, WindowMeta>),
 }
 
 impl std::fmt::Debug for EngineData {
@@ -84,11 +80,6 @@ impl std::fmt::Debug for EngineData {
             Self::WindowGranted(window) => {
                 f.debug_tuple("WindowGranted").field(window).finish()
             }
-            Self::RenderComplete(response) => f
-                .debug_struct("RenderComplete")
-                .field("render_time", &response.render_time)
-                .field("frame_size", &(response.frame.width, response.frame.height))
-                .finish(),
         }
     }
 }
@@ -107,29 +98,49 @@ impl From<DisplayEvent>
     }
 }
 
-/// The green vsync host's three handles, handed to the engine in one message by
-/// `EngineControl::VsyncActorReady`: the two inbound edges (data, control) plus a handle to the
-/// host itself for the shutdown cascade.
-type VsyncBootstrap = (
-    actor_scheduler::GreenSender<crate::vsync_actor::RenderedResponse>,
-    actor_scheduler::GreenSender<crate::vsync_actor::VsyncCommand>,
-    actor_scheduler::ActorHandle<
+/// The green-host bootstrap bundle, handed to the engine in one message by
+/// `EngineControl::GreenReady`.
+///
+/// Carries what the engine needs once vsync *and* the render coordinator (`coordinator_node.rs`,
+/// step 5c of the mesh migration doc) are both up on the one green-host thread: the vsync
+/// control edge, the coordinator's data-lane sender, and two handles kept only for the shutdown
+/// cascade. Named fields rather than a tuple because `host` and `forwarder` share a type
+/// (`ActorHandle<Infallible, Infallible, Infallible>`) and a positional tuple would let them be
+/// silently transposed.
+///
+/// The rasterizer's own live handle is deliberately **not** here. `RasterizerHandle` is not
+/// `Clone`, and its lanes are single-producer SPSC, so it cannot be shared between the
+/// coordinator (which needs it continuously, for every render) and the engine (which would only
+/// ever touch it once, at shutdown) without breaking that invariant. The coordinator keeps sole
+/// ownership; the rasterizer's own scheduler halts gracefully once that handle drops with the
+/// green host — the same disconnect-triggered shutdown the forwarder already relies on one hop
+/// downstream (`engine_troupe.rs`'s `RasterizerForwarder`).
+#[derive(Debug)]
+pub struct GreenReadyBundle {
+    pub(crate) vsync_control: actor_scheduler::GreenSender<crate::vsync_actor::VsyncCommand>,
+    pub(crate) coordinator: actor_scheduler::GreenSender<crate::coordinator_node::CoordinatorData>,
+    pub(crate) host: actor_scheduler::ActorHandle<
         std::convert::Infallible,
         std::convert::Infallible,
         std::convert::Infallible,
     >,
-);
+    pub(crate) forwarder: actor_scheduler::ActorHandle<
+        std::convert::Infallible,
+        std::convert::Infallible,
+        std::convert::Infallible,
+    >,
+}
 
 // Engine control message (low frequency, configuration/lifecycle)
 #[derive(Debug, Default)]
 pub enum EngineControl {
     UpdateRefreshRate(f64),
-    /// The green vsync host is up. Carries all three handles at once because there is exactly
-    /// one send site (`Troupe::with_config`) and one delivery (the shell intercept below) — a
-    /// single message beats three that would otherwise need to race each other into place
-    /// first. Boxed: the tuple is far larger than every other variant, and `Quit`/`DriverAck`
+    /// The green host is up, hosting both vsync and the render coordinator. There is exactly
+    /// one send site (`Troupe::with_config`) and one delivery (the shell intercept below), so a
+    /// single message beats several that would otherwise need to race each other into place
+    /// first. Boxed: the bundle is far larger than every other variant, and `Quit`/`DriverAck`
     /// are the hot ones.
-    VsyncActorReady(Box<VsyncBootstrap>),
+    GreenReady(Box<GreenReadyBundle>),
     /// A green node got stuck (design doc, `Host::sweep`'s `Supervision`). Logged for now;
     /// policy is a later slice.
     GreenStuck(actor_scheduler::host::Supervision),

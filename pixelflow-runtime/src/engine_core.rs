@@ -1,98 +1,58 @@
 //! `EngineCore` — the pure decision logic behind `EngineHandler` (`engine_troupe.rs`).
 //!
-//! Mirrors the `VsyncCore`/`RasterCore` split (`vsync_actor.rs`, `pixelflow-graphics`'s
-//! `rasterizer/actor.rs`): a `step_*` call takes a message and **returns** what to emit, so the
-//! whole mediator — request/render/present, the resize races, the app/vsync/driver relays — is
-//! table-testable with no scheduler, no handles, and no threads in the loop. `EngineHandler`
-//! shrinks to the thin adapter that owns the real channels and flushes the returned word.
+//! Mirrors the `VsyncCore`/`RasterCore`/`CoordinatorCore` split: a `step_*` call takes a message
+//! and **returns** what to emit, so the app/vsync/driver relays left once rendering moved to its
+//! own node (`coordinator_node.rs`, step 5c of
+//! `docs/designs/pixelflow-runtime-engine-mesh-migration.md`) are table-testable with no
+//! scheduler, no handles, and no threads in the loop. `EngineHandler` shrinks to the thin
+//! adapter that owns the real channels and flushes the returned word.
+//!
+//! # What left
+//!
+//! The render coordinator (`RenderCoordinator`, `frame_number`, and the `rasterizer`/
+//! `driver_data`/`vsync_data` ports that used to carry its decisions) is gone from here
+//! entirely — it runs as its own `Node` now, on the same green-host thread as vsync. What
+//! remains is a single relay port, `coordinator`: every input that used to drive `self.render`
+//! directly now just describes *which* `CoordinatorData` to forward, and the coordinator decides
+//! the rest.
 
 use crate::api::private::{EngineControl, EngineData};
 use crate::api::public::{
     AppData, AppManagement, EngineEvent, EngineEventControl, EngineEventData,
     EngineEventManagement, WindowId,
 };
-use crate::display::messages::{
-    DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Window, WindowMeta,
-};
+use crate::coordinator_node::CoordinatorData;
+use crate::display::messages::{DisplayControl, DisplayEvent, DisplayMgmt};
 use crate::input::MouseButton;
-use crate::platform::PlatformPixel;
-use crate::render_coordinator::{Completed, RenderCoordinator, Step};
-use crate::vsync_actor::{RenderedResponse, VsyncCommand};
-use actor_scheduler::mealy::Transducer;
+use crate::vsync_actor::VsyncCommand;
 use actor_scheduler::HandlerError;
-use pixelflow_graphics::render::rasterizer::RenderRequest;
-use std::time::{Duration, Instant};
-
-const LOG_FRAME_INTERVAL: u64 = 60;
+use actor_scheduler::mealy::Transducer;
 
 /// One optional slot per downstream edge. Default (all `None`, `quit: false`) is the silent
 /// step — most inputs move state without telling any peer.
 #[derive(Default)]
 pub(crate) struct EngineOut {
     pub(crate) app: Option<EngineEvent>,
-    pub(crate) driver_data: Option<DisplayData>,
     pub(crate) driver_control: Option<DisplayControl>,
     pub(crate) driver_mgmt: Option<DisplayMgmt>,
-    pub(crate) vsync_data: Option<RenderedResponse>,
     pub(crate) vsync_control: Option<VsyncCommand>,
-    pub(crate) rasterizer: Option<RenderRequest<PlatformPixel, WindowMeta>>,
-    /// Run the shutdown cascade: vsync, rasterizer, forwarder, app-drop, driver, self.
+    /// → the render coordinator's data lane (`coordinator_node.rs`). Replaces the old
+    /// `rasterizer`/`driver_data`/`vsync_data` ports outright: this type relays a decision, the
+    /// coordinator makes it and owns the ports those decisions used to ride.
+    pub(crate) coordinator: Option<CoordinatorData>,
+    /// Run the shutdown cascade: the green host (vsync + the coordinator node it also runs),
+    /// the rasterizer forwarder, app-drop, driver, self.
     pub(crate) quit: bool,
 }
 
-/// Pure engine mediator: request/render/present bookkeeping and the app/driver/vsync relay
-/// decisions, with no actor handle or channel in it. No self-port — retries of a dropped
-/// `RequestWindow` ride the next VSync tick, exactly as today, so there is no continuation to
-/// take.
-pub(crate) struct EngineCore {
-    render: RenderCoordinator,
-    /// Frame counter for VSync feedback. See the field doc on the old `EngineHandler` copy of
-    /// this (moved verbatim): it stays here rather than moving to the rasterizer because the
-    /// only consumer, FPS telemetry, is a `rasterizer → vsync` edge that does not exist until
-    /// the coordinator is its own node.
-    frame_number: u64,
-}
+/// Pure engine mediator: the app/driver/vsync relay decisions, with no actor handle or channel
+/// in it. No self-port — retries of a dropped `RequestWindow` are the coordinator's own concern
+/// now, not this type's.
+pub(crate) struct EngineCore;
 
 impl EngineCore {
     pub(crate) fn new() -> Self {
-        Self {
-            render: RenderCoordinator::new(),
-            frame_number: 0,
-        }
-    }
-
-    /// Whether the render coordinator currently holds the driver's buffer. Test-only window
-    /// into otherwise-private state, mirroring `RenderCoordinator::holds_buffer`.
-    #[cfg(test)]
-    pub(crate) fn holds_buffer(&self) -> bool {
-        self.render.holds_buffer()
-    }
-
-    /// A `Step::RequestWindow` port actually reached the driver.
-    ///
-    /// A pure core cannot see send outcomes — that is the shell's job, since only it holds the
-    /// handle and calls `send`. This is the hand-written stand-in for the mealy runtime's
-    /// parked-outbox/`Flush::Blocked` bookkeeping until the engine runs as a green node: the
-    /// shell calls this after a successful send, and [`Self::render_undeliverable`] after a
-    /// failed one, so the coordinator's latch tracks what actually left rather than what the
-    /// core merely emitted.
-    pub(crate) fn request_delivered(&mut self) {
-        self.render.request_sent();
-    }
-
-    /// A `Step::Render` port could not be delivered (missing rasterizer, or the send failed).
-    /// See [`Self::request_delivered`] for why this lives on the shell side of the seam.
-    pub(crate) fn render_undeliverable(&mut self) {
-        self.render.render_send_failed();
-    }
-
-    /// Map a `render_coordinator::Step` onto the port it belongs on.
-    fn route(step: Step, out: &mut EngineOut) {
-        match step {
-            Step::Idle => {}
-            Step::RequestWindow => out.driver_mgmt = Some(DisplayMgmt::RequestWindow),
-            Step::Render(request) => out.rasterizer = Some(request),
-        }
+        Self
     }
 
     fn step_app_data(&mut self, app_data: AppData, out: &mut EngineOut) {
@@ -102,10 +62,7 @@ impl EngineCore {
                 // The app has provided its compute graph, so permit VSync to request another
                 // frame without waiting for rasterization to finish.
                 out.vsync_control = Some(VsyncCommand::ReturnToken);
-
-                // Keep-latest port: the newest compute graph replaces any frame that hasn't
-                // started rendering yet, and renders now if a window is free to draw into.
-                Self::route(self.render.submit(manifold), out);
+                out.coordinator = Some(CoordinatorData::Submit(manifold));
             }
             AppData::Skipped => {
                 // App says nothing to render - return token anyway
@@ -114,30 +71,12 @@ impl EngineCore {
         }
     }
 
-    /// Hand the drawn buffer back to the driver to be shown, and tell vsync it landed.
-    ///
-    /// This *is* the return: the driver is the buffer's resting owner, so there is no separate
-    /// acknowledgement to wait for. FPS telemetry rides the frame actually reaching the driver
-    /// port, same as before — it used to ride `PresentComplete`, which no longer exists.
-    fn present_cooked_frame(&mut self, render_time: Duration, window: Window, out: &mut EngineOut) {
-        out.driver_data = Some(DisplayData::Present { window });
-
-        self.frame_number += 1;
-        out.vsync_data = Some(RenderedResponse {
-            frame_number: self.frame_number,
-            rendered_at: Instant::now(),
-        });
-
-        if self.frame_number.is_multiple_of(LOG_FRAME_INTERVAL) {
-            log::info!("Frame {}: render={:?}", self.frame_number, render_time);
-        }
-    }
-
     fn step_driver_event(&mut self, event: DisplayEvent, out: &mut EngineOut) {
         match event {
             // Both window-lifecycle events are pure relays: the driver has already built the
             // buffer for the new geometry by the time this arrives, so there is nothing here to
-            // take delivery of, stamp, or retire. What is left is telling the app its size.
+            // take delivery of, stamp, or retire. What is left is telling the app its size, and
+            // nudging the coordinator in case a buffer can now exist to draw into.
             DisplayEvent::WindowCreated { surface } => {
                 log::debug!(
                     "Relaying WindowCreated: id={}, {}x{}, scale={}",
@@ -147,10 +86,7 @@ impl EngineCore {
                     surface.scale
                 );
 
-                // The app may already have handed us something to draw, in which case this is
-                // the first moment a buffer can exist to draw it into.
-                Self::route(self.render.advance(), out);
-
+                out.coordinator = Some(CoordinatorData::Advance);
                 out.app = Some(EngineEvent::Control(EngineEventControl::WindowCreated {
                     id: surface.id,
                     width_px: surface.width_px,
@@ -166,12 +102,7 @@ impl EngineCore {
                     surface.height_px
                 );
 
-                // A buffer we are currently holding is now the wrong size, but it is not dropped
-                // here: it goes back on the next `Present` and the driver recognises it as
-                // superseded. Rendering into it once more first is harmless and one frame
-                // cheaper than reaching for the new one mid-flight.
-                Self::route(self.render.advance(), out);
-
+                out.coordinator = Some(CoordinatorData::Advance);
                 out.app = Some(EngineEvent::Control(EngineEventControl::Resized {
                     id: surface.id,
                     width_px: surface.width_px,
@@ -290,31 +221,11 @@ impl Transducer for EngineCore {
                     refresh_interval,
                 }));
 
-                // The tick is also what retries a request that was dropped in transit.
-                Self::route(self.render.advance(), &mut out);
-            }
-            EngineData::RenderComplete(response) => {
-                // No staleness check here any more. Whether this buffer is still the one the
-                // driver wants is the driver's question, asked against state the driver owns —
-                // and it has to be asked there regardless, because a resize can land after this
-                // point too. Asking it in both places would be two answers that can disagree.
-                let Completed { present, next } = self.render.completed(response);
-                match present {
-                    Some((window, render_time)) => {
-                        self.present_cooked_frame(render_time, window, &mut out)
-                    }
-                    // The rasterizer was paused, so it handed the buffer back unrendered.
-                    // Presenting it would blit whatever stale pixels it still holds; keeping it
-                    // is the whole point of the frame coming back at all. The coordinator has
-                    // retained it.
-                    None => {
-                        log::debug!("Render skipped (paused); retaining the buffer unpresented")
-                    }
-                }
-                Self::route(next, &mut out);
+                // The tick is also what retries a request the coordinator dropped in transit.
+                out.coordinator = Some(CoordinatorData::Advance);
             }
             EngineData::WindowGranted(window) => {
-                Self::route(self.render.granted(window), &mut out);
+                out.coordinator = Some(CoordinatorData::Granted(window));
             }
         }
         Ok(out)
@@ -330,7 +241,7 @@ impl Transducer for EngineCore {
             // Handle-carrying: the shell intercepts this before the core ever sees it, since a
             // pure core has no field to hold the handle in. Only the type split arriving with
             // the port/wiring phase removes this arm.
-            EngineControl::VsyncActorReady(..) => {
+            EngineControl::GreenReady(..) => {
                 unreachable!("handled by the engine shell")
             }
             // A real port with a real consumer; policy later.
@@ -351,9 +262,6 @@ impl Transducer for EngineCore {
             // ever sees them, since a pure core has no field to hold a handle or an `Arc<dyn
             // Application>` in. Only the type split arriving with the port/wiring phase removes
             // these arms.
-            AppManagement::SetRasterizerForwardHandle(_) => {
-                unreachable!("handled by the engine shell")
-            }
             AppManagement::Configure(_) => {
                 unreachable!("handled by the engine shell")
             }
@@ -418,19 +326,23 @@ fn convert_mouse_button(button: u8) -> MouseButton {
 #[cfg(test)]
 mod tests {
     //! `EngineCore` in isolation — no handles, no threads, no scheduler. Mirrors
-    //! `vsync_actor.rs`'s `mod tests` for `VsyncCore` and `rasterizer/actor.rs`'s `core_tests`
-    //! for `RasterCore`.
+    //! `vsync_actor.rs`'s `mod tests` for `VsyncCore` and `coordinator_node.rs`'s `mod tests`
+    //! for `CoordinatorCore`.
+    //!
+    //! What used to live here and doesn't any more: everything about the render protocol itself
+    //! (request/render/present, resize races, `holds_buffer`) — that is `CoordinatorCore`'s
+    //! contract now, pinned in `coordinator_node.rs`. What is left is the relay: does the right
+    //! input produce the right `CoordinatorData` on the `coordinator` port.
 
     use super::*;
-    use crate::display::messages::{Generation, Surface};
+    use crate::display::messages::{Generation, Surface, Window, WindowMeta};
     use crate::platform::ColorCube;
     use pixelflow_core::{Discrete, Manifold};
-    use pixelflow_graphics::render::Frame;
-    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     /// A constant black scene — these tests care about which port fires, not what is drawn.
-    fn manifold() -> Arc<dyn Manifold<Output = Discrete> + Send + Sync> {
-        Arc::new(ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32))
+    fn manifold() -> std::sync::Arc<dyn Manifold<Output = Discrete> + Send + Sync> {
+        std::sync::Arc::new(ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32))
     }
 
     fn surface(width_px: u32, height_px: u32) -> Surface {
@@ -446,7 +358,7 @@ mod tests {
 
     fn window(meta_size: (u32, u32)) -> Window {
         Window::rejoin(
-            Frame::new(meta_size.0, meta_size.1),
+            pixelflow_graphics::render::Frame::new(meta_size.0, meta_size.1),
             WindowMeta {
                 id: WindowId(1),
                 width_px: meta_size.0,
@@ -458,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn a_vsync_tick_requests_a_frame_from_the_app() {
+    fn a_vsync_tick_requests_a_frame_from_the_app_and_nudges_the_coordinator() {
         let mut core = EngineCore::new();
         let out = core
             .step_data(EngineData::VSync {
@@ -474,6 +386,10 @@ mod tests {
                 Some(EngineEvent::Data(EngineEventData::RequestFrame { .. }))
             ),
             "every tick must ask the app for a frame"
+        );
+        assert!(
+            matches!(out.coordinator, Some(CoordinatorData::Advance)),
+            "every tick must also nudge the coordinator, in case a request was lost in transit"
         );
     }
 
@@ -520,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn render_surface_returns_the_vsync_token() {
+    fn render_surface_returns_the_vsync_token_and_submits_to_the_coordinator() {
         let mut core = EngineCore::new();
         let out = core
             .step_data(EngineData::FromApp(AppData::RenderSurface(manifold())))
@@ -530,75 +446,56 @@ mod tests {
             matches!(out.vsync_control, Some(VsyncCommand::ReturnToken)),
             "submitting a scene must release the token so vsync can ask again"
         );
-    }
-
-    #[test]
-    fn a_granted_window_turns_a_submitted_scene_into_a_rasterizer_port() {
-        let mut core = EngineCore::new();
-        // A window must exist before the coordinator will ask for it.
-        core.step_data(EngineData::FromDriver(DisplayEvent::WindowCreated {
-            surface: surface(100, 100),
-        }))
-        .unwrap();
-
-        let out = core
-            .step_data(EngineData::FromApp(AppData::RenderSurface(manifold())))
-            .unwrap();
         assert!(
-            matches!(out.driver_mgmt, Some(DisplayMgmt::RequestWindow)),
-            "a scene with no buffer in hand must ask the driver for one"
-        );
-        core.request_delivered();
-
-        let out = core
-            .step_data(EngineData::WindowGranted(window((100, 100))))
-            .unwrap();
-        assert!(
-            out.rasterizer.is_some(),
-            "a granted window with a pending scene must render immediately"
-        );
-        assert!(
-            !core.holds_buffer(),
-            "the buffer left with the render request"
+            matches!(out.coordinator, Some(CoordinatorData::Submit(_))),
+            "a new scene must be forwarded to the coordinator"
         );
     }
 
     #[test]
-    fn render_complete_with_a_presentable_frame_emits_present_and_vsync_telemetry() {
-        use pixelflow_graphics::render::rasterizer::RenderResponse;
-
+    fn skipped_frame_returns_the_token_without_touching_the_coordinator() {
         let mut core = EngineCore::new();
-        core.step_data(EngineData::FromDriver(DisplayEvent::WindowCreated {
-            surface: surface(100, 100),
-        }))
-        .unwrap();
-        core.step_data(EngineData::FromApp(AppData::RenderSurface(manifold())))
+        let out = core
+            .step_data(EngineData::FromApp(AppData::Skipped))
             .unwrap();
-        core.request_delivered();
+
+        assert!(matches!(out.vsync_control, Some(VsyncCommand::ReturnToken)));
+        assert!(
+            out.coordinator.is_none(),
+            "nothing to draw, so the coordinator has nothing to hear about"
+        );
+    }
+
+    #[test]
+    fn window_granted_relays_to_the_coordinator() {
+        let mut core = EngineCore::new();
         let out = core
             .step_data(EngineData::WindowGranted(window((100, 100))))
             .unwrap();
-        let request = match out.rasterizer {
-            Some(request) => request,
-            None => panic!("expected a render request"),
-        };
+
+        assert!(
+            matches!(out.coordinator, Some(CoordinatorData::Granted(_))),
+            "a granted window must be forwarded to the coordinator"
+        );
+    }
+
+    #[test]
+    fn window_created_and_resized_nudge_the_coordinator_to_advance() {
+        let mut core = EngineCore::new();
 
         let out = core
-            .step_data(EngineData::RenderComplete(RenderResponse {
-                frame: request.frame,
-                render_time: Some(Duration::from_millis(1)),
-                meta: request.meta,
+            .step_data(EngineData::FromDriver(DisplayEvent::WindowCreated {
+                surface: surface(100, 100),
             }))
             .unwrap();
+        assert!(matches!(out.coordinator, Some(CoordinatorData::Advance)));
 
-        assert!(
-            matches!(out.driver_data, Some(DisplayData::Present { .. })),
-            "a drawn frame must be presented"
-        );
-        assert!(
-            out.vsync_data.is_some(),
-            "presenting a frame must report FPS telemetry to vsync"
-        );
+        let out = core
+            .step_data(EngineData::FromDriver(DisplayEvent::Resized {
+                surface: surface(200, 200),
+            }))
+            .unwrap();
+        assert!(matches!(out.coordinator, Some(CoordinatorData::Advance)));
     }
 
     #[test]
