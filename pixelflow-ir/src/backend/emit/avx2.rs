@@ -133,6 +133,22 @@ impl Vex {
         code.push(disp as u8);
     }
 
+    /// `[base64]` memory-operand form (mod=00 direct). `base` must not be
+    /// rsp/rbp/r12/r13, whose mod=00 encodings mean SIB/RIP instead.
+    fn rm_base(self, code: &mut Vec<u8>, reg: u8, base: u8) {
+        debug_assert!(
+            base & 7 != 4 && base & 7 != 5,
+            "Vex::rm_base: base must not be rsp/rbp/r12/r13"
+        );
+        let rbit = if reg >= 8 { 0x00 } else { 0x80 };
+        let bbit = if base >= 8 { 0x00 } else { 0x20 };
+        code.push(0xC4);
+        code.push(rbit | 0x40 | bbit | self.map as u8); // X=1 (unused)
+        code.push(((self.w as u8) << 7) | (0xF << 3) | (1 << 2) | self.pp as u8);
+        code.push(self.opcode);
+        code.push(((reg & 7) << 3) | (base & 7)); // mod=00
+    }
+
     /// Shared VEX prefix + opcode for the rsp-based memory forms.
     fn rm_rsp_prefix(self, code: &mut Vec<u8>, reg: u8) {
         let rbit = if reg >= 8 { 0x00 } else { 0x80 };
@@ -285,6 +301,11 @@ pub fn emit_load_rsp(code: &mut Vec<u8>, dst: Reg, disp: i32) {
 /// `vmovups [rsp+disp32], ymmSRC` — 256-bit spill store.
 pub fn emit_store_rsp(code: &mut Vec<u8>, src: Reg, disp: i32) {
     Vex::m0f(0x11).rm_rsp(code, src.0, disp);
+}
+
+/// `vmovups [base64], ymmSRC` — unaligned 256-bit store to a GP-register base.
+pub fn emit_store_base(code: &mut Vec<u8>, src: Reg, base_gpr: u8) {
+    Vex::m0f(0x11).rm_base(code, src.0, base_gpr);
 }
 
 /// Broadcast an f32 constant to all 8 lanes of `dst` via the stack (red zone,

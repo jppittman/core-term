@@ -1,41 +1,62 @@
 //! Engine Troupe - Render pipeline actor coordination using troupe! macro.
+//!
+//! `EngineHandler` is the thin adapter around [`EngineCore`] (`engine_core.rs`): the core
+//! decides, in the mealy-transducer style, what should happen and returns it as an
+//! [`EngineOut`] word; `flush` is this file's hand-written `Wiring` — the one place that word
+//! meets real channels.
 
 use crate::api::private::{EngineControl, EngineData};
-use crate::api::public::{
-    AppData, AppManagement, Application, EngineEvent, EngineEventControl, EngineEventData,
-    EngineEventManagement, WindowId,
-};
+use crate::api::public::{AppManagement, Application};
 use crate::config::EngineConfig;
 use crate::display::driver::DriverActor;
-use crate::display::messages::{
-    DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Window, WindowMeta,
-};
+use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt, WindowMeta};
 use crate::display::platform::PlatformActor;
+use crate::engine_core::{EngineCore, EngineOut};
 use crate::error::RuntimeError;
-use crate::input::MouseButton;
 use crate::platform::{ActivePlatform, PlatformPixel};
-use crate::vsync_actor::{
-    RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
-};
+use crate::vsync_actor::{RenderedResponse, VsyncCommand, VsyncCore, VsyncManagement, VsyncWiring};
+use actor_scheduler::actors::{Schedule, Timer};
+use actor_scheduler::host::{GreenThread, Host, HostOut};
+use actor_scheduler::mealy::{Flush, Lanes, Node, Transducer, Wiring};
 use actor_scheduler::{
-    Actor, ActorHandle, ActorStatus, ActorTypes, HandlerError, HandlerResult, Message, SendError,
-    SystemStatus, TroupeActor,
+    Actor, ActorBuilder, ActorHandle, ActorScheduler, ActorStatus, ActorTypes, GreenSender,
+    HandlerError, HandlerResult, Message, SchedulerParams, SystemStatus, TroupeActor,
+    TrySendError, green_channel,
 };
-use crate::render_coordinator::{Completed, RenderCoordinator, Step};
 use pixelflow_graphics::render::rasterizer::{
     RasterizerActor, RasterizerHandle, RenderRequest, RenderResponse,
 };
+use std::convert::Infallible;
+use std::ops::ControlFlow;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::Duration;
 
-const LOG_FRAME_INTERVAL: u64 = 60;
+/// Deliver a message on a credit-bounded green edge (design doc §3.2): the ring is provisioned
+/// to never fill from that edge alone, so `Disconnected` is an ordinary shutdown race but `Full`
+/// means the provisioning broke. Factored out because `vsync_data` and `vsync_control` make
+/// exactly this argument for exactly this reason.
+fn expect_credit_bounded_send<T: std::fmt::Debug>(
+    result: Result<(), TrySendError<T>>,
+    full_msg: &str,
+) {
+    match result {
+        Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+        Err(err @ TrySendError::Full(_)) => panic!("{full_msg}: {err:?}"),
+    }
+}
 
 /// Engine handler - coordinates app, rendering, display.
 pub struct EngineHandler {
     /// Handle to the display driver actor.
     driver: ActorHandle<DisplayData, DisplayControl, DisplayMgmt>,
-    /// Handle to the vsync actor (for feedback loop).
-    vsync: ActorHandle<RenderedResponse, VsyncCommand, VsyncManagement>,
+    /// The vsync green node's data edge (rendered-frame feedback for FPS telemetry). `None`
+    /// until `EngineControl::VsyncActorReady` arrives.
+    vsync_data: Option<GreenSender<RenderedResponse>>,
+    /// The vsync green node's control edge (`UpdateRefreshRate`, `ReturnToken`, ...).
+    vsync_control: Option<GreenSender<VsyncCommand>>,
+    /// A handle to the green host itself, for the shutdown cascade — sending it
+    /// `Message::Shutdown` stops the vsync node along with everything else the host owns.
+    vsync_host: Option<ActorHandle<Infallible, Infallible, Infallible>>,
     /// Handle to the rasterizer actor (set after bootstrap completes).
     rasterizer: Option<RasterizerHandle<PlatformPixel, WindowMeta>>,
     /// Handle to self (for shutdown).
@@ -43,23 +64,16 @@ pub struct EngineHandler {
     /// Pre-created dedicated SPSC handle for rasterizer response forwarding thread.
     /// Set via SetRasterizerForwardHandle management message before Configure.
     rasterizer_forward_handle: Option<ActorHandle<EngineData, EngineControl, AppManagement>>,
+    /// Handle to the rasterizer response-forwarding actor (spawned alongside the rasterizer
+    /// in `spawn_rasterizer`; `None` until then, same as `rasterizer` itself).
+    rasterizer_forwarder: Option<ActorHandle<Infallible, Infallible, Infallible>>,
     /// Handle to the application (for event forwarding).
     app_handle: Option<Arc<dyn Application + Send + Sync>>,
-    /// Frame counter for VSync feedback.
-    ///
-    /// Stays here for now. §7.3 sends it to the rasterizer, whose only consumer is the FPS
-    /// telemetry edge — but that edge is `rasterizer → vsync`, which does not exist until the
-    /// coordinator is its own node, so the move belongs with that slice rather than this one.
-    frame_number: u64,
     /// Number of render threads for work-stealing parallelism.
     render_threads: usize,
-    /// When to render and what to render into.
-    ///
-    /// All of it — the borrowed buffer, the outstanding-request latch, the one-render credit,
-    /// and the keep-latest kernel slot — lives behind this, and none of it is reachable from the
-    /// mediator's other responsibilities. What remains of `EngineHandler` on this path is
-    /// delivering the [`Step`]s it hands back.
-    render: RenderCoordinator,
+    /// The pure mediator: decides what to do with each message and returns it as an
+    /// [`EngineOut`] word for `flush` to deliver. Owns none of the handles above.
+    core: EngineCore,
 }
 
 // ActorTypes impls - required for troupe! macro
@@ -81,103 +95,41 @@ impl ActorTypes for DriverActor<ActivePlatform> {
 actor_scheduler::troupe! {
     driver: DriverActor<ActivePlatform> [main],
     engine: EngineHandler [expose],
-    vsync: VsyncActor [expose],
 }
 
 // Implement Actor for EngineHandler
 impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
     fn handle_data(&mut self, data: EngineData) -> HandlerResult {
-        match data {
-            EngineData::FromApp(app_data) => self.handle_app_data(app_data),
-            EngineData::FromDriver(event) => self.handle_driver_event(event),
-            EngineData::VSync {
-                timestamp,
-                target_timestamp,
-                refresh_interval,
-            } => {
-                // ALWAYS request frame from app (app builds compute graphs fast)
-                // Token bucket is now managed atomically by VSync
-                if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Data(EngineEventData::RequestFrame {
-                        timestamp,
-                        target_timestamp,
-                        refresh_interval,
-                    }))
-                    .expect("failed to send to app. it probably crashed");
-                }
-
-                // The tick is also what retries a request that was dropped in transit.
-                let step = self.render.advance();
-                self.deliver(step);
-            }
-            EngineData::RenderComplete(response) => {
-                // No staleness check here any more. Whether this buffer is still the one the
-                // driver wants is the driver's question, asked against state the driver owns —
-                // and it has to be asked there regardless, because a resize can land after this
-                // point too. Asking it in both places would be two answers that can disagree.
-                let Completed { present, next } = self.render.completed(response);
-                match present {
-                    Some((window, render_time)) => {
-                        self.present_cooked_frame(render_time, window)
-                    }
-                    // The rasterizer was paused, so it handed the buffer back unrendered.
-                    // Presenting it would blit whatever stale pixels it still holds; keeping it
-                    // is the whole point of the frame coming back at all. The coordinator has
-                    // retained it.
-                    None => {
-                        log::debug!("Render skipped (paused); retaining the buffer unpresented")
-                    }
-                }
-                self.deliver(next);
-            }
-            EngineData::WindowGranted(window) => {
-                let step = self.render.granted(window);
-                self.deliver(step);
-            }
-        }
+        let out = self.core.step_data(data)?;
+        self.flush(out);
         Ok(())
     }
 
     fn handle_control(&mut self, ctrl: EngineControl) -> HandlerResult {
-        match ctrl {
-            EngineControl::Quit => {
-                self.vsync
-                    .send(Message::Shutdown)
-                    .expect("Failed to shutdown vsync on Quit");
-                if let Some(rasterizer) = &self.rasterizer {
-                    rasterizer
-                        .send(Message::Shutdown)
-                        .expect("Failed to shutdown rasterizer on Quit");
-                }
-                self.app_handle = None;
-                self.driver
-                    .send(Message::Shutdown)
-                    .expect("Failed to shutdown driver on Quit");
-                if let Some(self_handle) = &self.self_handle {
-                    self_handle
-                        .send(Message::Shutdown)
-                        .expect("Failed to shutdown engine on Quit");
-                }
+        // Handle-carrying: intercepted before the core ever sees it, since a pure core has no
+        // field to hold an `ActorHandle` in.
+        let ctrl = match ctrl {
+            EngineControl::VsyncActorReady(triple) => {
+                let (data, control, host) = *triple;
+                self.vsync_data = Some(data);
+                self.vsync_control = Some(control);
+                self.vsync_host = Some(host);
+                return Ok(());
             }
-            EngineControl::UpdateRefreshRate(rr) => {
-                self.vsync
-                    .send(VsyncCommand::UpdateRefreshRate(rr))
-                    .expect("failed to update refresh rate");
-            }
-            EngineControl::VsyncActorReady(handle) => {
-                self.vsync = handle;
-            }
-            EngineControl::DriverAck => {
-                unimplemented!("DriverAck not yet implemented");
-            }
-        }
+            other => other,
+        };
+        let out = self.core.step_control(ctrl)?;
+        self.flush(out);
         Ok(())
     }
 
     fn handle_management(&mut self, mgmt: AppManagement) -> HandlerResult {
-        match mgmt {
+        // Handle-carrying / bootstrap messages: intercepted before the core ever sees them, for
+        // the same reason as `EngineControl::VsyncActorReady` above.
+        let mgmt = match mgmt {
             AppManagement::SetRasterizerForwardHandle(handle) => {
                 self.rasterizer_forward_handle = Some(handle);
+                return Ok(());
             }
             AppManagement::Configure(config) => {
                 self.render_threads = config.performance.render_threads;
@@ -185,82 +137,17 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
 
                 // Spawn rasterizer with bootstrap pattern
                 self.spawn_rasterizer();
-            }
-            AppManagement::SetTitle(title) => {
-                self.driver
-                    .send(Message::Control(DisplayControl::SetTitle {
-                        id: WindowId::PRIMARY,
-                        title,
-                    }))
-                    .expect("Failed to relay SetTitle to driver");
-            }
-            AppManagement::ResizeRequest(width, height) => {
-                self.driver
-                    .send(Message::Control(DisplayControl::SetSize {
-                        id: WindowId::PRIMARY,
-                        width,
-                        height,
-                    }))
-                    .expect("Failed to send SetSize to driver");
-            }
-            AppManagement::CopyToClipboard(text) => {
-                self.driver
-                    .send(Message::Control(DisplayControl::Copy { text }))
-                    .expect("Failed to send Copy to driver");
-            }
-            AppManagement::RequestPaste => {
-                self.driver
-                    .send(Message::Control(DisplayControl::RequestPaste))
-                    .expect("Failed to send RequestPaste to driver");
-            }
-            AppManagement::SetCursorIcon(icon) => {
-                self.driver
-                    .send(Message::Control(DisplayControl::SetCursor {
-                        id: WindowId::PRIMARY,
-                        cursor: icon,
-                    }))
-                    .expect("Failed to send SetCursor to driver");
+                return Ok(());
             }
             AppManagement::RegisterApp(app) => {
                 log::info!("Application handle registered");
                 self.app_handle = Some(app);
+                return Ok(());
             }
-            AppManagement::CreateWindow(descriptor) => {
-                // Engine assigns the window ID (for now, just use PRIMARY for single window)
-                let id = WindowId::PRIMARY;
-                log::info!(
-                    "Relaying CreateWindow request: assigning id={}, {}x{} \"{}\"",
-                    id.0,
-                    descriptor.width,
-                    descriptor.height,
-                    descriptor.title
-                );
-                self.driver
-                    .send(Message::Management(DisplayMgmt::Create {
-                        settings: descriptor,
-                    }))
-                    .expect("Failed to relay CreateWindow to driver");
-            }
-            AppManagement::Quit => {
-                self.vsync
-                    .send(Message::Shutdown)
-                    .expect("Failed to shutdown vsync on AppManagement::Quit");
-                if let Some(rasterizer) = &self.rasterizer {
-                    rasterizer
-                        .send(Message::Shutdown)
-                        .expect("Failed to shutdown rasterizer on AppManagement::Quit");
-                }
-                self.app_handle = None;
-                self.driver
-                    .send(Message::Shutdown)
-                    .expect("Failed to shutdown driver on AppManagement::Quit");
-                if let Some(self_handle) = &self.self_handle {
-                    self_handle
-                        .send(Message::Shutdown)
-                        .expect("Failed to shutdown engine on AppManagement::Quit");
-                }
-            }
-        }
+            other => other,
+        };
+        let out = self.core.step_management(mgmt)?;
+        self.flush(out);
         Ok(())
     }
 
@@ -270,24 +157,146 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
     }
 }
 
+/// Bridges the rasterizer's response channel into the engine's own actor system.
+///
+/// [`RasterizerActor`] hands completed frames back over a bare `mpsc::Sender` so
+/// pixelflow-graphics stays decoupled from any particular consumer's message enum. This actor
+/// is the one place that channel meets [`EngineData::RenderComplete`] — `handle_os` blocking on
+/// `response_rx.recv()` *is* the actor, the same way `PtyReader::handle_os` blocking on
+/// `epoll_wait` is that actor's entire job.
+///
+/// The scheduler only calls `handle_os` after the doorbell has woken at least once, so — same
+/// as `PtyReader` waiting for its first `Bind` — this actor needs one doorbell ring to start its
+/// loop; `spawn_rasterizer` rings it right after spawning the thread. Once `handle_os` returns
+/// `Busy` the scheduler keeps re-entering it without waiting on the doorbell again, so from then
+/// on the loop is self-sustaining.
+struct RasterizerForwarder {
+    response_rx: std::sync::mpsc::Receiver<RenderResponse<PlatformPixel, WindowMeta>>,
+    engine: ActorHandle<EngineData, EngineControl, AppManagement>,
+    /// Sends itself `Shutdown` once the rasterizer drops its sender, so the scheduler loop
+    /// (and the OS thread underneath it) actually exits instead of parking on an empty
+    /// doorbell forever. `Quit`/`AppManagement::Quit`/`CloseRequested` also send `Shutdown`
+    /// here directly; this is the fallback for whichever signal arrives second.
+    self_handle: Option<ActorHandle<Infallible, Infallible, Infallible>>,
+}
+
+impl ActorTypes for RasterizerForwarder {
+    type Data = Infallible;
+    type Control = Infallible;
+    type Management = Infallible;
+}
+
+impl Actor<Infallible, Infallible, Infallible> for RasterizerForwarder {
+    fn handle_data(&mut self, msg: Infallible) -> HandlerResult {
+        match msg {}
+    }
+
+    fn handle_control(&mut self, msg: Infallible) -> HandlerResult {
+        match msg {}
+    }
+
+    fn handle_management(&mut self, msg: Infallible) -> HandlerResult {
+        match msg {}
+    }
+
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        match self.response_rx.recv() {
+            Ok(response) => {
+                if let Err(e) = self
+                    .engine
+                    .send(Message::Data(EngineData::RenderComplete(response)))
+                {
+                    log::warn!("Failed to forward render response to engine: {}", e);
+                    self.shut_down();
+                    return Ok(ActorStatus::Idle);
+                }
+                Ok(ActorStatus::Busy)
+            }
+            Err(_) => {
+                // The rasterizer shut down and dropped its sender; there is nothing left to
+                // forward, so this actor's work is done too.
+                self.shut_down();
+                Ok(ActorStatus::Idle)
+            }
+        }
+    }
+}
+
+impl RasterizerForwarder {
+    fn shut_down(&mut self) {
+        if let Some(handle) = self.self_handle.take() {
+            if let Err(e) = handle.send(Message::Shutdown) {
+                log::debug!("Rasterizer forwarder self-shutdown send failed: {}", e);
+            }
+        }
+    }
+}
+
 impl EngineHandler {
-    /// Take delivery of a buffer from the driver, as the newest generation.
+    /// Deliver an [`EngineOut`] — the hand-written `Wiring` for [`EngineCore`]'s output word,
+    /// until the engine runs as a green node behind the generated port/wiring machinery.
     ///
-    /// Take the buffer into hand.
-    ///
-    /// Every path that acquires one goes through here so the "at most one buffer" invariant has
-    /// a single home rather than an assertion repeated at each arrival. It is a real `assert!`,
-    /// not a `debug_assert!`, because the release-build alternative is worse than a crash: the
-    /// buffer being overwritten is the driver's only current one, and losing it leaves a
-    /// terminal that never draws again and cannot recover without being killed.
-    /// Deliver whatever the coordinator decided.
-    ///
-    /// The single place the render protocol reaches the wire, so the coordinator can stay
-    /// handle-free and every send failure is handled once rather than at each call site.
-    fn deliver(&mut self, step: Step) {
-        match step {
-            Step::Idle => {}
-            Step::RequestWindow => {
+    /// Order matters here in one place: `app` is flushed first and `quit` last, so a
+    /// `CloseRequested` (which sets both `app` and `quit` in the same word) reaches the app
+    /// before the shutdown cascade drops its handle — matching what all three quit paths did
+    /// before this split.
+    fn flush(&mut self, out: EngineOut) {
+        if let Some(event) = out.app {
+            // Silently dropped if no app is registered yet, matching every `if let Some(app) =
+            // &self.app_handle` guard this replaces.
+            if let Some(app) = &self.app_handle {
+                app.send(event)
+                    .expect("failed to send to app. it probably crashed");
+            }
+        }
+
+        if let Some(ctrl) = out.driver_control {
+            self.driver
+                .send(Message::Control(ctrl))
+                .expect("Failed to relay control to driver");
+        }
+
+        if let Some(mgmt) = out.driver_mgmt {
+            self.send_driver_mgmt(mgmt);
+        }
+
+        if let Some(request) = out.rasterizer {
+            self.send_render(request);
+        }
+
+        if let Some(data) = out.driver_data {
+            self.driver
+                .send(Message::Data(data))
+                .expect("Failed to send window to driver for presentation");
+        }
+
+        if let Some(response) = out.vsync_data {
+            if let Some(tx) = &self.vsync_data {
+                // The ring is provisioned >= MAX_TOKENS worth of outstanding frames (bootstrap
+                // `with_config`), so `Full` here means that provisioning broke, not ordinary
+                // backpressure — same credit argument as `send_vsync_control` below (design doc
+                // §3.2).
+                expect_credit_bounded_send(
+                    tx.try_send(response),
+                    "vsync data ring unexpectedly full",
+                );
+            }
+        }
+
+        if let Some(cmd) = out.vsync_control {
+            self.send_vsync_control(cmd);
+        }
+
+        if out.quit {
+            self.shut_down();
+        }
+    }
+
+    /// The `driver_mgmt` port. `RequestWindow` needs the delivery-feedback seam described on
+    /// [`EngineCore::request_delivered`]; every other management message is a plain relay.
+    fn send_driver_mgmt(&mut self, mgmt: DisplayMgmt) {
+        match mgmt {
+            DisplayMgmt::RequestWindow => {
                 // A refused ask is not lost: the driver latches it and answers when a buffer
                 // frees. A send that fails leaves the latch clear, so the next tick retries —
                 // the latch only covers requests that actually arrived.
@@ -295,7 +304,7 @@ impl EngineHandler {
                     .driver
                     .send(Message::Management(DisplayMgmt::RequestWindow))
                 {
-                    Ok(()) => self.render.request_sent(),
+                    Ok(()) => self.core.request_delivered(),
                     Err(e) => {
                         log::debug!(
                             "Window request not delivered ({e}); retrying on the next tick"
@@ -303,8 +312,23 @@ impl EngineHandler {
                     }
                 }
             }
-            Step::Render(request) => self.send_render(request),
+            other => {
+                self.driver
+                    .send(Message::Management(other))
+                    .expect("Failed to relay management to driver");
+            }
         }
+    }
+
+    /// The `vsync_control` port — `ReturnToken` (a credit return: the ring holds `>= MAX_TOKENS`,
+    /// design doc §3.2) and `UpdateRefreshRate` alike. Both tolerate a disconnected vsync
+    /// (shutdown races are ordinary), and both treat `Full` as a bug rather than backpressure to
+    /// wait out, since the ring was sized to never fill from this edge.
+    fn send_vsync_control(&mut self, cmd: VsyncCommand) {
+        let Some(tx) = &self.vsync_control else {
+            return; // Not configured yet, or the green host has already shut down.
+        };
+        expect_credit_bounded_send(tx.try_send(cmd), "vsync control ring unexpectedly full");
     }
 
     /// Hand a bound frame to the rasterizer.
@@ -319,19 +343,46 @@ impl EngineHandler {
     fn send_render(&mut self, request: RenderRequest<PlatformPixel, WindowMeta>) {
         let Some(rasterizer) = &self.rasterizer else {
             log::warn!("Rasterizer not initialized, dropping render request");
-            self.render.render_send_failed();
+            self.core.render_undeliverable();
             return;
         };
         if let Err(e) = rasterizer.send(Message::Data(request)) {
             log::warn!("Failed to send render request to rasterizer: {}", e);
-            self.render.render_send_failed();
+            self.core.render_undeliverable();
         }
     }
 
-    fn return_vsync_token(&self) {
-        match self.vsync.send(Message::Control(VsyncCommand::ReturnToken)) {
-            Ok(()) | Err(SendError::Disconnected) => {}
-            Err(SendError::Timeout) => panic!("Timed out returning vsync token"),
+    /// The shutdown cascade all three quit paths (`EngineControl::Quit`,
+    /// `AppManagement::Quit`, `DisplayEvent::CloseRequested`) share: vsync, rasterizer,
+    /// forwarder, drop the app handle, driver, then self. Any app notification for a
+    /// `CloseRequested` has already gone out via the `app` port earlier in [`Self::flush`].
+    fn shut_down(&mut self) {
+        if let Some(host) = &self.vsync_host {
+            host.send(Message::Shutdown)
+                .expect("Failed to shutdown vsync host on Quit");
+        }
+        // The host shutting down drops its lanes' receivers; drop our ends too so nothing
+        // downstream mistakes a dead node for one still configured.
+        self.vsync_data = None;
+        self.vsync_control = None;
+        if let Some(rasterizer) = &self.rasterizer {
+            rasterizer
+                .send(Message::Shutdown)
+                .expect("Failed to shutdown rasterizer on Quit");
+        }
+        if let Some(forwarder) = &self.rasterizer_forwarder {
+            forwarder
+                .send(Message::Shutdown)
+                .expect("Failed to shutdown rasterizer forwarder on Quit");
+        }
+        self.app_handle = None;
+        self.driver
+            .send(Message::Shutdown)
+            .expect("Failed to shutdown driver on Quit");
+        if let Some(self_handle) = &self.self_handle {
+            self_handle
+                .send(Message::Shutdown)
+                .expect("Failed to shutdown engine on Quit");
         }
     }
 
@@ -360,282 +411,37 @@ impl EngineHandler {
         let (response_tx, response_rx) =
             std::sync::mpsc::channel::<RenderResponse<PlatformPixel, WindowMeta>>();
 
-        // Step 3: Start forwarding thread - receives responses and sends to engine
-        std::thread::spawn(move || {
-            log::debug!("Rasterizer response forwarding thread started");
-            while let Ok(response) = response_rx.recv() {
-                // Forward to engine as RenderComplete
-                if let Err(e) =
-                    engine_handle.send(Message::Data(EngineData::RenderComplete(response)))
-                {
-                    log::warn!("Failed to forward render response to engine: {}", e);
-                    break;
-                }
-            }
-            log::debug!("Rasterizer response forwarding thread exiting");
-        });
+        // Step 3: Run the forwarder as a real actor rather than a bare thread — it is now
+        // addressable (a real Shutdown on the Quit paths, not an implicit exit whenever the
+        // rasterizer happens to drop its sender) and supervisable the same way the rest of the
+        // troupe is. Its lanes are `Infallible`: nothing but `Shutdown` and the doorbell ever
+        // reaches it, so `data_buffer_size` of 1 is a formality.
+        let mut builder = ActorBuilder::new(1, None);
+        let self_handle = builder.add_producer();
+        let forwarder_handle = builder.add_producer();
+        let mut forwarder_scheduler: ActorScheduler<Infallible, Infallible, Infallible> =
+            builder.build();
+        let mut forwarder = RasterizerForwarder {
+            response_rx,
+            engine: engine_handle,
+            self_handle: Some(self_handle),
+        };
+        std::thread::Builder::new()
+            .name("rasterizer-forwarder".into())
+            .spawn(move || {
+                forwarder_scheduler.run(&mut forwarder);
+            })
+            .expect("failed to spawn rasterizer forwarder thread");
+        // The scheduler blocks on its doorbell until woken; with `Infallible` lanes there is no
+        // message to send, so ring the doorbell directly to start the loop.
+        forwarder_handle.waker().wake();
 
         // Step 4: Complete bootstrap - register response channel and get full handle
         let rasterizer_handle = setup_handle.register(response_tx);
 
         log::info!("Rasterizer actor initialized via bootstrap");
         self.rasterizer = Some(rasterizer_handle);
-    }
-
-    /// Handle app data messages (render surfaces, etc.)
-    fn handle_app_data(&mut self, app_data: AppData) {
-        match app_data {
-            AppData::RenderSurface(manifold) | AppData::RenderSurfaceU32(manifold) => {
-                log::debug!("Engine: Received RenderSurface from app");
-                // The app has provided its compute graph, so permit VSync to request another
-                // frame without waiting for rasterization to finish.
-                self.return_vsync_token();
-
-                // Keep-latest port: the newest compute graph replaces any frame that hasn't
-                // started rendering yet, and renders now if a window is free to draw into.
-                let step = self.render.submit(manifold);
-                self.deliver(step);
-            }
-            AppData::Skipped => {
-                // App says nothing to render - return token anyway
-                self.return_vsync_token();
-            }
-        }
-    }
-
-    /// Hand the drawn buffer back to the driver to be shown.
-    ///
-    /// This *is* the return: the driver is the buffer's resting owner, so there is no separate
-    /// acknowledgement to wait for and nothing to remember about what went out. The coordinator
-    /// simply has no buffer again afterwards, and asks for one when it next has something to
-    /// draw.
-    fn present_cooked_frame(&mut self, render_time: std::time::Duration, window: Window) {
-        let t1 = Instant::now();
-        self.driver
-            .send(Message::Data(DisplayData::Present { window }))
-            .expect("Failed to send window to driver for presentation");
-        let send_time = t1.elapsed();
-
-        self.frame_number += 1;
-        // FPS telemetry, on the frame actually reaching the driver. It used to ride
-        // `PresentComplete`, which no longer exists as a message.
-        self.vsync
-            .send(Message::Data(RenderedResponse {
-                frame_number: self.frame_number,
-                rendered_at: Instant::now(),
-            }))
-            .expect("Failed to notify VSync of completed frame");
-
-        if self.frame_number.is_multiple_of(LOG_FRAME_INTERVAL) {
-            log::info!(
-                "Frame {}: render={:?}, send={:?}",
-                self.frame_number,
-                render_time,
-                send_time
-            );
-        }
-    }
-
-    /// Handle events from the display driver
-    fn handle_driver_event(&mut self, event: DisplayEvent) {
-        match event {
-            // Both window-lifecycle events are now pure relays: the driver has already built
-            // the buffer for the new geometry by the time this arrives, so there is nothing here
-            // to take delivery of, stamp, or retire. What is left is telling the app its size.
-            DisplayEvent::WindowCreated { surface } => {
-                log::debug!(
-                    "Relaying WindowCreated: id={}, {}x{}, scale={}",
-                    surface.id.0,
-                    surface.width_px,
-                    surface.height_px,
-                    surface.scale
-                );
-
-                // The app may already have handed us something to draw, in which case this is
-                // the first moment a buffer can exist to draw it into.
-                let step = self.render.advance();
-                self.deliver(step);
-
-                if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Control(EngineEventControl::WindowCreated {
-                        id: surface.id,
-                        width_px: surface.width_px,
-                        height_px: surface.height_px,
-                        scale: surface.scale,
-                    }))
-                    .expect("Failed to relay WindowCreated event to app");
-                }
-            }
-            DisplayEvent::Resized { surface } => {
-                log::debug!(
-                    "Relaying Resized: id={}, {}x{}",
-                    surface.id.0,
-                    surface.width_px,
-                    surface.height_px
-                );
-
-                // A buffer we are currently holding is now the wrong size, but it is not dropped
-                // here: it goes back on the next `Present` and the driver recognises it as
-                // superseded. Rendering into it once more first is harmless and one frame
-                // cheaper than reaching for the new one mid-flight.
-                let step = self.render.advance();
-                self.deliver(step);
-
-                if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Control(EngineEventControl::Resized {
-                        id: surface.id,
-                        width_px: surface.width_px,
-                        height_px: surface.height_px,
-                    }))
-                    .expect("Failed to relay Resized event to app");
-                }
-            }
-            DisplayEvent::Key {
-                symbol,
-                modifiers,
-                text,
-                ..
-            } => {
-                if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Management(EngineEventManagement::KeyDown {
-                        key: symbol,
-                        mods: modifiers,
-                        text,
-                    }))
-                    .expect("Failed to send KeyDown event to app");
-                }
-            }
-            DisplayEvent::MouseButtonPress { button, x, y, .. } => {
-                if let Some(app) = &self.app_handle {
-                    let button = convert_mouse_button(button);
-                    app.send(EngineEvent::Management(EngineEventManagement::MouseClick {
-                        x: x as u32,
-                        y: y as u32,
-                        button,
-                    }))
-                    .expect("Failed to send MouseClick event to app");
-                }
-            }
-            DisplayEvent::MouseButtonRelease { button, x, y, .. } => {
-                if let Some(app) = &self.app_handle {
-                    let button = convert_mouse_button(button);
-                    app.send(EngineEvent::Management(
-                        EngineEventManagement::MouseRelease {
-                            x: x as u32,
-                            y: y as u32,
-                            button,
-                        },
-                    ))
-                    .expect("Failed to send MouseRelease event to app");
-                }
-            }
-            DisplayEvent::MouseMove {
-                x, y, modifiers, ..
-            } => {
-                if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Management(EngineEventManagement::MouseMove {
-                        x: x as u32,
-                        y: y as u32,
-                        mods: modifiers,
-                    }))
-                    .expect("Failed to send MouseMove event to app");
-                }
-            }
-            DisplayEvent::MouseScroll {
-                dx,
-                dy,
-                x,
-                y,
-                modifiers,
-                ..
-            } => {
-                if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Management(
-                        EngineEventManagement::MouseScroll {
-                            x: x as u32,
-                            y: y as u32,
-                            dx,
-                            dy,
-                            mods: modifiers,
-                        },
-                    ))
-                    .expect("Failed to send MouseScroll event to app");
-                }
-            }
-            DisplayEvent::CloseRequested { .. } => {
-                log::debug!("Close requested");
-                // Stop vsync from generating more frame requests
-                self.vsync
-                    .send(Message::Shutdown)
-                    .expect("Failed to shutdown vsync on CloseRequested");
-                // Shutdown rasterizer
-                if let Some(rasterizer) = &self.rasterizer {
-                    rasterizer
-                        .send(Message::Shutdown)
-                        .expect("Failed to shutdown rasterizer on CloseRequested");
-                }
-                // Notify app, then drop it - cleanup goes in app's Drop impl
-                if let Some(app) = self.app_handle.take() {
-                    app.send(EngineEvent::Control(EngineEventControl::CloseRequested))
-                        .expect("Failed to send CloseRequested to app");
-                }
-                // Shutdown the driver actor (terminates platform event loop)
-                self.driver
-                    .send(Message::Shutdown)
-                    .expect("Failed to shutdown driver on CloseRequested");
-                // Shutdown self
-                if let Some(self_handle) = &self.self_handle {
-                    self_handle
-                        .send(Message::Shutdown)
-                        .expect("Failed to shutdown engine on CloseRequested");
-                }
-            }
-            DisplayEvent::FocusGained { .. } => {
-                if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Management(EngineEventManagement::FocusGained))
-                        .expect("Failed to send FocusGained event to app");
-                }
-            }
-            DisplayEvent::FocusLost { .. } => {
-                if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Management(EngineEventManagement::FocusLost))
-                        .expect("Failed to send FocusLost event to app");
-                }
-            }
-            DisplayEvent::PasteData { text } => {
-                if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Management(EngineEventManagement::Paste(text)))
-                        .expect("Failed to send Paste event to app");
-                }
-            }
-            DisplayEvent::ScaleChanged { id, scale } => {
-                log::debug!("Relaying ScaleChanged: id={}, scale={}", id.0, scale);
-                if let Some(app) = &self.app_handle {
-                    app.send(EngineEvent::Control(EngineEventControl::ScaleChanged {
-                        id,
-                        scale,
-                    }))
-                    .expect("Failed to relay ScaleChanged event to app");
-                }
-            }
-            DisplayEvent::ClipboardDataRequested => {
-                unimplemented!("Clipboard data requested")
-            }
-            DisplayEvent::WindowDestroyed { .. } => {
-                unimplemented!("window destroyed, forward to app unimplemented");
-                // Window was destroyed
-            }
-        }
-    }
-}
-
-/// Convert raw mouse button code to MouseButton enum
-fn convert_mouse_button(button: u8) -> MouseButton {
-    match button {
-        0 => MouseButton::Left,
-        1 => MouseButton::Middle,
-        2 => MouseButton::Right,
-        _ => MouseButton::Other(button),
+        self.rasterizer_forwarder = Some(forwarder_handle);
     }
 }
 
@@ -644,14 +450,16 @@ impl TroupeActor<Directory> for EngineHandler {
     fn new(dir: Directory) -> Self {
         Self {
             driver: dir.driver,
-            vsync: dir.vsync,
+            vsync_data: None, // Set via EngineControl::VsyncActorReady once the green host is up
+            vsync_control: None,
+            vsync_host: None,
             rasterizer: None, // Set up separately via bootstrap
             self_handle: Some(dir.engine),
             rasterizer_forward_handle: None, // Set via SetRasterizerForwardHandle message
+            rasterizer_forwarder: None,      // Set up separately via bootstrap
             app_handle: None,
-            frame_number: 0,
-            render: RenderCoordinator::new(),
             render_threads: 1, // Default, will be set by Configure message
+            core: EngineCore::new(),
         }
     }
 }
@@ -681,8 +489,52 @@ impl TroupeActor<Directory> for DriverActor<ActivePlatform> {
     }
 }
 
+/// Delivers a [`Host`]'s supervision findings to the engine — the wired half of "Host as
+/// transducer" (design doc §5.4): a real port with a real consumer, where `handle_os` could only
+/// compute the event and drop it.
+///
+/// `HostOut::again` is the host's own continuation; it never reaches wiring at all — see the
+/// `debug_assert!` in [`Wiring::flush`](Wiring::flush), which is what makes that a checkable fact
+/// rather than a comment.
+struct EngineHostWiring {
+    engine: crate::api::private::EngineActorHandle,
+}
+
+impl Wiring for EngineHostWiring {
+    type Out = HostOut;
+
+    fn flush(&mut self, out: &mut HostOut) -> Flush {
+        debug_assert!(
+            out.again.is_none(),
+            "GreenThread drains its own continuation; wiring never sees it"
+        );
+
+        let Some(event) = out.supervision else {
+            return Flush::Done;
+        };
+
+        match self
+            .engine
+            .try_send(Message::Control(EngineControl::GreenStuck(event)))
+        {
+            Ok(()) => {
+                out.supervision = None;
+                Flush::Done
+            }
+            // Neither clears `out.supervision` — it is already `Some`, so leaving it be is
+            // putting it back, exactly like `VsyncWiring`'s tick port.
+            Err(TrySendError::Full(_)) => Flush::Blocked,
+            Err(TrySendError::Disconnected(_)) => Flush::Disconnected,
+        }
+    }
+}
+
 impl Troupe {
-    /// Create troupe and configure vsync actor.
+    /// Create troupe, configure the engine, and bring vsync up as the first green node
+    /// (docs/designs/actor-scheduler-mealy-transducer.md §5): one "green-host" thread runs a
+    /// [`Host`] hosting the vsync [`Node`], stepped by its own [`GreenThread`] rather than
+    /// living on a dedicated OS thread of its own. The one thread this bootstrap still spawns
+    /// for vsync is the [`Timer`] clock — a green actor may not block, and a clock has to wait.
     pub fn with_config(config: EngineConfig) -> Result<Self, RuntimeError> {
         // Create troupe with platform-specific waker for the main (driver) actor
         #[cfg(target_os = "macos")]
@@ -702,10 +554,10 @@ impl Troupe {
         let mut troupe = Self::new();
 
         // Create SPSC handles for initialization (each exposed() creates unique channels)
-        let init = troupe.exposed(); // engine + vsync handles for sending config messages
-        let vsync_engine = troupe.exposed(); // engine handle for vsync→engine
-        let clock_vsync = troupe.exposed(); // vsync handle for clock→vsync
+        let init = troupe.exposed(); // engine handle for sending config messages
         let rasterizer_fwd = troupe.exposed(); // engine handle for rasterizer→engine
+        let vsync_engine = troupe.exposed(); // dedicated engine producer for vsync ticks
+        let host_engine = troupe.exposed(); // dedicated engine producer for host supervision
 
         // Send rasterizer forwarding handle BEFORE Configure
         init.engine
@@ -723,16 +575,83 @@ impl Troupe {
             )))
             .map_err(|e| RuntimeError::InitError(format!("Failed to configure engine: {}", e)))?;
 
-        // Configure vsync with target FPS (auto-starts after configuration)
-        init.vsync
-            .send(Message::Management(VsyncManagement::SetConfig {
-                config: VsyncConfig {
-                    refresh_rate: config.performance.target_fps as f64,
-                },
-                engine_handle: Box::new(vsync_engine.engine),
-                self_handle: Box::new(clock_vsync.vsync),
-            }))
-            .map_err(|e| RuntimeError::InitError(format!("Failed to configure vsync: {}", e)))?;
+        // ── VSync: the first green node ─────────────────────────────────────────────────
+        //
+        // A host has no lanes of its own (all three types are `Infallible`); work reaches it by
+        // pushing straight into an adopted node's inbox with a `GreenSender` and ringing the
+        // host's doorbell. `host_shutdown` is kept (handed to the engine below, for the shutdown
+        // cascade); `host_kick` only lends its `Waker` to the green channels and gives the
+        // scheduler its initial kick once the thread is running.
+        let mut host_builder = ActorBuilder::<Infallible, Infallible, Infallible>::new(1, None);
+        let host_shutdown = host_builder.add_producer();
+        let host_kick = host_builder.add_producer();
+        let mut host_sched = host_builder.build();
+
+        let waker = host_kick.waker();
+        // Capacities >= MAX_TOKENS (100, `vsync_actor.rs`): the credit argument (design doc
+        // §3.2) needs the ring to hold every possible outstanding tick/`ReturnToken`, so `Full`
+        // on either is provably a bug rather than backpressure to tolerate.
+        let (vsync_data_tx, vsync_data_rx) = green_channel::<RenderedResponse>(128, waker.clone());
+        let (vsync_control_tx, vsync_control_rx) = green_channel::<VsyncCommand>(128, waker.clone());
+        // Capacity 1 is enough: a queued tick is as good as a fresh one, and the clock is the
+        // only producer.
+        let (tick_tx, tick_rx) = green_channel::<VsyncManagement>(2, waker);
+
+        init.engine
+            .send(Message::Control(EngineControl::VsyncActorReady(Box::new(
+                (vsync_data_tx, vsync_control_tx, host_shutdown),
+            ))))
+            .map_err(|e| {
+                RuntimeError::InitError(format!("Failed to hand vsync handles to engine: {}", e))
+            })?;
+
+        let refresh_rate = config.performance.target_fps as f64;
+        let tick_interval = Duration::from_secs_f64(1.0 / refresh_rate);
+
+        // Built here, on the calling thread, then moved into the green-host thread below —
+        // `Timer` is `Send`, so this doesn't need to happen on the thread that owns it.
+        let clock = Timer::spawn("vsync-clock", Schedule::Every(tick_interval), move || {
+            match tick_tx.try_send(VsyncManagement::Tick) {
+                Ok(()) => ControlFlow::Continue(()),
+                // A queued tick is as good as this one.
+                Err(TrySendError::Full(_)) => ControlFlow::Continue(()),
+                Err(TrySendError::Disconnected(_)) => ControlFlow::Break(()),
+            }
+        });
+
+        std::thread::Builder::new()
+            .name("green-host".to_string())
+            .spawn(move || {
+                let mut host = Host::new();
+                let core = VsyncCore::started(refresh_rate);
+                let wiring = VsyncWiring {
+                    engine: vsync_engine.engine,
+                    clock,
+                };
+                let node = Node::new_with_lanes(
+                    core,
+                    Lanes {
+                        control: vsync_control_rx,
+                        management: tick_rx,
+                        data: vsync_data_rx,
+                    },
+                    wiring,
+                    SchedulerParams::DEFAULT,
+                );
+                host.adopt(node);
+
+                let mut green_thread = GreenThread::new(
+                    host,
+                    EngineHostWiring {
+                        engine: host_engine.engine,
+                    },
+                );
+                host_sched.run(&mut green_thread);
+            })
+            .expect("failed to spawn green host thread");
+        // The scheduler blocks on its doorbell until woken; ring it once to start the sweep
+        // loop, the same kick `spawn_rasterizer`'s `RasterizerForwarder` gives itself.
+        host_kick.waker().wake();
 
         Ok(troupe)
     }
@@ -770,15 +689,16 @@ mod tests {
     //! the interaction between the two sides, not the behaviour of either alone.
 
     use super::*;
-    use pixelflow_core::{Discrete, Manifold};
-    use crate::display::messages::Surface;
+    use crate::api::public::{AppData, WindowId};
+    use crate::display::messages::{DisplayEvent, Surface, Window};
     use crate::display::window_keeper::{Presented, WindowKeeper};
     use crate::platform::ColorCube;
     use actor_scheduler::ActorScheduler;
+    use pixelflow_core::{Discrete, Manifold};
     use pixelflow_graphics::render::rasterizer::{RasterControl, RasterManagement};
     use pixelflow_graphics::render::Frame;
     use std::collections::VecDeque;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// Scheduler tuning for the fixture: nothing here approaches the buffer, and the burst
     /// limit only has to be big enough that one `poll_once` drains a test's worth of messages.
@@ -872,8 +792,11 @@ mod tests {
         driver_sched: ActorScheduler<DisplayData, DisplayControl, DisplayMgmt>,
         driver_spy: DriverSpy,
         /// Never polled: vsync's token returns and FPS reports are not what these tests are
-        /// about. It is held only so the engine's sends to it stay connected.
-        _vsync_sched: ActorScheduler<RenderedResponse, VsyncCommand, VsyncManagement>,
+        /// about. Held directly (no green host, no thread) only so the engine's sends have
+        /// somewhere to land — replaces the `ActorScheduler` spy the dedicated-thread
+        /// `VsyncActor` needed, since a `GreenSender`'s receiving end is a plain `SpscReceiver`.
+        _vsync_data_rx: actor_scheduler::spsc::SpscReceiver<RenderedResponse>,
+        _vsync_control_rx: actor_scheduler::spsc::SpscReceiver<VsyncCommand>,
         /// Renders the rasterizer has been asked for and not yet answered, oldest first.
         in_flight: VecDeque<WindowMeta>,
         request_log: Vec<Size>,
@@ -882,19 +805,33 @@ mod tests {
     impl Rig {
         fn new() -> Self {
             let (driver, driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
-            let (vsync, _vsync_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
             let (rasterizer, raster_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+
+            // A `Waker` with nobody listening is harmless (host.rs's own tests prove it), so a
+            // throwaway scheduler that is dropped immediately after minting one is enough — the
+            // green channels below never need a real host to wake.
+            let waker = {
+                let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
+                handle.waker()
+            };
+            // Same provisioning as the real bootstrap (>= MAX_TOKENS): the engine panics on a
+            // full vsync ring by the credit argument, so an undersized test ring would turn a
+            // long test into a spurious "provisioning broke" panic.
+            let (vsync_data, vsync_data_rx) = green_channel::<RenderedResponse>(128, waker.clone());
+            let (vsync_control, vsync_control_rx) = green_channel::<VsyncCommand>(128, waker);
 
             let engine = EngineHandler {
                 driver,
-                vsync,
+                vsync_data: Some(vsync_data),
+                vsync_control: Some(vsync_control),
+                vsync_host: None,
                 rasterizer: Some(rasterizer),
                 self_handle: None,
                 rasterizer_forward_handle: None,
+                rasterizer_forwarder: None,
                 app_handle: None,
-                frame_number: 0,
-                render: RenderCoordinator::new(),
                 render_threads: 1,
+                core: EngineCore::new(),
             };
 
             Self {
@@ -903,7 +840,8 @@ mod tests {
                 raster_spy: RasterizerSpy::default(),
                 driver_sched,
                 driver_spy: DriverSpy::default(),
-                _vsync_sched,
+                _vsync_data_rx: vsync_data_rx,
+                _vsync_control_rx: vsync_control_rx,
                 in_flight: VecDeque::new(),
                 request_log: Vec::new(),
             }
@@ -1049,7 +987,7 @@ mod tests {
         rig.tick();
         assert!(rig.render_requests().is_empty());
         assert!(
-            !rig.engine.render.holds_buffer(),
+            !rig.engine.core.holds_buffer(),
             "no manifold to draw, so no reason to be holding the buffer"
         );
     }
@@ -1148,17 +1086,14 @@ mod tests {
         rig.surface((200, 200));
 
         assert!(
-            !rig.engine.render.holds_buffer(),
+            !rig.engine.core.holds_buffer(),
             "a buffer is already out with the renderer; a second one must not be granted"
         );
 
         // The original render completes into an engine that still has exactly one buffer's
         // worth of state to reconcile.
         rig.complete_render();
-        assert!(
-            rig.blitted().is_empty(),
-            "the old-size frame is superseded"
-        );
+        assert!(rig.blitted().is_empty(), "the old-size frame is superseded");
         assert_eq!(
             rig.render_requests(),
             vec![(200, 200)],
@@ -1192,7 +1127,7 @@ mod tests {
         // A resize now allocates a buffer that a stale ask would collect.
         rig.surface((200, 200));
         assert!(
-            !rig.engine.render.holds_buffer(),
+            !rig.engine.core.holds_buffer(),
             "the buffer is out with the renderer; an unanswered duplicate ask must not \
              collect the resize's replacement"
         );
@@ -1224,11 +1159,101 @@ mod tests {
             rig.tick();
         }
         assert!(
-            !rig.engine.render.holds_buffer(),
+            !rig.engine.core.holds_buffer(),
             "no grant can arrive while the buffer is out, however often it is requested"
         );
 
         rig.complete_render();
         assert_eq!(rig.blitted(), vec![(100, 100)]);
+    }
+
+    /// The forwarder's whole reason to exist: turn the rasterizer's bare `mpsc` responses into
+    /// real `EngineData::RenderComplete` sends on an addressable actor, rather than a bare
+    /// thread nobody could signal. Exercises the actual `RasterizerForwarder`, not a stand-in.
+    #[test]
+    fn forwarder_relays_responses_and_exits_when_the_rasterizer_disconnects() {
+        use crate::display::messages::Generation;
+
+        let (engine_handle, mut engine_sched) = ActorScheduler::<
+            EngineData,
+            EngineControl,
+            AppManagement,
+        >::new(LANE_BURST, LANE_BUFFER);
+        let (response_tx, response_rx) = std::sync::mpsc::channel();
+
+        let mut builder = ActorBuilder::new(1, None);
+        let self_handle = builder.add_producer();
+        let starter_handle = builder.add_producer();
+        let mut forwarder_sched: ActorScheduler<Infallible, Infallible, Infallible> =
+            builder.build();
+        let mut forwarder = RasterizerForwarder {
+            response_rx,
+            engine: engine_handle,
+            self_handle: Some(self_handle),
+        };
+        let thread = std::thread::spawn(move || forwarder_sched.run(&mut forwarder));
+        starter_handle.waker().wake();
+
+        let meta = WindowMeta {
+            id: WindowId(1),
+            width_px: 4,
+            height_px: 4,
+            scale: 1.0,
+            generation: Generation::NONE,
+        };
+        response_tx
+            .send(RenderResponse {
+                frame: Frame::new(4, 4),
+                render_time: Some(Duration::from_millis(1)),
+                meta,
+            })
+            .expect("forwarder thread should still be listening");
+
+        #[derive(Default)]
+        struct TargetSpy {
+            received: Vec<(u32, u32)>,
+        }
+        impl Actor<EngineData, EngineControl, AppManagement> for TargetSpy {
+            fn handle_data(&mut self, data: EngineData) -> HandlerResult {
+                if let EngineData::RenderComplete(response) = data {
+                    self.received
+                        .push((response.meta.width_px, response.meta.height_px));
+                }
+                Ok(())
+            }
+            fn handle_control(&mut self, _msg: EngineControl) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _msg: AppManagement) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
+            }
+        }
+
+        let mut spy = TargetSpy::default();
+        // The forwarder thread runs concurrently; poll until its send lands rather than
+        // asserting after a single pass.
+        for _ in 0..10_000 {
+            let _ = engine_sched.poll_once(&mut spy);
+            if !spy.received.is_empty() {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            spy.received,
+            vec![(4, 4)],
+            "the forwarder must translate the rasterizer's response into RenderComplete"
+        );
+
+        // Dropping the sender is exactly what the real bootstrap path does when the rasterizer
+        // shuts down; the forwarder must notice and exit rather than parking on an empty
+        // doorbell forever.
+        drop(response_tx);
+        thread
+            .join()
+            .expect("forwarder must exit once the rasterizer disconnects");
     }
 }

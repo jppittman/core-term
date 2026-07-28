@@ -161,7 +161,7 @@ pub fn expand_transcendentals(arena: &mut ExprArena, root: ExprId) -> ExprId {
 /// shared `&ExprArena`: clone it, expand transcendentals in the clone, and
 /// return the owned arena + new root. Cheap when there are no transcendentals
 /// (the clone is two `Vec`s and the walk just copies), so every entry can call
-/// it unconditionally and be sure no backend — per-batch, scanline, or jet —
+/// it unconditionally and be sure no backend — per-batch or collapse —
 /// ever sees a transcendental node.
 #[must_use]
 pub fn expand_transcendentals_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {

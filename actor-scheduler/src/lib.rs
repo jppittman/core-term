@@ -59,11 +59,11 @@
 //! # Example (Basic Scheduler)
 //!
 //! ```rust
-//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler, ActorStatus, SystemStatus, HandlerResult, HandlerError};
+//! use actor_scheduler::{ActorScheduler, Message, Actor, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 //!
 //! struct MyHandler;
 //!
-//! impl SchedulerHandler<String, String, String> for MyHandler {
+//! impl Actor<String, String, String> for MyHandler {
 //!     fn handle_data(&mut self, msg: String) -> HandlerResult {
 //!         println!("Data: {}", msg);
 //!         Ok(())
@@ -103,9 +103,13 @@ pub mod spsc;
 
 use error::DrainStatus;
 pub use error::{HandlerError, HandlerResult, SendError};
-pub use host::{Green, GreenSender, GreenThread, Host, HostOut, RunSweep, green_channel};
+pub use host::{
+    Green, GreenSender, GreenThread, Host, HostOut, NodeId, RunSweep, Stuck, Supervision,
+    green_channel,
+};
 pub use lifecycle::Exit;
 pub use params::SchedulerParams;
+pub use spsc::TrySendError;
 
 // Re-export macros from the proc-macro crate
 pub use actor_scheduler_macros::{actor_impl, ports, troupe};
@@ -388,10 +392,6 @@ pub trait Actor<D, C, M> {
     /// Can return `HandlerError::Fatal` to trigger shutdown.
     fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError>;
 }
-
-/// Legacy alias for backward compatibility
-#[deprecated(since = "0.2.0", note = "Use `Actor` instead")]
-pub use Actor as SchedulerHandler;
 
 /// Defines the message types for an actor managed by the troupe! macro.
 ///
@@ -799,6 +799,70 @@ impl<D, C, M> ActorHandle<D, C, M> {
         Ok(())
     }
 
+    /// Non-blocking send: the runtime half of a droppable/credit-bounded edge (design doc
+    /// §3.2). Tries the message's lane exactly once — no spin, no backoff — then rings the
+    /// doorbell on success via the same [`Self::wake`] path [`Self::send`] uses. On `Full` or
+    /// `Disconnected` the message is handed back inside the error, unsent; the caller decides
+    /// whether that means drop, park, or panic.
+    ///
+    /// # Errors
+    /// Returns [`TrySendError::Full`] if the target lane's ring is full, or
+    /// [`TrySendError::Disconnected`] if the receiver is gone. Either way the message comes
+    /// back rewrapped in its original [`Message`] variant.
+    pub fn try_send<T: Into<Message<D, C, M>>>(
+        &self,
+        msg: T,
+    ) -> Result<(), spsc::TrySendError<Message<D, C, M>>> {
+        use spsc::TrySendError;
+
+        match msg.into() {
+            Message::Data(d) => match self.tx_data.try_send(d) {
+                Ok(()) => {
+                    self.wake();
+                    Ok(())
+                }
+                Err(TrySendError::Full(d)) => Err(TrySendError::Full(Message::Data(d))),
+                Err(TrySendError::Disconnected(d)) => {
+                    Err(TrySendError::Disconnected(Message::Data(d)))
+                }
+            },
+            Message::Control(c) => match self.tx_control.try_send(c) {
+                Ok(()) => {
+                    self.wake();
+                    Ok(())
+                }
+                Err(TrySendError::Full(c)) => Err(TrySendError::Full(Message::Control(c))),
+                Err(TrySendError::Disconnected(c)) => {
+                    Err(TrySendError::Disconnected(Message::Control(c)))
+                }
+            },
+            Message::Management(m) => match self.tx_mgmt.try_send(m) {
+                Ok(()) => {
+                    self.wake();
+                    Ok(())
+                }
+                Err(TrySendError::Full(m)) => Err(TrySendError::Full(Message::Management(m))),
+                Err(TrySendError::Disconnected(m)) => {
+                    Err(TrySendError::Disconnected(Message::Management(m)))
+                }
+            },
+            // Shutdown travels on the doorbell, not a lane ring, so there is no `Full`/
+            // `Disconnected` of its own to report non-blockingly — forward to the same
+            // delivery `send` uses and report success, matching the spec's carve-out for the
+            // one variant with no ring to be full.
+            Message::Shutdown => {
+                // Always reported as delivered: `send`'s own `Message::Shutdown` arm only ever
+                // fails via the doorbell's blocking `SyncSender::send`, which is a disconnect —
+                // and a disconnected doorbell means the scheduler is already gone, which is not
+                // this call's problem to report a second way.
+                match self.send_message(Message::Shutdown) {
+                    Ok(()) | Err(_) => {}
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Wake the scheduler to process messages.
     ///
     /// If a custom wake handler is configured, calls it first to wake the platform
@@ -1148,20 +1212,24 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         }
     }
 
-    /// Single non-blocking drain cycle for cooperative scheduling.
+    /// Single non-blocking drain cycle, for driving an actor synchronously
+    /// without a dedicated thread.
     ///
-    /// Intended for actors running on a shared Kubelet thread rather than a
-    /// dedicated OS thread. The Kubelet calls `poll_once()` on each cooperative
-    /// pod in round-robin during its controller loop.
+    /// Cooperative multiplexing of multiple actors on one thread is the green
+    /// tier's job (`Host` in `host.rs`; see
+    /// `docs/designs/actor-scheduler-mealy-transducer.md`), not this method's.
+    /// Its remaining real callers are test fixtures that need to step an
+    /// actor's message loop by hand; it is expected to leave the public API
+    /// once those callers migrate to `Host`.
     ///
     /// Unlike [`run`], `poll_once()` never blocks:
     /// - If the doorbell is empty, it still attempts one drain pass (the actor
     ///   may have work from a previous `Working` state).
-    /// - Returns `Some(phase)` when the pod should stop; `None` to keep polling.
+    /// - Returns `Some(phase)` when the actor should stop; `None` to keep polling.
     ///
     /// # Caller responsibility
     ///
-    /// The Kubelet must continue calling `poll_once()` after a `Disconnected`
+    /// The caller must continue calling `poll_once()` after a `Disconnected`
     /// doorbell until `Some` is returned — buffered SPSC messages need draining.
     pub fn poll_once<A>(&mut self, actor: &mut A) -> Option<Exit>
     where
@@ -1259,7 +1327,7 @@ mod tests {
         log: Arc<Mutex<Vec<String>>>,
     }
 
-    impl SchedulerHandler<String, String, String> for TestHandler {
+    impl Actor<String, String, String> for TestHandler {
         fn handle_data(&mut self, msg: String) -> HandlerResult {
             self.log.lock().unwrap().push(format!("Data: {}", msg));
             Ok(())
@@ -1393,7 +1461,7 @@ mod tests {
             mgmt_count: usize,
         }
 
-        impl SchedulerHandler<i32, String, bool> for CountingHandler {
+        impl Actor<i32, String, bool> for CountingHandler {
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.data_count += 1;
                 Ok(())
@@ -1600,6 +1668,64 @@ mod poll_once_tests {
             }
         };
         assert_eq!(phase, Exit::Completed);
+    }
+}
+
+#[cfg(test)]
+mod try_send_tests {
+    use super::*;
+
+    struct RecordActor {
+        got: Option<i32>,
+    }
+
+    impl Actor<i32, i32, i32> for RecordActor {
+        fn handle_data(&mut self, msg: i32) -> HandlerResult {
+            self.got = Some(msg);
+            Ok(())
+        }
+        fn handle_control(&mut self, _: i32) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _: i32) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
+        }
+    }
+
+    #[test]
+    fn try_send_succeeds_and_is_received() {
+        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
+        tx.try_send(Message::Data(7)).expect("room in the ring");
+
+        let mut actor = RecordActor { got: None };
+        assert_eq!(rx.poll_once(&mut actor), None, "still connected");
+        assert_eq!(actor.got, Some(7));
+    }
+
+    #[test]
+    fn try_send_on_a_full_data_ring_returns_full_with_the_message_recoverable() {
+        let (tx, _rx) = ActorScheduler::<i32, i32, i32>::new(10, 2);
+        // Capacity rounds up to a power of 2 (minimum 2); fill it without a consumer draining.
+        while tx.try_send(Message::Data(1)).is_ok() {}
+
+        match tx.try_send(Message::Data(99)) {
+            Err(TrySendError::Full(Message::Data(msg))) => assert_eq!(msg, 99),
+            other => panic!("expected Full(Message::Data(99)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_send_after_receiver_drop_returns_disconnected() {
+        let (tx, rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
+        drop(rx);
+
+        match tx.try_send(Message::Data(5)) {
+            Err(TrySendError::Disconnected(Message::Data(msg))) => assert_eq!(msg, 5),
+            other => panic!("expected Disconnected(Message::Data(5)), got {other:?}"),
+        }
     }
 }
 

@@ -19,9 +19,7 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_runtime::vsync_actor::{
-    RenderedResponse, VsyncCommand, VsyncConfig, VsyncManagement,
-};
+use pixelflow_runtime::vsync_actor::{RenderedResponse, VsyncCommand, VsyncManagement};
 
 // ============================================================================
 // POTENTIAL BUG: Double Clock Thread Spawn
@@ -59,10 +57,6 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker 
                 if self.running {
                     self.tick_times.lock().unwrap().push(Instant::now());
                 }
-            }
-            VsyncManagement::SetConfig { .. } => {
-                // In the real actor, this spawns ANOTHER clock thread
-                self.running = true;
             }
         }
         Ok(())
@@ -261,32 +255,28 @@ fn fps_with_very_small_elapsed_does_not_panic() {
 
 #[test]
 fn very_high_refresh_rate_does_not_overflow() {
-    let config = VsyncConfig {
-        refresh_rate: 1_000_000.0, // 1 MHz
-    };
+    let refresh_rate: f64 = 1_000_000.0; // 1 MHz
 
     // Calculate interval - should not overflow
-    let interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
+    let interval = Duration::from_secs_f64(1.0 / refresh_rate);
     assert!(interval > Duration::ZERO);
     assert!(interval < Duration::from_millis(1));
 }
 
 #[test]
 fn very_low_refresh_rate_does_not_overflow() {
-    let config = VsyncConfig {
-        refresh_rate: 0.001, // 0.001 Hz = 1000 second interval
-    };
+    let refresh_rate: f64 = 0.001; // 0.001 Hz = 1000 second interval
 
-    let interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
+    let interval = Duration::from_secs_f64(1.0 / refresh_rate);
     assert_eq!(interval.as_secs(), 1000);
 }
 
 #[test]
 fn zero_refresh_rate_handled_gracefully() {
-    let config = VsyncConfig { refresh_rate: 0.0 };
+    let refresh_rate: f64 = 0.0;
 
     // This will produce infinity
-    let interval_secs = 1.0 / config.refresh_rate;
+    let interval_secs = 1.0 / refresh_rate;
     assert!(interval_secs.is_infinite());
 
     // Duration::from_secs_f64 with infinity should panic or handle specially
@@ -302,12 +292,10 @@ fn zero_refresh_rate_handled_gracefully() {
 
 #[test]
 fn negative_refresh_rate_handled() {
-    let config = VsyncConfig {
-        refresh_rate: -60.0,
-    };
+    let refresh_rate: f64 = -60.0;
 
     // Negative rate produces negative interval
-    let interval_secs = 1.0 / config.refresh_rate;
+    let interval_secs = 1.0 / refresh_rate;
     assert!(interval_secs < 0.0);
 
     // Duration::from_secs_f64 with negative should panic

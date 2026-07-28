@@ -1,4 +1,3 @@
-pub mod bilinear;
 pub mod color;
 pub mod frame;
 pub mod pixel;

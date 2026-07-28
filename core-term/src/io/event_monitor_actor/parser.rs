@@ -10,7 +10,7 @@
 //! The reader-recycle handle comes from the troupe `Directory`; the app sink
 //! arrives via the `Bind` management message.
 
-use super::{Directory, FilledBuf, NoControl, ParserControl, ParserManagement, ReaderManagement};
+use super::{Directory, FilledBuf, ParserControl, ParserManagement, ReaderManagement};
 use crate::ansi::{AnsiParser, AnsiProcessor};
 use crate::io::traits::PtySender;
 use actor_scheduler::{
@@ -18,9 +18,10 @@ use actor_scheduler::{
     SystemStatus, TroupeActor,
 };
 use log::*;
+use std::convert::Infallible;
 
 /// Handle to the reader for buffer recycling (from the troupe `Directory`).
-type ReaderTx = ActorHandle<Vec<u8>, NoControl, ReaderManagement>;
+type ReaderTx = ActorHandle<Vec<u8>, Infallible, ReaderManagement>;
 
 pub(super) struct PtyParser {
     parser: AnsiProcessor,

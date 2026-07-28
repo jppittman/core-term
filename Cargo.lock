@@ -866,6 +866,7 @@ dependencies = [
  "criterion",
  "pixelflow-compiler",
  "pixelflow-ir",
+ "pixelflow-search",
 ]
 
 [[package]]
@@ -881,6 +882,7 @@ dependencies = [
  "pixelflow-compiler",
  "pixelflow-core",
  "pixelflow-ir",
+ "pixelflow-search",
  "proptest",
  "serde",
  "tempfile",

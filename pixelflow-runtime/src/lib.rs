@@ -4,6 +4,7 @@ pub mod api;
 // Internal modules
 pub mod config;
 pub mod display;
+pub(crate) mod engine_core;
 pub mod engine_troupe;
 pub mod error;
 pub mod frame;

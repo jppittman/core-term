@@ -32,10 +32,19 @@ fn golden_for(ch: char, size: usize) {
     let got = baked.buffer();
     assert_eq!(got.len(), size * size);
 
-    // Reference: the interpreter on the same arena (Dwrt lowered first — the
-    // interpreter evaluates the post-calculus program the JIT compiles).
+    // Reference: the interpreter on the same arena the JIT compiles. Bake
+    // runs the runtime e-graph tier (`optimize_runtime_arena`, which lowers
+    // Dwrt itself) before compiling, so the oracle interprets that same
+    // optimized arena — this golden pins the COMPILER (JIT vs interpreter on
+    // one program), while optimization soundness (optimized vs raw, within
+    // float-reassociation tolerance) is pinned separately by
+    // tests/kernel_glyph_optimize.rs.
     let (arena, root) = kernel.parts();
-    let (lowered, lroot) = lower_dwrt_owned(arena, root).expect("dwrt lowering");
+    let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root);
+    let (lowered, lroot) = match optimized.as_deref() {
+        Some((a, r)) => (a.clone(), *r),
+        None => lower_dwrt_owned(arena, root).expect("dwrt lowering"),
+    };
 
     let mut ink = 0.0f32;
     for j in 0..size {
@@ -44,8 +53,14 @@ fn golden_for(ch: char, size: usize) {
             let want = eval_scalar(&lowered, lroot, &[x, y, 0.0, 0.0], &BindingTable::empty());
             let jit = got[j * size + i];
             assert!(jit.is_finite(), "{ch}@{size}: non-finite coverage at ({x},{y})");
+            // 1e-3, not 1e-4: the optimized arena contains `MulAdd` (e-graph
+            // FMA fusion), whose rounding is documented platform-specific —
+            // the interpreter's reference `mul_add` rounds once, a build
+            // without hardware FMA rounds twice (see CLAUDE.md's FP table).
+            // Winding sums amplify that last-bit divergence to ~1e-4; a real
+            // miscompile shifts coverage by O(1).
             assert!(
-                (jit - want).abs() < 1e-4,
+                (jit - want).abs() < 1e-3,
                 "{ch}@{size}: JIT {jit} != interpreter {want} at texel ({i},{j})"
             );
             ink += want;

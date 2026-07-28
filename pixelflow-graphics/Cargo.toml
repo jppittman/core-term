@@ -40,6 +40,9 @@ proptest = "1.4"
 tempfile = "3.10"
 pixelflow-compiler = { path = "../pixelflow-compiler" }
 pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
+# The glyph-kernel optimization guards (tests/kernel_glyph_optimize.rs) probe
+# the runtime e-graph tier against real curve kernels.
+pixelflow-search = { path = "../pixelflow-search" }
 
 [[bench]]
 name = "font_rendering"
