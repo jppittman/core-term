@@ -3,6 +3,7 @@ pub mod api;
 
 // Internal modules
 pub mod config;
+pub(crate) mod coordinator_node;
 pub mod display;
 pub(crate) mod engine_core;
 pub mod engine_troupe;
