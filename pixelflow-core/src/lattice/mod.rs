@@ -383,6 +383,15 @@ impl Lattice {
     /// an arena, always compilable — except when this build's `Field` width is
     /// not the JIT's, where it panics rather than silently mis-tabulating.
     ///
+    /// Runtime-composed kernels (`Kernel::over`/`.at()`/arithmetic) never run
+    /// through the `kernel!`/`kernel_jit!` macros' e-graph saturation, so
+    /// `pixelflow_search::runtime::optimize_runtime_arena` runs the same
+    /// pipeline here before compiling (CSE, FMA fusion, algebraic
+    /// simplification). It bails out — the original arena compiles unchanged
+    /// — for constructs the e-graph doesn't model yet (`Reduce`, the binder
+    /// `Kernel::over` produces); that population still compiles, just
+    /// without the extra fusion.
+    ///
     /// The compiled form is the collapse kernel: the X loop lives *inside*
     /// the emitted code, so tabulation is one call per row rather than one
     /// `extern "C"` call per SIMD batch — no per-batch spill/reload of the
@@ -396,6 +405,11 @@ impl Lattice {
             "Lattice::bake: Field width does not match the JIT's emitted width"
         );
         let (arena, root) = kernel.parts();
+        let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root);
+        let (arena, root) = optimized
+            .as_ref()
+            .map(|(a, r)| (a, *r))
+            .unwrap_or((arena, root));
         let jit = pixelflow_ir::jit_cache::compile_collapse_cached(arena, root)
             .expect("kernel failed to compile");
 

@@ -21,16 +21,24 @@ docs/designs/2026-07-25-two-level-ir-and-backend-completeness.md (Parts 2b and
    value, has no tail handling, and has zero production callers. The "`over`"
    work is generalization and wiring, not invention.
 
-2. **Runtime-built `Kernel`s never see the optimizer.** `kernel!`/`kernel_jit!`
-   run e-graph saturation (FMA fusion, CSE) at macro-expansion time, but
-   `Lattice::bake(&Kernel)` and `jit_cache::compile_cached` call
-   `compile_arena_dag` directly — no saturation, no CSE, no FMA fusion. Every
-   runtime-composed kernel (glyphs, `Kernel::over`, spliced compositions) gets
-   raw emission. Compounding it, transcendental expansion builds its Chebyshev
-   polynomials from bare `Add`/`Mul` on the theory that "re-fusing is the
-   optimizer's job" — and the optimizer never runs on this path. This may be a
-   larger parity gap than call overhead. **Measure before committing to
-   loop-in-JIT as the first win.**
+2. **Runtime-built `Kernel`s never see the optimizer — closed 2026-07-28 for
+   the Reduce-free population.** `kernel!`/`kernel_jit!` run e-graph
+   saturation (FMA fusion, CSE) at macro-expansion time, but
+   `Lattice::bake(&Kernel)` and `jit_cache::compile_cached` called
+   `compile_arena_dag`/`compile_collapse` directly — no saturation, no CSE, no
+   FMA fusion. `pixelflow_search::runtime::optimize_runtime_arena` is the same
+   pipeline (shared `SaturationConfig`/`ExtractionPolicy`, moved out of
+   `pixelflow-compiler` so both tiers use one implementation) applied directly
+   to a runtime arena, and `Lattice::bake` now calls it before compiling. It
+   bails out (arena compiles unchanged) on `Buffer`/`Gather`/`Reduce` — memory
+   ops and the `Kernel::over` binder aren't e-graph-modeled yet — which covers
+   today's actual runtime population exactly: glyph coverage kernels (pure
+   arithmetic + `Dwrt`, the highest-volume case) now get CSE/FMA fusion;
+   `BilinearSampler` (`Gather`) and any future `Kernel::over` composition
+   correctly skip until binder-aware rewriting exists (tracked, not silently
+   wrong). Transcendental expansion's un-fused Chebyshev polys are a separate,
+   still-open gap (item 3 below) — the e-graph runs *before* that lowering, so
+   it can't fuse multiplies the lowering hasn't produced yet.
 
 ## Current call path and per-call overhead
 
@@ -105,10 +113,41 @@ slow parallel path.
    lands: `variance.rs` (kept for exactly this) identifies Y/Z/W-only
    subexpressions to hoist out of the inner loop — aarch64 can pin them in
    v8-v15 with a save/restore prologue, x86 uses stack slots.
-3. **The e-graph gap** (finding 2 above) — unchanged, and measurement still
-   comes first: if runtime-composed kernels are dominated by missing FMA/CSE,
-   a bounded optimization pass on the bake path may buy more than any
-   further loop work.
+3. **The e-graph gap — landed 2026-07-28 for the Reduce-free population.**
+   `pixelflow-search/src/runtime.rs`'s `optimize_runtime_arena(arena, root)`
+   inserts an arbitrary runtime `ExprArena` into a fresh `EGraph` (memoized by
+   `ExprId` on top of the e-graph's own structural hash-consing, iterative —
+   not recursive — matching `choices_to_arena`'s style since arena depth is
+   unbounded in principle), saturates with the same size-based
+   `SaturationConfig` preset the macro tier uses, extracts via the same
+   `ExtractionPolicy` (static latency-prior by default,
+   `PIXELFLOW_NNUE_WEIGHTS` opt-in — unchanged, still there, still reachable),
+   and converts the winning choices back to an `ExprArena` via the
+   already-existing `choices_to_arena`. Returns `None` — compile the original
+   arena unchanged — the instant it meets a `Buffer`/`Gather`/`RawGather` (no
+   rule reasons about memory) or `Nary`/`Reduce` (rewriting under a binder is
+   unsound without binder-aware rules) anywhere reachable from root; `Param`
+   too, defensively (a macro-only concept that should never reach a
+   runtime-built `Kernel`). `Lattice::bake` calls it before
+   `compile_collapse_cached`. Consolidated as one implementation, not two:
+   `SaturationConfig`/`config_for_node_count` and the extraction-policy
+   selector (`ExtractionPolicy`/`env_extraction_policy`, the
+   `PIXELFLOW_NNUE_WEIGHTS` env-var opt-in) moved out of
+   `pixelflow-compiler::optimize` into `pixelflow-search`, which already owned
+   `EGraph`/`CostModel`/`ExprNnue`; the compiler's own hand-rolled saturation
+   loop is deleted in favor of the already-existing (and more correct —
+   properly time-slices sub-budgets per round) `saturate_with_full_budget`.
+   `pixelflow-ir` still has no `pixelflow-search` dependency (the suckless
+   constraint holds — the hook lives in `pixelflow-core`, which calls
+   `pixelflow-search` directly now rather than only transitively through
+   `pixelflow-compiler`). Tests in `pixelflow-search/src/runtime.rs`: FMA
+   fusion and identity-collapse on synthetic runtime arenas, a
+   shared-subexpression case, a `Dwrt`-bearing arena (cross-checked against
+   `lower_dwrt_owned` — Dwrt is representable, since `derivative::ChainRule`
+   already reduces it in the e-graph), and explicit bail-out tests for
+   `Buffer`/`Gather` and `Reduce`. Font goldens (`kernel_glyph_golden.rs` et
+   al.) are unaffected — optimization preserves semantics by construction —
+   and now compile through the fused form.
 
 ## Measurement plan (do this first)
 
