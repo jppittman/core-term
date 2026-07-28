@@ -264,7 +264,7 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         // engine has no external channels which might be busy
         Ok(ActorStatus::Idle)
     }
@@ -806,7 +806,7 @@ mod tests {
         fn handle_management(&mut self, _msg: RasterManagement) -> HandlerResult {
             Ok(())
         }
-        fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -856,7 +856,7 @@ mod tests {
             }
             Ok(())
         }
-        fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }

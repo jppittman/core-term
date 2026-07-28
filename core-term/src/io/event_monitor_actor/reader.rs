@@ -7,7 +7,7 @@
 //! `Data` messages. The pool is allocated when the `Bind` management message
 //! arrives (see [`super`] for the bind protocol).
 //!
-//! `park()` is the bridge to the OS: it blocks in `epoll_wait`/`kevent` on
+//! `handle_os()` is the bridge to the OS: it blocks in `epoll_wait`/`kevent` on
 //! `{pty, waker}` and returns `Busy` so the scheduler polls the doorbell with
 //! `try_recv` instead of blocking on it. Three cases return `Idle` and let the
 //! scheduler block on the doorbell instead:
@@ -187,7 +187,7 @@ impl Actor<Vec<u8>, NoControl, ReaderManagement> for PtyReader {
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         let Some(bound) = self.bound.as_mut() else {
             return Ok(ActorStatus::Idle); // unbound: wait for Bind on the doorbell
         };
@@ -220,7 +220,7 @@ impl Actor<Vec<u8>, NoControl, ReaderManagement> for PtyReader {
         }
 
         // Busy: this actor's real doorbell is the event monitor, so the
-        // scheduler must come back through park() instead of blocking on
+        // scheduler must come back through handle_os() instead of blocking on
         // the channel doorbell.
         Ok(ActorStatus::Busy)
     }

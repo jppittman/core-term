@@ -197,6 +197,7 @@ pub(super) fn process_control_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ansi::commands::AnsiCommand;
     use crate::term::emulator::TerminalEmulator;
     use crate::term::EmulatorInput;
 
@@ -207,13 +208,12 @@ mod tests {
     #[test]
     fn paste_text_action_bracketed_on() {
         let mut emu = create_test_emu_for_input();
-        // Enable bracketed paste mode via public API (CSI ? 2004 h)
-        // This ensures we test the mode setting logic and state representation contract
-        // rather than modifying internal fields directly.
-        // TODO: Refactor to use the true public API (message passing via interpret_input) and
-        // consider restricting handle_set_mode visibility to pub(super) or private if feasible.
-        use crate::term::modes::{Mode, ModeAction};
-        emu.handle_set_mode(Mode::DecPrivate(2004), ModeAction::Enable);
+        // Enable bracketed paste mode via the public message-passing surface (CSI ? 2004 h).
+        use crate::ansi::commands::CsiCommand;
+        use crate::term::modes::DecModeConstant;
+        emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+            CsiCommand::SetModePrivate(DecModeConstant::BracketedPaste as u16),
+        )));
 
         let text_to_paste = "Hello\nWorld".to_string();
         let action = UserInputAction::PasteText(text_to_paste.clone());

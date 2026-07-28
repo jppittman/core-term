@@ -30,7 +30,7 @@
 //! in every scheduler wake, so an actor is always bound before it handles its
 //! first byte.
 //!
-//! **Blocking model.** The reader and writer bridge to the OS inside `park()`,
+//! **Blocking model.** The reader and writer bridge to the OS inside `handle_os()`,
 //! blocking in `epoll_wait`/`kevent` on `{pty, waker}`; each is a `[waker]`
 //! slot so a send interrupts the poll. The parser is message-driven.
 //!
@@ -147,7 +147,7 @@ pub type PtyWriterHandle = ActorHandle<Vec<u8>, WriterControl, WriterManagement>
 // ── Troupe declaration ──────────────────────────────────────────────────────
 
 // All three are [expose] so `PtyTroupe` can mint handles to send Bind and
-// Shutdown. Reader and writer are [waker] because they block in park().
+// Shutdown. Reader and writer are [waker] because they block in handle_os().
 actor_scheduler::troupe! {
     reader: PtyReader [main, expose, waker],
     parser: PtyParser [expose],
@@ -419,6 +419,40 @@ mod tests {
             start.elapsed() < Duration::from_secs(5),
             "shutdown should not block on a live child"
         );
+    }
+
+    #[test]
+    fn write_before_bind_is_flushed_at_bind() {
+        // Data sent on the writer handle before spawn() (before Bind lands)
+        // must queue and flush once bound, not be dropped.
+        let pty = NixPty::spawn_with_config(&PtyConfig {
+            command_executable: "/bin/cat",
+            args: &[],
+            initial_cols: 80,
+            initial_rows: 24,
+        })
+        .expect("pty");
+        let sink = CaptureSink::default();
+        let mut troupe = PtyTroupe::new(pty).expect("troupe");
+        let writer = troupe.writer_handle();
+
+        writer
+            .send(Message::Data(b"queued-before-bind".to_vec()))
+            .expect("early write");
+
+        let handle = troupe
+            .spawn(Box::new(sink.clone()), Box::new(sink.clone()))
+            .expect("spawn");
+
+        assert!(
+            sink.wait_for(Duration::from_secs(5), |s| s
+                .printed_text()
+                .contains("queued-before-bind")),
+            "writer should flush data queued before bind"
+        );
+
+        drop(writer);
+        drop(handle);
     }
 
     #[test]

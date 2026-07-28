@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "Unified Intermediate Representation and SIMD Backends for PixelFlow"
 
+[lib]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
 [lints]
 workspace = true
 

@@ -135,7 +135,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for MockVsyncActor {
         Ok(())
     }
 
-    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -736,7 +736,7 @@ fn shutdown_stops_processing_immediately() {
             fn handle_management(&mut self, _: VsyncManagement) -> HandlerResult {
                 Ok(())
             }
-            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }

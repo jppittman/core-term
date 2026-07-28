@@ -112,7 +112,7 @@ fn parse_attrs(group_str: &str) -> ActorAttrs {
         match part.trim() {
             "main" => attrs.is_main = true,
             "expose" => attrs.is_exposed = true,
-            // An actor that blocks in `park()` on a file descriptor (epoll,
+            // An actor that blocks in `handle_os()` on a file descriptor (epoll,
             // kqueue) needs a `WakeHandler` wired into its inbound handles so
             // sends interrupt the poll. `[waker]` reserves a slot in the
             // generated `Wakers` struct for that actor. `[main]` implies a
@@ -464,7 +464,7 @@ pub fn troupe(input: TokenStream) -> TokenStream {
         ///
         /// One optional field per slot: `Some(waker)` wires that `WakeHandler`
         /// into every inbound handle of the actor, so a send interrupts the
-        /// `park()` poll it is blocked in; `None` leaves it doorbell-only.
+        /// `handle_os()` poll it is blocked in; `None` leaves it doorbell-only.
         #[derive(Default)]
         pub struct Wakers {{
             {wakers_fields}
