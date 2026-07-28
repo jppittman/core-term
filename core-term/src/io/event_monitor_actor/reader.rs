@@ -22,7 +22,7 @@
 //! [`PtySender::send_child_exited`] so the terminal can quit instead of
 //! sitting on a dead session.
 
-use super::{Directory, FilledBuf, NoControl, ParserControl, ParserManagement, ReaderManagement};
+use super::{Directory, FilledBuf, ParserControl, ParserManagement, ReaderManagement};
 use crate::io::event::{Event, EventFlags, EventMonitor};
 use crate::io::pty::NixPty;
 use crate::io::traits::PtySender;
@@ -32,6 +32,7 @@ use actor_scheduler::{
     SystemStatus, TroupeActor,
 };
 use log::*;
+use std::convert::Infallible;
 use std::io::Read;
 use std::sync::Arc;
 
@@ -139,7 +140,7 @@ impl PtyReader {
 
 impl ActorTypes for PtyReader {
     type Data = Vec<u8>;
-    type Control = NoControl;
+    type Control = Infallible;
     type Management = ReaderManagement;
 }
 
@@ -152,7 +153,7 @@ impl TroupeActor<Directory> for PtyReader {
     }
 }
 
-impl Actor<Vec<u8>, NoControl, ReaderManagement> for PtyReader {
+impl Actor<Vec<u8>, Infallible, ReaderManagement> for PtyReader {
     fn handle_data(&mut self, mut buf: Vec<u8>) -> HandlerResult {
         let Some(bound) = self.bound.as_mut() else {
             return Ok(()); // not bound yet; drop (no reader data arrives pre-bind)
@@ -170,8 +171,8 @@ impl Actor<Vec<u8>, NoControl, ReaderManagement> for PtyReader {
         Ok(())
     }
 
-    fn handle_control(&mut self, _msg: NoControl) -> HandlerResult {
-        Ok(())
+    fn handle_control(&mut self, msg: Infallible) -> HandlerResult {
+        match msg {}
     }
 
     fn handle_management(&mut self, msg: ReaderManagement) -> HandlerResult {

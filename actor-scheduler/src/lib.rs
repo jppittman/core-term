@@ -59,11 +59,11 @@
 //! # Example (Basic Scheduler)
 //!
 //! ```rust
-//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler, ActorStatus, SystemStatus, HandlerResult, HandlerError};
+//! use actor_scheduler::{ActorScheduler, Message, Actor, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 //!
 //! struct MyHandler;
 //!
-//! impl SchedulerHandler<String, String, String> for MyHandler {
+//! impl Actor<String, String, String> for MyHandler {
 //!     fn handle_data(&mut self, msg: String) -> HandlerResult {
 //!         println!("Data: {}", msg);
 //!         Ok(())
@@ -388,10 +388,6 @@ pub trait Actor<D, C, M> {
     /// Can return `HandlerError::Fatal` to trigger shutdown.
     fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError>;
 }
-
-/// Legacy alias for backward compatibility
-#[deprecated(since = "0.2.0", note = "Use `Actor` instead")]
-pub use Actor as SchedulerHandler;
 
 /// Defines the message types for an actor managed by the troupe! macro.
 ///
@@ -1148,20 +1144,24 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         }
     }
 
-    /// Single non-blocking drain cycle for cooperative scheduling.
+    /// Single non-blocking drain cycle, for driving an actor synchronously
+    /// without a dedicated thread.
     ///
-    /// Intended for actors running on a shared Kubelet thread rather than a
-    /// dedicated OS thread. The Kubelet calls `poll_once()` on each cooperative
-    /// pod in round-robin during its controller loop.
+    /// Cooperative multiplexing of multiple actors on one thread is the green
+    /// tier's job (`Host` in `host.rs`; see
+    /// `docs/designs/actor-scheduler-mealy-transducer.md`), not this method's.
+    /// Its remaining real callers are test fixtures that need to step an
+    /// actor's message loop by hand; it is expected to leave the public API
+    /// once those callers migrate to `Host`.
     ///
     /// Unlike [`run`], `poll_once()` never blocks:
     /// - If the doorbell is empty, it still attempts one drain pass (the actor
     ///   may have work from a previous `Working` state).
-    /// - Returns `Some(phase)` when the pod should stop; `None` to keep polling.
+    /// - Returns `Some(phase)` when the actor should stop; `None` to keep polling.
     ///
     /// # Caller responsibility
     ///
-    /// The Kubelet must continue calling `poll_once()` after a `Disconnected`
+    /// The caller must continue calling `poll_once()` after a `Disconnected`
     /// doorbell until `Some` is returned — buffered SPSC messages need draining.
     pub fn poll_once<A>(&mut self, actor: &mut A) -> Option<Exit>
     where
@@ -1259,7 +1259,7 @@ mod tests {
         log: Arc<Mutex<Vec<String>>>,
     }
 
-    impl SchedulerHandler<String, String, String> for TestHandler {
+    impl Actor<String, String, String> for TestHandler {
         fn handle_data(&mut self, msg: String) -> HandlerResult {
             self.log.lock().unwrap().push(format!("Data: {}", msg));
             Ok(())
@@ -1393,7 +1393,7 @@ mod tests {
             mgmt_count: usize,
         }
 
-        impl SchedulerHandler<i32, String, bool> for CountingHandler {
+        impl Actor<i32, String, bool> for CountingHandler {
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.data_count += 1;
                 Ok(())
