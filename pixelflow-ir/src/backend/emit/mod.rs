@@ -710,6 +710,14 @@ trait IsaBackend {
     /// append + anchor the constant pool). After this, `code` is complete.
     fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32);
 
+    /// A fixed scratch register safe as a reload target for a Select whose
+    /// result AND both branches are spilled (the mask occupies
+    /// `RELOAD_REGS[0]` as the spilled destination, `if_true` takes
+    /// `RELOAD_REGS[1]`, and `if_false` needs a fourth register). Must be
+    /// outside the allocator pool and untouched by this backend's own
+    /// `Select` emission.
+    fn select_extra_reload(&self) -> Reg;
+
     /// Wrap a per-batch `body` (result in `result_reg`, spilling into a
     /// `frame_size`-slot frame) in the collapse loop scaffold, producing a
     /// complete [`CollapseKernelFn`](executable::CollapseKernelFn): the
@@ -866,6 +874,7 @@ fn emit_dag_body<B: IsaBackend>(
             &allocation.assignment,
             &layout.spill_slots,
             &allocation.rematerialize,
+            backend.select_extra_reload(),
         )?;
 
         // Select with a guard region: emit a uniform-mask short-circuit wrapper.
@@ -1119,6 +1128,12 @@ impl IsaBackend for Aarch64Backend {
         // RET
         code.extend_from_slice(&0xD65F03C0u32.to_le_bytes());
         self.finish_pool(code);
+    }
+
+    fn select_extra_reload(&self) -> Reg {
+        // v28: fixed-purpose scratch outside the allocatable range; BSL
+        // reads its three operands directly and never touches it.
+        Reg(28)
     }
 
     // AAPCS64: x0 = ctx (read-only in the body's gathers), x1 = out,
@@ -1668,12 +1683,14 @@ fn emit_mov_reg(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 /// The "dst-as-temporary" trick: ARM NEON reads all sources before writing
 /// the destination, so loading a spilled operand into dst is safe for binary
 /// ops (the instruction reads before it writes).
+#[allow(clippy::too_many_arguments)] // the register-allocation state is one logical argument
 pub fn resolve_operands(
     op: &ScheduledOp,
     dst_loc: Loc,
     assignment: &alloc::collections::BTreeMap<regalloc::ValueId, Reg>,
     spill_slots: &alloc::collections::BTreeMap<regalloc::ValueId, u32>,
     rematerialize: &alloc::collections::BTreeMap<regalloc::ValueId, u32>,
+    select_extra: Reg,
 ) -> Result<InstructionPlan, &'static str> {
     let tmp_op = RELOAD_REGS[1]; // v27 — always safe for operand reload
 
@@ -1837,16 +1854,18 @@ pub fn resolve_operands(
                     let c_reg = if b_spilled && c_spilled {
                         // Both branches spilled → two DISTINCT reload targets.
                         // tmp_op (RELOAD_REGS[1]) holds if_true; if_false takes
-                        // RELOAD_REGS[0], which is free whenever `dst` is a real
+                        // RELOAD_REGS[0] — free whenever `dst` is a real
                         // register (reload regs are never in the allocator
-                        // pool). Only a spilled *result* (dst == RELOAD_REGS[0])
-                        // leaves too few registers.
+                        // pool). A spilled *result* (dst == RELOAD_REGS[0],
+                        // holding the mask) needs a fourth register: the
+                        // backend's `select_extra_reload`, a fixed scratch its
+                        // own Select emission never touches. Optimized glyph
+                        // arenas reach this under real register pressure.
                         if dst.0 == RELOAD_REGS[0].0 {
-                            return Err(
-                                "Select with a spilled result and both branches spilled not supported",
-                            );
+                            resolve(*c, select_extra, &mut reloads)
+                        } else {
+                            resolve(*c, RELOAD_REGS[0], &mut reloads)
                         }
-                        resolve(*c, RELOAD_REGS[0], &mut reloads)
                     } else {
                         // At most one branch spilled → tmp_op suffices for it.
                         resolve(*c, tmp_op, &mut reloads)
@@ -2519,6 +2538,13 @@ impl IsaBackend for X86Backend {
         code.push(0xC3); // RET
     }
 
+    fn select_extra_reload(&self) -> Reg {
+        // xmm13: builtin scratch, unused by `emit_select` (whose internal
+        // temp is X86_SCRATCH/xmm10) and by the reload path (movups /
+        // RIP-relative consts touch no scratch).
+        Reg(13)
+    }
+
     // SysV: rdi = ctx (read-only in the body's gathers), rsi = out,
     // rdx = groups, xmm0..3 = x0/y/z/w. Loop registers: r8 = counter; the
     // body's scratch GPRs are rax/rcx (gather, movmskps) — disjoint. In
@@ -2827,6 +2853,12 @@ impl IsaBackend for Avx512Backend {
         avx512::emit_ret(code);
     }
 
+    fn select_extra_reload(&self) -> Reg {
+        // zmm13: outside the allocatable range and the reload pair;
+        // `vpternlogd` consumes its three operands with no temp.
+        Reg(13)
+    }
+
     // Same register roles as `X86Backend::emit_collapse_loop` at zmm width;
     // AVX-512 always uses an allocated frame (no red-zone mode), so the
     // body's slots sit at [rsp..bytes) and the coordinate slots above them.
@@ -3131,6 +3163,12 @@ impl IsaBackend for Avx2Backend {
         avx2::emit_ret(code);
     }
 
+    fn select_extra_reload(&self) -> Reg {
+        // ymm13: outside the allocatable range and the reload pair; the
+        // AVX2 select is a VEX blend with no internal temp.
+        Reg(13)
+    }
+
     // Same register roles as `X86Backend::emit_collapse_loop` at ymm width;
     // AVX2 always uses an allocated frame (mirrors AVX-512).
     fn emit_collapse_loop(
@@ -3393,7 +3431,7 @@ mod tests {
         // left=v4, right=v5, dst=v6 — all in registers
         let (assign, spills, remat) = make_maps(&[(0, 4), (1, 5), (2, 6)], &[]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat).unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         assert!(plan.reloads.is_empty());
         assert!(plan.store.is_none());
@@ -3413,7 +3451,7 @@ mod tests {
         // left spilled at offset 0, right in v5
         let (assign, spills, remat) = make_maps(&[(1, 5), (2, 6)], &[(0, 0)]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat).unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         assert_eq!(plan.reloads.len(), 1);
         assert_eq!(
@@ -3439,7 +3477,7 @@ mod tests {
         // Both spilled: left → dst (temp trick), right → tmp_op
         let (assign, spills, remat) = make_maps(&[(2, 6)], &[(0, 0), (1, 16)]);
         let op = ScheduledOp::Binary(OpKind::Mul, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat).unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         assert_eq!(plan.reloads.len(), 2);
         // left → dst (v6), right → tmp_op (v27)
@@ -3473,7 +3511,7 @@ mod tests {
         // dst is spilled → compute into RELOAD_REGS[0], then store
         let (assign, spills, remat) = make_maps(&[(0, 4), (1, 5)], &[(2, 32)]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Spill(32), &assign, &spills, &remat).unwrap();
+        let plan = resolve_operands(&op, Loc::Spill(32), &assign, &spills, &remat, Reg(13)).unwrap();
 
         // dst should be RELOAD_REGS[0] since result is spilled
         assert_eq!(
@@ -3504,7 +3542,7 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat).unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         assert!(plan.reloads.is_empty());
         // c=v7 ≠ dst=v8, so setup_mov should copy c → dst
@@ -3530,7 +3568,7 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat).unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         // a → dst, b → tmp_op loaded upfront
         assert_eq!(plan.reloads.len(), 2);
@@ -3577,7 +3615,7 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat).unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         // Only a and b reloads upfront — c is deferred
         assert_eq!(plan.reloads.len(), 2);
@@ -3594,7 +3632,7 @@ mod tests {
     fn resolve_var_is_nop() {
         let (assign, spills, remat) = make_maps(&[(0, 0)], &[]);
         let op = ScheduledOp::Var(0);
-        let plan = resolve_operands(&op, Loc::Reg(Reg(0)), &assign, &spills, &remat).unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(0)), &assign, &spills, &remat, Reg(13)).unwrap();
         assert_eq!(plan.op, ResolvedOp::Nop);
         assert!(plan.reloads.is_empty());
         assert!(plan.store.is_none());
@@ -3604,7 +3642,7 @@ mod tests {
     fn resolve_const() {
         let (assign, spills, remat) = make_maps(&[(0, 6)], &[]);
         let op = ScheduledOp::Const(core::f32::consts::PI);
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat).unwrap();
+        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
         assert_eq!(
             plan.op,
             ResolvedOp::LoadConst {

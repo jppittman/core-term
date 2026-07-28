@@ -882,6 +882,7 @@ dependencies = [
  "pixelflow-compiler",
  "pixelflow-core",
  "pixelflow-ir",
+ "pixelflow-search",
  "proptest",
  "serde",
  "tempfile",
