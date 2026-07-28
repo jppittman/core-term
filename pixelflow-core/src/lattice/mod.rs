@@ -382,6 +382,11 @@ impl Lattice {
     /// compiler during codegen. Falls back to nothing — a `Kernel` is always
     /// an arena, always compilable — except when this build's `Field` width is
     /// not the JIT's, where it panics rather than silently mis-tabulating.
+    ///
+    /// The compiled form is the collapse kernel: the X loop lives *inside*
+    /// the emitted code, so tabulation is one call per row rather than one
+    /// `extern "C"` call per SIMD batch — no per-batch spill/reload of the
+    /// loop-carried coordinate state at the Rust↔JIT boundary.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[must_use]
     pub fn bake(&self, kernel: &pixelflow_ir::Kernel) -> DiscreteManifold {
@@ -391,9 +396,68 @@ impl Lattice {
             "Lattice::bake: Field width does not match the JIT's emitted width"
         );
         let (arena, root) = kernel.parts();
-        let jit = pixelflow_ir::jit_cache::compile_cached(arena, root)
+        let jit = pixelflow_ir::jit_cache::compile_collapse_cached(arena, root)
             .expect("kernel failed to compile");
-        self.collapse(&RealizedKernel(jit))
+
+        let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
+        let mut buffer = vec![0.0f32; self.len()];
+        let full_groups = ex / PARALLELISM;
+        let tail = ex % PARALLELISM;
+        // A `Kernel` declares no buffers, so the context register is never
+        // read; the pointer just satisfies the ABI.
+        let ctx = core::ptr::null();
+        let x0 = Field::sequential(self.origin[0]);
+        let x_tail = Field::sequential(self.origin[0] + (full_groups * PARALLELISM) as f32);
+
+        let mut row = 0usize;
+        for w in 0..ew {
+            let w_field = Field::from(self.origin[3] + w as f32);
+            for z in 0..ez {
+                let z_field = Field::from(self.origin[2] + z as f32);
+                for y in 0..ey {
+                    let y_field = Field::from(self.origin[1] + y as f32);
+                    let row_offset = row * ex;
+                    // SAFETY: bake checked size_of::<Field>() == the JIT's
+                    // emitted width; the row slice holds full_groups whole
+                    // batches; the kernel came from compile_collapse_cached.
+                    unsafe {
+                        jit.call_collapse(
+                            ctx,
+                            buffer[row_offset..].as_mut_ptr(),
+                            full_groups,
+                            core::mem::transmute::<Field, JitVec>(x0),
+                            core::mem::transmute::<Field, JitVec>(y_field),
+                            core::mem::transmute::<Field, JitVec>(z_field),
+                            core::mem::transmute::<Field, JitVec>(w_field),
+                        );
+                    }
+                    if tail > 0 {
+                        let mut scratch = [0.0f32; PARALLELISM];
+                        // SAFETY: as above; scratch holds one whole batch.
+                        unsafe {
+                            jit.call_collapse(
+                                ctx,
+                                scratch.as_mut_ptr(),
+                                1,
+                                core::mem::transmute::<Field, JitVec>(x_tail),
+                                core::mem::transmute::<Field, JitVec>(y_field),
+                                core::mem::transmute::<Field, JitVec>(z_field),
+                                core::mem::transmute::<Field, JitVec>(w_field),
+                            );
+                        }
+                        buffer[row_offset + full_groups * PARALLELISM..row_offset + ex]
+                            .copy_from_slice(&scratch[..tail]);
+                    }
+                    row += 1;
+                }
+            }
+        }
+
+        DiscreteManifold {
+            buffer,
+            width: ex,
+            height: ey * ez * ew,
+        }
     }
 
     /// Fold all points of the lattice into a per-lane SIMD accumulator.
@@ -588,12 +652,6 @@ impl Lattice {
 #[cfg(test)]
 mod tests;
 
-/// A JIT-compiled kernel driving the generic collapse loop — the fast path
-/// of [`Lattice::bake`]. `Field` is transmuted to the emitter's vector ABI;
-/// `bake` guards the width match before constructing one.
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-struct RealizedKernel(alloc::sync::Arc<pixelflow_ir::JitManifold>);
-
 /// The vector type of the JIT's call ABI on this build. Mirrors
 /// `pixelflow_ir::JIT_VECTOR_BYTES`'s 3-way split (SSE2/AVX2/AVX-512).
 #[cfg(all(
@@ -612,25 +670,6 @@ type JitVec = core::arch::x86_64::__m256;
 type JitVec = core::arch::x86_64::__m512;
 #[cfg(target_arch = "aarch64")]
 type JitVec = core::arch::aarch64::float32x4_t;
-
-#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-impl Manifold<(Field, Field, Field, Field)> for RealizedKernel {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, (x, y, z, w): (Field, Field, Field, Field)) -> Field {
-        // SAFETY: realize checked size_of::<Field>() == JIT_VECTOR_BYTES, and
-        // the code was emitted by our own backend for exactly that ABI.
-        unsafe {
-            core::mem::transmute::<JitVec, Field>(self.0.call(
-                core::mem::transmute::<Field, JitVec>(x),
-                core::mem::transmute::<Field, JitVec>(y),
-                core::mem::transmute::<Field, JitVec>(z),
-                core::mem::transmute::<Field, JitVec>(w),
-            ))
-        }
-    }
-}
 
 // ============================================================================
 // BilinearSampler: smooth read-back of a collapsed lattice

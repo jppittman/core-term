@@ -31,16 +31,50 @@ use crate::backend::emit;
 
 static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Arc<JitManifold>>>> = OnceLock::new();
 
-/// Compile the kernel rooted at `root`, sharing previously compiled code for
-/// canonically identical kernels. The returned `Arc` is the shared handle —
-/// two constructions of the same kernel yield pointer-equal manifolds.
+/// The two compiled forms a kernel can take. The mode tags the cache key —
+/// the same arena compiles to different code (and a different ABI) per mode,
+/// so the forms must never share an entry.
+#[derive(Clone, Copy)]
+enum Mode {
+    /// One call = one SIMD batch (`KernelFn`/`CtxKernelFn`).
+    PerBatch,
+    /// One call = a whole row of batches (`CollapseKernelFn`).
+    Collapse,
+}
+
+/// Compile the kernel rooted at `root` to the per-batch form, sharing
+/// previously compiled code for canonically identical kernels. The returned
+/// `Arc` is the shared handle — two constructions of the same kernel yield
+/// pointer-equal manifolds.
 pub fn compile_cached(
     arena: &ExprArena,
     root: ExprId,
 ) -> Result<Arc<JitManifold>, &'static str> {
-    let Some(key) = canonical_key(arena, root) else {
+    compile_cached_mode(arena, root, Mode::PerBatch)
+}
+
+/// Compile the kernel rooted at `root` to the collapse (internal-loop) form
+/// — call through [`JitManifold::call_collapse`] — with the same sharing.
+pub fn compile_collapse_cached(
+    arena: &ExprArena,
+    root: ExprId,
+) -> Result<Arc<JitManifold>, &'static str> {
+    compile_cached_mode(arena, root, Mode::Collapse)
+}
+
+fn compile_cached_mode(
+    arena: &ExprArena,
+    root: ExprId,
+    mode: Mode,
+) -> Result<Arc<JitManifold>, &'static str> {
+    let compile = |arena: &ExprArena, root: ExprId| match mode {
+        Mode::PerBatch => emit::compile_arena_dag(arena, root),
+        Mode::Collapse => emit::compile_collapse(arena, root),
+    };
+
+    let Some(key) = canonical_key(arena, root, mode) else {
         // Uncacheable (bound memory): compile fresh.
-        let result = emit::compile_arena_dag(arena, root)?;
+        let result = compile(arena, root)?;
         return Ok(Arc::new(JitManifold::new(result.code)));
     };
 
@@ -56,7 +90,7 @@ pub fn compile_cached(
     // Compile outside the lock so concurrent distinct-kernel constructions
     // don't serialize. A racing duplicate compile wastes work; the first
     // insertion wins so all callers share one region.
-    let result = emit::compile_arena_dag(arena, root)?;
+    let result = compile(arena, root)?;
     let compiled = Arc::new(JitManifold::new(result.code));
     let mut guard = cache.lock().expect("jit_cache: lock poisoned");
     Ok(guard.entry(key).or_insert(compiled).clone())
@@ -71,11 +105,11 @@ pub fn entry_count() -> usize {
         .unwrap_or(0)
 }
 
-/// Canonical serialization of the subgraph reachable from `root`: nodes in
-/// ascending original id order (the arena is append-only, so children always
-/// precede parents), child references remapped to dense indices. `None` if
-/// the subgraph reads bound memory.
-fn canonical_key(arena: &ExprArena, root: ExprId) -> Option<Vec<u8>> {
+/// Canonical serialization of the subgraph reachable from `root`: a leading
+/// mode byte, then nodes in ascending original id order (the arena is
+/// append-only, so children always precede parents), child references
+/// remapped to dense indices. `None` if the subgraph reads bound memory.
+fn canonical_key(arena: &ExprArena, root: ExprId, mode: Mode) -> Option<Vec<u8>> {
     let len = arena.nodes_raw().len();
     let mut reachable = vec![false; len];
     let mut stack = vec![root];
@@ -89,7 +123,11 @@ fn canonical_key(arena: &ExprArena, root: ExprId) -> Option<Vec<u8>> {
     // Dense remap in ascending id order.
     let mut dense: Vec<u32> = vec![u32::MAX; len];
     let mut next = 0u32;
-    let mut key: Vec<u8> = Vec::with_capacity(len * 8);
+    let mut key: Vec<u8> = Vec::with_capacity(len * 8 + 1);
+    key.push(match mode {
+        Mode::PerBatch => 0,
+        Mode::Collapse => 1,
+    });
 
     let push_id = |key: &mut Vec<u8>, dense: &[u32], id: ExprId| {
         let d = dense[id.0 as usize];
@@ -199,7 +237,10 @@ mod tests {
     fn key_is_garbage_insensitive_and_structure_sensitive() {
         let (a1, r1) = circle_arena(false);
         let (a2, r2) = circle_arena(true);
-        assert_eq!(canonical_key(&a1, r1), canonical_key(&a2, r2));
+        assert_eq!(
+            canonical_key(&a1, r1, Mode::PerBatch),
+            canonical_key(&a2, r2, Mode::PerBatch)
+        );
 
         let mut a3 = ExprArena::new();
         let x = a3.push_var(0);
@@ -208,6 +249,9 @@ mod tests {
         let y2 = a3.push_binary(OpKind::Mul, y, y);
         let s = a3.push_binary(OpKind::Add, y2, x2); // operand order flipped
         let r3 = a3.push_unary(OpKind::Sqrt, s);
-        assert_ne!(canonical_key(&a1, r1), canonical_key(&a3, r3));
+        assert_ne!(
+            canonical_key(&a1, r1, Mode::PerBatch),
+            canonical_key(&a3, r3, Mode::PerBatch)
+        );
     }
 }

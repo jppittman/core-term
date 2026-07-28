@@ -5,7 +5,7 @@
 //! would create a dependency cycle. Instead, `kernel_jit!` emits a thin wrapper in
 //! the user's crate that calls through to `JitManifold`.
 
-use crate::backend::emit::executable::{CtxKernelFn, ExecutableCode, KernelFn};
+use crate::backend::emit::executable::{CollapseKernelFn, CtxKernelFn, ExecutableCode, KernelFn};
 
 /// A JIT-compiled kernel. Owns the executable code for one specific parameter
 /// combination. No cache — caller decides lifetime.
@@ -75,6 +75,35 @@ impl JitManifold {
         let func: CtxKernelFn = unsafe { self.code.as_fn() };
         func(ctx, x, y, z, w)
     }
+    /// Run a collapse (internal-loop) kernel: one call fills `groups`
+    /// batches of `out` from lane-sequential `x0`, stepping X by the batch
+    /// width per iteration (4 lanes, step 4.0).
+    ///
+    /// # Safety
+    ///
+    /// - The kernel must have been compiled by
+    ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
+    ///   per-batch entries emit a different ABI.
+    /// - `out` must be valid for `groups * lanes` writable `f32`s.
+    /// - `ctx` must hold one valid base pointer per buffer the arena
+    ///   declares (never read when it declares none).
+    #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
+    #[inline(always)]
+    pub unsafe fn call_collapse(
+        &self,
+        ctx: *const *const f32,
+        out: *mut f32,
+        groups: usize,
+        x0: core::arch::aarch64::float32x4_t,
+        y: core::arch::aarch64::float32x4_t,
+        z: core::arch::aarch64::float32x4_t,
+        w: core::arch::aarch64::float32x4_t,
+    ) {
+        // SAFETY: the ExecutableCode was produced by our JIT compiler which
+        // emits code matching the CollapseKernelFn signature.
+        let func: CollapseKernelFn = unsafe { self.code.as_fn() };
+        func(ctx, out, groups, x0, y, z, w)
+    }
 }
 
 #[cfg(all(
@@ -134,6 +163,35 @@ impl JitManifold {
         // arenas.
         let func: CtxKernelFn = unsafe { self.code.as_fn() };
         func(ctx, x, y, z, w)
+    }
+    /// Run a collapse (internal-loop) kernel: one call fills `groups`
+    /// batches of `out` from lane-sequential `x0`, stepping X by the batch
+    /// width per iteration (4 lanes, step 4.0).
+    ///
+    /// # Safety
+    ///
+    /// - The kernel must have been compiled by
+    ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
+    ///   per-batch entries emit a different ABI.
+    /// - `out` must be valid for `groups * lanes` writable `f32`s.
+    /// - `ctx` must hold one valid base pointer per buffer the arena
+    ///   declares (never read when it declares none).
+    #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
+    #[inline(always)]
+    pub unsafe fn call_collapse(
+        &self,
+        ctx: *const *const f32,
+        out: *mut f32,
+        groups: usize,
+        x0: core::arch::x86_64::__m128,
+        y: core::arch::x86_64::__m128,
+        z: core::arch::x86_64::__m128,
+        w: core::arch::x86_64::__m128,
+    ) {
+        // SAFETY: the ExecutableCode was produced by our JIT compiler which
+        // emits code matching the CollapseKernelFn signature.
+        let func: CollapseKernelFn = unsafe { self.code.as_fn() };
+        func(ctx, out, groups, x0, y, z, w)
     }
 }
 
@@ -195,6 +253,35 @@ impl JitManifold {
         let func: CtxKernelFn = unsafe { self.code.as_fn() };
         func(ctx, x, y, z, w)
     }
+    /// Run a collapse (internal-loop) kernel: one call fills `groups`
+    /// batches of `out` from lane-sequential `x0`, stepping X by the batch
+    /// width per iteration (8 lanes, step 8.0).
+    ///
+    /// # Safety
+    ///
+    /// - The kernel must have been compiled by
+    ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
+    ///   per-batch entries emit a different ABI.
+    /// - `out` must be valid for `groups * lanes` writable `f32`s.
+    /// - `ctx` must hold one valid base pointer per buffer the arena
+    ///   declares (never read when it declares none).
+    #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
+    #[inline(always)]
+    pub unsafe fn call_collapse(
+        &self,
+        ctx: *const *const f32,
+        out: *mut f32,
+        groups: usize,
+        x0: core::arch::x86_64::__m256,
+        y: core::arch::x86_64::__m256,
+        z: core::arch::x86_64::__m256,
+        w: core::arch::x86_64::__m256,
+    ) {
+        // SAFETY: the ExecutableCode was produced by our JIT compiler which
+        // emits code matching the CollapseKernelFn signature.
+        let func: CollapseKernelFn = unsafe { self.code.as_fn() };
+        func(ctx, out, groups, x0, y, z, w)
+    }
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
@@ -250,6 +337,35 @@ impl JitManifold {
         // arenas.
         let func: CtxKernelFn = unsafe { self.code.as_fn() };
         func(ctx, x, y, z, w)
+    }
+    /// Run a collapse (internal-loop) kernel: one call fills `groups`
+    /// batches of `out` from lane-sequential `x0`, stepping X by the batch
+    /// width per iteration (16 lanes, step 16.0).
+    ///
+    /// # Safety
+    ///
+    /// - The kernel must have been compiled by
+    ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
+    ///   per-batch entries emit a different ABI.
+    /// - `out` must be valid for `groups * lanes` writable `f32`s.
+    /// - `ctx` must hold one valid base pointer per buffer the arena
+    ///   declares (never read when it declares none).
+    #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
+    #[inline(always)]
+    pub unsafe fn call_collapse(
+        &self,
+        ctx: *const *const f32,
+        out: *mut f32,
+        groups: usize,
+        x0: core::arch::x86_64::__m512,
+        y: core::arch::x86_64::__m512,
+        z: core::arch::x86_64::__m512,
+        w: core::arch::x86_64::__m512,
+    ) {
+        // SAFETY: the ExecutableCode was produced by our JIT compiler which
+        // emits code matching the CollapseKernelFn signature.
+        let func: CollapseKernelFn = unsafe { self.code.as_fn() };
+        func(ctx, out, groups, x0, y, z, w)
     }
 }
 
