@@ -58,6 +58,7 @@ impl JitManifold {
     ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
     /// - The SIMD types must match the platform ABI the emitter generated
     ///   code for (ARM64 NEON: `float32x4_t`).
+    #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates
     #[must_use]
     #[inline(always)]
     pub unsafe fn call_bound(
@@ -117,6 +118,7 @@ impl JitManifold {
     ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
     /// - The SIMD types must match the platform ABI the emitter generated
     ///   code for (x86-64 SSE2: `__m128`).
+    #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates
     #[inline(always)]
     #[must_use]
     pub unsafe fn call_bound(
@@ -176,6 +178,7 @@ impl JitManifold {
     ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
     /// - The SIMD types must match the platform ABI the emitter generated
     ///   code for (x86-64 AVX2: `__m256`).
+    #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates
     #[inline(always)]
     #[must_use]
     pub unsafe fn call_bound(
@@ -231,6 +234,7 @@ impl JitManifold {
     ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
     /// - The SIMD types must match the platform ABI the emitter generated
     ///   code for (x86-64 AVX-512: `__m512`).
+    #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates
     #[inline(always)]
     #[must_use]
     pub unsafe fn call_bound(
