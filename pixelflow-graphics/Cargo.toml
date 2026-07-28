@@ -7,7 +7,10 @@ edition = "2021"
 workspace = true
 
 [lib]
-bench = true
+# The lib's harness is libtest, which rejects Criterion's `--output-format
+# bencher`; CI passes that flag to every `--benches` target, so only the
+# declared Criterion [[bench]] targets may run as benchmarks.
+bench = false
 
 [dependencies]
 # Core dependencies
