@@ -557,11 +557,7 @@ pub type CollapseKernelFn =
 // ABI. Under `+avx512f` or `+avx2`, `KernelFn` is `__m512`/`__m256` and these
 // `__m128` call sites don't type check; those paths are covered by the
 // `avx512`/`avx2` tests in `mod.rs`.
-#[cfg(all(
-    test,
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
+#[cfg(all(test, not(target_feature = "avx512f"), not(target_feature = "avx2")))]
 mod tests {
     // These tests hand-assemble instruction words as `base | Rd | (Rn << 5) | ...`;
     // the `| 0` / `(0 << 5)` terms document zero register fields on purpose.

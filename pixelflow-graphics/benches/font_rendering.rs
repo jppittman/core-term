@@ -93,7 +93,13 @@ fn bench_pixelflow_with_caching(c: &mut Criterion) {
         b.iter(|| {
             let mut cache = GlyphCache::new();
             for ch in 'A'..='Z' {
-                black_box(CachedText::new(&font, &mut cache, &ch.to_string(), 16.0, 1.0));
+                black_box(CachedText::new(
+                    &font,
+                    &mut cache,
+                    &ch.to_string(),
+                    16.0,
+                    1.0,
+                ));
             }
         });
     });

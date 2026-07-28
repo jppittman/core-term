@@ -803,7 +803,10 @@ fn shutdown_race_does_not_panic() {
                 fn handle_management(&mut self, _: i32) -> HandlerResult {
                     Ok(())
                 }
-                fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn handle_os(
+                    &mut self,
+                    _status: SystemStatus,
+                ) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Idle)
                 }
             }

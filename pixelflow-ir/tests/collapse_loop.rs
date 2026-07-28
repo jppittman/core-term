@@ -26,7 +26,15 @@ const LANES: usize = JIT_VECTOR_BYTES / 4;
 /// One collapse call: fill `out` (whose length must be `groups * LANES`)
 /// from lane-sequential X starting at `x0`, with loop-invariant y/z/w.
 #[allow(clippy::too_many_arguments)] // ctx + out + the four coordinates: the ABI's shape
-fn run_collapse(res: &CompileResult, ctx: &[*const f32], out: &mut [f32], x0: f32, y: f32, z: f32, w: f32) {
+fn run_collapse(
+    res: &CompileResult,
+    ctx: &[*const f32],
+    out: &mut [f32],
+    x0: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+) {
     assert_eq!(out.len() % LANES, 0);
     let groups = out.len() / LANES;
     let seq: Vec<f32> = (0..LANES).map(|i| x0 + i as f32).collect();
@@ -101,7 +109,15 @@ fn run_collapse(res: &CompileResult, ctx: &[*const f32], out: &mut [f32], x0: f3
 /// per-batch entry (`CtxKernelFn` shape — a buffer-free kernel never reads
 /// the context, so passing it unconditionally is sound) over the same row.
 #[allow(clippy::too_many_arguments)] // same ABI shape as run_collapse
-fn run_per_batch(res: &CompileResult, ctx: &[*const f32], out: &mut [f32], x0: f32, y: f32, z: f32, w: f32) {
+fn run_per_batch(
+    res: &CompileResult,
+    ctx: &[*const f32],
+    out: &mut [f32],
+    x0: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+) {
     assert_eq!(out.len() % LANES, 0);
     for (g, chunk) in out.chunks_exact_mut(LANES).enumerate() {
         let base = x0 + (g * LANES) as f32;

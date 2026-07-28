@@ -52,7 +52,10 @@ fn golden_for(ch: char, size: usize) {
             let (x, y) = (i as f32 + 0.5, j as f32 + 0.5);
             let want = eval_scalar(&lowered, lroot, &[x, y, 0.0, 0.0], &BindingTable::empty());
             let jit = got[j * size + i];
-            assert!(jit.is_finite(), "{ch}@{size}: non-finite coverage at ({x},{y})");
+            assert!(
+                jit.is_finite(),
+                "{ch}@{size}: non-finite coverage at ({x},{y})"
+            );
             // 1e-3, not 1e-4: the optimized arena contains `MulAdd` (e-graph
             // FMA fusion), whose rounding is documented platform-specific —
             // the interpreter's reference `mul_add` rounds once, a build

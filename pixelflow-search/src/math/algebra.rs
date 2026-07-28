@@ -359,8 +359,12 @@ impl Rewrite for Associative {
 
         for child in egraph.nodes(left) {
             let Some(child_op) = child.op() else { continue };
-            if child_op.kind() != self.op.kind() { continue }
-            let Some((a, b)) = child.binary_operands() else { continue };
+            if child_op.kind() != self.op.kind() {
+                continue;
+            }
+            let Some((a, b)) = child.binary_operands() else {
+                continue;
+            };
 
             return Some(RewriteAction::Associate {
                 op: self.op,
@@ -412,8 +416,12 @@ impl Rewrite for ReverseAssociative {
         // Check if the right child has a node with the same op
         for child in egraph.nodes(right) {
             let Some(child_op) = child.op() else { continue };
-            if child_op.kind() != self.op.kind() { continue }
-            let Some((b, c)) = child.binary_operands() else { continue };
+            if child_op.kind() != self.op.kind() {
+                continue;
+            }
+            let Some((b, c)) = child.binary_operands() else {
+                continue;
+            };
 
             return Some(RewriteAction::ReverseAssociate {
                 op: self.op,
@@ -507,9 +515,15 @@ impl Rewrite for Distributive {
         let (a, other) = node.binary_operands()?;
 
         for child_node in egraph.nodes(other) {
-            let Some(child_op) = child_node.op() else { continue };
-            if child_op.kind() != self.inner.kind() { continue }
-            let Some((b, c)) = child_node.binary_operands() else { continue };
+            let Some(child_op) = child_node.op() else {
+                continue;
+            };
+            if child_op.kind() != self.inner.kind() {
+                continue;
+            }
+            let Some((b, c)) = child_node.binary_operands() else {
+                continue;
+            };
 
             return Some(RewriteAction::Distribute {
                 outer: self.outer,
@@ -1020,8 +1034,8 @@ pub fn algebra_rules() -> Vec<Box<dyn Rewrite>> {
 #[cfg(test)]
 mod platform_specific_fold_tests {
     use super::*;
-    use crate::egraph::{EGraph, ENode};
     use crate::egraph::rewrite::{Rewrite, RewriteAction};
+    use crate::egraph::{EGraph, ENode};
 
     /// Drive `ConstantFold::apply` directly on `op(consts...)` and report
     /// whether it produced a folded constant.
@@ -1062,7 +1076,10 @@ mod platform_specific_fold_tests {
         // Past -0.5 the result is -1.0 in every tier, so folding is fine again.
         assert_eq!(folds(&ops::Round, &[-0.6]), Some(-1.0));
         // And positive inputs never had the ambiguity.
-        assert_eq!(folds(&ops::Round, &[0.2]).map(f32::to_bits), Some(0.0f32.to_bits()));
+        assert_eq!(
+            folds(&ops::Round, &[0.2]).map(f32::to_bits),
+            Some(0.0f32.to_bits())
+        );
     }
 
     #[test]
@@ -1087,7 +1104,10 @@ mod platform_specific_fold_tests {
         assert_eq!(folds(&ops::Min, &[0.0, -0.0]), None);
         assert_eq!(folds(&ops::Max, &[-0.0, 0.0]), None);
         // Same-signed zeros are indistinguishable, so folding is fine.
-        assert_eq!(folds(&ops::Min, &[0.0, 0.0]).map(f32::to_bits), Some(0.0f32.to_bits()));
+        assert_eq!(
+            folds(&ops::Min, &[0.0, 0.0]).map(f32::to_bits),
+            Some(0.0f32.to_bits())
+        );
     }
 
     /// `Recip`/`Rsqrt` are estimate instructions, and each target estimates
@@ -1131,7 +1151,13 @@ mod platform_specific_fold_tests {
         // only after lowering — so `Select` is the folder-visible consumer; the
         // end-to-end path through a real `and` is covered by
         // `pixelflow-ir/tests/transcendental_jit.rs`.)
-        assert_eq!(folds(&ops::Select, &[f32::from_bits(t), 7.0, 9.0]), Some(7.0));
-        assert_eq!(folds(&ops::Select, &[f32::from_bits(f), 7.0, 9.0]), Some(9.0));
+        assert_eq!(
+            folds(&ops::Select, &[f32::from_bits(t), 7.0, 9.0]),
+            Some(7.0)
+        );
+        assert_eq!(
+            folds(&ops::Select, &[f32::from_bits(f), 7.0, 9.0]),
+            Some(9.0)
+        );
     }
 }

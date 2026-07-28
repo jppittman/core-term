@@ -341,7 +341,9 @@ pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> 
             // so the index is not free in the result.
             ExprNode::Nary(OpKind::Reduce, start, len) => {
                 let children = arena.nary_children_slice(*start, *len);
-                let body = children.get(3).map_or(Variance::ALL, |c| result[c.0 as usize]);
+                let body = children
+                    .get(3)
+                    .map_or(Variance::ALL, |c| result[c.0 as usize]);
                 match bound_index_slot(arena, children) {
                     Some(slot) => body.without(Variance::from_var(slot)),
                     // Malformed binder — refuse to claim invariance we cannot prove.
@@ -587,7 +589,10 @@ mod tests {
             format!("{:?}", Variance::Y.union(Variance::from_var(5))),
             "Variance{Y,i5}"
         );
-        assert_eq!(format!("{:?}", Variance::ALL), "Variance{X,Y,Z,W,i4,i5,i6,i7}");
+        assert_eq!(
+            format!("{:?}", Variance::ALL),
+            "Variance{X,Y,Z,W,i4,i5,i6,i7}"
+        );
     }
 
     #[test]
@@ -677,7 +682,10 @@ mod tests {
         let body = arena.nary_children_slice(*start, *len)[3];
         let body_v = v[body.0 as usize];
 
-        assert!(body_v.depends_on_binder(), "body reads the index: {body_v:?}");
+        assert!(
+            body_v.depends_on_binder(),
+            "body reads the index: {body_v:?}"
+        );
         assert!(body_v.depends_on(4), "slot 4 is the only live binder");
         assert!(body_v.depends_on_y());
         assert!(body_v.is_x_invariant(), "nothing here reads X");
@@ -742,8 +750,4 @@ mod tests {
             "sin(Y) must not be hoistable out of Y, got {out_of_y:?}"
         );
     }
-
-
-
-
 }

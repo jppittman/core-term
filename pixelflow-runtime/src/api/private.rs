@@ -77,9 +77,7 @@ impl std::fmt::Debug for EngineData {
                 .field("target_timestamp", target_timestamp)
                 .field("refresh_interval", refresh_interval)
                 .finish(),
-            Self::WindowGranted(window) => {
-                f.debug_tuple("WindowGranted").field(window).finish()
-            }
+            Self::WindowGranted(window) => f.debug_tuple("WindowGranted").field(window).finish(),
         }
     }
 }

@@ -36,7 +36,7 @@ fn over_is_the_primitive_and_the_named_folds_are_helpers() {
     // is the only difference between them.
     let body = |i: &Kernel| i.add(&Kernel::constant(1.0));
     for (monoid, helper) in [
-        (Monoid::SUM, Kernel::sum_over(4, body) ),
+        (Monoid::SUM, Kernel::sum_over(4, body)),
         (Monoid::PRODUCT, Kernel::product_over(4, body)),
         (Monoid::MAX, Kernel::max_over(4, body)),
         (Monoid::MIN, Kernel::min_over(4, body)),
@@ -165,7 +165,11 @@ fn unrolling_shares_index_invariant_work() {
 
     // sin(Y) is invariant in the index: one copy serves all 16 terms.
     let invariant = Kernel::sum_over(16, |i| i.mul(&Kernel::y().sin()));
-    assert_eq!(count_sin(&invariant), 1, "sin(Y) must be shared, not copied");
+    assert_eq!(
+        count_sin(&invariant),
+        1,
+        "sin(Y) must be shared, not copied"
+    );
 
     // sin(X + i) genuinely varies with the index: N copies is correct, and the
     // sharing must not be so eager that it collapses distinct terms.
@@ -174,7 +178,10 @@ fn unrolling_shares_index_invariant_work() {
 
     // Semantics are unchanged by the sharing: Σ_{i<4} i·sin(0) = 0, and
     // Σ_{i<4} (i + Y) = 6 + 4Y, checked at Y = 2 → 14.
-    assert_eq!(interp(&Kernel::sum_over(4, |i| i.add(&Kernel::y())), 0.0, 2.0), 14.0);
+    assert_eq!(
+        interp(&Kernel::sum_over(4, |i| i.add(&Kernel::y())), 0.0, 2.0),
+        14.0
+    );
 }
 
 /// Placeholder claims are process-wide, so two threads building nested binders
@@ -261,7 +268,12 @@ fn occlusion_shaped_accumulation_over_samples() {
     const N: u32 = 4;
     let field = Kernel::x();
     let ao = Kernel::sum_over(N, move |i| {
-        field.at(&Kernel::x().add(i), &Kernel::y(), &Kernel::z(), &Kernel::w())
+        field.at(
+            &Kernel::x().add(i),
+            &Kernel::y(),
+            &Kernel::z(),
+            &Kernel::w(),
+        )
     })
     .div(&Kernel::constant(N as f32));
 
@@ -324,10 +336,7 @@ mod jit {
     #[test]
     fn unrolled_jit_matches_the_interpreter() {
         assert_tiers_agree(&Kernel::sum_over(6, |i| i.mul(&Kernel::x())), "sum");
-        assert_tiers_agree(
-            &Kernel::max_over(5, |i| i.sub(&Kernel::y())),
-            "max",
-        );
+        assert_tiers_agree(&Kernel::max_over(5, |i| i.sub(&Kernel::y())), "max");
         assert_tiers_agree(
             &Kernel::product_over(3, |i| i.add(&Kernel::constant(1.0))),
             "product",
@@ -349,14 +358,8 @@ mod jit {
     fn quantifier_monoids_agree_across_tiers() {
         let to_num = |m: Kernel| m.select(&Kernel::constant(1.0), &Kernel::constant(0.0));
 
-        assert_tiers_agree(
-            &to_num(Kernel::any_over(4, |i| i.gt(&Kernel::x()))),
-            "any",
-        );
-        assert_tiers_agree(
-            &to_num(Kernel::all_over(4, |i| i.ge(&Kernel::x()))),
-            "all",
-        );
+        assert_tiers_agree(&to_num(Kernel::any_over(4, |i| i.gt(&Kernel::x()))), "any");
+        assert_tiers_agree(&to_num(Kernel::all_over(4, |i| i.ge(&Kernel::x()))), "all");
         // Empty domains must produce each quantifier's identity in both tiers.
         assert_tiers_agree(&to_num(Kernel::any_over(0, |i| i.clone())), "any-empty");
         assert_tiers_agree(&to_num(Kernel::all_over(0, |i| i.clone())), "all-empty");

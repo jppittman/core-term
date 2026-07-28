@@ -202,8 +202,7 @@ impl EventMonitor {
         // Convert kernel events to our events
         events_out.clear();
 
-        for i in 0..nev as usize {
-            let kev = &kevents[i];
+        for kev in kevents.iter().take(nev as usize) {
             let token = kev.udata as u64;
 
             let mut flags = KqueueFlags::empty();

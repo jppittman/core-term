@@ -727,10 +727,7 @@ pub struct BilinearSampler {
 /// `Σ tap(x?, y?) · weight` with `x0 = floor(X)`, `fx = X − x0`, and the
 /// mirrored pair in y. Gather clamps each tap to the buffer edge.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn bilinear_arena(
-    width: u32,
-    height: u32,
-) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
+fn bilinear_arena(width: u32, height: u32) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
     use pixelflow_ir::arena::BufferDecl;
     use pixelflow_ir::{ExprArena, OpKind};
 

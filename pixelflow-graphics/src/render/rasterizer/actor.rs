@@ -210,8 +210,8 @@ mod core_tests {
     use crate::render::color::Rgba8;
     use crate::render::frame::Frame;
     use crate::render::Color;
-    use std::sync::Arc;
     use std::sync::mpsc;
+    use std::sync::Arc;
 
     fn request(size: u32) -> RenderRequest<Rgba8> {
         RenderRequest {

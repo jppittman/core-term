@@ -7,6 +7,13 @@
 //!
 //! Everything here is unsafe. This is lowest-level FFI.
 
+#![allow(
+    clippy::missing_safety_doc,
+    clippy::must_use_candidate,
+    clippy::too_many_arguments,
+    reason = "these internal helpers directly mirror variadic Objective-C runtime calls"
+)]
+
 use std::ffi::c_void;
 
 // --- Types ---
@@ -85,8 +92,7 @@ extern "C" {
     pub fn objc_getClass(name: *const u8) -> Class;
     pub fn sel_registerName(name: *const u8) -> Sel;
     pub fn objc_msgSend(self_: Id, op: Sel, ...) -> Id;
-    pub fn objc_allocateClassPair(superclass: Class, name: *const u8, extra_bytes: usize)
-        -> Class;
+    pub fn objc_allocateClassPair(superclass: Class, name: *const u8, extra_bytes: usize) -> Class;
     pub fn objc_registerClassPair(cls: Class);
     pub fn class_addMethod(cls: Class, name: Sel, imp: *const c_void, types: *const u8) -> BOOL;
 }

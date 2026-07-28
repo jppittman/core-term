@@ -95,7 +95,11 @@ fn drain_data_under_control_flood(data_messages: u64) -> u64 {
             // Receiver gone would be a bug in this demo (control is never dropped); a full
             // ring is fine and expected.
         }
-        assert_eq!(node.poll(), Step::Ran, "must always make progress, never park or idle");
+        assert_eq!(
+            node.poll(),
+            Step::Ran,
+            "must always make progress, never park or idle"
+        );
         polls += 1;
         assert!(
             polls < data_messages * 20,

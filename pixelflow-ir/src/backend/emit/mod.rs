@@ -361,12 +361,9 @@ pub const RELOAD_REG: Reg = Reg(12);
 #[cfg(target_arch = "x86_64")]
 pub const RELOAD_REGS: [Reg; 2] = [Reg(11), Reg(12)];
 
-
 // =============================================================================
 // Functional Emitter (x86-64)
 // =============================================================================
-
-
 
 // =============================================================================
 // High-level API
@@ -436,14 +433,6 @@ pub fn compile_arena_dag_with_ctx(
     let uses_map = arena_to_uses(&schedule);
     compile_from_schedule(schedule, uses_map, ctx)
 }
-
-
-
-
-
-
-
-
 
 // =============================================================================
 // Amortized compilation workspace
@@ -3692,8 +3681,6 @@ fn compile_collapse_via_backend<B: IsaBackend>(
     })
 }
 
-
-
 // =============================================================================
 // Tests
 // =============================================================================
@@ -3717,9 +3704,6 @@ mod tests {
         let root = a.push_binary(OpKind::Dwrt, x, v);
         let _ = arena_to_schedule(&a, root);
     }
-
-
-
 
     // =========================================================================
     // Graph Coloring (DAG) Tests
@@ -3788,7 +3772,8 @@ mod tests {
         // left=v4, right=v5, dst=v6 — all in registers
         let (assign, spills, remat) = make_maps(&[(0, 4), (1, 5), (2, 6)], &[]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         assert!(plan.reloads.is_empty());
         assert!(plan.store.is_none());
@@ -3808,7 +3793,8 @@ mod tests {
         // left spilled at offset 0, right in v5
         let (assign, spills, remat) = make_maps(&[(1, 5), (2, 6)], &[(0, 0)]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         assert_eq!(plan.reloads.len(), 1);
         assert_eq!(
@@ -3834,7 +3820,8 @@ mod tests {
         // Both spilled: left → dst (temp trick), right → tmp_op
         let (assign, spills, remat) = make_maps(&[(2, 6)], &[(0, 0), (1, 16)]);
         let op = ScheduledOp::Binary(OpKind::Mul, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         assert_eq!(plan.reloads.len(), 2);
         // left → dst (v6), right → tmp_op (v27)
@@ -3868,7 +3855,8 @@ mod tests {
         // dst is spilled → compute into RELOAD_REGS[0], then store
         let (assign, spills, remat) = make_maps(&[(0, 4), (1, 5)], &[(2, 32)]);
         let op = ScheduledOp::Binary(OpKind::Add, regalloc::ValueId(0), regalloc::ValueId(1));
-        let plan = resolve_operands(&op, Loc::Spill(32), &assign, &spills, &remat, Reg(13)).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Spill(32), &assign, &spills, &remat, Reg(13)).unwrap();
 
         // dst should be RELOAD_REGS[0] since result is spilled
         assert_eq!(
@@ -3899,7 +3887,8 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat, Reg(13)).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         assert!(plan.reloads.is_empty());
         // c=v7 ≠ dst=v8, so setup_mov should copy c → dst
@@ -3925,7 +3914,8 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat, Reg(13)).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         // a → dst, b → tmp_op loaded upfront
         assert_eq!(plan.reloads.len(), 2);
@@ -3972,7 +3962,8 @@ mod tests {
             regalloc::ValueId(1),
             regalloc::ValueId(2),
         );
-        let plan = resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat, Reg(13)).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(8)), &assign, &spills, &remat, Reg(13)).unwrap();
 
         // Only a and b reloads upfront — c is deferred
         assert_eq!(plan.reloads.len(), 2);
@@ -3989,7 +3980,8 @@ mod tests {
     fn resolve_var_is_nop() {
         let (assign, spills, remat) = make_maps(&[(0, 0)], &[]);
         let op = ScheduledOp::Var(0);
-        let plan = resolve_operands(&op, Loc::Reg(Reg(0)), &assign, &spills, &remat, Reg(13)).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(0)), &assign, &spills, &remat, Reg(13)).unwrap();
         assert_eq!(plan.op, ResolvedOp::Nop);
         assert!(plan.reloads.is_empty());
         assert!(plan.store.is_none());
@@ -3999,7 +3991,8 @@ mod tests {
     fn resolve_const() {
         let (assign, spills, remat) = make_maps(&[(0, 6)], &[]);
         let op = ScheduledOp::Const(core::f32::consts::PI);
-        let plan = resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
+        let plan =
+            resolve_operands(&op, Loc::Reg(Reg(6)), &assign, &spills, &remat, Reg(13)).unwrap();
         assert_eq!(
             plan.op,
             ResolvedOp::LoadConst {
@@ -4955,12 +4948,8 @@ mod tests {
                 cy.copy_from_slice(&ys[batch * 4..batch * 4 + 4]);
                 let got = run4_ctx(&res, &ctx, cx, cy);
                 for i in 0..4 {
-                    let want = crate::eval::eval_scalar(
-                        arena,
-                        root,
-                        &[cx[i], cy[i], 0.0, 0.0],
-                        &bindings,
-                    );
+                    let want =
+                        crate::eval::eval_scalar(arena, root, &[cx[i], cy[i], 0.0, 0.0], &bindings);
                     assert_eq!(
                         got[i], want,
                         "{tag} batch {batch} lane {i} (x={}, y={})",
@@ -5090,7 +5079,6 @@ mod tests {
             let ys = [0.0f32; 16];
             check_against_interp(&a, root, buffers, xs, ys, "matmul");
         }
-
     }
 
     // =========================================================================
@@ -5555,14 +5543,26 @@ mod tests {
             let mut missing = alloc::vec::Vec::new();
 
             for &op in REQUIRED_UNARY_OPS {
-                if !try_emit(backend, ResolvedOp::Unary { op, dst: Reg(4), src: Reg(5) }) {
+                if !try_emit(
+                    backend,
+                    ResolvedOp::Unary {
+                        op,
+                        dst: Reg(4),
+                        src: Reg(5),
+                    },
+                ) {
                     missing.push(alloc::format!("unary {:?}", op));
                 }
             }
             for &op in REQUIRED_BINARY_OPS {
                 if !try_emit(
                     backend,
-                    ResolvedOp::Binary { op, dst: Reg(4), left: Reg(4), right: Reg(5) },
+                    ResolvedOp::Binary {
+                        op,
+                        dst: Reg(4),
+                        left: Reg(4),
+                        right: Reg(5),
+                    },
                 ) {
                     missing.push(alloc::format!("binary {:?}", op));
                 }
@@ -5570,17 +5570,33 @@ mod tests {
             for &op in REQUIRED_SHIFT_OPS {
                 if !try_emit(
                     backend,
-                    ResolvedOp::ShiftImm { op, dst: Reg(4), src: Reg(4), amount: 1 },
+                    ResolvedOp::ShiftImm {
+                        op,
+                        dst: Reg(4),
+                        src: Reg(4),
+                        amount: 1,
+                    },
                 ) {
                     missing.push(alloc::format!("shift {:?}", op));
                 }
             }
-            if !try_emit(backend, ResolvedOp::FusedMulAdd { dst: Reg(4), a: Reg(5), b: Reg(6) }) {
+            if !try_emit(
+                backend,
+                ResolvedOp::FusedMulAdd {
+                    dst: Reg(4),
+                    a: Reg(5),
+                    b: Reg(6),
+                },
+            ) {
                 missing.push(alloc::string::String::from("ternary MulAdd"));
             }
             if !try_emit(
                 backend,
-                ResolvedOp::Select { dst: Reg(4), if_true: Reg(5), if_false: Reg(6) },
+                ResolvedOp::Select {
+                    dst: Reg(4),
+                    if_true: Reg(5),
+                    if_false: Reg(6),
+                },
             ) {
                 missing.push(alloc::string::String::from("ternary Select"));
             }

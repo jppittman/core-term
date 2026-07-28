@@ -248,9 +248,7 @@ fn a_folded_mask_blends_like_a_computed_one() {
     // The folder's answer for `0.5 != nextafter(0.5)` — true, and (since the
     // epsilon fix) reachable for ordinary finite values.
     let near = f32::from_bits(0.5f32.to_bits() + 1);
-    let folded = OpKind::Ne
-        .eval_binary(0.5, near)
-        .expect("oracle covers Ne");
+    let folded = OpKind::Ne.eval_binary(0.5, near).expect("oracle covers Ne");
 
     let k = Kernel::x()
         .gt(&Kernel::constant(0.0))
@@ -259,8 +257,16 @@ fn a_folded_mask_blends_like_a_computed_one() {
     let (arena, root) = k.parts();
     let jit = jit_cache::compile_cached(arena, root).expect("mask kernel compiles");
 
-    assert_eq!(call_x(&jit, 1.0), 7.0, "mask true must select if_true exactly");
-    assert_eq!(call_x(&jit, -1.0), 9.0, "mask false must select if_false exactly");
+    assert_eq!(
+        call_x(&jit, 1.0),
+        7.0,
+        "mask true must select if_true exactly"
+    );
+    assert_eq!(
+        call_x(&jit, -1.0),
+        9.0,
+        "mask false must select if_false exactly"
+    );
 }
 
 #[test]
@@ -336,18 +342,36 @@ fn eq_ne_are_exact_not_epsilon() {
 
     let near = f32::from_bits(0.5f32.to_bits() + 1);
     assert_ne!(0.5f32, near, "the two values really are distinct f32s");
-    assert!((0.5f32 - near).abs() < f32::EPSILON, "and closer than EPSILON");
+    assert!(
+        (0.5f32 - near).abs() < f32::EPSILON,
+        "and closer than EPSILON"
+    );
 
     let t = OpKind::mask(true);
     let f = OpKind::mask(false);
-    assert_eq!(OpKind::Eq.eval_binary(0.5, near).map(f32::to_bits), Some(f.to_bits()));
-    assert_eq!(OpKind::Ne.eval_binary(0.5, near).map(f32::to_bits), Some(t.to_bits()));
-    assert_eq!(OpKind::Eq.eval_binary(0.5, 0.5).map(f32::to_bits), Some(t.to_bits()));
+    assert_eq!(
+        OpKind::Eq.eval_binary(0.5, near).map(f32::to_bits),
+        Some(f.to_bits())
+    );
+    assert_eq!(
+        OpKind::Ne.eval_binary(0.5, near).map(f32::to_bits),
+        Some(t.to_bits())
+    );
+    assert_eq!(
+        OpKind::Eq.eval_binary(0.5, 0.5).map(f32::to_bits),
+        Some(t.to_bits())
+    );
 
     // NaN: never equal, always unequal — agreed by every emitter.
     let nan = f32::NAN;
-    assert_eq!(OpKind::Eq.eval_binary(nan, nan).map(f32::to_bits), Some(f.to_bits()));
-    assert_eq!(OpKind::Ne.eval_binary(nan, nan).map(f32::to_bits), Some(t.to_bits()));
+    assert_eq!(
+        OpKind::Eq.eval_binary(nan, nan).map(f32::to_bits),
+        Some(f.to_bits())
+    );
+    assert_eq!(
+        OpKind::Ne.eval_binary(nan, nan).map(f32::to_bits),
+        Some(t.to_bits())
+    );
 
     // `Kernel` exposes no eq/ne constructor, so there is no JIT side to compare
     // against here — the folder IS the consumer that was wrong, and these

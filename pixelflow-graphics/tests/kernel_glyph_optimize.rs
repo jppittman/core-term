@@ -18,9 +18,9 @@
 //! up as a hard number, not a benchmark whisper.
 
 use pixelflow_graphics::fonts::ttf_curve_analytical::{AnalyticalLine, AnalyticalQuad};
-use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 use pixelflow_ir::backend::emit::lowering::lower_dwrt_owned;
+use pixelflow_ir::OpKind;
 
 /// Count reachable nodes matching `pred` from `root`.
 fn count_reachable(arena: &ExprArena, root: ExprId, pred: impl Fn(&ExprNode) -> bool) -> usize {
@@ -199,9 +199,9 @@ fn lowered_winding_ops_are_all_egraph_representable() {
 /// mask) shifts coverage by O(1).
 #[test]
 fn optimized_glyph_matches_raw_within_reassociation_noise() {
+    use pixelflow_graphics::fonts::Font;
     use pixelflow_ir::binding::BindingTable;
     use pixelflow_ir::eval_scalar;
-    use pixelflow_graphics::fonts::Font;
 
     const FONT_DATA: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
     let font = Font::parse(FONT_DATA).unwrap();

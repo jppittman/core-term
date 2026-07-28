@@ -519,8 +519,8 @@ impl Transducer for Host {
 mod tests {
     use super::*;
     use crate::mealy::{Delivery, Flush, send_port};
-    use crate::{ActorScheduler, Message};
     use crate::spsc::{SpscSender, spsc_channel};
+    use crate::{ActorScheduler, Message};
 
     /// A stage that forwards its input onward, counting what it saw.
     struct Forward {
@@ -563,7 +563,11 @@ mod tests {
         ));
 
         tx_in.try_send(1).unwrap();
-        assert_eq!(host.sweep().status, ActorStatus::Busy, "a green actor had work");
+        assert_eq!(
+            host.sweep().status,
+            ActorStatus::Busy,
+            "a green actor had work"
+        );
         assert_eq!(rx_out.try_recv().unwrap(), 2);
     }
 
@@ -582,20 +586,31 @@ mod tests {
             rx_in,
             ForwardWiring { next: tx_out },
         ));
-        assert!(!host.is_empty(), "a host with an adopted actor is not empty");
+        assert!(
+            !host.is_empty(),
+            "a host with an adopted actor is not empty"
+        );
 
         tx_in.try_send(1).unwrap();
         tx_in.try_send(2).unwrap();
 
         assert_eq!(host.sweep().status, ActorStatus::Busy);
-        assert_eq!(rx_out.try_recv().unwrap(), 2, "only the first message is stepped");
+        assert_eq!(
+            rx_out.try_recv().unwrap(),
+            2,
+            "only the first message is stepped"
+        );
         assert!(
             rx_out.try_recv().is_err(),
             "the second message must wait for the next sweep"
         );
 
         assert_eq!(host.sweep().status, ActorStatus::Busy);
-        assert_eq!(rx_out.try_recv().unwrap(), 3, "the second message steps on the next sweep");
+        assert_eq!(
+            rx_out.try_recv().unwrap(),
+            3,
+            "the second message steps on the next sweep"
+        );
     }
 
     #[test]
@@ -612,11 +627,19 @@ mod tests {
             ForwardWiring { next: tx_out },
         ));
 
-        assert_eq!(host.sweep().status, ActorStatus::Idle, "no input, nothing ran");
+        assert_eq!(
+            host.sweep().status,
+            ActorStatus::Idle,
+            "no input, nothing ran"
+        );
 
         tx_in.try_send(7).unwrap();
         assert_eq!(host.sweep().status, ActorStatus::Busy);
-        assert_eq!(host.sweep().status, ActorStatus::Idle, "quiet again after draining");
+        assert_eq!(
+            host.sweep().status,
+            ActorStatus::Idle,
+            "quiet again after draining"
+        );
     }
 
     #[test]
@@ -684,13 +707,23 @@ mod tests {
             assert_eq!(sweep.stuck[0].reason, Stuck::TargetGone);
             sweep.stuck[0]
         };
-        assert_eq!(host.len(), 1, "and the node is kept, not silently discarded");
+        assert_eq!(
+            host.len(),
+            1,
+            "and the node is kept, not silently discarded"
+        );
 
         // The identity has to be actionable, or reporting it is theatre: retrying in place only
         // reaches the same dead sender, so taking the node out is the recovery available today.
-        assert!(host.remove(reported.node), "the reported id names a real node");
+        assert!(
+            host.remove(reported.node),
+            "the reported id names a real node"
+        );
         assert!(host.is_empty());
-        assert!(!host.remove(reported.node), "and removing it twice is not a panic");
+        assert!(
+            !host.remove(reported.node),
+            "and removing it twice is not a panic"
+        );
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -775,7 +808,11 @@ mod tests {
         assert_eq!(rx_out.try_recv().unwrap(), 2);
 
         // That continuation is consumed here, finds nothing left to do, and stops.
-        assert_eq!(node.poll(), Step::Ran, "the continuation is a step of its own");
+        assert_eq!(
+            node.poll(),
+            Step::Ran,
+            "the continuation is a step of its own"
+        );
         assert_eq!(
             node.poll(),
             Step::Idle,

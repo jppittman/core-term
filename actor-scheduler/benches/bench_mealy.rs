@@ -53,8 +53,12 @@ impl Actor<u8, (), ()> for SendingActor {
     fn handle_data(&mut self, byte: u8) -> HandlerResult {
         self.seen += 1;
         // Rings are sized so neither can fill; a failure would invalidate the measurement.
-        self.engine.try_send(Render(byte)).expect("engine ring sized for the run");
-        self.write.try_send(Echo(byte)).expect("write ring sized for the run");
+        self.engine
+            .try_send(Render(byte))
+            .expect("engine ring sized for the run");
+        self.write
+            .try_send(Echo(byte))
+            .expect("write ring sized for the run");
         Ok(())
     }
     fn handle_control(&mut self, (): ()) -> HandlerResult {
@@ -247,7 +251,10 @@ fn bench_pipeline(c: &mut Criterion) {
                 let (h2, mut s2) = ActorScheduler::<u8, (), ()>::new(n.max(1), cap);
                 let (h1, mut s1) = ActorScheduler::<u8, (), ()>::new(n.max(1), cap);
 
-                let mut a3 = ForwardActor { next: None, seen: 0 };
+                let mut a3 = ForwardActor {
+                    next: None,
+                    seen: 0,
+                };
                 let mut a2 = ForwardActor {
                     next: Some(h3),
                     seen: 0,
@@ -291,9 +298,21 @@ fn bench_pipeline(c: &mut Criterion) {
                 let (tx_23, rx_23) = spsc_channel::<u8>(cap);
                 let (tx_out, mut rx_out) = spsc_channel::<u8>(cap);
 
-                let mut n1 = Node::new(ForwardStep { seen: 0 }, rx_in, ForwardWiring { next: tx_12 });
-                let mut n2 = Node::new(ForwardStep { seen: 0 }, rx_12, ForwardWiring { next: tx_23 });
-                let mut n3 = Node::new(ForwardStep { seen: 0 }, rx_23, ForwardWiring { next: tx_out });
+                let mut n1 = Node::new(
+                    ForwardStep { seen: 0 },
+                    rx_in,
+                    ForwardWiring { next: tx_12 },
+                );
+                let mut n2 = Node::new(
+                    ForwardStep { seen: 0 },
+                    rx_12,
+                    ForwardWiring { next: tx_23 },
+                );
+                let mut n3 = Node::new(
+                    ForwardStep { seen: 0 },
+                    rx_23,
+                    ForwardWiring { next: tx_out },
+                );
 
                 for i in 0..n {
                     tx_in.try_send(i as u8).unwrap();

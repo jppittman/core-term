@@ -71,7 +71,11 @@ pub fn optimize_runtime_arena(arena: &ExprArena, root: ExprId) -> Option<Arc<(Ex
 
     let key = canonical_key(arena, root);
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(hit) = cache.lock().expect("optimize_runtime_arena: lock poisoned").get(&key) {
+    if let Some(hit) = cache
+        .lock()
+        .expect("optimize_runtime_arena: lock poisoned")
+        .get(&key)
+    {
         return hit.clone();
     }
 
@@ -98,7 +102,8 @@ fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(E
     // A lowering error (a genuinely non-differentiable op) bails to `None`;
     // the arena then compiles unoptimized and the compile entry's own
     // `lower_dwrt` reports the same error loudly at the right layer.
-    let (arena, root) = pixelflow_ir::backend::emit::lowering::lower_dwrt_owned(arena, root).ok()?;
+    let (arena, root) =
+        pixelflow_ir::backend::emit::lowering::lower_dwrt_owned(arena, root).ok()?;
 
     let mut egraph = EGraph::with_rules(all_rules());
     let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
@@ -377,7 +382,11 @@ mod tests {
     /// Every optimization must preserve the arena's denoted value, over a
     /// spread of coordinates — the load-bearing property. Anything that ever
     /// broke this would silently mis-render, not fail loudly.
-    fn assert_semantics_preserved(arena: &ExprArena, root: ExprId, optimized: &(ExprArena, ExprId)) {
+    fn assert_semantics_preserved(
+        arena: &ExprArena,
+        root: ExprId,
+        optimized: &(ExprArena, ExprId),
+    ) {
         let (opt_arena, opt_root) = optimized;
         let coords: &[(f32, f32, f32, f32)] = &[
             (0.0, 0.0, 0.0, 0.0),
@@ -463,13 +472,15 @@ mod tests {
         let mul = a.push_binary(OpKind::Mul, x, y);
         let root = a.push_binary(OpKind::Add, mul, z);
 
-        let arc = optimize_runtime_arena(&a, root)
-            .expect("pure arithmetic arena must optimize");
+        let arc = optimize_runtime_arena(&a, root).expect("pure arithmetic arena must optimize");
         let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
 
         assert_semantics_preserved(&a, root, &(opt_arena.clone(), opt_root));
         assert!(
-            matches!(opt_arena.node(opt_root), ExprNode::Ternary(OpKind::MulAdd, ..)),
+            matches!(
+                opt_arena.node(opt_root),
+                ExprNode::Ternary(OpKind::MulAdd, ..)
+            ),
             "expected a*b+c fused to MulAdd, got {:?}",
             opt_arena.node(opt_root)
         );
@@ -518,7 +529,8 @@ mod tests {
         // against the dedicated lower_dwrt pass.
         use pixelflow_ir::backend::emit::lowering::lower_dwrt_owned;
         let (want_arena, want_root) = lower_dwrt_owned(&a, dx).expect("lower original");
-        let (got_arena, got_root) = lower_dwrt_owned(&opt_arena, opt_root).expect("lower optimized");
+        let (got_arena, got_root) =
+            lower_dwrt_owned(&opt_arena, opt_root).expect("lower optimized");
         assert_semantics_preserved(&want_arena, want_root, &(got_arena, got_root));
     }
 

@@ -83,7 +83,6 @@ fn parse_op_kind(name: &str) -> Option<OpKind> {
         "floor" => Some(OpKind::Floor),
         "ceil" => Some(OpKind::Ceil),
         "round" => Some(OpKind::Round),
-        "fract" => Some(OpKind::Fract),
         "sin" => Some(OpKind::Sin),
         "cos" => Some(OpKind::Cos),
         "tan" => Some(OpKind::Tan),
@@ -97,7 +96,6 @@ fn parse_op_kind(name: &str) -> Option<OpKind> {
         "log2" => Some(OpKind::Log2),
         "log10" => Some(OpKind::Log10),
         "pow" => Some(OpKind::Pow),
-        "hypot" => Some(OpKind::Hypot),
         _ => None,
     }
 }

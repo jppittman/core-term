@@ -143,7 +143,6 @@ impl WindowKeeper {
 mod tests {
     use super::*;
 
-
     /// Request the buffer and take whatever answer is available immediately — the two-step the
     /// driver performs on every `RequestWindow`, as one call so the tests read as asks.
     fn ask(keeper: &mut WindowKeeper) -> Option<Window> {

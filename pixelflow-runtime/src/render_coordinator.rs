@@ -246,7 +246,9 @@ impl RenderCoordinator {
 fn bind(scene: Scene, window: Window) -> RenderRequest<PlatformPixel, WindowMeta> {
     let (frame, meta) = window.tear();
     let WindowMeta {
-        width_px, height_px, ..
+        width_px,
+        height_px,
+        ..
     } = meta;
 
     assert!(
@@ -286,9 +288,9 @@ mod tests {
     //! exercised against each other rather than against a fixture's idea of the other side.
 
     use super::*;
+    use crate::api::public::WindowId;
     use crate::display::messages::Surface;
     use crate::display::window_keeper::WindowKeeper;
-    use crate::api::public::WindowId;
     use pixelflow_core::Field;
     use pixelflow_graphics::render::rasterizer::RenderResponse;
 
@@ -338,7 +340,9 @@ mod tests {
     }
 
     /// A render that finished normally, handing the buffer back drawn.
-    fn drawn(request: RenderRequest<PlatformPixel, WindowMeta>) -> RenderResponse<PlatformPixel, WindowMeta> {
+    fn drawn(
+        request: RenderRequest<PlatformPixel, WindowMeta>,
+    ) -> RenderResponse<PlatformPixel, WindowMeta> {
         RenderResponse {
             frame: request.frame,
             render_time: Some(Duration::from_millis(1)),
@@ -347,7 +351,9 @@ mod tests {
     }
 
     /// A render the rasterizer skipped because it was paused.
-    fn skipped(request: RenderRequest<PlatformPixel, WindowMeta>) -> RenderResponse<PlatformPixel, WindowMeta> {
+    fn skipped(
+        request: RenderRequest<PlatformPixel, WindowMeta>,
+    ) -> RenderResponse<PlatformPixel, WindowMeta> {
         RenderResponse {
             frame: request.frame,
             render_time: None,
@@ -371,7 +377,10 @@ mod tests {
     }
 
     fn assert_requests_window(step: Step) {
-        assert!(matches!(step, Step::RequestWindow), "expected a window request");
+        assert!(
+            matches!(step, Step::RequestWindow),
+            "expected a window request"
+        );
     }
 
     /// Holding the buffer has to keep meaning "drawing into it", so an idle coordinator does not

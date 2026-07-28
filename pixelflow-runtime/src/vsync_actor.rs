@@ -26,7 +26,7 @@
 //! frame request.
 
 use actor_scheduler::actors::Timer;
-use actor_scheduler::mealy::{Credit, Flush, Transducer, Wiring, all};
+use actor_scheduler::mealy::{all, Credit, Flush, Transducer, Wiring};
 use actor_scheduler::{HandlerError, Message, TrySendError};
 use log::info;
 use std::sync::mpsc::Sender;
@@ -501,7 +501,10 @@ mod wiring_tests {
             interval: None,
         };
         assert_eq!(wiring.flush(&mut out), Flush::Done);
-        assert!(out.tick.is_none(), "a delivered tick is cleared from the port");
+        assert!(
+            out.tick.is_none(),
+            "a delivered tick is cleared from the port"
+        );
 
         struct Collector(bool);
         impl Actor<EngineData, EngineControl, AppManagement> for Collector {
@@ -589,7 +592,10 @@ mod wiring_tests {
             interval: Some(Duration::from_millis(8)),
         };
         assert_eq!(wiring.flush(&mut out), Flush::Done);
-        assert!(out.interval.is_none(), "the interval port is always drained");
+        assert!(
+            out.interval.is_none(),
+            "the interval port is always drained"
+        );
 
         stop(wiring);
     }
@@ -621,7 +627,9 @@ mod integration_tests {
     use actor_scheduler::actors::Schedule;
     use actor_scheduler::mealy::{Lanes, Node};
     use actor_scheduler::spsc::spsc_channel;
-    use actor_scheduler::{Actor, ActorScheduler, ActorStatus, HandlerResult, SchedulerParams, SystemStatus};
+    use actor_scheduler::{
+        Actor, ActorScheduler, ActorStatus, HandlerResult, SchedulerParams, SystemStatus,
+    };
     use std::ops::ControlFlow;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};

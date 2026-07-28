@@ -224,7 +224,6 @@ fn vpsrld_imm(c: &mut Vec<u8>, d: u8, s: u8, imm: u8) {
     evex_rrr_imm(c, Map::M0F, Pp::P66, false, 0x72, 2, d, s, imm);
 }
 
-
 // --- FMA (0F38, 66 prefix, W0). 213: dst = src1*dst + src2. ---
 fn vfmadd213ps(c: &mut Vec<u8>, d: u8, s1: u8, s2: u8) {
     evex_rrr(c, Map::M0F38, Pp::P66, false, 0xA8, d, s1, s2);

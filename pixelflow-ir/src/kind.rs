@@ -443,8 +443,7 @@ impl OpKind {
             | Self::Ge
             | Self::Eq
             | Self::Ne
-            | Self::Select
-            => 4,
+            | Self::Select => 4,
             Self::Mul | Self::MulAdd | Self::Recip | Self::Rsqrt => 5,
             // Bit-manip primitives: single cheap integer/convert instructions.
             Self::TruncToInt
@@ -674,7 +673,11 @@ impl OpKind {
     /// executed one interchangeable as operands.
     #[must_use]
     pub const fn mask(condition: bool) -> f32 {
-        if condition { f32::from_bits(u32::MAX) } else { 0.0 }
+        if condition {
+            f32::from_bits(u32::MAX)
+        } else {
+            0.0
+        }
     }
 
     /// Whether this op's result is a lane **bit pattern** rather than a number.

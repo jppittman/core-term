@@ -191,7 +191,10 @@ fn coverage_saturates_far_from_edges() {
             }
         }
     }
-    assert!(saturated_in > 20, "'H' at 32px should have a solid interior");
+    assert!(
+        saturated_in > 20,
+        "'H' at 32px should have a solid interior"
+    );
 }
 
 // =============================================================================

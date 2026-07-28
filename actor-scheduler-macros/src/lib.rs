@@ -585,7 +585,9 @@ fn parse_port_kind(group_str: &str, port: &str) -> PortKind {
             "drop" => kind = PortKind::Droppable,
             "self" => kind = PortKind::SelfPort,
             "" => {}
-            other => panic!("unknown port attribute `{other}` on port `{port}` (expected `drop` or `self`)"),
+            other => panic!(
+                "unknown port attribute `{other}` on port `{port}` (expected `drop` or `self`)"
+            ),
         }
     }
     kind
