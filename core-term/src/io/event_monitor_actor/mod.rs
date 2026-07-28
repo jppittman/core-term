@@ -59,10 +59,6 @@ use writer::PtyWriter;
 
 // ── Lane message types ──────────────────────────────────────────────────────
 
-/// Placeholder for the reader's unused control lane.
-#[derive(Debug, Clone)]
-pub struct NoControl;
-
 /// A read result flowing reader → parser: `data[..len]` holds PTY output.
 ///
 /// The buffer itself always keeps `len() == READ_BUFFER_SIZE`; carrying the

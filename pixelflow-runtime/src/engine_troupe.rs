@@ -25,6 +25,7 @@ use crate::render_coordinator::{Completed, RenderCoordinator, Step};
 use pixelflow_graphics::render::rasterizer::{
     RasterizerActor, RasterizerHandle, RenderRequest, RenderResponse,
 };
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -45,7 +46,7 @@ pub struct EngineHandler {
     rasterizer_forward_handle: Option<ActorHandle<EngineData, EngineControl, AppManagement>>,
     /// Handle to the rasterizer response-forwarding actor (spawned alongside the rasterizer
     /// in `spawn_rasterizer`; `None` until then, same as `rasterizer` itself).
-    rasterizer_forwarder: Option<ActorHandle<(), (), ()>>,
+    rasterizer_forwarder: Option<ActorHandle<Infallible, Infallible, Infallible>>,
     /// Handle to the application (for event forwarding).
     app_handle: Option<Arc<dyn Application + Send + Sync>>,
     /// Frame counter for VSync feedback.
@@ -292,10 +293,10 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
 /// `epoll_wait` is that actor's entire job.
 ///
 /// The scheduler only calls `handle_os` after the doorbell has woken at least once, so — same
-/// as `PtyReader` waiting for its first `Bind` — this actor needs one throwaway message to start
-/// its loop; `spawn_rasterizer` sends it right after spawning the thread. Once `handle_os`
-/// returns `Busy` the scheduler keeps re-entering it without waiting on the doorbell again, so
-/// from then on the loop is self-sustaining.
+/// as `PtyReader` waiting for its first `Bind` — this actor needs one doorbell ring to start its
+/// loop; `spawn_rasterizer` rings it right after spawning the thread. Once `handle_os` returns
+/// `Busy` the scheduler keeps re-entering it without waiting on the doorbell again, so from then
+/// on the loop is self-sustaining.
 struct RasterizerForwarder {
     response_rx: std::sync::mpsc::Receiver<RenderResponse<PlatformPixel, WindowMeta>>,
     engine: ActorHandle<EngineData, EngineControl, AppManagement>,
@@ -303,26 +304,26 @@ struct RasterizerForwarder {
     /// (and the OS thread underneath it) actually exits instead of parking on an empty
     /// doorbell forever. `Quit`/`AppManagement::Quit`/`CloseRequested` also send `Shutdown`
     /// here directly; this is the fallback for whichever signal arrives second.
-    self_handle: Option<ActorHandle<(), (), ()>>,
+    self_handle: Option<ActorHandle<Infallible, Infallible, Infallible>>,
 }
 
 impl ActorTypes for RasterizerForwarder {
-    type Data = ();
-    type Control = ();
-    type Management = ();
+    type Data = Infallible;
+    type Control = Infallible;
+    type Management = Infallible;
 }
 
-impl Actor<(), (), ()> for RasterizerForwarder {
-    fn handle_data(&mut self, _msg: ()) -> HandlerResult {
-        Ok(())
+impl Actor<Infallible, Infallible, Infallible> for RasterizerForwarder {
+    fn handle_data(&mut self, msg: Infallible) -> HandlerResult {
+        match msg {}
     }
 
-    fn handle_control(&mut self, _msg: ()) -> HandlerResult {
-        Ok(())
+    fn handle_control(&mut self, msg: Infallible) -> HandlerResult {
+        match msg {}
     }
 
-    fn handle_management(&mut self, _msg: ()) -> HandlerResult {
-        Ok(())
+    fn handle_management(&mut self, msg: Infallible) -> HandlerResult {
+        match msg {}
     }
 
     fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
@@ -451,11 +452,13 @@ impl EngineHandler {
         // Step 3: Run the forwarder as a real actor rather than a bare thread — it is now
         // addressable (a real Shutdown on the Quit paths, not an implicit exit whenever the
         // rasterizer happens to drop its sender) and supervisable the same way the rest of the
-        // troupe is. `data_buffer_size` of 1 is enough: D = () and nothing ever sends one.
+        // troupe is. Its lanes are `Infallible`: nothing but `Shutdown` and the doorbell ever
+        // reaches it, so `data_buffer_size` of 1 is a formality.
         let mut builder = ActorBuilder::new(1, None);
         let self_handle = builder.add_producer();
         let forwarder_handle = builder.add_producer();
-        let mut forwarder_scheduler: ActorScheduler<(), (), ()> = builder.build();
+        let mut forwarder_scheduler: ActorScheduler<Infallible, Infallible, Infallible> =
+            builder.build();
         let mut forwarder = RasterizerForwarder {
             response_rx,
             engine: engine_handle,
@@ -467,11 +470,9 @@ impl EngineHandler {
                 forwarder_scheduler.run(&mut forwarder);
             })
             .expect("failed to spawn rasterizer forwarder thread");
-        // The scheduler blocks on its doorbell until woken by a real message; this one has no
-        // meaning beyond "start" (Management = ()), matching PtyReader's Bind-triggered kickoff.
-        forwarder_handle
-            .send(Message::Management(()))
-            .expect("failed to start the rasterizer forwarder");
+        // The scheduler blocks on its doorbell until woken; with `Infallible` lanes there is no
+        // message to send, so ring the doorbell directly to start the loop.
+        forwarder_handle.waker().wake();
 
         // Step 4: Complete bootstrap - register response channel and get full handle
         let rasterizer_handle = setup_handle.register(response_tx);
@@ -1356,16 +1357,15 @@ mod tests {
         let mut builder = ActorBuilder::new(1, None);
         let self_handle = builder.add_producer();
         let starter_handle = builder.add_producer();
-        let mut forwarder_sched: ActorScheduler<(), (), ()> = builder.build();
+        let mut forwarder_sched: ActorScheduler<Infallible, Infallible, Infallible> =
+            builder.build();
         let mut forwarder = RasterizerForwarder {
             response_rx,
             engine: engine_handle,
             self_handle: Some(self_handle),
         };
         let thread = std::thread::spawn(move || forwarder_sched.run(&mut forwarder));
-        starter_handle
-            .send(Message::Management(()))
-            .expect("failed to start the rasterizer forwarder");
+        starter_handle.waker().wake();
 
         let meta = WindowMeta {
             id: WindowId(1),
