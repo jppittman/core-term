@@ -496,3 +496,106 @@ fn box_collapse_4d_layout() {
         );
     }
 }
+
+// ============================================================================
+// BilinearSampler: JIT'd 4-tap read-back semantics
+// ============================================================================
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+mod bilinear_sampler {
+    use super::*;
+    use crate::BilinearSampler;
+
+    /// Evaluate the sampler at a single point through the public lattice API.
+    fn sample(s: &BilinearSampler, x: f32, y: f32) -> f32 {
+        Lattice::point(x, y, 0.0, 0.0).collapse(s).into_buffer()[0]
+    }
+
+    #[test]
+    fn constant_field_is_identity() {
+        // A 3x3 constant grid: bilinear must return the constant everywhere.
+        let s = DiscreteManifold::new(vec![0.75; 9], 3, 3).bilinear();
+
+        for &(x, y) in &[(0.0, 0.0), (0.5, 0.5), (1.25, 0.75), (1.9, 1.1)] {
+            let v = sample(&s, x, y);
+            assert!(
+                (v - 0.75).abs() < 1e-6,
+                "constant field not reproduced at ({x}, {y}): got {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn linear_gradient_reproduced_exactly() {
+        // Buffer holding f(x, y) = x + 2y sampled at integer coords, 4x4.
+        let mut buf = Vec::with_capacity(16);
+        for y in 0..4 {
+            for x in 0..4 {
+                buf.push(x as f32 + 2.0 * y as f32);
+            }
+        }
+        let s = DiscreteManifold::new(buf, 4, 4).bilinear();
+
+        // Bilinear interpolation of an affine function is exact.
+        for &(x, y) in &[(0.5, 0.5), (1.25, 2.75), (0.1, 0.9), (2.5, 1.0)] {
+            let expect = x + 2.0 * y;
+            let v = sample(&s, x, y);
+            assert!(
+                (v - expect).abs() < 1e-5,
+                "gradient not reproduced at ({x}, {y}): got {v}, want {expect}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_at_grid_points_blended_between() {
+        // 2x2 checker: (0,0)=0, (1,0)=1, (0,1)=1, (1,1)=0.
+        let s = DiscreteManifold::new(vec![0.0, 1.0, 1.0, 0.0], 2, 2).bilinear();
+
+        // At integer grid points: exact stored values, no smoothing.
+        assert!((sample(&s, 0.0, 0.0) - 0.0).abs() < 1e-6);
+        assert!((sample(&s, 1.0, 0.0) - 1.0).abs() < 1e-6);
+        assert!((sample(&s, 0.0, 1.0) - 1.0).abs() < 1e-6);
+        assert!((sample(&s, 1.0, 1.0) - 0.0).abs() < 1e-6);
+
+        // Midpoint of an edge: average of its two endpoints.
+        assert!((sample(&s, 0.5, 0.0) - 0.5).abs() < 1e-6);
+        // Cell center: average of all four corners.
+        assert!((sample(&s, 0.5, 0.5) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn no_nearest_jumps_across_cell_boundaries() {
+        // Step buffer: left column 0, right column 1. Nearest-neighbor would
+        // jump 0 -> 1 crossing x = 1; bilinear must ramp smoothly.
+        let s = DiscreteManifold::new(vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0], 3, 2).bilinear();
+
+        let step = 0.125;
+        let mut prev = sample(&s, 0.0, 0.5);
+        let mut x = step;
+        while x <= 2.0 {
+            let v = sample(&s, x, 0.5);
+            let jump = (v - prev).abs();
+            assert!(
+                jump < 0.25,
+                "non-smooth jump {jump} at x = {x} (bilinear should ramp, not step)"
+            );
+            prev = v;
+            x += step;
+        }
+        // And the ramp actually reaches the step's top value.
+        assert!((sample(&s, 2.0, 0.5) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn out_of_range_taps_clamp_to_edge() {
+        // Queries outside the grid clamp to the edge texel, matching
+        // DiscreteManifold::eval's convention.
+        let s = DiscreteManifold::new(vec![1.0, 2.0, 3.0, 4.0], 2, 2).bilinear();
+
+        assert!((sample(&s, -5.0, -5.0) - 1.0).abs() < 1e-6);
+        assert!((sample(&s, 10.0, -5.0) - 2.0).abs() < 1e-6);
+        assert!((sample(&s, -5.0, 10.0) - 3.0).abs() < 1e-6);
+        assert!((sample(&s, 10.0, 10.0) - 4.0).abs() < 1e-6);
+    }
+}

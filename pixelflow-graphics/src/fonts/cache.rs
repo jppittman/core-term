@@ -13,9 +13,9 @@
 //! The bake JIT-compiles the fused glyph kernel once (`Lattice::bake`,
 //! global compile cache) and tabulates it; antialiasing is intrinsic to the
 //! kernel (symbolic `Dwrt` crossing ramps resolved at compile time). The
-//! read-back is `DiscreteManifold` (index) smoothed by the [`Bilinear`]
-//! combinator. Texels therefore store *antialiased* coverage — no post-hoc
-//! filtering of hard 0/1 samples.
+//! read-back is a [`BilinearSampler`] — a JIT'd 4-tap gather kernel bound to
+//! the baked buffer. Texels therefore store *antialiased* coverage — no
+//! post-hoc filtering of hard 0/1 samples.
 //!
 //! ```text
 //!            cache_at(size)
@@ -33,8 +33,8 @@
 //! The bake follows the same convention: texel `(i, j)` of the coverage
 //! lattice stores the glyph's coverage at continuous coordinate
 //! `(i + 0.5, j + 0.5)` (the lattice origin is `(0.5, 0.5)`).
-//! `CachedGlyph::eval` shifts incoming coordinates by −0.5 into
-//! [`Bilinear`]'s integer texel grid, so a query at a pixel center returns
+//! `CachedGlyph::eval` shifts incoming coordinates by −0.5 into the
+//! sampler's integer texel grid, so a query at a pixel center returns
 //! the stored texel exactly — the cached glyph reproduces the analytical
 //! antialiased glyph (`Antialiased::new(glyph)`) at pixel centers with no
 //! half-pixel shift and no extra blur at the baked size, while fractional
@@ -55,9 +55,9 @@
 //! let uncached = font.glyph_scaled('A', 17.3);
 //! ```
 
-use crate::render::bilinear::Bilinear;
 use pixelflow_core::{
-    At, DiscreteManifold, Field, Kernel, Lattice, Manifold, ManifoldExt, Select, W, X, Y, Z,
+    At, BilinearSampler, DiscreteManifold, Field, Kernel, Lattice, Manifold, ManifoldExt, Select,
+    W, X, Y, Z,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -96,7 +96,7 @@ const TEXEL_CENTER: f32 = 0.5;
 pub struct CachedGlyph {
     /// Bilinear sampler over the baked coverage lattice.
     /// Arc so cloning a cached glyph (once per cell per frame) is O(1).
-    sampler: Arc<Bilinear<DiscreteManifold>>,
+    sampler: Arc<BilinearSampler>,
     /// Point-space width (the baked lattice holds `width × density` texels).
     width: usize,
     /// Point-space height (the baked lattice holds `height × density` texels).
@@ -130,7 +130,7 @@ impl CachedGlyph {
     #[inline]
     #[must_use]
     pub fn coverage(&self) -> &DiscreteManifold {
-        &self.sampler.tex
+        self.sampler.texture()
     }
 
     /// Create a cached glyph by baking a glyph coverage [`Kernel`]
@@ -155,7 +155,7 @@ impl CachedGlyph {
         let baked = lattice.bake(kernel);
 
         Self {
-            sampler: Arc::new(Bilinear::new(baked)),
+            sampler: Arc::new(baked.bilinear()),
             width: size,
             height: size,
             density,
