@@ -395,6 +395,10 @@ pub struct CompileResult {
     pub spill_bytes: u32,
     /// Register budget that was used.
     pub max_regs: u8,
+    /// X-invariant values hoisted out of the collapse loop into the
+    /// once-per-call prologue (0 for per-batch kernels, and for collapse
+    /// kernels with nothing to hoist).
+    pub hoisted_values: u32,
 }
 
 /// Compile an [`ExprArena`] DAG to executable code.
@@ -730,11 +734,18 @@ trait IsaBackend {
     /// the ABI's vector registers are caller-saved scratch to the body, so
     /// each iteration reloads X/Y/Z/W into the input registers from the
     /// slots and the X slot alone is stepped.
+    ///
+    /// `hoist` (possibly empty) is the LICM prologue: X-invariant code emitted
+    /// once per call, after the coordinate stores and before the loop, parking
+    /// its results in `hoist_slots` vector slots directly above the coordinate
+    /// slots — the scaffold reserves them in its frame allocation.
     fn emit_collapse_loop(
         &mut self,
+        hoist: &[u8],
         body: &[u8],
         result_reg: Reg,
         frame_size: u32,
+        hoist_slots: u32,
     ) -> Result<Vec<u8>, &'static str>;
 }
 
@@ -756,6 +767,22 @@ fn emit_dag_body<B: IsaBackend>(
     uses_map: Vec<Vec<regalloc::ValueId>>,
     backend: &mut B,
 ) -> Result<(Vec<u8>, Reg, u32, u32), &'static str> {
+    emit_dag_body_hoisted(schedule, uses_map, backend, HoistCtx::None, None)
+}
+
+/// [`emit_dag_body`] with collapse-loop LICM support: a hoist map (see
+/// [`HoistCtx`]) and an optional frame-size override. The override replaces
+/// the layout's frame size in the `frame_ready` latch and the returned frame
+/// size — the collapse driver passes the max of the prologue's and body's
+/// frames so both address the shared hoist slots consistently (and, on x86,
+/// so both latch the same allocated-frame mode).
+fn emit_dag_body_hoisted<B: IsaBackend>(
+    schedule: Vec<(regalloc::ValueId, ScheduledOp)>,
+    uses_map: Vec<Vec<regalloc::ValueId>>,
+    backend: &mut B,
+    hoist: HoistCtx<'_>,
+    frame_override: Option<u32>,
+) -> Result<(Vec<u8>, Reg, u32, u32), &'static str> {
     use alloc::collections::BTreeMap;
 
     // Pre-colored values (variables -> input registers).
@@ -770,18 +797,39 @@ fn emit_dag_body<B: IsaBackend>(
     }
 
     // Register allocation (linear scan + Belady eviction + spilling).
-    let allocation = regalloc::linear_scan(
+    let mut allocation = regalloc::linear_scan(
         &schedule,
         &uses_map,
         &precolored,
         backend.num_regs(),
         SCRATCH_BASE,
     );
-    let layout = FrameLayout::from_allocation(&allocation.spilled)?;
-    backend.frame_ready(layout.frame_size);
+    let mut layout = FrameLayout::from_allocation(&allocation.spilled)?;
+    let real_spill_count = layout.spill_slots.len() as u32;
 
-    // Select short-circuit guards.
-    let select_guards = analyze_select_guards(&schedule);
+    // Hoisted values in the body are pre-spilled at their hoist slots: strip
+    // whatever location the allocator gave their placeholder defs and pin
+    // them, so consumers reload from the slot the prologue stored to.
+    if let HoistCtx::Body(hoisted) = &hoist {
+        for (vid, &offset) in hoisted.iter() {
+            allocation.assignment.remove(vid);
+            allocation.rematerialize.remove(vid);
+            layout.spill_slots.insert(*vid, offset);
+        }
+    }
+
+    let frame_size = frame_override.unwrap_or(layout.frame_size);
+    if frame_size < layout.frame_size {
+        return Err("frame override smaller than the layout's frame");
+    }
+    backend.frame_ready(frame_size);
+
+    // Select short-circuit guards (disabled in the prologue — see HoistCtx).
+    let select_guards = if matches!(hoist, HoistCtx::Prologue(_)) {
+        Vec::new()
+    } else {
+        analyze_select_guards(&schedule)
+    };
     let sched_len = schedule.len();
 
     struct PendingBranch {
@@ -867,6 +915,14 @@ fn emit_dag_body<B: IsaBackend>(
             }
         }
 
+        // A hoisted value's placeholder def emits nothing — the prologue
+        // already parked the value in its slot; consumers reload from there.
+        if let HoistCtx::Body(hoisted) = &hoist
+            && hoisted.contains_key(vid)
+        {
+            continue;
+        }
+
         let dst_loc = resolve_dst_loc_dense(*vid, &reg_for, &spill_for, &remat_for);
         let plan = resolve_operands(
             sched_op,
@@ -934,6 +990,19 @@ fn emit_dag_body<B: IsaBackend>(
         }
 
         backend.emit_plan(&mut code, &plan)?;
+
+        // Prologue mode: park each hoist root in its slot right after its
+        // def, while the value is guaranteed live. (Guards are disabled in
+        // this mode, so every def reaches this point — the guarded-Select
+        // early-continue above cannot fire.)
+        if let HoistCtx::Prologue(hoisted) = &hoist
+            && let Some(&offset) = hoisted.get(vid)
+        {
+            let r = backend.emit_resolve(
+                &mut code, *vid, RELOAD_REG, &reg_for, &spill_for, &remat_for,
+            );
+            backend.emit_store(&mut code, r, offset)?;
+        }
     }
 
     assert!(
@@ -947,12 +1016,7 @@ fn emit_dag_body<B: IsaBackend>(
         &mut code, root, RELOAD_REG, &reg_for, &spill_for, &remat_for,
     );
 
-    Ok((
-        code,
-        result_reg,
-        layout.frame_size,
-        layout.spill_slots.len() as u32,
-    ))
+    Ok((code, result_reg, frame_size, real_spill_count))
 }
 
 /// Drive a `(schedule, uses_map)` to a complete per-batch function via an
@@ -982,6 +1046,7 @@ fn compile_dag_via_backend<B: IsaBackend>(
         // thresholds, so the discrepancy was silently mistraining them.
         spill_bytes: backend.frame_bytes(frame_size),
         max_regs: backend.num_regs(),
+        hoisted_values: 0,
     })
 }
 
@@ -1142,21 +1207,26 @@ impl IsaBackend for Aarch64Backend {
     // — all disjoint. Coordinate slots live above the body's spill frame.
     fn emit_collapse_loop(
         &mut self,
+        hoist: &[u8],
         body: &[u8],
         result_reg: Reg,
         frame_size: u32,
+        hoist_slots: u32,
     ) -> Result<Vec<u8>, &'static str> {
         const VW: u32 = 16;
-        let total = frame_size + 4 * VW;
+        let total = frame_size + (4 + hoist_slots) * VW;
         let slot = |k: u32| frame_size + k * VW;
-        let mut code: Vec<u8> = Vec::with_capacity(body.len() + 128);
+        let mut code: Vec<u8> = Vec::with_capacity(hoist.len() + body.len() + 128);
 
         aarch64::emit_sub_sp(&mut code, total);
-        // Anchor the pool (the body's constants load X17-relative).
+        // Anchor the pool (the prologue's and body's constants load
+        // X17-relative).
         self.adr_patch_pos = aarch64::emit_adr_x17_placeholder(&mut code);
         for k in 0..4u32 {
             aarch64::emit_str_sp(&mut code, Reg(k as u8), slot(k));
         }
+        // LICM prologue: X-invariant values, parked in the hoist slots.
+        code.extend_from_slice(hoist);
         // mov x3, xzr — batch counter.
         aarch64::emit32(&mut code, 0xD280_0003);
 
@@ -1405,6 +1475,227 @@ fn arena_to_uses(schedule: &[(regalloc::ValueId, ScheduledOp)]) -> Vec<Vec<regal
             ScheduledOp::Ternary(_, a, b, c) => alloc::vec![*a, *b, *c],
         })
         .collect()
+}
+
+// =============================================================================
+// Collapse-loop LICM (X-invariant hoisting)
+// =============================================================================
+
+/// Compute [`Variance`](crate::variance::Variance) for every schedule entry.
+///
+/// The schedule mirrors the arena's topological order, so one forward pass
+/// suffices — the dense result is indexed by `ValueId.0`.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn schedule_variance(schedule: &[(regalloc::ValueId, ScheduledOp)]) -> Vec<crate::variance::Variance> {
+    use crate::variance::Variance;
+    let max_vid = schedule.iter().map(|(v, _)| v.0).max().unwrap_or(0) as usize;
+    let mut v = alloc::vec![Variance::CONST; max_vid + 1];
+    for (vid, op) in schedule {
+        let i = vid.0 as usize;
+        v[i] = match op {
+            ScheduledOp::Var(idx) if *idx < 8 => Variance::from_var(*idx),
+            ScheduledOp::Var(_) => Variance::ALL,
+            ScheduledOp::Const(_) => Variance::CONST,
+            ScheduledOp::Unary(_, a)
+            | ScheduledOp::ShiftImm(_, a, _)
+            // A gather reads from a bound buffer, whose contents are fixed for
+            // the kernel's lifetime — its variance is its index's variance.
+            | ScheduledOp::Gather(a, _) => v[a.0 as usize],
+            ScheduledOp::Binary(_, a, b) => v[a.0 as usize].union(v[b.0 as usize]),
+            ScheduledOp::Ternary(_, a, b, c) => v[a.0 as usize]
+                .union(v[b.0 as usize])
+                .union(v[c.0 as usize]),
+        };
+    }
+    v
+}
+
+/// The collapse loop's LICM partition: which values leave the X loop, and the
+/// two schedules that result.
+///
+/// `roots[i]` is parked in hoist slot `i`. `prologue` computes the roots (the
+/// full X-invariant sub-DAG, original order); `body` is the loop schedule with
+/// each root's entry replaced by a `Const(0.0)` placeholder — never emitted,
+/// its location overridden to the hoist slot so consumers reload it through
+/// the ordinary spill machinery.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+struct HoistPlan {
+    roots: Vec<regalloc::ValueId>,
+    prologue: Vec<(regalloc::ValueId, ScheduledOp)>,
+    body: Vec<(regalloc::ValueId, ScheduledOp)>,
+}
+
+/// Partition a collapse schedule for LICM.
+///
+/// A hoist root is an X-invariant, non-leaf value consumed by at least one
+/// X-dependent op (or the schedule root itself, when the whole kernel is
+/// X-invariant — the loop degenerates to a store). `Gather`s — and anything
+/// computed from one — are never hoisted: hoisting moves a value out of any
+/// select-guard arm it sits in, and while speculating arithmetic is free,
+/// keeping memory reads exactly where the per-batch kernel had them costs
+/// nothing today (winding kernels are gather-free).
+///
+/// Returns `None` when nothing qualifies, leaving the caller on the plain
+/// un-hoisted path.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn plan_collapse_hoist(
+    schedule: &[(regalloc::ValueId, ScheduledOp)],
+    variance: &[crate::variance::Variance],
+) -> Option<HoistPlan> {
+    use regalloc::ValueId;
+    let n = schedule.len();
+    if n == 0 {
+        return None;
+    }
+    let max_vid = schedule.iter().map(|(v, _)| v.0).max().unwrap_or(0) as usize;
+
+    let operands = |op: &ScheduledOp| -> alloc::vec::Vec<ValueId> {
+        match op {
+            ScheduledOp::Var(_) | ScheduledOp::Const(_) => alloc::vec![],
+            ScheduledOp::Unary(_, a) | ScheduledOp::ShiftImm(_, a, _) | ScheduledOp::Gather(a, _) => {
+                alloc::vec![*a]
+            }
+            ScheduledOp::Binary(_, a, b) => alloc::vec![*a, *b],
+            ScheduledOp::Ternary(_, a, b, c) => alloc::vec![*a, *b, *c],
+        }
+    };
+
+    // Which values are consumed by an X-dependent op, and which contain a
+    // gather anywhere in their sub-DAG (forward pass — schedule is topological).
+    let mut feeds_x_dependent = alloc::vec![false; max_vid + 1];
+    let mut contains_gather = alloc::vec![false; max_vid + 1];
+    for (vid, op) in schedule {
+        let i = vid.0 as usize;
+        let ops = operands(op);
+        contains_gather[i] = matches!(op, ScheduledOp::Gather(_, _))
+            || ops.iter().any(|a| contains_gather[a.0 as usize]);
+        if variance[i].depends_on_x() {
+            for a in &ops {
+                feeds_x_dependent[a.0 as usize] = true;
+            }
+        }
+    }
+
+    let is_leaf = |op: &ScheduledOp| matches!(op, ScheduledOp::Var(_) | ScheduledOp::Const(_));
+    let root_vid = schedule.last().map(|(v, _)| *v)?;
+
+    let mut is_root = alloc::vec![false; max_vid + 1];
+    let mut roots: Vec<ValueId> = Vec::new();
+    for (vid, op) in schedule {
+        let i = vid.0 as usize;
+        let hoistable = variance[i].is_x_invariant()
+            && !is_leaf(op)
+            && !contains_gather[i]
+            && (feeds_x_dependent[i] || *vid == root_vid);
+        if hoistable {
+            is_root[i] = true;
+            roots.push(*vid);
+        }
+    }
+    if roots.is_empty() {
+        return None;
+    }
+
+    // Prologue: the transitive operand closure of the roots (all X-invariant
+    // by construction), kept in original topological order.
+    let mut in_prologue = alloc::vec![false; max_vid + 1];
+    for r in &roots {
+        in_prologue[r.0 as usize] = true;
+    }
+    for (vid, op) in schedule.iter().rev() {
+        if in_prologue[vid.0 as usize] {
+            for a in operands(op) {
+                in_prologue[a.0 as usize] = true;
+            }
+        }
+    }
+    let prologue: Vec<_> = schedule
+        .iter()
+        .filter(|(v, _)| in_prologue[v.0 as usize])
+        .cloned()
+        .collect();
+
+    // Body: backward reachability from the schedule root, treating hoist roots
+    // as leaves (their entries become placeholders; operands not followed).
+    let mut in_body = alloc::vec![false; max_vid + 1];
+    in_body[root_vid.0 as usize] = true;
+    for (vid, op) in schedule.iter().rev() {
+        let i = vid.0 as usize;
+        if in_body[i] && !is_root[i] {
+            for a in operands(op) {
+                in_body[a.0 as usize] = true;
+            }
+        }
+    }
+    let body: Vec<_> = schedule
+        .iter()
+        .filter(|(v, _)| in_body[v.0 as usize])
+        .map(|(v, op)| {
+            if is_root[v.0 as usize] {
+                (*v, ScheduledOp::Const(0.0)) // placeholder; never emitted
+            } else {
+                (*v, op.clone())
+            }
+        })
+        .collect();
+
+    // Keep only roots the body actually reads (an interior invariant value
+    // consumed solely by other hoisted values needs no slot). The schedule
+    // root always keeps its slot — the loop stores it.
+    let roots: Vec<ValueId> = roots
+        .into_iter()
+        .filter(|r| in_body[r.0 as usize])
+        .collect();
+    if roots.is_empty() {
+        return None;
+    }
+
+    Some(HoistPlan {
+        roots,
+        prologue,
+        body,
+    })
+}
+
+/// The spill-frame size (16-byte logical units) a schedule will need, without
+/// emitting it — `linear_scan` and `FrameLayout` are pure, so this is exactly
+/// the frame `emit_dag_body` will compute for the same inputs. Used to place
+/// the hoist slots above both the prologue's and the body's frames before
+/// either is emitted.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn presize_frame(
+    schedule: &[(regalloc::ValueId, ScheduledOp)],
+    num_regs: u8,
+) -> Result<u32, &'static str> {
+    use alloc::collections::BTreeMap;
+    let mut precolored: BTreeMap<regalloc::ValueId, Reg> = BTreeMap::new();
+    for (vid, op) in schedule {
+        if let ScheduledOp::Var(i) = op {
+            if (*i as usize) >= INPUT_REGS.len() {
+                return Err("variable index out of range");
+            }
+            precolored.insert(*vid, INPUT_REGS[*i as usize]);
+        }
+    }
+    let allocation = regalloc::linear_scan(schedule, &[], &precolored, num_regs, SCRATCH_BASE);
+    Ok(FrameLayout::from_allocation(&allocation.spilled)?.frame_size)
+}
+
+/// How `emit_dag_body` treats hoisted values, if any.
+enum HoistCtx<'a> {
+    /// No hoisting (per-batch kernels, and collapse kernels with nothing to
+    /// hoist).
+    None,
+    /// Emitting the once-per-call prologue: after each mapped value's def,
+    /// store it to its hoist slot. Select short-circuit guards are disabled —
+    /// a guard could skip a hoist root's def on a uniform mask, leaving its
+    /// slot garbage for the loop to read (and the prologue runs once, so the
+    /// guard buys nothing).
+    Prologue(&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>),
+    /// Emitting the loop body: mapped values are never emitted; their
+    /// locations are overridden to their hoist slots so every consumer
+    /// reloads through the ordinary spill machinery.
+    Body(&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>),
 }
 
 // =============================================================================
@@ -2552,20 +2843,24 @@ impl IsaBackend for X86Backend {
     // coordinate slots allocated here at [rsp..) never collide with it.
     fn emit_collapse_loop(
         &mut self,
+        hoist: &[u8],
         body: &[u8],
         result_reg: Reg,
         _frame_size: u32,
+        hoist_slots: u32,
     ) -> Result<Vec<u8>, &'static str> {
         const VW: u32 = 16;
         let f = self.frame_bytes;
-        let total = f + 4 * VW;
+        let total = f + (4 + hoist_slots) * VW;
         let slot = |k: u32| (f + k * VW) as i32;
-        let mut code: Vec<u8> = Vec::with_capacity(body.len() + 128);
+        let mut code: Vec<u8> = Vec::with_capacity(hoist.len() + body.len() + 128);
 
         x86_64::emit_sub_rsp(&mut code, total);
         for k in 0..4u32 {
             x86_64::emit_movups_store_rsp32(&mut code, Reg(k as u8), slot(k));
         }
+        // LICM prologue: X-invariant values, parked in the hoist slots.
+        code.extend_from_slice(hoist);
         // xor r8, r8 — batch counter.
         code.extend_from_slice(&[0x4D, 0x31, 0xC0]);
 
@@ -2864,20 +3159,24 @@ impl IsaBackend for Avx512Backend {
     // body's slots sit at [rsp..bytes) and the coordinate slots above them.
     fn emit_collapse_loop(
         &mut self,
+        hoist: &[u8],
         body: &[u8],
         result_reg: Reg,
         frame_size: u32,
+        hoist_slots: u32,
     ) -> Result<Vec<u8>, &'static str> {
         const VW: u32 = 64;
         let f = avx512_frame_bytes(frame_size);
-        let total = f + 4 * VW;
+        let total = f + (4 + hoist_slots) * VW;
         let slot = |k: u32| (f + k * VW) as i32;
-        let mut code: Vec<u8> = Vec::with_capacity(body.len() + 128);
+        let mut code: Vec<u8> = Vec::with_capacity(hoist.len() + body.len() + 128);
 
         avx512::emit_sub_rsp(&mut code, total);
         for k in 0..4u32 {
             avx512::emit_store_rsp(&mut code, Reg(k as u8), slot(k));
         }
+        // LICM prologue: X-invariant values, parked in the hoist slots.
+        code.extend_from_slice(hoist);
         // xor r8, r8 — batch counter.
         code.extend_from_slice(&[0x4D, 0x31, 0xC0]);
 
@@ -3173,20 +3472,24 @@ impl IsaBackend for Avx2Backend {
     // AVX2 always uses an allocated frame (mirrors AVX-512).
     fn emit_collapse_loop(
         &mut self,
+        hoist: &[u8],
         body: &[u8],
         result_reg: Reg,
         frame_size: u32,
+        hoist_slots: u32,
     ) -> Result<Vec<u8>, &'static str> {
         const VW: u32 = 32;
         let f = avx2_frame_bytes(frame_size);
-        let total = f + 4 * VW;
+        let total = f + (4 + hoist_slots) * VW;
         let slot = |k: u32| (f + k * VW) as i32;
-        let mut code: Vec<u8> = Vec::with_capacity(body.len() + 128);
+        let mut code: Vec<u8> = Vec::with_capacity(hoist.len() + body.len() + 128);
 
         avx2::emit_sub_rsp(&mut code, total);
         for k in 0..4u32 {
             avx2::emit_store_rsp(&mut code, Reg(k as u8), slot(k));
         }
+        // LICM prologue: X-invariant values, parked in the hoist slots.
+        code.extend_from_slice(hoist);
         // xor r8, r8 — batch counter.
         code.extend_from_slice(&[0x4D, 0x31, 0xC0]);
 
@@ -3324,14 +3627,66 @@ fn compile_collapse_via_backend<B: IsaBackend>(
     uses_map: Vec<Vec<regalloc::ValueId>>,
     backend: &mut B,
 ) -> Result<CompileResult, &'static str> {
-    let (body, result_reg, frame_size, spill_count) = emit_dag_body(schedule, uses_map, backend)?;
-    let code = backend.emit_collapse_loop(&body, result_reg, frame_size)?;
+    let variance = schedule_variance(&schedule);
+    let Some(plan) = plan_collapse_hoist(&schedule, &variance) else {
+        // Nothing X-invariant worth hoisting: the plain loop.
+        let (body, result_reg, frame_size, spill_count) =
+            emit_dag_body(schedule, uses_map, backend)?;
+        let code = backend.emit_collapse_loop(&[], &body, result_reg, frame_size, 0)?;
+        let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
+        return Ok(CompileResult {
+            code: exec,
+            spill_count,
+            spill_bytes: backend.frame_bytes(frame_size),
+            max_regs: backend.num_regs(),
+            hoisted_values: 0,
+        });
+    };
+
+    // The prologue and the loop body share one stack frame: spill slots in
+    // [0, m), the scaffold's four coordinate slots at [m, m+64), hoist slots
+    // above those. `m` is the max of the two frames (each region is only live
+    // while its code runs; the hoist slots outlive both). Allocation is pure,
+    // so pre-sizing here computes exactly the frames the emissions below will.
+    // The 144 floor keeps x86's SSE2 backend out of red-zone mode — hoist
+    // offsets are far past the zone, so both emissions must latch
+    // allocated-frame ([rsp + offset]) addressing.
+    let pf = presize_frame(&plan.prologue, backend.num_regs())?;
+    let bf = presize_frame(&plan.body, backend.num_regs())?;
+    let m = pf.max(bf).max(144);
+    let hoist_map: alloc::collections::BTreeMap<regalloc::ValueId, u32> = plan
+        .roots
+        .iter()
+        .enumerate()
+        .map(|(i, vid)| (*vid, m + 4 * 16 + (i as u32) * 16))
+        .collect();
+
+    let uses_p = arena_to_uses(&plan.prologue);
+    let (prologue, _, _, pro_spills) = emit_dag_body_hoisted(
+        plan.prologue,
+        uses_p,
+        backend,
+        HoistCtx::Prologue(&hoist_map),
+        Some(m),
+    )?;
+    let uses_b = arena_to_uses(&plan.body);
+    let (body, result_reg, _, body_spills) = emit_dag_body_hoisted(
+        plan.body,
+        uses_b,
+        backend,
+        HoistCtx::Body(&hoist_map),
+        Some(m),
+    )?;
+
+    let code =
+        backend.emit_collapse_loop(&prologue, &body, result_reg, m, plan.roots.len() as u32)?;
     let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
     Ok(CompileResult {
         code: exec,
-        spill_count,
-        spill_bytes: backend.frame_bytes(frame_size),
+        spill_count: pro_spills + body_spills,
+        spill_bytes: backend.frame_bytes(m),
         max_regs: backend.num_regs(),
+        hoisted_values: plan.roots.len() as u32,
     })
 }
 

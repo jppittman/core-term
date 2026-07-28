@@ -332,6 +332,134 @@ fn matmul_reduce_one_call_fills_output() {
 }
 
 #[test]
+fn hoisted_row_constants_match_per_batch() {
+    // sqrt(y*y + 2) * x + y/3: the sqrt chain and the division are X-invariant
+    // and consumed by X-dependent ops, so LICM parks them in hoist slots and
+    // the loop reloads them. Hoisting reorders nothing within a value's own
+    // computation, so the result stays bit-exact against the per-batch kernel
+    // (which recomputes them every batch).
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let y = a.push_var(1);
+    let two = a.push_const(2.0);
+    let yy = a.push_binary(OpKind::Mul, y, y);
+    let yy2 = a.push_binary(OpKind::Add, yy, two);
+    let s = a.push_unary(OpKind::Sqrt, yy2);
+    let three = a.push_const(3.0);
+    let yd = a.push_binary(OpKind::Div, y, three);
+    let sx = a.push_binary(OpKind::Mul, s, x);
+    let root = a.push_binary(OpKind::Add, sx, yd);
+
+    let res = assert_collapse_matches_per_batch(&a, root, &[], 5, "hoist");
+    assert!(
+        res.hoisted_values >= 2,
+        "sqrt chain and division must hoist, got {}",
+        res.hoisted_values
+    );
+}
+
+#[test]
+fn fully_invariant_kernel_degenerates_to_a_store_loop() {
+    // sqrt(y + z*w): no X anywhere — the whole kernel hoists and the loop
+    // body is a bare reload-and-store of the one parked value.
+    let mut a = ExprArena::new();
+    let y = a.push_var(1);
+    let z = a.push_var(2);
+    let w = a.push_var(3);
+    let zw = a.push_binary(OpKind::Mul, z, w);
+    let yzw = a.push_binary(OpKind::Add, y, zw);
+    let root = a.push_unary(OpKind::Sqrt, yzw);
+
+    let res = assert_collapse_matches_per_batch(&a, root, &[], 4, "invariant-root");
+    assert!(res.hoisted_values >= 1);
+}
+
+#[test]
+fn hoisted_guarded_select_still_fills_its_slot() {
+    // select(y < 4, sqrt(y+9), y*2) * x + select(x < 4, x, y): the first
+    // select is X-invariant — it hoists, and the prologue must emit it
+    // UNGUARDED: a uniform-mask short-circuit in the prologue would skip an
+    // arm's defs (and on the root-hoisted path, the parking store itself),
+    // leaving the slot garbage for every loop iteration. The second select
+    // stays in the loop with its guards, proving guard machinery still works
+    // beside hoisting. Rows are chosen so the invariant select's mask is
+    // uniform-true, uniform-false, and (per-batch) mixed across the suite's
+    // three (x0, y) rows.
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let y = a.push_var(1);
+    let four = a.push_const(4.0);
+    let nine = a.push_const(9.0);
+    let two = a.push_const(2.0);
+
+    let ymask = a.push_binary(OpKind::Lt, y, four);
+    let y9 = a.push_binary(OpKind::Add, y, nine);
+    let sq = a.push_unary(OpKind::Sqrt, y9);
+    let y2 = a.push_binary(OpKind::Mul, y, two);
+    let ysel = a.push_ternary(OpKind::Select, ymask, sq, y2);
+
+    let xmask = a.push_binary(OpKind::Lt, x, four);
+    let xsel = a.push_ternary(OpKind::Select, xmask, x, y);
+
+    let prod = a.push_binary(OpKind::Mul, ysel, x);
+    let root = a.push_binary(OpKind::Add, prod, xsel);
+
+    let res = assert_collapse_matches_per_batch(&a, root, &[], 6, "hoisted-select");
+    assert!(
+        res.hoisted_values >= 1,
+        "the invariant select must hoist, got {}",
+        res.hoisted_values
+    );
+}
+
+#[test]
+fn deep_invariant_chain_spills_in_the_prologue() {
+    // A Y-only chain long enough to overflow the register budget: the
+    // PROLOGUE's own spill frame must coexist with the loop body's frame
+    // (they share the region below the coordinate slots) and with the hoist
+    // slots above. The X side is kept wide too so both frames are real.
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let y = a.push_var(1);
+    let mut y_terms = Vec::new();
+    let mut x_terms = Vec::new();
+    for k in 0..10 {
+        let c = a.push_const(0.3 + k as f32);
+        let yk = a.push_binary(OpKind::Add, y, c);
+        let ys = a.push_unary(OpKind::Sqrt, yk);
+        y_terms.push(ys);
+        let xk = a.push_binary(OpKind::Mul, x, c);
+        x_terms.push(xk);
+    }
+    // Pair each hoisted sqrt with an X term so every one crosses the loop
+    // boundary, then sum with a balanced tree to keep many values live.
+    let mut sums: Vec<ExprId> = y_terms
+        .iter()
+        .zip(&x_terms)
+        .map(|(ys, xk)| a.push_binary(OpKind::Mul, *ys, *xk))
+        .collect();
+    while sums.len() > 1 {
+        let mut next = Vec::new();
+        for pair in sums.chunks(2) {
+            next.push(match pair {
+                [l, r] => a.push_binary(OpKind::Add, *l, *r),
+                [l] => *l,
+                _ => unreachable!(),
+            });
+        }
+        sums = next;
+    }
+    let root = sums[0];
+
+    let res = assert_collapse_matches_per_batch(&a, root, &[], 3, "deep-hoist");
+    assert!(
+        res.hoisted_values >= 10,
+        "all ten sqrt chains must hoist, got {}",
+        res.hoisted_values
+    );
+}
+
+#[test]
 fn spill_frame_coexists_with_coordinate_slots() {
     // Force spilling (more simultaneously-live values than the allocator's
     // budget) so the body's spill frame and the scaffold's coordinate slots
