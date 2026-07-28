@@ -40,12 +40,6 @@ harness = false
 
 
 [[bin]]
-name = "bench_hoisted_scanline"
-path = "src/bin/bench_hoisted_scanline.rs"
-# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
-bench = false
-
-[[bin]]
 name = "bench_jit_corpus"
 path = "src/bin/bench_jit_corpus.rs"
 required-features = ["training"]
