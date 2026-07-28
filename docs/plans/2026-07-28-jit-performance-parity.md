@@ -183,6 +183,56 @@ slow parallel path.
    caller pays this on a hot path, so per the "subtract before you add"
    rule there's nothing here to subtract yet.
 
+### Making the e-graph actually fire on glyphs (landed 2026-07-28, same day)
+
+The hookup above was necessary but not sufficient: on real glyph kernels the
+tier was silently inert, twice over.
+
+1. **`Dwrt` reached saturation with nothing to fold.** The runtime tier fed
+   the raw arena to the e-graph and lowered `Dwrt` *afterwards*, so
+   `ConstantFold` never saw the constants that derivative resolution creates.
+   Fixed by running `lower_dwrt_owned` *first*, then saturating. On the
+   analytical curve kernels this is where the wins are: a line's `d = X − f(Y)`
+   has `DX(d) = 1`, so the whole gradient-magnitude `sqrt` folds away
+   (29 → 22 nodes, sqrt count 1 → 0), and a quad's discriminant/`sqrt` chain
+   is shared structurally between the value and gradient paths
+   (185 → 79 nodes, −57%).
+
+2. **The winding masks made the whole kernel bail.** The `in_y` band tests
+   lower to `BitAnd`/`BitOr`, which `op_from_kind` deliberately excludes, so
+   every real glyph arena hit the bail-out and compiled unoptimized. The fix
+   is *tier-scoped*, and the scoping is load-bearing: the mask ops are
+   registered only in `pixelflow-search/src/runtime.rs`
+   (`runtime_op_from_kind` → local `MaskAnd`/`MaskOr` ZSTs), NOT in the global
+   `egraph::ops::op_from_kind`. Registering them globally was tried and broke
+   the fonts' density-dependent AA ramp: the AOT macro tier runs
+   *pre-composition*, where resolving a leaf's `DX` to 1 is wrong the moment
+   an enclosing `.at()` warp scales the coordinate. The runtime tier runs
+   *post-composition* (bake time), where the same resolution is sound. Masks
+   are bit patterns, not numbers (see CLAUDE.md's FP contract), so they ride
+   through extraction opaquely — no rule reasons about their value.
+
+Two spillover fixes the optimized arenas forced:
+
+- **Select spill corner in the emitter.** Optimized glyph arenas under
+  register pressure hit the previously-unsupported "Select with a spilled
+  result and both branches spilled" case. `IsaBackend::select_extra_reload()`
+  (v28 on aarch64, xmm13 on x86 — both outside RELOAD_REGS, gather clobbers,
+  and `emit_select`'s own scratch) gives `resolve_operands` a third reload
+  register instead of an `Err`.
+- **Golden tolerance 1e-4 → 1e-3.** The optimized arena contains `MulAdd`
+  (FMA fusion); its one-vs-two-roundings divergence is documented
+  platform-specific, and winding sums amplify the last-bit difference to
+  ~1e-4 between the JIT and the interpreter oracle on a no-FMA build. The
+  goldens (`kernel_glyph_golden.rs`) now interpret the *optimized* arena
+  (pinning the compiler), and a separate suite
+  (`pixelflow-graphics/tests/kernel_glyph_optimize.rs`) pins optimization
+  soundness — optimized-vs-raw on real glyphs within reassociation noise —
+  plus structural guards: the line-gradient fold (sqrt count 0), the quad
+  discriminant share (≤3 sqrts), and lowered-winding representability
+  (every op the lowering produces must be `is_egraph_representable`, so a
+  new op can't silently reintroduce the bail-out).
+
 ## Measurement plan (do this first)
 
 - `pixelflow-runtime/examples/bench_psychedelic.rs` is the JIT-vs-LLVM parity

@@ -23,9 +23,10 @@
 //! arena to `jit_cache`.
 
 use crate::egraph::{
-    EClassId, EGraph, ENode, all_rules, choices_to_arena, config_for_node_count,
+    EClassId, EGraph, ENode, Op, all_rules, choices_to_arena, config_for_node_count,
     env_extraction_policy,
 };
+use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId, ExprNode};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -84,11 +85,26 @@ pub fn optimize_runtime_arena(arena: &ExprArena, root: ExprId) -> Option<Arc<(Ex
 }
 
 fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(ExprArena, ExprId)> {
+    // Resolve `Dwrt` FIRST, with the same exact symbolic pass the compile
+    // entries run — then the e-graph sees pure arithmetic. Order matters
+    // enormously: differentiation manufactures constants (the winding
+    // kernels' `d = X − f(Y)` gives `DX(d) = 1` and, for straight edges, a
+    // constant `DY(d)` — making the whole gradient magnitude `√(DX²+DY²)` a
+    // compile-time number), and `ConstantFold` can only cascade over
+    // constants that exist by the time saturation runs. Lowering after the
+    // e-graph (the compile entries' own fallback position) leaves those
+    // folds permanently on the table because nothing folds post-extraction.
+    //
+    // A lowering error (a genuinely non-differentiable op) bails to `None`;
+    // the arena then compiles unoptimized and the compile entry's own
+    // `lower_dwrt` reports the same error loudly at the right layer.
+    let (arena, root) = pixelflow_ir::backend::emit::lowering::lower_dwrt_owned(arena, root).ok()?;
+
     let mut egraph = EGraph::with_rules(all_rules());
     let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
-    let root_class = arena_to_egraph(arena, root, &mut egraph, &mut memo)?;
+    let root_class = arena_to_egraph(&arena, root, &mut egraph, &mut memo)?;
 
-    let node_count = reachable_count(arena, root);
+    let node_count = reachable_count(&arena, root);
     let config = config_for_node_count(node_count);
     crate::egraph::saturate_with_full_budget(
         &mut egraph,
@@ -191,6 +207,55 @@ fn canonical_key(arena: &ExprArena, root: ExprId) -> Vec<u8> {
     key
 }
 
+// ─────────────────────────── Runtime-only mask ops ───────────────────────────
+//
+// `&`/`|` on comparison masks are surface-language ops (every glyph winding
+// kernel's Y-range gate is `(Y >= lo) & (Y < hi)`), so runtime-built arenas
+// must be representable with them present. They are deliberately NOT in
+// `egraph::ops::op_from_kind`: registering them globally hands them to the
+// AOT macro tier too, whose e-graph runs at macro-expansion time — BEFORE
+// composition — where resolving the `Dwrt` nodes the masks travel with is
+// unsound (a leaf's `DX` is 1 only until an enclosing `.at()` warp scales
+// it; the fonts' density-dependent AA ramp broke exactly this way when
+// these ops were briefly global). The runtime tier optimizes the final
+// composed arena at bake time, where the calculus has its full context, so
+// mask ops are safe — and only meaningful — here.
+//
+// No rewrite rule targets them; they participate as opaque structure plus
+// `ConstantFold`, whose bitwise-domain exemption already models their
+// all-ones/zero masks.
+struct MaskAnd;
+impl Op for MaskAnd {
+    fn kind(&self) -> OpKind {
+        OpKind::BitAnd
+    }
+}
+struct MaskOr;
+impl Op for MaskOr {
+    fn kind(&self) -> OpKind {
+        OpKind::BitOr
+    }
+}
+
+/// Whether the runtime tier can represent `kind` in its e-graph — i.e.,
+/// whether an arena containing it still optimizes rather than bailing.
+/// Test hook for the representability guards; the semantics live in
+/// [`runtime_op_from_kind`].
+#[must_use]
+pub fn is_egraph_representable(kind: OpKind) -> bool {
+    runtime_op_from_kind(kind).is_some()
+}
+
+/// [`crate::egraph::ops::op_from_kind`] extended with the runtime-only mask
+/// ops above. Every conversion in this module resolves ops through this.
+fn runtime_op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
+    match kind {
+        OpKind::BitAnd => Some(&MaskAnd),
+        OpKind::BitOr => Some(&MaskOr),
+        other => crate::egraph::ops::op_from_kind(other),
+    }
+}
+
 /// Insert the subgraph reachable from `id` into `egraph`, memoized by
 /// `ExprId` (on top of the e-graph's own hash-consing by node shape) so a
 /// DAG-shared arena is walked once per node, not once per reference.
@@ -234,18 +299,18 @@ fn arena_to_egraph(
                     }
                     ExprNode::Param(_) | ExprNode::Buffer(_) => return None,
                     &ExprNode::Unary(kind, a) => {
-                        crate::egraph::ops::op_from_kind(kind)?;
+                        runtime_op_from_kind(kind)?;
                         task_stack.push(Task::Complete(id));
                         task_stack.push(Task::Visit(a));
                     }
                     &ExprNode::Binary(kind, a, b) => {
-                        crate::egraph::ops::op_from_kind(kind)?;
+                        runtime_op_from_kind(kind)?;
                         task_stack.push(Task::Complete(id));
                         task_stack.push(Task::Visit(b));
                         task_stack.push(Task::Visit(a));
                     }
                     &ExprNode::Ternary(kind, a, b, c) => {
-                        crate::egraph::ops::op_from_kind(kind)?;
+                        runtime_op_from_kind(kind)?;
                         task_stack.push(Task::Complete(id));
                         task_stack.push(Task::Visit(c));
                         task_stack.push(Task::Visit(b));
@@ -269,8 +334,8 @@ fn arena_to_egraph(
                     &ExprNode::Ternary(kind, _, _, _) => (kind, 3),
                     _ => unreachable!("Complete scheduled only for Unary/Binary/Ternary"),
                 };
-                let op = crate::egraph::ops::op_from_kind(kind)
-                    .expect("op_from_kind already checked in Visit");
+                let op = runtime_op_from_kind(kind)
+                    .expect("runtime_op_from_kind already checked in Visit");
                 let start = result_stack.len() - arity;
                 let children: Vec<EClassId> = result_stack.drain(start..).collect();
                 let class = egraph.add(ENode::Op { op, children });
