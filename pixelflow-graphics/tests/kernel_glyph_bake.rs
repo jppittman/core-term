@@ -45,14 +45,26 @@ fn triangle_coverage_bakes_from_line_kernels() {
 
     // Interior (7.5, 5.5): between the two edge crossings (x≈3.75 and x≈12.25),
     // several units clear of both, so the ~1px AA ramp has saturated to full.
-    assert!(at(7, 5) > 0.9, "interior coverage {} should be ~1", at(7, 5));
+    assert!(
+        at(7, 5) > 0.9,
+        "interior coverage {} should be ~1",
+        at(7, 5)
+    );
 
     // Exterior, far left (0.5, 5.5): left of both crossings → no contribution.
-    assert!(at(0, 5) < 0.1, "left-exterior coverage {} should be ~0", at(0, 5));
+    assert!(
+        at(0, 5) < 0.1,
+        "left-exterior coverage {} should be ~0",
+        at(0, 5)
+    );
 
     // Exterior, below the triangle (7.5, 0.5): y < 2, outside both edges' Y
     // extent → the in_y mask zeroes every contribution.
-    assert!(at(7, 0) < 0.1, "below-exterior coverage {} should be ~0", at(7, 0));
+    assert!(
+        at(7, 0) < 0.1,
+        "below-exterior coverage {} should be ~0",
+        at(7, 0)
+    );
 
     // Every texel is a real, bounded coverage value in [0, 1] (± AA slack).
     for &v in &buf {
@@ -81,7 +93,10 @@ fn quad_leaf_bakes_as_kernel_value() {
     // point of this test is that the leaf bakes, not a filled-shape golden.
     for &v in &buf {
         assert!(v.is_finite(), "quad coverage produced non-finite value");
-        assert!((-1.01..=1.01).contains(&v), "quad coverage out of range: {v}");
+        assert!(
+            (-1.01..=1.01).contains(&v),
+            "quad coverage out of range: {v}"
+        );
     }
     // At least one interior scanline must register a crossing (non-zero field),
     // proving the solver + ramp actually fired rather than masking everything.

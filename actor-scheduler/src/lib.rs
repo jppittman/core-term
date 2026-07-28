@@ -1251,7 +1251,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
             Ok(System::Wake) | Err(TryRecvError::Empty) => {
                 match self.handle_wake(actor) {
-                    Ok(Some(_)) => None,                   // still running
+                    Ok(Some(_)) => None,               // still running
                     Ok(None) => Some(Exit::Completed), // all disconnected
                     Err(HandlerError::Recoverable(msg)) => Some(Exit::Failed(msg)),
                     Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),

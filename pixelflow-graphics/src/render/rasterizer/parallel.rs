@@ -198,7 +198,11 @@ const STACK_SIZE: usize = 2 * 1024 * 1024 * lanes_scale();
 /// vector is than the 128-bit baseline the 2 MiB figure was chosen for.
 const fn lanes_scale() -> usize {
     let scale = core::mem::size_of::<pixelflow_core::Field>() / 16;
-    if scale < 1 { 1 } else { scale }
+    if scale < 1 {
+        1
+    } else {
+        scale
+    }
 }
 
 /// Render with parallel rasterization (spawns new threads).

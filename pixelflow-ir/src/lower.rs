@@ -34,7 +34,11 @@ impl LowerEnv {
     #[must_use]
     pub fn resolve(&self, n: usize) -> Option<ExprId> {
         let len = self.lets.len();
-        if n < len { Some(self.lets[len - 1 - n]) } else { None }
+        if n < len {
+            Some(self.lets[len - 1 - n])
+        } else {
+            None
+        }
     }
 }
 

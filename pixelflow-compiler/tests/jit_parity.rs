@@ -317,14 +317,16 @@ fn jit_dxx_is_second_derivative() {
 /// macro so the two tests below compile the *same* source.
 macro_rules! coverage_body {
     ($k:ident) => {
-        $k!(|x0: f32, y0: f32, dx_over_dy: f32, dir: f32, min_grad: f32| {
-            let d = X - ((Y - y0) * dx_over_dy + x0);
-            let grad = (DX(d.clone()) * DX(d.clone()) + DY(d.clone()) * DY(d.clone())).sqrt();
-            let coverage = (V(d) / (grad + V(min_grad)) + V(0.5))
-                .max(V(0.0))
-                .min(V(1.0));
-            coverage * V(dir)
-        })
+        $k!(
+            |x0: f32, y0: f32, dx_over_dy: f32, dir: f32, min_grad: f32| {
+                let d = X - ((Y - y0) * dx_over_dy + x0);
+                let grad = (DX(d.clone()) * DX(d.clone()) + DY(d.clone()) * DY(d.clone())).sqrt();
+                let coverage = (V(d) / (grad + V(min_grad)) + V(0.5))
+                    .max(V(0.0))
+                    .min(V(1.0));
+                coverage * V(dir)
+            }
+        )
     };
 }
 
@@ -346,7 +348,13 @@ fn jit_font_coverage_matches_truth() {
     let m = coverage_body!(kernel_jit)(x0, y0, k, dir, mg);
     for &(x, y) in COVERAGE_GRID {
         let p = (x, y, 0.0, 0.0);
-        check("font_coverage", eval(&m, p), coverage_truth(x, y), 1e-4, 1e-4);
+        check(
+            "font_coverage",
+            eval(&m, p),
+            coverage_truth(x, y),
+            1e-4,
+            1e-4,
+        );
     }
 }
 

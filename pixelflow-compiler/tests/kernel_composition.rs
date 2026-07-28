@@ -51,7 +51,7 @@ fn aa_ramp_over_circle_sdf() {
     for (x, y) in [
         (0.25f32, 0.5f32), // on the ramp (d = 0)
         (0.35, 0.55),
-        (1.6, -0.5), // fully outside
+        (1.6, -0.5),        // fully outside
         (0.25, -0.5 + 0.1), // deep inside
         (-1.0, 0.4),
     ] {
@@ -114,9 +114,10 @@ fn manifold_param_used_multiple_times() {
 fn at_sites_warp_coordinates_per_site() {
     let f = kernel_jit!(|| X * X * Y);
 
-    let central_dx = kernel_jit!(|tex: kernel| {
-        (tex.at(X + 1.0, Y, Z, W) - tex.at(X - 1.0, Y, Z, W)) * 0.5
-    })(f);
+    let central_dx =
+        kernel_jit!(|tex: kernel| { (tex.at(X + 1.0, Y, Z, W) - tex.at(X - 1.0, Y, Z, W)) * 0.5 })(
+            f,
+        );
 
     for (x, y) in [(2.0f32, 3.0f32), (-1.5, 0.5), (0.0, 4.0)] {
         check("central_dx", eval(&central_dx, x, y), 2.0 * x * y);
@@ -136,7 +137,6 @@ fn bare_and_at_sites_mix() {
         check("bare_plus_at", eval(&m, x, y), want);
     }
 }
-
 
 /// Named `kernel!` structs are spliceable leaves: the combinator ZST stays
 /// the direct-eval path, but `HasIr` lets a fused JIT root absorb it — its

@@ -25,9 +25,9 @@ impl EventLoopWaker for NoOpWaker {
 }
 
 #[cfg(use_cocoa_display)]
-pub use cocoa_waker::CocoaWaker;
-#[cfg(use_cocoa_display)]
 pub(crate) use cocoa_waker::consume_wake_token;
+#[cfg(use_cocoa_display)]
+pub use cocoa_waker::CocoaWaker;
 
 /// No-op fallback: the macOS platform module compiles whenever
 /// `target_os = "macos"`, even with a non-Cocoa display driver selected
@@ -189,6 +189,12 @@ mod cocoa_waker {
     #[derive(Clone)]
     pub struct CocoaWaker;
 
+    impl Default for CocoaWaker {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl actor_scheduler::WakeHandler for CocoaWaker {
         fn wake(&self) {
             <Self as EventLoopWaker>::wake(self).expect("Failed to wake Cocoa event loop");
@@ -196,6 +202,7 @@ mod cocoa_waker {
     }
 
     impl CocoaWaker {
+        #[must_use]
         pub fn new() -> Self {
             Self
         }

@@ -1,8 +1,8 @@
 use actor_scheduler::{Actor, ActorStatus, HandlerError, HandlerResult, SystemStatus};
 use pixelflow_graphics::render::Frame;
+use pixelflow_runtime::api::private::create_engine_actor;
 use pixelflow_runtime::display::messages::{DisplayControl, DisplayData, DisplayMgmt};
 use pixelflow_runtime::display::ops::{DriverOut, PlatformOps};
-use pixelflow_runtime::api::private::create_engine_actor;
 use pixelflow_runtime::display::platform::PlatformActor;
 use std::sync::{Arc, Mutex};
 
@@ -112,7 +112,9 @@ fn platform_actor_delegation() {
         .expect("handle_data should succeed");
 
     // Test HandleOs
-    actor.handle_os(SystemStatus::Busy).expect("handle_os should succeed");
+    actor
+        .handle_os(SystemStatus::Busy)
+        .expect("handle_os should succeed");
 
     // 4. Verify Log
     let log = log_ref.lock().unwrap();
@@ -123,15 +125,14 @@ fn platform_actor_delegation() {
     assert_eq!(log[3], "HandleOs");
 }
 
-
 /// The point of moving sends out of `PlatformOps`: an implementation can now be driven and
 /// observed with no engine, no adapter, no scheduler and no channels anywhere in the picture.
 /// Before this, `PlatformOps` held a live `EngineActorHandle` and its outbound events could
 /// only be seen by standing up an engine to receive them.
 #[test]
 fn platform_ops_emit_without_an_engine() {
-    use pixelflow_runtime::display::messages::{DisplayEvent, Window};
     use pixelflow_runtime::api::private::WindowId;
+    use pixelflow_runtime::display::messages::{DisplayEvent, Window};
     use pixelflow_runtime::display::ops::DriverEmit;
     use pixelflow_runtime::platform::PlatformPixel;
 
@@ -169,13 +170,26 @@ fn platform_ops_emit_without_an_engine() {
 
     // An empty step emits nothing, and costs no allocation.
     ops.handle_control(DisplayControl::Bell, &mut out).unwrap();
-    assert!(out.emits.is_empty(), "a step that does nothing must emit nothing");
+    assert!(
+        out.emits.is_empty(),
+        "a step that does nothing must emit nothing"
+    );
 
     // One step, N events.
     ops.handle_os(SystemStatus::Idle, &mut out).unwrap();
-    assert_eq!(out.emits.len(), 2, "handle_os drains N events in a single step");
-    assert!(matches!(out.emits[0], DriverEmit::Event(DisplayEvent::FocusGained { .. })));
-    assert!(matches!(out.emits[1], DriverEmit::Event(DisplayEvent::FocusLost { .. })));
+    assert_eq!(
+        out.emits.len(),
+        2,
+        "handle_os drains N events in a single step"
+    );
+    assert!(matches!(
+        out.emits[0],
+        DriverEmit::Event(DisplayEvent::FocusGained { .. })
+    ));
+    assert!(matches!(
+        out.emits[1],
+        DriverEmit::Event(DisplayEvent::FocusLost { .. })
+    ));
 
     // The buffer travels back as a value, so the test can inspect it directly rather than
     // needing an engine to receive it.
@@ -188,7 +202,8 @@ fn platform_ops_emit_without_an_engine() {
         scale: 1.0,
         generation: Default::default(),
     };
-    ops.handle_data(DisplayData::Present { window }, &mut out).unwrap();
+    ops.handle_data(DisplayData::Present { window }, &mut out)
+        .unwrap();
     match &out.emits[..] {
         [DriverEmit::Blitted(returned)] => assert_eq!(returned.id, WindowId(7)),
         other => panic!("expected exactly one buffer hand-back, got {:?}", other),

@@ -221,12 +221,14 @@ fn bundle_run(extra_args: &[String]) {
 /// `-C target-feature` value to pass (empty = the SSE2 baseline, no flag),
 /// and the `is_x86_feature_detected!` names that must all be present on this
 /// host to attempt the level at all.
+#[cfg(target_arch = "x86_64")]
 struct IsaLevel {
     name: &'static str,
     target_feature: &'static str,
     requires: &'static [&'static str],
 }
 
+#[cfg(target_arch = "x86_64")]
 const ISA_LEVELS: &[IsaLevel] = &[
     IsaLevel {
         name: "sse2 (baseline)",
@@ -276,6 +278,7 @@ fn host_has_feature(feature: &str) -> bool {
 }
 
 /// Outcome of attempting one [`IsaLevel`].
+#[cfg(target_arch = "x86_64")]
 enum LevelResult {
     /// Compiled, linted, and the test binaries ran.
     Passed,
@@ -298,11 +301,11 @@ fn isa_matrix(with_clippy: bool) {
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = workspace_root;
+        let _ = with_clippy;
         println!(
             "isa-matrix: host is not x86-64 (no SSE2/AVX2/AVX-512 split to test here — \
              e.g. aarch64/NEON has one ISA level already)."
         );
-        return;
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -366,7 +369,14 @@ fn isa_matrix(with_clippy: bool) {
                     &workspace_root,
                     &matrix_target,
                     &rustflags,
-                    &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"],
+                    &[
+                        "clippy",
+                        "--workspace",
+                        "--all-targets",
+                        "--",
+                        "-D",
+                        "warnings",
+                    ],
                 );
                 if !clippy_ok {
                     println!("isa-matrix: {} — cargo clippy FAILED", level.name);
@@ -380,11 +390,7 @@ fn isa_matrix(with_clippy: bool) {
             // whole workspace is built with this level's target-feature, so
             // rustc may emit those instructions anywhere in the binary — it is
             // not enough that a given test avoids them.
-            if let Some(&feat) = level
-                .requires
-                .iter()
-                .find(|&&feat| !host_has_feature(feat))
-            {
+            if let Some(&feat) = level.requires.iter().find(|&&feat| !host_has_feature(feat)) {
                 println!(
                     "isa-matrix: {} — built and linted; NOT running tests \
                      (host CPU lacks {feat})",

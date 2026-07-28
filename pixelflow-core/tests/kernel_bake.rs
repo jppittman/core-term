@@ -10,11 +10,7 @@ fn kernel_bakes_over_lattice() {
     // Circle SDF built entirely as Kernel composition.
     let x = Kernel::x();
     let y = Kernel::y();
-    let sdf = x
-        .mul(&x)
-        .add(&y.mul(&y))
-        .sqrt()
-        .sub(&Kernel::constant(3.0));
+    let sdf = x.mul(&x).add(&y.mul(&y)).sqrt().sub(&Kernel::constant(3.0));
 
     let lattice = Lattice {
         extent: [8, 8, 1, 1],
@@ -29,6 +25,9 @@ fn kernel_bakes_over_lattice() {
         let (px, py) = (i as f32 + 0.5, j as f32 + 0.5);
         let want = (px * px + py * py).sqrt() - 3.0;
         let got = buf[j * 8 + i];
-        assert!((got - want).abs() < 1e-3, "texel ({i},{j}): {got} vs {want}");
+        assert!(
+            (got - want).abs() < 1e-3,
+            "texel ({i},{j}): {got} vs {want}"
+        );
     }
 }

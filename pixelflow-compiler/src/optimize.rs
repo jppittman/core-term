@@ -434,7 +434,10 @@ fn is_coordinate_intrinsic(name: &str) -> bool {
 /// Optimize a block while preserving its structure.
 ///
 /// Each let binding and the final expression are optimized independently.
-fn optimize_block_preserving_structure(mut block: BlockExpr, extraction: &ExtractionPolicy<'_>) -> Expr {
+fn optimize_block_preserving_structure(
+    mut block: BlockExpr,
+    extraction: &ExtractionPolicy<'_>,
+) -> Expr {
     for stmt in &mut block.stmts {
         if let Stmt::Let(let_stmt) = stmt {
             let init = std::mem::replace(&mut let_stmt.init, make_literal(0.0, Span::call_site()));

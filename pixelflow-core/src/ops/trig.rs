@@ -209,10 +209,7 @@ mod tests {
         for &x in PRINCIPAL_RANGE_ANGLES {
             let got = eval_scalar(Field::from(x).sin());
             let want = x.sin();
-            assert!(
-                (got - want).abs() < 1e-3,
-                "sin({x}) = {got}, want {want}"
-            );
+            assert!((got - want).abs() < 1e-3, "sin({x}) = {got}, want {want}");
         }
     }
 
@@ -221,10 +218,7 @@ mod tests {
         for &x in PRINCIPAL_RANGE_ANGLES {
             let got = eval_scalar(Field::from(x).cos());
             let want = x.cos();
-            assert!(
-                (got - want).abs() < 2e-3,
-                "cos({x}) = {got}, want {want}"
-            );
+            assert!((got - want).abs() < 2e-3, "cos({x}) = {got}, want {want}");
         }
     }
 

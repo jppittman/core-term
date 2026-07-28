@@ -1,3 +1,9 @@
+#![allow(
+    clippy::manual_c_str_literals,
+    clippy::must_use_candidate,
+    reason = "this internal wrapper mirrors Objective-C runtime conventions and ABI encodings"
+)]
+
 use crate::api::public::WindowDescriptor;
 use crate::error::RuntimeError;
 use crate::platform::macos::cocoa::{NSPoint, NSRect, NSSize, NSView, NSWindow};
@@ -14,11 +20,7 @@ static CLOSED_WINDOWS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 /// Take all windows closed since the last drain.
 pub(crate) fn drain_closed_windows() -> Vec<usize> {
-    std::mem::take(
-        &mut *CLOSED_WINDOWS
-            .lock()
-            .expect("closed-window queue poisoned"),
-    )
+    std::mem::take(&mut *CLOSED_WINDOWS.lock().expect("closed-window queue poisoned"))
 }
 
 /// (NSWindow pointer, new backingScaleFactor) pairs reported by
@@ -28,11 +30,7 @@ static SCALE_CHANGES: Mutex<Vec<(usize, f64)>> = Mutex::new(Vec::new());
 
 /// Take all backing-scale changes since the last drain.
 pub(crate) fn drain_scale_changes() -> Vec<(usize, f64)> {
-    std::mem::take(
-        &mut *SCALE_CHANGES
-            .lock()
-            .expect("scale-change queue poisoned"),
-    )
+    std::mem::take(&mut *SCALE_CHANGES.lock().expect("scale-change queue poisoned"))
 }
 
 extern "C" fn window_will_close(_this: sys::Id, _cmd: sys::Sel, notification: sys::Id) {
@@ -280,10 +278,9 @@ impl MacWindow {
             if !drawable.is_null() {
                 let texture: Id = sys::send(drawable, sys::sel(b"texture\0"));
 
-                let region =
-                    sys::MTLRegion::new_2d(0, 0, frame.width as usize, frame.height as usize);
+                let region = sys::MTLRegion::new_2d(0, 0, frame.width, frame.height);
                 let bytes = frame.as_bytes().as_ptr() as *const c_void;
-                let bytes_per_row = (frame.width as usize) * 4;
+                let bytes_per_row = frame.width * 4;
 
                 sys::send_4::<(), sys::MTLRegion, usize, *const c_void, usize>(
                     texture,

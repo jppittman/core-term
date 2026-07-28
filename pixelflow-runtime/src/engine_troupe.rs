@@ -20,9 +20,9 @@ use actor_scheduler::actors::{Schedule, Timer};
 use actor_scheduler::host::{GreenThread, Host, HostOut};
 use actor_scheduler::mealy::{Flush, Lanes, NoLane, Node, Transducer, Wiring};
 use actor_scheduler::{
-    Actor, ActorBuilder, ActorHandle, ActorScheduler, ActorStatus, ActorTypes, GreenSender,
-    HandlerError, HandlerResult, Message, SchedulerParams, SystemStatus, TroupeActor,
-    TrySendError, green_channel,
+    green_channel, Actor, ActorBuilder, ActorHandle, ActorScheduler, ActorStatus, ActorTypes,
+    GreenSender, HandlerError, HandlerResult, Message, SchedulerParams, SystemStatus, TroupeActor,
+    TrySendError,
 };
 use pixelflow_graphics::render::rasterizer::{RasterizerActor, RasterizerHandle, RenderResponse};
 use std::convert::Infallible;
@@ -544,7 +544,8 @@ impl Troupe {
         // §3.2) needs the ring to hold every possible outstanding tick/`ReturnToken`, so `Full`
         // on either is provably a bug rather than backpressure to tolerate.
         let (vsync_data_tx, vsync_data_rx) = green_channel::<RenderedResponse>(128, waker.clone());
-        let (vsync_control_tx, vsync_control_rx) = green_channel::<VsyncCommand>(128, waker.clone());
+        let (vsync_control_tx, vsync_control_rx) =
+            green_channel::<VsyncCommand>(128, waker.clone());
         // Capacity 1 is enough: a queued tick is as good as a fresh one, and the clock is the
         // only producer.
         let (tick_tx, tick_rx) = green_channel::<VsyncManagement>(2, waker.clone());
@@ -717,7 +718,8 @@ mod tests {
             let (driver, _driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
 
             let waker = {
-                let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
+                let (handle, _sched) =
+                    ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
                 handle.waker()
             };
             let (coordinator_tx, coordinator_rx) = spsc_channel::<CoordinatorData>(64);

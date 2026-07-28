@@ -240,9 +240,9 @@ pub use zst::Zst;
 pub use manifold::Differentiable;
 
 // Lattice types for manifold evaluation over finite domains
-pub use lattice::{DiscreteManifold, Lattice, ReduceOp};
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub use lattice::BilinearSampler;
+pub use lattice::{DiscreteManifold, Lattice, ReduceOp};
 
 // ============================================================================
 // Field: The ONLY User-Facing SIMD Type
@@ -812,12 +812,6 @@ impl Field {
     #[inline(always)]
     pub(crate) fn hypot(self, y: Self) -> Self {
         Self(self.0.hypot(y.0))
-    }
-
-    /// Multiply by reciprocal square root: self * rsqrt(other) = self / sqrt(other).
-    #[inline(always)]
-    pub(crate) fn mul_rsqrt(self, other: Self) -> Self {
-        Self(self.0.mul_rsqrt(other.0))
     }
 
     /// Clamp to range [lo, hi].
@@ -1679,7 +1673,7 @@ impl numeric::Numeric for Field {
 
     #[inline(always)]
     fn mul_rsqrt(self, other: Self) -> Self {
-        Self::mul_rsqrt(self, other)
+        Self(self.0.mul_rsqrt(other.0))
     }
 
     #[inline(always)]

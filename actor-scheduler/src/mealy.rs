@@ -357,8 +357,13 @@ pub struct Lanes<RC, RM, RD> {
 /// shape every single-lane actor already uses. A lane-aware actor spells out all five
 /// parameters (or, in practice, just calls [`Node::new_with_lanes`] and lets inference fill
 /// them in).
-pub struct Node<T: Transducer, W: Wiring<Out = T::Out>, RD, RC = NoLane<<T as Transducer>::Control>, RM = NoLane<<T as Transducer>::Management>>
-{
+pub struct Node<
+    T: Transducer,
+    W: Wiring<Out = T::Out>,
+    RD,
+    RC = NoLane<<T as Transducer>::Control>,
+    RM = NoLane<<T as Transducer>::Management>,
+> {
     actor: T,
     control: RC,
     management: RM,
@@ -402,7 +407,12 @@ where
     /// OS-thread one, rather than by a second, parallel set of knobs. Override the data limit
     /// the same way any `SchedulerParams` field is overridden: `SchedulerParams { default_data_
     /// burst_limit: n, ..SchedulerParams::DEFAULT }`.
-    pub fn new_with_lanes(actor: T, lanes: Lanes<RC, RM, RD>, wiring: W, params: SchedulerParams) -> Self {
+    pub fn new_with_lanes(
+        actor: T,
+        lanes: Lanes<RC, RM, RD>,
+        wiring: W,
+        params: SchedulerParams,
+    ) -> Self {
         Self {
             actor,
             control: lanes.control,
@@ -1060,7 +1070,10 @@ mod tests {
             echoed.push(b);
         }
         let expected: Vec<u8> = (b'a'..=b'h').take(echoed.len()).collect();
-        assert_eq!(echoed, expected, "messages delivered in order, none dropped");
+        assert_eq!(
+            echoed, expected,
+            "messages delivered in order, none dropped"
+        );
     }
 
     #[test]
@@ -1176,7 +1189,10 @@ mod tests {
         assert!(credit.try_consume());
         assert!(credit.try_consume());
         assert!(credit.try_consume());
-        assert!(!credit.try_consume(), "a spurious release must not grant extra budget");
+        assert!(
+            !credit.try_consume(),
+            "a spurious release must not grant extra budget"
+        );
     }
 
     #[test]
@@ -1204,7 +1220,10 @@ mod tests {
             sent += 1;
         }
 
-        assert_eq!(sent, RING_CAPACITY as usize, "stopped exactly at the ring's capacity");
+        assert_eq!(
+            sent, RING_CAPACITY as usize,
+            "stopped exactly at the ring's capacity"
+        );
         assert_eq!(
             std::iter::from_fn(|| rx.try_recv().ok()).count(),
             RING_CAPACITY as usize,
@@ -1312,7 +1331,10 @@ mod tests {
 
         fn flush(&mut self, out: &mut CountdownOut) -> Flush {
             // The self-port never reaches the wiring: `take_continuation` lifts it out first.
-            debug_assert!(out.again.is_none(), "continuation must not reach the wiring");
+            debug_assert!(
+                out.again.is_none(),
+                "continuation must not reach the wiring"
+            );
             send_port(&mut out.done, &self.done, Delivery::Blocking)
         }
     }
@@ -1720,7 +1742,9 @@ mod tests {
         topo.blocking_edge(app, compiler); // request
         topo.blocking_edge(compiler, app); // reply — closes the cycle
 
-        let cycle = topo.validate().expect_err("mutual blocking must be rejected");
+        let cycle = topo
+            .validate()
+            .expect_err("mutual blocking must be rejected");
         assert_eq!(cycle.actors.len(), 2);
         assert!(cycle.actors.contains(&"app") && cycle.actors.contains(&"compiler"));
         assert!(
@@ -1756,9 +1780,14 @@ mod tests {
         topo.blocking_edge(c, d);
         topo.blocking_edge(d, b); // b → c → d → b
 
-        let cycle = topo.validate().expect_err("three-actor cycle must be caught");
+        let cycle = topo
+            .validate()
+            .expect_err("three-actor cycle must be caught");
         assert_eq!(cycle.actors.len(), 3, "got {cycle}");
-        assert!(!cycle.actors.contains(&"a"), "a is upstream, not on the cycle");
+        assert!(
+            !cycle.actors.contains(&"a"),
+            "a is upstream, not on the cycle"
+        );
     }
 
     #[test]

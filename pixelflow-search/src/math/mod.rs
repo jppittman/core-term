@@ -220,7 +220,12 @@ mod tests {
     /// expansion the compiler emits), and a private walker would be a second
     /// definition free to drift from it.
     fn eval_arena(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
-        pixelflow_ir::eval_scalar(arena, id, vars, &pixelflow_ir::binding::BindingTable::empty())
+        pixelflow_ir::eval_scalar(
+            arena,
+            id,
+            vars,
+            &pixelflow_ir::binding::BindingTable::empty(),
+        )
     }
 
     /// Run an expression through the egraph optimizer and check that the

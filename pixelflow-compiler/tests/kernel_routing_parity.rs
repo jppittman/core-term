@@ -56,11 +56,7 @@ fn check(name: &str, got: f32, want: f32) {
 fn routed_arithmetic_matches_truth() {
     let m = kernel!(|| (X - Y) * Z + X / (W + 10.0))();
     for &p in SAMPLES {
-        check(
-            "arith",
-            eval(&m, p),
-            (p.0 - p.1) * p.2 + p.0 / (p.3 + 10.0),
-        );
+        check("arith", eval(&m, p), (p.0 - p.1) * p.2 + p.0 / (p.3 + 10.0));
     }
 }
 
@@ -96,7 +92,11 @@ fn routed_piecewise_matches_truth() {
 fn routed_abs_recip_matches_truth() {
     let m = kernel!(|| (X - Y).abs() + (Z + 5.0).recip())();
     for &p in SAMPLES {
-        check("abs_recip", eval(&m, p), (p.0 - p.1).abs() + 1.0 / (p.2 + 5.0));
+        check(
+            "abs_recip",
+            eval(&m, p),
+            (p.0 - p.1).abs() + 1.0 / (p.2 + 5.0),
+        );
     }
 }
 

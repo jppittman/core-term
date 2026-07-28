@@ -50,7 +50,8 @@ pub fn eval_scalar(
     //
     // `expand_transcendentals_owned` is the identity (a bare clone) when the
     // arena holds none, so ordinary kernels pay nothing.
-    let (expanded, root) = crate::backend::emit::lowering::expand_transcendentals_owned(arena, root);
+    let (expanded, root) =
+        crate::backend::emit::lowering::expand_transcendentals_owned(arena, root);
     Env {
         arena: &expanded,
         vars,
@@ -93,21 +94,23 @@ impl Env<'_> {
             ),
             ExprNode::Unary(op, a) => {
                 let x = self.eval(*a);
-                op.eval_unary(x)
-                    .unwrap_or_else(|| panic!(
+                op.eval_unary(x).unwrap_or_else(|| {
+                    panic!(
                         "eval_scalar: no scalar eval for unary {op:?} — \
                          lower it first (expand_transcendentals)"
-                    ))
+                    )
+                })
             }
             ExprNode::Binary(OpKind::RawGather, buf, idx) => self.raw_gather(*buf, *idx),
             ExprNode::Binary(op, a, b) => {
                 let x = self.eval(*a);
                 let y = self.eval(*b);
-                op.eval_binary(x, y)
-                    .unwrap_or_else(|| panic!(
+                op.eval_binary(x, y).unwrap_or_else(|| {
+                    panic!(
                         "eval_scalar: no scalar eval for binary {op:?} — \
                          lower it first (expand_transcendentals)"
-                    ))
+                    )
+                })
             }
             ExprNode::Ternary(OpKind::Gather, buf, x, y) => self.gather(*buf, *x, *y),
             ExprNode::Ternary(op, a, b, c) => {

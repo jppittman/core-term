@@ -46,10 +46,7 @@ enum Mode {
 /// previously compiled code for canonically identical kernels. The returned
 /// `Arc` is the shared handle — two constructions of the same kernel yield
 /// pointer-equal manifolds.
-pub fn compile_cached(
-    arena: &ExprArena,
-    root: ExprId,
-) -> Result<Arc<JitManifold>, &'static str> {
+pub fn compile_cached(arena: &ExprArena, root: ExprId) -> Result<Arc<JitManifold>, &'static str> {
     compile_cached_mode(arena, root, Mode::PerBatch)
 }
 
@@ -79,11 +76,7 @@ fn compile_cached_mode(
     };
 
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(hit) = cache
-        .lock()
-        .expect("jit_cache: lock poisoned")
-        .get(&key)
-    {
+    if let Some(hit) = cache.lock().expect("jit_cache: lock poisoned").get(&key) {
         return Ok(hit.clone());
     }
 

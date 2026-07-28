@@ -789,8 +789,10 @@ impl ExprArena {
                         }
                         ExprNode::Nary(op, start, len) => {
                             let (s, l) = (start as usize, len as usize);
-                            let mapped: Vec<ExprId> =
-                                other.nary_children[s..s + l].iter().map(|c| m(*c)).collect();
+                            let mapped: Vec<ExprId> = other.nary_children[s..s + l]
+                                .iter()
+                                .map(|c| m(*c))
+                                .collect();
                             self.push_nary(op, &mapped)
                         }
                     };
@@ -867,8 +869,7 @@ impl ExprArena {
                         ExprNode::Nary(op, start, len) => {
                             let (s, l) = (start as usize, len as usize);
                             let child_ids: Vec<ExprId> = self.nary_children[s..s + l].to_vec();
-                            let mapped: Vec<ExprId> =
-                                child_ids.into_iter().map(m).collect();
+                            let mapped: Vec<ExprId> = child_ids.into_iter().map(m).collect();
                             self.push_nary(op, &mapped)
                         }
                     };

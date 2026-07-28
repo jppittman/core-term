@@ -28,6 +28,11 @@
 //! (including the mask/policy fields), since `apply_unified_sgd` updates the
 //! whole net; those fields simply stay zero when only `backward_value` runs.
 
+#![allow(
+    clippy::needless_range_loop,
+    reason = "the hand-derived tensor equations use indices shared across several fixed-size arrays"
+)]
+
 use pixelflow_ir::OpKind;
 use pixelflow_search::nnue::factored::{
     EMBED_DIM, EdgeAccumulator, ExprNnue, GRAPH_ACC_DIM, GRAPH_INPUT_DIM, GraphAccumulator,
@@ -1085,6 +1090,10 @@ fn group_clip_scale(norm: f32, max_norm: f32) -> f32 {
 /// momentum_buf = momentum * momentum_buf + grad + weight_decay * param
 /// param -= lr * momentum_buf
 /// ```
+#[allow(
+    clippy::too_many_arguments,
+    reason = "optimizer hyperparameters are intentionally explicit at this training API boundary"
+)]
 pub fn apply_unified_sgd(
     net: &mut ExprNnue,
     grads: &UnifiedGradients,
@@ -1516,6 +1525,10 @@ mod tests {
     }
 
     /// Compute value loss: (value_pred - target)^2 * value_coeff.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the gradient-check helper keeps every differentiated input explicit"
+    )]
     fn value_loss(
         net: &ExprNnue,
         acc: &EdgeAccumulator,

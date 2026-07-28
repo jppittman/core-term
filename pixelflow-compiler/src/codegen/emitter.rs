@@ -6,8 +6,8 @@ use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 
 use crate::annotate::{AnnotationCtx, annotate};
-use crate::ir_bridge;
 use crate::ast::{BinaryOp, Expr, ParamKind, Stmt, UnaryOp};
+use crate::ir_bridge;
 use crate::sema::AnalyzedKernel;
 use crate::symbol::SymbolKind;
 
@@ -782,8 +782,6 @@ impl<'a> CodeEmitter<'a> {
             #has_ir_impl
         }
     }
-
-
 
     /// Emit imports for array-based context system.
     ///

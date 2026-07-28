@@ -76,7 +76,12 @@ const UNUSED_VVVV: u8 = 0;
 
 impl Vex {
     const fn new(map: Map, pp: Pp, opcode: u8) -> Self {
-        Self { map, pp, w: false, opcode }
+        Self {
+            map,
+            pp,
+            w: false,
+            opcode,
+        }
     }
     /// Map `0F`, no prefix — the packed-single arithmetic family.
     const fn m0f(opcode: u8) -> Self {
@@ -346,7 +351,13 @@ pub fn emit_ret(code: &mut Vec<u8>) {
 /// `dst = op(src1, src2)`. VEX is 3-operand/non-destructive: operands are
 /// never clobbered and may alias `dst`. Comparisons produce an ordinary
 /// all-ones/all-zeros vector directly (no k-register step, unlike AVX-512).
-pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Reg) -> Result<(), &'static str> {
+pub fn emit_binary(
+    code: &mut Vec<u8>,
+    op: OpKind,
+    dst: Reg,
+    src1: Reg,
+    src2: Reg,
+) -> Result<(), &'static str> {
     let (d, s1, s2) = (dst.0, src1.0, src2.0);
     if let Some(pred) = cmp_pred(op) {
         vcmpps(code, d, s1, s2, pred);
@@ -398,7 +409,13 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) -> Result<
 const UNARY_SCRATCH: Reg = Reg(15);
 
 /// Emit a shift of i32 lanes by a compile-time immediate.
-pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount: u8) -> Result<(), &'static str> {
+pub fn emit_shift_imm(
+    code: &mut Vec<u8>,
+    op: OpKind,
+    dst: Reg,
+    src: Reg,
+    amount: u8,
+) -> Result<(), &'static str> {
     match op {
         OpKind::Shl => vpslld_imm(code, dst.0, src.0, amount),
         OpKind::Shr => vpsrld_imm(code, dst.0, src.0, amount),

@@ -122,7 +122,9 @@ impl AnalyticalLine {
             // Gradient-normalized ramp, ~1 screen pixel wide after the
             // calculus resolves DX/DY.
             let grad = (DX(d.clone()) * DX(d.clone()) + DY(d.clone()) * DY(d.clone())).sqrt();
-            let coverage = (V(d) / (grad + V(min_grad)) + V(0.5)).max(V(0.0)).min(V(1.0));
+            let coverage = (V(d) / (grad + V(min_grad)) + V(0.5))
+                .max(V(0.0))
+                .min(V(1.0));
 
             in_y.select(coverage * V(dir), V(0.0))
         })(
@@ -209,13 +211,21 @@ impl AnalyticalQuad {
     #[must_use]
     pub fn kernel(&self) -> Kernel {
         if self.is_linear {
-            kernel_value!(|ax: f32, bx: f32, cx: f32, by: f32, cy: f32, dir: f32, min_grad: f32|
+            kernel_value!(|ax: f32,
+                           bx: f32,
+                           cx: f32,
+                           by: f32,
+                           cy: f32,
+                           dir: f32,
+                           min_grad: f32|
              -> Field {
                 let t = (Y - cy) / by;
                 let in_t = t.clone().ge(0.0) & t.clone().le(1.0);
                 let d = X - (t.clone() * t.clone() * ax + t * bx + cx);
                 let grad = (DX(d.clone()) * DX(d.clone()) + DY(d.clone()) * DY(d.clone())).sqrt();
-                let coverage = (V(d) / (grad + V(min_grad)) + V(0.5)).max(V(0.0)).min(V(1.0));
+                let coverage = (V(d) / (grad + V(min_grad)) + V(0.5))
+                    .max(V(0.0))
+                    .min(V(1.0));
                 in_t.select(coverage * V(dir), V(0.0))
             })(
                 self.ax,
@@ -261,13 +271,15 @@ impl AnalyticalQuad {
                 let grad_plus = (DX(d_plus.clone()) * DX(d_plus.clone())
                     + DY(d_plus.clone()) * DY(d_plus.clone()))
                 .sqrt();
-                let cov_plus =
-                    (V(d_plus) / (grad_plus + V(min_grad)) + V(0.5)).max(V(0.0)).min(V(1.0));
+                let cov_plus = (V(d_plus) / (grad_plus + V(min_grad)) + V(0.5))
+                    .max(V(0.0))
+                    .min(V(1.0));
                 let grad_minus = (DX(d_minus.clone()) * DX(d_minus.clone())
                     + DY(d_minus.clone()) * DY(d_minus.clone()))
                 .sqrt();
-                let cov_minus =
-                    (V(d_minus) / (grad_minus + V(min_grad)) + V(0.5)).max(V(0.0)).min(V(1.0));
+                let cov_minus = (V(d_minus) / (grad_minus + V(min_grad)) + V(0.5))
+                    .max(V(0.0))
+                    .min(V(1.0));
 
                 // Validity: only count roots with t in [0, 1].
                 let valid_plus = t_plus.clone().ge(0.0) & t_plus.le(1.0);

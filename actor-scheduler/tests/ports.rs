@@ -154,7 +154,10 @@ fn a_droppable_port_discards_instead_of_parking() {
             Flush::Done,
             "a droppable port must never report Blocked"
         );
-        assert!(out.display.is_none(), "a droppable port never keeps a message");
+        assert!(
+            out.display.is_none(),
+            "a droppable port never keeps a message"
+        );
     }
 
     let delivered = std::iter::from_fn(|| rx_display.try_recv().ok()).count();

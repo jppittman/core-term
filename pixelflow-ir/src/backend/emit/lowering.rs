@@ -410,8 +410,10 @@ impl<'a> Substitution<'a> {
             ExprNode::Nary(op, start, len) => {
                 let (s, l) = (start as usize, len as usize);
                 let children: Vec<ExprId> = arena.nary_children_raw()[s..s + l].to_vec();
-                let mapped: Vec<ExprId> =
-                    children.into_iter().map(|ch| self.apply(arena, ch)).collect();
+                let mapped: Vec<ExprId> = children
+                    .into_iter()
+                    .map(|ch| self.apply(arena, ch))
+                    .collect();
                 arena.push_nary(op, &mapped)
             }
         };
@@ -1243,12 +1245,20 @@ mod dwrt_tests {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let (out, root) = lowered_derivative(&a, x, 0);
-        assert_close(eval(&out, root, &[3.0, 5.0, 0.0, 0.0]), 1.0, &[3.0, 5.0, 0.0, 0.0]);
+        assert_close(
+            eval(&out, root, &[3.0, 5.0, 0.0, 0.0]),
+            1.0,
+            &[3.0, 5.0, 0.0, 0.0],
+        );
 
         let mut a = ExprArena::new();
         let y = a.push_var(1);
         let (out, root) = lowered_derivative(&a, y, 0);
-        assert_close(eval(&out, root, &[3.0, 5.0, 0.0, 0.0]), 0.0, &[3.0, 5.0, 0.0, 0.0]);
+        assert_close(
+            eval(&out, root, &[3.0, 5.0, 0.0, 0.0]),
+            0.0,
+            &[3.0, 5.0, 0.0, 0.0],
+        );
     }
 
     #[test]
@@ -1284,8 +1294,16 @@ mod dwrt_tests {
         let y3 = a.push_binary(OpKind::Mul, y, three);
         let e = a.push_binary(OpKind::Min, x2, y3);
         let (out, root) = lowered_derivative(&a, e, 0);
-        assert_close(eval(&out, root, &[1.0, 5.0, 0.0, 0.0]), 2.0, &[1.0, 5.0, 0.0, 0.0]);
-        assert_close(eval(&out, root, &[9.0, 1.0, 0.0, 0.0]), 0.0, &[9.0, 1.0, 0.0, 0.0]);
+        assert_close(
+            eval(&out, root, &[1.0, 5.0, 0.0, 0.0]),
+            2.0,
+            &[1.0, 5.0, 0.0, 0.0],
+        );
+        assert_close(
+            eval(&out, root, &[9.0, 1.0, 0.0, 0.0]),
+            0.0,
+            &[9.0, 1.0, 0.0, 0.0],
+        );
 
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1296,8 +1314,16 @@ mod dwrt_tests {
         let y3 = a.push_binary(OpKind::Mul, y, three);
         let e = a.push_binary(OpKind::Max, x2, y3);
         let (out, root) = lowered_derivative(&a, e, 0);
-        assert_close(eval(&out, root, &[9.0, 1.0, 0.0, 0.0]), 2.0, &[9.0, 1.0, 0.0, 0.0]);
-        assert_close(eval(&out, root, &[1.0, 5.0, 0.0, 0.0]), 0.0, &[1.0, 5.0, 0.0, 0.0]);
+        assert_close(
+            eval(&out, root, &[9.0, 1.0, 0.0, 0.0]),
+            2.0,
+            &[9.0, 1.0, 0.0, 0.0],
+        );
+        assert_close(
+            eval(&out, root, &[1.0, 5.0, 0.0, 0.0]),
+            0.0,
+            &[1.0, 5.0, 0.0, 0.0],
+        );
     }
 
     #[test]
@@ -1313,8 +1339,16 @@ mod dwrt_tests {
         let x5 = a.push_binary(OpKind::Mul, x, five);
         let e = a.push_ternary(OpKind::Select, mask, xx, x5);
         let (out, root) = lowered_derivative(&a, e, 0);
-        assert_close(eval(&out, root, &[3.0, 1.0, 0.0, 0.0]), 6.0, &[3.0, 1.0, 0.0, 0.0]);
-        assert_close(eval(&out, root, &[3.0, -1.0, 0.0, 0.0]), 5.0, &[3.0, -1.0, 0.0, 0.0]);
+        assert_close(
+            eval(&out, root, &[3.0, 1.0, 0.0, 0.0]),
+            6.0,
+            &[3.0, 1.0, 0.0, 0.0],
+        );
+        assert_close(
+            eval(&out, root, &[3.0, -1.0, 0.0, 0.0]),
+            5.0,
+            &[3.0, -1.0, 0.0, 0.0],
+        );
     }
 
     #[test]
@@ -1330,8 +1364,16 @@ mod dwrt_tests {
         let floored = a.push_binary(OpKind::Max, xx, zero);
         let e = a.push_binary(OpKind::Min, floored, ten);
         let (out, root) = lowered_derivative(&a, e, 0);
-        assert_close(eval(&out, root, &[2.0, 0.0, 0.0, 0.0]), 4.0, &[2.0, 0.0, 0.0, 0.0]);
-        assert_close(eval(&out, root, &[5.0, 0.0, 0.0, 0.0]), 0.0, &[5.0, 0.0, 0.0, 0.0]);
+        assert_close(
+            eval(&out, root, &[2.0, 0.0, 0.0, 0.0]),
+            4.0,
+            &[2.0, 0.0, 0.0, 0.0],
+        );
+        assert_close(
+            eval(&out, root, &[5.0, 0.0, 0.0, 0.0]),
+            0.0,
+            &[5.0, 0.0, 0.0, 0.0],
+        );
     }
 
     #[test]

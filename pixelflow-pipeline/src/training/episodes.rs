@@ -93,6 +93,10 @@ pub struct Episode {
 /// 5. JIT-benchmark the extraction for ground-truth final cost.
 /// 6. Verify the rewrite preserved semantics (SIMD-lane equivalence at a
 ///    fixed test point).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "episode identity, budget, model, and seed inputs are distinct API inputs"
+)]
 pub fn run_episode(
     seed_arena: &ExprArena,
     seed_root: ExprId,

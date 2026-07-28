@@ -272,9 +272,7 @@ fn ast_to_arena_inner(
                     // opaque `.at()` call verbatim, so the local is dangling
                     // by the time this bridge runs. Direct receivers cover
                     // the real usage (bilinear, scene3d).
-                    return Err(
-                        ".at() receiver must be a manifold param".to_string(),
-                    );
+                    return Err(".at() receiver must be a manifold param".to_string());
                 };
                 if call.args.len() != 4 {
                     return Err(format!(
