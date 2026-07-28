@@ -64,50 +64,60 @@ monomorphized loop we're chasing. Pathological sites calling
 
 ## The `over` plan (loop-in-JIT)
 
-Ordered so each step is independently landable:
+**Rule of construction (2026-07-28, project direction): one implementation per
+job, replacement in place.** The new thing takes the existing good name; the
+superseded thing is deleted in the same change, never left beside it as a
+slow parallel path.
 
-1. **Second lowering strategy for `Reduce`.** `expand_reduce` always statically
-   unrolls; a 1920-wide domain needs a loop, not 1920 body copies. Choose
-   loop-vs-unroll by extent (or an explicit scope tag) in `lowering.rs` — one
-   place, all backends inherit it. Semantic gap to design around: `over` is
-   `⊕_i` (eliminates a dimension); the render loop is `for i { out[i] = f(i) }`
-   (iterates and stores). Either a monoid-less domain binder or a
-   store-tagged `Reduce`.
-2. **Two `IsaBackend` primitives** (scalar counter compare-and-branch, ~5
-   lines per ISA) replace the three existing hand-encoded loops (aarch64
-   hoisted scanline, x86 scanline, AVX-512 collapse).
-3. **Generalize the collapse entry** off AVX-512: synthesize X as an induction
-   value (`base + lane_seq`, vector-step add — deletes the `xs` array), add the
-   Y loop (per-row Y in a register, enabling the existing hoist machinery as
-   true LICM), add tail handling. Keep `rdi`/`x0` = ctx — the scanline ABI
-   repurposes the ctx register for `xs` and therefore can never gather;
-   the collapse ABI is the one to grow. Note the one ABI asymmetry: aarch64
-   has 8 callee-saved vector regs for hoisted values; x86-64 has none (hoisting
-   must be stack-slot-based there).
-4. **Wire `Lattice::collapse`/`bake`** to the collapse entry (per-mode cache
-   key in `jit_cache`; today it refuses to cache `Buffer` arenas at all, which
-   now matters — `BilinearSampler` compiles one per glyph).
-5. **Delete the superseded machinery:** the x86 Sethi-Ullman tree-walk emitter
-   (second codegen strategy, no spilling, no CSE), both hand-rolled scanline
-   loops + `ScanlineKernelFn` (SSE2-only — 4× narrower than the per-batch path
-   on an AVX-512 build), and `pixelflow-core/src/jit.rs` (an abandoned
-   inline-cache stripe evaluator with zero callers).
+**Landed 2026-07-28:**
 
-Caveats the scanline paths teach: they skip Stage-1 lowering (`sin`, `Dwrt`,
-`Reduce` silently unsupported) and hard-error on `Nary`. The generalized
-collapse entry must keep running the full lowering chain, as
-`compile_collapse_avx512` already does.
+1. `IsaBackend::emit_collapse_loop` — each backend (SSE2/AVX2/AVX-512/NEON)
+   wraps the shared `emit_dag_body` in its own ~60-line loop scaffold. X is an
+   induction value (caller passes lane-sequential `x0`; the kernel steps it by
+   the batch width), Y/Z/W are loop-invariant arguments, coordinate state
+   lives in stack slots above the body's spill frame, the ctx register stays
+   reserved for gather. `compile_collapse` replaced `compile_collapse_avx512`
+   in place; the ABI is `CollapseKernelFn(ctx, out, groups, x0, y, z, w)`.
+2. `Lattice::bake` tabulates through it — one call per row instead of one per
+   batch, row tails through a one-batch scratch. The mode-tagged
+   `jit_cache::compile_collapse_cached` shares compiles.
+3. The superseded kernels are gone (−3,240 lines): both scanline compile
+   entries and their hand-rolled loops, the x86 Sethi-Ullman tree-walk
+   emitter, `ScanlineJitManifold`/`ScanlineKernelFn`, the aarch64
+   v8-v15 hoisted-prologue machinery, `pixelflow-core/src/jit.rs`, and the
+   two pipeline benches that measured the deleted path.
+   `tests/collapse_loop.rs` pins collapse output bit-exact against the
+   per-batch kernel (and the interpreter) across arithmetic, selects,
+   transcendentals, gather, reduce, and forced spills.
+
+**Remaining, in order:**
+
+1. **`Reduce`'s loop lowering.** `expand_reduce` statically unrolls; a large
+   extent needs a real loop. Per the rule above this is a *replacement* of
+   the unroll, not a sibling keyed on extent — small trip counts may still
+   unroll, but as a decision inside the one lowering, not as two lowerings.
+   Semantic note: `over` is `⊕_i` (eliminates a dimension); the render loop
+   is `for i {{ out[i] = f(i) }}` — the collapse scaffold is the second shape,
+   a `Reduce` loop is the first, and they can share the backend loop
+   primitives.
+2. **The Y loop (2D collapse).** One call per frame instead of per row; the
+   scaffold grows an outer loop stepping the Y slot. This is also where LICM
+   lands: `variance.rs` (kept for exactly this) identifies Y/Z/W-only
+   subexpressions to hoist out of the inner loop — aarch64 can pin them in
+   v8-v15 with a save/restore prologue, x86 uses stack slots.
+3. **The e-graph gap** (finding 2 above) — unchanged, and measurement still
+   comes first: if runtime-composed kernels are dominated by missing FMA/CSE,
+   a bounded optimization pass on the bake path may buy more than any
+   further loop work.
 
 ## Measurement plan (do this first)
 
-- `pixelflow-pipeline/src/bin/bench_hoisted_scanline.rs` is already the
-  per-call-overhead benchmark (collapse-loop vs per-batch on 1920×1080);
-  needs an x86-64 lane and de-gating from `training`.
 - `pixelflow-runtime/examples/bench_psychedelic.rs` is the JIT-vs-LLVM parity
   number (`kernel_raw!` vs `kernel!` vs `kernel_jit!`, ns/pixel).
 - Add a criterion bench in `pixelflow-ir/benches/` (crate has none): N ×
   `KernelFn` vs one `CollapseKernelFn` on the same arena — isolates call
-  overhead from everything else; the acceptance metric for the `over` work.
+  overhead from everything else. `pixelflow-graphics/benches/font_rendering.rs`
+  (bake on a cached compile) already measures the production win end to end.
 - To size finding 2 (missing optimization) separately: bake the same
   expression via `kernel_jit!` (e-graph'd at macro time) and via runtime
   `Kernel` composition (raw), and diff ns/pixel. If the gap is large, an
