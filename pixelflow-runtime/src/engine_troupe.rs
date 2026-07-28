@@ -18,8 +18,8 @@ use crate::vsync_actor::{
     RenderedResponse, VsyncActor, VsyncCommand, VsyncConfig, VsyncManagement,
 };
 use actor_scheduler::{
-    Actor, ActorHandle, ActorStatus, ActorTypes, HandlerError, HandlerResult, Message, SendError,
-    SystemStatus, TroupeActor,
+    Actor, ActorBuilder, ActorHandle, ActorScheduler, ActorStatus, ActorTypes, HandlerError,
+    HandlerResult, Message, SendError, SystemStatus, TroupeActor,
 };
 use crate::render_coordinator::{Completed, RenderCoordinator, Step};
 use pixelflow_graphics::render::rasterizer::{
@@ -43,6 +43,9 @@ pub struct EngineHandler {
     /// Pre-created dedicated SPSC handle for rasterizer response forwarding thread.
     /// Set via SetRasterizerForwardHandle management message before Configure.
     rasterizer_forward_handle: Option<ActorHandle<EngineData, EngineControl, AppManagement>>,
+    /// Handle to the rasterizer response-forwarding actor (spawned alongside the rasterizer
+    /// in `spawn_rasterizer`; `None` until then, same as `rasterizer` itself).
+    rasterizer_forwarder: Option<ActorHandle<(), (), ()>>,
     /// Handle to the application (for event forwarding).
     app_handle: Option<Arc<dyn Application + Send + Sync>>,
     /// Frame counter for VSync feedback.
@@ -149,6 +152,11 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                         .send(Message::Shutdown)
                         .expect("Failed to shutdown rasterizer on Quit");
                 }
+                if let Some(forwarder) = &self.rasterizer_forwarder {
+                    forwarder
+                        .send(Message::Shutdown)
+                        .expect("Failed to shutdown rasterizer forwarder on Quit");
+                }
                 self.app_handle = None;
                 self.driver
                     .send(Message::Shutdown)
@@ -250,6 +258,11 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
                         .send(Message::Shutdown)
                         .expect("Failed to shutdown rasterizer on AppManagement::Quit");
                 }
+                if let Some(forwarder) = &self.rasterizer_forwarder {
+                    forwarder
+                        .send(Message::Shutdown)
+                        .expect("Failed to shutdown rasterizer forwarder on AppManagement::Quit");
+                }
                 self.app_handle = None;
                 self.driver
                     .send(Message::Shutdown)
@@ -267,6 +280,81 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
     fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         // engine has no external channels which might be busy
         Ok(ActorStatus::Idle)
+    }
+}
+
+/// Bridges the rasterizer's response channel into the engine's own actor system.
+///
+/// [`RasterizerActor`] hands completed frames back over a bare `mpsc::Sender` so
+/// pixelflow-graphics stays decoupled from any particular consumer's message enum. This actor
+/// is the one place that channel meets [`EngineData::RenderComplete`] — `handle_os` blocking on
+/// `response_rx.recv()` *is* the actor, the same way `PtyReader::handle_os` blocking on
+/// `epoll_wait` is that actor's entire job.
+///
+/// The scheduler only calls `handle_os` after the doorbell has woken at least once, so — same
+/// as `PtyReader` waiting for its first `Bind` — this actor needs one throwaway message to start
+/// its loop; `spawn_rasterizer` sends it right after spawning the thread. Once `handle_os`
+/// returns `Busy` the scheduler keeps re-entering it without waiting on the doorbell again, so
+/// from then on the loop is self-sustaining.
+struct RasterizerForwarder {
+    response_rx: std::sync::mpsc::Receiver<RenderResponse<PlatformPixel, WindowMeta>>,
+    engine: ActorHandle<EngineData, EngineControl, AppManagement>,
+    /// Sends itself `Shutdown` once the rasterizer drops its sender, so the scheduler loop
+    /// (and the OS thread underneath it) actually exits instead of parking on an empty
+    /// doorbell forever. `Quit`/`AppManagement::Quit`/`CloseRequested` also send `Shutdown`
+    /// here directly; this is the fallback for whichever signal arrives second.
+    self_handle: Option<ActorHandle<(), (), ()>>,
+}
+
+impl ActorTypes for RasterizerForwarder {
+    type Data = ();
+    type Control = ();
+    type Management = ();
+}
+
+impl Actor<(), (), ()> for RasterizerForwarder {
+    fn handle_data(&mut self, _msg: ()) -> HandlerResult {
+        Ok(())
+    }
+
+    fn handle_control(&mut self, _msg: ()) -> HandlerResult {
+        Ok(())
+    }
+
+    fn handle_management(&mut self, _msg: ()) -> HandlerResult {
+        Ok(())
+    }
+
+    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        match self.response_rx.recv() {
+            Ok(response) => {
+                if let Err(e) = self
+                    .engine
+                    .send(Message::Data(EngineData::RenderComplete(response)))
+                {
+                    log::warn!("Failed to forward render response to engine: {}", e);
+                    self.shut_down();
+                    return Ok(ActorStatus::Idle);
+                }
+                Ok(ActorStatus::Busy)
+            }
+            Err(_) => {
+                // The rasterizer shut down and dropped its sender; there is nothing left to
+                // forward, so this actor's work is done too.
+                self.shut_down();
+                Ok(ActorStatus::Idle)
+            }
+        }
+    }
+}
+
+impl RasterizerForwarder {
+    fn shut_down(&mut self) {
+        if let Some(handle) = self.self_handle.take() {
+            if let Err(e) = handle.send(Message::Shutdown) {
+                log::debug!("Rasterizer forwarder self-shutdown send failed: {}", e);
+            }
+        }
     }
 }
 
@@ -360,26 +448,37 @@ impl EngineHandler {
         let (response_tx, response_rx) =
             std::sync::mpsc::channel::<RenderResponse<PlatformPixel, WindowMeta>>();
 
-        // Step 3: Start forwarding thread - receives responses and sends to engine
-        std::thread::spawn(move || {
-            log::debug!("Rasterizer response forwarding thread started");
-            while let Ok(response) = response_rx.recv() {
-                // Forward to engine as RenderComplete
-                if let Err(e) =
-                    engine_handle.send(Message::Data(EngineData::RenderComplete(response)))
-                {
-                    log::warn!("Failed to forward render response to engine: {}", e);
-                    break;
-                }
-            }
-            log::debug!("Rasterizer response forwarding thread exiting");
-        });
+        // Step 3: Run the forwarder as a real actor rather than a bare thread — it is now
+        // addressable (a real Shutdown on the Quit paths, not an implicit exit whenever the
+        // rasterizer happens to drop its sender) and supervisable the same way the rest of the
+        // troupe is. `data_buffer_size` of 1 is enough: D = () and nothing ever sends one.
+        let mut builder = ActorBuilder::new(1, None);
+        let self_handle = builder.add_producer();
+        let forwarder_handle = builder.add_producer();
+        let mut forwarder_scheduler: ActorScheduler<(), (), ()> = builder.build();
+        let mut forwarder = RasterizerForwarder {
+            response_rx,
+            engine: engine_handle,
+            self_handle: Some(self_handle),
+        };
+        std::thread::Builder::new()
+            .name("rasterizer-forwarder".into())
+            .spawn(move || {
+                forwarder_scheduler.run(&mut forwarder);
+            })
+            .expect("failed to spawn rasterizer forwarder thread");
+        // The scheduler blocks on its doorbell until woken by a real message; this one has no
+        // meaning beyond "start" (Management = ()), matching PtyReader's Bind-triggered kickoff.
+        forwarder_handle
+            .send(Message::Management(()))
+            .expect("failed to start the rasterizer forwarder");
 
         // Step 4: Complete bootstrap - register response channel and get full handle
         let rasterizer_handle = setup_handle.register(response_tx);
 
         log::info!("Rasterizer actor initialized via bootstrap");
         self.rasterizer = Some(rasterizer_handle);
+        self.rasterizer_forwarder = Some(forwarder_handle);
     }
 
     /// Handle app data messages (render surfaces, etc.)
@@ -574,6 +673,12 @@ impl EngineHandler {
                         .send(Message::Shutdown)
                         .expect("Failed to shutdown rasterizer on CloseRequested");
                 }
+                // Shutdown rasterizer response forwarder
+                if let Some(forwarder) = &self.rasterizer_forwarder {
+                    forwarder
+                        .send(Message::Shutdown)
+                        .expect("Failed to shutdown rasterizer forwarder on CloseRequested");
+                }
                 // Notify app, then drop it - cleanup goes in app's Drop impl
                 if let Some(app) = self.app_handle.take() {
                     app.send(EngineEvent::Control(EngineEventControl::CloseRequested))
@@ -648,6 +753,7 @@ impl TroupeActor<Directory> for EngineHandler {
             rasterizer: None, // Set up separately via bootstrap
             self_handle: Some(dir.engine),
             rasterizer_forward_handle: None, // Set via SetRasterizerForwardHandle message
+            rasterizer_forwarder: None, // Set up separately via bootstrap
             app_handle: None,
             frame_number: 0,
             render: RenderCoordinator::new(),
@@ -891,6 +997,7 @@ mod tests {
                 rasterizer: Some(rasterizer),
                 self_handle: None,
                 rasterizer_forward_handle: None,
+                rasterizer_forwarder: None,
                 app_handle: None,
                 frame_number: 0,
                 render: RenderCoordinator::new(),
@@ -1230,5 +1337,96 @@ mod tests {
 
         rig.complete_render();
         assert_eq!(rig.blitted(), vec![(100, 100)]);
+    }
+
+    /// The forwarder's whole reason to exist: turn the rasterizer's bare `mpsc` responses into
+    /// real `EngineData::RenderComplete` sends on an addressable actor, rather than a bare
+    /// thread nobody could signal. Exercises the actual `RasterizerForwarder`, not a stand-in.
+    #[test]
+    fn forwarder_relays_responses_and_exits_when_the_rasterizer_disconnects() {
+        use crate::display::messages::Generation;
+
+        let (engine_handle, mut engine_sched) = ActorScheduler::<
+            EngineData,
+            EngineControl,
+            AppManagement,
+        >::new(LANE_BURST, LANE_BUFFER);
+        let (response_tx, response_rx) = std::sync::mpsc::channel();
+
+        let mut builder = ActorBuilder::new(1, None);
+        let self_handle = builder.add_producer();
+        let starter_handle = builder.add_producer();
+        let mut forwarder_sched: ActorScheduler<(), (), ()> = builder.build();
+        let mut forwarder = RasterizerForwarder {
+            response_rx,
+            engine: engine_handle,
+            self_handle: Some(self_handle),
+        };
+        let thread = std::thread::spawn(move || forwarder_sched.run(&mut forwarder));
+        starter_handle
+            .send(Message::Management(()))
+            .expect("failed to start the rasterizer forwarder");
+
+        let meta = WindowMeta {
+            id: WindowId(1),
+            width_px: 4,
+            height_px: 4,
+            scale: 1.0,
+            generation: Generation::NONE,
+        };
+        response_tx
+            .send(RenderResponse {
+                frame: Frame::new(4, 4),
+                render_time: Some(Duration::from_millis(1)),
+                meta,
+            })
+            .expect("forwarder thread should still be listening");
+
+        #[derive(Default)]
+        struct TargetSpy {
+            received: Vec<(u32, u32)>,
+        }
+        impl Actor<EngineData, EngineControl, AppManagement> for TargetSpy {
+            fn handle_data(&mut self, data: EngineData) -> HandlerResult {
+                if let EngineData::RenderComplete(response) = data {
+                    self.received
+                        .push((response.meta.width_px, response.meta.height_px));
+                }
+                Ok(())
+            }
+            fn handle_control(&mut self, _msg: EngineControl) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _msg: AppManagement) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
+            }
+        }
+
+        let mut spy = TargetSpy::default();
+        // The forwarder thread runs concurrently; poll until its send lands rather than
+        // asserting after a single pass.
+        for _ in 0..10_000 {
+            let _ = engine_sched.poll_once(&mut spy);
+            if !spy.received.is_empty() {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            spy.received,
+            vec![(4, 4)],
+            "the forwarder must translate the rasterizer's response into RenderComplete"
+        );
+
+        // Dropping the sender is exactly what the real bootstrap path does when the rasterizer
+        // shuts down; the forwarder must notice and exit rather than parking on an empty
+        // doorbell forever.
+        drop(response_tx);
+        thread
+            .join()
+            .expect("forwarder must exit once the rasterizer disconnects");
     }
 }
