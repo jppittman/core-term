@@ -631,3 +631,156 @@ impl Manifold<(Field, Field, Field, Field)> for RealizedKernel {
         }
     }
 }
+
+// ============================================================================
+// BilinearSampler: smooth read-back of a collapsed lattice
+// ============================================================================
+
+/// Bilinear read-back of a [`DiscreteManifold`]: the smooth companion to its
+/// nearest-neighbor `eval`.
+///
+/// Where the discrete manifold snaps a continuous coordinate to the containing
+/// lattice cell, the sampler reads the four surrounding integer-grid texels
+/// and blends them with the fractional coordinate weights. The blend is a
+/// bound-memory kernel — four `Gather`s plus the weight arithmetic in one
+/// arena — JIT-compiled once at construction and bound to the buffer at each
+/// call, so the read-back goes through the same backend as everything else
+/// rather than through a combinator tree.
+///
+/// # Coordinate convention
+///
+/// Integer-grid space: a query at `(i + fx, j + fy)` with `fx, fy ∈ [0, 1)`
+/// blends the texels at `(i, j)`, `(i+1, j)`, `(i, j+1)`, `(i+1, j+1)`.
+/// Consequences:
+///
+/// - At exact integer coordinates the stored texel is returned untouched
+///   (the fractional weights are zero).
+/// - A buffer holding samples of a function affine in x and y is reproduced
+///   exactly everywhere.
+/// - Out-of-range taps clamp to the edge texel, exactly as
+///   `DiscreteManifold::eval` does — `Gather`'s reference semantics.
+/// - No half-pixel convention is baked in. Callers that store samples at
+///   texel *centers* must shift coordinates by −0.5 before sampling.
+///
+/// Z and W pass through unchanged; interpolation is 2D over X/Y only.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[derive(Clone)]
+pub struct BilinearSampler {
+    tex: DiscreteManifold,
+    jit: alloc::sync::Arc<pixelflow_ir::JitManifold>,
+}
+
+/// The 4-tap bilinear blend over one declared buffer, as an arena fragment:
+/// `Σ tap(x?, y?) · weight` with `x0 = floor(X)`, `fx = X − x0`, and the
+/// mirrored pair in y. Gather clamps each tap to the buffer edge.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn bilinear_arena(
+    width: u32,
+    height: u32,
+) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
+    use pixelflow_ir::arena::BufferDecl;
+    use pixelflow_ir::{ExprArena, OpKind};
+
+    let mut a = ExprArena::new();
+    let buf = a.declare_buffer(BufferDecl { width, height });
+    let x = a.push_var(0);
+    let y = a.push_var(1);
+    let one = a.push_const(1.0);
+
+    let x0 = a.push_unary(OpKind::Floor, x);
+    let y0 = a.push_unary(OpKind::Floor, y);
+    let x1 = a.push_binary(OpKind::Add, x0, one);
+    let y1 = a.push_binary(OpKind::Add, y0, one);
+    let fx = a.push_binary(OpKind::Sub, x, x0);
+    let fy = a.push_binary(OpKind::Sub, y, y0);
+    let gx = a.push_binary(OpKind::Sub, one, fx);
+    let gy = a.push_binary(OpKind::Sub, one, fy);
+
+    let c00 = a.push_gather(buf, x0, y0);
+    let c10 = a.push_gather(buf, x1, y0);
+    let c01 = a.push_gather(buf, x0, y1);
+    let c11 = a.push_gather(buf, x1, y1);
+
+    let w00 = a.push_binary(OpKind::Mul, gx, gy);
+    let w10 = a.push_binary(OpKind::Mul, fx, gy);
+    let w01 = a.push_binary(OpKind::Mul, gx, fy);
+    let w11 = a.push_binary(OpKind::Mul, fx, fy);
+
+    let t00 = a.push_binary(OpKind::Mul, c00, w00);
+    let t10 = a.push_binary(OpKind::Mul, c10, w10);
+    let t01 = a.push_binary(OpKind::Mul, c01, w01);
+    let t11 = a.push_binary(OpKind::Mul, c11, w11);
+
+    let s0 = a.push_binary(OpKind::Add, t00, t10);
+    let s1 = a.push_binary(OpKind::Add, s0, t01);
+    let root = a.push_binary(OpKind::Add, s1, t11);
+    (a, root)
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+impl BilinearSampler {
+    /// The buffer this sampler reads (row-major f32).
+    #[must_use]
+    pub fn texture(&self) -> &DiscreteManifold {
+        &self.tex
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+impl DiscreteManifold {
+    /// Wrap this buffer in a [`BilinearSampler`], JIT-compiling the 4-tap
+    /// blend kernel bound to it.
+    ///
+    /// # Panics
+    ///
+    /// Panics on an empty buffer, when an extent exceeds `u32`, or when this
+    /// build's `Field` width does not match the JIT's emitted width.
+    #[must_use]
+    pub fn bilinear(self) -> BilinearSampler {
+        assert!(
+            !self.buffer.is_empty(),
+            "DiscreteManifold::bilinear on an empty buffer ({}x{})",
+            self.width,
+            self.height,
+        );
+        assert_eq!(
+            core::mem::size_of::<Field>(),
+            pixelflow_ir::JIT_VECTOR_BYTES,
+            "DiscreteManifold::bilinear: Field width does not match the JIT's emitted width"
+        );
+        let width = u32::try_from(self.width).expect("buffer width exceeds u32");
+        let height = u32::try_from(self.height).expect("buffer height exceeds u32");
+        let (arena, root) = bilinear_arena(width, height);
+        // Bound-memory arenas are uncacheable (the code bakes buffer slot
+        // metadata); compile_cached recognizes that and compiles fresh.
+        let jit = pixelflow_ir::jit_cache::compile_cached(&arena, root)
+            .expect("bilinear sampler failed to compile");
+        BilinearSampler { tex: self, jit }
+    }
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+impl crate::ext::ManifoldExpr for BilinearSampler {}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+impl Manifold<(Field, Field, Field, Field)> for BilinearSampler {
+    type Output = Field;
+
+    #[inline(always)]
+    fn eval(&self, (x, y, z, w): (Field, Field, Field, Field)) -> Field {
+        let ctx = [self.tex.buffer.as_ptr()];
+        // SAFETY: `bilinear` checked size_of::<Field>() == JIT_VECTOR_BYTES;
+        // the kernel was compiled from an arena declaring exactly one buffer
+        // whose decl matches `tex`'s extents, and `ctx` binds that buffer's
+        // live base pointer for the duration of the call.
+        unsafe {
+            core::mem::transmute::<JitVec, Field>(self.jit.call_bound(
+                ctx.as_ptr(),
+                core::mem::transmute::<Field, JitVec>(x),
+                core::mem::transmute::<Field, JitVec>(y),
+                core::mem::transmute::<Field, JitVec>(z),
+                core::mem::transmute::<Field, JitVec>(w),
+            ))
+        }
+    }
+}

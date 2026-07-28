@@ -241,6 +241,8 @@ pub use manifold::Differentiable;
 
 // Lattice types for manifold evaluation over finite domains
 pub use lattice::{DiscreteManifold, Lattice, ReduceOp};
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub use lattice::BilinearSampler;
 
 // ============================================================================
 // Field: The ONLY User-Facing SIMD Type

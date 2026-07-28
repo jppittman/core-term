@@ -56,9 +56,10 @@
 //! glyphs once per (character, size bucket): [`CachedGlyph::from_kernel`]
 //! JIT-compiles the fused kernel (global compile cache) and tabulates it
 //! over a `Lattice` into f32 coverage at pixel centers. Read-back goes
-//! through the [`crate::render::bilinear::Bilinear`] combinator, so
-//! fractional positions interpolate the baked AA coverage smoothly. See the
-//! `cache` module docs for the half-pixel coordinate convention.
+//! through `pixelflow_core::BilinearSampler` — a JIT'd 4-tap gather kernel
+//! bound to the baked buffer — so fractional positions interpolate the
+//! baked AA coverage smoothly. See the `cache` module docs for the
+//! half-pixel coordinate convention.
 //!
 //! ## Layer 4: Text Layout (`text` module and `CachedText`)
 //!

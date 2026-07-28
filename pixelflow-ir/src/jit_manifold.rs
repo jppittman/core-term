@@ -5,7 +5,7 @@
 //! would create a dependency cycle. Instead, `kernel_jit!` emits a thin wrapper in
 //! the user's crate that calls through to `JitManifold`.
 
-use crate::backend::emit::executable::{ExecutableCode, KernelFn};
+use crate::backend::emit::executable::{CtxKernelFn, ExecutableCode, KernelFn};
 
 /// A JIT-compiled kernel. Owns the executable code for one specific parameter
 /// combination. No cache — caller decides lifetime.
@@ -43,6 +43,37 @@ impl JitManifold {
         let func: KernelFn = unsafe { self.code.as_fn() };
         func(x, y, z, w)
     }
+
+    /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
+    /// pointers, indexed by [`BufferId`](crate::arena::BufferId), passed in
+    /// the first integer register (`x0`).
+    ///
+    /// # Safety
+    ///
+    /// - The kernel must have been compiled from an arena that declares
+    ///   buffers (its code reads the context register); use [`Self::call`]
+    ///   for buffer-free kernels, whose code never looks at `x0`.
+    /// - `ctx` must hold one valid base pointer per declared buffer, each
+    ///   pointing at `width * height` readable `f32`s matching its
+    ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
+    /// - The SIMD types must match the platform ABI the emitter generated
+    ///   code for (ARM64 NEON: `float32x4_t`).
+    #[must_use]
+    #[inline(always)]
+    pub unsafe fn call_bound(
+        &self,
+        ctx: *const *const f32,
+        x: core::arch::aarch64::float32x4_t,
+        y: core::arch::aarch64::float32x4_t,
+        z: core::arch::aarch64::float32x4_t,
+        w: core::arch::aarch64::float32x4_t,
+    ) -> core::arch::aarch64::float32x4_t {
+        // SAFETY: The ExecutableCode was produced by our JIT compiler which
+        // emits code matching the CtxKernelFn signature for buffer-declaring
+        // arenas.
+        let func: CtxKernelFn = unsafe { self.code.as_fn() };
+        func(ctx, x, y, z, w)
+    }
 }
 
 #[cfg(all(
@@ -70,6 +101,37 @@ impl JitManifold {
         // emits code matching the KernelFn signature.
         let func: KernelFn = unsafe { self.code.as_fn() };
         func(x, y, z, w)
+    }
+
+    /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
+    /// pointers, indexed by [`BufferId`](crate::arena::BufferId), passed in
+    /// the first integer register (`rdi`).
+    ///
+    /// # Safety
+    ///
+    /// - The kernel must have been compiled from an arena that declares
+    ///   buffers (its code reads the context register); use [`Self::call`]
+    ///   for buffer-free kernels, whose code never looks at `rdi`.
+    /// - `ctx` must hold one valid base pointer per declared buffer, each
+    ///   pointing at `width * height` readable `f32`s matching its
+    ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
+    /// - The SIMD types must match the platform ABI the emitter generated
+    ///   code for (x86-64 SSE2: `__m128`).
+    #[inline(always)]
+    #[must_use]
+    pub unsafe fn call_bound(
+        &self,
+        ctx: *const *const f32,
+        x: core::arch::x86_64::__m128,
+        y: core::arch::x86_64::__m128,
+        z: core::arch::x86_64::__m128,
+        w: core::arch::x86_64::__m128,
+    ) -> core::arch::x86_64::__m128 {
+        // SAFETY: The ExecutableCode was produced by our JIT compiler which
+        // emits code matching the CtxKernelFn signature for buffer-declaring
+        // arenas.
+        let func: CtxKernelFn = unsafe { self.code.as_fn() };
+        func(ctx, x, y, z, w)
     }
 }
 
@@ -99,6 +161,37 @@ impl JitManifold {
         let func: KernelFn = unsafe { self.code.as_fn() };
         func(x, y, z, w)
     }
+
+    /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
+    /// pointers, indexed by [`BufferId`](crate::arena::BufferId), passed in
+    /// the first integer register (`rdi`).
+    ///
+    /// # Safety
+    ///
+    /// - The kernel must have been compiled from an arena that declares
+    ///   buffers (its code reads the context register); use [`Self::call`]
+    ///   for buffer-free kernels, whose code never looks at `rdi`.
+    /// - `ctx` must hold one valid base pointer per declared buffer, each
+    ///   pointing at `width * height` readable `f32`s matching its
+    ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
+    /// - The SIMD types must match the platform ABI the emitter generated
+    ///   code for (x86-64 AVX2: `__m256`).
+    #[inline(always)]
+    #[must_use]
+    pub unsafe fn call_bound(
+        &self,
+        ctx: *const *const f32,
+        x: core::arch::x86_64::__m256,
+        y: core::arch::x86_64::__m256,
+        z: core::arch::x86_64::__m256,
+        w: core::arch::x86_64::__m256,
+    ) -> core::arch::x86_64::__m256 {
+        // SAFETY: The ExecutableCode was produced by our JIT compiler which
+        // emits code matching the CtxKernelFn signature for buffer-declaring
+        // arenas.
+        let func: CtxKernelFn = unsafe { self.code.as_fn() };
+        func(ctx, x, y, z, w)
+    }
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
@@ -122,6 +215,37 @@ impl JitManifold {
         // emits code matching the KernelFn signature.
         let func: KernelFn = unsafe { self.code.as_fn() };
         func(x, y, z, w)
+    }
+
+    /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
+    /// pointers, indexed by [`BufferId`](crate::arena::BufferId), passed in
+    /// the first integer register (`rdi`).
+    ///
+    /// # Safety
+    ///
+    /// - The kernel must have been compiled from an arena that declares
+    ///   buffers (its code reads the context register); use [`Self::call`]
+    ///   for buffer-free kernels, whose code never looks at `rdi`.
+    /// - `ctx` must hold one valid base pointer per declared buffer, each
+    ///   pointing at `width * height` readable `f32`s matching its
+    ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
+    /// - The SIMD types must match the platform ABI the emitter generated
+    ///   code for (x86-64 AVX-512: `__m512`).
+    #[inline(always)]
+    #[must_use]
+    pub unsafe fn call_bound(
+        &self,
+        ctx: *const *const f32,
+        x: core::arch::x86_64::__m512,
+        y: core::arch::x86_64::__m512,
+        z: core::arch::x86_64::__m512,
+        w: core::arch::x86_64::__m512,
+    ) -> core::arch::x86_64::__m512 {
+        // SAFETY: The ExecutableCode was produced by our JIT compiler which
+        // emits code matching the CtxKernelFn signature for buffer-declaring
+        // arenas.
+        let func: CtxKernelFn = unsafe { self.code.as_fn() };
+        func(ctx, x, y, z, w)
     }
 }
 
