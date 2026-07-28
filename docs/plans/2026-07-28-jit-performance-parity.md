@@ -233,6 +233,17 @@ Two spillover fixes the optimized arenas forced:
   (every op the lowering produces must be `is_egraph_representable`, so a
   new op can't silently reintroduce the bail-out).
 
+**Measured (SSE2 dev box, `cargo bench -p pixelflow-graphics`).** With the
+tier actually firing, baking 'A' is ~14.1µs — below both the inert-e-graph
+~20µs *and* the pre-hookup ~16µs baseline, so the optimization now more than
+pays for its own structural-key walk. `cache_warmup_alphabet` (26 glyphs,
+cold) recovered to ~5.2ms from the inert tier's ~5.5ms (pre-hookup: ~4.7ms —
+the residual gap is the once-per-shape saturation, amortized away by the
+cache on every subsequent bake of the same shape). Steady-state
+`cached_HELLO` is unchanged (~74µs), confirming the cost lands only in the
+one-time bake. Quad-heavy singles for the FreeType comparison: 'O' ~167µs,
+'S' ~264µs.
+
 ## Measurement plan (do this first)
 
 - `pixelflow-runtime/examples/bench_psychedelic.rs` is the JIT-vs-LLVM parity
