@@ -1411,15 +1411,27 @@ where
     /// continuously-fed lane never revisits the doorbell, so a queued `Shutdown` is never
     /// observed and `step_os` never runs. Budget spent with work remaining is just `Busy`.
     ///
-    /// Lane completion (`Halted(Exit::Completed)` — every lane disconnected) does not end the
-    /// node by itself: `step_os` gets its turn first, every sweep, until it reports idle — an
-    /// OS bridge's external source outlives the last `ActorHandle` by design, exactly like the
-    /// buffered-SPSC drain in `run_inner`'s disconnected branch. A *failed* handler
-    /// (`Halted(Exit::Failed)`) exits immediately: a broken actor gets no final turns.
+    /// Lane completion (`Halted(Exit::Completed)` — every lane disconnected) is *not* terminal
+    /// here: an OS bridge's external source outlives the last `ActorHandle` by design, and a
+    /// retained [`Waker`] can still ring the doorbell long after every lane is dead. The sweep
+    /// only reports whether there is work; *terminality belongs to the doorbell* — [`run`]
+    /// completes when the doorbell disconnects (no handle and no waker left anywhere) and a
+    /// sweep finds nothing to do. A *failed* handler (`Halted(Exit::Failed)`) still exits
+    /// immediately: a broken actor gets no final turns.
+    ///
+    /// A `Disconnected` delivery — the wiring's target is gone — is also an exit, as
+    /// `Exit::Failed`: the peer can never come back, the outbox-first contract means no lane
+    /// can progress past the parked word, and this driver has no supervisor to hand the
+    /// problem to (that is `Host`'s job for green nodes). Fail fast, fail loudly; the
+    /// undelivered payload stays retained in the node for whoever holds this
+    /// `DedicatedThread` after [`run`] returns.
     ///
     /// Returns `Some(exit)` when the node is done; otherwise `None` with a busy hint for the
     /// doorbell loop's `working` flag.
     fn sweep(&mut self) -> (Option<Exit>, bool) {
+        const TARGET_GONE: &str =
+            "wiring target disconnected; undelivered output retained in the node";
+
         let mut polls = 0usize;
         let lane_step = loop {
             match self.node.poll() {
@@ -1435,12 +1447,15 @@ where
         if let mealy::Step::Halted(Exit::Failed(msg)) = lane_step {
             return (Some(Exit::Failed(msg)), false);
         }
+        if lane_step == mealy::Step::Disconnected {
+            return (Some(Exit::Failed(TARGET_GONE.into())), false);
+        }
         let lanes_completed = matches!(lane_step, mealy::Step::Halted(_));
 
         // Idle means the lap found every lane genuinely empty. Ran means the budget ran out
-        // with lane work remaining; Blocked/Disconnected means a parked outbox is deferring
-        // lane work rather than lacking it — all three are the `Busy` the classic scheduler
-        // reports to `handle_os` in the same positions.
+        // with lane work remaining; Blocked means a parked outbox is deferring lane work
+        // rather than lacking it — both are the `Busy` the classic scheduler reports to
+        // `handle_os` in the same positions.
         let system_status = if lane_step == mealy::Step::Idle || lanes_completed {
             SystemStatus::Idle
         } else {
@@ -1448,23 +1463,17 @@ where
         };
 
         let (os_step, os_actor_status) = self.node.poll_os(system_status);
-        if let mealy::Step::Halted(exit) = os_step {
-            return (Some(exit), false);
+        match os_step {
+            mealy::Step::Halted(exit) => return (Some(exit), false),
+            mealy::Step::Disconnected => {
+                return (Some(Exit::Failed(TARGET_GONE.into())), false);
+            }
+            _ => {}
         }
-        let os_busy = matches!(os_actor_status, ActorStatus::Busy)
-            || matches!(os_step, mealy::Step::Blocked | mealy::Step::Disconnected);
+        let os_busy =
+            matches!(os_actor_status, ActorStatus::Busy) || os_step == mealy::Step::Blocked;
 
-        if lanes_completed {
-            // The lanes can never produce again; the node lives exactly as long as its OS
-            // bridge still has something to do (or something parked to deliver).
-            return if os_busy {
-                (None, true)
-            } else {
-                (Some(Exit::Completed), false)
-            };
-        }
-
-        let lanes_busy = lane_step != mealy::Step::Idle;
+        let lanes_busy = !lanes_completed && lane_step != mealy::Step::Idle;
         (None, lanes_busy || os_busy)
     }
 
@@ -1475,13 +1484,19 @@ where
     /// (the same `working` flag). `Message::Shutdown` still stops it immediately, because
     /// shutdown travels the doorbell rather than a lane, same as every other actor here.
     ///
-    /// A `Blocked`/`Disconnected` sweep is reported busy rather than idle — [`host::GreenThread`]
-    /// makes the identical choice for the same reason: a parked outbox resolves by a consumer
-    /// draining or a supervisor acting, neither of which sleeping on this doorbell can wait for,
-    /// and there is no risk of *missing* a wake this way, only of spending CPU until it clears.
-    /// Ring-not-full waking — a consumer ringing this thread's doorbell the instant it drains —
-    /// is not wired yet, so that is genuinely today's only recourse for backpressure: retry on
-    /// the next inbound message, same as the green tier's next sweep.
+    /// A `Blocked` sweep is reported busy rather than idle — a parked outbox resolves by a
+    /// consumer draining, which sleeping on this doorbell cannot wait for (ring-not-full
+    /// waking — a consumer ringing this thread's doorbell the instant it drains — is not wired
+    /// yet), and there is no risk of *missing* a wake this way, only of spending CPU until it
+    /// clears. A `Disconnected` delivery exits as `Exit::Failed` instead of retrying — see
+    /// [`Self::sweep`].
+    ///
+    /// Completion is the doorbell's to declare: `Exit::Completed` happens on `Shutdown`, or
+    /// when the doorbell disconnects — meaning no `ActorHandle` *and* no [`Waker`] exists
+    /// anywhere, so nothing can ever wake this node again — and a final drain finds nothing
+    /// left. Dead lanes alone are not completion: an idle OS bridge whose waker is still held
+    /// somewhere sleeps at 0% CPU instead of exiting, because that waker is someone's declared
+    /// intent to come back.
     pub fn run(&mut self) -> Exit {
         let mut working = false;
 

@@ -333,6 +333,71 @@ fn step_os_gets_a_final_turn_after_the_last_handle_drops() {
     );
 }
 
+/// A gone wiring target can never heal, no lane can progress past the parked word (the
+/// outbox-first contract), and a dedicated thread has no supervisor to hand the problem to —
+/// so the driver fails loudly instead of spinning a core on retries that cannot succeed. The
+/// undelivered payload stays retained in the node for whoever holds it after `run` returns.
+#[test]
+fn a_disconnected_wiring_target_fails_loudly_instead_of_spinning() {
+    let mut builder = ActorBuilder::<(), (), ()>::new(8, None);
+    let handle = builder.add_producer();
+    let (tx_seen, rx_seen) = spsc_channel::<&'static str>(8);
+    let mut thread = builder.build_node(LaneLog, LaneLogWiring { tx: tx_seen });
+
+    drop(rx_seen); // the downstream consumer dies before the first delivery
+
+    handle.send(Message::Data(())).unwrap();
+    let exit = thread.run();
+    assert!(
+        matches!(exit, Exit::Failed(_)),
+        "a dead peer is a loud failure, not an infinite retry: {exit:?}"
+    );
+}
+
+/// Dead lanes are not completion while a `Waker` is still held somewhere: the waker is
+/// someone's declared intent to come back, so an idle OS bridge sleeps instead of exiting —
+/// and wakes up for the event when it arrives. Terminality belongs to the doorbell.
+#[test]
+fn an_idle_os_bridge_survives_while_a_waker_exists() {
+    let (tx_ext, rx_ext) = mpsc::channel::<u32>();
+
+    let mut builder = ActorBuilder::<Infallible, Infallible, Infallible>::new(4, None);
+    let handle = builder.add_producer();
+    let waker = handle.waker();
+    let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
+    let mut thread = builder.build_node(
+        BridgeSource { external: rx_ext },
+        BridgeWiring { tx: tx_out },
+    );
+
+    // Every lane dies before the driver starts; only the waker keeps the doorbell alive.
+    drop(handle);
+    let worker = std::thread::spawn(move || thread.run());
+
+    // The bridge is asleep on its doorbell. A late event arrives: push, then wake.
+    std::thread::sleep(Duration::from_millis(30));
+    tx_ext.send(9).unwrap();
+    waker.wake();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(v) = rx_out.try_recv() {
+            assert_eq!(v, 9, "the late event flowed through the surviving bridge");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the bridge exited on dead lanes instead of sleeping on its live waker"
+        );
+    }
+
+    // Now nothing can ever wake it again — the doorbell disconnects, and that is completion.
+    drop(tx_ext);
+    drop(waker);
+    let exit = worker.join().expect("driver must not panic");
+    assert_eq!(exit, Exit::Completed);
+}
+
 /// The retention guarantee across lane completion: a `step_os` output that parks on a full
 /// ring, with every handle already dropped, must hold the driver open until it delivers —
 /// exiting `Completed` there would silently drop the word the actor just produced.
