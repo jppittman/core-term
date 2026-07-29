@@ -137,6 +137,13 @@ impl GlyphAtlas {
         self.size_pt
     }
 
+    /// Content texels per tile edge (the glyph bake extent) — the scene
+    /// geometry's `tile_w`/`tile_h`.
+    #[must_use]
+    pub fn tile_px(&self) -> usize {
+        self.tile_px
+    }
+
     /// Bumped whenever the buffer's extents change; a scene program
     /// compiled against other extents must recompile.
     #[must_use]
@@ -215,10 +222,22 @@ impl GlyphAtlas {
     }
 
     /// Double the slot rows into a fresh buffer, copying existing texels.
+    ///
+    /// # Panics
+    ///
+    /// Panics if growth would push the buffer past 2^24 texels — the
+    /// cell-grid kernel computes gather indices in `f32`, which is exact
+    /// only below that, so a larger atlas would silently alias texels.
     fn grow(&mut self) {
         let old_rows = self.height / self.slot_px;
         let new_rows = old_rows * 2;
         let new_height = new_rows * self.slot_px;
+        assert!(
+            self.width * new_height <= 1 << 24,
+            "GlyphAtlas: growing past 2^24 texels ({}x{new_height}) would \
+             exceed the exactly f32-indexable gather range",
+            self.width
+        );
         let mut grown = vec![0.0; self.width * new_height];
         grown[..self.buffer.len()].copy_from_slice(&self.buffer);
         self.buffer = Arc::new(grown);
