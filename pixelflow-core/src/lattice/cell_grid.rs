@@ -72,6 +72,13 @@ pub struct CellGridGeometry {
     pub atlas_width: u32,
     /// Atlas height in texels.
     pub atlas_height: u32,
+    /// Tile content width in texels. Samples past it clamp into the
+    /// zero apron between slots instead of reaching a neighbor's content
+    /// (a cell wider than its tile shows background there, exactly as the
+    /// per-glyph sampler's out-of-extent zero did).
+    pub tile_w: u32,
+    /// Tile content height in texels (see `tile_w`).
+    pub tile_h: u32,
 }
 
 impl CellGridGeometry {
@@ -143,8 +150,16 @@ fn channel_arena(geom: &CellGridGeometry, channel: usize, default_bg: f32) -> (E
     // Atlas coordinates: point offset into the cell, scaled to texels,
     // shifted to texel centers.
     let density = a.push_const(geom.density);
-    let lxd = a.push_binary(OpKind::Mul, lx, density);
-    let lyd = a.push_binary(OpKind::Mul, ly, density);
+    let lxd_raw = a.push_binary(OpKind::Mul, lx, density);
+    let lyd_raw = a.push_binary(OpKind::Mul, ly, density);
+    // Clamp to half a texel past the tile content: the taps then land on
+    // this slot's apron and (at most) the neighbor's apron — both zero —
+    // so a cell larger than its tile fades to background rather than
+    // displaying fragments of the adjacent tile.
+    let tile_w_edge = a.push_const(geom.tile_w as f32 + 0.5);
+    let tile_h_edge = a.push_const(geom.tile_h as f32 + 0.5);
+    let lxd = a.push_binary(OpKind::Min, lxd_raw, tile_w_edge);
+    let lyd = a.push_binary(OpKind::Min, lyd_raw, tile_h_edge);
     let au = a.push_binary(OpKind::Add, u0, lxd);
     let av = a.push_binary(OpKind::Add, v0, lyd);
     let ax = a.push_binary(OpKind::Sub, au, half);
@@ -231,6 +246,22 @@ impl CellGridProgram {
             core::mem::size_of::<Field>(),
             pixelflow_ir::JIT_VECTOR_BYTES,
             "CellGridProgram::compile: Field width does not match the JIT's emitted width"
+        );
+        // Gather computes its row-major linear index in f32, which is exact
+        // only below 2^24 — beyond that adjacent texels alias. Refuse
+        // loudly instead of rendering corrupted gathers.
+        const EXACT_F32_INDEX: usize = 1 << 24;
+        assert!(
+            geom.atlas_len() <= EXACT_F32_INDEX,
+            "CellGridProgram::compile: atlas of {} texels exceeds the exactly \
+             f32-indexable range (2^24); gathers would alias adjacent texels",
+            geom.atlas_len()
+        );
+        assert!(
+            geom.cells_len() <= EXACT_F32_INDEX,
+            "CellGridProgram::compile: cell buffer of {} floats exceeds the \
+             exactly f32-indexable range (2^24)",
+            geom.cells_len()
         );
         let jits = core::array::from_fn(|c| {
             let (arena, root) = channel_arena(&geom, c, default_bg[c]);
@@ -367,6 +398,8 @@ mod tests {
             density: 1.0,
             atlas_width: aw as u32,
             atlas_height: ah as u32,
+            tile_w: 4,
+            tile_h: 4,
         };
         let program = CellGridProgram::compile(geom, [0.9, 0.8, 0.7, 0.6]);
         // Cell 0 → tile 0, red-on-black; cell 1 → tile 1, white-on-blue.
@@ -457,6 +490,69 @@ mod tests {
             "cell0 apron R = {}",
             r[11]
         );
+    }
+
+    #[test]
+    fn cells_wider_than_their_tile_fade_to_background() {
+        // 1x1 grid, 8-point-wide cell over a 4-texel tile: the right half
+        // of the cell has no tile content. The clamp must land those taps
+        // in the zero apron (background), never in a neighboring slot.
+        let (aw, ah, slot) = (12usize, 6usize, 6usize);
+        let mut atlas = vec![0.0f32; aw * ah];
+        for r in 0..4 {
+            for c in 0..4 {
+                atlas[(1 + r) * aw + 1 + c] = 1.0; // tile 0: solid
+                atlas[(1 + r) * aw + slot + 1 + c] = 1.0; // tile 1: ALSO solid
+            }
+        }
+        let geom = CellGridGeometry {
+            cols: 1,
+            rows: 1,
+            cell_w: 8.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: aw as u32,
+            atlas_height: ah as u32,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        let program = CellGridProgram::compile(geom, [0.0; 4]);
+        let cells = vec![
+            1.0, 1.0, /* fg */ 1.0, 1.0, 1.0, 1.0, /* bg */ 0.0, 0.0, 0.0, 1.0,
+        ];
+        let frame = program.frame(Arc::new(cells), Arc::new(atlas));
+        let r = plane(&frame, 0, 8, 4);
+        // Left half: tile content, fg. Right half: past the tile — if the
+        // clamp failed, taps would reach tile 1 (also solid) and read 1.0.
+        assert!(
+            (r[px(1, 1)] - 1.0).abs() < 1e-5,
+            "tile content R = {}",
+            r[px(1, 1)]
+        );
+        for col in 5..8 {
+            assert!(
+                r[px(1, col)].abs() < 1e-5,
+                "cell past its tile must be background at col {col}, got {}",
+                r[px(1, col)]
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly")]
+    fn oversized_atlas_is_refused() {
+        let geom = CellGridGeometry {
+            cols: 1,
+            rows: 1,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: 1 << 13,
+            atlas_height: 1 << 12, // 2^25 texels: past exact f32 indexing
+            tile_w: 4,
+            tile_h: 4,
+        };
+        let _refused = CellGridProgram::compile(geom, [0.0; 4]);
     }
 
     #[test]

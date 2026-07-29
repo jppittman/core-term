@@ -294,6 +294,8 @@ impl TerminalApp {
             density: self.density,
             atlas_width: self.atlas.width() as u32,
             atlas_height: self.atlas.height() as u32,
+            tile_w: self.atlas.tile_px() as u32,
+            tile_h: self.atlas.tile_px() as u32,
         };
         if self.program.as_ref().map(CellGridProgram::geometry) != Some(&geom) {
             log::info!(
