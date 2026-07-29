@@ -320,6 +320,18 @@ pub struct CellGridFrame {
     atlas: Arc<Vec<f32>>,
 }
 
+/// A horizontal band of pixel rows to bake: `width` pixels across, rows
+/// `y0 .. y0 + rows`.
+#[derive(Clone, Copy, Debug)]
+pub struct PlaneRegion {
+    /// Pixels per row.
+    pub width: usize,
+    /// First pixel row.
+    pub y0: usize,
+    /// Number of rows.
+    pub rows: usize,
+}
+
 impl CellGridFrame {
     /// The padded row stride (in `f32`s) that [`CellGridFrame::bake_channel_rows`]
     /// writes: `width` rounded up to whole SIMD batches. Planes are laid out
@@ -343,16 +355,10 @@ impl CellGridFrame {
     ///
     /// # Panics
     ///
-    /// Panics if `channel >= 4`, `width == 0`, or `out` is shorter than
-    /// `rows * padded_width(width)`.
-    pub fn bake_channel_rows(
-        &self,
-        channel: usize,
-        width: usize,
-        y0: usize,
-        rows: usize,
-        out: &mut [f32],
-    ) {
+    /// Panics if `channel >= 4`, the region's width is zero, or `out` is
+    /// shorter than `rows * padded_width(width)`.
+    pub fn bake_channel_rows(&self, channel: usize, region: PlaneRegion, out: &mut [f32]) {
+        let PlaneRegion { width, y0, rows } = region;
         assert!(width > 0, "bake_channel_rows: zero width");
         let stride = Self::padded_width(width);
         assert!(
@@ -442,7 +448,15 @@ mod tests {
     fn plane(frame: &CellGridFrame, channel: usize, w: usize, h: usize) -> alloc::vec::Vec<f32> {
         let stride = CellGridFrame::padded_width(w);
         let mut padded = vec![0.0f32; h * stride];
-        frame.bake_channel_rows(channel, w, 0, h, &mut padded);
+        frame.bake_channel_rows(
+            channel,
+            PlaneRegion {
+                width: w,
+                y0: 0,
+                rows: h,
+            },
+            &mut padded,
+        );
         let mut dense = alloc::vec::Vec::with_capacity(w * h);
         for row in 0..h {
             dense.extend_from_slice(&padded[row * stride..row * stride + w]);

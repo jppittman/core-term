@@ -333,7 +333,6 @@ mod tests {
     use super::*;
     use crate::display::messages::{Generation, Surface, Window, WindowMeta};
     use crate::platform::ColorCube;
-    use pixelflow_core::{Discrete, Manifold};
     use std::time::{Duration, Instant};
 
     /// A constant black scene — these tests care about which port fires, not what is drawn.

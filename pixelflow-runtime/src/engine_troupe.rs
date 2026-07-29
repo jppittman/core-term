@@ -658,7 +658,6 @@ mod tests {
     use crate::platform::ColorCube;
     use actor_scheduler::spsc::{spsc_channel, SpscReceiver};
     use actor_scheduler::ActorScheduler;
-    use pixelflow_core::{Discrete, Manifold};
     use std::time::Instant;
 
     /// Scheduler tuning for the fixture: small, since nothing here approaches a real ring.

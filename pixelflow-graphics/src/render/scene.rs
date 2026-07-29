@@ -11,7 +11,7 @@
 use crate::render::frame::Frame;
 use crate::render::Pixel;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use pixelflow_core::CellGridFrame;
+use pixelflow_core::{CellGridFrame, PlaneRegion};
 use pixelflow_core::{Discrete, Manifold};
 use std::sync::Arc;
 
@@ -114,10 +114,11 @@ fn bake_and_pack_stripe<P: Pixel>(grid: &CellGridFrame, width: usize, y0: usize,
         let (r, rest) = planes.split_at_mut(rows * stride);
         let (g, rest) = rest.split_at_mut(rows * stride);
         let (b, a) = rest.split_at_mut(rows * stride);
-        grid.bake_channel_rows(0, width, y0, rows, r);
-        grid.bake_channel_rows(1, width, y0, rows, g);
-        grid.bake_channel_rows(2, width, y0, rows, b);
-        grid.bake_channel_rows(3, width, y0, rows, a);
+        let region = PlaneRegion { width, y0, rows };
+        grid.bake_channel_rows(0, region, r);
+        grid.bake_channel_rows(1, region, g);
+        grid.bake_channel_rows(2, region, b);
+        grid.bake_channel_rows(3, region, a);
     }
     let plane = |c: usize| &planes[c * rows * stride..(c + 1) * rows * stride];
     let (r, g, b, a) = (plane(0), plane(1), plane(2), plane(3));
