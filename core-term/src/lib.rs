@@ -9,6 +9,5 @@ pub mod glyph;
 pub mod io;
 pub mod keys;
 pub mod messages;
-pub mod surface;
 pub mod term;
 pub mod terminal_app;

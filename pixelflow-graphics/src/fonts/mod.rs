@@ -86,6 +86,7 @@
 //! - **TTF** (TrueType): quadratic Bézier outlines, cmap formats 4 and 12,
 //!   horizontal kerning (kern format 0).
 //!
+pub mod atlas;
 pub mod cache;
 pub mod loader;
 pub mod text;
@@ -102,4 +103,5 @@ pub use loader::{DataSource, EmbeddedSource, FontSource, LoadedFont, MmapSource}
 pub use text::text;
 
 // Re-export cache
+pub use atlas::GlyphAtlas;
 pub use cache::{CachedGlyph, CachedText, GlyphCache};
