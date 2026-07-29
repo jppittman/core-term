@@ -672,7 +672,12 @@ where
         match self.actor.step_os(status) {
             Ok((out, actor_status)) => {
                 let step = self.finish_step(out);
-                let hint = if self.continuation.is_some() {
+                // A continuation or a freshly parked outbox overrides the actor's `Idle` the
+                // same way and for the same reason: both are deferred work only another poll
+                // can advance, and nothing external is coming to ring the doorbell for either.
+                // Without the outbox half, a driver would sleep over — or, on lane completion,
+                // exit and *drop* — a word this very step produced and could not deliver.
+                let hint = if self.continuation.is_some() || self.outbox.is_some() {
                     ActorStatus::Busy
                 } else {
                     actor_status
@@ -1698,6 +1703,44 @@ mod tests {
             7,
             "the parked word was delivered, not lost"
         );
+    }
+
+    /// A `step_os` whose output parks on a full ring must come back `Busy` no matter what the
+    /// actor claimed: the freshly parked word is deferred work only another poll can retry,
+    /// and a driver that believed the actor's `Idle` would sleep over it — or, with dead
+    /// lanes, exit `Completed` and drop it.
+    #[test]
+    fn a_freshly_parked_step_os_output_reports_busy() {
+        let (_tx_in, rx_in) = spsc_channel::<u32>(4);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(2);
+        while tx_out.try_send(99).is_ok() {}
+
+        let mut node = Node::new(
+            Bridge {
+                queue: vec![7],
+                step_os_calls: 0,
+            },
+            rx_in,
+            BridgeWiring { out: tx_out },
+        );
+
+        // Bridge reports Idle after draining its one-item queue; the park must override it.
+        let (step, hint) = node.poll_os(SystemStatus::Idle);
+        assert_eq!(
+            step,
+            Step::Ran,
+            "the OS step consumed its item and advanced"
+        );
+        assert_eq!(
+            hint,
+            ActorStatus::Busy,
+            "a freshly parked word must keep the driver polling"
+        );
+
+        while rx_out.try_recv().is_ok() {}
+        let (step, _) = node.poll_os(SystemStatus::Idle);
+        assert_eq!(step, Step::Ran, "the retry flushed the parked word");
+        assert_eq!(rx_out.try_recv().unwrap(), 7, "delivered, not dropped");
     }
 
     /// A lane step that yields a continuation *and* an output that parks: `poll_os` must not

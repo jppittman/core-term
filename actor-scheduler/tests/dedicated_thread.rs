@@ -333,6 +333,47 @@ fn step_os_gets_a_final_turn_after_the_last_handle_drops() {
     );
 }
 
+/// The retention guarantee across lane completion: a `step_os` output that parks on a full
+/// ring, with every handle already dropped, must hold the driver open until it delivers —
+/// exiting `Completed` there would silently drop the word the actor just produced.
+#[test]
+fn a_parked_final_word_survives_lane_completion() {
+    let (tx_ext, rx_ext) = mpsc::channel::<u32>();
+    tx_ext.send(5).unwrap();
+    drop(tx_ext);
+
+    let mut builder = ActorBuilder::<Infallible, Infallible, Infallible>::new(4, None);
+    let handle = builder.add_producer();
+    let (tx_out, mut rx_out) = spsc_channel::<u32>(2);
+    while tx_out.try_send(99).is_ok() {}
+
+    let mut thread = builder.build_node(
+        BridgeSource { external: rx_ext },
+        BridgeWiring { tx: tx_out },
+    );
+    drop(handle);
+
+    let worker = std::thread::spawn(move || thread.run());
+
+    // The driver is spinning on the parked word; free the ring and it must deliver, then
+    // complete.
+    std::thread::sleep(Duration::from_millis(50));
+    let mut got = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while got.iter().filter(|&&v| v == 5).count() == 0 {
+        if let Ok(v) = rx_out.try_recv() {
+            got.push(v);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the parked word never arrived, got {got:?}"
+        );
+    }
+
+    let exit = worker.join().expect("driver must not panic");
+    assert_eq!(exit, Exit::Completed, "completion only after delivery");
+}
+
 /// A `step_os` that yields a continuation and honestly reports itself `Idle` must still make
 /// progress: the stored continuation is runtime-owned work, so the driver keeps sweeping
 /// instead of blocking on a doorbell nothing will ring.
