@@ -316,6 +316,29 @@ pub struct CellGridChannel {
 
 impl crate::ext::ManifoldExpr for CellGridChannel {}
 
+impl Manifold<(Field, Field, Field, Field)> for CellGridChannel {
+    type Output = Field;
+
+    #[inline(always)]
+    fn eval(&self, (x, y, z, w): (Field, Field, Field, Field)) -> Field {
+        let ctx = [self.cells.as_ptr(), self.atlas.as_ptr()];
+        // SAFETY: `compile` checked size_of::<Field>() == JIT_VECTOR_BYTES;
+        // the kernel was compiled from an arena declaring exactly the two
+        // buffers whose lengths `CellGridProgram::frame` asserted against
+        // the same geometry, and `ctx` binds their live base pointers (in
+        // declaration order) for the duration of the call.
+        unsafe {
+            core::mem::transmute::<JitVec, Field>(self.jit.call_bound(
+                ctx.as_ptr(),
+                core::mem::transmute::<Field, JitVec>(x),
+                core::mem::transmute::<Field, JitVec>(y),
+                core::mem::transmute::<Field, JitVec>(z),
+                core::mem::transmute::<Field, JitVec>(w),
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +379,11 @@ mod tests {
         (program, Arc::new(cells), Arc::new(atlas))
     }
 
+    /// Row-major index into an 8-wide plane.
+    fn px(row: usize, col: usize) -> usize {
+        row * 8 + col
+    }
+
     /// Evaluate one channel over a pixel-center lattice.
     fn plane(frame: &CellGridFrame, channel: usize, w: usize, h: usize) -> alloc::vec::Vec<f32> {
         let lattice = Lattice {
@@ -372,12 +400,12 @@ mod tests {
         let r = plane(&frame, 0, 8, 4);
         let b = plane(&frame, 2, 8, 4);
         // Cell 0 interior: coverage 1 → pure fg (red).
-        assert!((r[1 * 8 + 1] - 1.0).abs() < 1e-5, "cell0 R = {}", r[9]);
-        assert!(b[1 * 8 + 1].abs() < 1e-5, "cell0 B = {}", b[9]);
+        assert!((r[px(1, 1)] - 1.0).abs() < 1e-5, "cell0 R = {}", r[9]);
+        assert!(b[px(1, 1)].abs() < 1e-5, "cell0 B = {}", b[9]);
         // Cell 1 interior: coverage 0.5 → half fg, half bg.
         // R: 0.5·1 + 0.5·0 = 0.5;  B: 0.5·1 + 0.5·1 = 1.0.
-        assert!((r[1 * 8 + 5] - 0.5).abs() < 1e-5, "cell1 R = {}", r[13]);
-        assert!((b[1 * 8 + 5] - 1.0).abs() < 1e-5, "cell1 B = {}", b[13]);
+        assert!((r[px(1, 5)] - 0.5).abs() < 1e-5, "cell1 R = {}", r[13]);
+        assert!((b[px(1, 5)] - 1.0).abs() < 1e-5, "cell1 B = {}", b[13]);
     }
 
     #[test]
@@ -407,16 +435,8 @@ mod tests {
         // the bilinear read degenerates to lookup: the LAST pixel column of
         // cell 0 still reads pure coverage 1 (its own last content texel),
         // and the FIRST pixel column of cell 1 reads its tile's 0.5.
-        assert!(
-            (r[1 * 8 + 3] - 1.0).abs() < 1e-5,
-            "cell0 edge R = {}",
-            r[11]
-        );
-        assert!(
-            (r[1 * 8 + 4] - 0.5).abs() < 1e-5,
-            "cell1 edge R = {}",
-            r[12]
-        );
+        assert!((r[px(1, 3)] - 1.0).abs() < 1e-5, "cell0 edge R = {}", r[11]);
+        assert!((r[px(1, 4)] - 0.5).abs() < 1e-5, "cell1 edge R = {}", r[12]);
     }
 
     #[test]
@@ -433,7 +453,7 @@ mod tests {
         };
         let r = lattice.collapse(&frame.channel(0)).into_buffer();
         assert!(
-            (r[1 * 8 + 3] - 0.6).abs() < 1e-5,
+            (r[px(1, 3)] - 0.6).abs() < 1e-5,
             "cell0 apron R = {}",
             r[11]
         );
@@ -443,29 +463,7 @@ mod tests {
     #[should_panic(expected = "cell buffer length")]
     fn mismatched_cell_buffer_is_refused() {
         let (program, _, atlas) = tiny_scene();
-        let _ = program.frame(Arc::new(alloc::vec![0.0; 3]), atlas);
-    }
-}
-
-impl Manifold<(Field, Field, Field, Field)> for CellGridChannel {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, (x, y, z, w): (Field, Field, Field, Field)) -> Field {
-        let ctx = [self.cells.as_ptr(), self.atlas.as_ptr()];
-        // SAFETY: `compile` checked size_of::<Field>() == JIT_VECTOR_BYTES;
-        // the kernel was compiled from an arena declaring exactly the two
-        // buffers whose lengths `CellGridProgram::frame` asserted against
-        // the same geometry, and `ctx` binds their live base pointers (in
-        // declaration order) for the duration of the call.
-        unsafe {
-            core::mem::transmute::<JitVec, Field>(self.jit.call_bound(
-                ctx.as_ptr(),
-                core::mem::transmute::<Field, JitVec>(x),
-                core::mem::transmute::<Field, JitVec>(y),
-                core::mem::transmute::<Field, JitVec>(z),
-                core::mem::transmute::<Field, JitVec>(w),
-            ))
-        }
+        // Binding satisfies unused_must_use; the call panics first.
+        let _refused = program.frame(Arc::new(alloc::vec![0.0; 3]), atlas);
     }
 }
