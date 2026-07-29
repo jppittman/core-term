@@ -42,7 +42,7 @@ impl MetalOps {
             app.set_activation_policy(NS_APPLICATION_ACTIVATION_POLICY_REGULAR);
 
             app.finish_launching();
-            app.activate_ignoring_other_apps(true);
+            app.activate_ignoring_other_apps(cocoa::IgnoreOtherApps::Yes);
 
             app
         };
@@ -232,7 +232,7 @@ impl PlatformOps for MetalOps {
                     u64::MAX,
                     until_date,
                     mode,
-                    true, // dequeue
+                    cocoa::DequeueEvent::Yes, // dequeue
                 );
                 // Subsequent iterations never block.
                 until_date = distant_past;

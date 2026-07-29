@@ -114,7 +114,7 @@ impl MacWindow {
         // NSBackingStoreBuffered = 2
         let backing = 2;
 
-        let window = NSWindow::alloc().init_with_content_rect(rect, style_mask, backing, false);
+        let window = NSWindow::alloc().init_with_content_rect(rect, style_mask, backing, cocoa::DeferCreation::No);
         window.set_title(&desc.title);
 
         // We keep messaging this pointer (poll_resize, present) until the pump
@@ -166,7 +166,7 @@ impl MacWindow {
             sys::send_1::<(), Id>(view.0, sys::sel(b"setLayer:\0"), layer);
 
             // [view setWantsLayer: YES]
-            view.set_wants_layer(true);
+            view.set_wants_layer(cocoa::WantsLayer::Yes);
         }
 
         window.set_content_view(view);
