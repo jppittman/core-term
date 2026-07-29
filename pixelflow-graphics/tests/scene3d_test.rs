@@ -679,3 +679,53 @@ fn work_stealing_benchmark() {
         "Parallel output must match single-threaded"
     );
 }
+
+#[test]
+fn jit_kernel_3d_sky_and_normal() {
+    use pixelflow_core::{Kernel, Lattice};
+    use pixelflow_graphics::scene3d::kernel_3d;
+
+    const W: f32 = 32.0;
+    const H: f32 = 32.0;
+    let scale = 2.0 / H;
+
+    // Centered & flipped screen coordinates matching ScreenRemap
+    let sx = Kernel::x().sub(&Kernel::constant(W * 0.5)).mul(&Kernel::constant(scale));
+    let sy = Kernel::constant(H * 0.5).sub(&Kernel::y()).mul(&Kernel::constant(scale));
+
+    // Map screen coords to ray direction
+    let (dx, dy, dz) = kernel_3d::screen_to_ray(&sx, &sy, 1.0);
+
+    // Sky kernel
+    let sky = kernel_3d::sky(&dy);
+
+    // Unit sphere centered at origin
+    let t_sphere = kernel_3d::unit_sphere(&dx, &dy, &dz);
+
+    // Hit position P = ray * t
+    let px = dx.mul(&t_sphere);
+    let py = dy.mul(&t_sphere);
+    let pz = dz.mul(&t_sphere);
+
+    // Surface normal via Dwrt
+    let (_nx, ny, _nz) = kernel_3d::surface_normal(&px, &py, &pz);
+
+    // Bake sky over a 32x32 lattice
+    let lattice = Lattice::frame(32, 32, 0.0);
+    let baked_sky = lattice.bake(&sky);
+    assert_eq!(baked_sky.buffer().len(), 1024);
+
+    // Top texels (py=0 -> sy>0) should be brighter than bottom texels (py=31 -> sy<0)
+    let top_sample = baked_sky.buffer()[16];
+    let bot_sample = baked_sky.buffer()[31 * 32 + 16];
+    assert!(
+        top_sample > bot_sample,
+        "Top of sky ({top_sample}) should be brighter than bottom ({bot_sample})"
+    );
+
+    // Bake sphere surface normal Ny component over 32x32 lattice
+    let baked_ny = lattice.bake(&ny);
+    assert_eq!(baked_ny.buffer().len(), 1024);
+}
+
+
