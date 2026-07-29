@@ -644,6 +644,7 @@ fn format_const_kc(v: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "aarch64")]
     use crate::jit_bench::benchmark_jit_arena;
 
     const REWRITE_BUG_INPUTS: [f32; 4] = [0.5, 0.7, 1.3, -0.2];
@@ -662,6 +663,7 @@ mod tests {
         eval_arena_scalar(&arena, root, &REWRITE_BUG_INPUTS)
     }
 
+    #[cfg(target_arch = "aarch64")]
     fn logged_expr_jit_output(src: &str) -> f32 {
         let (arena, root) = parse_expr(src).unwrap_or_else(|| panic!("parse_expr failed: {src}"));
         benchmark_jit_arena(&arena, root)
@@ -678,6 +680,7 @@ mod tests {
         eval_arena_scalar(&re_arena, re_root, &REWRITE_BUG_INPUTS)
     }
 
+    #[cfg(target_arch = "aarch64")]
     fn assert_scalar_and_jit_close(src: &str, epsilon: f32) {
         let scalar = logged_expr_scalar_output(src);
         let jit = logged_expr_jit_output(src);
