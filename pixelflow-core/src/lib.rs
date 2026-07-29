@@ -243,9 +243,7 @@ pub use manifold::Differentiable;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub use lattice::BilinearSampler;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-pub use lattice::cell_grid::{
-    CELL_STRIDE, CellGridChannel, CellGridFrame, CellGridGeometry, CellGridProgram,
-};
+pub use lattice::cell_grid::{CELL_STRIDE, CellGridFrame, CellGridGeometry, CellGridProgram};
 pub use lattice::{DiscreteManifold, Lattice, ReduceOp};
 
 // ============================================================================

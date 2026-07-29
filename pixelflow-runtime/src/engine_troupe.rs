@@ -666,8 +666,10 @@ mod tests {
     const LANE_BUFFER: usize = 16;
 
     /// A constant black scene — these tests care about which port fires, not what is drawn.
-    fn manifold() -> Arc<dyn Manifold<Output = Discrete> + Send + Sync> {
-        Arc::new(ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32))
+    fn manifold() -> pixelflow_graphics::render::scene::Scene {
+        pixelflow_graphics::render::scene::Scene::Surface(Arc::new(
+            ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32),
+        ))
     }
 
     /// `EngineHandler` wired to a real driver scheduler (so `driver_control`/`driver_mgmt`

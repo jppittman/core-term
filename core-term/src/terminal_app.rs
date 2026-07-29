@@ -11,7 +11,8 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorHandle, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_core::{At, CellGridGeometry, CellGridProgram, Discrete, Manifold};
+use pixelflow_core::{At, CellGridGeometry, CellGridProgram};
+use pixelflow_graphics::render::scene::Scene;
 
 /// Adapter to send PTY commands to TerminalApp actor.
 pub struct TerminalAppSender {
@@ -221,20 +222,20 @@ impl TerminalApp {
     /// A resize therefore IS a recompile — four channel kernels, sized
     /// independently of the grid — which replaces the old per-frame tree of
     /// boxed combinators entirely.
-    fn build_scene(&mut self) -> Arc<dyn Manifold<Output = Discrete> + Send + Sync> {
+    fn build_scene(&mut self) -> Scene {
         let (dbg_r, dbg_g, dbg_b, dbg_a) = self.config.colors.background.to_f32_rgba();
 
         // Get terminal snapshot
         let snapshot = match self.emulator.get_render_snapshot() {
             Some(s) => s,
             None => {
-                return Arc::new(At {
+                return Scene::Surface(Arc::new(At {
                     inner: ColorCube::default(),
                     x: dbg_r,
                     y: dbg_g,
                     z: dbg_b,
                     w: dbg_a,
-                });
+                }));
             }
         };
 
@@ -286,12 +287,16 @@ impl TerminalApp {
         // (Re)compile the scene program when the geometry moved: resize,
         // density change, atlas growth. Compile cost is independent of the
         // grid size, so this is the entire cost of a dynamic resize.
+        // Scene::CellGrid renders in DEVICE-PIXEL space (the runtime does
+        // not contramap it): cell extents scale by the display density, and
+        // the atlas — baked at `density` texels per point — is exactly one
+        // texel per device pixel.
         let geom = CellGridGeometry {
             cols: cols as u32,
             rows: rows as u32,
-            cell_w: cell_width,
-            cell_h: cell_height,
-            density: self.density,
+            cell_w: cell_width * self.density,
+            cell_h: cell_height * self.density,
+            density: 1.0,
             atlas_width: self.atlas.width() as u32,
             atlas_height: self.atlas.height() as u32,
             tile_w: self.atlas.tile_px() as u32,
@@ -310,15 +315,7 @@ impl TerminalApp {
             self.program = Some(CellGridProgram::compile(geom, [dbg_r, dbg_g, dbg_b, dbg_a]));
         }
         let program = self.program.as_ref().expect("program compiled above");
-        let frame = program.frame(Arc::new(cells), self.atlas.buffer());
-
-        Arc::new(At {
-            inner: ColorCube::default(),
-            x: frame.channel(0),
-            y: frame.channel(1),
-            z: frame.channel(2),
-            w: frame.channel(3),
-        })
+        Scene::CellGrid(program.frame(Arc::new(cells), self.atlas.buffer()))
     }
 
     /// Send a rendered frame to the engine.
@@ -1095,7 +1092,6 @@ mod tests {
     fn scene_paints_default_background_and_recompiles_on_resize() {
         use pixelflow_graphics::render::color::Bgra8;
         use pixelflow_graphics::render::frame::Frame;
-        use pixelflow_graphics::render::rasterizer::rasterize;
 
         let (mut app, _writer_rx, _tx, _scheduler) = match create_test_app() {
             Some(v) => v,
@@ -1106,7 +1102,7 @@ mod tests {
         // JIT cell-grid scene must rasterize to that color.
         let scene = app.build_scene();
         let mut frame = Frame::<Bgra8>::new(16, 16);
-        rasterize(&scene, &mut frame, 1);
+        scene.render(&mut frame, 1);
         let (r, g, b, _) = app.config.colors.background.to_f32_rgba();
         let px = frame.data[8 * 16 + 8];
         let close = |got: u8, want: f32| (got as f32 - want * 255.0).abs() <= 2.0;

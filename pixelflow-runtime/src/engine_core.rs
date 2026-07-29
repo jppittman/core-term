@@ -57,12 +57,12 @@ impl EngineCore {
 
     fn step_app_data(&mut self, app_data: AppData, out: &mut EngineOut) {
         match app_data {
-            AppData::RenderSurface(manifold) | AppData::RenderSurfaceU32(manifold) => {
+            AppData::RenderSurface(scene) => {
                 log::debug!("Engine: Received RenderSurface from app");
                 // The app has provided its compute graph, so permit VSync to request another
                 // frame without waiting for rasterization to finish.
                 out.vsync_control = Some(VsyncCommand::ReturnToken);
-                out.coordinator = Some(CoordinatorData::Submit(manifold));
+                out.coordinator = Some(CoordinatorData::Submit(scene));
             }
             AppData::Skipped => {
                 // App says nothing to render - return token anyway
@@ -337,8 +337,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     /// A constant black scene — these tests care about which port fires, not what is drawn.
-    fn manifold() -> std::sync::Arc<dyn Manifold<Output = Discrete> + Send + Sync> {
-        std::sync::Arc::new(ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32))
+    fn manifold() -> pixelflow_graphics::render::scene::Scene {
+        pixelflow_graphics::render::scene::Scene::Surface(std::sync::Arc::new(
+            ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32),
+        ))
     }
 
     fn surface(width_px: u32, height_px: u32) -> Surface {

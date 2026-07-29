@@ -36,7 +36,6 @@ use super::messages::{
     RasterConfig, RasterControl, RasterManagement, RasterSetup, RasterizerSetupHandle,
     RenderRequest, RenderResponse,
 };
-use super::rasterize;
 use crate::render::Pixel;
 use actor_scheduler::mealy::Transducer;
 use actor_scheduler::{
@@ -102,7 +101,7 @@ impl<P: Pixel, Meta> RasterCore<P, Meta> {
     /// path carrying no frame.
     fn render(&mut self, request: RenderRequest<P, Meta>) -> RenderResponse<P, Meta> {
         let RenderRequest {
-            manifold,
+            scene,
             mut frame,
             meta,
         } = request;
@@ -117,7 +116,7 @@ impl<P: Pixel, Meta> RasterCore<P, Meta> {
         }
 
         let start = Instant::now();
-        rasterize(&manifold, &mut frame, self.num_threads);
+        scene.render(&mut frame, self.num_threads);
         let render_time = start.elapsed();
 
         log::trace!(
@@ -215,7 +214,7 @@ mod core_tests {
 
     fn request(size: u32) -> RenderRequest<Rgba8> {
         RenderRequest {
-            manifold: Arc::new(Color::Rgb(255, 0, 0)),
+            scene: crate::render::scene::Scene::Surface(Arc::new(Color::Rgb(255, 0, 0))),
             frame: Frame::new(size, size),
             meta: (),
         }
@@ -236,7 +235,7 @@ mod core_tests {
         let mut core = RasterCore::<Rgba8, WindowMeta>::new(1);
         let out = core
             .step_data(RenderRequest {
-                manifold: Arc::new(Color::Rgb(0, 255, 0)),
+                scene: crate::render::scene::Scene::Surface(Arc::new(Color::Rgb(0, 255, 0))),
                 frame: Frame::new(8, 8),
                 meta: WindowMeta {
                     id: 42,
@@ -482,7 +481,7 @@ mod tests {
         let red = Color::Rgb(255, 0, 0);
 
         let request = RenderRequest {
-            manifold: Arc::new(red),
+            scene: crate::render::scene::Scene::Surface(Arc::new(red)),
             frame,
             meta: (),
         };
@@ -569,7 +568,7 @@ mod tests {
         let blue = Color::Rgb(0, 0, 255);
 
         let request = RenderRequest {
-            manifold: Arc::new(blue),
+            scene: crate::render::scene::Scene::Surface(Arc::new(blue)),
             frame,
             meta: (),
         };

@@ -327,44 +327,7 @@ pub enum AppData {
     /// This allows different manifold types to be sent without recompiling.
     /// Performance cost: no dynamic dispatch at the algebra level (monomorphization still works),
     /// but you lose some inlining opportunities across the Arc boundary.
-    RenderSurface(
-        std::sync::Arc<
-            dyn pixelflow_core::Manifold<Output = pixelflow_core::Discrete> + Send + Sync,
-        >,
-    ),
-
-    /// Render a manifold at u32 coordinates (pixel-aligned).
-    ///
-    /// # Contract
-    ///
-    /// **Sender** (Application): Provides a color manifold to be evaluated at pixel-aligned coordinates.
-    ///
-    /// **Receiver** (Engine): Materializes the manifold using integer u32 coordinates (no floating-point).
-    /// This is identical to `RenderSurface` except for the coordinate type passed to evaluation.
-    ///
-    /// # When to Use
-    ///
-    /// - When your manifold is designed to work with integer coordinates (e.g., per-pixel patterns)
-    /// - For pixel-perfect rendering without sub-pixel interpolation
-    /// - When aliasing is acceptable or desirable
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // A checkerboard pattern using u32 coordinates
-    /// let checkerboard = (X & 16u32).eq(0.0).select(black, white);
-    /// tx.send(Message::Data(AppData::RenderSurfaceU32(checkerboard)))?;
-    /// ```
-    ///
-    /// # Performance
-    ///
-    /// Slightly more efficient than `RenderSurface` if your manifold naturally works
-    /// with integer coordinates, but the difference is usually negligible.
-    RenderSurfaceU32(
-        std::sync::Arc<
-            dyn pixelflow_core::Manifold<Output = pixelflow_core::Discrete> + Send + Sync,
-        >,
-    ),
+    RenderSurface(pixelflow_graphics::render::scene::Scene),
 
     /// Skip this frame (no rendering needed).
     ///
@@ -392,7 +355,6 @@ impl std::fmt::Debug for AppData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RenderSurface(_) => f.debug_tuple("RenderSurface").finish(),
-            Self::RenderSurfaceU32(_) => f.debug_tuple("RenderSurfaceU32").finish(),
             Self::Skipped => f.debug_tuple("Skipped").finish(),
         }
     }
