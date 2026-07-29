@@ -7,7 +7,7 @@
 //!
 //! Everything here is unsafe. This is lowest-level FFI.
 
-#![allow(
+#![expect(
     clippy::missing_safety_doc,
     clippy::must_use_candidate,
     clippy::too_many_arguments,

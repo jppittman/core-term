@@ -75,6 +75,13 @@ pub struct Episode {
     pub epoch_budget: usize,
 }
 
+/// Identity and saturation budget for an episode run.
+pub struct EpisodeSpec<'a> {
+    pub seed_name: &'a str,
+    pub max_epochs: usize,
+    pub episode_id: String,
+}
+
 /// Run a single budget-bounded saturation episode.
 ///
 /// Returns `None` if the seed or extracted expression cannot be JIT-benchmarked,
@@ -93,18 +100,17 @@ pub struct Episode {
 /// 5. JIT-benchmark the extraction for ground-truth final cost.
 /// 6. Verify the rewrite preserved semantics (SIMD-lane equivalence at a
 ///    fixed test point).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "episode identity, budget, model, and seed inputs are distinct API inputs"
-)]
 pub fn run_episode(
     seed_arena: &ExprArena,
     seed_root: ExprId,
-    seed_name: &str,
     model: &ExprNnue,
-    max_epochs: usize,
-    episode_id: String,
+    spec: EpisodeSpec<'_>,
 ) -> Option<Episode> {
+    let EpisodeSpec {
+        seed_name,
+        max_epochs,
+        episode_id,
+    } = spec;
     // Hard wall-clock deadline per episode: safety net against runaway extraction.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let episode_start = std::time::Instant::now();
@@ -335,10 +341,12 @@ mod tests {
         let episode = run_episode(
             &arena,
             root,
-            "smoke_seed",
             &model,
-            10,
-            "smoke_0".to_string(),
+            EpisodeSpec {
+                seed_name: "smoke_seed",
+                max_epochs: 10,
+                episode_id: "smoke_0".to_string(),
+            },
         )
         .expect("episode should complete for a small, well-defined seed expression");
 
