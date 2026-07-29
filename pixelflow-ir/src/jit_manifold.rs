@@ -75,16 +75,16 @@ impl JitManifold {
         let func: CtxKernelFn = unsafe { self.code.as_fn() };
         func(ctx, x, y, z, w)
     }
-    /// Run a collapse (internal-loop) kernel: one call fills `groups`
-    /// batches of `out` from lane-sequential `x0`, stepping X by the batch
-    /// width per iteration (4 lanes, step 4.0).
+    /// Run a 2D collapse kernel: one call fills `rows * groups` batches,
+    /// resetting X and advancing Y by 1.0 after each row.
     ///
     /// # Safety
     ///
     /// - The kernel must have been compiled by
     ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
     ///   per-batch entries emit a different ABI.
-    /// - `out` must be valid for `groups * lanes` writable `f32`s.
+    /// - Each row must expose `groups * lanes` writable `f32`s followed by
+    ///   `row_skip_bytes` writable-or-skippable bytes before the next row.
     /// - `ctx` must hold one valid base pointer per buffer the arena
     ///   declares (never read when it declares none).
     #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
@@ -94,15 +94,17 @@ impl JitManifold {
         ctx: *const *const f32,
         out: *mut f32,
         groups: usize,
+        rows: usize,
+        row_skip_bytes: usize,
         x0: core::arch::aarch64::float32x4_t,
-        y: core::arch::aarch64::float32x4_t,
+        y0: core::arch::aarch64::float32x4_t,
         z: core::arch::aarch64::float32x4_t,
         w: core::arch::aarch64::float32x4_t,
     ) {
         // SAFETY: the ExecutableCode was produced by our JIT compiler which
         // emits code matching the CollapseKernelFn signature.
         let func: CollapseKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, out, groups, x0, y, z, w)
+        func(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)
     }
 }
 
@@ -164,16 +166,16 @@ impl JitManifold {
         let func: CtxKernelFn = unsafe { self.code.as_fn() };
         func(ctx, x, y, z, w)
     }
-    /// Run a collapse (internal-loop) kernel: one call fills `groups`
-    /// batches of `out` from lane-sequential `x0`, stepping X by the batch
-    /// width per iteration (4 lanes, step 4.0).
+    /// Run a 2D collapse kernel: one call fills `rows * groups` batches,
+    /// resetting X and advancing Y by 1.0 after each row.
     ///
     /// # Safety
     ///
     /// - The kernel must have been compiled by
     ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
     ///   per-batch entries emit a different ABI.
-    /// - `out` must be valid for `groups * lanes` writable `f32`s.
+    /// - Each row must expose `groups * lanes` writable `f32`s followed by
+    ///   `row_skip_bytes` writable-or-skippable bytes before the next row.
     /// - `ctx` must hold one valid base pointer per buffer the arena
     ///   declares (never read when it declares none).
     #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
@@ -183,15 +185,17 @@ impl JitManifold {
         ctx: *const *const f32,
         out: *mut f32,
         groups: usize,
+        rows: usize,
+        row_skip_bytes: usize,
         x0: core::arch::x86_64::__m128,
-        y: core::arch::x86_64::__m128,
+        y0: core::arch::x86_64::__m128,
         z: core::arch::x86_64::__m128,
         w: core::arch::x86_64::__m128,
     ) {
         // SAFETY: the ExecutableCode was produced by our JIT compiler which
         // emits code matching the CollapseKernelFn signature.
         let func: CollapseKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, out, groups, x0, y, z, w)
+        func(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)
     }
 }
 
@@ -253,16 +257,16 @@ impl JitManifold {
         let func: CtxKernelFn = unsafe { self.code.as_fn() };
         func(ctx, x, y, z, w)
     }
-    /// Run a collapse (internal-loop) kernel: one call fills `groups`
-    /// batches of `out` from lane-sequential `x0`, stepping X by the batch
-    /// width per iteration (8 lanes, step 8.0).
+    /// Run a 2D collapse kernel: one call fills `rows * groups` batches,
+    /// resetting X and advancing Y by 1.0 after each row.
     ///
     /// # Safety
     ///
     /// - The kernel must have been compiled by
     ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
     ///   per-batch entries emit a different ABI.
-    /// - `out` must be valid for `groups * lanes` writable `f32`s.
+    /// - Each row must expose `groups * lanes` writable `f32`s followed by
+    ///   `row_skip_bytes` writable-or-skippable bytes before the next row.
     /// - `ctx` must hold one valid base pointer per buffer the arena
     ///   declares (never read when it declares none).
     #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
@@ -272,15 +276,17 @@ impl JitManifold {
         ctx: *const *const f32,
         out: *mut f32,
         groups: usize,
+        rows: usize,
+        row_skip_bytes: usize,
         x0: core::arch::x86_64::__m256,
-        y: core::arch::x86_64::__m256,
+        y0: core::arch::x86_64::__m256,
         z: core::arch::x86_64::__m256,
         w: core::arch::x86_64::__m256,
     ) {
         // SAFETY: the ExecutableCode was produced by our JIT compiler which
         // emits code matching the CollapseKernelFn signature.
         let func: CollapseKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, out, groups, x0, y, z, w)
+        func(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)
     }
 }
 
@@ -338,16 +344,16 @@ impl JitManifold {
         let func: CtxKernelFn = unsafe { self.code.as_fn() };
         func(ctx, x, y, z, w)
     }
-    /// Run a collapse (internal-loop) kernel: one call fills `groups`
-    /// batches of `out` from lane-sequential `x0`, stepping X by the batch
-    /// width per iteration (16 lanes, step 16.0).
+    /// Run a 2D collapse kernel: one call fills `rows * groups` batches,
+    /// resetting X and advancing Y by 1.0 after each row.
     ///
     /// # Safety
     ///
     /// - The kernel must have been compiled by
     ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
     ///   per-batch entries emit a different ABI.
-    /// - `out` must be valid for `groups * lanes` writable `f32`s.
+    /// - Each row must expose `groups * lanes` writable `f32`s followed by
+    ///   `row_skip_bytes` writable-or-skippable bytes before the next row.
     /// - `ctx` must hold one valid base pointer per buffer the arena
     ///   declares (never read when it declares none).
     #[allow(clippy::too_many_arguments)] // ctx + out + groups + the four coordinates
@@ -357,15 +363,17 @@ impl JitManifold {
         ctx: *const *const f32,
         out: *mut f32,
         groups: usize,
+        rows: usize,
+        row_skip_bytes: usize,
         x0: core::arch::x86_64::__m512,
-        y: core::arch::x86_64::__m512,
+        y0: core::arch::x86_64::__m512,
         z: core::arch::x86_64::__m512,
         w: core::arch::x86_64::__m512,
     ) {
         // SAFETY: the ExecutableCode was produced by our JIT compiler which
         // emits code matching the CollapseKernelFn signature.
         let func: CollapseKernelFn = unsafe { self.code.as_fn() };
-        func(ctx, out, groups, x0, y, z, w)
+        func(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)
     }
 }
 

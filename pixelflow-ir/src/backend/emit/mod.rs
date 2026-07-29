@@ -702,23 +702,25 @@ trait IsaBackend {
     /// `frame_size`-slot frame) in the collapse loop scaffold, producing a
     /// complete [`CollapseKernelFn`](executable::CollapseKernelFn): the
     /// caller's lane-sequential X is an induction value stepped by the batch
-    /// width each iteration, Y/Z/W are loop-invariant arguments, and each
-    /// batch's result is stored straight to the output pointer. The body's
-    /// branches are self-relative, so inlining it inside the loop is sound.
+    /// width in the inner loop and reset for each row; Y advances by 1.0 in
+    /// the outer loop; Z/W are loop-invariant. Each batch's result is stored
+    /// straight to the output pointer. The body's branches are self-relative,
+    /// so inlining it inside the loop is sound.
     ///
     /// Coordinate state lives in stack slots above the body's spill frame:
     /// the ABI's vector registers are caller-saved scratch to the body, so
     /// each iteration reloads X/Y/Z/W into the input registers from the
     /// slots and the X slot alone is stepped.
     ///
-    /// `hoist` (possibly empty) is the LICM prologue: X-invariant code emitted
-    /// once per call, after the coordinate stores and before the loop, parking
-    /// its results in `hoist_slots` vector slots directly above the coordinate
-    /// slots — the scaffold reserves them in its frame allocation.
+    /// `frame_hoist` contains X/Y-invariant code emitted once per call;
+    /// `row_hoist` contains X-invariant code emitted once per Y iteration.
+    /// Both park results in `hoist_slots` vector slots directly above the
+    /// coordinate slots reserved by the scaffold.
     #[allow(clippy::too_many_arguments)] // the scaffold's full framing contract
     fn emit_collapse_loop(
         &mut self,
-        hoist: &[u8],
+        frame_hoist: &[u8],
+        row_hoist: &[u8],
         body: &[u8],
         result_reg: Reg,
         frame_size: u32,
@@ -787,8 +789,8 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
     // Hoisted values in the body are pre-spilled at their hoist slots: strip
     // whatever location the allocator gave their placeholder defs and pin
     // them, so consumers reload from the slot the prologue stored to.
-    if let HoistCtx::Body(hoisted) = &hoist {
-        for (vid, &offset) in hoisted.iter() {
+    if let Some(hoisted) = hoist.preloaded() {
+        for (vid, &offset) in hoisted {
             allocation.assignment.remove(vid);
             allocation.rematerialize.remove(vid);
             layout.spill_slots.insert(*vid, offset);
@@ -802,7 +804,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
     backend.frame_ready(frame_size);
 
     // Select short-circuit guards (disabled in the prologue — see HoistCtx).
-    let select_guards = if matches!(hoist, HoistCtx::Prologue(_)) {
+    let select_guards = if hoist.parks_values() {
         Vec::new()
     } else {
         analyze_select_guards(&schedule)
@@ -846,7 +848,13 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
     }
     let mut spill_for: alloc::vec::Vec<Option<u32>> = alloc::vec![None; max_vid + 1];
     for (&vid, &offset) in &layout.spill_slots {
-        spill_for[vid.0 as usize] = Some(offset);
+        // An enclosing-scope hoist can be consumed entirely by this region's
+        // prologue and therefore be absent from this region's sparse schedule.
+        // It still belongs in `layout` for operand resolution when present,
+        // but it has no dense entry to populate here when absent.
+        if let Some(slot) = spill_for.get_mut(vid.0 as usize) {
+            *slot = Some(offset);
+        }
     }
     let mut remat_for: alloc::vec::Vec<Option<u32>> = alloc::vec![None; max_vid + 1];
     for (&vid, &bits) in &allocation.rematerialize {
@@ -894,7 +902,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
 
         // A hoisted value's placeholder def emits nothing — the prologue
         // already parked the value in its slot; consumers reload from there.
-        if let HoistCtx::Body(hoisted) = &hoist
+        if let Some(hoisted) = hoist.preloaded()
             && hoisted.contains_key(vid)
         {
             continue;
@@ -972,7 +980,7 @@ fn emit_dag_body_hoisted<B: IsaBackend>(
         // def, while the value is guaranteed live. (Guards are disabled in
         // this mode, so every def reaches this point — the guarded-Select
         // early-continue above cannot fire.)
-        if let HoistCtx::Prologue(hoisted) = &hoist
+        if let Some(hoisted) = hoist.parked()
             && let Some(&offset) = hoisted.get(vid)
         {
             let r = backend.emit_resolve(
@@ -1193,21 +1201,25 @@ impl IsaBackend for Aarch64Backend {
     }
 
     // AAPCS64: x0 = ctx (read-only in the body's gathers), x1 = out,
-    // x2 = groups, v0..3 = x0/y/z/w. Loop registers: x3 = counter; the body's
+    // x2 = groups, x3 = rows, x4 = row-skip bytes, v0..3 = x0/y0/z/w.
+    // Loop registers: x5 = inner counter, x6 = outer counter; the body's
     // scratch GPRs are x9-x11 (gather), w16 (branch tests), x17 (pool anchor)
-    // — all disjoint. Coordinate slots live above the body's spill frame.
+    // — all disjoint. Coordinate slots live above the body's spill frame;
+    // slot 4 preserves the row-start X while slot 0 advances within a row.
     fn emit_collapse_loop(
         &mut self,
-        hoist: &[u8],
+        frame_hoist: &[u8],
+        row_hoist: &[u8],
         body: &[u8],
         result_reg: Reg,
         frame_size: u32,
         hoist_slots: u32,
     ) -> Result<Vec<u8>, &'static str> {
         const VW: u32 = 16;
-        let total = frame_size + (4 + hoist_slots) * VW;
+        let total = frame_size + (5 + hoist_slots) * VW;
         let slot = |k: u32| frame_size + k * VW;
-        let mut code: Vec<u8> = Vec::with_capacity(hoist.len() + body.len() + 128);
+        let mut code: Vec<u8> =
+            Vec::with_capacity(frame_hoist.len() + row_hoist.len() + body.len() + 160);
 
         aarch64::emit_sub_sp(&mut code, total);
         // Anchor the pool (the prologue's and body's constants load
@@ -1216,15 +1228,31 @@ impl IsaBackend for Aarch64Backend {
         for k in 0..4u32 {
             aarch64::emit_str_sp(&mut code, Reg(k as u8), slot(k));
         }
-        // LICM prologue: X-invariant values, parked in the hoist slots.
-        code.extend_from_slice(hoist);
-        // mov x3, xzr — batch counter.
-        aarch64::emit32(&mut code, 0xD280_0003);
+        aarch64::emit_str_sp(&mut code, Reg(0), slot(4));
+        // Frame LICM: X/Y-invariant values are computed once per call.
+        code.extend_from_slice(frame_hoist);
+        // mov x6, xzr — row counter.
+        aarch64::emit32(&mut code, 0xD280_0006);
 
-        let loop_top = code.len();
-        // cmp x3, x2 ; b.hs end (forward, patched below).
-        aarch64::emit32(&mut code, 0xEB02_007F);
-        let bhs_at = code.len();
+        let outer_top = code.len();
+        // cmp x6, x3 ; b.hs end (forward, patched below).
+        aarch64::emit32(&mut code, 0xEB03_00DF);
+        let outer_bhs_at = code.len();
+        aarch64::emit32(&mut code, 0x5400_0002);
+
+        // LICM prologue: X-invariant values, recomputed once per row. Reload
+        // coordinates first because the previous body/Y-step clobbered v0..3.
+        for k in 0..4u32 {
+            aarch64::emit_ldr_sp(&mut code, Reg(k as u8), slot(k));
+        }
+        code.extend_from_slice(row_hoist);
+        // mov x5, xzr — batch counter.
+        aarch64::emit32(&mut code, 0xD280_0005);
+
+        let inner_top = code.len();
+        // cmp x5, x2 ; b.hs row_end (forward, patched below).
+        aarch64::emit32(&mut code, 0xEB02_00BF);
+        let inner_bhs_at = code.len();
         aarch64::emit32(&mut code, 0x5400_0002);
 
         for k in 0..4u32 {
@@ -1248,16 +1276,35 @@ impl IsaBackend for Aarch64Backend {
         aarch64::emit_fadd(&mut code, Reg(0), Reg(0), Reg(1));
         aarch64::emit_str_sp(&mut code, Reg(0), slot(0));
 
-        // add x3, x3, #1 ; b loop_top (backward).
-        aarch64::emit32(&mut code, 0x9100_0463);
-        let back = ((loop_top as i64 - code.len() as i64) / 4) as i32;
+        // add x5, x5, #1 ; b inner_top (backward).
+        aarch64::emit32(&mut code, 0x9100_04A5);
+        let back = ((inner_top as i64 - code.len() as i64) / 4) as i32;
         aarch64::emit32(&mut code, 0x1400_0000 | ((back as u32) & 0x03FF_FFFF));
 
-        // end: patch b.hs here, tear down, RET, pool.
+        let row_end = code.len();
+        let inner_imm19 = (((row_end - inner_bhs_at) / 4) as u32) & 0x7FFFF;
+        let inner_bhs = 0x5400_0000 | (inner_imm19 << 5) | 0x2;
+        code[inner_bhs_at..inner_bhs_at + 4].copy_from_slice(&inner_bhs.to_le_bytes());
+
+        // Reset X, advance Y, and skip any scalar tail in the output row.
+        aarch64::emit_ldr_sp(&mut code, Reg(0), slot(4));
+        aarch64::emit_str_sp(&mut code, Reg(0), slot(0));
+        aarch64::emit_ldr_sp(&mut code, Reg(0), slot(1));
+        aarch64::emit_fmov_imm(&mut code, Reg(1), 1.0, [Reg(28), Reg(29), Reg(30), Reg(31)]);
+        aarch64::emit_fadd(&mut code, Reg(0), Reg(0), Reg(1));
+        aarch64::emit_str_sp(&mut code, Reg(0), slot(1));
+        aarch64::emit32(&mut code, 0x8B04_0021); // add x1, x1, x4
+
+        // add x6, x6, #1 ; b outer_top (backward).
+        aarch64::emit32(&mut code, 0x9100_04C6);
+        let outer_back = ((outer_top as i64 - code.len() as i64) / 4) as i32;
+        aarch64::emit32(&mut code, 0x1400_0000 | ((outer_back as u32) & 0x03FF_FFFF));
+
+        // end: patch outer b.hs here, tear down, RET, pool.
         let end = code.len();
-        let imm19 = (((end - bhs_at) / 4) as u32) & 0x7FFFF;
-        let bhs = 0x5400_0000 | (imm19 << 5) | 0x2;
-        code[bhs_at..bhs_at + 4].copy_from_slice(&bhs.to_le_bytes());
+        let outer_imm19 = (((end - outer_bhs_at) / 4) as u32) & 0x7FFFF;
+        let outer_bhs = 0x5400_0000 | (outer_imm19 << 5) | 0x2;
+        code[outer_bhs_at..outer_bhs_at + 4].copy_from_slice(&outer_bhs.to_le_bytes());
 
         aarch64::emit_add_sp(&mut code, total);
         code.extend_from_slice(&0xD65F_03C0u32.to_le_bytes());
@@ -1534,6 +1581,7 @@ struct HoistPlan {
 fn plan_collapse_hoist(
     schedule: &[(regalloc::ValueId, ScheduledOp)],
     variance: &[crate::variance::Variance],
+    scope_mask: u8,
 ) -> Option<HoistPlan> {
     use regalloc::ValueId;
     let n = schedule.len();
@@ -1555,18 +1603,18 @@ fn plan_collapse_hoist(
         }
     };
 
-    // Which values are consumed by an X-dependent op, and which contain a
+    // Which values are consumed by an op varying inside this scope, and which contain a
     // gather anywhere in their sub-DAG (forward pass — schedule is topological).
-    let mut feeds_x_dependent = alloc::vec![false; max_vid + 1];
+    let mut feeds_varying = alloc::vec![false; max_vid + 1];
     let mut contains_gather = alloc::vec![false; max_vid + 1];
     for (vid, op) in schedule {
         let i = vid.0 as usize;
         let ops = operands(op);
         contains_gather[i] = matches!(op, ScheduledOp::Gather(_, _))
             || ops.iter().any(|a| contains_gather[a.0 as usize]);
-        if variance[i].depends_on_x() {
+        if variance[i].bits() & scope_mask != 0 {
             for a in &ops {
-                feeds_x_dependent[a.0 as usize] = true;
+                feeds_varying[a.0 as usize] = true;
             }
         }
     }
@@ -1578,10 +1626,10 @@ fn plan_collapse_hoist(
     let mut roots: Vec<ValueId> = Vec::new();
     for (vid, op) in schedule {
         let i = vid.0 as usize;
-        let hoistable = variance[i].is_x_invariant()
+        let hoistable = variance[i].bits() & scope_mask == 0
             && !is_leaf(op)
             && !contains_gather[i]
-            && (feeds_x_dependent[i] || *vid == root_vid);
+            && (feeds_varying[i] || *vid == root_vid);
         if hoistable {
             is_root[i] = true;
             roots.push(*vid);
@@ -1686,11 +1734,37 @@ enum HoistCtx<'a> {
     /// a guard could skip a hoist root's def on a uniform mask, leaving its
     /// slot garbage for the loop to read (and the prologue runs once, so the
     /// guard buys nothing).
-    Prologue(&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>),
+    Prologue {
+        /// Values parked by an enclosing loop and reloaded as leaves here.
+        preloaded: Option<&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>>,
+        /// Values this prologue computes and parks for its inner loop.
+        parked: &'a alloc::collections::BTreeMap<regalloc::ValueId, u32>,
+    },
     /// Emitting the loop body: mapped values are never emitted; their
     /// locations are overridden to their hoist slots so every consumer
     /// reloads through the ordinary spill machinery.
     Body(&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>),
+}
+
+impl<'a> HoistCtx<'a> {
+    fn preloaded(&self) -> Option<&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>> {
+        match self {
+            Self::None => None,
+            Self::Prologue { preloaded, .. } => *preloaded,
+            Self::Body(values) => Some(values),
+        }
+    }
+
+    fn parked(&self) -> Option<&'a alloc::collections::BTreeMap<regalloc::ValueId, u32>> {
+        match self {
+            Self::Prologue { parked, .. } => Some(parked),
+            Self::None | Self::Body(_) => None,
+        }
+    }
+
+    fn parks_values(&self) -> bool {
+        matches!(self, Self::Prologue { .. })
+    }
 }
 
 // =============================================================================
@@ -2832,13 +2906,15 @@ impl IsaBackend for X86Backend {
     }
 
     // SysV: rdi = ctx (read-only in the body's gathers), rsi = out,
-    // rdx = groups, xmm0..3 = x0/y/z/w. Loop registers: r8 = counter; the
-    // body's scratch GPRs are rax/rcx (gather, movmskps) — disjoint. In
+    // rdx = groups, rcx = rows, r8 = row-skip bytes, xmm0..3 = x0/y0/z/w.
+    // Loop registers: r9 = inner counter, r10 = preserved row count, r11 =
+    // outer counter; the body's scratch GPRs are rax/rcx (gather, movmskps) — disjoint. In
     // red-zone mode (`frame_bytes == 0`) the body spills below rsp, so the
     // coordinate slots allocated here at [rsp..) never collide with it.
     fn emit_collapse_loop(
         &mut self,
-        hoist: &[u8],
+        frame_hoist: &[u8],
+        row_hoist: &[u8],
         body: &[u8],
         result_reg: Reg,
         _frame_size: u32,
@@ -2846,24 +2922,39 @@ impl IsaBackend for X86Backend {
     ) -> Result<Vec<u8>, &'static str> {
         const VW: u32 = 16;
         let f = self.frame_bytes;
-        let total = f + (4 + hoist_slots) * VW;
+        let total = f + (5 + hoist_slots) * VW;
         let slot = |k: u32| (f + k * VW) as i32;
-        let mut code: Vec<u8> = Vec::with_capacity(hoist.len() + body.len() + 128);
+        let mut code: Vec<u8> =
+            Vec::with_capacity(frame_hoist.len() + row_hoist.len() + body.len() + 160);
 
         x86_64::emit_sub_rsp(&mut code, total);
         for k in 0..4u32 {
             x86_64::emit_movups_store_rsp32(&mut code, Reg(k as u8), slot(k));
         }
-        // LICM prologue: X-invariant values, parked in the hoist slots.
-        code.extend_from_slice(hoist);
-        // xor r8, r8 — batch counter.
-        code.extend_from_slice(&[0x4D, 0x31, 0xC0]);
+        x86_64::emit_movups_store_rsp32(&mut code, Reg(0), slot(4));
+        code.extend_from_slice(frame_hoist);
+        // Preserve rows away from rcx, which gather/select guards may clobber.
+        code.extend_from_slice(&[0x49, 0x89, 0xCA]); // mov r10, rcx
+        code.extend_from_slice(&[0x4D, 0x31, 0xDB]); // xor r11, r11
 
-        let loop_top = code.len();
-        // cmp r8, rdx ; jae end (forward, patched below).
-        code.extend_from_slice(&[0x49, 0x39, 0xD0]);
+        let outer_top = code.len();
+        code.extend_from_slice(&[0x4D, 0x39, 0xD3]); // cmp r11, r10
         code.extend_from_slice(&[0x0F, 0x83]);
-        let jae_at = code.len();
+        let outer_jae_at = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+
+        // LICM prologue: X-invariant values, recomputed once per row. Reload
+        // coordinates first because the previous body/Y-step clobbered xmm0..3.
+        for k in 0..4u32 {
+            x86_64::emit_movups_load_rsp32(&mut code, Reg(k as u8), slot(k));
+        }
+        code.extend_from_slice(row_hoist);
+        code.extend_from_slice(&[0x4D, 0x31, 0xC9]); // xor r9, r9
+
+        let inner_top = code.len();
+        code.extend_from_slice(&[0x49, 0x39, 0xD1]); // cmp r9, rdx
+        code.extend_from_slice(&[0x0F, 0x83]);
+        let inner_jae_at = code.len();
         code.extend_from_slice(&[0, 0, 0, 0]);
 
         for k in 0..4u32 {
@@ -2881,20 +2972,40 @@ impl IsaBackend for X86Backend {
         x86_64::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
         x86_64::emit_movups_store_rsp32(&mut code, Reg(0), slot(0));
 
-        // inc r8 ; jmp loop_top (backward).
-        code.extend_from_slice(&[0x49, 0xFF, 0xC0]);
+        // inc r9 ; jmp inner_top (backward).
+        code.extend_from_slice(&[0x49, 0xFF, 0xC1]);
         code.push(0xE9);
-        let jmp_at = code.len();
+        let inner_jmp_at = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+
+        let row_end = code.len();
+        let inner_jae_rel = (row_end as i32) - (inner_jae_at as i32 + 4);
+        code[inner_jae_at..inner_jae_at + 4].copy_from_slice(&inner_jae_rel.to_le_bytes());
+        let inner_jmp_rel = (inner_top as i32) - (inner_jmp_at as i32 + 4);
+        code[inner_jmp_at..inner_jmp_at + 4].copy_from_slice(&inner_jmp_rel.to_le_bytes());
+
+        // Reset X, advance Y, and skip any scalar tail in the output row.
+        x86_64::emit_movups_load_rsp32(&mut code, Reg(0), slot(4));
+        x86_64::emit_movups_store_rsp32(&mut code, Reg(0), slot(0));
+        x86_64::emit_movups_load_rsp32(&mut code, Reg(0), slot(1));
+        x86_64::emit_const(&mut code, Reg(1), 1.0, X86_BUILTIN_SCRATCH);
+        x86_64::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
+        x86_64::emit_movups_store_rsp32(&mut code, Reg(0), slot(1));
+        code.extend_from_slice(&[0x4C, 0x01, 0xC6]); // add rsi, r8
+
+        code.extend_from_slice(&[0x49, 0xFF, 0xC3]); // inc r11
+        code.push(0xE9);
+        let outer_jmp_at = code.len();
         code.extend_from_slice(&[0, 0, 0, 0]);
 
         let end = code.len();
         x86_64::emit_add_rsp(&mut code, total);
         code.push(0xC3); // RET
 
-        let jae_rel = (end as i32) - (jae_at as i32 + 4);
-        code[jae_at..jae_at + 4].copy_from_slice(&jae_rel.to_le_bytes());
-        let jmp_rel = (loop_top as i32) - (jmp_at as i32 + 4);
-        code[jmp_at..jmp_at + 4].copy_from_slice(&jmp_rel.to_le_bytes());
+        let outer_jae_rel = (end as i32) - (outer_jae_at as i32 + 4);
+        code[outer_jae_at..outer_jae_at + 4].copy_from_slice(&outer_jae_rel.to_le_bytes());
+        let outer_jmp_rel = (outer_top as i32) - (outer_jmp_at as i32 + 4);
+        code[outer_jmp_at..outer_jmp_at + 4].copy_from_slice(&outer_jmp_rel.to_le_bytes());
         Ok(code)
     }
 }
@@ -3154,7 +3265,8 @@ impl IsaBackend for Avx512Backend {
     // body's slots sit at [rsp..bytes) and the coordinate slots above them.
     fn emit_collapse_loop(
         &mut self,
-        hoist: &[u8],
+        frame_hoist: &[u8],
+        row_hoist: &[u8],
         body: &[u8],
         result_reg: Reg,
         frame_size: u32,
@@ -3162,24 +3274,36 @@ impl IsaBackend for Avx512Backend {
     ) -> Result<Vec<u8>, &'static str> {
         const VW: u32 = 64;
         let f = avx512_frame_bytes(frame_size);
-        let total = f + (4 + hoist_slots) * VW;
+        let total = f + (5 + hoist_slots) * VW;
         let slot = |k: u32| (f + k * VW) as i32;
-        let mut code: Vec<u8> = Vec::with_capacity(hoist.len() + body.len() + 128);
+        let mut code: Vec<u8> =
+            Vec::with_capacity(frame_hoist.len() + row_hoist.len() + body.len() + 160);
 
         avx512::emit_sub_rsp(&mut code, total);
         for k in 0..4u32 {
             avx512::emit_store_rsp(&mut code, Reg(k as u8), slot(k));
         }
-        // LICM prologue: X-invariant values, parked in the hoist slots.
-        code.extend_from_slice(hoist);
-        // xor r8, r8 — batch counter.
-        code.extend_from_slice(&[0x4D, 0x31, 0xC0]);
+        avx512::emit_store_rsp(&mut code, Reg(0), slot(4));
+        code.extend_from_slice(frame_hoist);
+        code.extend_from_slice(&[0x49, 0x89, 0xCA]); // mov r10, rcx
+        code.extend_from_slice(&[0x4D, 0x31, 0xDB]); // xor r11, r11
 
-        let loop_top = code.len();
-        // cmp r8, rdx ; jae end (forward, patched below).
-        code.extend_from_slice(&[0x49, 0x39, 0xD0]);
+        let outer_top = code.len();
+        code.extend_from_slice(&[0x4D, 0x39, 0xD3]); // cmp r11, r10
         code.extend_from_slice(&[0x0F, 0x83]);
-        let jae_at = code.len();
+        let outer_jae_at = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+
+        for k in 0..4u32 {
+            avx512::emit_load_rsp(&mut code, Reg(k as u8), slot(k));
+        }
+        code.extend_from_slice(row_hoist);
+        code.extend_from_slice(&[0x4D, 0x31, 0xC9]); // xor r9, r9
+
+        let inner_top = code.len();
+        code.extend_from_slice(&[0x49, 0x39, 0xD1]); // cmp r9, rdx
+        code.extend_from_slice(&[0x0F, 0x83]);
+        let inner_jae_at = code.len();
         code.extend_from_slice(&[0, 0, 0, 0]);
 
         for k in 0..4u32 {
@@ -3197,20 +3321,38 @@ impl IsaBackend for Avx512Backend {
         avx512::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
         avx512::emit_store_rsp(&mut code, Reg(0), slot(0));
 
-        // inc r8 ; jmp loop_top (backward).
-        code.extend_from_slice(&[0x49, 0xFF, 0xC0]);
+        code.extend_from_slice(&[0x49, 0xFF, 0xC1]); // inc r9
         code.push(0xE9);
-        let jmp_at = code.len();
+        let inner_jmp_at = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+
+        let row_end = code.len();
+        let inner_jae_rel = (row_end as i32) - (inner_jae_at as i32 + 4);
+        code[inner_jae_at..inner_jae_at + 4].copy_from_slice(&inner_jae_rel.to_le_bytes());
+        let inner_jmp_rel = (inner_top as i32) - (inner_jmp_at as i32 + 4);
+        code[inner_jmp_at..inner_jmp_at + 4].copy_from_slice(&inner_jmp_rel.to_le_bytes());
+
+        avx512::emit_load_rsp(&mut code, Reg(0), slot(4));
+        avx512::emit_store_rsp(&mut code, Reg(0), slot(0));
+        avx512::emit_load_rsp(&mut code, Reg(0), slot(1));
+        avx512::emit_const(&mut code, Reg(1), 1.0);
+        avx512::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
+        avx512::emit_store_rsp(&mut code, Reg(0), slot(1));
+        code.extend_from_slice(&[0x4C, 0x01, 0xC6]); // add rsi, r8
+
+        code.extend_from_slice(&[0x49, 0xFF, 0xC3]); // inc r11
+        code.push(0xE9);
+        let outer_jmp_at = code.len();
         code.extend_from_slice(&[0, 0, 0, 0]);
 
         let end = code.len();
         avx512::emit_add_rsp(&mut code, total);
         avx512::emit_ret(&mut code);
 
-        let jae_rel = (end as i32) - (jae_at as i32 + 4);
-        code[jae_at..jae_at + 4].copy_from_slice(&jae_rel.to_le_bytes());
-        let jmp_rel = (loop_top as i32) - (jmp_at as i32 + 4);
-        code[jmp_at..jmp_at + 4].copy_from_slice(&jmp_rel.to_le_bytes());
+        let outer_jae_rel = (end as i32) - (outer_jae_at as i32 + 4);
+        code[outer_jae_at..outer_jae_at + 4].copy_from_slice(&outer_jae_rel.to_le_bytes());
+        let outer_jmp_rel = (outer_top as i32) - (outer_jmp_at as i32 + 4);
+        code[outer_jmp_at..outer_jmp_at + 4].copy_from_slice(&outer_jmp_rel.to_le_bytes());
         Ok(code)
     }
 }
@@ -3467,7 +3609,8 @@ impl IsaBackend for Avx2Backend {
     // AVX2 always uses an allocated frame (mirrors AVX-512).
     fn emit_collapse_loop(
         &mut self,
-        hoist: &[u8],
+        frame_hoist: &[u8],
+        row_hoist: &[u8],
         body: &[u8],
         result_reg: Reg,
         frame_size: u32,
@@ -3475,24 +3618,36 @@ impl IsaBackend for Avx2Backend {
     ) -> Result<Vec<u8>, &'static str> {
         const VW: u32 = 32;
         let f = avx2_frame_bytes(frame_size);
-        let total = f + (4 + hoist_slots) * VW;
+        let total = f + (5 + hoist_slots) * VW;
         let slot = |k: u32| (f + k * VW) as i32;
-        let mut code: Vec<u8> = Vec::with_capacity(hoist.len() + body.len() + 128);
+        let mut code: Vec<u8> =
+            Vec::with_capacity(frame_hoist.len() + row_hoist.len() + body.len() + 160);
 
         avx2::emit_sub_rsp(&mut code, total);
         for k in 0..4u32 {
             avx2::emit_store_rsp(&mut code, Reg(k as u8), slot(k));
         }
-        // LICM prologue: X-invariant values, parked in the hoist slots.
-        code.extend_from_slice(hoist);
-        // xor r8, r8 — batch counter.
-        code.extend_from_slice(&[0x4D, 0x31, 0xC0]);
+        avx2::emit_store_rsp(&mut code, Reg(0), slot(4));
+        code.extend_from_slice(frame_hoist);
+        code.extend_from_slice(&[0x49, 0x89, 0xCA]); // mov r10, rcx
+        code.extend_from_slice(&[0x4D, 0x31, 0xDB]); // xor r11, r11
 
-        let loop_top = code.len();
-        // cmp r8, rdx ; jae end (forward, patched below).
-        code.extend_from_slice(&[0x49, 0x39, 0xD0]);
+        let outer_top = code.len();
+        code.extend_from_slice(&[0x4D, 0x39, 0xD3]); // cmp r11, r10
         code.extend_from_slice(&[0x0F, 0x83]);
-        let jae_at = code.len();
+        let outer_jae_at = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+
+        for k in 0..4u32 {
+            avx2::emit_load_rsp(&mut code, Reg(k as u8), slot(k));
+        }
+        code.extend_from_slice(row_hoist);
+        code.extend_from_slice(&[0x4D, 0x31, 0xC9]); // xor r9, r9
+
+        let inner_top = code.len();
+        code.extend_from_slice(&[0x49, 0x39, 0xD1]); // cmp r9, rdx
+        code.extend_from_slice(&[0x0F, 0x83]);
+        let inner_jae_at = code.len();
         code.extend_from_slice(&[0, 0, 0, 0]);
 
         for k in 0..4u32 {
@@ -3510,20 +3665,38 @@ impl IsaBackend for Avx2Backend {
         avx2::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
         avx2::emit_store_rsp(&mut code, Reg(0), slot(0));
 
-        // inc r8 ; jmp loop_top (backward).
-        code.extend_from_slice(&[0x49, 0xFF, 0xC0]);
+        code.extend_from_slice(&[0x49, 0xFF, 0xC1]); // inc r9
         code.push(0xE9);
-        let jmp_at = code.len();
+        let inner_jmp_at = code.len();
+        code.extend_from_slice(&[0, 0, 0, 0]);
+
+        let row_end = code.len();
+        let inner_jae_rel = (row_end as i32) - (inner_jae_at as i32 + 4);
+        code[inner_jae_at..inner_jae_at + 4].copy_from_slice(&inner_jae_rel.to_le_bytes());
+        let inner_jmp_rel = (inner_top as i32) - (inner_jmp_at as i32 + 4);
+        code[inner_jmp_at..inner_jmp_at + 4].copy_from_slice(&inner_jmp_rel.to_le_bytes());
+
+        avx2::emit_load_rsp(&mut code, Reg(0), slot(4));
+        avx2::emit_store_rsp(&mut code, Reg(0), slot(0));
+        avx2::emit_load_rsp(&mut code, Reg(0), slot(1));
+        avx2::emit_const(&mut code, Reg(1), 1.0);
+        avx2::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
+        avx2::emit_store_rsp(&mut code, Reg(0), slot(1));
+        code.extend_from_slice(&[0x4C, 0x01, 0xC6]); // add rsi, r8
+
+        code.extend_from_slice(&[0x49, 0xFF, 0xC3]); // inc r11
+        code.push(0xE9);
+        let outer_jmp_at = code.len();
         code.extend_from_slice(&[0, 0, 0, 0]);
 
         let end = code.len();
         avx2::emit_add_rsp(&mut code, total);
         avx2::emit_ret(&mut code);
 
-        let jae_rel = (end as i32) - (jae_at as i32 + 4);
-        code[jae_at..jae_at + 4].copy_from_slice(&jae_rel.to_le_bytes());
-        let jmp_rel = (loop_top as i32) - (jmp_at as i32 + 4);
-        code[jmp_at..jmp_at + 4].copy_from_slice(&jmp_rel.to_le_bytes());
+        let outer_jae_rel = (end as i32) - (outer_jae_at as i32 + 4);
+        code[outer_jae_at..outer_jae_at + 4].copy_from_slice(&outer_jae_rel.to_le_bytes());
+        let outer_jmp_rel = (outer_top as i32) - (outer_jmp_at as i32 + 4);
+        code[outer_jmp_at..outer_jmp_at + 4].copy_from_slice(&outer_jmp_rel.to_le_bytes());
         Ok(code)
     }
 }
@@ -3555,20 +3728,20 @@ pub fn compile_arena_dag_avx512(
     compile_dag_via_backend(schedule, uses, &mut Avx512Backend)
 }
 
-/// Compile an [`ExprArena`] DAG into a **collapse** kernel: the row loop is
-/// emitted *inside* the code, so one call fills `groups` output batches with
-/// no per-batch Rust↔JIT boundary. This is the internal-loop realization of a
-/// lattice collapse — the point of the whole design.
+/// Compile an [`ExprArena`] DAG into a **collapse** kernel: the X/Y loop nest is
+/// emitted *inside* the code, so one call fills `rows * groups` output batches
+/// with no per-row or per-batch Rust↔JIT boundary. This is the internal-loop
+/// realization of a lattice collapse.
 ///
 /// The per-batch body (produced by [`emit_dag_body`], with derivatives /
 /// reductions / gathers / transcendentals already lowered — the same Stage-1
 /// chain as [`compile_arena_dag`]) is wrapped in the build width's
-/// [`IsaBackend::emit_collapse_loop`] scaffold: X is an induction value
-/// stepped by the batch width each iteration, Y/Z/W are loop-invariant
-/// arguments, gathers read buffer bases from the context register, and each
-/// batch stores straight to `out`. Matches the
+/// [`IsaBackend::emit_collapse_loop`] scaffold: X steps by the batch width and
+/// resets per row, Y steps by 1.0, Z/W stay invariant, gathers read buffer
+/// bases from the context register, and each batch stores straight to `out`.
+/// Matches the
 /// [`CollapseKernelFn`](executable::CollapseKernelFn) ABI
-/// `(ctx, out, groups, x0, y, z, w)`.
+/// `(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)`.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub fn compile_collapse(
     arena: &crate::arena::ExprArena,
@@ -3623,11 +3796,28 @@ fn compile_collapse_via_backend<B: IsaBackend>(
     backend: &mut B,
 ) -> Result<CompileResult, &'static str> {
     let variance = schedule_variance(&schedule);
-    let Some(plan) = plan_collapse_hoist(&schedule, &variance) else {
-        // Nothing X-invariant worth hoisting: the plain loop.
+    const X_SCOPE: u8 = 1 << 0;
+    const XY_SCOPE: u8 = (1 << 0) | (1 << 1);
+
+    // First lift values invariant across the whole X/Y loop nest. Then treat
+    // those parked roots as leaves while lifting Y-dependent, X-invariant
+    // values into the per-row prologue.
+    let frame_plan = plan_collapse_hoist(&schedule, &variance, XY_SCOPE);
+    let (frame_roots, frame_prologue, row_input) = match frame_plan {
+        Some(plan) => (plan.roots, plan.prologue, plan.body),
+        None => (Vec::new(), Vec::new(), schedule),
+    };
+    let row_plan = plan_collapse_hoist(&row_input, &variance, X_SCOPE);
+    let (row_roots, row_prologue, body_schedule) = match row_plan {
+        Some(plan) => (plan.roots, plan.prologue, plan.body),
+        None => (Vec::new(), Vec::new(), row_input),
+    };
+
+    if frame_roots.is_empty() && row_roots.is_empty() {
+        // Nothing loop-invariant worth hoisting: the plain loop nest.
         let (body, result_reg, frame_size, spill_count) =
-            emit_dag_body(schedule, uses_map, backend)?;
-        let code = backend.emit_collapse_loop(&[], &body, result_reg, frame_size, 0)?;
+            emit_dag_body(body_schedule, uses_map, backend)?;
+        let code = backend.emit_collapse_loop(&[], &[], &body, result_reg, frame_size, 0)?;
         let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
         return Ok(CompileResult {
             code: exec,
@@ -3638,50 +3828,98 @@ fn compile_collapse_via_backend<B: IsaBackend>(
         });
     };
 
-    // The prologue and the loop body share one stack frame: spill slots in
-    // [0, m), the scaffold's four coordinate slots at [m, m+64), hoist slots
-    // above those. `m` is the max of the two frames (each region is only live
-    // while its code runs; the hoist slots outlive both). Allocation is pure,
+    // The two prologues and the loop body share one stack frame: spill slots in
+    // [0, m), the scaffold's five coordinate slots (X/Y/Z/W plus row-start X)
+    // at [m, m+80), and hoist slots above those. `m` is the max of the two
+    // frames (each region is only live while its code runs; the hoist slots
+    // outlive all three). Allocation is pure,
     // so pre-sizing here computes exactly the frames the emissions below will.
     // The 144 floor keeps x86's SSE2 backend out of red-zone mode — hoist
     // offsets are far past the zone, so both emissions must latch
     // allocated-frame ([rsp + offset]) addressing.
-    let pf = presize_frame(&plan.prologue, backend.num_regs())?;
-    let bf = presize_frame(&plan.body, backend.num_regs())?;
-    let m = pf.max(bf).max(144);
-    let hoist_map: alloc::collections::BTreeMap<regalloc::ValueId, u32> = plan
-        .roots
+    let ff = if frame_prologue.is_empty() {
+        0
+    } else {
+        presize_frame(&frame_prologue, backend.num_regs())?
+    };
+    let rf = if row_prologue.is_empty() {
+        0
+    } else {
+        presize_frame(&row_prologue, backend.num_regs())?
+    };
+    let bf = presize_frame(&body_schedule, backend.num_regs())?;
+    let m = ff.max(rf).max(bf).max(144);
+    let frame_map: alloc::collections::BTreeMap<regalloc::ValueId, u32> = frame_roots
         .iter()
         .enumerate()
-        .map(|(i, vid)| (*vid, m + 4 * 16 + (i as u32) * 16))
+        .map(|(i, vid)| (*vid, m + 5 * 16 + (i as u32) * 16))
+        .collect();
+    let row_map: alloc::collections::BTreeMap<regalloc::ValueId, u32> = row_roots
+        .iter()
+        .enumerate()
+        .map(|(i, vid)| (*vid, m + 5 * 16 + ((frame_roots.len() + i) as u32) * 16))
+        .collect();
+    let hoist_map: alloc::collections::BTreeMap<regalloc::ValueId, u32> = frame_map
+        .iter()
+        .chain(&row_map)
+        .map(|(vid, offset)| (*vid, *offset))
         .collect();
 
-    let uses_p = arena_to_uses(&plan.prologue);
-    let (prologue, _, _, pro_spills) = emit_dag_body_hoisted(
-        plan.prologue,
-        uses_p,
-        backend,
-        HoistCtx::Prologue(&hoist_map),
-        Some(m),
-    )?;
-    let uses_b = arena_to_uses(&plan.body);
+    let (frame_code, frame_spills) = if frame_prologue.is_empty() {
+        (Vec::new(), 0)
+    } else {
+        let uses = arena_to_uses(&frame_prologue);
+        let (code, _, _, spills) = emit_dag_body_hoisted(
+            frame_prologue,
+            uses,
+            backend,
+            HoistCtx::Prologue {
+                preloaded: None,
+                parked: &frame_map,
+            },
+            Some(m),
+        )?;
+        (code, spills)
+    };
+    let (row_code, row_spills) = if row_prologue.is_empty() {
+        (Vec::new(), 0)
+    } else {
+        let uses = arena_to_uses(&row_prologue);
+        let (code, _, _, spills) = emit_dag_body_hoisted(
+            row_prologue,
+            uses,
+            backend,
+            HoistCtx::Prologue {
+                preloaded: if frame_map.is_empty() {
+                    None
+                } else {
+                    Some(&frame_map)
+                },
+                parked: &row_map,
+            },
+            Some(m),
+        )?;
+        (code, spills)
+    };
+    let uses_b = arena_to_uses(&body_schedule);
     let (body, result_reg, _, body_spills) = emit_dag_body_hoisted(
-        plan.body,
+        body_schedule,
         uses_b,
         backend,
         HoistCtx::Body(&hoist_map),
         Some(m),
     )?;
 
+    let hoisted_values = (frame_roots.len() + row_roots.len()) as u32;
     let code =
-        backend.emit_collapse_loop(&prologue, &body, result_reg, m, plan.roots.len() as u32)?;
+        backend.emit_collapse_loop(&frame_code, &row_code, &body, result_reg, m, hoisted_values)?;
     let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
     Ok(CompileResult {
         code: exec,
-        spill_count: pro_spills + body_spills,
+        spill_count: frame_spills + row_spills + body_spills,
         spill_bytes: backend.frame_bytes(m),
         max_regs: backend.num_regs(),
-        hoisted_values: plan.roots.len() as u32,
+        hoisted_values,
     })
 }
 

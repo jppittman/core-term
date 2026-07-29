@@ -149,12 +149,16 @@ is a compiler pass, not a rasterizer rewrite:
    is `for i {{ out[i] = f(i) }}` — the collapse scaffold is the second shape,
    a `Reduce` loop is the first, and they can share the backend loop
    primitives.
-2. **The Y loop (2D collapse).** One call per frame instead of per row; the
-   scaffold grows an outer loop stepping the Y slot. The X-loop LICM above is
-   the per-row half of the hoisting story; the Y loop adds the per-frame half
-   (Z/W-only values hoist past it, and the per-row prologue stops paying the
-   call boundary). `find_hoistable_out_of(1, …)` is the same question asked
-   of Y.
+2. **The Y loop (2D collapse) — landed 2026-07-29.** `CollapseKernelFn` now
+   accepts `rows` and `row_skip_bytes`; all four ISA scaffolds wrap the X loop
+   in an outer loop that resets X, advances Y by 1.0, and skips a caller-owned
+   scalar tail without overwriting it. `Lattice::bake` submits the full-width
+   region of each Z/W plane in one call and keeps only the final partial SIMD
+   batch per row on the scratch path. LICM is two-level: X/Y-invariant roots
+   (Z/W-only or constant) run once per plane call, while Y-dependent/X-
+   invariant roots run once per row. `tests/collapse_loop.rs` pins X reset, Y
+   induction, row gaps, both hoist scopes, and interpreter parity; the existing
+   collapse suite still covers selects, gathers, transcendentals, and spills.
 3. **The e-graph gap — landed 2026-07-28 for the Reduce-free population.**
    `pixelflow-search/src/runtime.rs`'s `optimize_runtime_arena(arena, root)`
    inserts an arbitrary runtime `ExprArena` into a fresh `EGraph` (memoized by
@@ -286,10 +290,14 @@ one-time bake. Quad-heavy singles for the FreeType comparison: 'O' ~167µs,
 
 - `pixelflow-runtime/examples/bench_psychedelic.rs` is the JIT-vs-LLVM parity
   number (`kernel_raw!` vs `kernel!` vs `kernel_jit!`, ns/pixel).
-- Add a criterion bench in `pixelflow-ir/benches/` (crate has none): N ×
-  `KernelFn` vs one `CollapseKernelFn` on the same arena — isolates call
-  overhead from everything else. `pixelflow-graphics/benches/font_rendering.rs`
-  (bake on a cached compile) already measures the production win end to end.
+- **Landed 2026-07-29:** `pixelflow-ir/benches/collapse_overhead.rs` replaces
+  the ad-hoc example with a Criterion comparison of a Rust `KernelFn` loop
+  nest against one 2D `CollapseKernelFn` call on the same arena. On the SSE2
+  development host the deliberately cheap 61,440-pixel kernel is essentially
+  tied (49.23µs Rust loop, 49.63µs collapse), an honest baseline showing that
+  wins must come from LICM/expression cost rather than assuming the boundary
+  alone dominates. `pixelflow-graphics/benches/font_rendering.rs` remains the
+  production end-to-end measurement.
 - To size finding 2 (missing optimization) separately: bake the same
   expression via `kernel_jit!` (e-graph'd at macro time) and via runtime
   `Kernel` composition (raw), and diff ns/pixel. If the gap is large, an
