@@ -348,8 +348,10 @@ mod tests {
         let program = CellGridProgram::compile(geom, [0.9, 0.8, 0.7, 0.6]);
         // Cell 0 → tile 0, red-on-black; cell 1 → tile 1, white-on-blue.
         let cells = vec![
-            1.0, 1.0, /* uv */ 1.0, 0.0, 0.0, 1.0, /* fg */ 0.0, 0.0, 0.0, 1.0, /* bg */
-            7.0, 1.0, /* uv */ 1.0, 1.0, 1.0, 1.0, /* fg */ 0.0, 0.0, 1.0, 1.0, /* bg */
+            1.0, 1.0, /* uv */ 1.0, 0.0, 0.0, 1.0, /* fg */ 0.0, 0.0, 0.0,
+            1.0, /* bg */
+            7.0, 1.0, /* uv */ 1.0, 1.0, 1.0, 1.0, /* fg */ 0.0, 0.0, 1.0,
+            1.0, /* bg */
         ];
         (program, Arc::new(cells), Arc::new(atlas))
     }
@@ -386,7 +388,11 @@ mod tests {
         let g = plane(&frame, 1, 12, 6);
         // (10.5, 0.5) is right of the grid; (0.5, 5.5) below it.
         assert!((g[10] - 0.8).abs() < 1e-5, "right of grid G = {}", g[10]);
-        assert!((g[5 * 12] - 0.8).abs() < 1e-5, "below grid G = {}", g[5 * 12]);
+        assert!(
+            (g[5 * 12] - 0.8).abs() < 1e-5,
+            "below grid G = {}",
+            g[5 * 12]
+        );
         // Alpha channel outside: 0.6.
         let a = plane(&frame, 3, 12, 6);
         assert!((a[11] - 0.6).abs() < 1e-5, "outside A = {}", a[11]);
@@ -401,8 +407,16 @@ mod tests {
         // the bilinear read degenerates to lookup: the LAST pixel column of
         // cell 0 still reads pure coverage 1 (its own last content texel),
         // and the FIRST pixel column of cell 1 reads its tile's 0.5.
-        assert!((r[1 * 8 + 3] - 1.0).abs() < 1e-5, "cell0 edge R = {}", r[11]);
-        assert!((r[1 * 8 + 4] - 0.5).abs() < 1e-5, "cell1 edge R = {}", r[12]);
+        assert!(
+            (r[1 * 8 + 3] - 1.0).abs() < 1e-5,
+            "cell0 edge R = {}",
+            r[11]
+        );
+        assert!(
+            (r[1 * 8 + 4] - 0.5).abs() < 1e-5,
+            "cell1 edge R = {}",
+            r[12]
+        );
     }
 
     #[test]
@@ -418,7 +432,11 @@ mod tests {
             origin: [0.9, 0.5, 0.0, 0.0],
         };
         let r = lattice.collapse(&frame.channel(0)).into_buffer();
-        assert!((r[1 * 8 + 3] - 0.6).abs() < 1e-5, "cell0 apron R = {}", r[11]);
+        assert!(
+            (r[1 * 8 + 3] - 0.6).abs() < 1e-5,
+            "cell0 apron R = {}",
+            r[11]
+        );
     }
 
     #[test]
