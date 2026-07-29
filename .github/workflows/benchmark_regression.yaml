@@ -71,6 +71,24 @@ jobs:
           path: benchmark_results/output.txt
           if-no-files-found: error
 
+      # github-action-benchmark's auto-push does `git fetch origin
+      # gh-pages:gh-pages` and fails outright if the branch has never been
+      # created. Bootstrap an empty orphan branch on first run only.
+      - name: Ensure gh-pages branch exists
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            echo "gh-pages already exists"
+            exit 0
+          fi
+          git config user.name "github-action-benchmark"
+          git config user.email "github@users.noreply.github.com"
+          git checkout --orphan gh-pages
+          git rm -rf . >/dev/null 2>&1 || true
+          git commit --allow-empty -m "Initialize gh-pages branch"
+          git push origin gh-pages:gh-pages
+          git checkout -
+
       - name: Compare against baseline and publish
         id: benchmark_check
         uses: benchmark-action/github-action-benchmark@v1
