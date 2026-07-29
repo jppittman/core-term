@@ -11,7 +11,7 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorHandle, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_core::{And, At, Discrete, Ge, Le, Manifold, ManifoldExt, Select, Sub, W, X, Y, Z};
+use pixelflow_core::{At, CellGridGeometry, CellGridProgram, Discrete, Manifold};
 
 /// Adapter to send PTY commands to TerminalApp actor.
 pub struct TerminalAppSender {
@@ -40,9 +40,8 @@ impl PtySender for TerminalAppSender {
     }
 }
 
-/// Helper to create a positioned terminal cell with background blending.
 use pixelflow_graphics::fonts::loader::{LoadedFont, MmapSource};
-use pixelflow_graphics::{CachedGlyph, GlyphCache, Positioned, SpatialBSP};
+use pixelflow_graphics::fonts::GlyphAtlas;
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::AppData;
 use pixelflow_runtime::api::public::EngineHandle;
@@ -52,6 +51,9 @@ use std::sync::Arc;
 
 /// Font filename (looked up in multiple locations)
 const FONT_FILENAME: &str = "NotoSansMono-Regular.ttf";
+
+/// Atlas slots before the first growth (ASCII plus headroom).
+const ATLAS_CAPACITY: usize = 128;
 
 /// Find the font file, trying multiple locations:
 /// 1. macOS app bundle Resources directory (for bundled app)
@@ -93,30 +95,6 @@ fn find_font_path() -> std::path::PathBuf {
     workspace_path
 }
 
-/// Bounded glyph manifold (returns coverage in [0,1], 0 if out of bounds).
-/// Select<Cond, CachedGlyph, f32>
-type BoundedGlyph =
-    Select<And<And<And<Ge<X, f32>, Le<X, f32>>, Ge<Y, f32>>, Le<Y, f32>>, CachedGlyph, f32>;
-
-/// Positioned glyph manifold
-type PositionedGlyph = At<Sub<X, f32>, Sub<Y, f32>, Z, W, BoundedGlyph>;
-
-/// Layout parameters for a terminal cell.
-#[derive(Clone, Copy)]
-struct CellLayout {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-}
-
-/// Color parameters for a terminal cell.
-#[derive(Clone, Copy)]
-struct CellColors {
-    fg: [f32; 4],
-    bg: [f32; 4],
-}
-
 /// Terminal application implementing Actor trait.
 ///
 /// Receives engine events (frame requests, input) and responds with rendered
@@ -128,8 +106,14 @@ pub struct TerminalApp {
     engine_tx: EngineHandle,
     /// Memory-mapped font file.
     loaded_font: Arc<LoadedFont<MmapSource>>,
-    /// Cached rasterized glyphs.
-    glyph_cache: GlyphCache,
+    /// Baked glyph coverage tiles, gathered by the scene kernel.
+    atlas: GlyphAtlas,
+    /// The compiled cell-grid scene (four channel kernels). Recompiled
+    /// whenever the geometry it was compiled against — grid dimensions,
+    /// cell size, density, atlas extents — changes; `None` until the first
+    /// frame. This is the JIT answer to dynamic resize: the program's size
+    /// and compile time are independent of the grid's.
+    program: Option<CellGridProgram>,
     /// Currently pressed mouse button, tracked for motion reporting.
     /// Set on MouseClick, cleared on MouseRelease.
     pressed_mouse_button: Option<pixelflow_runtime::input::MouseButton>,
@@ -174,74 +158,6 @@ impl TerminalApp {
         }
     }
 
-    /// Helper to create a positioned terminal cell with background blending.
-    ///
-    /// Composition: bg + cov * (fg - bg)
-    #[inline(always)]
-    fn make_terminal_cell(
-        glyph: CachedGlyph,
-        layout: CellLayout,
-        colors: CellColors,
-    ) -> impl Manifold<Output = Discrete> + Clone {
-        // IMPORTANT: Bound BEFORE translating to avoid evaluating every glyph for every pixel
-        let cond = X.ge(0.0) & X.le(layout.width) & Y.ge(0.0) & Y.le(layout.height);
-        let bounded = Select {
-            cond,
-            if_true: glyph,
-            if_false: 0.0f32,
-        };
-
-        let positioned = At {
-            inner: bounded,
-            x: X - layout.x,
-            y: Y - layout.y,
-            z: Z,
-            w: W,
-        };
-
-        let lerp = X + Z * (Y - X);
-
-        // Helper to blend a single channel
-        let blend_channel = |bg: f32, fg: f32, coverage: &PositionedGlyph| At {
-            inner: lerp,
-            x: bg,
-            y: fg,
-            z: coverage.clone(),
-            w: 0.0,
-        };
-
-        let r = blend_channel(colors.bg[0], colors.fg[0], &positioned);
-        let g = blend_channel(colors.bg[1], colors.fg[1], &positioned);
-        let b = blend_channel(colors.bg[2], colors.fg[2], &positioned);
-
-        let blended = At {
-            inner: ColorCube::default(),
-            x: r,
-            y: g,
-            z: b,
-            w: 1.0,
-        };
-
-        let in_bounds = X.ge(layout.x)
-            & X.le(layout.x + layout.width)
-            & Y.ge(layout.y)
-            & Y.le(layout.y + layout.height);
-
-        let transparent = At {
-            inner: ColorCube::default(),
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-            w: 0.0,
-        };
-
-        Select {
-            cond: in_bounds,
-            if_true: blended,
-            if_false: transparent,
-        }
-    }
-
     /// Creates a new terminal app (internal - use spawn_terminal_app instead).
     fn new_registered(params: TerminalAppParamsRegistered) -> Self {
         // Memory-map the font file from the appropriate location
@@ -252,11 +168,11 @@ impl TerminalApp {
 
         let loaded_font = Arc::new(LoadedFont::new(source).expect("Failed to parse font"));
 
-        // Create glyph cache and pre-warm with ASCII. Density 1.0 until the
-        // platform reports the real backing scale via WindowCreated.
+        // Bake the ASCII set into the atlas. Density 1.0 until the platform
+        // reports the real backing scale via WindowCreated.
         let cell_height = params.config.appearance.cell_height_px as f32;
-        let mut glyph_cache = GlyphCache::with_capacity(128);
-        glyph_cache.warm_ascii(&loaded_font.font(), cell_height, 1.0);
+        let mut atlas = GlyphAtlas::new(cell_height, 1.0, ATLAS_CAPACITY);
+        atlas.warm(&loaded_font.font(), ' '..='~');
 
         Self {
             emulator: params.emulator,
@@ -264,14 +180,17 @@ impl TerminalApp {
             config: params.config,
             engine_tx: params.engine_tx,
             loaded_font,
-            glyph_cache,
+            atlas,
+            program: None,
             pressed_mouse_button: None,
             density: 1.0,
         }
     }
 
     /// Adopt a new display density (device pixels per point), re-baking the
-    /// warm glyph set so cached lattices match the platform's sample grid.
+    /// atlas so its tiles match the platform's sample grid. The scene
+    /// program recompiles on the next frame (the geometry it was compiled
+    /// against includes the density and the atlas extents).
     fn set_density(&mut self, scale: f64) {
         assert!(
             scale.is_finite() && scale > 0.0,
@@ -283,70 +202,55 @@ impl TerminalApp {
         }
         self.density = density;
         let cell_height = self.config.appearance.cell_height_px as f32;
-        self.glyph_cache
-            .warm_ascii(&self.loaded_font.font(), cell_height, density);
+        self.atlas = GlyphAtlas::new(cell_height, density, ATLAS_CAPACITY);
+        self.atlas.warm(&self.loaded_font.font(), ' '..='~');
+        self.program = None;
     }
 
-    /// Build a render manifold from the current terminal state.
-    fn build_manifold(
-        &mut self,
-    ) -> (
-        Arc<dyn Manifold<Output = Discrete> + Send + Sync>,
-        (f32, f32),
-    ) {
+    /// Build the frame scene: the JIT cell-grid program over the glyph
+    /// atlas and this snapshot's per-cell data.
+    ///
+    /// The per-frame work is filling one flat `f32` buffer (10 floats per
+    /// cell); the compiled program is reused until the geometry changes.
+    /// A resize therefore IS a recompile — four channel kernels, sized
+    /// independently of the grid — which replaces the old per-frame tree of
+    /// boxed combinators entirely.
+    fn build_scene(&mut self) -> Arc<dyn Manifold<Output = Discrete> + Send + Sync> {
+        let (dbg_r, dbg_g, dbg_b, dbg_a) = self.config.colors.background.to_f32_rgba();
+
         // Get terminal snapshot
         let snapshot = match self.emulator.get_render_snapshot() {
             Some(s) => s,
             None => {
-                let (r, g, b, a) = self.config.colors.background.to_f32_rgba();
-                return (
-                    Arc::new(At {
-                        inner: ColorCube::default(),
-                        x: r,
-                        y: g,
-                        z: b,
-                        w: a,
-                    }),
-                    (0.0, 0.0),
-                );
+                return Arc::new(At {
+                    inner: ColorCube::default(),
+                    x: dbg_r,
+                    y: dbg_g,
+                    z: dbg_b,
+                    w: dbg_a,
+                });
             }
         };
 
         let (cols, rows) = snapshot.dimensions;
         let cell_width = snapshot.cell_width_px as f32;
         let cell_height = snapshot.cell_height_px as f32;
-        let grid_width = cols as f32 * cell_width;
-        let grid_height = rows as f32 * cell_height;
-
-        // Debug: Log dimensions once per build
-        static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            log::info!(
-                "Terminal snapshot: {}x{} cells, cell size {}x{} px, grid {}x{} px",
-                cols,
-                rows,
-                cell_width,
-                cell_height,
-                grid_width,
-                grid_height
-            );
-        }
 
         // Default colors
         let default_fg = self.config.colors.foreground;
         let default_bg = self.config.colors.background;
 
-        // Build 2-level BSP: Vertical (Rows) -> Horizontal (Cells)
-        let mut row_items = Vec::with_capacity(rows);
-
+        // Fill the cell buffer FIRST: baking a previously unseen glyph may
+        // grow the atlas, and the program must be compiled against the
+        // atlas extents the frame actually binds.
+        let font = self.loaded_font.font();
+        let blank = self.atlas.blank_uv();
+        let mut cells =
+            Vec::with_capacity(cols * rows * pixelflow_core::CELL_STRIDE);
         for row in 0..rows {
             let line = &snapshot.lines[row];
-            let mut cell_items = Vec::with_capacity(cols);
-
             for col in 0..cols {
-                let glyph = &line.cells[col];
-
-                let (ch, fg_color, cell_bg) = match glyph {
+                let (uv, fg, bg): ((f32, f32), Color, Color) = match &line.cells[col] {
                     Glyph::Single(cc) | Glyph::WidePrimary(cc) => {
                         let fg = if cc.attr.fg == Color::Default {
                             default_fg
@@ -358,107 +262,64 @@ impl TerminalApp {
                         } else {
                             cc.attr.bg
                         };
-                        (cc.c, fg, bg)
+                        (self.atlas.uv(&font, cc.c), fg, bg)
                     }
-                    Glyph::WideSpacer => continue, // Skip spacers
+                    // A wide glyph's spacer cell shows its background.
+                    Glyph::WideSpacer => (blank, default_fg, default_bg),
                 };
-
-                // Get cached glyph - glyph_scaled now accounts for descenders
-                if let Some(cached) =
-                    self.glyph_cache
-                        .get(&self.loaded_font.font(), ch, cell_height, self.density)
-                {
-                    let (fg_r, fg_g, fg_b, fg_a) = fg_color.to_f32_rgba();
-                    let (bg_r, bg_g, bg_b, bg_a) = cell_bg.to_f32_rgba();
-
-                    let x = col as f32 * cell_width;
-                    let y = row as f32 * cell_height;
-
-                    cell_items.push(Positioned {
-                        bounds: (x, y, x + cell_width, y + cell_height),
-                        leaf: Self::make_terminal_cell(
-                            cached,
-                            CellLayout {
-                                x,
-                                y,
-                                width: cell_width,
-                                height: cell_height,
-                            },
-                            CellColors {
-                                fg: [fg_r, fg_g, fg_b, fg_a],
-                                bg: [bg_r, bg_g, bg_b, bg_a],
-                            },
-                        ),
-                    });
-                }
-            }
-
-            // If row has cells, wrap them in a horizontal BSP and add to row list
-            if !cell_items.is_empty() {
-                let y_min = row as f32 * cell_height;
-                let y_max = y_min + cell_height;
-
-                row_items.push(Positioned {
-                    bounds: (0.0, y_min, grid_width, y_max),
-                    leaf: SpatialBSP::from_positioned(cell_items),
-                });
+                let (fg_r, fg_g, fg_b, _) = fg.to_f32_rgba();
+                let (bg_r, bg_g, bg_b, _) = bg.to_f32_rgba();
+                cells.extend_from_slice(&[
+                    uv.0, uv.1, fg_r, fg_g, fg_b, 1.0, bg_r, bg_g, bg_b, 1.0,
+                ]);
             }
         }
 
-        // If no rows have content, just return background
-        if row_items.is_empty() {
-            let (r, g, b, a) = default_bg.to_f32_rgba();
-            return (
-                Arc::new(At {
-                    inner: ColorCube::default(),
-                    x: r,
-                    y: g,
-                    z: b,
-                    w: a,
-                }),
-                (grid_width, grid_height),
+        // (Re)compile the scene program when the geometry moved: resize,
+        // density change, atlas growth. Compile cost is independent of the
+        // grid size, so this is the entire cost of a dynamic resize.
+        let geom = CellGridGeometry {
+            cols: cols as u32,
+            rows: rows as u32,
+            cell_w: cell_width,
+            cell_h: cell_height,
+            density: self.density,
+            atlas_width: self.atlas.width() as u32,
+            atlas_height: self.atlas.height() as u32,
+        };
+        if self.program.as_ref().map(CellGridProgram::geometry) != Some(&geom) {
+            log::info!(
+                "Compiling cell-grid scene: {}x{} cells, cell {}x{} pt, atlas {}x{} texels",
+                cols,
+                rows,
+                cell_width,
+                cell_height,
+                geom.atlas_width,
+                geom.atlas_height
             );
+            self.program = Some(CellGridProgram::compile(
+                geom,
+                [dbg_r, dbg_g, dbg_b, dbg_a],
+            ));
         }
+        let program = self.program.as_ref().expect("program compiled above");
+        let frame = program.frame(Arc::new(cells), self.atlas.buffer());
 
-        // Build top-level vertical BSP from row items
-        log::debug!(
-            "Building BSP with {} row_items (from {} rows), grid {}x{}",
-            row_items.len(),
-            rows,
-            grid_width,
-            grid_height
-        );
-        let top_bsp = SpatialBSP::from_positioned(row_items);
-        (Arc::new(top_bsp), (grid_width, grid_height))
+        Arc::new(At {
+            inner: ColorCube::default(),
+            x: frame.channel(0),
+            y: frame.channel(1),
+            z: frame.channel(2),
+            w: frame.channel(3),
+        })
     }
 
     /// Send a rendered frame to the engine.
     fn send_frame(&mut self) {
-        let (manifold, grid_bounds) = self.build_manifold();
-
-        // 1. Create default background manifold
-        let default_bg = self.config.colors.background;
-        let (r, g, b, a) = default_bg.to_f32_rgba();
-        let background = At {
-            inner: ColorCube::default(),
-            x: r,
-            y: g,
-            z: b,
-            w: a,
-        };
-
-        // 2. Wrap SpatialBSP in a Select that clips to grid bounds
-        // cond = (x >= 0) & (x < grid_width) & (y >= 0) & (y < grid_height)
-        let (gw, gh) = grid_bounds;
-        let cond = X.ge(0.0) & X.lt(gw) & Y.ge(0.0) & Y.lt(gh);
-
-        let scene = Select {
-            cond,
-            if_true: manifold,
-            if_false: background,
-        };
-
-        let data = AppData::RenderSurface(Arc::new(scene));
+        // The scene kernel paints the default background outside the grid
+        // itself, so the frame is the scene — no outer clip/backdrop layer.
+        let scene = self.build_scene();
+        let data = AppData::RenderSurface(scene);
         if let Err(e) = self
             .engine_tx
             .send(Message::Data(EngineData::FromApp(data)))
@@ -1221,5 +1082,43 @@ mod tests {
         let mut probe = WriterProbe::default();
         drain_writer(&mut writer_rx, &mut probe);
         assert_eq!(probe.data, vec![vec![b'a']]);
+    }
+
+    #[test]
+    fn scene_paints_default_background_and_recompiles_on_resize() {
+        use pixelflow_graphics::render::color::Bgra8;
+        use pixelflow_graphics::render::frame::Frame;
+        use pixelflow_graphics::render::rasterizer::rasterize;
+
+        let (mut app, _writer_rx, _tx, _scheduler) = match create_test_app() {
+            Some(v) => v,
+            None => return,
+        };
+
+        // A blank 80x24 screen is spaces on the default background: the
+        // JIT cell-grid scene must rasterize to that color.
+        let scene = app.build_scene();
+        let mut frame = Frame::<Bgra8>::new(16, 16);
+        rasterize(&scene, &mut frame, 1);
+        let (r, g, b, _) = app.config.colors.background.to_f32_rgba();
+        let px = frame.data[8 * 16 + 8];
+        let close = |got: u8, want: f32| (got as f32 - want * 255.0).abs() <= 2.0;
+        assert!(
+            close(px.r(), r) && close(px.g(), g) && close(px.b(), b),
+            "blank scene pixel {:?} != default background ({r}, {g}, {b})",
+            (px.r(), px.g(), px.b()),
+        );
+
+        // A resize is a recompile: the program's geometry must move with
+        // the grid dimensions.
+        let before = *app.program.as_ref().expect("compiled").geometry();
+        let resize = EngineEventControl::Resized {
+            id: WindowId(0),
+            width_px: 500,
+            height_px: 320,
+        };
+        app.handle_control(resize).expect("resize");
+        let after = *app.program.as_ref().expect("recompiled").geometry();
+        assert_ne!(before, after, "resize must recompile the scene program");
     }
 }

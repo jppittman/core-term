@@ -287,6 +287,29 @@ to-be-retired backend, tracked until that backend dies.
   involvement (graphics color/shapes/subdiv, runtime coordinator, core-term
   surfaces, pixelflow-ml spherical harmonics).
 
+  **P6 progress 2026-07-29: core-term's scene is a JIT cell grid.** The
+  terminal frame was the largest remaining ZST consumer: a per-frame
+  `SpatialBSP` of boxed `Select`/`At` combinator trees (one per cell) with
+  dynamic dispatch per batch — boxing being the only way the static
+  expression-template types could express a runtime-sized, resizable grid.
+  Replaced by the tilemap primitive `pixelflow_core::CellGridProgram`
+  (lattice/cell_grid.rs, the `BilinearSampler` precedent generalized): four
+  channel kernels — cell-index arithmetic, per-cell data gathers, a 4-tap
+  atlas read, the fg/bg blend, out-of-grid default background — over two
+  bound buffers, ~50 arena nodes each *regardless of grid size*. The
+  glyph-side half is `pixelflow_graphics::fonts::GlyphAtlas` (uniform padded
+  tiles, bake-on-miss, growth bumps extents), keeping everything with a
+  `char` in it out of core. core-term's per-frame work is now filling one
+  flat `f32` buffer (10 floats per cell); a resize IS a recompile — four
+  small kernels, microseconds, cached until the geometry moves — replacing
+  the old dynamic-resize workaround outright. The dead stubbed
+  `core-term/src/surface/` module (the pre-Field Select-tree builder that
+  nothing called) is deleted with it. core-term's library code now touches
+  the ZST layer only through `At`+`ColorCube` at the frame root (the
+  runtime's `Manifold<Output = Discrete>` intake); a Kernel-native frame
+  lane in pixelflow-runtime (bake channel planes via the collapse loop +
+  LICM, pack to RGBA) is the natural next cut and would retire that too.
+
 ## Beyond P6 — the language the totality axiom demands
 
 P0–P6 unify the *pipeline*. These phases grow the *language* to cover the AO /

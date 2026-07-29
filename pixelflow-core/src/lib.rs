@@ -242,6 +242,10 @@ pub use manifold::Differentiable;
 // Lattice types for manifold evaluation over finite domains
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub use lattice::BilinearSampler;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub use lattice::cell_grid::{
+    CELL_STRIDE, CellGridChannel, CellGridFrame, CellGridGeometry, CellGridProgram,
+};
 pub use lattice::{DiscreteManifold, Lattice, ReduceOp};
 
 // ============================================================================
