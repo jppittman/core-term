@@ -38,6 +38,9 @@ pub mod kernel_3d {
     }
 
     /// Sphere centered at `center` with radius `r` for JIT `Kernel` scenes.
+    ///
+    /// Returns `(t_sphere, hit_mask)` where `t_sphere` is the ray intersection distance
+    /// and `hit_mask` is a boolean mask indicating valid non-NaN hits.
     #[must_use]
     pub fn sphere_at(
         center: (f32, f32, f32),
@@ -45,7 +48,7 @@ pub mod kernel_3d {
         dx: &Kernel,
         dy: &Kernel,
         dz: &Kernel,
-    ) -> Kernel {
+    ) -> (Kernel, Kernel) {
         let cx = Kernel::constant(center.0);
         let cy = Kernel::constant(center.1);
         let cz = Kernel::constant(center.2);
@@ -55,8 +58,15 @@ pub mod kernel_3d {
         let c_sq = cx.mul(&cx).add(&cy.mul(&cy)).add(&cz.mul(&cz));
 
         let discriminant = d_dot_c.mul(&d_dot_c).sub(&c_sq.sub(&r_sq));
-        let eps = Kernel::constant(0.0001);
-        d_dot_c.sub(&discriminant.add(&eps).sqrt())
+        let zero = Kernel::constant(0.0);
+        let disc_valid = discriminant.ge(&zero);
+
+        // Clamp negative discriminant to 0.0 before sqrt to prevent NaN propagation
+        let safe_disc = disc_valid.select(&discriminant, &zero);
+        let t_sphere = d_dot_c.sub(&safe_disc.sqrt());
+        let hit = disc_valid.and(&t_sphere.gt(&zero));
+
+        (t_sphere, hit)
     }
 
     /// Computes unit surface normal `(Nx, Ny, Nz)` from hit position `(Px, Py, Pz)`.
@@ -171,8 +181,7 @@ pub mod kernel_3d {
         let (dx, dy, dz) = screen_to_ray(sx, sy, 1.0);
         let (dr, dg, db) = world_rgb(&dx, &dy, &dz);
 
-        let t_sphere = sphere_at(sphere_center, radius, &dx, &dy, &dz);
-        let hit_sphere = t_sphere.gt(&Kernel::constant(0.0));
+        let (t_sphere, hit_sphere) = sphere_at(sphere_center, radius, &dx, &dy, &dz);
 
         let px = dx.mul(&t_sphere);
         let py = dy.mul(&t_sphere);

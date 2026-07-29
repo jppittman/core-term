@@ -59,8 +59,7 @@ fn jit_kernel_3d_sphere_on_plane() {
     let (dx, dy, dz) = kernel_3d::screen_to_ray(&sx, &sy, 1.0);
     let sky = kernel_3d::sky(&dy);
 
-    let t_sphere = kernel_3d::sphere_at((0.0, 0.0, 4.0), 1.0, &dx, &dy, &dz);
-    let hit_sphere = t_sphere.gt(&Kernel::constant(0.0));
+    let (t_sphere, hit_sphere) = kernel_3d::sphere_at((0.0, 0.0, 4.0), 1.0, &dx, &dy, &dz);
 
     let px = dx.mul(&t_sphere);
     let py = dy.mul(&t_sphere);

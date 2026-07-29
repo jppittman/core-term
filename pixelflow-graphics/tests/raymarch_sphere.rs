@@ -25,14 +25,12 @@ fn sphere_on_floor() {
     let (dx, dy, dz) = kernel_3d::screen_to_ray(&sx, &sy, 1.0);
     let sky = kernel_3d::sky(&dy);
 
-    let t_sphere = kernel_3d::sphere_at((0.0, 0.5, 4.0), 1.0, &dx, &dy, &dz);
+    let (t_sphere, hit_sphere) = kernel_3d::sphere_at((0.0, 0.5, 4.0), 1.0, &dx, &dy, &dz);
     let px = dx.mul(&t_sphere);
     let py = dy.mul(&t_sphere);
     let pz = dz.mul(&t_sphere);
 
     let (_nx, ny, _nz) = kernel_3d::surface_normal(&px, &py, &pz);
-
-    let hit_sphere = t_sphere.gt(&Kernel::constant(0.0));
     let scene = hit_sphere.select(&ny, &sky);
 
     let lattice = Lattice::frame(W, H, 0.0);
