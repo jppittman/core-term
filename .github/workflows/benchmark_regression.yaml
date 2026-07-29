@@ -71,6 +71,32 @@ jobs:
           path: benchmark_results/output.txt
           if-no-files-found: error
 
+      # github-action-benchmark hard-fails fetching a missing gh-pages
+      # branch and never creates one, so the compare step below died on
+      # `git fetch gh-pages` before any comparison ran — and the failure
+      # handler misfiled the crash as a performance regression (#939).
+      # Seed an empty baseline branch once; the action pushes real data
+      # onto it from then on.
+      - name: Seed benchmark baseline branch if missing
+        run: |
+          set -euo pipefail
+          status=0
+          git ls-remote --exit-code --heads origin gh-pages >/dev/null || status=$?
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          # ls-remote exits 2 for "no matching ref"; anything else is a
+          # transport error and must not be mistaken for a missing branch.
+          if [ "$status" -ne 2 ]; then
+            echo "Checking for the gh-pages baseline failed (git exit $status)" >&2
+            exit "$status"
+          fi
+          empty_tree=$(git hash-object -t tree /dev/null)
+          seed=$(git -c user.name=github-action-benchmark \
+                     -c user.email=github@users.noreply.github.com \
+                     commit-tree "$empty_tree" -m "Initialize benchmark baseline branch")
+          git push origin "$seed:refs/heads/gh-pages"
+
       - name: Compare against baseline and publish
         id: benchmark_check
         uses: benchmark-action/github-action-benchmark@v1
