@@ -26,17 +26,18 @@ const LANES: usize = JIT_VECTOR_BYTES / 4;
 /// One collapse call: fill `out` (whose length must be `groups * LANES`)
 /// from lane-sequential X starting at `x0`, with loop-invariant y/z/w.
 #[allow(clippy::too_many_arguments)] // ctx + out + the four coordinates: the ABI's shape
-fn run_collapse(
+fn run_collapse_grid(
     res: &CompileResult,
     ctx: &[*const f32],
     out: &mut [f32],
+    groups: usize,
+    rows: usize,
+    row_skip_bytes: usize,
     x0: f32,
     y: f32,
     z: f32,
     w: f32,
 ) {
-    assert_eq!(out.len() % LANES, 0);
-    let groups = out.len() / LANES;
     let seq: Vec<f32> = (0..LANES).map(|i| x0 + i as f32).collect();
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
@@ -47,6 +48,8 @@ fn run_collapse(
             ctx.as_ptr(),
             out.as_mut_ptr(),
             groups,
+            rows,
+            row_skip_bytes,
             _mm512_loadu_ps(seq.as_ptr()),
             _mm512_set1_ps(y),
             _mm512_set1_ps(z),
@@ -65,6 +68,8 @@ fn run_collapse(
             ctx.as_ptr(),
             out.as_mut_ptr(),
             groups,
+            rows,
+            row_skip_bytes,
             _mm256_loadu_ps(seq.as_ptr()),
             _mm256_set1_ps(y),
             _mm256_set1_ps(z),
@@ -83,6 +88,8 @@ fn run_collapse(
             ctx.as_ptr(),
             out.as_mut_ptr(),
             groups,
+            rows,
+            row_skip_bytes,
             _mm_loadu_ps(seq.as_ptr()),
             _mm_set1_ps(y),
             _mm_set1_ps(z),
@@ -97,12 +104,29 @@ fn run_collapse(
             ctx.as_ptr(),
             out.as_mut_ptr(),
             groups,
+            rows,
+            row_skip_bytes,
             vld1q_f32(seq.as_ptr()),
             vdupq_n_f32(y),
             vdupq_n_f32(z),
             vdupq_n_f32(w),
         );
     }
+}
+
+#[allow(clippy::too_many_arguments)] // same coordinate shape as the JIT ABI
+fn run_collapse(
+    res: &CompileResult,
+    ctx: &[*const f32],
+    out: &mut [f32],
+    x0: f32,
+    y: f32,
+    z: f32,
+    w: f32,
+) {
+    assert_eq!(out.len() % LANES, 0);
+    let groups = out.len() / LANES;
+    run_collapse_grid(res, ctx, out, groups, 1, 0, x0, y, z, w);
 }
 
 /// The per-batch oracle: evaluate the same arena batch by batch through the
@@ -240,6 +264,71 @@ fn arithmetic_row_matches_per_batch_and_interpreter() {
         let xi = 2.0 + i as f32;
         let want = eval_scalar(&a, root, &[xi, 3.0, 0.0, 0.0], &BindingTable::empty());
         assert_eq!(got, want, "arith vs interp at lane {i}");
+    }
+}
+
+#[test]
+fn two_dimensional_collapse_advances_y_preserves_stride_and_hoists_both_scopes() {
+    // sqrt(z*w + 2) is invariant across the whole X/Y nest; sqrt(y + 9) is
+    // invariant only across each X row. Both feed the X-dependent body.
+    let mut a = ExprArena::new();
+    let x = a.push_var(0);
+    let y = a.push_var(1);
+    let z = a.push_var(2);
+    let w = a.push_var(3);
+    let two = a.push_const(2.0);
+    let nine = a.push_const(9.0);
+    let zw = a.push_binary(OpKind::Mul, z, w);
+    let zw2 = a.push_binary(OpKind::Add, zw, two);
+    let frame_value = a.push_unary(OpKind::Sqrt, zw2);
+    let y9 = a.push_binary(OpKind::Add, y, nine);
+    let row_value = a.push_unary(OpKind::Sqrt, y9);
+    let fx = a.push_binary(OpKind::Mul, frame_value, x);
+    let root = a.push_binary(OpKind::Add, fx, row_value);
+
+    let compiled = compile_collapse(&a, root).expect("2D collapse compile");
+    assert!(
+        compiled.hoisted_values >= 2,
+        "frame and row roots must both hoist, got {}",
+        compiled.hoisted_values
+    );
+
+    const GROUPS: usize = 3;
+    const ROWS: usize = 4;
+    const TAIL: usize = 2;
+    let row_len = GROUPS * LANES + TAIL;
+    let mut out = vec![-1234.5f32; ROWS * row_len];
+    let (x0, y0, z0, w0) = (0.25f32, 1.5f32, 2.0f32, 3.0f32);
+    run_collapse_grid(
+        &compiled,
+        &[],
+        &mut out,
+        GROUPS,
+        ROWS,
+        TAIL * core::mem::size_of::<f32>(),
+        x0,
+        y0,
+        z0,
+        w0,
+    );
+
+    for row in 0..ROWS {
+        for col in 0..GROUPS * LANES {
+            let got = out[row * row_len + col];
+            let want = eval_scalar(
+                &a,
+                root,
+                &[x0 + col as f32, y0 + row as f32, z0, w0],
+                &BindingTable::empty(),
+            );
+            assert_eq!(got, want, "2D collapse at ({col},{row})");
+        }
+        assert!(
+            out[row * row_len + GROUPS * LANES..(row + 1) * row_len]
+                .iter()
+                .all(|&v| v == -1234.5),
+            "row {row} tail padding was overwritten"
+        );
     }
 }
 

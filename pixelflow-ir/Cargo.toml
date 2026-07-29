@@ -19,10 +19,15 @@ libm = "0.2.15"
 libc = "0.2"
 
 [dev-dependencies]
+criterion = "0.5"
 # Self-dependency so this crate's own `tests/` see the oracle. Nothing else
 # turns the feature on, which is what keeps a tree-walking evaluator out of
 # every shipped build.
 pixelflow-ir = { path = ".", features = ["oracle"] }
+
+[[bench]]
+name = "collapse_overhead"
+harness = false
 
 [features]
 default = ["std", "alloc"]

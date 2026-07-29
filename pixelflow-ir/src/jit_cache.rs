@@ -38,7 +38,7 @@ static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Arc<JitManifold>>>> = OnceLock::ne
 enum Mode {
     /// One call = one SIMD batch (`KernelFn`/`CtxKernelFn`).
     PerBatch,
-    /// One call = a whole row of batches (`CollapseKernelFn`).
+    /// One call = a 2D X/Y tile of batches (`CollapseKernelFn`).
     Collapse,
 }
 

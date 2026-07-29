@@ -392,10 +392,10 @@ impl Lattice {
     /// `Kernel::over` produces); that population still compiles, just
     /// without the extra fusion.
     ///
-    /// The compiled form is the collapse kernel: the X loop lives *inside*
-    /// the emitted code, so tabulation is one call per row rather than one
-    /// `extern "C"` call per SIMD batch — no per-batch spill/reload of the
-    /// loop-carried coordinate state at the Rust↔JIT boundary.
+    /// The compiled form is the collapse kernel: the X/Y loop nest lives
+    /// *inside* the emitted code, so each Z/W plane's full-width region is one
+    /// call rather than one `extern "C"` call per row or SIMD batch. Scalar
+    /// tails remain explicit one-batch calls into scratch storage.
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[must_use]
     pub fn bake(&self, kernel: &pixelflow_ir::Kernel) -> DiscreteManifold {
@@ -428,23 +428,30 @@ impl Lattice {
             let w_field = Field::from(self.origin[3] + w as f32);
             for z in 0..ez {
                 let z_field = Field::from(self.origin[2] + z as f32);
-                for y in 0..ey {
-                    let y_field = Field::from(self.origin[1] + y as f32);
-                    let row_offset = row * ex;
+                let plane_offset = row * ex;
+                if full_groups > 0 && ey > 0 {
+                    let y0 = Field::from(self.origin[1]);
                     // SAFETY: bake checked size_of::<Field>() == the JIT's
-                    // emitted width; the row slice holds full_groups whole
-                    // batches; the kernel came from compile_collapse_cached.
+                    // emitted width. The 2D collapse writes `full_groups`
+                    // batches per row, then skips the scalar tail bytes before
+                    // advancing Y; `ey` rows fit in this Z/W plane.
                     unsafe {
                         jit.call_collapse(
                             ctx,
-                            buffer[row_offset..].as_mut_ptr(),
+                            buffer[plane_offset..].as_mut_ptr(),
                             full_groups,
+                            ey,
+                            tail * core::mem::size_of::<f32>(),
                             core::mem::transmute::<Field, JitVec>(x0),
-                            core::mem::transmute::<Field, JitVec>(y_field),
+                            core::mem::transmute::<Field, JitVec>(y0),
                             core::mem::transmute::<Field, JitVec>(z_field),
                             core::mem::transmute::<Field, JitVec>(w_field),
                         );
                     }
+                }
+                for y in 0..ey {
+                    let y_field = Field::from(self.origin[1] + y as f32);
+                    let row_offset = row * ex;
                     if tail > 0 {
                         let mut scratch = [0.0f32; PARALLELISM];
                         // SAFETY: as above; scratch holds one whole batch.
@@ -453,6 +460,8 @@ impl Lattice {
                                 ctx,
                                 scratch.as_mut_ptr(),
                                 1,
+                                1,
+                                0,
                                 core::mem::transmute::<Field, JitVec>(x_tail),
                                 core::mem::transmute::<Field, JitVec>(y_field),
                                 core::mem::transmute::<Field, JitVec>(z_field),
