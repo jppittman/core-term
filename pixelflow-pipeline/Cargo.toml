@@ -9,7 +9,7 @@ description = "Training and data generation pipeline for PixelFlow"
 bench = false
 
 [features]
-default = []
+default = ["training"]
 training = ["pixelflow-search/std"]
 profiling = ["pprof"]
 
