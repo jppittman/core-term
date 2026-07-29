@@ -37,7 +37,7 @@ use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt, Window,
 use crate::platform::PlatformPixel;
 use crate::render_coordinator::{Completed, RenderCoordinator, Step};
 use crate::vsync_actor::RenderedResponse;
-use actor_scheduler::mealy::{Flush, Transducer, Wiring, all};
+use actor_scheduler::mealy::{all, Flush, Transducer, Wiring};
 use actor_scheduler::{ActorHandle, GreenSender, HandlerError, Message, TrySendError};
 use pixelflow_core::{Discrete, Manifold};
 use pixelflow_graphics::render::rasterizer::{RasterizerHandle, RenderRequest, RenderResponse};
@@ -142,7 +142,12 @@ impl CoordinatorCore {
     /// different ports set in one step is fine — `Wiring::flush` delivers them independently;
     /// it is only ever a problem for two messages sharing *one* port in one step, which does not
     /// happen here.
-    fn present_cooked_frame(&mut self, render_time: Duration, window: Window, out: &mut CoordinatorOut) {
+    fn present_cooked_frame(
+        &mut self,
+        render_time: Duration,
+        window: Window,
+        out: &mut CoordinatorOut,
+    ) {
         out.present = Some(window);
 
         self.frame_number += 1;
@@ -329,7 +334,10 @@ mod tests {
     fn a_granted_window_turns_a_submitted_scene_into_a_render_port() {
         let mut core = CoordinatorCore::new();
         let out = core.step_data(CoordinatorData::Submit(manifold())).unwrap();
-        assert!(out.request_window, "a scene with no buffer in hand must ask for one");
+        assert!(
+            out.request_window,
+            "a scene with no buffer in hand must ask for one"
+        );
 
         let out = core
             .step_data(CoordinatorData::Granted(one_to_one_window()))
@@ -338,7 +346,10 @@ mod tests {
             out.render.is_some(),
             "a granted window with a pending scene must render immediately"
         );
-        assert!(!core.holds_buffer(), "the buffer left with the render request");
+        assert!(
+            !core.holds_buffer(),
+            "the buffer left with the render request"
+        );
     }
 
     #[test]
@@ -399,12 +410,12 @@ mod node_tests {
     use crate::display::window_keeper::{Presented, WindowKeeper};
     use crate::platform::ColorCube;
     use actor_scheduler::mealy::{Lanes, NoLane, Node, Step as NodeStep};
-    use actor_scheduler::spsc::{SpscReceiver, SpscSender, spsc_channel};
+    use actor_scheduler::spsc::{spsc_channel, SpscReceiver, SpscSender};
     use actor_scheduler::{
         Actor, ActorScheduler, ActorStatus, HandlerResult, SchedulerParams, SystemStatus,
     };
-    use pixelflow_graphics::render::Frame;
     use pixelflow_graphics::render::rasterizer::{RasterControl, RasterManagement};
+    use pixelflow_graphics::render::Frame;
     use std::collections::VecDeque;
     use std::convert::Infallible;
 
@@ -501,8 +512,11 @@ mod node_tests {
         node: CoordinatorNode,
         data_tx: SpscSender<CoordinatorData>,
         mgmt_tx: SpscSender<RenderResponse<PlatformPixel, WindowMeta>>,
-        raster_sched:
-            ActorScheduler<RenderRequest<PlatformPixel, WindowMeta>, RasterControl, RasterManagement>,
+        raster_sched: ActorScheduler<
+            RenderRequest<PlatformPixel, WindowMeta>,
+            RasterControl,
+            RasterManagement,
+        >,
         raster_spy: RasterizerSpy,
         driver_sched: ActorScheduler<DisplayData, DisplayControl, DisplayMgmt>,
         driver_spy: DriverSpy,
@@ -523,7 +537,8 @@ mod node_tests {
             // immediately after minting one is enough — the plain channel below never needs a
             // real host to wake.
             let waker = {
-                let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
+                let (handle, _sched) =
+                    ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
                 handle.waker()
             };
             let (vsync_tx, vsync_rx) = spsc_channel::<RenderedResponse>(8);
