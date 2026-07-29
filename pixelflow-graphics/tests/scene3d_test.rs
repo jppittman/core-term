@@ -29,8 +29,8 @@ fn jit_kernel_3d_sky_and_normal() {
     let top_sample = baked_sky.buffer()[16];
     let bot_sample = baked_sky.buffer()[31 * 32 + 16];
     assert!(
-        top_sample > bot_sample,
-        "Top of sky ({top_sample}) should be brighter than bottom ({bot_sample})"
+        bot_sample > top_sample,
+        "Horizon sky ({bot_sample}) should be brighter than zenith sky ({top_sample})"
     );
 
     let baked_ny = lattice.bake(&ny);
