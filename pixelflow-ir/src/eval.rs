@@ -52,11 +52,16 @@ pub fn eval_scalar(
     // arena holds none, so ordinary kernels pay nothing.
     let (expanded, root) =
         crate::backend::emit::lowering::expand_transcendentals_owned(arena, root);
+    let variance = crate::variance::compute_arena_variance(&expanded);
+    let n = expanded.len();
+    let memo = core::cell::RefCell::new(alloc::vec![None; n]);
     Env {
         arena: &expanded,
         vars,
         bindings,
         reduce_vars: [0.0; 4],
+        variance: &variance,
+        memo: &memo,
     }
     .eval(root)
 }
@@ -72,11 +77,20 @@ struct Env<'a> {
     bindings: &'a BindingTable<'a>,
     /// Values bound to reduction indices `Var(4)..Var(8)` by enclosing folds.
     reduce_vars: [f32; 4],
+    variance: &'a [crate::variance::Variance],
+    memo: &'a core::cell::RefCell<alloc::vec::Vec<Option<f32>>>,
 }
 
 impl Env<'_> {
     fn eval(&self, id: ExprId) -> f32 {
-        match self.arena.node(id) {
+        let is_memoizable = !self.variance[id.0 as usize].depends_on_binder();
+        if is_memoizable {
+            let cached = self.memo.borrow()[id.0 as usize];
+            if let Some(val) = cached {
+                return val;
+            }
+        }
+        let val = match self.arena.node(id) {
             ExprNode::Var(i) => {
                 let i = *i as usize;
                 // 0..4 are coordinates; 4..8 are reduction indices.
@@ -126,7 +140,11 @@ impl Env<'_> {
                 self.reduce(ch[0], ch[1], ch[2], ch[3])
             }
             ExprNode::Nary(op, _, _) => panic!("eval_scalar: Nary({op:?}) unsupported"),
+        };
+        if is_memoizable {
+            self.memo.borrow_mut()[id.0 as usize] = Some(val);
         }
+        val
     }
 
     /// Read one bound buffer at floored, clamped, row-major indices. This IS the
