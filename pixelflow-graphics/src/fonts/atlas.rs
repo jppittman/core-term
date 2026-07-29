@@ -52,7 +52,12 @@ pub struct GlyphAtlas {
     capacity: usize,
     /// `char` → slot. `None` records "font has no glyph" so a missing char
     /// is looked up (and logged by the caller) once, not per frame.
-    slots: HashMap<char, Option<u16>>,
+    ///
+    /// An atlas is bound to ONE font: the map is keyed by `char` alone, so
+    /// feeding `uv` different fonts would serve stale tiles. Callers that
+    /// switch fonts build a new atlas (core-term does, via the same path
+    /// that rebuilds on cell-size and density changes).
+    slots: HashMap<char, Option<usize>>,
     /// Next unassigned slot. Slot 0 is the reserved blank.
     next_slot: usize,
     /// Point-space glyph square (the cell height, by convention).
@@ -156,7 +161,7 @@ impl GlyphAtlas {
     pub fn uv(&mut self, font: &Font, ch: char) -> (f32, f32) {
         if let Some(&slot) = self.slots.get(&ch) {
             return match slot {
-                Some(s) => self.slot_origin(s as usize),
+                Some(s) => self.slot_origin(s),
                 None => self.blank_uv(),
             };
         }
@@ -180,7 +185,7 @@ impl GlyphAtlas {
         }
         let slot = self.next_slot;
         self.next_slot += 1;
-        self.slots.insert(ch, Some(slot as u16));
+        self.slots.insert(ch, Some(slot));
 
         let (u, v) = self.slot_origin(slot);
         let (u, v) = (u as usize, v as usize);

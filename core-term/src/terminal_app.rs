@@ -187,24 +187,30 @@ impl TerminalApp {
         }
     }
 
-    /// Adopt a new display density (device pixels per point), re-baking the
-    /// atlas so its tiles match the platform's sample grid. The scene
-    /// program recompiles on the next frame (the geometry it was compiled
-    /// against includes the density and the atlas extents).
+    /// Adopt a new display density (device pixels per point). The atlas
+    /// rebuild and the scene-program recompile both happen lazily in
+    /// `build_scene`, which sizes them from the snapshot's actual cell
+    /// geometry.
     fn set_density(&mut self, scale: f64) {
         assert!(
             scale.is_finite() && scale > 0.0,
             "invalid display scale: {scale}"
         );
-        let density = scale as f32;
-        if density == self.density {
+        self.density = scale as f32;
+    }
+
+    /// Rebuild the atlas when its bake parameters no longer match the cell
+    /// geometry the emulator is actually using — first frame after a density
+    /// change, or a snapshot cell height that differs from the config the
+    /// startup atlas was sized from. The atlas is bound to one (font, size,
+    /// density); following the snapshot here is what keeps that binding
+    /// honest.
+    fn ensure_atlas(&mut self, cell_height: f32) {
+        if self.atlas.size_pt() == cell_height && self.atlas.density() == self.density {
             return;
         }
-        self.density = density;
-        let cell_height = self.config.appearance.cell_height_px as f32;
-        self.atlas = GlyphAtlas::new(cell_height, density, ATLAS_CAPACITY);
+        self.atlas = GlyphAtlas::new(cell_height, self.density, ATLAS_CAPACITY);
         self.atlas.warm(&self.loaded_font.font(), ' '..='~');
-        self.program = None;
     }
 
     /// Build the frame scene: the JIT cell-grid program over the glyph
@@ -239,6 +245,10 @@ impl TerminalApp {
         // Default colors
         let default_fg = self.config.colors.foreground;
         let default_bg = self.config.colors.background;
+
+        // The snapshot's cell geometry is the source of truth for the
+        // atlas's bake size, not the startup config.
+        self.ensure_atlas(cell_height);
 
         // Fill the cell buffer FIRST: baking a previously unseen glyph may
         // grow the atlas, and the program must be compiled against the
