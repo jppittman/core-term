@@ -179,6 +179,7 @@ pub mod transform;
 pub use spatial_bsp::{Positioned, SpatialBSP};
 
 pub use baked::Baked;
+pub use transform::Scale;
 
 // Re-export fonts (user-facing types only)
 pub use fonts::{CachedGlyph, CachedText, Font, GlyphCache};

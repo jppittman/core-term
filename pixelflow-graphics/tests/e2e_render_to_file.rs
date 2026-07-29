@@ -4,12 +4,13 @@
 //! through rasterization to file output.
 
 use pixelflow_compiler::kernel;
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, ManifoldExt};
+use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, ManifoldExt, X, Y};
 use pixelflow_graphics::render::color::{Grayscale, NamedColor, Rgba8};
 
 type Field4 = (Field, Field, Field, Field);
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
+use pixelflow_graphics::transform::{Scale, Translate};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
@@ -162,33 +163,47 @@ fn e2e_render_radial_gradient() {
     println!("Radial gradient saved to: {}", output_path.display());
 }
 
+/// A unit circle manifold (returns 1.0 inside, 0.0 outside).
+/// Uses proper manifold composition with ManifoldExt.
+#[derive(Clone, Copy)]
+struct UnitCircle;
+
+impl Manifold<Field4> for UnitCircle {
+    type Output = Field;
+
+    fn eval(&self, p: Field4) -> Field {
+        // Build the manifold expression: x² + y² < 1 ? 1.0 : 0.0
+        // Using ManifoldExt's lt() and select()
+        let dist_sq = X * X + Y * Y;
+        let mask = dist_sq.lt(1.0f32);
+        let result = mask.select(1.0f32, 0.0f32);
+
+        // Evaluate the composed manifold at the given coordinates
+        result.eval(p)
+    }
+}
+
 #[test]
 fn e2e_render_circle() {
-    use pixelflow_core::{Kernel, Lattice};
-
     const SIZE: u32 = 100;
 
-    // Unit circle at origin, scaled and translated to center of image using Kernel methods
+    // Unit circle at origin, scaled and translated to center of image
     let radius = SIZE as f32 / 2.0 - 5.0;
-    let dist_sq = Kernel::x()
-        .mul(&Kernel::x())
-        .add(&Kernel::y().mul(&Kernel::y()));
-    let circle_kernel = dist_sq
-        .lt(&Kernel::constant(1.0))
-        .select(&Kernel::constant(1.0), &Kernel::constant(0.0));
-    let centered = circle_kernel
-        .scale(radius)
-        .translate(SIZE as f32 / 2.0, SIZE as f32 / 2.0);
+    let scaled = Scale {
+        manifold: UnitCircle,
+        factor: radius,
+    };
+    let centered = Translate {
+        manifold: scaled,
+        offset: [SIZE as f32 / 2.0, SIZE as f32 / 2.0],
+    };
 
-    let lattice = Lattice::frame(SIZE as usize, SIZE as usize, 0.0);
-    let baked = lattice.bake(&centered);
-    let buffer = baked.buffer();
+    // Grayscale conversion
+    let scene = Grayscale(centered);
 
     let mut frame = Frame::<Rgba8>::new(SIZE, SIZE);
-    for (i, &val) in buffer.iter().enumerate() {
-        let byte = (val.clamp(0.0, 1.0) * 255.0) as u8;
-        frame.data[i] = Rgba8::new(byte, byte, byte, 255);
-    }
+
+    rasterize(&scene, &mut frame, 1);
 
     // Center should be white (inside circle = 1.0)
     let center_idx = (SIZE / 2) as usize * SIZE as usize + (SIZE / 2) as usize;
