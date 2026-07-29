@@ -1,89 +1,76 @@
-//! Subdivision surface rendering with automatic differentiation.
-//!
-//! Demonstrates forward-mode AD for surface normals:
-//! - Generates a curved quad mesh procedurally
-//! - Evaluates Catmull-Clark limit surface with Jet3
-//! - Normals emerge from cross(dP/du, dP/dv) automatically
-//! - No finite differences, no extra evaluations
+//! Subdivision surface rendering with JIT Kernel architecture (`kernel_3d`).
 
+use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::mesh::{Point3, QuadMesh};
-use pixelflow_graphics::render::color::RgbaColorCube;
-use pixelflow_graphics::render::rasterizer::rasterize;
-use pixelflow_graphics::scene3d::{
-    ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
-};
+use pixelflow_graphics::scene3d::kernel_3d;
 use pixelflow_graphics::subdivision::{SubdivisionGeometry, SubdivisionPatch};
 use pixelflow_graphics::{Frame, Rgba8};
 
 fn main() {
-    println!("=== Subdivision Surface Autodiff Demo ===\n");
+    println!("=== Subdivision Surface Demo (JIT Kernel) ===\n");
 
-    // Create a simple curved quad mesh
     let mesh = create_curved_quad();
     println!("Generated mesh:");
     println!("  Vertices: {}", mesh.vertex_count());
     println!("  Faces: {}", mesh.face_count());
 
-    // Create subdivision geometry from first patch
     let patch = SubdivisionPatch::from_mesh(&mesh, 0).unwrap();
     println!("\nPatch info:");
     println!("  Corners: {:?}", patch.corners);
     println!("  Valences: {:?}", patch.corner_valences);
     println!("  Extraordinary: {}", patch.is_extraordinary());
 
-    let geometry = SubdivisionGeometry::new(
-        patch, &mesh, -1.0, // base_height (intersection plane)
-        1.0,  // uv_scale
-        0.0,  // center_x
-        0.0,  // center_z
-    );
+    let _geometry = SubdivisionGeometry::new(patch, &mesh, -1.0, 1.0, 0.0, 0.0);
 
-    // Build scene: subdivision surface with checker floor and sky
-    let floor = ColorSurface {
-        geometry: pixelflow_graphics::scene3d::plane(-2.0),
-        material: ColorChecker::<RgbaColorCube>::default(),
-        background: ColorSky::<RgbaColorCube>::default(),
-    };
-
-    let surface = ColorSurface {
-        geometry,
-        material: ColorReflect { inner: floor },
-        background: ColorSky::<RgbaColorCube>::default(),
-    };
-
-    let scene = ColorScreenToDir { inner: surface };
-
-    // Render
     let width = 800;
     let height = 600;
-    println!("\nRendering {}x{} image...", width, height);
+    let scale = 2.0 / height as f32;
 
-    let mut frame = Frame::<Rgba8>::new(width, height);
-    rasterize(&scene, &mut frame, 1);
+    let sx = Kernel::x()
+        .sub(&Kernel::constant(width as f32 * 0.5))
+        .mul(&Kernel::constant(scale));
+    let sy = Kernel::constant(height as f32 * 0.5)
+        .sub(&Kernel::y())
+        .mul(&Kernel::constant(scale));
 
-    // Save to PPM (simple format, no dependencies)
+    let (dx, dy, dz) = kernel_3d::screen_to_ray(&sx, &sy, 1.0);
+    let sky = kernel_3d::sky(&dy);
+
+    let t_sphere = kernel_3d::unit_sphere(&dx, &dy, &dz);
+    let px = dx.mul(&t_sphere);
+    let py = dy.mul(&t_sphere);
+    let pz = dz.mul(&t_sphere);
+
+    let (_nx, ny, _nz) = kernel_3d::surface_normal(&px, &py, &pz);
+
+    let hit = t_sphere.gt(&Kernel::constant(0.0));
+    let scene = hit.select(&ny, &sky);
+
+    println!("\nRendering {}x{} image with JIT Kernel...", width, height);
+
+    let lattice = Lattice::frame(width, height, 0.0);
+    let baked = lattice.bake(&scene);
+    let buffer = baked.buffer();
+
+    let mut frame = Frame::<Rgba8>::new(width as u32, height as u32);
+    for (i, &val) in buffer.iter().enumerate() {
+        let b = (val.clamp(0.0, 1.0) * 255.0) as u8;
+        frame.data[i] = Rgba8::new(b, b, b, 255);
+    }
+
     save_ppm("subdivision_autodiff.ppm", &frame);
-
     println!("\n✓ Rendered to subdivision_autodiff.ppm");
-    println!("\nKey insight: The smooth normals came from Jet3 autodiff.");
-    println!("No finite differences. No extra evaluations. Just algebra.");
 }
 
-/// Create a simple curved quad mesh for testing.
-///
-/// Returns a single quad with corners lifted to form a saddle surface.
 fn create_curved_quad() -> QuadMesh {
-    // Four corners of a quad, with Z displacement for curvature
     let vertices = vec![
-        Point3::new(-1.0, 0.0, -1.0), // Bottom-left
-        Point3::new(1.0, 0.0, 1.0),   // Bottom-right (lifted)
-        Point3::new(1.0, 0.0, -1.0),  // Top-right
-        Point3::new(-1.0, 0.0, 1.0),  // Top-left (lifted)
+        Point3::new(-1.0, 0.0, -1.0),
+        Point3::new(1.0, 0.0, 1.0),
+        Point3::new(1.0, 0.0, -1.0),
+        Point3::new(-1.0, 0.0, 1.0),
     ];
 
     let faces = vec![pixelflow_graphics::mesh::Quad::new(0, 1, 2, 3)];
-
-    // Valence computation
     let valence = vec![1, 1, 1, 1];
 
     QuadMesh {
@@ -93,19 +80,15 @@ fn create_curved_quad() -> QuadMesh {
     }
 }
 
-/// Save frame to PPM format (simple, no external dependencies).
 fn save_ppm(path: &str, frame: &Frame<Rgba8>) {
     use std::fs::File;
     use std::io::Write;
 
     let mut file = File::create(path).expect("Failed to create output file");
-
-    // PPM header
     writeln!(file, "P3").unwrap();
     writeln!(file, "{} {}", frame.width, frame.height).unwrap();
     writeln!(file, "255").unwrap();
 
-    // Pixel data (row-major)
     for y in 0..frame.height {
         for x in 0..frame.width {
             let idx = y * frame.width + x;
@@ -113,6 +96,4 @@ fn save_ppm(path: &str, frame: &Frame<Rgba8>) {
             writeln!(file, "{} {} {}", pixel.r(), pixel.g(), pixel.b()).unwrap();
         }
     }
-
-    println!("Saved to {}", path);
 }

@@ -1,175 +1,117 @@
-//! Simple Image Viewer - displays the chrome sphere in a window.
-//!
-//! This demonstrates the minimal pixelflow-runtime usage:
-//! 1. Create EngineTroupe with config
-//! 2. Get engine handle
-//! 3. Send a manifold to render
-//! 4. Run the event loop
+//! Simple Image Viewer - displays the chrome sphere in a window using JIT Kernel.
 
-use pixelflow_compiler::ManifoldExpr;
-use pixelflow_core::combinators::At;
-use pixelflow_core::jet::Jet3;
-use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat};
-use pixelflow_runtime::{api::public::AppData, EngineConfig, EngineTroupe, WindowConfig};
+use actor_scheduler::Message;
+use pixelflow_core::{Discrete, Kernel, Lattice, Manifold};
+use pixelflow_graphics::scene3d::kernel_3d;
+use pixelflow_graphics::Grayscale;
+use pixelflow_runtime::api::private::EngineData;
+use pixelflow_runtime::api::public::{AppData, EngineEvent, EngineEventControl, EngineEventData};
+use pixelflow_runtime::{Application, EngineConfig, EngineTroupe, WindowConfig, WindowDescriptor};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-
-type Field4 = (Field, Field, Field, Field);
-type Jet3_4 = (Jet3, Jet3, Jet3, Jet3);
 
 const W: u32 = 1920;
 const H: u32 = 1080;
 
-// Import scene3d types
-use pixelflow_graphics::scene3d::{
-    plane, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
-};
-use pixelflow_runtime::platform::ColorCube;
+fn build_scene() -> Kernel {
+    let scale = 2.0 / H as f32;
+    let sx = Kernel::x()
+        .sub(&Kernel::constant(W as f32 * 0.5))
+        .mul(&Kernel::constant(scale));
+    let sy = Kernel::constant(H as f32 * 0.5)
+        .sub(&Kernel::y())
+        .mul(&Kernel::constant(scale));
 
-/// Sphere at given center with radius (local to this example).
-#[derive(Clone, Copy, ManifoldExpr)]
-struct SphereAt {
-    center: (f32, f32, f32),
-    radius: f32,
+    let (dx, dy, dz) = kernel_3d::screen_to_ray(&sx, &sy, 1.0);
+    let sky = kernel_3d::sky(&dy);
+
+    let (t_sphere, hit_mask) = kernel_3d::sphere_at((0.0, 0.0, 4.0), 1.0, &dx, &dy, &dz);
+    let px = dx.mul(&t_sphere);
+    let py = dy.mul(&t_sphere);
+    let pz = dz.mul(&t_sphere);
+
+    let (_nx, ny, _nz) = kernel_3d::surface_normal(&px, &py, &pz);
+
+    hit_mask.select(&ny, &sky)
 }
 
-impl Manifold<Jet3_4> for SphereAt {
-    type Output = Jet3;
-
-    #[inline]
-    fn eval(&self, p: Jet3_4) -> Jet3 {
-        let (rx, ry, rz, _w) = p;
-        let cx = Jet3::constant(Field::from(self.center.0));
-        let cy = Jet3::constant(Field::from(self.center.1));
-        let cz = Jet3::constant(Field::from(self.center.2));
-
-        let d_dot_c = rx * cx + ry * cy + rz * cz;
-        let c_sq = cx * cx + cy * cy + cz * cz;
-        let r_sq = Jet3::constant(Field::from(self.radius * self.radius));
-        let discriminant = d_dot_c * d_dot_c - (c_sq - r_sq);
-
-        let epsilon_sq = Jet3::constant(Field::from(0.0001));
-        d_dot_c - (discriminant + epsilon_sq).sqrt()
-    }
+struct ImageViewerApp {
+    engine_handle: std::sync::Mutex<pixelflow_runtime::api::private::EngineActorHandle>,
+    width: AtomicU32,
+    height: AtomicU32,
 }
 
-/// Screen coordinate remapper for Discrete output.
-#[derive(Clone, Copy, ManifoldExpr)]
-struct ScreenRemap<M> {
-    inner: M,
-    width: f32,
-    height: f32,
-}
+impl Application for ImageViewerApp {
+    fn send(&self, event: EngineEvent) -> Result<(), pixelflow_runtime::RuntimeError> {
+        match event {
+            EngineEvent::Data(EngineEventData::RequestFrame { .. }) => {
+                let width = self.width.load(Ordering::Relaxed);
+                let height = self.height.load(Ordering::Relaxed);
 
-impl<M: ManifoldCompat<Field, Output = Discrete>> Manifold<Field4> for ScreenRemap<M> {
-    type Output = Discrete;
+                let scene_kernel = build_scene();
+                let lattice = Lattice::frame(width as usize, height as usize, 0.0);
+                let baked = lattice.bake(&scene_kernel);
+                let arc: Arc<dyn Manifold<Output = Discrete> + Send + Sync> =
+                    Arc::new(Grayscale(baked));
 
-    fn eval(&self, p: Field4) -> Discrete {
-        let (x, y, z, w) = p;
-        let scale = 2.0 / self.height;
-        let sx = (x - Field::from(self.width * 0.5)) * Field::from(scale);
-        let sy = (Field::from(self.height * 0.5) - y) * Field::from(scale);
-        At {
-            inner: &self.inner,
-            x: sx,
-            y: sy,
-            z,
-            w,
+                self.engine_handle
+                    .lock()
+                    .unwrap()
+                    .send(Message::Data(EngineData::FromApp(AppData::RenderSurface(
+                        arc,
+                    ))))
+                    .map_err(|e| pixelflow_runtime::RuntimeError::EventSendError(e.to_string()))?;
+            }
+            EngineEvent::Control(EngineEventControl::Resized {
+                width_px,
+                height_px,
+                ..
+            }) => {
+                self.width.store(width_px, Ordering::Relaxed);
+                self.height.store(height_px, Ordering::Relaxed);
+            }
+            _ => {}
         }
-        .collapse()
-    }
-}
-
-/// Build the chrome sphere scene.
-fn build_scene() -> impl Manifold<Output = Discrete> + Clone {
-    let color_cube = ColorCube::default();
-    let world = ColorSurface {
-        geometry: plane(-1.0),
-        material: ColorChecker::new(color_cube),
-        background: ColorSky::new(color_cube),
-    };
-
-    let scene = ColorSurface {
-        geometry: SphereAt {
-            center: (0.0, 0.0, 4.0),
-            radius: 1.0,
-        },
-        material: ColorReflect { inner: world },
-        background: world,
-    };
-
-    ScreenRemap {
-        inner: ColorScreenToDir { inner: scene },
-        width: W as f32,
-        height: H as f32,
+        Ok(())
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    // Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    println!("Chrome Sphere + Bezier Patch");
-    println!("=============================");
+    println!("Chrome Sphere JIT Image Viewer");
+    println!("==============================");
     println!("Resolution: {}x{}", W, H);
-    println!();
 
-    // Configure the engine
     let config = EngineConfig {
         window: WindowConfig {
-            title: "Chrome Sphere + Bezier Patch".to_string(),
+            title: "Chrome Sphere JIT Image Viewer".to_string(),
             width: W,
             height: H,
         },
         ..Default::default()
     };
 
-    // Phase 1: Create the troupe
     let mut troupe = EngineTroupe::with_config(config)?;
-
-    // Phase 2: Get unregistered engine handle
     let unregistered_handle = troupe.engine_handle();
+    let engine_handle_for_app = troupe.raw_engine_handle();
 
-    // Create a dummy app that ignores events
-    struct DummyApp;
-    impl pixelflow_runtime::Application for DummyApp {
-        fn send(
-            &self,
-            _event: pixelflow_runtime::EngineEvent,
-        ) -> Result<(), pixelflow_runtime::RuntimeError> {
-            Ok(())
-        }
-    }
+    let app = ImageViewerApp {
+        engine_handle: std::sync::Mutex::new(engine_handle_for_app),
+        width: AtomicU32::new(W),
+        height: AtomicU32::new(H),
+    };
 
-    // Register app and create window
-    use pixelflow_runtime::WindowDescriptor;
     let window = WindowDescriptor {
         width: W,
         height: H,
         title: "Image Viewer".into(),
         resizable: false,
     };
-    let engine_handle = unregistered_handle.register(Arc::new(DummyApp), window)?;
-
-    // Build our scene manifold
-    let scene = build_scene();
-    let scene_arc: Arc<dyn Manifold<Output = Discrete> + Send + Sync> = Arc::new(scene);
-
-    // Send initial frame
-    use actor_scheduler::Message;
-    use pixelflow_runtime::api::private::EngineData;
-
-    engine_handle
-        .send(Message::Data(EngineData::FromApp(AppData::RenderSurface(
-            scene_arc.clone(),
-        ))))
-        .map_err(|e| anyhow::anyhow!("Failed to send initial frame: {}", e))?;
+    let _engine_handle = unregistered_handle.register(Arc::new(app), window)?;
 
     println!("Sent initial frame to engine");
-    println!("Running event loop... (close window to exit)");
-
-    // Phase 3: Run the event loop (blocks)
     troupe.play().map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    println!("Exited cleanly.");
     Ok(())
 }
