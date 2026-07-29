@@ -1,4 +1,6 @@
 //! Simple Image Viewer - displays the chrome sphere in a window using JIT Kernel.
+//!
+//! Caches the baked manifold to avoid re-compiling and re-baking static frames on VSync.
 
 use actor_scheduler::Message;
 use pixelflow_core::{Discrete, Kernel, Lattice, Manifold};
@@ -13,12 +15,12 @@ use std::sync::Arc;
 const W: u32 = 1920;
 const H: u32 = 1080;
 
-fn build_scene() -> Kernel {
-    let scale = 2.0 / H as f32;
+fn build_scene(w: u32, h: u32) -> Kernel {
+    let scale = 2.0 / h as f32;
     let sx = Kernel::x()
-        .sub(&Kernel::constant(W as f32 * 0.5))
+        .sub(&Kernel::constant(w as f32 * 0.5))
         .mul(&Kernel::constant(scale));
-    let sy = Kernel::constant(H as f32 * 0.5)
+    let sy = Kernel::constant(h as f32 * 0.5)
         .sub(&Kernel::y())
         .mul(&Kernel::constant(scale));
 
@@ -35,8 +37,15 @@ fn build_scene() -> Kernel {
     hit_mask.select(&ny, &sky)
 }
 
+struct CachedSurface {
+    width: u32,
+    height: u32,
+    manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>,
+}
+
 struct ImageViewerApp {
     engine_handle: std::sync::Mutex<pixelflow_runtime::api::private::EngineActorHandle>,
+    cached_surface: std::sync::Mutex<Option<CachedSurface>>,
     width: AtomicU32,
     height: AtomicU32,
 }
@@ -48,17 +57,44 @@ impl Application for ImageViewerApp {
                 let width = self.width.load(Ordering::Relaxed);
                 let height = self.height.load(Ordering::Relaxed);
 
-                let scene_kernel = build_scene();
-                let lattice = Lattice::frame(width as usize, height as usize, 0.0);
-                let baked = lattice.bake(&scene_kernel);
-                let arc: Arc<dyn Manifold<Output = Discrete> + Send + Sync> =
-                    Arc::new(Grayscale(baked));
+                let manifold = {
+                    let mut cache_guard = self.cached_surface.lock().unwrap();
+                    if let Some(ref cached) = *cache_guard {
+                        if cached.width == width && cached.height == height {
+                            cached.manifold.clone()
+                        } else {
+                            let scene_kernel = build_scene(width, height);
+                            let lattice = Lattice::frame(width as usize, height as usize, 0.0);
+                            let baked = lattice.bake(&scene_kernel);
+                            let arc: Arc<dyn Manifold<Output = Discrete> + Send + Sync> =
+                                Arc::new(Grayscale(baked));
+                            *cache_guard = Some(CachedSurface {
+                                width,
+                                height,
+                                manifold: arc.clone(),
+                            });
+                            arc
+                        }
+                    } else {
+                        let scene_kernel = build_scene(width, height);
+                        let lattice = Lattice::frame(width as usize, height as usize, 0.0);
+                        let baked = lattice.bake(&scene_kernel);
+                        let arc: Arc<dyn Manifold<Output = Discrete> + Send + Sync> =
+                            Arc::new(Grayscale(baked));
+                        *cache_guard = Some(CachedSurface {
+                            width,
+                            height,
+                            manifold: arc.clone(),
+                        });
+                        arc
+                    }
+                };
 
                 self.engine_handle
                     .lock()
                     .unwrap()
                     .send(Message::Data(EngineData::FromApp(AppData::RenderSurface(
-                        arc,
+                        manifold,
                     ))))
                     .map_err(|e| pixelflow_runtime::RuntimeError::EventSendError(e.to_string()))?;
             }
@@ -98,6 +134,7 @@ fn main() -> anyhow::Result<()> {
 
     let app = ImageViewerApp {
         engine_handle: std::sync::Mutex::new(engine_handle_for_app),
+        cached_surface: std::sync::Mutex::new(None),
         width: AtomicU32::new(W),
         height: AtomicU32::new(H),
     };
