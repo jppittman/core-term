@@ -1562,8 +1562,10 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "https://github.com/jppittman/pixelflow/issues/948"]
     fn numerical_gradient_check_value() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
         let net = make_test_net();
         let acc = make_test_acc();
         let gacc = make_test_gacc();
@@ -1572,8 +1574,8 @@ mod tests {
         let value_coeff = 0.5f32;
 
         let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
-        let mut grads = UnifiedGradients::zero();
-        backward_value(&net, &cache, target_cost, value_coeff, &mut grads);
+        let mut grads = Box::new(UnifiedGradients::zero());
+        backward_value(&net, &cache, target_cost, value_coeff, &mut *grads);
 
         let eps = 1e-3f32;
         let mut max_err = 0.0f64;
@@ -1776,6 +1778,10 @@ mod tests {
 
         assert!(checked >= 38, "checked {checked} value path elements");
         eprintln!("  value path max rel error: {max_err:.6e}  ({checked} elements)");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     // ========================================================================
