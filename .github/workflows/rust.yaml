@@ -59,6 +59,38 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  cross-target-abi:
+    name: Cross-target ABI (aarch64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-aarch64-
+
+      # This integration target expands the public `kernel!` macro in a
+      # consumer crate. A host-only proc-macro check would miss generated code
+      # that disagrees with the second supported architecture's JIT ABI.
+      - name: Type-check default kernel routing on aarch64
+        run: >-
+          cargo check -p pixelflow-compiler
+          --test kernel_routing_parity
+          --target aarch64-unknown-linux-gnu
+
   test:
     name: Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -117,6 +149,66 @@ jobs:
       - name: Run doctests
         shell: bash
         run: cargo test --workspace --all-features --doc
+
+  behavior-contracts:
+    name: Behavior contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-behavior-contracts-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-behavior-contracts-
+
+      # These are named public-behavior contracts, not an incidental subset of
+      # the workspace suite. nextest's explicit `--no-tests fail` makes deleting
+      # or renaming them a hard failure instead of a green zero-test run.
+      - name: Check default and arena kernel routing parity
+        shell: bash
+        run: |
+          cargo nextest run -p pixelflow-compiler --test kernel_routing_parity --no-tests fail
+          cargo nextest run -p pixelflow-compiler --test kernel_routing_parity --features arena-backend --no-tests fail
+
+      - name: Check JIT/interpreter glyph parity
+        shell: bash
+        run: >-
+          cargo nextest run -p pixelflow-graphics
+          --test kernel_glyph_golden
+          --no-tests fail
+
+      - name: Check scene color, reflection, and antialiasing contracts
+        shell: bash
+        run: >-
+          cargo nextest run -p pixelflow-graphics
+          --test scene3d_test
+          -E 'test(=color_chrome_sphere) | test(=floor_only) | test(=mullet_vs_3channel_comparison)'
+          --profile ci
+          --no-tests fail
+
+      - name: Check ray/surface composition contracts
+        shell: bash
+        run: >-
+          cargo nextest run -p pixelflow-graphics
+          --test raymarch_sphere
+          --profile ci
+          --no-tests fail
 
   isa-matrix:
     name: ISA matrix (SSE2/AVX2/AVX-512)
