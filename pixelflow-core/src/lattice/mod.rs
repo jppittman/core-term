@@ -217,12 +217,19 @@ pub struct Lattice {
 
 impl Lattice {
     /// A 2D pixel frame: X varies per pixel, Y per scanline; Z is the fixed
+    /// A 2D pixel frame: X varies per pixel, Y per scanline; Z is the fixed
     /// frame time, W is fixed at 0.
     #[must_use]
     pub fn frame(width: usize, height: usize, z: f32) -> Self {
+        Self::frame_4d(width, height, z, 0.0)
+    }
+
+    /// A 2D pixel frame with custom Z and W fixed coordinates.
+    #[must_use]
+    pub fn frame_4d(width: usize, height: usize, z: f32, w: f32) -> Self {
         Self {
             extent: [width as u32, height as u32, 1, 1],
-            origin: [0.0, 0.0, z, 0.0],
+            origin: [0.0, 0.0, z, w],
         }
     }
 

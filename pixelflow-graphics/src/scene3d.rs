@@ -37,7 +37,36 @@ pub mod kernel_3d {
         Kernel::constant(height).div(dy)
     }
 
-    /// Sphere centered at `center` with radius `r` for JIT `Kernel` scenes.
+    /// Sphere centered at `(cx, cy, cz)` kernels with radius `r` for JIT `Kernel` scenes.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn sphere_at_kernel(
+        cx: &Kernel,
+        cy: &Kernel,
+        cz: &Kernel,
+        radius: f32,
+        dx: &Kernel,
+        dy: &Kernel,
+        dz: &Kernel,
+    ) -> (Kernel, Kernel) {
+        let r_sq = Kernel::constant(radius * radius);
+
+        let d_dot_c = dx.mul(cx).add(&dy.mul(cy)).add(&dz.mul(cz));
+        let c_sq = cx.mul(cx).add(&cy.mul(cy)).add(&cz.mul(cz));
+
+        let discriminant = d_dot_c.mul(&d_dot_c).sub(&c_sq.sub(&r_sq));
+        let zero = Kernel::constant(0.0);
+        let disc_valid = discriminant.ge(&zero);
+
+        // Clamp negative discriminant to 0.0 before sqrt to prevent NaN propagation
+        let safe_disc = disc_valid.select(&discriminant, &zero);
+        let t_sphere = d_dot_c.sub(&safe_disc.sqrt());
+        let hit = disc_valid.and(&t_sphere.gt(&zero));
+
+        (t_sphere, hit)
+    }
+
+    /// Sphere centered at static `center` with radius `r` for JIT `Kernel` scenes.
     ///
     /// Returns `(t_sphere, hit_mask)` where `t_sphere` is the ray intersection distance
     /// and `hit_mask` is a boolean mask indicating valid non-NaN hits.
@@ -52,21 +81,7 @@ pub mod kernel_3d {
         let cx = Kernel::constant(center.0);
         let cy = Kernel::constant(center.1);
         let cz = Kernel::constant(center.2);
-        let r_sq = Kernel::constant(radius * radius);
-
-        let d_dot_c = dx.mul(&cx).add(&dy.mul(&cy)).add(&dz.mul(&cz));
-        let c_sq = cx.mul(&cx).add(&cy.mul(&cy)).add(&cz.mul(&cz));
-
-        let discriminant = d_dot_c.mul(&d_dot_c).sub(&c_sq.sub(&r_sq));
-        let zero = Kernel::constant(0.0);
-        let disc_valid = discriminant.ge(&zero);
-
-        // Clamp negative discriminant to 0.0 before sqrt to prevent NaN propagation
-        let safe_disc = disc_valid.select(&discriminant, &zero);
-        let t_sphere = d_dot_c.sub(&safe_disc.sqrt());
-        let hit = disc_valid.and(&t_sphere.gt(&zero));
-
-        (t_sphere, hit)
+        sphere_at_kernel(&cx, &cy, &cz, radius, dx, dy, dz)
     }
 
     /// Computes unit surface normal `(Nx, Ny, Nz)` from hit position `(Px, Py, Pz)`.
