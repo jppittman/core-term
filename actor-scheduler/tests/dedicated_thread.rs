@@ -333,6 +333,98 @@ fn step_os_gets_a_final_turn_after_the_last_handle_drops() {
     );
 }
 
+/// The blocking contract, end to end: a `step_os` that genuinely blocks (the hook's intended
+/// use — epoll, PTY reads) must be paired with a `WakeHandler` whose signal persists until
+/// consumed, and with one wired, `Shutdown` interrupts the wait and completes the thread. The
+/// fake OS wait blocks on an `mpsc::Receiver`; the handler's "self-pipe byte" is a sentinel
+/// pushed into that same channel.
+#[test]
+fn a_blocking_step_os_is_interrupted_for_shutdown() {
+    use actor_scheduler::WakeHandler;
+    use std::sync::Mutex;
+
+    const WAKE_SENTINEL: u32 = u32::MAX;
+
+    struct SentinelWaker {
+        tx: Mutex<mpsc::Sender<u32>>,
+    }
+
+    impl WakeHandler for SentinelWaker {
+        fn wake(&self) {
+            // A dead receiver just means the bridge is gone; a wake has nobody to interrupt.
+            let _unused = self.tx.lock().unwrap().send(WAKE_SENTINEL);
+        }
+    }
+
+    struct BlockingBridge {
+        external: mpsc::Receiver<u32>,
+    }
+
+    impl Transducer for BlockingBridge {
+        type Control = Infallible;
+        type Management = Infallible;
+        type Data = Infallible;
+        type Out = BridgeOut;
+
+        fn step_data(&mut self, msg: Infallible) -> Result<BridgeOut, HandlerError> {
+            match msg {}
+        }
+
+        fn step_os(
+            &mut self,
+            _status: SystemStatus,
+        ) -> Result<(BridgeOut, ActorStatus), HandlerError> {
+            // A real OS wait: blocks until an event or a wake arrives. Always Busy — a
+            // blocking bridge's doorbell is its poll set, so the driver must come back
+            // through step_os rather than sleep on the channel doorbell (PtyReader's exact
+            // posture, and why the driver's try_recv between Busy sweeps is what observes
+            // Shutdown).
+            match self.external.recv() {
+                Ok(WAKE_SENTINEL) => Ok((BridgeOut::default(), ActorStatus::Busy)),
+                Ok(v) => Ok((BridgeOut { word: Some(v) }, ActorStatus::Busy)),
+                // Source gone: nothing will ever arrive again; let the thread sleep/complete.
+                Err(_) => Ok((BridgeOut::default(), ActorStatus::Idle)),
+            }
+        }
+    }
+
+    let (tx_ext, rx_ext) = mpsc::channel::<u32>();
+    let handler = std::sync::Arc::new(SentinelWaker {
+        tx: Mutex::new(tx_ext.clone()),
+    });
+
+    let mut builder = ActorBuilder::<Infallible, Infallible, Infallible>::new(4, Some(handler));
+    let handle = builder.add_producer();
+    let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
+    let mut thread = builder.build_node(
+        BlockingBridge { external: rx_ext },
+        BridgeWiring { tx: tx_out },
+    );
+
+    let worker = std::thread::spawn(move || thread.run());
+    handle.waker().wake(); // first entry into the blocking wait
+
+    // A real event flows while the bridge lives.
+    tx_ext.send(21).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(v) = rx_out.try_recv() {
+            assert_eq!(v, 21);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the blocking bridge never emitted"
+        );
+    }
+
+    // The bridge is now blocked in recv() with nothing coming. Shutdown must interrupt it via
+    // the wake handler — without one, this join would hang forever.
+    handle.send(Message::Shutdown).unwrap();
+    let exit = worker.join().expect("driver must not panic");
+    assert_eq!(exit, Exit::Completed);
+}
+
 /// A gone wiring target can never heal, no lane can progress past the parked word (the
 /// outbox-first contract), and a dedicated thread has no supervisor to hand the problem to —
 /// so the driver fails loudly instead of spinning a core on retries that cannot succeed. The

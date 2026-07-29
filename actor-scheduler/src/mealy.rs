@@ -124,6 +124,20 @@ pub trait Transducer {
     /// [`Actor::handle_os`](crate::Actor::handle_os)). Return the output word to flush plus
     /// [`ActorStatus::Busy`] to be re-polled without blocking, or `Idle` to let the thread
     /// sleep on its doorbell.
+    ///
+    /// # If this blocks, wire a `WakeHandler`
+    ///
+    /// Blocking here is this hook's whole reason to exist — but while blocked, the driver
+    /// cannot see its doorbell, so lane wakes and `Shutdown` wait on you. The contract is the
+    /// same one `Actor::handle_os` has always had: a blocking wait must be interruptible by a
+    /// [`WakeHandler`](crate::WakeHandler) (supplied to `ActorBuilder::new`) whose signal
+    /// *persists until consumed* — a byte in a self-pipe registered with your poll set, the
+    /// `FdWaker` pattern — so that a wake or shutdown issued at any moment, including while
+    /// you are mid-block or about to block, actually returns control to the driver.
+    ///
+    /// A yield (`take_continuation`) from this hook is honored only while no lane continuation
+    /// is pending — the slot holds exactly one resume payload, and an OS step never needs it
+    /// just to be re-polled: that is what returning `Busy` means.
     fn step_os(&mut self, _status: SystemStatus) -> Result<(Self::Out, ActorStatus), HandlerError> {
         Ok((Self::Out::default(), ActorStatus::Idle))
     }
@@ -647,10 +661,15 @@ where
     /// its doorbell over work that only another `poll` can resume, and nothing external is
     /// coming to ring it.
     ///
-    /// A pending continuation also *defers* `step_os` entirely: `finish_step` writes the slot,
-    /// and running `step_os` over an unconsumed lane continuation would overwrite it — the
-    /// continuation-first contract [`Node::poll`] keeps is kept here by handing control back
-    /// (`Busy`) so the next `poll` resumes it before any OS step runs.
+    /// A pending lane continuation does not block `step_os`'s turn — an actor that yields on
+    /// every lane step would otherwise starve its own OS bridge forever — but it must survive
+    /// it: the pending continuation is stashed across the OS step and restored afterward, so
+    /// `finish_step`'s slot write cannot clobber it. The one thing that cannot be honored is a
+    /// `step_os` that *itself* yields while a lane continuation is pending: the slot holds
+    /// exactly one resume payload by design, and an OS step never needs the slot to be
+    /// re-polled — returning [`ActorStatus::Busy`] already is that request. Such a yield is
+    /// dropped with a `debug_assert!`/release warning; yield from a later `step_os` turn
+    /// instead, once the lane work has drained.
     ///
     /// Ring-not-full waking is not wired yet (consumers don't ring producers' doorbells today),
     /// so a driver that finds this parked has no way to be woken the instant the target drains;
@@ -665,13 +684,27 @@ where
             self.outbox = None;
         }
 
-        if self.continuation.is_some() {
-            return (Step::Ran, ActorStatus::Busy);
-        }
+        // The slot must be empty when a step runs; a stashed lane continuation is restored
+        // below, after finish_step has come and gone.
+        let stashed = self.continuation.take();
 
         match self.actor.step_os(status) {
             Ok((out, actor_status)) => {
                 let step = self.finish_step(out);
+                if let Some(lane_continuation) = stashed {
+                    debug_assert!(
+                        self.continuation.is_none(),
+                        "step_os yielded while a lane continuation was pending; an OS step \
+                         never needs the slot — return ActorStatus::Busy to be re-polled"
+                    );
+                    if self.continuation.is_some() {
+                        eprintln!(
+                            "[ActorScheduler] step_os continuation dropped: the slot still \
+                             holds a lane continuation; return ActorStatus::Busy instead"
+                        );
+                    }
+                    self.continuation = Some(lane_continuation);
+                }
                 // A continuation or a freshly parked outbox overrides the actor's `Idle` the
                 // same way and for the same reason: both are deferred work only another poll
                 // can advance, and nothing external is coming to ring the doorbell for either.
@@ -685,6 +718,9 @@ where
                 (step, hint)
             }
             Err(HandlerError::Recoverable(msg)) => {
+                if let Some(lane_continuation) = stashed {
+                    self.continuation = Some(lane_continuation);
+                }
                 (Step::Halted(Exit::Failed(msg)), ActorStatus::Idle)
             }
             Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
@@ -1743,12 +1779,86 @@ mod tests {
         assert_eq!(rx_out.try_recv().unwrap(), 7, "delivered, not dropped");
     }
 
-    /// A lane step that yields a continuation *and* an output that parks: `poll_os` must not
-    /// run `step_os` over the stored continuation — `finish_step` writes the slot, so an OS
-    /// step here would silently overwrite the lane's pending work. It hands control back Busy
-    /// instead, and the next `poll` resumes the continuation first, per its contract.
+    /// An actor that yields on every lane step must not starve its own OS bridge: `poll_os`
+    /// stashes the pending continuation across the OS step and restores it after, so `step_os`
+    /// gets its turn at every burst boundary and the lane's resume payload survives intact.
     #[test]
-    fn a_pending_continuation_defers_step_os() {
+    fn an_endless_self_yielder_does_not_starve_step_os() {
+        struct EndlessYield {
+            step_os_calls: u32,
+            resumed: u32,
+        }
+
+        impl Transducer for EndlessYield {
+            type Control = Infallible;
+            type Management = Infallible;
+            type Data = u32;
+            type Out = BridgeOut;
+
+            fn step_data(&mut self, n: u32) -> Result<BridgeOut, HandlerError> {
+                self.resumed = n;
+                // Always yields: the pathological-but-legal continuously running computation.
+                Ok(BridgeOut {
+                    word: None,
+                    again: Some(n + 1),
+                })
+            }
+
+            fn step_os(
+                &mut self,
+                _status: SystemStatus,
+            ) -> Result<(BridgeOut, ActorStatus), HandlerError> {
+                self.step_os_calls += 1;
+                Ok((BridgeOut::default(), ActorStatus::Idle))
+            }
+
+            fn take_continuation(out: &mut BridgeOut) -> Option<u32> {
+                out.again.take()
+            }
+        }
+
+        let (tx_in, rx_in) = spsc_channel::<u32>(4);
+        let (tx_out, _rx_out) = spsc_channel::<u32>(8);
+        let mut node = Node::new(
+            EndlessYield {
+                step_os_calls: 0,
+                resumed: 0,
+            },
+            rx_in,
+            BridgeWiring { out: tx_out },
+        );
+
+        tx_in.try_send(1).expect("room in the lane");
+        // A driver's sweep: some lane polls (the chain refills the slot every step), then the
+        // OS turn — which must actually happen, with the chain intact afterward.
+        for round in 1..=3u32 {
+            assert_eq!(node.poll(), Step::Ran);
+            let before = node.actor().resumed;
+            let (step, hint) = node.poll_os(SystemStatus::Busy);
+            assert_eq!((step, hint), (Step::Ran, ActorStatus::Busy));
+            assert_eq!(
+                node.actor().step_os_calls,
+                round,
+                "step_os runs at every burst boundary despite the endless chain"
+            );
+            assert!(
+                node.continuation.is_some(),
+                "the chain's resume payload survived the OS turn"
+            );
+            assert_eq!(
+                node.actor().resumed,
+                before,
+                "the OS turn advanced no lane work"
+            );
+        }
+    }
+
+    /// A lane step that yields a continuation *and* an output that parks: the continuation
+    /// must survive `poll_os` running `step_os` — `finish_step` writes the slot, and without
+    /// the stash/restore the OS step's (empty) continuation would silently overwrite the
+    /// lane's pending work.
+    #[test]
+    fn a_pending_continuation_survives_step_os() {
         struct YieldAndBlock {
             step_os_calls: u32,
             last_resumed: Option<u32>,
@@ -1807,17 +1917,18 @@ mod tests {
         assert_eq!(
             node.poll_os(SystemStatus::Idle),
             (Step::Ran, ActorStatus::Busy),
-            "control goes back to the driver, Busy, so the continuation is resumed by poll"
+            "Busy: the surviving continuation is deferred work for the next poll"
         );
         assert_eq!(
             node.actor().step_os_calls,
-            0,
-            "step_os must not run over a pending lane continuation"
+            1,
+            "step_os gets its turn — deferring it entirely would starve an OS bridge \
+             behind an endless self-yielder"
         );
         assert_eq!(
             node.continuation,
             Some(2),
-            "the continuation survived intact"
+            "the continuation survived the OS turn intact"
         );
 
         assert_eq!(node.poll(), Step::Ran);

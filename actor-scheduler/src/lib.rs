@@ -834,11 +834,16 @@ impl<D, C, M> ActorHandle<D, C, M> {
                 self.wake();
             }
             Message::Shutdown => {
-                // Shutdown: blocking send to guarantee delivery
-                // Actor must be running before calling this (doorbell will be drained)
+                // Shutdown: blocking send to guarantee delivery. The wake handler fires on
+                // BOTH sides of it: before, because the doorbell may be full while the
+                // consumer is blocked inside an OS wait (`step_os`/`handle_os`) — the handler
+                // is what interrupts that wait so the consumer can drain the slot this send
+                // needs; and after, because the consumer may have re-entered the wait between
+                // the drain and this send landing.
+                if let Some(waker) = &self.wake_handler {
+                    waker.wake();
+                }
                 self.tx_doorbell.send(System::Shutdown)?;
-
-                // Also call custom wake handler if present
                 if let Some(waker) = &self.wake_handler {
                     waker.wake();
                 }
