@@ -162,8 +162,6 @@ fn e2e_render_radial_gradient() {
     println!("Radial gradient saved to: {}", output_path.display());
 }
 
-
-
 #[test]
 fn e2e_render_circle() {
     use pixelflow_core::{Kernel, Lattice};
@@ -172,9 +170,15 @@ fn e2e_render_circle() {
 
     // Unit circle at origin, scaled and translated to center of image using Kernel methods
     let radius = SIZE as f32 / 2.0 - 5.0;
-    let dist_sq = Kernel::x().mul(&Kernel::x()).add(&Kernel::y().mul(&Kernel::y()));
-    let circle_kernel = dist_sq.lt(&Kernel::constant(1.0)).select(&Kernel::constant(1.0), &Kernel::constant(0.0));
-    let centered = circle_kernel.scale(radius).translate(SIZE as f32 / 2.0, SIZE as f32 / 2.0);
+    let dist_sq = Kernel::x()
+        .mul(&Kernel::x())
+        .add(&Kernel::y().mul(&Kernel::y()));
+    let circle_kernel = dist_sq
+        .lt(&Kernel::constant(1.0))
+        .select(&Kernel::constant(1.0), &Kernel::constant(0.0));
+    let centered = circle_kernel
+        .scale(radius)
+        .translate(SIZE as f32 / 2.0, SIZE as f32 / 2.0);
 
     let lattice = Lattice::frame(SIZE as usize, SIZE as usize, 0.0);
     let baked = lattice.bake(&centered);

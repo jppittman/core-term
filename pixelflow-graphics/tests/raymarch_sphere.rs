@@ -15,8 +15,12 @@ fn sphere_on_floor() {
     let h_f32 = H as f32;
     let scale = 2.0 / h_f32;
 
-    let sx = Kernel::x().sub(&Kernel::constant(w_f32 * 0.5)).mul(&Kernel::constant(scale));
-    let sy = Kernel::constant(h_f32 * 0.5).sub(&Kernel::y()).mul(&Kernel::constant(scale));
+    let sx = Kernel::x()
+        .sub(&Kernel::constant(w_f32 * 0.5))
+        .mul(&Kernel::constant(scale));
+    let sy = Kernel::constant(h_f32 * 0.5)
+        .sub(&Kernel::y())
+        .mul(&Kernel::constant(scale));
 
     let (dx, dy, dz) = kernel_3d::screen_to_ray(&sx, &sy, 1.0);
     let sky = kernel_3d::sky(&dy);

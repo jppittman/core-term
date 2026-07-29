@@ -20,9 +20,7 @@ fn main() {
     println!("  Valences: {:?}", patch.corner_valences);
     println!("  Extraordinary: {}", patch.is_extraordinary());
 
-    let _geometry = SubdivisionGeometry::new(
-        patch, &mesh, -1.0, 1.0, 0.0, 0.0,
-    );
+    let _geometry = SubdivisionGeometry::new(patch, &mesh, -1.0, 1.0, 0.0, 0.0);
 
     let width = 800;
     let height = 600;

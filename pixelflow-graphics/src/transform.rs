@@ -2,7 +2,7 @@
 //!
 //! Provides composable coordinate warping using [`Kernel`].
 
-use pixelflow_core::{Kernel, Manifold, Field, At, Div, Sub, X, Y, Z, W};
+use pixelflow_core::{At, Div, Field, Kernel, Manifold, Sub, W, X, Y, Z};
 
 /// The standard 4D Field domain type.
 type Field4 = (Field, Field, Field, Field);
@@ -61,7 +61,11 @@ mod tests {
 
     #[test]
     fn kernel_scale_and_translate_work() {
-        let circle = Kernel::x().mul(&Kernel::x()).add(&Kernel::y().mul(&Kernel::y())).sqrt().sub(&Kernel::constant(1.0));
+        let circle = Kernel::x()
+            .mul(&Kernel::x())
+            .add(&Kernel::y().mul(&Kernel::y()))
+            .sqrt()
+            .sub(&Kernel::constant(1.0));
         let scaled = scale_kernel(&circle, 2.0);
         let moved = translate_kernel(&scaled, 10.0, 5.0);
         let _ = moved;

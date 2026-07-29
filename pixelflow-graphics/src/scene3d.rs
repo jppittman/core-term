@@ -137,11 +137,7 @@ pub mod kernel_3d {
     ) -> (Kernel, Kernel, Kernel) {
         let d_dot_n = dx.mul(nx).add(&dy.mul(ny)).add(&dz.mul(nz));
         let k = Kernel::constant(2.0).mul(&d_dot_n);
-        (
-            dx.sub(&k.mul(nx)),
-            dy.sub(&k.mul(ny)),
-            dz.sub(&k.mul(nz)),
-        )
+        (dx.sub(&k.mul(nx)), dy.sub(&k.mul(ny)), dz.sub(&k.mul(nz)))
     }
 
     /// World scene background RGB (warm/cool checkerboard floor + sky gradient).

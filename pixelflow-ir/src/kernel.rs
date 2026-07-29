@@ -716,4 +716,3 @@ mod tests {
         assert_eq!(eval(&shifted, 5.0, 7.0), 4.0 + 5.0);
     }
 }
-

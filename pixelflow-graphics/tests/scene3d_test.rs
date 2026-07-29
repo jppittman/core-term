@@ -9,8 +9,12 @@ fn jit_kernel_3d_sky_and_normal() {
     const H: f32 = 32.0;
     let scale = 2.0 / H;
 
-    let sx = Kernel::x().sub(&Kernel::constant(W * 0.5)).mul(&Kernel::constant(scale));
-    let sy = Kernel::constant(H * 0.5).sub(&Kernel::y()).mul(&Kernel::constant(scale));
+    let sx = Kernel::x()
+        .sub(&Kernel::constant(W * 0.5))
+        .mul(&Kernel::constant(scale));
+    let sy = Kernel::constant(H * 0.5)
+        .sub(&Kernel::y())
+        .mul(&Kernel::constant(scale));
 
     let (dx, dy, dz) = kernel_3d::screen_to_ray(&sx, &sy, 1.0);
     let sky = kernel_3d::sky(&dy);
@@ -45,8 +49,12 @@ fn jit_kernel_3d_sphere_on_plane() {
     let h_f32 = H as f32;
     let scale = 2.0 / h_f32;
 
-    let sx = Kernel::x().sub(&Kernel::constant(w_f32 * 0.5)).mul(&Kernel::constant(scale));
-    let sy = Kernel::constant(h_f32 * 0.5).sub(&Kernel::y()).mul(&Kernel::constant(scale));
+    let sx = Kernel::x()
+        .sub(&Kernel::constant(w_f32 * 0.5))
+        .mul(&Kernel::constant(scale));
+    let sy = Kernel::constant(h_f32 * 0.5)
+        .sub(&Kernel::y())
+        .mul(&Kernel::constant(scale));
 
     let (dx, dy, dz) = kernel_3d::screen_to_ray(&sx, &sy, 1.0);
     let sky = kernel_3d::sky(&dy);

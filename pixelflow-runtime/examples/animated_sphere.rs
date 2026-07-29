@@ -6,7 +6,9 @@ use pixelflow_graphics::scene3d::kernel_3d;
 use pixelflow_graphics::Grayscale;
 use pixelflow_runtime::api::private::EngineData;
 use pixelflow_runtime::api::public::{AppData, EngineEvent, EngineEventControl, EngineEventData};
-use pixelflow_runtime::{Application, EngineConfig, EngineTroupe, RuntimeError, WindowConfig, WindowDescriptor};
+use pixelflow_runtime::{
+    Application, EngineConfig, EngineTroupe, RuntimeError, WindowConfig, WindowDescriptor,
+};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
