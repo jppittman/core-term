@@ -574,29 +574,6 @@ impl Kernel {
         Self::wrap(arena, root)
     }
 
-    /// Scale `self` uniformly in 2D by `factor`.
-    #[must_use]
-    pub fn scale(&self, factor: f32) -> Self {
-        let inv = Self::constant(1.0 / factor);
-        self.at(
-            &Self::x().mul(&inv),
-            &Self::y().mul(&inv),
-            &Self::z(),
-            &Self::w(),
-        )
-    }
-
-    /// Translate `self` in 2D by `(dx, dy)`.
-    #[must_use]
-    pub fn translate(&self, dx: f32, dy: f32) -> Self {
-        self.at(
-            &Self::x().sub(&Self::constant(dx)),
-            &Self::y().sub(&Self::constant(dy)),
-            &Self::z(),
-            &Self::w(),
-        )
-    }
-
     /// The derivative `∂self/∂var` (0=X, 1=Y, 2=Z), resolved symbolically at
     /// compile time. The building block of screen-space antialiasing: no jet
     /// domain, just an expression the calculus differentiates.
@@ -701,18 +678,5 @@ mod tests {
         let (out, oroot) = lower_dwrt_owned(arena, root).expect("calculus");
         let got = eval_scalar(&out, oroot, &[3.0, 4.0, 0.0, 0.0], &BindingTable::empty());
         assert!((got - 0.6).abs() < 1e-5);
-    }
-
-    #[test]
-    fn scale_and_translate_kernel_methods() {
-        // x · y scaled by 2 => (x/2) · (y/2)
-        let expr = Kernel::x().mul(&Kernel::y());
-        let scaled = expr.scale(2.0);
-        assert_eq!(eval(&scaled, 4.0, 6.0), 2.0 * 3.0);
-
-        // x + y translated by (1, 2) => (x - 1) + (y - 2)
-        let expr2 = Kernel::x().add(&Kernel::y());
-        let shifted = expr2.translate(1.0, 2.0);
-        assert_eq!(eval(&shifted, 5.0, 7.0), 4.0 + 5.0);
     }
 }

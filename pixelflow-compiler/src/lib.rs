@@ -132,11 +132,15 @@ pub fn kernel(input: TokenStream) -> TokenStream {
     // excludes derivative projections (see `is_transparent_routing_safe`) —
     // their `Field`-domain semantics intentionally differ between backends.
     // The default flips when the parity suite + font goldens say so.
-    // Default JIT routing (Phase 6): eligible closure kernels route to the JIT arena backend.
-    if jit_backend::is_transparent_routing_safe(&optimized)
-        && let Ok(tokens) = jit_backend::emit_jit(&optimized, jit_backend::ZeroParam::Closure)
+    #[cfg(feature = "arena-backend")]
     {
-        return tokens.into();
+        // A body the bridge cannot lower (Err) falls back to the combinator
+        // backend, same as ineligible signatures.
+        if jit_backend::is_transparent_routing_safe(&optimized)
+            && let Ok(tokens) = jit_backend::emit_jit(&optimized, jit_backend::ZeroParam::Closure)
+        {
+            return tokens.into();
+        }
     }
     codegen::emit(optimized).into()
 }
