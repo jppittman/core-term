@@ -9,8 +9,8 @@
 //! `PIXELFLOW_NNUE_WEIGHTS` opt-in.
 
 use super::cost::CostModel;
-use super::graph::EGraph;
 use super::extract::extract_dag;
+use super::graph::EGraph;
 use super::node::EClassId;
 use crate::nnue::ExprNnue;
 use std::sync::OnceLock;

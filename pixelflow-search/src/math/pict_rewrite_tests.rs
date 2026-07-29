@@ -25,10 +25,10 @@
 //! The generator is the same dependency-free pairwise routine used by the
 //! other two POCs, duplicated per the workspace's minimal-dependency policy.
 
-use crate::egraph::{saturate_with_budget, EGraph, ENode};
+use crate::egraph::{EGraph, ENode, saturate_with_budget};
 use crate::math::all_rules;
-use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 use pixelflow_ir::OpKind;
+use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
 // ============================================================================
 // Pairwise covering-array generator (see the ANSI/SGR POC for the annotated
@@ -108,20 +108,29 @@ fn expr_to_egraph(arena: &ExprArena, id: ExprId, egraph: &mut EGraph) -> crate::
         ExprNode::Unary(kind, a) => {
             let ca = expr_to_egraph(arena, a, egraph);
             let op = crate::egraph::ops::op_from_kind(kind).expect("op");
-            egraph.add(ENode::Op { op, children: vec![ca] })
+            egraph.add(ENode::Op {
+                op,
+                children: vec![ca],
+            })
         }
         ExprNode::Binary(kind, a, b) => {
             let ca = expr_to_egraph(arena, a, egraph);
             let cb = expr_to_egraph(arena, b, egraph);
             let op = crate::egraph::ops::op_from_kind(kind).expect("op");
-            egraph.add(ENode::Op { op, children: vec![ca, cb] })
+            egraph.add(ENode::Op {
+                op,
+                children: vec![ca, cb],
+            })
         }
         ExprNode::Ternary(kind, a, b, c) => {
             let ca = expr_to_egraph(arena, a, egraph);
             let cb = expr_to_egraph(arena, b, egraph);
             let cc = expr_to_egraph(arena, c, egraph);
             let op = crate::egraph::ops::op_from_kind(kind).expect("op");
-            egraph.add(ENode::Op { op, children: vec![ca, cb, cc] })
+            egraph.add(ENode::Op {
+                op,
+                children: vec![ca, cb, cc],
+            })
         }
         ExprNode::Param(_) | ExprNode::Buffer(_) | ExprNode::Nary(..) => {
             panic!("unsupported node in rewrite POC")
@@ -338,20 +347,38 @@ fn adversarial_cost_models() -> Vec<(&'static str, crate::egraph::CostModel)> {
 
 #[test]
 fn pict_rewrite_rules_preserve_semantics() {
-    let level_counts = [OUTER_OPS.len(), UNARY_WRAPPERS.len(), SHAPE_COUNT, SHAPE_COUNT, CONSTS.len()];
+    let level_counts = [
+        OUTER_OPS.len(),
+        UNARY_WRAPPERS.len(),
+        SHAPE_COUNT,
+        SHAPE_COUNT,
+        CONSTS.len(),
+    ];
     let rows = pairwise(&level_counts);
     let exhaustive: usize = level_counts.iter().product();
     let points = test_points();
 
     assert!(!all_rules().is_empty(), "expected a non-empty rule set");
-    let mut failures: Vec<String> = Vec::new();
-    let mut changed = 0usize; // how many cases the optimizer actually rewrote
 
-    for row in &rows {
-        let outer = OUTER_OPS[row[0]];
-        let wrapper = UNARY_WRAPPERS[row[1]];
-        let (left, right) = (row[2], row[3]);
-        let konst = CONSTS[row[4]];
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let chunk_size = (rows.len() + num_threads - 1) / num_threads;
+
+    let mut handles = Vec::new();
+    for chunk in rows.chunks(chunk_size) {
+        let chunk = chunk.to_vec();
+        let points = points.clone();
+
+        handles.push(std::thread::spawn(move || {
+            let mut failures = Vec::new();
+            let mut changed = 0usize;
+
+            for row in chunk {
+                let outer = OUTER_OPS[row[0]];
+                let wrapper = UNARY_WRAPPERS[row[1]];
+                let (left, right) = (row[2], row[3]);
+                let konst = CONSTS[row[4]];
 
         let mut arena = ExprArena::new();
         let root = build_expr(&mut arena, outer, wrapper, left, right, konst);
@@ -394,6 +421,17 @@ fn pict_rewrite_rules_preserve_semantics() {
                 }
             }
         }
+    }
+            (failures, changed)
+        }));
+    }
+
+    let mut failures = Vec::new();
+    let mut changed = 0;
+    for handle in handles {
+        let (mut t_failures, t_changed) = handle.join().unwrap();
+        failures.append(&mut t_failures);
+        changed += t_changed;
     }
 
     eprintln!(

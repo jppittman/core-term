@@ -97,7 +97,12 @@ mod tests {
     /// expansion the compiler emits), and a private walker would be a second
     /// definition free to drift from it.
     fn eval(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
-        pixelflow_ir::eval_scalar(arena, id, vars, &pixelflow_ir::binding::BindingTable::empty())
+        pixelflow_ir::eval_scalar(
+            arena,
+            id,
+            vars,
+            &pixelflow_ir::binding::BindingTable::empty(),
+        )
     }
 
     /// Saturate `D(differentiand, var)` with the full rule set, extract the
@@ -292,8 +297,16 @@ mod piecewise_tests {
             (bin OpKind::Mul, (var 0), (cst 2.0)),
             (bin OpKind::Mul, (var 1), (cst 3.0)));
         let (out, root) = differentiate(&a, e, 0);
-        assert_close(eval(&out, root, &[1.0, 5.0, 0.0, 0.0]), 2.0, &[1.0, 5.0, 0.0, 0.0]);
-        assert_close(eval(&out, root, &[9.0, 1.0, 0.0, 0.0]), 0.0, &[9.0, 1.0, 0.0, 0.0]);
+        assert_close(
+            eval(&out, root, &[1.0, 5.0, 0.0, 0.0]),
+            2.0,
+            &[1.0, 5.0, 0.0, 0.0],
+        );
+        assert_close(
+            eval(&out, root, &[9.0, 1.0, 0.0, 0.0]),
+            0.0,
+            &[9.0, 1.0, 0.0, 0.0],
+        );
     }
 
     #[test]
@@ -305,8 +318,16 @@ mod piecewise_tests {
             (bin OpKind::Mul, (var 0), (var 0)),
             (bin OpKind::Mul, (var 0), (cst 5.0)));
         let (out, root) = differentiate(&a, e, 0);
-        assert_close(eval(&out, root, &[3.0, 1.0, 0.0, 0.0]), 6.0, &[3.0, 1.0, 0.0, 0.0]);
-        assert_close(eval(&out, root, &[3.0, -1.0, 0.0, 0.0]), 5.0, &[3.0, -1.0, 0.0, 0.0]);
+        assert_close(
+            eval(&out, root, &[3.0, 1.0, 0.0, 0.0]),
+            6.0,
+            &[3.0, 1.0, 0.0, 0.0],
+        );
+        assert_close(
+            eval(&out, root, &[3.0, -1.0, 0.0, 0.0]),
+            5.0,
+            &[3.0, -1.0, 0.0, 0.0],
+        );
     }
 
     #[test]
@@ -321,8 +342,16 @@ mod piecewise_tests {
                 (cst 0.0)),
             (cst 10.0));
         let (out, root) = differentiate(&a, e, 0);
-        assert_close(eval(&out, root, &[2.0, 0.0, 0.0, 0.0]), 4.0, &[2.0, 0.0, 0.0, 0.0]);
-        assert_close(eval(&out, root, &[5.0, 0.0, 0.0, 0.0]), 0.0, &[5.0, 0.0, 0.0, 0.0]);
+        assert_close(
+            eval(&out, root, &[2.0, 0.0, 0.0, 0.0]),
+            4.0,
+            &[2.0, 0.0, 0.0, 0.0],
+        );
+        assert_close(
+            eval(&out, root, &[5.0, 0.0, 0.0, 0.0]),
+            0.0,
+            &[5.0, 0.0, 0.0, 0.0],
+        );
     }
 
     #[test]
@@ -330,6 +359,10 @@ mod piecewise_tests {
         let mut a = ExprArena::new();
         let e = arena_pat!(&mut a, bin OpKind::Lt, (var 0), (var 1));
         let (out, root) = differentiate(&a, e, 0);
-        assert_close(eval(&out, root, &[3.0, 5.0, 0.0, 0.0]), 0.0, &[3.0, 5.0, 0.0, 0.0]);
+        assert_close(
+            eval(&out, root, &[3.0, 5.0, 0.0, 0.0]),
+            0.0,
+            &[3.0, 5.0, 0.0, 0.0],
+        );
     }
 }
