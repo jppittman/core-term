@@ -245,8 +245,7 @@ impl TerminalApp {
         // atlas extents the frame actually binds.
         let font = self.loaded_font.font();
         let blank = self.atlas.blank_uv();
-        let mut cells =
-            Vec::with_capacity(cols * rows * pixelflow_core::CELL_STRIDE);
+        let mut cells = Vec::with_capacity(cols * rows * pixelflow_core::CELL_STRIDE);
         for row in 0..rows {
             let line = &snapshot.lines[row];
             for col in 0..cols {
@@ -269,9 +268,8 @@ impl TerminalApp {
                 };
                 let (fg_r, fg_g, fg_b, _) = fg.to_f32_rgba();
                 let (bg_r, bg_g, bg_b, _) = bg.to_f32_rgba();
-                cells.extend_from_slice(&[
-                    uv.0, uv.1, fg_r, fg_g, fg_b, 1.0, bg_r, bg_g, bg_b, 1.0,
-                ]);
+                cells
+                    .extend_from_slice(&[uv.0, uv.1, fg_r, fg_g, fg_b, 1.0, bg_r, bg_g, bg_b, 1.0]);
             }
         }
 
@@ -297,10 +295,7 @@ impl TerminalApp {
                 geom.atlas_width,
                 geom.atlas_height
             );
-            self.program = Some(CellGridProgram::compile(
-                geom,
-                [dbg_r, dbg_g, dbg_b, dbg_a],
-            ));
+            self.program = Some(CellGridProgram::compile(geom, [dbg_r, dbg_g, dbg_b, dbg_a]));
         }
         let program = self.program.as_ref().expect("program compiled above");
         let frame = program.frame(Arc::new(cells), self.atlas.buffer());
