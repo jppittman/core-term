@@ -13,6 +13,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cl-metadata:
+    name: CL metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code and CL history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check CL title and commit subjects
+        env:
+          CL_TITLE: ${{ github.event.pull_request.title }}
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+          HEAD_COMMIT: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          bash scripts/check-cl-metadata.sh
+          "$CL_TITLE"
+          "$BASE_COMMIT"
+          "$HEAD_COMMIT"
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
