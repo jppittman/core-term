@@ -21,30 +21,14 @@ use actor_scheduler::host::{GreenThread, Host, HostOut};
 use actor_scheduler::mealy::{Flush, Lanes, NoLane, Node, Transducer, Wiring};
 use actor_scheduler::{
     green_channel, Actor, ActorBuilder, ActorHandle, ActorScheduler, ActorStatus, ActorTypes,
-    GreenSender, HandlerError, HandlerResult, Message, SchedulerParams, SystemStatus, TroupeActor,
-    TrySendError,
+    GreenSender, HandlerError, HandlerResult, Message, SchedulerParams, SendError, SystemStatus,
+    TroupeActor, TrySendError,
 };
 use pixelflow_graphics::render::rasterizer::{RasterizerActor, RasterizerHandle, RenderResponse};
 use std::convert::Infallible;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
-
-/// Deliver a message on a credit-bounded green edge (design doc §3.2): the ring is provisioned
-/// to never fill from that edge alone, so `Disconnected` is an ordinary shutdown race but `Full`
-/// means the provisioning broke. Only `vsync_control` can honestly make that argument —
-/// `ReturnToken`s outstanding are bounded by `MAX_TOKENS`, below its ring's capacity. The
-/// coordinator relay cannot (unsolicited `Submit`s, event-flood `Advance`s) and has its own
-/// per-variant policy in [`EngineHandler::send_coordinator`].
-fn expect_credit_bounded_send<T: std::fmt::Debug>(
-    result: Result<(), TrySendError<T>>,
-    full_msg: &str,
-) {
-    match result {
-        Ok(()) | Err(TrySendError::Disconnected(_)) => {}
-        Err(err @ TrySendError::Full(_)) => panic!("{full_msg}: {err:?}"),
-    }
-}
 
 /// Engine handler - coordinates app, rendering, display.
 pub struct EngineHandler {
@@ -290,62 +274,45 @@ impl EngineHandler {
     /// The `coordinator` port: every window grant, scene submission, and advance nudge the
     /// engine relays to the render coordinator's own green node.
     ///
-    /// This edge is **not** credit-bounded, so `Full` is real backpressure here, not a
-    /// provisioning bug: `Submit`s are unsolicited — the app pushes frames outside the vsync
-    /// token protocol on resize, key input, and other interactive redraws — and `Advance`s
-    /// follow window events, which a resize drag emits in floods. What makes `Full` survivable
-    /// is that both are loss-tolerant by the coordinator's own contract:
-    ///
-    /// - `Submit` is keep-latest (`RenderCoordinator::submit`): a dropped frame is one step of
-    ///   staleness, corrected by the next submission — and under the load that fills this ring,
-    ///   the next submission is already on its way.
-    /// - `Advance` is an idempotent nudge, re-driven by every vsync tick.
-    ///
-    /// `Granted` is the exception: it carries the driver's only buffer, so it may not be
-    /// dropped — and unlike the loss-tolerant relays it is genuinely bounded (the driver lends
-    /// at most one buffer at a time), so a full ring in front of it is other traffic, not
-    /// unbounded grants. It waits: the green host is an independent thread actively draining
-    /// this ring at state-machine speed, so the wait is short and cannot deadlock — the
-    /// coordinator never blocks on the engine's own inbox (its wiring targets the driver,
-    /// rasterizer, and vsync only).
+    /// This edge is not credit-bounded — `Submit`s are unsolicited (the app pushes frames on
+    /// resize and interactive redraws, outside the vsync token protocol) and `Advance`s follow
+    /// window events, which a resize drag emits in floods — so a full ring is ordinary
+    /// backpressure, and the policy for that belongs to the scheduler, not here:
+    /// [`GreenSender::send`] blocks with the same bounded backoff as `ActorHandle::send`, then
+    /// fails with `Timeout` if the host stays unresponsive past the window. The wait cannot
+    /// deadlock — the green side never *blocks* toward the engine (its wirings `try_send` and
+    /// park), so the host is always live and draining while this thread waits. And the timeout
+    /// is not tolerated: a wedged green host is a broken runtime, and per the fail-fast mantra
+    /// the answer is a crash that says so, not quiet degradation.
     fn send_coordinator(&mut self, data: CoordinatorData) {
         let Some(tx) = &self.coordinator else {
             return; // Not configured yet, or the green host has already shut down.
         };
-        match data {
-            CoordinatorData::Granted(_) => {
-                let mut data = data;
-                loop {
-                    match tx.try_send(data) {
-                        Ok(()) => return,
-                        Err(TrySendError::Full(back)) => {
-                            data = back;
-                            std::thread::yield_now();
-                        }
-                        // Shutdown race: the host is gone and the buffer dies with the process,
-                        // not with this relay.
-                        Err(TrySendError::Disconnected(_)) => return,
-                    }
-                }
+        match tx.send(data) {
+            // Disconnected is the ordinary shutdown race: the host is gone and everything it
+            // hosted dies with the process.
+            Ok(()) | Err(SendError::Disconnected) => {}
+            Err(SendError::Timeout) => {
+                panic!("green host unresponsive: coordinator relay timed out")
             }
-            CoordinatorData::Submit(_) | CoordinatorData::Advance => match tx.try_send(data) {
-                Ok(()) | Err(TrySendError::Disconnected(_)) => {}
-                Err(TrySendError::Full(dropped)) => {
-                    log::debug!("coordinator ring full; dropping loss-tolerant {dropped:?}");
-                }
-            },
         }
     }
 
-    /// The `vsync_control` port — `ReturnToken` (a credit return: the ring holds `>= MAX_TOKENS`,
-    /// design doc §3.2) and `UpdateRefreshRate` alike. Both tolerate a disconnected vsync
-    /// (shutdown races are ordinary), and both treat `Full` as a bug rather than backpressure to
-    /// wait out, since the ring was sized to never fill from this edge.
+    /// The `vsync_control` port — `ReturnToken` and `UpdateRefreshRate`. Same discipline as
+    /// [`Self::send_coordinator`]: the scheduler's bounded blocking is the backpressure, a
+    /// timeout is a wedged host and fails loudly, and a disconnect is an ordinary shutdown
+    /// race. (In practice this edge never even blocks: `ReturnToken`s outstanding are bounded
+    /// by `MAX_TOKENS`, below the ring's capacity.)
     fn send_vsync_control(&mut self, cmd: VsyncCommand) {
         let Some(tx) = &self.vsync_control else {
             return; // Not configured yet, or the green host has already shut down.
         };
-        expect_credit_bounded_send(tx.try_send(cmd), "vsync control ring unexpectedly full");
+        match tx.send(cmd) {
+            Ok(()) | Err(SendError::Disconnected) => {}
+            Err(SendError::Timeout) => {
+                panic!("green host unresponsive: vsync control relay timed out")
+            }
+        }
     }
 
     /// The shutdown cascade all three quit paths (`EngineControl::Quit`,
@@ -759,6 +726,12 @@ mod tests {
         /// A rig with a chosen coordinator-ring capacity, for the overload-policy tests below —
         /// filling a 64-slot ring by hand would just bury the assertion in setup.
         fn with_ring(capacity: usize) -> Self {
+            Self::with_ring_and_params(capacity, SchedulerParams::DEFAULT)
+        }
+
+        /// [`with_ring`](Self::with_ring) with explicit backoff tuning, so the timeout test can
+        /// wedge in milliseconds instead of the production backoff window.
+        fn with_ring_and_params(capacity: usize, params: SchedulerParams) -> Self {
             let (driver, _driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
 
             let waker = {
@@ -767,7 +740,7 @@ mod tests {
                 handle.waker()
             };
             let (coordinator_tx, coordinator_rx) = spsc_channel::<CoordinatorData>(capacity);
-            let coordinator = GreenSender::new(coordinator_tx, waker);
+            let coordinator = GreenSender::new_with_params(coordinator_tx, waker, params);
 
             let engine = EngineHandler {
                 driver,
@@ -832,8 +805,8 @@ mod tests {
         ));
     }
 
-    /// Fill a rig's coordinator ring to the brim with advance nudges, via the raw sender —
-    /// the engine relay itself sheds on Full, so it can never be used to reach Full.
+    /// Fill a rig's coordinator ring to the brim with advance nudges, via the raw `try_send` —
+    /// the engine relay itself blocks on Full, so it can never be used to *reach* Full.
     fn fill_coordinator_ring(rig: &Rig) {
         let tx = rig
             .engine
@@ -843,35 +816,20 @@ mod tests {
         while tx.try_send(CoordinatorData::Advance).is_ok() {}
     }
 
-    /// The Codex-flagged overload case (PR #944): unsolicited app submissions are not bounded
-    /// by the vsync credit, so a full coordinator ring is real backpressure — the engine must
-    /// shed the loss-tolerant relay, not panic and take the runtime down.
+    /// The overload case review flagged on #944: unsolicited app submissions are not bounded by
+    /// the vsync credit, so a full coordinator ring is ordinary backpressure. The policy is the
+    /// scheduler's (`GreenSender::send`): the relay waits for the ring to drain and delivers —
+    /// nothing is shed, so the newest scene can never be silently lost, and nothing panics
+    /// while the host is live.
     #[test]
-    fn a_full_coordinator_ring_sheds_submits_and_advances_instead_of_panicking() {
-        let mut rig = Rig::with_ring(2);
-        fill_coordinator_ring(&rig);
-
-        // Both loss-tolerant variants: no panic, engine keeps running.
-        rig.feed(EngineData::FromApp(AppData::RenderSurface(manifold())));
-        let now = Instant::now();
-        rig.feed(EngineData::VSync {
-            timestamp: now,
-            target_timestamp: now,
-            refresh_interval: Duration::from_millis(16),
-        });
-    }
-
-    /// The exception to shedding: a granted window is the driver's only buffer, so the relay
-    /// waits for the ring to drain rather than dropping it.
-    #[test]
-    fn a_granted_window_waits_out_a_full_ring_rather_than_being_dropped() {
+    fn relays_wait_out_a_full_coordinator_ring_and_lose_nothing() {
         use crate::display::messages::{Generation, Window, WindowMeta};
 
         let mut rig = Rig::with_ring(2);
         fill_coordinator_ring(&rig);
 
         // Drain the ring from another thread after a delay, standing in for the green host: the
-        // engine's Granted relay must spin until space appears, then deliver.
+        // engine's relays must block until space appears, then deliver.
         let (done_tx, done_rx) = std::sync::mpsc::channel::<CoordinatorData>();
         let mut coordinator_rx = std::mem::replace(
             &mut rig.coordinator_rx,
@@ -890,6 +848,8 @@ mod tests {
             }
         });
 
+        // One of each relay against the full ring: all must block briefly and deliver.
+        rig.feed(EngineData::FromApp(AppData::RenderSurface(manifold())));
         let window = Window::rejoin(
             pixelflow_graphics::render::Frame::new(100, 100),
             WindowMeta {
@@ -900,16 +860,45 @@ mod tests {
                 generation: Generation::NONE,
             },
         );
-        // Blocks briefly until the drainer frees a slot; must NOT drop the grant.
         rig.feed(EngineData::WindowGranted(window));
 
         drop(rig); // Disconnect the sender so the drainer exits.
         drainer.join().expect("drainer exits cleanly");
-        let granted = done_rx
-            .iter()
-            .filter(|data| matches!(data, CoordinatorData::Granted(_)))
-            .count();
-        assert_eq!(granted, 1, "the grant must arrive despite the full ring");
+        let (mut submits, mut grants) = (0, 0);
+        for data in done_rx.iter() {
+            match data {
+                CoordinatorData::Submit(_) => submits += 1,
+                CoordinatorData::Granted(_) => grants += 1,
+                CoordinatorData::Advance => {}
+            }
+        }
+        assert_eq!(
+            (submits, grants),
+            (1, 1),
+            "backpressure must deliver, not shed: the newest scene and the buffer both arrive"
+        );
+    }
+
+    /// The other half of bounded patience: a host that stays unresponsive past the backoff
+    /// window is wedged, and the relay fails loudly instead of waiting forever or dropping
+    /// quietly.
+    #[test]
+    #[should_panic(expected = "green host unresponsive")]
+    fn a_wedged_green_host_times_out_loudly() {
+        // Short backoff so the test's wedged-host wait is milliseconds, not the production
+        // window.
+        let params = SchedulerParams {
+            spin_attempts: 1,
+            yield_attempts: 1,
+            min_backoff: Duration::from_micros(10),
+            max_backoff: Duration::from_micros(200),
+            ..SchedulerParams::DEFAULT
+        };
+        let mut rig = Rig::with_ring_and_params(2, params);
+        fill_coordinator_ring(&rig);
+
+        // Nobody drains: the bounded backoff exhausts and the relay must panic.
+        rig.feed(EngineData::FromApp(AppData::RenderSurface(manifold())));
     }
 
     #[test]

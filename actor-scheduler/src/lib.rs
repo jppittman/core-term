@@ -691,7 +691,7 @@ impl<D, C, M> std::fmt::Debug for ActorHandle<D, C, M> {
 ///
 /// Used for control and management lanes to prevent thundering herd when
 /// multiple senders compete for buffer space.
-fn send_with_backoff<T>(
+pub(crate) fn send_with_backoff<T>(
     tx: &SpscSender<T>,
     mut msg: T,
     params: &SchedulerParams,

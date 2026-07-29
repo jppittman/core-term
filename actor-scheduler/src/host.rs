@@ -57,7 +57,10 @@ use std::convert::Infallible;
 use crate::lifecycle::Exit;
 use crate::mealy::{Inbox, Node, Step, Transducer, Wiring};
 use crate::spsc::{SpscReceiver, SpscSender, TrySendError, spsc_channel};
-use crate::{Actor, ActorStatus, HandlerError, HandlerResult, SystemStatus, Waker};
+use crate::{
+    Actor, ActorStatus, HandlerError, HandlerResult, SchedulerParams, SendError, SystemStatus,
+    Waker,
+};
 
 /// A hosted green actor with its types erased, so one host can own a heterogeneous set.
 ///
@@ -322,13 +325,43 @@ impl Host {
 pub struct GreenSender<T> {
     tx: SpscSender<T>,
     waker: Waker,
+    params: SchedulerParams,
 }
 
 impl<T> GreenSender<T> {
     /// Pair an inbox sender with the waker of the host that owns the receiving actor.
     #[must_use]
     pub fn new(tx: SpscSender<T>, waker: Waker) -> Self {
-        Self { tx, waker }
+        Self::new_with_params(tx, waker, SchedulerParams::DEFAULT)
+    }
+
+    /// [`new`](Self::new) with explicit backoff tuning for [`send`](Self::send). Tests use
+    /// this to make the timeout short; production senders have no reason to deviate from
+    /// [`SchedulerParams::DEFAULT`].
+    #[must_use]
+    pub fn new_with_params(tx: SpscSender<T>, waker: Waker, params: SchedulerParams) -> Self {
+        params.validate();
+        Self { tx, waker, params }
+    }
+
+    /// Deliver a message, blocking with bounded patience when the inbox is full — the same
+    /// spin → yield → exponential-backoff discipline as [`ActorHandle::send`]
+    /// (`crate::ActorHandle`), because a full green inbox means the same thing a full lane
+    /// ring does: the consumer is behind, and the sender's job is to wait, not to invent a
+    /// shedding policy of its own. Delivery policy belongs to the scheduler.
+    ///
+    /// The patience is bounded: once backoff exceeds `params.max_backoff`, this returns
+    /// [`SendError::Timeout`] — a host that unresponsive is wedged, and the mantra is fail
+    /// fast, fail loudly, not wait forever or drop silently.
+    ///
+    /// # Errors
+    ///
+    /// [`SendError::Timeout`] if the inbox stayed full past the backoff window;
+    /// [`SendError::Disconnected`] if the actor is gone.
+    pub fn send(&self, msg: T) -> Result<(), SendError> {
+        crate::send_with_backoff(&self.tx, msg, &self.params)?;
+        self.waker.wake();
+        Ok(())
     }
 
     /// Deliver a message to the green actor and wake its host.
