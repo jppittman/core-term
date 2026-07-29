@@ -602,6 +602,14 @@ where
     /// The shared tail of every step: count it, lift the continuation, flush, park on
     /// backpressure or a gone peer. Never called with a non-empty outbox — the caller (lane
     /// dispatch or [`Self::poll_os`]) is the one that guarantees that by flushing first.
+    ///
+    /// A step whose output merely *parks* still reports [`Step::Ran`]: an input was consumed
+    /// and the machine advanced, and that is what a driver's "did anything happen" question
+    /// (`Host::sweep`'s `ran` flag, `DedicatedThread`'s working flag) is asking. The park
+    /// surfaces on the *next* poll, when the outbox-first gate finds it — reporting it now
+    /// instead would let a host go idle over an actor that just did work and still holds an
+    /// undelivered word. A gone peer is different: that is news no later poll improves on, so
+    /// it preempts `Ran` immediately.
     fn finish_step(&mut self, mut out: T::Out) -> Step {
         self.steps += 1;
 
@@ -611,7 +619,7 @@ where
         match self.wiring.flush(&mut out) {
             Flush::Blocked => {
                 self.outbox = Some(out);
-                Step::Blocked
+                Step::Ran
             }
             Flush::Disconnected => {
                 // Retained, not dropped — the payload is still in `out`.
@@ -633,7 +641,16 @@ where
     /// Returns the delivery outcome (same vocabulary as [`Node::poll`]) alongside the actor's
     /// own busy hint. The hint is [`ActorStatus::Idle`] whenever this poll could not actually
     /// run `step_os` because the outbox was still parked — a parked actor has nothing new to
-    /// say, so there is no fresher answer than "no".
+    /// say, so there is no fresher answer than "no". A stored continuation overrides the
+    /// actor's `Idle` the other way: the continuation is runtime-owned runnable work, so the
+    /// hint is `Busy` regardless of what the actor claimed — otherwise a driver would sleep on
+    /// its doorbell over work that only another `poll` can resume, and nothing external is
+    /// coming to ring it.
+    ///
+    /// A pending continuation also *defers* `step_os` entirely: `finish_step` writes the slot,
+    /// and running `step_os` over an unconsumed lane continuation would overwrite it — the
+    /// continuation-first contract [`Node::poll`] keeps is kept here by handing control back
+    /// (`Busy`) so the next `poll` resumes it before any OS step runs.
     ///
     /// Ring-not-full waking is not wired yet (consumers don't ring producers' doorbells today),
     /// so a driver that finds this parked has no way to be woken the instant the target drains;
@@ -648,8 +665,20 @@ where
             self.outbox = None;
         }
 
+        if self.continuation.is_some() {
+            return (Step::Ran, ActorStatus::Busy);
+        }
+
         match self.actor.step_os(status) {
-            Ok((out, actor_status)) => (self.finish_step(out), actor_status),
+            Ok((out, actor_status)) => {
+                let step = self.finish_step(out);
+                let hint = if self.continuation.is_some() {
+                    ActorStatus::Busy
+                } else {
+                    actor_status
+                };
+                (step, hint)
+            }
             Err(HandlerError::Recoverable(msg)) => {
                 (Step::Halted(Exit::Failed(msg)), ActorStatus::Idle)
             }
@@ -1544,9 +1573,11 @@ mod tests {
         let (_tx_in, rx_in) = spsc_channel::<u32>(4);
         let mut node = Node::new(OsYield { last_resumed: None }, rx_in, OsYieldWiring);
 
+        // Busy despite the actor's own Idle: the stored continuation is runtime-owned
+        // runnable work, and nothing external will ring the doorbell to resume it.
         assert_eq!(
             node.poll_os(SystemStatus::Idle),
-            (Step::Ran, ActorStatus::Idle)
+            (Step::Ran, ActorStatus::Busy)
         );
         assert_eq!(
             node.continuation,
@@ -1626,6 +1657,131 @@ mod tests {
             rx_out.try_recv().unwrap(),
             99,
             "then step_os's own output, flushed right after"
+        );
+    }
+
+    /// Pins the contract `finish_step`'s doc states and `Host::sweep` depends on: consuming an
+    /// input whose output parks is still a step that Ran — the machine advanced. A host that
+    /// heard `Blocked` here would count nothing as having run, go idle, and never retry the
+    /// parked word without an unrelated external wake.
+    #[test]
+    fn a_blocked_flush_still_reports_ran_for_the_consumed_input() {
+        let (tx_in, rx_in) = spsc_channel::<u32>(4);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(2);
+        while tx_out.try_send(99).is_ok() {}
+
+        let mut node = Node::new(
+            Bridge {
+                queue: vec![],
+                step_os_calls: 0,
+            },
+            rx_in,
+            BridgeWiring { out: tx_out },
+        );
+
+        tx_in.try_send(7).expect("room in the lane");
+        assert_eq!(
+            node.poll(),
+            Step::Ran,
+            "the input was consumed and the machine advanced; the park is not this poll's news"
+        );
+        assert_eq!(
+            node.poll(),
+            Step::Blocked,
+            "the park surfaces on the next poll's outbox-first gate"
+        );
+
+        while rx_out.try_recv().is_ok() {}
+        assert_eq!(node.poll(), Step::Idle, "outbox flushed, lane empty");
+        assert_eq!(
+            rx_out.try_recv().unwrap(),
+            7,
+            "the parked word was delivered, not lost"
+        );
+    }
+
+    /// A lane step that yields a continuation *and* an output that parks: `poll_os` must not
+    /// run `step_os` over the stored continuation — `finish_step` writes the slot, so an OS
+    /// step here would silently overwrite the lane's pending work. It hands control back Busy
+    /// instead, and the next `poll` resumes the continuation first, per its contract.
+    #[test]
+    fn a_pending_continuation_defers_step_os() {
+        struct YieldAndBlock {
+            step_os_calls: u32,
+            last_resumed: Option<u32>,
+        }
+
+        impl Transducer for YieldAndBlock {
+            type Control = Infallible;
+            type Management = Infallible;
+            type Data = u32;
+            type Out = BridgeOut;
+
+            fn step_data(&mut self, n: u32) -> Result<BridgeOut, HandlerError> {
+                self.last_resumed = Some(n);
+                Ok(BridgeOut {
+                    word: Some(n),
+                    again: Some(n + 1),
+                })
+            }
+
+            fn step_os(
+                &mut self,
+                _status: SystemStatus,
+            ) -> Result<(BridgeOut, ActorStatus), HandlerError> {
+                self.step_os_calls += 1;
+                Ok((BridgeOut::default(), ActorStatus::Idle))
+            }
+
+            fn take_continuation(out: &mut BridgeOut) -> Option<u32> {
+                out.again.take()
+            }
+        }
+
+        let (tx_in, rx_in) = spsc_channel::<u32>(4);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(2);
+        while tx_out.try_send(99).is_ok() {}
+
+        let mut node = Node::new(
+            YieldAndBlock {
+                step_os_calls: 0,
+                last_resumed: None,
+            },
+            rx_in,
+            BridgeWiring { out: tx_out },
+        );
+
+        tx_in.try_send(1).expect("room in the lane");
+        assert_eq!(node.poll(), Step::Ran);
+        assert_eq!(
+            node.continuation,
+            Some(2),
+            "the lane's continuation is stored"
+        );
+
+        // Free the ring so poll_os's outbox flush succeeds — the hazard is what happens next.
+        while rx_out.try_recv().is_ok() {}
+        assert_eq!(
+            node.poll_os(SystemStatus::Idle),
+            (Step::Ran, ActorStatus::Busy),
+            "control goes back to the driver, Busy, so the continuation is resumed by poll"
+        );
+        assert_eq!(
+            node.actor().step_os_calls,
+            0,
+            "step_os must not run over a pending lane continuation"
+        );
+        assert_eq!(
+            node.continuation,
+            Some(2),
+            "the continuation survived intact"
+        );
+
+        assert_eq!(node.poll(), Step::Ran);
+        assert_eq!(
+            node.actor().last_resumed,
+            Some(2),
+            "the lane continuation is what resumed — nothing was overwritten"
         );
     }
 

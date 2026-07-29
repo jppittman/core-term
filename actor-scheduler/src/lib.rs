@@ -621,6 +621,12 @@ impl<D, C, M> ActorBuilder<D, C, M> {
         T: mealy::Transducer<Data = D, Control = C, Management = M>,
         W: mealy::Wiring<Out = T::Out>,
     {
+        // One doorbell visit's worth of lane work, mirroring the classic scheduler's
+        // per-wake burst budget (two control half-bursts + management + data).
+        let sweep_burst = (self.params.control_burst_limit()
+            + self.params.management_burst_limit()
+            + self.params.default_data_burst_limit)
+            .max(1);
         let node = mealy::Node::new_with_lanes(
             actor,
             mealy::Lanes {
@@ -633,6 +639,7 @@ impl<D, C, M> ActorBuilder<D, C, M> {
         );
         DedicatedThread {
             node,
+            sweep_burst,
             rx_doorbell: self
                 .rx_doorbell
                 .expect("ActorBuilder::build_node called twice"),
@@ -1379,6 +1386,11 @@ pub struct DedicatedThread<
     W: mealy::Wiring<Out = T::Out>,
 {
     node: mealy::Node<T, W, RD, RC, RM>,
+    /// Lane polls allowed per sweep before the driver revisits the doorbell — the same role
+    /// as the classic scheduler's per-wake burst limits. Without it, a continuously-fed lane
+    /// would keep the sweep loop from ever seeing a queued `Shutdown` or giving `step_os` a
+    /// turn.
+    sweep_burst: usize,
     rx_doorbell: Receiver<System>,
 }
 
@@ -1390,31 +1402,46 @@ where
     RC: mealy::Inbox<Item = T::Control>,
     RM: mealy::Inbox<Item = T::Management>,
 {
-    /// Drain the lanes, then give `step_os` a turn. One "sweep" of the doorbell loop below.
+    /// Drain a bounded burst of lane work, then give `step_os` a turn. One "sweep" of the
+    /// doorbell loop below.
     ///
-    /// Draining is repeated polls, not a second budget layer — `Node::poll`'s own
-    /// Control/Management/Data cycle already rotates across calls (mealy.rs: "`Node::poll`
-    /// drains one message per call"), so calling it in a loop until it stops returning `Ran` is
-    /// how a whole burst actually drains, exactly as [`host::GreenThread::handle_os`] does for
-    /// its host's `Node`.
+    /// Draining is repeated polls — `Node::poll`'s own Control/Management/Data cycle already
+    /// rotates across calls — but bounded by `sweep_burst`, for the same reason the classic
+    /// scheduler bounds each wake's drain: an unbounded "until quiet" loop under a
+    /// continuously-fed lane never revisits the doorbell, so a queued `Shutdown` is never
+    /// observed and `step_os` never runs. Budget spent with work remaining is just `Busy`.
     ///
-    /// Returns `Some(exit)` when the node is done (halted, either from a lane or from
-    /// `step_os`); otherwise `None` with a busy hint for the doorbell loop's `working` flag.
+    /// Lane completion (`Halted(Exit::Completed)` — every lane disconnected) does not end the
+    /// node by itself: `step_os` gets its turn first, every sweep, until it reports idle — an
+    /// OS bridge's external source outlives the last `ActorHandle` by design, exactly like the
+    /// buffered-SPSC drain in `run_inner`'s disconnected branch. A *failed* handler
+    /// (`Halted(Exit::Failed)`) exits immediately: a broken actor gets no final turns.
+    ///
+    /// Returns `Some(exit)` when the node is done; otherwise `None` with a busy hint for the
+    /// doorbell loop's `working` flag.
     fn sweep(&mut self) -> (Option<Exit>, bool) {
+        let mut polls = 0usize;
         let lane_step = loop {
             match self.node.poll() {
-                mealy::Step::Ran => continue,
+                mealy::Step::Ran => {
+                    polls += 1;
+                    if polls >= self.sweep_burst {
+                        break mealy::Step::Ran;
+                    }
+                }
                 other => break other,
             }
         };
-        if let mealy::Step::Halted(exit) = lane_step {
-            return (Some(exit), false);
+        if let mealy::Step::Halted(Exit::Failed(msg)) = lane_step {
+            return (Some(Exit::Failed(msg)), false);
         }
+        let lanes_completed = matches!(lane_step, mealy::Step::Halted(_));
 
-        // Idle means the lap found every lane genuinely empty. Blocked/Disconnected means a
-        // parked outbox is deferring lane work rather than lacking it — the same distinction
-        // `handle_wake` reports to `handle_os` as `SystemStatus`.
-        let system_status = if lane_step == mealy::Step::Idle {
+        // Idle means the lap found every lane genuinely empty. Ran means the budget ran out
+        // with lane work remaining; Blocked/Disconnected means a parked outbox is deferring
+        // lane work rather than lacking it — all three are the `Busy` the classic scheduler
+        // reports to `handle_os` in the same positions.
+        let system_status = if lane_step == mealy::Step::Idle || lanes_completed {
             SystemStatus::Idle
         } else {
             SystemStatus::Busy
@@ -1424,10 +1451,21 @@ where
         if let mealy::Step::Halted(exit) = os_step {
             return (Some(exit), false);
         }
+        let os_busy = matches!(os_actor_status, ActorStatus::Busy)
+            || matches!(os_step, mealy::Step::Blocked | mealy::Step::Disconnected);
 
-        let lanes_deferred = lane_step != mealy::Step::Idle;
-        let os_busy = matches!(os_actor_status, ActorStatus::Busy);
-        (None, lanes_deferred || os_busy)
+        if lanes_completed {
+            // The lanes can never produce again; the node lives exactly as long as its OS
+            // bridge still has something to do (or something parked to deliver).
+            return if os_busy {
+                (None, true)
+            } else {
+                (Some(Exit::Completed), false)
+            };
+        }
+
+        let lanes_busy = lane_step != mealy::Step::Idle;
+        (None, lanes_busy || os_busy)
     }
 
     /// Run this node until it halts or is shut down.

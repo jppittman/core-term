@@ -237,3 +237,173 @@ fn the_same_transducer_runs_dedicated_or_hosted() {
     // to its own doorbell loop when there is nothing to do.
     assert_eq!(host.sweep().status, ActorStatus::Idle);
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Driver-loop liveness: the review findings on #967, pinned.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Consumes and discards everything — for tests about the driver loop, not delivery.
+struct DiscardWiring;
+
+impl Wiring for DiscardWiring {
+    type Out = LaneLogOut;
+
+    fn flush(&mut self, out: &mut LaneLogOut) -> Flush {
+        out.seen = None;
+        Flush::Done
+    }
+}
+
+/// A producer that never stops sending must not be able to starve shutdown: the sweep's lane
+/// drain is bounded (`sweep_burst`), so the driver revisits its doorbell no matter how full
+/// the lanes stay. Without the bound, this test hangs on `join`.
+#[test]
+fn a_flooded_lane_does_not_starve_shutdown() {
+    let mut builder = ActorBuilder::<(), (), ()>::new(64, None);
+    let flood_handle = builder.add_producer();
+    let shutdown_handle = builder.add_producer();
+    let mut thread = builder.build_node(LaneLog, DiscardWiring);
+
+    // The driver hands its node back after exiting, so the lanes and doorbell stay alive
+    // until the flooder is stopped — `ActorHandle::wake` panics on a disconnected doorbell by
+    // contract, so the flood must be stopped by flag, not by racing the teardown.
+    let worker = std::thread::spawn(move || {
+        let exit = thread.run();
+        (exit, thread)
+    });
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_flag = stop.clone();
+    let flooder = std::thread::spawn(move || {
+        while !stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            // try_send: a full ring must not stall the flood — pressure, not delivery, is the
+            // point.
+            if flood_handle.try_send(Message::Data(())).is_err() {
+                // Full is expected mid-flood; keep pressing.
+            }
+        }
+    });
+
+    // Let the flood establish itself before asking for shutdown.
+    std::thread::sleep(Duration::from_millis(50));
+    shutdown_handle
+        .send(Message::Shutdown)
+        .expect("the doorbell must remain reachable during a flood");
+
+    let (exit, thread) = worker.join().expect("driver must not panic");
+    assert_eq!(exit, Exit::Completed, "shutdown observed despite the flood");
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    flooder.join().expect("flooder exits on the stop flag");
+    drop(thread);
+}
+
+/// Dropping the last `ActorHandle` disconnects every lane, but an OS bridge's external source
+/// outlives the handles by design — `step_os` gets its turn each sweep until it reports idle,
+/// so queued external work drains instead of being discarded on lane completion.
+#[test]
+fn step_os_gets_a_final_turn_after_the_last_handle_drops() {
+    let (tx_ext, rx_ext) = mpsc::channel::<u32>();
+    for i in 0..5u32 {
+        tx_ext.send(i).unwrap();
+    }
+    drop(tx_ext);
+
+    let mut builder = ActorBuilder::<Infallible, Infallible, Infallible>::new(4, None);
+    let handle = builder.add_producer();
+    let (tx_out, mut rx_out) = spsc_channel::<u32>(16);
+    let mut thread = builder.build_node(
+        BridgeSource { external: rx_ext },
+        BridgeWiring { tx: tx_out },
+    );
+
+    // Every handle is gone before the driver takes a single step.
+    drop(handle);
+
+    let exit = thread.run();
+    assert_eq!(exit, Exit::Completed);
+
+    let mut got = Vec::new();
+    while let Ok(v) = rx_out.try_recv() {
+        got.push(v);
+    }
+    assert_eq!(
+        got,
+        vec![0, 1, 2, 3, 4],
+        "external work queued behind dead lanes still drains before completion"
+    );
+}
+
+/// A `step_os` that yields a continuation and honestly reports itself `Idle` must still make
+/// progress: the stored continuation is runtime-owned work, so the driver keeps sweeping
+/// instead of blocking on a doorbell nothing will ring.
+#[test]
+fn a_step_os_continuation_resumes_without_an_external_wake() {
+    struct OsKick {
+        kicked: bool,
+    }
+
+    #[derive(Default)]
+    struct OsKickOut {
+        word: Option<u32>,
+        again: Option<u32>,
+    }
+
+    struct OsKickWiring {
+        tx: SpscSender<u32>,
+    }
+
+    impl Wiring for OsKickWiring {
+        type Out = OsKickOut;
+
+        fn flush(&mut self, out: &mut OsKickOut) -> Flush {
+            send_port(&mut out.word, &self.tx, Delivery::Blocking)
+        }
+    }
+
+    impl Transducer for OsKick {
+        type Control = Infallible;
+        type Management = Infallible;
+        type Data = u32;
+        type Out = OsKickOut;
+
+        fn step_data(&mut self, n: u32) -> Result<OsKickOut, HandlerError> {
+            Ok(OsKickOut {
+                word: Some(n * 10),
+                again: None,
+            })
+        }
+
+        fn step_os(&mut self, _: SystemStatus) -> Result<(OsKickOut, ActorStatus), HandlerError> {
+            if self.kicked {
+                return Ok((OsKickOut::default(), ActorStatus::Idle));
+            }
+            self.kicked = true;
+            // Idle is the trap: the continuation alone must keep the driver going.
+            Ok((
+                OsKickOut {
+                    word: None,
+                    again: Some(7),
+                },
+                ActorStatus::Idle,
+            ))
+        }
+
+        fn take_continuation(out: &mut OsKickOut) -> Option<u32> {
+            out.again.take()
+        }
+    }
+
+    let mut builder = ActorBuilder::<u32, Infallible, Infallible>::new(4, None);
+    let handle = builder.add_producer();
+    let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
+    let mut thread = builder.build_node(OsKick { kicked: false }, OsKickWiring { tx: tx_out });
+    drop(handle);
+
+    let exit = thread.run();
+    assert_eq!(exit, Exit::Completed);
+    assert_eq!(
+        rx_out.try_recv().unwrap(),
+        70,
+        "the continuation resumed through step_data with no external wake"
+    );
+}
