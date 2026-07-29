@@ -1,4 +1,4 @@
-#![allow(
+#![expect(
     clippy::manual_c_str_literals,
     clippy::must_use_candidate,
     reason = "this internal wrapper mirrors Objective-C runtime conventions and ABI encodings"

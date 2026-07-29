@@ -3,7 +3,7 @@
 //! This module defines safe, Rust-friendly wrappers around the raw Objective-C runtime.
 //! No strings in driver logic. No unsafe blocks in driver logic.
 
-#![allow(
+#![expect(
     clippy::must_use_candidate,
     clippy::not_unsafe_ptr_arg_deref,
     reason = "this internal Cocoa wrapper validates Objective-C pointer use at the FFI boundary"
