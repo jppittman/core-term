@@ -1477,7 +1477,9 @@ fn arena_to_uses(schedule: &[(regalloc::ValueId, ScheduledOp)]) -> Vec<Vec<regal
 /// The schedule mirrors the arena's topological order, so one forward pass
 /// suffices — the dense result is indexed by `ValueId.0`.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn schedule_variance(schedule: &[(regalloc::ValueId, ScheduledOp)]) -> Vec<crate::variance::Variance> {
+fn schedule_variance(
+    schedule: &[(regalloc::ValueId, ScheduledOp)],
+) -> Vec<crate::variance::Variance> {
     use crate::variance::Variance;
     let max_vid = schedule.iter().map(|(v, _)| v.0).max().unwrap_or(0) as usize;
     let mut v = alloc::vec![Variance::CONST; max_vid + 1];
@@ -1543,7 +1545,9 @@ fn plan_collapse_hoist(
     let operands = |op: &ScheduledOp| -> alloc::vec::Vec<ValueId> {
         match op {
             ScheduledOp::Var(_) | ScheduledOp::Const(_) => alloc::vec![],
-            ScheduledOp::Unary(_, a) | ScheduledOp::ShiftImm(_, a, _) | ScheduledOp::Gather(a, _) => {
+            ScheduledOp::Unary(_, a)
+            | ScheduledOp::ShiftImm(_, a, _)
+            | ScheduledOp::Gather(a, _) => {
                 alloc::vec![*a]
             }
             ScheduledOp::Binary(_, a, b) => alloc::vec![*a, *b],

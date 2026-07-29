@@ -691,8 +691,8 @@ mod tests {
     use crate::coordinator_node::CoordinatorData;
     use crate::display::messages::{DisplayEvent, Surface};
     use crate::platform::ColorCube;
+    use actor_scheduler::spsc::{spsc_channel, SpscReceiver};
     use actor_scheduler::ActorScheduler;
-    use actor_scheduler::spsc::{SpscReceiver, spsc_channel};
     use pixelflow_core::{Discrete, Manifold};
     use std::time::Instant;
 
@@ -815,7 +815,9 @@ mod tests {
             scale: 1.0,
         };
 
-        rig.feed(EngineData::FromDriver(DisplayEvent::WindowCreated { surface }));
+        rig.feed(EngineData::FromDriver(DisplayEvent::WindowCreated {
+            surface,
+        }));
         assert!(matches!(
             rig.coordinator_rx.try_recv(),
             Ok(CoordinatorData::Advance)

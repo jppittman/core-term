@@ -25,8 +25,8 @@ use crate::coordinator_node::CoordinatorData;
 use crate::display::messages::{DisplayControl, DisplayEvent, DisplayMgmt};
 use crate::input::MouseButton;
 use crate::vsync_actor::VsyncCommand;
-use actor_scheduler::HandlerError;
 use actor_scheduler::mealy::Transducer;
+use actor_scheduler::HandlerError;
 
 /// One optional slot per downstream edge. Default (all `None`, `quit: false`) is the silent
 /// step — most inputs move state without telling any peer.
