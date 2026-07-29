@@ -1,6 +1,7 @@
 //! Chrome Sphere JIT Rendering Demo
 //!
-//! Renders the 3D chrome sphere scene JIT-compiled via `Lattice::bake`.
+//! Renders the 3D chrome sphere scene (with checkerboard floor, sky gradient, and Householder reflections)
+//! JIT-compiled via `Lattice::bake`.
 
 use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::render::color::Rgba8;
@@ -22,18 +23,7 @@ fn build_scene() -> Kernel {
         .sub(&Kernel::y())
         .mul(&Kernel::constant(scale));
 
-    let (dx, dy, dz) = kernel_3d::screen_to_ray(&sx, &sy, 1.0);
-    let sky = kernel_3d::sky(&dy);
-
-    let t_sphere = kernel_3d::sphere_at((0.0, 0.0, 4.0), 1.0, &dx, &dy, &dz);
-    let px = dx.mul(&t_sphere);
-    let py = dy.mul(&t_sphere);
-    let pz = dz.mul(&t_sphere);
-
-    let (_nx, ny, _nz) = kernel_3d::surface_normal(&px, &py, &pz);
-
-    let hit_mask = t_sphere.gt(&Kernel::constant(0.0));
-    hit_mask.select(&ny, &sky)
+    kernel_3d::chrome_scene(&sx, &sy, (0.0, 0.0, 4.0), 1.0)
 }
 
 fn main() {

@@ -1,7 +1,7 @@
 //! 3D Scene Rendering Engine built on PixelFlow JIT [`Kernel`].
 //!
 //! Provides coordinate mapping, 3D surface geometry, screen-space tangent frames,
-//! and material shading compiled via `Lattice::bake`.
+//! procedural materials, and Householder reflection compiled via `Lattice::bake`.
 
 use pixelflow_core::Kernel;
 
@@ -89,5 +89,76 @@ pub mod kernel_3d {
         let t = dy.mul(&Kernel::constant(0.5)).add(&Kernel::constant(0.5));
         let clamped = t.max(&Kernel::constant(0.0)).min(&Kernel::constant(1.0));
         Kernel::constant(0.1).add(&clamped.mul(&Kernel::constant(0.8)))
+    }
+
+    /// 2D procedural checkerboard pattern over `(px, pz)`.
+    #[must_use]
+    pub fn checker(px: &Kernel, pz: &Kernel, scale: f32) -> Kernel {
+        let inv_scale = Kernel::constant(1.0 / scale);
+        let cx = px.mul(&inv_scale).floor();
+        let cz = pz.mul(&inv_scale).floor();
+
+        let two = Kernel::constant(2.0);
+        let x_even = cx.sub(&cx.div(&two).floor().mul(&two));
+        let z_even = cz.sub(&cz.div(&two).floor().mul(&two));
+
+        let diff = x_even.sub(&z_even).abs();
+        diff.select(&Kernel::constant(0.2), &Kernel::constant(0.8))
+    }
+
+    /// Householder reflection ray direction `(Rx, Ry, Rz)` from incident `(Dx, Dy, Dz)` and normal `(Nx, Ny, Nz)`.
+    #[must_use]
+    pub fn reflect(
+        dx: &Kernel,
+        dy: &Kernel,
+        dz: &Kernel,
+        nx: &Kernel,
+        ny: &Kernel,
+        nz: &Kernel,
+    ) -> (Kernel, Kernel, Kernel) {
+        let d_dot_n = dx.mul(nx).add(&dy.mul(ny)).add(&dz.mul(nz));
+        let k = Kernel::constant(2.0).mul(&d_dot_n);
+        (
+            dx.sub(&k.mul(nx)),
+            dy.sub(&k.mul(ny)),
+            dz.sub(&k.mul(nz)),
+        )
+    }
+
+    /// World scene background (checkerboard floor + sky).
+    #[must_use]
+    pub fn world(dx: &Kernel, dy: &Kernel, dz: &Kernel) -> Kernel {
+        let floor_height = -1.0f32;
+        let t_floor = Kernel::constant(floor_height).div(dy);
+
+        let px_floor = dx.mul(&t_floor);
+        let pz_floor = dz.mul(&t_floor);
+
+        let floor_color = checker(&px_floor, &pz_floor, 1.0);
+        let sky_color = sky(dy);
+
+        let hit_floor = dy.lt(&Kernel::constant(0.0));
+        hit_floor.select(&floor_color, &sky_color)
+    }
+
+    /// Complete 3D reflective chrome sphere scene over screen coordinates `(sx, sy)`.
+    #[must_use]
+    pub fn chrome_scene(sx: &Kernel, sy: &Kernel, sphere_center: (f32, f32, f32), radius: f32) -> Kernel {
+        let (dx, dy, dz) = screen_to_ray(sx, sy, 1.0);
+        let direct_world = world(&dx, &dy, &dz);
+
+        let t_sphere = sphere_at(sphere_center, radius, &dx, &dy, &dz);
+        let hit_sphere = t_sphere.gt(&Kernel::constant(0.0));
+
+        let px = dx.mul(&t_sphere);
+        let py = dy.mul(&t_sphere);
+        let pz = dz.mul(&t_sphere);
+
+        let (nx, ny, nz) = surface_normal(&px, &py, &pz);
+        let (rx, ry, rz) = reflect(&dx, &dy, &dz, &nx, &ny, &nz);
+
+        let reflected_world = world(&rx, &ry, &rz);
+
+        hit_sphere.select(&reflected_world, &direct_world)
     }
 }
