@@ -1,7 +1,7 @@
 //! 3D Scene Rendering Engine built on PixelFlow JIT [`Kernel`].
 //!
 //! Provides coordinate mapping, 3D surface geometry, screen-space tangent frames,
-//! procedural materials, and Householder reflection compiled via `Lattice::bake`.
+//! procedural RGB materials, and Householder reflection compiled via `Lattice::bake`.
 
 use pixelflow_core::Kernel;
 
@@ -83,17 +83,28 @@ pub mod kernel_3d {
         (nx.mul(&inv_len), ny.mul(&inv_len), nz.mul(&inv_len))
     }
 
-    /// Sky gradient material kernel.
+    /// Sky gradient scalar material kernel.
     #[must_use]
     pub fn sky(dy: &Kernel) -> Kernel {
-        let t = dy.mul(&Kernel::constant(0.5)).add(&Kernel::constant(0.5));
-        let clamped = t.max(&Kernel::constant(0.0)).min(&Kernel::constant(1.0));
-        Kernel::constant(0.1).add(&clamped.mul(&Kernel::constant(0.8)))
+        sky_rgb(dy).2
     }
 
-    /// 2D procedural checkerboard pattern over `(px, pz)`.
+    /// Sky gradient RGB material kernel (deep horizon sky blue).
     #[must_use]
-    pub fn checker(px: &Kernel, pz: &Kernel, scale: f32) -> Kernel {
+    pub fn sky_rgb(dy: &Kernel) -> (Kernel, Kernel, Kernel) {
+        let t = dy.mul(&Kernel::constant(0.5)).add(&Kernel::constant(0.5));
+        let clamped = t.max(&Kernel::constant(0.0)).min(&Kernel::constant(1.0));
+
+        let r = Kernel::constant(0.7).sub(&clamped.mul(&Kernel::constant(0.5)));
+        let g = Kernel::constant(0.85).sub(&clamped.mul(&Kernel::constant(0.45)));
+        let b = Kernel::constant(1.0).sub(&clamped.mul(&Kernel::constant(0.2)));
+
+        (r, g, b)
+    }
+
+    /// 2D procedural warm/cool checkerboard pattern RGB over `(px, pz)`.
+    #[must_use]
+    pub fn checker_rgb(px: &Kernel, pz: &Kernel, scale: f32) -> (Kernel, Kernel, Kernel) {
         let inv_scale = Kernel::constant(1.0 / scale);
         let cx = px.mul(&inv_scale).floor();
         let cz = pz.mul(&inv_scale).floor();
@@ -103,11 +114,19 @@ pub mod kernel_3d {
         let z_even = cz.sub(&cz.div(&two).floor().mul(&two));
 
         let diff = x_even.sub(&z_even).abs();
-        diff.select(&Kernel::constant(0.2), &Kernel::constant(0.8))
+        let is_even = diff.lt(&Kernel::constant(0.5));
+
+        // Warm tile: (0.95, 0.90, 0.80), Cool tile: (0.20, 0.25, 0.30)
+        let r = is_even.select(&Kernel::constant(0.95), &Kernel::constant(0.20));
+        let g = is_even.select(&Kernel::constant(0.90), &Kernel::constant(0.25));
+        let b = is_even.select(&Kernel::constant(0.80), &Kernel::constant(0.30));
+
+        (r, g, b)
     }
 
     /// Householder reflection ray direction `(Rx, Ry, Rz)` from incident `(Dx, Dy, Dz)` and normal `(Nx, Ny, Nz)`.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn reflect(
         dx: &Kernel,
         dy: &Kernel,
@@ -125,27 +144,36 @@ pub mod kernel_3d {
         )
     }
 
-    /// World scene background (checkerboard floor + sky).
+    /// World scene background RGB (warm/cool checkerboard floor + sky gradient).
     #[must_use]
-    pub fn world(dx: &Kernel, dy: &Kernel, dz: &Kernel) -> Kernel {
+    pub fn world_rgb(dx: &Kernel, dy: &Kernel, dz: &Kernel) -> (Kernel, Kernel, Kernel) {
         let floor_height = -1.0f32;
         let t_floor = Kernel::constant(floor_height).div(dy);
 
         let px_floor = dx.mul(&t_floor);
         let pz_floor = dz.mul(&t_floor);
 
-        let floor_color = checker(&px_floor, &pz_floor, 1.0);
-        let sky_color = sky(dy);
+        let (fr, fg, fb) = checker_rgb(&px_floor, &pz_floor, 1.0);
+        let (sr, sg, sb) = sky_rgb(dy);
 
         let hit_floor = dy.lt(&Kernel::constant(0.0));
-        hit_floor.select(&floor_color, &sky_color)
+        (
+            hit_floor.select(&fr, &sr),
+            hit_floor.select(&fg, &sg),
+            hit_floor.select(&fb, &sb),
+        )
     }
 
-    /// Complete 3D reflective chrome sphere scene over screen coordinates `(sx, sy)`.
+    /// Complete 3D reflective chrome sphere scene returning `(R, G, B)` Kernels over screen coordinates `(sx, sy)`.
     #[must_use]
-    pub fn chrome_scene(sx: &Kernel, sy: &Kernel, sphere_center: (f32, f32, f32), radius: f32) -> Kernel {
+    pub fn chrome_scene_rgb(
+        sx: &Kernel,
+        sy: &Kernel,
+        sphere_center: (f32, f32, f32),
+        radius: f32,
+    ) -> (Kernel, Kernel, Kernel) {
         let (dx, dy, dz) = screen_to_ray(sx, sy, 1.0);
-        let direct_world = world(&dx, &dy, &dz);
+        let (dr, dg, db) = world_rgb(&dx, &dy, &dz);
 
         let t_sphere = sphere_at(sphere_center, radius, &dx, &dy, &dz);
         let hit_sphere = t_sphere.gt(&Kernel::constant(0.0));
@@ -157,8 +185,12 @@ pub mod kernel_3d {
         let (nx, ny, nz) = surface_normal(&px, &py, &pz);
         let (rx, ry, rz) = reflect(&dx, &dy, &dz, &nx, &ny, &nz);
 
-        let reflected_world = world(&rx, &ry, &rz);
+        let (rr, rg, rb) = world_rgb(&rx, &ry, &rz);
 
-        hit_sphere.select(&reflected_world, &direct_world)
+        (
+            hit_sphere.select(&rr, &dr),
+            hit_sphere.select(&rg, &dg),
+            hit_sphere.select(&rb, &db),
+        )
     }
 }

@@ -1,6 +1,6 @@
 //! Chrome Sphere JIT Rendering Demo
 //!
-//! Renders the 3D chrome sphere scene (with checkerboard floor, sky gradient, and Householder reflections)
+//! Renders the 3D chrome sphere scene (with warm/cool checkerboard floor, sky gradient, and Householder reflections)
 //! JIT-compiled via `Lattice::bake`.
 
 use pixelflow_core::{Kernel, Lattice};
@@ -14,7 +14,7 @@ use std::time::Instant;
 const W: usize = 1920;
 const H: usize = 1080;
 
-fn build_scene() -> Kernel {
+fn build_scene() -> (Kernel, Kernel, Kernel) {
     let scale = 2.0 / H as f32;
     let sx = Kernel::x()
         .sub(&Kernel::constant(W as f32 * 0.5))
@@ -23,7 +23,7 @@ fn build_scene() -> Kernel {
         .sub(&Kernel::y())
         .mul(&Kernel::constant(scale));
 
-    kernel_3d::chrome_scene(&sx, &sy, (0.0, 0.0, 4.0), 1.0)
+    kernel_3d::chrome_scene_rgb(&sx, &sy, (0.0, 0.0, 4.0), 1.0)
 }
 
 fn main() {
@@ -37,14 +37,19 @@ fn main() {
     );
     println!();
 
-    let scene_kernel = build_scene();
+    let (rk, gk, bk) = build_scene();
     let lattice = Lattice::frame(W, H, 0.0);
 
     let start = Instant::now();
-    let baked = lattice.bake(&scene_kernel);
+    let baked_r = lattice.bake(&rk);
+    let baked_g = lattice.bake(&gk);
+    let baked_b = lattice.bake(&bk);
     let elapsed = start.elapsed();
 
-    let buffer = baked.buffer();
+    let buf_r = baked_r.buffer();
+    let buf_g = baked_g.buffer();
+    let buf_b = baked_b.buffer();
+
     let mpps = (W * H) as f64 / elapsed.as_secs_f64() / 1_000_000.0;
     let fps = 1.0 / elapsed.as_secs_f64();
     println!(
@@ -55,9 +60,11 @@ fn main() {
     );
 
     let mut frame = Frame::<Rgba8>::new(W as u32, H as u32);
-    for (i, &val) in buffer.iter().enumerate() {
-        let b = (val.clamp(0.0, 1.0) * 255.0) as u8;
-        frame.data[i] = Rgba8::new(b, b, b, 255);
+    for i in 0..(W * H) {
+        let r = (buf_r[i].clamp(0.0, 1.0) * 255.0) as u8;
+        let g = (buf_g[i].clamp(0.0, 1.0) * 255.0) as u8;
+        let b = (buf_b[i].clamp(0.0, 1.0) * 255.0) as u8;
+        frame.data[i] = Rgba8::new(r, g, b, 255);
     }
 
     let path = std::env::temp_dir().join("chrome_sphere_jit.ppm");
