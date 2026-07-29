@@ -39,11 +39,6 @@ harness = false
 name = "bench_optimize_spsc"
 harness = false
 
-
 [[bench]]
-name = "bench_mealy"
-harness = false
-
-[[bench]]
-name = "bench_priority"
+name = "bench_kubelet"
 harness = false

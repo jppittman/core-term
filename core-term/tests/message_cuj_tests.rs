@@ -62,7 +62,7 @@ impl Actor<Vec<u8>, (), ()> for MockParserActor {
     fn handle_management(&mut self, _: ()) -> HandlerResult {
         Ok(())
     }
-    fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -401,7 +401,7 @@ fn cuj_pty04_sender_drop_terminates_receiver() {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -482,7 +482,7 @@ impl Actor<MockEngineData, MockEngineControl, MockEngineManagement> for MockTerm
         Ok(())
     }
 
-    fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -692,7 +692,7 @@ fn cuj_priority_control_before_management_before_data() {
             self.order.lock().unwrap().push(format!("M:{}", msg));
             Ok(())
         }
-        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -757,7 +757,7 @@ fn cuj_concurrent_senders_all_messages_delivered() {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }

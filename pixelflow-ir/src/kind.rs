@@ -29,6 +29,7 @@ pub enum OpKind {
     Floor = 14,
     Ceil = 15,
     Round = 16,
+    Fract = 17,
 
     // --- Trigonometry ---
     Sin = 18,
@@ -46,6 +47,7 @@ pub enum OpKind {
     Log2 = 28,
     Log10 = 29,
     Pow = 30,
+    Hypot = 31,
 
     // --- Comparison ---
     Lt = 32,
@@ -57,6 +59,7 @@ pub enum OpKind {
 
     // --- Control Flow ---
     Select = 38,
+    Clamp = 39,
 
     // --- Structure ---
     Tuple = 40,
@@ -83,10 +86,9 @@ pub enum OpKind {
     // --- Differentiation ---
     /// Symbolic derivative `∂(child0)/∂(var)` where `child1` is a `Const` whose
     /// value is the variable index (0=X, 1=Y, 2=Z, 3=W). The e-graph pushes
-    /// `Dwrt` toward the leaves via the chain rule at optimization time;
-    /// whatever survives (budget miss, unsupported op) falls to the runtime
-    /// `lower_dwrt` pass, which either eliminates it or refuses to compile.
-    /// It must never reach a backend.
+    /// `Dwrt` toward the leaves via the chain rule, computing the derivative
+    /// analytically; whatever cannot be decomposed survives as a residual `Dwrt`
+    /// (the jet fallback — not yet wired). It must never reach a backend.
     Dwrt = 48,
 
     // --- Bound memory (lattices) ---
@@ -119,7 +121,7 @@ pub enum OpKind {
 
 impl OpKind {
     /// Total number of operations.
-    pub const COUNT: usize = 50;
+    pub const COUNT: usize = 53;
 
     /// Monoid identity for an op usable as a reduction combiner
     /// (`Add`→0, `Mul`→1, `Min`→+∞, `Max`→−∞). `None` if `self` is not a valid
@@ -131,97 +133,7 @@ impl OpKind {
             Self::Mul => Some(1.0),
             Self::Min => Some(f32::INFINITY),
             Self::Max => Some(f32::NEG_INFINITY),
-            // Mask monoids — the existential and universal quantifiers over a
-            // bounded domain. Masks are bitwise in both evaluation tiers, so
-            // the identities are the all-clear and all-set bit patterns
-            // (`BitAnd`'s is a NaN by float reading; it is never read as a
-            // number, only ANDed).
-            Self::BitOr => Some(0.0),
-            Self::BitAnd => Some(f32::from_bits(u32::MAX)),
             _ => None,
-        }
-    }
-
-    /// Whether folding this op on `args` would bake in a **platform-specific**
-    /// answer.
-    ///
-    /// The FP contract (CLAUDE.md, "Floating point at the edges") is hardware
-    /// semantics — but the hardwares disagree in specific places, so for these
-    /// (op, operand) combinations the language promises nothing:
-    ///
-    /// - `Min`/`Max` with a NaN operand: x86 `minps`/`maxps` compute
-    ///   `(a OP b) ? a : b`, yielding the SECOND operand; aarch64 `FMIN`/`FMAX`
-    ///   propagate the NaN. `min(NaN, 1.0)` is `1.0` on x86, `NaN` on aarch64.
-    /// - `Min`/`Max` on **opposite-signed zeros**: the same operand-order rule
-    ///   returns the second zero on x86 (since `-0.0 < 0.0` is false), while
-    ///   `FMIN` selects `-0.0` and `FMAX` selects `+0.0`. `==` cannot see this
-    ///   — `-0.0 == 0.0` — but `1.0 / x` turns it into `+inf` vs `-inf`.
-    /// - `Gt`/`Ge` with a NaN operand: x86 uses the unordered predicates
-    ///   (imm8 6/5), TRUE for NaN; aarch64 `FCMGT`/`FCMGE` are ordered, FALSE.
-    /// - `Round` at an exact tie: nearest-even on x86 (`vroundps` imm 0x00),
-    ///   ties-away on aarch64 (`FRINTA`), and `(x + 0.5).floor()` in the
-    ///   combinator tier — three answers at `±n.5`.
-    /// - `Round` on `-0.5 <= x <= -0.0`: both JIT tiers round to `-0.0`,
-    ///   preserving the sign, while the combinator formula yields `+0.0`.
-    ///   Not a tie, so it needs its own condition. `(x + 0.5).floor()` is not
-    ///   any IEEE rounding mode — `round(-1.5)` is -1 there against -2
-    ///   everywhere else — so the real repair is in that tier, not here.
-    /// - `Recip`/`Rsqrt` **always**: these are estimate instructions and the
-    ///   estimates differ — `rcpps` ~12 bits, `vrcp14ps` ~14, aarch64
-    ///   `FRECPE` + one `FRECPS` refinement. The exact `1.0 / x` the folder
-    ///   computes is not any of those answers.
-    /// - `MulAdd` where one rounding differs from two: `vfmadd`/`FMLA` round
-    ///   the product and sum together, SSE2's `mulps`+`addps` rounds twice.
-    ///   `mul_add(1.0000001, 4097.0, 4097.0)` is `8194.001` fused, `8194.0`
-    ///   split.
-    ///
-    /// x86 has no ties-away rounding mode and NaN/zero blending costs extra
-    /// instructions, so unifying any of these would spend hot-path work on
-    /// cases the language does not promise.
-    ///
-    /// **Why a fold in particular must decline:** constant folding happens on
-    /// the BUILD host at macro-expansion time, but the constant it produces
-    /// executes on the TARGET. Folding one of these bakes the build machine's
-    /// arithmetic into a binary that may run somewhere computing differently —
-    /// so this is not merely an optimized-vs-unoptimized discrepancy.
-    ///
-    /// `eval_unary`/`eval_binary` still return a value for these; it is this
-    /// build's behavior and no promise about any other.
-    #[must_use]
-    pub fn fold_is_platform_specific(self, args: &[f32]) -> bool {
-        match self {
-            Self::Min | Self::Max => match args {
-                // Equal but distinguishable is exactly ±0.0: x86 picks by
-                // operand order, ARM by sign.
-                [a, b] => a.is_nan() || b.is_nan() || (a == b && a.to_bits() != b.to_bits()),
-                _ => false,
-            },
-            Self::Gt | Self::Ge => args.iter().any(|a| a.is_nan()),
-            // Ties (x86 nearest-even vs aarch64 ties-away), plus the interval
-            // where the combinator formula loses the sign of zero: for
-            // `-0.5 <= x <= -0.0` both JIT tiers round to `-0.0` (sign
-            // preserved) while `(x + 0.5).floor()` gives `+0.0`. `1.0 / x`
-            // makes that `-inf` versus `+inf`. `-0.5` is already covered as a
-            // tie; the rest of the interval is not.
-            Self::Round => args
-                .iter()
-                .any(|a| a.fract().abs() == 0.5 || (a.is_sign_negative() && *a > -0.5)),
-            // Reciprocal ESTIMATES, and every target estimates differently:
-            // SSE2/AVX2 `rcpps`/`vrcpps` give ~12 bits, AVX-512 `vrcp14ps`
-            // ~14, and aarch64 emits `FRECPE` plus one `FRECPS` Newton step.
-            // `eval_unary`'s exact `1.0 / x` matches none of them, so there is
-            // no host whose answer is worth baking. Unconditional: an estimate
-            // is only guaranteed close, never equal, so no argument is safe.
-            Self::Recip | Self::Rsqrt => true,
-            // One rounding or two. `mul_add` is the single-rounding FMA every
-            // first-class target has (`vfmadd`, `FMLA`); `x * y + z` is what
-            // SSE2 emits without one. Value-aware, because they agree for most
-            // inputs and folding is worth keeping where they do.
-            Self::MulAdd => match args {
-                [x, y, z] => x.mul_add(*y, *z).to_bits() != (x * y + z).to_bits(),
-                _ => false,
-            },
-            _ => false,
         }
     }
 
@@ -263,6 +175,7 @@ impl OpKind {
             | Self::Floor
             | Self::Ceil
             | Self::Round
+            | Self::Fract
             | Self::Sin
             | Self::Cos
             | Self::Tan
@@ -285,6 +198,7 @@ impl OpKind {
             | Self::Max
             | Self::Atan2
             | Self::Pow
+            | Self::Hypot
             | Self::Lt
             | Self::Le
             | Self::Gt
@@ -299,7 +213,7 @@ impl OpKind {
             | Self::Dwrt
             | Self::RawGather => 2,
 
-            Self::MulAdd | Self::Select | Self::Gather => 3,
+            Self::MulAdd | Self::Select | Self::Clamp | Self::Gather => 3,
 
             // N-ary: [combiner, reduce_var, extent, body].
             Self::Reduce => 4,
@@ -327,6 +241,7 @@ impl OpKind {
             Self::Floor => "floor",
             Self::Ceil => "ceil",
             Self::Round => "round",
+            Self::Fract => "fract",
             Self::Sin => "sin",
             Self::Cos => "cos",
             Self::Tan => "tan",
@@ -340,6 +255,7 @@ impl OpKind {
             Self::Log2 => "log2",
             Self::Log10 => "log10",
             Self::Pow => "pow",
+            Self::Hypot => "hypot",
             Self::Lt => "lt",
             Self::Le => "le",
             Self::Gt => "gt",
@@ -347,6 +263,7 @@ impl OpKind {
             Self::Eq => "eq",
             Self::Ne => "ne",
             Self::Select => "select",
+            Self::Clamp => "clamp",
             Self::Tuple => "tuple",
             Self::TruncToInt => "trunc_to_int",
             Self::IntToFloat => "int_to_float",
@@ -384,6 +301,7 @@ impl OpKind {
             "floor" => Some(Self::Floor),
             "ceil" => Some(Self::Ceil),
             "round" => Some(Self::Round),
+            "fract" => Some(Self::Fract),
             "sin" => Some(Self::Sin),
             "cos" => Some(Self::Cos),
             "tan" => Some(Self::Tan),
@@ -397,6 +315,7 @@ impl OpKind {
             "log2" => Some(Self::Log2),
             "log10" => Some(Self::Log10),
             "pow" | "powf" => Some(Self::Pow),
+            "hypot" => Some(Self::Hypot),
             "lt" => Some(Self::Lt),
             "le" => Some(Self::Le),
             "gt" => Some(Self::Gt),
@@ -404,6 +323,7 @@ impl OpKind {
             "eq" => Some(Self::Eq),
             "ne" => Some(Self::Ne),
             "select" => Some(Self::Select),
+            "clamp" => Some(Self::Clamp),
             "tuple" => Some(Self::Tuple),
             "trunc_to_int" => Some(Self::TruncToInt),
             "int_to_float" => Some(Self::IntToFloat),
@@ -432,7 +352,7 @@ impl OpKind {
             // Reduction is lowered (unrolled) away before costing; price the
             // node itself at zero so a stray one never dominates extraction.
             Self::Reduce => 0,
-            Self::Neg | Self::Abs | Self::Floor | Self::Ceil | Self::Round => 1,
+            Self::Neg | Self::Abs | Self::Floor | Self::Ceil | Self::Round | Self::Fract => 1,
             Self::Add
             | Self::Sub
             | Self::Min
@@ -443,7 +363,8 @@ impl OpKind {
             | Self::Ge
             | Self::Eq
             | Self::Ne
-            | Self::Select => 4,
+            | Self::Select
+            | Self::Clamp => 4,
             Self::Mul | Self::MulAdd | Self::Recip | Self::Rsqrt => 5,
             // Bit-manip primitives: single cheap integer/convert instructions.
             Self::TruncToInt
@@ -471,7 +392,8 @@ impl OpKind {
             | Self::Ln
             | Self::Log2
             | Self::Log10
-            | Self::Pow => 15,
+            | Self::Pow
+            | Self::Hypot => 15,
         }
     }
 
@@ -565,6 +487,7 @@ impl OpKind {
             | Self::Floor
             | Self::Ceil
             | Self::Round
+            | Self::Fract
             | Self::Sin
             | Self::Cos
             | Self::Tan
@@ -589,6 +512,7 @@ impl OpKind {
             Self::Min
             | Self::Max
             | Self::Atan2
+            | Self::Hypot
             | Self::Pow
             | Self::Lt
             | Self::Le
@@ -612,7 +536,7 @@ impl OpKind {
             Self::Reduce => EmitStyle::Special,
 
             // Ternary method: (a).mul_add(b, c)
-            Self::MulAdd | Self::Select => EmitStyle::TernaryMethod,
+            Self::MulAdd | Self::Select | Self::Clamp => EmitStyle::TernaryMethod,
         }
     }
 
@@ -632,81 +556,21 @@ impl OpKind {
             Self::Recip => Some(1.0 / x),
             Self::Floor => Some(x.floor()),
             Self::Ceil => Some(x.ceil()),
-            // x86's answer (`vroundps` imm 0x00 is nearest-even). aarch64
-            // `FRINTA` is ties-away and the combinator tier is
-            // `(x + 0.5).floor()`, so at a tie this is one of three behaviors
-            // and no promise — see `fold_is_platform_specific`.
-            Self::Round => Some(x.round_ties_even()),
-            // Integer-domain primitives. A lane holds an f32 bit pattern; these
-            // reinterpret it as i32, exactly as the hardware instructions do
-            // (`cvttps2dq` / `cvtdq2ps`). They exist so exp/log can lower to
-            // arithmetic, and the interpreter needs them for the same reason —
-            // it evaluates that lowering.
-            Self::TruncToInt => Some(f32::from_bits((x as i32) as u32)),
-            Self::IntToFloat => Some((x.to_bits() as i32) as f32),
-
-            // Transcendentals have no arm on purpose. `f32::sin` and friends
-            // are std-only (absent from `core`) and would be a *second*
-            // definition of a function the compiler already defines by
-            // expansion. Callers lower first — `expand_transcendentals` — and
-            // then only the primitives above are ever evaluated. Same
-            // discipline as `Dwrt`, which is also lowered rather than
-            // interpreted.
+            Self::Round => Some(x.round()),
+            Self::Fract => Some(x.fract()),
+            Self::Sin => Some(x.sin()),
+            Self::Cos => Some(x.cos()),
+            Self::Tan => Some(x.tan()),
+            Self::Asin => Some(x.asin()),
+            Self::Acos => Some(x.acos()),
+            Self::Atan => Some(x.atan()),
+            Self::Exp => Some(x.exp()),
+            Self::Exp2 => Some(x.exp2()),
+            Self::Ln => Some(x.ln()),
+            Self::Log2 => Some(x.log2()),
+            Self::Log10 => Some(x.log10()),
             _ => None,
         }
-    }
-
-    /// A comparison lane: all bits set for true, all clear for false.
-    ///
-    /// This is not a stylistic choice about how to spell a boolean — it is the
-    /// only representation the consumers accept. `Select` is a *bitwise* blend
-    /// on every backend (`andps`/`andnps`/`orps` on SSE2 and AVX2, one
-    /// `vpternlogd 0xCA` on AVX-512, `BSL` on aarch64), and `BitAnd`/`BitOr`
-    /// are literal bitwise ops, so a mask lane's job is to be a per-bit
-    /// stencil. `1.0` is not one: `0xFFFFFFFF & 0x3f800000` is `0x3f800000`,
-    /// and blending `7.0` against `9.0` through that pattern gives `4.5` — a
-    /// value neither branch ever held.
-    ///
-    /// Every tier that *executes* a comparison already writes all-ones —
-    /// `cmpps`, `FCMEQ`, and the combinator tier's SIMD compares alike. Folding
-    /// in the same representation is what makes a folded comparison and an
-    /// executed one interchangeable as operands.
-    #[must_use]
-    pub const fn mask(condition: bool) -> f32 {
-        if condition {
-            f32::from_bits(u32::MAX)
-        } else {
-            0.0
-        }
-    }
-
-    /// Whether this op's result is a lane **bit pattern** rather than a number.
-    ///
-    /// Comparisons produce masks ([`Self::mask`] — all-ones, which reads as
-    /// NaN); the integer-domain primitives reinterpret lanes as `i32` and are
-    /// how exp/log lower to arithmetic; `Select`/`BitAnd`/`BitOr` pass patterns
-    /// through. For all of them a non-finite float reading is the intended
-    /// output rather than an overflow, which is what separates them from
-    /// `1e38 * 1e38` — the case a folder is right to refuse.
-    #[must_use]
-    pub const fn is_bitwise_domain(self) -> bool {
-        matches!(
-            self,
-            Self::Lt
-                | Self::Le
-                | Self::Gt
-                | Self::Ge
-                | Self::Eq
-                | Self::Ne
-                | Self::Select
-                | Self::BitAnd
-                | Self::BitOr
-                | Self::TruncToInt
-                | Self::IntToFloat
-                | Self::IAdd
-                | Self::Shl
-                | Self::Shr
-        )
     }
 
     /// Evaluate a binary operation on constant arguments.
@@ -719,46 +583,25 @@ impl OpKind {
             Self::Sub => Some(x - y),
             Self::Mul => Some(x * y),
             Self::Div => Some(x / y),
-            // `minps`/`maxps` semantics on x86: `(a OP b) ? a : b`, so a NaN in
-            // EITHER operand yields the second. aarch64 `FMIN`/`FMAX` propagate
-            // the NaN instead — see `fold_is_platform_specific`. This arm
-            // is x86's answer and is not a promise for other targets.
-            Self::Min => Some(if x < y { x } else { y }),
-            Self::Max => Some(if x > y { x } else { y }),
-            Self::Lt => Some(Self::mask(x < y)),
-            Self::Le => Some(Self::mask(x <= y)),
-            // Gt/Ge are x86's UNORDERED predicates (imm8 6 = NLE_US, 5 =
-            // NLT_US), so unlike Lt/Le they are TRUE when either operand is
-            // NaN. ARM's FCMGT/FCMGE are ordered and give FALSE — see
-            // `fold_is_platform_specific`.
-            // Spelled as the ordered comparison plus the unordered case rather
-            // than as `!(x <= y)`: same answer, but it says which part is the
-            // NaN behavior instead of hiding it inside a negation.
-            Self::Gt => Some(Self::mask(x > y || x.is_nan() || y.is_nan())),
-            Self::Ge => Some(Self::mask(x >= y || x.is_nan() || y.is_nan())),
-            // Exact, as every emitter compares. The old `(x-y).abs() < EPSILON`
-            // made the folder disagree with the JIT for ordinary finite values:
-            // 0.5 and its next representable neighbour differ by less than
-            // EPSILON, so folding said "equal" where the hardware says "not".
-            // NaN is false here and in `cmpps`/`FCMEQ` alike.
-            Self::Eq => Some(Self::mask(x == y)),
-            // Exact, and true for NaN — matching `NEQ_UQ` and an inverted
-            // `FCMEQ`. Same epsilon bug as `Eq` above.
-            Self::Ne => Some(Self::mask(x != y)),
-            // Integer-domain binaries on lane bit patterns. The shift count is
-            // the RHS `Const`'s numeric value (the schedule reads it as
-            // `*v as u32 as u8`), and both shifts are logical — `vpslld` /
-            // `vpsrld`, zero-filling.
-            Self::IAdd => Some(f32::from_bits(
-                (x.to_bits() as i32).wrapping_add(y.to_bits() as i32) as u32,
-            )),
-            Self::Shl => Some(f32::from_bits(x.to_bits() << (y as u32 & 31))),
-            Self::Shr => Some(f32::from_bits(x.to_bits() >> (y as u32 & 31))),
-            // Bitwise on lane bit patterns, matching the SIMD backends. On
-            // canonical masks (1.0/0.0 here, all-ones/zero in the JIT) this
-            // is logical AND/OR in both representations.
-            Self::BitAnd => Some(f32::from_bits(x.to_bits() & y.to_bits())),
-            Self::BitOr => Some(f32::from_bits(x.to_bits() | y.to_bits())),
+            Self::Min => Some(x.min(y)),
+            Self::Max => Some(x.max(y)),
+            Self::Atan2 => Some(x.atan2(y)),
+            Self::Pow => Some(x.powf(y)),
+            Self::Hypot => Some(x.hypot(y)),
+            Self::Lt => Some(if x < y { 1.0 } else { 0.0 }),
+            Self::Le => Some(if x <= y { 1.0 } else { 0.0 }),
+            Self::Gt => Some(if x > y { 1.0 } else { 0.0 }),
+            Self::Ge => Some(if x >= y { 1.0 } else { 0.0 }),
+            Self::Eq => Some(if (x - y).abs() < f32::EPSILON {
+                1.0
+            } else {
+                0.0
+            }),
+            Self::Ne => Some(if (x - y).abs() >= f32::EPSILON {
+                1.0
+            } else {
+                0.0
+            }),
             _ => None,
         }
     }
@@ -767,18 +610,15 @@ impl OpKind {
     #[must_use]
     pub fn eval_ternary(self, x: f32, y: f32, z: f32) -> Option<f32> {
         match self {
-            // Two roundings, which is what a target without FMA emits (SSE2:
-            // `mulps` then `addps`). AVX2+FMA, AVX-512 and aarch64 all round
-            // once (`vfmadd`, `FMLA`), so the answers differ by target and
-            // `fold_is_platform_specific` declines exactly where they do.
             Self::MulAdd => Some(x * y + z),
-            // The bitwise blend every backend emits — `andps`/`andnps`/`orps`
-            // on SSE2 and AVX2, one `vpternlogd 0xCA` on AVX-512, `BSL` on
-            // aarch64. Spelling it `if x != 0.0` would be right only for a
-            // canonical [`Self::mask`] and silently wrong for anything else.
-            Self::Select => Some(f32::from_bits(
-                (x.to_bits() & y.to_bits()) | (!x.to_bits() & z.to_bits()),
-            )),
+            Self::Select => Some(if x != 0.0 { y } else { z }),
+            Self::Clamp => {
+                // Guard against degenerate clamp where min > max
+                // (can arise from e-graph extraction with swapped bounds).
+                let lo = y.min(z);
+                let hi = y.max(z);
+                Some(x.clamp(lo, hi))
+            }
             _ => None,
         }
     }

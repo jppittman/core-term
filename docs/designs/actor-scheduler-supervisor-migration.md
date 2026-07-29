@@ -2,16 +2,9 @@
 
 ## Metadata
 - **Author**: jppittman
-- **Status**: Superseded by `docs/designs/actor-scheduler-mealy-transducer.md`
+- **Status**: Draft
 - **Created**: 2026-02-20
 - **Reviewers**: —
-
-> **Superseded (2026-07-24).** The Kubernetes framing here was a supervision metaphor wearing a
-> scheduling costume: it welded *actor* to *OS thread* and explicitly punted on preemption. The
-> replacement models an actor as a Mealy machine whose handler *returns* its output instead of
-> calling `send`, which makes scheduling a property of the primitive rather than of a cluster.
-> Kept for history and for the restart/frequency-gate mechanics, which survive as a plain
-> supervisor. See the Mealy-transducer doc.
 
 ---
 
@@ -632,7 +625,7 @@ consumer migrations that can run in parallel.
 
 | Alternative | Pros | Cons | Why Not |
 |-------------|------|------|---------|
-| Seqlock `ActorRef` (indirection on every send) | True `OneForOne` within troupe | Adds indirection on the hot path and breaks the wait-free guarantee | Prefer lazy reconnect |
+| Seqlock `ActorRef` (indirection on every send) | True `OneForOne` within troupe | ~15–30ns per send on hot path, breaks wait-free guarantee | Overhead unacceptable; lazy reconnect is free |
 | Supervisor as an Actor (OTP style) | Familiar Erlang model | Circular handle problem; all supervision over priority lanes | Priority lanes are for application messages, not system signals |
 | Per-pod controller thread | Simpler per-pod logic | One OS thread per pod just for lifecycle watching — expensive | Kubelet amortizes cost across all pods |
 | Dynamic topology at runtime | More flexible | Impossible with static SPSC pre-allocation; breaks DHCP model | Explicitly non-goal |

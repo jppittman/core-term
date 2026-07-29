@@ -564,6 +564,12 @@ fn emit_shl(code: &mut Vec<u8>, dst: Reg, src: Reg, shift: u8) {
     emit32(code, inst);
 }
 
+/// SUB Vd.4S, Vn.4S, Vm.4S (integer subtract)
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+fn emit_sub_i32(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    emit32(code, encode_3same(0x6EA08400, dst, src1, src2));
+}
+
 /// ADD Vd.4S, Vn.4S, Vm.4S (integer add)
 fn emit_add_i32(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
     emit32(code, encode_3same(0x4EA08400, dst, src1, src2));
@@ -603,14 +609,243 @@ fn emit_mov(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     }
 }
 
+// =============================================================================
+// Constant Loading Helpers
+// =============================================================================
+
+/// Load a 32-bit constant (as raw bits) into all 4 lanes of a vector register.
+/// Uses W16 (IP0) as a GP scratch register.
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+fn emit_u32_const(code: &mut Vec<u8>, dst: Reg, bits: u32) {
+    if bits == 0 {
+        // MOVI Vd.4S, #0
+        emit32(code, 0x4F000400 | (dst.0 as u32));
+        return;
+    }
+    let lo16 = bits & 0xFFFF;
+    let hi16 = bits >> 16;
+    // MOVZ W16, #lo16
+    emit32(code, 0x52800010 | (lo16 << 5));
+    // MOVK W16, #hi16, LSL #16
+    emit32(code, 0x72A00010 | (hi16 << 5));
+    // DUP Vd.4S, W16
+    emit32(code, 0x4E040C00 | (dst.0 as u32) | (16 << 5));
+}
+
+// =============================================================================
+// Transcendental Builtins — inline polynomial sequences
+// =============================================================================
+//
+// Each builtin translates a pixelflow-core NEON implementation into direct
+// machine code emission. Same coefficients, same algorithms.
+//
+// Register contract:
+//   dst  — output register (also used as Horner accumulator)
+//   src  — input register (read-only, never clobbered)
+//   s0-s2 — scratch registers from scratch[0..2] (clobbered)
+//   s3    — scratch[3], used by composition builtins (cos, tan, pow)
+
+/// log2(x) — base-2 logarithm via bit manipulation + polynomial.
+///
+/// Translated from pixelflow-core arm.rs F32x4::log2().
+/// Uses exponent extraction and 5-coefficient polynomial on [√2/2, √2].
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+pub(crate) fn emit_log2_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
+    let s0 = scratch[0]; // n (exponent as float), then Horner scratch
+    let s1 = scratch[1]; // f (normalized mantissa), alive through Horner
+    let s2 = scratch[2]; // general scratch
+
+    // Phase 1: Extract exponent as float
+    // exp_bits = src_as_u32 >> 23
+    emit_ushr(code, s0, src, 23);
+    // bias = 127 (as integer)
+    emit_u32_const(code, s2, 127);
+    // n_i32 = exp_bits - 127 (integer subtraction)
+    emit_sub_i32(code, s0, s0, s2);
+    // n = float(n_i32) — convert to float, result in dst (will hold n)
+    emit_scvtf(code, dst, s0);
+
+    // Phase 2: Extract mantissa in [1, 2)
+    // mantissa_mask = 0x007FFFFF
+    emit_u32_const(code, s2, 0x007FFFFF);
+    // s1 = src & mantissa_mask (extract mantissa bits)
+    emit_and(code, s1, src, s2);
+    // one_bits = 0x3F800000 (1.0 as bits)
+    emit_u32_const(code, s2, 0x3F800000);
+    // s1 = mantissa_bits | 1.0_bits → f in [1, 2)
+    emit_orr(code, s1, s1, s2);
+
+    // Phase 3: Reduce to [√2/2, √2] for better accuracy
+    // mask = (f >= √2)
+    let sqrt2 = pool.push_f32(core::f32::consts::SQRT_2)?;
+    emit_ldr_q_x17(code, s2, sqrt2);
+    emit_fcmge(code, s2, s1, s2); // s2 = mask (all-ones where f >= √2)
+    // adjust = 1.0 & mask
+    let one = pool.push_f32(1.0)?;
+    emit_ldr_q_x17(code, s0, one);
+    emit_and(code, s0, s0, s2); // s0 = adjust (1.0 where f >= √2, 0 elsewhere)
+    // n += adjust
+    emit_fadd(code, dst, dst, s0);
+    // If f >= √2: multiply by 0.5 (divide by 2).
+    // Use BSL: s1 = mask ? f*0.5 : f
+    // Compute f*0.5 into s0, then BSL s2 (mask), s0 (if_true), s1 (if_false)
+    let half = pool.push_f32(0.5)?;
+    emit_ldr_q_x17(code, s0, half);
+    emit_fmul(code, s0, s1, s0); // s0 = f * 0.5
+    emit_bsl(code, s2, s0, s1); // s2 = mask ? f*0.5 : f
+    emit_mov(code, s1, s2); // s1 = adjusted f
+
+    // Phase 4: Polynomial log2(f) on [√2/2, √2]
+    // Subtract 1 so argument is centered at 0 for the polynomial
+    // Actually, the arm.rs impl doesn't subtract 1 — it uses a polynomial
+    // fitted to the [√2/2, √2] interval directly. The Horner chain is:
+    //   poly = ((((c4*f + c3)*f + c2)*f + c1)*f + c0)
+    // Result = n + poly (not n + poly*f)
+    //
+    // Horner: alternate dst and s2 as accumulator, s1 = f throughout.
+
+    // p = c4*f + c3
+    let c4 = pool.push_f32(-0.320_043_5_f32)?;
+    emit_ldr_q_x17(code, s2, c4);
+    let c3 = pool.push_f32(1.797_496_9_f32)?;
+    emit_ldr_q_x17(code, s0, c3);
+    emit_fmla(code, s0, s2, s1); // s0 = c3 + c4*f
+
+    // p = p*f + c2
+    let c2 = pool.push_f32(-4.198_805_f32)?;
+    emit_ldr_q_x17(code, s2, c2);
+    emit_fmla(code, s2, s0, s1); // s2 = c2 + p*f
+
+    // p = p*f + c1
+    let c1 = pool.push_f32(5.727_023_f32)?;
+    emit_ldr_q_x17(code, s0, c1);
+    emit_fmla(code, s0, s2, s1); // s0 = c1 + p*f
+
+    // p = p*f + c0
+    let c0 = pool.push_f32(-3.005_614_8_f32)?;
+    emit_ldr_q_x17(code, s2, c0);
+    emit_fmla(code, s2, s0, s1); // s2 = c0 + p*f
+
+    // result = n + poly
+    emit_fadd(code, dst, dst, s2); // dst = n + poly
+
+    Ok(())
+}
+
+/// exp2(x) — base-2 exponential via floor + polynomial + bit scaling.
+///
+/// Translated from pixelflow-core arm.rs F32x4::exp2().
+/// Uses 5-coefficient minimax polynomial on [0,1) fractional part,
+/// then scales by 2^n via integer exponent bit manipulation.
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+pub(crate) fn emit_exp2_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
+    let s0 = scratch[0]; // n = floor(x)
+    let s1 = scratch[1]; // f = frac(x), then integer scratch
+    let s2 = scratch[2]; // Horner alternating accumulator
+
+    // Phase 1: Split into integer and fractional parts
+    // n = floor(x)
+    emit_frintm(code, s0, src);
+    // f = x - n (fractional part in [0, 1))
+    emit_fsub(code, s1, src, s0);
+
+    // Phase 2: Horner polynomial for 2^f
+    // p = ((((c4*f + c3)*f + c2)*f + c1)*f + c0)
+    // Alternate between dst and s2 as accumulator, s1 = f.
+
+    // p = c4*f + c3
+    let c4 = pool.push_f32(0.0135557_f32)?;
+    emit_ldr_q_x17(code, s2, c4);
+    let c3 = pool.push_f32(0.0520323_f32)?;
+    emit_ldr_q_x17(code, dst, c3);
+    emit_fmla(code, dst, s2, s1); // dst = c3 + c4*f
+
+    // p = p*f + c2
+    let c2 = pool.push_f32(0.2413793_f32)?;
+    emit_ldr_q_x17(code, s2, c2);
+    emit_fmla(code, s2, dst, s1); // s2 = c2 + p*f
+
+    // p = p*f + c1
+    let c1 = pool.push_f32(core::f32::consts::LN_2)?;
+    emit_ldr_q_x17(code, dst, c1);
+    emit_fmla(code, dst, s2, s1); // dst = c1 + p*f
+
+    // p = p*f + c0 — 1.0 is FMOV-encodable but pool dedup is harmless
+    let c0 = pool.push_f32(1.0_f32)?;
+    emit_ldr_q_x17(code, s2, c0);
+    emit_fmla(code, s2, dst, s1); // s2 = c0 + p*f
+    // Polynomial result now in s2.
+
+    // Phase 3: Compute 2^n via bit manipulation
+    // 2^n = reinterpret_f32((int(n) + 127) << 23)
+    emit_fcvtzs(code, s1, s0); // s1 = int(n) (s1 was f, no longer needed)
+    emit_u32_const(code, dst, 127); // dst = 127 (as integer)
+    emit_add_i32(code, s1, s1, dst); // s1 = int(n) + 127
+    emit_shl(code, s1, s1, 23); // s1 = (int(n) + 127) << 23 = 2^n as IEEE bits
+
+    // Phase 4: result = poly * 2^n
+    emit_fmul(code, dst, s2, s1); // dst = poly * scale = 2^x
+
+    Ok(())
+}
+
 /// round(x) — round to nearest, ties away from zero. ARM64 FRINTA instruction.
 pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     emit_frinta(code, dst, src);
 }
 
+/// fract(x) = x - floor(x).
+pub fn emit_fract_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+    let s0 = scratch[0];
+    emit_frintm(code, s0, src); // s0 = floor(x)
+    emit_fsub(code, dst, src, s0); // dst = x - floor(x)
+}
+
 // =============================================================================
 // Binary Transcendental Builtins
 // =============================================================================
+
+/// pow(x, y) = exp2(y * log2(x)).
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_pow_builtin(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    dst: Reg,
+    src1: Reg,
+    src2: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
+    let s3 = scratch[3];
+    // log2(x) → s3 (uses s0, s1, s2 as scratch, reads src1)
+    emit_log2_builtin(code, pool, s3, src1, scratch)?;
+    // s3 = y * log2(x)
+    emit_fmul(code, s3, src2, s3);
+    // exp2(s3) → dst (uses s0, s1, s2 as scratch)
+    emit_exp2_builtin(code, pool, dst, s3, scratch)
+}
+
+/// hypot(x, y) = sqrt(x*x + y*y).
+pub fn emit_hypot_builtin(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
+    // dst = x * x
+    emit_fmul(code, dst, src1, src1);
+    // dst = dst + y * y  (FMLA: dst += y * y)
+    emit_fmla(code, dst, src2, src2);
+    // dst = sqrt(dst)
+    emit_fsqrt(code, dst, dst);
+}
 
 // =============================================================================
 // Compound Operations (emit full instruction sequences)
@@ -636,6 +871,7 @@ pub(crate) fn emit_unary(
         OpKind::Floor => emit_frintm(code, dst, src),
         OpKind::Ceil => emit_frintp(code, dst, src),
         OpKind::Round => emit_round_builtin(code, dst, src),
+        OpKind::Fract => emit_fract_builtin(code, dst, src, scratch),
 
         // Bit-manip primitives (integer-domain conversions).
         OpKind::TruncToInt => emit_fcvtzs(code, dst, src), // f32 -> i32 (truncate)
@@ -697,6 +933,30 @@ pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Re
     }
 }
 
+/// Emit binary transcendental operation (needs scratch registers).
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_binary_transcendental(
+    code: &mut Vec<u8>,
+    pool: &mut super::ConstPool,
+    op: OpKind,
+    dst: Reg,
+    src1: Reg,
+    src2: Reg,
+    scratch: [Reg; 4],
+) -> Result<(), &'static str> {
+    match op {
+        OpKind::Pow => emit_pow_builtin(code, pool, dst, src1, src2, scratch),
+        OpKind::Hypot => {
+            emit_hypot_builtin(code, dst, src1, src2);
+            Ok(())
+        }
+        // Atan2 is lowered to arithmetic before codegen; only Pow/Hypot still
+        // reach a backend (not yet lowered).
+        _ => Err("binary transcendental emit not implemented for this op"),
+    }
+}
+
 /// Emit ternary operation
 #[allow(clippy::too_many_arguments)]
 pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c: Reg) {
@@ -735,6 +995,12 @@ pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c:
                 );
             }
             emit_bsl(code, dst, b, c);
+        }
+
+        OpKind::Clamp => {
+            // dst = clamp(a, b, c) = max(min(a, c), b)
+            emit_fmin(code, dst, a, c); // dst = min(a, hi)
+            emit_fmax(code, dst, dst, b); // dst = max(dst, lo)
         }
 
         _ => panic!("ternary emit not implemented for {:?}", op),
@@ -861,6 +1127,449 @@ pub fn emit_epilogue(code: &mut Vec<u8>, result: Reg) {
     }
     // RET
     emit32(code, 0xD65F03C0);
+}
+
+// =============================================================================
+// Scanline loop wrapper
+// =============================================================================
+
+/// Encode an ARM64 GP register move: MOV Xd, Xm (= ORR Xd, XZR, Xm).
+fn encode_mov_x(dst: u8, src: u8) -> u32 {
+    // ORR Xd, XZR, Xm: sf=1, opc=01, shift=00, N=0
+    // 0xAA0003E0 | (Rm << 16) | Rd
+    0xAA0003E0u32 | ((src as u32) << 16) | (dst as u32)
+}
+
+/// Encode a NEON register move: MOV Vd.16B, Vn.16B (= ORR Vd.16B, Vn.16B, Vn.16B).
+fn encode_mov_v(dst: u8, src: u8) -> u32 {
+    0x4EA01C00u32 | ((src as u32) << 5) | ((src as u32) << 16) | (dst as u32)
+}
+
+/// Encode ADD Xd, Xn, #imm12 (64-bit).
+#[allow(dead_code)]
+fn encode_add_x_imm(dst: u8, src: u8, imm12: u32) -> u32 {
+    assert!(imm12 <= 4095, "ADD immediate {imm12} exceeds 12 bits");
+    0x91000000u32 | (imm12 << 10) | ((src as u32) << 5) | (dst as u32)
+}
+
+/// Encode SUBS XZR, Xn, Xm (CMP Xn, Xm — sets flags, discards result).
+#[allow(dead_code)]
+fn encode_cmp_x(n: u8, m: u8) -> u32 {
+    // SUBS Xd=XZR(31), Xn, Xm
+    0xEB000000u32 | ((m as u32) << 16) | ((n as u32) << 5) | 31
+}
+
+/// Encode LDR Qt, [Xn], #16 (128-bit post-index load, 16-byte increment).
+fn encode_ldr_q_post16(rt: u8, rn: u8) -> u32 {
+    // LDR Qt, [Xn], #16 (post-index immediate)
+    // size=00, V=1, opc=01, imm9=16=0x010, post-index=01
+    // 00_111_1_00_01_0_000010000_01_Rn_Rt
+    // Base for imm9=16, post-index: 0x3CC10400
+    0x3CC10400u32 | ((rn as u32) << 5) | (rt as u32)
+}
+
+/// Encode STR Qt, [Xn], #16 (128-bit post-index store, 16-byte increment).
+fn encode_str_q_post16(rt: u8, rn: u8) -> u32 {
+    // STR Qt, [Xn], #16 (post-index immediate)
+    // size=00, V=1, opc=00, imm9=16=0x010, post-index=01
+    // 00_111_1_00_00_0_000010000_01_Rn_Rt
+    // Base for imm9=16, post-index: 0x3C810400
+    0x3C810400u32 | ((rn as u32) << 5) | (rt as u32)
+}
+
+/// Encode STP Xt1, Xt2, [Xn, #imm]! (pre-index, signed offset in multiples of 8).
+fn encode_stp_pre(rt1: u8, rt2: u8, rn: u8, imm_bytes: i32) -> u32 {
+    // STP Xt1, Xt2, [Xn, #imm]! (pre-index)
+    // opc=10, V=0, L=0, pre-index
+    // imm7 = imm_bytes / 8
+    let imm7 = ((imm_bytes / 8) as u32) & 0x7F;
+    0xA9800000u32
+        | (imm7 << 15)
+        | ((rt2 as u32) << 10)
+        | ((rn as u32) << 5)
+        | (rt1 as u32)
+        | (0b11 << 23) // pre-index = opc 10, bit23=1 for pre-index writeback
+}
+
+/// Encode LDP Xt1, Xt2, [Xn], #imm (post-index, signed offset in multiples of 8).
+fn encode_ldp_post(rt1: u8, rt2: u8, rn: u8, imm_bytes: i32) -> u32 {
+    // LDP Xt1, Xt2, [Xn], #imm (post-index)
+    let imm7 = ((imm_bytes / 8) as u32) & 0x7F;
+    0xA8C00000u32 | (imm7 << 15) | ((rt2 as u32) << 10) | ((rn as u32) << 5) | (rt1 as u32)
+}
+
+/// Encode LDP Xt1, Xt2, [Xn, #imm] (signed offset, no writeback).
+fn encode_ldp_offset(rt1: u8, rt2: u8, rn: u8, imm_bytes: i32) -> u32 {
+    let imm7 = ((imm_bytes / 8) as u32) & 0x7F;
+    0xA9400000u32 | (imm7 << 15) | ((rt2 as u32) << 10) | ((rn as u32) << 5) | (rt1 as u32)
+}
+
+/// Encode STP Xt1, Xt2, [Xn, #imm] (signed offset, no writeback).
+fn encode_stp_offset(rt1: u8, rt2: u8, rn: u8, imm_bytes: i32) -> u32 {
+    let imm7 = ((imm_bytes / 8) as u32) & 0x7F;
+    0xA9000000u32 | (imm7 << 15) | ((rt2 as u32) << 10) | ((rn as u32) << 5) | (rt1 as u32)
+}
+
+/// Encode MOVZ Xd, #imm16 (zero and load immediate).
+#[allow(dead_code)]
+fn encode_movz_x(dst: u8, imm16: u16) -> u32 {
+    // MOVZ Xd, #imm16, LSL #0: sf=1
+    0xD2800000u32 | ((imm16 as u32) << 5) | (dst as u32)
+}
+
+/// Encode B.cond with imm19 offset (in instructions, not bytes).
+fn encode_bcond(imm19: u32, cond: u8) -> u32 {
+    0x54000000u32 | ((imm19 & 0x7FFFF) << 5) | (cond as u32)
+}
+
+/// Encode CBZ Xt, #imm19 (64-bit GP register).
+fn encode_cbz_x(rt: u8) -> u32 {
+    // CBZ Xt, #0 (placeholder) — sf=1 for 64-bit
+    0xB4000000u32 | (rt as u32)
+}
+
+/// Emit a scanline loop prologue for ARM64.
+///
+/// ## Calling convention
+///
+/// `ScanlineKernelFn(ptr, f32x4, f32x4, f32x4, ptr, usize)`:
+///
+/// ```text
+///   x0 = input pointer     (GP arg 0)
+///   v0 = Y broadcast       (SIMD arg 0)
+///   v1 = Z broadcast       (SIMD arg 1)
+///   v2 = W broadcast       (SIMD arg 2)
+///   x1 = output pointer    (GP arg 1)
+///   x2 = count             (GP arg 2)
+/// ```
+///
+/// The kernel body expects X in v0, Y in v1, Z in v2, W in v3.
+/// The prologue shuffles SIMD regs (v0/v1/v2 -> v1/v2/v3) and sets up
+/// loop variables in callee-saved GP registers x19-x22.
+///
+/// Returns [`ScanlinePrologue`] with offsets for branch patching.
+pub fn emit_scanline_prologue(code: &mut Vec<u8>) -> ScanlinePrologue {
+    // Save callee-saved GP regs we use: x19, x20, x21, x22
+    // STP x29, x30, [SP, #-48]!  (48 = 6*8, room for x29/x30/x19/x20/x21/x22)
+    emit32(code, encode_stp_pre(29, 30, 31, -48));
+    // STP x19, x20, [SP, #16]
+    emit32(code, encode_stp_offset(19, 20, 31, 16));
+    // STP x21, x22, [SP, #32]
+    emit32(code, encode_stp_offset(21, 22, 31, 32));
+
+    // Save Y/Z/W from ABI positions v0/v1/v2 into callee-saved NEON regs v29/v30/v31.
+    // These survive the kernel body (which freely clobbers v0-v27).
+    // We save them here so we can restore v1/v2/v3 at the top of each loop iteration.
+    emit32(code, encode_mov_v(29, 0)); // V29 = Y (from ABI v0)
+    emit32(code, encode_mov_v(30, 1)); // V30 = Z (from ABI v1)
+    emit32(code, encode_mov_v(31, 2)); // V31 = W (from ABI v2)
+
+    // Set up loop variables in callee-saved GP registers.
+    // x19 = input pointer (post-incremented per iteration)
+    // x20 = output pointer (post-incremented per iteration)
+    // x21 = remaining count (decremented per iteration)
+    emit32(code, encode_mov_x(19, 0)); // MOV x19, x0 (input ptr)
+    emit32(code, encode_mov_x(20, 1)); // MOV x20, x1 (output ptr)
+    emit32(code, encode_mov_x(21, 2)); // MOV x21, x2 (count)
+
+    // Early exit if count == 0 (patched later to jump past the epilogue).
+    let early_exit_patch = code.len();
+    emit32(code, encode_cbz_x(21));
+
+    // Loop header: reload Y/Z/W from callee-saved copies (kernel body may clobber v1-v3),
+    // then load X[i] into v0, post-incrementing the input pointer.
+    let loop_header = code.len();
+    emit32(code, encode_mov_v(1, 29)); // V1 = Y (from saved V29)
+    emit32(code, encode_mov_v(2, 30)); // V2 = Z (from saved V30)
+    emit32(code, encode_mov_v(3, 31)); // V3 = W (from saved V31)
+    // LDR Q0, [x19], #16 (load X[i] and advance pointer)
+    emit32(code, encode_ldr_q_post16(0, 19));
+
+    ScanlinePrologue {
+        early_exit_patch,
+        loop_header,
+    }
+}
+
+/// Metadata returned by [`emit_scanline_prologue`] for patching branches.
+pub struct ScanlinePrologue {
+    /// Code offset of the CBZ (early exit if count==0) — patch target is the epilogue.
+    pub early_exit_patch: usize,
+    /// Code offset of the loop header (LDR X[i]) — back-edge target.
+    pub loop_header: usize,
+}
+
+/// Emit the scanline loop tail: store result, decrement count, branch back to the
+/// loop header, then restore callee-saved registers and return.
+///
+/// Uses post-index addressing: the output pointer (x20) is advanced by 16 bytes
+/// per iteration (one `float32x4_t`). The count (x21) is decremented.
+///
+/// `result_reg` is the NEON register holding the kernel's output for this pixel.
+pub fn emit_scanline_epilogue(code: &mut Vec<u8>, prologue: &ScanlinePrologue, result_reg: Reg) {
+    // Store result: STR Q_result, [x20], #16 (store and advance output pointer)
+    emit32(code, encode_str_q_post16(result_reg.0, 20));
+
+    // Decrement remaining count: SUBS x21, x21, #1 (sets flags)
+    // SUBS Xd, Xn, #imm12: 0xF1000000 | (imm12 << 10) | (Rn << 5) | Rd
+    emit32(code, 0xF1000000u32 | (1 << 10) | (21 << 5) | 21);
+
+    // B.NE loop_header (branch back if count > 0)
+    let branch_pos = code.len();
+    let offset_instr = (prologue.loop_header as i64 - branch_pos as i64) / 4;
+    assert!(
+        (-(1 << 18)..(1 << 18)).contains(&offset_instr),
+        "scanline loop back-edge offset {offset_instr} out of ±1MB range"
+    );
+    let imm19 = (offset_instr as u32) & 0x7FFFF;
+    emit32(code, encode_bcond(imm19, 0x01)); // cond=NE (0b0001)
+
+    // --- Loop exit ---
+    // Patch the early-exit CBZ to land here.
+    let epilogue_pos = code.len();
+    patch_cbz_x(code, prologue.early_exit_patch, epilogue_pos);
+
+    // Restore callee-saved registers (reverse order of saves).
+    // LDP x21, x22, [SP, #32]
+    emit32(code, encode_ldp_offset(21, 22, 31, 32));
+    // LDP x19, x20, [SP, #16]
+    emit32(code, encode_ldp_offset(19, 20, 31, 16));
+    // LDP x29, x30, [SP], #48
+    emit32(code, encode_ldp_post(29, 30, 31, 48));
+
+    // RET
+    emit32(code, 0xD65F03C0);
+}
+
+// =============================================================================
+// Hoisted scanline prologue / epilogue
+// =============================================================================
+
+/// AAPCS64 callee-saved NEON registers: v8-v15 (8 registers).
+/// We use v8..v(7+num_hoisted) for loop-invariant values hoisted out of the
+/// inner pixel loop.
+const CALLEE_SAVED_NEON_BASE: u8 = 8;
+
+/// Maximum number of NEON callee-saved registers available for hoisting.
+const MAX_HOISTED_NEON: u8 = 8; // v8-v15
+
+/// Encode STP Qt1, Qt2, [Xn, #imm] (128-bit NEON pair, signed offset, no writeback).
+fn encode_stp_q_offset(rt1: u8, rt2: u8, rn: u8, imm_bytes: i32) -> u32 {
+    let imm7 = ((imm_bytes / 16) as u32) & 0x7F;
+    0xAD000000u32 | (imm7 << 15) | ((rt2 as u32) << 10) | ((rn as u32) << 5) | (rt1 as u32)
+}
+
+/// Encode LDP Qt1, Qt2, [Xn, #imm] (128-bit NEON pair, signed offset, no writeback).
+fn encode_ldp_q_offset(rt1: u8, rt2: u8, rn: u8, imm_bytes: i32) -> u32 {
+    let imm7 = ((imm_bytes / 16) as u32) & 0x7F;
+    0xAD400000u32 | (imm7 << 15) | ((rt2 as u32) << 10) | ((rn as u32) << 5) | (rt1 as u32)
+}
+
+/// Encode STR Qt, [Xn, #imm] (single 128-bit NEON store, unsigned offset).
+fn encode_str_q_offset(rt: u8, rn: u8, imm_bytes: u32) -> u32 {
+    let imm12 = imm_bytes / 16;
+    assert!(imm12 <= 4095, "STR Q offset exceeds 12-bit range");
+    0x3D800000u32 | (imm12 << 10) | ((rn as u32) << 5) | (rt as u32)
+}
+
+/// Encode LDR Qt, [Xn, #imm] (single 128-bit NEON load, unsigned offset).
+fn encode_ldr_q_offset(rt: u8, rn: u8, imm_bytes: u32) -> u32 {
+    let imm12 = imm_bytes / 16;
+    assert!(imm12 <= 4095, "LDR Q offset exceeds 12-bit range");
+    0x3DC00000u32 | (imm12 << 10) | ((rn as u32) << 5) | (rt as u32)
+}
+
+/// Metadata returned by [`emit_scanline_prologue_hoisted`] for patching branches.
+pub struct HoistedScanlinePrologue {
+    /// Code offset of the CBZ (early exit if count==0) -- patch target is the epilogue.
+    pub early_exit_patch: usize,
+    /// Code offset of the loop header (reload Y/Z/W + LDR X[i]) -- back-edge target.
+    pub loop_header: usize,
+    /// Number of NEON callee-saved registers preserved (v8..v(7+num_hoisted)).
+    pub num_hoisted: u8,
+    /// Total SP adjustment for callee saves (GP + NEON), 16-byte aligned.
+    pub callee_frame_size: u32,
+}
+
+/// Emit scanline loop prologue with additional callee-saved NEON registers for
+/// hoisted (loop-invariant) values.
+///
+/// Saves v8..v(7+num_hoisted) in addition to the GP callee saves (x19-x22,
+/// x29, x30). The setup block (emitted by the caller between this prologue
+/// and the loop header) writes hoisted results into v8..v(7+num_hoisted).
+///
+/// # Panics
+///
+/// Panics if `num_hoisted > 8` (AAPCS64 only guarantees v8-v15 as callee-saved).
+pub fn emit_scanline_prologue_hoisted(
+    code: &mut Vec<u8>,
+    num_hoisted: u8,
+) -> HoistedScanlinePrologue {
+    assert!(
+        num_hoisted <= MAX_HOISTED_NEON,
+        "num_hoisted={num_hoisted} exceeds AAPCS64 callee-saved NEON limit of {MAX_HOISTED_NEON} (v8-v15)"
+    );
+
+    // Compute total frame size for GP saves (48 bytes) + NEON saves.
+    // GP frame: x29, x30, x19, x20, x21, x22 = 6 * 8 = 48 bytes.
+    // NEON frame: num_hoisted * 16 bytes, rounded up to 16-byte alignment.
+    let neon_save_bytes = (num_hoisted as u32) * 16;
+    // Align NEON save area to 16 bytes (already guaranteed since 16*n is always aligned).
+    let neon_frame = (neon_save_bytes + 15) & !15;
+    let gp_frame: u32 = 48;
+    let total_frame = gp_frame + neon_frame;
+
+    // Save callee-saved GP regs: STP x29, x30, [SP, #-total_frame]!
+    emit32(code, encode_stp_pre(29, 30, 31, -(total_frame as i32)));
+    // STP x19, x20, [SP, #16]
+    emit32(code, encode_stp_offset(19, 20, 31, 16));
+    // STP x21, x22, [SP, #32]
+    emit32(code, encode_stp_offset(21, 22, 31, 32));
+
+    // Save NEON callee-saved registers in pairs at [SP, #gp_frame + offset].
+    let mut neon_offset = gp_frame as i32;
+    let mut i = 0u8;
+    while i + 1 < num_hoisted {
+        // Save pair: STP v(8+i), v(8+i+1), [SP, #neon_offset]
+        emit32(
+            code,
+            encode_stp_q_offset(
+                CALLEE_SAVED_NEON_BASE + i,
+                CALLEE_SAVED_NEON_BASE + i + 1,
+                31,
+                neon_offset,
+            ),
+        );
+        neon_offset += 32; // 2 * 16 bytes
+        i += 2;
+    }
+    if i < num_hoisted {
+        // Odd register: single STR v(8+i), [SP, #neon_offset]
+        emit32(
+            code,
+            encode_str_q_offset(CALLEE_SAVED_NEON_BASE + i, 31, neon_offset as u32),
+        );
+    }
+
+    // Move ABI inputs to callee-saved locations (same as non-hoisted prologue).
+    // Y/Z/W from v0/v1/v2 into v29/v30/v31 (survive kernel body).
+    emit32(code, encode_mov_v(29, 0)); // V29 = Y
+    emit32(code, encode_mov_v(30, 1)); // V30 = Z
+    emit32(code, encode_mov_v(31, 2)); // V31 = W
+
+    // Set up loop variables in callee-saved GP registers.
+    emit32(code, encode_mov_x(19, 0)); // x19 = input pointer
+    emit32(code, encode_mov_x(20, 1)); // x20 = output pointer
+    emit32(code, encode_mov_x(21, 2)); // x21 = count
+
+    // --- Setup block emitted by caller here ---
+    // The caller emits the hoisted (X-invariant) computation between this
+    // point and the loop header. Results land in v8..v(7+num_hoisted) via
+    // precolored register allocation.
+    //
+    // We defer the early-exit CBZ until after the setup block so that
+    // the setup code runs unconditionally (callee saves must be balanced).
+    // The CBZ is emitted as a placeholder; the caller patches it.
+    let early_exit_patch = code.len();
+    emit32(code, encode_cbz_x(21));
+
+    // Loop header: reload Y/Z/W, load X[i].
+    let loop_header = code.len();
+    emit32(code, encode_mov_v(1, 29)); // V1 = Y
+    emit32(code, encode_mov_v(2, 30)); // V2 = Z
+    emit32(code, encode_mov_v(3, 31)); // V3 = W
+    emit32(code, encode_ldr_q_post16(0, 19)); // V0 = X[i], x19 += 16
+
+    HoistedScanlinePrologue {
+        early_exit_patch,
+        loop_header,
+        num_hoisted,
+        callee_frame_size: total_frame,
+    }
+}
+
+/// Emit scanline loop epilogue with callee-saved NEON register restoration.
+///
+/// Mirrors [`emit_scanline_prologue_hoisted`]: store result, loop back, then
+/// restore v8..v(7+num_hoisted) and GP callee saves before returning.
+pub fn emit_scanline_epilogue_hoisted(
+    code: &mut Vec<u8>,
+    prologue: &HoistedScanlinePrologue,
+    result_reg: Reg,
+) {
+    let num_hoisted = prologue.num_hoisted;
+    let total_frame = prologue.callee_frame_size;
+
+    // Store result: STR Q_result, [x20], #16
+    emit32(code, encode_str_q_post16(result_reg.0, 20));
+
+    // Decrement count: SUBS x21, x21, #1
+    emit32(code, 0xF1000000u32 | (1 << 10) | (21 << 5) | 21);
+
+    // B.NE loop_header
+    let branch_pos = code.len();
+    let offset_instr = (prologue.loop_header as i64 - branch_pos as i64) / 4;
+    assert!(
+        (-(1 << 18)..(1 << 18)).contains(&offset_instr),
+        "scanline loop back-edge offset {offset_instr} out of +/-1MB range"
+    );
+    let imm19 = (offset_instr as u32) & 0x7FFFF;
+    emit32(code, encode_bcond(imm19, 0x01)); // cond=NE
+
+    // --- Loop exit ---
+    let epilogue_pos = code.len();
+    patch_cbz_x(code, prologue.early_exit_patch, epilogue_pos);
+
+    // Restore NEON callee-saved registers (reverse order of saves).
+    let gp_frame: u32 = 48;
+    let mut neon_offset = gp_frame as i32;
+    let mut i = 0u8;
+    // We need to restore in the same order (pairs first, then odd), but from the frame.
+    while i + 1 < num_hoisted {
+        emit32(
+            code,
+            encode_ldp_q_offset(
+                CALLEE_SAVED_NEON_BASE + i,
+                CALLEE_SAVED_NEON_BASE + i + 1,
+                31,
+                neon_offset,
+            ),
+        );
+        neon_offset += 32;
+        i += 2;
+    }
+    if i < num_hoisted {
+        emit32(
+            code,
+            encode_ldr_q_offset(CALLEE_SAVED_NEON_BASE + i, 31, neon_offset as u32),
+        );
+    }
+
+    // Restore GP callee-saved registers.
+    emit32(code, encode_ldp_offset(21, 22, 31, 32));
+    emit32(code, encode_ldp_offset(19, 20, 31, 16));
+    emit32(code, encode_ldp_post(29, 30, 31, total_frame as i32));
+
+    // RET
+    emit32(code, 0xD65F03C0);
+}
+
+/// Patch a 64-bit CBZ instruction at `patch_pos` to branch to `target_pos`.
+fn patch_cbz_x(code: &mut [u8], patch_pos: usize, target_pos: usize) {
+    let offset = (target_pos as i64 - patch_pos as i64) / 4;
+    assert!(
+        (-(1 << 18)..(1 << 18)).contains(&offset),
+        "CBZ branch offset {offset} out of ±1MB range"
+    );
+    let imm19 = (offset as u32) & 0x7FFFF;
+    let existing = u32::from_le_bytes([
+        code[patch_pos],
+        code[patch_pos + 1],
+        code[patch_pos + 2],
+        code[patch_pos + 3],
+    ]);
+    let patched = (existing & 0xFF00001F) | (imm19 << 5);
+    code[patch_pos..patch_pos + 4].copy_from_slice(&patched.to_le_bytes());
 }
 
 // =============================================================================
@@ -1255,6 +1964,38 @@ impl Aarch64Asm {
     #[allow(clippy::too_many_arguments)]
     pub fn ternary(&mut self, op: OpKind, dst: Reg, a: Reg, b: Reg, c: Reg) {
         emit_ternary(&mut self.code, op, dst, a, b, c);
+    }
+
+    // =========================================================================
+    // Scanline loop
+    // =========================================================================
+
+    /// Emit the scanline loop prologue. Returns metadata for patching.
+    #[inline]
+    pub fn scanline_prologue(&mut self) -> ScanlinePrologue {
+        emit_scanline_prologue(&mut self.code)
+    }
+
+    /// Emit the scanline loop epilogue (store, decrement, back-edge, restore, ret).
+    #[inline]
+    pub fn scanline_epilogue(&mut self, prologue: &ScanlinePrologue, result_reg: Reg) {
+        emit_scanline_epilogue(&mut self.code, prologue, result_reg);
+    }
+
+    /// Emit hoisted scanline prologue with callee-saved NEON registers.
+    #[inline]
+    pub fn scanline_prologue_hoisted(&mut self, num_hoisted: u8) -> HoistedScanlinePrologue {
+        emit_scanline_prologue_hoisted(&mut self.code, num_hoisted)
+    }
+
+    /// Emit hoisted scanline epilogue with NEON register restoration.
+    #[inline]
+    pub fn scanline_epilogue_hoisted(
+        &mut self,
+        prologue: &HoistedScanlinePrologue,
+        result_reg: Reg,
+    ) {
+        emit_scanline_epilogue_hoisted(&mut self.code, prologue, result_reg);
     }
 
     // =========================================================================

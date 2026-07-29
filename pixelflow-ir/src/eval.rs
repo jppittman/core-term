@@ -1,18 +1,10 @@
-//! Differential-testing oracle: a scalar tree-walk over an [`ExprArena`].
+//! Reference scalar interpreter for an [`ExprArena`].
 //!
-//! **This is not an execution tier.** PixelFlow is JIT-only: every rendered
-//! pixel comes from emitted machine code. This module exists so tests can ask
-//! "what should that machine code have produced?" without hand-computing the
-//! answer, and it is compiled out of the shipped crate — it lives behind the
-//! `oracle` feature, off by default, enabled only by `[dev-dependencies]`.
-//!
-//! It is a *reference walker over the one semantics*, not a second semantics.
-//! [`eval_scalar`] runs the same `expand_transcendentals` lowering the emitter
-//! runs, then interprets the result, so "the interpreter disagrees with the
-//! JIT" always means the emitter is wrong about an arithmetic primitive — never
-//! that the two disagree about what `sin` means. That property is what makes
-//! the oracle worth keeping: it is how the select-guard and clamp-ordering
-//! miscompiles were found.
+//! This walks the arena node-by-node at scalar `f32` coordinates and is the
+//! ground-truth semantics the JIT and SIMD backends must match. It is the
+//! first path that can *execute* `Gather` (bound-memory reads), via a
+//! [`BindingTable`]; production SIMD execution arrives with the JIT in M2
+//! (see `KERNELS_AND_LATTICES.md`).
 //!
 //! `Gather` semantics deliberately mirror `DiscreteManifold::eval` in
 //! `pixelflow-core`: floor each index, clamp to `[0, extent - 1]`, read
@@ -37,31 +29,11 @@ pub fn eval_scalar(
     vars: &[f32; 4],
     bindings: &BindingTable<'_>,
 ) -> f32 {
-    // A transcendental in this language IS the expansion the compiler emits, so
-    // the reference interpreter evaluates that expansion rather than the host's
-    // `f32::sin`. Three reasons, one answer:
-    //
-    //   * one definition — the interpreter and the JIT cannot disagree about
-    //     `sin`, which is exactly how the known 0.5116-vs-0.8415 parity class
-    //     of bug arises;
-    //   * no dependency — the expansion is arithmetic, so no libm;
-    //   * no_std — `f32::sin` does not exist in `core`, and this crate has to
-    //     run without an operating system.
-    //
-    // `expand_transcendentals_owned` is the identity (a bare clone) when the
-    // arena holds none, so ordinary kernels pay nothing.
-    let (expanded, root) =
-        crate::backend::emit::lowering::expand_transcendentals_owned(arena, root);
-    let variance = crate::variance::compute_arena_variance(&expanded);
-    let n = expanded.len();
-    let memo = core::cell::RefCell::new(alloc::vec![None; n]);
     Env {
-        arena: &expanded,
+        arena,
         vars,
         bindings,
         reduce_vars: [0.0; 4],
-        variance: &variance,
-        memo: &memo,
     }
     .eval(root)
 }
@@ -77,20 +49,11 @@ struct Env<'a> {
     bindings: &'a BindingTable<'a>,
     /// Values bound to reduction indices `Var(4)..Var(8)` by enclosing folds.
     reduce_vars: [f32; 4],
-    variance: &'a [crate::variance::Variance],
-    memo: &'a core::cell::RefCell<alloc::vec::Vec<Option<f32>>>,
 }
 
 impl Env<'_> {
     fn eval(&self, id: ExprId) -> f32 {
-        let is_memoizable = !self.variance[id.0 as usize].depends_on_binder();
-        if is_memoizable {
-            let cached = self.memo.borrow()[id.0 as usize];
-            if let Some(val) = cached {
-                return val;
-            }
-        }
-        let val = match self.arena.node(id) {
+        match self.arena.node(id) {
             ExprNode::Var(i) => {
                 let i = *i as usize;
                 // 0..4 are coordinates; 4..8 are reduction indices.
@@ -108,23 +71,15 @@ impl Env<'_> {
             ),
             ExprNode::Unary(op, a) => {
                 let x = self.eval(*a);
-                op.eval_unary(x).unwrap_or_else(|| {
-                    panic!(
-                        "eval_scalar: no scalar eval for unary {op:?} — \
-                         lower it first (expand_transcendentals)"
-                    )
-                })
+                op.eval_unary(x)
+                    .unwrap_or_else(|| panic!("eval_scalar: no scalar eval for unary {op:?}"))
             }
             ExprNode::Binary(OpKind::RawGather, buf, idx) => self.raw_gather(*buf, *idx),
             ExprNode::Binary(op, a, b) => {
                 let x = self.eval(*a);
                 let y = self.eval(*b);
-                op.eval_binary(x, y).unwrap_or_else(|| {
-                    panic!(
-                        "eval_scalar: no scalar eval for binary {op:?} — \
-                         lower it first (expand_transcendentals)"
-                    )
-                })
+                op.eval_binary(x, y)
+                    .unwrap_or_else(|| panic!("eval_scalar: no scalar eval for binary {op:?}"))
             }
             ExprNode::Ternary(OpKind::Gather, buf, x, y) => self.gather(*buf, *x, *y),
             ExprNode::Ternary(op, a, b, c) => {
@@ -140,11 +95,7 @@ impl Env<'_> {
                 self.reduce(ch[0], ch[1], ch[2], ch[3])
             }
             ExprNode::Nary(op, _, _) => panic!("eval_scalar: Nary({op:?}) unsupported"),
-        };
-        if is_memoizable {
-            self.memo.borrow_mut()[id.0 as usize] = Some(val);
         }
-        val
     }
 
     /// Read one bound buffer at floored, clamped, row-major indices. This IS the

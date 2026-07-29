@@ -307,12 +307,10 @@ fn main() {
                 &mut model,
                 &grads,
                 &mut momentum_buf,
-                pixelflow_pipeline::training::unified_backward::SgdConfig {
-                    lr: args.lr,
-                    momentum: args.momentum,
-                    weight_decay: args.weight_decay,
-                    grad_clip: args.grad_clip,
-                },
+                args.lr,
+                args.momentum,
+                args.weight_decay,
+                args.grad_clip,
             );
         }
 

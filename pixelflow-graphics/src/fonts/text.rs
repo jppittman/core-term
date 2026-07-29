@@ -1,44 +1,47 @@
-//! Text layout as Kernel composition.
+//! Text rendering as a category of composition.
 //!
-//! A string is a scan (prefix sum) over character advances, each glyph's
-//! coverage [`Kernel`] translated to its pen position and summed. The result
-//! is ONE fused coverage kernel for the whole run — composed at layout time,
-//! compiled once at bake.
+//! We map a string into a Sum of Translated, Scaled Glyphs.
 
-use super::ttf::Font;
-use pixelflow_core::Kernel;
+use super::ttf::{Font, Glyph, Line, LineKernel, Quad, QuadKernel, Sum};
+use crate::transform::Translate;
+use std::sync::Arc;
 
-/// Lay out uncached analytical text as a single coverage [`Kernel`].
+/// Create a text manifold from a string.
 ///
-/// Advance-based (kerning-free) layout: each glyph is scaled to `size` and
-/// translated by the accumulated advance. Antialiasing comes from the glyph
-/// kernels' `Dwrt` ramps at bake.
+/// This is a scan (prefix sum) operation over the character stream,
+/// lifting each character into the Manifold category.
+///
+/// Returns a Sum of translated glyphs.
 #[must_use]
-pub fn text(font: &Font, text_str: &str, size: f32) -> Kernel {
-    let mut cursor = 0.0f32;
-    let terms: Vec<Kernel> = text_str
+pub fn text(
+    font: &Font,
+    text_str: &str,
+    size: f32,
+) -> Sum<Translate<Glyph<Line<LineKernel>, Quad<QuadKernel>>>> {
+    // The Scan: Accumulate X position while mapping chars to glyphs
+    // Optimized to perform a single CMAP lookup per character
+    let mut cursor = 0.0;
+    let terms: Vec<_> = text_str
         .chars()
         .map(|ch| {
-            // Single CMAP lookup per character.
+            // Single CMAP lookup!
             let id = font.cmap_lookup(ch).unwrap_or(0);
 
-            let glyph = font
-                .glyph_kernel_scaled_by_id(id, size)
-                .unwrap_or_else(|| Kernel::constant(0.0));
+            // Fetch scaled glyph and advance using the ID
+            let glyph = font.glyph_scaled_by_id(id, size).unwrap_or(Glyph::Empty);
             let scaled_advance = font.advance_scaled_by_id(id, size).unwrap_or(0.0);
 
             let pos = cursor;
             cursor += scaled_advance;
 
-            // Translate: sample the glyph at (X - pos, Y).
-            glyph.at(
-                &Kernel::x().sub(&Kernel::constant(pos)),
-                &Kernel::y(),
-                &Kernel::z(),
-                &Kernel::w(),
-            )
+            // The Morphism: Translate the pre-scaled glyph
+            Translate {
+                manifold: glyph,
+                offset: [pos, 0.0],
+            }
         })
         .collect();
 
-    Kernel::sum(&terms)
+    // The Monoid: Sum the terms
+    Sum(Arc::from(terms))
 }

@@ -1,12 +1,8 @@
-#![expect(
-    clippy::manual_c_str_literals,
-    clippy::must_use_candidate,
-    reason = "this internal wrapper mirrors Objective-C runtime conventions and ABI encodings"
-)]
-
 use crate::api::public::WindowDescriptor;
 use crate::error::RuntimeError;
-use crate::platform::macos::cocoa::{NSPoint, NSRect, NSSize, NSView, NSWindow};
+use crate::platform::macos::cocoa::{
+    DeferCreation, NSPoint, NSRect, NSSize, NSView, NSWindow, WantsLayer,
+};
 use crate::platform::macos::sys::{self, Id, BOOL, NO, YES};
 use std::ffi::c_void;
 use std::sync::{Mutex, OnceLock};
@@ -15,7 +11,7 @@ use std::sync::{Mutex, OnceLock};
 /// platform pump has not yet reported to the engine. AppKit invokes the
 /// delegate synchronously on the main thread while the pump routes the click
 /// through `sendEvent:`; the pump drains this queue at the end of the same
-/// handle_os pass and emits `DisplayEvent::CloseRequested`.
+/// park pass and emits `DisplayEvent::CloseRequested`.
 static CLOSED_WINDOWS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 /// Take all windows closed since the last drain.
@@ -114,7 +110,8 @@ impl MacWindow {
         // NSBackingStoreBuffered = 2
         let backing = 2;
 
-        let window = NSWindow::alloc().init_with_content_rect(rect, style_mask, backing, cocoa::DeferCreation::No);
+        let window =
+            NSWindow::alloc().init_with_content_rect(rect, style_mask, backing, DeferCreation::No);
         window.set_title(&desc.title);
 
         // We keep messaging this pointer (poll_resize, present) until the pump
@@ -166,7 +163,7 @@ impl MacWindow {
             sys::send_1::<(), Id>(view.0, sys::sel(b"setLayer:\0"), layer);
 
             // [view setWantsLayer: YES]
-            view.set_wants_layer(cocoa::WantsLayer::Yes);
+            view.set_wants_layer(WantsLayer::Yes);
         }
 
         window.set_content_view(view);
@@ -278,9 +275,10 @@ impl MacWindow {
             if !drawable.is_null() {
                 let texture: Id = sys::send(drawable, sys::sel(b"texture\0"));
 
-                let region = sys::MTLRegion::new_2d(0, 0, frame.width, frame.height);
+                let region =
+                    sys::MTLRegion::new_2d(0, 0, frame.width as usize, frame.height as usize);
                 let bytes = frame.as_bytes().as_ptr() as *const c_void;
-                let bytes_per_row = frame.width * 4;
+                let bytes_per_row = (frame.width as usize) * 4;
 
                 sys::send_4::<(), sys::MTLRegion, usize, *const c_void, usize>(
                     texture,

@@ -38,7 +38,7 @@ impl Actor<u64, u64, u64> for CountingHandler {
         self.mgmt_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -60,7 +60,7 @@ impl Actor<u64, u64, u64> for SlowHandler {
     fn handle_management(&mut self, _msg: u64) -> HandlerResult {
         Ok(())
     }
-    fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -77,7 +77,7 @@ impl Actor<(), (), ()> for NoOpHandler {
     fn handle_management(&mut self, _: ()) -> HandlerResult {
         Ok(())
     }
-    fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -321,7 +321,7 @@ fn burst_limit_prevents_data_starvation() {
             self.mgmt_processed.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
-        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -391,7 +391,7 @@ fn multi_producer_send() {
         fn handle_management(&mut self, _: u64) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -472,7 +472,7 @@ fn large_messages_work() {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }

@@ -28,11 +28,6 @@
 //! (including the mask/policy fields), since `apply_unified_sgd` updates the
 //! whole net; those fields simply stay zero when only `backward_value` runs.
 
-#![expect(
-    clippy::needless_range_loop,
-    reason = "the hand-derived tensor equations use indices shared across several fixed-size arrays"
-)]
-
 use pixelflow_ir::OpKind;
 use pixelflow_search::nnue::factored::{
     EMBED_DIM, EdgeAccumulator, ExprNnue, GRAPH_ACC_DIM, GRAPH_INPUT_DIM, GraphAccumulator,
@@ -1090,27 +1085,15 @@ fn group_clip_scale(norm: f32, max_norm: f32) -> f32 {
 /// momentum_buf = momentum * momentum_buf + grad + weight_decay * param
 /// param -= lr * momentum_buf
 /// ```
-/// Hyperparameters for one unified SGD update.
-#[derive(Clone, Copy, Debug)]
-pub struct SgdConfig {
-    pub lr: f32,
-    pub momentum: f32,
-    pub weight_decay: f32,
-    pub grad_clip: f32,
-}
-
 pub fn apply_unified_sgd(
     net: &mut ExprNnue,
     grads: &UnifiedGradients,
     momentum_buf: &mut UnifiedGradients,
-    config: SgdConfig,
+    lr: f32,
+    momentum: f32,
+    weight_decay: f32,
+    grad_clip: f32,
 ) {
-    let SgdConfig {
-        lr,
-        momentum,
-        weight_decay,
-        grad_clip,
-    } = config;
     // Per-group L2 norm clipping.  Each semantic pathway is clipped
     // independently so an explosion in one group cannot suppress others.
     let clip_stats = grads.clip_stats(grad_clip);
@@ -1538,9 +1521,9 @@ mod tests {
         acc: &EdgeAccumulator,
         gacc: &GraphAccumulator,
         rule_embed: &[f32; EMBED_DIM],
-        target: (f32, f32),
+        target_cost: f32,
+        value_coeff: f32,
     ) -> f64 {
-        let (target_cost, value_coeff) = target;
         let cache = forward_cached(net, acc, gacc, rule_embed);
         let diff = cache.value_pred as f64 - target_cost as f64;
         diff * diff * value_coeff as f64
@@ -1562,7 +1545,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    #[ignore = "https://github.com/jppittman/pixelflow/issues/948"]
     fn numerical_gradient_check_value() {
         let net = make_test_net();
         let acc = make_test_acc();
@@ -1583,13 +1565,11 @@ mod tests {
         for j in [0, 8, 15] {
             let mut net_p = net.clone();
             net_p.value_mlp_w2[j] += eps;
-            let loss_plus =
-                value_loss(&net_p, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+            let loss_plus = value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
             let mut net_m = net.clone();
             net_m.value_mlp_w2[j] -= eps;
-            let loss_minus =
-                value_loss(&net_m, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+            let loss_minus = value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
             let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
             let (a, n, err) = check_gradient(grads.d_value_mlp_w2[j], num_grad);
@@ -1607,13 +1587,11 @@ mod tests {
         {
             let mut net_p = net.clone();
             net_p.value_mlp_b2 += eps;
-            let loss_plus =
-                value_loss(&net_p, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+            let loss_plus = value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
             let mut net_m = net.clone();
             net_m.value_mlp_b2 -= eps;
-            let loss_minus =
-                value_loss(&net_m, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+            let loss_minus = value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
             let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
             let (a, n, err) = check_gradient(grads.d_value_mlp_b2, num_grad);
@@ -1633,12 +1611,12 @@ mod tests {
                 let mut net_p = net.clone();
                 net_p.value_mlp_w1[i][j] += eps;
                 let loss_plus =
-                    value_loss(&net_p, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+                    value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let mut net_m = net.clone();
                 net_m.value_mlp_w1[i][j] -= eps;
                 let loss_minus =
-                    value_loss(&net_m, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+                    value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_value_mlp_w1[i][j], num_grad);
@@ -1676,12 +1654,12 @@ mod tests {
                 let mut net_p = net.clone();
                 net_p.expr_proj_w[j][k] += proj_eps;
                 let loss_plus =
-                    value_loss(&net_p, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+                    value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let mut net_m = net.clone();
                 net_m.expr_proj_w[j][k] -= proj_eps;
                 let loss_minus =
-                    value_loss(&net_m, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+                    value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * proj_eps as f64);
                 let (a, n, err) = check_gradient(grads.d_expr_proj_w[j][k], num_grad);
@@ -1702,12 +1680,12 @@ mod tests {
                 let mut net_p = net.clone();
                 net_p.trunk_w[i][j] += eps;
                 let loss_plus =
-                    value_loss(&net_p, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+                    value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let mut net_m = net.clone();
                 net_m.trunk_w[i][j] -= eps;
                 let loss_minus =
-                    value_loss(&net_m, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+                    value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_trunk_w[i][j], num_grad);
@@ -1727,13 +1705,11 @@ mod tests {
         for j in [0, 32, 63] {
             let mut net_p = net.clone();
             net_p.trunk_b[j] += eps;
-            let loss_plus =
-                value_loss(&net_p, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+            let loss_plus = value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
             let mut net_m = net.clone();
             net_m.trunk_b[j] -= eps;
-            let loss_minus =
-                value_loss(&net_m, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+            let loss_minus = value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
             let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
             let (a, n, err) = check_gradient(grads.d_trunk_b[j], num_grad);
@@ -1754,12 +1730,12 @@ mod tests {
                 let mut net_p = net.clone();
                 net_p.w1[i][j] += eps;
                 let loss_plus =
-                    value_loss(&net_p, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+                    value_loss(&net_p, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let mut net_m = net.clone();
                 net_m.w1[i][j] -= eps;
                 let loss_minus =
-                    value_loss(&net_m, &acc, &gacc, &rule_embed, (target_cost, value_coeff));
+                    value_loss(&net_m, &acc, &gacc, &rule_embed, target_cost, value_coeff);
 
                 let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
                 let (a, n, err) = check_gradient(grads.d_w1[i][j], num_grad);
@@ -1902,12 +1878,10 @@ mod tests {
             &mut net,
             &grads,
             &mut momentum_buf,
-            SgdConfig {
-                lr: 0.01,
-                momentum: 0.9,
-                weight_decay: 1e-4,
-                grad_clip: 1.0,
-            },
+            0.01, // lr
+            0.9,  // momentum
+            1e-4, // weight_decay
+            1.0,  // grad_clip
         );
 
         let w1_after = net.w1[0][0];
@@ -1957,12 +1931,10 @@ mod tests {
             &mut net,
             &grads,
             &mut momentum_buf,
-            SgdConfig {
-                lr: 1.0,
-                momentum: 0.0,
-                weight_decay: 0.0,
-                grad_clip: 1.0,
-            },
+            1.0, // lr
+            0.0, // momentum
+            0.0, // weight_decay
+            1.0, // grad_clip
         );
 
         let delta = net.trunk_w[0][0] - before;

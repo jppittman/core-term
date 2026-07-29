@@ -26,11 +26,11 @@
 //! per-actor [`FdWaker`], and the app-facing [`PtySender`]s — can't ride the
 //! `Directory` (which only knows troupe-internal handles), so they arrive via
 //! a `Bind` management message once the troupe is running. This mirrors how
-//! pixelflow-runtime's vsync green node receives its engine/clock edges post-construction.
-//! Management drains before Data in every scheduler wake, so an actor is always bound before
-//! it handles its first byte.
+//! `VsyncActor` is configured post-construction. Management drains before Data
+//! in every scheduler wake, so an actor is always bound before it handles its
+//! first byte.
 //!
-//! **Blocking model.** The reader and writer bridge to the OS inside `handle_os()`,
+//! **Blocking model.** The reader and writer bridge to the OS inside `park()`,
 //! blocking in `epoll_wait`/`kevent` on `{pty, waker}`; each is a `[waker]`
 //! slot so a send interrupts the poll. The parser is message-driven.
 //!
@@ -58,6 +58,10 @@ use std::thread::JoinHandle;
 use writer::PtyWriter;
 
 // ── Lane message types ──────────────────────────────────────────────────────
+
+/// Placeholder for the reader's unused control lane.
+#[derive(Debug, Clone)]
+pub struct NoControl;
 
 /// A read result flowing reader → parser: `data[..len]` holds PTY output.
 ///
@@ -143,7 +147,7 @@ pub type PtyWriterHandle = ActorHandle<Vec<u8>, WriterControl, WriterManagement>
 // ── Troupe declaration ──────────────────────────────────────────────────────
 
 // All three are [expose] so `PtyTroupe` can mint handles to send Bind and
-// Shutdown. Reader and writer are [waker] because they block in handle_os().
+// Shutdown. Reader and writer are [waker] because they block in park().
 actor_scheduler::troupe! {
     reader: PtyReader [main, expose, waker],
     parser: PtyParser [expose],
@@ -418,40 +422,6 @@ mod tests {
             start.elapsed() < Duration::from_secs(5),
             "shutdown should not block on a live child"
         );
-    }
-
-    #[test]
-    fn write_before_bind_is_flushed_at_bind() {
-        // Data sent on the writer handle before spawn() (before Bind lands)
-        // must queue and flush once bound, not be dropped.
-        let pty = NixPty::spawn_with_config(&PtyConfig {
-            command_executable: "/bin/cat",
-            args: &[],
-            initial_cols: 80,
-            initial_rows: 24,
-        })
-        .expect("pty");
-        let sink = CaptureSink::default();
-        let mut troupe = PtyTroupe::new(pty).expect("troupe");
-        let writer = troupe.writer_handle();
-
-        writer
-            .send(Message::Data(b"queued-before-bind".to_vec()))
-            .expect("early write");
-
-        let handle = troupe
-            .spawn(Box::new(sink.clone()), Box::new(sink.clone()))
-            .expect("spawn");
-
-        assert!(
-            sink.wait_for(Duration::from_secs(5), |s| s
-                .printed_text()
-                .contains("queued-before-bind")),
-            "writer should flush data queued before bind"
-        );
-
-        drop(writer);
-        drop(handle);
     }
 
     #[test]

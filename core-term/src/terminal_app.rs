@@ -753,7 +753,7 @@ impl Actor<TerminalData, EngineEventControl, EngineEventManagement> for Terminal
         Ok(())
     }
 
-    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         // No polling needed - PTY data comes in via handle_data
         Ok(ActorStatus::Idle)
     }
@@ -889,7 +889,7 @@ mod tests {
         fn handle_management(&mut self, _msg: WriterManagement) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -1048,7 +1048,7 @@ mod tests {
         ) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }

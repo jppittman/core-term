@@ -55,6 +55,7 @@ pub const LATENCY_PRIOR_CYCLES: [usize; OpKind::COUNT] = [
     4,  // Floor
     4,  // Ceil
     4,  // Round
+    4,  // Fract
     10, // Sin
     10, // Cos
     10, // Tan
@@ -68,6 +69,7 @@ pub const LATENCY_PRIOR_CYCLES: [usize; OpKind::COUNT] = [
     10, // Log10
     10, // Atan2
     12, // Pow
+    8,  // Hypot
     3,  // Lt
     3,  // Le
     3,  // Gt
@@ -75,6 +77,7 @@ pub const LATENCY_PRIOR_CYCLES: [usize; OpKind::COUNT] = [
     3,  // Eq
     3,  // Ne
     4,  // Select
+    6,  // Clamp - 2x compare + select
     0,  // Tuple - free (structural)
     // Bit-manip primitives: single cheap integer/convert instructions.
     1, // TruncToInt - cvttps2dq
@@ -286,6 +289,7 @@ impl CostModel {
             "floor" => OpKind::Floor,
             "ceil" => OpKind::Ceil,
             "round" => OpKind::Round,
+            "fract" => OpKind::Fract,
             "sin" => OpKind::Sin,
             "cos" => OpKind::Cos,
             "tan" => OpKind::Tan,
@@ -299,6 +303,7 @@ impl CostModel {
             "log2" => OpKind::Log2,
             "log10" => OpKind::Log10,
             "pow" => OpKind::Pow,
+            "hypot" => OpKind::Hypot,
             "lt" => OpKind::Lt,
             "le" => OpKind::Le,
             "gt" => OpKind::Gt,
@@ -306,6 +311,7 @@ impl CostModel {
             "eq" => OpKind::Eq,
             "ne" => OpKind::Ne,
             "select" => OpKind::Select,
+            "clamp" => OpKind::Clamp,
             "tuple" => OpKind::Tuple,
             _ => panic!("CostModel::cost_by_name: unknown op name {name:?}"),
         };

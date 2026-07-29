@@ -97,6 +97,6 @@ demo programs: `animated_sphere.rs`, `psychedelic_shader.rs`,
 compiler for real-time rendering hits `pixelflow-ir`'s backend `sin`/`cos`/
 `atan2` directly, which had the identical bug — but nothing in the terminal
 emulator's actual render path appears to use trig today either. That's likely
-why terminal rendering was never visibly broken by this, but it means
+why 155 FPS terminal rendering was never visibly broken by this, but it means
 any future feature reaching for rotation, circular motion, or angle math via
 these public entry points would have silently gotten badly wrong numbers.

@@ -138,64 +138,22 @@ fn expr_to_egraph(arena: &ExprArena, id: ExprId, egraph: &mut EGraph) -> crate::
     }
 }
 
-/// Evaluate an arena expression with **exact** transcendentals.
-///
-/// This sweep asks an *algebraic* question — "does this rewrite rule preserve
-/// mathematical value?" — so its oracle must be exact math, not the language's
-/// approximation. Evaluating with `pixelflow_ir::eval_scalar` (the language's
-/// semantics) instead reports sound rules as unsound: `cos` is expanded as
-/// `sin(x + π/2)`, which is not an even function, so the algebraically valid
-/// parity rewrite `cos(-x) → cos(x)` shifts the result by up to 7e-2. That is
-/// a defect in the expansion, tracked separately; masking it by loosening
-/// `REL_EPS` to 1e-1 would blind this sweep to genuine unsoundness, which
-/// changes values by O(1).
-///
-/// Primitives delegate to the IR's own evaluation; only the transcendentals
-/// are overridden with the host's exact versions. `pixelflow-search` is a
-/// host-only crate (e-graph + NNUE training), so std math here is fine — it is
-/// a test oracle, never a runtime path.
 fn eval_arena(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
-    let rec = |c| eval_arena(arena, c, vars);
     match *arena.node(id) {
         ExprNode::Var(i) => vars[i as usize],
         ExprNode::Const(c) => c,
-        ExprNode::Unary(op, a) => exact_unary(op, rec(a)),
-        ExprNode::Binary(op, a, b) => exact_binary(op, rec(a), rec(b)),
+        ExprNode::Unary(op, a) => op.eval_unary(eval_arena(arena, a, vars)).expect("unary"),
+        ExprNode::Binary(op, a, b) => op
+            .eval_binary(eval_arena(arena, a, vars), eval_arena(arena, b, vars))
+            .expect("binary"),
         ExprNode::Ternary(op, a, b, c) => op
-            .eval_ternary(rec(a), rec(b), rec(c))
-            .unwrap_or_else(|| panic!("exact oracle: ternary {op:?}")),
-        ref other => panic!("exact oracle: unsupported node {other:?}"),
-    }
-}
-
-/// Exact unary: transcendentals from the host, everything else from the IR.
-fn exact_unary(op: OpKind, x: f32) -> f32 {
-    match op {
-        OpKind::Sin => x.sin(),
-        OpKind::Cos => x.cos(),
-        OpKind::Tan => x.tan(),
-        OpKind::Asin => x.asin(),
-        OpKind::Acos => x.acos(),
-        OpKind::Atan => x.atan(),
-        OpKind::Exp => x.exp(),
-        OpKind::Exp2 => x.exp2(),
-        OpKind::Ln => x.ln(),
-        OpKind::Log2 => x.log2(),
-        OpKind::Log10 => x.log10(),
-        _ => op
-            .eval_unary(x)
-            .unwrap_or_else(|| panic!("exact oracle: unary {op:?}")),
-    }
-}
-
-/// Exact binary: see [`exact_unary`].
-fn exact_binary(op: OpKind, x: f32, y: f32) -> f32 {
-    match op {
-        OpKind::Atan2 => x.atan2(y),
-        OpKind::Pow => x.powf(y),
-        _ => op
-            .eval_binary(x, y)
-            .unwrap_or_else(|| panic!("exact oracle: binary {op:?}")),
+            .eval_ternary(
+                eval_arena(arena, a, vars),
+                eval_arena(arena, b, vars),
+                eval_arena(arena, c, vars),
+            )
+            .expect("ternary"),
+        _ => panic!("unsupported node in eval"),
     }
 }
 
@@ -304,9 +262,6 @@ fn test_points() -> Vec<[f32; 4]> {
 
 /// Relative tolerance: rewrites may reassociate/fuse, so only a genuine change
 /// in mathematical value (well beyond FP rounding) counts as a failure.
-///
-/// Tight, because this sweep is evaluated with the EXACT oracle below rather
-/// than the language's approximating expansion — see `eval_arena_exact`.
 const REL_EPS: f32 = 1e-3;
 
 /// Adversarial cost models. Extracting the same saturated e-graph under each
@@ -359,26 +314,14 @@ fn pict_rewrite_rules_preserve_semantics() {
     let points = test_points();
 
     assert!(!all_rules().is_empty(), "expected a non-empty rule set");
+    let mut failures: Vec<String> = Vec::new();
+    let mut changed = 0usize; // how many cases the optimizer actually rewrote
 
-    let num_threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    let chunk_size = (rows.len() + num_threads - 1) / num_threads;
-
-    let mut handles = Vec::new();
-    for chunk in rows.chunks(chunk_size) {
-        let chunk = chunk.to_vec();
-        let points = points.clone();
-
-        handles.push(std::thread::spawn(move || {
-            let mut failures = Vec::new();
-            let mut changed = 0usize;
-
-            for row in chunk {
-                let outer = OUTER_OPS[row[0]];
-                let wrapper = UNARY_WRAPPERS[row[1]];
-                let (left, right) = (row[2], row[3]);
-                let konst = CONSTS[row[4]];
+    for row in &rows {
+        let outer = OUTER_OPS[row[0]];
+        let wrapper = UNARY_WRAPPERS[row[1]];
+        let (left, right) = (row[2], row[3]);
+        let konst = CONSTS[row[4]];
 
         let mut arena = ExprArena::new();
         let root = build_expr(&mut arena, outer, wrapper, left, right, konst);
@@ -421,17 +364,6 @@ fn pict_rewrite_rules_preserve_semantics() {
                 }
             }
         }
-    }
-            (failures, changed)
-        }));
-    }
-
-    let mut failures = Vec::new();
-    let mut changed = 0;
-    for handle in handles {
-        let (mut t_failures, t_changed) = handle.join().unwrap();
-        failures.append(&mut t_failures);
-        changed += t_changed;
     }
 
     eprintln!(

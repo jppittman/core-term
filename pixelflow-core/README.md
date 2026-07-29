@@ -1,171 +1,308 @@
 # PixelFlow Core
 
-`pixelflow-core` is the `no_std` algebraic substrate for PixelFlow. It provides SIMD fields,
-coordinate domains, the `Manifold` evaluation trait, automatic-differentiation and composition
-utilities, and the lattice boundary that turns functions into finite data.
+**Pure Algebra for SIMD Graphics**
 
-PixelFlow's current programming direction is arena-backed `Kernel` values. The older
-type-level manifold combinators remain implemented as a compatibility and fallback layer, but
-they are not the intended public authoring model for new kernels.
-
-## The current split
-
-There are two related representations in the workspace:
-
-| Representation | Role today |
-|---|---|
-| `Kernel` (`pixelflow-ir`, re-exported here) | JIT-first program value: an `ExprArena` fragment composed before compilation |
-| `Manifold<P>` | Evaluation substrate for SIMD fields, cached data, opaque Rust values, and code not yet migrated from combinators |
-
-The distinction matters. A `Kernel` is PixelFlow-owned syntax with operations such as `at`,
-`select`, symbolic derivatives, and bounded reductions. A `Manifold` is a Rust trait that can
-evaluate a value over a domain. Baking a `Kernel` produces a discrete manifold; not every
-manifold needs or has an arena representation.
-
-## `Kernel`: the JIT-first value
-
-Use `kernel_value!` for new arena-native expressions:
+Write math. Get SIMD. No compromise.
 
 ```rust
-use pixelflow_compiler::kernel_value;
-use pixelflow_core::{Kernel, Lattice};
+use pixelflow_core::{Manifold, X, Y};
 
-let circle = kernel_value!(|cx: f32, cy: f32, radius: f32| {
-    let dx = X - cx;
-    let dy = Y - cy;
-    (dx * dx + dy * dy).sqrt() - radius
-});
+// Circle signed distance field
+let circle = (X * X + Y * Y).sqrt() - 100.0;
 
-let sdf: Kernel = circle(32.0, 32.0, 20.0);
-let coverage = sdf
-    .neg()
-    .add(&Kernel::constant(0.5))
-    .clamp(&Kernel::constant(0.0), &Kernel::constant(1.0));
-
-let pixels = Lattice::frame(64, 64, 0.0).bake(&coverage);
-assert_eq!(pixels.buffer().len(), 64 * 64);
+// Evaluate at any coordinate
+let distance = circle.eval_raw(x, y, 0.0, 0.0);
 ```
 
-`kernel_value!` parses and checks the DSL, runs e-graph optimization, and returns an uncompiled
-arena fragment. Scalar parameters become constants in the fragment. Composition remains at
-construction time; `Lattice::bake` JIT-compiles the fused root through the global compile cache
-and tabulates it.
+## Philosophy
 
-The `Kernel` surface currently includes:
+Inspired by [Conal Elliott's denotational design](http://conal.net/papers/icfp97/) and [Halide](https://halide-lang.org/), `pixelflow-core` treats SIMD not as an optimization but as the **algebraic realization of continuous fields**.
 
-- arithmetic, transcendental functions, comparisons, masks, and `select`;
-- coordinate substitution with `at`;
-- symbolic derivatives (`dwrt`, `dx`, and `dy`), resolved during lowering;
-- variadic sums and bounded monoid reductions (`sum_over`, `product_over`, `min_over`, and
-  related operations).
+**Everything is a manifold.** You compose functions, not values. No intermediate results. No pre-computation. Just expressions that fuse into optimal vector assembly.
 
-Bounded reductions have static extents. General unbounded recursion is intentionally outside
-the language. Typed discrete fields and a cost-semiring interpretation are described by the
-current design documents but are not all implemented yet.
+The idiomatic style:
+- ✅ **Write composable manifold expressions**: `X * scale + offset`, `circle.select(inner, outer)`
+- ✅ **Use combinators**: `At`, `Select`, `Fix` for control flow
+- ✅ **Stay generic**: Manifolds work with `Field`, `Jet2`, `Jet3` automatically
+- ❌ **Avoid pre-computed values**: Don't materialize to `Field` then recombine
 
-## `Field`
+## Core Concepts
 
-`Field` is the SIMD computational atom. Arithmetic and comparisons operate lane-wise, and the
-selected backend determines its lane count. Callers normally obtain fields by evaluating a
-`Manifold` or materializing a kernel rather than depending on a particular SIMD width.
+### Field
+
+The computational atom—a SIMD vector of `f32` values. All operations work lane-wise.
 
 ```rust
-use pixelflow_core::{Field, Manifold};
-
-fn sample<M>(m: &M, x: Field, y: Field) -> Field
-where
-    M: Manifold<(Field, Field, Field, Field), Output = Field>,
-{
-    m.eval((x, y, Field::from(0.0), Field::from(0.0)))
-}
+// Fields are created implicitly when you evaluate manifolds
+let result: Field = manifold.eval_raw(x, y, z, w);
 ```
 
-## `Manifold`
+### Manifold
 
-The current trait is generic over the entire input point, not over four positional arguments:
+The one trait. Everything is a function over 4D coordinates, generic over the numeric type:
 
 ```rust
-pub trait Manifold<P = (Field, Field, Field, Field)>: Send + Sync {
+pub trait Manifold<I: Numeric = Field>: Send + Sync {
     type Output;
-    fn eval(&self, p: P) -> Self::Output;
+    fn eval_raw(&self, x: I, y: I, z: I, w: I) -> Self::Output;
 }
 ```
 
-Different domains can carry plain fields, jets, bound context, or other coordinate structures.
-`ManifoldCompat::eval_raw(x, y, z, w)` remains as an adapter for older four-argument callers.
+The `I` type parameter enables **automatic differentiation**: evaluate with `Field` for
+concrete values, or `Jet2` to compute gradients automatically.
 
-The existing coordinate values (`X`, `Y`, `Z`, `W`), operators, `At`, `Select`, and related
-combinators still build Rust type trees which monomorphize into SIMD evaluation. They are used
-inside the repository and remain useful for opaque or cached Rust-backed manifolds. New
-language-level work should prefer `Kernel` so the program is available to PixelFlow's own
-optimizer and backends rather than encoded in Rust's type system.
+### Variables
 
-## Lattices and materialization
-
-A `Lattice` is a finite box over the four coordinate axes. It is the explicit boundary where
-a pure function becomes stored samples.
+Built-in coordinate accessors:
 
 ```rust
-use pixelflow_core::Lattice;
+use pixelflow_core::{X, Y, Z, W};
 
-let frame = Lattice::frame(800, 600, 0.0);
-let scanline = Lattice::scanline(800, 20.0, 0.0, 0.0);
-let features = Lattice::index(128);
+// X just returns the x coordinate
+// Y just returns the y coordinate
+// etc.
 ```
 
-- `collapse(&manifold)` evaluates an existing `Manifold` over the domain.
-- `bake(&kernel)` compiles an arena-backed `Kernel` and tabulates it.
-- The resulting `DiscreteManifold` owns an `f32` buffer and is itself sampleable as a
-  manifold.
+### Operator Overloads
 
-The longer-term plan replaces the present lattice terminology with typed discrete fields while
-preserving this explicit reification boundary. See
-[`KERNELS_AND_LATTICES.md`](../docs/designs/KERNELS_AND_LATTICES.md) and
-[`2026-07-24-totality-and-the-cost-model.md`](../docs/designs/2026-07-24-totality-and-the-cost-model.md).
+Write math naturally. Operators build an AST that evaluates to SIMD:
 
-## Automatic differentiation
-
-Two mechanisms coexist during the migration:
-
-- The combinator layer can evaluate compatible expressions over `Jet2` and `Jet3` domains.
-- Arena-native kernels contain `Dwrt` nodes that are differentiated symbolically before
-  backend emission.
-
-New JIT-first consumers use symbolic derivatives. The font pipeline, for example, constructs
-antialiased coverage ramps from `DX`/`DY` in the DSL and resolves those derivatives when the
-glyph kernel is baked. Jets remain relevant to older manifold consumers, including parts of
-the 3D graphics code.
-
-## Compiler transition
-
-The related macros currently have different output boundaries:
-
-- `kernel_value!` returns an uncompiled arena-backed `Kernel` and is the preferred JIT-first
-  composition surface.
-- `kernel_jit!` returns a JIT-compiled manifold.
-- `kernel!` still defaults to the type-level combinator emitter; eligible bodies can be routed
-  through the arena backend behind the compiler's `arena-backend` feature while parity work
-  continues.
-
-The plan is to converge these paths on one arena language and retire the combinator emitter
-after remaining parity and consumer migrations are complete. Progress and known gaps are
-tracked in [`2026-07-20-kernel-unification.md`](../docs/plans/2026-07-20-kernel-unification.md).
-
-## Constraints
-
-- `pixelflow-core` is `no_std`; allocation-dependent facilities use `alloc` internally.
-- Consumers should not manipulate `ExprArena` directly. Compose `Kernel` values and compile at
-  a materialization boundary.
-- Do not silently fall back when an arena kernel cannot compile. `Lattice::bake` fails loudly.
-- Do not assume a fixed SIMD lane count in consumer code.
-
-## Test and benchmark
-
-```bash
-cargo test -p pixelflow-core
-cargo bench -p pixelflow-core
+```rust
+// All these "just work"
+let sum = X + Y;
+let product = X * 2.0;
+let complex = (X + 2.0) * Y - 0.5;
+let ratio = X / (Y + 1.0);
 ```
+
+### Combinators: Composition Over Values
+
+The idiomatic PixelFlow pattern is to **compose manifolds as manifolds**, not materialize to values.
+
+**The Right Way**: Use combinators
+
+```rust
+use pixelflow_core::{Manifold, ManifoldExt, Select, At, X, Y};
+
+// Blend two manifolds based on a condition
+let sdf = (X * X + Y * Y).sqrt() - 10.0;
+let condition = sdf.lt(0.0);
+let result = condition.select(inner_color, outer_color);  // Both stay as manifolds!
+```
+
+**The Wrong Way**: Pre-compute to values
+
+```rust
+// ❌ Don't do this - loses compositional structure
+let sdf_value = sdf.eval_raw(x, y, z, w);        // Materialized!
+let condition_value = sdf_value < 0.0;           // Materialized!
+let result = if condition_value { inner } else { outer };  // Lost genericity!
+```
+
+#### Select: Branchless Conditional
+
+Choose between two manifolds without materializing intermediate values:
+
+```rust
+let mask = X.lt(50.0);
+let result = mask.select(white, black);  // Fuses into single kernel
+```
+
+#### At: Pin Manifolds to Computed Coordinates
+
+Evaluate manifolds at different coordinate systems, then blend:
+
+```rust
+use pixelflow_core::{At, Jet3};
+
+// material_at_hit and background_at_ray are independent evaluations
+// No pre-computed hit points or ray directions
+let material_at_hit = At {
+    inner: &material,
+    x: hit_x,  // Jet3 constants are manifolds too
+    y: hit_y,
+    z: hit_z,
+    w: Jet3::constant(0.0),
+};
+
+let background_at_ray = At {
+    inner: &background,
+    x: ray_x,
+    y: ray_y,
+    z: ray_z,
+    w,
+};
+
+// Compose: all parts stay as manifolds
+let scene = hit_mask.select(material_at_hit, background_at_ray);
+```
+
+The key insight: **Jet3 values themselves implement `Manifold`**, so they're not "pre-computed"—they're constant manifold expressions that integrate into the computation graph.
+
+## Examples
+
+### Circle SDF
+
+```rust
+use pixelflow_core::{Manifold, ManifoldExt, X, Y};
+
+// Signed distance to a circle at origin, radius 100
+let circle = (X * X + Y * Y).sqrt() - 100.0;
+
+// Inside: negative. Outside: positive.
+```
+
+### Centered Circle
+
+```rust
+use pixelflow_core::{Manifold, ManifoldExt, X, Y};
+
+// Circle centered at (50, 50)
+let cx = 50.0;
+let cy = 50.0;
+let radius = 30.0;
+
+let dx = X - cx;
+let dy = Y - cy;
+let circle = (dx * dx + dy * dy).sqrt() - radius;
+```
+
+### Smooth Gradient
+
+```rust
+use pixelflow_core::{Manifold, ManifoldExt, X, Y};
+
+// Horizontal gradient from 0 to 1 across 100 pixels
+let gradient = X / 100.0;
+
+// Clamp to [0, 1]
+let clamped = gradient.max(0.0).min(1.0);
+```
+
+### Checkerboard
+
+```rust
+use pixelflow_core::{Manifold, ManifoldExt, X, Y};
+
+// 10x10 pixel checkerboard
+let cell_size = 10.0;
+
+// XOR of x and y cell parity
+let x_cell = (X / cell_size).floor();
+let y_cell = (Y / cell_size).floor();
+
+// Use comparison and select for the pattern
+let x_odd = (x_cell % 2.0).ge(1.0);
+let y_odd = (y_cell % 2.0).ge(1.0);
+
+// XOR via: (x && !y) || (!x && y)
+// Or simpler: different parity = white
+let checker = x_odd.select(
+    y_odd.select(0.0, 1.0),  // x odd: white if y even
+    y_odd.select(1.0, 0.0),  // x even: white if y odd
+);
+```
+
+### Mandelbrot (using Fix)
+
+```rust
+use pixelflow_core::{Manifold, ManifoldExt, Fix, X, Y, W};
+
+// W is the iteration state (escape radius squared)
+// Simplified: just check if |z|² > 4 after N iterations
+
+let mandelbrot = Fix {
+    seed: 0.0,                        // z starts at 0
+    step: W * W + X,                  // z = z² + c (simplified to 1D)
+    done: W.abs().gt(2.0),            // escape when |z| > 2
+};
+
+// Evaluate: returns the final z value (or escape value)
+```
+
+## Ergonomics
+
+### Seamless Scalar Promotion
+
+Scalars auto-promote to `Field`:
+
+```rust
+// No splat() needed - 2.0 and 0.5 just work
+let expr = X * 2.0 + 0.5;
+```
+
+### Select with Scalars
+
+The `select` method accepts scalars directly:
+
+```rust
+let mask = X.lt(100.0);
+let result = mask.select(1.0, 0.0);  // No Field::splat needed
+```
+
+### ManifoldExt Methods
+
+Chaining methods for fluent APIs:
+
+```rust
+use pixelflow_core::ManifoldExt;
+
+let result = X
+    .add(10.0)        // X + 10
+    .mul(Y)           // (X + 10) * Y
+    .sqrt()           // sqrt((X + 10) * Y)
+    .max(0.0)         // clamp to non-negative
+    .min(1.0);        // clamp to max 1
+```
+
+### Materializing to Pixels
+
+Render a manifold to a byte buffer:
+
+```rust
+use pixelflow_core::materialize;
+
+let mut buffer = [0u8; WIDTH];
+materialize(&manifold, x_start, y, &mut buffer);
+// buffer now contains u8 values (0-255) from the manifold
+```
+
+## Automatic Differentiation with Jet2
+
+All expressions built with `ManifoldExt` are generic over the `Numeric` type. This means
+the same expression can be evaluated with `Field` (for values) or `Jet2` (for gradients):
+
+```rust
+use pixelflow_core::{ManifoldExt, X, Y, Jet2, Manifold, Numeric};
+
+// Build expression using ManifoldExt
+let circle = (X * X + Y * Y).sqrt() - 10.0;
+
+// Evaluate with Field (concrete values)
+let distance = circle.eval(3.0, 4.0, 0.0, 0.0);  // Returns 5.0 - 10.0 = -5.0
+
+// Evaluate with Jet2 (automatic differentiation)
+let x_jet = Jet2::x(3.0.into());  // x = 3, ∂x/∂x = 1, ∂x/∂y = 0
+let y_jet = Jet2::y(4.0.into());  // y = 4, ∂y/∂x = 0, ∂y/∂y = 1
+let zero = Jet2::constant(0.0.into());
+
+let result = circle.eval_raw(x_jet, y_jet, zero, zero);
+// result.val = -5.0 (the distance value)
+// result.dx = 0.6   (∂distance/∂x = x/√(x²+y²) = 3/5)
+// result.dy = 0.8   (∂distance/∂y = y/√(x²+y²) = 4/5)
+```
+
+This is useful for computing normals, gradients for optimization, and ray marching.
+
+## Architecture
+
+Under the hood:
+- `Field` = `SimdVec<f32>` (4 lanes on SSE2, 16 on AVX-512)
+- Expressions build an AST of `Add`, `Mul`, `Sqrt`, `Select`, etc.
+- Evaluation inlines to tight SIMD loops
+- Zero runtime dispatch—the compiler monomorphizes everything
+- Generic `Numeric` trait enables both `Field` and `Jet2` evaluation
 
 ## License
 
-[Apache License 2.0](../LICENSE.md)
+MIT

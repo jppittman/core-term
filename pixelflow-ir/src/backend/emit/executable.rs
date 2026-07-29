@@ -146,7 +146,9 @@ fn page_size() -> usize {
 /// A reusable region of executable memory for JIT compilation.
 ///
 /// Allocates a single page (or multiple pages) once via `mmap`, then reuses it
-/// across compiles to avoid repeated allocation and mapping work.
+/// across compiles. This eliminates the ~10-20µs mmap/munmap syscall overhead
+/// per compile, replacing it with cheaper mprotect toggles (~2-5µs) or
+/// `pthread_jit_write_protect_np` on Apple Silicon (~0.5µs).
 ///
 /// # Usage
 ///
@@ -338,7 +340,8 @@ impl Drop for CodeBuffer {
 /// When `writable` is true, the current thread can write to MAP_JIT memory.
 /// When false, the memory is executable but not writable (W^X).
 ///
-/// This is per-thread, so it doesn't affect other threads' ability to execute the code.
+/// This is much cheaper than mprotect (~0.5µs vs ~5µs) and is per-thread,
+/// so it doesn't affect other threads' ability to execute the code.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JitWriteState {
@@ -374,20 +377,8 @@ unsafe fn toggle_jit_write(state: JitWriteState) {
 #[cfg(target_arch = "aarch64")]
 use core::arch::aarch64::float32x4_t;
 
-// __m128 is only the kernel width on the SSE2 build: the deleted scanline
-// ABI was the last 128-bit-at-every-width user.
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
+#[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::__m128;
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-use core::arch::x86_64::__m256;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 use core::arch::x86_64::__m512;
 
@@ -418,20 +409,29 @@ pub type CtxKernelFn = extern "C" fn(
     float32x4_t,
 ) -> float32x4_t;
 
-/// JIT-compiled *collapse* kernel (ARM64). See the AVX-512
-/// [`CollapseKernelFn`] doc for the contract. AAPCS64 argument registers:
-/// `x0` = context, `x1` = `out`, `x2` = `groups`, `v0..3` = x0/y/z/w. Batch
-/// width is 4 lanes; the per-iteration X step is 4.0.
+/// JIT-compiled scanline kernel signature for ARM64.
+///
+/// Processes an entire scanline in a single call with no per-batch Rust-JIT boundary.
+/// Y/Z/W stay in registers across the entire loop (loop-invariant hoisting by construction).
+///
+/// Args:
+///   x0 = pointer to input X array (128-bit aligned `float32x4_t` values)
+///   v1 = Y (broadcast, loop-invariant)
+///   v2 = Z (broadcast, loop-invariant)
+///   v3 = W (broadcast, loop-invariant)
+///   x1 = pointer to output array (128-bit aligned `float32x4_t` values)
+///   x2 = count (number of SIMD groups to process)
+// SIMD vector types are not nominally FFI-safe, but both sides of this
+// boundary are our own JIT-emitted code using the platform vector ABI.
 #[allow(improper_ctypes_definitions)]
 #[cfg(target_arch = "aarch64")]
-pub type CollapseKernelFn = extern "C" fn(
-    *const *const f32,
-    *mut f32,
-    usize,
-    float32x4_t,
-    float32x4_t,
-    float32x4_t,
-    float32x4_t,
+pub type ScanlineKernelFn = extern "C" fn(
+    *const float32x4_t, // x_array
+    float32x4_t,        // y (broadcast)
+    float32x4_t,        // z (broadcast)
+    float32x4_t,        // w (broadcast)
+    *mut float32x4_t,   // output array
+    usize,              // count
 );
 
 /// JIT-compiled per-batch kernel signature for x86-64.
@@ -439,12 +439,11 @@ pub type CollapseKernelFn = extern "C" fn(
 /// Args: X/Y/Z/W in the first four vector registers; returns the result in the
 /// first. One call computes one pixel per lane; the caller loops.
 ///
-/// The width tracks the build's selected SIMD: 512-bit `__m512` (16 lanes) with
-/// AVX-512, 256-bit `__m256` (8 lanes) with AVX2 (and not AVX-512), else
-/// 128-bit `__m128` (4 lanes, SSE2). This MUST match `pixelflow-core`'s
-/// `Field`; the `kernel_jit!` wrapper const-asserts
+/// The width tracks the build's selected SIMD: 512-bit `__m512` (16 lanes) when
+/// compiled with AVX-512, else 128-bit `__m128` (4 lanes, SSE2). This MUST match
+/// `pixelflow-core`'s `Field`; the `kernel_jit!` wrapper const-asserts
 /// `size_of::<Field>() == JIT_VECTOR_BYTES`. The looping variant is
-/// [`CollapseKernelFn`], at the same width.
+/// `ScanlineKernelFn`, which stays 128-bit (the scanline emitter is still SSE2).
 #[allow(improper_ctypes_definitions)]
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub type KernelFn = extern "C" fn(__m512, __m512, __m512, __m512) -> __m512;
@@ -461,103 +460,45 @@ pub type KernelFn = extern "C" fn(__m512, __m512, __m512, __m512) -> __m512;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 pub type CtxKernelFn = extern "C" fn(*const *const f32, __m512, __m512, __m512, __m512) -> __m512;
 
-/// JIT-compiled *collapse* kernel (x86-64 AVX-512): the whole row loop is
-/// inside the emitted code, so one call fills `groups` output batches — no
-/// per-batch Rust↔JIT boundary. X is an induction value: the kernel starts
-/// from the caller's lane-sequential `x0` and adds the batch width (16.0)
-/// per iteration; Y/Z/W are loop-invariant arguments.
+/// JIT-compiled *collapse* kernel (x86-64 AVX-512): the whole lattice domain
+/// loop is inside the emitted code, so one call fills the entire output — no
+/// per-batch Rust↔JIT boundary. This is the internal-loop realization of the
+/// lattice: coordinates are induction values, not arguments.
 ///
-/// SysV argument registers: `rdi` = context (array of buffer base pointers,
-/// one per declared buffer — pass a dangling-free null-less array or anything
-/// when the arena declares none; a buffer-free kernel never reads it),
-/// `rsi` = `out` (output, written 64 bytes at a time; must hold at least
-/// `groups * 16` f32s), `rdx` = `groups`, `zmm0..3` = x0/y/z/w.
-#[allow(improper_ctypes_definitions)]
+/// SysV argument registers: `rdi` = context (array of buffer base pointers),
+/// `rsi` = `xs` (domain X coordinates, 16-lane groups), `rdx` = `out` (output,
+/// 16-lane groups), `rcx` = `groups` (number of 16-lane groups). Y/Z/W are zero
+/// inside the kernel. `xs`/`out` are read/written 64 bytes at a time and must
+/// hold at least `groups * 16` f32s.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-pub type CollapseKernelFn =
-    extern "C" fn(*const *const f32, *mut f32, usize, __m512, __m512, __m512, __m512);
-
-/// JIT-compiled per-batch kernel signature for x86-64 AVX2 (256-bit, 8 lanes).
-/// See [`KernelFn`] (the AVX-512 variant) for the ABI contract; this is the
-/// same shape at the AVX2 width, selected when the build has `avx2` but not
-/// `avx512f`.
-#[allow(improper_ctypes_definitions)]
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-pub type KernelFn = extern "C" fn(__m256, __m256, __m256, __m256) -> __m256;
-
-/// JIT-compiled kernel that reads bound memory (x86-64 AVX2). See the
-/// AVX-512 [`CtxKernelFn`] doc for the context-pointer contract; `rdi` is
-/// still disjoint from the coordinate vectors (now `ymm0..3`).
-#[allow(improper_ctypes_definitions)]
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-pub type CtxKernelFn = extern "C" fn(*const *const f32, __m256, __m256, __m256, __m256) -> __m256;
-
-/// JIT-compiled *collapse* kernel (x86-64 AVX2). See the AVX-512
-/// [`CollapseKernelFn`] doc for the contract; batch width is 8 lanes and the
-/// per-iteration X step is 8.0.
-#[allow(improper_ctypes_definitions)]
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-pub type CollapseKernelFn =
-    extern "C" fn(*const *const f32, *mut f32, usize, __m256, __m256, __m256, __m256);
+pub type CollapseKernelFn = extern "C" fn(*const *const f32, *const f32, *mut f32, usize);
 
 #[allow(improper_ctypes_definitions)]
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 pub type KernelFn = extern "C" fn(__m128, __m128, __m128, __m128) -> __m128;
 
-/// JIT-compiled kernel that reads bound memory (x86-64, 128-bit).
-///
-/// Identical to [`KernelFn`] plus a leading context pointer: an array of buffer
-/// base pointers, one per declared [`BufferId`](crate::arena::BufferId) in slot
-/// order. System V places this integer-class pointer in `rdi`, disjoint from the
-/// coordinate vectors in `xmm0..3`, so the emitted body is byte-for-byte the
-/// same as a `KernelFn` — only kernels containing a `Gather` read `rdi`. The
-/// caller picks this type iff the arena declared buffers.
+/// JIT-compiled scanline kernel signature for x86-64 (128-bit; the scanline
+/// emitter is SSE2 only, independent of the per-batch width).
 #[allow(improper_ctypes_definitions)]
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
-pub type CtxKernelFn = extern "C" fn(*const *const f32, __m128, __m128, __m128, __m128) -> __m128;
-
-/// JIT-compiled *collapse* kernel (x86-64, 128-bit). See the AVX-512
-/// [`CollapseKernelFn`] doc for the contract; batch width is 4 lanes and the
-/// per-iteration X step is 4.0.
-#[allow(improper_ctypes_definitions)]
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
-pub type CollapseKernelFn =
-    extern "C" fn(*const *const f32, *mut f32, usize, __m128, __m128, __m128, __m128);
+#[cfg(target_arch = "x86_64")]
+pub type ScanlineKernelFn = extern "C" fn(
+    *const __m128, // x_array
+    __m128,        // y (broadcast)
+    __m128,        // z (broadcast)
+    __m128,        // w (broadcast)
+    *mut __m128,   // output array
+    usize,         // count
+);
 
 // =============================================================================
 // Tests
 // =============================================================================
 
 // These tests hand-assemble SSE2 byte sequences and call them through the
-// 128-bit `KernelFn`, so they are specific to the SSE2 (no AVX2, no AVX-512)
-// ABI. Under `+avx512f` or `+avx2`, `KernelFn` is `__m512`/`__m256` and these
-// `__m128` call sites don't type check; those paths are covered by the
-// `avx512`/`avx2` tests in `mod.rs`.
-#[cfg(all(test, not(target_feature = "avx512f"), not(target_feature = "avx2")))]
+// 128-bit `KernelFn`, so they are specific to the non-AVX-512 ABI. Under
+// `+avx512f`, `KernelFn` is `__m512` and these `__m128` call sites don't type
+// check; the AVX-512 path is covered by the `avx512` tests in `mod.rs`.
+#[cfg(all(test, not(target_feature = "avx512f")))]
 mod tests {
     // These tests hand-assemble instruction words as `base | Rd | (Rn << 5) | ...`;
     // the `| 0` / `(0 << 5)` terms document zero register fields on purpose.

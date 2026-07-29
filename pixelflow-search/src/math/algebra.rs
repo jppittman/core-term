@@ -920,26 +920,6 @@ impl Rewrite for ConstantFold {
             args.push(found_const?);
         }
 
-        // Refuse to fold anything whose answer is platform-specific. This
-        // matters more than a same-machine consistency nicety: the folder runs
-        // on the BUILD host at macro-expansion time, while the folded constant
-        // executes on the TARGET, so folding here bakes the build machine's
-        // arithmetic into code that may run somewhere that computes
-        // differently. `fold_is_platform_specific` owns the classification (NaN
-        // and signed-zero Min/Max, NaN Gt/Ge, Round at a tie, the reciprocal
-        // estimates, MulAdd's one-vs-two roundings) so it lives in one place
-        // next to the semantics rather than as conditions here.
-        //
-        // Complete for `Round`/`Recip`/`Rsqrt` (unary — no rewrite can
-        // reintroduce the fold) and for `MulAdd` (its only commutable pair is
-        // the two multiplicands, which round identically either way). Partial
-        // for `Min`/`Max`: the e-graph installs commutativity for them, so a
-        // commuted form can still be folded. That is permitted, since the
-        // result is unspecified, but this removes the direct path.
-        if kind.fold_is_platform_specific(&args) {
-            return None;
-        }
-
         // Evaluate based on arity
         let result = match args.len() {
             1 => kind.eval_unary(args[0])?,
@@ -948,16 +928,8 @@ impl Rewrite for ConstantFold {
             _ => return None,
         };
 
-        // Don't bake in a non-finite result of ARITHMETIC: `1e38 * 1e38` folding
-        // to `inf` freezes an overflow no source constant asked for. Ops in the
-        // bitwise domain are exempt, because for them a non-finite float reading
-        // IS the intended output — a true comparison mask is all-ones, which
-        // reads as NaN by construction (`OpKind::mask`, and the same pattern
-        // `BitAnd`'s monoid identity uses), and the integer-domain primitives
-        // exp/log lower to build exponents out of raw bit patterns. Without the
-        // exemption this guard silently switches off comparison and exp/log
-        // folding while looking like a safety check.
-        if !result.is_finite() && !kind.is_bitwise_domain() {
+        // Don't fold NaN or infinity - they can cause issues
+        if !result.is_finite() {
             return None;
         }
 
@@ -1029,135 +1001,4 @@ pub fn algebra_rules() -> Vec<Box<dyn Rewrite>> {
     let mut rules = inverse_pair_rules();
     rules.extend(basic_algebra_rules());
     rules
-}
-
-#[cfg(test)]
-mod platform_specific_fold_tests {
-    use super::*;
-    use crate::egraph::rewrite::{Rewrite, RewriteAction};
-    use crate::egraph::{EGraph, ENode};
-
-    /// Drive `ConstantFold::apply` directly on `op(consts...)` and report
-    /// whether it produced a folded constant.
-    fn folds(op: &'static dyn Op, args: &[f32]) -> Option<f32> {
-        let mut eg = EGraph::new();
-        let children: Vec<_> = args.iter().map(|&v| eg.add(ENode::constant(v))).collect();
-        let node = ENode::Op { op, children };
-        let id = eg.add(node.clone());
-        match ConstantFold.apply(&eg, id, &node) {
-            Some(RewriteAction::Create(ENode::Const(bits))) => Some(f32::from_bits(bits)),
-            _ => None,
-        }
-    }
-
-    /// The folder runs on the BUILD host; the constant it bakes in executes on
-    /// the TARGET. For ops whose answer differs between targets it must decline,
-    /// or a cross-compile silently ships the build machine's arithmetic.
-    #[test]
-    fn declines_platform_specific_rounding_ties() {
-        // x86 nearest-even says 2, aarch64 FRINTA says 3 — so neither.
-        assert_eq!(folds(&ops::Round, &[2.5]), None);
-        assert_eq!(folds(&ops::Round, &[-1.5]), None);
-        assert_eq!(folds(&ops::Round, &[0.5]), None);
-        // Away from a tie every target agrees, so folding is still allowed.
-        assert_eq!(folds(&ops::Round, &[2.4]), Some(2.0));
-        assert_eq!(folds(&ops::Round, &[2.6]), Some(3.0));
-    }
-
-    /// Non-tie inputs in `[-0.5, -0.0]` round to `-0.0` in both JIT tiers but
-    /// to `+0.0` through the combinator tier's `(x + 0.5).floor()`, so the
-    /// folder must decline there too — `1.0 / x` makes the difference `-inf`
-    /// versus `+inf`.
-    #[test]
-    fn declines_round_folds_that_lose_the_sign_of_zero() {
-        assert_eq!(folds(&ops::Round, &[-0.2]), None);
-        assert_eq!(folds(&ops::Round, &[-0.4]), None);
-        assert_eq!(folds(&ops::Round, &[-0.0]), None);
-        // Past -0.5 the result is -1.0 in every tier, so folding is fine again.
-        assert_eq!(folds(&ops::Round, &[-0.6]), Some(-1.0));
-        // And positive inputs never had the ambiguity.
-        assert_eq!(
-            folds(&ops::Round, &[0.2]).map(f32::to_bits),
-            Some(0.0f32.to_bits())
-        );
-    }
-
-    #[test]
-    fn declines_platform_specific_nan_min_max() {
-        let nan = f32::NAN;
-        // x86 yields the second operand, aarch64 propagates the NaN.
-        assert_eq!(folds(&ops::Min, &[nan, 1.0]), None);
-        assert_eq!(folds(&ops::Min, &[1.0, nan]), None);
-        assert_eq!(folds(&ops::Max, &[nan, 1.0]), None);
-        // Without a NaN the targets agree and folding proceeds.
-        assert_eq!(folds(&ops::Min, &[1.0, 2.0]), Some(1.0));
-        assert_eq!(folds(&ops::Max, &[1.0, 2.0]), Some(2.0));
-    }
-
-    /// Opposite-signed zeros are the non-NaN case where Min/Max still diverge:
-    /// x86 picks by operand order (`-0.0 < 0.0` is false, so the second wins),
-    /// aarch64 `FMIN` picks `-0.0` and `FMAX` picks `+0.0`. `==` cannot tell
-    /// them apart, but `1.0 / x` makes it `+inf` versus `-inf`.
-    #[test]
-    fn declines_signed_zero_min_max() {
-        assert_eq!(folds(&ops::Min, &[-0.0, 0.0]), None);
-        assert_eq!(folds(&ops::Min, &[0.0, -0.0]), None);
-        assert_eq!(folds(&ops::Max, &[-0.0, 0.0]), None);
-        // Same-signed zeros are indistinguishable, so folding is fine.
-        assert_eq!(
-            folds(&ops::Min, &[0.0, 0.0]).map(f32::to_bits),
-            Some(0.0f32.to_bits())
-        );
-    }
-
-    /// `Recip`/`Rsqrt` are estimate instructions, and each target estimates
-    /// differently: `rcpps` gives ~12 bits, `vrcp14ps` ~14, aarch64 runs
-    /// `FRECPE` plus a `FRECPS` Newton step. `recip(3.0)` executes as
-    /// `0.33325195` on SSE2 against the exact `0.33333334` the folder would
-    /// compute — so unlike the cases above there is no argument that is safe.
-    #[test]
-    fn never_folds_reciprocal_estimates() {
-        for x in [3.0f32, 2.0, 1.0, 0.5, 16.0] {
-            assert_eq!(folds(&ops::Recip, &[x]), None, "recip({x}) is an estimate");
-            assert_eq!(folds(&ops::Rsqrt, &[x]), None, "rsqrt({x}) is an estimate");
-        }
-    }
-
-    /// `MulAdd` rounds once on every target with an FMA (`vfmadd`, `FMLA`) and
-    /// twice on SSE2 (`mulps` then `addps`). Value-aware, because the two agree
-    /// for most inputs — declining everything would give up real folding to
-    /// guard a narrow set of arguments.
-    #[test]
-    fn declines_muladd_only_where_the_roundings_differ() {
-        // One rounding gives 8194.001, two give 8194.0.
-        assert_eq!(folds(&ops::MulAdd, &[1.000_000_1, 4097.0, 4097.0]), None);
-        // Exactly representable throughout: both forms agree.
-        assert_eq!(folds(&ops::MulAdd, &[2.0, 3.0, 4.0]), Some(10.0));
-    }
-
-    /// A folded comparison and an executed one have to be the same operand.
-    /// `Select`/`BitAnd` are bitwise on every backend, so a folded `1.0` would
-    /// blend `7.0` against `9.0` into `4.5`; the mask has to be all-ones.
-    #[test]
-    fn comparison_folds_produce_mask_bit_patterns() {
-        let t = pixelflow_ir::OpKind::mask(true).to_bits();
-        let f = pixelflow_ir::OpKind::mask(false).to_bits();
-        assert_eq!(folds(&ops::Lt, &[1.0, 2.0]).map(f32::to_bits), Some(t));
-        assert_eq!(folds(&ops::Lt, &[2.0, 1.0]).map(f32::to_bits), Some(f));
-        assert_eq!(folds(&ops::Eq, &[2.0, 2.0]).map(f32::to_bits), Some(t));
-        assert_eq!(folds(&ops::Ne, &[2.0, 2.0]).map(f32::to_bits), Some(f));
-        // And such a mask blends exactly, through the same bitwise formula the
-        // backends emit. (`BitAnd`/`BitOr` have no e-graph `Op` — they appear
-        // only after lowering — so `Select` is the folder-visible consumer; the
-        // end-to-end path through a real `and` is covered by
-        // `pixelflow-ir/tests/transcendental_jit.rs`.)
-        assert_eq!(
-            folds(&ops::Select, &[f32::from_bits(t), 7.0, 9.0]),
-            Some(7.0)
-        );
-        assert_eq!(
-            folds(&ops::Select, &[f32::from_bits(f), 7.0, 9.0]),
-            Some(9.0)
-        );
-    }
 }

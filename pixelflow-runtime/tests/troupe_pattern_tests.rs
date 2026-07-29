@@ -108,7 +108,7 @@ impl Actor<AlphaData, AlphaControl, AlphaManagement> for AlphaActor<'_> {
         Ok(())
     }
 
-    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -160,7 +160,7 @@ impl Actor<BetaData, BetaControl, BetaManagement> for BetaActor<'_> {
         Ok(())
     }
 
-    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -394,7 +394,7 @@ fn all_actor_threads_exit_on_channel_close() {
             fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -414,7 +414,7 @@ fn all_actor_threads_exit_on_channel_close() {
             fn handle_management(&mut self, _: BetaManagement) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -462,7 +462,7 @@ fn actor_thread_panic_isolated() {
             fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -485,7 +485,7 @@ fn actor_thread_panic_isolated() {
             fn handle_management(&mut self, _: BetaManagement) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -571,7 +571,7 @@ fn circular_messaging_does_not_deadlock() {
             fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -605,7 +605,7 @@ fn circular_messaging_does_not_deadlock() {
             fn handle_management(&mut self, _: BetaManagement) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -668,7 +668,7 @@ fn multiple_producers_work_independently() {
             fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -729,7 +729,7 @@ fn actors_can_coordinate_startup_with_barrier() {
             fn handle_management(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -753,7 +753,7 @@ fn actors_can_coordinate_startup_with_barrier() {
             fn handle_management(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -804,7 +804,7 @@ fn shutdown_message_causes_actor_exit() {
             fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -849,7 +849,7 @@ fn shutdown_works_with_multiple_actors() {
             fn handle_management(&mut self, _: AlphaManagement) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -869,7 +869,7 @@ fn shutdown_works_with_multiple_actors() {
             fn handle_management(&mut self, _: BetaManagement) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }

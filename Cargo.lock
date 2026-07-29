@@ -864,9 +864,9 @@ name = "pixelflow-core"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "libm",
  "pixelflow-compiler",
  "pixelflow-ir",
- "pixelflow-search",
 ]
 
 [[package]]
@@ -881,8 +881,6 @@ dependencies = [
  "log",
  "pixelflow-compiler",
  "pixelflow-core",
- "pixelflow-ir",
- "pixelflow-search",
  "proptest",
  "serde",
  "tempfile",
@@ -895,7 +893,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "libm",
- "pixelflow-ir",
  "serde",
 ]
 

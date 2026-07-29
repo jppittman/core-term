@@ -9,7 +9,6 @@ use crate::platform::macos::cocoa::{event_type, NSEvent};
 
 /// Maps an `NSEvent` to a `DisplayEvent`, if applicable.
 /// `window_height` is needed to flip Y coordinates (macOS origin is bottom-left).
-#[must_use]
 pub fn map_event(event: NSEvent, window_height: f64) -> Option<DisplayEvent> {
     let ty = event.type_();
 

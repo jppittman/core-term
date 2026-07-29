@@ -189,12 +189,6 @@ mod cocoa_waker {
     #[derive(Clone)]
     pub struct CocoaWaker;
 
-    impl Default for CocoaWaker {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
     impl actor_scheduler::WakeHandler for CocoaWaker {
         fn wake(&self) {
             <Self as EventLoopWaker>::wake(self).expect("Failed to wake Cocoa event loop");
@@ -202,7 +196,6 @@ mod cocoa_waker {
     }
 
     impl CocoaWaker {
-        #[must_use]
         pub fn new() -> Self {
             Self
         }

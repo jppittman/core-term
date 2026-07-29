@@ -59,11 +59,11 @@
 //! # Example (Basic Scheduler)
 //!
 //! ```rust
-//! use actor_scheduler::{ActorScheduler, Message, Actor, ActorStatus, SystemStatus, HandlerResult, HandlerError};
+//! use actor_scheduler::{ActorScheduler, Message, SchedulerHandler, ActorStatus, SystemStatus, HandlerResult, HandlerError};
 //!
 //! struct MyHandler;
 //!
-//! impl Actor<String, String, String> for MyHandler {
+//! impl SchedulerHandler<String, String, String> for MyHandler {
 //!     fn handle_data(&mut self, msg: String) -> HandlerResult {
 //!         println!("Data: {}", msg);
 //!         Ok(())
@@ -76,7 +76,7 @@
 //!         println!("Management: {}", msg);
 //!         Ok(())
 //!     }
-//!     fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> { Ok(ActorStatus::Idle) }
+//!     fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> { Ok(ActorStatus::Idle) }
 //! }
 //!
 //! let (tx, mut rx) = ActorScheduler::<String, String, String>::new(10, 100);
@@ -92,27 +92,25 @@
 //! tx.send(Message::Control("high priority control".to_string())).unwrap();
 //! ```
 
-pub mod actors;
 mod error;
-pub mod host;
+pub mod kubelet;
 mod lifecycle;
-pub mod mealy;
 mod params;
+pub mod registry;
+pub mod service;
 pub mod sharded;
 pub mod spsc;
 
 use error::DrainStatus;
 pub use error::{HandlerError, HandlerResult, SendError};
-pub use host::{
-    Green, GreenSender, GreenThread, Host, HostOut, NodeId, RunSweep, Stuck, Supervision,
-    green_channel,
-};
-pub use lifecycle::Exit;
+pub use kubelet::{Kubelet, KubeletBuilder, SpawnedPod, spawn_managed};
+pub use lifecycle::{PodPhase, RestartPolicy};
 pub use params::SchedulerParams;
-pub use spsc::TrySendError;
+pub use registry::{PodGone, PodSlot};
+pub use service::{ServiceError, ServiceHandle};
 
 // Re-export macros from the proc-macro crate
-pub use actor_scheduler_macros::{actor_impl, ports, troupe};
+pub use actor_scheduler_macros::{actor_impl, troupe};
 
 use sharded::{InboxBuilder, ShardedInbox};
 use spsc::SpscSender;
@@ -180,7 +178,7 @@ use std::time::Duration;
 ///   2. Drain Management messages (capped at burst limit)
 ///   3. Drain Control messages again (priority recheck)
 ///   4. Drain Data messages (capped at burst limit)
-///   5. Call handle_os() - let actor/OS do other work
+///   5. Call park() - let actor/OS do other work
 ///   6. Repeat
 /// ```
 ///
@@ -343,14 +341,14 @@ macro_rules! impl_management_message {
     };
 }
 
-/// Actor status returned from handle_os() to hint the scheduler about blocking behavior.
+/// Actor status returned from park() to hint the scheduler about blocking behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActorStatus {
     Idle, // Actor has no unfinished work. Scheduler can block. (0% CPU)
     Busy, // Actor has unfinished work (yielding). Scheduler should poll.
 }
 
-/// Status provided to the actor's handle_os method indicating the state of the scheduler's queues.
+/// Status provided to the actor's park method indicating the state of the scheduler's queues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemStatus {
     Idle, // Scheduler queues are empty
@@ -390,8 +388,12 @@ pub trait Actor<D, C, M> {
     ///
     /// Returns actor status: Busy if yielding with unfinished work, Idle if done.
     /// Can return `HandlerError::Fatal` to trigger shutdown.
-    fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError>;
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError>;
 }
+
+/// Legacy alias for backward compatibility
+#[deprecated(since = "0.2.0", note = "Use `Actor` instead")]
+pub use Actor as SchedulerHandler;
 
 /// Defines the message types for an actor managed by the troupe! macro.
 ///
@@ -444,7 +446,7 @@ pub trait ActorTypes {
 ///     fn handle_data(&mut self, msg: EngineData) { }
 ///     fn handle_control(&mut self, msg: EngineControl) { }
 ///     fn handle_management(&mut self, msg: EngineManagement) { }
-///     fn handle_os(&mut self, status: SystemStatus) -> ActorStatus { ActorStatus::Idle }
+///     fn park(&mut self, status: SystemStatus) -> ActorStatus { ActorStatus::Idle }
 /// }
 /// ```
 pub trait TroupeActor<Dir>:
@@ -799,70 +801,6 @@ impl<D, C, M> ActorHandle<D, C, M> {
         Ok(())
     }
 
-    /// Non-blocking send: the runtime half of a droppable/credit-bounded edge (design doc
-    /// §3.2). Tries the message's lane exactly once — no spin, no backoff — then rings the
-    /// doorbell on success via the same [`Self::wake`] path [`Self::send`] uses. On `Full` or
-    /// `Disconnected` the message is handed back inside the error, unsent; the caller decides
-    /// whether that means drop, park, or panic.
-    ///
-    /// # Errors
-    /// Returns [`TrySendError::Full`] if the target lane's ring is full, or
-    /// [`TrySendError::Disconnected`] if the receiver is gone. Either way the message comes
-    /// back rewrapped in its original [`Message`] variant.
-    pub fn try_send<T: Into<Message<D, C, M>>>(
-        &self,
-        msg: T,
-    ) -> Result<(), spsc::TrySendError<Message<D, C, M>>> {
-        use spsc::TrySendError;
-
-        match msg.into() {
-            Message::Data(d) => match self.tx_data.try_send(d) {
-                Ok(()) => {
-                    self.wake();
-                    Ok(())
-                }
-                Err(TrySendError::Full(d)) => Err(TrySendError::Full(Message::Data(d))),
-                Err(TrySendError::Disconnected(d)) => {
-                    Err(TrySendError::Disconnected(Message::Data(d)))
-                }
-            },
-            Message::Control(c) => match self.tx_control.try_send(c) {
-                Ok(()) => {
-                    self.wake();
-                    Ok(())
-                }
-                Err(TrySendError::Full(c)) => Err(TrySendError::Full(Message::Control(c))),
-                Err(TrySendError::Disconnected(c)) => {
-                    Err(TrySendError::Disconnected(Message::Control(c)))
-                }
-            },
-            Message::Management(m) => match self.tx_mgmt.try_send(m) {
-                Ok(()) => {
-                    self.wake();
-                    Ok(())
-                }
-                Err(TrySendError::Full(m)) => Err(TrySendError::Full(Message::Management(m))),
-                Err(TrySendError::Disconnected(m)) => {
-                    Err(TrySendError::Disconnected(Message::Management(m)))
-                }
-            },
-            // Shutdown travels on the doorbell, not a lane ring, so there is no `Full`/
-            // `Disconnected` of its own to report non-blockingly — forward to the same
-            // delivery `send` uses and report success, matching the spec's carve-out for the
-            // one variant with no ring to be full.
-            Message::Shutdown => {
-                // Always reported as delivered: `send`'s own `Message::Shutdown` arm only ever
-                // fails via the doorbell's blocking `SyncSender::send`, which is a disconnect —
-                // and a disconnected doorbell means the scheduler is already gone, which is not
-                // this call's problem to report a second way.
-                match self.send_message(Message::Shutdown) {
-                    Ok(()) | Err(_) => {}
-                }
-                Ok(())
-            }
-        }
-    }
-
     /// Wake the scheduler to process messages.
     ///
     /// If a custom wake handler is configured, calls it first to wake the platform
@@ -882,69 +820,6 @@ impl<D, C, M> ActorHandle<D, C, M> {
             Err(mpsc::TrySendError::Disconnected(_)) => {
                 panic!("Doorbell receiver disconnected - scheduler dropped unexpectedly");
             }
-        }
-    }
-}
-
-/// Rings an actor's doorbell without sending it a message.
-///
-/// The scheduler blocks on its doorbell when idle, so anything that makes an actor runnable
-/// *without* going through its lanes has to ring that bell itself. The green tier is the
-/// case that needs it: a producer pushes straight into a green actor's inbox
-/// ([`GreenSender`](crate::host::GreenSender)) and then wakes the host that owns it.
-///
-/// This is the same contract as a `Waker` in a futures runtime — "there is work for you now"
-/// — and it is deliberately *not* `ActorHandle::send`: a wake carries no payload and cannot
-/// back up, because the doorbell holds one pending wake and coalesces the rest.
-///
-/// # Ordering
-///
-/// **Make the work visible, then wake.** Waking first admits a lost wakeup: the host can
-/// wake, find nothing, and go back to sleep before the message lands.
-#[derive(Clone)]
-pub struct Waker {
-    tx_doorbell: SyncSender<System>,
-    wake_handler: Option<Arc<dyn WakeHandler>>,
-}
-
-impl Waker {
-    /// Signal the actor that it has work.
-    ///
-    /// Never blocks and never fails. A full doorbell means a wake is already pending, and a
-    /// disconnected one means the actor is gone — in both cases there is nothing to do.
-    pub fn wake(&self) {
-        if let Some(waker) = &self.wake_handler {
-            waker.wake();
-        }
-        match self.tx_doorbell.try_send(System::Wake) {
-            Ok(()) => {}
-            // The doorbell holds one wake and coalesces the rest: full means a wake is
-            // already pending, which is exactly the signal this call wanted to send.
-            Err(mpsc::TrySendError::Full(_)) => {}
-            // Unlike `ActorHandle::wake`, a waker outliving its scheduler is ordinary — a
-            // green actor can be fed after its host is gone. There is nobody to wake.
-            Err(mpsc::TrySendError::Disconnected(_)) => {}
-        }
-    }
-}
-
-impl std::fmt::Debug for Waker {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Waker")
-            .field("has_wake_handler", &self.wake_handler.is_some())
-            .finish_non_exhaustive()
-    }
-}
-
-impl<D, C, M> ActorHandle<D, C, M> {
-    /// A [`Waker`] for this actor's scheduler.
-    ///
-    /// Hand one to anything that can make this actor runnable without sending it a message.
-    #[must_use]
-    pub fn waker(&self) -> Waker {
-        Waker {
-            tx_doorbell: self.tx_doorbell.clone(),
-            wake_handler: self.wake_handler.clone(),
         }
     }
 }
@@ -1105,7 +980,7 @@ impl<D, C, M> ActorScheduler<D, C, M> {
             SystemStatus::Idle
         };
 
-        let returned_hint = actor.handle_os(system_status)?;
+        let returned_hint = actor.park(system_status)?;
 
         let status = if more_work || returned_hint == ActorStatus::Busy {
             SchedulerLoopStatus::Working
@@ -1188,50 +1063,46 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// Blocks on the doorbell channel. Drains priority lanes in order:
     /// Shutdown > Control > Management > Data.
     ///
-    /// Returns a [`Exit`] describing why the scheduler exited, so a
+    /// Returns a [`PodPhase`] describing why the scheduler exited, so a
     /// supervisor can decide whether to restart the pod:
     ///
     /// | Exit reason | Returned phase |
     /// |-------------|----------------|
-    /// | `Message::Shutdown` received | `Exit::Completed` |
-    /// | All sender handles dropped | `Exit::Completed` |
-    /// | `HandlerError::Recoverable` | `Exit::Failed(msg)` |
+    /// | `Message::Shutdown` received | `PodPhase::Completed` |
+    /// | All sender handles dropped | `PodPhase::Completed` |
+    /// | `HandlerError::Recoverable` | `PodPhase::Failed(msg)` |
     /// | `HandlerError::Fatal` | panics — never returns |
     ///
     /// The return value is intentionally not `#[must_use]` so existing call
     /// sites that don't supervise actors don't need to change. Supervisors
-    /// should inspect it via [`Exit::is_failed`].
-    pub fn run<A>(&mut self, actor: &mut A) -> Exit
+    /// should inspect it via [`RestartPolicy::should_restart`].
+    pub fn run<A>(&mut self, actor: &mut A) -> PodPhase
     where
         A: Actor<D, C, M>,
     {
         match self.run_inner(actor) {
-            Ok(()) => Exit::Completed,
-            Err(HandlerError::Recoverable(msg)) => Exit::Failed(msg),
+            Ok(()) => PodPhase::Completed,
+            Err(HandlerError::Recoverable(msg)) => PodPhase::Failed(msg),
             Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
         }
     }
 
-    /// Single non-blocking drain cycle, for driving an actor synchronously
-    /// without a dedicated thread.
+    /// Single non-blocking drain cycle for cooperative scheduling.
     ///
-    /// Cooperative multiplexing of multiple actors on one thread is the green
-    /// tier's job (`Host` in `host.rs`; see
-    /// `docs/designs/actor-scheduler-mealy-transducer.md`), not this method's.
-    /// Its remaining real callers are test fixtures that need to step an
-    /// actor's message loop by hand; it is expected to leave the public API
-    /// once those callers migrate to `Host`.
+    /// Intended for actors running on a shared Kubelet thread rather than a
+    /// dedicated OS thread. The Kubelet calls `poll_once()` on each cooperative
+    /// pod in round-robin during its controller loop.
     ///
     /// Unlike [`run`], `poll_once()` never blocks:
     /// - If the doorbell is empty, it still attempts one drain pass (the actor
     ///   may have work from a previous `Working` state).
-    /// - Returns `Some(phase)` when the actor should stop; `None` to keep polling.
+    /// - Returns `Some(phase)` when the pod should stop; `None` to keep polling.
     ///
     /// # Caller responsibility
     ///
-    /// The caller must continue calling `poll_once()` after a `Disconnected`
+    /// The Kubelet must continue calling `poll_once()` after a `Disconnected`
     /// doorbell until `Some` is returned — buffered SPSC messages need draining.
-    pub fn poll_once<A>(&mut self, actor: &mut A) -> Option<Exit>
+    pub fn poll_once<A>(&mut self, actor: &mut A) -> Option<PodPhase>
     where
         A: Actor<D, C, M>,
     {
@@ -1242,8 +1113,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
         match signal {
             Ok(System::Shutdown) => {
                 let phase = match self.handle_shutdown(actor) {
-                    Ok(()) => Exit::Completed,
-                    Err(HandlerError::Recoverable(msg)) => Exit::Failed(msg),
+                    Ok(()) => PodPhase::Completed,
+                    Err(HandlerError::Recoverable(msg)) => PodPhase::Failed(msg),
                     Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
                 };
                 Some(phase)
@@ -1251,9 +1122,9 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
             Ok(System::Wake) | Err(TryRecvError::Empty) => {
                 match self.handle_wake(actor) {
-                    Ok(Some(_)) => None,               // still running
-                    Ok(None) => Some(Exit::Completed), // all disconnected
-                    Err(HandlerError::Recoverable(msg)) => Some(Exit::Failed(msg)),
+                    Ok(Some(_)) => None,                   // still running
+                    Ok(None) => Some(PodPhase::Completed), // all disconnected
+                    Err(HandlerError::Recoverable(msg)) => Some(PodPhase::Failed(msg)),
                     Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
                 }
             }
@@ -1262,8 +1133,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                 // All handles dropped — drain one batch, report done when empty
                 match self.handle_wake(actor) {
                     Ok(Some(_)) => None, // more buffered work; caller polls again
-                    Ok(None) => Some(Exit::Completed),
-                    Err(HandlerError::Recoverable(msg)) => Some(Exit::Failed(msg)),
+                    Ok(None) => Some(PodPhase::Completed),
+                    Err(HandlerError::Recoverable(msg)) => Some(PodPhase::Failed(msg)),
                     Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
                 }
             }
@@ -1327,7 +1198,7 @@ mod tests {
         log: Arc<Mutex<Vec<String>>>,
     }
 
-    impl Actor<String, String, String> for TestHandler {
+    impl SchedulerHandler<String, String, String> for TestHandler {
         fn handle_data(&mut self, msg: String) -> HandlerResult {
             self.log.lock().unwrap().push(format!("Data: {}", msg));
             Ok(())
@@ -1341,7 +1212,7 @@ mod tests {
             Ok(())
         }
 
-        fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -1461,7 +1332,7 @@ mod tests {
             mgmt_count: usize,
         }
 
-        impl Actor<i32, String, bool> for CountingHandler {
+        impl SchedulerHandler<i32, String, bool> for CountingHandler {
             fn handle_data(&mut self, _: i32) -> HandlerResult {
                 self.data_count += 1;
                 Ok(())
@@ -1474,7 +1345,7 @@ mod tests {
                 self.mgmt_count += 1;
                 Ok(())
             }
-            fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -1526,7 +1397,7 @@ mod tests {
                 fn handle_management(&mut self, _: ()) -> HandlerResult {
                     Ok(())
                 }
-                fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Idle)
                 }
             }
@@ -1570,7 +1441,7 @@ mod poll_once_tests {
         fn handle_management(&mut self, _: i32) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -1617,7 +1488,7 @@ mod poll_once_tests {
                 break p;
             }
         };
-        assert_eq!(phase, Exit::Completed);
+        assert_eq!(phase, PodPhase::Completed);
     }
 
     #[test]
@@ -1635,7 +1506,7 @@ mod poll_once_tests {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -1667,65 +1538,7 @@ mod poll_once_tests {
                 break p;
             }
         };
-        assert_eq!(phase, Exit::Completed);
-    }
-}
-
-#[cfg(test)]
-mod try_send_tests {
-    use super::*;
-
-    struct RecordActor {
-        got: Option<i32>,
-    }
-
-    impl Actor<i32, i32, i32> for RecordActor {
-        fn handle_data(&mut self, msg: i32) -> HandlerResult {
-            self.got = Some(msg);
-            Ok(())
-        }
-        fn handle_control(&mut self, _: i32) -> HandlerResult {
-            Ok(())
-        }
-        fn handle_management(&mut self, _: i32) -> HandlerResult {
-            Ok(())
-        }
-        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
-            Ok(ActorStatus::Idle)
-        }
-    }
-
-    #[test]
-    fn try_send_succeeds_and_is_received() {
-        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
-        tx.try_send(Message::Data(7)).expect("room in the ring");
-
-        let mut actor = RecordActor { got: None };
-        assert_eq!(rx.poll_once(&mut actor), None, "still connected");
-        assert_eq!(actor.got, Some(7));
-    }
-
-    #[test]
-    fn try_send_on_a_full_data_ring_returns_full_with_the_message_recoverable() {
-        let (tx, _rx) = ActorScheduler::<i32, i32, i32>::new(10, 2);
-        // Capacity rounds up to a power of 2 (minimum 2); fill it without a consumer draining.
-        while tx.try_send(Message::Data(1)).is_ok() {}
-
-        match tx.try_send(Message::Data(99)) {
-            Err(TrySendError::Full(Message::Data(msg))) => assert_eq!(msg, 99),
-            other => panic!("expected Full(Message::Data(99)), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn try_send_after_receiver_drop_returns_disconnected() {
-        let (tx, rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
-        drop(rx);
-
-        match tx.try_send(Message::Data(5)) {
-            Err(TrySendError::Disconnected(Message::Data(msg))) => assert_eq!(msg, 5),
-            other => panic!("expected Disconnected(Message::Data(5)), got {other:?}"),
-        }
+        assert_eq!(phase, PodPhase::Completed);
     }
 }
 
@@ -1875,182 +1688,6 @@ mod backoff_unit_tests {
     }
 }
 
-// Tests targeting missed mutations in handle_wake, exercised entirely through the
-// public ActorScheduler/ActorHandle surface (new_with_params, send, poll_once, run).
-#[cfg(test)]
-mod handle_wake_targeted_tests {
-    use super::*;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-    use std::time::Duration;
-
-    // An actor that records the last `SystemStatus` handed to `handle_os`. Since `handle_os`
-    // is called unconditionally at the end of every `handle_wake`, its argument is
-    // an observable proxy for the private `more_work` computation.
-    struct StatusRecorder {
-        last_status: Option<SystemStatus>,
-    }
-    impl Actor<i32, i32, i32> for StatusRecorder {
-        fn handle_data(&mut self, _: i32) -> HandlerResult {
-            Ok(())
-        }
-        fn handle_control(&mut self, _: i32) -> HandlerResult {
-            Ok(())
-        }
-        fn handle_management(&mut self, _: i32) -> HandlerResult {
-            Ok(())
-        }
-        fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
-            self.last_status = Some(status);
-            Ok(ActorStatus::Idle)
-        }
-    }
-
-    // Kills: replace || with && at each of the three operators joining
-    // matches!(control1|mgmt|control2|data, DrainStatus::More) into `more_work` (lines 973-975).
-    //
-    // Setup: half_control = 2 (control_burst_limit=4). Send 3 control messages so
-    // control1 drains 2 (1 remains -> More), mgmt is empty (not More), control2 then
-    // drains the last 1 (0 remain -> not More), data is empty (not More). Only the
-    // *first* term is More, so more_work is true iff the chain is a plain OR — any
-    // of the three `||`s replaced by `&&` collapses the result to false, flipping
-    // the SystemStatus handed to `handle_os` from Busy to Idle.
-    #[test]
-    fn more_work_is_true_when_only_first_control_pass_hits_burst_limit() {
-        let params = SchedulerParams {
-            control_mgmt_buffer_size: 4,
-            control_burst_multiplier: 1,
-            ..SchedulerParams::DEFAULT
-        };
-        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new_with_params(100, 100, params);
-        for _ in 0..3 {
-            tx.send(Message::Control(0)).unwrap();
-        }
-
-        let mut actor = StatusRecorder { last_status: None };
-        rx.poll_once(&mut actor);
-
-        assert_eq!(
-            actor.last_status,
-            Some(SystemStatus::Busy),
-            "control1 alone hitting the burst limit must make more_work true"
-        );
-    }
-
-    // Kills: replace / with * and replace / with % in
-    // `half_control = (control_burst_limit / 2).max(1)` (line 940).
-    //
-    // control_burst_limit=16 -> correct half_control=8. Sending 9 messages makes
-    // control1 (limit 8) leave exactly 1 behind (More); a `*` mutant inflates
-    // half_control to 32 and drains all 9 in one pass (not More).
-    #[test]
-    fn half_control_division_not_multiplication() {
-        let params = SchedulerParams {
-            control_mgmt_buffer_size: 16,
-            control_burst_multiplier: 1,
-            ..SchedulerParams::DEFAULT
-        };
-        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new_with_params(100, 100, params);
-        for _ in 0..9 {
-            tx.send(Message::Control(0)).unwrap();
-        }
-
-        let mut actor = StatusRecorder { last_status: None };
-        rx.poll_once(&mut actor);
-
-        assert_eq!(
-            actor.last_status,
-            Some(SystemStatus::Busy),
-            "9 messages against half_control=8 must leave one behind (More)"
-        );
-    }
-
-    // Same setup, but with 5 messages: correct half_control=8 drains all 5 (not
-    // More). A `%` mutant collapses half_control to (16 % 2).max(1) == 1, so
-    // control1 only drains 1 of 5 and reports More instead.
-    #[test]
-    fn half_control_division_not_modulo() {
-        let params = SchedulerParams {
-            control_mgmt_buffer_size: 16,
-            control_burst_multiplier: 1,
-            ..SchedulerParams::DEFAULT
-        };
-        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new_with_params(100, 100, params);
-        for _ in 0..5 {
-            tx.send(Message::Control(0)).unwrap();
-        }
-
-        let mut actor = StatusRecorder { last_status: None };
-        rx.poll_once(&mut actor);
-
-        assert_eq!(
-            actor.last_status,
-            Some(SystemStatus::Idle),
-            "5 messages against half_control=8 must drain fully (not More)"
-        );
-    }
-
-    // Kills: replace || with && (line 985:35) and replace == with != (line 985:52) in
-    // `let status = if more_work || returned_hint == ActorStatus::Busy { Working } else { Idle }`.
-    //
-    // `more_work` is false throughout (a single control message, nowhere near any
-    // burst limit). `handle_os` returns Busy on its first call only. Correct code: the
-    // Busy hint alone makes the first handle_wake report Working, so run_inner
-    // retries without blocking and calls handle_wake (and therefore handle_os) a second
-    // time before it finally blocks on the doorbell — handle_os called exactly twice.
-    // Under either mutant, `more_work || <busy-check>` collapses to false on the
-    // first call, handle_wake reports Idle immediately, and run_inner blocks
-    // before ever calling handle_os a second time.
-    #[test]
-    fn busy_park_hint_forces_one_extra_wake_before_blocking() {
-        let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(100, 100);
-
-        struct BusyOnceActor {
-            park_calls: Arc<AtomicUsize>,
-        }
-        impl Actor<i32, i32, i32> for BusyOnceActor {
-            fn handle_data(&mut self, _: i32) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_control(&mut self, _: i32) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_management(&mut self, _: i32) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                let n = self.park_calls.fetch_add(1, Ordering::SeqCst);
-                if n == 0 {
-                    Ok(ActorStatus::Busy)
-                } else {
-                    Ok(ActorStatus::Idle)
-                }
-            }
-        }
-
-        tx.send(Message::Control(0)).unwrap();
-
-        let park_calls = Arc::new(AtomicUsize::new(0));
-        let pc = park_calls.clone();
-        let handle = std::thread::spawn(move || {
-            let mut actor = BusyOnceActor { park_calls: pc };
-            rx.run(&mut actor);
-        });
-
-        std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(
-            park_calls.load(Ordering::SeqCst),
-            2,
-            "Busy handle_os hint alone should force exactly one extra non-blocking wake"
-        );
-
-        drop(tx);
-        handle.join().unwrap();
-    }
-}
-
 // Tests targeting missed mutations in drain_all_with_timeout.
 #[cfg(test)]
 mod drain_all_targeted_tests {
@@ -2076,7 +1713,7 @@ mod drain_all_targeted_tests {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -2172,7 +1809,7 @@ mod drain_all_targeted_tests {
                 self.mgmt.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
-            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -2230,7 +1867,7 @@ mod drain_all_targeted_tests {
                 self.mgmt.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
-            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -2255,111 +1892,6 @@ mod drain_all_targeted_tests {
             mgmt_count.load(Ordering::Relaxed),
             25,
             "DrainControl must drain all 25 management messages"
-        );
-    }
-
-    // Kills: delete `!` on the control term of `all_done` (line 915):
-    // `!matches!(control_status, More) && !matches!(mgmt, More) && !matches!(data, More)`.
-    // With the `!` deleted, `all_done` becomes true as soon as control alone is More
-    // (mgmt/data are never sent here, so they're always "not More"), and
-    // drain_all_with_timeout returns after just the first 10-message batch.
-    #[test]
-    fn drain_all_finishes_control_only_backlog_past_first_batch() {
-        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
-            100,
-            1000,
-            ShutdownMode::DrainAll {
-                timeout: Duration::from_secs(10),
-            },
-        );
-
-        tx.send(Message::Shutdown).unwrap();
-        for _ in 0..25 {
-            tx.send(Message::Control(())).unwrap();
-        }
-
-        let ctrl_count = Arc::new(AtomicUsize::new(0));
-        struct ControlOnlyActor {
-            ctrl: Arc<AtomicUsize>,
-        }
-        impl Actor<(), (), ()> for ControlOnlyActor {
-            fn handle_data(&mut self, _: ()) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_control(&mut self, _: ()) -> HandlerResult {
-                self.ctrl.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            fn handle_management(&mut self, _: ()) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                Ok(ActorStatus::Idle)
-            }
-        }
-
-        let ctrl_clone = ctrl_count.clone();
-        let handle = std::thread::spawn(move || {
-            let mut actor = ControlOnlyActor { ctrl: ctrl_clone };
-            rx.run(&mut actor);
-        });
-
-        handle.join().unwrap();
-        assert_eq!(
-            ctrl_count.load(Ordering::Relaxed),
-            25,
-            "drain_all_with_timeout must not stop after the first control batch"
-        );
-    }
-
-    // Kills: delete `!` on the mgmt term of `all_done` (line 916), symmetric to the
-    // control-only test above.
-    #[test]
-    fn drain_all_finishes_management_only_backlog_past_first_batch() {
-        let (tx, mut rx) = ActorScheduler::new_with_shutdown_mode(
-            100,
-            1000,
-            ShutdownMode::DrainAll {
-                timeout: Duration::from_secs(10),
-            },
-        );
-
-        tx.send(Message::Shutdown).unwrap();
-        for _ in 0..25 {
-            tx.send(Message::Management(())).unwrap();
-        }
-
-        let mgmt_count = Arc::new(AtomicUsize::new(0));
-        struct ManagementOnlyActor {
-            mgmt: Arc<AtomicUsize>,
-        }
-        impl Actor<(), (), ()> for ManagementOnlyActor {
-            fn handle_data(&mut self, _: ()) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_control(&mut self, _: ()) -> HandlerResult {
-                Ok(())
-            }
-            fn handle_management(&mut self, _: ()) -> HandlerResult {
-                self.mgmt.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
-                Ok(ActorStatus::Idle)
-            }
-        }
-
-        let mgmt_clone = mgmt_count.clone();
-        let handle = std::thread::spawn(move || {
-            let mut actor = ManagementOnlyActor { mgmt: mgmt_clone };
-            rx.run(&mut actor);
-        });
-
-        handle.join().unwrap();
-        assert_eq!(
-            mgmt_count.load(Ordering::Relaxed),
-            25,
-            "drain_all_with_timeout must not stop after the first management batch"
         );
     }
 }
@@ -2418,7 +1950,7 @@ mod troupe_tests {
         fn handle_management(&mut self, _msg: EngineManagement) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -2463,7 +1995,7 @@ mod troupe_tests {
         fn handle_management(&mut self, _msg: DisplayManagement) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -2565,7 +2097,7 @@ mod troupe_tests {
                 fn handle_management(&mut self, _: ()) -> HandlerResult {
                     Ok(())
                 }
-                fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Busy)
                 }
             }
@@ -2664,7 +2196,7 @@ mod troupe_tests {
                 fn handle_management(&mut self, _: ()) -> HandlerResult {
                     Ok(())
                 }
-                fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Busy)
                 }
             }
@@ -2765,7 +2297,7 @@ mod troupe_tests {
                 fn handle_management(&mut self, _: ()) -> HandlerResult {
                     Ok(())
                 }
-                fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Busy)
                 }
             }
@@ -2864,7 +2396,7 @@ mod troupe_tests {
                     thread::sleep(Duration::from_millis(2));
                     Ok(())
                 }
-                fn handle_os(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn park(&mut self, _: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Busy)
                 }
             }
@@ -2950,7 +2482,7 @@ mod troupe_nesting_tests {
         fn handle_management(&mut self, _msg: WorkerManagement) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(ActorStatus::Idle)
         }
     }
@@ -3088,7 +2620,7 @@ mod shutdown_tests {
             Ok(())
         }
 
-        fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
             match status {
                 SystemStatus::Idle => Ok(ActorStatus::Idle),
                 SystemStatus::Busy => Ok(ActorStatus::Busy),
@@ -3280,7 +2812,7 @@ mod shutdown_tests {
                 Ok(())
             }
 
-            fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 match status {
                     SystemStatus::Idle => Ok(ActorStatus::Idle),
                     SystemStatus::Busy => Ok(ActorStatus::Busy),

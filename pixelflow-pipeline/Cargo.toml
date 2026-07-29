@@ -4,10 +4,6 @@ version = "0.1.0"
 edition = "2024"
 description = "Training and data generation pipeline for PixelFlow"
 
-[lib]
-# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
-bench = false
-
 [features]
 default = []
 training = ["pixelflow-search/std"]
@@ -29,14 +25,9 @@ pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 [dev-dependencies]
 criterion = "0.5"
 pixelflow-compiler = { path = "../pixelflow-compiler" }
-pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
 
 [[bench]]
 name = "nnue_training_suite"
-harness = false
-
-[[bench]]
-name = "macro_bench"
 harness = false
 
 
@@ -63,6 +54,11 @@ required-features = ["training"]
 [[bin]]
 name = "validate_corpus"
 path = "src/bin/validate_corpus.rs"
+required-features = ["training"]
+
+[[bin]]
+name = "bench_scanline_jit"
+path = "src/bin/bench_scanline_jit.rs"
 required-features = ["training"]
 
 [[bin]]

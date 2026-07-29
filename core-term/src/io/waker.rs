@@ -1,7 +1,7 @@
 // src/io/waker.rs
 
 //! Self-pipe [`WakeHandler`] for actors that block in `epoll`/`kqueue` inside
-//! `handle_os()`.
+//! `park()`.
 //!
 //! The actor-scheduler's doorbell is an in-process channel with no file
 //! descriptor, so an actor blocked in `epoll_wait`/`kevent` cannot see it.

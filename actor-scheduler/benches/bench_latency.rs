@@ -32,7 +32,7 @@ impl Actor<(), (), ()> for LatencyActor {
         Ok(())
     }
 
-    fn handle_os(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
         match hint {
             SystemStatus::Idle => Ok(ActorStatus::Idle),
             SystemStatus::Busy => Ok(ActorStatus::Busy),
@@ -57,7 +57,7 @@ fn bench_control_latency(c: &mut Criterion) {
                     rx.run(&mut actor);
                 });
 
-                // Give actor thread time to start and enter handle_os
+                // Give actor thread time to start and park
                 thread::sleep(Duration::from_millis(1));
 
                 // Benchmark individual message round-trips (steady-state)

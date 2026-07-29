@@ -7,10 +7,7 @@ edition = "2021"
 workspace = true
 
 [lib]
-# The lib's harness is libtest, which rejects Criterion's `--output-format
-# bencher`; CI passes that flag to every `--benches` target, so only the
-# declared Criterion [[bench]] targets may run as benchmarks.
-bench = false
+bench = true
 
 [dependencies]
 # Core dependencies
@@ -39,10 +36,6 @@ criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1.4"
 tempfile = "3.10"
 pixelflow-compiler = { path = "../pixelflow-compiler" }
-pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
-# The glyph-kernel optimization guards (tests/kernel_glyph_optimize.rs) probe
-# the runtime e-graph tier against real curve kernels.
-pixelflow-search = { path = "../pixelflow-search" }
 
 [[bench]]
 name = "font_rendering"

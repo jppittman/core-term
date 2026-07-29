@@ -50,8 +50,8 @@ impl<P: Platform> Actor<DisplayData, DisplayControl, DisplayMgmt> for DriverActo
         self.platform.handle_management(mgmt)
     }
 
-    fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
-        // Delegate to platform's handle_os - this is where OS event loop integration happens
-        self.platform.handle_os(status)
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        // Delegate to platform's park - this is where OS event loop integration happens
+        self.platform.park(status)
     }
 }

@@ -26,12 +26,11 @@ pub type Deps = Variance;
 
 /// Convert a variable index to its variance (single-bit set).
 ///
-/// 0→X, 1→Y, 2→Z, 3→W, 4..8→the reduction index slots. Unknown indices are
-/// conservatively ALL.
+/// 0→X, 1→Y, 2→Z, 3→W. Unknown indices are conservatively ALL.
 #[inline]
 #[must_use]
 pub fn var_variance(v: u8) -> Variance {
-    if v < 8 {
+    if v < 4 {
         Variance::from_var(v)
     } else {
         Variance::ALL // Unknown vars are conservatively all-varying

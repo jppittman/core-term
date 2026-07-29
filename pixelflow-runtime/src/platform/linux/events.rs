@@ -1,7 +1,9 @@
 //! Event mapping for X11 -> DisplayEvent.
 
-use crate::display::messages::{DisplayEvent, Surface, WindowId};
+use crate::display::messages::{DisplayEvent, WindowId};
 use crate::input::{KeySymbol, Modifiers};
+use crate::pixel::PlatformPixel;
+use pixelflow_graphics::render::Frame;
 use std::ffi::c_int;
 use std::ptr;
 use x11::{keysym, xlib};
@@ -56,16 +58,15 @@ pub fn map_event(
                 if conf.width as u32 != window.width || conf.height as u32 != window.height {
                     window.width = conf.width as u32;
                     window.height = conf.height as u32;
-                    Some(DisplayEvent::Resized {
-                        surface: Surface {
-                            id: window_id,
-                            width_px: window.width,
-                            height_px: window.height,
-                            frame_width: window.width,
-                            frame_height: window.height,
-                            scale: window.scale_factor,
-                        },
-                    })
+                    let frame = Frame::<PlatformPixel>::new(window.width, window.height);
+                    let win = crate::display::messages::Window {
+                        id: window_id,
+                        frame,
+                        width_px: window.width,
+                        height_px: window.height,
+                        scale: window.scale_factor,
+                    };
+                    Some(DisplayEvent::Resized { window: win })
                 } else {
                     None
                 }

@@ -98,8 +98,8 @@ Four different communication primitives coexist in one subsystem:
 - Child exit propagates to `TerminalApp` as a message.
 - True end-to-end backpressure: shell → kernel PTY buffer → reader buffer pool
   → parser data lane → app data lane, with a fixed buffer population.
-- Keep the existing performance profile by avoiding steady-state allocation
-  and keeping reads responsive.
+- Keep the existing performance profile (zero steady-state allocation, <1ms
+  read latency).
 
 ### 1.4 Non-Goals
 

@@ -98,7 +98,7 @@ fn zero_burst_limit_does_not_cause_infinite_loop() {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -163,7 +163,7 @@ fn mass_sender_drop_does_not_cause_race() {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -234,7 +234,7 @@ fn actor_panic_does_not_corrupt_state() {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -282,7 +282,7 @@ fn continuous_control_eventually_processes_data() {
             fn handle_management(&mut self, _: String) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -335,7 +335,7 @@ fn park_poll_does_not_spin_indefinitely() {
             fn handle_management(&mut self, _: ()) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 let count = self.park_count.fetch_add(1, Ordering::SeqCst);
                 if count < self.max_parks {
                     Ok(ActorStatus::Busy) // Keep spinning
@@ -396,7 +396,7 @@ fn slow_handler_backpressure_works() {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -453,7 +453,7 @@ fn single_sender_fifo_ordering_maintained() {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -557,7 +557,7 @@ fn concurrent_send_during_processing() {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -622,7 +622,7 @@ fn doorbell_saturation_does_not_lose_messages() {
             fn handle_management(&mut self, _: i32) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -755,7 +755,7 @@ fn large_queue_does_not_cause_issues() {
             fn handle_management(&mut self, _: String) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -803,10 +803,7 @@ fn shutdown_race_does_not_panic() {
                 fn handle_management(&mut self, _: i32) -> HandlerResult {
                     Ok(())
                 }
-                fn handle_os(
-                    &mut self,
-                    _status: SystemStatus,
-                ) -> Result<ActorStatus, HandlerError> {
+                fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     Ok(ActorStatus::Idle)
                 }
             }

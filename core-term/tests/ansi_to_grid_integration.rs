@@ -227,8 +227,8 @@ fn bug_grid_changes_without_render_trigger() {
 
     let mut harness = MinimalTestHarness::new();
 
-    // Simulate PTY output being processed in handle_os()
-    // In the real app, handle_os() calls:
+    // Simulate PTY output being processed in park()
+    // In the real app, park() calls:
     //   self.emulator.interpret_input(EmulatorInput::Ansi(cmd))
     // But it NEVER calls send_frame() afterward!
 
@@ -244,8 +244,8 @@ fn bug_grid_changes_without_render_trigger() {
         "BUG CONFIRMED: Grid changes but no render triggered"
     );
 
-    // But in the real app, handle_os() doesn't call send_frame(),
+    // But in the real app, park() doesn't call send_frame(),
     // so the manifold is never rebuilt and the frame checksum stays the same!
 
-    // THE FIX: handle_os() should call self.send_frame() after processing PTY output
+    // THE FIX: park() should call self.send_frame() after processing PTY output
 }

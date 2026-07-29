@@ -12,7 +12,10 @@ bench = false
 [dependencies]
 pixelflow-ir = { path = "../pixelflow-ir" }
 pixelflow-compiler = { path = "../pixelflow-compiler" }
-pixelflow-search = { path = "../pixelflow-search" }
+
+# libm only needed for scalar fallback (non-x86_64, non-aarch64)
+[target.'cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+libm = "0.2.15"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -20,9 +23,3 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "core_benches"
 harness = false
-
-[[bin]]
-name = "calibrate_costs"
-path = "src/bin/calibrate_costs.rs"
-# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
-bench = false

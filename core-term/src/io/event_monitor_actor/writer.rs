@@ -8,7 +8,7 @@
 //! before Data by construction.
 //!
 //! Writes are nonblocking. If the kernel PTY buffer fills (a stopped shell mid
-//! large paste), the unwritten tail is queued in `pending` and `handle_os()` waits
+//! large paste), the unwritten tail is queued in `pending` and `park()` waits
 //! for `EPOLLOUT` — with the waker registered alongside, so Resize and
 //! Shutdown still get through while the queue drains.
 //!
@@ -60,7 +60,7 @@ struct BoundWriter {
 impl BoundWriter {
     fn bind(pty: NixPty, waker: Arc<FdWaker>) -> anyhow::Result<Self> {
         let monitor = EventMonitor::new()?;
-        // Registered permanently; handle_os() only polls while `pending` is
+        // Registered permanently; park() only polls while `pending` is
         // non-empty, so level-triggered "always writable" costs nothing.
         monitor.add(&pty, TOKEN_PTY, EventFlags::EPOLLOUT)?;
         monitor.add(&*waker, TOKEN_WAKER, EventFlags::EPOLLIN)?;
@@ -148,7 +148,7 @@ impl Actor<Vec<u8>, WriterControl, WriterManagement> for PtyWriter {
         }
         self.pending.push_back(bytes);
         // Common case (bound, queue was empty, PTY writable): flushes inline
-        // and handle_os() never needs to poll. Unbound: stays queued.
+        // and park() never needs to poll. Unbound: stays queued.
         self.flush_pending();
         Ok(())
     }
@@ -177,7 +177,7 @@ impl Actor<Vec<u8>, WriterControl, WriterManagement> for PtyWriter {
         Ok(())
     }
 
-    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         if self.broken || self.pending.is_empty() {
             // Message-driven: let the scheduler block on the doorbell. With
             // the waker unarmed, sends to this actor cost no wake syscall —
@@ -214,7 +214,103 @@ impl Actor<Vec<u8>, WriterControl, WriterManagement> for PtyWriter {
     }
 }
 
-// Coverage for pre-bind write queueing, pre-bind resize coalescing, and
-// bound writes/resizes lives in `event_monitor_actor::tests`, exercised
-// through the real actor message-passing surface (`PtyTroupe`/`writer_handle`)
-// rather than by constructing this private struct directly.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::pty::PtyConfig;
+    use crate::io::waker::FdWaker;
+
+    // A directly-driven writer (bypassing the troupe) for unit coverage of the
+    // bind + flush logic.
+    fn bound_writer(pty: NixPty) -> PtyWriter {
+        let mut w = PtyWriter {
+            bound: None,
+            pending: VecDeque::new(),
+            cursor: 0,
+            pending_resize: None,
+            broken: false,
+        };
+        let waker = Arc::new(FdWaker::new().expect("waker"));
+        w.handle_management(WriterManagement::Bind { pty, waker })
+            .expect("bind");
+        w
+    }
+
+    fn cat_pty() -> NixPty {
+        NixPty::spawn_with_config(&PtyConfig {
+            command_executable: "/bin/cat",
+            args: &[],
+            initial_cols: 80,
+            initial_rows: 24,
+        })
+        .expect("pty")
+    }
+
+    #[test]
+    fn write_before_bind_is_flushed_at_bind() {
+        let mut w = PtyWriter {
+            bound: None,
+            pending: VecDeque::new(),
+            cursor: 0,
+            pending_resize: None,
+            broken: false,
+        };
+        // Queue while unbound.
+        w.handle_data(b"queued".to_vec()).expect("data");
+        assert_eq!(w.pending.len(), 1, "unbound write should queue");
+
+        let waker = Arc::new(FdWaker::new().expect("waker"));
+        w.handle_management(WriterManagement::Bind {
+            pty: cat_pty(),
+            waker,
+        })
+        .expect("bind");
+        // cat is draining, so the queued bytes flush immediately.
+        assert!(w.pending.is_empty(), "bind should flush queued writes");
+    }
+
+    #[test]
+    fn resize_before_bind_is_coalesced() {
+        let mut w = PtyWriter {
+            bound: None,
+            pending: VecDeque::new(),
+            cursor: 0,
+            pending_resize: None,
+            broken: false,
+        };
+        w.handle_control(WriterControl::Resize(Resize { cols: 10, rows: 5 }))
+            .expect("resize1");
+        w.handle_control(WriterControl::Resize(Resize {
+            cols: 100,
+            rows: 40,
+        }))
+        .expect("resize2");
+        assert_eq!(
+            w.pending_resize,
+            Some(Resize {
+                cols: 100,
+                rows: 40
+            }),
+            "pre-bind resizes coalesce to the latest"
+        );
+
+        let waker = Arc::new(FdWaker::new().expect("waker"));
+        w.handle_management(WriterManagement::Bind {
+            pty: cat_pty(),
+            waker,
+        })
+        .expect("bind");
+        assert!(w.pending_resize.is_none(), "bind should apply the resize");
+    }
+
+    #[test]
+    fn bound_writer_accepts_writes() {
+        let mut w = bound_writer(cat_pty());
+        w.handle_data(b"hello".to_vec()).expect("write");
+        w.handle_control(WriterControl::Resize(Resize {
+            cols: 120,
+            rows: 40,
+        }))
+        .expect("resize");
+    }
+}

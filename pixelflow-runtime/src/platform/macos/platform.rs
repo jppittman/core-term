@@ -1,12 +1,14 @@
-use crate::api::private::WindowId;
-use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Surface};
-use crate::display::ops::{DriverOut, PlatformOps};
+use crate::api::private::{EngineActorHandle, EngineData, WindowId};
+use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Window};
+use crate::display::ops::PlatformOps;
 use crate::error::RuntimeError;
 use crate::platform::macos::cocoa::{self, event_type, NSApplication, NSPasteboard};
 use crate::platform::macos::events;
 use crate::platform::macos::sys;
 use crate::platform::macos::window::MacWindow;
-use actor_scheduler::{ActorStatus, HandlerError, HandlerResult, SystemStatus};
+use crate::platform::PlatformPixel;
+use actor_scheduler::{ActorStatus, HandlerError, HandlerResult, Message, SystemStatus};
+use pixelflow_graphics::render::Frame;
 
 use std::collections::HashMap;
 
@@ -21,12 +23,13 @@ pub struct MetalOps {
     // Note: NSWindow is a wrapper around Id, so we cast Id to usize or wrap generic
     window_map: HashMap<usize, WindowId>,
     // Handle to send events back to the engine
+    event_tx: EngineActorHandle,
 }
 
 unsafe impl Send for MetalOps {}
 
 impl MetalOps {
-    pub fn new() -> Result<Self, RuntimeError> {
+    pub fn new(event_tx: EngineActorHandle) -> Result<Self, RuntimeError> {
         // Initialize Cocoa Application
         let app = unsafe {
             // Pool:
@@ -51,12 +54,13 @@ impl MetalOps {
             app,
             windows: HashMap::new(),
             window_map: HashMap::new(),
+            event_tx,
         })
     }
 }
 
 impl PlatformOps for MetalOps {
-    fn handle_data(&mut self, msg: DisplayData, out: &mut DriverOut) -> HandlerResult {
+    fn handle_data(&mut self, msg: DisplayData) -> HandlerResult {
         match msg {
             DisplayData::Present { mut window } => {
                 log::trace!("MetalOps: Presenting frame for window {:?}", window.id);
@@ -70,13 +74,16 @@ impl PlatformOps for MetalOps {
                         window.id
                     );
                 }
-                out.blitted(window);
+                // Return the window to the engine for reuse
+                self.event_tx
+                    .send(Message::Data(EngineData::PresentComplete(window)))
+                    .expect("Failed to send PresentComplete to engine");
             }
         }
         Ok(())
     }
 
-    fn handle_control(&mut self, msg: DisplayControl, _out: &mut DriverOut) -> HandlerResult {
+    fn handle_control(&mut self, msg: DisplayControl) -> HandlerResult {
         match msg {
             DisplayControl::SetTitle { id, title } => {
                 if let Some(win) = self.windows.get_mut(&id) {
@@ -123,7 +130,7 @@ impl PlatformOps for MetalOps {
         Ok(())
     }
 
-    fn handle_management(&mut self, msg: DisplayMgmt, out: &mut DriverOut) -> HandlerResult {
+    fn handle_management(&mut self, msg: DisplayMgmt) -> HandlerResult {
         match msg {
             DisplayMgmt::Create { settings } => {
                 match MacWindow::new(settings) {
@@ -142,18 +149,21 @@ impl PlatformOps for MetalOps {
                         self.windows.insert(id, win);
                         self.window_map.insert(ptr as usize, id);
 
-                        // Geometry only — the driver allocates the buffer from this. The two
-                        // extents differ on Retina: layout is in points, the lattice in pixels.
-                        out.event(DisplayEvent::WindowCreated {
-                            surface: Surface {
-                                id,
-                                width_px: width,
-                                height_px: height,
-                                frame_width: px_w,
-                                frame_height: px_h,
-                                scale,
-                            },
-                        });
+                        // Create Window with initial frame buffer
+                        let window = Window {
+                            id,
+                            frame: Frame::<PlatformPixel>::new(px_w, px_h),
+                            width_px: width,
+                            height_px: height,
+                            scale,
+                        };
+
+                        // Emit WindowCreated event so Engine knows initial size
+                        self.event_tx
+                            .send(Message::Data(EngineData::FromDriver(
+                                DisplayEvent::WindowCreated { window },
+                            )))
+                            .expect("Failed to send WindowCreated event to engine");
                     }
                     Err(e) => {
                         eprintln!("Failed to create window: {}", e);
@@ -168,26 +178,20 @@ impl PlatformOps for MetalOps {
                     self.window_map.remove(&(win.window.0 as usize));
                 }
             }
-            // Answered by `PlatformActor` from its keeper; the ops hold no buffer.
-            DisplayMgmt::RequestWindow => {}
         }
         Ok(())
     }
 
-    fn handle_os(
-        &mut self,
-        status: SystemStatus,
-        out: &mut DriverOut,
-    ) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         // Logic for event loop interaction
         // The CocoaWaker posts an NSEvent when messages arrive, so distantFuture is safe.
         unsafe {
             // Only the FIRST wait may block (when the scheduler says Idle).
             // Everything already queued is then drained without blocking:
-            // a handle_os pass must empty the NSEvent queue, or wake events pile
+            // a park pass must empty the NSEvent queue, or wake events pile
             // up ahead of real input and a KeyDown can sit behind an
             // unbounded backlog (the "can't Ctrl-C out of `yes`" wedge).
-            // This mirrors LinuxOps::handle_os's `while XPending > 0` drain.
+            // This mirrors LinuxOps::park's `while XPending > 0` drain.
             let first_until_date: sys::Id = match status {
                 SystemStatus::Idle => {
                     // Block until an event arrives (waker will post NSEvent when messages come)
@@ -210,17 +214,21 @@ impl PlatformOps for MetalOps {
             // Poll for window resize
             for (id, mac_window) in self.windows.iter_mut() {
                 if let Some((width, height)) = mac_window.poll_resize() {
+                    // Create new Window with resized frame buffer
+                    // (device pixels; width_px/height_px are points)
                     let (px_w, px_h) = mac_window.pixel_size();
-                    out.event(DisplayEvent::Resized {
-                        surface: Surface {
-                            id: *id,
-                            width_px: width,
-                            height_px: height,
-                            frame_width: px_w,
-                            frame_height: px_h,
-                            scale: mac_window.scale_factor(),
-                        },
-                    });
+                    let window = Window {
+                        id: *id,
+                        frame: Frame::<PlatformPixel>::new(px_w, px_h),
+                        width_px: width,
+                        height_px: height,
+                        scale: mac_window.scale_factor(),
+                    };
+                    self.event_tx
+                        .send(Message::Data(EngineData::FromDriver(
+                            DisplayEvent::Resized { window },
+                        )))
+                        .expect("Failed to send Resized event to engine");
                 }
             }
 
@@ -266,7 +274,11 @@ impl PlatformOps for MetalOps {
                                 };
 
                                 if let Some(ev) = events::map_event(event, height) {
-                                    out.event(ev);
+                                    // Dispatch ev!
+                                    // We send it to the Engine via event_tx
+                                    self.event_tx
+                                        .send(Message::Data(EngineData::FromDriver(ev)))
+                                        .expect("Failed to send display event to engine");
                                 }
                             }
                         }
@@ -293,7 +305,11 @@ impl PlatformOps for MetalOps {
                 if let Some(id) = self.window_map.remove(&ptr) {
                     self.windows.remove(&id);
                     processed_any = true;
-                    out.event(DisplayEvent::CloseRequested { id });
+                    self.event_tx
+                        .send(Message::Data(EngineData::FromDriver(
+                            DisplayEvent::CloseRequested { id },
+                        )))
+                        .expect("Failed to send CloseRequested to engine");
                 }
             }
 
@@ -302,10 +318,10 @@ impl PlatformOps for MetalOps {
             // pass is already out of window_map, so its scale event is dropped.
             //
             // A scale change keeps the point-space bounds but changes the
-            // sample lattice, so a circulating buffer has the wrong pixel
-            // density. Emit Resized — which is what makes the driver allocate
-            // at the new density and retire the old buffer — then ScaleChanged
-            // so the app can re-bake density-keyed resources.
+            // sample lattice, so the circulating frame has the wrong pixel
+            // density. Emit Resized with a fresh pixel-sized frame (the engine
+            // marks any in-flight render stale and swaps buffers), then
+            // ScaleChanged so the app can re-bake density-keyed resources.
             for (ptr, scale) in crate::platform::macos::window::drain_scale_changes() {
                 if let Some(id) = self.window_map.get(&ptr).copied() {
                     let win = self
@@ -313,18 +329,24 @@ impl PlatformOps for MetalOps {
                         .get(&id)
                         .expect("window_map entry without a matching window");
                     let (px_w, px_h) = win.pixel_size();
+                    let window = Window {
+                        id,
+                        frame: Frame::<PlatformPixel>::new(px_w, px_h),
+                        width_px: win.current_width,
+                        height_px: win.current_height,
+                        scale,
+                    };
                     processed_any = true;
-                    out.event(DisplayEvent::Resized {
-                        surface: Surface {
-                            id,
-                            width_px: win.current_width,
-                            height_px: win.current_height,
-                            frame_width: px_w,
-                            frame_height: px_h,
-                            scale,
-                        },
-                    });
-                    out.event(DisplayEvent::ScaleChanged { id, scale });
+                    self.event_tx
+                        .send(Message::Data(EngineData::FromDriver(
+                            DisplayEvent::Resized { window },
+                        )))
+                        .expect("Failed to send Resized (scale change) to engine");
+                    self.event_tx
+                        .send(Message::Data(EngineData::FromDriver(
+                            DisplayEvent::ScaleChanged { id, scale },
+                        )))
+                        .expect("Failed to send ScaleChanged to engine");
                 }
             }
 

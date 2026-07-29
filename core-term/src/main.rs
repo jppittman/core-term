@@ -137,6 +137,10 @@ fn main() -> anyhow::Result<()> {
     #[cfg(feature = "profiling")]
     info!("CPU profiling enabled - flamegraph.svg will be written on exit");
 
+    if std::env::var_os("TERM").is_none() {
+        std::env::set_var("TERM", "screen-256color");
+    }
+
     // Determine command to execute based on -c flag
     let (shell_command, shell_args) = if let Some(command) = args.command {
         // Execute command with -c flag

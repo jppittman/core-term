@@ -83,6 +83,7 @@ fn parse_op_kind(name: &str) -> Option<OpKind> {
         "floor" => Some(OpKind::Floor),
         "ceil" => Some(OpKind::Ceil),
         "round" => Some(OpKind::Round),
+        "fract" => Some(OpKind::Fract),
         "sin" => Some(OpKind::Sin),
         "cos" => Some(OpKind::Cos),
         "tan" => Some(OpKind::Tan),
@@ -96,6 +97,7 @@ fn parse_op_kind(name: &str) -> Option<OpKind> {
         "log2" => Some(OpKind::Log2),
         "log10" => Some(OpKind::Log10),
         "pow" => Some(OpKind::Pow),
+        "hypot" => Some(OpKind::Hypot),
         _ => None,
     }
 }
@@ -644,18 +646,40 @@ fn format_const_kc(v: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_arch = "aarch64")]
     use crate::jit_bench::benchmark_jit_arena;
 
     const REWRITE_BUG_INPUTS: [f32; 4] = [0.5, 0.7, 1.3, -0.2];
 
     fn eval_arena_scalar(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
-        pixelflow_ir::eval_scalar(
-            arena,
-            id,
-            vars,
-            &pixelflow_ir::binding::BindingTable::empty(),
-        )
+        match *arena.node(id) {
+            ExprNode::Var(i) => vars[i as usize],
+            ExprNode::Const(c) => c,
+            ExprNode::Param(i) => panic!("Param in eval_arena_scalar: {i}"),
+            ExprNode::Buffer(b) => panic!(
+                "ExprNode::Buffer({}) reached eval_arena_scalar — memory ops require a binding \
+                 table, not yet wired (M2, see KERNELS_AND_LATTICES.md)",
+                b.0
+            ),
+            ExprNode::Unary(op, a) => {
+                let a = eval_arena_scalar(arena, a, vars);
+                op.eval_unary(a)
+                    .unwrap_or_else(|| panic!("eval_unary failed for {op:?}"))
+            }
+            ExprNode::Binary(op, a, b) => {
+                let a = eval_arena_scalar(arena, a, vars);
+                let b = eval_arena_scalar(arena, b, vars);
+                op.eval_binary(a, b)
+                    .unwrap_or_else(|| panic!("eval_binary failed for {op:?}"))
+            }
+            ExprNode::Ternary(op, a, b, c) => {
+                let a = eval_arena_scalar(arena, a, vars);
+                let b = eval_arena_scalar(arena, b, vars);
+                let c = eval_arena_scalar(arena, c, vars);
+                op.eval_ternary(a, b, c)
+                    .unwrap_or_else(|| panic!("eval_ternary failed for {op:?}"))
+            }
+            ExprNode::Nary(kind, _, _) => panic!("Nary in eval_arena_scalar: {kind:?}"),
+        }
     }
 
     fn logged_expr_scalar_output(src: &str) -> f32 {
@@ -663,7 +687,6 @@ mod tests {
         eval_arena_scalar(&arena, root, &REWRITE_BUG_INPUTS)
     }
 
-    #[cfg(target_arch = "aarch64")]
     fn logged_expr_jit_output(src: &str) -> f32 {
         let (arena, root) = parse_expr(src).unwrap_or_else(|| panic!("parse_expr failed: {src}"));
         benchmark_jit_arena(&arena, root)
@@ -680,7 +703,6 @@ mod tests {
         eval_arena_scalar(&re_arena, re_root, &REWRITE_BUG_INPUTS)
     }
 
-    #[cfg(target_arch = "aarch64")]
     fn assert_scalar_and_jit_close(src: &str, epsilon: f32) {
         let scalar = logged_expr_scalar_output(src);
         let jit = logged_expr_jit_output(src);

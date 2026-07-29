@@ -7,7 +7,8 @@
 //! The cost function encodes two kinds of knowledge:
 //!
 //! 1. **Measured metrics** — latency, throughput, fairness under synthetic load
-//! 2. **Domain constraints** — invariants supplied for the target workload
+//! 2. **Domain constraints** — invariants that follow from the system's role
+//!    as a real-time terminal scheduler at 155 FPS
 //!
 //! The domain constraints use multiplicative penalties so the optimizer cannot
 //! trade a constraint violation for a metric improvement. A configuration that
@@ -37,7 +38,7 @@ fn flush() {
 // Domain constraint penalties
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// These encode knowledge about the target workload
+// These encode knowledge about the target system (a 155 FPS terminal emulator)
 // that raw performance metrics cannot capture. Each penalty is >= 0, with 0
 // meaning "no violation." They feed into a multiplicative cost scaling factor
 // so the optimizer cannot compensate for a constraint violation with raw
@@ -45,12 +46,13 @@ fn flush() {
 
 /// Penalty for `min_backoff` exceeding the frame budget.
 ///
-/// If the first backoff sleep exceeds this budget, the sender can become
-/// unresponsive on the first sign of contention.
+/// At 155 FPS, one frame ≈ 6.45ms. If the first backoff sleep exceeds this,
+/// the sender drops at least one frame on the *first sign* of contention.
+/// This is the most visible failure mode — a keystroke vanishes.
 ///
 /// Returns 0.0 when min_backoff ≤ frame_budget, scales linearly above.
 fn frame_budget_penalty(params: &SchedulerParams) -> f64 {
-    const FRAME_BUDGET_US: f64 = 6_450.0;
+    const FRAME_BUDGET_US: f64 = 6_450.0; // 155 FPS
     let min_backoff_us = params.min_backoff.as_micros() as f64;
     let ratio = min_backoff_us / FRAME_BUDGET_US;
     if ratio <= 1.0 { 0.0 } else { ratio - 1.0 }
@@ -274,7 +276,7 @@ impl Actor<(), (), ()> for LatencyActor {
         self.response_tx.send(()).ok();
         Ok(())
     }
-    fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(match h {
             SystemStatus::Idle => ActorStatus::Idle,
             SystemStatus::Busy => ActorStatus::Busy,
@@ -360,7 +362,7 @@ impl Actor<i32, (), ()> for CountingActor {
         self.mgmt_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
-    fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(match h {
             SystemStatus::Idle => ActorStatus::Idle,
             SystemStatus::Busy => ActorStatus::Busy,
@@ -498,7 +500,7 @@ fn measure_latency_under_load(params: &SchedulerParams) -> f64 {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(match h {
                 SystemStatus::Idle => ActorStatus::Idle,
                 SystemStatus::Busy => ActorStatus::Busy,
@@ -583,7 +585,7 @@ fn measure_burst_recovery(params: &SchedulerParams) -> f64 {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(match h {
                 SystemStatus::Idle => ActorStatus::Idle,
                 SystemStatus::Busy => ActorStatus::Busy,

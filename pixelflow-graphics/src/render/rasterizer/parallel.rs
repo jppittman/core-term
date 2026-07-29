@@ -177,33 +177,8 @@ struct SendPtr<T>(*mut T);
 unsafe impl<T> Send for SendPtr<T> {}
 unsafe impl<T> Sync for SendPtr<T> {}
 
-/// Stack per worker thread, scaled by SIMD width.
-///
-/// Deep 3D scene recursion needs a large stack (the dev profile runs
-/// `opt-level=1` precisely because these Manifold chains overflow without
-/// inlining — see CLAUDE.md). The frames are dominated by `Field` locals, so
-/// the requirement grows with the vector: a flat 2 MiB was sized when a
-/// `Field` was 4 lanes, and an 8-lane build overflowed it — `scene3d_test`
-/// aborted with "has overflowed its stack" on the AVX2 leg of
-/// `cargo xtask isa-matrix` while passing at SSE2.
-///
-/// `Builder::stack_size` overrides `RUST_MIN_STACK`, so no environment
-/// variable can rescue these threads; the number has to be right here. Scaling
-/// off `size_of::<Field>()` keeps 2 MiB at 16-byte vectors (SSE2, NEON) and
-/// grows to 4 MiB at AVX2 and 8 MiB at AVX-512. The reservation is virtual and
-/// committed lazily, so the wider figures cost nothing on the untaken paths.
-const STACK_SIZE: usize = 2 * 1024 * 1024 * lanes_scale();
-
-/// `size_of::<Field>() / 16`, floored at 1 — how much wider this build's
-/// vector is than the 128-bit baseline the 2 MiB figure was chosen for.
-const fn lanes_scale() -> usize {
-    let scale = core::mem::size_of::<pixelflow_core::Field>() / 16;
-    if scale < 1 {
-        1
-    } else {
-        scale
-    }
-}
+// 2MB stack per thread (needed for deep 3D scene recursion)
+const STACK_SIZE: usize = 2 * 1024 * 1024;
 
 /// Render with parallel rasterization (spawns new threads).
 pub fn render_parallel<P, M>(manifold: &M, frame: &mut Frame<P>, options: RenderOptions)

@@ -43,11 +43,29 @@
 //! e-graph operation, so overhead scales linearly with the number of
 //! creation/union events regardless of e-graph size or shape.
 //!
-//! Every rule match is recorded as an `ApplicationRecord` unconditionally in
+//! Measured via `graph::tests::provenance_overhead_timing` (`#[ignore]`d;
+//! run with `cargo test -p pixelflow-search --release --lib -- --ignored
+//! provenance_overhead_timing --nocapture`) on a 40-op alternating
+//! add/mul/sub chain over two variables, saturated with the standard
+//! algebra rule set (`saturate()`, its default 100-iteration / 10k-class /
+//! 500ms limits):
+//!
+//! ```text
+//! saturation time: ~9ms (release build, steady state after warmup)
+//! origins:        1067  (one per e-node ever created)
+//! applications:  13092  (one per rewrite firing, matched or not netting a union)
+//! unions:          818
+//! classes:        1067  (final e-class count)
+//! ```
+//!
+//! Note `applications` (13092) considerably exceeds `unions` (818): every
+//! rule match is recorded as an `ApplicationRecord` unconditionally in
 //! `apply_action_from_rule` — including matches that ultimately produce no
 //! net change (e.g. `Union` against an already-equal target) — trading a
 //! larger provenance log for simpler, drift-proof bookkeeping (see that
-//! function's doc comment).
+//! function's doc comment). No separate non-provenance baseline was
+//! measured (not required — see task notes); the `O(1)`-per-event argument
+//! above is the basis for the overhead claim instead of an A/B comparison.
 
 use std::collections::{BTreeSet, HashMap};
 

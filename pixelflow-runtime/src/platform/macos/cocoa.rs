@@ -3,12 +3,6 @@
 //! This module defines safe, Rust-friendly wrappers around the raw Objective-C runtime.
 //! No strings in driver logic. No unsafe blocks in driver logic.
 
-#![expect(
-    clippy::must_use_candidate,
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "this internal Cocoa wrapper validates Objective-C pointer use at the FFI boundary"
-)]
-
 use super::sys::{self, Id, BOOL, NO, YES};
 use std::ffi::c_void;
 
@@ -170,7 +164,11 @@ impl NSApplication {
 
     pub fn activate_ignoring_other_apps(&self, ignore: IgnoreOtherApps) {
         unsafe {
-            let val = if ignore == IgnoreOtherApps::Yes { YES } else { NO };
+            let val = if ignore == IgnoreOtherApps::Yes {
+                YES
+            } else {
+                NO
+            };
             sys::send_1::<(), BOOL>(self.0, sys::sel(b"activateIgnoringOtherApps:\0"), val);
         }
     }
@@ -190,7 +188,11 @@ impl NSApplication {
     // nextEventMatchingMask:untilDate:inMode:dequeue:
     pub fn next_event(&self, mask: u64, date: Id, mode: Id, dequeue: DequeueEvent) -> NSEvent {
         unsafe {
-            let d = if dequeue == DequeueEvent::Yes { YES } else { NO };
+            let d = if dequeue == DequeueEvent::Yes {
+                YES
+            } else {
+                NO
+            };
             let ptr: Id = sys::send_4(
                 self.0,
                 sys::sel(b"nextEventMatchingMask:untilDate:inMode:dequeue:\0"),

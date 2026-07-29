@@ -18,7 +18,7 @@ impl<P> Actor<(), (), ()> for DriverActor<P> {
     fn handle_management(&mut self, _: ()) -> HandlerResult {
         Ok(())
     }
-    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }

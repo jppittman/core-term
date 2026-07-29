@@ -1,161 +1,110 @@
 # pixelflow-search
 
-`pixelflow-search` is PixelFlow's arena-native algebraic optimization research crate. Its
-implemented core builds an e-graph from `pixelflow-ir::ExprArena`, applies rewrite rules under
-explicit budgets, records rule provenance, and extracts an equivalent arena with a pluggable
-cost function.
+Arena-native e-graph optimization and model scoring for PixelFlow.
 
-Learned extraction machinery also exists, but learned rule guidance is an experiment with
-decision gates—not the default optimizer and not a completed training product.
+## Overview
 
-## Status at a glance
+This crate provides the live optimization stack:
 
-| Capability | Status |
-|---|---|
-| Arena ↔ e-graph conversion | Implemented |
-| Algebraic, transcendental, fusion, and derivative rewrites | Implemented and tested for soundness |
-| Time/class/iteration-bounded saturation | Implemented |
-| Static latency-prior extraction | Implemented; compiler default |
-| DAG-aware extraction and arena reconstruction | Implemented |
-| Rule-application provenance and hindsight labels | Implemented |
-| NNUE expression-cost model and incremental extractor | Implemented; opt-in consumer path |
-| Trained provenance guide for choosing rewrites | Research plan; thesis experiment not yet completed |
-| Beam/lookahead search over rewrite applications | Conditional future work |
+1. **E-graph equality saturation** - find algebraically equivalent forms
+2. **Arena-native extraction** - materialize the chosen result as `ExprArena`
+3. **EgraphOptimizationModel** - score saturation and extraction without benchmarking
 
-The obsolete critic/REINFORCE dual-head architecture is retained in historical documents for
-rationale, but it is not the live training path. See
-[`guided-saturation-redesign.md`](../docs/plans/2026-07-07-guided-saturation-redesign.md).
+## Architecture
 
-## Deterministic optimization path
-
-```text
-ExprArena
-   │
-   ▼
-EGraph::add_arena
-   │
-   ▼
-budgeted rewrite saturation
-   │
-   ▼
-CostModel / other CostFunction
-   │
-   ▼
-extracted ExprArena
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Training (offline)                          │
+├─────────────────────────────────────────────────────────────────┤
+│  1. Generate seed expressions                                   │
+│  2. E-graph saturation → find all equivalents                   │
+│  3. Benchmark sampled variants (real SIMD costs)                │
+│  4. Train the shared model:                                     │
+│     - Extraction head: features(expr) → cost_ns                 │
+│     - Saturation head: graph/rule state → rewrite score         │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                     Inference (compile-time)                    │
+├─────────────────────────────────────────────────────────────────┤
+│  For new kernel K:                                              │
+│  1. Insert K into e-graph                                       │
+│  2. Saturate with algebraic rules                               │
+│  3. Extract the best predicted arena form                       │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-`EGraph::new()` deliberately contains no rules. Applications supply a rule set explicitly,
-usually `all_rules()`, so a test or compiler phase can constrain the algebra it permits.
+## Usage
+
+### Basic E-Graph Optimization
 
 ```rust
-use pixelflow_ir::{ExprArena, OpKind};
-use pixelflow_search::egraph::{CostModel, EGraph, all_rules};
+use pixelflow_ir::ExprArena;
+use pixelflow_search::egraph::{ops, CostModel, EGraph, ENode};
 
 let mut arena = ExprArena::new();
 let x = arena.push_var(0);
 let zero = arena.push_const(0.0);
-let root = arena.push_binary(OpKind::Add, x, zero);
+let one = arena.push_const(1.0);
+let add = arena.push_binary(pixelflow_ir::OpKind::Add, x, zero);
+let root_expr = arena.push_binary(pixelflow_ir::OpKind::Mul, add, one);
 
-let mut egraph = EGraph::with_rules(all_rules());
-let root_class = egraph.add_arena(&arena, root);
-egraph.saturate();
+let mut eg = EGraph::new();
+let root = eg.add_arena(&arena, root_expr);
+eg.saturate();
 
+// Extract optimal arena form
 let costs = CostModel::default();
-let (optimized, optimized_root, estimated_cost) =
-    egraph.extract_best(root_class, &costs);
-
+let (optimized, optimized_root, cost) = eg.extract_best(root, &costs);
 assert!(optimized.node_count_subtree(optimized_root) > 0);
-assert!(estimated_cost <= costs.cost(OpKind::Add));
+assert!(cost <= 2);
 ```
-
-`saturate()` has built-in iteration, e-class, and wall-clock limits. Lower-level APIs expose
-explicit budgets for experiments that need a different stopping policy.
-
-## Cost model
-
-`CostFunction` is the extraction interface. The standard `CostModel` is an O(1) table indexed
-by `OpKind`, with optional depth penalties.
-
-`CostModel::default()` and `CostModel::latency_prior()` use the same handcrafted per-operation
-latency prior. This is the compiler's normal extraction policy. The values are estimates, not
-portable benchmark results; calibration and learned alternatives belong to the research
-tooling.
-
-The compiler enables learned extraction only when `PIXELFLOW_NNUE_WEIGHTS` names a weights
-file. Missing, unreadable, or incompatible opt-in weights fail loudly. With the variable
-unset, compilation uses the static latency prior.
-
-This opt-in path selects an expression from an already-built e-graph. It should not be confused
-with a learned policy that decides which rewrite applications to admit during saturation.
-
-## Provenance and labels
-
-The e-graph records three append-only kinds of evidence:
-
-- the origin of each stable e-node identity;
-- each rule application and the nodes it matched or created;
-- union events between e-classes.
-
-After extraction, `EpisodeLabels` walks the winning derivation and labels applications as
-load-bearing or unused for that episode. `run_episode` packages saturation, static extraction,
-and hindsight labeling for a supplied rule set.
-
-This machinery supports rule audits today. Its proposed use as supervised training data for a
-Guide remains research; provenance itself does not prove that a trained guide improves the
-optimizer.
-
-Run the checked-in report over its small illustrative corpus:
-
-```bash
-cargo run --release -p pixelflow-search --example rule_report
-```
-
-The report is corpus-conditioned. Do not generalize rule rankings from its five example
-kernels to production workloads without a representative corpus.
-
-## Guided-saturation research
-
-The current research question is whether a learned rule filter can keep a large rewrite
-library inside a fixed budget while preserving the extraction quality of smaller full
-saturation. The plan deliberately separates stages:
-
-1. Provenance and hindsight labels — landed.
-2. Static latency-prior baseline — landed and default.
-3. Greedy guide trained from provenance — not yet validated.
-4. Lookahead search — considered only if the greedy experiment exposes missed enabling chains.
-
-Each stage has a stop condition. The repository does not claim that guided saturation, an
-AlphaZero-like loop, or a learned cost model has beaten the static baseline.
 
 ## Modules
 
 | Module | Purpose |
-|---|---|
-| `egraph` | Graph, rewrites, saturation, extraction, provenance, and labeling |
-| `math` | Algebraic, calculus, parity, exponential, and trigonometric rewrite families |
-| `nnue` | Expression embeddings, model representation, and opt-in neural extraction support |
+|--------|---------|
+| `egraph` | E-graph implementation with equality saturation |
+| `egraph::codegen` | DAG → `kernel!` macro code generation |
+| `egraph::saturate` | Budget-limited saturation |
+| `nnue` | Shared optimization model + accumulators |
+| `nnue::factored` | O(ops) factored embedding architecture |
+| `training` | Training infrastructure (feature-gated) |
 
-Training corpora, JIT measurement, and extraction comparisons live in `pixelflow-pipeline`
-rather than in this crate. Commands documented here are limited to targets that currently
-exist; older `pixelflow-compiler` training examples were removed with the superseded RL path.
+## Features
 
-## Test
+- `std` (default): Enable standard library features
+- `training`: Enable training utilities (data generation, backprop)
+- `nnue`: Enable NNUE integration for best-first search
+
+## Training Pipeline
 
 ```bash
-cargo test -p pixelflow-search
+# 1. Generate variants and benchmark code
+cargo run -p pixelflow-compiler --example gen_egraph_variants --features training
+
+# 2. Collect benchmark costs
+cargo run -p pixelflow-compiler --example collect_benchmark_costs --features training
+
+# 3. Train the Judge (value head)
+cargo run -p pixelflow-compiler --example train_with_validation --features training
+
+# 4. Collect search training data using the Judge
+cargo run -p pixelflow-compiler --example collect_search_training --features training
+
+# 5. Train the Guide (search head)
+cargo run -p pixelflow-compiler --example train_search_head --features training
 ```
 
-Rewrite-soundness tests evaluate both sides through the IR's reference semantics. Optimization
-results and benchmark reports remain point-in-time evidence, not compatibility guarantees.
+## Integration
 
-## Related documents
+This crate works with:
 
-- [`guided-saturation-redesign.md`](../docs/plans/2026-07-07-guided-saturation-redesign.md) —
-  current research plan and decision gates
-- [`docs/results/`](../docs/results/) — rule and extraction experiment reports
-- [`EGRAPH_OPTIMIZATION_ARCHITECTURE.md`](../docs/EGRAPH_OPTIMIZATION_ARCHITECTURE.md) —
-  superseded critic/REINFORCE architecture, retained for history
+- **pixelflow-ir**: Shared IR types (Expr, OpKind)
+- **pixelflow-compiler**: Compile-time kernel optimization
 
-## License
+## References
 
-[Apache License 2.0](../LICENSE.md)
+- [egg: E-Graphs Good](https://egraphs-good.github.io/) - E-graph background
+- [Stockfish NNUE](https://github.com/official-stockfish/Stockfish) - NNUE architecture inspiration
+- [AlphaZero](https://arxiv.org/abs/1712.01815) - Dual-head value/policy network

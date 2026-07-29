@@ -7,7 +7,7 @@
 //! `Data` messages. The pool is allocated when the `Bind` management message
 //! arrives (see [`super`] for the bind protocol).
 //!
-//! `handle_os()` is the bridge to the OS: it blocks in `epoll_wait`/`kevent` on
+//! `park()` is the bridge to the OS: it blocks in `epoll_wait`/`kevent` on
 //! `{pty, waker}` and returns `Busy` so the scheduler polls the doorbell with
 //! `try_recv` instead of blocking on it. Three cases return `Idle` and let the
 //! scheduler block on the doorbell instead:
@@ -22,7 +22,7 @@
 //! [`PtySender::send_child_exited`] so the terminal can quit instead of
 //! sitting on a dead session.
 
-use super::{Directory, FilledBuf, ParserControl, ParserManagement, ReaderManagement};
+use super::{Directory, FilledBuf, NoControl, ParserControl, ParserManagement, ReaderManagement};
 use crate::io::event::{Event, EventFlags, EventMonitor};
 use crate::io::pty::NixPty;
 use crate::io::traits::PtySender;
@@ -32,7 +32,6 @@ use actor_scheduler::{
     SystemStatus, TroupeActor,
 };
 use log::*;
-use std::convert::Infallible;
 use std::io::Read;
 use std::sync::Arc;
 
@@ -144,7 +143,7 @@ impl PtyReader {
 
 impl ActorTypes for PtyReader {
     type Data = Vec<u8>;
-    type Control = Infallible;
+    type Control = NoControl;
     type Management = ReaderManagement;
 }
 
@@ -157,7 +156,7 @@ impl TroupeActor<Directory> for PtyReader {
     }
 }
 
-impl Actor<Vec<u8>, Infallible, ReaderManagement> for PtyReader {
+impl Actor<Vec<u8>, NoControl, ReaderManagement> for PtyReader {
     fn handle_data(&mut self, mut buf: Vec<u8>) -> HandlerResult {
         let Some(bound) = self.bound.as_mut() else {
             return Ok(()); // not bound yet; drop (no reader data arrives pre-bind)
@@ -175,8 +174,8 @@ impl Actor<Vec<u8>, Infallible, ReaderManagement> for PtyReader {
         Ok(())
     }
 
-    fn handle_control(&mut self, msg: Infallible) -> HandlerResult {
-        match msg {}
+    fn handle_control(&mut self, _msg: NoControl) -> HandlerResult {
+        Ok(())
     }
 
     fn handle_management(&mut self, msg: ReaderManagement) -> HandlerResult {
@@ -192,7 +191,7 @@ impl Actor<Vec<u8>, Infallible, ReaderManagement> for PtyReader {
         Ok(())
     }
 
-    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         let Some(bound) = self.bound.as_mut() else {
             return Ok(ActorStatus::Idle); // unbound: wait for Bind on the doorbell
         };
@@ -225,7 +224,7 @@ impl Actor<Vec<u8>, Infallible, ReaderManagement> for PtyReader {
         }
 
         // Busy: this actor's real doorbell is the event monitor, so the
-        // scheduler must come back through handle_os() instead of blocking on
+        // scheduler must come back through park() instead of blocking on
         // the channel doorbell.
         Ok(ActorStatus::Busy)
     }

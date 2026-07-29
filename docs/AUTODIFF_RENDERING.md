@@ -12,7 +12,7 @@ PixelFlow is positioned in the gap.
 |-----|------|------|---------------------|
 | Conal Elliott | 2009 | "Beautiful Differentiation" - explicitly cites surface normals for 3D rendering | Haskell, no SIMD, FP audience |
 | Inigo Quilez | 2013 | Dual numbers shader on Shadertoy | GLSL can't do operator overloading elegantly; comments show confusion |
-| Eric Jang | 2019 | JAX raytracer using autodiff normals | Python/JAX, reverse-mode ecosystem, ML audience |
+| Eric Jang | 2019 | JAX raytracer, shows autodiff normals 6x faster than finite diff | Python/JAX, reverse-mode ecosystem, ML audience |
 | RXMesh paper | 2025 | Forward-mode AD on GPU beats PyTorch/JAX for mesh ops | Mesh optimization, not real-time rendering |
 
 **The pattern**: Everyone who tries it finds it works. Nobody productionizes it because:
@@ -98,7 +98,7 @@ If Phase 1 validates, the pattern extends to:
 **What we're betting on:**
 
 1. Monomorphization eliminates abstraction overhead
-2. Forward-mode AD can avoid repeated evaluation
+2. Forward-mode AD is genuinely cheaper than 4-6x evaluation
 3. The algebraic elegance leads to optimization opportunities we can't see yet
 
 **If we're wrong**: We learn why everyone tessellates. That's still valuable.
@@ -106,7 +106,7 @@ If Phase 1 validates, the pattern extends to:
 ## Success Criteria
 
 1. **Renders correctly** - Face mesh with smooth normals, no faceting
-2. **Competitive performance** - Measure against a tessellated equivalent at the same visual quality
+2. **Competitive performance** - Within 2x of tessellated equivalent at same visual quality
 3. **Derivatives work** - Antialiasing, motion blur, curvature effects all emerge from Jet3
 
 ## Non-Goals (For Now)

@@ -2,16 +2,17 @@
 //!
 //! Bridge to X11DisplayDriver using the new PlatformOps trait.
 
-use crate::display::messages::{
-    DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, Surface, WindowId,
-};
-use crate::display::ops::{DriverOut, PlatformOps};
+use crate::api::private::EngineActorHandle;
+use crate::api::private::EngineData;
+use crate::display::messages::{DisplayControl, DisplayData, DisplayEvent, DisplayMgmt, WindowId};
+use crate::display::ops::PlatformOps;
 use crate::error::RuntimeError;
 use crate::platform::linux::window::X11Window;
 use crate::platform::waker::X11Waker;
-use actor_scheduler::{ActorStatus, SystemStatus};
+use actor_scheduler::{ActorStatus, Message, SystemStatus};
 use log::{error, info};
 use pixelflow_graphics::render::color::Bgra8;
+use pixelflow_graphics::render::Frame;
 use std::mem;
 use std::sync::OnceLock;
 use x11::xlib;
@@ -38,6 +39,7 @@ pub fn set_shared_waker(waker: X11Waker) {
 
 /// Linux platform operations - direct X11 implementation.
 pub struct LinuxOps {
+    engine_handle: EngineActorHandle,
     waker: X11Waker,
     window: Option<X11Window>,
 }
@@ -47,12 +49,10 @@ impl LinuxOps {
     ///
     /// Uses the shared waker set by `set_shared_waker()`, or creates a new
     /// one if not set (for backwards compatibility in tests).
-    ///
-    /// Takes no engine handle: outbound events are returned via `DriverOut`, so these ops can
-    /// be driven with no engine running at all. `PlatformActor` performs the sends.
-    pub fn new() -> Result<Self, RuntimeError> {
+    pub fn new(engine_handle: EngineActorHandle) -> Result<Self, RuntimeError> {
         let waker = SHARED_WAKER.get().cloned().unwrap_or_else(X11Waker::new);
         Ok(Self {
+            engine_handle,
             waker,
             window: None,
         })
@@ -60,11 +60,7 @@ impl LinuxOps {
 }
 
 impl PlatformOps for LinuxOps {
-    fn handle_data(
-        &mut self,
-        data: DisplayData,
-        out: &mut DriverOut,
-    ) -> Result<(), actor_scheduler::HandlerError> {
+    fn handle_data(&mut self, data: DisplayData) -> Result<(), actor_scheduler::HandlerError> {
         if let Some(x11_window) = &mut self.window {
             match data {
                 DisplayData::Present { mut window } => {
@@ -73,7 +69,10 @@ impl PlatformOps for LinuxOps {
                         error!("X11: Present failed: {:?}", e);
                     }
                     window.frame = returned_frame;
-                    out.blitted(window);
+                    // Return buffer to engine
+                    let _sent = self
+                        .engine_handle
+                        .send(Message::Data(EngineData::PresentComplete(window)));
                 }
             }
         }
@@ -83,7 +82,6 @@ impl PlatformOps for LinuxOps {
     fn handle_control(
         &mut self,
         ctrl: DisplayControl,
-        _out: &mut DriverOut,
     ) -> Result<(), actor_scheduler::HandlerError> {
         if let Some(window) = &mut self.window {
             match ctrl {
@@ -118,7 +116,6 @@ impl PlatformOps for LinuxOps {
     fn handle_management(
         &mut self,
         mgmt: DisplayMgmt,
-        out: &mut DriverOut,
     ) -> Result<(), actor_scheduler::HandlerError> {
         match mgmt {
             DisplayMgmt::Create { settings } => {
@@ -128,18 +125,24 @@ impl PlatformOps for LinuxOps {
                 );
                 match X11Window::new(&settings, &self.waker) {
                     Ok(window) => {
-                        // Geometry only — the driver allocates the buffer from this. X11 samples
-                        // 1:1, so the lattice and the point extent are the same numbers.
-                        out.event(DisplayEvent::WindowCreated {
-                            surface: Surface {
-                                id: WindowId(window.window),
-                                width_px: window.width,
-                                height_px: window.height,
-                                frame_width: window.width,
-                                frame_height: window.height,
-                                scale: window.scale_factor,
-                            },
-                        });
+                        let id = WindowId(window.window);
+                        // Allocate initial frame buffer
+                        let frame = Frame::<LinuxPixel>::new(window.width, window.height);
+
+                        let win = crate::display::messages::Window {
+                            id,
+                            frame,
+                            width_px: window.width,
+                            height_px: window.height,
+                            scale: window.scale_factor,
+                        };
+
+                        // Send WindowCreated event
+                        let _sent = self
+                            .engine_handle
+                            .send(Message::Data(EngineData::FromDriver(
+                                DisplayEvent::WindowCreated { window: win },
+                            )));
                         self.window = Some(window);
                     }
                     Err(e) => {
@@ -151,17 +154,11 @@ impl PlatformOps for LinuxOps {
                 // Drop window to close it
                 self.window = None;
             }
-            // Answered by `PlatformActor` from its keeper; the ops hold no buffer.
-            DisplayMgmt::RequestWindow => {}
         }
         Ok(())
     }
 
-    fn handle_os(
-        &mut self,
-        status: SystemStatus,
-        out: &mut DriverOut,
-    ) -> Result<ActorStatus, actor_scheduler::HandlerError> {
+    fn park(&mut self, status: SystemStatus) -> Result<ActorStatus, actor_scheduler::HandlerError> {
         if let Some(window) = &mut self.window {
             let window_id = WindowId(window.window);
 
@@ -185,14 +182,18 @@ impl PlatformOps for LinuxOps {
                         if matches!(display_event, DisplayEvent::CloseRequested { .. }) {
                             info!("X11: CloseRequested");
                         }
-                        out.event(display_event);
+                        self.engine_handle
+                            .send(Message::Data(EngineData::FromDriver(display_event)))
+                            .expect("failed to send engine event");
                     }
 
                     // Drain remaining pending events non-blocking
                     while xlib::XPending(window.display) > 0 {
                         xlib::XNextEvent(window.display, &mut event);
                         if let Some(display_event) = events::map_event(&event, window, window_id) {
-                            out.event(display_event);
+                            let _sent = self
+                                .engine_handle
+                                .send(Message::Data(EngineData::FromDriver(display_event)));
                         }
                     }
                     return Ok(ActorStatus::Busy);

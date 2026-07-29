@@ -1,25 +1,5 @@
 # Search Pipeline Design
 
-**Classification:** Historical/superseded.
-**Status:** Superseded by
-[`plans/2026-07-07-guided-saturation-redesign.md`](plans/2026-07-07-guided-saturation-redesign.md).
-
-This document records an unshipped composable-search proposal. Its traits and Rust snippets
-are illustrative and are not the current `pixelflow-search` API. In particular, neither MCTS
-nor REINFORCE is an active training or production path. The redesign found that MCTS/A* had
-never been integrated into the compiler and removed REINFORCE because its deterministic
-policy did not provide a valid policy-gradient estimator. The current plan uses supervised
-provenance labels for greedy guidance, with shallow rollback/beam search only as a
-conditional later phase.
-
-`pixelflow-pipeline/src/training/unified_backward.rs` remains, despite its old name, only as
-the hand-derived backward pass for the NNUE **value/extraction head** used by the current
-`bootstrap_extraction_head` binary. It computes MSE gradients against measured JIT costs.
-Its policy-gradient backward path was deleted; policy/mask gradient fields remain zero during
-value-only training so that the shared `ExprNnue` parameter/update layout stays intact. It is
-therefore support code for supervised extraction-cost bootstrapping, not evidence that the
-superseded unified REINFORCE loop still exists.
-
 ## Overview
 
 This document defines clean interfaces for composable search strategies in e-graph optimization.
@@ -32,24 +12,23 @@ We have multiple overlapping ideas that need to be organized:
 ### Search Strategies
 | Name | Status | Core Idea |
 |------|--------|-----------|
-| **Best-First + ε-greedy** | Historical prototype; not a compiler path | Priority queue, random exploration |
-| **MCTS (AlphaZero)** | Historical prototype; never integrated | Tree search with UCB, backprop |
-| **Guided Search** | Plan of record, Phase 3 not yet recorded complete | Supervised provenance-based match guidance |
+| **Best-First + ε-greedy** | In plan doc, implemented | Priority queue, random exploration |
+| **MCTS (AlphaZero)** | "Abandoned" in doc, but implemented | Tree search with UCB, backprop |
+| **Guided Search** | Implemented | Match prediction filter |
 
 ### Training Signals
 | Name | Status | Core Idea |
 |------|--------|-----------|
-| **Curriculum (Supervised)** | Historical proposal | Saturate small kernels → ground truth |
-| **REINFORCE** | Removed/superseded | Sparse reward, policy gradient |
-| **Synthetic Oracle** | Historical proposal; no current binary | Use judge to generate targets |
-| **Provenance supervision** | Plan of record; labeler implemented | Derivation participation and hindsight outcomes |
+| **Curriculum (Supervised)** | In plan doc | Saturate small kernels → ground truth |
+| **REINFORCE** | Implemented | Sparse reward, policy gradient |
+| **Synthetic Oracle** | Implemented in train_mcts | Use judge to generate targets |
 
 ### Neural Components
 | Name | Current Usage | Note |
 |------|---------------|------|
-| **Value Head** | Optional extraction-cost research | Static latency prior is the compiler default |
-| **Mask/Policy Head** | Retained parameters, no REINFORCE training | Intended to be retargeted as a supervised guide |
-| **Guide Net** | Planned match ordering | Phase 3 of the redesign |
+| **Value Head** | Cost prediction | Used everywhere |
+| **Mask/Policy Head** | Rule scoring | Plan doc says "not needed" |
+| **Guide Net** | Match probability | Separate small network |
 
 ## The Three Orthogonal Axes
 
@@ -89,9 +68,9 @@ The differences are:
 
 ---
 
-## Proposed Architecture (Historical)
+## Implemented Architecture
 
-The following was a proposed interface decomposition, not the current API.
+See `pixelflow-search/src/search/mod.rs` for the actual trait definitions.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -428,22 +407,17 @@ let hybrid = SearchPipeline {
 
 ## Migration Path
 
-> **Historical plan:** these binaries were proposed but do not exist in the current tree.
-> The current training executable is `bootstrap_extraction_head`, which trains only the
-> extraction/value head. Guided-saturation work is tracked by the redesign plan rather than
-> by an MCTS or REINFORCE binary.
-
 ### Phase 1: Extract Traits
 1. Define trait files in `pixelflow-search/src/search/`
 2. Implement for existing code without changing behavior
 
 ### Phase 2: Refactor Binaries
-1. Historical proposal: an MCTS trainer using `SyntheticTrainer` (never shipped)
-2. Historical proposal: a mask trainer using `ReinforceTrainer` (removed/superseded)
-3. Future plan: a supervised Guide trained from provenance labels
+1. `train_mcts.rs` -> uses `SyntheticTrainer`
+2. `train_mask_reinforce.rs` -> uses `ReinforceTrainer`
+3. `train_guide.rs` -> uses `SupervisedTrainer`
 
 ### Phase 3: A/B Testing
-1. Historical proposal: create a unified search-training executable
+1. Create unified `train_search.rs` that accepts config
 2. Config specifies which proposer/evaluator/trainer to use
 3. Easy comparison of approaches on same data
 

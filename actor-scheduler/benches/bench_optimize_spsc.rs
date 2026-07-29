@@ -274,7 +274,7 @@ impl<D, C, M> SpscScheduler<D, C, M> {
             SystemStatus::Idle
         };
 
-        let actor_status = actor.handle_os(system_status)?;
+        let actor_status = actor.park(system_status)?;
         Ok(more_work || actor_status == ActorStatus::Busy)
     }
 }
@@ -424,7 +424,7 @@ impl Actor<(), (), ()> for LatencyActor {
         self.response_tx.send(()).ok();
         Ok(())
     }
-    fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(match h {
             SystemStatus::Idle => ActorStatus::Idle,
             SystemStatus::Busy => ActorStatus::Busy,
@@ -507,7 +507,7 @@ impl Actor<i32, (), ()> for CountingActor {
         self.mgmt_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
-    fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(match h {
             SystemStatus::Idle => ActorStatus::Idle,
             SystemStatus::Busy => ActorStatus::Busy,
@@ -634,7 +634,7 @@ fn measure_latency_under_load(params: &SchedulerParams) -> f64 {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(match h {
                 SystemStatus::Idle => ActorStatus::Idle,
                 SystemStatus::Busy => ActorStatus::Busy,
@@ -708,7 +708,7 @@ fn measure_burst_recovery(params: &SchedulerParams) -> f64 {
         fn handle_management(&mut self, _: ()) -> HandlerResult {
             Ok(())
         }
-        fn handle_os(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
+        fn park(&mut self, h: SystemStatus) -> Result<ActorStatus, HandlerError> {
             Ok(match h {
                 SystemStatus::Idle => ActorStatus::Idle,
                 SystemStatus::Busy => ActorStatus::Busy,

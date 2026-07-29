@@ -19,7 +19,9 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_runtime::vsync_actor::{RenderedResponse, VsyncCommand, VsyncManagement};
+use pixelflow_runtime::vsync_actor::{
+    RenderedResponse, VsyncCommand, VsyncConfig, VsyncManagement,
+};
 
 // ============================================================================
 // POTENTIAL BUG: Double Clock Thread Spawn
@@ -58,11 +60,15 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TickRateTracker 
                     self.tick_times.lock().unwrap().push(Instant::now());
                 }
             }
+            VsyncManagement::SetConfig { .. } => {
+                // In the real actor, this spawns ANOTHER clock thread
+                self.running = true;
+            }
         }
         Ok(())
     }
 
-    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -175,7 +181,7 @@ impl Actor<RenderedResponse, VsyncCommand, VsyncManagement> for TokenTracker {
         Ok(())
     }
 
-    fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         Ok(ActorStatus::Idle)
     }
 }
@@ -255,28 +261,32 @@ fn fps_with_very_small_elapsed_does_not_panic() {
 
 #[test]
 fn very_high_refresh_rate_does_not_overflow() {
-    let refresh_rate: f64 = 1_000_000.0; // 1 MHz
+    let config = VsyncConfig {
+        refresh_rate: 1_000_000.0, // 1 MHz
+    };
 
     // Calculate interval - should not overflow
-    let interval = Duration::from_secs_f64(1.0 / refresh_rate);
+    let interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
     assert!(interval > Duration::ZERO);
     assert!(interval < Duration::from_millis(1));
 }
 
 #[test]
 fn very_low_refresh_rate_does_not_overflow() {
-    let refresh_rate: f64 = 0.001; // 0.001 Hz = 1000 second interval
+    let config = VsyncConfig {
+        refresh_rate: 0.001, // 0.001 Hz = 1000 second interval
+    };
 
-    let interval = Duration::from_secs_f64(1.0 / refresh_rate);
+    let interval = Duration::from_secs_f64(1.0 / config.refresh_rate);
     assert_eq!(interval.as_secs(), 1000);
 }
 
 #[test]
 fn zero_refresh_rate_handled_gracefully() {
-    let refresh_rate: f64 = 0.0;
+    let config = VsyncConfig { refresh_rate: 0.0 };
 
     // This will produce infinity
-    let interval_secs = 1.0 / refresh_rate;
+    let interval_secs = 1.0 / config.refresh_rate;
     assert!(interval_secs.is_infinite());
 
     // Duration::from_secs_f64 with infinity should panic or handle specially
@@ -292,10 +302,12 @@ fn zero_refresh_rate_handled_gracefully() {
 
 #[test]
 fn negative_refresh_rate_handled() {
-    let refresh_rate: f64 = -60.0;
+    let config = VsyncConfig {
+        refresh_rate: -60.0,
+    };
 
     // Negative rate produces negative interval
-    let interval_secs = 1.0 / refresh_rate;
+    let interval_secs = 1.0 / config.refresh_rate;
     assert!(interval_secs < 0.0);
 
     // Duration::from_secs_f64 with negative should panic
@@ -399,7 +411,7 @@ fn shutdown_command_stops_tick_processing() {
                 }
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -467,7 +479,7 @@ fn fps_request_handles_dropped_receiver() {
             fn handle_management(&mut self, _: VsyncManagement) -> HandlerResult {
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }
@@ -553,7 +565,7 @@ fn refresh_rate_update_during_ticks_is_safe() {
                 }
                 Ok(())
             }
-            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            fn park(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
                 Ok(ActorStatus::Idle)
             }
         }

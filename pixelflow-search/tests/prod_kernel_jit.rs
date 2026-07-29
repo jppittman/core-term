@@ -79,11 +79,7 @@ fn optimize(arena: &ExprArena, root: ExprId, tag: &str) -> (ExprArena, ExprId) {
 
 use pixelflow_ir::backend::emit::executable::{ExecutableCode, KernelFn};
 
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
     use core::arch::x86_64::{_mm_cvtss_f32, _mm_set1_ps};
     // SAFETY: SSE2 is the baseline on x86-64; the JIT emitted `__m128` ABI.
@@ -96,27 +92,6 @@ fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
             _mm_set1_ps(w),
         );
         _mm_cvtss_f32(r)
-    }
-}
-
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::{_mm256_cvtss_f32, _mm256_set1_ps};
-    // SAFETY: built with +avx2 (not +avx512f), so the JIT emitted the
-    // `__m256` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            _mm256_set1_ps(x),
-            _mm256_set1_ps(y),
-            _mm256_set1_ps(z),
-            _mm256_set1_ps(w),
-        );
-        _mm256_cvtss_f32(r)
     }
 }
 

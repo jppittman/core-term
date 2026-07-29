@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**PixelFlow** is a research project exploring **pull-based rendering** with **SIMD as algebra** on pure CPU without a GPU.
+**PixelFlow** is a research project demonstrating a novel paradigm for real-time graphics: **pull-based rendering** with **SIMD as algebra**. It achieves high performance (155 FPS at 1080p) on pure CPU without a GPU.
 
 **`core-term`** is the primary consumer application: a high-performance, correct terminal emulator built entirely on the PixelFlow engine.
 
@@ -40,12 +40,12 @@ The project is a Rust workspace with the following key members:
 
 *   **Build Release:** `cargo build --release`
 *   **Run Terminal:** `cargo run --release -p core-term`
-*   **Run macOS App:** `cargo bundle-run` (Bundles and runs `CoreTerm.app`)
+*   **Run macOS App:** `cargo xtask bundle-run` (Bundles and runs `CoreTerm.app`)
 *   **Run Tests:** `cargo test --workspace`
 *   **Benchmarks:** `cargo bench -p pixelflow-core`
 
 ### Build Profiles
-*   **`dev`**: `opt-level = 0`, `panic = "abort"`. The former opt-level 1-2 workaround for deeply nested expression-template types is obsolete: the JIT-first `Kernel`/`ExprArena` architecture superseded that layer (see `docs/plans/2026-07-20-kernel-unification.md`).
+*   **`dev`**: `opt-level = 1` (Required to prevent stack overflows from deep Manifold recursion).
 *   **`release`**: `opt-level = 3`, `panic = "abort"`.
 *   **`bench`**: `lto = true`, `codegen-units = 1`.
 *   **`dist`**: inherits `release`, adds `lto = true`, `codegen-units = 1`, `strip = true`.
@@ -58,12 +58,7 @@ The project is a Rust workspace with the following key members:
 *   **Types are Shaders:** Use the type system to build compute graphs.
 *   **Platform Isolation:** Platform-specific code (macOS/Linux/Web) goes in `pixelflow-runtime`.
 
-### Coding Style
-
-[`docs/STYLE.md`](docs/STYLE.md) is the canonical style guide. Make all style
-changes there so contributors and automated agents follow a single source of
-truth.
-
+### Coding Style (See `docs/STYLE.md`)
 *   **Comments:**
     *   **Public API (`///`):** Document **WHAT** and **HOW**.
     *   **Implementation (`//`):** Document **WHY**. Explain design rationale, not obvious logic.

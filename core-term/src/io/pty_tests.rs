@@ -1,5 +1,7 @@
 // src/os/pty_tests.rs
 
+#![cfg(test)]
+
 use super::pty::{NixPty, PtyChannel, PtyConfig};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;

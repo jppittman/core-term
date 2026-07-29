@@ -132,10 +132,6 @@ fn evex_runtime_16_lanes() {
     use core::arch::x86_64::*;
 
     // System V passes/returns __m512 in zmm0-7: X=zmm0, Y=zmm1, Z=zmm2.
-    // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so the
-    // not-FFI-safe warning is a false positive here — same reason
-    // `backend::emit::executable`'s KernelFn aliases carry this allow.
-    #[allow(improper_ctypes_definitions)]
     type Kernel = unsafe extern "C" fn(__m512, __m512, __m512, __m512) -> __m512;
 
     // Kernel A: (X + Y) * Z

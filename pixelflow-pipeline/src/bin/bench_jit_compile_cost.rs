@@ -19,6 +19,7 @@
 //!     --bin bench_jit_compile_cost
 //! ```
 //!
+//! Results are recorded in `docs/results/2026-07-20-jit-compile-cost.md`.
 
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
 use pixelflow_pipeline::jit_bench::benchmark_compile_fresh;

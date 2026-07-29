@@ -2,15 +2,11 @@
 
 ## Metadata
 - **Author**:
-- **Status**: Draft | Review | Approved | Implemented (required; choose exactly one)
+- **Status**: Draft | Review | Approved | Implemented
 - **Created**: YYYY-MM-DD
 - **Reviewers**:
 
 ---
-
-Every new plan or design must retain this metadata block and use one of the four
-status values above. Describe archival relationships separately with `Supersedes:` or
-`Superseded by:`; do not invent another workflow status for them.
 
 ## 1. Overview
 

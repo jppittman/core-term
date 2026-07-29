@@ -89,10 +89,13 @@ NOTE its ratios are corpus-conditioned (5 toy kernels); rule-triage decisions re
 real kernel population. Known follow-up: tighten union-causality over-approximation before
 training the Guide on per-application labels.
 
-**Phase 2 — Judge offline.** The static latency prior
-(`CostModel::latency_prior()`) is the compiler's default extraction policy; NNUE is
-opt-in via `PIXELFLOW_NNUE_WEIGHTS` (hard-fails on bad weights). Re-evaluate that choice
-with current benchmarks whenever cost-model research resumes.
+**Phase 2 — Judge offline.** ✅ **DECIDED 2026-07-08** (docs/results/2026-07-08-extraction-3way.md):
+Judge retrained (4k samples, 48s — the supervised core was never the slow part), bench run.
+**NNUE lost: 6.7% slower geomean than the latency prior at ~31x extraction cost**; extraction
+itself worth ~33% over no-swap. Per the gate: the static latency prior
+(`CostModel::latency_prior()`) is now the compiler's default extraction policy; NNUE is
+opt-in via `PIXELFLOW_NNUE_WEIGHTS` (hard-fails on bad weights). Cost-model research can
+resume any time by training better weights and re-running the same recorded bench.
 
 **Phase 3 — Greedy guided saturation (the thesis test).** Guide trained on provenance
 labels; budget-bounded greedy expansion; first calculus/trig rule batch. Run **the**

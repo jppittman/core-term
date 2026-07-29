@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**core-term** is a GPU-free terminal emulator built on PixelFlow, a pull-based functional graphics engine using CPU SIMD.
+**core-term** is a GPU-free terminal emulator built on PixelFlow, a pull-based functional graphics engine using CPU SIMD. The project demonstrates that elegant algebraic abstractions can achieve 155 FPS at 1080p on pure CPU.
 **pixelflow** is an eDSL built on rust isomorphic to the typed lambda calculus.
 **pixelflow-graphics** is a graphic library built using the aforementioned eDSL.
 **pixelflow-runtime** offers a platform agnostic runtime for applications using pixelflow rendering.
@@ -17,90 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **NO PUBLIC raw_mul, raw_select, raw_add ETC USAGE** NONE. ZERO. Do not perform raw operations on fields/jets without explicit direction. ALWAYS construct the AST, then use the nested contramap pattern to evaluate it.
 - **SIMD is an implementation detail.** `Batch::splat` and `Field::splat` are `pub(crate)`. Do NOT expose them. Do not expose `SimdVec`s. Do not expose anything that hints at lanes. pixelflow-core is an algebra; writing it should look like Halide, not assembly.
 - **Minimal public API** - Do NOT change visibility of internal APIs without explicit permission. Keep `pub(crate)` and private items encapsulated. Use Manifold composition instead of exposing internals.
-- **Subtract before you add.** The good version of a primitive is reached by removing machinery, not stacking it. If a type's signature already refuses the wrong shape, you don't need a macro, a lint, or a doc to forbid it — the opinion lives in the types. Reach for a new dependency or a new abstraction only after subtraction has failed.
-
-### Floating point at the edges
-
-**Rust already ships reasonably fast IEEE-754 arithmetic.** `f32::min`,
-`f32::round`, ordered comparisons — correct, conformant, and quick enough for
-almost everything. Reaching for pixelflow *is* the decision that "almost
-everything" excludes you: the library exists because conformant-and-quick was
-judged inadequate on performance grounds. So the trade is made deliberately and
-in one direction — **the language gives you the instruction.** Edge-case IEEE
-conformance is not on offer, and code that needs it should compute that part in
-scalar `f32` where it is already available and already fast.
-
-That is the whole contract. The tables below are reference material for what the
-instructions do, not a list of defects, and nothing here should be "fixed" by
-spending hot-path instructions to match scalar Rust.
-
-Behavior every target agrees on, pinned by
-`pixelflow-ir/tests/transcendental_jit.rs`:
-
-| Op | Behavior |
-|---|---|
-| `Lt`, `Le` | ordered — false for NaN |
-| `Eq`, `Ne` | **exact** comparison; NaN never equal, always unequal |
-| every comparison's *result* | an **all-ones** lane for true, all-zero for false — a mask, never `1.0` |
-| `exp`, `exp2` | saturate past ±126 exponents rather than overflowing to `inf` |
-
-A mask is a bit pattern, not a number, and that is a load-bearing distinction:
-`Select` is a bitwise blend on every backend (`andps`/`andnps`/`orps`,
-`vpternlogd 0xCA`, `BSL`) and `BitAnd`/`BitOr` are literal bitwise ops. Spell a
-true mask `1.0` and `mask & 1.0` is `0x3f800000`, which blends `7.0` against
-`9.0` into `4.5` — a value neither branch held. `OpKind::mask(bool)` is the only
-constructor, `OpKind::is_bitwise_domain()` marks the ops whose results are
-patterns, and the folder's "refuse non-finite results" guard exempts them —
-otherwise an all-ones mask reads as NaN and comparison folding switches itself
-off while looking like a safety check.
-
-Behavior that differs by target, because the instructions do:
-
-| Op | x86 | aarch64 | combinator tier |
-|---|---|---|---|
-| `Min`, `Max` (NaN operand) | `(a OP b) ? a : b` → the **second** operand | `FMIN`/`FMAX` **propagate** NaN | — |
-| `Min`, `Max` (opposite-signed zeros) | operand order → the **second** zero | `FMIN` picks `-0.0`, `FMAX` picks `+0.0` | — |
-| `Gt`, `Ge` (NaN operand) | unordered (imm8 6/5) — **true** | `FCMGT`/`FCMGE` ordered — **false** | ordered — **false** |
-| `Round` (exact tie) | nearest-**even** (imm 0x00) → `round(2.5) == 2` | `FRINTA` ties-**away** → `3` | `(x+0.5).floor()` → `3` |
-| `Round` (`-0.5 ≤ x ≤ -0.0`) | `-0.0` (sign preserved) | `-0.0` | `+0.0` |
-| `Recip`, `Rsqrt` | `rcpps` ~12 bits; `vrcp14ps` ~14 | `FRECPE` + one `FRECPS` step | estimate + NR |
-| `MulAdd` | **one** rounding with `+fma`, **two** without (`mulps`+`addps`) | one (`FMLA`) | one |
-
-The last two rows are the reminder that "target" is finer than "architecture":
-`Recip` and `MulAdd` differ between *ISA levels of the same machine*, which is
-what `cargo xtask isa-matrix` exists to keep honest. `Recip`/`Rsqrt` are
-estimates — only ever guaranteed close, never equal — so no argument to them is
-ever foldable; `MulAdd` is value-aware, since one rounding and two agree on most
-inputs (`mul_add(1.0000001, 4097.0, 4097.0)` is one of the inputs where they
-don't).
-
-Unifying any row costs instructions — x86 has no ties-away rounding mode, and
-NaN or signed-zero blending is a compare plus a select — so none of them are
-unified. Portable code should not depend on a single row's answer;
-`OpKind::fold_is_platform_specific(args)` marks them, and is value-aware because
-the divergence is: `min(1.0, 2.0)` is perfectly foldable, `min(-0.0, 0.0)` is
-not. Note `==` cannot see the signed-zero case (`-0.0 == 0.0`), so compare bit
-patterns — `1.0 / x` turns it into `+inf` versus `-inf`.
-
-**The one thing this does not license: folding on the wrong machine.** Constant
-folding runs on the *build host* at macro-expansion time while the constant
-executes on the *target*, so folding a row from the second table bakes the build
-machine's answer into a binary that runs somewhere else. That is not a
-speed-for-conformance trade — it is simply the wrong value for that target — so
-`ConstantFold` declines those cases. Everything else folds.
-
-Corollary, easy to get wrong: **within a target, the optimizer may still produce
-a different answer than the unoptimized code.** `Min`/`Max` are not commutative
-on NaN (`min(1.0, NaN)` vs `min(NaN, 1.0)` differ on x86), yet the e-graph
-installs commutativity for them. That is sound precisely because no value was
-promised; it would be a miscompile the moment anything promised one.
-
-The combinator tier's `Round` is a genuine bug rather than an instance of this
-trade: `(x + 0.5).floor()` is two instructions where `roundps` is one, and it is
-not any IEEE rounding mode (`round(-1.5)` is -1 there, -2 everywhere else). It
-is slower *and* wrong, so it should be replaced with the target's rounding
-instruction — the trade only ever justifies taking what the hardware gives, never
-hand-rolling something worse.
+- **Suckless Dependencies**: Keep dependencies to the bare, bare minimum. (no crossbeam)
 
 ### Philosophy
 
@@ -146,7 +63,7 @@ conditionals are performed using Select or postfix (ManifoldExt) `.select`
 
 ### Actor Model
 
-The actor architecture separates input from rendering:
+Three-thread architecture for zero-latency input:
 
 Priority lanes: **Control > Management > Data**
 
@@ -168,7 +85,9 @@ The compiler uses e-graphs (equality graphs) to find optimal instruction sequenc
    (`CostModel::latency_prior()` — handwritten per-op cycle estimates, the DEFAULT)
 
 A learned NNUE cost model exists as **opt-in only** (`PIXELFLOW_NNUE_WEIGHTS` env var, read
-at proc-macro expansion time; hard-fails on bad weights). The e-graph also records
+at proc-macro expansion time; hard-fails on bad weights). The recorded 3-way benchmark
+(docs/results/2026-07-08-extraction-3way.md) measured NNUE extraction slower than the
+latency prior, so the handwritten model is the production default. The e-graph also records
 **rule provenance** (node origins + union journal, `pixelflow-search/src/egraph/provenance.rs`),
 enabling hindsight labeling of which rule applications were load-bearing for an extraction
 (`labeler.rs`) — the substrate for guided-saturation research
@@ -196,7 +115,7 @@ cargo bundle-run --features profiling  # Flamegraph on exit
 
 ### Build Profiles
 
-- **dev** - opt-level=0, panic=abort. The former opt-level=1/2 workaround for deeply nested expression-template types is obsolete: the JIT-first `Kernel`/`ExprArena` architecture superseded that layer (see `docs/plans/2026-07-20-kernel-unification.md`).
+- **dev** - opt-level=1 because deep Manifold recursion causes stack overflow without inlining. panic=abort.
 - **release** - opt-level=3, panic=abort
 - **bench** - LTO, codegen-units=1
 - **dist** - LTO, strip, codegen-units=1, panic=abort
@@ -295,8 +214,9 @@ handle.send(Message::Data(MyDataMsg))?;           // Lowest (backpressure)
 - **Complex Manifold trait bounds**: Add explicit type annotations, break into named intermediates.
 - **"method not found" on Manifold**: Import `use pixelflow_core::Manifold;` and extension traits.
 
-## Execution Notes
+## Performance
 
+- **Target:** 155 FPS at 1080p, ~5ns per pixel
 - **Hot paths:** `#[inline(always)]` on eval methods in Manifold implementations
 - **Glyph caching:** Categorical morphisms ensure glyphs computed once (`fonts/combinators.rs`)
 - **Antialiasing:** Automatic differentiation via `Jet2` dual numbers
@@ -313,6 +233,8 @@ docs/plans/2026-07-07-guided-saturation-redesign.md.
 What remains is simple and supervised:
 - `gen_bench_corpus` / `bootstrap_extraction_head` (pixelflow-pipeline, `--features training`):
   mint (expression, measured-ns) pairs via the JIT bench harness (`jit_bench.rs`,
-  median-of-samples) and regress the extraction head on them.
+  median-of-samples) and regress the extraction head on them. A full retrain is ~1 minute.
+- `bench_extraction_3way`: the recorded extraction-policy benchmark (NNUE vs latency prior
+  vs no-swap). Any new cost model must beat the latency prior here before becoming default.
 - Guided-saturation research (the Guide / rule-masking direction) trains on hindsight
   provenance labels from `pixelflow-search`'s `egraph::labeler` — no critic, no RL.

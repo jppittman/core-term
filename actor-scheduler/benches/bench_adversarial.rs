@@ -30,7 +30,7 @@ impl Actor<i32, (), ()> for CountingActor {
         Ok(())
     }
 
-    fn handle_os(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+    fn park(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
         match hint {
             SystemStatus::Idle => Ok(ActorStatus::Idle),
             SystemStatus::Busy => Ok(ActorStatus::Busy),
@@ -243,7 +243,7 @@ fn bench_slow_receiver_backpressure(c: &mut Criterion) {
                     Ok(())
                 }
 
-                fn handle_os(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                fn park(&mut self, hint: SystemStatus) -> Result<ActorStatus, HandlerError> {
                     match hint {
                         SystemStatus::Idle => Ok(ActorStatus::Idle),
                         SystemStatus::Busy => Ok(ActorStatus::Busy),

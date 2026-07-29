@@ -7,13 +7,6 @@
 //!
 //! Everything here is unsafe. This is lowest-level FFI.
 
-#![expect(
-    clippy::missing_safety_doc,
-    clippy::must_use_candidate,
-    clippy::too_many_arguments,
-    reason = "these internal helpers directly mirror variadic Objective-C runtime calls"
-)]
-
 use std::ffi::c_void;
 
 // --- Types ---

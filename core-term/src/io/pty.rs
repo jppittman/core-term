@@ -1,7 +1,7 @@
 // src/os/pty.rs
 
 use anyhow::{Context, Result};
-use std::ffi::{CString, OsStr};
+use std::ffi::CString;
 use std::io::{Read, Result as IoResult, Write};
 use std::os::unix::io::{AsFd, AsRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
@@ -202,18 +202,15 @@ impl NixPty {
         for arg in config.args {
             argv.push(CString::new(*arg).context("Command argument contains NUL")?);
         }
-        // Inherit the parent environment, but advertise CoreTerm's capabilities
-        // instead of inheriting the launcher's TERM (which may be "dumb").
-        let mut env: Vec<CString> = std::env::vars_os()
-            .filter(|(key, _)| key != OsStr::new("TERM"))
-            .map(|(key, value)| {
+        // Inherit our environment (a NUL inside a var can't cross exec; skip it).
+        let env: Vec<CString> = std::env::vars_os()
+            .filter_map(|(key, value)| {
                 let mut kv = key.into_vec();
                 kv.push(b'=');
                 kv.extend(value.into_vec());
-                CString::new(kv).context("Environment variable contains NUL")
+                CString::new(kv).ok()
             })
-            .collect::<Result<_>>()?;
-        env.push(CString::new("TERM=screen-256color").expect("static TERM value contains no NUL"));
+            .collect();
 
         let mut argv_ptrs: Vec<*mut libc::c_char> = argv
             .iter()

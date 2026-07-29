@@ -7,25 +7,20 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
-permissions:
-  contents: read
-
 jobs:
   test:
-    name: ${{ matrix.test-suite }} on ${{ matrix.os }} (5 iterations)
+    name: Test ${{ matrix.test-suite }} on ${{ matrix.os }} (run ${{ matrix.run-number }}/5)
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
     strategy:
-      # A failure in one suite must not hide results from the others.
+      # Continue running other jobs even if one fails, to see all failures
       fail-fast: false
       matrix:
+        # Test on multiple operating systems
         os: [ubuntu-latest, macos-latest]
+        # Parallel runs to catch flaky tests and maximize CI throughput
         test-suite: [actor-scheduler, other-crates]
-        include:
-          - test-suite: actor-scheduler
-            cargo-args: "-p actor-scheduler -p actor-scheduler-macros"
-          - test-suite: other-crates
-            cargo-args: "--workspace --exclude actor-scheduler --exclude actor-scheduler-macros"
+        # Run each test suite 5 times in parallel for flake detection
+        run-number: [1, 2, 3, 4, 5]
 
     steps:
       - name: Checkout code
@@ -34,19 +29,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install X11 dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
-
+      # Caching dependencies speeds up subsequent runs.
       - name: Cache dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v3
         with:
           path: |
             ~/.cargo/registry
@@ -56,114 +41,28 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # A build failure is a hard postsubmit failure in its own right; keeping
-      # it a separate step also means the iteration loop below measures test
-      # stability, not compilation.
-      - name: Build tests
+      - name: Run actor-scheduler tests
+        if: matrix.test-suite == 'actor-scheduler'
         shell: bash
-        run: cargo nextest run ${{ matrix.cargo-args }} --no-run
+        run: cargo test -p actor-scheduler -p actor-scheduler-macros --verbose
 
-      # Run the suite 5 times to separate flaky tests from broken ones:
-      #   5/5 pass  -> green
-      #   1-4 fail  -> FLAKY: reported as an issue by the flake-report job,
-      #                but the workflow stays green (no revert for flakes)
-      #   5/5 fail  -> consistent failure: job fails, which fails the
-      #                workflow and triggers the automatic revert
-      - name: Run test suite 5 times
+      - name: Run other crates tests
+        if: matrix.test-suite == 'other-crates'
         shell: bash
-        run: |
-          set -o pipefail
-          PASSES=0
-          : > failed_tests.txt
-          for i in 1 2 3 4 5; do
-            echo "::group::Iteration $i/5"
-            if cargo nextest run ${{ matrix.cargo-args }} --profile ci 2>&1 | tee "run_$i.log"; then
-              PASSES=$((PASSES + 1))
-            else
-              # Per-test timeouts (.config/nextest.toml) surface as TIMEOUT.
-              grep -E '^[[:space:]]+(FAIL|TIMEOUT|SIGSEGV|SIGABRT|ABORT)' "run_$i.log" >> failed_tests.txt || true
-            fi
-            echo "::endgroup::"
-          done
+        run: cargo test --workspace --exclude actor-scheduler --exclude actor-scheduler-macros --verbose
 
-          SLUG="${{ matrix.os }}-${{ matrix.test-suite }}"
-          echo "$SLUG: $PASSES/5 iterations passed"
-          if [ "$PASSES" -eq 5 ]; then
-            exit 0
-          elif [ "$PASSES" -eq 0 ]; then
-            echo "::error::$SLUG: all 5 iterations failed — consistent breakage, revert will be proposed"
-            exit 1
-          fi
-
-          echo "::warning::$SLUG: $((5 - PASSES))/5 iterations failed — flaky, filing an issue instead of reverting"
-          mkdir -p flake-results
-          {
-            echo "### \`$SLUG\`: $((5 - PASSES))/5 iterations failed"
-            echo ""
-            echo '```'
-            sort -u failed_tests.txt
-            echo '```'
-          } > "flake-results/$SLUG.md"
-
-      - name: Upload flake report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: flake-${{ matrix.os }}-${{ matrix.test-suite }}
-          path: flake-results/
-          if-no-files-found: ignore
-
-  # Files (or updates) a tracking issue when any suite was flaky. This job
-  # must never fail the workflow: a hiccup filing an issue is not a
-  # postsubmit failure and must not trigger the automatic revert.
-  flake-report:
-    name: File flake report
+  # Report flake detection status
+  flake-detection-status:
+    name: Flake Detection Status
     runs-on: ubuntu-latest
     needs: test
     if: always()
-    continue-on-error: true
-    permissions:
-      issues: write
     steps:
-      - name: Download flake reports
-        uses: actions/download-artifact@v4
-        with:
-          pattern: flake-*
-          merge-multiple: true
-          path: flake-results
-
-      - name: Create or update flake issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check flake detection results
         run: |
-          set -euo pipefail
-          shopt -s nullglob
-          reports=(flake-results/*.md)
-          if [ "${#reports[@]}" -eq 0 ]; then
-            echo "No flaky suites detected."
-            exit 0
-          fi
-
-          gh label create "flaky-test" -f \
-            --color "FBCA04" --description "Test failed intermittently in postsubmit" \
-            --repo "${{ github.repository }}"
-
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          BODY="Intermittent test failures detected on \`${{ github.sha }}\` ([run]($RUN_URL)).
-
-          A flaky suite passed some of its 5 postsubmit iterations and failed others, so the commit was **not** reverted. Deflake or quarantine the tests below.
-
-          $(cat "${reports[@]}")"
-
-          EXISTING=$(gh issue list --repo "${{ github.repository }}" \
-            --label flaky-test --state open \
-            --search "Flaky tests detected on main in:title" \
-            --json number --jq '.[0].number // empty')
-          if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body "$BODY"
+          if [ "${{ needs.test.result }}" = "failure" ]; then
+            echo "Flake detection found failures - triggering automatic revert"
+            exit 1
           else
-            gh issue create --repo "${{ github.repository }}" \
-              --title "Flaky tests detected on main" \
-              --body "$BODY" \
-              --label "flaky-test"
+            echo "All flake detection tests passed"
           fi
