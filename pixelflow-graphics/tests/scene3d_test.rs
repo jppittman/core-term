@@ -728,4 +728,65 @@ fn jit_kernel_3d_sky_and_normal() {
     assert_eq!(baked_ny.buffer().len(), 1024);
 }
 
+#[test]
+fn jit_kernel_3d_vs_jet3_parity() {
+    use pixelflow_core::{Kernel, Lattice, Manifold};
+    use pixelflow_graphics::scene3d::kernel_3d;
+
+    const W: usize = 64;
+    const H: usize = 48;
+    let w_f32 = W as f32;
+    let h_f32 = H as f32;
+    let scale = 2.0 / h_f32;
+
+    // --- 1. Old Jet3 Path ---
+    struct SkyOnly;
+    impl Manifold<Jet3_4> for SkyOnly {
+        type Output = Field;
+        fn eval(&self, p: Jet3_4) -> Field {
+            let (_x, y, _z, _w) = p;
+            let t = (y.val * Field::from(0.5) + Field::from(0.5))
+                .max(Field::from(0.0))
+                .min(Field::from(1.0));
+            (Field::from(0.1) + t * Field::from(0.8)).constant()
+        }
+    }
+    let old_renderer = ScreenRemap {
+        inner: ScreenToDir { inner: SkyOnly },
+        width: w_f32,
+        height: h_f32,
+    };
+
+    // --- 2. New JIT Kernel Path ---
+    let sx = Kernel::x().sub(&Kernel::constant(w_f32 * 0.5)).mul(&Kernel::constant(scale));
+    let sy = Kernel::constant(h_f32 * 0.5).sub(&Kernel::y()).mul(&Kernel::constant(scale));
+    let (_dx, dy, _dz) = kernel_3d::screen_to_ray(&sx, &sy, 1.0);
+    let sky_kernel = kernel_3d::sky(&dy);
+
+    let lattice = Lattice::frame(W, H, 0.0);
+    let old_baked = lattice.collapse(&old_renderer);
+    let new_baked = lattice.bake(&sky_kernel);
+
+    let old_buf = old_baked.buffer();
+    let new_buf = new_baked.buffer();
+
+    // --- 3. Compare Old vs New ---
+    assert_eq!(old_buf.len(), new_buf.len());
+    let mut max_diff = 0.0f32;
+    for (i, (&old_v, &new_v)) in old_buf.iter().zip(new_buf.iter()).enumerate() {
+        let diff = (old_v - new_v).abs();
+        if diff > max_diff {
+            max_diff = diff;
+        }
+        assert!(
+            diff < 1e-4,
+            "Pixel {i} mismatch: old={old_v}, new={new_v}, diff={diff}"
+        );
+    }
+    println!("Parity verified! Max diff between old Jet3 and new JIT Kernel 3D: {max_diff}");
+}
+
+
+
+
 
