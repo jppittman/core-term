@@ -105,18 +105,18 @@ jobs:
       # Compile tests first so the run step below is (mostly) pure execution.
       - name: Build tests
         shell: bash
-        run: cargo nextest run --workspace --no-run
+        run: cargo nextest run --workspace --all-features --no-run
 
       # Per-test hard cap: nextest TERMINATES any test exceeding 10 minutes and
       # names it in the log (see .config/nextest.toml), failing the run.
       - name: Run workspace tests
         shell: bash
-        run: cargo nextest run --workspace --profile ci
+        run: cargo nextest run --workspace --all-features --profile ci
 
       # nextest does not run doctests; run them separately.
       - name: Run doctests
         shell: bash
-        run: cargo test --workspace --doc
+        run: cargo test --workspace --all-features --doc
 
   isa-matrix:
     name: ISA matrix (SSE2/AVX2/AVX-512)

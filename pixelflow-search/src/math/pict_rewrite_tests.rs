@@ -359,14 +359,26 @@ fn pict_rewrite_rules_preserve_semantics() {
     let points = test_points();
 
     assert!(!all_rules().is_empty(), "expected a non-empty rule set");
-    let mut failures: Vec<String> = Vec::new();
-    let mut changed = 0usize; // how many cases the optimizer actually rewrote
 
-    for row in &rows {
-        let outer = OUTER_OPS[row[0]];
-        let wrapper = UNARY_WRAPPERS[row[1]];
-        let (left, right) = (row[2], row[3]);
-        let konst = CONSTS[row[4]];
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let chunk_size = (rows.len() + num_threads - 1) / num_threads;
+
+    let mut handles = Vec::new();
+    for chunk in rows.chunks(chunk_size) {
+        let chunk = chunk.to_vec();
+        let points = points.clone();
+
+        handles.push(std::thread::spawn(move || {
+            let mut failures = Vec::new();
+            let mut changed = 0usize;
+
+            for row in chunk {
+                let outer = OUTER_OPS[row[0]];
+                let wrapper = UNARY_WRAPPERS[row[1]];
+                let (left, right) = (row[2], row[3]);
+                let konst = CONSTS[row[4]];
 
         let mut arena = ExprArena::new();
         let root = build_expr(&mut arena, outer, wrapper, left, right, konst);
@@ -409,6 +421,17 @@ fn pict_rewrite_rules_preserve_semantics() {
                 }
             }
         }
+    }
+            (failures, changed)
+        }));
+    }
+
+    let mut failures = Vec::new();
+    let mut changed = 0;
+    for handle in handles {
+        let (mut t_failures, t_changed) = handle.join().unwrap();
+        failures.append(&mut t_failures);
+        changed += t_changed;
     }
 
     eprintln!(
