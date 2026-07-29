@@ -94,7 +94,7 @@ fn save_ppm(path: &str, frame: &Frame<Rgba8>) {
     for y in 0..frame.height {
         for x in 0..frame.width {
             let idx = y * frame.width + x;
-            let pixel = &frame.data[idx as usize];
+            let pixel = &frame.data[idx];
             writeln!(file, "{} {} {}", pixel.r(), pixel.g(), pixel.b()).unwrap();
         }
     }
