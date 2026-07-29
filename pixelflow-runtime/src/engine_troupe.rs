@@ -32,8 +32,10 @@ use std::time::Duration;
 
 /// Deliver a message on a credit-bounded green edge (design doc §3.2): the ring is provisioned
 /// to never fill from that edge alone, so `Disconnected` is an ordinary shutdown race but `Full`
-/// means the provisioning broke. Factored out because `vsync_data` and `vsync_control` make
-/// exactly this argument for exactly this reason.
+/// means the provisioning broke. Only `vsync_control` can honestly make that argument —
+/// `ReturnToken`s outstanding are bounded by `MAX_TOKENS`, below its ring's capacity. The
+/// coordinator relay cannot (unsolicited `Submit`s, event-flood `Advance`s) and has its own
+/// per-variant policy in [`EngineHandler::send_coordinator`].
 fn expect_credit_bounded_send<T: std::fmt::Debug>(
     result: Result<(), TrySendError<T>>,
     full_msg: &str,
@@ -288,15 +290,53 @@ impl EngineHandler {
     /// The `coordinator` port: every window grant, scene submission, and advance nudge the
     /// engine relays to the render coordinator's own green node.
     ///
-    /// Submissions are bounded by the vsync token bucket (`MAX_TOKENS`, `vsync_actor.rs`) and
-    /// grants by the one-buffer-in-flight bound the driver already enforces, so this edge can
-    /// never see more outstanding sends than its ring holds — `Full` is therefore a provisioning
-    /// bug, the same credit argument `expect_credit_bounded_send` makes for `vsync_control`.
+    /// This edge is **not** credit-bounded, so `Full` is real backpressure here, not a
+    /// provisioning bug: `Submit`s are unsolicited — the app pushes frames outside the vsync
+    /// token protocol on resize, key input, and other interactive redraws — and `Advance`s
+    /// follow window events, which a resize drag emits in floods. What makes `Full` survivable
+    /// is that both are loss-tolerant by the coordinator's own contract:
+    ///
+    /// - `Submit` is keep-latest (`RenderCoordinator::submit`): a dropped frame is one step of
+    ///   staleness, corrected by the next submission — and under the load that fills this ring,
+    ///   the next submission is already on its way.
+    /// - `Advance` is an idempotent nudge, re-driven by every vsync tick.
+    ///
+    /// `Granted` is the exception: it carries the driver's only buffer, so it may not be
+    /// dropped — and unlike the loss-tolerant relays it is genuinely bounded (the driver lends
+    /// at most one buffer at a time), so a full ring in front of it is other traffic, not
+    /// unbounded grants. It waits: the green host is an independent thread actively draining
+    /// this ring at state-machine speed, so the wait is short and cannot deadlock — the
+    /// coordinator never blocks on the engine's own inbox (its wiring targets the driver,
+    /// rasterizer, and vsync only).
     fn send_coordinator(&mut self, data: CoordinatorData) {
         let Some(tx) = &self.coordinator else {
             return; // Not configured yet, or the green host has already shut down.
         };
-        expect_credit_bounded_send(tx.try_send(data), "coordinator ring unexpectedly full");
+        match data {
+            CoordinatorData::Granted(_) => {
+                let mut data = data;
+                loop {
+                    match tx.try_send(data) {
+                        Ok(()) => return,
+                        Err(TrySendError::Full(back)) => {
+                            data = back;
+                            std::thread::yield_now();
+                        }
+                        // Shutdown race: the host is gone and the buffer dies with the process,
+                        // not with this relay.
+                        Err(TrySendError::Disconnected(_)) => return,
+                    }
+                }
+            }
+            CoordinatorData::Submit(_) | CoordinatorData::Advance => {
+                match tx.try_send(data) {
+                    Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+                    Err(TrySendError::Full(dropped)) => {
+                        log::debug!("coordinator ring full; dropping loss-tolerant {dropped:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// The `vsync_control` port — `ReturnToken` (a credit return: the ring holds `>= MAX_TOKENS`,
@@ -715,6 +755,12 @@ mod tests {
 
     impl Rig {
         fn new() -> Self {
+            Self::with_ring(64)
+        }
+
+        /// A rig with a chosen coordinator-ring capacity, for the overload-policy tests below —
+        /// filling a 64-slot ring by hand would just bury the assertion in setup.
+        fn with_ring(capacity: usize) -> Self {
             let (driver, _driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
 
             let waker = {
@@ -722,7 +768,7 @@ mod tests {
                     ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
                 handle.waker()
             };
-            let (coordinator_tx, coordinator_rx) = spsc_channel::<CoordinatorData>(64);
+            let (coordinator_tx, coordinator_rx) = spsc_channel::<CoordinatorData>(capacity);
             let coordinator = GreenSender::new(coordinator_tx, waker);
 
             let engine = EngineHandler {
@@ -786,6 +832,86 @@ mod tests {
             rig.coordinator_rx.try_recv(),
             Ok(CoordinatorData::Granted(_))
         ));
+    }
+
+    /// Fill a rig's coordinator ring to the brim with advance nudges, via the raw sender —
+    /// the engine relay itself sheds on Full, so it can never be used to reach Full.
+    fn fill_coordinator_ring(rig: &Rig) {
+        let tx = rig
+            .engine
+            .coordinator
+            .as_ref()
+            .expect("rig always wires a coordinator");
+        while tx.try_send(CoordinatorData::Advance).is_ok() {}
+    }
+
+    /// The Codex-flagged overload case (PR #944): unsolicited app submissions are not bounded
+    /// by the vsync credit, so a full coordinator ring is real backpressure — the engine must
+    /// shed the loss-tolerant relay, not panic and take the runtime down.
+    #[test]
+    fn a_full_coordinator_ring_sheds_submits_and_advances_instead_of_panicking() {
+        let mut rig = Rig::with_ring(2);
+        fill_coordinator_ring(&rig);
+
+        // Both loss-tolerant variants: no panic, engine keeps running.
+        rig.feed(EngineData::FromApp(AppData::RenderSurface(manifold())));
+        let now = Instant::now();
+        rig.feed(EngineData::VSync {
+            timestamp: now,
+            target_timestamp: now,
+            refresh_interval: Duration::from_millis(16),
+        });
+    }
+
+    /// The exception to shedding: a granted window is the driver's only buffer, so the relay
+    /// waits for the ring to drain rather than dropping it.
+    #[test]
+    fn a_granted_window_waits_out_a_full_ring_rather_than_being_dropped() {
+        use crate::display::messages::{Generation, Window, WindowMeta};
+
+        let mut rig = Rig::with_ring(2);
+        fill_coordinator_ring(&rig);
+
+        // Drain the ring from another thread after a delay, standing in for the green host: the
+        // engine's Granted relay must spin until space appears, then deliver.
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<CoordinatorData>();
+        let mut coordinator_rx = std::mem::replace(
+            &mut rig.coordinator_rx,
+            spsc_channel::<CoordinatorData>(1).1,
+        );
+        let drainer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            loop {
+                match coordinator_rx.try_recv() {
+                    Ok(data) => done_tx.send(data).expect("collector alive"),
+                    Err(actor_scheduler::spsc::TryRecvError::Empty) => {
+                        std::thread::sleep(Duration::from_millis(1))
+                    }
+                    Err(actor_scheduler::spsc::TryRecvError::Disconnected) => return,
+                }
+            }
+        });
+
+        let window = Window::rejoin(
+            pixelflow_graphics::render::Frame::new(100, 100),
+            WindowMeta {
+                id: WindowId(1),
+                width_px: 100,
+                height_px: 100,
+                scale: 1.0,
+                generation: Generation::NONE,
+            },
+        );
+        // Blocks briefly until the drainer frees a slot; must NOT drop the grant.
+        rig.feed(EngineData::WindowGranted(window));
+
+        drop(rig); // Disconnect the sender so the drainer exits.
+        drainer.join().expect("drainer exits cleanly");
+        let granted = done_rx
+            .iter()
+            .filter(|data| matches!(data, CoordinatorData::Granted(_)))
+            .count();
+        assert_eq!(granted, 1, "the grant must arrive despite the full ring");
     }
 
     #[test]
