@@ -1575,7 +1575,7 @@ mod tests {
 
         let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
         let mut grads = Box::new(UnifiedGradients::zero());
-        backward_value(&net, &cache, target_cost, value_coeff, &mut *grads);
+        backward_value(&net, &cache, target_cost, value_coeff, &mut grads);
 
         let eps = 1e-3f32;
         let mut max_err = 0.0f64;
