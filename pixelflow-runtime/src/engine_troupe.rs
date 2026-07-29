@@ -328,14 +328,12 @@ impl EngineHandler {
                     }
                 }
             }
-            CoordinatorData::Submit(_) | CoordinatorData::Advance => {
-                match tx.try_send(data) {
-                    Ok(()) | Err(TrySendError::Disconnected(_)) => {}
-                    Err(TrySendError::Full(dropped)) => {
-                        log::debug!("coordinator ring full; dropping loss-tolerant {dropped:?}");
-                    }
+            CoordinatorData::Submit(_) | CoordinatorData::Advance => match tx.try_send(data) {
+                Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+                Err(TrySendError::Full(dropped)) => {
+                    log::debug!("coordinator ring full; dropping loss-tolerant {dropped:?}");
                 }
-            }
+            },
         }
     }
 
