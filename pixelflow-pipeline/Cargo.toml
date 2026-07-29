@@ -29,6 +29,7 @@ pprof = { version = "0.15", features = ["flamegraph"], optional = true }
 [dev-dependencies]
 criterion = "0.5"
 pixelflow-compiler = { path = "../pixelflow-compiler" }
+pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
 
 [[bench]]
 name = "nnue_training_suite"

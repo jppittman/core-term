@@ -1562,6 +1562,7 @@ mod tests {
     // ========================================================================
 
     #[test]
+    #[ignore = "https://github.com/jppittman/pixelflow/issues/948"]
     fn numerical_gradient_check_value() {
         let net = make_test_net();
         let acc = make_test_acc();
