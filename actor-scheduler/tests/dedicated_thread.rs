@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use actor_scheduler::mealy::{Flush, Node, Transducer, Wiring, send_port};
 use actor_scheduler::spsc::{SpscSender, spsc_channel};
-use actor_scheduler::{ActorBuilder, ActorStatus, HandlerError, Host, Message, SystemStatus};
+use actor_scheduler::{
+    ActorBuilder, ActorStatus, HandlerError, Host, Message, SchedulerParams, SystemStatus,
+};
 
 // ────────────────────────────────────────────────────────────────────────────
 // A pure Transducer: same shape as mealy.rs's own `LaneLog` fixture, reused
@@ -595,4 +597,236 @@ fn a_step_os_continuation_resumes_without_an_external_wake() {
         70,
         "the continuation resumed through step_data with no external wake"
     );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// `sweep_burst`: the per-sweep lane budget `ActorBuilder::build_node` computes, and
+// `DedicatedThread::sweep`'s own use of it.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Emits `Seen::Data` from every data step and `Seen::OsTurn` from every `step_os` call, onto
+/// the same output port — so a test can read off the exact interleaving of the two.
+struct SweepBurstProbe;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    Data,
+    OsTurn,
+}
+
+#[derive(Default)]
+struct SweepBurstOut {
+    seen: Option<Seen>,
+}
+
+struct SweepBurstWiring {
+    tx: SpscSender<Seen>,
+}
+
+impl Wiring for SweepBurstWiring {
+    type Out = SweepBurstOut;
+
+    fn flush(&mut self, out: &mut SweepBurstOut) -> Flush {
+        send_port(&mut out.seen, &self.tx)
+    }
+}
+
+impl Transducer for SweepBurstProbe {
+    type Control = Infallible;
+    type Management = Infallible;
+    type Data = ();
+    type Out = SweepBurstOut;
+
+    fn step_data(&mut self, (): ()) -> Result<SweepBurstOut, HandlerError> {
+        Ok(SweepBurstOut {
+            seen: Some(Seen::Data),
+        })
+    }
+
+    fn step_os(
+        &mut self,
+        _status: SystemStatus,
+    ) -> Result<(SweepBurstOut, ActorStatus), HandlerError> {
+        Ok((
+            SweepBurstOut {
+                seen: Some(Seen::OsTurn),
+            },
+            ActorStatus::Idle,
+        ))
+    }
+}
+
+/// Kills four `+`↔`*`/`-` mutants in `ActorBuilder::build_node`'s
+/// `sweep_burst = control_burst_limit + management_burst_limit + default_data_burst_limit`, plus
+/// the `+=`→`*=` and `>=`→`<` mutants on `DedicatedThread::sweep`'s own budget counter/check.
+///
+/// Limits (2, 3, 4) are chosen so every wrong operator disagrees with the correct sum (9):
+/// `2*3+4=10`, `2-3+4=3`, `2+3*4=14`, `2+3-4=1`. Queue more data (30) than any of those values,
+/// all before the thread starts, so the first sweep always drains until *its own* budget stops
+/// it — never until the lane runs dry. `step_os` stamps a distinct marker on the same output
+/// port data uses, so counting `Seen::Data` entries before the first `Seen::OsTurn` reads the
+/// budget straight off the wire.
+#[test]
+fn sweep_burst_is_the_sum_of_lane_limits_not_the_product() {
+    let params = SchedulerParams {
+        control_mgmt_buffer_size: 1,
+        control_burst_multiplier: 2,    // control_burst_limit == 2
+        management_burst_multiplier: 3, // management_burst_limit == 3
+        default_data_burst_limit: 4,
+        ..SchedulerParams::DEFAULT
+    };
+    assert_eq!(params.control_burst_limit(), 2);
+    assert_eq!(params.management_burst_limit(), 3);
+
+    let mut builder = ActorBuilder::<(), Infallible, Infallible>::new_with_params(64, None, params);
+    let handle = builder.add_producer();
+    let (tx_seen, mut rx_seen) = spsc_channel::<Seen>(64);
+    let mut thread = builder.build_node(SweepBurstProbe, SweepBurstWiring { tx: tx_seen });
+
+    for _ in 0..30 {
+        handle.send(Message::Data(())).unwrap();
+    }
+
+    let worker = std::thread::spawn(move || thread.run());
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut data_before_os_turn = 0usize;
+    loop {
+        match rx_seen.try_recv() {
+            Ok(Seen::Data) => data_before_os_turn += 1,
+            Ok(Seen::OsTurn) => break,
+            Err(_) => {}
+        }
+        assert!(Instant::now() < deadline, "step_os never got a turn");
+    }
+
+    assert_eq!(
+        data_before_os_turn, 9,
+        "sweep_burst must be 2+3+4=9 (sum), not a product or difference of the three limits"
+    );
+
+    handle.send(Message::Shutdown).unwrap();
+    worker.join().expect("dedicated thread must not panic");
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// The `SystemStatus` `DedicatedThread::sweep` derives for `step_os`, and whether an idle sweep
+// actually lets the driver block on its doorbell.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Reports the `SystemStatus` it was called with, out the same port every time — so a test can
+/// read off exactly what each sweep decided, and count how many sweeps happened at all.
+struct StatusProbe;
+
+#[derive(Default)]
+struct StatusProbeOut {
+    status: Option<SystemStatus>,
+}
+
+struct StatusProbeWiring {
+    tx: SpscSender<SystemStatus>,
+}
+
+impl Wiring for StatusProbeWiring {
+    type Out = StatusProbeOut;
+
+    fn flush(&mut self, out: &mut StatusProbeOut) -> Flush {
+        send_port(&mut out.status, &self.tx)
+    }
+}
+
+impl Transducer for StatusProbe {
+    type Control = Infallible;
+    type Management = Infallible;
+    type Data = ();
+    type Out = StatusProbeOut;
+
+    // Silent: the point is what reaches step_os, not the data step's own output.
+    fn step_data(&mut self, (): ()) -> Result<StatusProbeOut, HandlerError> {
+        Ok(StatusProbeOut::default())
+    }
+
+    fn step_os(
+        &mut self,
+        status: SystemStatus,
+    ) -> Result<(StatusProbeOut, ActorStatus), HandlerError> {
+        Ok((
+            StatusProbeOut {
+                status: Some(status),
+            },
+            ActorStatus::Idle,
+        ))
+    }
+}
+
+/// Kills the `==`→`!=` and `||`→`&&` mutants on `DedicatedThread::sweep`'s
+/// `lane_step == Step::Idle || lanes_completed` (which `SystemStatus` reaches `step_os`), and
+/// the `!=`→`==` mutant on the sibling `lane_step != Step::Idle` inside `lanes_busy` (whether an
+/// idle sweep still reports itself busy and keeps the driver spinning instead of blocking).
+///
+/// Phase 1: wake with nothing queued — the lane is genuinely idle, so `step_os` must see
+/// `SystemStatus::Idle`, and the driver must actually block afterward (no further sweep without
+/// another external wake — proven by waiting past a generous margin and finding nothing more).
+/// Phase 2: queue more data than `sweep_burst`, so the lane empties with work still budgeted —
+/// `step_os` must see `SystemStatus::Busy`.
+#[test]
+fn sweep_reports_idle_status_only_when_lanes_are_actually_idle() {
+    let params = SchedulerParams {
+        control_mgmt_buffer_size: 1,
+        control_burst_multiplier: 2,
+        management_burst_multiplier: 3,
+        default_data_burst_limit: 4, // sweep_burst == 9
+        ..SchedulerParams::DEFAULT
+    };
+
+    let mut builder = ActorBuilder::<(), Infallible, Infallible>::new_with_params(64, None, params);
+    let handle = builder.add_producer();
+    let (tx_status, mut rx_status) = spsc_channel::<SystemStatus>(64);
+    let mut thread = builder.build_node(StatusProbe, StatusProbeWiring { tx: tx_status });
+
+    let worker = std::thread::spawn(move || thread.run());
+
+    // Phase 1: wake with an empty lane.
+    handle.waker().wake();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let first = loop {
+        if let Ok(s) = rx_status.try_recv() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "step_os never ran on an idle wake");
+    };
+    assert_eq!(
+        first,
+        SystemStatus::Idle,
+        "an empty lane must report Idle to step_os"
+    );
+
+    // The driver must have gone back to blocking on its doorbell: nothing else rings it, so no
+    // further sweep — and therefore no further status — should appear.
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        rx_status.try_recv().is_err(),
+        "an idle sweep must let the driver block, not spin"
+    );
+
+    // Phase 2: queue more than sweep_burst (9) so the lane empties with budget still unspent —
+    // sending itself rings the doorbell.
+    for _ in 0..15 {
+        handle.send(Message::Data(())).unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let second = loop {
+        if let Ok(s) = rx_status.try_recv() {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "step_os never ran on the busy sweep");
+    };
+    assert_eq!(
+        second,
+        SystemStatus::Busy,
+        "a lane with budget still unspent must report Busy to step_os"
+    );
+
+    handle.send(Message::Shutdown).unwrap();
+    worker.join().expect("dedicated thread must not panic");
 }

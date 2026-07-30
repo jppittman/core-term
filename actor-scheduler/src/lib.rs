@@ -1898,6 +1898,30 @@ mod try_send_tests {
             other => panic!("expected Disconnected(Message::Data(5)), got {other:?}"),
         }
     }
+
+    // Kills: replace <ActorHandle<D, C, M> as mealy::PortTarget<Message<D, C, M>>>::try_deliver's
+    // body with Ok(()) — a stub that reports success without ever touching the lane. Routes a
+    // port through `mealy::send_port` itself, the real call site every generated `Wiring::flush`
+    // uses to reach an `ActorHandle`, and confirms the message actually arrives rather than just
+    // getting a `Flush::Done`.
+    #[test]
+    fn actor_handle_is_a_port_target_for_send_port() {
+        use crate::mealy::{Flush, send_port};
+
+        let (handle, mut sched) = ActorScheduler::<i32, i32, i32>::new(10, 100);
+
+        let mut port = Some(Message::Data(11));
+        assert_eq!(send_port(&mut port, &handle), Flush::Done);
+        assert!(port.is_none(), "a delivered port clears");
+
+        let mut actor = RecordActor { got: None };
+        sched.poll_once(&mut actor);
+        assert_eq!(
+            actor.got,
+            Some(11),
+            "send_port must actually deliver through an ActorHandle target, not just clear the port"
+        );
+    }
 }
 
 // Tests targeting missed mutations in backoff_with_jitter and send_with_backoff.
