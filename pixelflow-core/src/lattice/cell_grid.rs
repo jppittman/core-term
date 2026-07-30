@@ -54,19 +54,31 @@ use pixelflow_ir::{ExprArena, ExprId, JitManifold, OpKind};
 pub const CELL_STRIDE: usize = 10;
 
 /// The compiled-against shape of a [`CellGridProgram`]: grid dimensions,
-/// cell extent in points, atlas extents in texels, and the atlas sample
-/// density (texels per point). Changing any field means recompiling.
+/// cell extents, atlas extents in texels, and the atlas sample density.
+/// Changing any field means recompiling.
+///
+/// ## Coordinate units
+///
+/// Cell extents and `density` are in the CALLER'S sampling space — the
+/// coordinates the compiled kernels will be evaluated at. The program
+/// applies no unit conversion of its own, so whoever drives the bake
+/// decides what a coordinate means and must express every field in that
+/// one space. In particular, `pixelflow-runtime` renders cell-grid scenes
+/// on the frame buffer's DEVICE-PIXEL grid without any DPI contramap: a
+/// scene destined for the runtime bakes its display scale in here
+/// (extents × scale, density in texels per device pixel), as core-term
+/// does.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct CellGridGeometry {
     /// Grid width in cells.
     pub cols: u32,
     /// Grid height in cells.
     pub rows: u32,
-    /// Cell width in points.
+    /// Cell width, in sampling-space coordinate units (see the type docs).
     pub cell_w: f32,
-    /// Cell height in points.
+    /// Cell height, in sampling-space coordinate units.
     pub cell_h: f32,
-    /// Atlas texels per point.
+    /// Atlas texels per sampling-space coordinate unit.
     pub density: f32,
     /// Atlas width in texels.
     pub atlas_width: u32,

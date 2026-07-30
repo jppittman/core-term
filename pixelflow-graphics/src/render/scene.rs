@@ -103,31 +103,67 @@ fn render_cell_grid<P: Pixel + Send>(
     });
 }
 
+/// Scratch budget per worker for the four channel planes. Bounds the
+/// bake-and-pack working set to cache-friendly chunks instead of sizing
+/// temporaries to the whole stripe (a 4K frame would otherwise stage
+/// ~127 MiB of planes per render).
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+const PLANE_SCRATCH_BYTES: usize = 1 << 20;
+
 /// Bake the four channel planes for rows `y0..y0 + band.len()/width` and
-/// pack them into `band`.
+/// pack them into `band`, in bounded-height chunks reusing one scratch
+/// allocation.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn bake_and_pack_stripe<P: Pixel>(grid: &CellGridFrame, width: usize, y0: usize, band: &mut [P]) {
+    let stride = CellGridFrame::padded_width(width);
+    let chunk_rows = PLANE_SCRATCH_BYTES / (4 * stride * core::mem::size_of::<f32>());
+    bake_and_pack_chunked(grid, width, y0, band, chunk_rows);
+}
+
+/// [`bake_and_pack_stripe`] with an explicit chunk height (rows of plane
+/// scratch per pass) — split out so tests can force chunk boundaries that
+/// the production budget would only hit on very large frames.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+fn bake_and_pack_chunked<P: Pixel>(
+    grid: &CellGridFrame,
+    width: usize,
+    y0: usize,
+    band: &mut [P],
+    chunk_rows: usize,
+) {
     let rows = band.len() / width;
     let stride = CellGridFrame::padded_width(width);
-    let mut planes = vec![0.0f32; 4 * rows * stride];
-    {
-        let (r, rest) = planes.split_at_mut(rows * stride);
-        let (g, rest) = rest.split_at_mut(rows * stride);
-        let (b, a) = rest.split_at_mut(rows * stride);
-        let region = PlaneRegion { width, y0, rows };
-        grid.bake_channel_rows(0, region, r);
-        grid.bake_channel_rows(1, region, g);
-        grid.bake_channel_rows(2, region, b);
-        grid.bake_channel_rows(3, region, a);
-    }
-    let plane = |c: usize| &planes[c * rows * stride..(c + 1) * rows * stride];
-    let (r, g, b, a) = (plane(0), plane(1), plane(2), plane(3));
-    for row in 0..rows {
-        let p = row * stride;
-        let o = row * width;
-        for i in 0..width {
-            band[o + i] = P::from_rgba(r[p + i], g[p + i], b[p + i], a[p + i]);
+    let chunk_rows = chunk_rows.clamp(1, rows.max(1));
+    let mut planes = vec![0.0f32; 4 * chunk_rows * stride];
+
+    let mut done = 0usize;
+    while done < rows {
+        let n = chunk_rows.min(rows - done);
+        {
+            let (r, rest) = planes.split_at_mut(chunk_rows * stride);
+            let (g, rest) = rest.split_at_mut(chunk_rows * stride);
+            let (b, a) = rest.split_at_mut(chunk_rows * stride);
+            let region = PlaneRegion {
+                width,
+                y0: y0 + done,
+                rows: n,
+            };
+            grid.bake_channel_rows(0, region, r);
+            grid.bake_channel_rows(1, region, g);
+            grid.bake_channel_rows(2, region, b);
+            grid.bake_channel_rows(3, region, a);
         }
+        let plane =
+            |c: usize| &planes[c * chunk_rows * stride..c * chunk_rows * stride + n * stride];
+        let (r, g, b, a) = (plane(0), plane(1), plane(2), plane(3));
+        for row in 0..n {
+            let p = row * stride;
+            let o = (done + row) * width;
+            for i in 0..width {
+                band[o + i] = P::from_rgba(r[p + i], g[p + i], b[p + i], a[p + i]);
+            }
+        }
+        done += n;
     }
 }
 
@@ -193,6 +229,21 @@ mod tests {
         // Outside the grid: the default background (0.25 → ~64).
         let m = px(9, 9);
         assert!(m.r() >= 62 && m.r() <= 66, "margin r = {}", m.r());
+    }
+
+    #[test]
+    fn chunked_bake_matches_whole_stripe() {
+        // Force chunk boundaries (3-row chunks over an 8-row band) and
+        // require pixel identity with the unchunked bake.
+        let Scene::CellGrid(grid) = scene() else {
+            unreachable!()
+        };
+        let (w, h) = (9usize, 8usize);
+        let mut whole = vec![Rgba8::from_u32(0); w * h];
+        let mut chunked = vec![Rgba8::from_u32(0); w * h];
+        super::bake_and_pack_chunked(&grid, w, 0, &mut whole, h);
+        super::bake_and_pack_chunked(&grid, w, 0, &mut chunked, 3);
+        assert_eq!(whole, chunked, "chunk boundaries must not change pixels");
     }
 
     #[test]

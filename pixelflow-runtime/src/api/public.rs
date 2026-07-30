@@ -286,47 +286,50 @@ pub enum EngineEventData {
 /// The pixel type `P` is kept for API compatibility but is unused in practice.
 /// All rendering is done via manifolds that produce `Discrete` (packed RGBA u32 pixels).
 pub enum AppData {
-    /// Render a manifold (continuous surface) to the window.
+    /// Render a [`Scene`](pixelflow_graphics::render::scene::Scene) to the
+    /// window.
     ///
     /// # Contract
     ///
-    /// **Sender** (Application): Provides a color manifold that produces `Discrete` pixels.
-    /// The manifold is evaluated at sequential x-coordinates and writes pixels to the framebuffer.
+    /// **Sender** (Application): Provides the scene — either
+    /// `Scene::Surface` (an `Arc<dyn Manifold<Output = Discrete>>`; `.into()`
+    /// converts one directly) or `Scene::CellGrid` (a JIT cell-grid frame,
+    /// rendered by the collapse-baked fast lane).
     ///
-    /// **Receiver** (Engine): Materializes the manifold and presents it to the window.
-    /// The manifold is evaluated fresh for each frame, so it can be animated or interactive.
+    /// **Receiver** (Engine): Renders the scene into the frame buffer and
+    /// presents it. The scene is rendered fresh for each submission, so it
+    /// can be animated or interactive.
     ///
-    /// # Arguments
+    /// # Coordinate spaces
     ///
-    /// - A `Manifold<Output = Discrete>` wrapped in `Arc<dyn ...>` for type erasure
+    /// `Surface` scenes are authored in point space: on HiDPI displays the
+    /// engine contramaps them by points/pixels so the author stays
+    /// scale-agnostic. `CellGrid` scenes are DEVICE-PIXEL space by
+    /// contract — their geometry carries any display scale (see
+    /// `CellGridGeometry`'s docs), and the engine applies no transform.
     ///
     /// # Example
     ///
     /// ```ignore
     /// use pixelflow_graphics::Color;
-    /// use pixelflow_core::ManifoldExt;
     /// use std::sync::Arc;
     ///
-    /// // Build a red rectangle
+    /// // A solid color as the generic surface lane.
     /// let red = Color::Named(NamedColor::Red);
     /// let manifold = Arc::new(red) as Arc<dyn Manifold<Output = Discrete> + Send + Sync>;
+    /// tx.send(Message::Data(AppData::RenderSurface(manifold.into())))?;
     ///
-    /// tx.send(Message::Data(AppData::RenderSurface(manifold)))?;
+    /// // A cell-grid frame takes the fast lane.
+    /// tx.send(Message::Data(AppData::RenderSurface(Scene::CellGrid(frame))))?;
     /// ```
     ///
     /// # Performance Notes
     ///
-    /// - The manifold is evaluated for every frame, every pixel (no caching)
-    /// - Use simple, closed-form expressions for good performance
-    /// - The evaluation happens in the render thread; expensive computations will cause frame drops
-    /// - Consider composing manifolds rather than using `map` callbacks
-    ///
-    /// # Type Erasure
-    ///
-    /// The manifold is stored as `dyn Manifold`, which erases the static type.
-    /// This allows different manifold types to be sent without recompiling.
-    /// Performance cost: no dynamic dispatch at the algebra level (monomorphization still works),
-    /// but you lose some inlining opportunities across the Arc boundary.
+    /// - `Surface`: evaluated per batch through the `Manifold` trait, every
+    ///   frame, every pixel — keep expressions closed-form; expensive
+    ///   evaluation causes frame drops.
+    /// - `CellGrid`: one internal-loop JIT call per channel per stripe plus
+    ///   a pack — the production path for grid-shaped content.
     RenderSurface(pixelflow_graphics::render::scene::Scene),
 
     /// Skip this frame (no rendering needed).
