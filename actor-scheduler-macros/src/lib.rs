@@ -560,11 +560,9 @@ pub fn troupe(input: TokenStream) -> TokenStream {
 /// How one output port is delivered.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PortKind {
-    /// Parks the actor when the target is full. The default, and the only kind that
-    /// propagates backpressure.
+    /// Parks the actor when the target is full. The only kind that reaches the wiring — every
+    /// port parks, so this is also every port's default.
     Blocking,
-    /// Discards when the target is full. Cannot park, so it may close a cycle.
-    Droppable,
     /// Addressed to the actor itself. Never reaches the wiring — the scheduler lifts it into
     /// the continuation slot.
     SelfPort,
@@ -577,17 +575,26 @@ struct Port {
     kind: PortKind,
 }
 
-/// Parse `[drop]` / `[self]`, defaulting to a blocking port.
+/// Parse `[self]`, defaulting to a blocking port.
+///
+/// `[drop]` is a named, deliberate compile-time panic rather than silently accepted or a
+/// confusing parse error: droppable ports have no production user, the one real shedding
+/// instance in the runtime was a bypass of this very macro (a hand-rolled `try_send`, not a
+/// declared `[drop]` port), and every port now parks (see
+/// `docs/designs/actor-scheduler-mealy-transducer.md` §7.2).
 fn parse_port_kind(group_str: &str, port: &str) -> PortKind {
     let mut kind = PortKind::Blocking;
     for part in group_str.split(',') {
         match part.trim() {
-            "drop" => kind = PortKind::Droppable,
+            "drop" => panic!(
+                "ports! `{port}`: droppable ports are gone; every port parks. \
+                 See docs/designs/actor-scheduler-mealy-transducer.md §7.2."
+            ),
             "self" => kind = PortKind::SelfPort,
             "" => {}
-            other => panic!(
-                "unknown port attribute `{other}` on port `{port}` (expected `drop` or `self`)"
-            ),
+            other => {
+                panic!("unknown port attribute `{other}` on port `{port}` (expected `self`)")
+            }
         }
     }
     kind
@@ -606,8 +613,8 @@ fn parse_port_kind(group_str: &str, port: &str) -> PortKind {
 /// ```ignore
 /// ports! {
 ///     App {
-///         engine: Render,        // blocking: parks the actor when full
-///         write: Echo [drop],    // droppable: discards when full, never parks
+///         engine: Render,        // parks the actor when full — the only delivery kind
+///         write: Echo,
 ///         again: u32 [self],     // continuation: goes to the slot, not the wiring
 ///     }
 /// }
@@ -619,8 +626,9 @@ fn parse_port_kind(group_str: &str, port: &str) -> PortKind {
 ///   transition.
 /// - `pub struct AppWiring` — one `SpscSender<T>` per *deliverable* port. A `[self]` port has
 ///   no field here, because it never travels through the wiring.
-/// - `impl Wiring for AppWiring` — `flush` delivering each port by its kind and combining the
-///   outcomes, so a partial flush falls out: the ports that fit go now, the rest wait.
+/// - `impl Wiring for AppWiring` — `flush` delivering each port via `mealy::send_port` and
+///   combining the outcomes, so a partial flush falls out: the ports that fit go now, the rest
+///   wait.
 /// - `impl AppOut::take_continuation` when a `[self]` port is declared, for the actor's
 ///   `Transducer::take_continuation` to delegate to.
 ///
@@ -747,12 +755,8 @@ fn render_ports(base: &str, ports: &[Port], self_port: Option<&Port>) -> TokenSt
     let sends = deliverable
         .iter()
         .map(|p| {
-            let delivery = match p.kind {
-                PortKind::Droppable => "Droppable",
-                _ => "Blocking",
-            };
             format!(
-                "            ::actor_scheduler::mealy::send_port(&mut out.{0}, &self.{0}, ::actor_scheduler::mealy::Delivery::{delivery}),",
+                "            ::actor_scheduler::mealy::send_port(&mut out.{0}, &self.{0}),",
                 p.name
             )
         })

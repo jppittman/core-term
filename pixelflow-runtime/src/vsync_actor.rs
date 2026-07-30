@@ -26,8 +26,8 @@
 //! frame request.
 
 use actor_scheduler::actors::Timer;
-use actor_scheduler::mealy::{all, Credit, Flush, Transducer, Wiring};
-use actor_scheduler::{HandlerError, Message, TrySendError};
+use actor_scheduler::mealy::{all, send_port, Credit, Flush, Transducer, Wiring};
+use actor_scheduler::{HandlerError, Message};
 use log::info;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -269,31 +269,32 @@ impl Wiring for VsyncWiring {
     type Out = VsyncCoreOut;
 
     fn flush(&mut self, out: &mut VsyncCoreOut) -> Flush {
-        let tick_flush = match out.tick {
-            None => Flush::Done,
-            Some(tick) => {
-                use crate::api::private::EngineData;
+        use crate::api::private::EngineData;
 
-                let msg = Message::Data(EngineData::VSync {
-                    timestamp: tick.timestamp,
-                    target_timestamp: tick.target_timestamp,
-                    refresh_interval: tick.refresh_interval,
-                });
-                match self.engine.try_send(msg) {
-                    Ok(()) => {
-                        out.tick = None;
-                        Flush::Done
-                    }
-                    // MAX_TOKENS bounds outstanding ticks (design doc §3.2): every tick is gated
-                    // by `Credit::try_consume`, so the engine's inbox can never fill from this
-                    // edge alone. `Full` here means that invariant broke, so parking — not
-                    // dropping the tick — is the honest response. `out.tick` is already `Some`,
-                    // so leaving it be *is* putting it back.
-                    Err(TrySendError::Full(_)) => Flush::Blocked,
-                    Err(TrySendError::Disconnected(_)) => Flush::Disconnected,
-                }
-            }
-        };
+        // MAX_TOKENS bounds outstanding ticks (design doc §3.2): every tick is gated by
+        // `Credit::try_consume`, so the engine's inbox can never fill from this edge alone —
+        // `Blocked` here means that invariant broke, so parking (not dropping the tick) is the
+        // honest response.
+        let mut tick_msg = out.tick.take().map(|tick| {
+            Message::Data(EngineData::VSync {
+                timestamp: tick.timestamp,
+                target_timestamp: tick.target_timestamp,
+                refresh_interval: tick.refresh_interval,
+            })
+        });
+        let tick_flush = send_port(&mut tick_msg, &self.engine);
+        if let Some(Message::Data(EngineData::VSync {
+            timestamp,
+            target_timestamp,
+            refresh_interval,
+        })) = tick_msg
+        {
+            out.tick = Some(VsyncTick {
+                timestamp,
+                target_timestamp,
+                refresh_interval,
+            });
+        }
 
         // Infallible: the clock has no ring to be full, and outliving its Timer is not a state
         // this wiring can observe.
@@ -534,15 +535,19 @@ mod wiring_tests {
         let (engine, _engine_sched) =
             ActorScheduler::<EngineData, EngineControl, AppManagement>::new(4, 2);
         // Fill the ring without a consumer draining it, so the next send is genuinely full
-        // rather than disconnected.
-        while engine
-            .try_send(Message::Data(EngineData::VSync {
+        // rather than disconnected — via `send_port`, the one public non-blocking path to an
+        // `ActorHandle`.
+        let tick = || {
+            Some(Message::Data(EngineData::VSync {
                 timestamp: Instant::now(),
                 target_timestamp: Instant::now(),
                 refresh_interval: Duration::from_millis(16),
             }))
-            .is_ok()
-        {}
+        };
+        let mut port = tick();
+        while send_port(&mut port, &engine) == Flush::Done {
+            port = tick();
+        }
 
         let mut wiring = VsyncWiring {
             engine,
@@ -629,6 +634,7 @@ mod integration_tests {
     use actor_scheduler::spsc::spsc_channel;
     use actor_scheduler::{
         Actor, ActorScheduler, ActorStatus, HandlerResult, SchedulerParams, SystemStatus,
+        TrySendError,
     };
     use std::ops::ControlFlow;
     use std::sync::atomic::{AtomicBool, Ordering};

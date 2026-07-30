@@ -5,7 +5,7 @@
 
 use actor_scheduler::mealy::{Flush, Node, Step, Transducer, Wiring};
 use actor_scheduler::spsc::spsc_channel;
-use actor_scheduler::{Exit, HandlerError, ports};
+use actor_scheduler::{HandlerError, ports};
 use std::convert::Infallible;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -125,47 +125,11 @@ fn generated_flush_parks_on_a_full_target_and_keeps_the_message() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// A droppable port cannot park — the runtime half of `Topology::droppable_edge`
+// `[drop]` is gone — see actor-scheduler-macros' `parse_port_kind`, which now panics at
+// expansion time naming the removal. Not exercised here: a macro-expansion panic fails the
+// whole test crate's compilation, so there is no runtime assertion to write for it; the panic
+// message itself is the only artifact worth pinning, and it lives in the macro's own source.
 // ────────────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, PartialEq, Eq)]
-struct Frame(u32);
-
-ports! {
-    Vsync {
-        display: Frame [drop],
-    }
-}
-
-#[test]
-fn a_droppable_port_discards_instead_of_parking() {
-    let (tx_display, mut rx_display) = spsc_channel::<Frame>(2);
-    let mut wiring = VsyncWiring {
-        display: tx_display,
-    };
-
-    // Far more frames than the ring holds: none of them may block.
-    for i in 0..64 {
-        let mut out = VsyncOut {
-            display: Some(Frame(i)),
-        };
-        assert_eq!(
-            wiring.flush(&mut out),
-            Flush::Done,
-            "a droppable port must never report Blocked"
-        );
-        assert!(
-            out.display.is_none(),
-            "a droppable port never keeps a message"
-        );
-    }
-
-    let delivered = std::iter::from_fn(|| rx_display.try_recv().ok()).count();
-    assert!(
-        delivered > 0 && delivered < 64,
-        "some frames delivered, the rest dropped; got {delivered}"
-    );
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // A `[self]` port is a continuation, not a wiring field
@@ -284,5 +248,5 @@ fn a_disconnected_inbox_halts_a_generated_node() {
 
     let mut node = Node::new(Batcher, rx_in, BatcherWiring { out: tx_out });
     drop(tx_in);
-    assert_eq!(node.poll(), Step::Halted(Exit::Completed));
+    assert_eq!(node.poll(), Step::Halted);
 }

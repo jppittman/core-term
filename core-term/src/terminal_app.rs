@@ -767,7 +767,7 @@ mod tests {
     /// Drain everything the app has sent to the writer so far.
     fn drain_writer(rx: &mut WriterScheduler, probe: &mut WriterProbe) {
         for _ in 0..4 {
-            if rx.poll_once(probe).is_some() {
+            if rx.poll_once(probe) {
                 break;
             }
         }

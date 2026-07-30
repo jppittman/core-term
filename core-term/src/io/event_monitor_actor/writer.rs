@@ -164,9 +164,7 @@ impl Actor<Vec<u8>, WriterControl, WriterManagement> for PtyWriter {
         match BoundWriter::bind(pty, waker) {
             Ok(bound) => self.bound = Some(bound),
             Err(e) => {
-                return Err(HandlerError::recoverable(format!(
-                    "PTY writer bind failed: {e}"
-                )))
+                return Err(HandlerError::new(format!("PTY writer bind failed: {e}")));
             }
         }
         // Apply anything queued before the bind.
@@ -195,7 +193,7 @@ impl Actor<Vec<u8>, WriterControl, WriterManagement> for PtyWriter {
 
         let poll = bound.monitor.events(&mut bound.events, -1);
         bound.waker.disarm();
-        poll.map_err(|e| HandlerError::recoverable(format!("PTY writer poll failed: {e}")))?;
+        poll.map_err(|e| HandlerError::new(format!("PTY writer poll failed: {e}")))?;
 
         let mut pty_writable = false;
         for event in &bound.events {

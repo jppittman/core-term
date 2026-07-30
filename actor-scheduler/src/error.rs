@@ -46,54 +46,31 @@ impl<T> From<crate::spsc::TrySendError<T>> for SendError {
     }
 }
 
-/// Error from an actor handler indicating failure severity.
-///
-/// # Severity Levels
-///
-/// - **Recoverable**: Actor state is corrupted but the problem might be fixed
-///   by restarting. The scheduler exits `run()` and the supervisor can respawn.
-///
-/// - **Fatal**: Unrecoverable process-level failure. The scheduler panics,
-///   bringing down the entire process. Use for invariant violations, data
-///   corruption, or conditions where continuing would cause harm.
-///
-/// # When to use each
-///
-/// Return `Recoverable` when:
-/// - Actor state became inconsistent
-/// - A resource leaked or became unavailable
-/// - Retries exhausted on a critical operation
-///
-/// Return `Fatal` when:
-/// - Memory corruption detected
-/// - Security invariant violated
-/// - Continuing would cause data loss or undefined behavior
+/// Error from an actor handler. Every handler failure panics — there is no recoverable
+/// severity to select, because every build profile sets `panic = "abort"`, so a "recoverable"
+/// error was never actually recoverable: nothing could unwind to a supervisor that might
+/// restart it. This type still exists, as a plain wrapper, because `?` inside a handler is
+/// worth keeping — the panic happens once, formatted, at the scheduler boundary, rather than
+/// scattering `panic!` calls through every handler body.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HandlerError {
-    /// Actor needs restart - scheduler exits, supervisor may respawn
-    Recoverable(String),
-    /// Process must crash - scheduler panics
-    Fatal(String),
-}
+pub struct HandlerError(String);
 
 impl HandlerError {
-    /// Create a recoverable error (actor restart).
-    pub fn recoverable(msg: impl Into<String>) -> Self {
-        HandlerError::Recoverable(msg.into())
+    /// Wrap a failure message.
+    pub fn new(msg: impl Into<String>) -> Self {
+        HandlerError(msg.into())
     }
 
-    /// Create a fatal error (process crash).
-    pub fn fatal(msg: impl Into<String>) -> Self {
-        HandlerError::Fatal(msg.into())
+    /// Panic with this error's message. The one formatting site every `Err(e)` at a scheduler
+    /// boundary funnels through.
+    pub(crate) fn panic(self) -> ! {
+        panic!("actor handler failed: {self}")
     }
 }
 
 impl std::fmt::Display for HandlerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HandlerError::Recoverable(msg) => write!(f, "recoverable: {}", msg),
-            HandlerError::Fatal(msg) => write!(f, "FATAL: {}", msg),
-        }
+        write!(f, "{}", self.0)
     }
 }
 

@@ -29,16 +29,18 @@
 //! [`RenderCoordinator::request_sent`] the moment it decides to ask — delivery is now
 //! guaranteed-or-parked, so "an ask is in flight" is already true at the moment of emission.
 //! `render_send_failed` has no counterpart here: a rasterizer that is truly *gone* surfaces as
-//! [`Flush::Disconnected`] → `Host` supervision → `GreenStuck`, which is strictly better than the
-//! old warn-and-release-credit path — the render's buffer is retained rather than destroyed (see
-//! [`CoordinatorWiring`]'s `render` port).
+//! [`Flush::Disconnected`], which panics — there is no supervisor to escalate to, and a
+//! recoverable outcome was never on offer once every build profile sets `panic = "abort"`. That
+//! is still strictly better than the old warn-and-release-credit path right up to the panic: the
+//! render's buffer is retained rather than destroyed (see [`CoordinatorWiring`]'s `render` port),
+//! so the crash is at least legible from a core dump.
 
 use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt, Window, WindowMeta};
 use crate::platform::PlatformPixel;
 use crate::render_coordinator::{Completed, RenderCoordinator, Step};
 use crate::vsync_actor::RenderedResponse;
-use actor_scheduler::mealy::{all, Flush, Transducer, Wiring};
-use actor_scheduler::{ActorHandle, GreenSender, HandlerError, Message, TrySendError};
+use actor_scheduler::mealy::{all, send_port, Flush, Transducer, Wiring};
+use actor_scheduler::{ActorHandle, GreenSender, HandlerError, Message};
 use pixelflow_core::{Discrete, Manifold};
 use pixelflow_graphics::render::rasterizer::{RasterizerHandle, RenderRequest, RenderResponse};
 use std::sync::Arc;
@@ -86,7 +88,8 @@ impl std::fmt::Debug for CoordinatorData {
 /// most inputs move state without telling any peer, exactly as `EngineOut`/`VsyncCoreOut`.
 #[derive(Default)]
 pub(crate) struct CoordinatorOut {
-    /// → the rasterizer. Credit(1) + droppable-backstop edge; see [`CoordinatorWiring`].
+    /// → the rasterizer. Credit(1) bounds this edge below the reply ring's capacity, so it
+    /// never actually parks; see [`CoordinatorWiring`].
     pub(crate) render: Option<RenderRequest<PlatformPixel, WindowMeta>>,
     /// → the driver's management lane (`DisplayMgmt::RequestWindow`). A flag, not an
     /// `Option<T>`: there is no payload, only "ask now or don't".
@@ -95,8 +98,10 @@ pub(crate) struct CoordinatorOut {
     /// besides a non-stale render completion (migration doc §9.2), so this and the render
     /// completion are the two edges that must never drop it.
     pub(crate) present: Option<Window>,
-    /// → vsync's data lane (FPS telemetry). Droppable in principle (§9.2): losing a sample
-    /// changes nothing but a displayed number.
+    /// → vsync's data lane (FPS telemetry). Parks like every other port (§9.2 revised): the
+    /// ring holds 128 samples, one per presented frame, so a full ring means the vsync node
+    /// hasn't run in roughly two seconds — a wedged node, not a transient — and parking makes
+    /// that visible instead of silently skewing the FPS number forever.
     pub(crate) rendered: Option<RenderedResponse>,
 }
 
@@ -211,92 +216,49 @@ impl Wiring for CoordinatorWiring {
     type Out = CoordinatorOut;
 
     fn flush(&mut self, out: &mut CoordinatorOut) -> Flush {
-        let render_flush = match out.render.take() {
-            None => Flush::Done,
-            Some(request) => match self.rasterizer.try_send(Message::Data(request)) {
-                Ok(()) => Flush::Done,
-                // The render credit bounds this edge to one in flight, so `Full` is provably a
-                // bug — but park, don't panic: the payload is the driver's only buffer (§9.2 of
-                // the mealy design doc).
-                Err(TrySendError::Full(msg)) => {
-                    let Message::Data(request) = msg else {
-                        unreachable!("a Data send only ever returns its Data variant back")
-                    };
-                    out.render = Some(request);
-                    Flush::Blocked
-                }
-                Err(TrySendError::Disconnected(msg)) => {
-                    let Message::Data(request) = msg else {
-                        unreachable!("a Data send only ever returns its Data variant back")
-                    };
-                    out.render = Some(request);
-                    Flush::Disconnected
-                }
-            },
-        };
-
-        let present_flush = match out.present.take() {
-            None => Flush::Done,
-            Some(window) => {
-                let msg = Message::Data(DisplayData::Present { window });
-                match self.driver.try_send(msg) {
-                    Ok(()) => Flush::Done,
-                    // Parked-and-retained replaces the old `send_render`/`present_cooked_frame`
-                    // path's destroyed-on-failure hazard (see the NOTE that used to live on
-                    // `EngineHandler::send_render`) — the payload is the ping-pong buffer's only
-                    // copy, so losing it here would freeze the display for good.
-                    Err(TrySendError::Full(msg)) => {
-                        let Message::Data(DisplayData::Present { window }) = msg else {
-                            unreachable!("a Data send only ever returns its Data variant back")
-                        };
-                        out.present = Some(window);
-                        Flush::Blocked
-                    }
-                    Err(TrySendError::Disconnected(msg)) => {
-                        let Message::Data(DisplayData::Present { window }) = msg else {
-                            unreachable!("a Data send only ever returns its Data variant back")
-                        };
-                        out.present = Some(window);
-                        Flush::Disconnected
-                    }
-                }
-            }
-        };
-
-        let request_window_flush = if out.request_window {
-            match self
-                .driver
-                .try_send(Message::Management(DisplayMgmt::RequestWindow))
-            {
-                Ok(()) => {
-                    out.request_window = false;
-                    Flush::Done
-                }
-                // Safe to park rather than drop: the latch (`RenderCoordinator::request_sent`,
-                // already applied in `CoordinatorCore::route`) means we never double-ask, so a
-                // retry after this parks is still exactly one ask.
-                Err(TrySendError::Full(_)) => Flush::Blocked,
-                Err(TrySendError::Disconnected(_)) => Flush::Disconnected,
-            }
-        } else {
-            Flush::Done
-        };
-
-        // Telemetry: droppable per §9.2 — FPS skew beats parking the render loop on a sample.
-        // Never contributes to the combined outcome below, and never blocks the coordinator.
-        if let Some(response) = out.rendered.take() {
-            match self.vsync.try_send(response) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) => {
-                    log::debug!("vsync telemetry ring full; dropping an FPS sample");
-                }
-                Err(TrySendError::Disconnected(_)) => {
-                    // The vsync node's own host is going down too; nobody to report to.
-                }
-            }
+        // The render credit bounds this edge to one in flight, so `Blocked` is provably a bug —
+        // but park, don't panic: the payload is the driver's only buffer (§9.2 of the mealy
+        // design doc).
+        let mut render_msg = out.render.take().map(Message::Data);
+        let render_flush = send_port(&mut render_msg, &self.rasterizer);
+        if let Some(Message::Data(request)) = render_msg {
+            out.render = Some(request);
         }
 
-        all([render_flush, present_flush, request_window_flush])
+        // Parked-and-retained replaces the old `send_render`/`present_cooked_frame` path's
+        // destroyed-on-failure hazard (see the NOTE that used to live on
+        // `EngineHandler::send_render`) — the payload is the ping-pong buffer's only copy, so
+        // losing it here would freeze the display for good.
+        let mut present_msg = out
+            .present
+            .take()
+            .map(|window| Message::Data(DisplayData::Present { window }));
+        let present_flush = send_port(&mut present_msg, &self.driver);
+        if let Some(Message::Data(DisplayData::Present { window })) = present_msg {
+            out.present = Some(window);
+        }
+
+        // Safe to park rather than drop: the latch (`RenderCoordinator::request_sent`, already
+        // applied in `CoordinatorCore::route`) means we never double-ask, so a retry after this
+        // parks is still exactly one ask.
+        let mut request_window_msg = out
+            .request_window
+            .then_some(Message::Management(DisplayMgmt::RequestWindow));
+        let request_window_flush = send_port(&mut request_window_msg, &self.driver);
+        out.request_window = request_window_msg.is_some();
+
+        // Telemetry parks like every other port now (§9.2 revised): the ring holds 128 samples,
+        // one per presented frame, so a full ring means the vsync node hasn't run in roughly two
+        // seconds — a wedged node, not a transient — and parking makes that visible instead of
+        // silently skewing the FPS number forever.
+        let rendered_flush = send_port(&mut out.rendered, &self.vsync);
+
+        all([
+            render_flush,
+            present_flush,
+            request_window_flush,
+            rendered_flush,
+        ])
     }
 }
 

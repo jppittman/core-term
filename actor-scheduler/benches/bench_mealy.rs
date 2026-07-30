@@ -12,7 +12,7 @@
 //! The second is the honest measure of the design: the dispatch delta is small either way,
 //! but the thread-hop that disappears is not.
 
-use actor_scheduler::mealy::{Delivery, Flush, Node, Step, Transducer, Wiring, all, send_port};
+use actor_scheduler::mealy::{Flush, Node, Step, Transducer, Wiring, all, send_port};
 use actor_scheduler::spsc::{SpscSender, spsc_channel};
 use actor_scheduler::{
     Actor, ActorScheduler, ActorStatus, HandlerError, HandlerResult, Message, SystemStatus,
@@ -92,8 +92,8 @@ impl Wiring for AppWiring {
     type Out = AppOut;
     fn flush(&mut self, out: &mut AppOut) -> Flush {
         all([
-            send_port(&mut out.engine, &self.engine, Delivery::Blocking),
-            send_port(&mut out.write, &self.write, Delivery::Blocking),
+            send_port(&mut out.engine, &self.engine),
+            send_port(&mut out.write, &self.write),
         ])
     }
 }
@@ -135,7 +135,7 @@ fn bench_dispatch(c: &mut Criterion) {
                     handle.send(Message::Data(i as u8)).unwrap();
                 }
                 while actor.seen < n as u64 {
-                    if sched.poll_once(&mut actor).is_some() {
+                    if sched.poll_once(&mut actor) {
                         break;
                     }
                 }
@@ -194,7 +194,7 @@ impl Actor<u8, (), ()> for ForwardActor {
         self.seen += 1;
         if let Some(next) = &self.next {
             next.send(Message::Data(byte.wrapping_add(1)))
-                .map_err(|_| HandlerError::Recoverable("downstream gone".into()))?;
+                .map_err(|_| HandlerError::new("downstream gone"))?;
         }
         Ok(())
     }
@@ -221,7 +221,7 @@ struct ForwardWiring {
 impl Wiring for ForwardWiring {
     type Out = Option<u8>;
     fn flush(&mut self, out: &mut Option<u8>) -> Flush {
-        send_port(out, &self.next, Delivery::Blocking)
+        send_port(out, &self.next)
     }
 }
 

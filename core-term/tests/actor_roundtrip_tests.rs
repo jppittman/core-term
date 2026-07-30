@@ -794,7 +794,7 @@ impl Actor<Vec<u8>, WriterControl, ()> for WriterProbe {
 
 fn drain_probe(rx: &mut ActorScheduler<Vec<u8>, WriterControl, ()>, probe: &mut WriterProbe) {
     for _ in 0..8 {
-        if rx.poll_once(probe).is_some() {
+        if rx.poll_once(probe) {
             break;
         }
     }
@@ -896,13 +896,8 @@ fn pty_writer_completes_on_handle_drop() {
     drop(tx);
 
     let mut probe = WriterProbe::default();
-    let phase = loop {
-        if let Some(phase) = rx.poll_once(&mut probe) {
-            break phase;
-        }
-    };
+    while !rx.poll_once(&mut probe) {}
 
-    assert_eq!(phase, actor_scheduler::Exit::Completed);
     assert_eq!(
         probe.received,
         vec![WriterEvent::Write(b"last words".to_vec())]
@@ -966,11 +961,7 @@ fn pty_writer_receives_from_multiple_producers() {
     h2.join().unwrap();
 
     let mut probe = WriterProbe::default();
-    loop {
-        if rx.poll_once(&mut probe).is_some() {
-            break;
-        }
-    }
+    while !rx.poll_once(&mut probe) {}
 
     let resize_count = probe
         .received

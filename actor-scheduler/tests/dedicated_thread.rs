@@ -6,9 +6,9 @@ use std::convert::Infallible;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use actor_scheduler::mealy::{Delivery, Flush, Node, Transducer, Wiring, send_port};
+use actor_scheduler::mealy::{Flush, Node, Transducer, Wiring, send_port};
 use actor_scheduler::spsc::{SpscSender, spsc_channel};
-use actor_scheduler::{ActorBuilder, ActorStatus, Exit, HandlerError, Host, Message, SystemStatus};
+use actor_scheduler::{ActorBuilder, ActorStatus, HandlerError, Host, Message, SystemStatus};
 
 // ────────────────────────────────────────────────────────────────────────────
 // A pure Transducer: same shape as mealy.rs's own `LaneLog` fixture, reused
@@ -31,7 +31,7 @@ impl Wiring for LaneLogWiring {
     type Out = LaneLogOut;
 
     fn flush(&mut self, out: &mut LaneLogOut) -> Flush {
-        send_port(&mut out.seen, &self.tx, Delivery::Blocking)
+        send_port(&mut out.seen, &self.tx)
     }
 }
 
@@ -104,8 +104,7 @@ fn priority_holds_on_a_dedicated_thread_fed_by_ordinary_handles() {
     );
 
     handle.send(Message::Shutdown).unwrap();
-    let exit = worker.join().expect("dedicated thread must not panic");
-    assert_eq!(exit, Exit::Completed);
+    worker.join().expect("dedicated thread must not panic");
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -131,7 +130,7 @@ impl Wiring for BridgeWiring {
     type Out = BridgeOut;
 
     fn flush(&mut self, out: &mut BridgeOut) -> Flush {
-        send_port(&mut out.word, &self.tx, Delivery::Blocking)
+        send_port(&mut out.word, &self.tx)
     }
 }
 
@@ -200,10 +199,9 @@ fn an_os_bridge_transducer_drains_through_step_os_and_parks_when_idle() {
     assert_eq!(got, vec![0, 1, 2, 3, 4]);
 
     handle.send(Message::Shutdown).unwrap();
-    let exit = worker
+    worker
         .join()
         .expect("dedicated thread must exit cleanly, not hang or panic");
-    assert_eq!(exit, Exit::Completed);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -223,7 +221,7 @@ fn the_same_transducer_runs_dedicated_or_hosted() {
 
     tx_d.try_send(()).unwrap();
     assert_eq!(
-        host.sweep().status,
+        host.sweep(),
         ActorStatus::Busy,
         "the hosted node had a data-lane message to run"
     );
@@ -235,7 +233,7 @@ fn the_same_transducer_runs_dedicated_or_hosted() {
 
     // Nothing left: a quiet host reports Idle, exactly like the dedicated thread reports Idle
     // to its own doorbell loop when there is nothing to do.
-    assert_eq!(host.sweep().status, ActorStatus::Idle);
+    assert_eq!(host.sweep(), ActorStatus::Idle);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -268,18 +266,18 @@ fn a_flooded_lane_does_not_starve_shutdown() {
     // until the flooder is stopped — `ActorHandle::wake` panics on a disconnected doorbell by
     // contract, so the flood must be stopped by flag, not by racing the teardown.
     let worker = std::thread::spawn(move || {
-        let exit = thread.run();
-        (exit, thread)
+        thread.run();
+        thread
     });
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_flag = stop.clone();
     let flooder = std::thread::spawn(move || {
         while !stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
-            // try_send: a full ring must not stall the flood — pressure, not delivery, is the
-            // point.
-            if flood_handle.try_send(Message::Data(())).is_err() {
-                // Full is expected mid-flood; keep pressing.
-            }
+            // send_port, the one public non-blocking path to this handle: a full ring must not
+            // stall the flood — pressure, not delivery, is the point. `Blocked` is expected
+            // mid-flood; keep pressing regardless of the outcome.
+            let mut port = Some(Message::Data(()));
+            send_port(&mut port, &flood_handle);
         }
     });
 
@@ -289,8 +287,9 @@ fn a_flooded_lane_does_not_starve_shutdown() {
         .send(Message::Shutdown)
         .expect("the doorbell must remain reachable during a flood");
 
-    let (exit, thread) = worker.join().expect("driver must not panic");
-    assert_eq!(exit, Exit::Completed, "shutdown observed despite the flood");
+    let thread = worker
+        .join()
+        .expect("driver must not panic, and must exit despite the flood");
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     flooder.join().expect("flooder exits on the stop flag");
@@ -319,8 +318,7 @@ fn step_os_gets_a_final_turn_after_the_last_handle_drops() {
     // Every handle is gone before the driver takes a single step.
     drop(handle);
 
-    let exit = thread.run();
-    assert_eq!(exit, Exit::Completed);
+    thread.run();
 
     let mut got = Vec::new();
     while let Ok(v) = rx_out.try_recv() {
@@ -421,16 +419,16 @@ fn a_blocking_step_os_is_interrupted_for_shutdown() {
     // The bridge is now blocked in recv() with nothing coming. Shutdown must interrupt it via
     // the wake handler — without one, this join would hang forever.
     handle.send(Message::Shutdown).unwrap();
-    let exit = worker.join().expect("driver must not panic");
-    assert_eq!(exit, Exit::Completed);
+    worker.join().expect("driver must not panic");
 }
 
-/// A gone wiring target can never heal, no lane can progress past the parked word (the
-/// outbox-first contract), and a dedicated thread has no supervisor to hand the problem to —
-/// so the driver fails loudly instead of spinning a core on retries that cannot succeed. The
-/// undelivered payload stays retained in the node for whoever holds it after `run` returns.
+/// A gone wiring target can never heal, and no lane can progress past the parked word (the
+/// outbox-first contract) — so the driver panics loudly instead of spinning a core on retries
+/// that cannot succeed. There is no supervisor to hand the problem to instead; fail fast, fail
+/// loudly.
 #[test]
-fn a_disconnected_wiring_target_fails_loudly_instead_of_spinning() {
+#[should_panic(expected = "wiring target disconnected")]
+fn a_disconnected_wiring_target_panics_instead_of_spinning() {
     let mut builder = ActorBuilder::<(), (), ()>::new(8, None);
     let handle = builder.add_producer();
     let (tx_seen, rx_seen) = spsc_channel::<&'static str>(8);
@@ -439,11 +437,7 @@ fn a_disconnected_wiring_target_fails_loudly_instead_of_spinning() {
     drop(rx_seen); // the downstream consumer dies before the first delivery
 
     handle.send(Message::Data(())).unwrap();
-    let exit = thread.run();
-    assert!(
-        matches!(exit, Exit::Failed(_)),
-        "a dead peer is a loud failure, not an infinite retry: {exit:?}"
-    );
+    thread.run();
 }
 
 /// Dead lanes are not completion while a `Waker` is still held somewhere: the waker is
@@ -486,8 +480,7 @@ fn an_idle_os_bridge_survives_while_a_waker_exists() {
     // Now nothing can ever wake it again — the doorbell disconnects, and that is completion.
     drop(tx_ext);
     drop(waker);
-    let exit = worker.join().expect("driver must not panic");
-    assert_eq!(exit, Exit::Completed);
+    worker.join().expect("driver must not panic");
 }
 
 /// The retention guarantee across lane completion: a `step_os` output that parks on a full
@@ -527,8 +520,7 @@ fn a_parked_final_word_survives_lane_completion() {
         );
     }
 
-    let exit = worker.join().expect("driver must not panic");
-    assert_eq!(exit, Exit::Completed, "completion only after delivery");
+    worker.join().expect("driver must not panic");
 }
 
 /// A `step_os` that yields a continuation and honestly reports itself `Idle` must still make
@@ -554,7 +546,7 @@ fn a_step_os_continuation_resumes_without_an_external_wake() {
         type Out = OsKickOut;
 
         fn flush(&mut self, out: &mut OsKickOut) -> Flush {
-            send_port(&mut out.word, &self.tx, Delivery::Blocking)
+            send_port(&mut out.word, &self.tx)
         }
     }
 
@@ -597,8 +589,7 @@ fn a_step_os_continuation_resumes_without_an_external_wake() {
     let mut thread = builder.build_node(OsKick { kicked: false }, OsKickWiring { tx: tx_out });
     drop(handle);
 
-    let exit = thread.run();
-    assert_eq!(exit, Exit::Completed);
+    thread.run();
     assert_eq!(
         rx_out.try_recv().unwrap(),
         70,

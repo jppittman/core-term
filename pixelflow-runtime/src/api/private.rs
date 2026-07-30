@@ -139,9 +139,6 @@ pub enum EngineControl {
     /// first. Boxed: the bundle is far larger than every other variant, and `Quit`/`DriverAck`
     /// are the hot ones.
     GreenReady(Box<GreenReadyBundle>),
-    /// A green node got stuck (design doc, `Host::sweep`'s `Supervision`). Logged for now;
-    /// policy is a later slice.
-    GreenStuck(actor_scheduler::host::Supervision),
     #[default]
     Quit,
     DriverAck,
