@@ -6,7 +6,7 @@ use std::convert::Infallible;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use actor_scheduler::mealy::{Delivery, Flush, Node, Transducer, Wiring, send_port};
+use actor_scheduler::mealy::{Flush, Node, Transducer, Wiring, send_port};
 use actor_scheduler::spsc::{SpscSender, spsc_channel};
 use actor_scheduler::{ActorBuilder, ActorStatus, HandlerError, Host, Message, SystemStatus};
 
@@ -31,7 +31,7 @@ impl Wiring for LaneLogWiring {
     type Out = LaneLogOut;
 
     fn flush(&mut self, out: &mut LaneLogOut) -> Flush {
-        send_port(&mut out.seen, &self.tx, Delivery::Blocking)
+        send_port(&mut out.seen, &self.tx)
     }
 }
 
@@ -130,7 +130,7 @@ impl Wiring for BridgeWiring {
     type Out = BridgeOut;
 
     fn flush(&mut self, out: &mut BridgeOut) -> Flush {
-        send_port(&mut out.word, &self.tx, Delivery::Blocking)
+        send_port(&mut out.word, &self.tx)
     }
 }
 
@@ -273,11 +273,11 @@ fn a_flooded_lane_does_not_starve_shutdown() {
     let stop_flag = stop.clone();
     let flooder = std::thread::spawn(move || {
         while !stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
-            // try_send: a full ring must not stall the flood — pressure, not delivery, is the
-            // point.
-            if flood_handle.try_send(Message::Data(())).is_err() {
-                // Full is expected mid-flood; keep pressing.
-            }
+            // send_port, the one public non-blocking path to this handle: a full ring must not
+            // stall the flood — pressure, not delivery, is the point. `Blocked` is expected
+            // mid-flood; keep pressing regardless of the outcome.
+            let mut port = Some(Message::Data(()));
+            send_port(&mut port, &flood_handle);
         }
     });
 
@@ -546,7 +546,7 @@ fn a_step_os_continuation_resumes_without_an_external_wake() {
         type Out = OsKickOut;
 
         fn flush(&mut self, out: &mut OsKickOut) -> Flush {
-            send_port(&mut out.word, &self.tx, Delivery::Blocking)
+            send_port(&mut out.word, &self.tx)
         }
     }
 

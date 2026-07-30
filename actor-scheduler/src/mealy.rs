@@ -143,7 +143,7 @@ pub trait Transducer {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Delivery
+// Sending a port
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Whether an output word was fully delivered.
@@ -182,58 +182,52 @@ pub trait Wiring {
     fn flush(&mut self, out: &mut Self::Out) -> Flush;
 }
 
-/// Whether a port's delivery may park its producer.
+/// A target a port can be delivered to: try once, hand the message back on refusal.
 ///
-/// The two edge kinds [`Topology`] knows about (§3.1): a cycle among blocking edges is a
-/// bootstrap error, but a droppable edge cannot deadlock and so may legally close one. This
-/// is the runtime counterpart, and it is also what the macro's `[drop]` port attribute
-/// compiles to — one enum, not an accreting family of `send_port`/`send_port_*` functions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Delivery {
-    /// Park the producer when the target is full. Propagates backpressure.
-    Blocking,
-    /// Discard when the target is full. Can never return [`Flush::Blocked`], which is what
-    /// makes it legal as the closing edge of a cycle.
-    ///
-    /// Use it for data that is only worth delivering if still current — "drop this frame if
-    /// the display is busy" — never for anything a consumer must not miss. Silence on a full
-    /// ring is the whole point, and also the whole risk.
-    Droppable,
+/// The scheduler owns send policy — a caller names a *target* (a lane's [`SpscSender`], an
+/// [`ActorHandle`](crate::ActorHandle), a [`GreenSender`](crate::host::GreenSender)), never a
+/// policy — so this is one trait implemented for all three rather than three `send_port`-shaped
+/// functions, one per target kind.
+pub trait PortTarget<T> {
+    /// Try once. Hand the message back on refusal — the target was full or gone.
+    fn try_deliver(&self, msg: T) -> Result<(), TrySendError<T>>;
 }
 
-/// Deliver one port according to `delivery`.
+impl<T> PortTarget<T> for SpscSender<T> {
+    fn try_deliver(&self, msg: T) -> Result<(), TrySendError<T>> {
+        self.try_send(msg)
+    }
+}
+
+/// Deliver one port. Every port parks — there is no shedding policy to choose.
 ///
 /// The building block every generated `Wiring::flush` is made of.
 ///
 /// Outcomes:
 /// - **Delivered**, or the port was empty → [`Flush::Done`].
-/// - **Target full**, [`Delivery::Droppable`] → the message is discarded, [`Flush::Done`].
-///   Silence on a full ring is the whole point of that delivery kind, and also its whole risk.
-/// - **Target full**, [`Delivery::Blocking`] → the message is put back in `port`,
-///   [`Flush::Blocked`]. Retry when the ring drains.
-/// - **Target gone** (either delivery kind) → the message is **put back in `port`**,
-///   [`Flush::Disconnected`]. It is deliberately *not* dropped: for a port carrying a moved
-///   resource, dropping here would destroy it with nobody having decided to, while the sender
-///   believed it was delivered. Blocking forever on a dead consumer would deadlock, so this
-///   reports rather than parks. The retained payload has nowhere left to go — [`Node`] panics on
-///   this outcome — but it stays inspectable, in a core dump if nowhere else, instead of vanishing
-///   with the panic.
-pub fn send_port<T>(port: &mut Option<T>, tx: &SpscSender<T>, delivery: Delivery) -> Flush {
+/// - **Target full** → the message is put back in `port`, [`Flush::Blocked`]. Retry when the
+///   ring drains.
+/// - **Target gone** → the message is **put back in `port`**, [`Flush::Disconnected`]. It is
+///   deliberately *not* dropped: for a port carrying a moved resource, dropping here would
+///   destroy it with nobody having decided to, while the sender believed it was delivered.
+///   Blocking forever on a dead consumer would deadlock, so this reports rather than parks. The
+///   retained payload has nowhere left to go — [`Node`] panics on this outcome — but it stays
+///   inspectable, in a core dump if nowhere else, instead of vanishing with the panic.
+pub fn send_port<T, Tgt: PortTarget<T>>(port: &mut Option<T>, target: &Tgt) -> Flush {
     let Some(msg) = port.take() else {
         return Flush::Done;
     };
-    match (tx.try_send(msg), delivery) {
-        (Ok(()), _) => Flush::Done,
-        // The target is gone. Put the message back rather than dropping it: for a port carrying
-        // a moved resource, dropping here destroys it with nobody having decided to.
-        (Err(TrySendError::Disconnected(msg)), _) => {
-            *port = Some(msg);
-            Flush::Disconnected
-        }
-        (Err(TrySendError::Full(_)), Delivery::Droppable) => Flush::Done,
-        (Err(TrySendError::Full(msg)), Delivery::Blocking) => {
+    match target.try_deliver(msg) {
+        Ok(()) => Flush::Done,
+        Err(TrySendError::Full(msg)) => {
             *port = Some(msg);
             Flush::Blocked
+        }
+        // The target is gone. Put the message back rather than dropping it: for a port carrying
+        // a moved resource, dropping here destroys it with nobody having decided to.
+        Err(TrySendError::Disconnected(msg)) => {
+            *port = Some(msg);
+            Flush::Disconnected
         }
     }
 }
@@ -754,13 +748,15 @@ where
 // Credit: bounding a request without a new port kind
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Bounds how many messages a request edge may have outstanding, without needing a third
-/// [`Delivery`] kind.
+/// Bounds how many messages a request edge may have outstanding, without needing a droppable
+/// port kind.
 ///
 /// A request/response pair — send a request, later receive its reply — is a cycle. [`Topology`]
-/// only accepts a cycle closed by an edge that structurally cannot block: a continuation, or a
-/// [`Delivery::Droppable`] port. A credit-bounded request *is* a droppable port; `Credit` is the
-/// sender-side discipline that keeps the drop from ever actually happening.
+/// only accepts a cycle closed by an edge that structurally cannot block: a continuation. A
+/// blocking reply port is safe to close that cycle with anyway, *if* the ring it targets can be
+/// proven never to fill — which is exactly what `Credit` gives: the sender-side discipline that
+/// keeps the ring below capacity, so the port's park is unreachable rather than avoided by
+/// shedding.
 ///
 /// The requester holds one `Credit` per edge, in its own `self` — never shared, never atomic,
 /// touched only during that actor's own step:
@@ -771,12 +767,12 @@ where
 ///   whatever lane the reply arrives on.
 ///
 /// As long as the constructor's `max` does not exceed the reply ring's capacity, and every
-/// request is gated by `try_consume`, the physical ring can never fill from this edge — the
-/// `[drop]` port is a backstop for a bug, not a path the well-behaved system ever takes. This
-/// replaces a hand-rolled global atomic token bucket (the kind a request/response actor pair
-/// reaches for today) with per-edge, non-atomic, typed state — cheaper, because nothing here is
-/// shared across threads, and checked, because a `Credit` that runs dry stops the sender from
-/// even trying rather than trusting a convention.
+/// request is gated by `try_consume`, the physical ring can never fill from this edge — a park
+/// on that edge would be a backstop for a bug, not a path the well-behaved system ever takes.
+/// This replaces a hand-rolled global atomic token bucket (the kind a request/response actor
+/// pair reaches for today) with per-edge, non-atomic, typed state — cheaper, because nothing
+/// here is shared across threads, and checked, because a `Credit` that runs dry stops the
+/// sender from even trying rather than trusting a convention.
 #[derive(Debug, Clone, Copy)]
 pub struct Credit {
     available: u32,
@@ -864,22 +860,16 @@ impl std::error::Error for Cycle {}
 /// > **Blocking edges must form a DAG. A cycle may only be closed by an edge that cannot
 /// > block.**
 ///
-/// Two such edges exist:
-/// - the **continuation** (a self-edge), which has a dedicated one-message slot and so is
-///   structurally incapable of blocking — see [`Node::poll`];
-/// - a **droppable** edge, which discards on a full target instead of parking (declared with
-///   [`Topology::droppable_edge`]) — the "drop this frame if the display is busy" policy.
+/// One such edge exists: the **continuation** (a self-edge), which has a dedicated
+/// one-message slot and so is structurally incapable of blocking — see [`Node::poll`].
 ///
-/// Request/response between two actors is therefore expressible: the reply edge is either
-/// droppable or credit-bounded (the requester never has more requests outstanding than the
-/// reply ring holds, so the reply can never find it full).
+/// Request/response between two actors is therefore expressible only when the reply edge is
+/// credit-bounded: the requester never has more requests outstanding than the reply ring
+/// holds, so a blocking reply port can never actually find it full (§3.2 — see [`Credit`]).
 #[derive(Debug, Default)]
 pub struct Topology {
     names: Vec<&'static str>,
-    /// Blocking edges only. Droppable edges are recorded for diagnostics but do not
-    /// constrain the order, because they cannot park a producer.
     blocking: Vec<(usize, usize)>,
-    droppable: Vec<(usize, usize)>,
 }
 
 impl Topology {
@@ -910,14 +900,6 @@ impl Topology {
             self.names[from.0]
         );
         self.blocking.push((from.0, to.0));
-    }
-
-    /// Declare an edge that discards on a full target instead of parking.
-    ///
-    /// Droppable edges are exempt from the DAG rule: they cannot park a producer, so they
-    /// cannot participate in a deadlock. This is how a cycle is legally closed.
-    pub fn droppable_edge(&mut self, from: ActorId, to: ActorId) {
-        self.droppable.push((from.0, to.0));
     }
 
     /// Check the blocking edges for cycles, and return a safe polling order.
@@ -1052,8 +1034,8 @@ mod tests {
 
         fn flush(&mut self, out: &mut AppOut) -> Flush {
             all([
-                send_port(&mut out.engine, &self.engine, Delivery::Blocking),
-                send_port(&mut out.write, &self.write, Delivery::Blocking),
+                send_port(&mut out.engine, &self.engine),
+                send_port(&mut out.write, &self.write),
             ])
         }
     }
@@ -1228,45 +1210,22 @@ mod tests {
     }
 
     #[test]
-    fn a_droppable_port_never_blocks_and_never_keeps_a_message() {
-        // The runtime half of `Topology::droppable_edge`: because it cannot park its
-        // producer, it cannot take part in a deadlock, which is what lets it close a cycle.
-        let (tx, mut rx) = spsc_channel::<Render>(2);
-
-        let mut delivered = 0;
-        for i in 0..32u8 {
-            let mut port = Some(Render(i));
-            assert_eq!(send_port(&mut port, &tx, Delivery::Droppable), Flush::Done);
-            assert!(port.is_none(), "a droppable port always clears");
-            if rx.try_recv().is_ok() {
-                delivered += 1;
-            }
-        }
-        assert!(delivered > 0, "some messages must actually get through");
-    }
-
-    #[test]
     fn a_port_to_a_dead_target_reports_it_and_keeps_the_payload() {
         // This previously asserted `Flush::Done` with the payload consumed — a dead peer was
         // indistinguishable from a successful send. For a port carrying a moved resource that
         // silently destroyed it while the sender believed it had been delivered. Retention is
         // the point of the variant; the caller can still retry, hand off, or shut down with the
         // value in hand.
-        for delivery in [Delivery::Droppable, Delivery::Blocking] {
-            let (tx, rx) = spsc_channel::<Render>(4);
-            drop(rx);
+        let (tx, rx) = spsc_channel::<Render>(4);
+        drop(rx);
 
-            let mut port = Some(Render(1));
-            assert_eq!(
-                send_port(&mut port, &tx, delivery),
-                Flush::Disconnected,
-                "a gone target is reported, not silently swallowed ({delivery:?})"
-            );
-            assert!(
-                port.is_some(),
-                "and the payload stays recoverable ({delivery:?})"
-            );
-        }
+        let mut port = Some(Render(1));
+        assert_eq!(
+            send_port(&mut port, &tx),
+            Flush::Disconnected,
+            "a gone target is reported, not silently swallowed"
+        );
+        assert!(port.is_some(), "and the payload stays recoverable");
     }
 
     #[test]
@@ -1318,11 +1277,11 @@ mod tests {
     }
 
     #[test]
-    fn credit_gating_keeps_a_droppable_reply_edge_from_ever_dropping() {
-        // The property that makes a droppable port the right closer for a credit-bounded
-        // cycle: as long as every send is gated by `try_consume` and max <= ring capacity,
-        // the ring can never fill, so the drop path this test's sibling exercises is never
-        // actually taken.
+    fn credit_gating_keeps_a_blocking_reply_edge_from_ever_parking() {
+        // The property that makes a blocking port safe to close a credit-bounded cycle with:
+        // as long as every send is gated by `try_consume` and max <= ring capacity, the ring
+        // can never fill, so the park path this test's sibling exercises is never actually
+        // reachable — safe because the park is unreachable, not because the port sheds.
         const RING_CAPACITY: u32 = 4;
         let (tx, mut rx) = spsc_channel::<Render>(RING_CAPACITY as usize);
         let mut credit = Credit::new(RING_CAPACITY);
@@ -1334,9 +1293,9 @@ mod tests {
             }
             let mut port = Some(Render(i));
             assert_eq!(
-                send_port(&mut port, &tx, Delivery::Droppable),
+                send_port(&mut port, &tx),
                 Flush::Done,
-                "gated by credit, so the ring never fills and nothing is ever dropped"
+                "gated by credit, so the ring never fills and the port never parks"
             );
             assert!(port.is_none());
             sent += 1;
@@ -1349,27 +1308,27 @@ mod tests {
         assert_eq!(
             std::iter::from_fn(|| rx.try_recv().ok()).count(),
             RING_CAPACITY as usize,
-            "every gated message actually arrived — the backstop was never needed"
+            "every gated message actually arrived — the park was never reachable"
         );
     }
 
     #[test]
-    fn without_credit_gating_the_same_droppable_port_silently_drops_instead_of_deadlocking() {
-        // The contrast case: an ungated sender that ignores the ring's real capacity does not
-        // hang the way a Blocking port would — it drops. That is the backstop `Credit` exists
-        // to make unreachable in the well-behaved case above.
-        let (tx, mut rx) = spsc_channel::<Render>(4);
+    fn without_credit_gating_the_same_port_parks_instead_of_deadlocking() {
+        // The contrast case: an ungated sender that ignores the ring's real capacity finds the
+        // port `Blocked` once the ring fills. That reachable park is exactly what `Credit`
+        // exists to make unreachable in the well-behaved case above.
+        let (tx, _rx) = spsc_channel::<Render>(4);
 
+        let mut parked = false;
         for i in 0..64u8 {
             let mut port = Some(Render(i));
-            assert_eq!(send_port(&mut port, &tx, Delivery::Droppable), Flush::Done);
+            if send_port(&mut port, &tx) == Flush::Blocked {
+                assert!(port.is_some(), "a blocked port retains its message");
+                parked = true;
+                break;
+            }
         }
-
-        let delivered = std::iter::from_fn(|| rx.try_recv().ok()).count();
-        assert!(
-            delivered < 64,
-            "an ungated sender must have overrun the ring and dropped some messages"
-        );
+        assert!(parked, "an ungated sender must have overrun the ring");
     }
 
     #[test]
@@ -1401,7 +1360,7 @@ mod tests {
         impl Wiring for BoomWiring {
             type Out = Option<u8>;
             fn flush(&mut self, out: &mut Option<u8>) -> Flush {
-                send_port(out, &self.out, Delivery::Blocking)
+                send_port(out, &self.out)
             }
         }
         impl Transducer for Boom {
@@ -1442,7 +1401,7 @@ mod tests {
         type Out = BridgeOut;
 
         fn flush(&mut self, out: &mut BridgeOut) -> Flush {
-            send_port(&mut out.word, &self.out, Delivery::Blocking)
+            send_port(&mut out.word, &self.out)
         }
     }
 
@@ -1957,7 +1916,7 @@ mod tests {
                 out.again.is_none(),
                 "continuation must not reach the wiring"
             );
-            send_port(&mut out.done, &self.done, Delivery::Blocking)
+            send_port(&mut out.done, &self.done)
         }
     }
 
@@ -2372,21 +2331,6 @@ mod tests {
         assert!(
             cycle.to_string().contains("app"),
             "the message must name the cycle, got {cycle}"
-        );
-    }
-
-    #[test]
-    fn a_droppable_reply_edge_makes_request_response_legal() {
-        // The escape hatch: a cycle may be closed by an edge that cannot park its producer.
-        let mut topo = Topology::new();
-        let app = topo.actor("app");
-        let compiler = topo.actor("compiler");
-        topo.blocking_edge(app, compiler);
-        topo.droppable_edge(compiler, app);
-
-        assert!(
-            topo.validate().is_ok(),
-            "a non-blocking reply edge cannot deadlock, so it does not constrain the order"
         );
     }
 

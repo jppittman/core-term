@@ -170,17 +170,43 @@ violates the tier's defining constraint.
 
 ---
 
-## 6. Open question: should the timeout panic in the crate?
+## 6. Where the panic happens: the crate diagnoses, the caller crashes
 
-§2.3 says a blown ladder means the peer is dead, and §4 says dead means panic. But
-`send_with_backoff` returns `SendError::Timeout` and leaves the panic to the caller,
-which every production caller then performs — identically. That is caller-chosen policy
-for a condition the crate has already diagnosed, and §3's rule says the crate owns send
+§2.3 says a blown ladder means the peer is dead, and §4 says dead means panic — so why
+does `send_with_backoff` return `SendError::Timeout` and leave the panic to a caller who
+then performs it identically every time? It looks like caller-chosen policy for a
+condition the crate already diagnosed, in tension with §3's rule that the crate owns send
 policy.
 
-Moving the panic inside would leave `SendError` with only `Disconnected`, which is a
-genuinely different case: a disconnected peer during a shutdown cascade is ordinary, not
-a failure. Unresolved, and deliberately recorded rather than quietly settled.
+It is not, and the distinction is worth stating because it decides where every future
+failure belongs.
+
+**A library does not own the process it is linked into.** Ending it is an application's
+decision, made with knowledge the crate does not have: whether this is a terminal a user
+is typing into, a test asserting the failure, a benchmark, or a tool that would rather
+report and exit cleanly. `actor-scheduler` diagnoses *"this peer is not running"* — that
+is the thing it is uniquely positioned to know. What that is worth dying over is not.
+Panicking across a crate boundary on an application's behalf is presumptuous, and being
+right about the diagnosis does not make it less so.
+
+The caller also crashes *better*. The crate can say a send timed out; the caller can say
+which actor, carrying what, at what point in which cascade. §4's whole argument is that
+loud failure pays for itself, and the loudest available failure is the one raised where
+the context is.
+
+So the rule, which also reconciles this with the panics the runtime *does* raise
+internally (`HandlerError`, and a flush that finds its target gone):
+
+> **Panic where there is no caller to tell.** At an API surface someone invokes directly,
+> return — they are holding the `Result` and have the context. Deep inside machinery the
+> caller does not drive, where the only alternative is manufacturing a value nobody can
+> act on and threading it back out through code that has no opinion about it, panic.
+
+`Node::poll` is the second case: it is driven by the scheduler, several frames below
+anyone who called anything, and its `Step::Disconnected` variant was exactly such a
+manufactured value — carried outward, matched on in three places, and acted on nowhere.
+Deleting it in favour of a panic removed code. `send` is the first case: the caller is
+right there, and returning costs nothing.
 
 ---
 

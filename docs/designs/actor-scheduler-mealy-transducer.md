@@ -148,22 +148,29 @@ cycle is rejected at bootstrap by a topological sort — no runtime cost, no det
 
 > **Blocking edges must form a DAG. A cycle may only be closed by an edge that cannot block.**
 
-Two edges cannot block, and so are exempt:
-- the **continuation** (§2.3), which has a dedicated one-message slot;
-- a **droppable** edge, which discards on a full target instead of parking — the "drop this
-  frame if the display is busy" policy, which belongs on the Data lane anyway.
+**Update, post-shedding-removal:** one edge cannot block, and so is exempt — the **continuation**
+(§2.3), which has a dedicated one-message slot. A droppable delivery kind used to be the second
+exemption; it had zero production users, its own escape hatch (`Delivery::Droppable`/`[drop]`)
+was never reached for by real code, and the one place the runtime actually shed a message did it
+by hand-rolling `try_send` outside this mechanism entirely rather than declaring a `[drop]` port
+— the abstraction's one real-world instance was a bypass of it. It is deleted; every port parks.
 
-Request/response therefore remains expressible: the reply edge is droppable, or credit-bounded
-(the requester never has more outstanding requests than the reply ring holds, so the reply can
-never find it full). The validator returns the topological order as a by-product, which is also
-the right polling order — upstream first drains a pipeline in one sweep instead of trickling one
-message per pass.
+Request/response therefore remains expressible only when the reply edge is credit-bounded: the
+requester never has more outstanding requests than the reply ring holds, so a blocking reply port
+can never actually find it full (§3.2). The validator returns the topological order as a
+by-product, which is also the right polling order — upstream first drains a pipeline in one sweep
+instead of trickling one message per pass.
 
 ### 3.2 Credit-bounded edges (resolves §9.3)
 
-A credit-bounded request/response pair does not need a third [`Delivery`](../../actor-scheduler/src/mealy.rs)
-kind. It **is** a droppable port — `Credit` is the sender-side discipline that keeps the drop
-from ever actually firing:
+**Update, post-shedding-removal:** the claim below that a credit-bounded request/response pair
+*is* a droppable port no longer holds as stated, because there is no droppable port left to be.
+The surviving argument is narrower and still correct: `Credit` bounds outstanding requests below
+the reply ring's capacity, so the edge **never actually fills** — a blocking port on that edge is
+safe because the park is unreachable, not because the port sheds. `Topology`'s DAG check cannot
+see that (it only sees "blocking or not"), so a credit-bounded edge is safe to declare
+`blocking_edge` in practice but is not, itself, verified acyclic by the checker if it closes a
+cycle — the proof that it cannot actually park is `Credit`'s invariant, not the graph's.
 
 ```rust
 struct Credit { available: u32, max: u32 }
@@ -173,12 +180,12 @@ struct Credit { available: u32, max: u32 }
 
 The requester holds one `Credit` per edge in its own `self` — never shared, never atomic,
 touched only during that actor's own step. As long as `max` does not exceed the reply ring's
-capacity, and every request is gated by `try_consume`, the ring can never fill from this edge:
-the `[drop]` port is a backstop for a bug, not a path the well-behaved system ever takes.
+capacity, and every request is gated by `try_consume`, the ring can never fill from this edge: a
+park on it would be a backstop for a bug, not a path the well-behaved system ever takes.
 
 This is a straight replacement for a hand-rolled global atomic token bucket — the shape a
 request/response actor pair reaches for today (§9.1) — with per-edge, non-atomic, typed state.
-No new `Topology` primitive, no new port kind: `Credit` plus the `Delivery` that already existed.
+No new `Topology` primitive, no new port kind: `Credit` plus the one delivery kind that exists.
 
 ### 3.3 Waking
 
@@ -321,8 +328,8 @@ tests over transition tables.
 | `Host`: an `Actor` whose `park` sweeps owned green `Node`s, `Busy`/`Idle` driving the thread | `actor-scheduler/src/host.rs` |
 | `Waker` + `GreenSender`/`green_channel`: push-then-wake, so a green actor can be fed from another thread | `actor-scheduler/src/lib.rs`, `host.rs` |
 | `ports!` generating the output word + wiring + flush from a port declaration | `actor-scheduler-macros/src/lib.rs` |
-| `Delivery` (`Blocking`/`Droppable`) as a `send_port` parameter — the runtime half of a droppable edge | `actor-scheduler/src/mealy.rs` |
-| `Credit`: sender-side budget that keeps a droppable request/response edge from ever actually dropping | `actor-scheduler/src/mealy.rs` |
+| `PortTarget`: one trait `send_port` uses for all three port target kinds (`SpscSender`, `ActorHandle`, `GreenSender`) — deleted `Delivery` (`Blocking`/`Droppable`); every port parks | `actor-scheduler/src/mealy.rs` |
+| `Credit`: sender-side budget that keeps a credit-bounded request/response edge's blocking reply port from ever actually parking | `actor-scheduler/src/mealy.rs` |
 | `Transducer` gains `Control`/`Management`/`Data` + `step_control`/`step_management` (defaulted); `Node` gains three lanes (`Lanes`, `NoLane`, `Slot` cycle) reusing `SchedulerParams` | `actor-scheduler/src/mealy.rs` |
 
 ### 7.1 Benchmarking
@@ -342,17 +349,21 @@ port omitted from a hand-written `flush` is a message that vanishes with no erro
 ```rust
 ports! {
     App {
-        engine: Render,        // blocking: parks the actor when full
-        write: Echo [drop],    // droppable: discards when full, never parks
+        engine: Render,        // parks the actor when full — the only delivery kind
+        write: Echo,
         again: u32 [self],     // continuation: goes to the slot, not the wiring
     }
 }
 ```
 
-The port kinds are exactly the three delivery disciplines §3.1 needs, so the DAG rule becomes
-something an actor *declares* rather than something a reviewer has to notice. A `[self]` port
-gets **no wiring field at all** — a continuation cannot be attached to a queue even by
-mistake, and the generated `flush` `debug_assert!`s that the scheduler lifted it first.
+**Update, post-shedding-removal:** `[drop]` is gone. It had zero production users, and the
+`ports!` port kinds it named (`Blocking`/`Droppable`/`self`) are now just `Blocking`/`self` — the
+two delivery disciplines §3.1 now recognizes. `[drop]` in a port declaration is a named
+compile-time panic ("droppable ports are gone; every port parks") rather than silently accepted
+or a confusing parse error, so a stale declaration from before this change fails loudly at the
+call site instead of quietly compiling into something else. A `[self]` port gets **no wiring
+field at all** — a continuation cannot be attached to a queue even by mistake, and the generated
+`flush` `debug_assert!`s that the scheduler lifted it first.
 
 More than one `[self]` port is a compile-time panic, because the continuation slot holds
 exactly one message.
@@ -442,26 +453,38 @@ This isn't hypothetical: `vsync_actor.rs:20-22` is a **global atomic token bucke
 before a tick and incremented on frame completion — an unenforced, hand-rolled instance of
 exactly the credit-bounded edge §3.2 formalizes. `PendingRender.stale` (`engine_troupe.rs:37-
 39,129-152`) is a hand-written droppable policy: discard a render superseded by a resize. Both
-are the runtime already reaching for what `Credit` and `Delivery::Droppable` now give for free —
-this design isn't proposing new machinery so much as typing and checking machinery that already
-exists informally.
+are the runtime already reaching for what `Credit` and a droppable delivery kind would have given
+for free — this design isn't proposing new machinery so much as typing and checking machinery
+that already exists informally. (The droppable kind itself did not survive contact with
+production, though — see §3.1/§9.2: the runtime's one real shedding instance ended up bypassing
+it rather than adopting it.)
 
-### 9.2 Dropping is only safe for recoverable loss — an audit, not a rule
+### 9.2 Dropping is only safe for recoverable loss — an audit, not a rule (superseded)
 
-`[drop]` is safe only for data whose loss the next message can recover from. In the current
-flow: vsync ticks themselves and a `RenderComplete` for an already-`stale` render are candidates.
-`PresentComplete` and a non-stale `RenderComplete` must never be `[drop]` — the former is the
-only path the `Window` buffer returns on (drop it and the ping-pong buffer is gone, forever,
-silently); the latter clears `pending_render` (drop it and the engine hangs waiting for a
-response that was discarded). The type system cannot tell "droppable frame" from "the only copy
-of this buffer" apart — that choice is a per-edge human decision this design does not, and
-should not try to, make automatically.
+**Update, post-shedding-removal:** `[drop]` is gone, so the answer to "which edges may drop" is
+now *none* — every port parks. This section is kept for the audit trail (the reasoning below is
+why shedding was never extended past the one real instance, and why that instance turned out to
+bypass the mechanism rather than use it), not as live guidance for a delivery kind that no longer
+exists.
+
+`[drop]` was safe only for data whose loss the next message could recover from. In the audited
+flow: vsync ticks themselves and a `RenderComplete` for an already-`stale` render were the
+candidates. `PresentComplete` and a non-stale `RenderComplete` were never safe to `[drop]` — the
+former is the only path the `Window` buffer returns on (drop it and the ping-pong buffer is gone,
+forever, silently); the latter clears `pending_render` (drop it and the engine hangs waiting for
+a response that was discarded). The type system could not tell "droppable frame" from "the only
+copy of this buffer" apart, and that per-edge human judgment call turned out to be exactly the
+gap: the one place production actually shed a message (the coordinator's FPS telemetry port) did
+so by hand-rolling `try_send` outside `Delivery` entirely, not by declaring `[drop]` — an
+abstraction whose one real-world instance bypasses it is not earning its keep, which is the
+subtraction §3.1/§7.2 record.
 
 ### 9.3 Credit-bounded edges: resolved
 
 Was open (§10 below, formerly here): does the topology need a third edge kind for request/
-response? No — see §3.2. `Credit` plus the existing `Delivery::Droppable` is sufficient; no new
-`Topology` primitive was needed.
+response? No — see §3.2. `Credit` alone is sufficient — no new `Topology` primitive, and (after
+shedding's removal, §3.1) no droppable delivery kind either: a credit-bounded reply edge is a
+plain blocking port whose park is provably unreachable.
 
 ### 9.4 What the audit reassures rather than worries about
 

@@ -18,11 +18,11 @@ use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{RenderedResponse, VsyncCommand, VsyncCore, VsyncManagement, VsyncWiring};
 use actor_scheduler::actors::{Schedule, Timer};
 use actor_scheduler::host::{GreenThread, Host};
-use actor_scheduler::mealy::{Lanes, NoLane, Node, Transducer};
+use actor_scheduler::mealy::{send_port, Flush, Lanes, NoLane, Node, Transducer};
 use actor_scheduler::{
     green_channel, Actor, ActorBuilder, ActorHandle, ActorScheduler, ActorStatus, ActorTypes,
     GreenSender, HandlerError, HandlerResult, Message, SchedulerParams, SendError, SystemStatus,
-    TroupeActor, TrySendError,
+    TroupeActor,
 };
 use pixelflow_graphics::render::rasterizer::{RasterizerActor, RasterizerHandle, RenderResponse};
 use std::convert::Infallible;
@@ -158,9 +158,10 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
 /// on `response_rx.recv()` *is* the actor, the same way `PtyReader::handle_os` blocking on
 /// `epoll_wait` is that actor's entire job.
 ///
-/// The forward to `coordinator` uses [`GreenSender::send`], not `try_send`: this is a handler
-/// pushing into another actor's inbox, not a `Wiring::flush`, so the bounded-backoff-then-loud-
-/// timeout posture is the right one — `try_send` is reserved for flush (see its doc).
+/// The forward to `coordinator` uses [`GreenSender::send`], not the scheduler's port sender:
+/// this is a handler pushing into another actor's inbox, not a `Wiring::flush`, so the
+/// bounded-backoff-then-loud-timeout posture is the right one — `mealy::send_port` is reserved
+/// for flush (see its doc).
 ///
 /// The scheduler only calls `handle_os` after the doorbell has woken at least once, so — same
 /// as `PtyReader` waiting for its first `Bind` — this actor needs one doorbell ring to start its
@@ -284,7 +285,7 @@ impl EngineHandler {
     /// backpressure, and the policy for that belongs to the scheduler, not here:
     /// [`GreenSender::send`] blocks with the same bounded backoff as `ActorHandle::send`, then
     /// fails with `Timeout` if the host stays unresponsive past the window. The wait cannot
-    /// deadlock — the green side never *blocks* toward the engine (its wirings `try_send` and
+    /// deadlock — the green side never *blocks* toward the engine (its wirings `send_port` and
     /// park), so the host is always live and draining while this thread waits. And the timeout
     /// is not tolerated: a wedged green host is a broken runtime, and per the fail-fast mantra
     /// the answer is a crash that says so, not quiet degradation.
@@ -554,11 +555,12 @@ impl Troupe {
         // Built here, on the calling thread, then moved into the green-host thread below —
         // `Timer` is `Send`, so this doesn't need to happen on the thread that owns it.
         let clock = Timer::spawn("vsync-clock", Schedule::Every(tick_interval), move || {
-            match tick_tx.try_send(VsyncManagement::Tick) {
-                Ok(()) => ControlFlow::Continue(()),
+            let mut port = Some(VsyncManagement::Tick);
+            match send_port(&mut port, &tick_tx) {
+                Flush::Done => ControlFlow::Continue(()),
                 // A queued tick is as good as this one.
-                Err(TrySendError::Full(_)) => ControlFlow::Continue(()),
-                Err(TrySendError::Disconnected(_)) => ControlFlow::Break(()),
+                Flush::Blocked => ControlFlow::Continue(()),
+                Flush::Disconnected => ControlFlow::Break(()),
             }
         });
 
@@ -763,15 +765,21 @@ mod tests {
         ));
     }
 
-    /// Fill a rig's coordinator ring to the brim with advance nudges, via the raw `try_send` —
-    /// the engine relay itself blocks on Full, so it can never be used to *reach* Full.
+    /// Fill a rig's coordinator ring to the brim with advance nudges, via `send_port` (the
+    /// scheduler's own non-blocking port sender) — the engine relay itself blocks on Full, so
+    /// it can never be used to *reach* Full.
     fn fill_coordinator_ring(rig: &Rig) {
         let tx = rig
             .engine
             .coordinator
             .as_ref()
             .expect("rig always wires a coordinator");
-        while tx.try_send(CoordinatorData::Advance).is_ok() {}
+        loop {
+            let mut port = Some(CoordinatorData::Advance);
+            if send_port(&mut port, tx) != Flush::Done {
+                break;
+            }
+        }
     }
 
     /// The overload case review flagged on #944: unsolicited app submissions are not bounded by

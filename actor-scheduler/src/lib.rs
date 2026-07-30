@@ -842,25 +842,27 @@ impl<D, C, M> ActorHandle<D, C, M> {
         Ok(())
     }
 
-    /// Non-blocking send: the runtime half of a droppable/credit-bounded edge (design doc
-    /// §3.2). Tries the message's lane exactly once — no spin, no backoff — then rings the
-    /// doorbell on success via the same [`Self::wake`] path [`Self::send`] uses. On `Full` or
-    /// `Disconnected` the message is handed back inside the error, unsent; the caller decides
-    /// whether that means drop, park, or panic.
+    /// Non-blocking send: the mechanism `mealy::send_port` uses to deliver a port addressed to
+    /// this handle (design doc §3.2). Tries the message's lane exactly once — no spin, no
+    /// backoff — then rings the doorbell on success via the same [`Self::wake`] path
+    /// [`Self::send`] uses. On `Full` or `Disconnected` the message is handed back inside the
+    /// error, unsent.
     ///
-    /// **For `Wiring::flush` only.** Flush runs inside `Node::poll` inside a `Host::sweep`, on a
-    /// thread shared by every green actor that host owns — blocking there freezes all of them,
-    /// which is why a green actor may not block at all. This is the `ActorHandle` analogue of
-    /// `send_port`, which every wiring already uses: try once, put the payload back on refusal,
-    /// let the parked outbox retry later. Anywhere else — a handler pushing into another
-    /// actor's inbox — use [`Self::send`] instead: its bounded backoff stops only the caller,
-    /// and a loud timeout beats a silently dropped or spun-on message.
+    /// `pub(crate)`, not public: **the scheduler owns send policy, a caller names a target.**
+    /// `mealy::send_port` (via [`mealy::PortTarget`](crate::mealy::PortTarget)) is the one public
+    /// path to this handle from a `Wiring::flush` — it is what parks the payload on refusal
+    /// rather than leaving the choice (drop, park, panic) to whoever called `try_send`. Flush
+    /// runs inside `Node::poll` inside a `Host::sweep`, on a thread shared by every green actor
+    /// that host owns — blocking there freezes all of them, which is why a green actor may not
+    /// block at all and this cannot be [`Self::send`]. A handler pushing into another actor's
+    /// inbox from outside a flush should reach for [`Self::send`] instead: its bounded backoff
+    /// stops only the caller, and a loud timeout beats a silently dropped or spun-on message.
     ///
     /// # Errors
     /// Returns [`TrySendError::Full`] if the target lane's ring is full, or
     /// [`TrySendError::Disconnected`] if the receiver is gone. Either way the message comes
     /// back rewrapped in its original [`Message`] variant.
-    pub fn try_send<T: Into<Message<D, C, M>>>(
+    pub(crate) fn try_send<T: Into<Message<D, C, M>>>(
         &self,
         msg: T,
     ) -> Result<(), spsc::TrySendError<Message<D, C, M>>> {
@@ -934,6 +936,19 @@ impl<D, C, M> ActorHandle<D, C, M> {
                 panic!("Doorbell receiver disconnected - scheduler dropped unexpectedly");
             }
         }
+    }
+}
+
+/// The port sender's view of an `ActorHandle`: a `Wiring::flush` builds the `Message` itself
+/// (it already knows which lane a port belongs on) and hands it to `mealy::send_port`, rather
+/// than this crate reconstructing an arbitrary port type from a `Message` on the retry path —
+/// see `mealy::send_port`'s doc for why that direction of conversion is the one worth avoiding.
+impl<D, C, M> mealy::PortTarget<Message<D, C, M>> for ActorHandle<D, C, M> {
+    fn try_deliver(
+        &self,
+        msg: Message<D, C, M>,
+    ) -> Result<(), spsc::TrySendError<Message<D, C, M>>> {
+        self.try_send(msg)
     }
 }
 

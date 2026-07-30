@@ -225,21 +225,31 @@ impl<T> GreenSender<T> {
 
     /// Deliver a message to the green actor and wake its host.
     ///
-    /// **For `Wiring::flush` only** — the green analogue of [`ActorHandle::try_send`]
-    /// (`crate::ActorHandle`): flush runs inside a green actor's own step, which may not block,
-    /// so this is what lets a wiring try once and put the payload back on refusal. A handler
-    /// pushing into another green actor's inbox from outside a flush should reach for
-    /// [`Self::send`] instead, whose bounded backoff and loud timeout are the wanted posture
-    /// everywhere else.
+    /// `pub(crate)`, not public: **the scheduler owns send policy, a caller names a target.**
+    /// `mealy::send_port` (via [`mealy::PortTarget`](crate::mealy::PortTarget)) is the one public
+    /// path to a `GreenSender` from a `Wiring::flush` — it is what parks the payload on refusal
+    /// rather than leaving the choice to whoever called `try_send` directly. Flush runs inside a
+    /// green actor's own step, which may not block, so this try-once-and-put-back behavior is
+    /// exactly what a flush needs and nothing else should reach for: a handler pushing into
+    /// another green actor's inbox from outside a flush should use [`Self::send`] instead, whose
+    /// bounded backoff and loud timeout are the wanted posture everywhere else.
     ///
     /// # Errors
     ///
     /// Returns [`TrySendError::Full`] if the actor's inbox is full — the caller's
     /// backpressure signal — or [`TrySendError::Disconnected`] if the actor is gone.
-    pub fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
+    pub(crate) fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
         self.tx.try_send(msg)?;
         self.waker.wake();
         Ok(())
+    }
+}
+
+/// The port sender's view of a `GreenSender`: `mealy::send_port` calls this to try once and
+/// hand the payload back on refusal, exactly as it does for an `SpscSender` or `ActorHandle`.
+impl<T> crate::mealy::PortTarget<T> for GreenSender<T> {
+    fn try_deliver(&self, msg: T) -> Result<(), TrySendError<T>> {
+        self.try_send(msg)
     }
 }
 
@@ -394,7 +404,7 @@ impl Transducer for Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mealy::{Delivery, Flush, send_port};
+    use crate::mealy::{Flush, send_port};
     use crate::spsc::{SpscSender, spsc_channel};
     use crate::{ActorScheduler, Message};
 
@@ -410,7 +420,7 @@ mod tests {
     impl Wiring for ForwardWiring {
         type Out = Option<u32>;
         fn flush(&mut self, out: &mut Option<u32>) -> Flush {
-            send_port(out, &self.next, Delivery::Blocking)
+            send_port(out, &self.next)
         }
     }
 
