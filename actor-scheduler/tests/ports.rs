@@ -5,7 +5,7 @@
 
 use actor_scheduler::mealy::{Flush, Node, Step, Transducer, Wiring};
 use actor_scheduler::spsc::spsc_channel;
-use actor_scheduler::{Exit, HandlerError, ports};
+use actor_scheduler::{HandlerError, ports};
 use std::convert::Infallible;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -284,5 +284,5 @@ fn a_disconnected_inbox_halts_a_generated_node() {
 
     let mut node = Node::new(Batcher, rx_in, BatcherWiring { out: tx_out });
     drop(tx_in);
-    assert_eq!(node.poll(), Step::Halted(Exit::Completed));
+    assert_eq!(node.poll(), Step::Halted);
 }

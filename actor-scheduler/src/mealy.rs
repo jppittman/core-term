@@ -53,7 +53,6 @@ use std::marker::PhantomData;
 
 use crate::HandlerError;
 use crate::SchedulerParams;
-use crate::lifecycle::Exit;
 use crate::spsc::{SpscSender, TryRecvError, TrySendError};
 use crate::{ActorStatus, SystemStatus};
 
@@ -161,11 +160,11 @@ pub enum Flush {
     /// Previously a disconnected target was reported as [`Done`](Flush::Done), which consumed
     /// the message. For a port carrying a moved resource — the render pipeline's sole frame
     /// buffer, say — that silently destroyed it, and left the sender believing it had been
-    /// delivered. Retaining the payload keeps every recovery open: retry, hand off, escalate,
-    /// or shut down gracefully with the resource still in hand.
+    /// delivered. Retaining the payload keeps the aftermath inspectable — in a core dump, if
+    /// nowhere else — once [`Node`] turns this into a panic; see [`Node::poll`].
     ///
-    /// This variant deliberately carries no policy. What to do about a dead peer is the
-    /// supervisor's call, not the port's; see [`Step::Disconnected`].
+    /// This variant deliberately carries no policy of its own: it is how a [`Wiring`] *reports*
+    /// a gone target. [`Node`] is what decides what a gone target means, and it panics.
     Disconnected,
 }
 
@@ -216,8 +215,9 @@ pub enum Delivery {
 ///   [`Flush::Disconnected`]. It is deliberately *not* dropped: for a port carrying a moved
 ///   resource, dropping here would destroy it with nobody having decided to, while the sender
 ///   believed it was delivered. Blocking forever on a dead consumer would deadlock, so this
-///   reports rather than parks — the caller decides whether to retry, hand off, or shut down,
-///   and can do any of them because the value is still in hand.
+///   reports rather than parks. The retained payload has nowhere left to go — [`Node`] panics on
+///   this outcome — but it stays inspectable, in a core dump if nowhere else, instead of vanishing
+///   with the panic.
 pub fn send_port<T>(port: &mut Option<T>, tx: &SpscSender<T>, delivery: Delivery) -> Flush {
     let Some(msg) = port.take() else {
         return Flush::Done;
@@ -265,7 +265,7 @@ pub fn all(outcomes: impl IntoIterator<Item = Flush>) -> Flush {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// What one [`Node::poll`] accomplished.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
     /// Consumed an input and advanced the machine.
     Ran,
@@ -274,17 +274,12 @@ pub enum Step {
     Blocked,
     /// No input available. Nothing to do until a message arrives.
     Idle,
-    /// Terminal. The actor is done and should be removed (and possibly restarted).
-    Halted(Exit),
-    /// A target is gone. The outbox **still holds the undelivered ports**, so whatever they
-    /// carry is recoverable.
+    /// Terminal: every lane disconnected. The actor is done and should be removed.
     ///
-    /// Distinct from [`Blocked`](Step::Blocked) because backpressure resolves by waiting and
-    /// this does not — retrying a dead peer forever is a hang, and dropping the payload is data
-    /// loss. Surfaced rather than handled here on purpose: retry, escalate, or shut down
-    /// gracefully is a supervision decision, and the caller can make any of them because the
-    /// resource is still in hand.
-    Disconnected,
+    /// The only inhabitant of what used to be `Exit` — a handler failure no longer produces a
+    /// `Step` at all, because [`Node`] panics on it directly (see [`Node::poll`]) instead of
+    /// returning a value describing the failure.
+    Halted,
 }
 
 /// Pulling one input symbol. Implemented for the SPSC receiver; a trait so tests can drive a
@@ -463,7 +458,7 @@ where
         self.steps
     }
 
-    /// The actor, for inspection in tests and for supervisors rebuilding state.
+    /// The actor, for inspection in tests.
     #[must_use]
     pub fn actor(&self) -> &T {
         &self.actor
@@ -490,7 +485,10 @@ where
         if let Some(pending) = &mut self.outbox {
             match self.wiring.flush(pending) {
                 Flush::Blocked => return Step::Blocked,
-                Flush::Disconnected => return Step::Disconnected,
+                // The retry target is gone for good and nobody is left to hand the finding to,
+                // so this fails fast rather than surfacing a value. The payload stays retained
+                // in `self.outbox` right up to the abort, for a core dump to show.
+                Flush::Disconnected => panic!("wiring target disconnected"),
                 Flush::Done => {}
             }
             self.outbox = None;
@@ -577,7 +575,7 @@ where
         }
 
         if control_disconnected && management_disconnected && data_disconnected {
-            Step::Halted(Exit::Completed)
+            Step::Halted
         } else {
             Step::Idle
         }
@@ -605,25 +603,27 @@ where
     /// then maybe park" is written once rather than four times. [`Self::poll_os`] shares this
     /// same finish — the only thing that differs between a lane step and an OS-bridge step is
     /// how the output word was produced, not what happens to it afterward.
+    ///
+    /// A handler `Err` panics here, with the message the handler gave — every build profile
+    /// sets `panic = "abort"`, so there is no recoverable outcome to translate it into.
     fn dispatch(&mut self, step: impl FnOnce(&mut T) -> Result<T::Out, HandlerError>) -> Step {
         match step(&mut self.actor) {
             Ok(out) => self.finish_step(out),
-            Err(HandlerError::Recoverable(msg)) => Step::Halted(Exit::Failed(msg)),
-            Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
+            Err(e) => e.panic(),
         }
     }
 
     /// The shared tail of every step: count it, lift the continuation, flush, park on
-    /// backpressure or a gone peer. Never called with a non-empty outbox — the caller (lane
-    /// dispatch or [`Self::poll_os`]) is the one that guarantees that by flushing first.
+    /// backpressure, or panic on a gone peer. Never called with a non-empty outbox — the caller
+    /// (lane dispatch or [`Self::poll_os`]) is the one that guarantees that by flushing first.
     ///
     /// A step whose output merely *parks* still reports [`Step::Ran`]: an input was consumed
     /// and the machine advanced, and that is what a driver's "did anything happen" question
     /// (`Host::sweep`'s `ran` flag, `DedicatedThread`'s working flag) is asking. The park
     /// surfaces on the *next* poll, when the outbox-first gate finds it — reporting it now
     /// instead would let a host go idle over an actor that just did work and still holds an
-    /// undelivered word. A gone peer is different: that is news no later poll improves on, so
-    /// it preempts `Ran` immediately.
+    /// undelivered word. A gone peer panics immediately instead: there is no later poll that
+    /// improves on a target that is never coming back.
     fn finish_step(&mut self, mut out: T::Out) -> Step {
         self.steps += 1;
 
@@ -636,17 +636,19 @@ where
                 Step::Ran
             }
             Flush::Disconnected => {
-                // Retained, not dropped — the payload is still in `out`.
+                // Retained, not dropped — kept in `self.outbox` right up to the abort so a core
+                // dump can still show what the target never received.
                 self.outbox = Some(out);
-                Step::Disconnected
+                panic!("wiring target disconnected");
             }
             Flush::Done => Step::Ran,
         }
     }
 
     /// Run one [`Transducer::step_os`] through the same dispatch discipline as a lane: outbox
-    /// empty first, then step, lift continuation, flush, park on backpressure or a gone peer —
-    /// see [`Self::dispatch`]/[`Self::finish_step`], which this shares rather than duplicates.
+    /// empty first, then step, lift continuation, flush, park on backpressure or panic on a
+    /// gone peer — see [`Self::dispatch`]/[`Self::finish_step`], which this shares rather than
+    /// duplicates.
     ///
     /// Only a dedicated-thread driver calls this, and only when the lanes are quiet — a
     /// [`Host`](crate::Host) never does, because a green actor may not block and `step_os` is
@@ -678,7 +680,8 @@ where
         if let Some(pending) = &mut self.outbox {
             match self.wiring.flush(pending) {
                 Flush::Blocked => return (Step::Blocked, ActorStatus::Idle),
-                Flush::Disconnected => return (Step::Disconnected, ActorStatus::Idle),
+                // Retained in `self.outbox` right up to the abort; see `Node::poll`.
+                Flush::Disconnected => panic!("wiring target disconnected"),
                 Flush::Done => {}
             }
             self.outbox = None;
@@ -717,13 +720,7 @@ where
                 };
                 (step, hint)
             }
-            Err(HandlerError::Recoverable(msg)) => {
-                if let Some(lane_continuation) = stashed {
-                    self.continuation = Some(lane_continuation);
-                }
-                (Step::Halted(Exit::Failed(msg)), ActorStatus::Idle)
-            }
-            Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
+            Err(e) => e.panic(),
         }
     }
 }
@@ -1391,11 +1388,12 @@ mod tests {
         );
 
         drop(tx_in);
-        assert_eq!(node.poll(), Step::Halted(Exit::Completed));
+        assert_eq!(node.poll(), Step::Halted);
     }
 
     #[test]
-    fn a_failed_step_halts_without_emitting() {
+    #[should_panic(expected = "boom")]
+    fn a_failed_step_panics_without_emitting() {
         struct Boom;
         struct BoomWiring {
             out: SpscSender<u8>,
@@ -1412,24 +1410,16 @@ mod tests {
             type Data = u8;
             type Out = Option<u8>;
             fn step_data(&mut self, _: u8) -> Result<Option<u8>, HandlerError> {
-                Err(HandlerError::Recoverable("boom".into()))
+                Err(HandlerError::new("boom"))
             }
         }
 
         let (tx_in, rx_in) = spsc_channel::<u8>(4);
-        let (tx_out, mut rx_out) = spsc_channel::<u8>(4);
+        let (tx_out, _rx_out) = spsc_channel::<u8>(4);
         let mut node = Node::new(Boom, rx_in, BoomWiring { out: tx_out });
 
         tx_in.try_send(1).unwrap();
-        assert_eq!(
-            node.poll(),
-            Step::Halted(Exit::Failed("boom".into())),
-            "a failed transition reports the failure"
-        );
-        assert!(
-            rx_out.try_recv().is_err(),
-            "Err carries no output — a failed step emits nothing"
-        );
+        node.poll();
     }
 
     // ── step_os / poll_os: the OS-bridge hook ────────────────────────────────
@@ -2296,7 +2286,7 @@ mod tests {
         assert_eq!(node.poll(), Step::Idle);
 
         drop(tx_d);
-        assert_eq!(node.poll(), Step::Halted(Exit::Completed));
+        assert_eq!(node.poll(), Step::Halted);
     }
 
     // Regression: a slot that finishes a poll() sitting exactly at its limit (e.g. Data,

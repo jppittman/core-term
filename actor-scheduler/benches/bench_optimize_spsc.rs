@@ -260,7 +260,7 @@ impl<D, C, M> SpscScheduler<D, C, M> {
                 DrainStatus::Disconnected
             )
         ) {
-            return Err(HandlerError::recoverable("all disconnected"));
+            return Err(HandlerError::new("all disconnected"));
         }
 
         let more_work = matches!(c1, DrainStatus::More)

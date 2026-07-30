@@ -244,10 +244,6 @@ impl Transducer for EngineCore {
             EngineControl::GreenReady(..) => {
                 unreachable!("handled by the engine shell")
             }
-            // A real port with a real consumer; policy later.
-            EngineControl::GreenStuck(supervision) => {
-                log::error!("green node stuck: {supervision:?}");
-            }
             EngineControl::DriverAck => {
                 unimplemented!("DriverAck not yet implemented");
             }
@@ -390,48 +386,6 @@ mod tests {
         assert!(
             matches!(out.coordinator, Some(CoordinatorData::Advance)),
             "every tick must also nudge the coordinator, in case a request was lost in transit"
-        );
-    }
-
-    #[test]
-    fn green_stuck_is_logged_and_emits_nothing() {
-        // A trivial green actor, adopted only so `Host::adopt` mints a real `NodeId` — the
-        // supervision port's payload has to be a real identity, not a stand-in, for this test to
-        // say anything about the actual variant shape.
-        struct Noop;
-        impl actor_scheduler::mealy::Transducer for Noop {
-            type Control = std::convert::Infallible;
-            type Management = std::convert::Infallible;
-            type Data = std::convert::Infallible;
-            type Out = ();
-            fn step_data(&mut self, msg: std::convert::Infallible) -> Result<(), HandlerError> {
-                match msg {}
-            }
-        }
-        struct NoopWiring;
-        impl actor_scheduler::mealy::Wiring for NoopWiring {
-            type Out = ();
-            fn flush(&mut self, _out: &mut ()) -> actor_scheduler::mealy::Flush {
-                actor_scheduler::mealy::Flush::Done
-            }
-        }
-        let (_tx, rx) = actor_scheduler::spsc::spsc_channel::<std::convert::Infallible>(1);
-        let mut host = actor_scheduler::host::Host::new();
-        let node_id = host.adopt(actor_scheduler::mealy::Node::new(Noop, rx, NoopWiring));
-
-        let mut core = EngineCore::new();
-        let out = core
-            .step_control(EngineControl::GreenStuck(
-                actor_scheduler::host::Supervision {
-                    node: node_id,
-                    reason: actor_scheduler::host::Stuck::TargetGone,
-                },
-            ))
-            .unwrap();
-
-        assert!(
-            !out.quit && out.app.is_none() && out.driver_control.is_none(),
-            "logging a stuck node must not itself trigger any other port"
         );
     }
 

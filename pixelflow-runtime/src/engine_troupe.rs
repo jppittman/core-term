@@ -17,8 +17,8 @@ use crate::error::RuntimeError;
 use crate::platform::{ActivePlatform, PlatformPixel};
 use crate::vsync_actor::{RenderedResponse, VsyncCommand, VsyncCore, VsyncManagement, VsyncWiring};
 use actor_scheduler::actors::{Schedule, Timer};
-use actor_scheduler::host::{GreenThread, Host, HostOut};
-use actor_scheduler::mealy::{Flush, Lanes, NoLane, Node, Transducer, Wiring};
+use actor_scheduler::host::{GreenThread, Host};
+use actor_scheduler::mealy::{Lanes, NoLane, Node, Transducer};
 use actor_scheduler::{
     green_channel, Actor, ActorBuilder, ActorHandle, ActorScheduler, ActorStatus, ActorTypes,
     GreenSender, HandlerError, HandlerResult, Message, SchedulerParams, SendError, SystemStatus,
@@ -158,6 +158,10 @@ impl Actor<EngineData, EngineControl, AppManagement> for EngineHandler {
 /// on `response_rx.recv()` *is* the actor, the same way `PtyReader::handle_os` blocking on
 /// `epoll_wait` is that actor's entire job.
 ///
+/// The forward to `coordinator` uses [`GreenSender::send`], not `try_send`: this is a handler
+/// pushing into another actor's inbox, not a `Wiring::flush`, so the bounded-backoff-then-loud-
+/// timeout posture is the right one — `try_send` is reserved for flush (see its doc).
+///
 /// The scheduler only calls `handle_os` after the doorbell has woken at least once, so — same
 /// as `PtyReader` waiting for its first `Bind` — this actor needs one doorbell ring to start its
 /// loop; `spawn_rasterizer` rings it right after spawning the thread. Once `handle_os` returns
@@ -194,18 +198,18 @@ impl Actor<Infallible, Infallible, Infallible> for RasterizerForwarder {
 
     fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
         match self.response_rx.recv() {
-            Ok(response) => match self.coordinator.try_send(response) {
+            Ok(response) => match self.coordinator.send(response) {
                 Ok(()) => Ok(ActorStatus::Busy),
-                // This is the render credit's reply edge: at most one render is ever in flight,
-                // so the ring can never fill from this edge alone — `Full` is a provisioning
-                // bug, not backpressure to wait out.
-                Err(TrySendError::Full(_)) => {
-                    panic!("coordinator management ring unexpectedly full: the render-complete edge is credit(1)-bounded")
-                }
-                Err(TrySendError::Disconnected(_)) => {
+                Err(SendError::Disconnected) => {
                     log::warn!("Coordinator gone; rasterizer forwarder shutting down");
                     self.shut_down();
                     Ok(ActorStatus::Idle)
+                }
+                // The render credit bounds this edge to one in flight, so the ring should never
+                // stay full past the backoff window — a timeout means the host is wedged, and
+                // the answer is a loud crash, not quiet retrying.
+                Err(SendError::Timeout) => {
+                    panic!("green host unresponsive: coordinator forward relay timed out")
                 }
             },
             Err(_) => {
@@ -382,7 +386,7 @@ fn spawn_rasterizer(
 
     // Step 3: Run the forwarder as a real actor rather than a bare thread — it is addressable (a
     // real Shutdown on the Quit paths, not an implicit exit whenever the rasterizer happens to
-    // drop its sender) and supervisable the same way the rest of the troupe is. Its lanes are
+    // drop its sender), managed the same way the rest of the troupe is. Its lanes are
     // `Infallible`: nothing but `Shutdown` and the doorbell ever reaches it, so
     // `data_buffer_size` of 1 is a formality.
     let mut builder = ActorBuilder::new(1, None);
@@ -453,46 +457,6 @@ impl TroupeActor<Directory> for DriverActor<ActivePlatform> {
     }
 }
 
-/// Delivers a [`Host`]'s supervision findings to the engine — the wired half of "Host as
-/// transducer" (design doc §5.4): a real port with a real consumer, where `handle_os` could only
-/// compute the event and drop it.
-///
-/// `HostOut::again` is the host's own continuation; it never reaches wiring at all — see the
-/// `debug_assert!` in [`Wiring::flush`](Wiring::flush), which is what makes that a checkable fact
-/// rather than a comment.
-struct EngineHostWiring {
-    engine: crate::api::private::EngineActorHandle,
-}
-
-impl Wiring for EngineHostWiring {
-    type Out = HostOut;
-
-    fn flush(&mut self, out: &mut HostOut) -> Flush {
-        debug_assert!(
-            out.again.is_none(),
-            "GreenThread drains its own continuation; wiring never sees it"
-        );
-
-        let Some(event) = out.supervision else {
-            return Flush::Done;
-        };
-
-        match self
-            .engine
-            .try_send(Message::Control(EngineControl::GreenStuck(event)))
-        {
-            Ok(()) => {
-                out.supervision = None;
-                Flush::Done
-            }
-            // Neither clears `out.supervision` — it is already `Some`, so leaving it be is
-            // putting it back, exactly like `VsyncWiring`'s tick port.
-            Err(TrySendError::Full(_)) => Flush::Blocked,
-            Err(TrySendError::Disconnected(_)) => Flush::Disconnected,
-        }
-    }
-}
-
 impl Troupe {
     /// Create troupe, configure the engine, and bring vsync *and the render coordinator* up as
     /// green nodes (docs/designs/actor-scheduler-mealy-transducer.md §5, and step 5c of
@@ -523,7 +487,6 @@ impl Troupe {
         // separate `exposed()` call, since one call already mints every exposed actor's handle.
         let init = troupe.exposed(); // engine: config messages; driver: the coordinator's handle
         let vsync_engine = troupe.exposed(); // dedicated engine producer for vsync ticks
-        let host_engine = troupe.exposed(); // dedicated engine producer for host supervision
 
         // Configure the engine with window settings
         init.engine
@@ -645,12 +608,7 @@ impl Troupe {
                 );
                 host.adopt(coordinator_node);
 
-                let mut green_thread = GreenThread::new(
-                    host,
-                    EngineHostWiring {
-                        engine: host_engine.engine,
-                    },
-                );
+                let mut green_thread = GreenThread::new(host);
                 host_sched.run(&mut green_thread);
             })
             .expect("failed to spawn green host thread");

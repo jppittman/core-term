@@ -205,7 +205,7 @@ fn pending_messages_drain_in_priority_order() {
     // Keep polling until every message has been handled; the drain may batch.
     while log.lock().unwrap().len() < 3 {
         assert!(
-            rx.poll_once(&mut actor).is_none(),
+            !rx.poll_once(&mut actor),
             "the scheduler exited before draining the three pending messages"
         );
     }

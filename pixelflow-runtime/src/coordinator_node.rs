@@ -29,9 +29,11 @@
 //! [`RenderCoordinator::request_sent`] the moment it decides to ask — delivery is now
 //! guaranteed-or-parked, so "an ask is in flight" is already true at the moment of emission.
 //! `render_send_failed` has no counterpart here: a rasterizer that is truly *gone* surfaces as
-//! [`Flush::Disconnected`] → `Host` supervision → `GreenStuck`, which is strictly better than the
-//! old warn-and-release-credit path — the render's buffer is retained rather than destroyed (see
-//! [`CoordinatorWiring`]'s `render` port).
+//! [`Flush::Disconnected`], which panics — there is no supervisor to escalate to, and a
+//! recoverable outcome was never on offer once every build profile sets `panic = "abort"`. That
+//! is still strictly better than the old warn-and-release-credit path right up to the panic: the
+//! render's buffer is retained rather than destroyed (see [`CoordinatorWiring`]'s `render` port),
+//! so the crash is at least legible from a core dump.
 
 use crate::display::messages::{DisplayControl, DisplayData, DisplayMgmt, Window, WindowMeta};
 use crate::platform::PlatformPixel;

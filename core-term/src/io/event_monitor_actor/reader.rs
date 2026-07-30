@@ -184,9 +184,7 @@ impl Actor<Vec<u8>, Infallible, ReaderManagement> for PtyReader {
         match BoundReader::bind(pty, waker, app_tx) {
             Ok(bound) => self.bound = Some(bound),
             Err(e) => {
-                return Err(HandlerError::recoverable(format!(
-                    "PTY reader bind failed: {e}"
-                )))
+                return Err(HandlerError::new(format!("PTY reader bind failed: {e}")));
             }
         }
         Ok(())
@@ -209,7 +207,7 @@ impl Actor<Vec<u8>, Infallible, ReaderManagement> for PtyReader {
 
         let poll = bound.monitor.events(&mut bound.events, -1);
         bound.waker.disarm();
-        poll.map_err(|e| HandlerError::recoverable(format!("PTY reader poll failed: {e}")))?;
+        poll.map_err(|e| HandlerError::new(format!("PTY reader poll failed: {e}")))?;
 
         let mut pty_ready = false;
         for event in &bound.events {

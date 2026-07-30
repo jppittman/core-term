@@ -35,9 +35,11 @@ only"). It also welded *actor* to *OS thread*, so adding an actor cost a thread 
 of the goal. The kubelet that got built was a restart babysitter, and `poll_once` — the
 cooperative step it needed — leaked the scheduling strategy into the actor's public API.
 
-The replacement is not a smaller cluster. It is a different primitive. Supervision becomes a
-plain concern (a supervisor waits on exits and restarts), and scheduling becomes a property of
-the primitive itself. No pods, no clusterIPs, no kubelet in the common path.
+The replacement is not a smaller cluster. It is a different primitive, and scheduling becomes a
+property of the primitive itself. No pods, no clusterIPs, no kubelet in the common path. What
+this paragraph originally said next — that supervision becomes a plain concern for some future
+supervisor to pick up — did not survive contact with `panic = "abort"`; see §8's updated entry
+for why failures panic instead.
 
 ### 1.2 Goals
 
@@ -126,8 +128,10 @@ The scheduler is the only thing that sends. On each step it:
    independent, so partial flush is trivial.
 4. Does **not** call that actor's next handler until its outbox has drained (correct
    backpressure: an actor cannot outrun its slowest consumer; it just parks).
-5. On `Err(e)`, runs the existing error/restart path. `Err` carries no output — "emit *and*
-   warn" is a message variant, not an error. The mutual exclusion keeps a step legible.
+5. On `Err(e)`, panics with `e`'s message — every build profile sets `panic = "abort"`, so there
+   is no restart path to run; a "recoverable" error was never actually recoverable. `Err` carries
+   no output — "emit *and* warn" is a message variant, not an error. The mutual exclusion keeps a
+   step legible. (See §8's reversal of the entry that once proposed a restart policy here.)
 
 ### 3.1 Blocking edges must form a DAG
 
@@ -376,10 +380,18 @@ This design was reached by deletion. Recorded so it is not re-derived:
   yielding. Nothing to enforce.
 - **The Kubernetes supervision machinery** (`Kubelet`, `PodSlot`/`PodRegistry`, `ServiceHandle`,
   `RestartPolicy`, `PodPhase`'s unreachable phases) — ~1 500 lines implementing a cluster
-  metaphor for a handful of in-process actors. Deleted outright rather than renamed: the restart
-  policy and frequency gate can return as a plain supervisor reading `Host::exits()` when
-  something actually needs restarting. `PodPhase` survives as `Exit` with only the two variants
-  `run` can return.
+  metaphor for a handful of in-process actors. Deleted outright rather than renamed. This entry
+  originally left the door open for the restart policy and frequency gate to "return as a plain
+  supervisor reading `Host::exits()` when something actually needs restarting," with `PodPhase`
+  surviving as `Exit`. **That door is now closed too.** Every build profile in this workspace
+  sets `panic = "abort"`, which means a "recoverable" `HandlerError` variant was never actually
+  recoverable — nothing could unwind to a supervisor that might read an exit reason and decide
+  to respawn. A supervisor that cannot unwind, restart, or resume is theater wearing the shape of
+  one. `HandlerError` collapsed to a single variant, `Exit` and the whole `Host`
+  supervision surface (`Supervision`, `Stuck`, `NodeId`, `Host::exits`/`Host::remove`,
+  `HostOut::supervision`) were deleted, and every failure — a handler `Err`, or a `Wiring` flush
+  discovering its target gone — panics at the point of discovery instead of being reported
+  upward. Fail fast, fail loudly; there is no restart path left to wire one into.
 - **A shared work-stealing run queue for green actors** — the obvious way to balance load, and
   the wrong default here. The measured win is *locality* (§7.1): co-locating a pipeline removes
   the cross-thread hop entirely. A shared queue reintroduces that hop for any edge whose

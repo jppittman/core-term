@@ -135,7 +135,7 @@ fn bench_dispatch(c: &mut Criterion) {
                     handle.send(Message::Data(i as u8)).unwrap();
                 }
                 while actor.seen < n as u64 {
-                    if sched.poll_once(&mut actor).is_some() {
+                    if sched.poll_once(&mut actor) {
                         break;
                     }
                 }
@@ -194,7 +194,7 @@ impl Actor<u8, (), ()> for ForwardActor {
         self.seen += 1;
         if let Some(next) = &self.next {
             next.send(Message::Data(byte.wrapping_add(1)))
-                .map_err(|_| HandlerError::Recoverable("downstream gone".into()))?;
+                .map_err(|_| HandlerError::new("downstream gone"))?;
         }
         Ok(())
     }

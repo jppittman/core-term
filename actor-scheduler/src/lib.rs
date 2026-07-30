@@ -95,7 +95,6 @@
 pub mod actors;
 mod error;
 pub mod host;
-mod lifecycle;
 pub mod mealy;
 mod params;
 pub mod sharded;
@@ -103,11 +102,7 @@ pub mod spsc;
 
 use error::DrainStatus;
 pub use error::{HandlerError, HandlerResult, SendError};
-pub use host::{
-    Green, GreenSender, GreenThread, Host, HostOut, NodeId, RunSweep, Stuck, Supervision,
-    green_channel,
-};
-pub use lifecycle::Exit;
+pub use host::{Green, GreenSender, GreenThread, Host, HostOut, RunSweep, green_channel};
 pub use params::SchedulerParams;
 pub use spsc::TrySendError;
 
@@ -366,30 +361,25 @@ pub enum SystemStatus {
 pub trait Actor<D, C, M> {
     /// Handle a data message.
     ///
-    /// Returns `Ok(())` on success, or a `HandlerError` on failure.
-    /// - `HandlerError::Temporary`: Scheduler logs and continues
-    /// - `HandlerError::Fatal`: Scheduler initiates shutdown
+    /// Returns `Ok(())` on success. An `Err` panics the scheduler thread — there is no
+    /// recoverable outcome to opt into.
     fn handle_data(&mut self, msg: D) -> HandlerResult;
 
     /// Handle a control message.
     ///
-    /// Returns `Ok(())` on success, or a `HandlerError` on failure.
-    /// - `HandlerError::Temporary`: Scheduler logs and continues
-    /// - `HandlerError::Fatal`: Scheduler initiates shutdown
+    /// Returns `Ok(())` on success. An `Err` panics the scheduler thread.
     fn handle_control(&mut self, msg: C) -> HandlerResult;
 
     /// Handle a management message.
     ///
-    /// Returns `Ok(())` on success, or a `HandlerError` on failure.
-    /// - `HandlerError::Temporary`: Scheduler logs and continues
-    /// - `HandlerError::Fatal`: Scheduler initiates shutdown
+    /// Returns `Ok(())` on success. An `Err` panics the scheduler thread.
     fn handle_management(&mut self, msg: M) -> HandlerResult;
 
     /// The "Hook" where the Actor creates the bridge to the OS.
     /// Called when the scheduler has drained available messages (or hit burst limits).
     ///
     /// Returns actor status: Busy if yielding with unfinished work, Idle if done.
-    /// Can return `HandlerError::Fatal` to trigger shutdown.
+    /// An `Err` panics the scheduler thread.
     fn handle_os(&mut self, status: SystemStatus) -> Result<ActorStatus, HandlerError>;
 }
 
@@ -858,6 +848,14 @@ impl<D, C, M> ActorHandle<D, C, M> {
     /// `Disconnected` the message is handed back inside the error, unsent; the caller decides
     /// whether that means drop, park, or panic.
     ///
+    /// **For `Wiring::flush` only.** Flush runs inside `Node::poll` inside a `Host::sweep`, on a
+    /// thread shared by every green actor that host owns — blocking there freezes all of them,
+    /// which is why a green actor may not block at all. This is the `ActorHandle` analogue of
+    /// `send_port`, which every wiring already uses: try once, put the payload back on refusal,
+    /// let the parked outbox retry later. Anywhere else — a handler pushing into another
+    /// actor's inbox — use [`Self::send`] instead: its bounded backoff stops only the caller,
+    /// and a loud timeout beats a silently dropped or spun-on message.
+    ///
     /// # Errors
     /// Returns [`TrySendError::Full`] if the target lane's ring is full, or
     /// [`TrySendError::Disconnected`] if the receiver is gone. Either way the message comes
@@ -1241,27 +1239,16 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// Blocks on the doorbell channel. Drains priority lanes in order:
     /// Shutdown > Control > Management > Data.
     ///
-    /// Returns a [`Exit`] describing why the scheduler exited, so a
-    /// supervisor can decide whether to restart the pod:
-    ///
-    /// | Exit reason | Returned phase |
-    /// |-------------|----------------|
-    /// | `Message::Shutdown` received | `Exit::Completed` |
-    /// | All sender handles dropped | `Exit::Completed` |
-    /// | `HandlerError::Recoverable` | `Exit::Failed(msg)` |
-    /// | `HandlerError::Fatal` | panics — never returns |
-    ///
-    /// The return value is intentionally not `#[must_use]` so existing call
-    /// sites that don't supervise actors don't need to change. Supervisors
-    /// should inspect it via [`Exit::is_failed`].
-    pub fn run<A>(&mut self, actor: &mut A) -> Exit
+    /// Returns when `Message::Shutdown` is received or every sender handle is dropped. A
+    /// handler `Err` panics the scheduler thread instead of returning — every build profile
+    /// sets `panic = "abort"`, so there is no recoverable outcome to report back to a caller;
+    /// fail fast, fail loudly.
+    pub fn run<A>(&mut self, actor: &mut A)
     where
         A: Actor<D, C, M>,
     {
-        match self.run_inner(actor) {
-            Ok(()) => Exit::Completed,
-            Err(HandlerError::Recoverable(msg)) => Exit::Failed(msg),
-            Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
+        if let Err(e) = self.run_inner(actor) {
+            e.panic();
         }
     }
 
@@ -1278,13 +1265,14 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     /// Unlike [`run`], `poll_once()` never blocks:
     /// - If the doorbell is empty, it still attempts one drain pass (the actor
     ///   may have work from a previous `Working` state).
-    /// - Returns `Some(phase)` when the actor should stop; `None` to keep polling.
+    /// - Returns `true` once the actor is finished and must not be polled again; `false` to
+    ///   keep polling. A handler `Err` panics, same as [`run`].
     ///
     /// # Caller responsibility
     ///
     /// The caller must continue calling `poll_once()` after a `Disconnected`
-    /// doorbell until `Some` is returned — buffered SPSC messages need draining.
-    pub fn poll_once<A>(&mut self, actor: &mut A) -> Option<Exit>
+    /// doorbell until it returns `true` — buffered SPSC messages need draining.
+    pub fn poll_once<A>(&mut self, actor: &mut A) -> bool
     where
         A: Actor<D, C, M>,
     {
@@ -1294,30 +1282,24 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 
         match signal {
             Ok(System::Shutdown) => {
-                let phase = match self.handle_shutdown(actor) {
-                    Ok(()) => Exit::Completed,
-                    Err(HandlerError::Recoverable(msg)) => Exit::Failed(msg),
-                    Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
-                };
-                Some(phase)
+                if let Err(e) = self.handle_shutdown(actor) {
+                    e.panic();
+                }
+                true
             }
 
-            Ok(System::Wake) | Err(TryRecvError::Empty) => {
-                match self.handle_wake(actor) {
-                    Ok(Some(_)) => None,               // still running
-                    Ok(None) => Some(Exit::Completed), // all disconnected
-                    Err(HandlerError::Recoverable(msg)) => Some(Exit::Failed(msg)),
-                    Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
-                }
-            }
+            Ok(System::Wake) | Err(TryRecvError::Empty) => match self.handle_wake(actor) {
+                Ok(Some(_)) => false, // still running
+                Ok(None) => true,     // all disconnected
+                Err(e) => e.panic(),
+            },
 
             Err(TryRecvError::Disconnected) => {
                 // All handles dropped — drain one batch, report done when empty
                 match self.handle_wake(actor) {
-                    Ok(Some(_)) => None, // more buffered work; caller polls again
-                    Ok(None) => Some(Exit::Completed),
-                    Err(HandlerError::Recoverable(msg)) => Some(Exit::Failed(msg)),
-                    Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
+                    Ok(Some(_)) => false, // more buffered work; caller polls again
+                    Ok(None) => true,
+                    Err(e) => e.panic(),
                 }
             }
         }
@@ -1416,27 +1398,19 @@ where
     /// continuously-fed lane never revisits the doorbell, so a queued `Shutdown` is never
     /// observed and `step_os` never runs. Budget spent with work remaining is just `Busy`.
     ///
-    /// Lane completion (`Halted(Exit::Completed)` — every lane disconnected) is *not* terminal
-    /// here: an OS bridge's external source outlives the last `ActorHandle` by design, and a
-    /// retained [`Waker`] can still ring the doorbell long after every lane is dead. The sweep
-    /// only reports whether there is work; *terminality belongs to the doorbell* — [`run`]
-    /// completes when the doorbell disconnects (no handle and no waker left anywhere) and a
-    /// sweep finds nothing to do. A *failed* handler (`Halted(Exit::Failed)`) still exits
-    /// immediately: a broken actor gets no final turns.
+    /// Lane completion (`Halted` — every lane disconnected) is *not* terminal here: an OS
+    /// bridge's external source outlives the last `ActorHandle` by design, and a retained
+    /// [`Waker`] can still ring the doorbell long after every lane is dead. The sweep only
+    /// reports whether there is work; *terminality belongs to the doorbell* — [`run`] completes
+    /// when the doorbell disconnects (no handle and no waker left anywhere) and a sweep finds
+    /// nothing to do.
     ///
-    /// A `Disconnected` delivery — the wiring's target is gone — is also an exit, as
-    /// `Exit::Failed`: the peer can never come back, the outbox-first contract means no lane
-    /// can progress past the parked word, and this driver has no supervisor to hand the
-    /// problem to (that is `Host`'s job for green nodes). Fail fast, fail loudly; the
-    /// undelivered payload stays retained in the node for whoever holds this
-    /// `DedicatedThread` after [`run`] returns.
+    /// A wiring target that is gone panics inside `Node` itself (`mealy.rs`) the instant a
+    /// flush discovers it — there is no supervisor for this driver to hand the problem to, so
+    /// failing fast at the point of discovery is the whole policy.
     ///
-    /// Returns `Some(exit)` when the node is done; otherwise `None` with a busy hint for the
-    /// doorbell loop's `working` flag.
-    fn sweep(&mut self) -> (Option<Exit>, bool) {
-        const TARGET_GONE: &str =
-            "wiring target disconnected; undelivered output retained in the node";
-
+    /// Returns the busy hint for the doorbell loop's `working` flag.
+    fn sweep(&mut self) -> bool {
         let mut polls = 0usize;
         let lane_step = loop {
             match self.node.poll() {
@@ -1449,13 +1423,7 @@ where
                 other => break other,
             }
         };
-        if let mealy::Step::Halted(Exit::Failed(msg)) = lane_step {
-            return (Some(Exit::Failed(msg)), false);
-        }
-        if lane_step == mealy::Step::Disconnected {
-            return (Some(Exit::Failed(TARGET_GONE.into())), false);
-        }
-        let lanes_completed = matches!(lane_step, mealy::Step::Halted(_));
+        let lanes_completed = matches!(lane_step, mealy::Step::Halted);
 
         // Idle means the lap found every lane genuinely empty. Ran means the budget ran out
         // with lane work remaining; Blocked means a parked outbox is deferring lane work
@@ -1468,18 +1436,11 @@ where
         };
 
         let (os_step, os_actor_status) = self.node.poll_os(system_status);
-        match os_step {
-            mealy::Step::Halted(exit) => return (Some(exit), false),
-            mealy::Step::Disconnected => {
-                return (Some(Exit::Failed(TARGET_GONE.into())), false);
-            }
-            _ => {}
-        }
         let os_busy =
             matches!(os_actor_status, ActorStatus::Busy) || os_step == mealy::Step::Blocked;
 
         let lanes_busy = !lanes_completed && lane_step != mealy::Step::Idle;
-        (None, lanes_busy || os_busy)
+        lanes_busy || os_busy
     }
 
     /// Run this node until it halts or is shut down.
@@ -1493,16 +1454,14 @@ where
     /// consumer draining, which sleeping on this doorbell cannot wait for (ring-not-full
     /// waking — a consumer ringing this thread's doorbell the instant it drains — is not wired
     /// yet), and there is no risk of *missing* a wake this way, only of spending CPU until it
-    /// clears. A `Disconnected` delivery exits as `Exit::Failed` instead of retrying — see
-    /// [`Self::sweep`].
+    /// clears. A gone wiring target panics inside `Node` rather than reaching this loop at all.
     ///
-    /// Completion is the doorbell's to declare: `Exit::Completed` happens on `Shutdown`, or
-    /// when the doorbell disconnects — meaning no `ActorHandle` *and* no [`Waker`] exists
-    /// anywhere, so nothing can ever wake this node again — and a final drain finds nothing
-    /// left. Dead lanes alone are not completion: an idle OS bridge whose waker is still held
-    /// somewhere sleeps at 0% CPU instead of exiting, because that waker is someone's declared
-    /// intent to come back.
-    pub fn run(&mut self) -> Exit {
+    /// Completion is the doorbell's to declare: it returns on `Shutdown`, or when the doorbell
+    /// disconnects — meaning no `ActorHandle` *and* no [`Waker`] exists anywhere, so nothing can
+    /// ever wake this node again — and a final drain finds nothing left. Dead lanes alone are
+    /// not completion: an idle OS bridge whose waker is still held somewhere sleeps at 0% CPU
+    /// instead of exiting, because that waker is someone's declared intent to come back.
+    pub fn run(&mut self) {
         let mut working = false;
 
         loop {
@@ -1515,23 +1474,14 @@ where
             };
 
             match signal {
-                Ok(System::Shutdown) => return Exit::Completed,
-                Ok(System::Wake) | Err(mpsc::TryRecvError::Empty) => match self.sweep() {
-                    (Some(exit), _) => return exit,
-                    (None, busy) => working = busy,
-                },
+                Ok(System::Shutdown) => return,
+                Ok(System::Wake) | Err(mpsc::TryRecvError::Empty) => working = self.sweep(),
                 Err(mpsc::TryRecvError::Disconnected) => {
                     // All handles dropped. Keep sweeping — buffered shard messages, a parked
                     // outbox, or step_os's own work can all outlive the last `ActorHandle` —
-                    // until the node halts (every lane disconnected, mirroring `run_inner`'s
-                    // equivalent branch) or a sweep reports genuinely nothing left to do.
-                    loop {
-                        match self.sweep() {
-                            (Some(exit), _) => return exit,
-                            (None, true) => continue,
-                            (None, false) => return Exit::Completed,
-                        }
-                    }
+                    // until a sweep reports genuinely nothing left to do.
+                    while self.sweep() {}
+                    return;
                 }
             }
         }
@@ -1798,18 +1748,18 @@ mod poll_once_tests {
     }
 
     #[test]
-    fn poll_once_returns_none_when_still_running() {
+    fn poll_once_returns_false_when_still_running() {
         let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
         let mut actor = CountActor { data: 0, ctrl: 0 };
 
-        // No messages yet — doorbell empty, poll_once drains nothing, returns None
+        // No messages yet — doorbell empty, poll_once drains nothing, keeps running
         let result = rx.poll_once(&mut actor);
-        assert_eq!(result, None);
+        assert!(!result);
         drop(tx);
     }
 
     #[test]
-    fn poll_once_drains_messages_and_returns_none() {
+    fn poll_once_drains_messages_and_keeps_running() {
         let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(100, 100);
         let mut actor = CountActor { data: 0, ctrl: 0 };
 
@@ -1820,36 +1770,32 @@ mod poll_once_tests {
         thread::sleep(Duration::from_millis(5));
 
         let result = rx.poll_once(&mut actor);
-        assert_eq!(result, None); // still connected
+        assert!(!result); // still connected
         assert!(actor.ctrl >= 1, "control message should have been drained");
 
         drop(tx);
     }
 
     #[test]
-    fn poll_once_returns_completed_after_all_handles_dropped() {
+    fn poll_once_returns_true_after_all_handles_dropped() {
         let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
         let mut actor = CountActor { data: 0, ctrl: 0 };
 
         drop(tx);
 
-        // Keep polling until Completed
-        let phase = loop {
-            if let Some(p) = rx.poll_once(&mut actor) {
-                break p;
-            }
-        };
-        assert_eq!(phase, Exit::Completed);
+        // Keep polling until done
+        while !rx.poll_once(&mut actor) {}
     }
 
     #[test]
-    fn poll_once_returns_failed_on_recoverable_error() {
+    #[should_panic(expected = "injected failure")]
+    fn poll_once_panics_on_a_handler_error() {
         let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
 
         struct FailOnData;
         impl Actor<i32, i32, i32> for FailOnData {
             fn handle_data(&mut self, _: i32) -> HandlerResult {
-                Err(HandlerError::recoverable("injected failure"))
+                Err(HandlerError::new("injected failure"))
             }
             fn handle_control(&mut self, _: i32) -> HandlerResult {
                 Ok(())
@@ -1866,30 +1812,18 @@ mod poll_once_tests {
         thread::sleep(Duration::from_millis(5));
 
         let mut actor = FailOnData;
-        let phase = loop {
-            if let Some(p) = rx.poll_once(&mut actor) {
-                break p;
-            }
-        };
-
-        assert!(phase.is_failed());
-        drop(tx);
+        while !rx.poll_once(&mut actor) {}
     }
 
     #[test]
-    fn poll_once_returns_completed_on_shutdown_message() {
+    fn poll_once_returns_true_on_shutdown_message() {
         let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
         let mut actor = CountActor { data: 0, ctrl: 0 };
 
         tx.send(Message::Shutdown).unwrap();
         thread::sleep(Duration::from_millis(5));
 
-        let phase = loop {
-            if let Some(p) = rx.poll_once(&mut actor) {
-                break p;
-            }
-        };
-        assert_eq!(phase, Exit::Completed);
+        while !rx.poll_once(&mut actor) {}
     }
 }
 
@@ -1923,7 +1857,7 @@ mod try_send_tests {
         tx.try_send(Message::Data(7)).expect("room in the ring");
 
         let mut actor = RecordActor { got: None };
-        assert_eq!(rx.poll_once(&mut actor), None, "still connected");
+        assert!(!rx.poll_once(&mut actor), "still connected");
         assert_eq!(actor.got, Some(7));
     }
 

@@ -348,7 +348,7 @@ mod tests {
 
         let result = inbox.drain(100, |msg: u32| {
             if msg == 1 {
-                Err(HandlerError::fatal("boom"))
+                Err(HandlerError::new("boom"))
             } else {
                 Ok(())
             }
