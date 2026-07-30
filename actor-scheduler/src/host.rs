@@ -859,4 +859,39 @@ mod tests {
         let (tx_green, _rx_green) = green_channel::<u32>(2, handle.waker());
         assert!(format!("{:?}", tx_green).contains("GreenSender"));
     }
+
+    // Kills: replace GreenSender::send's body with Ok(()) — a stub that reports success without
+    // ever touching the channel. Every other test here only checks `send`'s/`try_send`'s
+    // Result; this checks the message actually arrives.
+    #[test]
+    fn green_sender_send_actually_delivers() {
+        let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+        let (tx_green, mut rx_green) = green_channel::<u32>(4, handle.waker());
+
+        tx_green.send(7).expect("room in the inbox");
+        assert_eq!(
+            rx_green.try_recv().unwrap(),
+            7,
+            "send must actually deliver, not just report Ok"
+        );
+    }
+
+    // Kills: replace <GreenSender<T> as PortTarget<T>>::try_deliver's body with Ok(()) — the
+    // same stub-success bug, on the path `send_port` (and so every generated `Wiring::flush`)
+    // actually uses to reach a `GreenSender`. Routes a port through `send_port` itself, the
+    // real call site, rather than calling `try_deliver` directly.
+    #[test]
+    fn green_sender_is_a_port_target_for_send_port() {
+        let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+        let (tx_green, mut rx_green) = green_channel::<u32>(4, handle.waker());
+
+        let mut port = Some(9u32);
+        assert_eq!(send_port(&mut port, &tx_green), Flush::Done);
+        assert!(port.is_none(), "a delivered port clears");
+        assert_eq!(
+            rx_green.try_recv().unwrap(),
+            9,
+            "send_port must actually deliver through a GreenSender target, not just clear the port"
+        );
+    }
 }

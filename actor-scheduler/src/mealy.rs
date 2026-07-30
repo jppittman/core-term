@@ -2221,6 +2221,96 @@ mod tests {
         );
     }
 
+    // Kills: replace += with *= (line 538) in the `Slot::Management` arm's
+    // `self.slot_progress += 1`. With `*=`, `slot_progress` starts at 0 and stays 0 forever
+    // (0 * 1 == 0), so `advance_if_exhausted` never sees it reach `limit` and the slot never
+    // rotates off Management on its own — only an empty/disconnected lane moves it. Set
+    // `management_limit == 1` and queue two management messages plus one data message: correct
+    // code serves M, then (having exhausted its 1-message budget) rotates through Control2 to
+    // Data before coming back around to the second M — M, D, M. The mutant keeps re-checking
+    // Management, which still has a message, so it serves both M's back to back before ever
+    // reaching Data — M, M, D.
+    #[test]
+    fn management_slot_progress_increments_not_multiplies() {
+        let params = SchedulerParams {
+            control_mgmt_buffer_size: 1,
+            management_burst_multiplier: 1, // management_burst_limit == 1
+            ..SchedulerParams::DEFAULT
+        };
+        assert_eq!(params.management_burst_limit(), 1);
+
+        let (_tx_c, rx_c) = spsc_channel::<()>(4);
+        let (tx_m, rx_m) = spsc_channel::<()>(4);
+        let (tx_d, rx_d) = spsc_channel::<()>(4);
+
+        let mut node = Node::new_with_lanes(
+            LaneLog { seen: Vec::new() },
+            Lanes {
+                control: rx_c,
+                management: rx_m,
+                data: rx_d,
+            },
+            NoWiring,
+            params,
+        );
+
+        tx_m.try_send(()).unwrap();
+        tx_m.try_send(()).unwrap();
+        tx_d.try_send(()).unwrap();
+
+        for _ in 0..3 {
+            assert_eq!(node.poll(), Step::Ran);
+        }
+        assert_eq!(
+            node.actor().seen,
+            vec!["M", "D", "M"],
+            "management's 1-message budget must yield to data before the second M"
+        );
+    }
+
+    // Kills: replace += with *= (line 554) in the `Slot::Data` arm's
+    // `self.slot_progress += 1`. Same defect as the Management case above, one slot over: with
+    // `*=`, a spent Data budget never registers, so the slot stays on Data past its limit
+    // instead of rotating back to Control1. `default_data_burst_limit == 1` and two data
+    // messages queued: correct code serves one D, rotates off Data, and (once a control message
+    // is queued) serves it next — D, C. The mutant never leaves Data while it still has a
+    // message, so it serves the second D instead — D, D.
+    #[test]
+    fn data_slot_progress_increments_not_multiplies() {
+        let params = SchedulerParams {
+            default_data_burst_limit: 1,
+            ..SchedulerParams::DEFAULT
+        };
+
+        let (tx_c, rx_c) = spsc_channel::<()>(4);
+        let (_tx_m, rx_m) = spsc_channel::<()>(4);
+        let (tx_d, rx_d) = spsc_channel::<()>(4);
+
+        let mut node = Node::new_with_lanes(
+            LaneLog { seen: Vec::new() },
+            Lanes {
+                control: rx_c,
+                management: rx_m,
+                data: rx_d,
+            },
+            NoWiring,
+            params,
+        );
+
+        tx_d.try_send(()).unwrap();
+        tx_d.try_send(()).unwrap();
+
+        assert_eq!(node.poll(), Step::Ran);
+        tx_c.try_send(()).unwrap();
+        assert_eq!(node.poll(), Step::Ran);
+
+        assert_eq!(
+            node.actor().seen,
+            vec!["D", "C"],
+            "data's 1-message budget must yield to control before the second D"
+        );
+    }
+
     #[test]
     fn halts_only_once_every_lane_is_disconnected() {
         let (tx_c, rx_c) = spsc_channel::<()>(4);
