@@ -417,6 +417,31 @@ mod tests {
         row * 8 + col
     }
 
+    /// Row-major index into a plane of arbitrary width — for the handful of
+    /// tests below whose lattice isn't 8 wide.
+    fn px_w(row: usize, col: usize, width: usize) -> usize {
+        row * width + col
+    }
+
+    #[test]
+    fn cells_len_multiplies_every_dimension() {
+        // cols != rows so a `cols / rows` (or any other dropped-factor)
+        // mistake for one of the three multiplicands cannot hide behind a
+        // coincidental 1.
+        let geom = CellGridGeometry {
+            cols: 3,
+            rows: 5,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: 8,
+            atlas_height: 8,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        assert_eq!(geom.cells_len(), 3 * 5 * CELL_STRIDE);
+    }
+
     /// Evaluate one channel over a pixel-center lattice.
     fn plane(frame: &CellGridFrame, channel: usize, w: usize, h: usize) -> alloc::vec::Vec<f32> {
         let lattice = Lattice {
@@ -431,6 +456,7 @@ mod tests {
         let (program, cells, atlas) = tiny_scene();
         let frame = program.frame(cells, atlas);
         let r = plane(&frame, 0, 8, 4);
+        let g = plane(&frame, 1, 8, 4);
         let b = plane(&frame, 2, 8, 4);
         // Cell 0 interior: coverage 1 → pure fg (red).
         assert!((r[px(1, 1)] - 1.0).abs() < 1e-5, "cell0 R = {}", r[9]);
@@ -439,6 +465,49 @@ mod tests {
         // R: 0.5·1 + 0.5·0 = 0.5;  B: 0.5·1 + 0.5·1 = 1.0.
         assert!((r[px(1, 5)] - 0.5).abs() < 1e-5, "cell1 R = {}", r[13]);
         assert!((b[px(1, 5)] - 1.0).abs() < 1e-5, "cell1 B = {}", b[13]);
+        // Cell 1's G channel (fg_g=1, bg_g=0) pins the fg/bg gather offsets
+        // themselves: reading `bg` from the wrong cell-data slot (e.g. the
+        // fg alpha column, which is also 1 for cell 1) would land on 1.0
+        // instead of blending down to 0.5.
+        assert!((g[px(1, 5)] - 0.5).abs() < 1e-5, "cell1 G = {}", g[13]);
+    }
+
+    /// Points just past the grid's real width/height, but still short of
+    /// what a broken `cols + cell_w` / `rows + cell_h` extent (instead of
+    /// `cols * cell_w` / `rows * cell_h`) would compute — pins the
+    /// multiplication, not just the boundary's existence.
+    #[test]
+    fn grid_extent_is_cell_count_times_cell_size_not_a_sum() {
+        let (program, cells, atlas) = tiny_scene();
+        let frame = program.frame(cells, atlas);
+        // Real grid: 8×4 points (2 cols × 4pt, 1 row × 4pt). A broken
+        // `cols + cell_w` extent would compute 2+4=6 for the width.
+        let lattice = Lattice {
+            extent: [1, 1, 1, 1],
+            origin: [6.5, 0.5, 0.0, 0.0], // inside the real grid, past width 6
+        };
+        let r = lattice.collapse(&frame.channel(0)).into_buffer();
+        assert!(
+            (r[0] - 0.5).abs() < 1e-5,
+            "x=6.5 is inside cell 1 and must read its blended color, not the \
+             default background: R = {}",
+            r[0]
+        );
+
+        // A broken `rows + cell_h` extent would compute 1+4=5 for the
+        // height; y=4.4 is outside the real grid (height 4) but inside that
+        // broken one.
+        let lattice = Lattice {
+            extent: [1, 1, 1, 1],
+            origin: [0.5, 4.4, 0.0, 0.0],
+        };
+        let r = lattice.collapse(&frame.channel(0)).into_buffer();
+        assert!(
+            (r[0] - 0.9).abs() < 1e-5,
+            "y=4.4 is below the real grid and must read the default \
+             background (0.9), not cell content: R = {}",
+            r[0]
+        );
     }
 
     #[test]
@@ -534,6 +603,58 @@ mod tests {
                 r[px(1, col)].abs() < 1e-5,
                 "cell past its tile must be background at col {col}, got {}",
                 r[px(1, col)]
+            );
+        }
+    }
+
+    #[test]
+    fn cells_taller_than_their_tile_fade_to_background() {
+        // 1x1 grid, 4-point cell width (matches its tile) but a 12-point-tall
+        // cell over a 4-texel-tall tile: everything below the tile has no
+        // content. The vertical clamp must land those taps in the zero
+        // apron, never back inside the tile's own solid content — a clamp
+        // computed too small (rather than missing entirely) still reads
+        // *some* real texel, just the wrong one, so a plain "not the tile's
+        // fg color" check wouldn't catch it; this pins the exact apron row.
+        let (aw, ah) = (6usize, 6usize);
+        let mut atlas = vec![0.0f32; aw * ah];
+        for r in 0..4 {
+            for c in 0..4 {
+                atlas[(1 + r) * aw + 1 + c] = 1.0; // solid tile
+            }
+        }
+        let geom = CellGridGeometry {
+            cols: 1,
+            rows: 1,
+            cell_w: 4.0,
+            cell_h: 12.0,
+            density: 1.0,
+            atlas_width: aw as u32,
+            atlas_height: ah as u32,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        let program = CellGridProgram::compile(geom, [0.0; 4]);
+        let cells = vec![
+            1.0, 1.0, /* uv */ 1.0, 1.0, 1.0, 1.0, /* fg */ 0.0, 0.0, 0.0,
+            1.0, /* bg */
+        ];
+        let frame = program.frame(Arc::new(cells), Arc::new(atlas));
+        let r = plane(&frame, 0, 4, 12);
+        // Near the top: tile content, fg.
+        assert!(
+            (r[px_w(1, 1, 4)] - 1.0).abs() < 1e-5,
+            "tile content R = {}",
+            r[px_w(1, 1, 4)]
+        );
+        // Well below the tile: a clamp landing even a couple texels short
+        // of the apron reads back into the tile's own solid content (1.0)
+        // instead of background.
+        for row in 8..12 {
+            assert!(
+                r[px_w(row, 1, 4)].abs() < 1e-5,
+                "cell past its tile must be background at row {row}, got {}",
+                r[px_w(row, 1, 4)]
             );
         }
     }
