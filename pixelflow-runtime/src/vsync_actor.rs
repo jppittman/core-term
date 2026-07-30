@@ -448,6 +448,94 @@ mod tests {
             "only UpdateRefreshRate should touch the interval port"
         );
     }
+
+    /// `started`'s whole contract ("new and already running", see its doc) lives in `configure`
+    /// — nothing else in this module ever calls `started`/`configure` (every other test builds
+    /// via `new` and drives `Start` itself), so `configure`'s body had no coverage at all.
+    #[test]
+    fn started_configures_running_state_with_the_correct_interval() {
+        let core = VsyncCore::started(60.0);
+        assert!(core.running, "`started` must already be running");
+        assert_eq!(
+            core.interval,
+            Duration::from_secs_f64(1.0 / 60.0),
+            "the interval must be the reciprocal of the refresh rate"
+        );
+    }
+
+    /// `update_fps` (and the frame counting in `step_data` that feeds it) had zero coverage:
+    /// nothing sent `RequestCurrentFPS` to observe `last_fps`, so mutating the whole function to
+    /// a no-op, flipping its 1-second gate, or swapping `/` for `%`/`*` all survived. Forces the
+    /// gate open the same way `force_tick_due` forces the vsync gate open — overriding the
+    /// private `fps_start` directly — so this doesn't depend on the test itself taking a real
+    /// second to run.
+    #[test]
+    fn update_fps_divides_frame_count_by_elapsed_seconds() {
+        let mut core = VsyncCore::new(60.0);
+        let rendered = || RenderedResponse {
+            frame_number: 0,
+            rendered_at: Instant::now(),
+        };
+        for _ in 0..10 {
+            core.step_data(rendered()).unwrap();
+        }
+        core.fps_start = Instant::now() - Duration::from_secs(5);
+        core.step_data(rendered()).unwrap(); // 11th frame; also the one that crosses the gate
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        core.step_control(VsyncCommand::RequestCurrentFPS(tx))
+            .unwrap();
+        let fps = rx.try_recv().expect("fps reply sent");
+        // 11 frames / ~5s ~= 2.2 fps. Loose bounds tolerate real scheduling jitter in `elapsed`
+        // while still separating the correct division from `%` (would read ~1.0, the remainder
+        // of 11/5) or `*` (would read 55, the product) or a no-op/inverted gate (would read the
+        // untouched initial 0.0).
+        assert!(
+            (1.5..3.0).contains(&fps),
+            "expected roughly 11/5 ~= 2.2 fps from dividing frame count by elapsed seconds, got {fps}"
+        );
+    }
+
+    /// The time gate (`now < next_vsync`) is only ever exercised in the "already due" direction
+    /// by every other test (`force_tick_due` pushes `next_vsync` into the past); nothing checks
+    /// that a core due far in the *future* stays silent, so the gate could be deleted or
+    /// inverted without any test noticing.
+    #[test]
+    fn a_tick_far_before_its_own_interval_does_not_fire() {
+        let mut core = VsyncCore::new(60.0);
+        core.step_control(VsyncCommand::Start).unwrap();
+        core.next_vsync = Instant::now() + Duration::from_secs(3600);
+        let out = core.step_management(VsyncManagement::Tick).unwrap();
+        assert!(
+            out.tick.is_none(),
+            "must not tick before its own interval has elapsed"
+        );
+    }
+
+    /// `target_timestamp` and the next `next_vsync` are each "one interval ahead of this tick" —
+    /// a promise no existing test pinned numerically (they only checked `tick.is_some()`), and
+    /// `next_vsync`'s value in particular was always immediately overwritten by the next test's
+    /// own `force_tick_due` before anything could observe it.
+    #[test]
+    fn a_tick_advances_next_vsync_and_target_timestamp_by_exactly_one_interval() {
+        let mut core = VsyncCore::new(60.0);
+        core.step_control(VsyncCommand::Start).unwrap();
+        force_tick_due(&mut core);
+        let out = core.step_management(VsyncManagement::Tick).unwrap();
+        let tick = out.tick.expect("a started, due core must tick");
+
+        assert_eq!(
+            tick.target_timestamp,
+            tick.timestamp + core.interval,
+            "target_timestamp must be exactly one interval ahead of the tick"
+        );
+        assert_eq!(
+            core.next_vsync,
+            tick.timestamp + core.interval,
+            "next_vsync must advance by exactly one interval from this tick, not from `now` \
+             recomputed or from the old next_vsync"
+        );
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -258,6 +258,16 @@ mod tests {
     }
 
     #[test]
+    fn tile_px_scales_with_density_not_just_size() {
+        // Every other test in this module uses density = 1.0, where
+        // `size_pt * density` is indistinguishable from `size_pt / density`
+        // or plain `size_pt` — pin the actual multiplication with a density
+        // that isn't 1.
+        let atlas = GlyphAtlas::new(8.0, 2.0, 4);
+        assert_eq!(atlas.tile_px(), 16);
+    }
+
+    #[test]
     fn slot_zero_is_blank_and_missing_chars_map_to_it() {
         let font = font();
         let mut atlas = GlyphAtlas::new(16.0, 1.0, 8);

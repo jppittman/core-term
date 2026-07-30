@@ -736,6 +736,39 @@ mod tests {
         ));
     }
 
+    /// `Rig` always wires `vsync_control: None` (see `with_ring_and_params`), so every other
+    /// test in this module exercises `send_vsync_control`'s early-return branch, not its real
+    /// send — this builds a minimal `EngineHandler` with a live vsync-control channel instead.
+    #[test]
+    fn render_surface_returns_the_vsync_token_over_the_real_channel() {
+        let waker = {
+            let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
+            handle.waker()
+        };
+        let (vsync_control_tx, mut vsync_control_rx) = spsc_channel::<VsyncCommand>(8);
+        let vsync_control = GreenSender::new(vsync_control_tx, waker);
+        let (driver, _driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+        let mut engine = EngineHandler {
+            driver,
+            vsync_control: Some(vsync_control),
+            vsync_host: None,
+            coordinator: None,
+            self_handle: None,
+            rasterizer_forwarder: None,
+            app_handle: None,
+            core: EngineCore::new(),
+        };
+
+        engine
+            .handle_data(EngineData::FromApp(AppData::RenderSurface(manifold())))
+            .expect("render surface handled");
+
+        assert!(
+            matches!(vsync_control_rx.try_recv(), Ok(VsyncCommand::ReturnToken)),
+            "submitting a scene must release the vsync token over the real channel"
+        );
+    }
+
     #[test]
     fn skipped_frame_does_not_touch_the_coordinator() {
         let mut rig = Rig::new();
@@ -907,6 +940,52 @@ mod tests {
             rig.coordinator_rx.try_recv(),
             Ok(CoordinatorData::Advance)
         ));
+    }
+
+    /// The three quit paths (`EngineControl::Quit`, `AppManagement::Quit`, `CloseRequested`) all
+    /// funnel into `shut_down`'s cascade. `Rig` can't exercise this: it drops its driver
+    /// scheduler immediately (`with_ring_and_params`'s `_driver_sched`), so `driver.send(Shutdown)`
+    /// would hit a disconnected receiver and panic on the `.expect` inside `shut_down` — this
+    /// builds a minimal `EngineHandler` with a live driver scheduler instead, everything else
+    /// `None` (each optional handle's `Shutdown` send is skipped when absent, so only the driver,
+    /// which isn't optional, needs one).
+    #[test]
+    fn quit_control_shuts_down_the_driver() {
+        let (driver, mut driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+        let mut engine = EngineHandler {
+            driver,
+            vsync_control: None,
+            vsync_host: None,
+            coordinator: None,
+            self_handle: None,
+            rasterizer_forwarder: None,
+            app_handle: None,
+            core: EngineCore::new(),
+        };
+
+        engine
+            .handle_control(EngineControl::Quit)
+            .expect("quit is handled");
+
+        struct NoOpDriver;
+        impl Actor<DisplayData, DisplayControl, DisplayMgmt> for NoOpDriver {
+            fn handle_data(&mut self, _: DisplayData) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_control(&mut self, _: DisplayControl) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_management(&mut self, _: DisplayMgmt) -> HandlerResult {
+                Ok(())
+            }
+            fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+                Ok(ActorStatus::Idle)
+            }
+        }
+        assert!(
+            driver_sched.poll_once(&mut NoOpDriver),
+            "EngineControl::Quit must reach the driver as Message::Shutdown"
+        );
     }
 
     /// The forwarder's whole reason to exist: turn the rasterizer's bare `mpsc` responses into

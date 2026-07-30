@@ -452,6 +452,55 @@ mod tests {
         assert!(matches!(out.coordinator, Some(CoordinatorData::Advance)));
     }
 
+    /// `convert_mouse_button`'s three named codes, pinned by number rather than by "is a click
+    /// relayed at all" — the button-code table itself had zero coverage (nothing in this module
+    /// exercised `DisplayEvent::MouseButtonPress` at all), so a mutant deleting any one of the
+    /// 0/1/2 arms fell through to `MouseButton::Other` unnoticed.
+    #[test]
+    fn mouse_button_press_maps_known_codes_and_falls_back_to_other() {
+        let press = |button: u8| {
+            let mut core = EngineCore::new();
+            core.step_data(EngineData::FromDriver(DisplayEvent::MouseButtonPress {
+                id: WindowId(1),
+                button,
+                x: 0,
+                y: 0,
+                modifiers: crate::input::Modifiers::default(),
+            }))
+            .unwrap()
+            .app
+        };
+
+        assert!(matches!(
+            press(0),
+            Some(EngineEvent::Management(EngineEventManagement::MouseClick {
+                button: MouseButton::Left,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            press(1),
+            Some(EngineEvent::Management(EngineEventManagement::MouseClick {
+                button: MouseButton::Middle,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            press(2),
+            Some(EngineEvent::Management(EngineEventManagement::MouseClick {
+                button: MouseButton::Right,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            press(9),
+            Some(EngineEvent::Management(EngineEventManagement::MouseClick {
+                button: MouseButton::Other(9),
+                ..
+            }))
+        ));
+    }
+
     #[test]
     fn quit_control_sets_quit() {
         let mut core = EngineCore::new();

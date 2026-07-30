@@ -338,6 +338,54 @@ mod tests {
         );
     }
 
+    /// `present_cooked_frame` stamps every presented frame with a strictly increasing number
+    /// (telemetry's whole reason to exist — see the module doc's "Why two producers, two
+    /// lanes"). A single-frame test can't tell an incrementing counter from one pinned at its
+    /// first value, so this drives two full request/render/present cycles.
+    #[test]
+    fn frame_counter_advances_once_per_presented_frame() {
+        let mut core = CoordinatorCore::new();
+
+        core.step_data(CoordinatorData::Submit(manifold())).unwrap();
+        let out = core
+            .step_data(CoordinatorData::Granted(one_to_one_window()))
+            .unwrap();
+        let request = out.render.expect("expected a render request");
+        let out = core
+            .step_management(RenderResponse {
+                frame: request.frame,
+                render_time: Some(Duration::from_millis(1)),
+                meta: request.meta,
+            })
+            .unwrap();
+        let first = out
+            .rendered
+            .expect("first frame must report telemetry")
+            .frame_number;
+        assert_eq!(first, 1, "the first presented frame must be numbered 1");
+
+        core.step_data(CoordinatorData::Submit(manifold())).unwrap();
+        let out = core
+            .step_data(CoordinatorData::Granted(one_to_one_window()))
+            .unwrap();
+        let request = out.render.expect("expected a second render request");
+        let out = core
+            .step_management(RenderResponse {
+                frame: request.frame,
+                render_time: Some(Duration::from_millis(1)),
+                meta: request.meta,
+            })
+            .unwrap();
+        let second = out
+            .rendered
+            .expect("second frame must report telemetry")
+            .frame_number;
+        assert_eq!(
+            second, 2,
+            "the frame counter must advance on each presented frame, not stay pinned"
+        );
+    }
+
     /// The delivery-feedback seam dissolved (module doc): `route` calls `request_sent` the
     /// instant it decides to ask, not once wiring confirms delivery — so a second submission
     /// arriving before any reply must not repeat the ask.

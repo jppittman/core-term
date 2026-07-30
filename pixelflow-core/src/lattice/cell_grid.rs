@@ -495,16 +495,19 @@ mod tests {
         );
 
         // A broken `rows + cell_h` extent would compute 1+4=5 for the
-        // height; y=4.4 is outside the real grid (height 4) but inside that
-        // broken one.
+        // height; y=4.9 is outside the real grid (height 4) but inside that
+        // broken one, deep enough into the phantom row's clamped tile read
+        // (coverage saturates to 1) that the wrongly-admitted value (1.0)
+        // can't coincidentally match the default background (0.9) the way
+        // a point right at the boundary could.
         let lattice = Lattice {
             extent: [1, 1, 1, 1],
-            origin: [0.5, 4.4, 0.0, 0.0],
+            origin: [0.5, 4.9, 0.0, 0.0],
         };
         let r = lattice.collapse(&frame.channel(0)).into_buffer();
         assert!(
             (r[0] - 0.9).abs() < 1e-5,
-            "y=4.4 is below the real grid and must read the default \
+            "y=4.9 is below the real grid and must read the default \
              background (0.9), not cell content: R = {}",
             r[0]
         );
