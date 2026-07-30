@@ -2,6 +2,7 @@ pub mod color;
 pub mod frame;
 pub mod pixel;
 pub mod rasterizer;
+pub mod scene;
 
 #[cfg(test)]
 mod pict; // PICT-style pairwise covering-array generator (POC)

@@ -160,7 +160,7 @@ fn main() -> anyhow::Result<()> {
 
     engine_handle
         .send(Message::Data(EngineData::FromApp(AppData::RenderSurface(
-            scene_arc.clone(),
+            scene_arc.clone().into(),
         ))))
         .map_err(|e| anyhow::anyhow!("Failed to send initial frame: {}", e))?;
 

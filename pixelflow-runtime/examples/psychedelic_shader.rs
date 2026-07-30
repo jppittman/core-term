@@ -121,7 +121,7 @@ impl Application for PsychedelicApp {
                     .lock()
                     .unwrap()
                     .send(Message::Data(EngineData::FromApp(AppData::RenderSurface(
-                        arc,
+                        arc.into(),
                     ))))
                     .map_err(|e| RuntimeError::EventSendError(e.to_string()))?;
             }

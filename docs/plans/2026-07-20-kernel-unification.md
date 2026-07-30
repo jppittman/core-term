@@ -310,6 +310,23 @@ to-be-retired backend, tracked until that backend dies.
   lane in pixelflow-runtime (bake channel planes via the collapse loop +
   LICM, pack to RGBA) is the natural next cut and would retire that too.
 
+  **P6 progress 2026-07-29 (second): the frame lane is Kernel-native.**
+  The rasterizer's input is now `pixelflow_graphics::render::scene::Scene`:
+  `Surface` (an arbitrary color manifold, dense per-batch evaluation — the
+  generic lane examples and the no-snapshot background still use) or
+  `CellGrid` (a `CellGridFrame` rendered by ONE 2D-collapse call per channel
+  per stripe — the internal pixel loop, both LICM prologue scopes active —
+  then packed via `Pixel::from_rgba`). `CellGridProgram` compiles
+  collapse-mode kernels only; the per-batch `CellGridChannel` manifolds are
+  deleted with their `At`+`ColorCube` composition in core-term — the
+  terminal's render path now contains no combinator evaluation at all.
+  `Scene::CellGrid` renders in device-pixel space by contract (the
+  coordinator's DPI contramap applies only to `Surface`; the cell grid
+  carries its scale in its geometry, which makes atlas texels ≡ device
+  pixels). `AppData::RenderSurfaceU32` — documented as u32-coordinate
+  rendering but treated identically to `RenderSurface` by the engine, with
+  zero senders — deleted per subtract-before-add.
+
 ## Beyond P6 — the language the totality axiom demands
 
 P0–P6 unify the *pipeline*. These phases grow the *language* to cover the AO /

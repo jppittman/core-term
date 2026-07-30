@@ -41,9 +41,7 @@ use crate::render_coordinator::{Completed, RenderCoordinator, Step};
 use crate::vsync_actor::RenderedResponse;
 use actor_scheduler::mealy::{all, send_port, Flush, Transducer, Wiring};
 use actor_scheduler::{ActorHandle, GreenSender, HandlerError, Message};
-use pixelflow_core::{Discrete, Manifold};
 use pixelflow_graphics::render::rasterizer::{RasterizerHandle, RenderRequest, RenderResponse};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A manifold as it travels between the app and the rasterizer.
@@ -52,7 +50,7 @@ use std::time::{Duration, Instant};
 /// it: that module's `Scene` is deliberately not part of even this crate's wider surface, and
 /// re-exporting it just to share one line would widen `RenderCoordinator`'s API for a type
 /// alias, not a capability.
-type Scene = Arc<dyn Manifold<Output = Discrete> + Send + Sync>;
+use pixelflow_graphics::render::scene::Scene;
 
 /// Frame counter logging cadence — moved verbatim from the old `EngineCore` copy: the telemetry
 /// edge (`rendered`, below) is a coordinator → vsync edge now, so the counter that stamps it
@@ -275,7 +273,9 @@ mod tests {
     use crate::platform::ColorCube;
 
     fn manifold() -> Scene {
-        Arc::new(ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32))
+        Scene::Surface(std::sync::Arc::new(
+            ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32),
+        ))
     }
 
     fn one_to_one_window() -> Window {
@@ -651,7 +651,9 @@ mod node_tests {
     /// A constant black scene — these tests care about which buffer a render is aimed at, not
     /// what is in it.
     fn manifold() -> Scene {
-        Arc::new(ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32))
+        Scene::Surface(std::sync::Arc::new(
+            ColorCube::default().at(0.0f32, 0.0f32, 0.0f32, 1.0f32),
+        ))
     }
 
     /// The steady state: the coordinator asks for the buffer only when it has something to

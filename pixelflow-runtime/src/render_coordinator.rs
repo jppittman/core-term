@@ -15,13 +15,13 @@
 use crate::display::messages::{Window, WindowMeta};
 use crate::platform::PlatformPixel;
 use actor_scheduler::mealy::Credit;
-use pixelflow_core::{At, Discrete, Manifold, W, X, Y, Z};
+use pixelflow_core::{At, W, X, Y, Z};
 use pixelflow_graphics::render::rasterizer::{RenderRequest, RenderResponse};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A manifold as it travels between the app and the rasterizer.
-type Scene = Arc<dyn Manifold<Output = Discrete> + Send + Sync>;
+/// A scene as it travels between the app and the rasterizer.
+use pixelflow_graphics::render::scene::Scene;
 
 /// What the coordinator wants delivered, having decided everything it can on its own.
 ///
@@ -259,23 +259,28 @@ fn bind(scene: Scene, window: Window) -> RenderRequest<PlatformPixel, WindowMeta
     );
     let point_per_px_x = width_px as f32 / frame.width as f32;
     let point_per_px_y = height_px as f32 / frame.height as f32;
-    let manifold: Scene = if point_per_px_x == 1.0 && point_per_px_y == 1.0 {
-        scene
-    } else {
-        Arc::new(At {
-            inner: scene,
-            x: X * point_per_px_x,
-            y: Y * point_per_px_y,
-            z: Z,
-            w: W,
-        })
+    let scene: Scene = match scene {
+        // Point-space surfaces are contramapped into the denser device grid.
+        Scene::Surface(manifold) => {
+            if point_per_px_x == 1.0 && point_per_px_y == 1.0 {
+                Scene::Surface(manifold)
+            } else {
+                Scene::Surface(Arc::new(At {
+                    inner: manifold,
+                    x: X * point_per_px_x,
+                    y: Y * point_per_px_y,
+                    z: Z,
+                    w: W,
+                }))
+            }
+        }
+        // A cell-grid scene is device-pixel space by contract: its geometry
+        // (cell extents, atlas density) already carries any DPI scale, so
+        // the collapse kernels sample the buffer's own pixel grid directly.
+        Scene::CellGrid(grid) => Scene::CellGrid(grid),
     };
 
-    RenderRequest {
-        manifold,
-        frame,
-        meta,
-    }
+    RenderRequest { scene, frame, meta }
 }
 
 #[cfg(test)]
@@ -292,6 +297,7 @@ mod tests {
     use crate::display::messages::Surface;
     use crate::display::window_keeper::WindowKeeper;
     use pixelflow_core::Field;
+    use pixelflow_core::{Discrete, Manifold};
     use pixelflow_graphics::render::rasterizer::RenderResponse;
 
     /// A manifold that ignores its input — the coordinator never samples it, it only decides
@@ -312,7 +318,7 @@ mod tests {
     }
 
     fn scene() -> Scene {
-        Arc::new(Flat)
+        Scene::Surface(Arc::new(Flat))
     }
 
     /// A keeper holding one buffer at the given logical size, sampled 1:1.
@@ -513,24 +519,30 @@ mod tests {
         // 1:1 — the scene must arrive at the rasterizer untouched.
         let mut coord = RenderCoordinator::new();
         let flat = scene();
-        assert_requests_window(coord.submit(Arc::clone(&flat)));
+        assert_requests_window(coord.submit(flat.clone()));
         coord.request_sent();
         let request = expect_render(coord.granted(one_to_one_window()));
+        let (Scene::Surface(got), Scene::Surface(sent)) = (&request.scene, &flat) else {
+            panic!("surface scenes in, surface scenes out");
+        };
         assert!(
-            Arc::ptr_eq(&request.manifold, &flat),
+            Arc::ptr_eq(got, sent),
             "a 1:1 frame needs no warp, so the scene should pass through unwrapped"
         );
 
         // 2:1 — 100 points across a 200-pixel frame.
         let mut coord = RenderCoordinator::new();
         let flat = scene();
-        assert_requests_window(coord.submit(Arc::clone(&flat)));
+        assert_requests_window(coord.submit(flat.clone()));
         coord.request_sent();
         let retina = grant_from(&mut keeper_at((100, 100), (200, 200), 2.0));
         let request = expect_render(coord.granted(retina));
         assert_eq!((request.frame.width, request.frame.height), (200, 200));
+        let (Scene::Surface(got), Scene::Surface(sent)) = (&request.scene, &flat) else {
+            panic!("surface scenes in, surface scenes out");
+        };
         assert!(
-            !Arc::ptr_eq(&request.manifold, &flat),
+            !Arc::ptr_eq(got, sent),
             "a Retina frame must be contramapped by points/pixels, not forwarded as authored"
         );
     }

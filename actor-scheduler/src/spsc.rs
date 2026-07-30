@@ -22,7 +22,7 @@
 use std::cell::{Cell, UnsafeCell};
 use std::mem::MaybeUninit;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Cache line size for padding. 64 bytes on x86, conservative default.
 const CACHE_LINE: usize = 64;
@@ -76,6 +76,14 @@ struct RingBuffer<T> {
     head: PaddedAtomic,
     /// Producer's write position. Only the producer stores to this.
     tail: PaddedAtomic,
+    /// Set (Release) by the producer's Drop, AFTER its last `tail` publish.
+    /// The consumer reads it with Acquire, so observing `true` makes every
+    /// message the producer ever published visible — which is what makes
+    /// "disconnected AND empty" a drain guarantee instead of a race.
+    /// (`Arc::strong_count` cannot serve here: its Relaxed load orders
+    /// nothing, so a consumer could see the count drop before the final
+    /// tail store and abandon buffered messages.)
+    producer_gone: AtomicBool,
 }
 
 // Safety: RingBuffer is shared between exactly one producer thread and one
@@ -102,6 +110,7 @@ impl<T> RingBuffer<T> {
             mask,
             head: PaddedAtomic::new(0),
             tail: PaddedAtomic::new(0),
+            producer_gone: AtomicBool::new(false),
         }
     }
 }
@@ -247,11 +256,21 @@ impl<T> SpscReceiver<T> {
             // Refresh tail from the producer's atomic
             self.cached_tail = self.ring.tail.value.load(Ordering::Acquire);
             if head == self.cached_tail {
-                // Empty — check if producer is gone
-                if Arc::strong_count(&self.ring) == 1 {
-                    return Err(TryRecvError::Disconnected);
+                // Empty — check if producer is gone. The Acquire load pairs
+                // with the Release store in SpscSender::drop, which runs
+                // after the producer's last publish; re-check the tail so a
+                // disconnect never outruns messages already sent (the CI-
+                // caught race: 256 of 100k lost at teardown).
+                if self.ring.producer_gone.load(Ordering::Acquire) {
+                    self.cached_tail = self.ring.tail.value.load(Ordering::Acquire);
+                    if head == self.cached_tail {
+                        return Err(TryRecvError::Disconnected);
+                    }
+                    // Messages landed between the checks: fall through and
+                    // read them; Disconnected is only ever "gone AND drained".
+                } else {
+                    return Err(TryRecvError::Empty);
                 }
-                return Err(TryRecvError::Empty);
             }
         }
 
@@ -274,7 +293,7 @@ impl<T> SpscReceiver<T> {
     /// Returns true if the producer has been dropped.
     #[must_use]
     pub fn is_disconnected(&self) -> bool {
-        Arc::strong_count(&self.ring) == 1
+        self.ring.producer_gone.load(Ordering::Acquire)
     }
 
     /// Returns the number of messages currently in the buffer.
@@ -296,8 +315,10 @@ impl<T> SpscReceiver<T> {
 
 impl<T> Drop for SpscSender<T> {
     fn drop(&mut self) {
-        // No special action needed — the RingBuffer's Drop handles cleanup.
-        // The consumer will see Disconnected on next try_recv when empty.
+        // Release-publish the disconnect AFTER every tail store this thread
+        // made, so a consumer that Acquire-observes it also observes the
+        // final messages. The RingBuffer's Drop handles slot cleanup.
+        self.ring.producer_gone.store(true, Ordering::Release);
     }
 }
 

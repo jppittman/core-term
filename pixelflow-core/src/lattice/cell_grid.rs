@@ -46,7 +46,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::JitVec;
-use crate::{Field, Manifold};
+use crate::Field;
 use pixelflow_ir::arena::BufferDecl;
 use pixelflow_ir::{ExprArena, ExprId, JitManifold, OpKind};
 
@@ -54,19 +54,31 @@ use pixelflow_ir::{ExprArena, ExprId, JitManifold, OpKind};
 pub const CELL_STRIDE: usize = 10;
 
 /// The compiled-against shape of a [`CellGridProgram`]: grid dimensions,
-/// cell extent in points, atlas extents in texels, and the atlas sample
-/// density (texels per point). Changing any field means recompiling.
+/// cell extents, atlas extents in texels, and the atlas sample density.
+/// Changing any field means recompiling.
+///
+/// ## Coordinate units
+///
+/// Cell extents and `density` are in the CALLER'S sampling space — the
+/// coordinates the compiled kernels will be evaluated at. The program
+/// applies no unit conversion of its own, so whoever drives the bake
+/// decides what a coordinate means and must express every field in that
+/// one space. In particular, `pixelflow-runtime` renders cell-grid scenes
+/// on the frame buffer's DEVICE-PIXEL grid without any DPI contramap: a
+/// scene destined for the runtime bakes its display scale in here
+/// (extents × scale, density in texels per device pixel), as core-term
+/// does.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct CellGridGeometry {
     /// Grid width in cells.
     pub cols: u32,
     /// Grid height in cells.
     pub rows: u32,
-    /// Cell width in points.
+    /// Cell width, in sampling-space coordinate units (see the type docs).
     pub cell_w: f32,
-    /// Cell height in points.
+    /// Cell height, in sampling-space coordinate units.
     pub cell_h: f32,
-    /// Atlas texels per point.
+    /// Atlas texels per sampling-space coordinate unit.
     pub density: f32,
     /// Atlas width in texels.
     pub atlas_width: u32,
@@ -265,10 +277,11 @@ impl CellGridProgram {
         );
         let jits = core::array::from_fn(|c| {
             let (arena, root) = channel_arena(&geom, c, default_bg[c]);
-            // Bound-memory arenas are uncacheable (the code bakes buffer
-            // slot metadata); compile_cached recognizes that and compiles
-            // fresh.
-            pixelflow_ir::jit_cache::compile_cached(&arena, root)
+            // Collapse-mode (internal 2D loop): one call bakes a whole run
+            // of rows for a channel. Bound-memory arenas are uncacheable
+            // (the code bakes buffer slot metadata); the cache recognizes
+            // that and compiles fresh.
+            pixelflow_ir::jit_cache::compile_collapse_cached(&arena, root)
                 .expect("cell-grid channel failed to compile")
         });
         Self { geom, jits }
@@ -319,53 +332,80 @@ pub struct CellGridFrame {
     atlas: Arc<Vec<f32>>,
 }
 
+/// A horizontal band of pixel rows to bake: `width` pixels across, rows
+/// `y0 .. y0 + rows`.
+#[derive(Clone, Copy, Debug)]
+pub struct PlaneRegion {
+    /// Pixels per row.
+    pub width: usize,
+    /// First pixel row.
+    pub y0: usize,
+    /// Number of rows.
+    pub rows: usize,
+}
+
 impl CellGridFrame {
-    /// The manifold for one color channel (0 = R, 1 = G, 2 = B, 3 = A).
+    /// The padded row stride (in `f32`s) that [`CellGridFrame::bake_channel_rows`]
+    /// writes: `width` rounded up to whole SIMD batches. Planes are laid out
+    /// at this stride; the padding lanes hold whatever the kernel computed
+    /// past the right edge (out-of-grid pixels — the default background) and
+    /// are simply not read back.
+    #[must_use]
+    pub fn padded_width(width: usize) -> usize {
+        let lanes = pixelflow_ir::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
+        width.div_ceil(lanes).max(1) * lanes
+    }
+
+    /// Bake one color channel (0 = R, 1 = G, 2 = B, 3 = A) over the pixel
+    /// rows `y0 .. y0 + rows` at pixel-center coordinates, into a plane of
+    /// [`CellGridFrame::padded_width`]`(width)`-stride rows.
+    ///
+    /// ONE call into the channel's 2D collapse kernel per invocation: the
+    /// loop over batches and rows lives inside the JIT, with the two-level
+    /// LICM prologues (per-call and per-row) active. This is the production
+    /// render path — a frame is four of these per stripe, then a pack.
     ///
     /// # Panics
     ///
-    /// Panics if `channel >= 4`.
-    #[must_use]
-    pub fn channel(&self, channel: usize) -> CellGridChannel {
-        CellGridChannel {
-            jit: self.jits[channel].clone(),
-            cells: self.cells.clone(),
-            atlas: self.atlas.clone(),
+    /// Panics if `channel >= 4`, the region's width is zero, or `out` is
+    /// shorter than `rows * padded_width(width)`.
+    pub fn bake_channel_rows(&self, channel: usize, region: PlaneRegion, out: &mut [f32]) {
+        let PlaneRegion { width, y0, rows } = region;
+        assert!(width > 0, "bake_channel_rows: zero width");
+        let stride = Self::padded_width(width);
+        assert!(
+            out.len() >= rows * stride,
+            "bake_channel_rows: plane of {} f32s cannot hold {rows} rows at stride {stride}",
+            out.len()
+        );
+        if rows == 0 {
+            return;
         }
-    }
-}
-
-/// One color channel of a [`CellGridFrame`], as a manifold. Evaluation is a
-/// single call into the channel's JIT-compiled program with the frame's two
-/// buffers bound.
-#[derive(Clone)]
-pub struct CellGridChannel {
-    jit: Arc<JitManifold>,
-    cells: Arc<Vec<f32>>,
-    atlas: Arc<Vec<f32>>,
-}
-
-impl crate::ext::ManifoldExpr for CellGridChannel {}
-
-impl Manifold<(Field, Field, Field, Field)> for CellGridChannel {
-    type Output = Field;
-
-    #[inline(always)]
-    fn eval(&self, (x, y, z, w): (Field, Field, Field, Field)) -> Field {
+        let groups = stride / (pixelflow_ir::JIT_VECTOR_BYTES / core::mem::size_of::<f32>());
         let ctx = [self.cells.as_ptr(), self.atlas.as_ptr()];
+        // Pixel centers: the rasterizer convention (x + ½, y + ½).
+        let x0 = Field::sequential(0.5);
+        let y = Field::from(y0 as f32 + 0.5);
+        let zero = Field::from(0.0);
         // SAFETY: `compile` checked size_of::<Field>() == JIT_VECTOR_BYTES;
         // the kernel was compiled from an arena declaring exactly the two
         // buffers whose lengths `CellGridProgram::frame` asserted against
-        // the same geometry, and `ctx` binds their live base pointers (in
-        // declaration order) for the duration of the call.
+        // the same geometry; `ctx` binds their live base pointers (in
+        // declaration order) for the duration of the call; and `out` holds
+        // `rows` full rows of `groups` batches (asserted above) with no
+        // scalar tail (row_skip = 0 — the stride IS whole batches).
         unsafe {
-            core::mem::transmute::<JitVec, Field>(self.jit.call_bound(
+            self.jits[channel].call_collapse(
                 ctx.as_ptr(),
-                core::mem::transmute::<Field, JitVec>(x),
+                out.as_mut_ptr(),
+                groups,
+                rows,
+                0,
+                core::mem::transmute::<Field, JitVec>(x0),
                 core::mem::transmute::<Field, JitVec>(y),
-                core::mem::transmute::<Field, JitVec>(z),
-                core::mem::transmute::<Field, JitVec>(w),
-            ))
+                core::mem::transmute::<Field, JitVec>(zero),
+                core::mem::transmute::<Field, JitVec>(zero),
+            );
         }
     }
 }
@@ -373,7 +413,6 @@ impl Manifold<(Field, Field, Field, Field)> for CellGridChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Lattice;
     use alloc::vec;
 
     /// A 2×1 grid over a 2-tile atlas: tile A solid coverage 1, tile B a
@@ -417,13 +456,24 @@ mod tests {
         row * 8 + col
     }
 
-    /// Evaluate one channel over a pixel-center lattice.
+    /// Bake one channel over pixel centers and unpad to a dense w×h plane.
     fn plane(frame: &CellGridFrame, channel: usize, w: usize, h: usize) -> alloc::vec::Vec<f32> {
-        let lattice = Lattice {
-            extent: [w as u32, h as u32, 1, 1],
-            origin: [0.5, 0.5, 0.0, 0.0],
-        };
-        lattice.collapse(&frame.channel(channel)).into_buffer()
+        let stride = CellGridFrame::padded_width(w);
+        let mut padded = vec![0.0f32; h * stride];
+        frame.bake_channel_rows(
+            channel,
+            PlaneRegion {
+                width: w,
+                y0: 0,
+                rows: h,
+            },
+            &mut padded,
+        );
+        let mut dense = alloc::vec::Vec::with_capacity(w * h);
+        for row in 0..h {
+            dense.extend_from_slice(&padded[row * stride..row * stride + w]);
+        }
+        dense
     }
 
     #[test]
@@ -474,21 +524,43 @@ mod tests {
 
     #[test]
     fn misaligned_samples_fade_through_the_apron_not_into_neighbors() {
-        let (program, cells, atlas) = tiny_scene();
-        let frame = program.frame(cells, atlas);
-        // Sample pixel centers shifted by +0.4 point: x = 3.9 in cell 0 taps
-        // its last content texel (weight 0.6) and its APRON (weight 0.4) —
-        // coverage 0.6. If the tap bled into tile 1's 0.5 coverage instead,
-        // this would read 0.6 + 0.4·0.5 = 0.8.
-        let lattice = Lattice {
-            extent: [8, 4, 1, 1],
-            origin: [0.9, 0.5, 0.0, 0.0],
+        // Density 0.8 over a 5-point cell: pixel centers land BETWEEN texel
+        // centers, so the bilinear filter engages. The last pixel of the
+        // cell (x = 4.5 → tile-space 3.6) taps the last content texel
+        // (weight 0.9) and the zero APRON (weight 0.1) — never the next
+        // slot's content, which sits two texels further.
+        let (aw, ah, slot) = (12usize, 6usize, 6usize);
+        let mut atlas = vec![0.0f32; aw * ah];
+        for r in 0..4 {
+            for c in 0..4 {
+                atlas[(1 + r) * aw + 1 + c] = 1.0; // tile 0: solid
+                atlas[(1 + r) * aw + slot + 1 + c] = 1.0; // tile 1: ALSO solid
+            }
+        }
+        let geom = CellGridGeometry {
+            cols: 1,
+            rows: 1,
+            cell_w: 5.0,
+            cell_h: 5.0,
+            density: 0.8,
+            atlas_width: aw as u32,
+            atlas_height: ah as u32,
+            tile_w: 4,
+            tile_h: 4,
         };
-        let r = lattice.collapse(&frame.channel(0)).into_buffer();
+        let program = CellGridProgram::compile(geom, [0.0; 4]);
+        let cells = vec![
+            1.0, 1.0, /* fg */ 1.0, 1.0, 1.0, 1.0, /* bg */ 0.0, 0.0, 0.0, 1.0,
+        ];
+        let frame = program.frame(Arc::new(cells), Arc::new(atlas));
+        let r = plane(&frame, 0, 5, 5);
+        // Row 2 (tile-space y = 2.0·... = interior): x = 4.5 → 0.9 content,
+        // 0.1 apron. If the tap bled into tile 1's solid content instead,
+        // this would read 1.0.
         assert!(
-            (r[px(1, 3)] - 0.6).abs() < 1e-5,
-            "cell0 apron R = {}",
-            r[11]
+            (r[2 * 5 + 4] - 0.9).abs() < 1e-5,
+            "fractional edge sample R = {}",
+            r[2 * 5 + 4]
         );
     }
 

@@ -16,11 +16,10 @@
 //! - **Management**: Configuration updates (thread count, etc.)
 
 use crate::render::frame::Frame;
+use crate::render::scene::Scene;
 use crate::render::Pixel;
 use actor_scheduler::ActorHandle;
-use pixelflow_core::{Discrete, Manifold};
 use std::sync::mpsc::{self, Sender, SyncSender};
-use std::sync::Arc;
 use std::time::Duration;
 
 /// Frame rendering request (Data lane - high throughput, backpressure).
@@ -28,8 +27,9 @@ use std::time::Duration;
 /// The Data lane is designed for high-volume work items and will block
 /// senders when the buffer is full, providing natural backpressure.
 pub struct RenderRequest<P: Pixel, Meta = ()> {
-    /// The color manifold to render.
-    pub manifold: Arc<dyn Manifold<Output = Discrete> + Send + Sync>,
+    /// The scene to render (an arbitrary color manifold, or a JIT
+    /// cell-grid frame on the collapse-baked fast lane).
+    pub scene: Scene,
     /// The frame buffer to render into.
     pub frame: Frame<P>,
     /// Caller-owned payload, returned untouched in the [`RenderResponse`].
