@@ -2072,6 +2072,80 @@ mod tests {
         );
     }
 
+    // ── The default step_control / step_management bodies ───────────────────
+
+    /// Overrides only `step_data`. Control and management fall through to `Transducer`'s
+    /// default body, so a step on either lane exercises the trait's own "silent transition"
+    /// contract rather than a fixture-specific override.
+    struct DefaultLanes;
+
+    #[derive(Default)]
+    struct DefaultLanesOut {
+        word: Option<u32>,
+    }
+
+    struct DefaultLanesWiring {
+        tx: SpscSender<u32>,
+    }
+
+    impl Wiring for DefaultLanesWiring {
+        type Out = DefaultLanesOut;
+
+        fn flush(&mut self, out: &mut DefaultLanesOut) -> Flush {
+            send_port(&mut out.word, &self.tx)
+        }
+    }
+
+    impl Transducer for DefaultLanes {
+        type Control = u32;
+        type Management = u32;
+        type Data = u32;
+        type Out = DefaultLanesOut;
+
+        fn step_data(&mut self, msg: u32) -> Result<DefaultLanesOut, HandlerError> {
+            Ok(DefaultLanesOut { word: Some(msg) })
+        }
+        // step_control / step_management: deliberately not overridden.
+    }
+
+    #[test]
+    fn unoverridden_control_and_management_steps_are_silent() {
+        let (tx_c, rx_c) = spsc_channel::<u32>(4);
+        let (tx_m, rx_m) = spsc_channel::<u32>(4);
+        let (tx_d, rx_d) = spsc_channel::<u32>(4);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(4);
+
+        let mut node = Node::new_with_lanes(
+            DefaultLanes,
+            Lanes {
+                control: rx_c,
+                management: rx_m,
+                data: rx_d,
+            },
+            DefaultLanesWiring { tx: tx_out },
+            SchedulerParams::DEFAULT,
+        );
+
+        tx_c.try_send(1).unwrap();
+        tx_m.try_send(2).unwrap();
+        tx_d.try_send(3).unwrap();
+
+        // Control > Management > Data: the first two steps hit the unoverridden defaults.
+        for _ in 0..3 {
+            assert_eq!(node.poll(), Step::Ran);
+        }
+
+        assert_eq!(
+            rx_out.try_recv().unwrap(),
+            3,
+            "only the overridden data step emits anything"
+        );
+        assert!(
+            rx_out.try_recv().is_err(),
+            "the default step_control/step_management bodies must be silent, not just unobserved"
+        );
+    }
+
     // ── Priority lanes: ported from ActorScheduler::handle_wake ─────────────
 
     /// Records which lane each step came from. `Out = ()`: these tests are about input
