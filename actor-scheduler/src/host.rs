@@ -604,6 +604,41 @@ mod tests {
         assert_eq!(rx_out.try_recv().unwrap(), 2);
     }
 
+    /// A step whose output parks still counts as having run — `Node::finish_step` reports
+    /// `Ran` for it — so the host stays `Busy` and keeps sweeping until the retry can flush.
+    /// If the park were reported as `Blocked` on the same sweep that consumed the input, this
+    /// host would go `Idle` over an actor holding an undelivered word, and nothing external
+    /// would wake it to retry.
+    #[test]
+    fn a_parked_first_output_keeps_the_host_busy() {
+        let (tx_in, rx_in) = spsc_channel::<u32>(8);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(2);
+        while tx_out.try_send(99).is_ok() {}
+
+        let mut host = Host::new();
+        host.adopt(Node::new(
+            Forward { seen: 0 },
+            rx_in,
+            ForwardWiring { next: tx_out },
+        ));
+
+        tx_in.try_send(1).unwrap();
+        assert_eq!(
+            host.sweep().status,
+            ActorStatus::Busy,
+            "the input was consumed; the park must not read as an idle host"
+        );
+
+        // Once the ring drains, the very next sweep retries the parked flush.
+        while rx_out.try_recv().is_ok() {}
+        drop(host.sweep());
+        assert_eq!(
+            rx_out.try_recv().unwrap(),
+            2,
+            "the parked word was delivered"
+        );
+    }
+
     #[test]
     fn a_sweep_advances_at_most_one_step_per_actor() {
         // The doc contract on `Host::sweep`: "advance every green actor by at most one step".

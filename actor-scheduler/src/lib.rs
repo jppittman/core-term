@@ -597,6 +597,54 @@ impl<D, C, M> ActorBuilder<D, C, M> {
             shutdown_mode,
         }
     }
+
+    /// Seal the registry as a [`DedicatedThread`] instead of a classic [`ActorScheduler`].
+    ///
+    /// Same producer-facing contract as [`build`](Self::build)/[`build_with_burst`](Self::build_with_burst)
+    /// — every [`ActorHandle`] already handed out by [`add_producer`](Self::add_producer) keeps
+    /// working unchanged, because it feeds the same three sharded lanes either way. What
+    /// differs is the consumer: a [`Transducer`](mealy::Transducer) plus its
+    /// [`Wiring`](mealy::Wiring) instead of an [`Actor`] impl, run through [`Node`](mealy::Node)'s
+    /// dispatch discipline instead of `handle_data`/`handle_control`/`handle_management`.
+    ///
+    /// This is the load-bearing bridge for placement-as-a-driver-choice (design doc §5): the
+    /// same lanes an `ActorHandle` feeds can be read by either an `ActorScheduler` (this
+    /// module) or a `Node` (`mealy.rs`), because [`sharded::ShardedInbox`] implements both
+    /// `ShardedInbox::drain` (for the former) and [`mealy::Inbox`] (for the latter).
+    #[must_use]
+    pub fn build_node<T, W>(
+        self,
+        actor: T,
+        wiring: W,
+    ) -> DedicatedThread<T, W, ShardedInbox<D>, ShardedInbox<C>, ShardedInbox<M>>
+    where
+        T: mealy::Transducer<Data = D, Control = C, Management = M>,
+        W: mealy::Wiring<Out = T::Out>,
+    {
+        // One doorbell visit's worth of lane work, mirroring the classic scheduler's
+        // per-wake burst budget (two control half-bursts + management + data).
+        let sweep_burst = (self.params.control_burst_limit()
+            + self.params.management_burst_limit()
+            + self.params.default_data_burst_limit)
+            .max(1);
+        let node = mealy::Node::new_with_lanes(
+            actor,
+            mealy::Lanes {
+                control: self.control_inbox.build(),
+                management: self.mgmt_inbox.build(),
+                data: self.data_inbox.build(),
+            },
+            wiring,
+            self.params,
+        );
+        DedicatedThread {
+            node,
+            sweep_burst,
+            rx_doorbell: self
+                .rx_doorbell
+                .expect("ActorBuilder::build_node called twice"),
+        }
+    }
 }
 
 /// Trait for waking a blocked actor scheduler.
@@ -786,11 +834,16 @@ impl<D, C, M> ActorHandle<D, C, M> {
                 self.wake();
             }
             Message::Shutdown => {
-                // Shutdown: blocking send to guarantee delivery
-                // Actor must be running before calling this (doorbell will be drained)
+                // Shutdown: blocking send to guarantee delivery. The wake handler fires on
+                // BOTH sides of it: before, because the doorbell may be full while the
+                // consumer is blocked inside an OS wait (`step_os`/`handle_os`) — the handler
+                // is what interrupts that wait so the consumer can drain the slot this send
+                // needs; and after, because the consumer may have re-entered the wait between
+                // the drain and this send landing.
+                if let Some(waker) = &self.wake_handler {
+                    waker.wake();
+                }
                 self.tx_doorbell.send(System::Shutdown)?;
-
-                // Also call custom wake handler if present
                 if let Some(waker) = &self.wake_handler {
                     waker.wake();
                 }
@@ -1308,6 +1361,175 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                         match self.handle_wake(actor)? {
                             Some(_) => {} // keep draining
                             None => return Ok(()),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Runs one [`mealy::Node`] on a dedicated OS thread, blocking on a doorbell.
+///
+/// The mealy-tier mirror of [`host::GreenThread`]: same doorbell, same wake/shutdown vocabulary,
+/// same "stay awake rather than risk a lost wakeup" reasoning — but driving one actor's own
+/// thread instead of hosting many inside someone else's `handle_os`. Lives here rather than in
+/// `host.rs` because its doorbell is [`Receiver<System>`], and `System` is private to this
+/// module — `host.rs` has no way to name the field's type.
+///
+/// Built by [`ActorBuilder::build_node`], never directly: the doorbell receiver and the three
+/// sharded lanes must come from the same builder as the [`ActorHandle`]s that feed them, and
+/// `ActorBuilder` is the only thing that owns that invariant.
+pub struct DedicatedThread<
+    T,
+    W,
+    RD,
+    RC = mealy::NoLane<<T as mealy::Transducer>::Control>,
+    RM = mealy::NoLane<<T as mealy::Transducer>::Management>,
+> where
+    T: mealy::Transducer,
+    W: mealy::Wiring<Out = T::Out>,
+{
+    node: mealy::Node<T, W, RD, RC, RM>,
+    /// Lane polls allowed per sweep before the driver revisits the doorbell — the same role
+    /// as the classic scheduler's per-wake burst limits. Without it, a continuously-fed lane
+    /// would keep the sweep loop from ever seeing a queued `Shutdown` or giving `step_os` a
+    /// turn.
+    sweep_burst: usize,
+    rx_doorbell: Receiver<System>,
+}
+
+impl<T, W, RD, RC, RM> DedicatedThread<T, W, RD, RC, RM>
+where
+    T: mealy::Transducer,
+    W: mealy::Wiring<Out = T::Out>,
+    RD: mealy::Inbox<Item = T::Data>,
+    RC: mealy::Inbox<Item = T::Control>,
+    RM: mealy::Inbox<Item = T::Management>,
+{
+    /// Drain a bounded burst of lane work, then give `step_os` a turn. One "sweep" of the
+    /// doorbell loop below.
+    ///
+    /// Draining is repeated polls — `Node::poll`'s own Control/Management/Data cycle already
+    /// rotates across calls — but bounded by `sweep_burst`, for the same reason the classic
+    /// scheduler bounds each wake's drain: an unbounded "until quiet" loop under a
+    /// continuously-fed lane never revisits the doorbell, so a queued `Shutdown` is never
+    /// observed and `step_os` never runs. Budget spent with work remaining is just `Busy`.
+    ///
+    /// Lane completion (`Halted(Exit::Completed)` — every lane disconnected) is *not* terminal
+    /// here: an OS bridge's external source outlives the last `ActorHandle` by design, and a
+    /// retained [`Waker`] can still ring the doorbell long after every lane is dead. The sweep
+    /// only reports whether there is work; *terminality belongs to the doorbell* — [`run`]
+    /// completes when the doorbell disconnects (no handle and no waker left anywhere) and a
+    /// sweep finds nothing to do. A *failed* handler (`Halted(Exit::Failed)`) still exits
+    /// immediately: a broken actor gets no final turns.
+    ///
+    /// A `Disconnected` delivery — the wiring's target is gone — is also an exit, as
+    /// `Exit::Failed`: the peer can never come back, the outbox-first contract means no lane
+    /// can progress past the parked word, and this driver has no supervisor to hand the
+    /// problem to (that is `Host`'s job for green nodes). Fail fast, fail loudly; the
+    /// undelivered payload stays retained in the node for whoever holds this
+    /// `DedicatedThread` after [`run`] returns.
+    ///
+    /// Returns `Some(exit)` when the node is done; otherwise `None` with a busy hint for the
+    /// doorbell loop's `working` flag.
+    fn sweep(&mut self) -> (Option<Exit>, bool) {
+        const TARGET_GONE: &str =
+            "wiring target disconnected; undelivered output retained in the node";
+
+        let mut polls = 0usize;
+        let lane_step = loop {
+            match self.node.poll() {
+                mealy::Step::Ran => {
+                    polls += 1;
+                    if polls >= self.sweep_burst {
+                        break mealy::Step::Ran;
+                    }
+                }
+                other => break other,
+            }
+        };
+        if let mealy::Step::Halted(Exit::Failed(msg)) = lane_step {
+            return (Some(Exit::Failed(msg)), false);
+        }
+        if lane_step == mealy::Step::Disconnected {
+            return (Some(Exit::Failed(TARGET_GONE.into())), false);
+        }
+        let lanes_completed = matches!(lane_step, mealy::Step::Halted(_));
+
+        // Idle means the lap found every lane genuinely empty. Ran means the budget ran out
+        // with lane work remaining; Blocked means a parked outbox is deferring lane work
+        // rather than lacking it — both are the `Busy` the classic scheduler reports to
+        // `handle_os` in the same positions.
+        let system_status = if lane_step == mealy::Step::Idle || lanes_completed {
+            SystemStatus::Idle
+        } else {
+            SystemStatus::Busy
+        };
+
+        let (os_step, os_actor_status) = self.node.poll_os(system_status);
+        match os_step {
+            mealy::Step::Halted(exit) => return (Some(exit), false),
+            mealy::Step::Disconnected => {
+                return (Some(Exit::Failed(TARGET_GONE.into())), false);
+            }
+            _ => {}
+        }
+        let os_busy =
+            matches!(os_actor_status, ActorStatus::Busy) || os_step == mealy::Step::Blocked;
+
+        let lanes_busy = !lanes_completed && lane_step != mealy::Step::Idle;
+        (None, lanes_busy || os_busy)
+    }
+
+    /// Run this node until it halts or is shut down.
+    ///
+    /// Mirrors [`ActorScheduler::run_inner`]'s doorbell loop exactly: block on the doorbell
+    /// unless the last sweep left work behind, in which case poll it non-blockingly instead
+    /// (the same `working` flag). `Message::Shutdown` still stops it immediately, because
+    /// shutdown travels the doorbell rather than a lane, same as every other actor here.
+    ///
+    /// A `Blocked` sweep is reported busy rather than idle — a parked outbox resolves by a
+    /// consumer draining, which sleeping on this doorbell cannot wait for (ring-not-full
+    /// waking — a consumer ringing this thread's doorbell the instant it drains — is not wired
+    /// yet), and there is no risk of *missing* a wake this way, only of spending CPU until it
+    /// clears. A `Disconnected` delivery exits as `Exit::Failed` instead of retrying — see
+    /// [`Self::sweep`].
+    ///
+    /// Completion is the doorbell's to declare: `Exit::Completed` happens on `Shutdown`, or
+    /// when the doorbell disconnects — meaning no `ActorHandle` *and* no [`Waker`] exists
+    /// anywhere, so nothing can ever wake this node again — and a final drain finds nothing
+    /// left. Dead lanes alone are not completion: an idle OS bridge whose waker is still held
+    /// somewhere sleeps at 0% CPU instead of exiting, because that waker is someone's declared
+    /// intent to come back.
+    pub fn run(&mut self) -> Exit {
+        let mut working = false;
+
+        loop {
+            let signal = if working {
+                self.rx_doorbell.try_recv()
+            } else {
+                self.rx_doorbell
+                    .recv()
+                    .map_err(|_| mpsc::TryRecvError::Disconnected)
+            };
+
+            match signal {
+                Ok(System::Shutdown) => return Exit::Completed,
+                Ok(System::Wake) | Err(mpsc::TryRecvError::Empty) => match self.sweep() {
+                    (Some(exit), _) => return exit,
+                    (None, busy) => working = busy,
+                },
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // All handles dropped. Keep sweeping — buffered shard messages, a parked
+                    // outbox, or step_os's own work can all outlive the last `ActorHandle` —
+                    // until the node halts (every lane disconnected, mirroring `run_inner`'s
+                    // equivalent branch) or a sweep reports genuinely nothing left to do.
+                    loop {
+                        match self.sweep() {
+                            (Some(exit), _) => return exit,
+                            (None, true) => continue,
+                            (None, false) => return Exit::Completed,
                         }
                     }
                 }

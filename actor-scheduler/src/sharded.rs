@@ -171,6 +171,47 @@ impl<T> ShardedInbox<T> {
     pub fn shard_count(&self) -> usize {
         self.shards.len()
     }
+
+    /// Take one message, round-robin across shards. The single-message counterpart to
+    /// [`Self::drain`], for a [`Node`](crate::mealy::Node) — which takes at most one input per
+    /// [`poll`](crate::mealy::Node::poll) — to sit on the same multi-producer lanes an
+    /// [`ActorHandle`](crate::ActorHandle) already feeds, instead of needing a second inbox type.
+    ///
+    /// `Disconnected` only when every shard is: same all-or-nothing rule `drain` uses, so a
+    /// lane with one live producer and the rest gone still reports `Empty`, not halted.
+    fn take_one(&mut self) -> Result<T, TryRecvError> {
+        let n = self.shards.len();
+        let mut all_disconnected = true;
+
+        for i in 0..n {
+            let idx = (self.round_robin + i) % n;
+            match self.shards[idx].try_recv() {
+                Ok(msg) => {
+                    self.round_robin = (idx + 1) % n;
+                    return Ok(msg);
+                }
+                Err(TryRecvError::Empty) => all_disconnected = false,
+                Err(TryRecvError::Disconnected) => {}
+            }
+        }
+
+        // Rotate even on a miss, for the same fairness reason `drain` rotates every call.
+        self.round_robin = (self.round_robin + 1) % n;
+
+        if all_disconnected {
+            Err(TryRecvError::Disconnected)
+        } else {
+            Err(TryRecvError::Empty)
+        }
+    }
+}
+
+impl<T> crate::mealy::Inbox for ShardedInbox<T> {
+    type Item = T;
+
+    fn take(&mut self) -> Result<T, TryRecvError> {
+        self.take_one()
+    }
 }
 
 #[cfg(test)]

@@ -55,6 +55,7 @@ use crate::HandlerError;
 use crate::SchedulerParams;
 use crate::lifecycle::Exit;
 use crate::spsc::{SpscSender, TryRecvError, TrySendError};
+use crate::{ActorStatus, SystemStatus};
 
 // ────────────────────────────────────────────────────────────────────────────
 // The actor
@@ -113,6 +114,32 @@ pub trait Transducer {
     /// more work, not a control or management signal.
     fn take_continuation(_out: &mut Self::Out) -> Option<Self::Data> {
         None
+    }
+
+    /// The OS-bridge hook, in effects-as-values form: called only by a dedicated-thread driver
+    /// when the lanes are quiet, never by a [`Host`](crate::Host) — a green actor may not
+    /// block, and placement (design doc §5) is exactly the choice of which driver runs you.
+    ///
+    /// `SystemStatus` reports whether the lanes still hold work (same contract as
+    /// [`Actor::handle_os`](crate::Actor::handle_os)). Return the output word to flush plus
+    /// [`ActorStatus::Busy`] to be re-polled without blocking, or `Idle` to let the thread
+    /// sleep on its doorbell.
+    ///
+    /// # If this blocks, wire a `WakeHandler`
+    ///
+    /// Blocking here is this hook's whole reason to exist — but while blocked, the driver
+    /// cannot see its doorbell, so lane wakes and `Shutdown` wait on you. The contract is the
+    /// same one `Actor::handle_os` has always had: a blocking wait must be interruptible by a
+    /// [`WakeHandler`](crate::WakeHandler) (supplied to `ActorBuilder::new`) whose signal
+    /// *persists until consumed* — a byte in a self-pipe registered with your poll set, the
+    /// `FdWaker` pattern — so that a wake or shutdown issued at any moment, including while
+    /// you are mid-block or about to block, actually returns control to the driver.
+    ///
+    /// A yield (`take_continuation`) from this hook is honored only while no lane continuation
+    /// is pending — the slot holds exactly one resume payload, and an OS step never needs it
+    /// just to be re-polled: that is what returning `Busy` means.
+    fn step_os(&mut self, _status: SystemStatus) -> Result<(Self::Out, ActorStatus), HandlerError> {
+        Ok((Self::Out::default(), ActorStatus::Idle))
     }
 }
 
@@ -575,31 +602,129 @@ where
     /// Run one step, advance the step counter, extract the continuation, and flush.
     ///
     /// The one path every lane and the continuation resume through, so "step, then flush,
-    /// then maybe park" is written once rather than four times.
+    /// then maybe park" is written once rather than four times. [`Self::poll_os`] shares this
+    /// same finish — the only thing that differs between a lane step and an OS-bridge step is
+    /// how the output word was produced, not what happens to it afterward.
     fn dispatch(&mut self, step: impl FnOnce(&mut T) -> Result<T::Out, HandlerError>) -> Step {
-        let mut out = match step(&mut self.actor) {
-            Ok(out) => out,
-            Err(HandlerError::Recoverable(msg)) => return Step::Halted(Exit::Failed(msg)),
+        match step(&mut self.actor) {
+            Ok(out) => self.finish_step(out),
+            Err(HandlerError::Recoverable(msg)) => Step::Halted(Exit::Failed(msg)),
             Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
-        };
+        }
+    }
+
+    /// The shared tail of every step: count it, lift the continuation, flush, park on
+    /// backpressure or a gone peer. Never called with a non-empty outbox — the caller (lane
+    /// dispatch or [`Self::poll_os`]) is the one that guarantees that by flushing first.
+    ///
+    /// A step whose output merely *parks* still reports [`Step::Ran`]: an input was consumed
+    /// and the machine advanced, and that is what a driver's "did anything happen" question
+    /// (`Host::sweep`'s `ran` flag, `DedicatedThread`'s working flag) is asking. The park
+    /// surfaces on the *next* poll, when the outbox-first gate finds it — reporting it now
+    /// instead would let a host go idle over an actor that just did work and still holds an
+    /// undelivered word. A gone peer is different: that is news no later poll improves on, so
+    /// it preempts `Ran` immediately.
+    fn finish_step(&mut self, mut out: T::Out) -> Step {
         self.steps += 1;
 
-        // The slot was emptied before dispatch runs, so this write can never overflow.
+        // The slot was emptied before this step ran, so this write can never overflow.
         self.continuation = T::take_continuation(&mut out);
 
         match self.wiring.flush(&mut out) {
             Flush::Blocked => {
                 self.outbox = Some(out);
+                Step::Ran
             }
             Flush::Disconnected => {
                 // Retained, not dropped — the payload is still in `out`.
                 self.outbox = Some(out);
-                return Step::Disconnected;
+                Step::Disconnected
             }
-            Flush::Done => {}
+            Flush::Done => Step::Ran,
+        }
+    }
+
+    /// Run one [`Transducer::step_os`] through the same dispatch discipline as a lane: outbox
+    /// empty first, then step, lift continuation, flush, park on backpressure or a gone peer —
+    /// see [`Self::dispatch`]/[`Self::finish_step`], which this shares rather than duplicates.
+    ///
+    /// Only a dedicated-thread driver calls this, and only when the lanes are quiet — a
+    /// [`Host`](crate::Host) never does, because a green actor may not block and `step_os` is
+    /// exactly the hook that is allowed to (design doc §5).
+    ///
+    /// Returns the delivery outcome (same vocabulary as [`Node::poll`]) alongside the actor's
+    /// own busy hint. The hint is [`ActorStatus::Idle`] whenever this poll could not actually
+    /// run `step_os` because the outbox was still parked — a parked actor has nothing new to
+    /// say, so there is no fresher answer than "no". A stored continuation overrides the
+    /// actor's `Idle` the other way: the continuation is runtime-owned runnable work, so the
+    /// hint is `Busy` regardless of what the actor claimed — otherwise a driver would sleep on
+    /// its doorbell over work that only another `poll` can resume, and nothing external is
+    /// coming to ring it.
+    ///
+    /// A pending lane continuation does not block `step_os`'s turn — an actor that yields on
+    /// every lane step would otherwise starve its own OS bridge forever — but it must survive
+    /// it: the pending continuation is stashed across the OS step and restored afterward, so
+    /// `finish_step`'s slot write cannot clobber it. The one thing that cannot be honored is a
+    /// `step_os` that *itself* yields while a lane continuation is pending: the slot holds
+    /// exactly one resume payload by design, and an OS step never needs the slot to be
+    /// re-polled — returning [`ActorStatus::Busy`] already is that request. Such a yield is
+    /// dropped with a `debug_assert!`/release warning; yield from a later `step_os` turn
+    /// instead, once the lane work has drained.
+    ///
+    /// Ring-not-full waking is not wired yet (consumers don't ring producers' doorbells today),
+    /// so a driver that finds this parked has no way to be woken the instant the target drains;
+    /// it retries on its next inbound message, same as the green tier's next sweep.
+    pub fn poll_os(&mut self, status: SystemStatus) -> (Step, ActorStatus) {
+        if let Some(pending) = &mut self.outbox {
+            match self.wiring.flush(pending) {
+                Flush::Blocked => return (Step::Blocked, ActorStatus::Idle),
+                Flush::Disconnected => return (Step::Disconnected, ActorStatus::Idle),
+                Flush::Done => {}
+            }
+            self.outbox = None;
         }
 
-        Step::Ran
+        // The slot must be empty when a step runs; a stashed lane continuation is restored
+        // below, after finish_step has come and gone.
+        let stashed = self.continuation.take();
+
+        match self.actor.step_os(status) {
+            Ok((out, actor_status)) => {
+                let step = self.finish_step(out);
+                if let Some(lane_continuation) = stashed {
+                    debug_assert!(
+                        self.continuation.is_none(),
+                        "step_os yielded while a lane continuation was pending; an OS step \
+                         never needs the slot — return ActorStatus::Busy to be re-polled"
+                    );
+                    if self.continuation.is_some() {
+                        eprintln!(
+                            "[ActorScheduler] step_os continuation dropped: the slot still \
+                             holds a lane continuation; return ActorStatus::Busy instead"
+                        );
+                    }
+                    self.continuation = Some(lane_continuation);
+                }
+                // A continuation or a freshly parked outbox overrides the actor's `Idle` the
+                // same way and for the same reason: both are deferred work only another poll
+                // can advance, and nothing external is coming to ring the doorbell for either.
+                // Without the outbox half, a driver would sleep over — or, on lane completion,
+                // exit and *drop* — a word this very step produced and could not deliver.
+                let hint = if self.continuation.is_some() || self.outbox.is_some() {
+                    ActorStatus::Busy
+                } else {
+                    actor_status
+                };
+                (step, hint)
+            }
+            Err(HandlerError::Recoverable(msg)) => {
+                if let Some(lane_continuation) = stashed {
+                    self.continuation = Some(lane_continuation);
+                }
+                (Step::Halted(Exit::Failed(msg)), ActorStatus::Idle)
+            }
+            Err(HandlerError::Fatal(msg)) => panic!("Actor fatal error: {msg}"),
+        }
     }
 }
 
@@ -1304,6 +1429,513 @@ mod tests {
         assert!(
             rx_out.try_recv().is_err(),
             "Err carries no output — a failed step emits nothing"
+        );
+    }
+
+    // ── step_os / poll_os: the OS-bridge hook ────────────────────────────────
+    //
+    // `Bridge` stands in for an OS-bridge transducer (§5): its data lane is ordinary, but it
+    // also has an internal queue it can only drain from `step_os`, played by a dedicated-thread
+    // driver rather than a `Host`.
+
+    #[derive(Default)]
+    struct BridgeOut {
+        word: Option<u32>,
+        again: Option<u32>,
+    }
+
+    struct BridgeWiring {
+        out: SpscSender<u32>,
+    }
+
+    impl Wiring for BridgeWiring {
+        type Out = BridgeOut;
+
+        fn flush(&mut self, out: &mut BridgeOut) -> Flush {
+            send_port(&mut out.word, &self.out, Delivery::Blocking)
+        }
+    }
+
+    struct Bridge {
+        queue: Vec<u32>,
+        /// Counts `step_os` calls, so a test can prove it was *not* invoked while parked.
+        step_os_calls: u32,
+    }
+
+    impl Transducer for Bridge {
+        type Control = Infallible;
+        type Management = Infallible;
+        type Data = u32;
+        type Out = BridgeOut;
+
+        fn step_data(&mut self, msg: u32) -> Result<BridgeOut, HandlerError> {
+            Ok(BridgeOut {
+                word: Some(msg),
+                again: None,
+            })
+        }
+
+        fn step_os(
+            &mut self,
+            _status: SystemStatus,
+        ) -> Result<(BridgeOut, ActorStatus), HandlerError> {
+            self.step_os_calls += 1;
+            let Some(next) = self.queue.pop() else {
+                return Ok((BridgeOut::default(), ActorStatus::Idle));
+            };
+            let more = if self.queue.is_empty() {
+                ActorStatus::Idle
+            } else {
+                ActorStatus::Busy
+            };
+            Ok((
+                BridgeOut {
+                    word: Some(next),
+                    again: None,
+                },
+                more,
+            ))
+        }
+
+        fn take_continuation(out: &mut BridgeOut) -> Option<u32> {
+            out.again.take()
+        }
+    }
+
+    #[test]
+    fn step_os_output_flushes_through_wiring() {
+        let (_tx_in, rx_in) = spsc_channel::<u32>(4);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(4);
+
+        let mut node = Node::new(
+            Bridge {
+                queue: vec![7],
+                step_os_calls: 0,
+            },
+            rx_in,
+            BridgeWiring { out: tx_out },
+        );
+
+        assert_eq!(
+            node.poll_os(SystemStatus::Idle),
+            (Step::Ran, ActorStatus::Idle),
+            "one queued item, nothing left after it: Idle"
+        );
+        assert_eq!(
+            rx_out.try_recv().unwrap(),
+            7,
+            "the OS-bridge output reached the wiring"
+        );
+    }
+
+    #[test]
+    fn busy_propagates_from_step_os() {
+        let (_tx_in, rx_in) = spsc_channel::<u32>(4);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(4);
+
+        let mut node = Node::new(
+            Bridge {
+                queue: vec![2, 1],
+                step_os_calls: 0,
+            },
+            rx_in,
+            BridgeWiring { out: tx_out },
+        );
+
+        // Two items queued: popping the first leaves one behind, so the actor reports Busy —
+        // "re-poll me without blocking" — exactly what a dedicated-thread driver needs to keep
+        // draining a bursty OS source without going back to the doorbell.
+        assert_eq!(
+            node.poll_os(SystemStatus::Idle),
+            (Step::Ran, ActorStatus::Busy),
+            "one item left after this pop"
+        );
+        assert_eq!(rx_out.try_recv().unwrap(), 1, "queue is popped LIFO");
+
+        assert_eq!(
+            node.poll_os(SystemStatus::Idle),
+            (Step::Ran, ActorStatus::Idle),
+            "queue now empty: Idle"
+        );
+        assert_eq!(rx_out.try_recv().unwrap(), 2);
+    }
+
+    /// An OS-bridge actor whose `step_os` yields to itself, exactly the way a data-lane step
+    /// can (mealy.rs: "Yielding"). Isolates the continuation claim from `Bridge`'s output-word
+    /// claim above.
+    struct OsYield {
+        last_resumed: Option<u32>,
+    }
+
+    #[derive(Default)]
+    struct OsYieldOut {
+        again: Option<u32>,
+    }
+
+    struct OsYieldWiring;
+
+    impl Wiring for OsYieldWiring {
+        type Out = OsYieldOut;
+
+        fn flush(&mut self, out: &mut OsYieldOut) -> Flush {
+            debug_assert!(
+                out.again.is_none(),
+                "continuation must not reach the wiring"
+            );
+            Flush::Done
+        }
+    }
+
+    impl Transducer for OsYield {
+        type Control = Infallible;
+        type Management = Infallible;
+        type Data = u32;
+        type Out = OsYieldOut;
+
+        fn step_data(&mut self, n: u32) -> Result<OsYieldOut, HandlerError> {
+            self.last_resumed = Some(n);
+            Ok(OsYieldOut::default())
+        }
+
+        fn step_os(
+            &mut self,
+            _status: SystemStatus,
+        ) -> Result<(OsYieldOut, ActorStatus), HandlerError> {
+            Ok((OsYieldOut { again: Some(42) }, ActorStatus::Idle))
+        }
+
+        fn take_continuation(out: &mut OsYieldOut) -> Option<u32> {
+            out.again.take()
+        }
+    }
+
+    #[test]
+    fn step_os_continuation_lands_in_the_slot() {
+        let (_tx_in, rx_in) = spsc_channel::<u32>(4);
+        let mut node = Node::new(OsYield { last_resumed: None }, rx_in, OsYieldWiring);
+
+        // Busy despite the actor's own Idle: the stored continuation is runtime-owned
+        // runnable work, and nothing external will ring the doorbell to resume it.
+        assert_eq!(
+            node.poll_os(SystemStatus::Idle),
+            (Step::Ran, ActorStatus::Busy)
+        );
+        assert_eq!(
+            node.continuation,
+            Some(42),
+            "step_os's continuation lands in the same slot a lane's does"
+        );
+
+        // It resumes before any lane is even consulted, exactly like a lane-produced one.
+        assert_eq!(node.poll(), Step::Ran);
+        assert_eq!(
+            node.actor().last_resumed,
+            Some(42),
+            "the continuation actually reached step_data"
+        );
+        assert!(node.continuation.is_none());
+    }
+
+    #[test]
+    fn a_parked_outbox_defers_step_os() {
+        let (tx_in, rx_in) = spsc_channel::<u32>(64);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(2);
+
+        let mut node = Node::new(
+            Bridge {
+                queue: vec![99],
+                step_os_calls: 0,
+            },
+            rx_in,
+            BridgeWiring { out: tx_out },
+        );
+
+        // Drive data steps until the small target ring backs up and the outbox parks.
+        // Capacity is a power-of-two rounding of the request (see `parks_on_full_target_...`
+        // above), so drive it by behavior rather than assuming an exact count.
+        for i in 0..8 {
+            tx_in.try_send(i).unwrap();
+        }
+        let mut polls = 0;
+        while node.poll() == Step::Ran {
+            polls += 1;
+            assert!(polls < 32, "target ring should have filled by now");
+        }
+        assert_eq!(
+            node.poll(),
+            Step::Blocked,
+            "outbox is parked going into poll_os"
+        );
+
+        assert_eq!(
+            node.poll_os(SystemStatus::Idle),
+            (Step::Blocked, ActorStatus::Idle),
+            "a parked outbox must be retried before step_os runs at all"
+        );
+        assert_eq!(
+            node.actor().step_os_calls,
+            0,
+            "step_os must not run while parked — it has nothing new to say"
+        );
+
+        // Drain the target ring (not the node's outbox — that message is still parked, waiting
+        // for room): this only frees up space for the flush `poll_os` retries next.
+        while rx_out.try_recv().is_ok() {}
+        assert_eq!(
+            node.poll_os(SystemStatus::Idle),
+            (Step::Ran, ActorStatus::Idle),
+            "outbox cleared, so this call reaches step_os and drains the queued item"
+        );
+        assert_eq!(node.actor().step_os_calls, 1);
+        let unparked = rx_out
+            .try_recv()
+            .expect("the previously parked word flushes first, in the same poll_os call");
+        assert!(
+            (0..8).contains(&unparked),
+            "that is the value that was blocked"
+        );
+        assert_eq!(
+            rx_out.try_recv().unwrap(),
+            99,
+            "then step_os's own output, flushed right after"
+        );
+    }
+
+    /// Pins the contract `finish_step`'s doc states and `Host::sweep` depends on: consuming an
+    /// input whose output parks is still a step that Ran — the machine advanced. A host that
+    /// heard `Blocked` here would count nothing as having run, go idle, and never retry the
+    /// parked word without an unrelated external wake.
+    #[test]
+    fn a_blocked_flush_still_reports_ran_for_the_consumed_input() {
+        let (tx_in, rx_in) = spsc_channel::<u32>(4);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(2);
+        while tx_out.try_send(99).is_ok() {}
+
+        let mut node = Node::new(
+            Bridge {
+                queue: vec![],
+                step_os_calls: 0,
+            },
+            rx_in,
+            BridgeWiring { out: tx_out },
+        );
+
+        tx_in.try_send(7).expect("room in the lane");
+        assert_eq!(
+            node.poll(),
+            Step::Ran,
+            "the input was consumed and the machine advanced; the park is not this poll's news"
+        );
+        assert_eq!(
+            node.poll(),
+            Step::Blocked,
+            "the park surfaces on the next poll's outbox-first gate"
+        );
+
+        while rx_out.try_recv().is_ok() {}
+        assert_eq!(node.poll(), Step::Idle, "outbox flushed, lane empty");
+        assert_eq!(
+            rx_out.try_recv().unwrap(),
+            7,
+            "the parked word was delivered, not lost"
+        );
+    }
+
+    /// A `step_os` whose output parks on a full ring must come back `Busy` no matter what the
+    /// actor claimed: the freshly parked word is deferred work only another poll can retry,
+    /// and a driver that believed the actor's `Idle` would sleep over it — or, with dead
+    /// lanes, exit `Completed` and drop it.
+    #[test]
+    fn a_freshly_parked_step_os_output_reports_busy() {
+        let (_tx_in, rx_in) = spsc_channel::<u32>(4);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(2);
+        while tx_out.try_send(99).is_ok() {}
+
+        let mut node = Node::new(
+            Bridge {
+                queue: vec![7],
+                step_os_calls: 0,
+            },
+            rx_in,
+            BridgeWiring { out: tx_out },
+        );
+
+        // Bridge reports Idle after draining its one-item queue; the park must override it.
+        let (step, hint) = node.poll_os(SystemStatus::Idle);
+        assert_eq!(
+            step,
+            Step::Ran,
+            "the OS step consumed its item and advanced"
+        );
+        assert_eq!(
+            hint,
+            ActorStatus::Busy,
+            "a freshly parked word must keep the driver polling"
+        );
+
+        while rx_out.try_recv().is_ok() {}
+        let (step, _) = node.poll_os(SystemStatus::Idle);
+        assert_eq!(step, Step::Ran, "the retry flushed the parked word");
+        assert_eq!(rx_out.try_recv().unwrap(), 7, "delivered, not dropped");
+    }
+
+    /// An actor that yields on every lane step must not starve its own OS bridge: `poll_os`
+    /// stashes the pending continuation across the OS step and restores it after, so `step_os`
+    /// gets its turn at every burst boundary and the lane's resume payload survives intact.
+    #[test]
+    fn an_endless_self_yielder_does_not_starve_step_os() {
+        struct EndlessYield {
+            step_os_calls: u32,
+            resumed: u32,
+        }
+
+        impl Transducer for EndlessYield {
+            type Control = Infallible;
+            type Management = Infallible;
+            type Data = u32;
+            type Out = BridgeOut;
+
+            fn step_data(&mut self, n: u32) -> Result<BridgeOut, HandlerError> {
+                self.resumed = n;
+                // Always yields: the pathological-but-legal continuously running computation.
+                Ok(BridgeOut {
+                    word: None,
+                    again: Some(n + 1),
+                })
+            }
+
+            fn step_os(
+                &mut self,
+                _status: SystemStatus,
+            ) -> Result<(BridgeOut, ActorStatus), HandlerError> {
+                self.step_os_calls += 1;
+                Ok((BridgeOut::default(), ActorStatus::Idle))
+            }
+
+            fn take_continuation(out: &mut BridgeOut) -> Option<u32> {
+                out.again.take()
+            }
+        }
+
+        let (tx_in, rx_in) = spsc_channel::<u32>(4);
+        let (tx_out, _rx_out) = spsc_channel::<u32>(8);
+        let mut node = Node::new(
+            EndlessYield {
+                step_os_calls: 0,
+                resumed: 0,
+            },
+            rx_in,
+            BridgeWiring { out: tx_out },
+        );
+
+        tx_in.try_send(1).expect("room in the lane");
+        // A driver's sweep: some lane polls (the chain refills the slot every step), then the
+        // OS turn — which must actually happen, with the chain intact afterward.
+        for round in 1..=3u32 {
+            assert_eq!(node.poll(), Step::Ran);
+            let before = node.actor().resumed;
+            let (step, hint) = node.poll_os(SystemStatus::Busy);
+            assert_eq!((step, hint), (Step::Ran, ActorStatus::Busy));
+            assert_eq!(
+                node.actor().step_os_calls,
+                round,
+                "step_os runs at every burst boundary despite the endless chain"
+            );
+            assert!(
+                node.continuation.is_some(),
+                "the chain's resume payload survived the OS turn"
+            );
+            assert_eq!(
+                node.actor().resumed,
+                before,
+                "the OS turn advanced no lane work"
+            );
+        }
+    }
+
+    /// A lane step that yields a continuation *and* an output that parks: the continuation
+    /// must survive `poll_os` running `step_os` — `finish_step` writes the slot, and without
+    /// the stash/restore the OS step's (empty) continuation would silently overwrite the
+    /// lane's pending work.
+    #[test]
+    fn a_pending_continuation_survives_step_os() {
+        struct YieldAndBlock {
+            step_os_calls: u32,
+            last_resumed: Option<u32>,
+        }
+
+        impl Transducer for YieldAndBlock {
+            type Control = Infallible;
+            type Management = Infallible;
+            type Data = u32;
+            type Out = BridgeOut;
+
+            fn step_data(&mut self, n: u32) -> Result<BridgeOut, HandlerError> {
+                self.last_resumed = Some(n);
+                Ok(BridgeOut {
+                    word: Some(n),
+                    again: Some(n + 1),
+                })
+            }
+
+            fn step_os(
+                &mut self,
+                _status: SystemStatus,
+            ) -> Result<(BridgeOut, ActorStatus), HandlerError> {
+                self.step_os_calls += 1;
+                Ok((BridgeOut::default(), ActorStatus::Idle))
+            }
+
+            fn take_continuation(out: &mut BridgeOut) -> Option<u32> {
+                out.again.take()
+            }
+        }
+
+        let (tx_in, rx_in) = spsc_channel::<u32>(4);
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(2);
+        while tx_out.try_send(99).is_ok() {}
+
+        let mut node = Node::new(
+            YieldAndBlock {
+                step_os_calls: 0,
+                last_resumed: None,
+            },
+            rx_in,
+            BridgeWiring { out: tx_out },
+        );
+
+        tx_in.try_send(1).expect("room in the lane");
+        assert_eq!(node.poll(), Step::Ran);
+        assert_eq!(
+            node.continuation,
+            Some(2),
+            "the lane's continuation is stored"
+        );
+
+        // Free the ring so poll_os's outbox flush succeeds — the hazard is what happens next.
+        while rx_out.try_recv().is_ok() {}
+        assert_eq!(
+            node.poll_os(SystemStatus::Idle),
+            (Step::Ran, ActorStatus::Busy),
+            "Busy: the surviving continuation is deferred work for the next poll"
+        );
+        assert_eq!(
+            node.actor().step_os_calls,
+            1,
+            "step_os gets its turn — deferring it entirely would starve an OS bridge \
+             behind an endless self-yielder"
+        );
+        assert_eq!(
+            node.continuation,
+            Some(2),
+            "the continuation survived the OS turn intact"
+        );
+
+        assert_eq!(node.poll(), Step::Ran);
+        assert_eq!(
+            node.actor().last_resumed,
+            Some(2),
+            "the lane continuation is what resumed — nothing was overwritten"
         );
     }
 
