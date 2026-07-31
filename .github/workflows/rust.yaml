@@ -320,3 +320,71 @@ jobs:
       - name: Run ISA matrix (test + clippy per supported level)
         shell: bash
         run: cargo run -p xtask -- isa-matrix --clippy
+
+  # Every display driver's cfg (use_cocoa_display, use_x11_display,
+  # use_web_display) should be verifiably exercised *somewhere* in CI, or its
+  # buildability is a total blind spot -- exactly how the now-deleted headless
+  # driver went 22-errors-broken without a single red check. Cocoa/X11 are
+  # covered by the `test`/`clippy` jobs above (build.rs's target_os priority
+  # always resolves to one of them there). Nothing above ever targets wasm32,
+  # so use_web_display has never been compiled by CI at all.
+  #
+  # This job is deliberately non-blocking: pixelflow-ir's `backend::emit`
+  # module (the JIT machine-code emitter) is compiled unconditionally --  not
+  # feature- or arch-gated -- and only has x86_64/aarch64 constants defined,
+  # so every crate in this dependency chain (pixelflow-ir -> pixelflow-search
+  # -> pixelflow-core -> pixelflow-runtime) currently fails to build for
+  # wasm32. All three checks below are expected to be RED today. That's a
+  # real, substantial gap (a wasm32 JIT backend does not exist), not a
+  # regression this job should gate merges on. Its purpose is to keep that
+  # gap *visible and tracked* instead of silently unreachable by any check,
+  # so the day someone starts fixing it, this job is what turns green and
+  # proves it -- and so nobody has to rediscover this by hand.
+  wasm32-status:
+    name: WASM target status (informational, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm32-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm32-
+
+      # Reported separately (not one `cargo check --workspace`) so the log
+      # says exactly which crates build for wasm32 today and which don't,
+      # instead of one pass/fail bit for the whole dependency graph.
+      - name: Check wasm32 buildability per crate
+        shell: bash
+        run: |
+          set -uo pipefail
+          check() {
+            local label=$1
+            shift
+            echo "::group::$label"
+            if cargo check --target wasm32-unknown-unknown "$@"; then
+              echo "PASS: $label"
+            else
+              echo "::warning::FAIL (known, tracked): $label does not build for wasm32-unknown-unknown"
+            fi
+            echo "::endgroup::"
+          }
+          check "pixelflow-search" -p pixelflow-search
+          check "pixelflow-core" -p pixelflow-core
+          check "pixelflow-runtime web driver" -p pixelflow-runtime --no-default-features --features display_web
+        env:
+          DISPLAY_DRIVER: web
