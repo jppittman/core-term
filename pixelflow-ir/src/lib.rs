@@ -7,6 +7,14 @@
 //! - **ALL_OPS**: The single source of truth for all operations.
 //! - **Backend**: SIMD execution traits.
 
+// NOTE: `no_std` support (disabling the `std` feature) is currently
+// incomplete: `cargo check -p pixelflow-ir --no-default-features` fails with
+// over 200 errors (missing f32 methods, `ExprId` deref mismatches in
+// `arena.rs`). No CI job builds this crate with `std` off -- the default
+// feature set and `--all-features` both enable it -- so this has never been
+// exercised. Tracked as a known, non-blocking gap by the
+// `pixelflow-ir-nostd-status` job in `.github/workflows/rust.yaml`; treat
+// `no_std` as aspirational until that job is green.
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;

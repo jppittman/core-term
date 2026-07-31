@@ -404,3 +404,65 @@ jobs:
           check "pixelflow-runtime web driver" -p pixelflow-runtime --no-default-features --features display_web
         env:
           DISPLAY_DRIVER: web
+
+  # `pixelflow-ir` declares `no_std` support (`#![cfg_attr(not(feature =
+  # "std"), no_std)]`) and `pixelflow-search` declares `std` as an optional,
+  # default-on feature -- but every existing CI job builds both with `std`
+  # on, via `--all-features` or their own `default` feature sets. That's the
+  # headless-driver failure shape again: a build configuration the crate
+  # advertises, that no runner has ever actually compiled, and workspace-wide
+  # `--all-features`/`--workspace` runs can't catch because Cargo unifies
+  # features across every crate in the build rather than checking each crate
+  # in isolation. Neither is hypothetical:
+  #   - `cargo check -p pixelflow-ir --no-default-features` fails with 218
+  #     errors (missing f32 methods under `no_std`, `ExprId` deref mismatches
+  #     in `arena.rs`), regardless of whether `alloc` is separately enabled.
+  #   - `cargo check -p pixelflow-search --no-default-features` fails because
+  #     `env_extraction_policy`/`load_opt_in_weights` in
+  #     `egraph/extraction.rs` call `std::env::var`/`std::fs::read`/
+  #     `ExprNnue::from_bytes` unconditionally, with no matching
+  #     `#[cfg(feature = "std")]` gate on the callers.
+  # Fixing either is a real feature of unknown scope, not a CI config issue,
+  # so this job -- like wasm32-status -- only keeps the gap visible instead
+  # of leaving it dark.
+  std-off-status:
+    name: no_std / std-off feature status (informational, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-nostd-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-nostd-
+
+      - name: Check crates that declare an optional/disable-able `std` feature, with it off
+        shell: bash
+        run: |
+          set -uo pipefail
+          check() {
+            local label=$1
+            shift
+            echo "::group::$label"
+            if cargo check "$@"; then
+              echo "PASS: $label"
+            else
+              echo "::warning::FAIL (known, tracked): $label"
+            fi
+            echo "::endgroup::"
+          }
+          check "pixelflow-ir --no-default-features (no std, no alloc feature)" -p pixelflow-ir --no-default-features
+          check "pixelflow-ir --no-default-features --features alloc (no std)" -p pixelflow-ir --no-default-features --features alloc
+          check "pixelflow-search --no-default-features (no std)" -p pixelflow-search --no-default-features

@@ -55,4 +55,4 @@ harness = false
 [features]
 default = []
 freetype = ["dep:freetype-rs"]
-serde = ["dep:serde"]
+serde = ["dep:serde", "bitflags/serde"]
