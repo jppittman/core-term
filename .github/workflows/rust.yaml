@@ -49,6 +49,22 @@ jobs:
       - name: Check every declared display driver cfg has recorded CI coverage
         run: bash scripts/check-driver-cfg-coverage.sh
 
+  dependency-advisories:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Catches known security/soundness advisories (RUSTSEC) in the resolved
+      # dependency graph. Config lives in deny.toml; only `advisories` is
+      # checked here — see the note at the top of that file for why `bans`,
+      # `licenses`, and `sources` aren't gated on yet.
+      - name: cargo deny check advisories
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
