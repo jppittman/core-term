@@ -6,6 +6,9 @@ CoreTerm.app
 .gemini*/
 gha-creds-*.json
 *.ppm
+# Golden reference images are the one deliberate exception: checked into git
+# so visual-regression tests have something to compare against.
+!pixelflow-graphics/tests/golden/*.ppm
 *.log
 *.db
 *.pyc

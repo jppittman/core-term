@@ -1,5 +1,7 @@
 //! Test: 3D scene rendering with sphere + floor using the scene3d architecture
 
+mod common;
+
 use pixelflow_compiler::ManifoldExpr;
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
@@ -40,8 +42,6 @@ impl Manifold<Jet3_4> for SphereAt {
         d_dot_c - (discriminant + epsilon_sq).sqrt()
     }
 }
-use std::fs::File;
-use std::io::Write;
 
 /// Remap pixel coordinates to normalized screen coordinates.
 /// Transforms [0, width] × [0, height] → normalized coordinates
@@ -109,11 +109,8 @@ fn sphere_on_floor() {
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_raymarch_sh.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
-    for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
-    }
+    common::write_ppm(&path, &frame).unwrap();
+    common::assert_golden("sphere_on_floor", &frame, 2);
     println!("Saved: {}", path.display());
 
     // Basic sanity: center should hit something (not pure sky)
@@ -172,11 +169,8 @@ fn sphere_on_matte_floor() {
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_raymarch_matte.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
-    for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
-    }
+    common::write_ppm(&path, &frame).unwrap();
+    common::assert_golden("sphere_on_matte_floor", &frame, 2);
     println!("Saved: {}", path.display());
 
     // Center should hit geometry (gray sphere)
@@ -223,11 +217,8 @@ fn chrome_sphere_on_checkerboard() {
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_chrome_checker.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", WIDTH, HEIGHT).unwrap();
-    for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
-    }
+    common::write_ppm(&path, &frame).unwrap();
+    common::assert_golden("chrome_sphere_on_checkerboard", &frame, 2);
     println!("Saved: {}", path.display());
 
     // Debug: print some pixel values
