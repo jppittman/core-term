@@ -128,7 +128,7 @@ Cargo workspace with 12 member crates:
 | `pixelflow-ml` | Graphics ML experiments (harmonic attention, SH feature maps). Not part of the compiler cost model. |
 | `pixelflow-search` | E-graph optimization. Rewrite rules, saturation, cost extraction (static latency prior default; NNUE opt-in), rule provenance + hindsight labeling. |
 | `pixelflow-pipeline` | Cost-model tooling. JIT bench harness, corpus generation, extraction-head bootstrap, extraction-policy benchmarks. |
-| `pixelflow-runtime` | Display drivers (macOS Cocoa, X11, Metal, Web WASM), input handling, vsync, render pool. |
+| `pixelflow-runtime` | Display drivers (macOS Cocoa, X11, Metal; Web WASM driver exists but can't compile yet — pixelflow-ir's JIT emitter has no wasm32 backend), input handling, vsync, render pool. |
 | `actor-scheduler` | Priority channels with `troupe!` macro. Control > Management > Data lanes. |
 | `actor-scheduler-macros` | Procedural macros for actor system. |
 | `core-term` | Terminal application: PTY management, ANSI processing, terminal emulator, key translation. |

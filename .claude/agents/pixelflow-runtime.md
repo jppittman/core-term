@@ -131,7 +131,7 @@ Cross-thread signaling for background threads:
 - kqueue for PTY I/O
 
 ### Linux (X11)
-- X11 via `display/drivers/x11.rs`
+- X11 via `LinuxOps` (`platform/linux/platform.rs`), the `PlatformOps` impl — not the legacy `display/drivers/` trait
 - epoll for PTY I/O
 - Requires libx11-dev packages
 
@@ -139,6 +139,8 @@ Cross-thread signaling for background threads:
 - SharedArrayBuffer for cross-thread IPC
 - Canvas API for rendering
 - Special initialization via `pixelflow_init_worker`
+- Still uses the legacy `DisplayDriver` trait (not yet migrated to `PlatformOps`)
+- **Does not currently compile**: pixelflow-ir's JIT emitter has no wasm32 codegen backend (x86_64/aarch64 only), so anything depending on pixelflow-core fails to build for wasm32-unknown-unknown regardless of this driver's own code. Not exercised by any CI job.
 
 ## Invariants You Must Maintain
 

@@ -538,8 +538,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi 0.11.1+wasi-snapshot-preview1",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -954,6 +956,7 @@ dependencies = [
 name = "pixelflow-search"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.2.17",
  "libm",
  "pixelflow-ir",
  "rand 0.8.5",
