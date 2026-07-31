@@ -110,7 +110,7 @@ fn sphere_on_floor() {
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_raymarch_sh.ppm");
     common::write_ppm(&path, &frame).unwrap();
-    common::assert_golden("sphere_on_floor", &frame, 2);
+    common::assert_golden("sphere_on_floor", &frame, 2, 0.01);
     println!("Saved: {}", path.display());
 
     // Basic sanity: center should hit something (not pure sky)
@@ -170,7 +170,7 @@ fn sphere_on_matte_floor() {
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_raymarch_matte.ppm");
     common::write_ppm(&path, &frame).unwrap();
-    common::assert_golden("sphere_on_matte_floor", &frame, 2);
+    common::assert_golden("sphere_on_matte_floor", &frame, 2, 0.01);
     println!("Saved: {}", path.display());
 
     // Center should hit geometry (gray sphere)
@@ -218,7 +218,7 @@ fn chrome_sphere_on_checkerboard() {
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_chrome_checker.ppm");
     common::write_ppm(&path, &frame).unwrap();
-    common::assert_golden("chrome_sphere_on_checkerboard", &frame, 2);
+    common::assert_golden("chrome_sphere_on_checkerboard", &frame, 2, 0.01);
     println!("Saved: {}", path.display());
 
     // Debug: print some pixel values

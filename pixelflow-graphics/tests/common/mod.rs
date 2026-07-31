@@ -14,11 +14,25 @@
 //!   on mismatch writes the actual render and a visual diff next to the
 //!   golden so the failure is something to look at, not just a number.
 //!
-//! The tolerance exists because this codebase documents (CLAUDE.md) that
-//! `MulAdd` rounding and similar float behavior legitimately differs by
-//! target ISA -- a real miscompile shifts coverage/color by whole steps, not
-//! by a a rounding ULP, so a small per-channel tolerance absorbs the former
-//! without hiding the latter.
+//! The per-channel tolerance exists because this codebase documents
+//! (CLAUDE.md) that `MulAdd` rounding and similar float behavior legitimately
+//! differs by target ISA -- a real miscompile shifts coverage/color by whole
+//! steps, not by a rounding ULP.
+//!
+//! That alone isn't enough for scenes with hard edges (a checkerboard grid
+//! line, a sphere's silhouette): a sub-ULP difference in an edge-distance
+//! calculation can land a boundary pixel on the *other side* of a threshold,
+//! flipping it to a completely different color -- a large delta on a single
+//! pixel, not a small delta on the whole image. No per-channel tolerance can
+//! absorb that, because the two colors either side of an edge can be
+//! arbitrarily different. `assert_golden` therefore also budgets a small
+//! *fraction* of pixels allowed to exceed the per-channel tolerance, on the
+//! premise that a real regression moves far more than a sliver of boundary
+//! pixels, while a few hundred edge pixels flipping between x86 and aarch64
+//! (or even between two x86 ISA levels) is exactly the platform divergence
+//! CLAUDE.md says to expect. Confirmed on this repo's own CI: the initial
+//! goldens, generated on one machine, failed on both ubuntu-latest and
+//! macos-latest at ~0.4% of pixels, all at checkerboard/sphere edges.
 
 use pixelflow_graphics::render::color::Rgba8;
 use pixelflow_graphics::render::frame::Frame;
@@ -87,10 +101,18 @@ fn frame_to_rgb(frame: &Frame<Rgba8>) -> Vec<u8> {
     rgb
 }
 
-/// Compare `frame` against the stored golden named `name`, within
-/// `tolerance` per RGB channel. Panics (failing the test) on a mismatch, a
-/// missing golden (unless `UPDATE_GOLDENS=1`), or a dimension mismatch.
-pub fn assert_golden(name: &str, frame: &Frame<Rgba8>, tolerance: u8) {
+/// Compare `frame` against the stored golden named `name`. A pixel counts as
+/// mismatched if any RGB channel differs by more than `tolerance`; the test
+/// fails only if more than `max_mismatched_fraction` of all pixels mismatch
+/// (see the module docs for why a pure per-pixel tolerance isn't enough on
+/// its own). Panics on a real mismatch, a missing golden (unless
+/// `UPDATE_GOLDENS=1`), or a dimension mismatch.
+pub fn assert_golden(
+    name: &str,
+    frame: &Frame<Rgba8>,
+    tolerance: u8,
+    max_mismatched_fraction: f64,
+) {
     let golden_path = golden_dir().join(format!("{name}.ppm"));
 
     if std::env::var("UPDATE_GOLDENS").is_ok() {
@@ -139,7 +161,18 @@ pub fn assert_golden(name: &str, frame: &Frame<Rgba8>, tolerance: u8) {
         diff_rgb[i] = actual_rgb[i].abs_diff(golden.rgb[i]).saturating_mul(8);
     }
 
+    let total = actual_rgb.len() / 3;
+    let mismatched_fraction = mismatched_pixels as f64 / total as f64;
+
     if mismatched_pixels == 0 {
+        return;
+    }
+    if mismatched_fraction <= max_mismatched_fraction {
+        println!(
+            "{name}: {mismatched_pixels}/{total} pixels exceeded tolerance {tolerance} \
+             (worst delta {worst_delta}), within the {max_mismatched_fraction} budget -- \
+             treating as platform edge-pixel noise, not a regression"
+        );
         return;
     }
 
@@ -159,12 +192,13 @@ pub fn assert_golden(name: &str, frame: &Frame<Rgba8>, tolerance: u8) {
     write_ppm(&diff_path, &diff_frame).expect("write diff");
 
     panic!(
-        "{name}: {mismatched_pixels}/{total} pixels exceeded tolerance {tolerance} (worst delta {worst_delta}).\n\
+        "{name}: {mismatched_pixels}/{total} pixels exceeded tolerance {tolerance} \
+         (worst delta {worst_delta}) -- above the {max_mismatched_fraction} budget for \
+         platform edge-pixel noise, so this looks like a real regression.\n\
          golden: {golden_path}\n\
          actual: {actual_path}\n\
          diff:   {diff_path} (amplified 8x so small deltas are visible)\n\
          If this change is intentional, rerun with UPDATE_GOLDENS=1 and commit the new golden.",
-        total = actual_rgb.len() / 3,
         golden_path = golden_path.display(),
         actual_path = actual_path.display(),
         diff_path = diff_path.display(),

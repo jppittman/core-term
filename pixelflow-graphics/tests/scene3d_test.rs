@@ -143,7 +143,7 @@ fn chrome_unit_sphere() {
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_chrome_unit_sphere.ppm");
     common::write_ppm(&path, &frame).unwrap();
-    common::assert_golden("chrome_unit_sphere", &frame, 2);
+    common::assert_golden("chrome_unit_sphere", &frame, 2, 0.01);
     println!("Saved: {}", path.display());
 
     // Debug: print some pixel values
@@ -207,7 +207,7 @@ fn sky_only() {
     // Save
     let path = std::env::temp_dir().join("pixelflow_sky_only.ppm");
     common::write_ppm(&path, &frame).unwrap();
-    common::assert_golden("sky_only", &frame, 2);
+    common::assert_golden("sky_only", &frame, 2, 0.0);
     println!("Saved: {}", path.display());
 
     // Top should be brighter than bottom (gradient)
@@ -247,7 +247,7 @@ fn floor_only() {
     // Save
     let path = std::env::temp_dir().join("pixelflow_floor_only.ppm");
     common::write_ppm(&path, &frame).unwrap();
-    common::assert_golden("floor_only", &frame, 2);
+    common::assert_golden("floor_only", &frame, 2, 0.01);
     println!("Saved: {}", path.display());
 
     // Bottom half should hit floor, top half should hit sky

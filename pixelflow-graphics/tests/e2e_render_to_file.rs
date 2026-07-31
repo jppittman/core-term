@@ -81,7 +81,7 @@ fn e2e_render_gradient() {
     // Write to file for visual inspection
     let output_path = std::env::temp_dir().join("pixelflow_e2e_gradient.ppm");
     write_ppm(&output_path, &frame).expect("Failed to write PPM file");
-    assert_golden("e2e_render_gradient", &frame, 2);
+    assert_golden("e2e_render_gradient", &frame, 2, 0.0);
 
     println!("Gradient image saved to: {}", output_path.display());
 
@@ -144,7 +144,7 @@ fn e2e_render_radial_gradient() {
 
     let output_path = std::env::temp_dir().join("pixelflow_e2e_radial.ppm");
     write_ppm(&output_path, &frame).expect("Failed to write PPM file");
-    assert_golden("e2e_render_radial_gradient", &frame, 2);
+    assert_golden("e2e_render_radial_gradient", &frame, 2, 0.01);
     println!("Radial gradient saved to: {}", output_path.display());
 }
 
@@ -211,7 +211,7 @@ fn e2e_render_circle() {
 
     let output_path = std::env::temp_dir().join("pixelflow_e2e_circle.ppm");
     write_ppm(&output_path, &frame).expect("Failed to write PPM file");
-    assert_golden("e2e_render_circle", &frame, 2);
+    assert_golden("e2e_render_circle", &frame, 2, 0.01);
     println!("Circle image saved to: {}", output_path.display());
 }
 
@@ -236,7 +236,7 @@ fn e2e_solid_color_renders_correctly() {
 
     let output_path = std::env::temp_dir().join("pixelflow_e2e_cyan.ppm");
     write_ppm(&output_path, &frame).expect("Failed to write PPM file");
-    assert_golden("e2e_solid_color_renders_correctly", &frame, 2);
+    assert_golden("e2e_solid_color_renders_correctly", &frame, 2, 0.0);
     println!("Solid cyan image saved to: {}", output_path.display());
 }
 
