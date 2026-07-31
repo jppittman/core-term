@@ -8,6 +8,13 @@
 //! [`ExtractionPolicy::choices`] — one implementation, not two copies of the
 //! `PIXELFLOW_NNUE_WEIGHTS` opt-in.
 
+// NOTE: this module uses `std::env::var`/`std::fs::read`/`OnceLock`
+// unconditionally, with no `#[cfg(feature = "std")]` gate, even though the
+// crate's `std` feature is optional and default-on. `cargo check -p
+// pixelflow-search --no-default-features` fails here today; no CI job
+// builds this crate with `std` off, so that's never been exercised. Treat
+// `std`-off as aspirational until the `std-off-status` job in
+// `.github/workflows/rust.yaml` is green.
 use super::cost::CostModel;
 use super::extract::extract_dag;
 use super::graph::EGraph;

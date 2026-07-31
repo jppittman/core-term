@@ -5,6 +5,8 @@
 //! 2. Surface: Warps `P = ray * t` - creates tangent frame via chain rule
 //! 3. Material: Reconstructs normal from derivatives - Reflect, Checker, Sky
 
+mod common;
+
 use pixelflow_compiler::ManifoldExpr;
 use pixelflow_core::combinators::At;
 use pixelflow_core::jet::Jet3;
@@ -19,8 +21,6 @@ use pixelflow_graphics::scene3d::{
     plane, sky, Checker, ColorChecker, ColorReflect, ColorScreenToDir, ColorSky, ColorSurface,
     Reflect, ScreenToDir, Surface,
 };
-use std::fs::File;
-use std::io::Write;
 
 /// Sphere at given center with radius (local to this test).
 #[derive(Clone, Copy, ManifoldExpr)]
@@ -142,11 +142,8 @@ fn chrome_unit_sphere() {
 
     // Save PPM
     let path = std::env::temp_dir().join("pixelflow_chrome_unit_sphere.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
-    for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
-    }
+    common::write_ppm(&path, &frame).unwrap();
+    common::assert_golden("chrome_unit_sphere", &frame, 2, 0.01);
     println!("Saved: {}", path.display());
 
     // Debug: print some pixel values
@@ -209,11 +206,8 @@ fn sky_only() {
 
     // Save
     let path = std::env::temp_dir().join("pixelflow_sky_only.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
-    for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
-    }
+    common::write_ppm(&path, &frame).unwrap();
+    common::assert_golden("sky_only", &frame, 2, 0.0);
     println!("Saved: {}", path.display());
 
     // Top should be brighter than bottom (gradient)
@@ -252,11 +246,8 @@ fn floor_only() {
 
     // Save
     let path = std::env::temp_dir().join("pixelflow_floor_only.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
-    for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
-    }
+    common::write_ppm(&path, &frame).unwrap();
+    common::assert_golden("floor_only", &frame, 2, 0.01);
     println!("Saved: {}", path.display());
 
     // Bottom half should hit floor, top half should hit sky
@@ -339,13 +330,14 @@ fn color_chrome_sphere() {
     let mpps = (W * H) as f64 / elapsed.as_secs_f64() / 1_000_000.0;
     println!("Color render (mullet): {:?} ({:.2} Mpix/s)", elapsed, mpps);
 
-    // Save PPM
+    // Save PPM. No golden comparison here: this test renders at 1920x1080
+    // for the throughput measurement below, which would mean an ~6MB binary
+    // golden checked into git for one test -- disproportionate for a test
+    // whose main purpose is the perf number, not visual regression. The same
+    // chrome-sphere-reflection code path is already golden-tested at a much
+    // smaller resolution by `chrome_unit_sphere`.
     let path = std::env::temp_dir().join("pixelflow_color_chrome.ppm");
-    let mut file = File::create(&path).unwrap();
-    writeln!(file, "P6\n{} {}\n255", W, H).unwrap();
-    for p in &frame.data {
-        file.write_all(&[p.r(), p.g(), p.b()]).unwrap();
-    }
+    common::write_ppm(&path, &frame).unwrap();
     println!("Saved: {}", path.display());
 
     // Debug pixels

@@ -121,14 +121,14 @@ Cargo workspace with 12 member crates:
 
 | Crate | Purpose |
 |-------|---------|
-| `pixelflow-core` | SIMD algebra. `Field`, `Manifold`, coordinate variables, ops. Multi-backend (AVX-512/SSE2/NEON/scalar). Edition 2024. |
+| `pixelflow-core` | SIMD algebra. `Field`, `Manifold`, coordinate variables, ops. Backends: x86-64 (SSE2 baseline, AVX2/AVX-512 opt-in via `target-feature`) and aarch64 (NEON) only — no portable/scalar fallback for other architectures. Edition 2024. |
 | `pixelflow-compiler` | Proc-macro compiler: `kernel!` macro, lexer, parser, sema, AST optimization, codegen. Edition 2024. |
 | `pixelflow-ir` | Shared IR. `ExprArena` (sole IR), OpKind enum, backend execution traits, JIT manifold. |
 | `pixelflow-graphics` | Font loading (TTF, SDF), colors (`Rgba8`, `Color`), rasterization, antialiasing, shapes. |
 | `pixelflow-ml` | Graphics ML experiments (harmonic attention, SH feature maps). Not part of the compiler cost model. |
 | `pixelflow-search` | E-graph optimization. Rewrite rules, saturation, cost extraction (static latency prior default; NNUE opt-in), rule provenance + hindsight labeling. |
 | `pixelflow-pipeline` | Cost-model tooling. JIT bench harness, corpus generation, extraction-head bootstrap, extraction-policy benchmarks. |
-| `pixelflow-runtime` | Display drivers (macOS Cocoa, headless, Metal, Web WASM), input handling, vsync, render pool. |
+| `pixelflow-runtime` | Display drivers (macOS Cocoa, X11, Metal; Web WASM driver exists but can't compile yet — pixelflow-ir's JIT emitter has no wasm32 backend), input handling, vsync, render pool. |
 | `actor-scheduler` | Priority channels with `troupe!` macro. Control > Management > Data lanes. |
 | `actor-scheduler-macros` | Procedural macros for actor system. |
 | `core-term` | Terminal application: PTY management, ANSI processing, terminal emulator, key translation. |
@@ -290,7 +290,7 @@ handle.send(Message::Data(MyDataMsg))?;           // Lowest (backpressure)
 ## Debugging Pitfalls
 
 - **SIMD mismatch between machines**: Check `build.rs` output, verify target features. `RUSTFLAGS="-C target-cpu=native"` to match CPU.
-- **Unexpectedly slow**: May be falling back to scalar. Check build output.
+- **Unexpectedly slow**: May be building against a lower ISA level than the CPU supports (e.g. SSE2 baseline on an AVX2/AVX-512-capable host). Check build output and `RUSTFLAGS`/`target-cpu`; there is no separate portable-scalar tier to "fall back" to — see `xtask isa-matrix`.
 - **Cocoa main thread panic**: Ensure `pixelflow_runtime::run()` called from `fn main()`, not a spawned thread.
 - **Complex Manifold trait bounds**: Add explicit type annotations, break into named intermediates.
 - **"method not found" on Manifold**: Import `use pixelflow_core::Manifold;` and extension traits.

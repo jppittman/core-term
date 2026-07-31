@@ -33,6 +33,78 @@ jobs:
           "$BASE_COMMIT"
           "$HEAD_COMMIT"
 
+  # A build.rs can declare (via rustc-check-cfg) a display-driver cfg that no
+  # CI job ever actually builds -- that's exactly how the headless driver
+  # went 22-errors-broken with a fully green CI history. This is a fast,
+  # blocking metadata check (not a build): it fails the moment a new driver
+  # cfg is declared without a maintainer recording how CI covers it, instead
+  # of leaving that as a silent gap someone has to rediscover by hand.
+  driver-cfg-coverage:
+    name: Display driver CI coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check every declared display driver cfg has recorded CI coverage
+        run: bash scripts/check-driver-cfg-coverage.sh
+
+  dependency-advisories:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Catches known security/soundness advisories (RUSTSEC) in the resolved
+      # dependency graph. Config lives in deny.toml; only `advisories` is
+      # checked here — see the note at the top of that file for why `bans`,
+      # `licenses`, and `sources` aren't gated on yet.
+      - name: cargo deny check advisories
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
+  feature-matrix:
+    name: Feature matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install X11 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-feature-matrix-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-feature-matrix-
+
+      # Checks every crate against each of its own features in isolation
+      # (cargo-hack --each-feature), not just workspace --all-features.
+      # Cargo's feature unification can hide a broken feature behind
+      # whatever else in the workspace happens to enable its dependencies --
+      # see the script's header comment for the pixelflow-graphics `serde`
+      # bug this exact gap let through.
+      - name: Check every crate's features build in isolation
+        run: bash scripts/check-feature-matrix.sh
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
@@ -320,3 +392,133 @@ jobs:
       - name: Run ISA matrix (test + clippy per supported level)
         shell: bash
         run: cargo run -p xtask -- isa-matrix --clippy
+
+  # Every display driver's cfg (use_cocoa_display, use_x11_display,
+  # use_web_display) should be verifiably exercised *somewhere* in CI, or its
+  # buildability is a total blind spot -- exactly how the now-deleted headless
+  # driver went 22-errors-broken without a single red check. Cocoa/X11 are
+  # covered by the `test`/`clippy` jobs above (build.rs's target_os priority
+  # always resolves to one of them there). Nothing above ever targets wasm32,
+  # so use_web_display has never been compiled by CI at all.
+  #
+  # This job is deliberately non-blocking: pixelflow-ir's `backend::emit`
+  # module (the JIT machine-code emitter) is compiled unconditionally --  not
+  # feature- or arch-gated -- and only has x86_64/aarch64 constants defined,
+  # so every crate in this dependency chain (pixelflow-ir -> pixelflow-search
+  # -> pixelflow-core -> pixelflow-runtime) currently fails to build for
+  # wasm32. All three checks below are expected to be RED today. That's a
+  # real, substantial gap (a wasm32 JIT backend does not exist), not a
+  # regression this job should gate merges on. Its purpose is to keep that
+  # gap *visible and tracked* instead of silently unreachable by any check,
+  # so the day someone starts fixing it, this job is what turns green and
+  # proves it -- and so nobody has to rediscover this by hand.
+  wasm32-status:
+    name: WASM target status (informational, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm32-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm32-
+
+      # Reported separately (not one `cargo check --workspace`) so the log
+      # says exactly which crates build for wasm32 today and which don't,
+      # instead of one pass/fail bit for the whole dependency graph.
+      - name: Check wasm32 buildability per crate
+        shell: bash
+        run: |
+          set -uo pipefail
+          check() {
+            local label=$1
+            shift
+            echo "::group::$label"
+            if cargo check --target wasm32-unknown-unknown "$@"; then
+              echo "PASS: $label"
+            else
+              echo "::warning::FAIL (known, tracked): $label does not build for wasm32-unknown-unknown"
+            fi
+            echo "::endgroup::"
+          }
+          check "pixelflow-search" -p pixelflow-search
+          check "pixelflow-core" -p pixelflow-core
+          check "pixelflow-runtime web driver" -p pixelflow-runtime --no-default-features --features display_web
+        env:
+          DISPLAY_DRIVER: web
+
+  # `pixelflow-ir` declares `no_std` support (`#![cfg_attr(not(feature =
+  # "std"), no_std)]`) and `pixelflow-search` declares `std` as an optional,
+  # default-on feature -- but every existing CI job builds both with `std`
+  # on, via `--all-features` or their own `default` feature sets. That's the
+  # headless-driver failure shape again: a build configuration the crate
+  # advertises, that no runner has ever actually compiled, and workspace-wide
+  # `--all-features`/`--workspace` runs can't catch because Cargo unifies
+  # features across every crate in the build rather than checking each crate
+  # in isolation. Neither is hypothetical:
+  #   - `cargo check -p pixelflow-ir --no-default-features` fails with 218
+  #     errors (missing f32 methods under `no_std`, `ExprId` deref mismatches
+  #     in `arena.rs`), regardless of whether `alloc` is separately enabled.
+  #   - `cargo check -p pixelflow-search --no-default-features` fails because
+  #     `env_extraction_policy`/`load_opt_in_weights` in
+  #     `egraph/extraction.rs` call `std::env::var`/`std::fs::read`/
+  #     `ExprNnue::from_bytes` unconditionally, with no matching
+  #     `#[cfg(feature = "std")]` gate on the callers.
+  # Fixing either is a real feature of unknown scope, not a CI config issue,
+  # so this job -- like wasm32-status -- only keeps the gap visible instead
+  # of leaving it dark.
+  std-off-status:
+    name: no_std / std-off feature status (informational, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-nostd-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-nostd-
+
+      - name: Check crates that declare an optional/disable-able `std` feature, with it off
+        shell: bash
+        run: |
+          set -uo pipefail
+          check() {
+            local label=$1
+            shift
+            echo "::group::$label"
+            if cargo check "$@"; then
+              echo "PASS: $label"
+            else
+              echo "::warning::FAIL (known, tracked): $label"
+            fi
+            echo "::endgroup::"
+          }
+          check "pixelflow-ir --no-default-features (no std, no alloc feature)" -p pixelflow-ir --no-default-features
+          check "pixelflow-ir --no-default-features --features alloc (no std)" -p pixelflow-ir --no-default-features --features alloc
+          check "pixelflow-search --no-default-features (no std)" -p pixelflow-search --no-default-features

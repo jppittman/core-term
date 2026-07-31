@@ -3,34 +3,17 @@
 //! This test verifies the full pipeline from manifold composition
 //! through rasterization to file output.
 
+mod common;
+
 use pixelflow_compiler::kernel;
 use pixelflow_core::{Discrete, Field, Manifold, ManifoldCompat, ManifoldExt, X, Y};
 use pixelflow_graphics::render::color::{Grayscale, NamedColor, Rgba8};
 
 type Field4 = (Field, Field, Field, Field);
+use common::{assert_golden, write_ppm};
 use pixelflow_graphics::render::frame::Frame;
 use pixelflow_graphics::render::rasterizer::rasterize;
 use pixelflow_graphics::transform::{Scale, Translate};
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
-
-/// Write a frame to a PPM file (simple image format, no dependencies needed).
-fn write_ppm<P: AsRef<Path>>(path: P, frame: &Frame<Rgba8>) -> std::io::Result<()> {
-    let mut file = File::create(path)?;
-
-    // PPM header: P6 means binary RGB
-    writeln!(file, "P6")?;
-    writeln!(file, "{} {}", frame.width, frame.height)?;
-    writeln!(file, "255")?;
-
-    // Write RGB bytes (skip alpha)
-    for pixel in &frame.data {
-        file.write_all(&[pixel.r(), pixel.g(), pixel.b()])?;
-    }
-
-    Ok(())
-}
 
 /// A colorful gradient manifold that outputs Discrete pixels.
 /// Creates a smooth color transition based on x and y coordinates.
@@ -98,6 +81,7 @@ fn e2e_render_gradient() {
     // Write to file for visual inspection
     let output_path = std::env::temp_dir().join("pixelflow_e2e_gradient.ppm");
     write_ppm(&output_path, &frame).expect("Failed to write PPM file");
+    assert_golden("e2e_render_gradient", &frame, 2, 0.0);
 
     println!("Gradient image saved to: {}", output_path.display());
 
@@ -160,6 +144,7 @@ fn e2e_render_radial_gradient() {
 
     let output_path = std::env::temp_dir().join("pixelflow_e2e_radial.ppm");
     write_ppm(&output_path, &frame).expect("Failed to write PPM file");
+    assert_golden("e2e_render_radial_gradient", &frame, 2, 0.01);
     println!("Radial gradient saved to: {}", output_path.display());
 }
 
@@ -226,6 +211,7 @@ fn e2e_render_circle() {
 
     let output_path = std::env::temp_dir().join("pixelflow_e2e_circle.ppm");
     write_ppm(&output_path, &frame).expect("Failed to write PPM file");
+    assert_golden("e2e_render_circle", &frame, 2, 0.01);
     println!("Circle image saved to: {}", output_path.display());
 }
 
@@ -250,6 +236,7 @@ fn e2e_solid_color_renders_correctly() {
 
     let output_path = std::env::temp_dir().join("pixelflow_e2e_cyan.ppm");
     write_ppm(&output_path, &frame).expect("Failed to write PPM file");
+    assert_golden("e2e_solid_color_renders_correctly", &frame, 2, 0.0);
     println!("Solid cyan image saved to: {}", output_path.display());
 }
 

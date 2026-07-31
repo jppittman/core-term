@@ -8,7 +8,7 @@ Platform abstraction, display drivers, actor-based threading, vsync coordination
 
 ## What Lives Here
 
-- Display drivers: Cocoa (macOS), X11 (Linux), Web (WASM), Headless
+- Display drivers: Cocoa (macOS), X11 (Linux), Web (WASM)
 - Platform code: Window creation, event handling, input
 - Actor orchestration: EngineTroupe, VsyncActor
 - Frame management: ping-pong buffers, recycling via `FramePacket`
@@ -131,7 +131,7 @@ Cross-thread signaling for background threads:
 - kqueue for PTY I/O
 
 ### Linux (X11)
-- X11 via `display/drivers/x11.rs`
+- X11 via `LinuxOps` (`platform/linux/platform.rs`), the `PlatformOps` impl — not the legacy `display/drivers/` trait
 - epoll for PTY I/O
 - Requires libx11-dev packages
 
@@ -139,11 +139,8 @@ Cross-thread signaling for background threads:
 - SharedArrayBuffer for cross-thread IPC
 - Canvas API for rendering
 - Special initialization via `pixelflow_init_worker`
-
-### Headless
-- For testing/CI
-- No actual display
-- Auto-selected in test environments
+- Still uses the legacy `DisplayDriver` trait (not yet migrated to `PlatformOps`)
+- **Does not currently compile**: pixelflow-ir's JIT emitter has no wasm32 codegen backend (x86_64/aarch64 only), so anything depending on pixelflow-core fails to build for wasm32-unknown-unknown regardless of this driver's own code. Not exercised by any CI job.
 
 ## Invariants You Must Maintain
 
@@ -167,7 +164,6 @@ Cross-thread signaling for background threads:
 1. Check thread affinity (especially macOS)
 2. Verify event loop is running
 3. Check channel connectivity
-4. Use headless driver to isolate display issues
 
 ### Optimizing Frame Timing
 

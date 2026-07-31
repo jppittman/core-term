@@ -9,7 +9,6 @@ fn main() {
     // Declare custom cfg names to avoid warnings
     println!("cargo::rustc-check-cfg=cfg(use_cocoa_display)");
     println!("cargo::rustc-check-cfg=cfg(use_x11_display)");
-    println!("cargo::rustc-check-cfg=cfg(use_headless_display)");
     println!("cargo::rustc-check-cfg=cfg(use_web_display)");
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS")
@@ -34,9 +33,6 @@ fn main() {
                 eprintln!("Warning: X11 libraries not found. X11 features may not be available.");
             }
         }
-        "headless" => {
-            println!("cargo:rustc-cfg=use_headless_display");
-        }
         "web" => {
             println!("cargo:rustc-cfg=use_web_display");
         }
@@ -55,8 +51,6 @@ fn determine_display_driver(target_os: &str) -> String {
     let has_cocoa =
         cfg!(feature = "display_cocoa") || std::env::var("CARGO_FEATURE_DISPLAY_COCOA").is_ok();
     let has_x11 = has_x11_feature();
-    let has_headless = cfg!(feature = "display_headless")
-        || std::env::var("CARGO_FEATURE_DISPLAY_HEADLESS").is_ok();
     let has_web =
         cfg!(feature = "display_web") || std::env::var("CARGO_FEATURE_DISPLAY_WEB").is_ok();
 
@@ -68,40 +62,21 @@ fn determine_display_driver(target_os: &str) -> String {
         return "web".to_string();
     }
 
-    // Prioritize OS-specific drivers when multiple features are enabled
     if target_os == "macos" {
-        if has_cocoa {
-            return "cocoa".to_string();
-        }
-        if has_headless {
-            return "headless".to_string();
-        }
         return "cocoa".to_string();
     }
 
     if target_os == "linux" {
-        if has_x11 {
-            return "x11".to_string();
-        }
-        if has_headless {
-            return "headless".to_string();
-        }
-
-        // On Linux, prefer X11 but fall back to headless if X11 is not available
         if pkg_config::probe_library("x11").is_ok() {
             return "x11".to_string();
-        } else {
-            eprintln!("Warning: X11 libraries not found. Falling back to headless display driver.");
-            println!("cargo:warning=X11 libraries not found. Building headless driver instead.");
-            println!("cargo:warning=To use X11, install libx11-dev (Debian/Ubuntu) or libx11-devel (RHEL/Fedora)");
-            return "headless".to_string();
         }
+        panic!(
+            "X11 libraries not found on Linux and no other display driver is available. \
+             Install libx11-dev (Debian/Ubuntu) or libx11-devel (RHEL/Fedora), or set DISPLAY_DRIVER explicitly."
+        );
     }
 
-    // Fallbacks
-    if has_headless {
-        return "headless".to_string();
-    }
+    // Fallbacks (other target OSes / cross-compilation)
     if has_x11 {
         return "x11".to_string();
     }
@@ -110,9 +85,10 @@ fn determine_display_driver(target_os: &str) -> String {
     }
 
     match target_os {
-        "macos" => "cocoa".to_string(),
-        "linux" => "x11".to_string(),
+        // wasm32-unknown-unknown reports target_os "unknown".
         "unknown" => "web".to_string(),
-        _ => "headless".to_string(),
+        _ => panic!(
+            "No display driver available for target OS '{target_os}'. Enable a display feature or set DISPLAY_DRIVER explicitly."
+        ),
     }
 }
