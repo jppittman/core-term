@@ -18,4 +18,15 @@ ignore = [
     # see the `wasm32-status` CI job). Unmaintained, but there is no drop-in
     # replacement to swap to blind; revisit once wasm32 support is real.
     "RUSTSEC-2025-0141",
+    # quick-xml's DoS advisories (unbounded CPU/memory on maliciously crafted
+    # XML) are pulled in transitively via inferno -> pprof, which is only ever
+    # compiled behind the optional, non-default `profiling` feature used for
+    # local flamegraph generation. The XML that path parses is profiling data
+    # inferno itself produced, not attacker-controlled input, so the actual
+    # threat model (untrusted network XML) doesn't apply here. No fix is
+    # available regardless: pprof 0.15.0 (latest) hard-pins
+    # `inferno = "^0.11"`, which hard-pins `quick-xml = "^0.26"`; revisit when
+    # pprof/inferno release a version that allows quick-xml >=0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]
