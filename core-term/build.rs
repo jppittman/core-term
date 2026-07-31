@@ -89,7 +89,10 @@ fn determine_display_driver(target_os: &str) -> String {
     match target_os {
         "macos" => "cocoa".to_string(),
         "linux" => "x11".to_string(),
-        _ => panic!("Unsupported target OS '{}': no display driver available.", target_os),
+        _ => panic!(
+            "Unsupported target OS '{}': no display driver available.",
+            target_os
+        ),
     }
 }
 
