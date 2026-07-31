@@ -65,6 +65,46 @@ jobs:
         with:
           command: check advisories
 
+  feature-matrix:
+    name: Feature matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install X11 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-feature-matrix-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-feature-matrix-
+
+      # Checks every crate against each of its own features in isolation
+      # (cargo-hack --each-feature), not just workspace --all-features.
+      # Cargo's feature unification can hide a broken feature behind
+      # whatever else in the workspace happens to enable its dependencies --
+      # see the script's header comment for the pixelflow-graphics `serde`
+      # bug this exact gap let through.
+      - name: Check every crate's features build in isolation
+        run: bash scripts/check-feature-matrix.sh
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
