@@ -33,6 +33,22 @@ jobs:
           "$BASE_COMMIT"
           "$HEAD_COMMIT"
 
+  # A build.rs can declare (via rustc-check-cfg) a display-driver cfg that no
+  # CI job ever actually builds -- that's exactly how the headless driver
+  # went 22-errors-broken with a fully green CI history. This is a fast,
+  # blocking metadata check (not a build): it fails the moment a new driver
+  # cfg is declared without a maintainer recording how CI covers it, instead
+  # of leaving that as a silent gap someone has to rediscover by hand.
+  driver-cfg-coverage:
+    name: Display driver CI coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check every declared display driver cfg has recorded CI coverage
+        run: bash scripts/check-driver-cfg-coverage.sh
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
