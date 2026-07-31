@@ -8,7 +8,7 @@ Platform abstraction, display drivers, actor-based threading, vsync coordination
 
 ## What Lives Here
 
-- Display drivers: Cocoa (macOS), X11 (Linux), Web (WASM), Headless
+- Display drivers: Cocoa (macOS), X11 (Linux), Web (WASM)
 - Platform code: Window creation, event handling, input
 - Actor orchestration: EngineTroupe, VsyncActor
 - Frame management: ping-pong buffers, recycling via `FramePacket`
@@ -140,11 +140,6 @@ Cross-thread signaling for background threads:
 - Canvas API for rendering
 - Special initialization via `pixelflow_init_worker`
 
-### Headless
-- For testing/CI
-- No actual display
-- Auto-selected in test environments
-
 ## Invariants You Must Maintain
 
 1. **Main thread for Cocoa** — Never call Cocoa from background threads
@@ -167,7 +162,6 @@ Cross-thread signaling for background threads:
 1. Check thread affinity (especially macOS)
 2. Verify event loop is running
 3. Check channel connectivity
-4. Use headless driver to isolate display issues
 
 ### Optimizing Frame Timing
 

@@ -24,8 +24,5 @@ pub use drivers::MetalDisplayDriver;
 // #[cfg(use_x11_display)]
 // pub use drivers::X11DisplayDriver;
 
-#[cfg(use_headless_display)]
-pub use drivers::HeadlessDisplayDriver;
-
 #[cfg(use_web_display)]
 pub use drivers::WebDisplayDriver;

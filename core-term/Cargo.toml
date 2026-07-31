@@ -71,6 +71,5 @@ bench = false
 # Manual override features (optional - platform auto-detects)
 display_cocoa = ["pixelflow-runtime/display_cocoa"]
 display_x11 = ["pixelflow-runtime/display_x11"]
-display_headless = ["pixelflow-runtime/display_headless"]
 default = []
 profiling = ["pprof"]
