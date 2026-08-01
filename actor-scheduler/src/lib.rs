@@ -1845,6 +1845,7 @@ mod poll_once_tests {
 #[cfg(test)]
 mod try_send_tests {
     use super::*;
+    use crate::mealy::Flush;
 
     struct RecordActor {
         got: Option<i32>,
@@ -1869,7 +1870,9 @@ mod try_send_tests {
     #[test]
     fn try_send_succeeds_and_is_received() {
         let (tx, mut rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
-        tx.try_send(Message::Data(7)).expect("room in the ring");
+        let mut port = Some(Message::Data(7));
+        assert_eq!(mealy::send_port(&mut port, &tx), Flush::Done);
+        assert!(port.is_none(), "delivered ports are cleared");
 
         let mut actor = RecordActor { got: None };
         assert!(!rx.poll_once(&mut actor), "still connected");
@@ -1880,11 +1883,18 @@ mod try_send_tests {
     fn try_send_on_a_full_data_ring_returns_full_with_the_message_recoverable() {
         let (tx, _rx) = ActorScheduler::<i32, i32, i32>::new(10, 2);
         // Capacity rounds up to a power of 2 (minimum 2); fill it without a consumer draining.
-        while tx.try_send(Message::Data(1)).is_ok() {}
+        loop {
+            let mut port = Some(Message::Data(1));
+            if mealy::send_port(&mut port, &tx) != Flush::Done {
+                break;
+            }
+        }
 
-        match tx.try_send(Message::Data(99)) {
-            Err(TrySendError::Full(Message::Data(msg))) => assert_eq!(msg, 99),
-            other => panic!("expected Full(Message::Data(99)), got {other:?}"),
+        let mut port = Some(Message::Data(99));
+        assert_eq!(mealy::send_port(&mut port, &tx), Flush::Blocked);
+        match port {
+            Some(Message::Data(msg)) => assert_eq!(msg, 99),
+            other => panic!("expected a blocked port to keep Data(99), got {other:?}"),
         }
     }
 
@@ -1893,9 +1903,11 @@ mod try_send_tests {
         let (tx, rx) = ActorScheduler::<i32, i32, i32>::new(10, 100);
         drop(rx);
 
-        match tx.try_send(Message::Data(5)) {
-            Err(TrySendError::Disconnected(Message::Data(msg))) => assert_eq!(msg, 5),
-            other => panic!("expected Disconnected(Message::Data(5)), got {other:?}"),
+        let mut port = Some(Message::Data(5));
+        assert_eq!(mealy::send_port(&mut port, &tx), Flush::Disconnected);
+        match port {
+            Some(Message::Data(msg)) => assert_eq!(msg, 5),
+            other => panic!("expected a disconnected target to retain Data(5), got {other:?}"),
         }
     }
 }
