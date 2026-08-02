@@ -35,6 +35,32 @@ use crate::kind::OpKind;
 use crate::variance::Variance;
 use alloc::vec::Vec;
 
+/// Run every legalization pass, in the one order they compose in.
+///
+/// This is the whole pipeline. It was previously four calls copied into each
+/// compile entry, which is how two entries — `compile_arena_dag_avx2` and
+/// `compile_arena_dag_avx512` — came to run none of them, and how the deleted
+/// `CompileWorkspace` came to run none of them *and* skip the guard that
+/// refuses a surviving `Dwrt`. An order that has to be retyped is an order
+/// that can be forgotten.
+///
+/// Every pass has an identity fast-path, so calling this on an arena that
+/// needs nothing lowered costs four comparisons and no allocation. There is
+/// no reason for a caller to want a subset.
+///
+/// # Errors
+///
+/// Propagates [`lower_dwrt_owned`]'s error for expressions with no derivative
+/// rule — bound-memory reads, integer/bit ops, reductions.
+pub fn legalize(arena: &ExprArena, root: ExprId) -> Result<(ExprArena, ExprId), &'static str> {
+    // `lower_dwrt` first: differentiating a `sin` manufactures a `cos`, so it
+    // has to precede the pass that expands them.
+    let (arena, root) = lower_dwrt_owned(arena, root)?;
+    let (arena, root) = expand_reduce_owned(&arena, root);
+    let (arena, root) = expand_gather_owned(&arena, root);
+    Ok(expand_transcendentals_owned(&arena, root))
+}
+
 /// Whether `op` is a unary transcendental this pass expands.
 fn is_transcendental_unary(op: OpKind) -> bool {
     matches!(

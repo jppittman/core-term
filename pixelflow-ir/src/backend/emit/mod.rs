@@ -418,15 +418,10 @@ pub fn compile_arena_dag_with_ctx(
     root: crate::arena::ExprId,
     ctx: EmitCtx,
 ) -> Result<CompileResult, &'static str> {
-    // Lower derivatives, reductions, memory reads, then transcendentals to
-    // primitives (one source of truth in `lowering`); the aarch64 emitter then
-    // never sees Dwrt/Reduce/Gather/Sin/Cos/etc. Dwrt runs first: its chain
-    // rule emits Sin/Cos/Exp nodes that the transcendental pass must still
-    // lower. (aarch64 gather emission is a later slice.)
-    let (arena, root) = crate::passes::lower_dwrt_owned(arena, root)?;
-    let (arena, root) = crate::passes::expand_reduce_owned(&arena, root);
-    let (arena, root) = crate::passes::expand_gather_owned(&arena, root);
-    let (arena, root) = crate::passes::expand_transcendentals_owned(&arena, root);
+    // After this the emitter sees only ops it can encode — no Dwrt, Reduce,
+    // Gather or transcendentals. The passes and their order live in
+    // `crate::passes::legalize`.
+    let (arena, root) = crate::passes::legalize(arena, root)?;
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses_map = arena_to_uses(&schedule);
@@ -2319,18 +2314,11 @@ pub fn compile_arena_dag_with_ctx(
     // SSE2 (128-bit xmm). Both implement `IsaBackend`, so the driver and the
     // KernelFn ABI stay consistent with the selected width.
     //
-    // Lower, in order: derivatives (Dwrt -> chain-rule arithmetic), reductions
-    // (unroll -> arithmetic + gathers), then memory reads (Gather -> index math
-    // + RawGather), then transcendentals. Each is a no-op when absent. Dwrt runs
-    // first because its rules emit Sin/Cos/Exp nodes the transcendental pass
-    // must still lower; Reduce runs before Gather so the gathers it unrolls get
-    // lowered too. A kernel that reads bound memory takes its buffer bases from
-    // a context pointer in rdi; the emitted body is identical either way, so the
-    // caller invokes it as `CtxKernelFn` instead of `KernelFn`.
-    let (arena, root) = crate::passes::lower_dwrt_owned(arena, root)?;
-    let (arena, root) = crate::passes::expand_reduce_owned(&arena, root);
-    let (arena, root) = crate::passes::expand_gather_owned(&arena, root);
-    let (arena, root) = crate::passes::expand_transcendentals_owned(&arena, root);
+    // A kernel that reads bound memory takes its buffer bases from a context
+    // pointer in rdi; the emitted body is identical either way, so the caller
+    // invokes it as `CtxKernelFn` instead of `KernelFn`. The passes that get
+    // the arena down to encodable ops live in `crate::passes::legalize`.
+    let (arena, root) = crate::passes::legalize(arena, root)?;
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
@@ -3532,7 +3520,8 @@ pub fn compile_arena_dag_avx2(
     arena: &ExprArena,
     root: ExprId,
 ) -> Result<CompileResult, &'static str> {
-    let schedule = arena_to_schedule(arena, root);
+    let (arena, root) = crate::passes::legalize(arena, root)?;
+    let schedule = arena_to_schedule(&arena, root);
     let uses = arena_to_uses(&schedule);
     compile_dag_via_backend(schedule, uses, &mut Avx2Backend)
 }
@@ -3546,7 +3535,8 @@ pub fn compile_arena_dag_avx512(
     arena: &ExprArena,
     root: ExprId,
 ) -> Result<CompileResult, &'static str> {
-    let schedule = arena_to_schedule(arena, root);
+    let (arena, root) = crate::passes::legalize(arena, root)?;
+    let schedule = arena_to_schedule(&arena, root);
     let uses = arena_to_uses(&schedule);
     compile_dag_via_backend(schedule, uses, &mut Avx512Backend)
 }
@@ -3570,10 +3560,7 @@ pub fn compile_collapse(
     arena: &crate::arena::ExprArena,
     root: crate::arena::ExprId,
 ) -> Result<CompileResult, &'static str> {
-    let (arena, root) = crate::passes::lower_dwrt_owned(arena, root)?;
-    let (arena, root) = crate::passes::expand_reduce_owned(&arena, root);
-    let (arena, root) = crate::passes::expand_gather_owned(&arena, root);
-    let (arena, root) = crate::passes::expand_transcendentals_owned(&arena, root);
+    let (arena, root) = crate::passes::legalize(arena, root)?;
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
