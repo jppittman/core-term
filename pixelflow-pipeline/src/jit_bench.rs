@@ -421,12 +421,6 @@ const COMPILE_TIMED_RUNS: usize = 101;
 /// steady-state cost, not cold-start page faults.
 const COMPILE_WARMUP_ITERS: usize = 16;
 
-/// Code-buffer capacity for the reused-buffer path. 256KB is generous for
-/// expressions up to ~2000 nodes (`CompileWorkspace` docs say 64KB covers
-/// ~500 nodes).
-#[cfg(target_arch = "aarch64")]
-const REUSED_CODE_CAPACITY: usize = 256 * 1024;
-
 /// Result of a compile-cost measurement.
 pub struct CompileCostResult {
     /// Median ns for one complete compile.
@@ -462,44 +456,6 @@ pub fn benchmark_compile_fresh(
     times.sort_unstable();
     let median = times[COMPILE_TIMED_RUNS / 2] as f64;
     validate_median(median).map(|ns| CompileCostResult { ns, code_bytes })
-}
-
-/// Median wall-clock cost of one compile into a reused
-/// [`CompileWorkspace`](pixelflow_ir::backend::emit::CompileWorkspace):
-/// the executable region is mmap'd once up front, and each compile pays only
-/// `pthread_jit_write_protect_np` toggles + icache invalidation (Apple
-/// Silicon) instead of mmap/munmap. This is the amortized cost gate G0 cares
-/// about. aarch64 only — `CompileWorkspace` has no x86-64 counterpart.
-///
-/// Returns median ns per compile. Note the workspace path skips the lowering
-/// passes (`expand_reduce`/`expand_gather`/`expand_transcendentals`), so the
-/// arena must contain only directly-emittable ops for the comparison against
-/// [`benchmark_compile_fresh`] to be apples-to-apples.
-#[cfg(target_arch = "aarch64")]
-pub fn benchmark_compile_reused(arena: &ExprArena, root: ExprId) -> Result<f64, BenchError> {
-    use pixelflow_ir::backend::emit::CompileWorkspace;
-
-    let mut ws = CompileWorkspace::new(REUSED_CODE_CAPACITY).map_err(BenchError::CompileFailed)?;
-
-    // SAFETY: the returned KernelFn is never called, and is discarded before
-    // the next compile_arena call overwrites the buffer.
-    for _ in 0..COMPILE_WARMUP_ITERS {
-        let func = unsafe { ws.compile_arena(arena, root) }.map_err(BenchError::CompileFailed)?;
-        std::hint::black_box(func);
-    }
-
-    let mut times = [0u64; COMPILE_TIMED_RUNS];
-    for t in &mut times {
-        let start = nanos_now();
-        // SAFETY: as above — pointer discarded, never called.
-        let func = unsafe { ws.compile_arena(arena, root) }.map_err(BenchError::CompileFailed)?;
-        std::hint::black_box(func);
-        *t = nanos_now() - start;
-    }
-
-    times.sort_unstable();
-    let median = times[COMPILE_TIMED_RUNS / 2] as f64;
-    validate_median(median)
 }
 
 /// Convert nanoseconds to log-nanoseconds (floored at 1e-3ns, capped at 1s).
