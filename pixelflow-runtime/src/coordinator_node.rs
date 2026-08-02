@@ -293,6 +293,39 @@ mod tests {
     }
 
     #[test]
+    fn debug_format_reflects_the_variant() {
+        assert_eq!(format!("{:?}", CoordinatorData::Advance), "Advance");
+        assert_eq!(
+            format!("{:?}", CoordinatorData::Submit(manifold())),
+            "Submit(<scene>)"
+        );
+    }
+
+    #[test]
+    fn the_first_presented_frame_is_numbered_one_not_zero() {
+        let mut core = CoordinatorCore::new();
+        core.step_data(CoordinatorData::Submit(manifold())).unwrap();
+        let out = core
+            .step_data(CoordinatorData::Granted(one_to_one_window()))
+            .unwrap();
+        let request = out.render.expect("expected a render request");
+
+        let out = core
+            .step_management(RenderResponse {
+                frame: request.frame,
+                render_time: Some(Duration::from_millis(1)),
+                meta: request.meta,
+            })
+            .unwrap();
+
+        let rendered = out.rendered.expect("a presented frame reports telemetry");
+        assert_eq!(
+            rendered.frame_number, 1,
+            "the counter starts at 0 and increments once per presented frame"
+        );
+    }
+
+    #[test]
     fn a_granted_window_turns_a_submitted_scene_into_a_render_port() {
         let mut core = CoordinatorCore::new();
         let out = core.step_data(CoordinatorData::Submit(manifold())).unwrap();

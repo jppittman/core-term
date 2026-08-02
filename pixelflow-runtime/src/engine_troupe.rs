@@ -550,6 +550,15 @@ impl Troupe {
             })?;
 
         let refresh_rate = config.performance.target_fps as f64;
+        // Mutation-tested (`1.0 / refresh_rate` swapped to `%`/`*`): both mutants survive,
+        // because `with_config` is the real bootstrap — it spawns the platform driver, the
+        // green-host thread, and the vsync clock, none of which a unit test should stand up just
+        // to pin one arithmetic op. Extracting a pure `fn tick_interval(fps: f64) -> Duration`
+        // helper would make it testable, but that is new `pub(crate)` surface on a function that
+        // does not otherwise need one, against CLAUDE.md's "do not change visibility of internal
+        // APIs without explicit permission." Flexibility-clause exception to docs/STYLE.md's
+        // public-API testing rule, same judgment call as `pixelflow-graphics/src/render/scene.rs`'s
+        // `chunked_bake_matches_whole_stripe` (2026-08-01 pass).
         let tick_interval = Duration::from_secs_f64(1.0 / refresh_rate);
 
         // Built here, on the calling thread, then moved into the green-host thread below —
@@ -742,6 +751,87 @@ mod tests {
         let mut rig = Rig::new();
         rig.feed(EngineData::FromApp(AppData::Skipped));
         assert!(rig.coordinator_rx.try_recv().is_err());
+    }
+
+    /// `send_vsync_control`'s only two producers (`AppData::RenderSurface`/`Skipped`, both a
+    /// `VsyncCommand::ReturnToken`) relay onto the vsync green node's control edge — the
+    /// permission slip that lets vsync ask for another frame without waiting for rasterization,
+    /// mirroring `send_coordinator`'s already-tested relay above.
+    #[test]
+    fn render_surface_returns_the_vsync_token() {
+        let (driver, _driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+        let waker = {
+            let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
+            handle.waker()
+        };
+        let (vsync_tx, mut vsync_rx) = spsc_channel::<VsyncCommand>(4);
+        let vsync_control = GreenSender::new(vsync_tx, waker);
+
+        let mut engine = EngineHandler {
+            driver,
+            vsync_control: Some(vsync_control),
+            vsync_host: None,
+            coordinator: None,
+            self_handle: None,
+            rasterizer_forwarder: None,
+            app_handle: None,
+            core: EngineCore::new(),
+        };
+
+        engine
+            .handle_data(EngineData::FromApp(AppData::RenderSurface(manifold())))
+            .expect("engine handled the message");
+
+        assert!(matches!(vsync_rx.try_recv(), Ok(VsyncCommand::ReturnToken)));
+    }
+
+    /// An `Actor` whose only job is to let a real `ActorScheduler` observe `Message::Shutdown` —
+    /// none of its `handle_*` methods are ever exercised, since `Shutdown` travels on the
+    /// scheduler's doorbell, not a lane.
+    #[derive(Default)]
+    struct NoOpDriver;
+
+    impl Actor<DisplayData, DisplayControl, DisplayMgmt> for NoOpDriver {
+        fn handle_data(&mut self, _msg: DisplayData) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_control(&mut self, _msg: DisplayControl) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _msg: DisplayMgmt) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
+        }
+    }
+
+    /// `EngineControl::Quit`'s shutdown cascade (`EngineHandler::shut_down`) reaches the driver
+    /// unconditionally — the one handle that is never behind an `Option`, so it is the cascade's
+    /// simplest observable proof of life.
+    #[test]
+    fn quit_sends_shutdown_to_the_driver() {
+        let (driver, mut driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+        let mut engine = EngineHandler {
+            driver,
+            vsync_control: None,
+            vsync_host: None,
+            coordinator: None,
+            self_handle: None,
+            rasterizer_forwarder: None,
+            app_handle: None,
+            core: EngineCore::new(),
+        };
+
+        engine
+            .handle_control(EngineControl::Quit)
+            .expect("engine handled the message");
+
+        let mut spy = NoOpDriver;
+        assert!(
+            driver_sched.poll_once(&mut spy),
+            "Quit's shutdown cascade must reach the driver"
+        );
     }
 
     #[test]
