@@ -1,29 +1,34 @@
-//! Lowering transcendental ops to primitive arithmetic subgraphs.
+//! IR-to-IR transforms: legalization.
 //!
-//! Functions like `sin`, `cos`, `atan` have no single hardware instruction on
-//! any target — they are *always* a polynomial of `mul`/`add`/`floor`/… So they
-//! do not belong in a backend. Instead, before codegen, this pass rewrites each
-//! transcendental [`ExprNode`] into the arena subgraph that computes it. The
-//! result:
+//! Four passes, each `(arena, root) -> (arena, root)`, each turning ops no
+//! backend can emit into ops every backend can:
 //!
-//! - **No backend emits transcendental assembly.** x86/aarch64/AVX-512 (and any
-//!   future backend) only ever see the primitive ops they already support.
-//! - **Derivatives are free.** The jet (forward-mode AD) lowering differentiates
-//!   arena arithmetic via the chain rule; an expanded `sin` differentiates with
-//!   zero per-transcendental rules.
-//! - **One source of truth.** The polynomial lives here, shared by every
-//!   backend, with precision a property of this code (the polynomial degree),
-//!   uniform across targets and tunable in one place.
+//! | pass | consumes | produces |
+//! |---|---|---|
+//! | [`lower_dwrt`] | `Dwrt` | arithmetic, and *re-introduces* transcendentals |
+//! | [`expand_reduce`] | `Reduce` | the combiner applied over unrolled copies |
+//! | [`expand_gather`] | `Gather` | index arithmetic + `RawGather` |
+//! | [`expand_transcendentals`] | `Sin`..`Pow` | arithmetic + bit-manip atoms |
 //!
-//! The pass runs *after* the e-graph optimizer (which may still reason about
-//! `sin`/`cos` algebraically) and *before* any arena walk in the emitters, so
-//! the transcendental `OpKind`s remain a valid authoring/optimization
-//! vocabulary while never reaching machine code.
+//! The order in that table is the order they must run: differentiating a `sin`
+//! produces a `cos`, so `lower_dwrt` has to go before the pass that expands
+//! them. Every pass is idempotent and has an identity fast-path, so running
+//! one that has nothing to do is free.
 //!
-//! Expansions are built from the jet-differentiable primitive set
-//! (`Add`/`Sub`/`Mul`/`Neg`/`Sqrt`/`Floor`) — *not* `MulAdd` or `Select` — so
-//! the derivative path keeps working. Fusing `mul`+`add` back into `MulAdd` is
-//! the optimizer's job on the non-jet paths.
+//! **Nothing here knows what it is lowering *for*.** There is no `cfg` in this
+//! module beyond `#[cfg(test)]`, and no import outside `crate::{arena, kind,
+//! variance}`. The legal set happens to be uniform across the backends today;
+//! if it stops being uniform, that belongs in a target description these passes
+//! consult, not in a `cfg` here.
+//!
+//! On transcendentals specifically: `sin`, `cos`, `atan` have no single
+//! instruction on any target — they are *always* a polynomial — so they are not
+//! a backend's business. Expanding them here means no emitter ever contains
+//! transcendental assembly, the polynomial has one home, and precision is a
+//! property of this code rather than of whichever backend you landed on.
+//! The expansions deliberately avoid `MulAdd` and `Select`, staying inside the
+//! differentiable primitive set so `lower_dwrt` can still get through them;
+//! fusing `mul`+`add` back into `MulAdd` is the optimizer's job afterwards.
 
 use crate::arena::{ExprArena, ExprId, ExprNode};
 use crate::kind::OpKind;

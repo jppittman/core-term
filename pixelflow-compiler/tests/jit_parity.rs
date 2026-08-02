@@ -175,7 +175,7 @@ fn jit_minmax() {
 }
 
 /// sin/cos now lower to primitive arithmetic before codegen (see
-/// `pixelflow_ir::backend::emit::lowering`), so they run on BOTH the 128-bit and
+/// `pixelflow_ir::passes`), so they run on BOTH the 128-bit and
 /// AVX-512 paths — no backend emits a transcendental. Tolerance is "ballpark"
 /// (these are polynomial approximations, ~few % at the range edges), set to
 /// catch logic errors, not certify ulp accuracy.
@@ -367,7 +367,7 @@ fn jit_font_coverage_matches_truth() {
 #[test]
 fn jit_font_coverage_matches_interpreter() {
     use pixelflow_core::{Lower, LowerEnv};
-    use pixelflow_ir::backend::emit::lowering::lower_dwrt_owned;
+    use pixelflow_ir::passes::lower_dwrt_owned;
     use pixelflow_ir::{BindingTable, ExprArena, eval_scalar};
 
     let (x0, y0, k, dir, mg) = COVERAGE_PARAMS;

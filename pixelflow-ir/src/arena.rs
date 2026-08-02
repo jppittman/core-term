@@ -1387,7 +1387,7 @@ mod composition_tests {
     fn spliced_fragment_differentiates_in_host() {
         // The composition story end-to-end at the arena level: splice a
         // distance fragment under a Dwrt and lower — d/dx √(x²+y²) = x/r.
-        use crate::backend::emit::lowering::lower_dwrt_owned;
+        use crate::passes::lower_dwrt_owned;
 
         let mut donor = ExprArena::new();
         let x = donor.push_var(0);

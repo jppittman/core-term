@@ -102,8 +102,7 @@ fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(E
     // A lowering error (a genuinely non-differentiable op) bails to `None`;
     // the arena then compiles unoptimized and the compile entry's own
     // `lower_dwrt` reports the same error loudly at the right layer.
-    let (arena, root) =
-        pixelflow_ir::backend::emit::lowering::lower_dwrt_owned(arena, root).ok()?;
+    let (arena, root) = pixelflow_ir::passes::lower_dwrt_owned(arena, root).ok()?;
 
     let mut egraph = EGraph::with_rules(all_rules());
     let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
@@ -527,7 +526,7 @@ mod tests {
         // post-calculus program, same as the JIT) — lower both sides before
         // comparing, cross-checking the e-graph's ChainRule reduction
         // against the dedicated lower_dwrt pass.
-        use pixelflow_ir::backend::emit::lowering::lower_dwrt_owned;
+        use pixelflow_ir::passes::lower_dwrt_owned;
         let (want_arena, want_root) = lower_dwrt_owned(&a, dx).expect("lower original");
         let (got_arena, got_root) =
             lower_dwrt_owned(&opt_arena, opt_root).expect("lower optimized");

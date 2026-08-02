@@ -810,9 +810,9 @@ fn opkind_to_tokens(kind: OpKind) -> TokenStream {
 mod expansion_derivative_tests {
     use super::*;
     use pixelflow_ir::arena::ExprNode;
-    use pixelflow_ir::backend::emit::lowering::lower_dwrt_owned;
     use pixelflow_ir::binding::BindingTable;
     use pixelflow_ir::eval::eval_scalar;
+    use pixelflow_ir::passes::lower_dwrt_owned;
 
     /// The optimizer's contract, checked differentially: whatever it returns
     /// for a `Dwrt`-carrying arena must agree numerically with the runtime

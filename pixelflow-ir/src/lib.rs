@@ -29,6 +29,10 @@ pub use variance::Variance;
 pub use variance::{compute_arena_variance, find_hoistable_arena_nodes};
 
 pub mod arena;
+
+/// IR-to-IR transforms: each takes an expression graph and returns another.
+/// Target-blind by construction — nothing here knows which ISA it is feeding.
+pub mod passes;
 pub use arena::{ExprArena, ExprId, ExprNode};
 
 pub mod lower;

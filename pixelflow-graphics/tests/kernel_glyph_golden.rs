@@ -10,9 +10,9 @@
 
 use pixelflow_core::{Kernel, Lattice};
 use pixelflow_graphics::fonts::Font;
-use pixelflow_ir::backend::emit::lowering::lower_dwrt_owned;
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval_scalar;
+use pixelflow_ir::passes::lower_dwrt_owned;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSansMono-Fallback.ttf");
 

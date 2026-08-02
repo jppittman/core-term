@@ -19,7 +19,7 @@
 
 use pixelflow_graphics::fonts::ttf_curve_analytical::{AnalyticalLine, AnalyticalQuad};
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
-use pixelflow_ir::backend::emit::lowering::lower_dwrt_owned;
+use pixelflow_ir::passes::lower_dwrt_owned;
 use pixelflow_ir::OpKind;
 
 /// Count reachable nodes matching `pred` from `root`.

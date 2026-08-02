@@ -136,14 +136,14 @@ fn nested_binders_do_not_capture() {
 /// emitted 5882 bytes instead of 962.
 #[test]
 fn unrolling_shares_index_invariant_work() {
-    use pixelflow_ir::backend::emit::lowering;
+    use pixelflow_ir::passes;
     use pixelflow_ir::{ExprNode, OpKind};
 
     // Count only nodes the root reaches: `expand_reduce` rebuilds in place and
     // leaves the pre-rebuild nodes behind, so the raw arena over-counts.
     let count_sin = |k: &Kernel| {
         let (arena, root) = k.parts();
-        let (lowered, new_root) = lowering::expand_reduce_owned(arena, root);
+        let (lowered, new_root) = passes::expand_reduce_owned(arena, root);
         let mut live = vec![false; lowered.len()];
         let mut stack = vec![new_root];
         while let Some(id) = stack.pop() {

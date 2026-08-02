@@ -35,7 +35,6 @@ pub mod avx512;
 #[cfg(test)]
 pub(crate) mod coverage;
 pub mod executable;
-pub mod lowering;
 pub mod regalloc;
 pub mod x86_64;
 
@@ -424,10 +423,10 @@ pub fn compile_arena_dag_with_ctx(
     // never sees Dwrt/Reduce/Gather/Sin/Cos/etc. Dwrt runs first: its chain
     // rule emits Sin/Cos/Exp nodes that the transcendental pass must still
     // lower. (aarch64 gather emission is a later slice.)
-    let (arena, root) = lowering::lower_dwrt_owned(arena, root)?;
-    let (arena, root) = lowering::expand_reduce_owned(&arena, root);
-    let (arena, root) = lowering::expand_gather_owned(&arena, root);
-    let (arena, root) = lowering::expand_transcendentals_owned(&arena, root);
+    let (arena, root) = crate::passes::lower_dwrt_owned(arena, root)?;
+    let (arena, root) = crate::passes::expand_reduce_owned(&arena, root);
+    let (arena, root) = crate::passes::expand_gather_owned(&arena, root);
+    let (arena, root) = crate::passes::expand_transcendentals_owned(&arena, root);
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses_map = arena_to_uses(&schedule);
@@ -1299,7 +1298,7 @@ fn arena_to_schedule(
                 ScheduledOp::Gather(map_child(idx), slot)
             }
             // Unreachable precondition: every compile entry point runs
-            // `lowering::lower_dwrt` before scheduling, which either rewrites
+            // `passes::lower_dwrt` before scheduling, which either rewrites
             // all `Dwrt` (autodiff) nodes into chain-rule arithmetic or errors
             // loudly on an op it cannot differentiate. A `Dwrt` here means a
             // caller bypassed that pipeline. Fail loudly rather than as a
@@ -2328,10 +2327,10 @@ pub fn compile_arena_dag_with_ctx(
     // lowered too. A kernel that reads bound memory takes its buffer bases from
     // a context pointer in rdi; the emitted body is identical either way, so the
     // caller invokes it as `CtxKernelFn` instead of `KernelFn`.
-    let (arena, root) = lowering::lower_dwrt_owned(arena, root)?;
-    let (arena, root) = lowering::expand_reduce_owned(&arena, root);
-    let (arena, root) = lowering::expand_gather_owned(&arena, root);
-    let (arena, root) = lowering::expand_transcendentals_owned(&arena, root);
+    let (arena, root) = crate::passes::lower_dwrt_owned(arena, root)?;
+    let (arena, root) = crate::passes::expand_reduce_owned(&arena, root);
+    let (arena, root) = crate::passes::expand_gather_owned(&arena, root);
+    let (arena, root) = crate::passes::expand_transcendentals_owned(&arena, root);
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
@@ -3571,10 +3570,10 @@ pub fn compile_collapse(
     arena: &crate::arena::ExprArena,
     root: crate::arena::ExprId,
 ) -> Result<CompileResult, &'static str> {
-    let (arena, root) = lowering::lower_dwrt_owned(arena, root)?;
-    let (arena, root) = lowering::expand_reduce_owned(&arena, root);
-    let (arena, root) = lowering::expand_gather_owned(&arena, root);
-    let (arena, root) = lowering::expand_transcendentals_owned(&arena, root);
+    let (arena, root) = crate::passes::lower_dwrt_owned(arena, root)?;
+    let (arena, root) = crate::passes::expand_reduce_owned(&arena, root);
+    let (arena, root) = crate::passes::expand_gather_owned(&arena, root);
+    let (arena, root) = crate::passes::expand_transcendentals_owned(&arena, root);
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
