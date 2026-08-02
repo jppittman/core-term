@@ -747,7 +747,7 @@ mod tests {
         });
 
         std::thread::sleep(Duration::from_millis(50));
-        tx_green.try_send(41).expect("green inbox has room");
+        tx_green.send(41).expect("green inbox has room");
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let got = loop {
@@ -792,7 +792,7 @@ mod tests {
         // Let the host reach its doorbell and block before sending, so this exercises the
         // wake path rather than racing the host to its first sweep.
         std::thread::sleep(Duration::from_millis(50));
-        tx_green.try_send(41).expect("green inbox has room");
+        tx_green.send(41).expect("green inbox has room");
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let got = loop {

@@ -1569,20 +1569,17 @@ mod tests {
             node.poll_os(SystemStatus::Idle),
             (Step::Ran, ActorStatus::Busy)
         );
-        assert_eq!(
-            node.continuation,
-            Some(42),
-            "step_os's continuation lands in the same slot a lane's does"
-        );
 
-        // It resumes before any lane is even consulted, exactly like a lane-produced one.
+        // It resumes before any lane is even consulted, exactly like a lane-produced one —
+        // and the slot is drained by that resume, since a second `poll` would starve rather
+        // than re-run it (the lane holds nothing else).
         assert_eq!(node.poll(), Step::Ran);
         assert_eq!(
             node.actor().last_resumed,
             Some(42),
-            "the continuation actually reached step_data"
+            "step_os's continuation lands in the same slot a lane's does, and actually \
+             reached step_data"
         );
-        assert!(node.continuation.is_none());
     }
 
     #[test]
@@ -1790,16 +1787,20 @@ mod tests {
                 round,
                 "step_os runs at every burst boundary despite the endless chain"
             );
-            assert!(
-                node.continuation.is_some(),
-                "the chain's resume payload survived the OS turn"
-            );
             assert_eq!(
                 node.actor().resumed,
                 before,
                 "the OS turn advanced no lane work"
             );
         }
+        // One more poll proves round 3's continuation survived its OS turn too: the lane
+        // was fed exactly one message up front, so without a surviving continuation this
+        // would starve (`Step::Idle`) instead of resuming the chain.
+        assert_eq!(
+            node.poll(),
+            Step::Ran,
+            "the chain's resume payload survived the OS turn"
+        );
     }
 
     /// A lane step that yields a continuation *and* an output that parks: the continuation
@@ -1855,11 +1856,6 @@ mod tests {
 
         tx_in.try_send(1).expect("room in the lane");
         assert_eq!(node.poll(), Step::Ran);
-        assert_eq!(
-            node.continuation,
-            Some(2),
-            "the lane's continuation is stored"
-        );
 
         // Free the ring so poll_os's outbox flush succeeds — the hazard is what happens next.
         while rx_out.try_recv().is_ok() {}
@@ -1874,12 +1870,9 @@ mod tests {
             "step_os gets its turn — deferring it entirely would starve an OS bridge \
              behind an endless self-yielder"
         );
-        assert_eq!(
-            node.continuation,
-            Some(2),
-            "the continuation survived the OS turn intact"
-        );
 
+        // The continuation survived the OS turn intact: it resumes with the lane's value
+        // (2), not `step_os`'s own (empty) output overwriting the slot.
         assert_eq!(node.poll(), Step::Ran);
         assert_eq!(
             node.actor().last_resumed,
@@ -1985,15 +1978,14 @@ mod tests {
         );
 
         tx_in.try_send(3).unwrap();
-        while node.poll() == Step::Ran {
-            assert!(
-                node.continuation.is_none() || node.continuation.is_some(),
-                "slot is a single Option — it cannot hold two"
-            );
+        let mut last = Step::Ran;
+        while last == Step::Ran {
+            last = node.poll();
         }
-        assert!(
-            node.continuation.is_none(),
-            "the slot is empty once the machine finishes"
+        assert_eq!(
+            last,
+            Step::Idle,
+            "the slot is empty once the machine finishes — nothing left to run"
         );
     }
 
@@ -2013,12 +2005,14 @@ mod tests {
         tx_in.try_send(9).unwrap(); // queued behind the in-flight countdown
 
         assert_eq!(node.poll(), Step::Ran); // 2 → continuation 1
-        assert_eq!(node.continuation, Some(1));
         assert_eq!(node.poll(), Step::Ran); // resumes 1, not the queued 9
-        assert_eq!(node.continuation, Some(0));
         assert_eq!(node.poll(), Step::Ran); // 0 → done
-        assert_eq!(node.actor().finished, Some(0), "first unit finished first");
-        assert!(node.continuation.is_none());
+        assert_eq!(
+            node.actor().finished,
+            Some(0),
+            "first unit finished first — three steps, not interleaved with the queued 9, \
+             which needs its own nine steps to reach 0"
+        );
     }
 
     #[test]

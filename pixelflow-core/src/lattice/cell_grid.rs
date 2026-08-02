@@ -634,4 +634,193 @@ mod tests {
         // Binding satisfies unused_must_use; the call panics first.
         let _refused = program.frame(Arc::new(alloc::vec![0.0; 3]), atlas);
     }
+
+    #[test]
+    fn cells_len_and_atlas_len_match_declared_geometry() {
+        let geom = CellGridGeometry {
+            cols: 3,
+            rows: 2,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: 12,
+            atlas_height: 6,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        assert_eq!(geom.cells_len(), 3 * 2 * CELL_STRIDE);
+        assert_eq!(geom.atlas_len(), 12 * 6);
+    }
+
+    #[test]
+    fn padded_width_rounds_up_to_whole_simd_batches() {
+        let lanes = pixelflow_ir::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
+        assert_eq!(CellGridFrame::padded_width(1), lanes);
+        assert_eq!(CellGridFrame::padded_width(lanes), lanes);
+        assert_eq!(CellGridFrame::padded_width(lanes + 1), lanes * 2);
+    }
+
+    #[test]
+    fn green_channel_reads_its_own_bg_field_not_a_neighboring_one() {
+        // In `tiny_scene`, cell 1 has fg_g = 1.0, bg_g = 0.0, coverage 0.5,
+        // so the correct blend is 0.5. Every neighboring field at cell 1
+        // (fg_a, bg_r, bg_b) is 1.0 or 0.0 in a way that a wrong bg-field
+        // offset would still coincidentally read 0.5-ish through cell 0's
+        // R/B channels the other tests already check — G is the one channel
+        // whose neighbors in the field layout (fg_a at offset 5, bg_r at
+        // offset 6) both read 1.0/0.0 in a way that distinguishes a bad
+        // offset from the correct one.
+        let (program, cells, atlas) = tiny_scene();
+        let frame = program.frame(cells, atlas);
+        let g = plane(&frame, 1, 8, 4);
+        assert!(
+            (g[px(1, 5)] - 0.5).abs() < 1e-5,
+            "cell1 G = {}",
+            g[px(1, 5)]
+        );
+    }
+
+    #[test]
+    fn cells_taller_than_their_tile_fade_to_background() {
+        // Mirrors `cells_wider_than_their_tile_fade_to_background` in the
+        // row direction: a 1x1 grid with a cell taller than its tile. The
+        // bottom half has no tile content; the vertical apron clamp must
+        // land those taps in the zero apron, never a neighboring slot.
+        let (aw, ah, slot) = (12usize, 6usize, 6usize);
+        let mut atlas = vec![0.0f32; aw * ah];
+        for r in 0..4 {
+            for c in 0..4 {
+                atlas[(1 + r) * aw + 1 + c] = 1.0; // tile 0: solid
+                atlas[(1 + r) * aw + slot + 1 + c] = 1.0; // tile 1: ALSO solid
+            }
+        }
+        let geom = CellGridGeometry {
+            cols: 1,
+            rows: 1,
+            cell_w: 4.0,
+            cell_h: 8.0,
+            density: 1.0,
+            atlas_width: aw as u32,
+            atlas_height: ah as u32,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        let program = CellGridProgram::compile(geom, [0.0; 4]);
+        let cells = vec![
+            1.0, 1.0, /* fg */ 1.0, 1.0, 1.0, 1.0, /* bg */ 0.0, 0.0, 0.0, 1.0,
+        ];
+        let frame = program.frame(Arc::new(cells), Arc::new(atlas));
+        let r = plane(&frame, 0, 4, 8);
+        // Top half: tile content, fg. Bottom half: past the tile — if the
+        // clamp failed, taps would reach tile 1 (also solid) and read 1.0.
+        assert!((r[5] - 1.0).abs() < 1e-5, "tile content R = {}", r[5]);
+        for row in 5..8 {
+            assert!(
+                r[row * 4 + 1].abs() < 1e-5,
+                "cell past its tile must be background at row {row}, got {}",
+                r[row * 4 + 1]
+            );
+        }
+    }
+
+    #[test]
+    fn grid_extent_is_cell_count_times_cell_size_not_their_sum() {
+        // A 3x3 grid of 2x2 cells: grid_w = grid_h = 6.0. If the boundary
+        // check ever computed cols + cell_w (5.0) instead of cols * cell_w,
+        // the last row/column of real cells (spanning [4, 6)) would be
+        // wrongly treated as outside the grid.
+        let (aw, ah) = (6usize, 6usize);
+        let mut atlas = vec![0.0f32; aw * ah];
+        for r in 0..4 {
+            for c in 0..4 {
+                atlas[(1 + r) * aw + 1 + c] = 1.0; // solid tile
+            }
+        }
+        let geom = CellGridGeometry {
+            cols: 3,
+            rows: 3,
+            cell_w: 2.0,
+            cell_h: 2.0,
+            density: 1.0,
+            atlas_width: aw as u32,
+            atlas_height: ah as u32,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        let program = CellGridProgram::compile(geom, [0.4; 4]);
+        let block: [f32; CELL_STRIDE] = [
+            1.0, 1.0, /* fg */ 1.0, 0.0, 0.0, 1.0, /* bg */ 0.0, 0.0, 0.0, 1.0,
+        ];
+        let mut cells = vec![];
+        for _ in 0..9 {
+            cells.extend_from_slice(&block);
+        }
+        let frame = program.frame(Arc::new(cells), Arc::new(atlas));
+        let r = plane(&frame, 0, 8, 8);
+        // (5.5, 5.5) is interior to the last (col 2, row 2) cell — must
+        // read pure fg (1.0), not the default background (0.4) a
+        // cols+cell_w-sized boundary would wrongly clip it to.
+        assert!(
+            (r[5 * 8 + 5] - 1.0).abs() < 1e-5,
+            "last cell R = {}",
+            r[5 * 8 + 5]
+        );
+    }
+
+    #[test]
+    fn baking_a_row_offset_region_samples_the_correct_absolute_row() {
+        // A 1x2 grid (one column, two rows) with visibly different content
+        // per row. Baking a region whose `PlaneRegion::y0` starts mid-grid
+        // must read the ABSOLUTE row that `y0` implies. A constant error in
+        // the pixel-center offset shifts every sampled row by the same
+        // amount, so a self-consistency check (comparing this bake against
+        // a full bake sliced at the same relative offset) can't see it —
+        // this asserts a concrete expected value instead.
+        let (aw, ah, slot) = (12usize, 6usize, 6usize);
+        let mut atlas = vec![0.0f32; aw * ah];
+        for r in 0..4 {
+            for c in 0..4 {
+                atlas[(1 + r) * aw + 1 + c] = 1.0; // tile 0: solid
+                atlas[(1 + r) * aw + slot + 1 + c] = 0.5; // tile 1: half
+            }
+        }
+        let geom = CellGridGeometry {
+            cols: 1,
+            rows: 2,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: aw as u32,
+            atlas_height: ah as u32,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        let program = CellGridProgram::compile(geom, [0.0; 4]);
+        let cells = vec![
+            1.0, 1.0, /* row0 fg */ 1.0, 0.0, 0.0, 1.0, /* bg */ 0.0, 0.0, 0.0, 1.0, 7.0,
+            1.0, /* row1 fg */ 0.0, 0.0, 1.0, 1.0, /* bg */ 1.0, 1.0, 1.0, 1.0,
+        ];
+        let frame = program.frame(Arc::new(cells), Arc::new(atlas));
+
+        let stride = CellGridFrame::padded_width(4);
+        let mut padded = vec![0.0f32; 4 * stride];
+        frame.bake_channel_rows(
+            0,
+            PlaneRegion {
+                width: 4,
+                y0: 4,
+                rows: 4,
+            },
+            &mut padded,
+        );
+        // y0 = 4 → the first baked row samples absolute y = 4.5, inside row
+        // 1's cell (coverage 0.5, R: bg 1.0 -> fg 0.0 blends to 0.5). An
+        // off-by-one-pixel-center bug would instead sample y = 3.5, still
+        // inside row 0's cell (solid fg, R = 1.0).
+        assert!(
+            (padded[1] - 0.5).abs() < 1e-5,
+            "row-offset bake read the wrong absolute row: R = {}",
+            padded[1]
+        );
+    }
 }

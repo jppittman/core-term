@@ -235,6 +235,18 @@ mod tests {
     fn chunked_bake_matches_whole_stripe() {
         // Force chunk boundaries (3-row chunks over an 8-row band) and
         // require pixel identity with the unchunked bake.
+        //
+        // `bake_and_pack_chunked` is production logic (`bake_and_pack_stripe`
+        // calls it on the real render path too), not a test-only seam — but
+        // its `chunk_rows` argument is derived internally from
+        // `PLANE_SCRATCH_BYTES`, which only forces a chunk boundary on
+        // frames far larger than a unit test should render. Calling it
+        // directly with a small `chunk_rows` is the only way to exercise
+        // that boundary deterministically; going through `Scene::render`
+        // could only ever hit the always-one-chunk case. Flexibility-clause
+        // exception to docs/STYLE.md's public-API testing rule, same as the
+        // 2026-07-24 pass's call for actor-scheduler's timing-internal
+        // backoff arithmetic.
         let Scene::CellGrid(grid) = scene() else {
             unreachable!()
         };

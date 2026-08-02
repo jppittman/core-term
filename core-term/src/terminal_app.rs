@@ -1088,40 +1088,115 @@ mod tests {
         assert_eq!(probe.data, vec![vec![b'a']]);
     }
 
+    /// Test double for the engine actor: records the scenes the app renders.
+    #[derive(Default)]
+    struct EngineProbe {
+        scenes: Vec<Scene>,
+    }
+
+    impl
+        Actor<
+            EngineData,
+            pixelflow_runtime::api::private::EngineControl,
+            pixelflow_runtime::api::public::AppManagement,
+        > for EngineProbe
+    {
+        fn handle_data(&mut self, msg: EngineData) -> HandlerResult {
+            if let EngineData::FromApp(AppData::RenderSurface(scene)) = msg {
+                self.scenes.push(scene);
+            }
+            Ok(())
+        }
+        fn handle_control(
+            &mut self,
+            _msg: pixelflow_runtime::api::private::EngineControl,
+        ) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(
+            &mut self,
+            _msg: pixelflow_runtime::api::public::AppManagement,
+        ) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
+        }
+    }
+
+    /// Drain the frame(s) the app has sent to the engine so far.
+    fn drain_engine(
+        rx: &mut pixelflow_runtime::api::private::EngineActorScheduler,
+        probe: &mut EngineProbe,
+    ) {
+        for _ in 0..4 {
+            if rx.poll_once(probe) {
+                break;
+            }
+        }
+    }
+
+    fn request_frame() -> TerminalData {
+        let now = std::time::Instant::now();
+        TerminalData::Engine(EngineEventData::RequestFrame {
+            timestamp: now,
+            target_timestamp: now,
+            refresh_interval: std::time::Duration::from_millis(16),
+        })
+    }
+
     #[test]
     fn scene_paints_default_background_and_recompiles_on_resize() {
         use pixelflow_graphics::render::color::Bgra8;
         use pixelflow_graphics::render::frame::Frame;
 
-        let (mut app, _writer_rx, _tx, _scheduler) = match create_test_app() {
+        let (mut app, _writer_rx, _tx, mut engine_scheduler) = match create_test_app() {
             Some(v) => v,
             None => return,
         };
+        let (r, g, b, _) = app.config.colors.background.to_f32_rgba();
+        let close = |got: u8, want: f32| (got as f32 - want * 255.0).abs() <= 2.0;
 
-        // A blank 80x24 screen is spaces on the default background: the
-        // JIT cell-grid scene must rasterize to that color.
-        let scene = app.build_scene();
+        // A blank 80x24 screen is spaces on the default background: the JIT
+        // cell-grid scene the app sends the engine must rasterize to that
+        // color. Drive it through the actor's real entry point — a
+        // RequestFrame data message — rather than the private scene-builder.
+        app.handle_data(request_frame()).expect("request frame");
+        let mut probe = EngineProbe::default();
+        drain_engine(&mut engine_scheduler, &mut probe);
+        let scene = probe.scenes.pop().expect("app sent a frame");
         let mut frame = Frame::<Bgra8>::new(16, 16);
         scene.render(&mut frame, 1);
-        let (r, g, b, _) = app.config.colors.background.to_f32_rgba();
         let px = frame.data[8 * 16 + 8];
-        let close = |got: u8, want: f32| (got as f32 - want * 255.0).abs() <= 2.0;
         assert!(
             close(px.r(), r) && close(px.g(), g) && close(px.b(), b),
             "blank scene pixel {:?} != default background ({r}, {g}, {b})",
             (px.r(), px.g(), px.b()),
         );
 
-        // A resize is a recompile: the program's geometry must move with
-        // the grid dimensions.
-        let before = *app.program.as_ref().expect("compiled").geometry();
+        // A resize is a recompile: the cell buffer the next frame builds is
+        // always sized to the CURRENT terminal snapshot, so a program whose
+        // geometry failed to move with it would panic on the length
+        // mismatch the moment the next frame binds it. Rendering
+        // successfully after the resize is itself the proof.
         let resize = EngineEventControl::Resized {
             id: WindowId(0),
             width_px: 500,
             height_px: 320,
         };
         app.handle_control(resize).expect("resize");
-        let after = *app.program.as_ref().expect("recompiled").geometry();
-        assert_ne!(before, after, "resize must recompile the scene program");
+        app.handle_data(request_frame())
+            .expect("request frame after resize");
+        let mut probe = EngineProbe::default();
+        drain_engine(&mut engine_scheduler, &mut probe);
+        let scene = probe.scenes.pop().expect("app sent a post-resize frame");
+        let mut frame = Frame::<Bgra8>::new(16, 16);
+        scene.render(&mut frame, 1);
+        let px = frame.data[8 * 16 + 8];
+        assert!(
+            close(px.r(), r) && close(px.g(), g) && close(px.b(), b),
+            "post-resize scene pixel {:?} != default background ({r}, {g}, {b})",
+            (px.r(), px.g(), px.b()),
+        );
     }
 }
