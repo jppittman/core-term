@@ -942,6 +942,7 @@ dependencies = [
  "pixelflow-compiler",
  "pixelflow-core",
  "pixelflow-graphics",
+ "pixelflow-ir",
  "pkg-config",
  "serde",
  "serde-wasm-bindgen",

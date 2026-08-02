@@ -382,16 +382,16 @@ fn jit_wrapper_tokens() -> TokenStream {
         #[derive(Clone)]
         struct __JitWrapper {
             ir: ::std::sync::Arc<(
-                ::pixelflow_core::__ir::ExprArena,
-                ::pixelflow_core::__ir::ExprId,
+                ::pixelflow_ir::ExprArena,
+                ::pixelflow_ir::ExprId,
             )>,
-            jit: ::std::sync::OnceLock<::std::sync::Arc<::pixelflow_core::__ir::JitManifold>>,
+            jit: ::std::sync::OnceLock<::std::sync::Arc<::pixelflow_ir::JitManifold>>,
         }
         impl __JitWrapper {
             #[inline]
-            fn __compiled(&self) -> &::std::sync::Arc<::pixelflow_core::__ir::JitManifold> {
+            fn __compiled(&self) -> &::std::sync::Arc<::pixelflow_ir::JitManifold> {
                 self.jit.get_or_init(|| {
-                    ::pixelflow_core::__ir::jit_cache::compile_cached(&self.ir.0, self.ir.1)
+                    ::pixelflow_ir::jit_cache::compile_cached(&self.ir.0, self.ir.1)
                         .expect("kernel JIT compilation failed")
                 })
             }
@@ -399,9 +399,9 @@ fn jit_wrapper_tokens() -> TokenStream {
         impl ::pixelflow_core::Lower for __JitWrapper {
             fn lower(
                 &self,
-                arena: &mut ::pixelflow_core::__ir::ExprArena,
+                arena: &mut ::pixelflow_ir::ExprArena,
                 _env: &mut ::pixelflow_core::LowerEnv,
-            ) -> ::core::option::Option<::pixelflow_core::__ir::ExprId> {
+            ) -> ::core::option::Option<::pixelflow_ir::ExprId> {
                 ::core::option::Option::Some(arena.splice(&self.ir.0, self.ir.1))
             }
         }
@@ -411,7 +411,7 @@ fn jit_wrapper_tokens() -> TokenStream {
         // JIT still emits 128-bit), fail at compile time with a clear message
         // rather than a raw transmute size error or a silent miscompile.
         const _: () = assert!(
-            ::core::mem::size_of::<::pixelflow_core::Field>() == ::pixelflow_core::__ir::JIT_VECTOR_BYTES,
+            ::core::mem::size_of::<::pixelflow_core::Field>() == ::pixelflow_ir::JIT_VECTOR_BYTES,
             "kernel_jit!: pixelflow-core Field width does not match the JIT's emitted \
              vector width (pixelflow_ir::JIT_VECTOR_BYTES) — the JIT does not yet emit \
              this SIMD width",

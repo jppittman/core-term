@@ -187,8 +187,6 @@ pub mod lattice;
 // arenas and JIT manifolds in the *consumer's* crate, which depends on
 // pixelflow-core but not necessarily on pixelflow-ir. Not public API.
 #[doc(hidden)]
-pub use pixelflow_ir as __ir;
-
 pub use algebra::{Algebra, Transcendental};
 pub use backend::fastmath::FastMathGuard;
 pub use combinators::*;
