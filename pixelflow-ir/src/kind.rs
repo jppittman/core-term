@@ -2,8 +2,13 @@
 //!
 //! This enum provides a uniform representation of all operations.
 //! It is used for storage in the e-graph and as the base for feature indices.
+//!
+//! Per-op tables belong in [`OpMap`], not in a bare `[T; OpKind::COUNT]`.
+//! A bare array makes each consumer responsible for turning an op into a
+//! subscript, and every consumer that did got it wrong the same way.
 
 use crate::traits::EmitStyle;
+use core::ops::{Index, IndexMut};
 
 /// Unified enumeration of all IR operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -238,6 +243,15 @@ impl OpKind {
     #[must_use]
     pub const fn index(self) -> usize {
         self as usize
+    }
+
+    /// Every op, in [`OpKind::index`] order.
+    ///
+    /// Prefer this to walking `0..COUNT` and calling [`OpKind::from_index`] —
+    /// that spelling is why the three ops sitting past the old discriminant
+    /// gaps were never visited by any table-filling loop.
+    pub fn all() -> impl Iterator<Item = Self> + Clone {
+        (0..Self::COUNT).map(|i| Self::from_index(i).expect("index_is_dense_and_total"))
     }
 
     /// Convert index to `OpKind`. Inverse of [`OpKind::index`].
@@ -785,6 +799,103 @@ impl OpKind {
             )),
             _ => None,
         }
+    }
+}
+
+// ============================================================================
+// OpMap
+// ============================================================================
+
+/// A total map from every [`OpKind`] to a `T`.
+///
+/// This exists because the obvious alternative — `[T; OpKind::COUNT]`
+/// subscripted by `OpKind::index()` — spread the same defect to every consumer
+/// that reached for it. Four of them did: the latency-prior cost table, the
+/// learned cost model, the NNUE op embeddings, and its gradient buffer.
+///
+/// Two things go wrong with the bare array, and both went wrong here:
+///
+/// 1. **The subscript escapes.** `index() -> usize` hands out an integer with
+///    no memory of the bound it is valid against, so each consumer re-derives
+///    the same unchecked cast. When the discriminants had gaps, every one of
+///    them was out of bounds for the last three ops — and the workaround that
+///    appeared was a local `if op.index() < OpKind::COUNT` guard that
+///    *silently skipped* those ops rather than failing.
+/// 2. **Positional literals drift.** A `[T; COUNT]` written out in order is
+///    aligned to the discriminants only by convention, and nothing checks the
+///    convention. The latency prior was written densely while `index()` was
+///    sparse, so 13 of 50 ops read a neighbour's cost — `Dwrt` was priced at
+///    10 instead of the 1000 that keeps extraction away from it.
+///
+/// [`OpMap::from_fn`] closes the second hole: an exhaustive `match` on
+/// `OpKind` is checked by the compiler, so a table cannot silently misalign
+/// and cannot silently omit an op.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpMap<T> {
+    slots: [T; OpKind::COUNT],
+}
+
+impl<T> OpMap<T> {
+    /// Build a table by answering for every op. Write the body as a `match`
+    /// and the compiler will not let you forget one.
+    pub fn from_fn(mut f: impl FnMut(OpKind) -> T) -> Self {
+        Self {
+            slots: core::array::from_fn(|i| {
+                f(OpKind::from_index(i).expect("index_is_dense_and_total"))
+            }),
+        }
+    }
+
+    /// Iterate in [`OpKind::index`] order — the order [`OpMap::as_slice`]
+    /// serializes in.
+    pub fn iter(&self) -> impl Iterator<Item = (OpKind, &T)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (OpKind::from_index(i).expect("index_is_dense_and_total"), v))
+    }
+
+    /// The backing slots in `index()` order. For serialization; prefer
+    /// indexing by [`OpKind`] for lookups.
+    pub fn as_slice(&self) -> &[T] {
+        &self.slots
+    }
+
+    /// Mutable backing slots in `index()` order. For deserialization.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.slots
+    }
+}
+
+impl<T: Copy> OpMap<T> {
+    /// A table where every op answers `value`.
+    pub const fn splat(value: T) -> Self {
+        Self {
+            slots: [value; OpKind::COUNT],
+        }
+    }
+}
+
+impl<T: Default + Copy> Default for OpMap<T> {
+    fn default() -> Self {
+        Self::splat(T::default())
+    }
+}
+
+impl<T> Index<OpKind> for OpMap<T> {
+    type Output = T;
+
+    #[inline]
+    fn index(&self, op: OpKind) -> &T {
+        // The only place in the workspace where an op becomes a subscript.
+        &self.slots[op.index()]
+    }
+}
+
+impl<T> IndexMut<OpKind> for OpMap<T> {
+    #[inline]
+    fn index_mut(&mut self, op: OpKind) -> &mut T {
+        &mut self.slots[op.index()]
     }
 }
 

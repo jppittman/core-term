@@ -39,11 +39,12 @@ fn judge_weights_round_trip_via_trid() {
         .unwrap_or_else(|e| panic!("ExprNnue::from_bytes rejected a freshly-saved TRID file: {e}"));
 
     // Beyond "magic matched": a model whose embeddings are all zero/non-finite
-    // would still parse as valid TRID but carry no signal. Guard against a
+    // would still parse as valid TRIE but carry no signal. Guard against a
     // silently-dead file.
     let has_signal = loaded
         .embeddings
         .e
+        .as_slice()
         .iter()
         .flatten()
         .any(|&v| v.is_finite() && v != 0.0);

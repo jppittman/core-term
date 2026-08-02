@@ -34,6 +34,7 @@
 )]
 
 use pixelflow_ir::OpKind;
+use pixelflow_ir::kind::OpMap;
 use pixelflow_search::nnue::factored::{
     EMBED_DIM, EdgeAccumulator, ExprNnue, GRAPH_ACC_DIM, GRAPH_INPUT_DIM, GraphAccumulator,
     HIDDEN_DIM, INPUT_DIM, K, MLP_HIDDEN, depth_pe,
@@ -339,7 +340,7 @@ pub struct UnifiedGradients {
     /// Bias projection gradients: EMBED_DIM.
     pub d_mask_bias_proj: [f32; EMBED_DIM],
     /// OpEmbedding gradients: [OpKind::COUNT][K].
-    pub d_embeddings: [[f32; K]; OpKind::COUNT],
+    pub d_embeddings: OpMap<[f32; K]>,
     /// Shared trunk weight gradients: HIDDEN_DIM x HIDDEN_DIM.
     /// Accumulates from BOTH edge and graph backward paths.
     pub d_trunk_w: [[f32; HIDDEN_DIM]; HIDDEN_DIM],
@@ -397,7 +398,7 @@ impl UnifiedGradients {
             d_mask_mlp_b2: [0.0; EMBED_DIM],
             d_interaction: [[0.0; EMBED_DIM]; EMBED_DIM],
             d_mask_bias_proj: [0.0; EMBED_DIM],
-            d_embeddings: [[0.0; K]; OpKind::COUNT],
+            d_embeddings: OpMap::splat([0.0; K]),
             d_trunk_w: [[0.0; HIDDEN_DIM]; HIDDEN_DIM],
             d_trunk_b: [0.0; HIDDEN_DIM],
             d_graph_w1: [[0.0; HIDDEN_DIM]; GRAPH_INPUT_DIM],
@@ -461,7 +462,7 @@ impl UnifiedGradients {
         for v in &mut self.d_mask_bias_proj {
             *v *= s;
         }
-        for row in &mut self.d_embeddings {
+        for row in self.d_embeddings.as_mut_slice() {
             for v in row {
                 *v *= s;
             }
@@ -548,7 +549,7 @@ impl UnifiedGradients {
         for &v in &self.d_mask_bias_proj {
             sum += (v as f64) * (v as f64);
         }
-        for row in &self.d_embeddings {
+        for row in self.d_embeddings.as_slice() {
             for &v in row {
                 sum += (v as f64) * (v as f64);
             }
@@ -675,7 +676,7 @@ impl UnifiedGradients {
     /// L2 norm of the op embeddings table.
     pub fn norm_embeddings(&self) -> f32 {
         let mut sum = 0.0f64;
-        for row in &self.d_embeddings {
+        for row in self.d_embeddings.as_slice() {
             for &v in row {
                 sum += (v as f64) * (v as f64);
             }
@@ -798,7 +799,7 @@ impl UnifiedGradients {
         for k in 0..EMBED_DIM {
             self.d_mask_bias_proj[k] += other.d_mask_bias_proj[k];
         }
-        for op in 0..OpKind::COUNT {
+        for op in OpKind::all() {
             for i in 0..K {
                 self.d_embeddings[op][i] += other.d_embeddings[op][i];
             }
@@ -1001,18 +1002,13 @@ pub fn backward_through_accumulator(
     // these don't depend on embeddings, so we skip them.
 
     for &(parent_op_u8, child_op_u8, depth_u16) in edges {
-        let pi = parent_op_u8 as usize;
-        let ci = child_op_u8 as usize;
-        assert!(
-            pi < OpKind::COUNT,
-            "parent op index {pi} out of range for OpKind::COUNT={}",
-            OpKind::COUNT
-        );
-        assert!(
-            ci < OpKind::COUNT,
-            "child op index {ci} out of range for OpKind::COUNT={}",
-            OpKind::COUNT
-        );
+        // Decoded once, loudly. These arrive as raw bytes from a serialized
+        // edge record, so "this byte names an op" is a claim about the data,
+        // not something the type system already knows.
+        let pi = OpKind::from_index(parent_op_u8 as usize)
+            .unwrap_or_else(|| panic!("parent op byte {parent_op_u8} names no OpKind"));
+        let ci = OpKind::from_index(child_op_u8 as usize)
+            .unwrap_or_else(|| panic!("child op byte {child_op_u8} names no OpKind"));
         let pe = depth_pe(depth_u16 as u32);
 
         // Flat parent half: values[i] += parent_emb[i]
@@ -1290,7 +1286,7 @@ pub fn apply_unified_sgd(
     // ── Embeddings (scale_embeddings) ─────────────────────────────────────────
 
     // embeddings: [OpKind::COUNT][K]
-    for op in 0..OpKind::COUNT {
+    for op in OpKind::all() {
         for i in 0..K {
             sgd_scalar!(
                 net.embeddings.e[op][i],
@@ -1380,7 +1376,7 @@ pub fn apply_unified_sgd(
     //
     // Instead, keep embeddings on the unit sphere after every update.
     // This is equivalent to projected gradient descent on S^{K-1}.
-    for op in 0..OpKind::COUNT {
+    for op in OpKind::all() {
         let l2 = net.embeddings.e[op]
             .iter()
             .map(|x| x * x)
