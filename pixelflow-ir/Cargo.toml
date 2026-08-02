@@ -12,11 +12,13 @@ bench = false
 workspace = true
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"], optional = true }
 libm = "0.2.15"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+# `default-features = false` keeps `libc/std` off the dependency graph. With
+# defaults on, this crate linked `std` transitively even under
+# `--no-default-features`, which `cargo check` cannot see.
+libc = { version = "0.2", default-features = false }
 
 [dev-dependencies]
 criterion = "0.5"
@@ -30,11 +32,8 @@ name = "collapse_overhead"
 harness = false
 
 [features]
-default = ["std", "alloc"]
-std = ["alloc"]
+default = ["std"]
+std = []
 # The scalar differential-testing oracle (`eval`). Test-only: PixelFlow renders
 # exclusively through the JIT, so no shipped build may reach an interpreter.
 oracle = []
-# The crate always links `alloc` (see `extern crate alloc`). This feature gates
-# the owned `Expr` tree API used by the x86-64 JIT emitter and arena bridge.
-alloc = []

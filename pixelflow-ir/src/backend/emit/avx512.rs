@@ -4,16 +4,18 @@
 //! targets the full `zmm0..zmm31` register file via EVEX, so it can also use the
 //! extended registers (`zmm16..31`) that VEX cannot reach.
 //!
-//! Scope (Stage 1): arithmetic, FMA, sqrt/recip/rsqrt, min/max, bitwise,
-//! comparisons, select, and constant broadcast — covers everything
-//! `Select`/`Clamp`/glyph coverage kernels need. Comparisons go through the
-//! k-register class (`vcmpps` -> `vpmovm2d`, see `emit_compare` below) so
-//! every downstream consumer still sees an ordinary all-ones/all-zeros
-//! vector, exactly like every other backend — the allocator never learns
-//! k-registers exist. The transcendental polynomials and the integer
-//! bit-shift lowering exp/log needs (`ShiftImm`) are still separate stages;
-//! the backend rejects those up front so nothing here is reached for an
-//! unsupported op.
+//! Scope: arithmetic, FMA, sqrt/recip/rsqrt, min/max, bitwise, comparisons,
+//! select, constant broadcast, the integer bit-manipulation atoms
+//! (`IAdd`/`BitAnd`/`BitOr`/`TruncToInt`/`IntToFloat`), and `ShiftImm` (see
+//! `emit_shift_imm`) — so the exp/log lowering reaches this backend intact.
+//! Comparisons go through the k-register class (`vcmpps` -> `vpmovm2d`, see
+//! `emit_compare` below) so every downstream consumer still sees an ordinary
+//! all-ones/all-zeros vector, exactly like every other backend — the allocator
+//! never learns k-registers exist. Note `vpmovm2d` is AVX-512**DQ**, not F: an
+//! F-only part would fault on any kernel containing a comparison.
+//!
+//! Transcendentals themselves are still a separate lowering stage; ops with no
+//! rule here are refused up front rather than mis-emitted.
 //!
 //! Spills use a real stack frame (a `zmm` is 64 bytes — far past the 128-byte
 //! red zone the SSE2 path relies on).

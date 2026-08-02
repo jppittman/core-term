@@ -3,28 +3,14 @@
 //! This module defines the interface for SIMD backends.
 //! Implementations (AVX2, NEON, Wasm) are provided in submodules.
 //!
-//! # Architecture
-//!
-//! The SIMD operations are split into two layers:
-//!
-//! - **Primitives** (`primitives.rs`): Operations that map 1:1 (or near 1:1) to
-//!   hardware instructions. These are what the JIT emits directly.
-//!
-//! - **Compounds** (`compounds.rs`): Higher-level operations (sin, cos, exp, log)
-//!   built from primitives. These have a blanket impl over all `Primitives`.
-//!
-//! The existing `SimdOps` trait is preserved for backward compatibility but new
-//! code should use `Primitives` + `Compounds`.
+//! `SimdOps` is the one trait here. Its *required* methods are the per-ISA
+//! primitives (each backend supplies its own instruction); its *provided*
+//! methods are the uniform expansions built on them. That required-vs-provided
+//! split is this tier's legal/lowered partition, and it is deliberately the
+//! only place it is written down for this tier.
 
 use core::fmt::Debug;
 use core::ops::{Add, BitAnd, BitOr, Div, Mul, Neg, Not, Shl, Shr, Sub};
-
-// New layered architecture
-pub mod compounds;
-pub mod primitives;
-
-pub use compounds::Compounds;
-pub use primitives::{MaskPrimitives, Primitives};
 
 // JIT code emission
 pub mod emit;

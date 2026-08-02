@@ -224,10 +224,10 @@ pub enum ResolvedOp {
         if_true: Reg,
         if_false: Reg,
     },
-    /// Bound-memory gather: `dst = buffer[slot][idx_lane]`. Emitted only on the
-    /// AVX-512 backend (native `vgatherdps`); other backends reject it. The
-    /// buffer base pointer is loaded from the context struct (rdi) at
-    /// `slot * 8`.
+    /// Bound-memory gather: `dst = buffer[slot][idx_lane]`. Every backend
+    /// implements it: AVX-512 natively (`vgatherdps`), AVX-2 as two scalar
+    /// halves, SSE2 and NEON as four scalar loads. The buffer base pointer is
+    /// loaded from the context struct (rdi) at `slot * 8`.
     Gather { dst: Reg, idx: Reg, slot: u16 },
 }
 
@@ -4799,7 +4799,7 @@ mod tests {
         use crate::arena::ExprArena;
 
         // Tolerance reflects the degree-7 Chebyshev's ACTUAL measured accuracy
-        // (the SAME polynomial the runtime Compounds path uses): ~1e-6 near 0,
+        // (the SAME polynomial the runtime `SimdOps` path uses): ~1e-6 near 0,
         // degrading to ~2.6e-2 at the ±π range-reduction edges — only ~2-digit
         // accurate there. The bound catches *logic* errors (sign/coefficient/
         // range-reduction), not approximation error; tightening the polynomial

@@ -899,7 +899,6 @@ dependencies = [
  "libc",
  "libm",
  "pixelflow-ir",
- "serde",
 ]
 
 [[package]]
@@ -943,7 +942,6 @@ dependencies = [
  "pixelflow-compiler",
  "pixelflow-core",
  "pixelflow-graphics",
- "pixelflow-ir",
  "pkg-config",
  "serde",
  "serde-wasm-bindgen",

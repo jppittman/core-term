@@ -954,7 +954,7 @@ fn expand_binary(arena: &mut ExprArena, op: OpKind, a: ExprId, b: ExprId) -> Exp
 
 /// `atan2(y, x)` (four-quadrant) as a primitive subgraph.
 ///
-/// Mirrors the runtime Compounds version: reduce to a ratio in [-1,1] (swapping
+/// Mirrors the runtime `SimdOps` version: reduce to a ratio in [-1,1] (swapping
 /// y/x when |y|>|x|), a degree-7 odd polynomial for atan on that interval, then
 /// quadrant fix-ups via `Select` on comparison masks. Uses `Select`/`Lt`/`Gt`/
 /// `Ge`/`Recip` — all primitives the value path emits. (Like other Select-using
