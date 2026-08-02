@@ -29,6 +29,28 @@
 //! - Reloaded via LDR to dedicated reload register before use
 //! - This lets ML models learn register pressure vs spill tradeoffs
 
+/// The one way a backend refuses an op.
+///
+/// Reaching this is never "the target cannot do that". [`crate::passes::legalize`]
+/// leaves only ops from the backend-legal set, and every backend owes an
+/// encoding for all of them — so arriving here means the pipeline was bypassed
+/// or this backend is incomplete. Both are bugs in the compiler rather than
+/// facts about the kernel, and neither is something a caller could act on: the
+/// only callers that ever saw the old `Err` immediately `.expect()`ed it.
+///
+/// So it panics, loudly and at the point of failure, naming the op and the
+/// backend that owes it. Development gets a stack trace pointing at the missing
+/// match arm instead of a `&'static str` surfacing three frames up.
+#[cold]
+#[inline(never)]
+pub(crate) fn unimplemented_op(backend: &str, op: crate::kind::OpKind) -> ! {
+    panic!(
+        "{backend} has no encoding for {op:?} — `passes::legalize` leaves only \
+         backend-legal ops, so this is a missing implementation or a bypassed \
+         pipeline, not a bad kernel"
+    )
+}
+
 pub mod aarch64;
 pub mod avx2;
 pub mod avx512;
@@ -2112,7 +2134,7 @@ fn emit_instruction_plan(
         }
         ResolvedOp::Unary { op, dst, src } => {
             let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
-            emit_unary(code, pool, *op, *dst, *src, scratch)?;
+            emit_unary(code, pool, *op, *dst, *src, scratch);
         }
         ResolvedOp::ShiftImm {
             op,
@@ -2120,7 +2142,7 @@ fn emit_instruction_plan(
             src,
             amount,
         } => {
-            aarch64::emit_shift_imm(code, *op, *dst, *src, *amount)?;
+            aarch64::emit_shift_imm(code, *op, *dst, *src, *amount);
         }
         ResolvedOp::Gather { dst, idx, slot } => {
             // dst = buffer[slot][idx], via four scalar loads (NEON has no
@@ -2918,7 +2940,7 @@ impl IsaBackend for Avx512Backend {
                 avx512::emit_const(code, *dst, f32::from_bits(*val_bits));
             }
             ResolvedOp::Unary { op, dst, src } => {
-                avx512::emit_unary(code, *op, *dst, *src)?;
+                avx512::emit_unary(code, *op, *dst, *src);
             }
             ResolvedOp::ShiftImm {
                 op,
@@ -2926,7 +2948,7 @@ impl IsaBackend for Avx512Backend {
                 src,
                 amount,
             } => {
-                avx512::emit_shift_imm(code, *op, *dst, *src, *amount)?;
+                avx512::emit_shift_imm(code, *op, *dst, *src, *amount);
             }
             ResolvedOp::Gather { dst, idx, slot } => {
                 // dst = buffer[slot][idx]. The context pointer (array of buffer
@@ -2952,9 +2974,9 @@ impl IsaBackend for Avx512Backend {
                 // EVEX 3-operand: no two-operand hazard, emit directly.
                 // Comparisons produce a vector mask (vcmpps -> vpmovm2d).
                 if avx512::is_compare(*op) {
-                    avx512::emit_compare(code, *op, *dst, *left, *right)?;
+                    avx512::emit_compare(code, *op, *dst, *left, *right);
                 } else {
-                    avx512::emit_binary(code, *op, *dst, *left, *right)?;
+                    avx512::emit_binary(code, *op, *dst, *left, *right);
                 }
             }
             ResolvedOp::FusedMulAdd { dst, a, b } => {
@@ -2969,7 +2991,7 @@ impl IsaBackend for Avx512Backend {
                 c_deferred,
             } => {
                 // dst = a*b, reload c (after the multiply if deferred), dst += c.
-                avx512::emit_binary(code, OpKind::Mul, *dst, *a, *b)?;
+                avx512::emit_binary(code, OpKind::Mul, *dst, *a, *b);
                 match c_deferred {
                     Some(DeferredReload::FromStack(off)) => {
                         avx512::emit_load_rsp(code, *c, avx512_slot_disp(*off));
@@ -2979,7 +3001,7 @@ impl IsaBackend for Avx512Backend {
                     }
                     None => {}
                 }
-                avx512::emit_binary(code, OpKind::Add, *dst, *dst, *c)?;
+                avx512::emit_binary(code, OpKind::Add, *dst, *dst, *c);
             }
             ResolvedOp::Select {
                 dst,
@@ -3129,7 +3151,7 @@ impl IsaBackend for Avx512Backend {
         // X += lane count.
         avx512::emit_load_rsp(&mut code, Reg(0), slot(0));
         avx512::emit_const(&mut code, Reg(1), (VW / 4) as f32);
-        avx512::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
+        avx512::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
         avx512::emit_store_rsp(&mut code, Reg(0), slot(0));
 
         code.extend_from_slice(&[0x49, 0xFF, 0xC1]); // inc r9
@@ -3147,7 +3169,7 @@ impl IsaBackend for Avx512Backend {
         avx512::emit_store_rsp(&mut code, Reg(0), slot(0));
         avx512::emit_load_rsp(&mut code, Reg(0), slot(1));
         avx512::emit_const(&mut code, Reg(1), 1.0);
-        avx512::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
+        avx512::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
         avx512::emit_store_rsp(&mut code, Reg(0), slot(1));
         code.extend_from_slice(&[0x4C, 0x01, 0xC6]); // add rsi, r8
 
@@ -3255,7 +3277,7 @@ impl IsaBackend for Avx2Backend {
                 avx2::emit_const(code, *dst, f32::from_bits(*val_bits));
             }
             ResolvedOp::Unary { op, dst, src } => {
-                avx2::emit_unary(code, *op, *dst, *src)?;
+                avx2::emit_unary(code, *op, *dst, *src);
             }
             ResolvedOp::ShiftImm {
                 op,
@@ -3263,7 +3285,7 @@ impl IsaBackend for Avx2Backend {
                 src,
                 amount,
             } => {
-                avx2::emit_shift_imm(code, *op, *dst, *src, *amount)?;
+                avx2::emit_shift_imm(code, *op, *dst, *src, *amount);
             }
             ResolvedOp::Gather { dst, idx, slot } => {
                 // Context pointer (array of buffer base pointers) arrives in
@@ -3297,7 +3319,7 @@ impl IsaBackend for Avx2Backend {
                 right,
             } => {
                 // VEX 3-operand: no two-operand hazard, emit directly.
-                avx2::emit_binary(code, *op, *dst, *left, *right)?;
+                avx2::emit_binary(code, *op, *dst, *left, *right);
             }
             ResolvedOp::FusedMulAdd { dst, a, b } => {
                 avx2::emit_fmadd_c_in_dst(code, *dst, *a, *b);
@@ -3309,7 +3331,7 @@ impl IsaBackend for Avx2Backend {
                 c,
                 c_deferred,
             } => {
-                avx2::emit_binary(code, OpKind::Mul, *dst, *a, *b)?;
+                avx2::emit_binary(code, OpKind::Mul, *dst, *a, *b);
                 match c_deferred {
                     Some(DeferredReload::FromStack(off)) => {
                         avx2::emit_load_rsp(code, *c, avx2_slot_disp(*off));
@@ -3319,7 +3341,7 @@ impl IsaBackend for Avx2Backend {
                     }
                     None => {}
                 }
-                avx2::emit_binary(code, OpKind::Add, *dst, *dst, *c)?;
+                avx2::emit_binary(code, OpKind::Add, *dst, *dst, *c);
             }
             ResolvedOp::Select {
                 dst,
@@ -3473,7 +3495,7 @@ impl IsaBackend for Avx2Backend {
         // X += lane count.
         avx2::emit_load_rsp(&mut code, Reg(0), slot(0));
         avx2::emit_const(&mut code, Reg(1), (VW / 4) as f32);
-        avx2::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
+        avx2::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
         avx2::emit_store_rsp(&mut code, Reg(0), slot(0));
 
         code.extend_from_slice(&[0x49, 0xFF, 0xC1]); // inc r9
@@ -3491,7 +3513,7 @@ impl IsaBackend for Avx2Backend {
         avx2::emit_store_rsp(&mut code, Reg(0), slot(0));
         avx2::emit_load_rsp(&mut code, Reg(0), slot(1));
         avx2::emit_const(&mut code, Reg(1), 1.0);
-        avx2::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
+        avx2::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
         avx2::emit_store_rsp(&mut code, Reg(0), slot(1));
         code.extend_from_slice(&[0x4C, 0x01, 0xC6]); // add rsi, r8
 
@@ -5561,11 +5583,14 @@ mod tests {
         use super::*;
 
         /// Run one `ResolvedOp` through a backend and report whether it
-        /// emitted without error. Backends disagree on failure signaling
-        /// today (avx512 returns `Err`; x86-64/aarch64's leaf encoders
-        /// `panic!` on an unhandled op) — `catch_unwind` treats both as the
-        /// same "not supported" signal so this test doesn't have to care
-        /// which convention a given backend uses.
+        /// emitted.
+        ///
+        /// Every backend signals an op it cannot encode the same way now — by
+        /// panicking through [`unimplemented_op`], because after `legalize`
+        /// that is a missing implementation rather than a property of the
+        /// kernel. `catch_unwind` is what lets this test report *which* ops a
+        /// backend owes, by name and all of them, instead of dying on the
+        /// first one.
         fn try_emit<B: IsaBackend>(backend: &mut B, op: ResolvedOp) -> bool {
             let plan = InstructionPlan {
                 reloads: alloc::vec::Vec::new(),

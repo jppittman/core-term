@@ -3,7 +3,7 @@
 //! Each function emits raw machine code bytes for one instruction (or a small fixed sequence).
 //! These are the "atoms" that compound operations are built from.
 
-use super::Reg;
+use super::{Reg, unimplemented_op};
 use crate::kind::OpKind;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -629,7 +629,7 @@ pub(crate) fn emit_unary(
     dst: Reg,
     src: Reg,
     scratch: [Reg; 4],
-) -> Result<(), &'static str> {
+) {
     match op {
         OpKind::Neg => emit_fneg(code, dst, src),
         OpKind::Abs => emit_fabs(code, dst, src),
@@ -647,26 +647,18 @@ pub(crate) fn emit_unary(
         // Transcendentals (sin/cos/tan/exp/exp2/ln/log2/log10/atan/asin/acos) are
         // expanded to primitive arithmetic by `lowering` before codegen, so they
         // never reach a backend. Reaching here means lowering was skipped.
-        _ => return Err("unary emit not implemented for this op (lowering not run?)"),
+        _ => unimplemented_op("aarch64", op),
     }
-    Ok(())
 }
 
 /// Emit a logical shift of i32 lanes by a compile-time immediate.
 /// `Shl` -> `SHL`, `Shr` -> `USHR` (logical right). NEON shifts are imm-form.
-pub fn emit_shift_imm(
-    code: &mut Vec<u8>,
-    op: OpKind,
-    dst: Reg,
-    src: Reg,
-    amount: u8,
-) -> Result<(), &'static str> {
+pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount: u8) {
     match op {
         OpKind::Shl => emit_shl(code, dst, src, amount),
         OpKind::Shr => emit_ushr(code, dst, src, amount),
-        _ => return Err("aarch64 emit_shift_imm: not a shift op"),
+        _ => unimplemented_op("aarch64", op),
     }
-    Ok(())
 }
 
 /// Emit binary operation
@@ -696,7 +688,7 @@ pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Re
         OpKind::BitAnd => emit_and(code, dst, src1, src2),
         OpKind::BitOr => emit_orr(code, dst, src1, src2),
 
-        _ => panic!("binary emit not implemented for {:?}", op),
+        _ => unimplemented_op("aarch64", op),
     }
 }
 
@@ -740,7 +732,7 @@ pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c:
             emit_bsl(code, dst, b, c);
         }
 
-        _ => panic!("ternary emit not implemented for {:?}", op),
+        _ => unimplemented_op("aarch64", op),
     }
 }
 
