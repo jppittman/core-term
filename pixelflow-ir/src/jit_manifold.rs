@@ -5,7 +5,7 @@
 //! would create a dependency cycle. Instead, `kernel_jit!` emits a thin wrapper in
 //! the user's crate that calls through to `JitManifold`.
 
-use crate::backend::emit::executable::{CollapseKernelFn, CtxKernelFn, ExecutableCode, KernelFn};
+use crate::emit::executable::{CollapseKernelFn, CtxKernelFn, ExecutableCode, KernelFn};
 
 /// A JIT-compiled kernel. Owns the executable code for one specific parameter
 /// combination. No cache — caller decides lifetime.
@@ -81,7 +81,7 @@ impl JitManifold {
     /// # Safety
     ///
     /// - The kernel must have been compiled by
-    ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
+    ///   [`compile_collapse`](crate::emit::compile_collapse) — the
     ///   per-batch entries emit a different ABI.
     /// - Each row must expose `groups * lanes` writable `f32`s followed by
     ///   `row_skip_bytes` writable-or-skippable bytes before the next row.
@@ -172,7 +172,7 @@ impl JitManifold {
     /// # Safety
     ///
     /// - The kernel must have been compiled by
-    ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
+    ///   [`compile_collapse`](crate::emit::compile_collapse) — the
     ///   per-batch entries emit a different ABI.
     /// - Each row must expose `groups * lanes` writable `f32`s followed by
     ///   `row_skip_bytes` writable-or-skippable bytes before the next row.
@@ -263,7 +263,7 @@ impl JitManifold {
     /// # Safety
     ///
     /// - The kernel must have been compiled by
-    ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
+    ///   [`compile_collapse`](crate::emit::compile_collapse) — the
     ///   per-batch entries emit a different ABI.
     /// - Each row must expose `groups * lanes` writable `f32`s followed by
     ///   `row_skip_bytes` writable-or-skippable bytes before the next row.
@@ -350,7 +350,7 @@ impl JitManifold {
     /// # Safety
     ///
     /// - The kernel must have been compiled by
-    ///   [`compile_collapse`](crate::backend::emit::compile_collapse) — the
+    ///   [`compile_collapse`](crate::emit::compile_collapse) — the
     ///   per-batch entries emit a different ABI.
     /// - Each row must expose `groups * lanes` writable `f32`s followed by
     ///   `row_skip_bytes` writable-or-skippable bytes before the next row.

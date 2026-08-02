@@ -2,7 +2,7 @@
 //! cargo run --release -p pixelflow-pipeline --features "training profiling" --bin bench_jit_profile
 
 use pixelflow_ir::arena::ExprArena;
-use pixelflow_ir::backend::emit::compile_arena_dag;
+use pixelflow_ir::emit::compile_arena_dag;
 use pixelflow_ir::kind::OpKind;
 
 fn main() {

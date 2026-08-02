@@ -27,7 +27,7 @@ use std::vec::Vec;
 
 use crate::JitManifold;
 use crate::arena::{ExprArena, ExprId, ExprNode};
-use crate::backend::emit;
+use crate::emit;
 
 static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Arc<JitManifold>>>> = OnceLock::new();
 

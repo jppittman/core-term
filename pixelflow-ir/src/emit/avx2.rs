@@ -511,7 +511,7 @@ mod tests {
     #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
     mod runtime {
         use super::super::*;
-        use crate::backend::emit::executable::ExecutableCode;
+        use crate::emit::executable::ExecutableCode;
         use core::arch::x86_64::*;
 
         #[allow(improper_ctypes_definitions)]

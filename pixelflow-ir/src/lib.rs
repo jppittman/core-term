@@ -19,7 +19,7 @@
 
 extern crate alloc;
 
-pub mod backend;
+pub mod emit;
 pub mod kind;
 pub mod ops;
 pub mod traits;

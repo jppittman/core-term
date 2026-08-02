@@ -14,7 +14,7 @@
 //!     --test avx512_evex_proof
 
 #[cfg(target_feature = "avx512f")]
-use pixelflow_ir::backend::emit::executable::ExecutableCode;
+use pixelflow_ir::emit::executable::ExecutableCode;
 
 // ============================================================================
 // Minimal EVEX encoder (512-bit). Promoted to a real module once proven.

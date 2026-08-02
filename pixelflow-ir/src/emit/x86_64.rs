@@ -839,7 +839,7 @@ mod tests {
     use super::*;
 
     /// `X86BinaryInsn::select` is `emit_binary`'s completeness contract made
-    /// checkable: every op `pixelflow_ir::backend::emit::coverage::
+    /// checkable: every op `pixelflow_ir::emit::coverage::
     /// REQUIRED_BINARY_OPS` lists must select `Some`, or this backend would
     /// panic the moment the scheduler handed it that op. Cheaper and more
     /// precise than the emit-and-catch-panic sweep in `emit/mod.rs`'s
@@ -847,7 +847,7 @@ mod tests {
     /// directly instead of inferring "not supported" from a caught panic.
     #[test]
     fn selects_every_required_binary_op() {
-        use crate::backend::emit::coverage::REQUIRED_BINARY_OPS;
+        use crate::emit::coverage::REQUIRED_BINARY_OPS;
 
         let unselected: alloc::vec::Vec<OpKind> = REQUIRED_BINARY_OPS
             .iter()

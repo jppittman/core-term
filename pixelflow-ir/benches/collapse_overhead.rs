@@ -10,7 +10,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use pixelflow_ir::JIT_VECTOR_BYTES;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::ExprArena;
-use pixelflow_ir::backend::emit::{CompileResult, compile_arena_dag, compile_collapse};
+use pixelflow_ir::emit::{CompileResult, compile_arena_dag, compile_collapse};
 
 const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 const GROUPS: usize = 240;
@@ -76,7 +76,7 @@ fn per_batch_frame(
         let row_out = &mut out[row * groups * LANES..][..groups * LANES];
         #[cfg(target_feature = "avx512f")]
         unsafe {
-            let f: pixelflow_ir::backend::emit::executable::KernelFn = result.code.as_fn();
+            let f: pixelflow_ir::emit::executable::KernelFn = result.code.as_fn();
             let step = _mm512_set1_ps(LANES as f32);
             let mut x = _mm512_loadu_ps(seq.as_ptr());
             let yv = _mm512_set1_ps(y);
@@ -88,7 +88,7 @@ fn per_batch_frame(
         }
         #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
         unsafe {
-            let f: pixelflow_ir::backend::emit::executable::KernelFn = result.code.as_fn();
+            let f: pixelflow_ir::emit::executable::KernelFn = result.code.as_fn();
             let step = _mm256_set1_ps(LANES as f32);
             let mut x = _mm256_loadu_ps(seq.as_ptr());
             let yv = _mm256_set1_ps(y);
@@ -100,7 +100,7 @@ fn per_batch_frame(
         }
         #[cfg(not(any(target_feature = "avx2", target_feature = "avx512f")))]
         unsafe {
-            let f: pixelflow_ir::backend::emit::executable::KernelFn = result.code.as_fn();
+            let f: pixelflow_ir::emit::executable::KernelFn = result.code.as_fn();
             let step = _mm_set1_ps(LANES as f32);
             let mut x = _mm_loadu_ps(seq.as_ptr());
             let yv = _mm_set1_ps(y);
@@ -123,7 +123,7 @@ fn per_batch_frame(
 ) {
     use core::arch::aarch64::*;
     unsafe {
-        let f: pixelflow_ir::backend::emit::executable::KernelFn = result.code.as_fn();
+        let f: pixelflow_ir::emit::executable::KernelFn = result.code.as_fn();
         let step = vdupq_n_f32(LANES as f32);
         let zero = vdupq_n_f32(0.0);
         for row in 0..rows {
@@ -149,7 +149,7 @@ fn collapse_frame(
     use core::arch::x86_64::*;
     #[cfg(target_feature = "avx512f")]
     unsafe {
-        let f: pixelflow_ir::backend::emit::executable::CollapseKernelFn = result.code.as_fn();
+        let f: pixelflow_ir::emit::executable::CollapseKernelFn = result.code.as_fn();
         let zero = _mm512_setzero_ps();
         f(
             core::ptr::null(),
@@ -165,7 +165,7 @@ fn collapse_frame(
     }
     #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
     unsafe {
-        let f: pixelflow_ir::backend::emit::executable::CollapseKernelFn = result.code.as_fn();
+        let f: pixelflow_ir::emit::executable::CollapseKernelFn = result.code.as_fn();
         let zero = _mm256_setzero_ps();
         f(
             core::ptr::null(),
@@ -181,7 +181,7 @@ fn collapse_frame(
     }
     #[cfg(not(any(target_feature = "avx2", target_feature = "avx512f")))]
     unsafe {
-        let f: pixelflow_ir::backend::emit::executable::CollapseKernelFn = result.code.as_fn();
+        let f: pixelflow_ir::emit::executable::CollapseKernelFn = result.code.as_fn();
         let zero = _mm_setzero_ps();
         f(
             core::ptr::null(),
@@ -207,7 +207,7 @@ fn collapse_frame(
 ) {
     use core::arch::aarch64::*;
     unsafe {
-        let f: pixelflow_ir::backend::emit::executable::CollapseKernelFn = result.code.as_fn();
+        let f: pixelflow_ir::emit::executable::CollapseKernelFn = result.code.as_fn();
         let zero = vdupq_n_f32(0.0);
         f(
             core::ptr::null(),

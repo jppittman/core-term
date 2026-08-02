@@ -688,7 +688,7 @@ mod tests {
     #[cfg(target_feature = "avx512f")]
     mod runtime {
         use super::super::*;
-        use crate::backend::emit::executable::ExecutableCode;
+        use crate::emit::executable::ExecutableCode;
         use core::arch::x86_64::*;
 
         // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
