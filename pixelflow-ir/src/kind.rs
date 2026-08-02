@@ -208,9 +208,9 @@ impl OpKind {
             // preserved) while `(x + 0.5).floor()` gives `+0.0`. `1.0 / x`
             // makes that `-inf` versus `+inf`. `-0.5` is already covered as a
             // tie; the rest of the interval is not.
-            Self::Round => args
-                .iter()
-                .any(|a| a.fract().abs() == 0.5 || (a.is_sign_negative() && *a > -0.5)),
+            Self::Round => args.iter().any(|a| {
+                (a - libm::truncf(*a)).abs() == 0.5 || (a.is_sign_negative() && *a > -0.5)
+            }),
             // Reciprocal ESTIMATES, and every target estimates differently:
             // SSE2/AVX2 `rcpps`/`vrcpps` give ~12 bits, AVX-512 `vrcp14ps`
             // ~14, and aarch64 emits `FRECPE` plus one `FRECPS` Newton step.
@@ -223,7 +223,7 @@ impl OpKind {
             // SSE2 emits without one. Value-aware, because they agree for most
             // inputs and folding is worth keeping where they do.
             Self::MulAdd => match args {
-                [x, y, z] => x.mul_add(*y, *z).to_bits() != (x * y + z).to_bits(),
+                [x, y, z] => libm::fmaf(*x, *y, *z).to_bits() != (x * y + z).to_bits(),
                 _ => false,
             },
             _ => false,
@@ -644,17 +644,17 @@ impl OpKind {
     pub fn eval_unary(self, x: f32) -> Option<f32> {
         match self {
             Self::Neg => Some(-x),
-            Self::Sqrt => Some(x.sqrt()),
-            Self::Rsqrt => Some(1.0 / x.sqrt()),
+            Self::Sqrt => Some(libm::sqrtf(x)),
+            Self::Rsqrt => Some(1.0 / libm::sqrtf(x)),
             Self::Abs => Some(x.abs()),
             Self::Recip => Some(1.0 / x),
-            Self::Floor => Some(x.floor()),
-            Self::Ceil => Some(x.ceil()),
+            Self::Floor => Some(libm::floorf(x)),
+            Self::Ceil => Some(libm::ceilf(x)),
             // x86's answer (`vroundps` imm 0x00 is nearest-even). aarch64
             // `FRINTA` is ties-away and the combinator tier is
             // `(x + 0.5).floor()`, so at a tie this is one of three behaviors
             // and no promise — see `fold_is_platform_specific`.
-            Self::Round => Some(x.round_ties_even()),
+            Self::Round => Some(libm::rintf(x)),
             // Integer-domain primitives. A lane holds an f32 bit pattern; these
             // reinterpret it as i32, exactly as the hardware instructions do
             // (`cvttps2dq` / `cvtdq2ps`). They exist so exp/log can lower to

@@ -5,6 +5,9 @@
 
 use super::Reg;
 use crate::kind::OpKind;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 // =============================================================================
 // Instruction Encoding Helpers

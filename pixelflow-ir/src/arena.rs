@@ -7,6 +7,7 @@
 //! The arena is append-only. [`ExprArena::clear`] truncates without deallocating,
 //! ready for reuse.
 
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 

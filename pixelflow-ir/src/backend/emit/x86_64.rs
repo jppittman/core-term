@@ -11,6 +11,7 @@
 
 use super::Reg;
 use crate::kind::OpKind;
+use alloc::vec::Vec;
 
 // =============================================================================
 // Encoding Helpers
