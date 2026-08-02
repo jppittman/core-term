@@ -2634,7 +2634,7 @@ impl ExprNnue {
         let mut file = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(path)?);
 
         // Magic header (TRID = shared trunk added — retrain required for old TRIC/TRIB/etc models)
-        file.write_all(b"TRID")?;
+        file.write_all(b"TRIE")?;
 
         // ===== Backbone =====
         // Embeddings
@@ -2791,21 +2791,26 @@ impl ExprNnue {
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)?;
 
-        // TRID: shared trunk layer between towers and projection heads
+        // TRIE: `OpKind` discriminants renumbered densely over `0..COUNT`
+        // TRID: incompatible — op embeddings are indexed by `OpKind::index()`,
+        //       and the pre-2026-08-02 discriminants had gaps at 17/31/39. The
+        //       shapes still match, so a TRID file would load without error and
+        //       silently attribute every op past a gap to its neighbour.
         // TRIC: incompatible — pre-shared-trunk architecture
         // TRIB: incompatible — GRAPH_ACC_DIM was 3K (96), GRAPH_INPUT_DIM was 100
         // TRIA: incompatible — had mask_rule_bias[1024] instead of mask_bias_proj[32]
         // TRI5-TRI9: incompatible — EMBED_DIM was 24, all weight shapes differ
-        if &magic != b"TRID" {
+        if &magic != b"TRIE" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "Incompatible ExprNnue format {:?}. Expected 'TRID' (shared trunk). {}",
+                    "Incompatible ExprNnue format {:?}. Expected 'TRIE' (dense OpKind indices). {}",
                     std::str::from_utf8(&magic).unwrap_or("????"),
-                    if &magic == b"TRIC" {
-                        "Incompatible format 'TRIC' (pre-shared-trunk). Retrain required."
+                    if &magic == b"TRID" {
+                        "'TRID' predates the OpKind renumbering; its op embeddings are \
+                         shifted past discriminants 17/31/39. Retrain required."
                     } else {
-                        "Old formats (TRIB, TRIA, TRI5-TRI9) require retrain."
+                        "Old formats (TRIC, TRIB, TRIA, TRI5-TRI9) require retrain."
                     }
                 ),
             ));

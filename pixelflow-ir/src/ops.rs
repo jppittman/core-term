@@ -68,62 +68,62 @@ define_op!(15, Ceil, "ceil", 1, UnaryMethod);
 define_op!(16, Round, "round", 1, UnaryMethod);
 
 // --- Trigonometry ---
-define_op!(18, Sin, "sin", 1, UnaryMethod);
-define_op!(19, Cos, "cos", 1, UnaryMethod);
-define_op!(20, Tan, "tan", 1, UnaryMethod);
-define_op!(21, Asin, "asin", 1, UnaryMethod);
-define_op!(22, Acos, "acos", 1, UnaryMethod);
-define_op!(23, Atan, "atan", 1, UnaryMethod);
-define_op!(24, Atan2, "atan2", 2, BinaryMethod);
+define_op!(17, Sin, "sin", 1, UnaryMethod);
+define_op!(18, Cos, "cos", 1, UnaryMethod);
+define_op!(19, Tan, "tan", 1, UnaryMethod);
+define_op!(20, Asin, "asin", 1, UnaryMethod);
+define_op!(21, Acos, "acos", 1, UnaryMethod);
+define_op!(22, Atan, "atan", 1, UnaryMethod);
+define_op!(23, Atan2, "atan2", 2, BinaryMethod);
 
 // --- Exponentials ---
-define_op!(25, Exp, "exp", 1, UnaryMethod);
-define_op!(26, Exp2, "exp2", 1, UnaryMethod);
-define_op!(27, Ln, "ln", 1, UnaryMethod);
-define_op!(28, Log2, "log2", 1, UnaryMethod);
-define_op!(29, Log10, "log10", 1, UnaryMethod);
-define_op!(30, Pow, "pow", 2, BinaryMethod);
+define_op!(24, Exp, "exp", 1, UnaryMethod);
+define_op!(25, Exp2, "exp2", 1, UnaryMethod);
+define_op!(26, Ln, "ln", 1, UnaryMethod);
+define_op!(27, Log2, "log2", 1, UnaryMethod);
+define_op!(28, Log10, "log10", 1, UnaryMethod);
+define_op!(29, Pow, "pow", 2, BinaryMethod);
 
 // --- Comparison ---
-define_op!(32, Lt, "lt", 2, BinaryMethod);
-define_op!(33, Le, "le", 2, BinaryMethod);
-define_op!(34, Gt, "gt", 2, BinaryMethod);
-define_op!(35, Ge, "ge", 2, BinaryMethod);
-define_op!(36, Eq, "eq", 2, BinaryMethod);
-define_op!(37, Ne, "ne", 2, BinaryMethod);
+define_op!(30, Lt, "lt", 2, BinaryMethod);
+define_op!(31, Le, "le", 2, BinaryMethod);
+define_op!(32, Gt, "gt", 2, BinaryMethod);
+define_op!(33, Ge, "ge", 2, BinaryMethod);
+define_op!(34, Eq, "eq", 2, BinaryMethod);
+define_op!(35, Ne, "ne", 2, BinaryMethod);
 
 // --- Control Flow ---
-define_op!(38, Select, "select", 3, TernaryMethod);
+define_op!(36, Select, "select", 3, TernaryMethod);
 
 // --- Structure ---
-define_op!(40, Tuple, "tuple", 0, Special);
+define_op!(37, Tuple, "tuple", 0, Special);
 
 // Bit-manipulation primitives (integer-domain). Each maps 1:1 to a single
 // instruction; they let exp/ln/log lower to arithmetic.
-define_op!(41, TruncToInt, "trunc_to_int", 1, UnaryMethod);
-define_op!(42, IntToFloat, "int_to_float", 1, UnaryMethod);
-define_op!(43, IAdd, "iadd", 2, BinaryMethod);
-define_op!(44, Shl, "shl", 2, BinaryMethod);
-define_op!(45, Shr, "shr", 2, BinaryMethod);
-define_op!(46, BitAnd, "bitand", 2, BinaryMethod);
-define_op!(47, BitOr, "bitor", 2, BinaryMethod);
+define_op!(38, TruncToInt, "trunc_to_int", 1, UnaryMethod);
+define_op!(39, IntToFloat, "int_to_float", 1, UnaryMethod);
+define_op!(40, IAdd, "iadd", 2, BinaryMethod);
+define_op!(41, Shl, "shl", 2, BinaryMethod);
+define_op!(42, Shr, "shr", 2, BinaryMethod);
+define_op!(43, BitAnd, "bitand", 2, BinaryMethod);
+define_op!(44, BitOr, "bitor", 2, BinaryMethod);
 
 // Differentiation operator. Rewritten away in the e-graph (chain rule); never
 // emitted, hence Special.
-define_op!(48, Dwrt, "dwrt", 2, Special);
+define_op!(45, Dwrt, "dwrt", 2, Special);
 
 // Bound memory (lattices). Buffer is a leaf referencing the arena's buffer
 // table; Gather reads a bound buffer (floor + clamp + row-major gather).
 // Both are emitted by the JIT binding path, hence Special.
-define_op!(49, Buffer, "buffer", 0, Special);
-define_op!(50, Gather, "gather", 3, Special);
+define_op!(46, Buffer, "buffer", 0, Special);
+define_op!(47, Gather, "gather", 3, Special);
 // Primitive gather (buffer + precomputed linear index). `Gather` lowers to
 // index arithmetic plus this; emitted directly by the JIT gather path.
-define_op!(51, RawGather, "raw_gather", 2, Special);
+define_op!(48, RawGather, "raw_gather", 2, Special);
 // Reduction (lattice fold). N-ary: [combiner, reduce_var, extent, body].
 // The combiner is a child parameter, so one op covers every monoid. Lowered to
 // unrolled arithmetic by `expand_reduce` before codegen.
-define_op!(52, Reduce, "reduce", 4, Special);
+define_op!(49, Reduce, "reduce", 4, Special);
 
 /// Total number of operations. Must equal [`crate::kind::OpKind::COUNT`].
 pub const OP_COUNT: usize = 50;
@@ -205,4 +205,43 @@ pub fn known_method_names() -> impl Iterator<Item = &'static str> {
         .iter()
         .filter(|op| !matches!(op.emit_style(), Special))
         .map(|op| op.name())
+}
+
+#[cfg(test)]
+mod all_ops_agrees_with_kind {
+    use super::ALL_OPS;
+    use crate::kind::OpKind;
+
+    /// `ALL_OPS` is positional, but each entry carries its own `index()`.
+    /// Those two numberings are independent declarations of the same fact, so
+    /// they can drift — and did: the entries' indices were the `OpKind`
+    /// discriminants, which had gaps, while the array positions never do. An
+    /// op sitting one slot past a gap then answered `index()` with its
+    /// neighbour's position.
+    ///
+    /// Names are checked in the same pass because `from_name` is a third
+    /// table over the same set.
+    #[test]
+    fn positions_indices_and_names_agree() {
+        for (pos, op) in ALL_OPS.iter().enumerate() {
+            assert_eq!(
+                op.index(),
+                pos,
+                "ALL_OPS[{pos}] ({}) reports index {}",
+                op.name(),
+                op.index()
+            );
+
+            let kind = OpKind::from_index(pos).unwrap_or_else(|| {
+                panic!("no OpKind at index {pos}, but ALL_OPS has {}", op.name())
+            });
+            assert_eq!(
+                OpKind::from_name(op.name()),
+                Some(kind),
+                "ALL_OPS[{pos}] is {:?} but its name {:?} resolves elsewhere",
+                kind,
+                op.name()
+            );
+        }
+    }
 }

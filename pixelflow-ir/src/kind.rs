@@ -31,54 +31,54 @@ pub enum OpKind {
     Round = 16,
 
     // --- Trigonometry ---
-    Sin = 18,
-    Cos = 19,
-    Tan = 20,
-    Asin = 21,
-    Acos = 22,
-    Atan = 23,
-    Atan2 = 24,
+    Sin = 17,
+    Cos = 18,
+    Tan = 19,
+    Asin = 20,
+    Acos = 21,
+    Atan = 22,
+    Atan2 = 23,
 
     // --- Exponentials ---
-    Exp = 25,
-    Exp2 = 26,
-    Ln = 27,
-    Log2 = 28,
-    Log10 = 29,
-    Pow = 30,
+    Exp = 24,
+    Exp2 = 25,
+    Ln = 26,
+    Log2 = 27,
+    Log10 = 28,
+    Pow = 29,
 
     // --- Comparison ---
-    Lt = 32,
-    Le = 33,
-    Gt = 34,
-    Ge = 35,
-    Eq = 36,
-    Ne = 37,
+    Lt = 30,
+    Le = 31,
+    Gt = 32,
+    Ge = 33,
+    Eq = 34,
+    Ne = 35,
 
     // --- Control Flow ---
-    Select = 38,
+    Select = 36,
 
     // --- Structure ---
-    Tuple = 40,
+    Tuple = 37,
 
     // --- Bit manipulation (integer-domain primitives) ---
     // These let exp/ln/log lower to arithmetic: each maps 1:1 to a single
     // hardware instruction. Lanes are reinterpreted as i32 where noted;
     // "reinterpret" itself is free (same register) and is not an op.
     /// Truncate f32 lanes to i32 (`cvttps2dq` / `fcvtzs`).
-    TruncToInt = 41,
+    TruncToInt = 38,
     /// Convert i32 lanes to f32 (`cvtdq2ps` / `scvtf`).
-    IntToFloat = 42,
+    IntToFloat = 39,
     /// Integer (i32) lane-wise add (`paddd` / `add .4s`).
-    IAdd = 43,
+    IAdd = 40,
     /// Logical shift-left of i32 lanes; RHS is a `Const` shift amount.
-    Shl = 44,
+    Shl = 41,
     /// Logical shift-right of i32 lanes; RHS is a `Const` shift amount.
-    Shr = 45,
+    Shr = 42,
     /// Bitwise AND of lane bit patterns (`andps` / `and`).
-    BitAnd = 46,
+    BitAnd = 43,
     /// Bitwise OR of lane bit patterns (`orps` / `orr`).
-    BitOr = 47,
+    BitOr = 44,
 
     // --- Differentiation ---
     /// Symbolic derivative `∂(child0)/∂(var)` where `child1` is a `Const` whose
@@ -87,23 +87,23 @@ pub enum OpKind {
     /// whatever survives (budget miss, unsupported op) falls to the runtime
     /// `lower_dwrt` pass, which either eliminates it or refuses to compile.
     /// It must never reach a backend.
-    Dwrt = 48,
+    Dwrt = 45,
 
     // --- Bound memory (lattices) ---
     /// Buffer leaf: a slot referencing a `BufferDecl` in the arena's buffer
     /// table. The declared extents are static IR; the contents are bound at
     /// JIT-compile time. See `docs/designs/KERNELS_AND_LATTICES.md`.
-    Buffer = 49,
+    Buffer = 46,
     /// Read a bound buffer: `Gather(buffer, x, y)` where `buffer` is a
     /// `Buffer` leaf. Semantics match `DiscreteManifold::eval`: floor the
     /// indices, clamp to the declared extents, gather row-major.
-    Gather = 50,
+    Gather = 47,
     /// Primitive gather: `RawGather(buffer, index)` reads `buffer`'s contents
     /// at the already-computed linear lane `index` (truncated to int), with no
     /// floor/clamp/row-major math. `Gather` lowers to index arithmetic (built
     /// from existing ops) plus this primitive — the analogue of `raw_mul` under
     /// `mul`. The index is trusted to be in bounds (the lowering clamps it).
-    RawGather = 51,
+    RawGather = 48,
 
     // --- Reduction (lattice fold) ---
     /// Fold a body over a bounded domain. Encoded
@@ -114,7 +114,7 @@ pub enum OpKind {
     /// opcode, so one `Reduce` covers every monoid and can later take an
     /// arbitrary combiner function. Lowered to an unrolled accumulation by
     /// `expand_reduce` before codegen — the analogue of `Gather -> RawGather`.
-    Reduce = 52,
+    Reduce = 49,
 }
 
 impl OpKind {
@@ -232,21 +232,25 @@ impl OpKind {
         self.monoid_identity().is_some()
     }
 
-    /// Convert to array index.
+    /// Convert to array index. Dense over `0..COUNT`, so `[T; OpKind::COUNT]`
+    /// indexed by this is total — see [`OpKind::from_index`].
     #[inline]
     #[must_use]
     pub const fn index(self) -> usize {
         self as usize
     }
 
-    /// Convert index to OpKind.
+    /// Convert index to `OpKind`. Inverse of [`OpKind::index`].
     #[must_use]
     pub fn from_index(idx: usize) -> Option<Self> {
         if idx >= Self::COUNT {
             return None;
         }
-        // SAFETY: repr(u8) and contiguous 0..=40
-        unsafe { core::mem::transmute(idx as u8) }
+        // SAFETY: `OpKind` is `repr(u8)` with discriminants assigned densely
+        // over `0..COUNT`, so every value passing the bound above names a
+        // variant. `index_is_dense_and_total` is what keeps that true — it
+        // fails the moment a discriminant is skipped or `COUNT` drifts.
+        Some(unsafe { core::mem::transmute::<u8, Self>(idx as u8) })
     }
 
     /// Get the arity of the operation.
@@ -785,3 +789,37 @@ impl OpKind {
 }
 
 // EmitStyle is imported from crate::traits - single source of truth
+
+#[cfg(test)]
+mod index_space {
+    use super::OpKind;
+
+    /// `index()` must be dense over `0..COUNT`, and `from_index` must be its
+    /// exact inverse.
+    ///
+    /// Both halves are load-bearing, and both were false before 2026-08-02.
+    /// Every `[T; OpKind::COUNT]` in the workspace is subscripted by `index()`
+    /// — the NNUE op embeddings, the latency-prior cost table, the extraction
+    /// feature sets — so a *gap* in the discriminants pushes the ops after it
+    /// past the end of every one of those arrays. `Gather`/`RawGather`/`Reduce`
+    /// sat past three gaps and indexed 50..=52 into `[_; 50]`; the only reason
+    /// that was not a live panic is that the e-graph refuses `Buffer` leaves
+    /// earlier, and every `Gather` has one.
+    ///
+    /// The second half is worse: `from_index` bounds-checks against `COUNT`
+    /// and then transmutes, so any index that is inside `COUNT` but names no
+    /// variant is undefined behaviour rather than a `None`.
+    #[test]
+    fn index_is_dense_and_total() {
+        for i in 0..OpKind::COUNT {
+            let op = OpKind::from_index(i)
+                .unwrap_or_else(|| panic!("from_index({i}) is None inside 0..COUNT — gap"));
+            assert_eq!(op.index(), i, "{op:?} does not round-trip at index {i}");
+        }
+        assert_eq!(
+            OpKind::from_index(OpKind::COUNT),
+            None,
+            "COUNT must be one past the last discriminant"
+        );
+    }
+}

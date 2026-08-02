@@ -509,3 +509,43 @@ impl CostFunction for CostModel {
         self.cost(op)
     }
 }
+
+#[cfg(test)]
+mod every_op_is_priceable {
+    use super::CostModel;
+    use pixelflow_ir::kind::OpKind;
+
+    /// `cost`/`set_cost` subscript `[usize; OpKind::COUNT]` with
+    /// `OpKind::index()`. That is only total while the discriminants are dense.
+    ///
+    /// They were not, until 2026-08-02: `Gather`/`RawGather`/`Reduce` sat past
+    /// three gaps and indexed 50..=52 into a 50-slot array. Nothing caught it
+    /// because `arena_to_egraph` refuses `Buffer` leaves before extraction
+    /// runs, and every `Gather` has one — so the panic was reachable only by
+    /// pricing an op the front end happened never to hand over. Pricing the
+    /// whole enum here does not depend on that accident holding.
+    #[test]
+    fn pricing_never_indexes_out_of_bounds() {
+        let mut model = CostModel::latency_prior();
+
+        // Named, not reached through `from_index`, because that is precisely
+        // how the bug hid: these three sat at discriminants 50..=52, past
+        // `COUNT`, so no walk over `0..COUNT` ever produced them.
+        for op in [OpKind::Gather, OpKind::RawGather, OpKind::Reduce] {
+            assert!(
+                op.index() < OpKind::COUNT,
+                "{op:?} has index {} but COUNT is {}",
+                op.index(),
+                OpKind::COUNT
+            );
+            let _ = model.cost(op);
+            model.set_cost(op, 1);
+        }
+
+        for i in 0..OpKind::COUNT {
+            let op = OpKind::from_index(i).expect("dense over 0..COUNT");
+            let _ = model.cost(op);
+            model.set_cost(op, 1);
+        }
+    }
+}
