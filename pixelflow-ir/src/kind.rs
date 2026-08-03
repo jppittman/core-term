@@ -910,7 +910,6 @@ impl<T> IndexMut<OpKind> for OpMap<T> {
 /// implementing an `OpMeta`/`Op`/arity-marker trait family, purely to answer
 /// this question. `OpKind` already knows every op's name and emit style, so
 /// the family and its 230-line module are gone.
-#[must_use]
 pub fn known_method_names() -> impl Iterator<Item = &'static str> {
     OpKind::all()
         .filter(|op| !matches!(op.emit_style(), EmitStyle::Special))

@@ -879,6 +879,7 @@ dependencies = [
  "freetype-rs",
  "libc",
  "log",
+ "pixelflow-codegen",
  "pixelflow-compiler",
  "pixelflow-core",
  "pixelflow-ir",
