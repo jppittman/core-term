@@ -353,6 +353,51 @@ mod tests {
             "the latch must already be set from the first ask"
         );
     }
+
+    /// Drives one full submit → grant → complete round trip and returns the frame number vsync
+    /// telemetry reported for it.
+    fn present_one_frame(core: &mut CoordinatorCore) -> u64 {
+        core.step_data(CoordinatorData::Submit(manifold())).unwrap();
+        let out = core
+            .step_data(CoordinatorData::Granted(one_to_one_window()))
+            .unwrap();
+        let request = out.render.expect("expected a render request");
+
+        let out = core
+            .step_management(RenderResponse {
+                frame: request.frame,
+                render_time: Some(Duration::from_millis(1)),
+                meta: request.meta,
+            })
+            .unwrap();
+        out.rendered
+            .expect("presenting a frame must report FPS telemetry")
+            .frame_number
+    }
+
+    #[test]
+    fn frame_number_increments_by_one_per_presented_frame() {
+        let mut core = CoordinatorCore::new();
+        assert_eq!(present_one_frame(&mut core), 1, "the first frame is 1");
+        assert_eq!(
+            present_one_frame(&mut core),
+            2,
+            "the second frame is 2, not a multiple of the first"
+        );
+    }
+
+    #[test]
+    fn coordinator_data_debug_names_each_variant() {
+        assert_eq!(
+            format!("{:?}", CoordinatorData::Submit(manifold())),
+            "Submit(<scene>)"
+        );
+        assert_eq!(format!("{:?}", CoordinatorData::Advance), "Advance");
+        assert!(
+            format!("{:?}", CoordinatorData::Granted(one_to_one_window())).starts_with("Granted("),
+            "the Granted variant's Debug output must identify itself, not just its payload"
+        );
+    }
 }
 
 #[cfg(test)]
