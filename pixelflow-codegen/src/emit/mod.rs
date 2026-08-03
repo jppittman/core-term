@@ -31,7 +31,7 @@
 
 /// The one way a backend refuses an op.
 ///
-/// Reaching this is never "the target cannot do that". [`crate::passes::legalize`]
+/// Reaching this is never "the target cannot do that". [`pixelflow_ir::passes::legalize`]
 /// leaves only ops from the backend-legal set, and every backend owes an
 /// encoding for all of them — so arriving here means the pipeline was bypassed
 /// or this backend is incomplete. Both are bugs in the compiler rather than
@@ -43,7 +43,7 @@
 /// match arm instead of a `&'static str` surfacing three frames up.
 #[cold]
 #[inline(never)]
-pub(crate) fn unimplemented_op(backend: &str, op: crate::kind::OpKind) -> ! {
+pub(crate) fn unimplemented_op(backend: &str, op: pixelflow_ir::kind::OpKind) -> ! {
     panic!(
         "{backend} has no encoding for {op:?} — `passes::legalize` leaves only \
          backend-legal ops, so this is a missing implementation or a bypassed \
@@ -60,10 +60,10 @@ pub mod executable;
 pub mod regalloc;
 pub mod x86_64;
 
-use crate::kind::OpKind;
+use pixelflow_ir::kind::OpKind;
 
 #[cfg(target_arch = "x86_64")]
-use crate::arena::{ExprArena, ExprId};
+use pixelflow_ir::arena::{ExprArena, ExprId};
 
 use alloc::vec::Vec;
 
@@ -412,8 +412,8 @@ pub struct CompileResult {
 /// order eliminates the linearization pass entirely.
 #[cfg(target_arch = "aarch64")]
 pub fn compile_arena(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
 ) -> Result<executable::ExecutableCode, &'static str> {
     compile_arena_dag(arena, root).map(|r| r.code)
 }
@@ -424,8 +424,8 @@ pub fn compile_arena(
 /// `ExprId` maps 1:1 to `ValueId` for reachable nodes.
 #[cfg(target_arch = "aarch64")]
 pub fn compile_arena_dag(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
 ) -> Result<CompileResult, &'static str> {
     compile_arena_dag_with_ctx(arena, root, EmitCtx::default())
 }
@@ -436,14 +436,14 @@ pub fn compile_arena_dag(
 /// schedule comes for free -- `ExprId` maps 1:1 to `ValueId` for reachable nodes.
 #[cfg(target_arch = "aarch64")]
 pub fn compile_arena_dag_with_ctx(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
     ctx: EmitCtx,
 ) -> Result<CompileResult, &'static str> {
     // After this the emitter sees only ops it can encode — no Dwrt, Reduce,
     // Gather or transcendentals. The passes and their order live in
-    // `crate::passes::legalize`.
-    let (arena, root) = crate::passes::legalize(arena, root)?;
+    // `pixelflow_ir::passes::legalize`.
+    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses_map = arena_to_uses(&schedule);
@@ -1210,8 +1210,8 @@ pub enum ScheduledOp {
 /// The arena may contain garbage nodes from junkify passes; only nodes
 /// transitively referenced by `root` should appear in the schedule.
 fn mark_reachable(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
     reachable: &mut [bool],
 ) {
     let mut stack = alloc::vec![root];
@@ -1240,10 +1240,10 @@ fn mark_reachable(
 /// Panics if a `Param` or `Nary` node is encountered (these are not expected
 /// in JIT compilation).
 fn arena_to_schedule(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
 ) -> Vec<(regalloc::ValueId, ScheduledOp)> {
-    use crate::arena::{ExprId, ExprNode};
+    use pixelflow_ir::arena::{ExprId, ExprNode};
     use regalloc::ValueId;
 
     let len = arena.len();
@@ -1359,15 +1359,15 @@ fn arena_to_uses(schedule: &[(regalloc::ValueId, ScheduledOp)]) -> Vec<Vec<regal
 // Collapse-loop LICM (X-invariant hoisting)
 // =============================================================================
 
-/// Compute [`Variance`](crate::variance::Variance) for every schedule entry.
+/// Compute [`Variance`](pixelflow_ir::variance::Variance) for every schedule entry.
 ///
 /// The schedule mirrors the arena's topological order, so one forward pass
 /// suffices — the dense result is indexed by `ValueId.0`.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn schedule_variance(
     schedule: &[(regalloc::ValueId, ScheduledOp)],
-) -> Vec<crate::variance::Variance> {
-    use crate::variance::Variance;
+) -> Vec<pixelflow_ir::variance::Variance> {
+    use pixelflow_ir::variance::Variance;
     let max_vid = schedule.iter().map(|(v, _)| v.0).max().unwrap_or(0) as usize;
     let mut v = alloc::vec![Variance::CONST; max_vid + 1];
     for (vid, op) in schedule {
@@ -1420,7 +1420,7 @@ struct HoistPlan {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn plan_collapse_hoist(
     schedule: &[(regalloc::ValueId, ScheduledOp)],
-    variance: &[crate::variance::Variance],
+    variance: &[pixelflow_ir::variance::Variance],
     scope_mask: u8,
 ) -> Option<HoistPlan> {
     use regalloc::ValueId;
@@ -2339,8 +2339,8 @@ pub fn compile_arena_dag_with_ctx(
     // A kernel that reads bound memory takes its buffer bases from a context
     // pointer in rdi; the emitted body is identical either way, so the caller
     // invokes it as `CtxKernelFn` instead of `KernelFn`. The passes that get
-    // the arena down to encodable ops live in `crate::passes::legalize`.
-    let (arena, root) = crate::passes::legalize(arena, root)?;
+    // the arena down to encodable ops live in `pixelflow_ir::passes::legalize`.
+    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
@@ -3542,7 +3542,7 @@ pub fn compile_arena_dag_avx2(
     arena: &ExprArena,
     root: ExprId,
 ) -> Result<CompileResult, &'static str> {
-    let (arena, root) = crate::passes::legalize(arena, root)?;
+    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
     let schedule = arena_to_schedule(&arena, root);
     let uses = arena_to_uses(&schedule);
     compile_dag_via_backend(schedule, uses, &mut Avx2Backend)
@@ -3557,7 +3557,7 @@ pub fn compile_arena_dag_avx512(
     arena: &ExprArena,
     root: ExprId,
 ) -> Result<CompileResult, &'static str> {
-    let (arena, root) = crate::passes::legalize(arena, root)?;
+    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
     let schedule = arena_to_schedule(&arena, root);
     let uses = arena_to_uses(&schedule);
     compile_dag_via_backend(schedule, uses, &mut Avx512Backend)
@@ -3579,10 +3579,10 @@ pub fn compile_arena_dag_avx512(
 /// `(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)`.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub fn compile_collapse(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
 ) -> Result<CompileResult, &'static str> {
-    let (arena, root) = crate::passes::legalize(arena, root)?;
+    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
@@ -3763,7 +3763,7 @@ fn compile_collapse_via_backend<B: IsaBackend>(
 mod tests {
     use super::*;
     #[cfg(target_arch = "aarch64")]
-    use crate::arena::ExprArena;
+    use pixelflow_ir::arena::ExprArena;
 
     /// A `Dwrt` that reaches the scheduler (a caller bypassed the lowering
     /// pipeline) must fail loudly at the schedule boundary, not as a cryptic
@@ -4090,7 +4090,7 @@ mod tests {
 
     #[test]
     fn arena_to_schedule_simple() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4118,7 +4118,7 @@ mod tests {
 
     #[test]
     fn arena_to_schedule_filters_unreachable() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4138,7 +4138,7 @@ mod tests {
 
     #[test]
     fn verify_arena_to_uses() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4157,7 +4157,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn arena_compile_simple() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4183,7 +4183,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn arena_compile_with_constant() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4211,7 +4211,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn arena_compile_with_spills() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4312,7 +4312,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn dwrt_of_gather_refuses_to_compile() {
-        use crate::arena::BufferDecl;
+        use pixelflow_ir::arena::BufferDecl;
         let mut a = ExprArena::new();
         let buf = a.declare_buffer(BufferDecl {
             width: 2,
@@ -4628,7 +4628,7 @@ mod tests {
     ))]
     mod lowering_tests {
         use super::*;
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         // Tolerance reflects the degree-7 Chebyshev's ACTUAL measured accuracy
         // (the SAME polynomial the runtime `SimdOps` path uses): ~1e-6 near 0,
@@ -4792,7 +4792,7 @@ mod tests {
     ))]
     mod sched {
         use super::*;
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         fn run(res: &CompileResult, x: f32, y: f32, z: f32, w: f32) -> f32 {
             unsafe {
@@ -4947,7 +4947,7 @@ mod tests {
     ))]
     mod gather_driver_128 {
         use super::*;
-        use crate::arena::{ExprArena, ExprId};
+        use pixelflow_ir::arena::{ExprArena, ExprId};
 
         /// Run a compiled gather kernel as a `CtxKernelFn`: the context (array
         /// of buffer base pointers) goes in the first integer argument (x0 /
@@ -5013,7 +5013,7 @@ mod tests {
         ) {
             let res = compile_arena_dag(arena, root).expect("compile gather kernel");
             let ctx: Vec<*const f32> = buffers.iter().map(|b| b.as_ptr()).collect();
-            let bindings = crate::binding::BindingTable::bind(arena, buffers).unwrap();
+            let bindings = pixelflow_ir::binding::BindingTable::bind(arena, buffers).unwrap();
 
             for batch in 0..4 {
                 let mut cx = [0.0f32; 4];
@@ -5022,8 +5022,12 @@ mod tests {
                 cy.copy_from_slice(&ys[batch * 4..batch * 4 + 4]);
                 let got = run4_ctx(&res, &ctx, cx, cy);
                 for i in 0..4 {
-                    let want =
-                        crate::eval::eval_scalar(arena, root, &[cx[i], cy[i], 0.0, 0.0], &bindings);
+                    let want = pixelflow_ir::eval::eval_scalar(
+                        arena,
+                        root,
+                        &[cx[i], cy[i], 0.0, 0.0],
+                        &bindings,
+                    );
                     assert_eq!(
                         got[i], want,
                         "{tag} batch {batch} lane {i} (x={}, y={})",
@@ -5051,7 +5055,7 @@ mod tests {
             let (w, h) = (8usize, 4usize);
             let buf: Vec<f32> = (0..(w * h)).map(|i| i as f32 * 2.0 - 3.0).collect();
             let mut a = ExprArena::new();
-            let b = a.declare_buffer(crate::arena::BufferDecl {
+            let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5069,7 +5073,7 @@ mod tests {
             let (w, h) = (8usize, 4usize);
             let buf: Vec<f32> = (0..(w * h)).map(|i| (i as f32).sin()).collect();
             let mut a = ExprArena::new();
-            let b = a.declare_buffer(crate::arena::BufferDecl {
+            let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5091,11 +5095,11 @@ mod tests {
             let buf_a: Vec<f32> = (0..(w * h)).map(|i| i as f32).collect();
             let buf_b: Vec<f32> = (0..(w * h)).map(|i| -(i as f32) * 0.5).collect();
             let mut a = ExprArena::new();
-            let ba = a.declare_buffer(crate::arena::BufferDecl {
+            let ba = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
-            let bb = a.declare_buffer(crate::arena::BufferDecl {
+            let bb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5128,11 +5132,11 @@ mod tests {
             let input: Vec<f32> = (0..in_dim).map(|k| k as f32 + 1.0).collect();
 
             let mut a = ExprArena::new();
-            let wb = a.declare_buffer(crate::arena::BufferDecl {
+            let wb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: in_dim as u32,
                 height: out_dim as u32,
             });
-            let ib = a.declare_buffer(crate::arena::BufferDecl {
+            let ib = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: in_dim as u32,
                 height: 1,
             });
@@ -5162,7 +5166,7 @@ mod tests {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     mod avx512_driver {
         use super::*;
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
         // not-FFI-safe is a false positive here, as for `executable`'s aliases.
@@ -5267,10 +5271,14 @@ mod tests {
             let ctx: Vec<*const f32> = buffers.iter().map(|b| b.as_ptr()).collect();
             let got = run16_ctx(&res, &ctx, xs, ys);
 
-            let bindings = crate::binding::BindingTable::bind(arena, buffers).unwrap();
+            let bindings = pixelflow_ir::binding::BindingTable::bind(arena, buffers).unwrap();
             for (i, &g) in got.iter().enumerate() {
-                let want =
-                    crate::eval::eval_scalar(arena, root, &[xs[i], ys[i], 0.0, 0.0], &bindings);
+                let want = pixelflow_ir::eval::eval_scalar(
+                    arena,
+                    root,
+                    &[xs[i], ys[i], 0.0, 0.0],
+                    &bindings,
+                );
                 assert_eq!(g, want, "{tag} lane {i} (x={}, y={})", xs[i], ys[i]);
             }
         }
@@ -5293,7 +5301,7 @@ mod tests {
             let (w, h) = (8usize, 4usize);
             let buf: Vec<f32> = (0..(w * h)).map(|i| i as f32 * 2.0 - 3.0).collect();
             let mut a = ExprArena::new();
-            let b = a.declare_buffer(crate::arena::BufferDecl {
+            let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5311,7 +5319,7 @@ mod tests {
             let (w, h) = (8usize, 4usize);
             let buf: Vec<f32> = (0..(w * h)).map(|i| (i as f32).sin()).collect();
             let mut a = ExprArena::new();
-            let b = a.declare_buffer(crate::arena::BufferDecl {
+            let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5333,11 +5341,11 @@ mod tests {
             let buf_a: Vec<f32> = (0..(w * h)).map(|i| i as f32).collect();
             let buf_b: Vec<f32> = (0..(w * h)).map(|i| -(i as f32) * 0.5).collect();
             let mut a = ExprArena::new();
-            let ba = a.declare_buffer(crate::arena::BufferDecl {
+            let ba = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
-            let bb = a.declare_buffer(crate::arena::BufferDecl {
+            let bb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5370,11 +5378,11 @@ mod tests {
             let input: Vec<f32> = (0..in_dim).map(|k| k as f32 + 1.0).collect();
 
             let mut a = ExprArena::new();
-            let wb = a.declare_buffer(crate::arena::BufferDecl {
+            let wb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: in_dim as u32,
                 height: out_dim as u32,
             });
-            let ib = a.declare_buffer(crate::arena::BufferDecl {
+            let ib = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: in_dim as u32,
                 height: 1,
             });

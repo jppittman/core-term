@@ -285,8 +285,8 @@ fn occlusion_shaped_accumulation_over_samples() {
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 mod jit {
     use super::*;
-    use pixelflow_ir::emit::compile_arena_dag;
-    use pixelflow_ir::jit_manifold::JitManifold;
+    use pixelflow_codegen::emit::compile_arena_dag;
+    use pixelflow_codegen::jit_manifold::JitManifold;
 
     // JitManifold::call's ABI tracks the build's selected width (SSE2/AVX2;
     // this module is gated off avx512f above), so the splat/extract pair must

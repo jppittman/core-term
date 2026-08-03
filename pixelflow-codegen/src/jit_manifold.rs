@@ -45,7 +45,7 @@ impl JitManifold {
     }
 
     /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
-    /// pointers, indexed by [`BufferId`](crate::arena::BufferId), passed in
+    /// pointers, indexed by [`BufferId`](pixelflow_ir::arena::BufferId), passed in
     /// the first integer register (`x0`).
     ///
     /// # Safety
@@ -55,7 +55,7 @@ impl JitManifold {
     ///   for buffer-free kernels, whose code never looks at `x0`.
     /// - `ctx` must hold one valid base pointer per declared buffer, each
     ///   pointing at `width * height` readable `f32`s matching its
-    ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
+    ///   [`BufferDecl`](pixelflow_ir::arena::BufferDecl), and must outlive the call.
     /// - The SIMD types must match the platform ABI the emitter generated
     ///   code for (ARM64 NEON: `float32x4_t`).
     #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates
@@ -136,7 +136,7 @@ impl JitManifold {
     }
 
     /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
-    /// pointers, indexed by [`BufferId`](crate::arena::BufferId), passed in
+    /// pointers, indexed by [`BufferId`](pixelflow_ir::arena::BufferId), passed in
     /// the first integer register (`rdi`).
     ///
     /// # Safety
@@ -146,7 +146,7 @@ impl JitManifold {
     ///   for buffer-free kernels, whose code never looks at `rdi`.
     /// - `ctx` must hold one valid base pointer per declared buffer, each
     ///   pointing at `width * height` readable `f32`s matching its
-    ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
+    ///   [`BufferDecl`](pixelflow_ir::arena::BufferDecl), and must outlive the call.
     /// - The SIMD types must match the platform ABI the emitter generated
     ///   code for (x86-64 SSE2: `__m128`).
     #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates
@@ -227,7 +227,7 @@ impl JitManifold {
     }
 
     /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
-    /// pointers, indexed by [`BufferId`](crate::arena::BufferId), passed in
+    /// pointers, indexed by [`BufferId`](pixelflow_ir::arena::BufferId), passed in
     /// the first integer register (`rdi`).
     ///
     /// # Safety
@@ -237,7 +237,7 @@ impl JitManifold {
     ///   for buffer-free kernels, whose code never looks at `rdi`.
     /// - `ctx` must hold one valid base pointer per declared buffer, each
     ///   pointing at `width * height` readable `f32`s matching its
-    ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
+    ///   [`BufferDecl`](pixelflow_ir::arena::BufferDecl), and must outlive the call.
     /// - The SIMD types must match the platform ABI the emitter generated
     ///   code for (x86-64 AVX2: `__m256`).
     #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates
@@ -314,7 +314,7 @@ impl JitManifold {
     }
 
     /// Evaluate a bound-memory kernel: `ctx` is the array of buffer base
-    /// pointers, indexed by [`BufferId`](crate::arena::BufferId), passed in
+    /// pointers, indexed by [`BufferId`](pixelflow_ir::arena::BufferId), passed in
     /// the first integer register (`rdi`).
     ///
     /// # Safety
@@ -324,7 +324,7 @@ impl JitManifold {
     ///   for buffer-free kernels, whose code never looks at `rdi`.
     /// - `ctx` must hold one valid base pointer per declared buffer, each
     ///   pointing at `width * height` readable `f32`s matching its
-    ///   [`BufferDecl`](crate::arena::BufferDecl), and must outlive the call.
+    ///   [`BufferDecl`](pixelflow_ir::arena::BufferDecl), and must outlive the call.
     /// - The SIMD types must match the platform ABI the emitter generated
     ///   code for (x86-64 AVX-512: `__m512`).
     #[allow(clippy::too_many_arguments)] // ctx + the four fixed coordinates

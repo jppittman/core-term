@@ -47,8 +47,9 @@ use alloc::vec::Vec;
 
 use super::JitVec;
 use crate::Field;
+use pixelflow_codegen::JitManifold;
 use pixelflow_ir::arena::BufferDecl;
-use pixelflow_ir::{ExprArena, ExprId, JitManifold, OpKind};
+use pixelflow_ir::{ExprArena, ExprId, OpKind};
 
 /// `f32`s per cell in the cell-data buffer.
 pub const CELL_STRIDE: usize = 10;
@@ -256,7 +257,7 @@ impl CellGridProgram {
         );
         assert_eq!(
             core::mem::size_of::<Field>(),
-            pixelflow_ir::JIT_VECTOR_BYTES,
+            pixelflow_codegen::JIT_VECTOR_BYTES,
             "CellGridProgram::compile: Field width does not match the JIT's emitted width"
         );
         // Gather computes its row-major linear index in f32, which is exact
@@ -281,7 +282,7 @@ impl CellGridProgram {
             // of rows for a channel. Bound-memory arenas are uncacheable
             // (the code bakes buffer slot metadata); the cache recognizes
             // that and compiles fresh.
-            pixelflow_ir::jit_cache::compile_collapse_cached(&arena, root)
+            pixelflow_codegen::jit_cache::compile_collapse_cached(&arena, root)
                 .expect("cell-grid channel failed to compile")
         });
         Self { geom, jits }
@@ -352,7 +353,7 @@ impl CellGridFrame {
     /// are simply not read back.
     #[must_use]
     pub fn padded_width(width: usize) -> usize {
-        let lanes = pixelflow_ir::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
+        let lanes = pixelflow_codegen::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
         width.div_ceil(lanes).max(1) * lanes
     }
 
@@ -381,7 +382,7 @@ impl CellGridFrame {
         if rows == 0 {
             return;
         }
-        let groups = stride / (pixelflow_ir::JIT_VECTOR_BYTES / core::mem::size_of::<f32>());
+        let groups = stride / (pixelflow_codegen::JIT_VECTOR_BYTES / core::mem::size_of::<f32>());
         let ctx = [self.cells.as_ptr(), self.atlas.as_ptr()];
         // Pixel centers: the rasterizer convention (x + ½, y + ½).
         let x0 = Field::sequential(0.5);
@@ -654,7 +655,7 @@ mod tests {
 
     #[test]
     fn padded_width_rounds_up_to_whole_simd_batches() {
-        let lanes = pixelflow_ir::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
+        let lanes = pixelflow_codegen::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
         assert_eq!(CellGridFrame::padded_width(1), lanes);
         assert_eq!(CellGridFrame::padded_width(lanes), lanes);
         assert_eq!(CellGridFrame::padded_width(lanes + 1), lanes * 2);

@@ -14,22 +14,12 @@ workspace = true
 [dependencies]
 libm = "0.2.15"
 
-[target.'cfg(unix)'.dependencies]
-# `default-features = false` keeps `libc/std` off the dependency graph. With
-# defaults on, this crate linked `std` transitively even under
-# `--no-default-features`, which `cargo check` cannot see.
-libc = { version = "0.2", default-features = false }
 
 [dev-dependencies]
-criterion = "0.5"
 # Self-dependency so this crate's own `tests/` see the oracle. Nothing else
 # turns the feature on, which is what keeps a tree-walking evaluator out of
 # every shipped build.
 pixelflow-ir = { path = ".", features = ["oracle"] }
-
-[[bench]]
-name = "collapse_overhead"
-harness = false
 
 [features]
 default = ["std"]

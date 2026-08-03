@@ -184,7 +184,7 @@ pub type KernelFn =
 /// JIT-compiled kernel that reads bound memory (ARM64).
 ///
 /// Identical to [`KernelFn`] plus a leading context pointer: an array of buffer
-/// base pointers, one per declared [`BufferId`](crate::arena::BufferId) in slot
+/// base pointers, one per declared [`BufferId`](pixelflow_ir::arena::BufferId) in slot
 /// order. AAPCS64 places this integer-class pointer in `x0`, disjoint from the
 /// coordinate vectors in `v0..3`, so the emitted body is byte-for-byte the same
 /// as a `KernelFn` — only kernels containing a `Gather` read `x0`. The caller
@@ -236,7 +236,7 @@ pub type KernelFn = extern "C" fn(__m512, __m512, __m512, __m512) -> __m512;
 /// JIT-compiled kernel that reads bound memory (x86-64 AVX-512).
 ///
 /// Identical to [`KernelFn`] plus a leading context pointer: an array of buffer
-/// base pointers, one per declared [`BufferId`](crate::arena::BufferId) in slot
+/// base pointers, one per declared [`BufferId`](pixelflow_ir::arena::BufferId) in slot
 /// order. System V places this integer-class pointer in `rdi`, disjoint from the
 /// coordinate vectors in `zmm0..3`, so the emitted body is byte-for-byte the
 /// same as a `KernelFn` — only kernels containing a `Gather` read `rdi`. The
@@ -309,7 +309,7 @@ pub type KernelFn = extern "C" fn(__m128, __m128, __m128, __m128) -> __m128;
 /// JIT-compiled kernel that reads bound memory (x86-64, 128-bit).
 ///
 /// Identical to [`KernelFn`] plus a leading context pointer: an array of buffer
-/// base pointers, one per declared [`BufferId`](crate::arena::BufferId) in slot
+/// base pointers, one per declared [`BufferId`](pixelflow_ir::arena::BufferId) in slot
 /// order. System V places this integer-class pointer in `rdi`, disjoint from the
 /// coordinate vectors in `xmm0..3`, so the emitted body is byte-for-byte the
 /// same as a `KernelFn` — only kernels containing a `Gather` read `rdi`. The

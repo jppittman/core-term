@@ -385,13 +385,13 @@ fn jit_wrapper_tokens() -> TokenStream {
                 ::pixelflow_ir::ExprArena,
                 ::pixelflow_ir::ExprId,
             )>,
-            jit: ::std::sync::OnceLock<::std::sync::Arc<::pixelflow_ir::JitManifold>>,
+            jit: ::std::sync::OnceLock<::std::sync::Arc<::pixelflow_codegen::JitManifold>>,
         }
         impl __JitWrapper {
             #[inline]
-            fn __compiled(&self) -> &::std::sync::Arc<::pixelflow_ir::JitManifold> {
+            fn __compiled(&self) -> &::std::sync::Arc<::pixelflow_codegen::JitManifold> {
                 self.jit.get_or_init(|| {
-                    ::pixelflow_ir::jit_cache::compile_cached(&self.ir.0, self.ir.1)
+                    ::pixelflow_codegen::jit_cache::compile_cached(&self.ir.0, self.ir.1)
                         .expect("kernel JIT compilation failed")
                 })
             }
@@ -405,15 +405,15 @@ fn jit_wrapper_tokens() -> TokenStream {
                 ::core::option::Option::Some(arena.splice(&self.ir.0, self.ir.1))
             }
         }
-        // The JIT emits and is called at `pixelflow_ir::JIT_VECTOR_BYTES` width;
+        // The JIT emits and is called at `pixelflow_codegen::JIT_VECTOR_BYTES` width;
         // `eval` transmutes `Field` to that ABI. If this build selected a `Field`
         // whose width the JIT does not emit (e.g. an AVX-512 `Field` while the
         // JIT still emits 128-bit), fail at compile time with a clear message
         // rather than a raw transmute size error or a silent miscompile.
         const _: () = assert!(
-            ::core::mem::size_of::<::pixelflow_core::Field>() == ::pixelflow_ir::JIT_VECTOR_BYTES,
+            ::core::mem::size_of::<::pixelflow_core::Field>() == ::pixelflow_codegen::JIT_VECTOR_BYTES,
             "kernel_jit!: pixelflow-core Field width does not match the JIT's emitted \
-             vector width (pixelflow_ir::JIT_VECTOR_BYTES) — the JIT does not yet emit \
+             vector width (pixelflow_codegen::JIT_VECTOR_BYTES) — the JIT does not yet emit \
              this SIMD width",
         );
         impl ::pixelflow_core::Manifold<(

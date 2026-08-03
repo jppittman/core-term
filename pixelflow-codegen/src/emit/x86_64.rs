@@ -10,8 +10,8 @@
 //! 3-operand form which avoids extra MOV instructions in multi-step sequences.
 
 use super::{Reg, unimplemented_op};
-use crate::kind::OpKind;
 use alloc::vec::Vec;
+use pixelflow_ir::kind::OpKind;
 
 // =============================================================================
 // Encoding Helpers

@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use pixelflow_ir::emit::compile_arena_dag;
+use pixelflow_codegen::emit::compile_arena_dag;
 use pixelflow_ir::{ExprArena, ExprId};
 
 /// Number of timed samples per expression. Take the median.
@@ -264,7 +264,7 @@ impl BenchResult {
 }
 
 fn benchmark_exec_code(
-    exec_code: pixelflow_ir::emit::executable::ExecutableCode,
+    exec_code: pixelflow_codegen::emit::executable::ExecutableCode,
     repeat_batches: usize,
 ) -> Result<BenchResult, BenchError> {
     let repeat_batches = repeat_batches.max(1);
@@ -273,7 +273,7 @@ fn benchmark_exec_code(
     {
         use core::arch::aarch64::*;
         unsafe {
-            use pixelflow_ir::emit::executable::KernelFn;
+            use pixelflow_codegen::emit::executable::KernelFn;
             let func: KernelFn = exec_code.as_fn();
 
             let x = vdupq_n_f32(0.5);
@@ -313,7 +313,7 @@ fn benchmark_exec_code(
     {
         use core::arch::x86_64::*;
         unsafe {
-            use pixelflow_ir::emit::executable::KernelFn;
+            use pixelflow_codegen::emit::executable::KernelFn;
             let func: KernelFn = exec_code.as_fn();
 
             // Inputs at the KernelFn's SIMD width: __m512 under +avx512f, __m256

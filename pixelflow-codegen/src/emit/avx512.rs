@@ -21,8 +21,8 @@
 //! red zone the SSE2 path relies on).
 
 use super::{Reg, unimplemented_op};
-use crate::OpKind;
 use alloc::vec::Vec;
+use pixelflow_ir::OpKind;
 
 // =============================================================================
 // EVEX encoder

@@ -384,13 +384,10 @@ impl Lattice {
     /// not the JIT's, where it panics rather than silently mis-tabulating.
     ///
     /// Runtime-composed kernels (`Kernel::over`/`.at()`/arithmetic) never run
-    /// through the `kernel!`/`kernel_jit!` macros' e-graph saturation, so
-    /// `pixelflow_search::runtime::optimize_runtime_arena` runs the same
-    /// pipeline here before compiling (CSE, FMA fusion, algebraic
-    /// simplification). It bails out — the original arena compiles unchanged
-    /// — for constructs the e-graph doesn't model yet (`Reduce`, the binder
-    /// `Kernel::over` produces); that population still compiles, just
-    /// without the extra fusion.
+    /// through the `kernel!`/`kernel_jit!` macros' e-graph saturation. They do
+    /// not need to be optimized here either: the compile entry runs the
+    /// optimizer itself, so there is no arena shape that reaches a backend
+    /// unoptimized and no caller that has to remember to ask.
     ///
     /// The compiled form is the collapse kernel: the X/Y loop nest lives
     /// *inside* the emitted code, so each Z/W plane's full-width region is one
@@ -401,16 +398,11 @@ impl Lattice {
     pub fn bake(&self, kernel: &pixelflow_ir::Kernel) -> DiscreteManifold {
         assert_eq!(
             core::mem::size_of::<Field>(),
-            pixelflow_ir::JIT_VECTOR_BYTES,
+            pixelflow_codegen::JIT_VECTOR_BYTES,
             "Lattice::bake: Field width does not match the JIT's emitted width"
         );
         let (arena, root) = kernel.parts();
-        let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root);
-        let (arena, root) = optimized
-            .as_deref()
-            .map(|(a, r)| (a, *r))
-            .unwrap_or((arena, root));
-        let jit = pixelflow_ir::jit_cache::compile_collapse_cached(arena, root)
+        let jit = pixelflow_codegen::jit_cache::compile_collapse_cached(arena, root)
             .expect("kernel failed to compile");
 
         let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
@@ -679,7 +671,7 @@ pub mod cell_grid;
 mod tests;
 
 /// The vector type of the JIT's call ABI on this build. Mirrors
-/// `pixelflow_ir::JIT_VECTOR_BYTES`'s 3-way split (SSE2/AVX2/AVX-512).
+/// `pixelflow_codegen::JIT_VECTOR_BYTES`'s 3-way split (SSE2/AVX2/AVX-512).
 #[cfg(all(
     target_arch = "x86_64",
     not(target_feature = "avx512f"),
@@ -732,7 +724,7 @@ type JitVec = core::arch::aarch64::float32x4_t;
 #[derive(Clone)]
 pub struct BilinearSampler {
     tex: DiscreteManifold,
-    jit: alloc::sync::Arc<pixelflow_ir::JitManifold>,
+    jit: alloc::sync::Arc<pixelflow_codegen::JitManifold>,
 }
 
 /// The 4-tap bilinear blend over one declared buffer, as an arena fragment:
@@ -807,7 +799,7 @@ impl DiscreteManifold {
         );
         assert_eq!(
             core::mem::size_of::<Field>(),
-            pixelflow_ir::JIT_VECTOR_BYTES,
+            pixelflow_codegen::JIT_VECTOR_BYTES,
             "DiscreteManifold::bilinear: Field width does not match the JIT's emitted width"
         );
         let width = u32::try_from(self.width).expect("buffer width exceeds u32");
@@ -815,7 +807,7 @@ impl DiscreteManifold {
         let (arena, root) = bilinear_arena(width, height);
         // Bound-memory arenas are uncacheable (the code bakes buffer slot
         // metadata); compile_cached recognizes that and compiles fresh.
-        let jit = pixelflow_ir::jit_cache::compile_cached(&arena, root)
+        let jit = pixelflow_codegen::jit_cache::compile_cached(&arena, root)
             .expect("bilinear sampler failed to compile");
         BilinearSampler { tex: self, jit }
     }

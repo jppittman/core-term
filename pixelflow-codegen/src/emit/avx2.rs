@@ -28,8 +28,8 @@
 
 use super::x86_64;
 use super::{Reg, unimplemented_op};
-use crate::OpKind;
 use alloc::vec::Vec;
+use pixelflow_ir::OpKind;
 
 // =============================================================================
 // VEX.256 encoder

@@ -4,10 +4,10 @@
 //! These are the "atoms" that compound operations are built from.
 
 use super::{Reg, unimplemented_op};
-use crate::kind::OpKind;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use pixelflow_ir::kind::OpKind;
 
 // =============================================================================
 // Instruction Encoding Helpers
@@ -1690,8 +1690,8 @@ fn decode_aarch64_mnemonic(word: u32) -> String {
 /// Returns an error string if compilation fails (same errors as `compile_arena`).
 #[cfg(target_arch = "aarch64")]
 pub fn dump_jit_asm(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
 ) -> Result<String, &'static str> {
     let result = super::compile_arena_dag(arena, root)?;
     Ok(disassemble_code(result.code.as_bytes()))

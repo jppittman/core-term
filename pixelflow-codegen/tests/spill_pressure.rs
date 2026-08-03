@@ -16,10 +16,10 @@
 
 #![cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 
+use pixelflow_codegen::emit::compile_arena_dag;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
-use pixelflow_ir::emit::compile_arena_dag;
 use pixelflow_ir::eval_scalar;
 use pixelflow_ir::jit_manifold::JitManifold;
 

@@ -13,12 +13,12 @@
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
-use pixelflow_ir::JIT_VECTOR_BYTES;
+use pixelflow_codegen::JIT_VECTOR_BYTES;
+use pixelflow_codegen::emit::executable::CollapseKernelFn;
+use pixelflow_codegen::emit::{CompileResult, compile_arena_dag, compile_collapse};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{BufferDecl, ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
-use pixelflow_ir::emit::executable::CollapseKernelFn;
-use pixelflow_ir::emit::{CompileResult, compile_arena_dag, compile_collapse};
 use pixelflow_ir::eval_scalar;
 
 const LANES: usize = JIT_VECTOR_BYTES / 4;
@@ -150,7 +150,7 @@ fn run_per_batch(
         #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
         unsafe {
             use core::arch::x86_64::*;
-            let f: pixelflow_ir::emit::executable::CtxKernelFn = res.code.as_fn();
+            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
             let r = f(
                 ctx.as_ptr(),
                 _mm512_loadu_ps(seq.as_ptr()),
@@ -167,7 +167,7 @@ fn run_per_batch(
         ))]
         unsafe {
             use core::arch::x86_64::*;
-            let f: pixelflow_ir::emit::executable::CtxKernelFn = res.code.as_fn();
+            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
             let r = f(
                 ctx.as_ptr(),
                 _mm256_loadu_ps(seq.as_ptr()),
@@ -184,7 +184,7 @@ fn run_per_batch(
         ))]
         unsafe {
             use core::arch::x86_64::*;
-            let f: pixelflow_ir::emit::executable::CtxKernelFn = res.code.as_fn();
+            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
             let r = f(
                 ctx.as_ptr(),
                 _mm_loadu_ps(seq.as_ptr()),
@@ -197,7 +197,7 @@ fn run_per_batch(
         #[cfg(target_arch = "aarch64")]
         unsafe {
             use core::arch::aarch64::*;
-            let f: pixelflow_ir::emit::executable::CtxKernelFn = res.code.as_fn();
+            let f: pixelflow_codegen::emit::executable::CtxKernelFn = res.code.as_fn();
             let r = f(
                 ctx.as_ptr(),
                 vld1q_f32(seq.as_ptr()),

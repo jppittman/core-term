@@ -4,11 +4,11 @@
 //! time: `pixelflow-compiler::optimize` builds an e-graph from the parsed
 //! AST, saturates, and extracts before ever touching an
 //! [`ExprArena`](pixelflow_ir::ExprArena). Anything stamped by those macros
-//! reaches `pixelflow_ir::jit_cache` already optimized.
+//! reaches `pixelflow_codegen::jit_cache` already optimized.
 //!
 //! `Kernel` values composed directly at runtime — `Kernel::over`, `.at()`,
 //! `.select()`, arithmetic — never go through that macro, so their arenas hit
-//! [`pixelflow_ir::jit_cache::compile_cached`]/`compile_collapse_cached` raw:
+//! [`pixelflow_codegen::jit_cache::compile_cached`]/`compile_collapse_cached` raw:
 //! no CSE, no FMA fusion, no algebraic simplification. [`optimize_runtime_arena`]
 //! is the same pipeline applied to an arena directly, for exactly that gap —
 //! today's highest-volume instance is the font glyph bake
@@ -51,7 +51,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// is strictly an optimization, never required for correctness.
 ///
 /// Cached by the structural shape of the reachable subgraph (mirroring
-/// `pixelflow_ir::jit_cache`'s own canonical-key cache): a caller that bakes
+/// `pixelflow_codegen::jit_cache`'s own canonical-key cache): a caller that bakes
 /// the same `Kernel` across many frames — every glyph, on the common path
 /// through `GlyphCache` — pays saturation once, not once per bake. Skipping
 /// this cache would make `optimize_runtime_arena` slower than not optimizing
@@ -125,7 +125,7 @@ fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(E
 /// Canonical serialization of the subgraph reachable from `root`: nodes in
 /// ascending original id order (the arena is append-only, so children always
 /// precede parents), child references remapped to dense indices — the same
-/// shape as `pixelflow_ir::jit_cache`'s private `canonical_key`, reimplemented
+/// shape as `pixelflow_codegen::jit_cache`'s private `canonical_key`, reimplemented
 /// here since that one isn't exported and this cache's correctness condition
 /// is different (it needs a key for *every* reachable node kind, including
 /// `Buffer`/`Nary`, to memoize the bail-out case too, not just the
@@ -353,7 +353,7 @@ fn arena_to_egraph(
 }
 
 /// Count nodes reachable from `root` — a rough size measure for
-/// [`config_for_node_count`], mirroring what `pixelflow_ir::jit_cache`'s
+/// [`config_for_node_count`], mirroring what `pixelflow_codegen::jit_cache`'s
 /// canonical-key reachability walk already does for the same arena.
 fn reachable_count(arena: &ExprArena, root: ExprId) -> usize {
     let len = arena.nodes_raw().len();
