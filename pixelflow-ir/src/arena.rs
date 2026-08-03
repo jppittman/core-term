@@ -366,7 +366,7 @@ impl ExprArena {
     /// Same logical safety contract as [`ExprArena::from_raw`]; additionally,
     /// every `Buffer(id)` node must index validly into `buffers`.
     #[must_use]
-    pub fn from_raw_with_buffers(
+    pub(crate) fn from_raw_with_buffers(
         nodes: Vec<ExprNode>,
         nary_children: Vec<ExprId>,
         buffers: Vec<BufferDecl>,
@@ -886,7 +886,7 @@ impl ExprArena {
 
     /// Format the subtree rooted at `root` as an S-expression, matching the
     /// [`Expr`] display format.
-    pub fn fmt_expr(&self, root: ExprId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    pub(crate) fn fmt_expr(&self, root: ExprId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         enum Task {
             Visit(ExprId),
             WriteStr(&'static str),

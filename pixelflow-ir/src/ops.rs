@@ -126,12 +126,12 @@ define_op!(48, RawGather, "raw_gather", 2, Special);
 define_op!(49, Reduce, "reduce", 4, Special);
 
 /// Total number of operations. Must equal [`crate::kind::OpKind::COUNT`].
-pub const OP_COUNT: usize = 50;
+pub(crate) const OP_COUNT: usize = 50;
 
 /// All operations in the IR, indexed by their INDEX constant.
 ///
 /// This is the single source of truth for all operations.
-pub const ALL_OPS: [&'static dyn OpMeta; OP_COUNT] = [
+pub(crate) const ALL_OPS: [&'static dyn OpMeta; OP_COUNT] = [
     &Var,
     &Const,
     &Add,
@@ -188,12 +188,12 @@ pub const ALL_OPS: [&'static dyn OpMeta; OP_COUNT] = [
 const _: () = assert!(OP_COUNT == crate::kind::OpKind::COUNT);
 
 /// Get an operation by name.
-pub fn op_by_name(name: &str) -> Option<&'static dyn OpMeta> {
+pub(crate) fn op_by_name(name: &str) -> Option<&'static dyn OpMeta> {
     ALL_OPS.iter().find(|op| op.name() == name).copied()
 }
 
 /// Get an operation by index.
-pub fn op_by_index(idx: usize) -> Option<&'static dyn OpMeta> {
+pub(crate) fn op_by_index(idx: usize) -> Option<&'static dyn OpMeta> {
     ALL_OPS.get(idx).copied()
 }
 

@@ -2344,7 +2344,7 @@ pub fn compile_arena_dag_with_ctx(
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
-    // Three-way build-width split, matching `pixelflow_ir::JIT_VECTOR_BYTES`
+    // Three-way build-width split, matching `crate::JIT_VECTOR_BYTES`
     // and `pixelflow-core`'s `Field` storage: AVX-512 > AVX2 > SSE2.
     #[cfg(target_feature = "avx512f")]
     {

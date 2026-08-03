@@ -195,7 +195,7 @@ pub fn expand_transcendentals(arena: &mut ExprArena, root: ExprId) -> ExprId {
 /// it unconditionally and be sure no backend — per-batch or collapse —
 /// ever sees a transcendental node.
 #[must_use]
-pub fn expand_transcendentals_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
+pub(crate) fn expand_transcendentals_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
     // Identity fast-path: if there is nothing to lower, return the arena
     // unchanged. The rebuild below is not bit-identical to the input (it can
     // re-order / re-dedup nodes), which would perturb register allocation for
@@ -236,7 +236,7 @@ pub fn expand_gather(arena: &mut ExprArena, root: ExprId) -> ExprId {
 /// Owned wrapper mirroring [`expand_transcendentals_owned`]: identity fast-path
 /// when the arena has no `Gather`, otherwise clone-and-lower.
 #[must_use]
-pub fn expand_gather_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
+pub(crate) fn expand_gather_owned(arena: &ExprArena, root: ExprId) -> (ExprArena, ExprId) {
     if !arena
         .nodes_raw()
         .iter()

@@ -839,7 +839,7 @@ mod tests {
     use super::*;
 
     /// `X86BinaryInsn::select` is `emit_binary`'s completeness contract made
-    /// checkable: every op `pixelflow_ir::emit::coverage::
+    /// checkable: every op `crate::emit::coverage::
     /// REQUIRED_BINARY_OPS` lists must select `Some`, or this backend would
     /// panic the moment the scheduler handed it that op. Cheaper and more
     /// precise than the emit-and-catch-panic sweep in `emit/mod.rs`'s

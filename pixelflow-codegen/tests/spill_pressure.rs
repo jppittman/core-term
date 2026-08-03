@@ -17,11 +17,11 @@
 #![cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 
 use pixelflow_codegen::emit::compile_arena_dag;
+use pixelflow_codegen::jit_manifold::JitManifold;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval_scalar;
-use pixelflow_ir::jit_manifold::JitManifold;
 
 // JitManifold::call's ABI tracks the build's selected width (SSE2/AVX2; this
 // file is gated off avx512f above), so the splat/extract pair must match:

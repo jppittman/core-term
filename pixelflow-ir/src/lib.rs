@@ -25,7 +25,6 @@ pub mod traits;
 pub mod variance;
 
 pub use variance::Variance;
-pub use variance::{compute_arena_variance, find_hoistable_arena_nodes};
 
 pub mod arena;
 
@@ -52,5 +51,5 @@ pub mod kernel;
 pub use kernel::{Kernel, Monoid};
 
 pub use kind::OpKind;
-pub use ops::{ALL_OPS, OP_COUNT, known_method_names, op_by_index, op_by_name};
-pub use traits::{EmitStyle, Op, OpMeta};
+pub use ops::known_method_names;
+pub use traits::EmitStyle;

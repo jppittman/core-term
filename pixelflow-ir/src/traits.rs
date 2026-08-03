@@ -23,31 +23,31 @@ pub enum EmitStyle {
 }
 
 /// Base trait for operation arity.
-pub trait Arity {
+pub(crate) trait Arity {
     /// Number of operands.
     const ARITY: usize;
 }
 
 /// Marker trait for nullary operations (0 operands).
-pub trait Nullary: Arity {}
+pub(crate) trait Nullary: Arity {}
 
 /// Marker trait for unary operations (1 operand).
-pub trait Unary: Arity {}
+pub(crate) trait Unary: Arity {}
 
 /// Marker trait for binary operations (2 operands).
-pub trait Binary: Arity {}
+pub(crate) trait Binary: Arity {}
 
 /// Marker trait for ternary operations (3 operands).
-pub trait Ternary: Arity {}
+pub(crate) trait Ternary: Arity {}
 
 /// Marker trait for variadic/n-ary operations.
-pub trait Nary: Arity {}
+pub(crate) trait Nary: Arity {}
 
 /// Dynamic-dispatch-compatible operation metadata.
 ///
 /// This trait contains only the methods needed for codegen and lookup.
 /// It's dyn-compatible because it doesn't use Self in bounds.
-pub trait OpMeta: 'static + Debug + Send + Sync {
+pub(crate) trait OpMeta: 'static + Debug + Send + Sync {
     /// Display name of the operation (e.g., "sqrt", "add").
     fn name(&self) -> &'static str;
 
@@ -67,7 +67,9 @@ pub trait OpMeta: 'static + Debug + Send + Sync {
 /// operations. It defines the ISA properties at the type level.
 ///
 /// Also implements `OpMeta` for dyn-compatible access.
-pub trait Op: 'static + Arity + Eq + Hash + Copy + Clone + Debug + Send + Sync + OpMeta {
+pub(crate) trait Op:
+    'static + Arity + Eq + Hash + Copy + Clone + Debug + Send + Sync + OpMeta
+{
     /// Display name of the operation (e.g., "sqrt", "add").
     const NAME: &'static str;
 

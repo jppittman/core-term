@@ -64,13 +64,13 @@ impl Variance {
     pub const W: Self = Self(1 << 3);
 
     /// All spatial coordinates (X, Y, Z). Common for per-pixel expressions.
-    pub const SPATIAL: Self = Self(0b0000_0111);
+    pub(crate) const SPATIAL: Self = Self(0b0000_0111);
 
     /// The four coordinates the lattice nest binds (X, Y, Z, W).
-    pub const COORDS: Self = Self(0b0000_1111);
+    pub(crate) const COORDS: Self = Self(0b0000_1111);
 
     /// The four reduction index slots a binder can bind.
-    pub const BINDERS: Self = Self(0b1111_0000);
+    pub(crate) const BINDERS: Self = Self(0b1111_0000);
 
     /// Every variable — the top of the lattice, and the answer whenever the
     /// analysis cannot prove something narrower.
@@ -167,7 +167,7 @@ impl Variance {
     /// Panics if `var_idx >= 8`.
     #[inline]
     #[must_use]
-    pub const fn depends_on(self, var_idx: u8) -> bool {
+    pub(crate) const fn depends_on(self, var_idx: u8) -> bool {
         self.0 & Self::from_var(var_idx).0 != 0
     }
 
@@ -182,7 +182,7 @@ impl Variance {
     /// Panics if `var_idx >= 8`.
     #[inline]
     #[must_use]
-    pub const fn is_invariant_in(self, var_idx: u8) -> bool {
+    pub(crate) const fn is_invariant_in(self, var_idx: u8) -> bool {
         !self.depends_on(var_idx)
     }
 
@@ -204,7 +204,7 @@ impl Variance {
     /// body and cannot be hoisted past it.
     #[inline]
     #[must_use]
-    pub const fn depends_on_binder(self) -> bool {
+    pub(crate) const fn depends_on_binder(self) -> bool {
         self.0 & Self::BINDERS.0 != 0
     }
 
@@ -225,7 +225,7 @@ impl Variance {
     /// True if depends on W.
     #[inline]
     #[must_use]
-    pub const fn depends_on_w(self) -> bool {
+    pub(crate) const fn depends_on_w(self) -> bool {
         self.0 & Self::W.0 != 0
     }
 
@@ -245,14 +245,14 @@ impl Variance {
     /// spatial coordinate (X, Y, or Z).
     #[inline]
     #[must_use]
-    pub const fn is_spatially_varying(self) -> bool {
+    pub(crate) const fn is_spatially_varying(self) -> bool {
         self.0 & Self::SPATIAL.0 != 0
     }
 
     /// Number of variables this expression depends on (0-8).
     #[inline]
     #[must_use]
-    pub const fn popcount(self) -> u32 {
+    pub(crate) const fn popcount(self) -> u32 {
         self.0.count_ones()
     }
 }
@@ -304,7 +304,7 @@ use alloc::vec::Vec;
 ///
 /// Cost: O(n) where n = `arena.len()`. No allocations beyond the result vec.
 #[must_use]
-pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> {
+pub(crate) fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> {
     use crate::arena::{ExprId, ExprNode};
     use crate::kind::OpKind;
 
@@ -382,7 +382,7 @@ fn bound_index_slot(
 ///
 /// [`find_hoistable_out_of`] with `0` — the pixel loop's question.
 #[must_use]
-pub fn find_hoistable_arena_nodes(
+pub(crate) fn find_hoistable_arena_nodes(
     arena: &crate::arena::ExprArena,
     root: crate::arena::ExprId,
     variance: &[Variance],
@@ -409,7 +409,7 @@ pub fn find_hoistable_arena_nodes(
 ///
 /// Panics if `var >= 8`.
 #[must_use]
-pub fn find_hoistable_out_of(
+pub(crate) fn find_hoistable_out_of(
     var: u8,
     arena: &crate::arena::ExprArena,
     root: crate::arena::ExprId,

@@ -130,7 +130,7 @@ impl OpKind {
     /// (`Add`→0, `Mul`→1, `Min`→+∞, `Max`→−∞). `None` if `self` is not a valid
     /// combiner.
     #[must_use]
-    pub const fn monoid_identity(self) -> Option<f32> {
+    pub(crate) const fn monoid_identity(self) -> Option<f32> {
         match self {
             Self::Add => Some(0.0),
             Self::Mul => Some(1.0),
@@ -233,7 +233,7 @@ impl OpKind {
     /// Whether `self` is a valid reduction combiner (an associative monoid op
     /// with an identity).
     #[must_use]
-    pub const fn is_monoid(self) -> bool {
+    pub(crate) const fn is_monoid(self) -> bool {
         self.monoid_identity().is_some()
     }
 
