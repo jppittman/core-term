@@ -958,9 +958,13 @@ mod tests {
             .expect("forwarder thread should still be listening");
 
         // The forwarder thread runs concurrently; poll until its send lands rather than
-        // asserting after a single pass.
+        // asserting after a single pass. Bounded by wall-clock time, not iteration count: a
+        // fixed yield budget can be exhausted by scheduler contention alone (observed under
+        // `cargo mutants -j4`'s parallel builds) without the forwarder thread ever running.
+        const POLL_DEADLINE: Duration = Duration::from_secs(5);
+        let start = Instant::now();
         let mut received = None;
-        for _ in 0..10_000 {
+        while start.elapsed() < POLL_DEADLINE {
             if let Ok(response) = coordinator_rx.try_recv() {
                 received = Some((response.meta.width_px, response.meta.height_px));
                 break;
