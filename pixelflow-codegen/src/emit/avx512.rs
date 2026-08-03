@@ -758,7 +758,7 @@ mod tests {
             ];
             for &(op, f) in cases {
                 let mut c = Vec::new();
-                emit_binary(&mut c, op, X, X, Y).unwrap();
+                emit_binary(&mut c, op, X, X, Y);
                 check(run(&c, xs, ys, zs), |i| f(xs[i], ys[i]), "binary");
             }
         }
@@ -767,7 +767,7 @@ mod tests {
         fn high_register() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_binary(&mut c, OpKind::Mul, Reg(20), X, Y).unwrap();
+            emit_binary(&mut c, OpKind::Mul, Reg(20), X, Y);
             emit_mov(&mut c, X, Reg(20));
             check(run(&c, xs, ys, zs), |i| xs[i] * ys[i], "mul via zmm20");
         }
@@ -776,7 +776,7 @@ mod tests {
         fn sqrt_op() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Sqrt, X, Y).unwrap(); // Y > 0
+            emit_unary(&mut c, OpKind::Sqrt, X, Y); // Y > 0
             check(run(&c, xs, ys, zs), |i| ys[i].sqrt(), "sqrt");
         }
 
@@ -784,10 +784,10 @@ mod tests {
         fn neg_abs() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Neg, X, X).unwrap();
+            emit_unary(&mut c, OpKind::Neg, X, X);
             check(run(&c, xs, ys, zs), |i| -xs[i], "neg");
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Abs, X, X).unwrap();
+            emit_unary(&mut c, OpKind::Abs, X, X);
             check(run(&c, xs, ys, zs), |i| xs[i].abs(), "abs");
         }
 
@@ -796,7 +796,7 @@ mod tests {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_const(&mut c, Reg(5), 2.5);
-            emit_binary(&mut c, OpKind::Add, X, X, Reg(5)).unwrap();
+            emit_binary(&mut c, OpKind::Add, X, X, Reg(5));
             check(run(&c, xs, ys, zs), |i| xs[i] + 2.5, "const+add");
         }
 
@@ -855,9 +855,9 @@ mod tests {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_sub_rsp(&mut c, 64);
-            emit_binary(&mut c, OpKind::Mul, Reg(6), X, Y).unwrap();
+            emit_binary(&mut c, OpKind::Mul, Reg(6), X, Y);
             emit_store_rsp(&mut c, Reg(6), 0);
-            emit_binary(&mut c, OpKind::Add, Reg(6), X, X).unwrap(); // clobber
+            emit_binary(&mut c, OpKind::Add, Reg(6), X, X); // clobber
             emit_load_rsp(&mut c, X, 0);
             emit_add_rsp(&mut c, 64);
             check(run(&c, xs, ys, zs), |i| xs[i] * ys[i], "spill roundtrip");
