@@ -25,7 +25,7 @@ impl LowerEnv {
     }
 
     /// Leave a `Let` body.
-    pub(crate) fn unbind(&mut self) {
+    pub fn unbind(&mut self) {
         let popped = self.lets.pop();
         debug_assert!(popped.is_some(), "LowerEnv::unbind without a bind");
     }

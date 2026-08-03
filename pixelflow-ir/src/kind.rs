@@ -901,6 +901,22 @@ impl<T> IndexMut<OpKind> for OpMap<T> {
 
 // EmitStyle is imported from crate::traits - single source of truth
 
+/// Every op name the surface language accepts as a method.
+///
+/// `Special` ops are excluded: they are structural (`Var`, `Const`, `Buffer`,
+/// `Reduce`, ...) and have no method spelling.
+///
+/// This used to walk a parallel array of one zero-sized type per op, each
+/// implementing an `OpMeta`/`Op`/arity-marker trait family, purely to answer
+/// this question. `OpKind` already knows every op's name and emit style, so
+/// the family and its 230-line module are gone.
+#[must_use]
+pub fn known_method_names() -> impl Iterator<Item = &'static str> {
+    OpKind::all()
+        .filter(|op| !matches!(op.emit_style(), EmitStyle::Special))
+        .map(OpKind::name)
+}
+
 #[cfg(test)]
 mod index_space {
     use super::OpKind;

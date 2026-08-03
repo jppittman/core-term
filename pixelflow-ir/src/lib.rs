@@ -4,7 +4,6 @@
 //!
 //! - **Traits**: `Op` trait defines behavior, `EmitStyle` for codegen.
 //! - **Ops**: Unit structs (`Add`, `Mul`) implement `Op`.
-//! - **ALL_OPS**: The single source of truth for all operations.
 //! - **Backend**: SIMD execution traits.
 
 // NOTE: `no_std` support (disabling the `std` feature) is currently
@@ -20,7 +19,6 @@
 extern crate alloc;
 
 pub mod kind;
-pub mod ops;
 pub mod traits;
 pub mod variance;
 
@@ -51,5 +49,5 @@ pub mod kernel;
 pub use kernel::{Kernel, Monoid};
 
 pub use kind::OpKind;
-pub use ops::known_method_names;
+pub use kind::known_method_names;
 pub use traits::EmitStyle;
