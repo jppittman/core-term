@@ -981,4 +981,84 @@ mod tests {
             .join()
             .expect("forwarder must exit once the rasterizer disconnects");
     }
+
+    /// Neither `Rig` above needs `vsync_control` wired — nothing else in this file's tests reads
+    /// it — so this test wires its own to observe what `EngineHandler::send_vsync_control`
+    /// actually puts on the wire.
+    #[test]
+    fn render_surface_returns_a_vsync_token() {
+        let (driver, _driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+        let waker = {
+            let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
+            handle.waker()
+        };
+        let (vsync_control_tx, mut vsync_control_rx) = spsc_channel::<VsyncCommand>(8);
+        let vsync_control = GreenSender::new(vsync_control_tx, waker);
+
+        let mut engine = EngineHandler {
+            driver,
+            vsync_control: Some(vsync_control),
+            vsync_host: None,
+            coordinator: None,
+            self_handle: None,
+            rasterizer_forwarder: None,
+            app_handle: None,
+            core: EngineCore::new(),
+        };
+
+        engine
+            .handle_data(EngineData::FromApp(AppData::RenderSurface(manifold())))
+            .expect("engine handled the message");
+
+        assert!(
+            matches!(vsync_control_rx.try_recv(), Ok(VsyncCommand::ReturnToken)),
+            "a submitted scene must return its vsync token so vsync can request another frame"
+        );
+    }
+
+    /// A driver stub for [`quit_cascades_a_shutdown_to_the_driver`]: nothing here cares what
+    /// arrives, only whether `Message::Shutdown` did.
+    struct NoopDriver;
+
+    impl Actor<DisplayData, DisplayControl, DisplayMgmt> for NoopDriver {
+        fn handle_data(&mut self, _msg: DisplayData) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_control(&mut self, _msg: DisplayControl) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _msg: DisplayMgmt) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
+        }
+    }
+
+    /// [`EngineHandler::shut_down`]'s one cascade step that is always unconditional (every other
+    /// step is gated behind an `Option` the default `Rig` leaves `None`): the driver always gets
+    /// `Message::Shutdown` on `Quit`, wedged host or not.
+    #[test]
+    fn quit_cascades_a_shutdown_to_the_driver() {
+        let (driver, mut driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+        let mut engine = EngineHandler {
+            driver,
+            vsync_control: None,
+            vsync_host: None,
+            coordinator: None,
+            self_handle: None,
+            rasterizer_forwarder: None,
+            app_handle: None,
+            core: EngineCore::new(),
+        };
+
+        engine
+            .handle_control(EngineControl::Quit)
+            .expect("engine handled Quit");
+
+        assert!(
+            driver_sched.poll_once(&mut NoopDriver),
+            "the shutdown cascade must reach the driver"
+        );
+    }
 }
