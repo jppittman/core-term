@@ -64,6 +64,15 @@ pub struct TerminalEmulator {
     /// Viewport offset for scrollback navigation.
     /// 0 means viewing the live screen, >0 means scrolled back into history.
     viewport_offset: usize,
+    /// The `(scrollback_generation, viewport_offset)` pair the previous
+    /// snapshot rendered. The visible surface is a pure function of the
+    /// grids, the scrollback, and this pair — so when the pair is unchanged,
+    /// only the grids' own per-line dirt remains, and a scrolled-back idle
+    /// terminal reads as clean instead of redrawing on every timer tick.
+    /// When it changes, every line's screen position changed with it, so the
+    /// whole snapshot is dirty (this includes returning to offset 0, where no
+    /// scrollback-sourced line exists to carry the signal).
+    last_snapshot_view: Option<(u64, usize)>,
 }
 
 impl TerminalEmulator {
@@ -98,6 +107,7 @@ impl TerminalEmulator {
             cursor_wrap_next: false,
             layout,
             viewport_offset: 0,
+            last_snapshot_view: None,
         }
     }
 
@@ -181,6 +191,14 @@ impl TerminalEmulator {
         // Clamp viewport_offset to available scrollback
         let effective_offset = self.viewport_offset.min(scrollback_len);
 
+        // Did the view itself move — scroll position changed, or scrollback
+        // shifted underneath a held position? (The offset is anchored to the
+        // scrollback's end, so a push while scrolled back changes what every
+        // scrollback-sourced row shows without changing the offset.)
+        let view = (self.screen.scrollback_generation, effective_offset);
+        let view_changed = self.last_snapshot_view != Some(view);
+        self.last_snapshot_view = Some(view);
+
         // Build lines by cloning Arc references (cheap ref count bump)
         // When scrolled back, top lines come from scrollback, rest from active grid
         let lines: Vec<SnapshotLine> = (0..height)
@@ -189,16 +207,20 @@ impl TerminalEmulator {
                     // This line comes from scrollback
                     // scrollback is ordered oldest first, so we need to index from the end
                     let scrollback_idx = scrollback_len - effective_offset + y_idx;
-                    // All scrollback lines are considered "dirty" when first viewed
+                    // Scrollback content is immutable once written: a line is
+                    // dirty exactly when the view moved, never merely because
+                    // it is visible — the latter kept an idle scrolled-back
+                    // terminal rendering on every frame request.
                     SnapshotLine::from_arc(
                         self.screen.scrollback[scrollback_idx].clone(),
-                        true.into(),
+                        view_changed.into(),
                     )
                 } else {
                     // This line comes from active grid
                     let grid_idx = y_idx - effective_offset;
                     if grid_idx < active_grid.len() {
-                        let is_dirty = self.screen.dirty.get(grid_idx).is_none_or(|&d| d != 0);
+                        let is_dirty = view_changed
+                            || self.screen.dirty.get(grid_idx).is_none_or(|&d| d != 0);
                         SnapshotLine::from_arc(active_grid[grid_idx].clone(), is_dirty.into())
                     } else {
                         // Beyond active grid, return empty line

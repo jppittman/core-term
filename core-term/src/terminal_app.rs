@@ -115,6 +115,10 @@ pub struct TerminalApp {
     /// frame. This is the JIT answer to dynamic resize: the program's size
     /// and compile time are independent of the grid's.
     program: Option<CellGridProgram>,
+    /// Whether any scene has been submitted yet. Synchronized output holds
+    /// the last frame, which only exists once this is true; before that, the
+    /// solid background is the only honest thing to show.
+    has_presented: bool,
     /// Currently pressed mouse button, tracked for motion reporting.
     /// Set on MouseClick, cleared on MouseRelease.
     pressed_mouse_button: Option<pixelflow_runtime::input::MouseButton>,
@@ -183,6 +187,7 @@ impl TerminalApp {
             loaded_font,
             atlas,
             program: None,
+            has_presented: false,
             pressed_mouse_button: None,
             density: 1.0,
         }
@@ -231,6 +236,18 @@ impl TerminalApp {
         let snapshot = match self.emulator.get_render_snapshot() {
             Some(s) => s,
             None => {
+                // Synchronized output (DECSET 2026): the application asked us
+                // to hold the last frame until its batch ends, so painting
+                // anything here — the background included — is exactly what
+                // the mode forbids. Skip, and the engine keeps what is shown.
+                // Any mutations made during the batch set per-line dirt that
+                // survives (only a delivered snapshot clears it), so the
+                // batch-end frame renders; a batch with no mutations leaves
+                // the held frame, which is correct, not stale.
+                if self.has_presented {
+                    return None;
+                }
+                // Nothing was ever presented: there is no frame to hold.
                 return Some(Scene::Surface(Arc::new(At {
                     inner: ColorCube::default(),
                     x: dbg_r,
@@ -360,11 +377,16 @@ impl TerminalApp {
             Some(scene) => AppData::RenderSurface(scene),
             None => AppData::Skipped,
         };
-        if let Err(e) = self
+        let presented = matches!(data, AppData::RenderSurface(_));
+        match self
             .engine_tx
             .send(Message::Data(EngineData::FromApp(data)))
         {
-            log::warn!("Failed to send frame to engine: {}", e);
+            // Only a delivered scene counts: synchronized output holds "the
+            // last frame", which must mean one that actually reached the
+            // engine.
+            Ok(()) => self.has_presented |= presented,
+            Err(e) => log::warn!("Failed to send frame to engine: {}", e),
         }
     }
 }

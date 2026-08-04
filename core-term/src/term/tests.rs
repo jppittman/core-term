@@ -1752,3 +1752,89 @@ mod paste_text_tests {
         );
     }
 }
+
+// ============================================================================
+// Damage tracking across the scrollback viewport (PR #974 review)
+// ============================================================================
+
+/// Fill enough lines to populate scrollback, scroll back, and let the
+/// terminal go idle: the SECOND snapshot at an unchanged view must be fully
+/// clean, or the app's damage gate re-renders on every timer tick for as
+/// long as the user stays scrolled back.
+#[test]
+fn scrolled_back_idle_snapshot_is_clean() {
+    let mut term = create_test_emulator(4, 2);
+    for ch in "a\r\nb\r\nc\r\nd\r\ne".chars() {
+        match ch {
+            '\r' => term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(
+                crate::ansi::commands::C0Control::CR,
+            ))),
+            '\n' => term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(
+                crate::ansi::commands::C0Control::LF,
+            ))),
+            c => term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print(c))),
+        };
+    }
+    assert!(term.scroll_viewport(1), "scrollback should be available");
+
+    let first = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        first.lines.iter().any(|l| l.is_dirty),
+        "the view moved: the first scrolled-back snapshot must be dirty"
+    );
+
+    let second = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        !second.lines.iter().any(|l| l.is_dirty),
+        "idle at an unchanged view: nothing may be dirty, else the damage \
+         gate never skips while scrolled back"
+    );
+}
+
+/// Returning to the live screen is a view change even though no
+/// scrollback-sourced line remains to carry the signal — every line's screen
+/// position changed, so the snapshot must be dirty.
+#[test]
+fn returning_to_live_screen_marks_dirty() {
+    let mut term = create_test_emulator(4, 2);
+    for _ in 0..4 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(
+            crate::ansi::commands::C0Control::LF,
+        )));
+    }
+    assert!(term.scroll_viewport(1));
+    let _ = term.get_render_snapshot().expect("snapshot");
+    assert!(term.scroll_viewport(-1), "scroll back to live");
+
+    let snapshot = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        snapshot.lines.iter().any(|l| l.is_dirty),
+        "offset n -> 0 changed every visible line"
+    );
+}
+
+/// A scrollback push while scrolled back shifts what a held offset shows
+/// (the offset anchors to the scrollback's END), so new output must dirty
+/// the scrolled-back view.
+#[test]
+fn scrollback_growth_under_held_offset_marks_dirty() {
+    let mut term = create_test_emulator(4, 2);
+    for _ in 0..4 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(
+            crate::ansi::commands::C0Control::LF,
+        )));
+    }
+    assert!(term.scroll_viewport(1));
+    let _ = term.get_render_snapshot().expect("snapshot");
+
+    // New output scrolls another line into scrollback underneath the view.
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(
+        crate::ansi::commands::C0Control::LF,
+    )));
+
+    let snapshot = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        snapshot.lines.iter().any(|l| l.is_dirty),
+        "the held offset now shows different history"
+    );
+}
