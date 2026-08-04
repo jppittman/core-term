@@ -111,6 +111,12 @@ pub const LATENCY_PRIOR_CYCLES: [usize; OpKind::COUNT] = [
     0,    // 49: Buffer - leaf, free
 ];
 
+/// Discriminants with no `OpKind` variant (see `LATENCY_PRIOR_CYCLES`'s
+/// comment). `OpKind::from_index` only bounds-checks against `COUNT`, not
+/// variant validity, so callers iterating `0..OpKind::COUNT` must skip these
+/// themselves rather than pass them to `from_index`.
+const DISCRIMINANT_GAPS: [usize; 3] = [17, 31, 39];
+
 // ============================================================================
 // Cost Function Trait
 // ============================================================================
@@ -162,6 +168,15 @@ pub trait CostFunction {
 pub struct CostModel {
     /// Cost per operation, indexed by `OpKind::index()`.
     costs: [usize; OpKind::COUNT],
+    // `Gather`/`RawGather`/`Reduce` (discriminants 50-52) fall outside
+    // `costs`'s range — see the comment on `LATENCY_PRIOR_CYCLES` for why —
+    // so they get their own fields instead. Every accessor (`cost`,
+    // `set_cost`, `from_map`, `to_map`, `load_toml`) must go through these,
+    // not a hardcoded constant, so `CostModel::zero()` and custom cost
+    // overrides apply to them too.
+    gather_cost: usize,
+    raw_gather_cost: usize,
+    reduce_cost: usize,
     /// Depth at which to start applying penalties.
     pub depth_threshold: usize,
     /// Penalty per depth level beyond threshold.
@@ -195,6 +210,9 @@ impl CostModel {
     pub fn latency_prior() -> Self {
         Self {
             costs: LATENCY_PRIOR_CYCLES,
+            gather_cost: 10,       // memory read
+            raw_gather_cost: 10,   // memory read
+            reduce_cost: 0,        // lowered (unrolled) before costing
             depth_threshold: 1024, // Effectively disabled
             depth_penalty: 0,
         }
@@ -209,6 +227,9 @@ impl CostModel {
     pub fn zero() -> Self {
         Self {
             costs: [0usize; OpKind::COUNT],
+            gather_cost: 0,
+            raw_gather_cost: 0,
+            reduce_cost: 0,
             depth_threshold: 1024, // Effectively disabled
             depth_penalty: 0,
         }
@@ -231,11 +252,9 @@ impl CostModel {
     #[inline]
     pub fn cost(&self, op: OpKind) -> usize {
         match op {
-            // Beyond LATENCY_PRIOR_CYCLES's range — see the comment on that
-            // table for why it stops at discriminant 49 instead of covering
-            // these three.
-            OpKind::Gather | OpKind::RawGather => 10, // memory read
-            OpKind::Reduce => 0,                      // lowered (unrolled) before costing
+            OpKind::Gather => self.gather_cost,
+            OpKind::RawGather => self.raw_gather_cost,
+            OpKind::Reduce => self.reduce_cost,
             _ => self.costs[op.index()],
         }
     }
@@ -243,15 +262,27 @@ impl CostModel {
     /// Set cost for an OpKind.
     #[inline]
     pub fn set_cost(&mut self, op: OpKind, cost: usize) {
-        self.costs[op.index()] = cost;
+        match op {
+            OpKind::Gather => self.gather_cost = cost,
+            OpKind::RawGather => self.raw_gather_cost = cost,
+            OpKind::Reduce => self.reduce_cost = cost,
+            _ => self.costs[op.index()] = cost,
+        }
     }
 
     /// Get the raw costs array.
+    ///
+    /// Does not include `Gather`/`RawGather`/`Reduce` — they live outside
+    /// this array (see the field comments on `CostModel`); use [`Self::cost`]
+    /// for those.
     pub fn costs(&self) -> &[usize; OpKind::COUNT] {
         &self.costs
     }
 
     /// Get mutable reference to costs array.
+    ///
+    /// Does not include `Gather`/`RawGather`/`Reduce`; use [`Self::set_cost`]
+    /// for those.
     pub fn costs_mut(&mut self) -> &mut [usize; OpKind::COUNT] {
         &mut self.costs
     }
@@ -305,10 +336,28 @@ impl CostModel {
         contents.push_str("# Generated from SIMD benchmark measurements\n\n");
 
         for i in 0..OpKind::COUNT {
+            if DISCRIMINANT_GAPS.contains(&i) {
+                continue;
+            }
             if let Some(op) = OpKind::from_index(i) {
                 contents.push_str(&format!("{} = {}\n", op.name(), self.costs[i]));
             }
         }
+        contents.push_str(&format!(
+            "{} = {}\n",
+            OpKind::Gather.name(),
+            self.gather_cost
+        ));
+        contents.push_str(&format!(
+            "{} = {}\n",
+            OpKind::RawGather.name(),
+            self.raw_gather_cost
+        ));
+        contents.push_str(&format!(
+            "{} = {}\n",
+            OpKind::Reduce.name(),
+            self.reduce_cost
+        ));
 
         contents.push_str(&format!("\ndepth_threshold = {}\n", self.depth_threshold));
         contents.push_str(&format!("depth_penalty = {}\n", self.depth_penalty));
@@ -363,7 +412,7 @@ impl CostModel {
                 model.depth_penalty = v;
             } else if let Some(op) = OpKind::from_name(key) {
                 // O(1) lookup via OpKind::from_name
-                model.costs[op.index()] = v;
+                model.set_cost(op, v);
             } else {
                 // Unrecognized op name: this is an external, evolving file
                 // format (older/newer OpKind sets), so we don't hard-fail —
@@ -458,7 +507,7 @@ impl CostModel {
                 model.depth_penalty = value;
             } else if let Some(op) = OpKind::from_name(key) {
                 // O(1) lookup via OpKind::from_name
-                model.costs[op.index()] = value;
+                model.set_cost(op, value);
             }
             // Unknown keys are silently ignored (external data format)
         }
@@ -469,10 +518,16 @@ impl CostModel {
     pub fn to_map(&self) -> HashMap<String, usize> {
         let mut map = HashMap::new();
         for i in 0..OpKind::COUNT {
+            if DISCRIMINANT_GAPS.contains(&i) {
+                continue;
+            }
             if let Some(op) = OpKind::from_index(i) {
                 map.insert(op.name().to_string(), self.costs[i]);
             }
         }
+        map.insert(OpKind::Gather.name().to_string(), self.gather_cost);
+        map.insert(OpKind::RawGather.name().to_string(), self.raw_gather_cost);
+        map.insert(OpKind::Reduce.name().to_string(), self.reduce_cost);
         map.insert("depth_threshold".to_string(), self.depth_threshold);
         map.insert("depth_penalty".to_string(), self.depth_penalty);
         map
@@ -542,5 +597,72 @@ mod cost_alignment_tests {
         assert_eq!(model.cost_by_name("gather"), 10);
         assert_eq!(model.cost_by_name("raw_gather"), 10);
         assert_eq!(model.cost_by_name("reduce"), 0);
+    }
+
+    /// `Gather`/`RawGather`/`Reduce` must obey `CostModel::zero()`'s
+    /// all-zero contract, not the hardcoded latency-prior values — they
+    /// live in dedicated fields precisely so they can vary per model
+    /// instead of being baked into `cost()` as constants.
+    #[test]
+    fn zero_model_zeroes_ops_beyond_latency_table_range() {
+        let model = CostModel::zero();
+        assert_eq!(model.cost(OpKind::Gather), 0);
+        assert_eq!(model.cost(OpKind::RawGather), 0);
+        assert_eq!(model.cost(OpKind::Reduce), 0);
+    }
+
+    /// `set_cost` must not panic for ops beyond `LATENCY_PRIOR_CYCLES`'s
+    /// range, and the write must be visible through `cost`.
+    #[test]
+    fn set_cost_updates_ops_beyond_latency_table_range() {
+        let mut model = CostModel::zero();
+        model.set_cost(OpKind::Gather, 42);
+        model.set_cost(OpKind::RawGather, 43);
+        model.set_cost(OpKind::Reduce, 44);
+        assert_eq!(model.cost(OpKind::Gather), 42);
+        assert_eq!(model.cost(OpKind::RawGather), 43);
+        assert_eq!(model.cost(OpKind::Reduce), 44);
+    }
+
+    /// `to_map`/`from_map` must round-trip ops beyond `LATENCY_PRIOR_CYCLES`'s
+    /// range instead of silently dropping them.
+    #[test]
+    fn map_round_trip_includes_ops_beyond_latency_table_range() {
+        let mut model = CostModel::zero();
+        model.set_cost(OpKind::Gather, 7);
+        model.set_cost(OpKind::RawGather, 8);
+        model.set_cost(OpKind::Reduce, 9);
+
+        let map = model.to_map();
+        assert_eq!(map.get("gather"), Some(&7));
+        assert_eq!(map.get("raw_gather"), Some(&8));
+        assert_eq!(map.get("reduce"), Some(&9));
+
+        let round_tripped = CostModel::from_map(&map);
+        assert_eq!(round_tripped.cost(OpKind::Gather), 7);
+        assert_eq!(round_tripped.cost(OpKind::RawGather), 8);
+        assert_eq!(round_tripped.cost(OpKind::Reduce), 9);
+    }
+
+    /// `save_toml`/`load_toml` must round-trip the same three ops.
+    #[test]
+    fn toml_round_trip_includes_ops_beyond_latency_table_range() {
+        let mut model = CostModel::zero();
+        model.set_cost(OpKind::Gather, 17);
+        model.set_cost(OpKind::RawGather, 18);
+        model.set_cost(OpKind::Reduce, 19);
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "pixelflow-cost-model-test-{}.toml",
+            std::process::id()
+        ));
+        model.save_toml(&path).expect("save_toml should succeed");
+        let loaded = CostModel::load_toml(&path).expect("load_toml should succeed");
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(loaded.cost(OpKind::Gather), 17);
+        assert_eq!(loaded.cost(OpKind::RawGather), 18);
+        assert_eq!(loaded.cost(OpKind::Reduce), 19);
     }
 }
