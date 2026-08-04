@@ -115,6 +115,10 @@ pub struct TerminalApp {
     /// frame. This is the JIT answer to dynamic resize: the program's size
     /// and compile time are independent of the grid's.
     program: Option<CellGridProgram>,
+    /// Whether any scene has been submitted yet. Synchronized output holds
+    /// the last frame, which only exists once this is true; before that, the
+    /// solid background is the only honest thing to show.
+    has_presented: bool,
     /// Currently pressed mouse button, tracked for motion reporting.
     /// Set on MouseClick, cleared on MouseRelease.
     pressed_mouse_button: Option<pixelflow_runtime::input::MouseButton>,
@@ -183,6 +187,7 @@ impl TerminalApp {
             loaded_font,
             atlas,
             program: None,
+            has_presented: false,
             pressed_mouse_button: None,
             density: 1.0,
         }
@@ -222,26 +227,64 @@ impl TerminalApp {
     /// A resize therefore IS a recompile — four channel kernels, sized
     /// independently of the grid — which replaces the old per-frame tree of
     /// boxed combinators entirely.
-    fn build_scene(&mut self) -> Scene {
+    /// `None` means nothing has changed since the last frame and the engine
+    /// should be answered with [`AppData::Skipped`] rather than a scene.
+    fn build_scene(&mut self) -> Option<Scene> {
         let (dbg_r, dbg_g, dbg_b, dbg_a) = self.config.colors.background.to_f32_rgba();
 
         // Get terminal snapshot
         let snapshot = match self.emulator.get_render_snapshot() {
             Some(s) => s,
             None => {
-                return Scene::Surface(Arc::new(At {
+                // Synchronized output (DECSET 2026): the application asked us
+                // to hold the last frame until its batch ends, so painting
+                // anything here — the background included — is exactly what
+                // the mode forbids. Skip, and the engine keeps what is shown.
+                // Any mutations made during the batch set per-line dirt that
+                // survives (only a delivered snapshot clears it), so the
+                // batch-end frame renders; a batch with no mutations leaves
+                // the held frame, which is correct, not stale.
+                if self.has_presented {
+                    return None;
+                }
+                // Nothing was ever presented: there is no frame to hold.
+                return Some(Scene::Surface(Arc::new(At {
                     inner: ColorCube::default(),
                     x: dbg_r,
                     y: dbg_g,
                     z: dbg_b,
                     w: dbg_a,
-                }));
+                })));
             }
         };
 
         let (cols, rows) = snapshot.dimensions;
         let cell_width = snapshot.cell_width_px as f32;
         let cell_height = snapshot.cell_height_px as f32;
+
+        // This is the only place the answer is available: `get_render_snapshot`
+        // stamps each line's dirt and then calls `mark_all_clean`, so the flags
+        // live in the snapshot and nowhere else once it returns.
+        //
+        // Per-line dirt is sufficient for the *content* half of the question —
+        // the snapshot dirties the rows a moved/restyled cursor left and
+        // entered (`last_cursor_mark` in the emulator) and selection changes
+        // mark their lines (`screen.rs`), so those are not separate cases. It
+        // says nothing about *geometry*, which is why the grid shape is checked
+        // separately below rather than trusted to come with a dirty line.
+        let nothing_drawn_changed = !snapshot.lines.iter().any(|line| line.is_dirty);
+        let geometry_matches = self.program.as_ref().is_some_and(|p| {
+            let g = p.geometry();
+            g.cols == cols as u32
+                && g.rows == rows as u32
+                && g.cell_w == cell_width * self.density
+                && g.cell_h == cell_height * self.density
+        });
+        // `geometry_matches` is false while `program` is `None`, so the first
+        // frame after startup always draws.
+        if nothing_drawn_changed && geometry_matches {
+            return None;
+        }
 
         // Default colors
         let default_fg = self.config.colors.foreground;
@@ -315,20 +358,36 @@ impl TerminalApp {
             self.program = Some(CellGridProgram::compile(geom, [dbg_r, dbg_g, dbg_b, dbg_a]));
         }
         let program = self.program.as_ref().expect("program compiled above");
-        Scene::CellGrid(program.frame(Arc::new(cells), self.atlas.buffer()))
+        Some(Scene::CellGrid(
+            program.frame(Arc::new(cells), self.atlas.buffer()),
+        ))
     }
 
-    /// Send a rendered frame to the engine.
+    /// Answer the engine's frame request.
+    ///
+    /// Either with a scene, or — when nothing has changed — with
+    /// [`AppData::Skipped`], which returns the vsync token without waking the
+    /// coordinator. An idle terminal must not rasterize: the request arrives on
+    /// a fixed timer (`target_fps`, not a display link), so answering every one
+    /// with pixels means re-rendering identical output for as long as the
+    /// window is open.
     fn send_frame(&mut self) {
         // The scene kernel paints the default background outside the grid
         // itself, so the frame is the scene — no outer clip/backdrop layer.
-        let scene = self.build_scene();
-        let data = AppData::RenderSurface(scene);
-        if let Err(e) = self
+        let data = match self.build_scene() {
+            Some(scene) => AppData::RenderSurface(scene),
+            None => AppData::Skipped,
+        };
+        let presented = matches!(data, AppData::RenderSurface(_));
+        match self
             .engine_tx
             .send(Message::Data(EngineData::FromApp(data)))
         {
-            log::warn!("Failed to send frame to engine: {}", e);
+            // Only a delivered scene counts: synchronized output holds "the
+            // last frame", which must mean one that actually reached the
+            // engine.
+            Ok(()) => self.has_presented |= presented,
+            Err(e) => log::warn!("Failed to send frame to engine: {}", e),
         }
     }
 }

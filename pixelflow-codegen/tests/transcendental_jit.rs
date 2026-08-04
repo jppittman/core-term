@@ -9,10 +9,11 @@
 //! `Kernel::log2` still failed to compile. The completeness sweep catches the
 //! emission gap; this catches the semantics — the bytes must also be right.
 
-use pixelflow_ir::{Kernel, jit_cache};
+use pixelflow_codegen::jit_cache;
+use pixelflow_ir::Kernel;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-fn call_x(jit: &pixelflow_ir::JitManifold, x: f32) -> f32 {
+fn call_x(jit: &pixelflow_codegen::JitManifold, x: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let v = _mm512_set1_ps(x);
@@ -25,7 +26,7 @@ fn call_x(jit: &pixelflow_ir::JitManifold, x: f32) -> f32 {
     target_feature = "avx2",
     not(target_feature = "avx512f")
 ))]
-fn call_x(jit: &pixelflow_ir::JitManifold, x: f32) -> f32 {
+fn call_x(jit: &pixelflow_codegen::JitManifold, x: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let v = _mm256_set1_ps(x);
@@ -38,7 +39,7 @@ fn call_x(jit: &pixelflow_ir::JitManifold, x: f32) -> f32 {
     not(target_feature = "avx2"),
     not(target_feature = "avx512f")
 ))]
-fn call_x(jit: &pixelflow_ir::JitManifold, x: f32) -> f32 {
+fn call_x(jit: &pixelflow_codegen::JitManifold, x: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let v = _mm_set1_ps(x);
@@ -47,7 +48,7 @@ fn call_x(jit: &pixelflow_ir::JitManifold, x: f32) -> f32 {
     }
 }
 #[cfg(target_arch = "aarch64")]
-fn call_x(jit: &pixelflow_ir::JitManifold, x: f32) -> f32 {
+fn call_x(jit: &pixelflow_codegen::JitManifold, x: f32) -> f32 {
     use core::arch::aarch64::*;
     unsafe {
         let v = vdupq_n_f32(x);
@@ -58,7 +59,7 @@ fn call_x(jit: &pixelflow_ir::JitManifold, x: f32) -> f32 {
 
 /// Two-operand form of [`call_x`]: X = `x`, Y = `y`, lane 0 of the result.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-fn call_xy(jit: &pixelflow_ir::JitManifold, x: f32, y: f32) -> f32 {
+fn call_xy(jit: &pixelflow_codegen::JitManifold, x: f32, y: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let z = _mm512_setzero_ps();
@@ -70,7 +71,7 @@ fn call_xy(jit: &pixelflow_ir::JitManifold, x: f32, y: f32) -> f32 {
     target_feature = "avx2",
     not(target_feature = "avx512f")
 ))]
-fn call_xy(jit: &pixelflow_ir::JitManifold, x: f32, y: f32) -> f32 {
+fn call_xy(jit: &pixelflow_codegen::JitManifold, x: f32, y: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let z = _mm256_setzero_ps();
@@ -82,7 +83,7 @@ fn call_xy(jit: &pixelflow_ir::JitManifold, x: f32, y: f32) -> f32 {
     not(target_feature = "avx2"),
     not(target_feature = "avx512f")
 ))]
-fn call_xy(jit: &pixelflow_ir::JitManifold, x: f32, y: f32) -> f32 {
+fn call_xy(jit: &pixelflow_codegen::JitManifold, x: f32, y: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let z = _mm_setzero_ps();
@@ -90,7 +91,7 @@ fn call_xy(jit: &pixelflow_ir::JitManifold, x: f32, y: f32) -> f32 {
     }
 }
 #[cfg(target_arch = "aarch64")]
-fn call_xy(jit: &pixelflow_ir::JitManifold, x: f32, y: f32) -> f32 {
+fn call_xy(jit: &pixelflow_codegen::JitManifold, x: f32, y: f32) -> f32 {
     use core::arch::aarch64::*;
     unsafe {
         let z = vdupq_n_f32(0.0);

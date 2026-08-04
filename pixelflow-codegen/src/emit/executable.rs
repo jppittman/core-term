@@ -120,7 +120,16 @@ impl Drop for ExecutableCode {
     fn drop(&mut self) {
         #[cfg(unix)]
         unsafe {
-            libc::munmap(self.ptr as *mut libc::c_void, self.capacity);
+            let rc = libc::munmap(self.ptr as *mut libc::c_void, self.capacity);
+            // A failing `munmap` means the mapping this type believed it owned
+            // was not the mapping the kernel had — a leak at best. Nothing
+            // useful can be done about it while unwinding, but it must not
+            // pass unremarked.
+            debug_assert_eq!(
+                rc, 0,
+                "munmap failed for {:?} ({} bytes)",
+                self.ptr, self.capacity
+            );
         }
     }
 }
@@ -136,234 +145,6 @@ fn page_size() -> usize {
     #[cfg(not(target_os = "macos"))]
     unsafe {
         libc::sysconf(libc::_SC_PAGESIZE) as usize
-    }
-}
-
-// =============================================================================
-// Reusable code buffer — eliminates mmap/munmap per compile
-// =============================================================================
-
-/// A reusable region of executable memory for JIT compilation.
-///
-/// Allocates a single page (or multiple pages) once via `mmap`, then reuses it
-/// across compiles to avoid repeated allocation and mapping work.
-///
-/// # Usage
-///
-/// ```ignore
-/// let mut buf = CodeBuffer::new(65536).expect("mmap failed");
-/// let func: KernelFn = buf.write_code(&machine_code)?;
-/// // ... call func ...
-/// // Next compile reuses the same memory:
-/// let func2: KernelFn = buf.write_code(&other_code)?;
-/// ```
-///
-/// # Safety
-///
-/// The caller must ensure that no references to previously returned function
-/// pointers are used after a subsequent `write_code` call (the old code is
-/// overwritten).
-pub struct CodeBuffer {
-    ptr: *mut u8,
-    capacity: usize,
-    len: usize,
-}
-
-// SAFETY: The code buffer is owned by a single thread at a time.
-// The caller must ensure no concurrent access to write_code.
-unsafe impl Send for CodeBuffer {}
-
-impl CodeBuffer {
-    /// Allocate a reusable code buffer of at least `capacity` bytes.
-    ///
-    /// The actual capacity is rounded up to the system page size.
-    /// Returns an error if mmap fails.
-    #[cfg(unix)]
-    pub fn new(capacity: usize) -> Result<Self, &'static str> {
-        use libc::{MAP_ANON, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap};
-
-        if capacity == 0 {
-            return Err("CodeBuffer capacity must be > 0");
-        }
-
-        let ps = page_size();
-        let capacity = (capacity + ps - 1) & !(ps - 1);
-
-        // On macOS with JIT support, use MAP_JIT for pthread_jit_write_protect_np.
-        #[cfg(target_os = "macos")]
-        let flags = MAP_PRIVATE | MAP_ANON | libc::MAP_JIT;
-        #[cfg(not(target_os = "macos"))]
-        let flags = MAP_PRIVATE | MAP_ANON;
-
-        let ptr = unsafe {
-            mmap(
-                ptr::null_mut(),
-                capacity,
-                PROT_READ | PROT_WRITE,
-                flags,
-                -1,
-                0,
-            )
-        };
-
-        if ptr == libc::MAP_FAILED {
-            return Err("CodeBuffer: mmap failed");
-        }
-
-        // Immediately flip to RX so it's in a safe default state.
-        #[cfg(not(target_os = "macos"))]
-        {
-            let rc = unsafe { libc::mprotect(ptr, capacity, libc::PROT_READ | libc::PROT_EXEC) };
-            if rc != 0 {
-                unsafe {
-                    libc::munmap(ptr, capacity);
-                }
-                return Err("CodeBuffer: initial mprotect to RX failed");
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            // With MAP_JIT on macOS, the memory starts RW. Toggle to RX.
-            unsafe {
-                toggle_jit_write(JitWriteState::Executable);
-            }
-        }
-
-        Ok(Self {
-            ptr: ptr as *mut u8,
-            capacity,
-            len: 0,
-        })
-    }
-
-    /// Write machine code into the buffer and return a function pointer.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure:
-    /// 1. `code` contains valid machine code for the current architecture.
-    /// 2. No previously returned function pointers are called after this.
-    /// 3. `code.len() <= self.capacity`.
-    #[cfg(unix)]
-    pub unsafe fn write_code<F: Copy>(&mut self, code: &[u8]) -> Result<F, &'static str> {
-        if code.is_empty() {
-            return Err("CodeBuffer: empty code");
-        }
-        if code.len() > self.capacity {
-            return Err("CodeBuffer: code exceeds buffer capacity");
-        }
-
-        // SAFETY: All unsafe operations below are protected by the function's
-        // safety contract: valid machine code, no concurrent access, code fits.
-        unsafe {
-            // Toggle to writable.
-            #[cfg(target_os = "macos")]
-            {
-                toggle_jit_write(JitWriteState::Writable);
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                let rc = libc::mprotect(
-                    self.ptr as *mut libc::c_void,
-                    self.capacity,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                );
-                if rc != 0 {
-                    return Err("CodeBuffer: mprotect to RW failed");
-                }
-            }
-
-            // Copy code.
-            ptr::copy_nonoverlapping(code.as_ptr(), self.ptr, code.len());
-            self.len = code.len();
-
-            // Toggle to executable.
-            #[cfg(target_os = "macos")]
-            {
-                toggle_jit_write(JitWriteState::Executable);
-                // Instruction cache coherence on Apple Silicon.
-                // sys_icache_invalidate is needed after writing code on ARM.
-                unsafe extern "C" {
-                    fn sys_icache_invalidate(start: *mut core::ffi::c_void, size: usize);
-                }
-                sys_icache_invalidate(self.ptr as *mut core::ffi::c_void, code.len());
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                let rc = libc::mprotect(
-                    self.ptr as *mut libc::c_void,
-                    self.capacity,
-                    libc::PROT_READ | libc::PROT_EXEC,
-                );
-                if rc != 0 {
-                    return Err("CodeBuffer: mprotect to RX failed");
-                }
-            }
-
-            Ok(core::mem::transmute_copy(&self.ptr))
-        }
-    }
-
-    /// Current code length in bytes.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Whether the buffer contains no code.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    /// Total capacity in bytes.
-    #[must_use]
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-}
-
-impl Drop for CodeBuffer {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        unsafe {
-            libc::munmap(self.ptr as *mut libc::c_void, self.capacity);
-        }
-    }
-}
-
-/// Toggle JIT write protection on macOS (Apple Silicon).
-///
-/// When `writable` is true, the current thread can write to MAP_JIT memory.
-/// When false, the memory is executable but not writable (W^X).
-///
-/// This is per-thread, so it doesn't affect other threads' ability to execute the code.
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JitWriteState {
-    Writable,
-    Executable,
-}
-
-#[cfg(target_os = "macos")]
-unsafe fn toggle_jit_write(state: JitWriteState) {
-    // pthread_jit_write_protect_np(true) = write-protect (executable)
-    // pthread_jit_write_protect_np(false) = writable (not executable)
-    // Note: the semantics are inverted from what you'd expect!
-    unsafe extern "C" {
-        fn pthread_jit_write_protect_np(enabled: core::ffi::c_int);
-    }
-
-    let enabled = match state {
-        JitWriteState::Executable => 1,
-        JitWriteState::Writable => 0,
-    };
-
-    // SAFETY: pthread_jit_write_protect_np is always safe to call — it only
-    // affects the calling thread's JIT write permission.
-    unsafe {
-        pthread_jit_write_protect_np(enabled);
     }
 }
 
@@ -403,7 +184,7 @@ pub type KernelFn =
 /// JIT-compiled kernel that reads bound memory (ARM64).
 ///
 /// Identical to [`KernelFn`] plus a leading context pointer: an array of buffer
-/// base pointers, one per declared [`BufferId`](crate::arena::BufferId) in slot
+/// base pointers, one per declared [`BufferId`](pixelflow_ir::arena::BufferId) in slot
 /// order. AAPCS64 places this integer-class pointer in `x0`, disjoint from the
 /// coordinate vectors in `v0..3`, so the emitted body is byte-for-byte the same
 /// as a `KernelFn` — only kernels containing a `Gather` read `x0`. The caller
@@ -455,7 +236,7 @@ pub type KernelFn = extern "C" fn(__m512, __m512, __m512, __m512) -> __m512;
 /// JIT-compiled kernel that reads bound memory (x86-64 AVX-512).
 ///
 /// Identical to [`KernelFn`] plus a leading context pointer: an array of buffer
-/// base pointers, one per declared [`BufferId`](crate::arena::BufferId) in slot
+/// base pointers, one per declared [`BufferId`](pixelflow_ir::arena::BufferId) in slot
 /// order. System V places this integer-class pointer in `rdi`, disjoint from the
 /// coordinate vectors in `zmm0..3`, so the emitted body is byte-for-byte the
 /// same as a `KernelFn` — only kernels containing a `Gather` read `rdi`. The
@@ -528,7 +309,7 @@ pub type KernelFn = extern "C" fn(__m128, __m128, __m128, __m128) -> __m128;
 /// JIT-compiled kernel that reads bound memory (x86-64, 128-bit).
 ///
 /// Identical to [`KernelFn`] plus a leading context pointer: an array of buffer
-/// base pointers, one per declared [`BufferId`](crate::arena::BufferId) in slot
+/// base pointers, one per declared [`BufferId`](pixelflow_ir::arena::BufferId) in slot
 /// order. System V places this integer-class pointer in `rdi`, disjoint from the
 /// coordinate vectors in `xmm0..3`, so the emitted body is byte-for-byte the
 /// same as a `KernelFn` — only kernels containing a `Gather` read `rdi`. The

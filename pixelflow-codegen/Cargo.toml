@@ -1,0 +1,30 @@
+[package]
+name = "pixelflow-codegen"
+version = "0.1.0"
+edition = "2024"
+description = "Expression graphs to machine code: per-ISA emitters, executable memory, and the compile cache"
+
+[lib]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[lints]
+workspace = true
+
+[dependencies]
+pixelflow-ir = { path = "../pixelflow-ir" }
+# The compile entries own the optimize-then-emit pipeline, which is the reason
+# this crate sits ABOVE the e-graph rather than beside it. Callers ask for a
+# compiled kernel; whether it was optimized is not theirs to decide.
+pixelflow-search = { path = "../pixelflow-search" }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", default-features = false }
+
+[dev-dependencies]
+criterion = "0.5"
+pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
+
+[[bench]]
+name = "collapse_overhead"
+harness = false

@@ -16,6 +16,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use libm::fabsf;
+use pixelflow_ir::kind::OpMap;
 
 /// Re-export canonical IR types as the source of truth.
 pub use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
@@ -975,7 +976,7 @@ impl BwdGenerator {
         &mut self,
         root: ExprId,
         budget: usize,
-        root_op_set: &[bool; OpKind::COUNT],
+        root_op_set: &OpMap<bool>,
     ) -> (ExprId, usize) {
         let n = self.arena.len();
         // Identity remap: every node maps to itself initially.
@@ -1009,7 +1010,7 @@ impl BwdGenerator {
 
             // Op filter: skip if no template can match this node's root op.
             let node_op = self.arena.kind(base_id);
-            if node_op.index() < OpKind::COUNT && !root_op_set[node_op.index()] {
+            if !root_op_set[node_op] {
                 continue;
             }
 

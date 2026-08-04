@@ -19,7 +19,7 @@
 //! with the no-op zero-weight cost model — extraction keeps the original
 //! form; peephole/CSE still run. The point is the *pipeline*, end to end.
 
-use pixelflow_ir::backend::emit::compile_arena_dag;
+use pixelflow_codegen::emit::compile_arena_dag;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
 use pixelflow_search::egraph::{EGraph, IncrementalExtractor, choices_to_arena};
 use pixelflow_search::math::all_rules;
@@ -77,7 +77,7 @@ fn optimize(arena: &ExprArena, root: ExprId, tag: &str) -> (ExprArena, ExprId) {
 // Gated to match the width-specific `KernelFn` ABI the backend emits.
 // ---------------------------------------------------------------------------
 
-use pixelflow_ir::backend::emit::executable::{ExecutableCode, KernelFn};
+use pixelflow_codegen::emit::executable::{ExecutableCode, KernelFn};
 
 #[cfg(all(
     target_arch = "x86_64",

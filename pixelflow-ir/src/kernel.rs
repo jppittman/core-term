@@ -668,7 +668,7 @@ mod tests {
 
     #[test]
     fn dx_differentiates_at_compile_time() {
-        use crate::backend::emit::lowering::lower_dwrt_owned;
+        use crate::passes::lower_dwrt_owned;
         // d/dx √(x²+y²) = x / √(x²+y²).
         let x = Kernel::x();
         let y = Kernel::y();

@@ -7,6 +7,7 @@
 //! The arena is append-only. [`ExprArena::clear`] truncates without deallocating,
 //! ready for reuse.
 
+use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -365,7 +366,7 @@ impl ExprArena {
     /// Same logical safety contract as [`ExprArena::from_raw`]; additionally,
     /// every `Buffer(id)` node must index validly into `buffers`.
     #[must_use]
-    pub fn from_raw_with_buffers(
+    pub(crate) fn from_raw_with_buffers(
         nodes: Vec<ExprNode>,
         nary_children: Vec<ExprId>,
         buffers: Vec<BufferDecl>,
@@ -885,7 +886,7 @@ impl ExprArena {
 
     /// Format the subtree rooted at `root` as an S-expression, matching the
     /// [`Expr`] display format.
-    pub fn fmt_expr(&self, root: ExprId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    pub(crate) fn fmt_expr(&self, root: ExprId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         enum Task {
             Visit(ExprId),
             WriteStr(&'static str),
@@ -1387,7 +1388,7 @@ mod composition_tests {
     fn spliced_fragment_differentiates_in_host() {
         // The composition story end-to-end at the arena level: splice a
         // distance fragment under a Dwrt and lower — d/dx √(x²+y²) = x/r.
-        use crate::backend::emit::lowering::lower_dwrt_owned;
+        use crate::passes::lower_dwrt_owned;
 
         let mut donor = ExprArena::new();
         let x = donor.push_var(0);

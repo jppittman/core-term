@@ -8,7 +8,7 @@ use pixelflow_ir::kind::OpKind;
 
 #[cfg(target_arch = "aarch64")]
 fn main() {
-    use pixelflow_ir::backend::emit::compile_arena_dag;
+    use pixelflow_codegen::emit::compile_arena_dag;
 
     for size in [10, 30, 50, 100, 150, 200] {
         let (arena, root) = build_expr(size);

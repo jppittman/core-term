@@ -34,16 +34,17 @@ fn judge_weights_round_trip_via_trid() {
     let _ = std::fs::remove_file(&path);
 
     // The magic must be TRID (not a stale TRIC/TRIB), and the loader must accept it.
-    assert_eq!(&bytes[0..4], b"TRID", "saved file is not TRID-format");
+    assert_eq!(&bytes[0..4], b"TRIE", "saved file is not TRIE-format");
     let loaded = ExprNnue::from_bytes(&bytes)
         .unwrap_or_else(|e| panic!("ExprNnue::from_bytes rejected a freshly-saved TRID file: {e}"));
 
     // Beyond "magic matched": a model whose embeddings are all zero/non-finite
-    // would still parse as valid TRID but carry no signal. Guard against a
+    // would still parse as valid TRIE but carry no signal. Guard against a
     // silently-dead file.
     let has_signal = loaded
         .embeddings
         .e
+        .as_slice()
         .iter()
         .flatten()
         .any(|&v| v.is_finite() && v != 0.0);

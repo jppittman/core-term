@@ -50,8 +50,7 @@ pub fn eval_scalar(
     //
     // `expand_transcendentals_owned` is the identity (a bare clone) when the
     // arena holds none, so ordinary kernels pay nothing.
-    let (expanded, root) =
-        crate::backend::emit::lowering::expand_transcendentals_owned(arena, root);
+    let (expanded, root) = crate::passes::expand_transcendentals_owned(arena, root);
     let variance = crate::variance::compute_arena_variance(&expanded);
     let n = expanded.len();
     let memo = core::cell::RefCell::new(alloc::vec![None; n]);
@@ -277,7 +276,7 @@ mod tests {
     fn lowering_preserves_gather_semantics() {
         // The crux of M2 slice 1: expand_gather must produce an index
         // expression that evaluates identically to the high-level Gather.
-        use crate::backend::emit::lowering::expand_gather;
+        use crate::passes::expand_gather;
 
         let width = 5usize;
         let height = 4usize;
@@ -394,7 +393,7 @@ mod tests {
     #[test]
     fn reduce_lowering_preserves_semantics() {
         // Σ over i of (X + i), lowered by expand_reduce, must equal the fold.
-        use crate::backend::emit::lowering::expand_reduce;
+        use crate::passes::expand_reduce;
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
         let i = arena.push_var(4);

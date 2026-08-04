@@ -1773,7 +1773,7 @@ impl SimdOps for F32x16 {
 
             // Adjust to [√2/2, √2] range for better accuracy (centered at 1)
             // If f >= √2, divide by 2 and increment exponent
-            let sqrt2 = _mm512_set1_ps(std::f32::consts::SQRT_2);
+            let sqrt2 = _mm512_set1_ps(core::f32::consts::SQRT_2);
             let mask = _mm512_cmp_ps_mask::<_CMP_GE_OQ>(f, sqrt2);
             let adjust = _mm512_mask_blend_ps(mask, _mm512_setzero_ps(), _mm512_set1_ps(1.0));
             n = _mm512_add_ps(n, adjust);
@@ -1807,7 +1807,7 @@ impl SimdOps for F32x16 {
             let c4 = _mm512_set1_ps(exp2_poly::C4);
             let c3 = _mm512_set1_ps(exp2_poly::C3);
             let c2 = _mm512_set1_ps(exp2_poly::C2);
-            let c1 = _mm512_set1_ps(std::f32::consts::LN_2);
+            let c1 = _mm512_set1_ps(core::f32::consts::LN_2);
             let c0 = _mm512_set1_ps(1.0);
 
             // Horner's method with FMA

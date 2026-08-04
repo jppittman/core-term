@@ -1274,9 +1274,9 @@ fn named_struct_lower_impl(
         {
             fn lower(
                 &self,
-                __host: &mut ::pixelflow_core::__ir::ExprArena,
+                __host: &mut ::pixelflow_core::__macro::ir::ExprArena,
                 _env: &mut ::pixelflow_core::LowerEnv,
-            ) -> ::core::option::Option<::pixelflow_core::__ir::ExprId> {
+            ) -> ::core::option::Option<::pixelflow_core::__macro::ir::ExprId> {
                 let (mut __arena, mut __root) = #arena_code;
                 #compose
                 __root = __arena.substitute_params(

@@ -26,10 +26,10 @@
 //! (`x86_64::emit_gather_scalar`), run once per 128-bit half and combined
 //! with `vinsertf128`.
 
-use super::Reg;
 use super::x86_64;
-use crate::OpKind;
+use super::{Reg, unimplemented_op};
 use alloc::vec::Vec;
+use pixelflow_ir::OpKind;
 
 // =============================================================================
 // VEX.256 encoder
@@ -351,17 +351,11 @@ pub fn emit_ret(code: &mut Vec<u8>) {
 /// `dst = op(src1, src2)`. VEX is 3-operand/non-destructive: operands are
 /// never clobbered and may alias `dst`. Comparisons produce an ordinary
 /// all-ones/all-zeros vector directly (no k-register step, unlike AVX-512).
-pub fn emit_binary(
-    code: &mut Vec<u8>,
-    op: OpKind,
-    dst: Reg,
-    src1: Reg,
-    src2: Reg,
-) -> Result<(), &'static str> {
+pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Reg) {
     let (d, s1, s2) = (dst.0, src1.0, src2.0);
     if let Some(pred) = cmp_pred(op) {
         vcmpps(code, d, s1, s2, pred);
-        return Ok(());
+        return;
     }
     match op {
         OpKind::Add => vaddps(code, d, s1, s2),
@@ -373,13 +367,12 @@ pub fn emit_binary(
         OpKind::BitAnd => vandps(code, d, s1, s2),
         OpKind::BitOr => vorps(code, d, s1, s2),
         OpKind::IAdd => vpaddd(code, d, s1, s2),
-        _ => return Err("avx2: binary op not implemented"),
+        _ => unimplemented_op("avx2", op),
     }
-    Ok(())
 }
 
 /// `dst = op(src)`.
-pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) -> Result<(), &'static str> {
+pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) {
     match op {
         OpKind::Sqrt => vsqrtps(code, dst.0, src.0),
         OpKind::Rsqrt => vrsqrtps(code, dst.0, src.0),
@@ -398,9 +391,8 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) -> Result<
         OpKind::Round => vroundps(code, dst.0, src.0, 0x00),
         OpKind::TruncToInt => vcvttps2dq(code, dst.0, src.0),
         OpKind::IntToFloat => vcvtdq2ps(code, dst.0, src.0),
-        _ => return Err("avx2: unary op not implemented"),
+        _ => unimplemented_op("avx2", op),
     }
-    Ok(())
 }
 
 /// Scratch register for unary mask materialization (neg/abs) and the select
@@ -409,19 +401,12 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) -> Result<
 const UNARY_SCRATCH: Reg = Reg(15);
 
 /// Emit a shift of i32 lanes by a compile-time immediate.
-pub fn emit_shift_imm(
-    code: &mut Vec<u8>,
-    op: OpKind,
-    dst: Reg,
-    src: Reg,
-    amount: u8,
-) -> Result<(), &'static str> {
+pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount: u8) {
     match op {
         OpKind::Shl => vpslld_imm(code, dst.0, src.0, amount),
         OpKind::Shr => vpsrld_imm(code, dst.0, src.0, amount),
-        _ => return Err("avx2: not a shift op"),
+        _ => unimplemented_op("avx2", op),
     }
-    Ok(())
 }
 
 /// `dst = mask ? if_true : if_false` (bit-select; mask already in `dst`, same
@@ -526,7 +511,7 @@ mod tests {
     #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
     mod runtime {
         use super::super::*;
-        use crate::backend::emit::executable::ExecutableCode;
+        use crate::emit::executable::ExecutableCode;
         use core::arch::x86_64::*;
 
         #[allow(improper_ctypes_definitions)]
@@ -605,7 +590,7 @@ mod tests {
             ];
             for &(op, f) in cases {
                 let mut c = Vec::new();
-                emit_binary(&mut c, op, X, X, Y).unwrap();
+                emit_binary(&mut c, op, X, X, Y);
                 check(run(&c, xs, ys, zs), |i| f(xs[i], ys[i]), "binary");
             }
         }
@@ -614,7 +599,7 @@ mod tests {
         fn compare_lt() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_binary(&mut c, OpKind::Lt, X, X, Y).unwrap();
+            emit_binary(&mut c, OpKind::Lt, X, X, Y);
             check_bits(
                 run(&c, xs, ys, zs),
                 |i| if xs[i] < ys[i] { 0xFFFF_FFFF } else { 0 },
@@ -626,15 +611,15 @@ mod tests {
         fn sqrt_and_neg_abs() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Sqrt, X, Y).unwrap();
+            emit_unary(&mut c, OpKind::Sqrt, X, Y);
             check(run(&c, xs, ys, zs), |i| ys[i].sqrt(), "sqrt");
 
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Neg, X, X).unwrap();
+            emit_unary(&mut c, OpKind::Neg, X, X);
             check(run(&c, xs, ys, zs), |i| -xs[i], "neg");
 
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Abs, X, X).unwrap();
+            emit_unary(&mut c, OpKind::Abs, X, X);
             check(run(&c, xs, ys, zs), |i| xs[i].abs(), "abs");
         }
 
@@ -642,7 +627,7 @@ mod tests {
         fn select_blend() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_binary(&mut c, OpKind::Lt, Reg(5), X, Y).unwrap(); // mask
+            emit_binary(&mut c, OpKind::Lt, Reg(5), X, Y); // mask
             emit_mov(&mut c, Reg(6), Reg(5));
             emit_select(&mut c, Reg(6), X, Y); // dst = mask ? x : y
             emit_mov(&mut c, X, Reg(6));
@@ -658,7 +643,7 @@ mod tests {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_const(&mut c, Reg(5), 2.5);
-            emit_binary(&mut c, OpKind::Add, X, X, Reg(5)).unwrap();
+            emit_binary(&mut c, OpKind::Add, X, X, Reg(5));
             check(run(&c, xs, ys, zs), |i| xs[i] + 2.5, "const+add");
 
             let mut c = Vec::new();
@@ -673,9 +658,9 @@ mod tests {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_sub_rsp(&mut c, 32);
-            emit_binary(&mut c, OpKind::Mul, Reg(6), X, Y).unwrap();
+            emit_binary(&mut c, OpKind::Mul, Reg(6), X, Y);
             emit_store_rsp(&mut c, Reg(6), 0);
-            emit_binary(&mut c, OpKind::Add, Reg(6), X, X).unwrap(); // clobber
+            emit_binary(&mut c, OpKind::Add, Reg(6), X, X); // clobber
             emit_load_rsp(&mut c, X, 0);
             emit_add_rsp(&mut c, 32);
             check(run(&c, xs, ys, zs), |i| xs[i] * ys[i], "spill roundtrip");

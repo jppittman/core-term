@@ -20,7 +20,7 @@
 /// # Example
 ///
 /// ```ignore
-/// use pixelflow_ir::backend::fastmath::FastMathGuard;
+/// use pixelflow_core::backend::fastmath::FastMathGuard;
 ///
 /// {
 ///     let _guard = unsafe { FastMathGuard::new() };

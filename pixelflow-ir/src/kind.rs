@@ -2,8 +2,13 @@
 //!
 //! This enum provides a uniform representation of all operations.
 //! It is used for storage in the e-graph and as the base for feature indices.
+//!
+//! Per-op tables belong in [`OpMap`], not in a bare `[T; OpKind::COUNT]`.
+//! A bare array makes each consumer responsible for turning an op into a
+//! subscript, and every consumer that did got it wrong the same way.
 
 use crate::traits::EmitStyle;
+use core::ops::{Index, IndexMut};
 
 /// Unified enumeration of all IR operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -31,54 +36,54 @@ pub enum OpKind {
     Round = 16,
 
     // --- Trigonometry ---
-    Sin = 18,
-    Cos = 19,
-    Tan = 20,
-    Asin = 21,
-    Acos = 22,
-    Atan = 23,
-    Atan2 = 24,
+    Sin = 17,
+    Cos = 18,
+    Tan = 19,
+    Asin = 20,
+    Acos = 21,
+    Atan = 22,
+    Atan2 = 23,
 
     // --- Exponentials ---
-    Exp = 25,
-    Exp2 = 26,
-    Ln = 27,
-    Log2 = 28,
-    Log10 = 29,
-    Pow = 30,
+    Exp = 24,
+    Exp2 = 25,
+    Ln = 26,
+    Log2 = 27,
+    Log10 = 28,
+    Pow = 29,
 
     // --- Comparison ---
-    Lt = 32,
-    Le = 33,
-    Gt = 34,
-    Ge = 35,
-    Eq = 36,
-    Ne = 37,
+    Lt = 30,
+    Le = 31,
+    Gt = 32,
+    Ge = 33,
+    Eq = 34,
+    Ne = 35,
 
     // --- Control Flow ---
-    Select = 38,
+    Select = 36,
 
     // --- Structure ---
-    Tuple = 40,
+    Tuple = 37,
 
     // --- Bit manipulation (integer-domain primitives) ---
     // These let exp/ln/log lower to arithmetic: each maps 1:1 to a single
     // hardware instruction. Lanes are reinterpreted as i32 where noted;
     // "reinterpret" itself is free (same register) and is not an op.
     /// Truncate f32 lanes to i32 (`cvttps2dq` / `fcvtzs`).
-    TruncToInt = 41,
+    TruncToInt = 38,
     /// Convert i32 lanes to f32 (`cvtdq2ps` / `scvtf`).
-    IntToFloat = 42,
+    IntToFloat = 39,
     /// Integer (i32) lane-wise add (`paddd` / `add .4s`).
-    IAdd = 43,
+    IAdd = 40,
     /// Logical shift-left of i32 lanes; RHS is a `Const` shift amount.
-    Shl = 44,
+    Shl = 41,
     /// Logical shift-right of i32 lanes; RHS is a `Const` shift amount.
-    Shr = 45,
+    Shr = 42,
     /// Bitwise AND of lane bit patterns (`andps` / `and`).
-    BitAnd = 46,
+    BitAnd = 43,
     /// Bitwise OR of lane bit patterns (`orps` / `orr`).
-    BitOr = 47,
+    BitOr = 44,
 
     // --- Differentiation ---
     /// Symbolic derivative `∂(child0)/∂(var)` where `child1` is a `Const` whose
@@ -87,23 +92,23 @@ pub enum OpKind {
     /// whatever survives (budget miss, unsupported op) falls to the runtime
     /// `lower_dwrt` pass, which either eliminates it or refuses to compile.
     /// It must never reach a backend.
-    Dwrt = 48,
+    Dwrt = 45,
 
     // --- Bound memory (lattices) ---
     /// Buffer leaf: a slot referencing a `BufferDecl` in the arena's buffer
     /// table. The declared extents are static IR; the contents are bound at
     /// JIT-compile time. See `docs/designs/KERNELS_AND_LATTICES.md`.
-    Buffer = 49,
+    Buffer = 46,
     /// Read a bound buffer: `Gather(buffer, x, y)` where `buffer` is a
     /// `Buffer` leaf. Semantics match `DiscreteManifold::eval`: floor the
     /// indices, clamp to the declared extents, gather row-major.
-    Gather = 50,
+    Gather = 47,
     /// Primitive gather: `RawGather(buffer, index)` reads `buffer`'s contents
     /// at the already-computed linear lane `index` (truncated to int), with no
     /// floor/clamp/row-major math. `Gather` lowers to index arithmetic (built
     /// from existing ops) plus this primitive — the analogue of `raw_mul` under
     /// `mul`. The index is trusted to be in bounds (the lowering clamps it).
-    RawGather = 51,
+    RawGather = 48,
 
     // --- Reduction (lattice fold) ---
     /// Fold a body over a bounded domain. Encoded
@@ -114,7 +119,7 @@ pub enum OpKind {
     /// opcode, so one `Reduce` covers every monoid and can later take an
     /// arbitrary combiner function. Lowered to an unrolled accumulation by
     /// `expand_reduce` before codegen — the analogue of `Gather -> RawGather`.
-    Reduce = 52,
+    Reduce = 49,
 }
 
 impl OpKind {
@@ -125,7 +130,7 @@ impl OpKind {
     /// (`Add`→0, `Mul`→1, `Min`→+∞, `Max`→−∞). `None` if `self` is not a valid
     /// combiner.
     #[must_use]
-    pub const fn monoid_identity(self) -> Option<f32> {
+    pub(crate) const fn monoid_identity(self) -> Option<f32> {
         match self {
             Self::Add => Some(0.0),
             Self::Mul => Some(1.0),
@@ -203,9 +208,9 @@ impl OpKind {
             // preserved) while `(x + 0.5).floor()` gives `+0.0`. `1.0 / x`
             // makes that `-inf` versus `+inf`. `-0.5` is already covered as a
             // tie; the rest of the interval is not.
-            Self::Round => args
-                .iter()
-                .any(|a| a.fract().abs() == 0.5 || (a.is_sign_negative() && *a > -0.5)),
+            Self::Round => args.iter().any(|a| {
+                (a - libm::truncf(*a)).abs() == 0.5 || (a.is_sign_negative() && *a > -0.5)
+            }),
             // Reciprocal ESTIMATES, and every target estimates differently:
             // SSE2/AVX2 `rcpps`/`vrcpps` give ~12 bits, AVX-512 `vrcp14ps`
             // ~14, and aarch64 emits `FRECPE` plus one `FRECPS` Newton step.
@@ -218,7 +223,7 @@ impl OpKind {
             // SSE2 emits without one. Value-aware, because they agree for most
             // inputs and folding is worth keeping where they do.
             Self::MulAdd => match args {
-                [x, y, z] => x.mul_add(*y, *z).to_bits() != (x * y + z).to_bits(),
+                [x, y, z] => libm::fmaf(*x, *y, *z).to_bits() != (x * y + z).to_bits(),
                 _ => false,
             },
             _ => false,
@@ -228,25 +233,38 @@ impl OpKind {
     /// Whether `self` is a valid reduction combiner (an associative monoid op
     /// with an identity).
     #[must_use]
-    pub const fn is_monoid(self) -> bool {
+    pub(crate) const fn is_monoid(self) -> bool {
         self.monoid_identity().is_some()
     }
 
-    /// Convert to array index.
+    /// Convert to array index. Dense over `0..COUNT`, so `[T; OpKind::COUNT]`
+    /// indexed by this is total — see [`OpKind::from_index`].
     #[inline]
     #[must_use]
     pub const fn index(self) -> usize {
         self as usize
     }
 
-    /// Convert index to OpKind.
+    /// Every op, in [`OpKind::index`] order.
+    ///
+    /// Prefer this to walking `0..COUNT` and calling [`OpKind::from_index`] —
+    /// that spelling is why the three ops sitting past the old discriminant
+    /// gaps were never visited by any table-filling loop.
+    pub fn all() -> impl Iterator<Item = Self> + Clone {
+        (0..Self::COUNT).map(|i| Self::from_index(i).expect("index_is_dense_and_total"))
+    }
+
+    /// Convert index to `OpKind`. Inverse of [`OpKind::index`].
     #[must_use]
     pub fn from_index(idx: usize) -> Option<Self> {
         if idx >= Self::COUNT {
             return None;
         }
-        // SAFETY: repr(u8) and contiguous 0..=40
-        unsafe { core::mem::transmute(idx as u8) }
+        // SAFETY: `OpKind` is `repr(u8)` with discriminants assigned densely
+        // over `0..COUNT`, so every value passing the bound above names a
+        // variant. `index_is_dense_and_total` is what keeps that true — it
+        // fails the moment a discriminant is skipped or `COUNT` drifts.
+        Some(unsafe { core::mem::transmute::<u8, Self>(idx as u8) })
     }
 
     /// Get the arity of the operation.
@@ -626,17 +644,17 @@ impl OpKind {
     pub fn eval_unary(self, x: f32) -> Option<f32> {
         match self {
             Self::Neg => Some(-x),
-            Self::Sqrt => Some(x.sqrt()),
-            Self::Rsqrt => Some(1.0 / x.sqrt()),
+            Self::Sqrt => Some(libm::sqrtf(x)),
+            Self::Rsqrt => Some(1.0 / libm::sqrtf(x)),
             Self::Abs => Some(x.abs()),
             Self::Recip => Some(1.0 / x),
-            Self::Floor => Some(x.floor()),
-            Self::Ceil => Some(x.ceil()),
+            Self::Floor => Some(libm::floorf(x)),
+            Self::Ceil => Some(libm::ceilf(x)),
             // x86's answer (`vroundps` imm 0x00 is nearest-even). aarch64
             // `FRINTA` is ties-away and the combinator tier is
             // `(x + 0.5).floor()`, so at a tie this is one of three behaviors
             // and no promise — see `fold_is_platform_specific`.
-            Self::Round => Some(x.round_ties_even()),
+            Self::Round => Some(libm::rintf(x)),
             // Integer-domain primitives. A lane holds an f32 bit pattern; these
             // reinterpret it as i32, exactly as the hardware instructions do
             // (`cvttps2dq` / `cvtdq2ps`). They exist so exp/log can lower to
@@ -784,4 +802,150 @@ impl OpKind {
     }
 }
 
+// ============================================================================
+// OpMap
+// ============================================================================
+
+/// A total map from every [`OpKind`] to a `T`.
+///
+/// This exists because the obvious alternative — `[T; OpKind::COUNT]`
+/// subscripted by `OpKind::index()` — spread the same defect to every consumer
+/// that reached for it. Four of them did: the latency-prior cost table, the
+/// learned cost model, the NNUE op embeddings, and its gradient buffer.
+///
+/// Two things go wrong with the bare array, and both went wrong here:
+///
+/// 1. **The subscript escapes.** `index() -> usize` hands out an integer with
+///    no memory of the bound it is valid against, so each consumer re-derives
+///    the same unchecked cast. When the discriminants had gaps, every one of
+///    them was out of bounds for the last three ops — and the workaround that
+///    appeared was a local `if op.index() < OpKind::COUNT` guard that
+///    *silently skipped* those ops rather than failing.
+/// 2. **Positional literals drift.** A `[T; COUNT]` written out in order is
+///    aligned to the discriminants only by convention, and nothing checks the
+///    convention. The latency prior was written densely while `index()` was
+///    sparse, so 13 of 50 ops read a neighbour's cost — `Dwrt` was priced at
+///    10 instead of the 1000 that keeps extraction away from it.
+///
+/// [`OpMap::from_fn`] closes the second hole: an exhaustive `match` on
+/// `OpKind` is checked by the compiler, so a table cannot silently misalign
+/// and cannot silently omit an op.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpMap<T> {
+    slots: [T; OpKind::COUNT],
+}
+
+impl<T> OpMap<T> {
+    /// Build a table by answering for every op. Write the body as a `match`
+    /// and the compiler will not let you forget one.
+    pub fn from_fn(mut f: impl FnMut(OpKind) -> T) -> Self {
+        Self {
+            slots: core::array::from_fn(|i| {
+                f(OpKind::from_index(i).expect("index_is_dense_and_total"))
+            }),
+        }
+    }
+
+    /// Iterate in [`OpKind::index`] order — the order [`OpMap::as_slice`]
+    /// serializes in.
+    pub fn iter(&self) -> impl Iterator<Item = (OpKind, &T)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (OpKind::from_index(i).expect("index_is_dense_and_total"), v))
+    }
+
+    /// The backing slots in `index()` order. For serialization; prefer
+    /// indexing by [`OpKind`] for lookups.
+    pub fn as_slice(&self) -> &[T] {
+        &self.slots
+    }
+
+    /// Mutable backing slots in `index()` order. For deserialization.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.slots
+    }
+}
+
+impl<T: Copy> OpMap<T> {
+    /// A table where every op answers `value`.
+    pub const fn splat(value: T) -> Self {
+        Self {
+            slots: [value; OpKind::COUNT],
+        }
+    }
+}
+
+impl<T: Default + Copy> Default for OpMap<T> {
+    fn default() -> Self {
+        Self::splat(T::default())
+    }
+}
+
+impl<T> Index<OpKind> for OpMap<T> {
+    type Output = T;
+
+    #[inline]
+    fn index(&self, op: OpKind) -> &T {
+        // The only place in the workspace where an op becomes a subscript.
+        &self.slots[op.index()]
+    }
+}
+
+impl<T> IndexMut<OpKind> for OpMap<T> {
+    #[inline]
+    fn index_mut(&mut self, op: OpKind) -> &mut T {
+        &mut self.slots[op.index()]
+    }
+}
+
 // EmitStyle is imported from crate::traits - single source of truth
+
+/// Every op name the surface language accepts as a method.
+///
+/// `Special` ops are excluded: they are structural (`Var`, `Const`, `Buffer`,
+/// `Reduce`, ...) and have no method spelling.
+///
+/// This used to walk a parallel array of one zero-sized type per op, each
+/// implementing an `OpMeta`/`Op`/arity-marker trait family, purely to answer
+/// this question. `OpKind` already knows every op's name and emit style, so
+/// the family and its 230-line module are gone.
+pub fn known_method_names() -> impl Iterator<Item = &'static str> {
+    OpKind::all()
+        .filter(|op| !matches!(op.emit_style(), EmitStyle::Special))
+        .map(OpKind::name)
+}
+
+#[cfg(test)]
+mod index_space {
+    use super::OpKind;
+
+    /// `index()` must be dense over `0..COUNT`, and `from_index` must be its
+    /// exact inverse.
+    ///
+    /// Both halves are load-bearing, and both were false before 2026-08-02.
+    /// Every `[T; OpKind::COUNT]` in the workspace is subscripted by `index()`
+    /// — the NNUE op embeddings, the latency-prior cost table, the extraction
+    /// feature sets — so a *gap* in the discriminants pushes the ops after it
+    /// past the end of every one of those arrays. `Gather`/`RawGather`/`Reduce`
+    /// sat past three gaps and indexed 50..=52 into `[_; 50]`; the only reason
+    /// that was not a live panic is that the e-graph refuses `Buffer` leaves
+    /// earlier, and every `Gather` has one.
+    ///
+    /// The second half is worse: `from_index` bounds-checks against `COUNT`
+    /// and then transmutes, so any index that is inside `COUNT` but names no
+    /// variant is undefined behaviour rather than a `None`.
+    #[test]
+    fn index_is_dense_and_total() {
+        for i in 0..OpKind::COUNT {
+            let op = OpKind::from_index(i)
+                .unwrap_or_else(|| panic!("from_index({i}) is None inside 0..COUNT — gap"));
+            assert_eq!(op.index(), i, "{op:?} does not round-trip at index {i}");
+        }
+        assert_eq!(
+            OpKind::from_index(OpKind::COUNT),
+            None,
+            "COUNT must be one past the last discriminant"
+        );
+    }
+}

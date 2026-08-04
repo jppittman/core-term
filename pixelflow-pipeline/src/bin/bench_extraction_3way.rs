@@ -25,8 +25,8 @@
 
 use std::time::Instant;
 
-use pixelflow_ir::backend::emit::compile_arena_dag;
-use pixelflow_ir::backend::emit::executable::{ExecutableCode, KernelFn};
+use pixelflow_codegen::emit::compile_arena_dag;
+use pixelflow_codegen::emit::executable::{ExecutableCode, KernelFn};
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
 use pixelflow_search::egraph::{
     CostModel, EGraph, IncrementalExtractor, all_rules, choices_to_arena, collect_rule_templates,

@@ -39,9 +39,10 @@ use alloc::vec::Vec;
 use libm::sqrtf;
 
 use crate::egraph::Rewrite;
-use crate::egraph::cost::LATENCY_PRIOR_CYCLES;
+use crate::egraph::cost::latency_prior_cycles;
 pub use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
+use pixelflow_ir::kind::OpMap;
 
 // ============================================================================
 // Constants
@@ -279,14 +280,14 @@ impl RuleTemplates {
 
     /// Build a precomputed O(1) set of root ops appearing in any template.
     #[must_use]
-    pub fn root_op_set(&self) -> [bool; OpKind::COUNT] {
-        let mut set = [false; OpKind::COUNT];
+    pub fn root_op_set(&self) -> OpMap<bool> {
+        let mut set = OpMap::splat(false);
         for t in self.rules.iter().flatten() {
             if let Some(op) = t.lhs_op {
-                set[op.index()] = true;
+                set[op] = true;
             }
             if let Some(op) = t.rhs_op {
-                set[op.index()] = true;
+                set[op] = true;
             }
         }
         set
@@ -353,7 +354,7 @@ pub struct ArenaRuleTemplates {
     /// One arena-backed template per rule, indexed by rule_idx.
     pub arenas: Vec<ArenaRuleTemplate>,
     /// Precomputed O(1) op-membership set (same semantics as `root_op_set()`).
-    pub root_op_set: [bool; OpKind::COUNT],
+    pub root_op_set: OpMap<bool>,
 }
 
 impl ArenaRuleTemplates {
@@ -361,7 +362,7 @@ impl ArenaRuleTemplates {
     #[must_use]
     pub fn from_rule_templates(templates: &RuleTemplates) -> Self {
         let mut arenas = Vec::with_capacity(templates.len());
-        let mut root_op_set = [false; OpKind::COUNT];
+        let mut root_op_set = OpMap::splat(false);
 
         for slot in &templates.rules {
             let tmpl = match slot {
@@ -375,10 +376,10 @@ impl ArenaRuleTemplates {
                 },
             };
             if let Some(op) = tmpl.lhs_op {
-                root_op_set[op.index()] = true;
+                root_op_set[op] = true;
             }
             if let Some(op) = tmpl.rhs_op {
-                root_op_set[op.index()] = true;
+                root_op_set[op] = true;
             }
             arenas.push(tmpl);
         }
@@ -415,7 +416,7 @@ impl ArenaRuleTemplates {
 pub struct OpEmbeddings {
     /// E[op][i] = i-th dimension of op's embedding.
     /// Stored as [OpKind::COUNT][K] = 42 × 32 = 1,344 floats.
-    pub e: [[f32; K]; OpKind::COUNT],
+    pub e: OpMap<[f32; K]>,
 }
 
 impl Default for OpEmbeddings {
@@ -429,7 +430,7 @@ impl OpEmbeddings {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            e: [[0.0; K]; OpKind::COUNT],
+            e: OpMap::splat([0.0; K]),
         }
     }
 
@@ -460,11 +461,11 @@ impl OpEmbeddings {
     /// Initialize with latency priors in place.
     ///
     /// Dimension 0 = latency, normalized to `[0, 1]` by dividing the shared
-    /// [`LATENCY_PRIOR_CYCLES`] cycle table (source of truth, also used by
+    /// [`latency_prior_cycles`] cycle table (source of truth, also used by
     /// `egraph::cost::CostModel::latency_prior`) by `LATENCY_NORMALIZER`.
     pub fn init_with_latency_prior(&mut self, seed: u64) {
         // Cycle estimate above which we don't bother distinguishing further;
-        // used only to squash LATENCY_PRIOR_CYCLES into [0, 1]. Dwrt's
+        // used only to squash the cycle table into [0, 1]. Dwrt's
         // deliberately-prohibitive 1000-cycle entry saturates to 1.0 here,
         // same as before this table was shared with CostModel.
         const LATENCY_NORMALIZER: f32 = 20.0;
@@ -472,16 +473,17 @@ impl OpEmbeddings {
         let mut rng_state = seed.wrapping_add(1);
         let small_scale = 0.1; // Small noise for other dimensions
 
-        for op_idx in 0..OpKind::COUNT {
+        let cycles_of = latency_prior_cycles();
+        for op in OpKind::all() {
             // Dimension 0: latency prior, normalized from the shared cycle table.
-            let cycles = LATENCY_PRIOR_CYCLES[op_idx] as f32;
-            self.e[op_idx][0] = (cycles / LATENCY_NORMALIZER).min(1.0);
+            let cycles = cycles_of[op] as f32;
+            self.e[op][0] = (cycles / LATENCY_NORMALIZER).min(1.0);
 
             // Dimensions 1..K: small random for learning interactions
             for dim in 1..K {
                 rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 let uniform = (rng_state >> 33) as f32 / (1u64 << 31) as f32;
-                self.e[op_idx][dim] = (uniform * 2.0 - 1.0) * small_scale;
+                self.e[op][dim] = (uniform * 2.0 - 1.0) * small_scale;
             }
         }
     }
@@ -491,7 +493,7 @@ impl OpEmbeddings {
         let scale = sqrtf(2.0 / K as f32);
         let mut rng_state = seed.wrapping_add(1);
 
-        for op_idx in 0..OpKind::COUNT {
+        for op in OpKind::all() {
             for dim in 0..K {
                 // LCG for no_std compatibility
                 rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
@@ -499,7 +501,7 @@ impl OpEmbeddings {
                 // Convert to [-1, 1] and scale
                 let uniform = (rng_state >> 33) as f32 / (1u64 << 31) as f32;
                 let centered = uniform * 2.0 - 1.0;
-                self.e[op_idx][dim] = centered * scale;
+                self.e[op][dim] = centered * scale;
             }
         }
     }
@@ -508,7 +510,7 @@ impl OpEmbeddings {
     #[inline]
     #[must_use]
     pub fn get(&self, op: OpKind) -> &[f32; K] {
-        &self.e[op.index()]
+        &self.e[op]
     }
 
     /// Total parameter count.
@@ -2634,11 +2636,11 @@ impl ExprNnue {
         let mut file = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(path)?);
 
         // Magic header (TRID = shared trunk added — retrain required for old TRIC/TRIB/etc models)
-        file.write_all(b"TRID")?;
+        file.write_all(b"TRIE")?;
 
         // ===== Backbone =====
         // Embeddings
-        for row in &self.embeddings.e {
+        for row in self.embeddings.e.as_slice() {
             for &val in row {
                 file.write_all(&val.to_le_bytes())?;
             }
@@ -2791,21 +2793,26 @@ impl ExprNnue {
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)?;
 
-        // TRID: shared trunk layer between towers and projection heads
+        // TRIE: `OpKind` discriminants renumbered densely over `0..COUNT`
+        // TRID: incompatible — op embeddings are indexed by `OpKind::index()`,
+        //       and the pre-2026-08-02 discriminants had gaps at 17/31/39. The
+        //       shapes still match, so a TRID file would load without error and
+        //       silently attribute every op past a gap to its neighbour.
         // TRIC: incompatible — pre-shared-trunk architecture
         // TRIB: incompatible — GRAPH_ACC_DIM was 3K (96), GRAPH_INPUT_DIM was 100
         // TRIA: incompatible — had mask_rule_bias[1024] instead of mask_bias_proj[32]
         // TRI5-TRI9: incompatible — EMBED_DIM was 24, all weight shapes differ
-        if &magic != b"TRID" {
+        if &magic != b"TRIE" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "Incompatible ExprNnue format {:?}. Expected 'TRID' (shared trunk). {}",
+                    "Incompatible ExprNnue format {:?}. Expected 'TRIE' (dense OpKind indices). {}",
                     std::str::from_utf8(&magic).unwrap_or("????"),
-                    if &magic == b"TRIC" {
-                        "Incompatible format 'TRIC' (pre-shared-trunk). Retrain required."
+                    if &magic == b"TRID" {
+                        "'TRID' predates the OpKind renumbering; its op embeddings are \
+                         shifted past discriminants 17/31/39. Retrain required."
                     } else {
-                        "Old formats (TRIB, TRIA, TRI5-TRI9) require retrain."
+                        "Old formats (TRIC, TRIB, TRIA, TRI5-TRI9) require retrain."
                     }
                 ),
             ));
@@ -2815,7 +2822,7 @@ impl ExprNnue {
 
         // ===== Backbone =====
         // Embeddings
-        for row in &mut net.embeddings.e {
+        for row in net.embeddings.e.as_mut_slice() {
             for val in row {
                 let mut buf = [0u8; 4];
                 file.read_exact(&mut buf)?;
@@ -3525,7 +3532,7 @@ mod tests {
         let mut net = ExprNnue::new();
 
         // Set some backbone values that should be preserved
-        net.embeddings.e[0][0] = 1.234;
+        net.embeddings.e[OpKind::Var][0] = 1.234;
         net.w1[0][0] = 5.678;
         net.b1[0] = 0.999;
         net.expr_proj_w[0][0] = 2.345; // shared projection - should be preserved
@@ -3542,7 +3549,7 @@ mod tests {
 
         // Backbone should be PRESERVED
         assert!(
-            (net.embeddings.e[0][0] - 1.234).abs() < 1e-6,
+            (net.embeddings.e[OpKind::Var][0] - 1.234).abs() < 1e-6,
             "Embeddings should be preserved"
         );
         assert!(

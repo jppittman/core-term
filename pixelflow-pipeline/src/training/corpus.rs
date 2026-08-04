@@ -3,11 +3,11 @@
 //! Replaces JSONL text corpus with a binary format that loads in microseconds
 //! via sequential read (no parsing, no allocation beyond the arena vecs).
 //!
-//! ## Format (v1)
+//! ## Format (v2)
 //!
 //! ```text
 //! magic: [u8; 4] = b"PXCR"
-//! version: u32 (little-endian) = 1
+//! version: u32 (little-endian) = 2
 //! count: u32 (little-endian)
 //!
 //! For each expression:
@@ -23,6 +23,12 @@
 //! Each ExprNode is encoded as:
 //!   tag: u8  (0=Var, 1=Const, 2=Param, 3=Unary, 4=Binary, 5=Ternary, 6=Nary)
 //!   payload varies by tag.
+//!
+//! Ops are stored as their numeric `OpKind` discriminant, so the format
+//! version is coupled to the opcode numbering: v2 marks the dense 0..COUNT
+//! renumbering. A v1 file's op bytes would decode as *different* ops under
+//! the new numbering — silently wrong data, not a parse error — so any
+//! version other than the current one is a hard load error.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -30,7 +36,11 @@ use std::path::Path;
 use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
 
 const MAGIC: &[u8; 4] = b"PXCR";
-const VERSION: u32 = 1;
+// Bumped 1 → 2 when OpKind discriminants were renumbered dense (0..COUNT):
+// ops serialize as their discriminant byte, so a v1 corpus decodes its op
+// bytes as different ops under the new numbering. The version bump turns
+// that silent corruption into a load-time error.
+const VERSION: u32 = 2;
 
 // ── ExprNode serialization tags ──────────────────────────────────────────────
 
@@ -160,11 +170,19 @@ fn read_corpus_bytes(data: &[u8]) -> io::Result<Vec<(String, ExprArena, ExprId)>
         ));
     }
 
+    // Exact-version check, no tolerance: op bytes are OpKind discriminants,
+    // and those were renumbered between v1 and v2, so "best effort" decoding
+    // of an old file would silently produce wrong expressions.
     let version = r.read_u32()?;
     if version != VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("unsupported corpus version: {version} (expected {VERSION})"),
+            format!(
+                "unsupported corpus version: {version} (expected {VERSION}); the OpKind \
+                 opcode numbering changed, so older corpora decode to the wrong ops — \
+                 regenerate the corpus with `cargo run --release -p pixelflow-pipeline \
+                 --features training --bin gen_bench_corpus`"
+            ),
         ));
     }
 
@@ -490,6 +508,35 @@ mod tests {
                 e.to_string().contains("unsupported corpus version"),
                 "unexpected error: {e}"
             ),
+        }
+    }
+
+    #[test]
+    fn v1_corpus_is_refused_with_regeneration_hint() {
+        // A v1 header must be a hard error: v1 predates the dense OpKind
+        // renumbering, so its op bytes decode as different ops — the reader
+        // must refuse it, not fall back to decoding garbage.
+        let mut data = Vec::new();
+        data.extend_from_slice(MAGIC);
+        data.extend_from_slice(&1u32.to_le_bytes()); // pre-renumbering version
+        data.extend_from_slice(&0u32.to_le_bytes()); // count=0
+        match read_corpus_bytes(&data) {
+            Ok(_) => panic!("v1 corpus must be refused: its op bytes decode as wrong OpKinds"),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("unsupported corpus version: 1"),
+                    "error must name the rejected version: {msg}"
+                );
+                assert!(
+                    msg.contains("opcode numbering changed"),
+                    "error must explain WHY v1 is rejected: {msg}"
+                );
+                assert!(
+                    msg.contains("gen_bench_corpus"),
+                    "error must name the regeneration binary: {msg}"
+                );
+            }
         }
     }
 
