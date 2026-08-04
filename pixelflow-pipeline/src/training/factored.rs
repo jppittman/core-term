@@ -40,10 +40,34 @@ fn parse_expr_into(s: &str, arena: &mut ExprArena) -> Option<ExprId> {
     }
 
     let paren_pos = s.find('(')?;
-    let op = parse_op_kind(&s[..paren_pos])?;
+    let op_name = s[..paren_pos].to_lowercase();
     let inner = &s[paren_pos + 1..s.len() - 1];
     let children = split_args(inner);
 
+    // `fract` and `hypot` are compound ops (no hardware instruction backs
+    // them, see pixelflow-ir/src/kernel.rs), so they no longer have a single
+    // OpKind to construct via push_unary/push_binary below. Build the same
+    // primitive subgraph pixelflow_ir::backend::compounds::Compounds does.
+    match op_name.as_str() {
+        "fract" if children.len() == 1 => {
+            // fract(x) = x - floor(x)
+            let a = parse_expr_into(children[0], arena)?;
+            let floor_a = arena.push_unary(OpKind::Floor, a);
+            return Some(arena.push_binary(OpKind::Sub, a, floor_a));
+        }
+        "hypot" if children.len() == 2 => {
+            // hypot(x, y) = sqrt(x*x + y*y)
+            let a = parse_expr_into(children[0], arena)?;
+            let b = parse_expr_into(children[1], arena)?;
+            let aa = arena.push_binary(OpKind::Mul, a, a);
+            let bb = arena.push_binary(OpKind::Mul, b, b);
+            let sum = arena.push_binary(OpKind::Add, aa, bb);
+            return Some(arena.push_unary(OpKind::Sqrt, sum));
+        }
+        _ => {}
+    }
+
+    let op = parse_op_kind(&op_name)?;
     match (op.arity(), children.len()) {
         (1, 1) => {
             let a = parse_expr_into(children[0], arena)?;
@@ -752,6 +776,30 @@ mod tests {
             arena.len() >= 7,
             "expected method-heavy parse to build a real DAG"
         );
+    }
+
+    #[test]
+    fn parse_expr_fract_builds_sub_floor_compound() {
+        // fract(x) = x - floor(x); no OpKind::Fract exists (see kernel.rs) so
+        // this must expand to the primitive subgraph, not a single node.
+        let src = "fract(Var(0))";
+        let (arena, root) = parse_expr(src).unwrap_or_else(|| panic!("parse failed: {src}"));
+        assert_eq!(
+            eval_arena_scalar(&arena, root, &[1.75, 0.0, 0.0, 0.0]),
+            0.75
+        );
+        assert_eq!(
+            eval_arena_scalar(&arena, root, &[-1.25, 0.0, 0.0, 0.0]),
+            0.75
+        );
+    }
+
+    #[test]
+    fn parse_expr_hypot_builds_sqrt_mul_add_compound() {
+        // hypot(x, y) = sqrt(x*x + y*y); no OpKind::Hypot exists (see kernel.rs).
+        let src = "hypot(Var(0), Var(1))";
+        let (arena, root) = parse_expr(src).unwrap_or_else(|| panic!("parse failed: {src}"));
+        assert_eq!(eval_arena_scalar(&arena, root, &[3.0, 4.0, 0.0, 0.0]), 5.0);
     }
 
     // ========================================================================

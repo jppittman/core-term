@@ -36,8 +36,6 @@ use pixelflow_ir::kind::OpMap;
 /// drift apart. If you're tempted to hand-tune a number in one place,
 /// change it here instead.
 ///
-/// Values are approximate cycle counts on typical x86_64/AArch64 SIMD
-/// hardware; refine as real measurements come in (see `calibrate_costs`).
 /// Handcrafted cycle estimates, one per op.
 ///
 /// Written as an exhaustive `match` rather than a positional
@@ -105,6 +103,7 @@ pub fn latency_prior_cycles() -> OpMap<usize> {
         OpKind::Reduce => 0,     // lowered (unrolled) before costing
     })
 }
+
 // ============================================================================
 // Cost Function Trait
 // ============================================================================
@@ -277,49 +276,9 @@ impl CostModel {
     /// callers pass through with a wrong-but-plausible number — fail loud
     /// instead.
     pub fn cost_by_name(&self, name: &str) -> usize {
-        // Map name to OpKind
-        let op = match name {
-            "var" => OpKind::Var,
-            "const" => OpKind::Const,
-            "add" => OpKind::Add,
-            "sub" => OpKind::Sub,
-            "mul" => OpKind::Mul,
-            "div" => OpKind::Div,
-            "neg" => OpKind::Neg,
-            "sqrt" => OpKind::Sqrt,
-            "rsqrt" => OpKind::Rsqrt,
-            "abs" => OpKind::Abs,
-            "min" => OpKind::Min,
-            "max" => OpKind::Max,
-            "mul_add" => OpKind::MulAdd,
-            "recip" => OpKind::Recip,
-            "floor" => OpKind::Floor,
-            "ceil" => OpKind::Ceil,
-            "round" => OpKind::Round,
-            "sin" => OpKind::Sin,
-            "cos" => OpKind::Cos,
-            "tan" => OpKind::Tan,
-            "asin" => OpKind::Asin,
-            "acos" => OpKind::Acos,
-            "atan" => OpKind::Atan,
-            "atan2" => OpKind::Atan2,
-            "exp" => OpKind::Exp,
-            "exp2" => OpKind::Exp2,
-            "ln" => OpKind::Ln,
-            "log2" => OpKind::Log2,
-            "log10" => OpKind::Log10,
-            "pow" => OpKind::Pow,
-            "lt" => OpKind::Lt,
-            "le" => OpKind::Le,
-            "gt" => OpKind::Gt,
-            "ge" => OpKind::Ge,
-            "eq" => OpKind::Eq,
-            "ne" => OpKind::Ne,
-            "select" => OpKind::Select,
-            "tuple" => OpKind::Tuple,
-            _ => panic!("CostModel::cost_by_name: unknown op name {name:?}"),
-        };
-        self.costs[op]
+        let op = OpKind::from_name(name)
+            .unwrap_or_else(|| panic!("CostModel::cost_by_name: unknown op name {name:?}"));
+        self.cost(op)
     }
 
     // =========================================================================
@@ -587,6 +546,42 @@ mod every_op_is_priceable {
             let op = OpKind::from_index(i).expect("dense over 0..COUNT");
             let _ = model.cost(op);
             model.set_cost(op, 1);
+        }
+    }
+
+    /// `cost_by_name` used to hand-roll its own `&str -> OpKind` table,
+    /// separate from `OpKind::from_name`, and that table's whitelist simply
+    /// stopped at `tuple` — every op past it (memory/lattice/bit-manip ops
+    /// included) was unreachable by name even though `cost`/`set_cost`
+    /// already handled it fine by value. Delegating to `OpKind::from_name`
+    /// means `cost_by_name` covers exactly what `cost` covers, nothing more
+    /// or less — check that against a sample spanning the enum, not just the
+    /// ops the old table happened to list.
+    #[test]
+    fn cost_by_name_matches_cost_for_every_sampled_op() {
+        let model = CostModel::latency_prior();
+        for name in [
+            "sin",
+            "log10",
+            "pow",
+            "lt",
+            "select",
+            "tuple",
+            "dwrt",
+            "buffer",
+            "gather",
+            "raw_gather",
+            "reduce",
+            "iadd",
+            "shl",
+            "trunc_to_int",
+        ] {
+            let op = OpKind::from_name(name).unwrap_or_else(|| panic!("unknown op name {name:?}"));
+            assert_eq!(
+                model.cost_by_name(name),
+                model.cost(op),
+                "cost_by_name({name:?}) should match cost(OpKind::{op:?})"
+            );
         }
     }
 }
