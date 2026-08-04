@@ -544,8 +544,7 @@ mod every_op_is_priceable {
             model.set_cost(op, 1);
         }
 
-        for i in 0..OpKind::COUNT {
-            let op = OpKind::from_index(i).expect("dense over 0..COUNT");
+        for op in OpKind::all() {
             let _ = model.cost(op);
             model.set_cost(op, 1);
         }

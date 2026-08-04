@@ -415,7 +415,7 @@ impl ArenaRuleTemplates {
 #[derive(Clone)]
 pub struct OpEmbeddings {
     /// E[op][i] = i-th dimension of op's embedding.
-    /// Stored as [OpKind::COUNT][K] = 42 × 32 = 1,344 floats.
+    /// Stored as [OpKind::COUNT][K] = 50 × 32 = 1,600 floats.
     pub e: OpMap<[f32; K]>,
 }
 
@@ -1507,7 +1507,7 @@ pub struct Edge {
 #[derive(Clone)]
 pub struct ExprNnue {
     // ========== SHARED (Expression Backbone) ==========
-    /// Learned embeddings for each operation (42 × 32 = 1,344 params)
+    /// Learned embeddings for each operation (50 × 32 = 1,600 params)
     pub embeddings: OpEmbeddings,
 
     /// Hidden layer weights: [INPUT_DIM][HIDDEN_DIM] (85 × 64 = 5,440 params)

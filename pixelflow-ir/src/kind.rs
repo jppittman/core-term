@@ -123,8 +123,70 @@ pub enum OpKind {
 }
 
 impl OpKind {
-    /// Total number of operations.
+    /// Total number of operations. One past the last discriminant.
+    ///
+    /// Pinned to [`OpKind::ALL`] by that array's declared length: bumping one
+    /// without the other is a type error, not a test failure.
     pub const COUNT: usize = 50;
+
+    /// Every op, in [`OpKind::index`] order — the roster [`OpKind::all`],
+    /// [`OpMap::from_fn`] and [`OpMap::iter`] walk.
+    ///
+    /// Declared as `[Self; Self::COUNT]` so the roster and the count cannot
+    /// drift apart: adding an entry without bumping `COUNT` (or the reverse)
+    /// is a length mismatch the compiler rejects.
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Var,
+        Self::Const,
+        Self::Add,
+        Self::Sub,
+        Self::Mul,
+        Self::Div,
+        Self::Neg,
+        Self::Sqrt,
+        Self::Rsqrt,
+        Self::Abs,
+        Self::Min,
+        Self::Max,
+        Self::MulAdd,
+        Self::Recip,
+        Self::Floor,
+        Self::Ceil,
+        Self::Round,
+        Self::Sin,
+        Self::Cos,
+        Self::Tan,
+        Self::Asin,
+        Self::Acos,
+        Self::Atan,
+        Self::Atan2,
+        Self::Exp,
+        Self::Exp2,
+        Self::Ln,
+        Self::Log2,
+        Self::Log10,
+        Self::Pow,
+        Self::Lt,
+        Self::Le,
+        Self::Gt,
+        Self::Ge,
+        Self::Eq,
+        Self::Ne,
+        Self::Select,
+        Self::Tuple,
+        Self::TruncToInt,
+        Self::IntToFloat,
+        Self::IAdd,
+        Self::Shl,
+        Self::Shr,
+        Self::BitAnd,
+        Self::BitOr,
+        Self::Dwrt,
+        Self::Buffer,
+        Self::Gather,
+        Self::RawGather,
+        Self::Reduce,
+    ];
 
     /// Monoid identity for an op usable as a reduction combiner
     /// (`Add`→0, `Mul`→1, `Min`→+∞, `Max`→−∞). `None` if `self` is not a valid
@@ -284,12 +346,70 @@ impl OpKind {
         self.monoid_identity().is_some()
     }
 
-    /// Convert to array index. Dense over `0..COUNT`, so `[T; OpKind::COUNT]`
-    /// indexed by this is total — see [`OpKind::from_index`].
+    /// This op's slot number: the explicit, exhaustive map from op to integer.
+    ///
+    /// Written as a `match` rather than `self as usize` so that adding or
+    /// removing a variant is a compile error *here*, where the number is
+    /// assigned — not a test failure somewhere downstream, and not a silent
+    /// omission. One number per line, deliberately uncollapsed.
+    ///
+    /// These numbers are an on-disk contract; see
+    /// `numbering_is_the_on_disk_contract` before changing one.
     #[inline]
     #[must_use]
     pub const fn index(self) -> usize {
-        self as usize
+        match self {
+            Self::Var => 0,
+            Self::Const => 1,
+            Self::Add => 2,
+            Self::Sub => 3,
+            Self::Mul => 4,
+            Self::Div => 5,
+            Self::Neg => 6,
+            Self::Sqrt => 7,
+            Self::Rsqrt => 8,
+            Self::Abs => 9,
+            Self::Min => 10,
+            Self::Max => 11,
+            Self::MulAdd => 12,
+            Self::Recip => 13,
+            Self::Floor => 14,
+            Self::Ceil => 15,
+            Self::Round => 16,
+            Self::Sin => 17,
+            Self::Cos => 18,
+            Self::Tan => 19,
+            Self::Asin => 20,
+            Self::Acos => 21,
+            Self::Atan => 22,
+            Self::Atan2 => 23,
+            Self::Exp => 24,
+            Self::Exp2 => 25,
+            Self::Ln => 26,
+            Self::Log2 => 27,
+            Self::Log10 => 28,
+            Self::Pow => 29,
+            Self::Lt => 30,
+            Self::Le => 31,
+            Self::Gt => 32,
+            Self::Ge => 33,
+            Self::Eq => 34,
+            Self::Ne => 35,
+            Self::Select => 36,
+            Self::Tuple => 37,
+            Self::TruncToInt => 38,
+            Self::IntToFloat => 39,
+            Self::IAdd => 40,
+            Self::Shl => 41,
+            Self::Shr => 42,
+            Self::BitAnd => 43,
+            Self::BitOr => 44,
+            Self::Dwrt => 45,
+            Self::Buffer => 46,
+            Self::Gather => 47,
+            Self::RawGather => 48,
+            Self::Reduce => 49,
+        }
     }
 
     /// Every op, in [`OpKind::index`] order.
@@ -298,20 +418,70 @@ impl OpKind {
     /// that spelling is why the three ops sitting past the old discriminant
     /// gaps were never visited by any table-filling loop.
     pub fn all() -> impl Iterator<Item = Self> + Clone {
-        (0..Self::COUNT).map(|i| Self::from_index(i).expect("index_is_dense_and_total"))
+        Self::ALL.into_iter()
     }
 
-    /// Convert index to `OpKind`. Inverse of [`OpKind::index`].
+    /// Inverse of [`OpKind::index`]. `None` for any integer that names no op.
+    ///
+    /// An explicit match, not a bounds check and a `transmute`: the old
+    /// spelling made every integer inside `COUNT` that named no variant
+    /// undefined behaviour rather than a `None`. Here that case cannot be
+    /// written.
     #[must_use]
-    pub fn from_index(idx: usize) -> Option<Self> {
-        if idx >= Self::COUNT {
-            return None;
+    pub const fn from_index(idx: usize) -> Option<Self> {
+        match idx {
+            0 => Some(Self::Var),
+            1 => Some(Self::Const),
+            2 => Some(Self::Add),
+            3 => Some(Self::Sub),
+            4 => Some(Self::Mul),
+            5 => Some(Self::Div),
+            6 => Some(Self::Neg),
+            7 => Some(Self::Sqrt),
+            8 => Some(Self::Rsqrt),
+            9 => Some(Self::Abs),
+            10 => Some(Self::Min),
+            11 => Some(Self::Max),
+            12 => Some(Self::MulAdd),
+            13 => Some(Self::Recip),
+            14 => Some(Self::Floor),
+            15 => Some(Self::Ceil),
+            16 => Some(Self::Round),
+            17 => Some(Self::Sin),
+            18 => Some(Self::Cos),
+            19 => Some(Self::Tan),
+            20 => Some(Self::Asin),
+            21 => Some(Self::Acos),
+            22 => Some(Self::Atan),
+            23 => Some(Self::Atan2),
+            24 => Some(Self::Exp),
+            25 => Some(Self::Exp2),
+            26 => Some(Self::Ln),
+            27 => Some(Self::Log2),
+            28 => Some(Self::Log10),
+            29 => Some(Self::Pow),
+            30 => Some(Self::Lt),
+            31 => Some(Self::Le),
+            32 => Some(Self::Gt),
+            33 => Some(Self::Ge),
+            34 => Some(Self::Eq),
+            35 => Some(Self::Ne),
+            36 => Some(Self::Select),
+            37 => Some(Self::Tuple),
+            38 => Some(Self::TruncToInt),
+            39 => Some(Self::IntToFloat),
+            40 => Some(Self::IAdd),
+            41 => Some(Self::Shl),
+            42 => Some(Self::Shr),
+            43 => Some(Self::BitAnd),
+            44 => Some(Self::BitOr),
+            45 => Some(Self::Dwrt),
+            46 => Some(Self::Buffer),
+            47 => Some(Self::Gather),
+            48 => Some(Self::RawGather),
+            49 => Some(Self::Reduce),
+            _ => None,
         }
-        // SAFETY: `OpKind` is `repr(u8)` with discriminants assigned densely
-        // over `0..COUNT`, so every value passing the bound above names a
-        // variant. `index_is_dense_and_total` is what keeps that true — it
-        // fails the moment a discriminant is skipped or `COUNT` drifts.
-        Some(unsafe { core::mem::transmute::<u8, Self>(idx as u8) })
     }
 
     /// Get the arity of the operation.
@@ -681,8 +851,6 @@ impl OpKind {
         }
     }
 
-    // NOTE: KNOWN_METHODS was removed - now derived from ALL_OPS via known_method_names()
-
     /// Evaluate a unary operation on a constant argument.
     ///
     /// Returns `None` for non-unary operations or operations that can't be
@@ -849,6 +1017,32 @@ impl OpKind {
     }
 }
 
+// The op numbering is written three times — as a discriminant on the variant,
+// as a position in `OpKind::ALL`, and as an arm of `index()`/`from_index`.
+// This proves all three agree, for every op, at compile time.
+//
+// Each spelling earns its place: the discriminants are injective for free
+// (duplicates are E0081, which a `match` cannot give you — two arms may return
+// the same number and still compile), `ALL` is the roster every table-filling
+// loop walks, and the matches are where a new variant forces a decision.
+const _: () = {
+    let mut i = 0;
+    while i < OpKind::COUNT {
+        let op = OpKind::ALL[i];
+        assert!(op.index() == i, "OpKind::ALL is out of index() order");
+        assert!(op as usize == i, "discriminant disagrees with index()");
+        match OpKind::from_index(i) {
+            Some(back) => assert!(back.index() == i, "from_index is not index()'s inverse"),
+            None => panic!("from_index has a gap inside 0..COUNT"),
+        }
+        i += 1;
+    }
+    assert!(
+        OpKind::from_index(OpKind::COUNT).is_none(),
+        "from_index answers past COUNT"
+    );
+};
+
 // ============================================================================
 // OpMap
 // ============================================================================
@@ -887,19 +1081,14 @@ impl<T> OpMap<T> {
     /// and the compiler will not let you forget one.
     pub fn from_fn(mut f: impl FnMut(OpKind) -> T) -> Self {
         Self {
-            slots: core::array::from_fn(|i| {
-                f(OpKind::from_index(i).expect("index_is_dense_and_total"))
-            }),
+            slots: core::array::from_fn(|i| f(OpKind::ALL[i])),
         }
     }
 
     /// Iterate in [`OpKind::index`] order — the order [`OpMap::as_slice`]
     /// serializes in.
     pub fn iter(&self) -> impl Iterator<Item = (OpKind, &T)> {
-        self.slots
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (OpKind::from_index(i).expect("index_is_dense_and_total"), v))
+        OpKind::ALL.into_iter().zip(self.slots.iter())
     }
 
     /// The backing slots in `index()` order. For serialization; prefer
@@ -967,33 +1156,63 @@ pub fn known_method_names() -> impl Iterator<Item = &'static str> {
 mod index_space {
     use super::OpKind;
 
-    /// `index()` must be dense over `0..COUNT`, and `from_index` must be its
-    /// exact inverse.
+    /// Density, totality and round-tripping are proved at compile time by the
+    /// `const` block above, so there is no runtime test for them here.
     ///
-    /// Both halves are load-bearing, and both were false before 2026-08-02.
-    /// Every `[T; OpKind::COUNT]` in the workspace is subscripted by `index()`
-    /// — the NNUE op embeddings, the latency-prior cost table, the extraction
-    /// feature sets — so a *gap* in the discriminants pushes the ops after it
-    /// past the end of every one of those arrays. `Gather`/`RawGather`/`Reduce`
-    /// sat past three gaps and indexed 50..=52 into `[_; 50]`; the only reason
-    /// that was not a live panic is that the e-graph refuses `Buffer` leaves
-    /// earlier, and every `Gather` has one.
+    /// Before 2026-08-02 both were false: the discriminants carried gaps at
+    /// 17/31/39 while `COUNT` was the variant count, so `Gather`/`RawGather`/
+    /// `Reduce` indexed 50..=52 into every `[_; 50]` in the workspace, and
+    /// `from_index` bounds-checked against `COUNT` and then transmuted, making
+    /// any in-bound integer that named no variant undefined behaviour.
     ///
-    /// The second half is worse: `from_index` bounds-checks against `COUNT`
-    /// and then transmutes, so any index that is inside `COUNT` but names no
-    /// variant is undefined behaviour rather than a `None`.
+    /// What no compile check can catch is a *consistent* renumbering: move a
+    /// discriminant, its `ALL` slot and its `index()` arm together and the
+    /// result is internally coherent, compiles clean, and silently
+    /// reinterprets every file already on disk. These numbers are an external
+    /// contract:
+    ///
+    /// - the `PXCR` v2 corpus stores an op as this byte
+    ///   (`pixelflow-pipeline/src/training/corpus.rs`)
+    /// - the `TRIE` NNUE weight file lays out op embeddings in this order
+    ///   (`pixelflow-search/src/nnue/factored.rs`)
+    ///
+    /// Changing a number here means bumping `corpus::VERSION` and the `TRIE`
+    /// magic, regenerating corpora and retraining. Do not "fix" this test.
     #[test]
-    fn index_is_dense_and_total() {
-        for i in 0..OpKind::COUNT {
-            let op = OpKind::from_index(i)
-                .unwrap_or_else(|| panic!("from_index({i}) is None inside 0..COUNT — gap"));
-            assert_eq!(op.index(), i, "{op:?} does not round-trip at index {i}");
+    fn numbering_is_the_on_disk_contract() {
+        assert_eq!(OpKind::COUNT, 50);
+        assert_eq!(OpKind::Var.index(), 0);
+        assert_eq!(OpKind::Add.index(), 2);
+        assert_eq!(OpKind::Mul.index(), 4);
+        assert_eq!(OpKind::Min.index(), 10);
+        assert_eq!(OpKind::Max.index(), 11);
+        // 17, 31 and 39 were the gaps; the ops now sitting on them are the
+        // ones a re-gapping would move first.
+        assert_eq!(OpKind::Sin.index(), 17);
+        assert_eq!(OpKind::Le.index(), 31);
+        assert_eq!(OpKind::IntToFloat.index(), 39);
+        assert_eq!(OpKind::BitAnd.index(), 43);
+        assert_eq!(OpKind::BitOr.index(), 44);
+        assert_eq!(OpKind::Buffer.index(), 46);
+        // These three sat past the gaps at 50..=52 and were unreachable.
+        assert_eq!(OpKind::Gather.index(), 47);
+        assert_eq!(OpKind::RawGather.index(), 48);
+        assert_eq!(OpKind::Reduce.index(), 49);
+    }
+
+    /// `from_name` matches on `&str` and can never be exhaustive, so nothing
+    /// makes a new op's name mandatory. Written name-first because the reverse
+    /// is not injective: `"pow"` and `"powf"` both parse to `Pow`.
+    #[test]
+    fn every_op_round_trips_through_its_name() {
+        for op in OpKind::all() {
+            assert_eq!(
+                OpKind::from_name(op.name()),
+                Some(op),
+                "{op:?} names {:?}, which does not parse back",
+                op.name()
+            );
         }
-        assert_eq!(
-            OpKind::from_index(OpKind::COUNT),
-            None,
-            "COUNT must be one past the last discriminant"
-        );
     }
 }
 

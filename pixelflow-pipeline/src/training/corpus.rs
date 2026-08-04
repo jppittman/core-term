@@ -120,22 +120,22 @@ fn write_node(w: &mut impl Write, node: &ExprNode) -> io::Result<()> {
             w.write_all(&[TAG_PARAM, *i])?;
         }
         ExprNode::Unary(op, a) => {
-            w.write_all(&[TAG_UNARY, *op as u8])?;
+            w.write_all(&[TAG_UNARY, op.index() as u8])?;
             w.write_all(&a.0.to_le_bytes())?;
         }
         ExprNode::Binary(op, a, b) => {
-            w.write_all(&[TAG_BINARY, *op as u8])?;
+            w.write_all(&[TAG_BINARY, op.index() as u8])?;
             w.write_all(&a.0.to_le_bytes())?;
             w.write_all(&b.0.to_le_bytes())?;
         }
         ExprNode::Ternary(op, a, b, c) => {
-            w.write_all(&[TAG_TERNARY, *op as u8])?;
+            w.write_all(&[TAG_TERNARY, op.index() as u8])?;
             w.write_all(&a.0.to_le_bytes())?;
             w.write_all(&b.0.to_le_bytes())?;
             w.write_all(&c.0.to_le_bytes())?;
         }
         ExprNode::Nary(op, start, len) => {
-            w.write_all(&[TAG_NARY, *op as u8])?;
+            w.write_all(&[TAG_NARY, op.index() as u8])?;
             w.write_all(&start.to_le_bytes())?;
             w.write_all(&len.to_le_bytes())?;
         }
