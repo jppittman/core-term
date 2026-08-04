@@ -11,7 +11,7 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorHandle, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_core::{At, CellGridGeometry, CellGridProgram};
+use pixelflow_core::{At, CellGridGeometry, CellGridPackedProgram};
 use pixelflow_graphics::render::scene::Scene;
 
 /// Adapter to send PTY commands to TerminalApp actor.
@@ -109,12 +109,14 @@ pub struct TerminalApp {
     loaded_font: Arc<LoadedFont<MmapSource>>,
     /// Baked glyph coverage tiles, gathered by the scene kernel.
     atlas: GlyphAtlas,
-    /// The compiled cell-grid scene (four channel kernels). Recompiled
-    /// whenever the geometry it was compiled against — grid dimensions,
-    /// cell size, density, atlas extents — changes; `None` until the first
-    /// frame. This is the JIT answer to dynamic resize: the program's size
-    /// and compile time are independent of the grid's.
-    program: Option<CellGridProgram>,
+    /// The compiled cell-grid scene: ONE packed kernel producing finished
+    /// `u32` pixels, byte order bound by the platform's ColorCube inside
+    /// pixelflow-graphics. Recompiled whenever the geometry it was compiled
+    /// against — grid dimensions, cell size, density, atlas extents —
+    /// changes; `None` until the first frame. This is the JIT answer to
+    /// dynamic resize: the program's size and compile time are independent
+    /// of the grid's.
+    program: Option<CellGridPackedProgram>,
     /// Whether any scene has been submitted yet. Synchronized output holds
     /// the last frame, which only exists once this is true; before that, the
     /// solid background is the only honest thing to show.
@@ -345,7 +347,7 @@ impl TerminalApp {
             tile_w: self.atlas.tile_px() as u32,
             tile_h: self.atlas.tile_px() as u32,
         };
-        if self.program.as_ref().map(CellGridProgram::geometry) != Some(&geom) {
+        if self.program.as_ref().map(CellGridPackedProgram::geometry) != Some(&geom) {
             log::info!(
                 "Compiling cell-grid scene: {}x{} cells, cell {}x{} pt, atlas {}x{} texels",
                 cols,
@@ -355,7 +357,12 @@ impl TerminalApp {
                 geom.atlas_width,
                 geom.atlas_height
             );
-            self.program = Some(CellGridProgram::compile(geom, [dbg_r, dbg_g, dbg_b, dbg_a]));
+            self.program = Some(
+                pixelflow_graphics::render::scene::compile_platform_cell_grid(
+                    geom,
+                    [dbg_r, dbg_g, dbg_b, dbg_a],
+                ),
+            );
         }
         let program = self.program.as_ref().expect("program compiled above");
         Some(Scene::CellGrid(
