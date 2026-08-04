@@ -267,8 +267,9 @@ impl TerminalApp {
         // live in the snapshot and nowhere else once it returns.
         //
         // Per-line dirt is sufficient for the *content* half of the question —
-        // the emulator marks lines on cursor movement (`screen_ops.rs`) and on
-        // selection change (`screen.rs`), so those are not separate cases. It
+        // the snapshot dirties the rows a moved/restyled cursor left and
+        // entered (`last_cursor_mark` in the emulator) and selection changes
+        // mark their lines (`screen.rs`), so those are not separate cases. It
         // says nothing about *geometry*, which is why the grid shape is checked
         // separately below rather than trusted to come with a dirty line.
         let nothing_drawn_changed = !snapshot.lines.iter().any(|line| line.is_dirty);

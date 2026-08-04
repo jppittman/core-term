@@ -1838,3 +1838,42 @@ fn scrollback_growth_under_held_offset_marks_dirty() {
         "the held offset now shows different history"
     );
 }
+
+/// A cursor-only change (no cell mutated) must still dirty the snapshot:
+/// CUF/CUB/CUP and style changes move the cursor without touching a line,
+/// and a skipped frame would freeze the visible cursor at its old cell.
+#[test]
+fn cursor_only_movement_marks_its_rows_dirty() {
+    let mut term = create_test_emulator(4, 2);
+    let _ = term.get_render_snapshot().expect("snapshot");
+    let clean = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        !clean.lines.iter().any(|l| l.is_dirty),
+        "precondition: an idle terminal snapshots clean"
+    );
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorForward(1),
+    )));
+    let moved = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        moved.lines.iter().any(|l| l.is_dirty),
+        "the cursor moved: the frame must redraw"
+    );
+
+    let idle = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        !idle.lines.iter().any(|l| l.is_dirty),
+        "cursor at rest: clean again"
+    );
+
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::CursorDown(1),
+    )));
+    let rowed = term.get_render_snapshot().expect("snapshot");
+    assert_eq!(
+        rowed.lines.iter().filter(|l| l.is_dirty).count(),
+        2,
+        "a row change dirties the row left and the row entered"
+    );
+}

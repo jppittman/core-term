@@ -73,6 +73,12 @@ pub struct TerminalEmulator {
     /// whole snapshot is dirty (this includes returning to offset 0, where no
     /// scrollback-sourced line exists to carry the signal).
     last_snapshot_view: Option<(u64, usize)>,
+    /// The `(x, y, shape)` of the cursor the previous snapshot rendered
+    /// (`None` when it rendered no cursor). CUF/CUB/CUP and style changes
+    /// mutate the cursor controller without touching any line, so line dirt
+    /// alone would let the damage gate skip a frame whose cursor moved —
+    /// freezing the visible cursor at its old cell.
+    last_cursor_mark: Option<(usize, usize, crate::term::snapshot::CursorShape)>,
 }
 
 impl TerminalEmulator {
@@ -108,6 +114,7 @@ impl TerminalEmulator {
             layout,
             viewport_offset: 0,
             last_snapshot_view: None,
+            last_cursor_mark: None,
         }
     }
 
@@ -201,7 +208,7 @@ impl TerminalEmulator {
 
         // Build lines by cloning Arc references (cheap ref count bump)
         // When scrolled back, top lines come from scrollback, rest from active grid
-        let lines: Vec<SnapshotLine> = (0..height)
+        let mut lines: Vec<SnapshotLine> = (0..height)
             .map(|y_idx| {
                 if y_idx < effective_offset {
                     // This line comes from scrollback
@@ -281,6 +288,20 @@ impl TerminalEmulator {
         };
 
         self.screen.mark_all_clean();
+
+        // A cursor that moved or restyled dirties the row it left and the
+        // row it entered, whether or not any cell changed. The char/attrs
+        // underneath are excluded from the comparison on purpose: they only
+        // change with a cell edit, which dirties its line already.
+        let cursor_mark = cursor_state.as_ref().map(|c| (c.x, c.y, c.shape));
+        if cursor_mark != self.last_cursor_mark {
+            for (_, row, _) in [cursor_mark, self.last_cursor_mark].into_iter().flatten() {
+                if let Some(line) = lines.get_mut(row) {
+                    line.is_dirty = true;
+                }
+            }
+            self.last_cursor_mark = cursor_mark;
+        }
 
         Some(TerminalSnapshot {
             dimensions: (width, height),
