@@ -700,19 +700,22 @@ fn cuj_priority_control_before_management_before_data() {
     let (tx, mut rx) = ActorScheduler::<String, String, String>::new(10, 64);
     let order_clone = message_order.clone();
 
-    let handle = thread::spawn(move || {
-        let mut actor = OrderRecordingActor { order: order_clone };
-        rx.run(&mut actor);
-    });
-
-    // When: Messages are sent in Data, Management, Control order
+    // When: every message is queued BEFORE the consumer exists. Spawning
+    // the actor first raced it against the sends — it could legitimately
+    // drain data1 in the window before ctrl1 was sent (priority cannot
+    // apply to a message that does not exist yet), and the assertion then
+    // misread honest FIFO behavior as a priority violation. The race was
+    // real: it fired under the ISA-matrix job's avx2-no-fma timing.
     tx.send(Message::Data("data1".to_string())).unwrap();
     tx.send(Message::Data("data2".to_string())).unwrap();
     tx.send(Message::Management("mgmt1".to_string())).unwrap();
     tx.send(Message::Control("ctrl1".to_string())).unwrap();
-
-    thread::sleep(Duration::from_millis(100));
     drop(tx);
+
+    let handle = thread::spawn(move || {
+        let mut actor = OrderRecordingActor { order: order_clone };
+        rx.run(&mut actor);
+    });
     handle.join().unwrap();
 
     // Then: Control should be processed before earlier Data
