@@ -1017,6 +1017,15 @@ impl EGraphContext {
 
             ENode::Const(bits) => make_literal(f32::from_bits(*bits) as f64, span),
 
+            // Buffer leaves exist only in runtime-built arenas (there is no
+            // surface syntax for one); the macro tier's representability gate
+            // refuses memory ops before the e-graph is ever built, so one
+            // reaching AST emission is a pipeline-order bug.
+            ENode::Buffer(decl) => panic!(
+                "eclass_to_expr: ENode::Buffer({decl:?}) in the macro tier — \
+                 buffer-bearing kernels are runtime-JIT only"
+            ),
+
             ENode::Op { op, children } => {
                 let name = op.name();
                 let child_exprs: Vec<Expr> = children

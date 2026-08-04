@@ -197,6 +197,7 @@ mod tests {
         match node {
             ENode::Var(idx) => arena.push_var(idx),
             ENode::Const(bits) => arena.push_const(f32::from_bits(bits)),
+            ENode::Buffer(decl) => panic!("Buffer({decl:?}) reached math tests"),
             ENode::Op { op, children } => {
                 let kind = op.kind();
                 let child_ids: Vec<ExprId> = children

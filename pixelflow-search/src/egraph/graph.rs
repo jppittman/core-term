@@ -165,7 +165,7 @@ impl EGraph {
 
     fn canonicalize_node(&self, node: &mut ENode) {
         match node {
-            ENode::Var(_) | ENode::Const(_) => {}
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {}
             ENode::Op { children, .. } => {
                 for child in children {
                     *child = self.find(*child);
@@ -454,6 +454,7 @@ impl EGraph {
         match &class.nodes[0] {
             ENode::Var(_) => pixelflow_ir::OpKind::Var,
             ENode::Const(_) => pixelflow_ir::OpKind::Const,
+            ENode::Buffer(_) => pixelflow_ir::OpKind::Buffer,
             ENode::Op { op, .. } => op.kind(),
         }
     }
@@ -514,13 +515,10 @@ impl EGraph {
                 ExprNode::Param(i) => {
                     panic!("add_arena: ExprNode::Param({i}) not valid after kernel compilation")
                 }
-                ExprNode::Buffer(b) => {
-                    panic!(
-                        "add_arena: ExprNode::Buffer({}) — memory ops are not yet representable \
-                         in the e-graph (KERNELS_AND_LATTICES.md M3)",
-                        b.0
-                    )
-                }
+                // The leaf carries the full decl (identity + extents), so
+                // hash-consing merges buffer references across arenas iff they
+                // name the same memory — see `ENode::Buffer`.
+                ExprNode::Buffer(b) => self.add(ENode::Buffer(*arena.buffer_decl(*b))),
                 ExprNode::Unary(op, child) => {
                     let child_id = id_map[child.0 as usize].unwrap_or_else(|| {
                         panic!(
@@ -574,8 +572,15 @@ impl EGraph {
                             c
                         )
                     });
-                    let static_op = ops::op_from_kind(*op)
-                        .unwrap_or_else(|| panic!("add_arena: no static Op for OpKind {:?}", op));
+                    // Gather is deliberately absent from `op_from_kind` (no
+                    // rewrite rule may name it) but representable as opaque
+                    // structure — resolve it directly.
+                    let static_op: &'static dyn crate::egraph::ops::Op = match *op {
+                        pixelflow_ir::OpKind::Gather => &ops::Gather,
+                        other => ops::op_from_kind(other).unwrap_or_else(|| {
+                            panic!("add_arena: no static Op for OpKind {other:?}")
+                        }),
+                    };
                     self.add(ENode::Op {
                         op: static_op,
                         children: vec![a_id, b_id, c_id],
@@ -1414,6 +1419,14 @@ impl EGraph {
             ENode::Const(_) => return self.add(ENode::constant(0.0)),
             ENode::Var(i) => {
                 return self.add(ENode::constant(if *i == var { 1.0 } else { 0.0 }));
+            }
+            // A Buffer leaf is not a value — it only ever appears as Gather's
+            // first child, and no rewrite builds `Dwrt(buffer)`. Reaching one
+            // here means the graph is malformed; fail loudly. (`Dwrt(gather)`
+            // is the Op arm below: Gather has no derivative table entry, so it
+            // reconstructs the Dwrt as the jet fallback.)
+            ENode::Buffer(decl) => {
+                panic!("build_derivative: Dwrt applied to a Buffer leaf ({decl:?})")
             }
             ENode::Op { op, children } => (*op, children.clone()),
         };

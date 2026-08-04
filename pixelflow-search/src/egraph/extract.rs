@@ -434,7 +434,7 @@ fn break_single_cycle(egraph: &EGraph, cycle: &[usize], best_node: &mut Vec<Opti
         let canonical = egraph.find(EClassId(cid as u32));
         let nodes = egraph.nodes(canonical);
         for (idx, node) in nodes.iter().enumerate() {
-            if matches!(node, ENode::Var(_) | ENode::Const(_)) {
+            if matches!(node, ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_)) {
                 best_node[cid] = Some(idx);
                 return;
             }
@@ -469,7 +469,7 @@ fn break_single_cycle(egraph: &EGraph, cycle: &[usize], best_node: &mut Vec<Opti
     let mut best_in_cycle_count = usize::MAX;
     for (idx, node) in nodes.iter().enumerate() {
         let count = match node {
-            ENode::Var(_) | ENode::Const(_) => 0,
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => 0,
             ENode::Op { children, .. } => children
                 .iter()
                 .filter(|&&c| {
@@ -553,7 +553,9 @@ pub fn extract<C: CostFunction>(
 
             for (idx, node) in nodes.iter().enumerate() {
                 let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) => costs.node_cost(node, None),
+                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {
+                        costs.node_cost(node, None)
+                    }
                     ENode::Op { children, .. } => {
                         // Check for self-referential children
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
@@ -753,6 +755,16 @@ pub fn choices_to_arena(
     let mut arena = ExprArena::with_capacity(num_classes);
     // Cache: canonical e-class id → ExprId (None = not yet visited).
     let mut id_map: Vec<Option<ExprId>> = alloc::vec![None; num_classes];
+    // Buffer identity → declared slot in the output arena. Distinct e-classes
+    // can carry the same identity only if their decls differ, which is a
+    // corrupt graph (one memory, two extents) — assert, never alias silently.
+    let mut buffer_slots: alloc::collections::BTreeMap<
+        pixelflow_ir::arena::BufferIdentity,
+        (
+            pixelflow_ir::arena::BufferId,
+            pixelflow_ir::arena::BufferDecl,
+        ),
+    > = alloc::collections::BTreeMap::new();
     let mut result_stack: Vec<ExprId> = Vec::new();
     let mut task_stack: Vec<Task> = alloc::vec![Task::Visit(root)];
 
@@ -805,6 +817,31 @@ pub fn choices_to_arena(
                     }
                     ENode::Const(bits) => {
                         let expr_id = arena.push_const(f32::from_bits(*bits));
+                        if idx < id_map.len() {
+                            id_map[idx] = Some(expr_id);
+                        }
+                        result_stack.push(expr_id);
+                    }
+                    ENode::Buffer(decl) => {
+                        // One slot per distinct identity: e-classes already
+                        // dedupe equal decls, so a repeat identity here means
+                        // two decls disagreeing on extents.
+                        let buf_id = match buffer_slots.get(&decl.id) {
+                            Some(&(buf_id, prior)) => {
+                                assert!(
+                                    prior == *decl,
+                                    "choices_to_arena: BufferIdentity declared twice with \
+                                     different extents ({prior:?} vs {decl:?})"
+                                );
+                                buf_id
+                            }
+                            None => {
+                                let buf_id = arena.declare_buffer(*decl);
+                                buffer_slots.insert(decl.id, (buf_id, *decl));
+                                buf_id
+                            }
+                        };
+                        let expr_id = arena.push_buffer(buf_id);
                         if idx < id_map.len() {
                             id_map[idx] = Some(expr_id);
                         }
@@ -1005,7 +1042,9 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
 
             for (idx, node) in nodes.iter().enumerate() {
                 let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) => costs.node_cost(node, None),
+                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {
+                        costs.node_cost(node, None)
+                    }
                     ENode::Op { children, .. } => {
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             CYCLE_COST

@@ -168,6 +168,12 @@ fn eclass_to_code(
         ENode::Var(3) => "W".to_string(),
         ENode::Var(i) => format!("V{}", i),
         ENode::Const(bits) => format_const(f32::from_bits(*bits)),
+        // String codegen serves the AOT macro tier, which compiles before any
+        // runtime buffer exists — a Buffer here is a pipeline-order bug.
+        ENode::Buffer(decl) => panic!(
+            "eclass_to_code: ENode::Buffer({decl:?}) has no source-code form — \
+             buffer-bearing kernels are runtime-JIT only"
+        ),
         ENode::Op { op, children } => {
             let child_codes: Vec<String> = children
                 .iter()

@@ -35,12 +35,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// same rule set and extraction policy (static latency-prior by default,
 /// `PIXELFLOW_NNUE_WEIGHTS` opt-in) as the `kernel!`/`kernel_jit!` macros.
 ///
+/// `Buffer`/`Gather` (bound-memory reads) are representable: they enter the
+/// e-graph as opaque structure — no rewrite rule can name them, so their
+/// gain is hash-consing CSE (splice-duplicated sampler subtrees collapse to
+/// one node) plus ordinary rewriting of the coordinate arithmetic that feeds
+/// them. Extraction redeclares each distinct `BufferIdentity` once in the
+/// output arena.
+///
 /// Returns `None`, unchanged, when the subgraph reachable from `root`
 /// contains a construct the e-graph doesn't model:
 ///
-/// - `Buffer`/`Gather`/`RawGather` (bound-memory reads) — no rewrite rule
-///   reasons about memory, and the e-graph would just be dead weight around
-///   an opaque leaf.
+/// - `RawGather` — produced by lowering, after the e-graph's place in the
+///   pipeline; reaching one here means the arena is already lowered.
 /// - `Nary` (the `Reduce` binder, from `Kernel::over`) — rewriting under a
 ///   binder is unsound without binder-aware rules (none exist yet); this is
 ///   a documented follow-up, not silently wrong output.
@@ -171,8 +177,16 @@ fn canonical_key(arena: &ExprArena, root: ExprId) -> Vec<u8> {
             }
             &ExprNode::Buffer(b) => {
                 key.push(3);
-                key.extend_from_slice(&b.0.to_le_bytes());
-                let BufferDecl { width, height, .. } = *arena.buffer_decl(b);
+                // Key by process-unique BufferIdentity, NOT the arena-local
+                // slot index: two arenas can both call their own buffer "slot
+                // 0" with equal extents while naming different memory, and a
+                // slot-keyed cache would hand one of them the other's
+                // optimized arena — whose redeclared identity binds the wrong
+                // pixels. Identity is process-local, which is exactly the
+                // lifetime of this in-process cache. It has no byte accessor,
+                // so serialize its (injective) Debug form.
+                let BufferDecl { id, width, height } = *arena.buffer_decl(b);
+                key.extend_from_slice(alloc::format!("{id:?}").as_bytes());
                 key.extend_from_slice(&width.to_le_bytes());
                 key.extend_from_slice(&height.to_le_bytes());
             }
@@ -241,6 +255,50 @@ impl Op for MaskOr {
     }
 }
 
+// ─────────────────────── Runtime-only integer-domain ops ─────────────────────
+//
+// The packed cell-grid kernel's spine: clamp → `TruncToInt` → `Shl` →
+// or-fold builds a `u32` pixel per lane, so the production frame kernel is
+// unrepresentable — and therefore compiles with NO CSE across its four
+// channels — unless these enter the e-graph. Runtime-tier only, for the
+// same reason as the mask ops above. Opaque structure: no rewrite rule can
+// name them (nothing here or in `op_from_kind` hands them to a template),
+// their results are bit patterns the float rule set has no semantics for,
+// and `ConstantFold` cannot reach them because folding is rule-driven.
+// `Shl`/`Shr` keep `Const` shift operands by the same argument — no rule
+// can rewrite an operand of an unnameable op's node, and extraction emits
+// `Const` leaves verbatim — so the emitter's immediate-only contract holds.
+struct IntTrunc;
+impl Op for IntTrunc {
+    fn kind(&self) -> OpKind {
+        OpKind::TruncToInt
+    }
+}
+struct IntFromInt;
+impl Op for IntFromInt {
+    fn kind(&self) -> OpKind {
+        OpKind::IntToFloat
+    }
+}
+struct IntAdd;
+impl Op for IntAdd {
+    fn kind(&self) -> OpKind {
+        OpKind::IAdd
+    }
+}
+struct IntShl;
+impl Op for IntShl {
+    fn kind(&self) -> OpKind {
+        OpKind::Shl
+    }
+}
+struct IntShr;
+impl Op for IntShr {
+    fn kind(&self) -> OpKind {
+        OpKind::Shr
+    }
+}
+
 /// Whether the runtime tier can represent `kind` in its e-graph — i.e.,
 /// whether an arena containing it still optimizes rather than bailing.
 /// Test hook for the representability guards; the semantics live in
@@ -251,11 +309,19 @@ pub fn is_egraph_representable(kind: OpKind) -> bool {
 }
 
 /// [`crate::egraph::ops::op_from_kind`] extended with the runtime-only mask
-/// ops above. Every conversion in this module resolves ops through this.
+/// ops above and the opaque `Gather` op (absent from the global lookup so no
+/// rewrite template can name it — its participation is hash-consing CSE
+/// only). Every conversion in this module resolves ops through this.
 fn runtime_op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
     match kind {
         OpKind::BitAnd => Some(&MaskAnd),
         OpKind::BitOr => Some(&MaskOr),
+        OpKind::TruncToInt => Some(&IntTrunc),
+        OpKind::IntToFloat => Some(&IntFromInt),
+        OpKind::IAdd => Some(&IntAdd),
+        OpKind::Shl => Some(&IntShl),
+        OpKind::Shr => Some(&IntShr),
+        OpKind::Gather => Some(&crate::egraph::ops::Gather),
         other => crate::egraph::ops::op_from_kind(other),
     }
 }
@@ -301,7 +367,12 @@ fn arena_to_egraph(
                         memo.insert(id, class);
                         result_stack.push(class);
                     }
-                    ExprNode::Param(_) | ExprNode::Buffer(_) => return None,
+                    ExprNode::Param(_) => return None,
+                    &ExprNode::Buffer(b) => {
+                        let class = egraph.add(ENode::Buffer(*arena.buffer_decl(b)));
+                        memo.insert(id, class);
+                        result_stack.push(class);
+                    }
                     &ExprNode::Unary(kind, a) => {
                         runtime_op_from_kind(kind)?;
                         task_stack.push(Task::Complete(id));
@@ -533,13 +604,97 @@ mod tests {
         assert_semantics_preserved(&want_arena, want_root, &(got_arena, got_root));
     }
 
+    /// Ids of every node reachable from `root`, discovery order.
+    fn reachable_ids(arena: &ExprArena, root: ExprId) -> Vec<ExprId> {
+        let mut seen = vec![false; arena.nodes_raw().len()];
+        let mut stack = vec![root];
+        let mut out = Vec::new();
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut seen[id.0 as usize], true) {
+                continue;
+            }
+            out.push(id);
+            stack.extend(arena.children(id));
+        }
+        out
+    }
+
+    fn count_gathers(arena: &ExprArena, root: ExprId) -> usize {
+        reachable_ids(arena, root)
+            .iter()
+            .filter(|&&id| matches!(arena.node(id), ExprNode::Ternary(OpKind::Gather, ..)))
+            .count()
+    }
+
+    /// Identities of buffers referenced by reachable `Buffer` leaves.
+    fn reachable_buffer_identities(
+        arena: &ExprArena,
+        root: ExprId,
+    ) -> std::collections::BTreeSet<pixelflow_ir::arena::BufferIdentity> {
+        reachable_ids(arena, root)
+            .iter()
+            .filter_map(|&id| match arena.node(id) {
+                &ExprNode::Buffer(b) => Some(arena.buffer_decl(b).id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Bind slices to an arena by buffer *identity*, not slot order: the
+    /// optimizer redeclares buffers in extraction-traversal order, so the
+    /// optimized arena's slot numbering can differ from the input's.
+    fn bind_by_identity<'a>(
+        arena: &ExprArena,
+        by_id: &[(pixelflow_ir::arena::BufferIdentity, &'a [f32])],
+    ) -> BindingTable<'a> {
+        let slices: Vec<&[f32]> = arena
+            .buffers()
+            .iter()
+            .map(|d| {
+                by_id
+                    .iter()
+                    .find(|(id, _)| *id == d.id)
+                    .unwrap_or_else(|| panic!("no slice for buffer identity {:?}", d.id))
+                    .1
+            })
+            .collect();
+        BindingTable::bind(arena, &slices).expect("bind_by_identity")
+    }
+
+    /// Eval parity for buffer-bearing arenas, both sides bound by identity.
+    fn assert_gather_semantics_preserved(
+        arena: &ExprArena,
+        root: ExprId,
+        optimized: &(ExprArena, ExprId),
+        by_id: &[(pixelflow_ir::arena::BufferIdentity, &[f32])],
+    ) {
+        let (opt_arena, opt_root) = optimized;
+        let want_bind = bind_by_identity(arena, by_id);
+        let got_bind = bind_by_identity(opt_arena, by_id);
+        // Coordinates chosen off integer boundaries so Gather's floor cannot
+        // flip cells on rounding differences introduced by rewrites.
+        let coords: &[(f32, f32)] = &[(0.3, 0.4), (1.5, 0.6), (2.2, 1.7), (3.6, 2.4), (-1.2, 9.5)];
+        for &(cx, cy) in coords {
+            let want = eval_scalar(arena, root, &[cx, cy, 0.0, 0.0], &want_bind);
+            let got = eval_scalar(opt_arena, *opt_root, &[cx, cy, 0.0, 0.0], &got_bind);
+            assert!(
+                (want - got).abs() < 1e-3,
+                "gather optimization changed semantics at ({cx},{cy}): {want} != {got}"
+            );
+        }
+    }
+
     #[test]
-    fn buffer_gather_bails_out() {
-        // BilinearSampler-shaped: a Gather anywhere reachable from root means
-        // "don't touch this" — return None rather than mis-optimize memory
-        // ops the e-graph doesn't model.
+    fn gather_arena_round_trips_through_the_egraph() {
+        // BilinearSampler-shaped: the e-graph must now carry the Gather as
+        // opaque structure and hand back an arena that declares the same
+        // buffer (by identity) and evaluates identically.
+        let identity = pixelflow_ir::arena::BufferIdentity::mint();
+        let data: Vec<f32> = (0..16).map(|i| i as f32 * 3.0 + 1.0).collect();
+
         let mut a = ExprArena::new();
         let buf = a.declare_buffer(BufferDecl {
+            id: identity,
             width: 4,
             height: 4,
         });
@@ -549,10 +704,219 @@ mod tests {
         let one = a.push_const(1.0);
         let root = a.push_binary(OpKind::Add, g, one);
 
-        assert!(
-            optimize_runtime_arena(&a, root).is_none(),
-            "an arena reaching a Buffer/Gather must not be optimized"
+        let arc = optimize_runtime_arena(&a, root)
+            .expect("a Gather-bearing arena must optimize, not bail");
+        let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
+
+        assert_eq!(
+            reachable_buffer_identities(&opt_arena, opt_root),
+            reachable_buffer_identities(&a, root),
+            "extraction must redeclare the same buffers, by identity"
         );
+        assert_gather_semantics_preserved(
+            &a,
+            root,
+            &(opt_arena, opt_root),
+            &[(identity, data.as_slice())],
+        );
+    }
+
+    #[test]
+    fn duplicated_gathers_cse_into_one_node() {
+        // The composition problem this change exists to solve: every use of a
+        // sampler Kernel re-splices its fragment, so the SAME gather (same
+        // buffer identity, same coordinate subtree) appears twice as two
+        // disjoint copies. Hash-consing must collapse them to one node.
+        let identity = pixelflow_ir::arena::BufferIdentity::mint();
+        let data: Vec<f32> = (0..16).map(|i| (i * i) as f32).collect();
+
+        let mut a = ExprArena::new();
+        let buf = a.declare_buffer(BufferDecl {
+            id: identity,
+            width: 4,
+            height: 4,
+        });
+        // Two structurally identical copies, pushed separately — exactly what
+        // splice produces.
+        let mut push_dup = |a: &mut ExprArena| {
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let one = a.push_const(1.0);
+            let xx = a.push_binary(OpKind::Add, x, one);
+            a.push_gather(buf, xx, y)
+        };
+        let g1 = push_dup(&mut a);
+        let g2 = push_dup(&mut a);
+        // Mul (not Add) so the doubling rule can't restructure the root and
+        // muddy the count assertions.
+        let root = a.push_binary(OpKind::Mul, g1, g2);
+
+        let before = reachable_count(&a, root);
+        assert_eq!(
+            count_gathers(&a, root),
+            2,
+            "input must contain the duplicate"
+        );
+
+        let arc = optimize_runtime_arena(&a, root).expect("must optimize");
+        let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
+        let after = reachable_count(&opt_arena, opt_root);
+
+        assert!(
+            after < before,
+            "CSE must strictly shrink the arena (before={before}, after={after})"
+        );
+        assert_eq!(
+            count_gathers(&opt_arena, opt_root),
+            1,
+            "the two identical gathers must share one node"
+        );
+        assert_gather_semantics_preserved(
+            &a,
+            root,
+            &(opt_arena, opt_root),
+            &[(identity, data.as_slice())],
+        );
+    }
+
+    #[test]
+    fn distinct_buffer_identities_never_merge() {
+        // Equal extents and identical coordinates are a coincidence, not the
+        // same memory: gathers of different identities must stay distinct.
+        let id_a = pixelflow_ir::arena::BufferIdentity::mint();
+        let id_b = pixelflow_ir::arena::BufferIdentity::mint();
+        let data_a: Vec<f32> = (0..16).map(|i| i as f32).collect();
+        let data_b: Vec<f32> = (0..16).map(|i| 1000.0 - i as f32).collect();
+
+        let mut a = ExprArena::new();
+        let buf_a = a.declare_buffer(BufferDecl {
+            id: id_a,
+            width: 4,
+            height: 4,
+        });
+        let buf_b = a.declare_buffer(BufferDecl {
+            id: id_b,
+            width: 4,
+            height: 4,
+        });
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let ga = a.push_gather(buf_a, x, y);
+        let gb = a.push_gather(buf_b, x, y);
+        let root = a.push_binary(OpKind::Sub, ga, gb);
+
+        let arc = optimize_runtime_arena(&a, root).expect("must optimize");
+        let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
+
+        assert_eq!(
+            count_gathers(&opt_arena, opt_root),
+            2,
+            "different identities with identical extents/coords must not merge"
+        );
+        assert_eq!(
+            reachable_buffer_identities(&opt_arena, opt_root).len(),
+            2,
+            "both identities must survive extraction"
+        );
+        assert_gather_semantics_preserved(
+            &a,
+            root,
+            &(opt_arena, opt_root),
+            &[(id_a, data_a.as_slice()), (id_b, data_b.as_slice())],
+        );
+    }
+
+    #[test]
+    fn composed_cell_grid_kernel_shape_deduplicates() {
+        // Faithful synthetic of the packed terminal kernel: cell-grid
+        // coordinate arithmetic (cell index + intra-cell offset) feeding 5
+        // gathers of one buffer (glyph atlas channels) and 4 of another
+        // (color planes), with the coordinate subtree re-spliced VERBATIM for
+        // every gather — exactly the duplication Kernel composition produces.
+        let atlas_id = pixelflow_ir::arena::BufferIdentity::mint();
+        let color_id = pixelflow_ir::arena::BufferIdentity::mint();
+        let atlas: Vec<f32> = (0..(64 * 32)).map(|i| (i % 97) as f32).collect();
+        let colors: Vec<f32> = (0..(64 * 32)).map(|i| (i % 251) as f32 * 0.5).collect();
+
+        let mut a = ExprArena::new();
+        let atlas_buf = a.declare_buffer(BufferDecl {
+            id: atlas_id,
+            width: 64,
+            height: 32,
+        });
+        let color_buf = a.declare_buffer(BufferDecl {
+            id: color_id,
+            width: 64,
+            height: 32,
+        });
+
+        // The shared coordinate arithmetic, duplicated per gather: cell
+        // coords (floor(X/8), floor(Y/16)), intra-cell offsets, and an
+        // atlas-space remap. The atlas cell stride (10, 18) differs from the
+        // screen cell size (8, 16) so no algebraic rule can cancel the
+        // arithmetic away — deduplication must come from hash-consing, as in
+        // the real kernel.
+        let mut push_coords = |a: &mut ExprArena| {
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let cw = a.push_const(8.0);
+            let ch = a.push_const(16.0);
+            let aw = a.push_const(10.0);
+            let ah = a.push_const(18.0);
+            let xc = a.push_binary(OpKind::Div, x, cw);
+            let cx = a.push_unary(OpKind::Floor, xc);
+            let yc = a.push_binary(OpKind::Div, y, ch);
+            let cy = a.push_unary(OpKind::Floor, yc);
+            let cxw = a.push_binary(OpKind::Mul, cx, cw);
+            let fx = a.push_binary(OpKind::Sub, x, cxw);
+            let cyh = a.push_binary(OpKind::Mul, cy, ch);
+            let fy = a.push_binary(OpKind::Sub, y, cyh);
+            let cxa = a.push_binary(OpKind::Mul, cx, aw);
+            let cya = a.push_binary(OpKind::Mul, cy, ah);
+            let sx = a.push_binary(OpKind::Add, cxa, fx);
+            let sy = a.push_binary(OpKind::Add, cya, fy);
+            (sx, sy)
+        };
+
+        let mut acc = a.push_const(0.0);
+        for i in 0..9 {
+            let (sx, sy) = push_coords(&mut a);
+            let buf = if i < 5 { atlas_buf } else { color_buf };
+            let g = a.push_gather(buf, sx, sy);
+            let w = a.push_const(0.1 + i as f32 * 0.07);
+            let wg = a.push_binary(OpKind::Mul, g, w);
+            acc = a.push_binary(OpKind::Add, acc, wg);
+        }
+        let root = acc;
+
+        let before = reachable_count(&a, root);
+        assert_eq!(count_gathers(&a, root), 9);
+
+        let arc = optimize_runtime_arena(&a, root).expect("must optimize");
+        let (opt_arena, opt_root) = (arc.0.clone(), arc.1);
+        let after = reachable_count(&opt_arena, opt_root);
+
+        // Report shape for the record: 9 duplicated ~13-node coordinate
+        // subtrees must collapse to (at most) one shared copy, and the 5+4
+        // gathers to one per (buffer, coords) pair — here 2 total.
+        assert!(
+            after < before,
+            "composed kernel must come back deduplicated (before={before}, after={after})"
+        );
+        assert_eq!(
+            count_gathers(&opt_arena, opt_root),
+            2,
+            "5 atlas + 4 color gathers of identical coords must CSE to one each"
+        );
+        assert_gather_semantics_preserved(
+            &a,
+            root,
+            &(opt_arena, opt_root),
+            &[(atlas_id, atlas.as_slice()), (color_id, colors.as_slice())],
+        );
+
+        // Keep the measured counts visible in test output (`--nocapture`).
+        println!("composed cell-grid shape: before={before} nodes, after={after} nodes");
     }
 
     #[test]
