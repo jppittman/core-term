@@ -455,9 +455,7 @@ pub const COMPILE_MISS_KERNELS: usize = COMPILE_WARMUP_ITERS + COMPILE_TIMED_RUN
 /// retain every entry compiled here. That is fine for a one-shot bench
 /// process; do not call this in a long-lived process expecting the memory
 /// back.
-pub fn benchmark_compile_cached_miss(
-    kernels: Vec<(ExprArena, ExprId)>,
-) -> Result<f64, BenchError> {
+pub fn benchmark_compile_cached_miss(kernels: Vec<(ExprArena, ExprId)>) -> Result<f64, BenchError> {
     use pixelflow_codegen::jit_cache;
 
     assert_eq!(
@@ -472,7 +470,8 @@ pub fn benchmark_compile_cached_miss(
     let mut kernels = kernels.into_iter();
 
     for (arena, root) in kernels.by_ref().take(COMPILE_WARMUP_ITERS) {
-        let compiled = jit_cache::compile_cached(&arena, root).map_err(BenchError::CompileFailed)?;
+        let compiled =
+            jit_cache::compile_cached(&arena, root).map_err(BenchError::CompileFailed)?;
         std::hint::black_box(&compiled);
     }
 
@@ -480,7 +479,8 @@ pub fn benchmark_compile_cached_miss(
     for t in &mut times {
         let (arena, root) = kernels.next().expect("stream length asserted above");
         let start = nanos_now();
-        let compiled = jit_cache::compile_cached(&arena, root).map_err(BenchError::CompileFailed)?;
+        let compiled =
+            jit_cache::compile_cached(&arena, root).map_err(BenchError::CompileFailed)?;
         std::hint::black_box(&compiled);
         *t = nanos_now() - start;
         // The cache retains its own Arc, so dropping ours (and the source

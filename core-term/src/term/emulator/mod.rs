@@ -219,8 +219,8 @@ impl TerminalEmulator {
                     // This line comes from active grid
                     let grid_idx = y_idx - effective_offset;
                     if grid_idx < active_grid.len() {
-                        let is_dirty = view_changed
-                            || self.screen.dirty.get(grid_idx).is_none_or(|&d| d != 0);
+                        let is_dirty =
+                            view_changed || self.screen.dirty.get(grid_idx).is_none_or(|&d| d != 0);
                         SnapshotLine::from_arc(active_grid[grid_idx].clone(), is_dirty.into())
                     } else {
                         // Beyond active grid, return empty line

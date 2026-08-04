@@ -120,10 +120,7 @@ fn build_kernel_arena(target_nodes: usize, salt: f32) -> (ExprArena, ExprId) {
 /// `target_nodes` nodes each. `salt_counter` is global across the whole run
 /// so no two kernels anywhere in the process share a salt (and the salt base
 /// avoids `EMIT_SERIES_SALT`), keeping every `compile_cached` call a miss.
-fn distinct_kernel_stream(
-    target_nodes: usize,
-    salt_counter: &mut u32,
-) -> Vec<(ExprArena, ExprId)> {
+fn distinct_kernel_stream(target_nodes: usize, salt_counter: &mut u32) -> Vec<(ExprArena, ExprId)> {
     (0..COMPILE_MISS_KERNELS)
         .map(|_| {
             *salt_counter += 1;
