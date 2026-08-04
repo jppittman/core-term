@@ -15,9 +15,8 @@ fn get_jit_mul_kernel() -> usize {
     let bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(code.as_ptr() as *const u8, code.len() * 4) };
 
-    let exec = unsafe {
-        pixelflow_ir::backend::emit::executable::ExecutableCode::from_code(bytes).unwrap()
-    };
+    let exec =
+        unsafe { pixelflow_codegen::emit::executable::ExecutableCode::from_code(bytes).unwrap() };
 
     // Leak the executable so it lives forever (it's just a test)
     let ptr = unsafe { exec.as_fn::<extern "C" fn()>() as usize };

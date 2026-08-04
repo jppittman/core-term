@@ -21,6 +21,7 @@ use std::path::Path;
 
 use super::node::ENode;
 use pixelflow_ir::OpKind;
+use pixelflow_ir::kind::OpMap;
 
 // ============================================================================
 // Latency Prior — single source of truth
@@ -37,64 +38,73 @@ use pixelflow_ir::OpKind;
 ///
 /// Values are approximate cycle counts on typical x86_64/AArch64 SIMD
 /// hardware; refine as real measurements come in (see `calibrate_costs`).
-pub const LATENCY_PRIOR_CYCLES: [usize; OpKind::COUNT] = [
-    0,  // Var - free
-    0,  // Const - free
-    4,  // Add
-    4,  // Sub
-    5,  // Mul
-    15, // Div
-    1,  // Neg
-    15, // Sqrt
-    5,  // Rsqrt - fast approximation
-    1,  // Abs
-    4,  // Min
-    4,  // Max
-    5,  // MulAdd - fused
-    10, // Recip
-    4,  // Floor
-    4,  // Ceil
-    4,  // Round
-    10, // Sin
-    10, // Cos
-    10, // Tan
-    10, // Asin
-    10, // Acos
-    10, // Atan
-    10, // Exp
-    10, // Exp2
-    10, // Ln
-    10, // Log2
-    10, // Log10
-    10, // Atan2
-    12, // Pow
-    3,  // Lt
-    3,  // Le
-    3,  // Gt
-    3,  // Ge
-    3,  // Eq
-    3,  // Ne
-    4,  // Select
-    0,  // Tuple - free (structural)
-    // Bit-manip primitives: single cheap integer/convert instructions.
-    1, // TruncToInt - cvttps2dq
-    1, // IntToFloat - cvtdq2ps
-    1, // IAdd - paddd
-    1, // Shl
-    1, // Shr
-    1, // BitAnd
-    1, // BitOr
-    // Dwrt - rewritten away by the e-graph (chain rule); never emitted.
-    // Extraction must never choose a surviving one, so it gets a
-    // prohibitive (but finite, non-saturating) cost here. `node_op_cost`
-    // additionally hard-codes usize::MAX/4 as a belt-and-suspenders guard.
-    1000, // Dwrt
-    0,    // Buffer - leaf, free
-    10,   // Gather - memory read
-    10,   // RawGather - primitive memory read
-    0,    // Reduce - lowered (unrolled) before costing
-];
-
+/// Handcrafted cycle estimates, one per op.
+///
+/// Written as an exhaustive `match` rather than a positional
+/// `[usize; OpKind::COUNT]`. The array form aligned to the discriminants only
+/// by convention, nothing checked the convention, and it drifted: while the
+/// discriminants had gaps the table was written densely, so 13 of 50 ops read
+/// their neighbour's cycle count. `Dwrt` came back 10 instead of 1000 — cheap
+/// enough for extraction to pick an unlowered derivative, which is exactly what
+/// the 1000 exists to prevent — and `Shr`, which `expand_log2` emits, came back
+/// 1000 instead of 1.
+///
+/// A `match` cannot drift: adding an op is a compile error until it is priced.
+#[must_use]
+pub fn latency_prior_cycles() -> OpMap<usize> {
+    OpMap::from_fn(|op| match op {
+        OpKind::Var => 0,   // free
+        OpKind::Const => 0, // free
+        OpKind::Add => 4,
+        OpKind::Sub => 4,
+        OpKind::Mul => 5,
+        OpKind::Div => 15,
+        OpKind::Neg => 1,
+        OpKind::Sqrt => 15,
+        OpKind::Rsqrt => 5, // fast approximation
+        OpKind::Abs => 1,
+        OpKind::Min => 4,
+        OpKind::Max => 4,
+        OpKind::MulAdd => 5, // fused
+        OpKind::Recip => 10,
+        OpKind::Floor => 4,
+        OpKind::Ceil => 4,
+        OpKind::Round => 4,
+        OpKind::Sin => 10,
+        OpKind::Cos => 10,
+        OpKind::Tan => 10,
+        OpKind::Asin => 10,
+        OpKind::Acos => 10,
+        OpKind::Atan => 10,
+        OpKind::Exp => 10,
+        OpKind::Exp2 => 10,
+        OpKind::Ln => 10,
+        OpKind::Log2 => 10,
+        OpKind::Log10 => 10,
+        OpKind::Atan2 => 10,
+        OpKind::Pow => 12,
+        OpKind::Lt => 3,
+        OpKind::Le => 3,
+        OpKind::Gt => 3,
+        OpKind::Ge => 3,
+        OpKind::Eq => 3,
+        OpKind::Ne => 3,
+        OpKind::Select => 4,
+        OpKind::Tuple => 0,      // free (structural)
+        OpKind::TruncToInt => 1, // cvttps2dq
+        OpKind::IntToFloat => 1, // cvtdq2ps
+        OpKind::IAdd => 1,       // paddd
+        OpKind::Shl => 1,
+        OpKind::Shr => 1,
+        OpKind::BitAnd => 1,
+        OpKind::BitOr => 1,
+        OpKind::Dwrt => 1000,
+        OpKind::Buffer => 0,     // leaf, free
+        OpKind::Gather => 10,    // memory read
+        OpKind::RawGather => 10, // primitive memory read
+        OpKind::Reduce => 0,     // lowered (unrolled) before costing
+    })
+}
 // ============================================================================
 // Cost Function Trait
 // ============================================================================
@@ -140,12 +150,12 @@ pub trait CostFunction {
 
 /// Cost model indexed by OpKind.
 ///
-/// Uses `[usize; OpKind::COUNT]` internally for O(1) lookup.
+/// Uses [`OpMap`] internally for O(1) lookup.
 /// Includes depth penalty for compile-time optimization.
 #[derive(Clone, Debug)]
 pub struct CostModel {
-    /// Cost per operation, indexed by `OpKind::index()`.
-    costs: [usize; OpKind::COUNT],
+    /// Cost per operation.
+    costs: OpMap<usize>,
     /// Depth at which to start applying penalties.
     pub depth_threshold: usize,
     /// Penalty per depth level beyond threshold.
@@ -160,7 +170,7 @@ impl Default for CostModel {
 
 impl CostModel {
     /// Create a cost model seeded with the handcrafted latency-prior cycle
-    /// table ([`LATENCY_PRIOR_CYCLES`]).
+    /// table ([`latency_prior_cycles`]).
     ///
     /// This is the default: an all-zero cost model makes every expression
     /// "free" and extraction degenerates to an arbitrary tie-break, so
@@ -173,12 +183,12 @@ impl CostModel {
 
     /// Create a cost model from the handcrafted latency-prior cycle table.
     ///
-    /// Source of truth: [`LATENCY_PRIOR_CYCLES`], shared with
+    /// Source of truth: [`latency_prior_cycles`], shared with
     /// `nnue::factored::OpEmbeddings::init_with_latency_prior` so the static
     /// and learned cost models cannot drift apart.
     pub fn latency_prior() -> Self {
         Self {
-            costs: LATENCY_PRIOR_CYCLES,
+            costs: latency_prior_cycles(),
             depth_threshold: 1024, // Effectively disabled
             depth_penalty: 0,
         }
@@ -192,7 +202,7 @@ impl CostModel {
     /// independent of any particular cost table.
     pub fn zero() -> Self {
         Self {
-            costs: [0usize; OpKind::COUNT],
+            costs: OpMap::splat(0),
             depth_threshold: 1024, // Effectively disabled
             depth_penalty: 0,
         }
@@ -214,22 +224,22 @@ impl CostModel {
     /// Get cost for an OpKind.
     #[inline]
     pub fn cost(&self, op: OpKind) -> usize {
-        self.costs[op.index()]
+        self.costs[op]
     }
 
     /// Set cost for an OpKind.
     #[inline]
     pub fn set_cost(&mut self, op: OpKind, cost: usize) {
-        self.costs[op.index()] = cost;
+        self.costs[op] = cost;
     }
 
     /// Get the raw costs array.
-    pub fn costs(&self) -> &[usize; OpKind::COUNT] {
+    pub fn costs(&self) -> &OpMap<usize> {
         &self.costs
     }
 
     /// Get mutable reference to costs array.
-    pub fn costs_mut(&mut self) -> &mut [usize; OpKind::COUNT] {
+    pub fn costs_mut(&mut self) -> &mut OpMap<usize> {
         &mut self.costs
     }
 
@@ -309,7 +319,7 @@ impl CostModel {
             "tuple" => OpKind::Tuple,
             _ => panic!("CostModel::cost_by_name: unknown op name {name:?}"),
         };
-        self.costs[op.index()]
+        self.costs[op]
     }
 
     // =========================================================================
@@ -321,10 +331,8 @@ impl CostModel {
         let mut contents = String::from("# Learned cost model weights\n");
         contents.push_str("# Generated from SIMD benchmark measurements\n\n");
 
-        for i in 0..OpKind::COUNT {
-            if let Some(op) = OpKind::from_index(i) {
-                contents.push_str(&format!("{} = {}\n", op.name(), self.costs[i]));
-            }
+        for (op, cost) in self.costs.iter() {
+            contents.push_str(&format!("{} = {}\n", op.name(), cost));
         }
 
         contents.push_str(&format!("\ndepth_threshold = {}\n", self.depth_threshold));
@@ -380,7 +388,7 @@ impl CostModel {
                 model.depth_penalty = v;
             } else if let Some(op) = OpKind::from_name(key) {
                 // O(1) lookup via OpKind::from_name
-                model.costs[op.index()] = v;
+                model.costs[op] = v;
             } else {
                 // Unrecognized op name: this is an external, evolving file
                 // format (older/newer OpKind sets), so we don't hard-fail —
@@ -475,7 +483,7 @@ impl CostModel {
                 model.depth_penalty = value;
             } else if let Some(op) = OpKind::from_name(key) {
                 // O(1) lookup via OpKind::from_name
-                model.costs[op.index()] = value;
+                model.costs[op] = value;
             }
             // Unknown keys are silently ignored (external data format)
         }
@@ -485,10 +493,8 @@ impl CostModel {
     /// Convert to HashMap for interop.
     pub fn to_map(&self) -> HashMap<String, usize> {
         let mut map = HashMap::new();
-        for i in 0..OpKind::COUNT {
-            if let Some(op) = OpKind::from_index(i) {
-                map.insert(op.name().to_string(), self.costs[i]);
-            }
+        for (op, cost) in self.costs.iter() {
+            map.insert(op.name().to_string(), *cost);
         }
         map.insert("depth_threshold".to_string(), self.depth_threshold);
         map.insert("depth_penalty".to_string(), self.depth_penalty);
@@ -507,5 +513,80 @@ impl CostFunction for CostModel {
 
     fn cost_by_kind(&self, op: OpKind, _parent: Option<OpKind>) -> usize {
         self.cost(op)
+    }
+}
+
+#[cfg(test)]
+mod every_op_is_priceable {
+    use super::{CostModel, latency_prior_cycles};
+    use pixelflow_ir::kind::{OpKind, OpMap};
+
+    /// `cost`/`set_cost` subscript `[usize; OpKind::COUNT]` with
+    /// `OpKind::index()`. That is only total while the discriminants are dense.
+    ///
+    /// They were not, until 2026-08-02: `Gather`/`RawGather`/`Reduce` sat past
+    /// three gaps and indexed 50..=52 into a 50-slot array. Nothing caught it
+    /// because `arena_to_egraph` refuses `Buffer` leaves before extraction
+    /// runs, and every `Gather` has one — so the panic was reachable only by
+    /// pricing an op the front end happened never to hand over. Pricing the
+    /// whole enum here does not depend on that accident holding.
+    /// The prices that are load-bearing rather than advisory.
+    ///
+    /// `Dwrt` is priced prohibitively so extraction never selects an unlowered
+    /// derivative — `arena_to_schedule` panics on one that reaches codegen, and
+    /// that panic is supposed to be unreachable. When the table was positional
+    /// and `index()` was sparse, `Dwrt` came back 10, which is cheaper than
+    /// `Div`. `Shr` got Dwrt's 1000 in the same shift, which taught the
+    /// optimizer to avoid the shifts `expand_log2` is built from.
+    #[test]
+    fn the_prohibitive_prices_are_actually_prohibitive() {
+        let cycles = latency_prior_cycles();
+
+        assert_eq!(cycles[OpKind::Dwrt], 1000, "Dwrt must stay unselectable");
+        assert!(
+            cycles[OpKind::Dwrt] > 100 * cycles[OpKind::Mul],
+            "Dwrt at {} is not prohibitive next to Mul at {}",
+            cycles[OpKind::Dwrt],
+            cycles[OpKind::Mul]
+        );
+
+        // The bit-manipulation atoms exp/log lower into are single
+        // instructions and must be priced like it.
+        for op in [
+            OpKind::Shl,
+            OpKind::Shr,
+            OpKind::BitAnd,
+            OpKind::BitOr,
+            OpKind::IAdd,
+            OpKind::TruncToInt,
+            OpKind::IntToFloat,
+        ] {
+            assert_eq!(cycles[op], 1, "{op:?} is a single instruction");
+        }
+    }
+
+    #[test]
+    fn pricing_never_indexes_out_of_bounds() {
+        let mut model = CostModel::latency_prior();
+
+        // Named, not reached through `from_index`, because that is precisely
+        // how the bug hid: these three sat at discriminants 50..=52, past
+        // `COUNT`, so no walk over `0..COUNT` ever produced them.
+        for op in [OpKind::Gather, OpKind::RawGather, OpKind::Reduce] {
+            assert!(
+                op.index() < OpKind::COUNT,
+                "{op:?} has index {} but COUNT is {}",
+                op.index(),
+                OpKind::COUNT
+            );
+            let _ = model.cost(op);
+            model.set_cost(op, 1);
+        }
+
+        for i in 0..OpKind::COUNT {
+            let op = OpKind::from_index(i).expect("dense over 0..COUNT");
+            let _ = model.cost(op);
+            model.set_cost(op, 1);
+        }
     }
 }

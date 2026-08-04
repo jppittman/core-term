@@ -33,7 +33,7 @@
 //!   included in a "every backend must support this" list; its own test
 //!   coverage lives with the gather-specific tests.
 
-use crate::kind::OpKind;
+use pixelflow_ir::kind::OpKind;
 
 /// Ops that reach `IsaBackend::emit_plan` as `ResolvedOp::Unary { op, .. }`.
 pub(crate) const REQUIRED_UNARY_OPS: &[OpKind] = &[

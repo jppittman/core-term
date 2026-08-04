@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::vec::Vec;
 
 use crate::JitManifold;
-use crate::arena::{ExprArena, ExprId, ExprNode};
-use crate::backend::emit;
+use crate::emit;
+use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
 static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Arc<JitManifold>>>> = OnceLock::new();
 
@@ -64,9 +64,26 @@ fn compile_cached_mode(
     root: ExprId,
     mode: Mode,
 ) -> Result<Arc<JitManifold>, &'static str> {
-    let compile = |arena: &ExprArena, root: ExprId| match mode {
-        Mode::PerBatch => emit::compile_arena_dag(arena, root),
-        Mode::Collapse => emit::compile_collapse(arena, root),
+    // Optimize, then emit. This is not a step callers get to sequence: an
+    // arena reaching a backend unoptimized is never what anyone wanted, and
+    // when the choice was on offer, two of the three production call sites
+    // took the wrong one and compiled the terminal's cell-grid kernels with
+    // no CSE and no FMA fusion. It is inside the compile entry because that
+    // is the only place it cannot be forgotten.
+    //
+    // It bails to the arena as given for constructs the e-graph does not
+    // model (`Reduce`, the binder `Kernel::over` produces); those still
+    // compile, just without the extra fusion.
+    let compile = |arena: &ExprArena, root: ExprId| {
+        let optimized = pixelflow_search::runtime::optimize_runtime_arena(arena, root);
+        let (arena, root) = optimized
+            .as_deref()
+            .map(|(a, r)| (a, *r))
+            .unwrap_or((arena, root));
+        match mode {
+            Mode::PerBatch => emit::compile_arena_dag(arena, root),
+            Mode::Collapse => emit::compile_collapse(arena, root),
+        }
     };
 
     let Some(key) = canonical_key(arena, root, mode) else {
@@ -75,6 +92,9 @@ fn compile_cached_mode(
         return Ok(Arc::new(JitManifold::new(result.code)));
     };
 
+    // Keyed on the arena *as handed in*, before optimization. Optimization is
+    // a deterministic function of that input, so equal inputs yield equal
+    // output and a hit skips the saturation as well as the codegen.
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache.lock().expect("jit_cache: lock poisoned").get(&key) {
         return Ok(hit.clone());
@@ -184,7 +204,7 @@ fn canonical_key(arena: &ExprArena, root: ExprId, mode: Mode) -> Option<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kind::OpKind;
+    use pixelflow_ir::kind::OpKind;
 
     fn circle_arena(garbage: bool) -> (ExprArena, ExprId) {
         let mut a = ExprArena::new();

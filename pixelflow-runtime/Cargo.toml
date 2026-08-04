@@ -18,7 +18,6 @@ serde = { version = "1.0", features = ["derive"] }
 
 # Workspace dependencies
 pixelflow-core = { path = "../pixelflow-core" }
-pixelflow-ir = { path = "../pixelflow-ir" }
 pixelflow-graphics = { path = "../pixelflow-graphics", features = ["serde"] }
 
 [dependencies.actor-scheduler]
@@ -78,3 +77,7 @@ default = []
 anyhow = "1.0"
 env_logger = "0.11"
 pixelflow-compiler = { path = "../pixelflow-compiler" }
+# The kernel macros expand into code that constructs IR values, so any crate
+# invoking them names the IR crate directly. Tests and examples only, here.
+pixelflow-ir = { path = "../pixelflow-ir" }
+pixelflow-codegen = { path = "../pixelflow-codegen" }

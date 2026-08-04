@@ -9,8 +9,9 @@
 //! Transcendental builtins (atan2, atan, asin, acos) use VEX encoding for the
 //! 3-operand form which avoids extra MOV instructions in multi-step sequences.
 
-use super::Reg;
-use crate::kind::OpKind;
+use super::{Reg, unimplemented_op};
+use alloc::vec::Vec;
+use pixelflow_ir::kind::OpKind;
 
 // =============================================================================
 // Encoding Helpers
@@ -604,14 +605,7 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: [
         OpKind::TruncToInt => emit_vcvttps2dq(code, dst, src),
         OpKind::IntToFloat => emit_vcvtdq2ps(code, dst, src),
 
-        // Transcendentals (sin/cos/tan/exp/exp2/ln/log2/log10/atan/asin/acos) are
-        // expanded to primitive arithmetic by `lowering` before codegen, so they
-        // never reach a backend. Reaching here means the lowering pass was
-        // skipped — a bug; fall through to the panic.
-        _ => panic!(
-            "x86_64 unary emit not implemented for {:?} (lowering not run?)",
-            op
-        ),
+        _ => unimplemented_op("x86-64", op),
     }
 }
 
@@ -622,7 +616,7 @@ pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount
     match op {
         OpKind::Shl => emit_vpslld_imm(code, dst, src, amount),
         OpKind::Shr => emit_vpsrld_imm(code, dst, src, amount),
-        _ => panic!("x86_64 emit_shift_imm: not a shift op: {:?}", op),
+        _ => unimplemented_op("x86-64", op),
     }
 }
 
@@ -734,7 +728,7 @@ pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Re
 
     match X86BinaryInsn::select(op) {
         Some(insn) => insn.encode(code, dst, src2),
-        None => panic!("x86_64 binary emit not implemented for {:?}", op),
+        None => unimplemented_op("x86-64", op),
     }
 }
 
@@ -764,7 +758,7 @@ pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c:
             emit_addps(code, dst, c);
         }
 
-        _ => panic!("x86_64 ternary emit not implemented for {:?}", op),
+        _ => unimplemented_op("x86-64", op),
     }
 }
 
@@ -845,7 +839,7 @@ mod tests {
     use super::*;
 
     /// `X86BinaryInsn::select` is `emit_binary`'s completeness contract made
-    /// checkable: every op `pixelflow_ir::backend::emit::coverage::
+    /// checkable: every op `crate::emit::coverage::
     /// REQUIRED_BINARY_OPS` lists must select `Some`, or this backend would
     /// panic the moment the scheduler handed it that op. Cheaper and more
     /// precise than the emit-and-catch-panic sweep in `emit/mod.rs`'s
@@ -853,7 +847,7 @@ mod tests {
     /// directly instead of inferring "not supported" from a caught panic.
     #[test]
     fn selects_every_required_binary_op() {
-        use crate::backend::emit::coverage::REQUIRED_BINARY_OPS;
+        use crate::emit::coverage::REQUIRED_BINARY_OPS;
 
         let unselected: alloc::vec::Vec<OpKind> = REQUIRED_BINARY_OPS
             .iter()

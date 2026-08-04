@@ -12,29 +12,18 @@ bench = false
 workspace = true
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"], optional = true }
 libm = "0.2.15"
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [dev-dependencies]
-criterion = "0.5"
 # Self-dependency so this crate's own `tests/` see the oracle. Nothing else
 # turns the feature on, which is what keeps a tree-walking evaluator out of
 # every shipped build.
 pixelflow-ir = { path = ".", features = ["oracle"] }
 
-[[bench]]
-name = "collapse_overhead"
-harness = false
-
 [features]
-default = ["std", "alloc"]
-std = ["alloc"]
+default = ["std"]
+std = []
 # The scalar differential-testing oracle (`eval`). Test-only: PixelFlow renders
 # exclusively through the JIT, so no shipped build may reach an interpreter.
 oracle = []
-# The crate always links `alloc` (see `extern crate alloc`). This feature gates
-# the owned `Expr` tree API used by the x86-64 JIT emitter and arena bridge.
-alloc = []

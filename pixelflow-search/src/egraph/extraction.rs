@@ -89,7 +89,7 @@ fn load_opt_in_weights(path: &str) -> ExprNnue {
         )
     });
 
-    const EXPECTED_MAGIC: &[u8; 4] = b"TRID";
+    const EXPECTED_MAGIC: &[u8; 4] = b"TRIE";
     let found_magic = bytes.get(0..4);
     match ExprNnue::from_bytes(&bytes) {
         Ok(model) => model,

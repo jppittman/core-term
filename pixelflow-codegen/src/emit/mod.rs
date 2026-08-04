@@ -29,20 +29,41 @@
 //! - Reloaded via LDR to dedicated reload register before use
 //! - This lets ML models learn register pressure vs spill tradeoffs
 
+/// The one way a backend refuses an op.
+///
+/// Reaching this is never "the target cannot do that". [`pixelflow_ir::passes::legalize`]
+/// leaves only ops from the backend-legal set, and every backend owes an
+/// encoding for all of them — so arriving here means the pipeline was bypassed
+/// or this backend is incomplete. Both are bugs in the compiler rather than
+/// facts about the kernel, and neither is something a caller could act on: the
+/// only callers that ever saw the old `Err` immediately `.expect()`ed it.
+///
+/// So it panics, loudly and at the point of failure, naming the op and the
+/// backend that owes it. Development gets a stack trace pointing at the missing
+/// match arm instead of a `&'static str` surfacing three frames up.
+#[cold]
+#[inline(never)]
+pub(crate) fn unimplemented_op(backend: &str, op: pixelflow_ir::kind::OpKind) -> ! {
+    panic!(
+        "{backend} has no encoding for {op:?} — `passes::legalize` leaves only \
+         backend-legal ops, so this is a missing implementation or a bypassed \
+         pipeline, not a bad kernel"
+    )
+}
+
 pub mod aarch64;
 pub mod avx2;
 pub mod avx512;
 #[cfg(test)]
 pub(crate) mod coverage;
 pub mod executable;
-pub mod lowering;
 pub mod regalloc;
 pub mod x86_64;
 
-use crate::kind::OpKind;
+use pixelflow_ir::kind::OpKind;
 
 #[cfg(target_arch = "x86_64")]
-use crate::arena::{ExprArena, ExprId};
+use pixelflow_ir::arena::{ExprArena, ExprId};
 
 use alloc::vec::Vec;
 
@@ -224,10 +245,10 @@ pub enum ResolvedOp {
         if_true: Reg,
         if_false: Reg,
     },
-    /// Bound-memory gather: `dst = buffer[slot][idx_lane]`. Emitted only on the
-    /// AVX-512 backend (native `vgatherdps`); other backends reject it. The
-    /// buffer base pointer is loaded from the context struct (rdi) at
-    /// `slot * 8`.
+    /// Bound-memory gather: `dst = buffer[slot][idx_lane]`. Every backend
+    /// implements it: AVX-512 natively (`vgatherdps`), AVX-2 as two scalar
+    /// halves, SSE2 and NEON as four scalar loads. The buffer base pointer is
+    /// loaded from the context struct (rdi) at `slot * 8`.
     Gather { dst: Reg, idx: Reg, slot: u16 },
 }
 
@@ -391,8 +412,8 @@ pub struct CompileResult {
 /// order eliminates the linearization pass entirely.
 #[cfg(target_arch = "aarch64")]
 pub fn compile_arena(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
 ) -> Result<executable::ExecutableCode, &'static str> {
     compile_arena_dag(arena, root).map(|r| r.code)
 }
@@ -403,8 +424,8 @@ pub fn compile_arena(
 /// `ExprId` maps 1:1 to `ValueId` for reachable nodes.
 #[cfg(target_arch = "aarch64")]
 pub fn compile_arena_dag(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
 ) -> Result<CompileResult, &'static str> {
     compile_arena_dag_with_ctx(arena, root, EmitCtx::default())
 }
@@ -415,199 +436,18 @@ pub fn compile_arena_dag(
 /// schedule comes for free -- `ExprId` maps 1:1 to `ValueId` for reachable nodes.
 #[cfg(target_arch = "aarch64")]
 pub fn compile_arena_dag_with_ctx(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
     ctx: EmitCtx,
 ) -> Result<CompileResult, &'static str> {
-    // Lower derivatives, reductions, memory reads, then transcendentals to
-    // primitives (one source of truth in `lowering`); the aarch64 emitter then
-    // never sees Dwrt/Reduce/Gather/Sin/Cos/etc. Dwrt runs first: its chain
-    // rule emits Sin/Cos/Exp nodes that the transcendental pass must still
-    // lower. (aarch64 gather emission is a later slice.)
-    let (arena, root) = lowering::lower_dwrt_owned(arena, root)?;
-    let (arena, root) = lowering::expand_reduce_owned(&arena, root);
-    let (arena, root) = lowering::expand_gather_owned(&arena, root);
-    let (arena, root) = lowering::expand_transcendentals_owned(&arena, root);
+    // After this the emitter sees only ops it can encode — no Dwrt, Reduce,
+    // Gather or transcendentals. The passes and their order live in
+    // `pixelflow_ir::passes::legalize`.
+    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses_map = arena_to_uses(&schedule);
     compile_from_schedule(schedule, uses_map, ctx)
-}
-
-// =============================================================================
-// Amortized compilation workspace
-// =============================================================================
-
-/// Pre-allocated workspace for amortized JIT compilation.
-///
-/// Owns a reusable [`executable::CodeBuffer`] and pre-sized scratch vectors,
-/// eliminating mmap/munmap syscalls and Vec allocations on every compile.
-///
-/// # Usage
-///
-/// ```ignore
-/// let mut ws = CompileWorkspace::new(65536)?;
-/// loop {
-///     let func = ws.compile_arena(&arena, root)?;
-///     // Use func... (valid until next compile_arena call)
-/// }
-/// ```
-///
-/// # Safety
-///
-/// The returned `KernelFn` is invalidated by the next call to `compile_arena`.
-/// The caller must not hold references across compiles.
-#[cfg(target_arch = "aarch64")]
-pub struct CompileWorkspace {
-    /// Reusable executable memory region.
-    code_buf: executable::CodeBuffer,
-    /// Scratch buffer for schedule entries.
-    schedule: Vec<(regalloc::ValueId, ScheduledOp)>,
-    /// Scratch buffer for uses map.
-    uses_map: Vec<Vec<regalloc::ValueId>>,
-    /// Scratch buffer for reachability marking.
-    reachable: Vec<bool>,
-    /// Scratch buffer for ExprId -> ValueId mapping.
-    id_map: Vec<regalloc::ValueId>,
-    /// Register budget.
-    ctx: EmitCtx,
-}
-
-#[cfg(target_arch = "aarch64")]
-impl CompileWorkspace {
-    /// Create a new workspace with the given code buffer capacity (bytes).
-    ///
-    /// `code_capacity` is rounded up to the system page size. 64KB is
-    /// generous for expressions up to ~500 nodes.
-    pub fn new(code_capacity: usize) -> Result<Self, &'static str> {
-        Ok(Self {
-            code_buf: executable::CodeBuffer::new(code_capacity)?,
-            schedule: Vec::with_capacity(256),
-            uses_map: Vec::with_capacity(256),
-            reachable: Vec::with_capacity(256),
-            id_map: Vec::with_capacity(256),
-            ctx: EmitCtx::default(),
-        })
-    }
-
-    /// Set the register budget for subsequent compiles.
-    pub fn set_max_regs(&mut self, max_regs: u8) {
-        self.ctx.max_regs = max_regs;
-    }
-
-    /// Compile an arena DAG, returning a function pointer into reusable memory.
-    ///
-    /// # Safety
-    ///
-    /// The returned function pointer is valid only until the next call to
-    /// `compile_arena`. The caller must ensure no concurrent use.
-    pub unsafe fn compile_arena(
-        &mut self,
-        arena: &crate::arena::ExprArena,
-        root: crate::arena::ExprId,
-    ) -> Result<executable::KernelFn, &'static str> {
-        // 1. Build schedule into pre-allocated buffers.
-        self.schedule.clear();
-        let len = arena.len();
-
-        // Grow scratch buffers if needed (retains capacity across compiles).
-        self.reachable.clear();
-        self.reachable.resize(len, false);
-        self.id_map.clear();
-        self.id_map.resize(len, regalloc::ValueId(u32::MAX));
-
-        mark_reachable(arena, root, &mut self.reachable);
-
-        let id_map = &mut self.id_map;
-        let schedule = &mut self.schedule;
-        let reachable = &self.reachable;
-
-        let mut next_id = 0u32;
-        for idx in 0..len {
-            if !reachable[idx] {
-                continue;
-            }
-            let expr_id = crate::arena::ExprId(idx as u32);
-            let node = arena.node(expr_id);
-            let vid = regalloc::ValueId(next_id);
-            next_id += 1;
-            id_map[idx] = vid;
-
-            let map_child = |child: &crate::arena::ExprId| -> regalloc::ValueId {
-                let mapped = id_map[child.0 as usize];
-                assert!(
-                    mapped.0 != u32::MAX,
-                    "CompileWorkspace: child ExprId({}) not mapped",
-                    child.0
-                );
-                mapped
-            };
-
-            let sched_op = match node {
-                crate::arena::ExprNode::Var(i) => ScheduledOp::Var(*i),
-                crate::arena::ExprNode::Const(v) => ScheduledOp::Const(*v),
-                crate::arena::ExprNode::Param(i) => panic!(
-                    "ExprNode::Param({}) reached CompileWorkspace — \
-                     call substitute_params before compile",
-                    i
-                ),
-                crate::arena::ExprNode::Buffer(b) => panic!(
-                    "ExprNode::Buffer({}) reached CompileWorkspace — memory ops require a \
-                     binding table (KERNELS_AND_LATTICES.md M2, not yet implemented)",
-                    b.0
-                ),
-                crate::arena::ExprNode::Unary(op, child) => {
-                    ScheduledOp::Unary(*op, map_child(child))
-                }
-                crate::arena::ExprNode::Binary(op, a, b) => {
-                    ScheduledOp::Binary(*op, map_child(a), map_child(b))
-                }
-                crate::arena::ExprNode::Ternary(op, a, b, c) => {
-                    ScheduledOp::Ternary(*op, map_child(a), map_child(b), map_child(c))
-                }
-                crate::arena::ExprNode::Nary(_, _, _) => {
-                    panic!("Nary not supported in JIT arena compilation")
-                }
-            };
-            schedule.push((vid, sched_op));
-        }
-
-        // 2. Build uses_map.
-        self.uses_map.clear();
-        for (_, op) in &self.schedule {
-            let uses = match op {
-                ScheduledOp::Var(_) | ScheduledOp::Const(_) => Vec::new(),
-                ScheduledOp::Unary(_, a)
-                | ScheduledOp::ShiftImm(_, a, _)
-                | ScheduledOp::Gather(a, _) => alloc::vec![*a],
-                ScheduledOp::Binary(_, a, b) => alloc::vec![*a, *b],
-                ScheduledOp::Ternary(_, a, b, c) => alloc::vec![*a, *b, *c],
-            };
-            self.uses_map.push(uses);
-        }
-
-        // 3. Compile via the shared backend (schedule + uses_map -> executable).
-        //    compile_from_schedule owns the Vecs (moved), so swap them out
-        //    and restore empty Vecs with retained capacity afterward.
-        let schedule_owned = core::mem::take(&mut self.schedule);
-        let uses_owned = core::mem::take(&mut self.uses_map);
-        let result = compile_from_schedule(
-            schedule_owned,
-            uses_owned,
-            EmitCtx {
-                max_regs: self.ctx.max_regs,
-                spill_offset: 0,
-                spill_count: 0,
-            },
-        )?;
-
-        // Copy the compiled bytes into our reusable code buffer.
-        let bytes = result.code.as_bytes();
-        // SAFETY: The caller guarantees no concurrent use and that previous
-        // function pointers are not held across this call.
-        let func: executable::KernelFn = unsafe { self.code_buf.write_code(bytes)? };
-        Ok(func)
-    }
 }
 
 /// The architecture seam for the shared per-batch driver.
@@ -1370,8 +1210,8 @@ pub enum ScheduledOp {
 /// The arena may contain garbage nodes from junkify passes; only nodes
 /// transitively referenced by `root` should appear in the schedule.
 fn mark_reachable(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
     reachable: &mut [bool],
 ) {
     let mut stack = alloc::vec![root];
@@ -1400,10 +1240,10 @@ fn mark_reachable(
 /// Panics if a `Param` or `Nary` node is encountered (these are not expected
 /// in JIT compilation).
 fn arena_to_schedule(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
 ) -> Vec<(regalloc::ValueId, ScheduledOp)> {
-    use crate::arena::{ExprId, ExprNode};
+    use pixelflow_ir::arena::{ExprId, ExprNode};
     use regalloc::ValueId;
 
     let len = arena.len();
@@ -1475,7 +1315,7 @@ fn arena_to_schedule(
                 ScheduledOp::Gather(map_child(idx), slot)
             }
             // Unreachable precondition: every compile entry point runs
-            // `lowering::lower_dwrt` before scheduling, which either rewrites
+            // `passes::lower_dwrt` before scheduling, which either rewrites
             // all `Dwrt` (autodiff) nodes into chain-rule arithmetic or errors
             // loudly on an op it cannot differentiate. A `Dwrt` here means a
             // caller bypassed that pipeline. Fail loudly rather than as a
@@ -1519,15 +1359,15 @@ fn arena_to_uses(schedule: &[(regalloc::ValueId, ScheduledOp)]) -> Vec<Vec<regal
 // Collapse-loop LICM (X-invariant hoisting)
 // =============================================================================
 
-/// Compute [`Variance`](crate::variance::Variance) for every schedule entry.
+/// Compute [`Variance`](pixelflow_ir::variance::Variance) for every schedule entry.
 ///
 /// The schedule mirrors the arena's topological order, so one forward pass
 /// suffices — the dense result is indexed by `ValueId.0`.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn schedule_variance(
     schedule: &[(regalloc::ValueId, ScheduledOp)],
-) -> Vec<crate::variance::Variance> {
-    use crate::variance::Variance;
+) -> Vec<pixelflow_ir::variance::Variance> {
+    use pixelflow_ir::variance::Variance;
     let max_vid = schedule.iter().map(|(v, _)| v.0).max().unwrap_or(0) as usize;
     let mut v = alloc::vec![Variance::CONST; max_vid + 1];
     for (vid, op) in schedule {
@@ -1580,7 +1420,7 @@ struct HoistPlan {
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn plan_collapse_hoist(
     schedule: &[(regalloc::ValueId, ScheduledOp)],
-    variance: &[crate::variance::Variance],
+    variance: &[pixelflow_ir::variance::Variance],
     scope_mask: u8,
 ) -> Option<HoistPlan> {
     use regalloc::ValueId;
@@ -2294,7 +2134,7 @@ fn emit_instruction_plan(
         }
         ResolvedOp::Unary { op, dst, src } => {
             let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
-            emit_unary(code, pool, *op, *dst, *src, scratch)?;
+            emit_unary(code, pool, *op, *dst, *src, scratch);
         }
         ResolvedOp::ShiftImm {
             op,
@@ -2302,7 +2142,7 @@ fn emit_instruction_plan(
             src,
             amount,
         } => {
-            aarch64::emit_shift_imm(code, *op, *dst, *src, *amount)?;
+            aarch64::emit_shift_imm(code, *op, *dst, *src, *amount);
         }
         ResolvedOp::Gather { dst, idx, slot } => {
             // dst = buffer[slot][idx], via four scalar loads (NEON has no
@@ -2496,22 +2336,15 @@ pub fn compile_arena_dag_with_ctx(
     // SSE2 (128-bit xmm). Both implement `IsaBackend`, so the driver and the
     // KernelFn ABI stay consistent with the selected width.
     //
-    // Lower, in order: derivatives (Dwrt -> chain-rule arithmetic), reductions
-    // (unroll -> arithmetic + gathers), then memory reads (Gather -> index math
-    // + RawGather), then transcendentals. Each is a no-op when absent. Dwrt runs
-    // first because its rules emit Sin/Cos/Exp nodes the transcendental pass
-    // must still lower; Reduce runs before Gather so the gathers it unrolls get
-    // lowered too. A kernel that reads bound memory takes its buffer bases from
-    // a context pointer in rdi; the emitted body is identical either way, so the
-    // caller invokes it as `CtxKernelFn` instead of `KernelFn`.
-    let (arena, root) = lowering::lower_dwrt_owned(arena, root)?;
-    let (arena, root) = lowering::expand_reduce_owned(&arena, root);
-    let (arena, root) = lowering::expand_gather_owned(&arena, root);
-    let (arena, root) = lowering::expand_transcendentals_owned(&arena, root);
+    // A kernel that reads bound memory takes its buffer bases from a context
+    // pointer in rdi; the emitted body is identical either way, so the caller
+    // invokes it as `CtxKernelFn` instead of `KernelFn`. The passes that get
+    // the arena down to encodable ops live in `pixelflow_ir::passes::legalize`.
+    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
-    // Three-way build-width split, matching `pixelflow_ir::JIT_VECTOR_BYTES`
+    // Three-way build-width split, matching `crate::JIT_VECTOR_BYTES`
     // and `pixelflow-core`'s `Field` storage: AVX-512 > AVX2 > SSE2.
     #[cfg(target_feature = "avx512f")]
     {
@@ -3107,7 +2940,7 @@ impl IsaBackend for Avx512Backend {
                 avx512::emit_const(code, *dst, f32::from_bits(*val_bits));
             }
             ResolvedOp::Unary { op, dst, src } => {
-                avx512::emit_unary(code, *op, *dst, *src)?;
+                avx512::emit_unary(code, *op, *dst, *src);
             }
             ResolvedOp::ShiftImm {
                 op,
@@ -3115,7 +2948,7 @@ impl IsaBackend for Avx512Backend {
                 src,
                 amount,
             } => {
-                avx512::emit_shift_imm(code, *op, *dst, *src, *amount)?;
+                avx512::emit_shift_imm(code, *op, *dst, *src, *amount);
             }
             ResolvedOp::Gather { dst, idx, slot } => {
                 // dst = buffer[slot][idx]. The context pointer (array of buffer
@@ -3141,9 +2974,9 @@ impl IsaBackend for Avx512Backend {
                 // EVEX 3-operand: no two-operand hazard, emit directly.
                 // Comparisons produce a vector mask (vcmpps -> vpmovm2d).
                 if avx512::is_compare(*op) {
-                    avx512::emit_compare(code, *op, *dst, *left, *right)?;
+                    avx512::emit_compare(code, *op, *dst, *left, *right);
                 } else {
-                    avx512::emit_binary(code, *op, *dst, *left, *right)?;
+                    avx512::emit_binary(code, *op, *dst, *left, *right);
                 }
             }
             ResolvedOp::FusedMulAdd { dst, a, b } => {
@@ -3158,7 +2991,7 @@ impl IsaBackend for Avx512Backend {
                 c_deferred,
             } => {
                 // dst = a*b, reload c (after the multiply if deferred), dst += c.
-                avx512::emit_binary(code, OpKind::Mul, *dst, *a, *b)?;
+                avx512::emit_binary(code, OpKind::Mul, *dst, *a, *b);
                 match c_deferred {
                     Some(DeferredReload::FromStack(off)) => {
                         avx512::emit_load_rsp(code, *c, avx512_slot_disp(*off));
@@ -3168,7 +3001,7 @@ impl IsaBackend for Avx512Backend {
                     }
                     None => {}
                 }
-                avx512::emit_binary(code, OpKind::Add, *dst, *dst, *c)?;
+                avx512::emit_binary(code, OpKind::Add, *dst, *dst, *c);
             }
             ResolvedOp::Select {
                 dst,
@@ -3318,7 +3151,7 @@ impl IsaBackend for Avx512Backend {
         // X += lane count.
         avx512::emit_load_rsp(&mut code, Reg(0), slot(0));
         avx512::emit_const(&mut code, Reg(1), (VW / 4) as f32);
-        avx512::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
+        avx512::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
         avx512::emit_store_rsp(&mut code, Reg(0), slot(0));
 
         code.extend_from_slice(&[0x49, 0xFF, 0xC1]); // inc r9
@@ -3336,7 +3169,7 @@ impl IsaBackend for Avx512Backend {
         avx512::emit_store_rsp(&mut code, Reg(0), slot(0));
         avx512::emit_load_rsp(&mut code, Reg(0), slot(1));
         avx512::emit_const(&mut code, Reg(1), 1.0);
-        avx512::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
+        avx512::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
         avx512::emit_store_rsp(&mut code, Reg(0), slot(1));
         code.extend_from_slice(&[0x4C, 0x01, 0xC6]); // add rsi, r8
 
@@ -3444,7 +3277,7 @@ impl IsaBackend for Avx2Backend {
                 avx2::emit_const(code, *dst, f32::from_bits(*val_bits));
             }
             ResolvedOp::Unary { op, dst, src } => {
-                avx2::emit_unary(code, *op, *dst, *src)?;
+                avx2::emit_unary(code, *op, *dst, *src);
             }
             ResolvedOp::ShiftImm {
                 op,
@@ -3452,7 +3285,7 @@ impl IsaBackend for Avx2Backend {
                 src,
                 amount,
             } => {
-                avx2::emit_shift_imm(code, *op, *dst, *src, *amount)?;
+                avx2::emit_shift_imm(code, *op, *dst, *src, *amount);
             }
             ResolvedOp::Gather { dst, idx, slot } => {
                 // Context pointer (array of buffer base pointers) arrives in
@@ -3486,7 +3319,7 @@ impl IsaBackend for Avx2Backend {
                 right,
             } => {
                 // VEX 3-operand: no two-operand hazard, emit directly.
-                avx2::emit_binary(code, *op, *dst, *left, *right)?;
+                avx2::emit_binary(code, *op, *dst, *left, *right);
             }
             ResolvedOp::FusedMulAdd { dst, a, b } => {
                 avx2::emit_fmadd_c_in_dst(code, *dst, *a, *b);
@@ -3498,7 +3331,7 @@ impl IsaBackend for Avx2Backend {
                 c,
                 c_deferred,
             } => {
-                avx2::emit_binary(code, OpKind::Mul, *dst, *a, *b)?;
+                avx2::emit_binary(code, OpKind::Mul, *dst, *a, *b);
                 match c_deferred {
                     Some(DeferredReload::FromStack(off)) => {
                         avx2::emit_load_rsp(code, *c, avx2_slot_disp(*off));
@@ -3508,7 +3341,7 @@ impl IsaBackend for Avx2Backend {
                     }
                     None => {}
                 }
-                avx2::emit_binary(code, OpKind::Add, *dst, *dst, *c)?;
+                avx2::emit_binary(code, OpKind::Add, *dst, *dst, *c);
             }
             ResolvedOp::Select {
                 dst,
@@ -3662,7 +3495,7 @@ impl IsaBackend for Avx2Backend {
         // X += lane count.
         avx2::emit_load_rsp(&mut code, Reg(0), slot(0));
         avx2::emit_const(&mut code, Reg(1), (VW / 4) as f32);
-        avx2::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
+        avx2::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
         avx2::emit_store_rsp(&mut code, Reg(0), slot(0));
 
         code.extend_from_slice(&[0x49, 0xFF, 0xC1]); // inc r9
@@ -3680,7 +3513,7 @@ impl IsaBackend for Avx2Backend {
         avx2::emit_store_rsp(&mut code, Reg(0), slot(0));
         avx2::emit_load_rsp(&mut code, Reg(0), slot(1));
         avx2::emit_const(&mut code, Reg(1), 1.0);
-        avx2::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1))?;
+        avx2::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
         avx2::emit_store_rsp(&mut code, Reg(0), slot(1));
         code.extend_from_slice(&[0x4C, 0x01, 0xC6]); // add rsi, r8
 
@@ -3709,7 +3542,8 @@ pub fn compile_arena_dag_avx2(
     arena: &ExprArena,
     root: ExprId,
 ) -> Result<CompileResult, &'static str> {
-    let schedule = arena_to_schedule(arena, root);
+    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
+    let schedule = arena_to_schedule(&arena, root);
     let uses = arena_to_uses(&schedule);
     compile_dag_via_backend(schedule, uses, &mut Avx2Backend)
 }
@@ -3723,7 +3557,8 @@ pub fn compile_arena_dag_avx512(
     arena: &ExprArena,
     root: ExprId,
 ) -> Result<CompileResult, &'static str> {
-    let schedule = arena_to_schedule(arena, root);
+    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
+    let schedule = arena_to_schedule(&arena, root);
     let uses = arena_to_uses(&schedule);
     compile_dag_via_backend(schedule, uses, &mut Avx512Backend)
 }
@@ -3744,13 +3579,10 @@ pub fn compile_arena_dag_avx512(
 /// `(ctx, out, groups, rows, row_skip_bytes, x0, y0, z, w)`.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 pub fn compile_collapse(
-    arena: &crate::arena::ExprArena,
-    root: crate::arena::ExprId,
+    arena: &pixelflow_ir::arena::ExprArena,
+    root: pixelflow_ir::arena::ExprId,
 ) -> Result<CompileResult, &'static str> {
-    let (arena, root) = lowering::lower_dwrt_owned(arena, root)?;
-    let (arena, root) = lowering::expand_reduce_owned(&arena, root);
-    let (arena, root) = lowering::expand_gather_owned(&arena, root);
-    let (arena, root) = lowering::expand_transcendentals_owned(&arena, root);
+    let (arena, root) = pixelflow_ir::passes::legalize(arena, root)?;
     let arena = &arena;
     let schedule = arena_to_schedule(arena, root);
     let uses = arena_to_uses(&schedule);
@@ -3931,7 +3763,7 @@ fn compile_collapse_via_backend<B: IsaBackend>(
 mod tests {
     use super::*;
     #[cfg(target_arch = "aarch64")]
-    use crate::arena::ExprArena;
+    use pixelflow_ir::arena::ExprArena;
 
     /// A `Dwrt` that reaches the scheduler (a caller bypassed the lowering
     /// pipeline) must fail loudly at the schedule boundary, not as a cryptic
@@ -4258,7 +4090,7 @@ mod tests {
 
     #[test]
     fn arena_to_schedule_simple() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4286,7 +4118,7 @@ mod tests {
 
     #[test]
     fn arena_to_schedule_filters_unreachable() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4306,7 +4138,7 @@ mod tests {
 
     #[test]
     fn verify_arena_to_uses() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4325,7 +4157,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn arena_compile_simple() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4351,7 +4183,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn arena_compile_with_constant() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4379,7 +4211,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn arena_compile_with_spills() {
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
@@ -4480,7 +4312,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn dwrt_of_gather_refuses_to_compile() {
-        use crate::arena::BufferDecl;
+        use pixelflow_ir::arena::BufferDecl;
         let mut a = ExprArena::new();
         let buf = a.declare_buffer(BufferDecl {
             width: 2,
@@ -4796,10 +4628,10 @@ mod tests {
     ))]
     mod lowering_tests {
         use super::*;
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         // Tolerance reflects the degree-7 Chebyshev's ACTUAL measured accuracy
-        // (the SAME polynomial the runtime Compounds path uses): ~1e-6 near 0,
+        // (the SAME polynomial the runtime `SimdOps` path uses): ~1e-6 near 0,
         // degrading to ~2.6e-2 at the ±π range-reduction edges — only ~2-digit
         // accurate there. The bound catches *logic* errors (sign/coefficient/
         // range-reduction), not approximation error; tightening the polynomial
@@ -4960,7 +4792,7 @@ mod tests {
     ))]
     mod sched {
         use super::*;
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         fn run(res: &CompileResult, x: f32, y: f32, z: f32, w: f32) -> f32 {
             unsafe {
@@ -5115,7 +4947,7 @@ mod tests {
     ))]
     mod gather_driver_128 {
         use super::*;
-        use crate::arena::{ExprArena, ExprId};
+        use pixelflow_ir::arena::{ExprArena, ExprId};
 
         /// Run a compiled gather kernel as a `CtxKernelFn`: the context (array
         /// of buffer base pointers) goes in the first integer argument (x0 /
@@ -5181,7 +5013,7 @@ mod tests {
         ) {
             let res = compile_arena_dag(arena, root).expect("compile gather kernel");
             let ctx: Vec<*const f32> = buffers.iter().map(|b| b.as_ptr()).collect();
-            let bindings = crate::binding::BindingTable::bind(arena, buffers).unwrap();
+            let bindings = pixelflow_ir::binding::BindingTable::bind(arena, buffers).unwrap();
 
             for batch in 0..4 {
                 let mut cx = [0.0f32; 4];
@@ -5190,8 +5022,12 @@ mod tests {
                 cy.copy_from_slice(&ys[batch * 4..batch * 4 + 4]);
                 let got = run4_ctx(&res, &ctx, cx, cy);
                 for i in 0..4 {
-                    let want =
-                        crate::eval::eval_scalar(arena, root, &[cx[i], cy[i], 0.0, 0.0], &bindings);
+                    let want = pixelflow_ir::eval::eval_scalar(
+                        arena,
+                        root,
+                        &[cx[i], cy[i], 0.0, 0.0],
+                        &bindings,
+                    );
                     assert_eq!(
                         got[i], want,
                         "{tag} batch {batch} lane {i} (x={}, y={})",
@@ -5219,7 +5055,7 @@ mod tests {
             let (w, h) = (8usize, 4usize);
             let buf: Vec<f32> = (0..(w * h)).map(|i| i as f32 * 2.0 - 3.0).collect();
             let mut a = ExprArena::new();
-            let b = a.declare_buffer(crate::arena::BufferDecl {
+            let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5237,7 +5073,7 @@ mod tests {
             let (w, h) = (8usize, 4usize);
             let buf: Vec<f32> = (0..(w * h)).map(|i| (i as f32).sin()).collect();
             let mut a = ExprArena::new();
-            let b = a.declare_buffer(crate::arena::BufferDecl {
+            let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5259,11 +5095,11 @@ mod tests {
             let buf_a: Vec<f32> = (0..(w * h)).map(|i| i as f32).collect();
             let buf_b: Vec<f32> = (0..(w * h)).map(|i| -(i as f32) * 0.5).collect();
             let mut a = ExprArena::new();
-            let ba = a.declare_buffer(crate::arena::BufferDecl {
+            let ba = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
-            let bb = a.declare_buffer(crate::arena::BufferDecl {
+            let bb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5296,11 +5132,11 @@ mod tests {
             let input: Vec<f32> = (0..in_dim).map(|k| k as f32 + 1.0).collect();
 
             let mut a = ExprArena::new();
-            let wb = a.declare_buffer(crate::arena::BufferDecl {
+            let wb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: in_dim as u32,
                 height: out_dim as u32,
             });
-            let ib = a.declare_buffer(crate::arena::BufferDecl {
+            let ib = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: in_dim as u32,
                 height: 1,
             });
@@ -5330,7 +5166,7 @@ mod tests {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     mod avx512_driver {
         use super::*;
-        use crate::arena::ExprArena;
+        use pixelflow_ir::arena::ExprArena;
 
         // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
         // not-FFI-safe is a false positive here, as for `executable`'s aliases.
@@ -5435,10 +5271,14 @@ mod tests {
             let ctx: Vec<*const f32> = buffers.iter().map(|b| b.as_ptr()).collect();
             let got = run16_ctx(&res, &ctx, xs, ys);
 
-            let bindings = crate::binding::BindingTable::bind(arena, buffers).unwrap();
+            let bindings = pixelflow_ir::binding::BindingTable::bind(arena, buffers).unwrap();
             for (i, &g) in got.iter().enumerate() {
-                let want =
-                    crate::eval::eval_scalar(arena, root, &[xs[i], ys[i], 0.0, 0.0], &bindings);
+                let want = pixelflow_ir::eval::eval_scalar(
+                    arena,
+                    root,
+                    &[xs[i], ys[i], 0.0, 0.0],
+                    &bindings,
+                );
                 assert_eq!(g, want, "{tag} lane {i} (x={}, y={})", xs[i], ys[i]);
             }
         }
@@ -5461,7 +5301,7 @@ mod tests {
             let (w, h) = (8usize, 4usize);
             let buf: Vec<f32> = (0..(w * h)).map(|i| i as f32 * 2.0 - 3.0).collect();
             let mut a = ExprArena::new();
-            let b = a.declare_buffer(crate::arena::BufferDecl {
+            let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5479,7 +5319,7 @@ mod tests {
             let (w, h) = (8usize, 4usize);
             let buf: Vec<f32> = (0..(w * h)).map(|i| (i as f32).sin()).collect();
             let mut a = ExprArena::new();
-            let b = a.declare_buffer(crate::arena::BufferDecl {
+            let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5501,11 +5341,11 @@ mod tests {
             let buf_a: Vec<f32> = (0..(w * h)).map(|i| i as f32).collect();
             let buf_b: Vec<f32> = (0..(w * h)).map(|i| -(i as f32) * 0.5).collect();
             let mut a = ExprArena::new();
-            let ba = a.declare_buffer(crate::arena::BufferDecl {
+            let ba = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
-            let bb = a.declare_buffer(crate::arena::BufferDecl {
+            let bb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: w as u32,
                 height: h as u32,
             });
@@ -5538,11 +5378,11 @@ mod tests {
             let input: Vec<f32> = (0..in_dim).map(|k| k as f32 + 1.0).collect();
 
             let mut a = ExprArena::new();
-            let wb = a.declare_buffer(crate::arena::BufferDecl {
+            let wb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: in_dim as u32,
                 height: out_dim as u32,
             });
-            let ib = a.declare_buffer(crate::arena::BufferDecl {
+            let ib = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
                 width: in_dim as u32,
                 height: 1,
             });
@@ -5751,11 +5591,14 @@ mod tests {
         use super::*;
 
         /// Run one `ResolvedOp` through a backend and report whether it
-        /// emitted without error. Backends disagree on failure signaling
-        /// today (avx512 returns `Err`; x86-64/aarch64's leaf encoders
-        /// `panic!` on an unhandled op) — `catch_unwind` treats both as the
-        /// same "not supported" signal so this test doesn't have to care
-        /// which convention a given backend uses.
+        /// emitted.
+        ///
+        /// Every backend signals an op it cannot encode the same way now — by
+        /// panicking through [`unimplemented_op`], because after `legalize`
+        /// that is a missing implementation rather than a property of the
+        /// kernel. `catch_unwind` is what lets this test report *which* ops a
+        /// backend owes, by name and all of them, instead of dying on the
+        /// first one.
         fn try_emit<B: IsaBackend>(backend: &mut B, op: ResolvedOp) -> bool {
             let plan = InstructionPlan {
                 reloads: alloc::vec::Vec::new(),

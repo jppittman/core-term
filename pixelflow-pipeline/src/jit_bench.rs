@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use pixelflow_ir::backend::emit::compile_arena_dag;
+use pixelflow_codegen::emit::compile_arena_dag;
 use pixelflow_ir::{ExprArena, ExprId};
 
 /// Number of timed samples per expression. Take the median.
@@ -264,7 +264,7 @@ impl BenchResult {
 }
 
 fn benchmark_exec_code(
-    exec_code: pixelflow_ir::backend::emit::executable::ExecutableCode,
+    exec_code: pixelflow_codegen::emit::executable::ExecutableCode,
     repeat_batches: usize,
 ) -> Result<BenchResult, BenchError> {
     let repeat_batches = repeat_batches.max(1);
@@ -273,7 +273,7 @@ fn benchmark_exec_code(
     {
         use core::arch::aarch64::*;
         unsafe {
-            use pixelflow_ir::backend::emit::executable::KernelFn;
+            use pixelflow_codegen::emit::executable::KernelFn;
             let func: KernelFn = exec_code.as_fn();
 
             let x = vdupq_n_f32(0.5);
@@ -313,7 +313,7 @@ fn benchmark_exec_code(
     {
         use core::arch::x86_64::*;
         unsafe {
-            use pixelflow_ir::backend::emit::executable::KernelFn;
+            use pixelflow_codegen::emit::executable::KernelFn;
             let func: KernelFn = exec_code.as_fn();
 
             // Inputs at the KernelFn's SIMD width: __m512 under +avx512f, __m256
@@ -421,12 +421,6 @@ const COMPILE_TIMED_RUNS: usize = 101;
 /// steady-state cost, not cold-start page faults.
 const COMPILE_WARMUP_ITERS: usize = 16;
 
-/// Code-buffer capacity for the reused-buffer path. 256KB is generous for
-/// expressions up to ~2000 nodes (`CompileWorkspace` docs say 64KB covers
-/// ~500 nodes).
-#[cfg(target_arch = "aarch64")]
-const REUSED_CODE_CAPACITY: usize = 256 * 1024;
-
 /// Result of a compile-cost measurement.
 pub struct CompileCostResult {
     /// Median ns for one complete compile.
@@ -435,10 +429,85 @@ pub struct CompileCostResult {
     pub code_bytes: usize,
 }
 
+/// Number of structurally distinct kernels [`benchmark_compile_cached_miss`]
+/// consumes: warmup plus timed samples, every one of which must be a genuine
+/// cache miss.
+pub const COMPILE_MISS_KERNELS: usize = COMPILE_WARMUP_ITERS + COMPILE_TIMED_RUNS;
+
+/// Median wall-clock cost of one *production* cache-miss compile through
+/// [`pixelflow_codegen::jit_cache::compile_cached`]. On a miss that entry
+/// point runs canonical-key construction, the cache lock,
+/// `optimize_runtime_arena` (e-graph saturation + extraction, itself keyed by
+/// the same structure and therefore also a miss for a distinct kernel),
+/// `compile_arena_dag`, and cache insertion. This is what one distinct kernel
+/// actually costs at runtime; [`benchmark_compile_fresh`] times only the emit
+/// step and exists for attribution.
+///
+/// `kernels` must contain exactly [`COMPILE_MISS_KERNELS`] canonically
+/// distinct entries (e.g. each embedding a different const leaf that survives
+/// optimization) — built by the caller beforehand so arena construction stays
+/// outside the timed window. Distinctness is not trusted: the entry-count
+/// delta of the global cache is asserted afterwards, so a stream that
+/// accidentally repeats a kernel fails loudly instead of silently timing
+/// cache hits.
+///
+/// Both global caches (the JIT cache and the optimizer's) are unbounded and
+/// retain every entry compiled here. That is fine for a one-shot bench
+/// process; do not call this in a long-lived process expecting the memory
+/// back.
+pub fn benchmark_compile_cached_miss(kernels: Vec<(ExprArena, ExprId)>) -> Result<f64, BenchError> {
+    use pixelflow_codegen::jit_cache;
+
+    assert_eq!(
+        kernels.len(),
+        COMPILE_MISS_KERNELS,
+        "benchmark_compile_cached_miss needs exactly COMPILE_MISS_KERNELS ({}) kernels, got {}",
+        COMPILE_MISS_KERNELS,
+        kernels.len()
+    );
+
+    let entries_before = jit_cache::entry_count();
+    let mut kernels = kernels.into_iter();
+
+    for (arena, root) in kernels.by_ref().take(COMPILE_WARMUP_ITERS) {
+        let compiled =
+            jit_cache::compile_cached(&arena, root).map_err(BenchError::CompileFailed)?;
+        std::hint::black_box(&compiled);
+    }
+
+    let mut times = [0u64; COMPILE_TIMED_RUNS];
+    for t in &mut times {
+        let (arena, root) = kernels.next().expect("stream length asserted above");
+        let start = nanos_now();
+        let compiled =
+            jit_cache::compile_cached(&arena, root).map_err(BenchError::CompileFailed)?;
+        std::hint::black_box(&compiled);
+        *t = nanos_now() - start;
+        // The cache retains its own Arc, so dropping ours (and the source
+        // arena) here is deallocation bookkeeping outside the timed window.
+    }
+
+    let interned = jit_cache::entry_count() - entries_before;
+    assert_eq!(
+        interned, COMPILE_MISS_KERNELS,
+        "benchmark_compile_cached_miss: only {} of {} calls missed the cache — the kernel \
+         stream was not canonically distinct, so the timings measured hits and are wrong",
+        interned, COMPILE_MISS_KERNELS
+    );
+
+    times.sort_unstable();
+    validate_median(times[COMPILE_TIMED_RUNS / 2] as f64)
+}
+
 /// Median wall-clock cost of one `compile_arena_dag` call, fresh-allocation
 /// path: every compile mmaps a new executable region and munmaps it on drop.
-/// Both syscalls are inside the timed window — this is the full per-compile
-/// lifecycle a naive per-kernel JIT would pay.
+/// Both syscalls are inside the timed window.
+///
+/// This is the **emit step only** — no optimizer, no canonical key, no cache
+/// lock or insertion. A real cache miss through `jit_cache::compile_cached`
+/// pays all of those on top; measure that with
+/// [`benchmark_compile_cached_miss`]. Keep this series for attributing how
+/// much of the miss cost is codegen proper.
 pub fn benchmark_compile_fresh(
     arena: &ExprArena,
     root: ExprId,
@@ -462,44 +531,6 @@ pub fn benchmark_compile_fresh(
     times.sort_unstable();
     let median = times[COMPILE_TIMED_RUNS / 2] as f64;
     validate_median(median).map(|ns| CompileCostResult { ns, code_bytes })
-}
-
-/// Median wall-clock cost of one compile into a reused
-/// [`CompileWorkspace`](pixelflow_ir::backend::emit::CompileWorkspace):
-/// the executable region is mmap'd once up front, and each compile pays only
-/// `pthread_jit_write_protect_np` toggles + icache invalidation (Apple
-/// Silicon) instead of mmap/munmap. This is the amortized cost gate G0 cares
-/// about. aarch64 only — `CompileWorkspace` has no x86-64 counterpart.
-///
-/// Returns median ns per compile. Note the workspace path skips the lowering
-/// passes (`expand_reduce`/`expand_gather`/`expand_transcendentals`), so the
-/// arena must contain only directly-emittable ops for the comparison against
-/// [`benchmark_compile_fresh`] to be apples-to-apples.
-#[cfg(target_arch = "aarch64")]
-pub fn benchmark_compile_reused(arena: &ExprArena, root: ExprId) -> Result<f64, BenchError> {
-    use pixelflow_ir::backend::emit::CompileWorkspace;
-
-    let mut ws = CompileWorkspace::new(REUSED_CODE_CAPACITY).map_err(BenchError::CompileFailed)?;
-
-    // SAFETY: the returned KernelFn is never called, and is discarded before
-    // the next compile_arena call overwrites the buffer.
-    for _ in 0..COMPILE_WARMUP_ITERS {
-        let func = unsafe { ws.compile_arena(arena, root) }.map_err(BenchError::CompileFailed)?;
-        std::hint::black_box(func);
-    }
-
-    let mut times = [0u64; COMPILE_TIMED_RUNS];
-    for t in &mut times {
-        let start = nanos_now();
-        // SAFETY: as above — pointer discarded, never called.
-        let func = unsafe { ws.compile_arena(arena, root) }.map_err(BenchError::CompileFailed)?;
-        std::hint::black_box(func);
-        *t = nanos_now() - start;
-    }
-
-    times.sort_unstable();
-    let median = times[COMPILE_TIMED_RUNS / 2] as f64;
-    validate_median(median)
 }
 
 /// Convert nanoseconds to log-nanoseconds (floored at 1e-3ns, capped at 1s).

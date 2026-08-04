@@ -489,7 +489,7 @@ pub fn ast_to_runtime_arena(
         .iter()
         .map(|node| match node {
             pixelflow_ir::arena::ExprNode::Var(i) => {
-                quote! { ::pixelflow_core::__ir::arena::ExprNode::Var(#i) }
+                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Var(#i) }
             }
             // By bit pattern, not as a decimal literal: `quote`'s `f32`
             // impl goes through `Literal::f32_suffixed`, which asserts
@@ -500,10 +500,10 @@ pub fn ast_to_runtime_arena(
             // no decimal-formatting question to get wrong.
             pixelflow_ir::arena::ExprNode::Const(v) => {
                 let bits = v.to_bits();
-                quote! { ::pixelflow_core::__ir::arena::ExprNode::Const(f32::from_bits(#bits)) }
+                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Const(f32::from_bits(#bits)) }
             }
             pixelflow_ir::arena::ExprNode::Param(i) => {
-                quote! { ::pixelflow_core::__ir::arena::ExprNode::Param(#i) }
+                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Param(#i) }
             }
             // The `kernel!` macro has no buffer surface yet, so this is
             // unreachable in practice; fail loud rather than emit a node that
@@ -518,24 +518,24 @@ pub fn ast_to_runtime_arena(
             pixelflow_ir::arena::ExprNode::Unary(op, child) => {
                 let op_code = opkind_to_tokens(*op);
                 let child = child.0;
-                quote! { ::pixelflow_core::__ir::arena::ExprNode::Unary(#op_code, ::pixelflow_core::__ir::arena::ExprId(#child)) }
+                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Unary(#op_code, ::pixelflow_core::__macro::ir::arena::ExprId(#child)) }
             }
             pixelflow_ir::arena::ExprNode::Binary(op, a, b) => {
                 let op_code = opkind_to_tokens(*op);
                 let a = a.0;
                 let b = b.0;
-                quote! { ::pixelflow_core::__ir::arena::ExprNode::Binary(#op_code, ::pixelflow_core::__ir::arena::ExprId(#a), ::pixelflow_core::__ir::arena::ExprId(#b)) }
+                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Binary(#op_code, ::pixelflow_core::__macro::ir::arena::ExprId(#a), ::pixelflow_core::__macro::ir::arena::ExprId(#b)) }
             }
             pixelflow_ir::arena::ExprNode::Ternary(op, a, b, c) => {
                 let op_code = opkind_to_tokens(*op);
                 let a = a.0;
                 let b = b.0;
                 let c = c.0;
-                quote! { ::pixelflow_core::__ir::arena::ExprNode::Ternary(#op_code, ::pixelflow_core::__ir::arena::ExprId(#a), ::pixelflow_core::__ir::arena::ExprId(#b), ::pixelflow_core::__ir::arena::ExprId(#c)) }
+                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Ternary(#op_code, ::pixelflow_core::__macro::ir::arena::ExprId(#a), ::pixelflow_core::__macro::ir::arena::ExprId(#b), ::pixelflow_core::__macro::ir::arena::ExprId(#c)) }
             }
             pixelflow_ir::arena::ExprNode::Nary(op, start, len) => {
                 let op_code = opkind_to_tokens(*op);
-                quote! { ::pixelflow_core::__ir::arena::ExprNode::Nary(#op_code, #start, #len) }
+                quote! { ::pixelflow_core::__macro::ir::arena::ExprNode::Nary(#op_code, #start, #len) }
             }
         })
         .collect();
@@ -544,7 +544,7 @@ pub fn ast_to_runtime_arena(
         .iter()
         .map(|id| {
             let id = id.0;
-            quote! { ::pixelflow_core::__ir::arena::ExprId(#id) }
+            quote! { ::pixelflow_core::__macro::ir::arena::ExprId(#id) }
         })
         .collect();
 
@@ -552,8 +552,8 @@ pub fn ast_to_runtime_arena(
     let tokens = quote! {{
         let __nodes = vec![#(#node_tokens),*];
         let __nary_children = vec![#(#child_tokens),*];
-        let __arena = ::pixelflow_core::__ir::arena::ExprArena::from_raw(__nodes, __nary_children);
-        (__arena, ::pixelflow_core::__ir::arena::ExprId(#root))
+        let __arena = ::pixelflow_core::__macro::ir::arena::ExprArena::from_raw(__nodes, __nary_children);
+        (__arena, ::pixelflow_core::__macro::ir::arena::ExprId(#root))
     }};
     Ok((tokens, plan))
 }
@@ -608,10 +608,10 @@ pub fn composition_stmts(plan: &CompositionPlan, accessors: &[TokenStream]) -> T
                     let __warped = __arena.substitute_vars_with(
                         __frag,
                         &[
-                            (0u8, ::pixelflow_core::__ir::arena::ExprId(#cx)),
-                            (1u8, ::pixelflow_core::__ir::arena::ExprId(#cy)),
-                            (2u8, ::pixelflow_core::__ir::arena::ExprId(#cz)),
-                            (3u8, ::pixelflow_core::__ir::arena::ExprId(#cw)),
+                            (0u8, ::pixelflow_core::__macro::ir::arena::ExprId(#cx)),
+                            (1u8, ::pixelflow_core::__macro::ir::arena::ExprId(#cy)),
+                            (2u8, ::pixelflow_core::__macro::ir::arena::ExprId(#cz)),
+                            (3u8, ::pixelflow_core::__macro::ir::arena::ExprId(#cw)),
                         ],
                     );
                     __subs.push((#slot, __warped));
@@ -621,7 +621,7 @@ pub fn composition_stmts(plan: &CompositionPlan, accessors: &[TokenStream]) -> T
         .collect();
 
     quote! {
-        let mut __subs: ::std::vec::Vec<(u8, ::pixelflow_core::__ir::arena::ExprId)> =
+        let mut __subs: ::std::vec::Vec<(u8, ::pixelflow_core::__macro::ir::arena::ExprId)> =
             ::std::vec::Vec::new();
         #( #bare )*
         #( #sites )*
@@ -762,46 +762,46 @@ fn extract_f64_from_lit(lit: &Lit) -> Option<f64> {
 /// Map OpKind to its token representation.
 fn opkind_to_tokens(kind: OpKind) -> TokenStream {
     match kind {
-        OpKind::Add => quote! { ::pixelflow_core::__ir::OpKind::Add },
-        OpKind::Sub => quote! { ::pixelflow_core::__ir::OpKind::Sub },
-        OpKind::Mul => quote! { ::pixelflow_core::__ir::OpKind::Mul },
-        OpKind::Div => quote! { ::pixelflow_core::__ir::OpKind::Div },
-        OpKind::Neg => quote! { ::pixelflow_core::__ir::OpKind::Neg },
-        OpKind::Sqrt => quote! { ::pixelflow_core::__ir::OpKind::Sqrt },
-        OpKind::Rsqrt => quote! { ::pixelflow_core::__ir::OpKind::Rsqrt },
-        OpKind::Recip => quote! { ::pixelflow_core::__ir::OpKind::Recip },
-        OpKind::Abs => quote! { ::pixelflow_core::__ir::OpKind::Abs },
-        OpKind::Min => quote! { ::pixelflow_core::__ir::OpKind::Min },
-        OpKind::Max => quote! { ::pixelflow_core::__ir::OpKind::Max },
-        OpKind::MulAdd => quote! { ::pixelflow_core::__ir::OpKind::MulAdd },
-        OpKind::Sin => quote! { ::pixelflow_core::__ir::OpKind::Sin },
-        OpKind::Cos => quote! { ::pixelflow_core::__ir::OpKind::Cos },
-        OpKind::Atan => quote! { ::pixelflow_core::__ir::OpKind::Atan },
-        OpKind::Asin => quote! { ::pixelflow_core::__ir::OpKind::Asin },
-        OpKind::Acos => quote! { ::pixelflow_core::__ir::OpKind::Acos },
-        OpKind::Atan2 => quote! { ::pixelflow_core::__ir::OpKind::Atan2 },
-        OpKind::Tan => quote! { ::pixelflow_core::__ir::OpKind::Tan },
-        OpKind::Exp => quote! { ::pixelflow_core::__ir::OpKind::Exp },
-        OpKind::Exp2 => quote! { ::pixelflow_core::__ir::OpKind::Exp2 },
-        OpKind::Ln => quote! { ::pixelflow_core::__ir::OpKind::Ln },
-        OpKind::Log2 => quote! { ::pixelflow_core::__ir::OpKind::Log2 },
-        OpKind::Log10 => quote! { ::pixelflow_core::__ir::OpKind::Log10 },
-        OpKind::Pow => quote! { ::pixelflow_core::__ir::OpKind::Pow },
-        OpKind::Floor => quote! { ::pixelflow_core::__ir::OpKind::Floor },
-        OpKind::Ceil => quote! { ::pixelflow_core::__ir::OpKind::Ceil },
-        OpKind::Round => quote! { ::pixelflow_core::__ir::OpKind::Round },
-        OpKind::Lt => quote! { ::pixelflow_core::__ir::OpKind::Lt },
-        OpKind::Le => quote! { ::pixelflow_core::__ir::OpKind::Le },
-        OpKind::Gt => quote! { ::pixelflow_core::__ir::OpKind::Gt },
-        OpKind::Ge => quote! { ::pixelflow_core::__ir::OpKind::Ge },
-        OpKind::Eq => quote! { ::pixelflow_core::__ir::OpKind::Eq },
-        OpKind::Ne => quote! { ::pixelflow_core::__ir::OpKind::Ne },
-        OpKind::Select => quote! { ::pixelflow_core::__ir::OpKind::Select },
+        OpKind::Add => quote! { ::pixelflow_core::__macro::ir::OpKind::Add },
+        OpKind::Sub => quote! { ::pixelflow_core::__macro::ir::OpKind::Sub },
+        OpKind::Mul => quote! { ::pixelflow_core::__macro::ir::OpKind::Mul },
+        OpKind::Div => quote! { ::pixelflow_core::__macro::ir::OpKind::Div },
+        OpKind::Neg => quote! { ::pixelflow_core::__macro::ir::OpKind::Neg },
+        OpKind::Sqrt => quote! { ::pixelflow_core::__macro::ir::OpKind::Sqrt },
+        OpKind::Rsqrt => quote! { ::pixelflow_core::__macro::ir::OpKind::Rsqrt },
+        OpKind::Recip => quote! { ::pixelflow_core::__macro::ir::OpKind::Recip },
+        OpKind::Abs => quote! { ::pixelflow_core::__macro::ir::OpKind::Abs },
+        OpKind::Min => quote! { ::pixelflow_core::__macro::ir::OpKind::Min },
+        OpKind::Max => quote! { ::pixelflow_core::__macro::ir::OpKind::Max },
+        OpKind::MulAdd => quote! { ::pixelflow_core::__macro::ir::OpKind::MulAdd },
+        OpKind::Sin => quote! { ::pixelflow_core::__macro::ir::OpKind::Sin },
+        OpKind::Cos => quote! { ::pixelflow_core::__macro::ir::OpKind::Cos },
+        OpKind::Atan => quote! { ::pixelflow_core::__macro::ir::OpKind::Atan },
+        OpKind::Asin => quote! { ::pixelflow_core::__macro::ir::OpKind::Asin },
+        OpKind::Acos => quote! { ::pixelflow_core::__macro::ir::OpKind::Acos },
+        OpKind::Atan2 => quote! { ::pixelflow_core::__macro::ir::OpKind::Atan2 },
+        OpKind::Tan => quote! { ::pixelflow_core::__macro::ir::OpKind::Tan },
+        OpKind::Exp => quote! { ::pixelflow_core::__macro::ir::OpKind::Exp },
+        OpKind::Exp2 => quote! { ::pixelflow_core::__macro::ir::OpKind::Exp2 },
+        OpKind::Ln => quote! { ::pixelflow_core::__macro::ir::OpKind::Ln },
+        OpKind::Log2 => quote! { ::pixelflow_core::__macro::ir::OpKind::Log2 },
+        OpKind::Log10 => quote! { ::pixelflow_core::__macro::ir::OpKind::Log10 },
+        OpKind::Pow => quote! { ::pixelflow_core::__macro::ir::OpKind::Pow },
+        OpKind::Floor => quote! { ::pixelflow_core::__macro::ir::OpKind::Floor },
+        OpKind::Ceil => quote! { ::pixelflow_core::__macro::ir::OpKind::Ceil },
+        OpKind::Round => quote! { ::pixelflow_core::__macro::ir::OpKind::Round },
+        OpKind::Lt => quote! { ::pixelflow_core::__macro::ir::OpKind::Lt },
+        OpKind::Le => quote! { ::pixelflow_core::__macro::ir::OpKind::Le },
+        OpKind::Gt => quote! { ::pixelflow_core::__macro::ir::OpKind::Gt },
+        OpKind::Ge => quote! { ::pixelflow_core::__macro::ir::OpKind::Ge },
+        OpKind::Eq => quote! { ::pixelflow_core::__macro::ir::OpKind::Eq },
+        OpKind::Ne => quote! { ::pixelflow_core::__macro::ir::OpKind::Ne },
+        OpKind::Select => quote! { ::pixelflow_core::__macro::ir::OpKind::Select },
         // Mask combination (canonical masks in both tiers).
-        OpKind::BitAnd => quote! { ::pixelflow_core::__ir::OpKind::BitAnd },
-        OpKind::BitOr => quote! { ::pixelflow_core::__ir::OpKind::BitOr },
+        OpKind::BitAnd => quote! { ::pixelflow_core::__macro::ir::OpKind::BitAnd },
+        OpKind::BitOr => quote! { ::pixelflow_core::__macro::ir::OpKind::BitOr },
         // Lowered at runtime by pixelflow-ir's `lower_dwrt` before codegen.
-        OpKind::Dwrt => quote! { ::pixelflow_core::__ir::OpKind::Dwrt },
+        OpKind::Dwrt => quote! { ::pixelflow_core::__macro::ir::OpKind::Dwrt },
         _ => panic!("Unsupported OpKind for JIT: {:?}", kind),
     }
 }
@@ -810,9 +810,9 @@ fn opkind_to_tokens(kind: OpKind) -> TokenStream {
 mod expansion_derivative_tests {
     use super::*;
     use pixelflow_ir::arena::ExprNode;
-    use pixelflow_ir::backend::emit::lowering::lower_dwrt_owned;
     use pixelflow_ir::binding::BindingTable;
     use pixelflow_ir::eval::eval_scalar;
+    use pixelflow_ir::passes::lower_dwrt_owned;
 
     /// The optimizer's contract, checked differentially: whatever it returns
     /// for a `Dwrt`-carrying arena must agree numerically with the runtime

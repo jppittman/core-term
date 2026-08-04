@@ -99,6 +99,13 @@ pub(super) struct Screen {
     pub alt_grid: Grid,
     /// Scrollback buffer; lines that have scrolled off the primary screen.
     pub scrollback: VecDeque<Row>,
+    /// Bumped on every scrollback mutation (push, eviction, clear). A
+    /// snapshot remembers the generation it rendered at, so a scrolled-back
+    /// but idle terminal can be recognized as unchanged — without this, the
+    /// damage gate could never skip a frame while the user is scrolled back.
+    /// Every new mutation site MUST bump it; if the mutation surface grows,
+    /// the honest fix is a wrapper type that bumps internally.
+    pub(super) scrollback_generation: u64,
     /// Maximum number of lines to store in the scrollback buffer.
     scrollback_limit: usize,
     /// True if the alternate screen (`alt_grid`) is currently active.
@@ -179,6 +186,7 @@ impl Screen {
             grid,
             alt_grid,
             scrollback,
+            scrollback_generation: 0,
             scrollback_limit: scrollback_limit_from_config,
             alt_screen_active: false,
             width: w,
@@ -328,6 +336,7 @@ impl Screen {
                     && scrollback_limit > 0
                 {
                     self.scrollback.push_back(row);
+                    self.scrollback_generation += 1;
                     if self.scrollback.len() > scrollback_limit {
                         self.scrollback.pop_front();
                     }
@@ -510,6 +519,7 @@ impl Screen {
         if self.scrollback_limit == 0 {
             if !self.scrollback.is_empty() {
                 self.scrollback.clear();
+                self.scrollback_generation += 1;
                 self.scrollback.shrink_to_fit(); // Free memory if it was used
             }
         } else {
@@ -525,6 +535,9 @@ impl Screen {
                     let row = Arc::make_mut(row_arc);
                     row.resize(nw, fill_glyph);
                 }
+            }
+            if self.scrollback.len() > self.scrollback_limit {
+                self.scrollback_generation += 1;
             }
             while self.scrollback.len() > self.scrollback_limit {
                 self.scrollback.pop_front();

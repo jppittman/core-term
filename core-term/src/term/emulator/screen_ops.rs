@@ -57,6 +57,7 @@ impl TerminalEmulator {
             }
             EraseMode::Scrollback => {
                 self.screen.scrollback.clear();
+                self.screen.scrollback_generation += 1;
                 // CSI 3J should also clear the screen like CSI 2J
                 for y in 0..screen_ctx.height {
                     self.screen.clear_line_segment(y, 0, screen_ctx.width);

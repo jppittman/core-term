@@ -304,7 +304,7 @@ use alloc::vec::Vec;
 ///
 /// Cost: O(n) where n = `arena.len()`. No allocations beyond the result vec.
 #[must_use]
-pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> {
+pub(crate) fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> {
     use crate::arena::{ExprId, ExprNode};
     use crate::kind::OpKind;
 
@@ -382,6 +382,14 @@ fn bound_index_slot(
 ///
 /// [`find_hoistable_out_of`] with `0` — the pixel loop's question.
 #[must_use]
+/// NOTE (2026-08-03): this is the ARENA-side hoisting analysis, and it has no
+/// callers. The live loop-invariant-code-motion in the collapse compile path
+/// does the same job over the *schedule* instead — see `schedule_variance` and
+/// `plan_collapse_hoist` in pixelflow-codegen's `emit/mod.rs`, which
+/// `compile_collapse_via_backend` runs at two scopes (whole-nest, then
+/// per-row). So this is one analysis implemented twice at two tiers, the same
+/// shape as the chain rule was. Which copy survives is an open question, not a
+/// dormant feature.
 pub fn find_hoistable_arena_nodes(
     arena: &crate::arena::ExprArena,
     root: crate::arena::ExprId,

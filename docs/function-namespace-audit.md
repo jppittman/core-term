@@ -131,7 +131,7 @@ Test code uses prefixes deliberately as a grouping convention (`csi_*`, `sgr_*`,
 | n | pub | crate | prefix | location | first-arg / type | remedy |
 |--:|--:|---|---|---|---|---|
 | 152 | 87 | pixelflow-ir | `emit_*` | backend/emit/{x86_64,aarch64,mod}.rs | `code: &mut Vec<u8>` | newtype `Assembler(Vec<u8>)`; `emit_addps(code,…)` → `asm.addps(…)` |
-| 15 | 12 | pixelflow-ir | `compile_*` | backend/emit/mod.rs | arena/workspace | assoc fns on `CompileWorkspace` |
+| 15 | 12 | pixelflow-ir | `compile_*` | backend/emit/mod.rs | arena | ~~assoc fns on `CompileWorkspace`~~ — `CompileWorkspace` was deleted 2026-08-02 (bench-only, skipped lowering, and its "reused buffer" mmap'd anyway). Needs a new home; `ExecutableCode` is the surviving type. |
 | 8 | 0 | pixelflow-core | `field_*` | core/src/lib.rs | `NativeSimd` | private methods on the SIMD wrapper |
 | 4 | 4 | pixelflow-core | `sh2_*` | combinators/spherical.rs | `&Sh2` / `&Sh2Field` | `impl Sh2 { fn multiply… }` |
 | 7 | 7 | pixelflow-runtime | `msg_*` | platform/macos/objc.rs | objc send | `objc::msg` submodule |

@@ -4,23 +4,25 @@
 //! targets the full `zmm0..zmm31` register file via EVEX, so it can also use the
 //! extended registers (`zmm16..31`) that VEX cannot reach.
 //!
-//! Scope (Stage 1): arithmetic, FMA, sqrt/recip/rsqrt, min/max, bitwise,
-//! comparisons, select, and constant broadcast — covers everything
-//! `Select`/`Clamp`/glyph coverage kernels need. Comparisons go through the
-//! k-register class (`vcmpps` -> `vpmovm2d`, see `emit_compare` below) so
-//! every downstream consumer still sees an ordinary all-ones/all-zeros
-//! vector, exactly like every other backend — the allocator never learns
-//! k-registers exist. The transcendental polynomials and the integer
-//! bit-shift lowering exp/log needs (`ShiftImm`) are still separate stages;
-//! the backend rejects those up front so nothing here is reached for an
-//! unsupported op.
+//! Scope: arithmetic, FMA, sqrt/recip/rsqrt, min/max, bitwise, comparisons,
+//! select, constant broadcast, the integer bit-manipulation atoms
+//! (`IAdd`/`BitAnd`/`BitOr`/`TruncToInt`/`IntToFloat`), and `ShiftImm` (see
+//! `emit_shift_imm`) — so the exp/log lowering reaches this backend intact.
+//! Comparisons go through the k-register class (`vcmpps` -> `vpmovm2d`, see
+//! `emit_compare` below) so every downstream consumer still sees an ordinary
+//! all-ones/all-zeros vector, exactly like every other backend — the allocator
+//! never learns k-registers exist. Note `vpmovm2d` is AVX-512**DQ**, not F: an
+//! F-only part would fault on any kernel containing a comparison.
+//!
+//! Transcendentals themselves are still a separate lowering stage; ops with no
+//! rule here are refused up front rather than mis-emitted.
 //!
 //! Spills use a real stack frame (a `zmm` is 64 bytes — far past the 128-byte
 //! red zone the SSE2 path relies on).
 
-use super::Reg;
-use crate::OpKind;
+use super::{Reg, unimplemented_op};
 use alloc::vec::Vec;
+use pixelflow_ir::OpKind;
 
 // =============================================================================
 // EVEX encoder
@@ -327,13 +329,7 @@ pub fn emit_ret(code: &mut Vec<u8>) {
 /// EVEX is 3-operand and non-destructive, so unlike SSE there is no
 /// two-operand hazard: `src1`/`src2` are never clobbered and may alias `dst`.
 /// Returns `Err` for ops not in the Stage-1 arithmetic subset.
-pub fn emit_binary(
-    code: &mut Vec<u8>,
-    op: OpKind,
-    dst: Reg,
-    src1: Reg,
-    src2: Reg,
-) -> Result<(), &'static str> {
+pub fn emit_binary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Reg) {
     let (d, s1, s2) = (dst.0, src1.0, src2.0);
     match op {
         OpKind::Add => vaddps(code, d, s1, s2),
@@ -346,9 +342,8 @@ pub fn emit_binary(
         OpKind::BitOr => vorps(code, d, s1, s2),
         // Integer add on lane bit patterns (exp/log exponent arithmetic).
         OpKind::IAdd => vpaddd(code, d, s1, s2),
-        _ => return Err("avx512: binary op not in Stage-1 subset"),
+        _ => unimplemented_op("avx-512", op),
     }
-    Ok(())
 }
 
 // =============================================================================
@@ -412,14 +407,10 @@ pub fn is_compare(op: OpKind) -> bool {
 /// `vcmpps k1, src1, src2, pred` (EVEX.512.0F.W0 C2 /r ib) writes a k-register;
 /// `vpmovm2d dst, k1` (EVEX.512.F3.0F38.W0 38 /r) widens it to a per-lane
 /// all-ones/all-zeros vector occupying the allocator-assigned `dst` zmm.
-pub fn emit_compare(
-    code: &mut Vec<u8>,
-    op: OpKind,
-    dst: Reg,
-    src1: Reg,
-    src2: Reg,
-) -> Result<(), &'static str> {
-    let pred = cmp_pred(op).ok_or("avx512: not a comparison op")?;
+pub fn emit_compare(code: &mut Vec<u8>, op: OpKind, dst: Reg, src1: Reg, src2: Reg) {
+    let Some(pred) = cmp_pred(op) else {
+        unimplemented_op("avx-512", op)
+    };
     // vcmpps k1, src1, src2, pred  (k-dest in ModRM.reg)
     evex_rrr_imm(
         code,
@@ -443,7 +434,6 @@ pub fn emit_compare(
         UNUSED_VVVV,
         SCRATCH_K,
     );
-    Ok(())
 }
 
 /// Emit `dst = mask ? if_true : if_false`, with the vector mask already in
@@ -491,22 +481,15 @@ pub fn emit_mask_flags(code: &mut Vec<u8>, mask: Reg) {
 /// Emit `dst = src << amount` / `dst = src >> amount` (logical, zero-fill)
 /// on lane bit patterns. The amount is a compile-time immediate — the
 /// schedule folds the `Const` RHS out (`ScheduledOp::ShiftImm`).
-pub fn emit_shift_imm(
-    code: &mut Vec<u8>,
-    op: OpKind,
-    dst: Reg,
-    src: Reg,
-    amount: u8,
-) -> Result<(), &'static str> {
+pub fn emit_shift_imm(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, amount: u8) {
     match op {
         OpKind::Shl => vpslld_imm(code, dst.0, src.0, amount),
         OpKind::Shr => vpsrld_imm(code, dst.0, src.0, amount),
-        _ => return Err("avx512: emit_shift_imm requires Shl or Shr"),
+        _ => unimplemented_op("avx-512", op),
     }
-    Ok(())
 }
 
-pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) -> Result<(), &'static str> {
+pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) {
     match op {
         OpKind::Sqrt => vsqrtps(code, dst.0, src.0),
         OpKind::Neg => {
@@ -533,9 +516,8 @@ pub fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg) -> Result<
         // cvtdq2ps — the primitives exp/log lower to.
         OpKind::TruncToInt => vcvttps2dq(code, dst.0, src.0),
         OpKind::IntToFloat => vcvtdq2ps(code, dst.0, src.0),
-        _ => return Err("avx512: unary op not in Stage-1 subset"),
+        _ => unimplemented_op("avx-512", op),
     }
-    Ok(())
 }
 
 /// Emit a fused multiply-add `dst = a*b + c` where `dst` already holds `c`.
@@ -706,7 +688,7 @@ mod tests {
     #[cfg(target_feature = "avx512f")]
     mod runtime {
         use super::super::*;
-        use crate::backend::emit::executable::ExecutableCode;
+        use crate::emit::executable::ExecutableCode;
         use core::arch::x86_64::*;
 
         // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
@@ -776,7 +758,7 @@ mod tests {
             ];
             for &(op, f) in cases {
                 let mut c = Vec::new();
-                emit_binary(&mut c, op, X, X, Y).unwrap();
+                emit_binary(&mut c, op, X, X, Y);
                 check(run(&c, xs, ys, zs), |i| f(xs[i], ys[i]), "binary");
             }
         }
@@ -785,7 +767,7 @@ mod tests {
         fn high_register() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_binary(&mut c, OpKind::Mul, Reg(20), X, Y).unwrap();
+            emit_binary(&mut c, OpKind::Mul, Reg(20), X, Y);
             emit_mov(&mut c, X, Reg(20));
             check(run(&c, xs, ys, zs), |i| xs[i] * ys[i], "mul via zmm20");
         }
@@ -794,7 +776,7 @@ mod tests {
         fn sqrt_op() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Sqrt, X, Y).unwrap(); // Y > 0
+            emit_unary(&mut c, OpKind::Sqrt, X, Y); // Y > 0
             check(run(&c, xs, ys, zs), |i| ys[i].sqrt(), "sqrt");
         }
 
@@ -802,10 +784,10 @@ mod tests {
         fn neg_abs() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Neg, X, X).unwrap();
+            emit_unary(&mut c, OpKind::Neg, X, X);
             check(run(&c, xs, ys, zs), |i| -xs[i], "neg");
             let mut c = Vec::new();
-            emit_unary(&mut c, OpKind::Abs, X, X).unwrap();
+            emit_unary(&mut c, OpKind::Abs, X, X);
             check(run(&c, xs, ys, zs), |i| xs[i].abs(), "abs");
         }
 
@@ -814,7 +796,7 @@ mod tests {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_const(&mut c, Reg(5), 2.5);
-            emit_binary(&mut c, OpKind::Add, X, X, Reg(5)).unwrap();
+            emit_binary(&mut c, OpKind::Add, X, X, Reg(5));
             check(run(&c, xs, ys, zs), |i| xs[i] + 2.5, "const+add");
         }
 
@@ -873,9 +855,9 @@ mod tests {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
             emit_sub_rsp(&mut c, 64);
-            emit_binary(&mut c, OpKind::Mul, Reg(6), X, Y).unwrap();
+            emit_binary(&mut c, OpKind::Mul, Reg(6), X, Y);
             emit_store_rsp(&mut c, Reg(6), 0);
-            emit_binary(&mut c, OpKind::Add, Reg(6), X, X).unwrap(); // clobber
+            emit_binary(&mut c, OpKind::Add, Reg(6), X, X); // clobber
             emit_load_rsp(&mut c, X, 0);
             emit_add_rsp(&mut c, 64);
             check(run(&c, xs, ys, zs), |i| xs[i] * ys[i], "spill roundtrip");

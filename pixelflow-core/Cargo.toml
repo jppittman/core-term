@@ -11,8 +11,8 @@ bench = false
 
 [dependencies]
 pixelflow-ir = { path = "../pixelflow-ir" }
+pixelflow-codegen = { path = "../pixelflow-codegen" }
 pixelflow-compiler = { path = "../pixelflow-compiler" }
-pixelflow-search = { path = "../pixelflow-search" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
