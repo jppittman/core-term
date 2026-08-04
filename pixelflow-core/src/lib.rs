@@ -183,6 +183,24 @@ pub mod lattice;
 // Re-exports (The "Prelude")
 // ============================================================================
 
+// Macro plumbing, serde-`__private`-style: `kernel!`/`kernel_value!`/
+// `kernel_jit!` expansions run in the *consumer's* crate, whose extern
+// prelude is only guaranteed to contain the documented two-crate surface
+// (pixelflow-core + pixelflow-compiler). Generated code therefore reaches
+// pixelflow-ir and pixelflow-codegen through this module — a bare
+// `::pixelflow_ir`/`::pixelflow_codegen` path would fail to resolve for any
+// consumer that does not also declare those crates as direct dependencies.
+//
+// This does NOT relax the "pixelflow-core shouldn't re-export the IR" ruling:
+// that ruling is about the public API surface, and this module exists solely
+// so macro expansions resolve from the two-crate dependency surface. It is
+// not public API — do not use it directly.
+#[doc(hidden)]
+pub mod __macro {
+    pub use pixelflow_codegen as codegen;
+    pub use pixelflow_ir as ir;
+}
+
 // Macro plumbing: `kernel!`/`kernel_jit!` expansions construct pixelflow-ir
 // arenas and JIT manifolds in the *consumer's* crate, which depends on
 // pixelflow-core but not necessarily on pixelflow-ir. Not public API.
