@@ -429,10 +429,85 @@ pub struct CompileCostResult {
     pub code_bytes: usize,
 }
 
+/// Number of structurally distinct kernels [`benchmark_compile_cached_miss`]
+/// consumes: warmup plus timed samples, every one of which must be a genuine
+/// cache miss.
+pub const COMPILE_MISS_KERNELS: usize = COMPILE_WARMUP_ITERS + COMPILE_TIMED_RUNS;
+
+/// Median wall-clock cost of one *production* cache-miss compile through
+/// [`pixelflow_codegen::jit_cache::compile_cached`]. On a miss that entry
+/// point runs canonical-key construction, the cache lock,
+/// `optimize_runtime_arena` (e-graph saturation + extraction, itself keyed by
+/// the same structure and therefore also a miss for a distinct kernel),
+/// `compile_arena_dag`, and cache insertion. This is what one distinct kernel
+/// actually costs at runtime; [`benchmark_compile_fresh`] times only the emit
+/// step and exists for attribution.
+///
+/// `kernels` must contain exactly [`COMPILE_MISS_KERNELS`] canonically
+/// distinct entries (e.g. each embedding a different const leaf that survives
+/// optimization) — built by the caller beforehand so arena construction stays
+/// outside the timed window. Distinctness is not trusted: the entry-count
+/// delta of the global cache is asserted afterwards, so a stream that
+/// accidentally repeats a kernel fails loudly instead of silently timing
+/// cache hits.
+///
+/// Both global caches (the JIT cache and the optimizer's) are unbounded and
+/// retain every entry compiled here. That is fine for a one-shot bench
+/// process; do not call this in a long-lived process expecting the memory
+/// back.
+pub fn benchmark_compile_cached_miss(
+    kernels: Vec<(ExprArena, ExprId)>,
+) -> Result<f64, BenchError> {
+    use pixelflow_codegen::jit_cache;
+
+    assert_eq!(
+        kernels.len(),
+        COMPILE_MISS_KERNELS,
+        "benchmark_compile_cached_miss needs exactly COMPILE_MISS_KERNELS ({}) kernels, got {}",
+        COMPILE_MISS_KERNELS,
+        kernels.len()
+    );
+
+    let entries_before = jit_cache::entry_count();
+    let mut kernels = kernels.into_iter();
+
+    for (arena, root) in kernels.by_ref().take(COMPILE_WARMUP_ITERS) {
+        let compiled = jit_cache::compile_cached(&arena, root).map_err(BenchError::CompileFailed)?;
+        std::hint::black_box(&compiled);
+    }
+
+    let mut times = [0u64; COMPILE_TIMED_RUNS];
+    for t in &mut times {
+        let (arena, root) = kernels.next().expect("stream length asserted above");
+        let start = nanos_now();
+        let compiled = jit_cache::compile_cached(&arena, root).map_err(BenchError::CompileFailed)?;
+        std::hint::black_box(&compiled);
+        *t = nanos_now() - start;
+        // The cache retains its own Arc, so dropping ours (and the source
+        // arena) here is deallocation bookkeeping outside the timed window.
+    }
+
+    let interned = jit_cache::entry_count() - entries_before;
+    assert_eq!(
+        interned, COMPILE_MISS_KERNELS,
+        "benchmark_compile_cached_miss: only {} of {} calls missed the cache — the kernel \
+         stream was not canonically distinct, so the timings measured hits and are wrong",
+        interned, COMPILE_MISS_KERNELS
+    );
+
+    times.sort_unstable();
+    validate_median(times[COMPILE_TIMED_RUNS / 2] as f64)
+}
+
 /// Median wall-clock cost of one `compile_arena_dag` call, fresh-allocation
 /// path: every compile mmaps a new executable region and munmaps it on drop.
-/// Both syscalls are inside the timed window — this is the full per-compile
-/// lifecycle a naive per-kernel JIT would pay.
+/// Both syscalls are inside the timed window.
+///
+/// This is the **emit step only** — no optimizer, no canonical key, no cache
+/// lock or insertion. A real cache miss through `jit_cache::compile_cached`
+/// pays all of those on top; measure that with
+/// [`benchmark_compile_cached_miss`]. Keep this series for attributing how
+/// much of the miss cost is codegen proper.
 pub fn benchmark_compile_fresh(
     arena: &ExprArena,
     root: ExprId,
