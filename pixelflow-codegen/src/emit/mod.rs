@@ -4321,6 +4321,7 @@ mod tests {
         use pixelflow_ir::arena::BufferDecl;
         let mut a = ExprArena::new();
         let buf = a.declare_buffer(BufferDecl {
+            id: pixelflow_ir::arena::BufferIdentity::mint(),
             width: 2,
             height: 1,
         });
@@ -5062,6 +5063,7 @@ mod tests {
             let buf: Vec<f32> = (0..(w * h)).map(|i| i as f32 * 2.0 - 3.0).collect();
             let mut a = ExprArena::new();
             let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: w as u32,
                 height: h as u32,
             });
@@ -5080,6 +5082,7 @@ mod tests {
             let buf: Vec<f32> = (0..(w * h)).map(|i| (i as f32).sin()).collect();
             let mut a = ExprArena::new();
             let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: w as u32,
                 height: h as u32,
             });
@@ -5102,10 +5105,12 @@ mod tests {
             let buf_b: Vec<f32> = (0..(w * h)).map(|i| -(i as f32) * 0.5).collect();
             let mut a = ExprArena::new();
             let ba = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: w as u32,
                 height: h as u32,
             });
             let bb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: w as u32,
                 height: h as u32,
             });
@@ -5139,10 +5144,12 @@ mod tests {
 
             let mut a = ExprArena::new();
             let wb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: in_dim as u32,
                 height: out_dim as u32,
             });
             let ib = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: in_dim as u32,
                 height: 1,
             });
@@ -5308,6 +5315,7 @@ mod tests {
             let buf: Vec<f32> = (0..(w * h)).map(|i| i as f32 * 2.0 - 3.0).collect();
             let mut a = ExprArena::new();
             let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: w as u32,
                 height: h as u32,
             });
@@ -5326,6 +5334,7 @@ mod tests {
             let buf: Vec<f32> = (0..(w * h)).map(|i| (i as f32).sin()).collect();
             let mut a = ExprArena::new();
             let b = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: w as u32,
                 height: h as u32,
             });
@@ -5348,10 +5357,12 @@ mod tests {
             let buf_b: Vec<f32> = (0..(w * h)).map(|i| -(i as f32) * 0.5).collect();
             let mut a = ExprArena::new();
             let ba = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: w as u32,
                 height: h as u32,
             });
             let bb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: w as u32,
                 height: h as u32,
             });
@@ -5385,10 +5396,12 @@ mod tests {
 
             let mut a = ExprArena::new();
             let wb = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: in_dim as u32,
                 height: out_dim as u32,
             });
             let ib = a.declare_buffer(pixelflow_ir::arena::BufferDecl {
+                id: pixelflow_ir::arena::BufferIdentity::mint(),
                 width: in_dim as u32,
                 height: 1,
             });

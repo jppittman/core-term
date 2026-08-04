@@ -246,6 +246,7 @@ mod tests {
 
         let mut arena = ExprArena::new();
         let b = arena.declare_buffer(BufferDecl {
+            id: crate::arena::BufferIdentity::mint(),
             width: width as u32,
             height: height as u32,
         });
@@ -284,6 +285,7 @@ mod tests {
 
         let mut arena = ExprArena::new();
         let b = arena.declare_buffer(BufferDecl {
+            id: crate::arena::BufferIdentity::mint(),
             width: width as u32,
             height: height as u32,
         });
@@ -342,6 +344,7 @@ mod tests {
         let buf = vec![5.0f32, 6.0, 7.0, 8.0];
         let mut arena = ExprArena::new();
         let b = arena.declare_buffer(BufferDecl {
+            id: crate::arena::BufferIdentity::mint(),
             width: 4,
             height: 1,
         });
@@ -431,10 +434,12 @@ mod tests {
         let inp = alloc::vec![10.0f32, 20.0, 30.0];
         let mut arena = ExprArena::new();
         let wb = arena.declare_buffer(BufferDecl {
+            id: crate::arena::BufferIdentity::mint(),
             width: 3,
             height: 1,
         });
         let ib = arena.declare_buffer(BufferDecl {
+            id: crate::arena::BufferIdentity::mint(),
             width: 3,
             height: 1,
         });
@@ -454,6 +459,7 @@ mod tests {
     fn bind_rejects_wrong_length() {
         let mut arena = ExprArena::new();
         let _ = arena.declare_buffer(BufferDecl {
+            id: crate::arena::BufferIdentity::mint(),
             width: 4,
             height: 2,
         });
@@ -473,6 +479,7 @@ mod tests {
     fn bind_rejects_wrong_count() {
         let mut arena = ExprArena::new();
         let _ = arena.declare_buffer(BufferDecl {
+            id: crate::arena::BufferIdentity::mint(),
             width: 2,
             height: 2,
         });

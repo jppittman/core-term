@@ -172,7 +172,7 @@ fn canonical_key(arena: &ExprArena, root: ExprId) -> Vec<u8> {
             &ExprNode::Buffer(b) => {
                 key.push(3);
                 key.extend_from_slice(&b.0.to_le_bytes());
-                let BufferDecl { width, height } = *arena.buffer_decl(b);
+                let BufferDecl { width, height, .. } = *arena.buffer_decl(b);
                 key.extend_from_slice(&width.to_le_bytes());
                 key.extend_from_slice(&height.to_le_bytes());
             }

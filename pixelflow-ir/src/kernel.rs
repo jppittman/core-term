@@ -422,6 +422,38 @@ impl Kernel {
         self.combine(rhs, OpKind::BitOr)
     }
 
+    // ─────────────────────────── int domain ───────────────────────
+
+    /// Truncate toward zero to a lane-wide `i32` (`cvttps2dq` / `fcvtzs`).
+    ///
+    /// The result is a BIT PATTERN, not a number — the same discipline as a
+    /// comparison mask. It may only flow into the bitwise domain
+    /// ([`Kernel::shl`], [`Kernel::or`], [`Kernel::and`]) or a raw store;
+    /// float arithmetic on it is meaningless.
+    #[must_use]
+    pub fn trunc_to_int(&self) -> Self {
+        self.map(OpKind::TruncToInt)
+    }
+
+    /// `self << bits` — a logical shift of the lane's bit pattern
+    /// (int domain: operand and result are bit patterns, see
+    /// [`Kernel::trunc_to_int`]).
+    ///
+    /// The count is pushed as a `Const` operand, which the emitter folds into
+    /// the hardware shift immediate; a dynamic count is not representable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bits >= 32` — a 32-bit lane has no bits there.
+    #[must_use]
+    pub fn shl(&self, bits: u32) -> Self {
+        assert!(bits < 32, "Kernel::shl: shift of {bits} on a 32-bit lane");
+        let mut arena = self.inner.arena.clone();
+        let count = arena.push_const(bits as f32);
+        let root = arena.push_binary(OpKind::Shl, self.inner.root, count);
+        Self::wrap(arena, root)
+    }
+
     // ─────────────────────────── control ──────────────────────────
 
     /// `self ? if_true : if_false` — `self` is the mask.
@@ -664,6 +696,22 @@ mod tests {
             &Kernel::w(),
         );
         assert_eq!(eval(&warped, 3.0, 4.0), 4.0 * 8.0);
+    }
+
+    #[test]
+    fn trunc_shl_or_pack_a_byte_lane() {
+        // The packing idiom: clamp-truncated bytes shifted to their lanes and
+        // OR-folded. 3.7 truncates toward zero to 3; 3 << 8 | 2 = 0x0302.
+        let lo = Kernel::x().trunc_to_int();
+        let hi = Kernel::y().trunc_to_int().shl(8);
+        let packed = hi.or(&lo);
+        assert_eq!(eval(&packed, 2.9, 3.7).to_bits(), 0x0302);
+    }
+
+    #[test]
+    #[should_panic(expected = "32-bit lane")]
+    fn shl_past_the_lane_is_refused() {
+        let _refused = Kernel::x().shl(32);
     }
 
     #[test]
