@@ -26,6 +26,12 @@ fn main() {
         eprintln!("                [--clippy to also run clippy per level]");
         eprintln!("                [--build-only to skip test execution entirely --");
         eprintln!("                 presubmit's fast path; postsubmit runs the tests]");
+        eprintln!("  launch-stability-check");
+        eprintln!("                Build, bundle, and launch CoreTerm.app repeatedly,");
+        eprintln!("                failing if any launch crashes");
+        eprintln!("                [--runs N] [--watch-seconds S]");
+        eprintln!("  bundle        Build and assemble CoreTerm.app WITHOUT launching it");
+        eprintln!("                (for CI signing/notarization; see bundle-run to also launch)");
         std::process::exit(1);
     }
 
@@ -34,6 +40,11 @@ fn main() {
             // Pass through any additional arguments after "bundle-run"
             let extra_args = if args.len() > 2 { &args[2..] } else { &[] };
             bundle_run(extra_args);
+        }
+        "bundle" => {
+            let extra_args = if args.len() > 2 { &args[2..] } else { &[] };
+            let (_workspace_root, app_bundle) = build_and_bundle(extra_args);
+            println!("Bundled (not launched): {}", app_bundle.display());
         }
         "bake-eigen" => {
             bake_eigen();
@@ -47,11 +58,25 @@ fn main() {
             };
             isa_matrix(with_clippy, mode);
         }
+        "launch-stability-check" => {
+            let runs =
+                parse_u32_flag(&args[2..], "--runs").unwrap_or(LAUNCH_STABILITY_DEFAULT_RUNS);
+            let watch_seconds = parse_u32_flag(&args[2..], "--watch-seconds")
+                .map(u64::from)
+                .unwrap_or(LAUNCH_STABILITY_DEFAULT_WATCH_SECONDS);
+            launch_stability_check(runs, watch_seconds);
+        }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             std::process::exit(1);
         }
     }
+}
+
+/// Parses `--flag VALUE` out of an argument slice, if present.
+fn parse_u32_flag(args: &[String], flag: &str) -> Option<u32> {
+    let idx = args.iter().position(|a| a == flag)?;
+    args.get(idx + 1)?.parse().ok()
 }
 
 /// Find the workspace root by looking for Cargo.toml with [workspace]
@@ -78,12 +103,16 @@ fn find_workspace_root() -> PathBuf {
     }
 }
 
-/// Builds the project in release mode and bundles it into a macOS .app structure.
-/// Then launches the application.
+/// Builds the project in release mode and assembles the macOS .app bundle,
+/// without launching it. Shared by `bundle-run` (build + bundle + launch
+/// once, for interactive dev use) and `launch-stability-check` (build +
+/// bundle + launch repeatedly, for CI).
 ///
 /// # Parameters
 /// * `extra_args` - Additional arguments to pass to `cargo build`.
-fn bundle_run(extra_args: &[String]) {
+///
+/// Returns `(workspace_root, app_bundle_path)`.
+fn build_and_bundle(extra_args: &[String]) -> (PathBuf, PathBuf) {
     // Find workspace root so this works from any subdirectory
     let workspace_root = find_workspace_root();
     println!("Workspace root: {}", workspace_root.display());
@@ -179,6 +208,17 @@ fn bundle_run(extra_args: &[String]) {
         .status()
         .expect("Failed to touch app bundle");
 
+    (workspace_root, app_bundle)
+}
+
+/// Builds the project in release mode and bundles it into a macOS .app structure.
+/// Then launches the application.
+///
+/// # Parameters
+/// * `extra_args` - Additional arguments to pass to `cargo build`.
+fn bundle_run(extra_args: &[String]) {
+    let (_workspace_root, app_bundle) = build_and_bundle(extra_args);
+
     println!("Launching CoreTerm.app...");
     println!("Logs will be written to /tmp/core-term.log");
 
@@ -196,6 +236,173 @@ fn bundle_run(extra_args: &[String]) {
 
     println!("CoreTerm.app launched successfully!");
     println!("Monitor logs with: tail -f /tmp/core-term.log");
+}
+
+// ============================================================================
+// macOS launch stability check
+// ============================================================================
+//
+// MetalOps hand-pumps NSApplication's event queue (nextEventMatchingMask)
+// instead of calling -[NSApplication run], because the actor scheduler needs
+// to interleave event pumping with message handling on the main thread (see
+// pixelflow-runtime/src/platform/macos/platform.rs). A background thread
+// that called into AppKit unsynchronized with that pump (the original
+// CocoaWaker::wake, see pixelflow-runtime/src/platform/waker.rs) corrupted
+// AppKit's internal main-event-queue bookkeeping, which AppKit only actually
+// noticed and asserted on later: observed 14-22s after launch, roughly 2 out
+// of every 3 raw launches -- well after the window a human tester normally
+// watches, and invisible to every other CI job. It needs a real window
+// server session (a Linux runner has none at all) and a real LaunchServices
+// bundle launch (`cargo run`/`cargo test` spawn the binary directly,
+// bypassing that launch path). This is what would have caught it, and what
+// stops it from silently coming back.
+const LAUNCH_STABILITY_DEFAULT_RUNS: u32 = 15;
+// Real crashes were observed 14-22s after launch; watch a few seconds past
+// that so a slow CI runner doesn't get a false pass by checking too early.
+const LAUNCH_STABILITY_DEFAULT_WATCH_SECONDS: u64 = 25;
+
+fn launch_stability_check(runs: u32, watch_seconds: u64) {
+    let (_workspace_root, app_bundle) = build_and_bundle(&[]);
+    let binary_match = "CoreTerm.app/Contents/MacOS/CoreTerm";
+
+    let crash_dir = PathBuf::from(env::var("HOME").expect("HOME not set"))
+        .join("Library/Logs/DiagnosticReports");
+
+    // Anything at or after this instant is a crash from THIS check, not a
+    // stale report from an earlier, unrelated run.
+    let check_start = std::time::SystemTime::now();
+
+    let mut failures: u32 = 0;
+
+    for run in 1..=runs {
+        let status = Command::new("open")
+            .arg(&app_bundle)
+            .status()
+            .expect("Failed to launch app");
+        if !status.success() {
+            eprintln!("::error::run {run}: 'open' itself failed");
+            failures += 1;
+            continue;
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let pid = find_pid(binary_match);
+        let Some(pid) = pid else {
+            eprintln!("::error::run {run}: process never appeared after launch");
+            failures += 1;
+            continue;
+        };
+
+        let mut died_at = None;
+        for elapsed in 1..=watch_seconds {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if !pid_alive(pid) {
+                died_at = Some(elapsed);
+                break;
+            }
+        }
+
+        match died_at {
+            Some(t) => {
+                eprintln!(
+                    "::error::run {run} (pid={pid}): process died after {t}s (expected to survive {watch_seconds}s)"
+                );
+                failures += 1;
+            }
+            None => {
+                println!("run {run} (pid={pid}): survived {watch_seconds}s");
+            }
+        }
+
+        kill_pid(pid);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    println!();
+    println!(
+        "Checking for new crash reports under {}...",
+        crash_dir.display()
+    );
+    let new_crashes = find_crash_reports_since(&crash_dir, check_start);
+    if !new_crashes.is_empty() {
+        eprintln!(
+            "::error::{} new crash report(s) appeared during {runs} launches:",
+            new_crashes.len()
+        );
+        for f in &new_crashes {
+            eprintln!("::error::  {}", f.display());
+        }
+        failures += 1;
+    }
+
+    if failures > 0 {
+        eprintln!("::error::macOS launch stability check FAILED ({failures} issue(s) across {runs} launches)");
+        std::process::exit(1);
+    }
+
+    println!(
+        "macOS launch stability check passed: {runs}/{runs} launches survived {watch_seconds}s with no crash reports."
+    );
+}
+
+/// Finds the PID of a running process by matching `pattern` against its full
+/// command line, mirroring `pgrep -f`.
+fn find_pid(pattern: &str) -> Option<u32> {
+    let output = Command::new("pgrep").args(["-f", pattern]).output().ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.lines().next()?.trim().parse().ok()
+}
+
+/// Checks whether `pid` is alive via `kill -0` (sends no signal, just probes).
+fn pid_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn kill_pid(pid: u32) {
+    match Command::new("kill").arg(pid.to_string()).status() {
+        Ok(status) if status.success() => {}
+        // Most likely: the process already exited (e.g. it crashed) between
+        // the last liveness check and here -- not a failure of the check
+        // itself, so this is intentionally non-fatal.
+        Ok(status) => {
+            println!("note: 'kill {pid}' exited with {status}, process likely already gone")
+        }
+        Err(e) => println!("note: failed to run 'kill {pid}': {e}"),
+    }
+}
+
+/// Lists `CoreTerm-*.ips` crash reports modified at or after `since`.
+fn find_crash_reports_since(
+    crash_dir: &std::path::Path,
+    since: std::time::SystemTime,
+) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(crash_dir) else {
+        return Vec::new();
+    };
+
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.starts_with("CoreTerm-") || !name.ends_with(".ips") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if modified >= since {
+            found.push(path);
+        }
+    }
+    found.sort();
+    found
 }
 
 // ============================================================================
