@@ -37,62 +37,78 @@ use pixelflow_ir::OpKind;
 ///
 /// Values are approximate cycle counts on typical x86_64/AArch64 SIMD
 /// hardware; refine as real measurements come in (see `calibrate_costs`).
+// `OpKind`'s discriminants are not contiguous (`kind.rs` leaves gaps at 17,
+// 31, and 39 between arithmetic/trig/comparison/structural groups), but this
+// table is a positional literal indexed by `OpKind::index()` (the raw
+// discriminant), so each entry below sits at its op's real discriminant, not
+// at its ordinal position in the enum's source order — the three gaps get
+// an explicit placeholder that is never read (no `OpKind` variant has that
+// discriminant). Getting a row's position wrong here is silent: the cost
+// model still returns *a* number, just the wrong op's number.
+//
+// `Gather`/`RawGather`/`Reduce` (discriminants 50-52) are deliberately
+// excluded and costed via an explicit match in `CostModel::cost` instead of
+// growing this array to 53: `OpKind::COUNT` (=50, this array's length) is
+// also the array-sizing constant for the NNUE embedding tables in
+// `nnue::factored` and `pixelflow-pipeline`'s training gradients, so bumping
+// it would silently reshape those (and any serialized weights) as a side
+// effect of a cost-table fix.
 pub const LATENCY_PRIOR_CYCLES: [usize; OpKind::COUNT] = [
-    0,  // Var - free
-    0,  // Const - free
-    4,  // Add
-    4,  // Sub
-    5,  // Mul
-    15, // Div
-    1,  // Neg
-    15, // Sqrt
-    5,  // Rsqrt - fast approximation
-    1,  // Abs
-    4,  // Min
-    4,  // Max
-    5,  // MulAdd - fused
-    10, // Recip
-    4,  // Floor
-    4,  // Ceil
-    4,  // Round
-    10, // Sin
-    10, // Cos
-    10, // Tan
-    10, // Asin
-    10, // Acos
-    10, // Atan
-    10, // Exp
-    10, // Exp2
-    10, // Ln
-    10, // Log2
-    10, // Log10
-    10, // Atan2
-    12, // Pow
-    3,  // Lt
-    3,  // Le
-    3,  // Gt
-    3,  // Ge
-    3,  // Eq
-    3,  // Ne
-    4,  // Select
-    0,  // Tuple - free (structural)
+    0,  // 0: Var - free
+    0,  // 1: Const - free
+    4,  // 2: Add
+    4,  // 3: Sub
+    5,  // 4: Mul
+    15, // 5: Div
+    1,  // 6: Neg
+    15, // 7: Sqrt
+    5,  // 8: Rsqrt - fast approximation
+    1,  // 9: Abs
+    4,  // 10: Min
+    4,  // 11: Max
+    5,  // 12: MulAdd - fused
+    10, // 13: Recip
+    4,  // 14: Floor
+    4,  // 15: Ceil
+    4,  // 16: Round
+    0,  // 17: gap - no OpKind variant has this discriminant
+    10, // 18: Sin
+    10, // 19: Cos
+    10, // 20: Tan
+    10, // 21: Asin
+    10, // 22: Acos
+    10, // 23: Atan
+    10, // 24: Atan2
+    10, // 25: Exp
+    10, // 26: Exp2
+    10, // 27: Ln
+    10, // 28: Log2
+    10, // 29: Log10
+    12, // 30: Pow
+    0,  // 31: gap - no OpKind variant has this discriminant
+    3,  // 32: Lt
+    3,  // 33: Le
+    3,  // 34: Gt
+    3,  // 35: Ge
+    3,  // 36: Eq
+    3,  // 37: Ne
+    4,  // 38: Select
+    0,  // 39: gap - no OpKind variant has this discriminant
+    0,  // 40: Tuple - free (structural)
     // Bit-manip primitives: single cheap integer/convert instructions.
-    1, // TruncToInt - cvttps2dq
-    1, // IntToFloat - cvtdq2ps
-    1, // IAdd - paddd
-    1, // Shl
-    1, // Shr
-    1, // BitAnd
-    1, // BitOr
+    1, // 41: TruncToInt - cvttps2dq
+    1, // 42: IntToFloat - cvtdq2ps
+    1, // 43: IAdd - paddd
+    1, // 44: Shl
+    1, // 45: Shr
+    1, // 46: BitAnd
+    1, // 47: BitOr
     // Dwrt - rewritten away by the e-graph (chain rule); never emitted.
     // Extraction must never choose a surviving one, so it gets a
     // prohibitive (but finite, non-saturating) cost here. `node_op_cost`
     // additionally hard-codes usize::MAX/4 as a belt-and-suspenders guard.
-    1000, // Dwrt
-    0,    // Buffer - leaf, free
-    10,   // Gather - memory read
-    10,   // RawGather - primitive memory read
-    0,    // Reduce - lowered (unrolled) before costing
+    1000, // 48: Dwrt
+    0,    // 49: Buffer - leaf, free
 ];
 
 // ============================================================================
@@ -214,7 +230,14 @@ impl CostModel {
     /// Get cost for an OpKind.
     #[inline]
     pub fn cost(&self, op: OpKind) -> usize {
-        self.costs[op.index()]
+        match op {
+            // Beyond LATENCY_PRIOR_CYCLES's range — see the comment on that
+            // table for why it stops at discriminant 49 instead of covering
+            // these three.
+            OpKind::Gather | OpKind::RawGather => 10, // memory read
+            OpKind::Reduce => 0,                      // lowered (unrolled) before costing
+            _ => self.costs[op.index()],
+        }
     }
 
     /// Set cost for an OpKind.
@@ -267,49 +290,9 @@ impl CostModel {
     /// callers pass through with a wrong-but-plausible number — fail loud
     /// instead.
     pub fn cost_by_name(&self, name: &str) -> usize {
-        // Map name to OpKind
-        let op = match name {
-            "var" => OpKind::Var,
-            "const" => OpKind::Const,
-            "add" => OpKind::Add,
-            "sub" => OpKind::Sub,
-            "mul" => OpKind::Mul,
-            "div" => OpKind::Div,
-            "neg" => OpKind::Neg,
-            "sqrt" => OpKind::Sqrt,
-            "rsqrt" => OpKind::Rsqrt,
-            "abs" => OpKind::Abs,
-            "min" => OpKind::Min,
-            "max" => OpKind::Max,
-            "mul_add" => OpKind::MulAdd,
-            "recip" => OpKind::Recip,
-            "floor" => OpKind::Floor,
-            "ceil" => OpKind::Ceil,
-            "round" => OpKind::Round,
-            "sin" => OpKind::Sin,
-            "cos" => OpKind::Cos,
-            "tan" => OpKind::Tan,
-            "asin" => OpKind::Asin,
-            "acos" => OpKind::Acos,
-            "atan" => OpKind::Atan,
-            "atan2" => OpKind::Atan2,
-            "exp" => OpKind::Exp,
-            "exp2" => OpKind::Exp2,
-            "ln" => OpKind::Ln,
-            "log2" => OpKind::Log2,
-            "log10" => OpKind::Log10,
-            "pow" => OpKind::Pow,
-            "lt" => OpKind::Lt,
-            "le" => OpKind::Le,
-            "gt" => OpKind::Gt,
-            "ge" => OpKind::Ge,
-            "eq" => OpKind::Eq,
-            "ne" => OpKind::Ne,
-            "select" => OpKind::Select,
-            "tuple" => OpKind::Tuple,
-            _ => panic!("CostModel::cost_by_name: unknown op name {name:?}"),
-        };
-        self.costs[op.index()]
+        let op = OpKind::from_name(name)
+            .unwrap_or_else(|| panic!("CostModel::cost_by_name: unknown op name {name:?}"));
+        self.cost(op)
     }
 
     // =========================================================================
@@ -507,5 +490,57 @@ impl CostFunction for CostModel {
 
     fn cost_by_kind(&self, op: OpKind, _parent: Option<OpKind>) -> usize {
         self.cost(op)
+    }
+}
+
+#[cfg(test)]
+mod cost_alignment_tests {
+    use super::*;
+
+    /// `OpKind`'s discriminants have gaps (17, 31, 39); every op's cost must
+    /// come from ITS OWN row in `LATENCY_PRIOR_CYCLES`, not a neighbor's.
+    /// These pairs straddle a gap and have deliberately distinct costs, so a
+    /// misaligned table would return the wrong number, not just panic.
+    #[test]
+    fn cost_matches_intended_value_across_discriminant_gaps() {
+        let model = CostModel::latency_prior();
+        assert_eq!(model.cost(OpKind::Round), 4);
+        assert_eq!(model.cost(OpKind::Sin), 10);
+        assert_eq!(model.cost(OpKind::Log10), 10);
+        assert_eq!(model.cost(OpKind::Pow), 12);
+        assert_eq!(model.cost(OpKind::Lt), 3);
+        assert_eq!(model.cost(OpKind::Select), 4);
+        assert_eq!(model.cost(OpKind::Tuple), 0);
+        assert_eq!(model.cost(OpKind::Dwrt), 1000);
+        assert_eq!(model.cost(OpKind::Buffer), 0);
+    }
+
+    #[test]
+    fn cost_by_name_matches_cost_for_gap_adjacent_ops() {
+        let model = CostModel::latency_prior();
+        for name in [
+            "sin", "log10", "pow", "lt", "select", "tuple", "dwrt", "buffer",
+        ] {
+            let op = OpKind::from_name(name).unwrap();
+            assert_eq!(
+                model.cost_by_name(name),
+                model.cost(op),
+                "cost_by_name({name:?}) should match cost(OpKind::{op:?})"
+            );
+        }
+    }
+
+    /// `Gather`/`RawGather`/`Reduce` sit past `LATENCY_PRIOR_CYCLES`'s range
+    /// (discriminants 50-52 vs. the array's 50 slots); `cost` must handle
+    /// them explicitly rather than indexing out of bounds.
+    #[test]
+    fn cost_handles_ops_beyond_latency_table_range() {
+        let model = CostModel::latency_prior();
+        assert_eq!(model.cost(OpKind::Gather), 10);
+        assert_eq!(model.cost(OpKind::RawGather), 10);
+        assert_eq!(model.cost(OpKind::Reduce), 0);
+        assert_eq!(model.cost_by_name("gather"), 10);
+        assert_eq!(model.cost_by_name("raw_gather"), 10);
+        assert_eq!(model.cost_by_name("reduce"), 0);
     }
 }
