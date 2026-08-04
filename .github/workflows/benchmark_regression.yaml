@@ -91,16 +91,26 @@ jobs:
         id: baseline
         run: |
           set -euo pipefail
-          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            {
-              echo "## Benchmark comparison skipped"
-              echo "No \`gh-pages\` baseline exists yet. The first push to"
-              echo "\`main\` creates it; PR runs never mutate the repository."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          # --exit-code: 0 = ref exists, 2 = no matching ref. Anything else
+          # is a transport/auth failure and must fail the check — treating
+          # it as "no baseline" would skip the comparison and read as green.
+          status=0
+          git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1 || status=$?
+          case "$status" in
+            0) echo "exists=true" >> "$GITHUB_OUTPUT" ;;
+            2)
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+              {
+                echo "## Benchmark comparison skipped"
+                echo "No \`gh-pages\` baseline exists yet. The first push to"
+                echo "\`main\` creates it; PR runs never mutate the repository."
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::git ls-remote failed with status $status (not 'ref absent')"
+              exit "$status"
+              ;;
+          esac
 
       - name: Compare against baseline
         if: steps.baseline.outputs.exists == 'true'
@@ -182,9 +192,17 @@ jobs:
       - name: Ensure gh-pages branch exists
         run: |
           set -euo pipefail
-          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+          # Same tri-state as the PR job's baseline check: only "no matching
+          # ref" (status 2) may trigger a bootstrap. Bootstrapping on a
+          # transport error would race a branch that actually exists.
+          status=0
+          git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1 || status=$?
+          if [ "$status" -eq 0 ]; then
             echo "gh-pages already exists"
             exit 0
+          elif [ "$status" -ne 2 ]; then
+            echo "::error::git ls-remote failed with status $status (not 'ref absent')"
+            exit "$status"
           fi
           git config user.name "github-action-benchmark"
           git config user.email "github@users.noreply.github.com"
