@@ -368,9 +368,15 @@ impl<'a> Cursor<'a> {
 mod tests {
     use super::*;
 
+    // Per-process path: concurrent `cargo test` runs must not share corpus files,
+    // or one process's remove_file races another's write/read.
+    fn unique_tmp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("corpus_rt_{name}_{}.bin", std::process::id()))
+    }
+
     #[test]
     fn round_trip_empty() {
-        let tmp = std::env::temp_dir().join("corpus_rt_empty.bin");
+        let tmp = unique_tmp("empty");
         let entries: Vec<(String, ExprArena, ExprId)> = Vec::new();
         write_corpus(&tmp, &entries).expect("write");
         let loaded = read_corpus(&tmp).expect("read");
@@ -387,7 +393,7 @@ mod tests {
 
         let entries = vec![("test_add".to_string(), arena, root)];
 
-        let tmp = std::env::temp_dir().join("corpus_rt_simple.bin");
+        let tmp = unique_tmp("simple");
         write_corpus(&tmp, &entries).expect("write");
         let loaded = read_corpus(&tmp).expect("read");
 
@@ -416,7 +422,7 @@ mod tests {
 
         let entries = vec![("sqrt_pi".to_string(), arena, root)];
 
-        let tmp = std::env::temp_dir().join("corpus_rt_unary.bin");
+        let tmp = unique_tmp("unary");
         write_corpus(&tmp, &entries).expect("write");
         let loaded = read_corpus(&tmp).expect("read");
 
@@ -444,7 +450,7 @@ mod tests {
 
         let entries = vec![("select_xyz".to_string(), arena, root)];
 
-        let tmp = std::env::temp_dir().join("corpus_rt_ternary.bin");
+        let tmp = unique_tmp("ternary");
         write_corpus(&tmp, &entries).expect("write");
         let loaded = read_corpus(&tmp).expect("read");
 
@@ -467,7 +473,7 @@ mod tests {
 
         let entries = vec![("tuple_abc".to_string(), arena, root)];
 
-        let tmp = std::env::temp_dir().join("corpus_rt_nary.bin");
+        let tmp = unique_tmp("nary");
         write_corpus(&tmp, &entries).expect("write");
         let loaded = read_corpus(&tmp).expect("read");
 
@@ -557,7 +563,7 @@ mod tests {
         let r2 = a2.push_unary(OpKind::Sqrt, c);
         entries.push(("sqrt_pi".to_string(), a2, r2));
 
-        let tmp = std::env::temp_dir().join("corpus_rt_multi.bin");
+        let tmp = unique_tmp("multi");
         write_corpus(&tmp, &entries).expect("write");
         let loaded = read_corpus(&tmp).expect("read");
 
