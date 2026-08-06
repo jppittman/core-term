@@ -1877,3 +1877,44 @@ fn cursor_only_movement_marks_its_rows_dirty() {
         "a row change dirties the row left and the row entered"
     );
 }
+
+// White-box test of `get_render_snapshot`'s documented per-line dirty
+// contract, not a claim any consumer reads per-row state — no production
+// code checks `is_dirty` per row today, only whole-snapshot (`any()`).
+// Row-specific on purpose: rows inside the region are independently dirty
+// from their own content change regardless of `view_changed`, so only rows
+// outside it (with no other dirty reason) isolate `view_changed`'s own
+// contribution to the OR.
+#[test]
+fn scroll_region_push_dirties_rows_outside_the_region() {
+    let mut term = create_test_emulator(4, 6);
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetScrollingRegion { top: 1, bottom: 3 },
+    )));
+    let _ = term.get_render_snapshot().expect("snapshot");
+
+    // Cursor starts at the region's top row; three linefeeds walk it to the
+    // region's bottom and then scroll the region, pushing row 0 into
+    // scrollback and bumping the generation. Rows 3-5 sit outside the
+    // region and are never touched by the scroll — nothing except
+    // `view_changed` can dirty them.
+    for _ in 0..3 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(
+            crate::ansi::commands::C0Control::LF,
+        )));
+    }
+
+    let after_scroll = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        after_scroll.lines[3..6].iter().all(|l| l.is_dirty),
+        "the view changed (scrollback generation bumped): `get_render_snapshot`'s \
+         documented contract dirties every row, including ones the scroll itself \
+         never touched"
+    );
+
+    let idle = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        !idle.lines[3..6].iter().any(|l| l.is_dirty),
+        "the view is unchanged and those rows were never touched: clean"
+    );
+}
