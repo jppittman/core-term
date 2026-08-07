@@ -332,9 +332,48 @@ mod tests {
             .unwrap();
 
         assert!(out.present.is_some(), "a drawn frame must be presented");
+        let rendered = out
+            .rendered
+            .expect("presenting a frame must report FPS telemetry to vsync");
+        assert_eq!(
+            rendered.frame_number, 1,
+            "the first presented frame must be numbered 1, not left at its zero default"
+        );
+    }
+
+    #[test]
+    fn the_frame_counter_advances_once_per_presented_frame() {
+        let mut core = CoordinatorCore::new();
+
+        for expected in 1..=3u64 {
+            core.step_data(CoordinatorData::Submit(manifold())).unwrap();
+            let out = core
+                .step_data(CoordinatorData::Granted(one_to_one_window()))
+                .unwrap();
+            let request = out.render.expect("expected a render request");
+
+            let out = core
+                .step_management(RenderResponse {
+                    frame: request.frame,
+                    render_time: Some(Duration::from_millis(1)),
+                    meta: request.meta,
+                })
+                .unwrap();
+
+            let rendered = out.rendered.expect("a drawn frame reports telemetry");
+            assert_eq!(
+                rendered.frame_number, expected,
+                "the counter must advance by exactly one per presented frame"
+            );
+        }
+    }
+
+    #[test]
+    fn coordinator_data_debug_names_its_variant() {
+        assert_eq!(format!("{:?}", CoordinatorData::Advance), "Advance");
+        assert!(format!("{:?}", CoordinatorData::Submit(manifold())).contains("Submit"));
         assert!(
-            out.rendered.is_some(),
-            "presenting a frame must report FPS telemetry to vsync"
+            format!("{:?}", CoordinatorData::Granted(one_to_one_window())).contains("Granted")
         );
     }
 
