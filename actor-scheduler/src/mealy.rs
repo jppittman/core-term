@@ -2179,6 +2179,98 @@ mod tests {
         );
     }
 
+    #[test]
+    fn management_backlog_does_not_starve_data_forever() {
+        // Mirrors control_backlog_does_not_starve_data_forever: with management_limit=1 and
+        // no control traffic, a deep management backlog must still yield to data after one
+        // message, not hog the node until the backlog drains.
+        let params = SchedulerParams {
+            control_mgmt_buffer_size: 1,
+            control_burst_multiplier: 1,
+            management_burst_multiplier: 1, // management_burst_limit = 1
+            default_data_burst_limit: 1,
+            ..SchedulerParams::DEFAULT
+        };
+
+        let (_tx_c, rx_c) = spsc_channel::<()>(4);
+        let (tx_m, rx_m) = spsc_channel::<()>(64);
+        let (tx_d, rx_d) = spsc_channel::<()>(4);
+
+        let mut node = Node::new_with_lanes(
+            LaneLog { seen: Vec::new() },
+            Lanes {
+                control: rx_c,
+                management: rx_m,
+                data: rx_d,
+            },
+            NoWiring,
+            params,
+        );
+
+        for _ in 0..5 {
+            tx_m.try_send(()).unwrap();
+        }
+        tx_d.try_send(()).unwrap();
+
+        for _ in 0..2 {
+            assert_eq!(node.poll(), Step::Ran);
+        }
+        assert_eq!(
+            node.actor().seen,
+            vec!["M", "D"],
+            "data must be served right after management's one-message turn, not after the \
+             whole backlog"
+        );
+    }
+
+    #[test]
+    fn data_backlog_does_not_starve_control_forever() {
+        // The mirror image of control_backlog_does_not_starve_data_forever: data is served
+        // last in the lap and has no split turn the way control does, so a deep data backlog
+        // is the one most likely to silently monopolise the node if its own burst limit isn't
+        // actually enforced. With data_limit=2 and a control backlog, control must reclaim the
+        // node after exactly 2 data messages, not be starved for the rest of the backlog.
+        let params = SchedulerParams {
+            control_mgmt_buffer_size: 1,
+            control_burst_multiplier: 1, // control_half_limit = 1
+            management_burst_multiplier: 1,
+            default_data_burst_limit: 2,
+            ..SchedulerParams::DEFAULT
+        };
+
+        let (tx_c, rx_c) = spsc_channel::<()>(64);
+        let (_tx_m, rx_m) = spsc_channel::<()>(4);
+        let (tx_d, rx_d) = spsc_channel::<()>(64);
+
+        let mut node = Node::new_with_lanes(
+            LaneLog { seen: Vec::new() },
+            Lanes {
+                control: rx_c,
+                management: rx_m,
+                data: rx_d,
+            },
+            NoWiring,
+            params,
+        );
+
+        for _ in 0..3 {
+            tx_c.try_send(()).unwrap();
+        }
+        for _ in 0..5 {
+            tx_d.try_send(()).unwrap();
+        }
+
+        for _ in 0..5 {
+            assert_eq!(node.poll(), Step::Ran);
+        }
+        assert_eq!(
+            node.actor().seen,
+            vec!["C", "C", "D", "D", "C"],
+            "control must get its next turn after data's 2-message burst limit, not be \
+             starved by the rest of the data backlog"
+        );
+    }
+
     // Regression: half_control = control_burst_limit / 2 used to truncate to 0 when the
     // burst limit was 1, and a zero-limit slot could never make progress (mirrors
     // control_lane_progresses_with_burst_limit_one in lib.rs for the OS-thread scheduler).
