@@ -981,4 +981,142 @@ mod tests {
             .join()
             .expect("forwarder must exit once the rasterizer disconnects");
     }
+
+    #[test]
+    fn skipped_frame_returns_the_vsync_token() {
+        let (driver, _driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+        let waker = {
+            let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
+            handle.waker()
+        };
+        let (vsync_tx, mut vsync_rx) = spsc_channel::<VsyncCommand>(8);
+        let vsync_control = GreenSender::new(vsync_tx, waker);
+
+        let mut engine = EngineHandler {
+            driver,
+            vsync_control: Some(vsync_control),
+            vsync_host: None,
+            coordinator: None,
+            self_handle: None,
+            rasterizer_forwarder: None,
+            app_handle: None,
+            core: EngineCore::new(),
+        };
+
+        engine
+            .handle_data(EngineData::FromApp(AppData::Skipped))
+            .expect("engine handled the message");
+
+        assert!(
+            matches!(vsync_rx.try_recv(), Ok(VsyncCommand::ReturnToken)),
+            "a skipped frame must still return the vsync token, or the next frame starves"
+        );
+    }
+
+    /// No-op stand-ins for `poll_once`-based observation below: these actors are never meant to
+    /// do real work, only to let a scheduler report whether a `Shutdown` landed.
+    struct NoopDriver;
+    impl Actor<DisplayData, DisplayControl, DisplayMgmt> for NoopDriver {
+        fn handle_data(&mut self, _msg: DisplayData) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_control(&mut self, _msg: DisplayControl) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _msg: DisplayMgmt) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
+        }
+    }
+
+    struct NoopEngine;
+    impl Actor<EngineData, EngineControl, AppManagement> for NoopEngine {
+        fn handle_data(&mut self, _msg: EngineData) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_control(&mut self, _msg: EngineControl) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_management(&mut self, _msg: AppManagement) -> HandlerResult {
+            Ok(())
+        }
+        fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
+        }
+    }
+
+    struct Never;
+    impl Actor<Infallible, Infallible, Infallible> for Never {
+        fn handle_data(&mut self, msg: Infallible) -> HandlerResult {
+            match msg {}
+        }
+        fn handle_control(&mut self, msg: Infallible) -> HandlerResult {
+            match msg {}
+        }
+        fn handle_management(&mut self, msg: Infallible) -> HandlerResult {
+            match msg {}
+        }
+        fn handle_os(&mut self, _status: SystemStatus) -> Result<ActorStatus, HandlerError> {
+            Ok(ActorStatus::Idle)
+        }
+    }
+
+    /// Polls `sched` until it reports a `Shutdown` (`poll_once` returning `true`) or gives up —
+    /// bounded so a regression fails fast with a clear message instead of hanging the suite.
+    fn eventually_shuts_down<D, C, M, A: Actor<D, C, M>>(
+        sched: &mut ActorScheduler<D, C, M>,
+        actor: &mut A,
+    ) -> bool {
+        for _ in 0..10_000 {
+            if sched.poll_once(actor) {
+                return true;
+            }
+            std::thread::yield_now();
+        }
+        false
+    }
+
+    #[test]
+    fn quit_shuts_down_the_driver_and_every_configured_handle() {
+        let (driver, mut driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+        let (self_handle, mut self_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
+        let (vsync_host, mut vsync_sched) =
+            ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
+        let (forwarder, mut forwarder_sched) =
+            ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
+
+        let mut engine = EngineHandler {
+            driver,
+            vsync_control: None,
+            vsync_host: Some(vsync_host),
+            coordinator: None,
+            self_handle: Some(self_handle),
+            rasterizer_forwarder: Some(forwarder),
+            app_handle: None,
+            core: EngineCore::new(),
+        };
+
+        engine
+            .handle_control(EngineControl::Quit)
+            .expect("quit handled");
+
+        assert!(
+            eventually_shuts_down(&mut driver_sched, &mut NoopDriver),
+            "the driver must always receive Shutdown on Quit"
+        );
+        assert!(
+            eventually_shuts_down(&mut vsync_sched, &mut Never),
+            "the green host must receive Shutdown on Quit when configured"
+        );
+        assert!(
+            eventually_shuts_down(&mut forwarder_sched, &mut Never),
+            "the rasterizer forwarder must receive Shutdown on Quit when configured"
+        );
+        assert!(
+            eventually_shuts_down(&mut self_sched, &mut NoopEngine),
+            "the engine must send itself Shutdown on Quit when self_handle is configured"
+        );
+    }
 }
