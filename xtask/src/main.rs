@@ -307,6 +307,13 @@ fn launch_stability_check(runs: u32, watch_seconds: u64) {
                 "::error::run {run}: process never appeared within {APPEAR_DEADLINE_MS}ms of launch"
             );
             failures += 1;
+            // First disappearance: gather enough evidence to distinguish the
+            // three ways this happens — LaunchServices silently declining the
+            // (unsigned) bundle, the binary dying faster than the poll, or
+            // the pgrep pattern not matching on this host.
+            if failures == 1 {
+                launch_failure_diagnostics(&app_bundle, binary_match);
+            }
             continue;
         };
 
@@ -364,6 +371,71 @@ fn launch_stability_check(runs: u32, watch_seconds: u64) {
 
 /// Finds the PID of a running process by matching `pattern` against its full
 /// command line, mirroring `pgrep -f`.
+/// Evidence dump for "process never appeared": what IS running, whether the
+/// binary can run at all outside LaunchServices, any crash reports, and what
+/// the unified log says about the launch. Diagnostic-only — failures here are
+/// reported, never fatal, because this runs after the check already failed.
+fn launch_failure_diagnostics(app_bundle: &std::path::Path, binary_match: &str) {
+    eprintln!("---- diagnostics: pgrep view ----");
+    let pg = Command::new("pgrep").args(["-fl", "CoreTerm"]).output();
+    match pg {
+        Ok(o) => eprintln!(
+            "pgrep -fl CoreTerm (status {}):\n{}{}",
+            o.status,
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        ),
+        Err(e) => eprintln!("pgrep failed to run: {e}"),
+    }
+
+    eprintln!("---- diagnostics: direct exec (bypasses LaunchServices) ----");
+    let binary = app_bundle.join("Contents/MacOS/CoreTerm");
+    match Command::new(&binary).spawn() {
+        Err(e) => eprintln!("direct exec failed to spawn: {e}"),
+        Ok(mut child) => {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            match child.try_wait() {
+                Ok(None) => {
+                    eprintln!(
+                        "direct exec: alive after 3s — the binary runs; the \
+                         failure is in the LaunchServices path (match: {binary_match})"
+                    );
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                Ok(Some(status)) => {
+                    eprintln!("direct exec: exited within 3s: {status}");
+                    let _ = child.wait();
+                }
+                Err(e) => eprintln!("direct exec: try_wait failed: {e}"),
+            }
+        }
+    }
+
+    eprintln!("---- diagnostics: unified log (last 2m, launch-related) ----");
+    let log = Command::new("log")
+        .args([
+            "show",
+            "--last",
+            "2m",
+            "--style",
+            "compact",
+            "--predicate",
+            "eventMessage CONTAINS[c] \"coreterm\" OR subsystem == \"com.apple.launchservices\"",
+        ])
+        .output();
+    match log {
+        Ok(o) => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            let tail: Vec<&str> = text.lines().rev().take(60).collect();
+            for line in tail.iter().rev() {
+                eprintln!("{line}");
+            }
+        }
+        Err(e) => eprintln!("log show failed to run: {e}"),
+    }
+}
+
 fn find_pid(pattern: &str) -> Option<u32> {
     let output = Command::new("pgrep").args(["-f", pattern]).output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
