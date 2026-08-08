@@ -40,8 +40,12 @@ fn main() {
         }
         "isa-matrix" => {
             let with_clippy = args[2..].iter().any(|a| a == "--clippy");
-            let build_only = args[2..].iter().any(|a| a == "--build-only");
-            isa_matrix(with_clippy, build_only);
+            let mode = if args[2..].iter().any(|a| a == "--build-only") {
+                IsaExecutionMode::BuildOnly
+            } else {
+                IsaExecutionMode::BuildAndTest
+            };
+            isa_matrix(with_clippy, mode);
         }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
@@ -280,37 +284,69 @@ fn host_has_feature(feature: &str) -> bool {
     }
 }
 
+/// Whether [`isa_matrix`] executes the tests it builds, or only builds and
+/// lints. These are mutually exclusive execution modes, not an independent
+/// toggle -- hence an enum rather than a `build_only: bool` alongside
+/// `with_clippy: bool` (see the repository's "avoid boolean parameters"
+/// convention in AGENTS.md). Not `x86_64`-gated like the rest of the matrix
+/// machinery below: `main` constructs one from CLI args unconditionally,
+/// before `isa_matrix` ever branches on host architecture.
+enum IsaExecutionMode {
+    /// Compile and lint every level; never execute tests, even on a host
+    /// that could run them. Presubmit's fast path.
+    BuildOnly,
+    /// Compile, lint, and execute the tests for whichever levels this
+    /// host's CPU can run. Postsubmit's job, once a change has landed.
+    BuildAndTest,
+}
+
+/// Number of times a level's test step is retried before its failures are
+/// trusted. Mirrors the 5-iteration flake/consistent-break split the sibling
+/// `test` job in `postsubmit-flake-detection.yaml` already uses -- without
+/// it, a single flaky test at one ISA level would fail this job outright and
+/// trigger `automatic-revert.yaml` on a plain flake, bypassing the exact
+/// safeguard that job exists to provide.
+#[cfg(target_arch = "x86_64")]
+const TEST_RETRIES: u32 = 5;
+
 /// Outcome of attempting one [`IsaLevel`].
 #[cfg(target_arch = "x86_64")]
 enum LevelResult {
-    /// Compiled, linted, and the test binaries ran.
+    /// Compiled, linted, and every test attempt passed.
     Passed,
     /// Compiled and linted, but the tests were not executed — either
-    /// `build_only` was requested (presubmit's fast path) or the host CPU
-    /// cannot run this level's instructions. NOT a skip — everything that
-    /// can be checked without running the binary was checked.
+    /// [`IsaExecutionMode::BuildOnly`] was requested (presubmit's fast path)
+    /// or the host CPU cannot run this level's instructions. NOT a skip —
+    /// everything that can be checked without running the binary was
+    /// checked.
     BuiltNotRun { reason: String },
-    /// A command failed; `stage` names which for the summary.
+    /// Failed at least once but eventually passed within [`TEST_RETRIES`]
+    /// attempts: not a consistent break, so this does not fail the job.
+    /// `attempts` is the attempt number that finally passed.
+    Flaky { attempts: u32 },
+    /// A command failed; `stage` names which for the summary. For `stage:
+    /// "test"`, every one of [`TEST_RETRIES`] attempts failed.
     Failed { stage: &'static str },
 }
 
 /// Build and lint (`cargo test --workspace --no-run`, optionally `cargo
 /// clippy --workspace --all-targets -- -D warnings`) every x86-64 ISA level.
-/// Unless `build_only` is set, also runs the tests for whichever levels this
-/// host's CPU can execute. `build_only` is presubmit's fast path: every PR
-/// gets compile+lint coverage for every level without paying for a run;
-/// postsubmit calls this with `build_only: false` to actually execute the
-/// tests once a change has landed. Non-x86-64 hosts (aarch64/NEON) have a
-/// single ISA level already, so there is nothing to matrix — this prints a
-/// note and exits 0 rather than silently doing nothing.
-fn isa_matrix(with_clippy: bool, build_only: bool) {
+/// Under [`IsaExecutionMode::BuildAndTest`], also runs the tests for
+/// whichever levels this host's CPU can execute. `BuildOnly` is presubmit's
+/// fast path: every PR gets compile+lint coverage for every level without
+/// paying for a run; postsubmit calls this with `BuildAndTest` to actually
+/// execute the tests once a change has landed. Non-x86-64 hosts
+/// (aarch64/NEON) have a single ISA level already, so there is nothing to
+/// matrix — this prints a note and exits 0 rather than silently doing
+/// nothing.
+fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
     let workspace_root = find_workspace_root();
 
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = workspace_root;
         let _ = with_clippy;
-        let _ = build_only;
+        let _ = mode;
         println!(
             "isa-matrix: host is not x86-64 (no SSE2/AVX2/AVX-512 split to test here — \
              e.g. aarch64/NEON has one ISA level already)."
@@ -396,18 +432,19 @@ fn isa_matrix(with_clippy: bool, build_only: bool) {
             }
 
             // Executing is the part that genuinely needs the CPU (and, under
-            // `--build-only`, the part presubmit explicitly defers). Note the
+            // `BuildOnly`, the part presubmit explicitly defers). Note the
             // whole workspace is built with this level's target-feature, so
             // rustc may emit those instructions anywhere in the binary — it is
             // not enough that a given test avoids them.
-            let skip_reason = if build_only {
-                Some("--build-only: tests run in postsubmit".to_string())
-            } else {
-                level
+            let skip_reason = match mode {
+                IsaExecutionMode::BuildOnly => {
+                    Some("build-only mode: tests run in postsubmit".to_string())
+                }
+                IsaExecutionMode::BuildAndTest => level
                     .requires
                     .iter()
                     .find(|&&feat| !host_has_feature(feat))
-                    .map(|&feat| format!("host lacks {feat}"))
+                    .map(|&feat| format!("host lacks {feat}")),
             };
 
             if let Some(reason) = skip_reason {
@@ -419,18 +456,56 @@ fn isa_matrix(with_clippy: bool, build_only: bool) {
                 continue;
             }
 
-            if !run_with_rustflags(
-                &workspace_root,
-                &matrix_target,
-                &rustflags,
-                &["test", "--workspace", "--no-fail-fast"],
-            ) {
-                println!("isa-matrix: {} — cargo test FAILED", level.name);
+            // A single failing run here would otherwise fail this job outright
+            // and trigger automatic-revert on a plain flake, bypassing the
+            // exact flaky-vs-consistent-break distinction the sibling `test`
+            // job makes via its own 5-iteration loop. So retry ON FAILURE up
+            // to TEST_RETRIES total attempts: a first-try pass costs exactly
+            // what this step always cost (one run), and only a failure pays
+            // for the extra attempts needed to tell "flaky" from "every
+            // attempt failed" -- unlike the `test` job, three ISA levels run
+            // sequentially in this one job, so unconditionally repeating a
+            // full `cargo test --workspace` five times per level regardless
+            // of outcome would multiply this job's typical runtime by 5x for
+            // no benefit in the common all-green case.
+            let mut attempts = 0u32;
+            let mut passed = false;
+            while attempts < TEST_RETRIES && !passed {
+                attempts += 1;
+                println!(
+                    "isa-matrix: {} — test attempt {attempts}/{TEST_RETRIES}",
+                    level.name
+                );
+                passed = run_with_rustflags(
+                    &workspace_root,
+                    &matrix_target,
+                    &rustflags,
+                    &["test", "--workspace", "--no-fail-fast"],
+                );
+            }
+
+            if !passed {
+                println!(
+                    "isa-matrix: {} — cargo test FAILED all {TEST_RETRIES} attempts",
+                    level.name
+                );
                 results.push((level.name, LevelResult::Failed { stage: "test" }));
                 continue;
             }
-            println!("isa-matrix: {} — cargo test passed", level.name);
 
+            if attempts > 1 {
+                let failures = attempts - 1;
+                println!(
+                    "isa-matrix: {} — FLAKY: passed on attempt {attempts}/{TEST_RETRIES} \
+                     ({failures} failed first); not treating as a consistent break",
+                    level.name
+                );
+                write_flake_report(&workspace_root, level.name, attempts);
+                results.push((level.name, LevelResult::Flaky { attempts }));
+                continue;
+            }
+
+            println!("isa-matrix: {} — cargo test passed", level.name);
             results.push((level.name, LevelResult::Passed));
         }
 
@@ -446,6 +521,9 @@ fn isa_matrix(with_clippy: bool, build_only: bool) {
                 LevelResult::BuiltNotRun { reason } => {
                     format!("BUILT+LINT (not run: {reason})")
                 }
+                LevelResult::Flaky { attempts } => {
+                    format!("FLAKY (passed on attempt {attempts}/{TEST_RETRIES})")
+                }
             };
             println!("  {name:<20} {line}");
         }
@@ -453,6 +531,52 @@ fn isa_matrix(with_clippy: bool, build_only: bool) {
         if any_failed {
             std::process::exit(1);
         }
+    }
+}
+
+/// Lowercase `name`, replacing every run of non-alphanumeric characters with
+/// a single `-`, trimming leading/trailing `-`. `"avx2 (no fma)"` becomes
+/// `"avx2-no-fma"` -- safe both as a filename and as the artifact-name/report
+/// slug the flake-detection convention below expects.
+#[cfg(target_arch = "x86_64")]
+fn slugify(name: &str) -> String {
+    let mut slug = String::with_capacity(name.len());
+    let mut last_was_dash = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+            last_was_dash = false;
+        } else if !last_was_dash {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+/// Record a flaky ISA level in the exact convention the sibling `test` job in
+/// `postsubmit-flake-detection.yaml` already uses: a markdown file under
+/// `flake-results/`, uploaded as an artifact matching the `flake-*` pattern.
+/// The downstream `flake-report` job globs that pattern and files a tracking
+/// issue -- it needs no changes to pick this up too.
+#[cfg(target_arch = "x86_64")]
+fn write_flake_report(workspace_root: &std::path::Path, level_name: &str, attempts: u32) {
+    let slug = format!("isa-matrix-{}", slugify(level_name));
+    let dir = workspace_root.join("flake-results");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        panic!("isa-matrix: could not create {}: {e}", dir.display());
+    }
+    let failures = attempts - 1;
+    let body = format!(
+        "### `{slug}`: {failures}/{attempts} iterations failed\n\n\
+         ISA level **{level_name}** failed {failures} `cargo test --workspace` \
+         run(s) before passing on attempt {attempts} — flaky, not a \
+         consistent break. See the `isa-matrix` job log on this run for \
+         which tests failed on which attempt.\n"
+    );
+    let path = dir.join(format!("{slug}.md"));
+    if let Err(e) = std::fs::write(&path, body) {
+        panic!("isa-matrix: could not write {}: {e}", path.display());
     }
 }
 

@@ -113,14 +113,18 @@ jobs:
           path: flake-results/
           if-no-files-found: ignore
 
-  # Single-run build+lint+test pass per x86-64 ISA level (SSE2/AVX2/AVX-512).
-  # Presubmit (rust.yaml) already built+linted every level with
-  # `--build-only`; this is the actual execution pass, deferred here because
-  # it's the slow part (three full test runs) and a bad result now means
-  # reverting the already-merged commit, not blocking a PR. No flake-retry
-  # loop like the `test` job above: a failure here is a genuine ISA-level
-  # break, so it fails this job outright, which fails the workflow and
-  # triggers the automatic revert same as a consistent `test` failure.
+  # Build+lint+test pass per x86-64 ISA level (SSE2/AVX2/AVX-512). Presubmit
+  # (rust.yaml) already built+linted every level with `--build-only`; this is
+  # the actual execution pass, deferred here because it's the slow part
+  # (three full test runs) and a bad result now means reverting the
+  # already-merged commit, not blocking a PR. `xtask isa-matrix` applies the
+  # same flaky-vs-consistent-break distinction as the `test` job above, but
+  # retries on failure only (up to 5 attempts) rather than always running 5
+  # times: a level failing every attempt fails this job outright, which fails
+  # the workflow and triggers the automatic revert; a level that fails at
+  # least once but eventually passes writes a flake-results/*.md file (same
+  # convention as `test`'s "Run test suite 5 times" step) without failing the
+  # job.
   isa-matrix:
     name: ISA matrix (SSE2/AVX2/AVX-512) -- build+lint+test
     runs-on: ubuntu-latest
@@ -154,13 +158,21 @@ jobs:
         shell: bash
         run: cargo run -p xtask -- isa-matrix --clippy
 
+      - name: Upload flake report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-isa-matrix
+          path: flake-results/
+          if-no-files-found: ignore
+
   # Files (or updates) a tracking issue when any suite was flaky. This job
   # must never fail the workflow: a hiccup filing an issue is not a
   # postsubmit failure and must not trigger the automatic revert.
   flake-report:
     name: File flake report
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, isa-matrix]
     if: always()
     continue-on-error: true
     permissions:
