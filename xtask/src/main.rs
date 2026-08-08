@@ -24,6 +24,8 @@ fn main() {
         eprintln!("  isa-matrix    Build+lint every x86-64 ISA level (SSE2/AVX2/AVX-512);");
         eprintln!("                run the tests for those this host can execute");
         eprintln!("                [--clippy to also run clippy per level]");
+        eprintln!("                [--build-only to skip test execution entirely --");
+        eprintln!("                 presubmit's fast path; postsubmit runs the tests]");
         std::process::exit(1);
     }
 
@@ -38,7 +40,8 @@ fn main() {
         }
         "isa-matrix" => {
             let with_clippy = args[2..].iter().any(|a| a == "--clippy");
-            isa_matrix(with_clippy);
+            let build_only = args[2..].iter().any(|a| a == "--build-only");
+            isa_matrix(with_clippy, build_only);
         }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
@@ -282,26 +285,32 @@ fn host_has_feature(feature: &str) -> bool {
 enum LevelResult {
     /// Compiled, linted, and the test binaries ran.
     Passed,
-    /// Compiled and linted, but the tests were not executed: the host CPU
-    /// cannot run this level's instructions. NOT a skip — everything that can
-    /// be checked without the hardware was checked.
-    BuiltNotRun { missing: &'static str },
+    /// Compiled and linted, but the tests were not executed — either
+    /// `build_only` was requested (presubmit's fast path) or the host CPU
+    /// cannot run this level's instructions. NOT a skip — everything that
+    /// can be checked without running the binary was checked.
+    BuiltNotRun { reason: String },
     /// A command failed; `stage` names which for the summary.
     Failed { stage: &'static str },
 }
 
-/// Run the workspace test suite (`cargo test --workspace`), and optionally
-/// `cargo clippy --workspace --all-targets -- -D warnings`, at every x86-64
-/// ISA level this host supports. Non-x86-64 hosts (aarch64/NEON) have a
+/// Build and lint (`cargo test --workspace --no-run`, optionally `cargo
+/// clippy --workspace --all-targets -- -D warnings`) every x86-64 ISA level.
+/// Unless `build_only` is set, also runs the tests for whichever levels this
+/// host's CPU can execute. `build_only` is presubmit's fast path: every PR
+/// gets compile+lint coverage for every level without paying for a run;
+/// postsubmit calls this with `build_only: false` to actually execute the
+/// tests once a change has landed. Non-x86-64 hosts (aarch64/NEON) have a
 /// single ISA level already, so there is nothing to matrix — this prints a
 /// note and exits 0 rather than silently doing nothing.
-fn isa_matrix(with_clippy: bool) {
+fn isa_matrix(with_clippy: bool, build_only: bool) {
     let workspace_root = find_workspace_root();
 
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = workspace_root;
         let _ = with_clippy;
+        let _ = build_only;
         println!(
             "isa-matrix: host is not x86-64 (no SSE2/AVX2/AVX-512 split to test here — \
              e.g. aarch64/NEON has one ISA level already)."
@@ -386,17 +395,27 @@ fn isa_matrix(with_clippy: bool) {
                 println!("isa-matrix: {} — cargo clippy passed", level.name);
             }
 
-            // Executing is the part that genuinely needs the CPU. Note the
+            // Executing is the part that genuinely needs the CPU (and, under
+            // `--build-only`, the part presubmit explicitly defers). Note the
             // whole workspace is built with this level's target-feature, so
             // rustc may emit those instructions anywhere in the binary — it is
             // not enough that a given test avoids them.
-            if let Some(&feat) = level.requires.iter().find(|&&feat| !host_has_feature(feat)) {
+            let skip_reason = if build_only {
+                Some("--build-only: tests run in postsubmit".to_string())
+            } else {
+                level
+                    .requires
+                    .iter()
+                    .find(|&&feat| !host_has_feature(feat))
+                    .map(|&feat| format!("host lacks {feat}"))
+            };
+
+            if let Some(reason) = skip_reason {
                 println!(
-                    "isa-matrix: {} — built and linted; NOT running tests \
-                     (host CPU lacks {feat})",
+                    "isa-matrix: {} — built and linted; NOT running tests ({reason})",
                     level.name
                 );
-                results.push((level.name, LevelResult::BuiltNotRun { missing: feat }));
+                results.push((level.name, LevelResult::BuiltNotRun { reason }));
                 continue;
             }
 
@@ -424,8 +443,8 @@ fn isa_matrix(with_clippy: bool) {
                     any_failed = true;
                     format!("FAIL ({stage})")
                 }
-                LevelResult::BuiltNotRun { missing } => {
-                    format!("BUILT+LINT (not run: host lacks {missing})")
+                LevelResult::BuiltNotRun { reason } => {
+                    format!("BUILT+LINT (not run: {reason})")
                 }
             };
             println!("  {name:<20} {line}");
