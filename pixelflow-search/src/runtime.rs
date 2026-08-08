@@ -75,6 +75,15 @@ pub fn optimize_runtime_arena(arena: &ExprArena, root: ExprId) -> Option<Arc<(Ex
     static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, Option<Arc<(ExprArena, ExprId)>>>>> =
         OnceLock::new();
 
+    // Buffer-bearing arenas bypass the cache entirely: `BufferIdentity` is
+    // process-unique and minted per construction, so two compiles never
+    // share a key — every lookup would miss while every insert stayed
+    // forever (the cache is static and unbounded). A terminal resizing all
+    // day would leak one full optimized arena per recompile for zero hits.
+    if !arena.buffers().is_empty() {
+        return optimize_runtime_arena_uncached(arena, root).map(Arc::new);
+    }
+
     let key = canonical_key(arena, root);
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(hit) = cache
@@ -125,7 +134,33 @@ fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(E
 
     let policy = env_extraction_policy();
     let choices = policy.choices(&egraph, root_class);
-    Some(choices_to_arena(&egraph, root_class, &choices))
+    let (extracted, extracted_root) = choices_to_arena(&egraph, root_class, &choices);
+
+    // The extracted arena declares buffers in extraction-traversal order,
+    // which need not match the input's — and slot order is ABI: the JIT
+    // loads slot i's base pointer from the caller's context array at i*8,
+    // and callers bind in the order the arena THEY BUILT declared. A
+    // different extraction (a commuted equivalent under another cost model)
+    // must not silently permute their pointers. Re-splicing onto a table
+    // pre-declared in input order makes the invariant structural: splice
+    // dedups buffers by identity onto the existing slots.
+    if arena.buffers().is_empty() {
+        return Some((extracted, extracted_root));
+    }
+    let mut ordered = ExprArena::new();
+    for decl in arena.buffers() {
+        let _slot = ordered.declare_buffer(*decl);
+    }
+    let root = ordered.splice(&extracted, extracted_root);
+    debug_assert!(
+        ordered
+            .buffers()
+            .iter()
+            .zip(arena.buffers())
+            .all(|(a, b)| a.id == b.id),
+        "buffer slot order must survive optimization"
+    );
+    Some((ordered, root))
 }
 
 /// Canonical serialization of the subgraph reachable from `root`: nodes in
@@ -777,6 +812,37 @@ mod tests {
             &(opt_arena, opt_root),
             &[(identity, data.as_slice())],
         );
+    }
+
+    /// Slot order is the binding ABI: the JIT loads slot i's base pointer
+    /// from the context array at i*8, and callers bind in the order the arena
+    /// THEY built declared. Extraction traverses in its own order — here the
+    /// root's first child reads the SECOND-declared buffer — so a rebuild
+    /// that declared buffers in traversal order would silently swap the
+    /// caller's two pointers and read the wrong memory.
+    #[test]
+    fn optimization_preserves_buffer_slot_order() {
+        let mut a = ExprArena::new();
+        let buf_a = a.declare_buffer(BufferDecl {
+            id: pixelflow_ir::arena::BufferIdentity::mint(),
+            width: 4,
+            height: 1,
+        });
+        let buf_b = a.declare_buffer(BufferDecl {
+            id: pixelflow_ir::arena::BufferIdentity::mint(),
+            width: 8,
+            height: 1,
+        });
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let gb = a.push_gather(buf_b, x, y);
+        let ga = a.push_gather(buf_a, x, y);
+        let root = a.push_binary(OpKind::Add, gb, ga);
+
+        let out = optimize_runtime_arena(&a, root).expect("buffer kernel must optimize");
+        let input: Vec<_> = a.buffers().iter().map(|d| d.id).collect();
+        let output: Vec<_> = out.0.buffers().iter().map(|d| d.id).collect();
+        assert_eq!(input, output, "slot order must survive optimization");
     }
 
     #[test]

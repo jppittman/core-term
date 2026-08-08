@@ -1213,7 +1213,10 @@ mod tests {
 
     #[test]
     fn scene_paints_default_background_and_recompiles_on_resize() {
-        use pixelflow_graphics::render::color::Bgra8;
+        // The app compiles its kernel for the PLATFORM's pixel format, so
+        // the frame must be that format too — a hardcoded one was correct
+        // only while rendering converted per pixel.
+        use pixelflow_graphics::render::color::PlatformPixel;
         use pixelflow_graphics::render::frame::Frame;
 
         let (mut app, _writer_rx, _tx, mut engine_scheduler) = match create_test_app() {
@@ -1231,7 +1234,7 @@ mod tests {
         let mut probe = EngineProbe::default();
         drain_engine(&mut engine_scheduler, &mut probe);
         let scene = probe.scenes.pop().expect("app sent a frame");
-        let mut frame = Frame::<Bgra8>::new(16, 16);
+        let mut frame = Frame::<PlatformPixel>::new(16, 16);
         scene.render(&mut frame, 1);
         let px = frame.data[8 * 16 + 8];
         assert!(
@@ -1256,7 +1259,7 @@ mod tests {
         let mut probe = EngineProbe::default();
         drain_engine(&mut engine_scheduler, &mut probe);
         let scene = probe.scenes.pop().expect("app sent a post-resize frame");
-        let mut frame = Frame::<Bgra8>::new(16, 16);
+        let mut frame = Frame::<PlatformPixel>::new(16, 16);
         scene.render(&mut frame, 1);
         let px = frame.data[8 * 16 + 8];
         assert!(

@@ -501,6 +501,9 @@ impl CellGridFrame {
 /// `f32` plane (or vice versa) rather than a runtime check catching it.
 pub struct CellGridPackedProgram {
     geom: CellGridGeometry,
+    /// The byte lanes this kernel packed for. A frame stores raw words, so
+    /// whoever consumes them must confirm their format agrees.
+    shifts: [u32; 4],
     jit: Arc<JitManifold>,
     /// What each buffer slot of the compiled arena reads — see [`SlotReads`].
     slots: Arc<[SlotReads]>,
@@ -553,9 +556,16 @@ impl CellGridPackedProgram {
             .expect("packed cell-grid kernel failed to compile");
         Self {
             geom,
+            shifts,
             jit,
             slots: slots.into(),
         }
+    }
+
+    /// The byte lanes this program's kernel packs into.
+    #[must_use]
+    pub fn shifts(&self) -> [u32; 4] {
+        self.shifts
     }
 
     /// The packed kernel's emitted bytes (research/profiling harness).
@@ -591,6 +601,7 @@ impl CellGridPackedProgram {
             self.geom
         );
         CellGridPackedFrame {
+            shifts: self.shifts,
             jit: self.jit.clone(),
             slots: self.slots.clone(),
             cells,
@@ -603,6 +614,9 @@ impl CellGridPackedProgram {
 /// reads. Cheap to clone.
 #[derive(Clone)]
 pub struct CellGridPackedFrame {
+    /// The byte lanes the kernel packed for; a consumer storing these words
+    /// must confirm its pixel format agrees.
+    shifts: [u32; 4],
     jit: Arc<JitManifold>,
     slots: Arc<[SlotReads]>,
     cells: Arc<Vec<f32>>,
@@ -610,6 +624,12 @@ pub struct CellGridPackedFrame {
 }
 
 impl CellGridPackedFrame {
+    /// The byte lanes these words are packed into.
+    #[must_use]
+    pub fn shifts(&self) -> [u32; 4] {
+        self.shifts
+    }
+
     /// Bake packed pixels over the pixel rows `y0 .. y0 + rows` at
     /// pixel-center coordinates, into a plane of
     /// [`CellGridFrame::padded_width`]`(width)`-stride rows — the same

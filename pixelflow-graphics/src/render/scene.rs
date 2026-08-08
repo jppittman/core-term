@@ -12,7 +12,7 @@
 //! ([`compile_platform_cell_grid`]), never from application code.
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-use crate::render::color::PlatformColorCube;
+use crate::render::color::{PlatformColorCube, PlatformPixel};
 use crate::render::frame::Frame;
 use crate::render::Pixel;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -46,16 +46,50 @@ impl From<CellGridPackedFrame> for Scene {
     }
 }
 
+/// Compile the packed cell-grid program for the pixel format `P`, taking
+/// byte order from `P` itself — so the format the kernel packs for is the
+/// format the frame stores, by construction. Applications pass geometry and
+/// colors; they never see a shift.
+///
+/// Use [`compile_platform_cell_grid`] when the frame is the platform's own
+/// format, which is the production path.
+///
+/// # Panics
+///
+/// Panics for a `P` with no packed RGBA form ([`Pixel::packed_shifts`]
+/// returns `None`) — a grayscale or exotic format must render through the
+/// surface lane, and silently packing RGBA into it would be garbage.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[must_use]
+pub fn compile_cell_grid_for<P: Pixel>(
+    geom: CellGridGeometry,
+    default_bg: [f32; 4],
+) -> CellGridPackedProgram {
+    let shifts = P::packed_shifts().unwrap_or_else(|| {
+        panic!(
+            "compile_cell_grid_for: {} has no packed RGBA form; render it \
+             through the surface lane instead",
+            core::any::type_name::<P>()
+        )
+    });
+    CellGridPackedProgram::compile(geom, default_bg, shifts)
+}
+
 /// Compile the packed cell-grid program with THIS platform's pixel byte
-/// order, taken from [`PlatformColorCube`] — the one home byte order has.
-/// Applications pass geometry and colors; they never see a shift.
+/// order — [`PlatformColorCube`] and [`PlatformPixel`] are the same choice,
+/// pinned to each other below.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 #[must_use]
 pub fn compile_platform_cell_grid(
     geom: CellGridGeometry,
     default_bg: [f32; 4],
 ) -> CellGridPackedProgram {
-    CellGridPackedProgram::compile(geom, default_bg, PlatformColorCube::PACKED_SHIFTS)
+    debug_assert_eq!(
+        PlatformPixel::packed_shifts(),
+        Some(PlatformColorCube::PACKED_SHIFTS),
+        "the platform pixel and platform color cube must agree on byte order"
+    );
+    compile_cell_grid_for::<PlatformPixel>(geom, default_bg)
 }
 
 impl core::fmt::Debug for Scene {
@@ -100,6 +134,16 @@ fn render_cell_grid<P: Pixel + Send>(
     if width == 0 || height == 0 {
         return;
     }
+    // The kernel baked a packed word for the shifts it was compiled with;
+    // storing that word as a format with different byte order would swap R
+    // and B in every pixel. The old per-pixel `from_rgba` path converted, so
+    // any `P` worked; this path moves bits, so the formats must match.
+    assert_eq!(
+        P::packed_shifts(),
+        Some(grid.shifts()),
+        "cell-grid frame format does not match the shifts its kernel packed \
+         for — compile with `compile_cell_grid_for::<P>`"
+    );
     let workers = num_threads.max(1).min(height);
     let rows_per = height.div_ceil(workers);
     let mut bands: Vec<(usize, &mut [P])> = Vec::with_capacity(workers);
@@ -480,5 +524,82 @@ mod frame_bench {
             n as f64 / px as f64
         );
         println!("  speedup: {:.2}x", o as f64 / n as f64);
+    }
+}
+
+#[cfg(test)]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+mod pixel_format_tests {
+    use super::*;
+    use crate::render::color::{Bgra8, Rgba8};
+
+    /// The kernel packs for one byte order and the frame stores raw words,
+    /// so a mismatched frame format would swap R and B in every pixel. The
+    /// old per-pixel `from_rgba` path converted; this one must refuse.
+    #[test]
+    #[should_panic(expected = "does not match the shifts its kernel packed for")]
+    fn mismatched_frame_format_is_refused() {
+        let (aw, ah) = (12usize, 6usize);
+        let geom = CellGridGeometry {
+            cols: 2,
+            rows: 2,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: aw as u32,
+            atlas_height: ah as u32,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        // Compiled for Rgba8's lanes...
+        let program = compile_cell_grid_for::<Rgba8>(geom, [0.0, 0.0, 0.0, 1.0]);
+        let frame_data = program.frame(
+            Arc::new(vec![0.0f32; geom.cells_len()]),
+            Arc::new(vec![0.0f32; aw * ah]),
+        );
+        // ...rendered into a Bgra8 frame.
+        let mut frame = Frame::<Bgra8>::new(8, 8);
+        Scene::CellGrid(frame_data).render(&mut frame, 1);
+    }
+
+    /// Both packed formats work when the kernel is compiled for them.
+    #[test]
+    fn each_packed_format_renders_through_its_own_shifts() {
+        let (aw, ah) = (12usize, 6usize);
+        let geom = CellGridGeometry {
+            cols: 2,
+            rows: 2,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: aw as u32,
+            atlas_height: ah as u32,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        // Opaque red background everywhere: coverage is zero (empty atlas),
+        // so every in-grid pixel is its cell's background.
+        let mut cells = vec![0.0f32; geom.cells_len()];
+        for cell in cells.chunks_mut(pixelflow_core::CELL_STRIDE) {
+            cell[6] = 1.0; // bg_r
+            cell[9] = 1.0; // bg_a
+        }
+        let atlas = Arc::new(vec![0.0f32; aw * ah]);
+        let cells = Arc::new(cells);
+
+        let rgba = compile_cell_grid_for::<Rgba8>(geom, [1.0, 0.0, 0.0, 1.0])
+            .frame(cells.clone(), atlas.clone());
+        let mut rf = Frame::<Rgba8>::new(8, 8);
+        Scene::CellGrid(rgba).render(&mut rf, 1);
+
+        let bgra = compile_cell_grid_for::<Bgra8>(geom, [1.0, 0.0, 0.0, 1.0]).frame(cells, atlas);
+        let mut bf = Frame::<Bgra8>::new(8, 8);
+        Scene::CellGrid(bgra).render(&mut bf, 1);
+
+        // Same color through both formats: the raw words differ (byte order),
+        // the decoded channels agree.
+        assert_ne!(rf.data[0].0, bf.data[0].0, "byte orders must differ");
+        assert_eq!((rf.data[0].r(), rf.data[0].b()), (255, 0));
+        assert_eq!((bf.data[0].r(), bf.data[0].b()), (255, 0));
     }
 }

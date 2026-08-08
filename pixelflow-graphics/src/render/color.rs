@@ -380,6 +380,11 @@ impl From<Rgba8> for Bgra8 {
 // =============================================================================
 
 impl Pixel for Rgba8 {
+    /// `Rgba8::new` stores `[r, g, b, a]`, so r is byte 0.
+    fn packed_shifts() -> Option<[u32; 4]> {
+        Some([0, 8, 16, 24])
+    }
+
     #[inline]
     fn from_u32(v: u32) -> Self {
         Self(v)
@@ -399,6 +404,11 @@ impl Pixel for Rgba8 {
 }
 
 impl Pixel for Bgra8 {
+    /// `Bgra8::new` stores `[b, g, r, a]`, so r is byte 2.
+    fn packed_shifts() -> Option<[u32; 4]> {
+        Some([16, 8, 0, 24])
+    }
+
     #[inline]
     fn from_u32(v: u32) -> Self {
         Self(v)
@@ -522,11 +532,30 @@ impl RgbaColorCube {
     pub const PACKED_SHIFTS: [u32; 4] = [0, 8, 16, 24];
 }
 
+// The cube constants and the `Pixel` impls above state one fact; this pins
+// them to each other so a future edit cannot move only one.
+const _: () = assert!(RgbaColorCube::PACKED_SHIFTS[0] == 0);
+const _: () = assert!(BgraColorCube::PACKED_SHIFTS[0] == 16);
+
 impl BgraColorCube {
     /// Bit position of each `(r, g, b, a)` channel — `Bgra8::new` stores
     /// `[b, g, r, a]`, so r is byte 2. See [`RgbaColorCube::PACKED_SHIFTS`].
     pub const PACKED_SHIFTS: [u32; 4] = [16, 8, 0, 24];
 }
+
+/// The platform's framebuffer pixel format — the same choice
+/// [`PlatformColorCube`] makes, for code that needs the `Pixel` type rather
+/// than the cube.
+#[cfg(target_os = "macos")]
+pub type PlatformPixel = Rgba8;
+
+/// See the macOS variant.
+#[cfg(target_os = "linux")]
+pub type PlatformPixel = Bgra8;
+
+/// See the macOS variant.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub type PlatformPixel = Rgba8;
 
 /// Platform-appropriate ColorCube (handles byte order based on target OS).
 ///

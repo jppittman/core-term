@@ -187,7 +187,7 @@ pub use fonts::{CachedGlyph, CachedText, Font, GlyphCache};
 // Re-export render
 pub use render::color::{
     AttrFlags, Bgra8, BgraColorCube, CocoaPixel, Color, ColorCube, Grayscale, NamedColor, Pixel,
-    PlatformColorCube, Rgba8, RgbaColorCube, WebPixel, X11Pixel,
+    PlatformColorCube, PlatformPixel, Rgba8, RgbaColorCube, WebPixel, X11Pixel,
 };
 pub use render::frame::Frame;
 pub use render::rasterizer::rasterize;
