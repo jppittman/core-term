@@ -173,7 +173,30 @@ impl TerminalApp {
             panic!("Failed to open font file at {}: {}", font_path.display(), e)
         });
 
-        let loaded_font = Arc::new(LoadedFont::new(source).expect("Failed to parse font"));
+        let loaded_font = Arc::new(LoadedFont::new(source).unwrap_or_else(|| {
+            // `expect("Failed to parse font")` discarded the path and the
+            // size — and cost a CI round-trip with a bespoke diagnostic
+            // harness to learn that the "font" was a 131-byte Git LFS
+            // pointer. The parse returns no error of its own, so what the
+            // file actually IS is the only signal available; report it.
+            let size = std::fs::metadata(&font_path).map(|m| m.len());
+            let lfs_pointer = std::fs::read(&font_path)
+                .is_ok_and(|b| b.starts_with(b"version https://git-lfs.github.com/spec/v1"));
+            panic!(
+                "Failed to parse font at {} ({}){}",
+                font_path.display(),
+                match size {
+                    Ok(n) => format!("{n} bytes"),
+                    Err(e) => format!("size unknown: {e}"),
+                },
+                if lfs_pointer {
+                    " — this file is a Git LFS pointer, not a font. Run \
+                     `git lfs pull` (or check out with LFS enabled)."
+                } else {
+                    ""
+                }
+            )
+        }));
 
         // Bake the ASCII set into the atlas. Density 1.0 until the platform
         // reports the real backing scale via WindowCreated.

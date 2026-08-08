@@ -419,6 +419,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # The app's font is LFS-tracked (.gitattributes), and this is the
+          # only job that runs the real bundle — without the smudge it ships
+          # a 131-byte pointer and the app dies parsing it. Tests escape this
+          # by include_bytes!-ing the fallback font, which .gitattributes
+          # exempts from LFS for exactly that reason.
+          lfs: true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

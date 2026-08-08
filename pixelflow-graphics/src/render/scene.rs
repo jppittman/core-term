@@ -324,14 +324,6 @@ mod tests {
 
     #[test]
     fn platform_wrapper_needs_no_shifts_from_the_caller() {
-        let Scene::CellGrid(reference) = scene() else {
-            unreachable!()
-        };
-        // Same geometry/data through the platform wrapper: it must compile
-        // and render; pixel values are platform byte order, so only shape
-        // and the alpha-lane content are asserted here (Rgba8 and Bgra8
-        // agree on the alpha byte).
-        let _ = reference;
         let (aw, ah) = (12usize, 6usize);
         let atlas = vec![0.0f32; aw * ah];
         let geom = CellGridGeometry {
@@ -353,7 +345,13 @@ mod tests {
             cell[9] = 1.0; // bg_a
         }
         let frame_data = program.frame(Arc::new(cells), Arc::new(atlas));
-        let mut frame = Frame::<Rgba8>::new(8, 8);
+        // The platform wrapper packs for PlatformPixel, so the frame must BE
+        // PlatformPixel — pairing it with a hardcoded format is the mistake
+        // the render-time format guard exists to catch, and did catch here
+        // (this test asserted Rgba8 and failed on Linux, where the platform
+        // is Bgra8). Alpha is byte 3 in both orders, so the assertion below
+        // is the one claim that holds whichever platform runs it.
+        let mut frame = Frame::<crate::render::color::PlatformPixel>::new(8, 8);
         Scene::CellGrid(frame_data).render(&mut frame, 1);
         assert!(
             frame.data.iter().all(|p| p.0 >> 24 == 255),

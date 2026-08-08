@@ -799,6 +799,15 @@ impl BilinearSampler {
         width: u32,
         height: u32,
     ) -> pixelflow_ir::Kernel {
+        // Same guard as `DiscreteManifold::kernel_for`, for the same reason:
+        // `BindingTable::bind` accepts an empty slice against an empty
+        // declaration, and gather lowering's `saturating_sub(1)` then clamps
+        // every tap to index 0 — so an empty extent reaches the JIT and
+        // dereferences a zero-length buffer instead of failing here.
+        assert!(
+            width > 0 && height > 0,
+            "BilinearSampler::kernel_for: empty buffer ({width}x{height})"
+        );
         let (arena, root) = bilinear_arena(id, width, height);
         pixelflow_ir::Kernel::from_parts(arena, root)
     }
