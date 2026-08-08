@@ -549,6 +549,26 @@ mod every_op_is_priceable {
         }
     }
 
+    /// `CostModel::zero()` exists specifically so extraction tests can check
+    /// structural behavior (DAG sharing, cycle handling) independent of any
+    /// cost table — see its doc comment. That property only holds if every
+    /// op is actually priced at 0; if `zero()` ever returned the
+    /// `latency_prior` table instead (an easy mix-up, since both build a
+    /// `CostModel { costs, .. }` with the same shape), every extraction test
+    /// built on "cost is irrelevant here" would start silently depending on
+    /// real cycle counts instead.
+    #[test]
+    fn zero_prices_every_op_at_zero_cost() {
+        let model = CostModel::zero();
+        for op in OpKind::all() {
+            assert_eq!(
+                model.cost(op),
+                0,
+                "{op:?} is not zero-priced under CostModel::zero()"
+            );
+        }
+    }
+
     /// `cost_by_name` used to hand-roll its own `&str -> OpKind` table,
     /// separate from `OpKind::from_name`, and that table's whitelist simply
     /// stopped at `tuple` — every op past it (memory/lattice/bit-manip ops

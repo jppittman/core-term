@@ -526,7 +526,13 @@ mod tests {
         data.extend_from_slice(MAGIC);
         data.extend_from_slice(&1u32.to_le_bytes()); // pre-renumbering version
         data.extend_from_slice(&0u32.to_le_bytes()); // count=0
-        match read_corpus_bytes(&data) {
+
+        let tmp = unique_tmp("v1_refused");
+        std::fs::write(&tmp, &data).expect("write v1 fixture");
+        let result = read_corpus(&tmp);
+        let _ = std::fs::remove_file(&tmp);
+
+        match result {
             Ok(_) => panic!("v1 corpus must be refused: its op bytes decode as wrong OpKinds"),
             Err(e) => {
                 let msg = e.to_string();

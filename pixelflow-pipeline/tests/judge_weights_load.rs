@@ -1,6 +1,6 @@
 //! Verifies the Judge extraction-head weights round-trip through the
-//! production serializer: `ExprNnue::save` (which writes the current "TRID"
-//! format) followed by `ExprNnue::from_bytes` (which only accepts TRID).
+//! production serializer: `ExprNnue::save` (which writes the current "TRIE"
+//! format) followed by `ExprNnue::from_bytes` (which only accepts TRIE).
 //!
 //! Phase 2 of docs/plans/2026-07-07-guided-saturation-redesign.md: the
 //! shipped state before the retrain was NO weights (old TRIC-format file
@@ -17,14 +17,14 @@
 use pixelflow_search::nnue::factored::ExprNnue;
 
 #[test]
-fn judge_weights_round_trip_via_trid() {
+fn judge_weights_round_trip_via_trie() {
     // A latency-prior-initialized model is well-formed and non-zero — the
     // same code path `bootstrap_extraction_head` starts from before training.
     let model = ExprNnue::new_with_latency_prior(0xF00D_2026);
 
     // Save through the production path to a unique temp file.
     let mut path = std::env::temp_dir();
-    path.push(format!("pf_judge_trid_{}.bin", std::process::id()));
+    path.push(format!("pf_judge_trie_{}.bin", std::process::id()));
     model
         .save(&path)
         .unwrap_or_else(|e| panic!("ExprNnue::save failed for {}: {e}", path.display()));
@@ -33,10 +33,10 @@ fn judge_weights_round_trip_via_trid() {
         std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
     let _ = std::fs::remove_file(&path);
 
-    // The magic must be TRID (not a stale TRIC/TRIB), and the loader must accept it.
+    // The magic must be TRIE (not a stale TRID/TRIC), and the loader must accept it.
     assert_eq!(&bytes[0..4], b"TRIE", "saved file is not TRIE-format");
     let loaded = ExprNnue::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("ExprNnue::from_bytes rejected a freshly-saved TRID file: {e}"));
+        .unwrap_or_else(|e| panic!("ExprNnue::from_bytes rejected a freshly-saved TRIE file: {e}"));
 
     // Beyond "magic matched": a model whose embeddings are all zero/non-finite
     // would still parse as valid TRIE but carry no signal. Guard against a
