@@ -58,6 +58,11 @@ pub struct EGraph {
     /// Which rewrite application (if any) is currently executing — read by
     /// `add()`/`union()` to attribute newly created nodes/unions.
     active_application: Option<ActiveApplication>,
+    /// Unions REFUSED because they would assert two numerically unequal
+    /// constants equal — a proved falsehood the graph declines to absorb.
+    /// Distinct (bits, bits) pairs, kept for reporting and tests; see
+    /// [`EGraph::union`].
+    refused_const_unions: Vec<(u32, u32)>,
 }
 
 impl Default for EGraph {
@@ -79,6 +84,7 @@ impl Clone for EGraph {
             step: self.step,
             provenance: self.provenance.clone(),
             active_application: self.active_application,
+            refused_const_unions: self.refused_const_unions.clone(),
         }
     }
 }
@@ -110,6 +116,7 @@ impl EGraph {
             step: 0,
             provenance: Provenance::new(),
             active_application: None,
+            refused_const_unions: Vec::new(),
         }
     }
 
@@ -128,6 +135,7 @@ impl EGraph {
             step: 0,
             provenance: Provenance::new(),
             active_application: None,
+            refused_const_unions: Vec::new(),
         }
     }
 
@@ -204,11 +212,63 @@ impl EGraph {
         id
     }
 
+    /// Refused constant unions: `(bits, bits)` pairs the graph declined to
+    /// assert equal. Non-empty means some kernel hit the folding-vs-algebra
+    /// collision — see the refusal block in [`EGraph::union`].
+    #[must_use]
+    pub fn refused_const_unions(&self) -> &[(u32, u32)] {
+        &self.refused_const_unions
+    }
+
     pub fn union(&mut self, a: EClassId, b: EClassId) -> EClassId {
         let a = self.find_mut(a);
         let b = self.find_mut(b);
         if a == b {
             return a;
+        }
+        // An e-class asserts "these are all equal", so a union placing two
+        // numerically UNEQUAL constants in one class would be a proved
+        // falsehood — and congruence closure amplifies any proved falsehood
+        // into everything-equals-everything, with extraction tie-breaking
+        // arbitrarily between unequal constants. The falsehoods are real:
+        // constant folding computes f32-truths (`x + 2²⁴ = 2²⁴`) while the
+        // algebraic rules compute ℝ-truths (`(x+y)−y = x`), each sound
+        // alone. At the collision, REFUSE the union: an under-merged e-graph
+        // is still sound — every class still holds only provably-equal
+        // terms, and the cost is missed CSE at exactly the collision points
+        // — while a false merge is unbounded. First prover keeps the class;
+        // the refusal is journaled and reported so ill-conditioned kernels
+        // are loud instead of subtly nondeterministic. (Folding constants in
+        // f64 is the planned complement: it makes the folder agree with the
+        // algebra at f32-observable scales, so collisions become
+        // vanishingly rare and this valve becomes a pure detector.)
+        //
+        // `ca == cb` (not bit equality) deliberately admits ±0.0 — signed
+        // zero selection is already platform-unspecified, so an optimizer
+        // choosing a sign is within contract, same license as commuting
+        // Min/Max over NaN. Bit equality additionally admits identical NaN
+        // patterns, which `==` would wrongly reject: an all-ones comparison
+        // mask reads as NaN and must be unionable with itself.
+        let const_of = |class: EClassId, classes: &[EClass]| {
+            classes[class.index()].nodes.iter().find_map(|n| n.as_f32())
+        };
+        if let (Some(ca), Some(cb)) = (const_of(a, &self.classes), const_of(b, &self.classes)) {
+            if ca != cb && ca.to_bits() != cb.to_bits() {
+                let pair = (ca.to_bits(), cb.to_bits());
+                if !self.refused_const_unions.contains(&pair) {
+                    std::eprintln!(
+                        "pixelflow e-graph: refusing a union that would assert \
+                         {ca} = {cb} (bits {:#010x} vs {:#010x}) — the rule set \
+                         derived contradictory constants (f32 folding vs \
+                         algebra at an ill-conditioned input); keeping the \
+                         classes separate costs only missed CSE",
+                        pair.0,
+                        pair.1
+                    );
+                    self.refused_const_unions.push(pair);
+                }
+                return if a.0 < b.0 { a } else { b };
+            }
         }
         let (parent, child) = if a.0 < b.0 { (a, b) } else { (b, a) };
         self.parent[child.index()] = parent;
