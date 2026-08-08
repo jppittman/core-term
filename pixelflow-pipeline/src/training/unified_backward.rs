@@ -1802,8 +1802,10 @@ mod tests {
             score_from_public
         );
 
-        // Verify prob = sigmoid(score)
-        let expected_prob = sigmoid(cache.score);
+        // Verify prob = sigmoid(score); computed independently rather than by
+        // calling the private `sigmoid` helper, so this checks the documented
+        // score->prob contract rather than the helper's own implementation.
+        let expected_prob = 1.0 / (1.0 + libm::expf(-cache.score));
         assert!(
             (cache.prob - expected_prob).abs() < 1e-6,
             "prob mismatch: cached={}, sigmoid(score)={}",

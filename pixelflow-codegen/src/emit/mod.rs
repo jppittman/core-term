@@ -4088,6 +4088,12 @@ mod tests {
     // Arena compilation tests
     // =========================================================================
 
+    // These three tests call the private `arena_to_schedule`/`arena_to_uses`
+    // directly rather than through `compile_arena_dag`: value numbering and
+    // dead-node filtering are schedule-shape invariants with no output-value
+    // signature (a regression here wastes registers/instructions, it doesn't
+    // change what a compiled kernel computes), so there is no public
+    // black-box assertion that would catch a break here.
     #[test]
     fn arena_to_schedule_simple() {
         use pixelflow_ir::arena::ExprArena;

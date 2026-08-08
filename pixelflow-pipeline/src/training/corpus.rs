@@ -490,10 +490,25 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
+    // Header-rejection tests drive the reader through its public entry point:
+    // `read_corpus_bytes` is private, and pinning it here would test a path no
+    // caller can reach. `name` keeps sibling tests off each other's fixture
+    // within a process, `unique_tmp` keeps concurrent test processes apart.
+    fn read_corpus_from_bytes(
+        name: &str,
+        data: &[u8],
+    ) -> io::Result<Vec<(String, ExprArena, ExprId)>> {
+        let tmp = unique_tmp(name);
+        std::fs::write(&tmp, data).expect("write fixture");
+        let result = read_corpus(&tmp);
+        let _ = std::fs::remove_file(&tmp);
+        result
+    }
+
     #[test]
     fn bad_magic_fails() {
         let data = b"BADMxxxxxxxx";
-        match read_corpus_bytes(data) {
+        match read_corpus_from_bytes("bad_magic", data) {
             Ok(_) => panic!("expected error for bad magic"),
             Err(e) => assert!(
                 e.to_string().contains("bad corpus magic"),
@@ -508,7 +523,7 @@ mod tests {
         data.extend_from_slice(MAGIC);
         data.extend_from_slice(&99u32.to_le_bytes()); // bad version
         data.extend_from_slice(&0u32.to_le_bytes()); // count=0
-        match read_corpus_bytes(&data) {
+        match read_corpus_from_bytes("bad_version", &data) {
             Ok(_) => panic!("expected error for bad version"),
             Err(e) => assert!(
                 e.to_string().contains("unsupported corpus version"),
@@ -526,13 +541,7 @@ mod tests {
         data.extend_from_slice(MAGIC);
         data.extend_from_slice(&1u32.to_le_bytes()); // pre-renumbering version
         data.extend_from_slice(&0u32.to_le_bytes()); // count=0
-
-        let tmp = unique_tmp("v1_refused");
-        std::fs::write(&tmp, &data).expect("write v1 fixture");
-        let result = read_corpus(&tmp);
-        let _ = std::fs::remove_file(&tmp);
-
-        match result {
+        match read_corpus_from_bytes("v1_refused", &data) {
             Ok(_) => panic!("v1 corpus must be refused: its op bytes decode as wrong OpKinds"),
             Err(e) => {
                 let msg = e.to_string();

@@ -247,13 +247,65 @@ mod tests {
     }
 
     #[test]
-    fn key_is_garbage_insensitive_and_structure_sensitive() {
-        let (a1, r1) = circle_arena(false);
-        let (a2, r2) = circle_arena(true);
-        assert_eq!(
-            canonical_key(&a1, r1, Mode::PerBatch),
-            canonical_key(&a2, r2, Mode::PerBatch)
+    fn entry_count_is_monotonic_and_grows_on_new_kernels() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let k = a.push_const(424_242.0);
+        let r = a.push_binary(OpKind::Mul, x, k);
+        let before = entry_count();
+        let _m1 = compile_cached(&a, r).expect("compile");
+        let after_one = entry_count();
+        assert!(
+            after_one > before,
+            "compiling a new kernel must grow the cache"
         );
+
+        let mut a2 = ExprArena::new();
+        let y = a2.push_var(1);
+        let k2 = a2.push_const(535_353.0);
+        let r2 = a2.push_binary(OpKind::Mul, y, k2);
+        let _m2 = compile_cached(&a2, r2).expect("compile");
+        let after_two = entry_count();
+        assert!(
+            after_two > after_one,
+            "compiling another distinct kernel must grow the cache again"
+        );
+    }
+
+    #[test]
+    fn nary_reduce_children_affect_kernel_identity() {
+        // Two back-to-back `Reduce` nodes in the same arena: the second one's
+        // children start at a nonzero offset into the flat nary-children slab,
+        // so an off-by-slicing bug in the second node's child range either
+        // indexes out of bounds or silently drops its children from the key,
+        // making two kernels that differ only in the second reduce collide.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let body1 = a.push_binary(OpKind::Add, x, x);
+        let r1 = a.push_reduce(OpKind::Add, 4, 3, body1);
+        let body2 = a.push_binary(OpKind::Mul, x, x);
+        let r2 = a.push_reduce(OpKind::Mul, 5, 6, body2);
+        let root = a.push_binary(OpKind::Add, r1, r2);
+
+        let mut a2 = ExprArena::new();
+        let x2 = a2.push_var(0);
+        let body1b = a2.push_binary(OpKind::Add, x2, x2);
+        let r1b = a2.push_reduce(OpKind::Add, 4, 3, body1b);
+        let body2b = a2.push_binary(OpKind::Mul, x2, x2);
+        let r2b = a2.push_reduce(OpKind::Mul, 5, 9, body2b); // extent differs only here
+        let root2 = a2.push_binary(OpKind::Add, r1b, r2b);
+
+        let m1 = compile_cached(&a, root).expect("compile");
+        let m2 = compile_cached(&a2, root2).expect("compile");
+        assert!(
+            !Arc::ptr_eq(&m1, &m2),
+            "a change confined to the second reduce's extent must not share a cache entry"
+        );
+    }
+
+    #[test]
+    fn operand_order_flip_is_a_distinct_kernel() {
+        let (a1, r1) = circle_arena(false);
 
         let mut a3 = ExprArena::new();
         let x = a3.push_var(0);
@@ -262,9 +314,12 @@ mod tests {
         let y2 = a3.push_binary(OpKind::Mul, y, y);
         let s = a3.push_binary(OpKind::Add, y2, x2); // operand order flipped
         let r3 = a3.push_unary(OpKind::Sqrt, s);
-        assert_ne!(
-            canonical_key(&a1, r1, Mode::PerBatch),
-            canonical_key(&a3, r3, Mode::PerBatch)
+
+        let m1 = compile_cached(&a1, r1).expect("compile");
+        let m3 = compile_cached(&a3, r3).expect("compile");
+        assert!(
+            !Arc::ptr_eq(&m1, &m3),
+            "flipping operand order must not share a cache entry"
         );
     }
 }
