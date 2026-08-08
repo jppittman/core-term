@@ -102,7 +102,7 @@ pub const MASK_MAX_RULES: usize = 1024;
 /// Used when encoding rules from their LHS/RHS expression templates.
 pub const RULE_CONCAT_DIM: usize = 4 * EMBED_DIM;
 
-/// Mask MLP input dimension: expr_embed directly (24 dims).
+/// Mask MLP input dimension: expr_embed directly (EMBED_DIM = 32 dims).
 /// value_pred was removed — it is a deterministic function of expr_embed and adds zero information.
 pub const MASK_INPUT_DIM: usize = EMBED_DIM;
 
@@ -1511,7 +1511,7 @@ pub struct ExprNnue {
     /// Learned embeddings for each operation (50 × 32 = 1,600 params)
     pub embeddings: OpEmbeddings,
 
-    /// Hidden layer weights: [INPUT_DIM][HIDDEN_DIM] (85 × 64 = 5,440 params)
+    /// Hidden layer weights: [INPUT_DIM][HIDDEN_DIM] (132 × 64 = 8,448 params)
     pub w1: [[f32; HIDDEN_DIM]; INPUT_DIM],
 
     /// Hidden layer biases: [HIDDEN_DIM] (64 params)
@@ -1534,7 +1534,7 @@ pub struct ExprNnue {
     /// Expr projection bias: [EMBED_DIM]
     pub expr_proj_b: [f32; EMBED_DIM],
 
-    /// Value MLP layer 1 weights: expr_embed (24) → hidden (16)
+    /// Value MLP layer 1 weights: expr_embed (32) → hidden (16)
     pub value_mlp_w1: [[f32; MLP_HIDDEN]; EMBED_DIM],
     /// Value MLP layer 1 bias
     pub value_mlp_b1: [f32; MLP_HIDDEN],
@@ -1543,12 +1543,13 @@ pub struct ExprNnue {
     /// Value MLP layer 2 bias
     pub value_mlp_b2: f32,
 
-    /// Mask MLP layer 1 weights: [expr_embed (24), value_pred (1)] → hidden (16)
-    /// The mask sees value prediction as input: "Given this costs X, should I try rule R?"
+    /// Mask MLP layer 1 weights: expr_embed (32) → hidden (16).
+    /// value_pred was removed from the input — it is a deterministic function
+    /// of expr_embed and adds zero information (see `MASK_INPUT_DIM`).
     pub mask_mlp_w1: [[f32; MLP_HIDDEN]; MASK_INPUT_DIM],
     /// Mask MLP layer 1 bias
     pub mask_mlp_b1: [f32; MLP_HIDDEN],
-    /// Mask MLP layer 2 weights: hidden (16) → mask_features (24)
+    /// Mask MLP layer 2 weights: hidden (16) → mask_features (32)
     pub mask_mlp_w2: [[f32; EMBED_DIM]; MLP_HIDDEN],
     /// Mask MLP layer 2 bias
     pub mask_mlp_b2: [f32; EMBED_DIM],
@@ -1559,7 +1560,7 @@ pub struct ExprNnue {
     pub rule_mlp_w1: [[f32; MLP_HIDDEN]; RULE_FEATURE_DIM],
     /// Rule MLP layer 1 bias
     pub rule_mlp_b1: [f32; MLP_HIDDEN],
-    /// Rule MLP layer 2 weights: hidden (16) → rule_embed (24)
+    /// Rule MLP layer 2 weights: hidden (16) → rule_embed (32)
     pub rule_mlp_w2: [[f32; EMBED_DIM]; MLP_HIDDEN],
     /// Rule MLP layer 2 bias
     pub rule_mlp_b2: [f32; EMBED_DIM],
@@ -1568,11 +1569,11 @@ pub struct ExprNnue {
     // These fields support encoding rules from their LHS/RHS expression
     // templates using the SAME expr_embed as extraction/saturation heads.
     //
-    // 4-way concat: [z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS] (96) → rule_embed (24)
-    /// Rule projection weights: [RULE_CONCAT_DIM x EMBED_DIM] = [96 x 24] = 2,304 params.
+    // 4-way concat: [z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS] (128) → rule_embed (32)
+    /// Rule projection weights: [RULE_CONCAT_DIM x EMBED_DIM] = [128 x 32] = 4,096 params.
     /// Projects 4-way concatenation to rule embedding.
     pub rule_proj_w: [[f32; EMBED_DIM]; RULE_CONCAT_DIM],
-    /// Rule projection bias: [EMBED_DIM] = 24 params
+    /// Rule projection bias: [EMBED_DIM] = 32 params
     pub rule_proj_b: [f32; EMBED_DIM],
 
     /// Bilinear interaction matrix: mask_features @ interaction @ rule_embed
@@ -2489,31 +2490,34 @@ impl ExprNnue {
     #[must_use]
     pub const fn param_count() -> usize {
         OpEmbeddings::param_count()           // embeddings: 50 * 32 = 1,600
-            + INPUT_DIM * HIDDEN_DIM          // w1: 130 * 64 = 8,320
+            + INPUT_DIM * HIDDEN_DIM          // w1: 132 * 64 = 8,448
             + HIDDEN_DIM                      // b1: 64
+            // shared trunk
+            + HIDDEN_DIM * HIDDEN_DIM         // trunk_w: 64 * 64 = 4,096
+            + HIDDEN_DIM                      // trunk_b: 64
             // expr_proj
-            + HIDDEN_DIM * EMBED_DIM          // expr_proj_w: 64 * 24 = 1,536
-            + EMBED_DIM                       // expr_proj_b: 24
+            + HIDDEN_DIM * EMBED_DIM          // expr_proj_w: 64 * 32 = 2,048
+            + EMBED_DIM                       // expr_proj_b: 32
             // value MLP
-            + EMBED_DIM * MLP_HIDDEN          // value_mlp_w1: 24 * 16 = 384
+            + EMBED_DIM * MLP_HIDDEN          // value_mlp_w1: 32 * 16 = 512
             + MLP_HIDDEN                      // value_mlp_b1: 16
             + MLP_HIDDEN                      // value_mlp_w2: 16
             + 1                               // value_mlp_b2: 1
             // mask MLP
-            + MASK_INPUT_DIM * MLP_HIDDEN     // mask_mlp_w1: 24 * 16 = 384
+            + MASK_INPUT_DIM * MLP_HIDDEN     // mask_mlp_w1: 32 * 16 = 512
             + MLP_HIDDEN                      // mask_mlp_b1: 16
-            + MLP_HIDDEN * EMBED_DIM          // mask_mlp_w2: 16 * 24 = 384
-            + EMBED_DIM                       // mask_mlp_b2: 24
+            + MLP_HIDDEN * EMBED_DIM          // mask_mlp_w2: 16 * 32 = 512
+            + EMBED_DIM                       // mask_mlp_b2: 32
             // rule MLP
             + RULE_FEATURE_DIM * MLP_HIDDEN   // rule_mlp_w1: 8 * 16 = 128
             + MLP_HIDDEN                      // rule_mlp_b1: 16
-            + MLP_HIDDEN * EMBED_DIM          // rule_mlp_w2: 16 * 24 = 384
-            + EMBED_DIM                       // rule_mlp_b2: 24
+            + MLP_HIDDEN * EMBED_DIM          // rule_mlp_w2: 16 * 32 = 512
+            + EMBED_DIM                       // rule_mlp_b2: 32
             // rule projection
-            + RULE_CONCAT_DIM * EMBED_DIM     // rule_proj_w: 96 * 24 = 2,304
-            + EMBED_DIM                       // rule_proj_b: 24
+            + RULE_CONCAT_DIM * EMBED_DIM     // rule_proj_w: 128 * 32 = 4,096
+            + EMBED_DIM                       // rule_proj_b: 32
             // bilinear
-            + EMBED_DIM * EMBED_DIM           // interaction: 24 * 24 = 576
+            + EMBED_DIM * EMBED_DIM           // interaction: 32 * 32 = 1,024
             + EMBED_DIM                        // mask_bias_proj: 32
             // graph state backbone
             + GRAPH_INPUT_DIM * HIDDEN_DIM    // graph_w1: 132 * 64 = 8,448

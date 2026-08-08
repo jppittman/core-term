@@ -25,10 +25,12 @@ use pixelflow_search::egraph::{
 };
 use pixelflow_search::nnue::ExprNnue;
 use pixelflow_search::nnue::RuleTemplates;
+use serde::Serialize;
 
-use crate::jit_bench::benchmark_jit_arena;
+use crate::jit_bench::{BenchMode, BenchSession};
 use crate::training::corpus;
 use crate::training::factored::arena_to_kernel_code;
+use crate::training::mint::normalized_label_ns;
 
 /// Build [`RuleTemplates`] from rule definitions.
 ///
@@ -62,12 +64,19 @@ pub struct Episode {
     /// The seed expression, unmodified.
     pub initial_arena: ExprArena,
     pub initial_root: ExprId,
-    /// JIT-benchmarked cost of the seed expression (nanoseconds).
+    /// Overhead-adjusted, sentinel-normalized single-eval latency of the seed
+    /// expression (nanoseconds, [`BenchMode::Latency`] — chain-serialized per
+    /// audit H3, call overhead subtracted per audit M1, expressed in the
+    /// session's opening clock per
+    /// [`normalized_label_ns`](crate::training::mint::normalized_label_ns)).
     pub initial_cost_ns: f64,
     /// The expression extracted after budget-bounded saturation.
     pub final_arena: ExprArena,
     pub final_root: ExprId,
-    /// JIT-benchmarked cost of the extracted expression (nanoseconds).
+    /// Overhead-adjusted, sentinel-normalized single-eval latency of the
+    /// extracted expression (nanoseconds, same measurement contract as
+    /// `initial_cost_ns` — same clock, so the ratio of the two is a speedup
+    /// rather than a speedup plus whatever the machine did in between).
     pub final_cost_ns: f64,
     /// The e-class budget saturation was run under.
     pub node_budget: usize,
@@ -75,18 +84,66 @@ pub struct Episode {
     pub epoch_budget: usize,
 }
 
+/// A structured record of why an episode minted no label (audit M2).
+///
+/// Emitted as one JSON line on stderr per excluded episode so failures are
+/// machine-countable, never a silent `None`. When the episode collector is
+/// built, these records are what its exclusion-rate alarm will consume.
+#[derive(Serialize)]
+struct EpisodeExclusion<'a> {
+    episode_id: &'a str,
+    seed_name: &'a str,
+    /// Pipeline stage that failed (e.g. `initial_bench_failed`,
+    /// `equivalence_failed`).
+    stage: &'a str,
+    /// Human-readable detail: the underlying error, or the divergence report.
+    detail: &'a str,
+}
+
+/// Emit one structured exclusion line to stderr. Panics if serialization
+/// itself fails — a failure path that cannot report is worse than a crash.
+fn log_exclusion(episode_id: &str, seed_name: &str, stage: &str, detail: &str) {
+    let record = EpisodeExclusion {
+        episode_id,
+        seed_name,
+        stage,
+        detail,
+    };
+    let json = serde_json::to_string(&record).unwrap_or_else(|e| {
+        panic!("failed to serialize EpisodeExclusion for episode {episode_id}: {e}")
+    });
+    eprintln!("EPISODE_EXCLUDED {json}");
+}
+
+/// The seed expression an episode starts from: the arena, its root, and the
+/// name used in logs and exclusion records.
+pub struct EpisodeSeed<'a> {
+    pub arena: &'a ExprArena,
+    pub root: ExprId,
+    pub name: &'a str,
+}
+
 /// Identity and saturation budget for an episode run.
-pub struct EpisodeSpec<'a> {
-    pub seed_name: &'a str,
+///
+/// The seed's name lives on [`EpisodeSeed`], not here: it names the expression,
+/// and one field cannot be the authority for two structs.
+pub struct EpisodeSpec {
     pub max_epochs: usize,
     pub episode_id: String,
 }
 
 /// Run a single budget-bounded saturation episode.
 ///
+/// Benchmarks run through the caller's [`BenchSession`] so episode labels get
+/// the same sentinel/QoS/tick-floor protection as every other minted label
+/// (audit H4/H5); costs are overhead-adjusted [`BenchMode::Latency`]
+/// measurements (audit H3/M1 — chain-serialized latency is what production
+/// per-pixel evaluation pays).
+///
 /// Returns `None` if the seed or extracted expression cannot be JIT-benchmarked,
 /// is degenerate (NaN/Inf constants), or if the rewrite fails the
-/// semantic-equivalence check.
+/// semantic-equivalence check. Every `None` is preceded by a structured
+/// `EPISODE_EXCLUDED` stderr line (audit M2 — exclusions are never silent).
 ///
 /// # Algorithm
 ///
@@ -101,13 +158,17 @@ pub struct EpisodeSpec<'a> {
 /// 6. Verify the rewrite preserved semantics (SIMD-lane equivalence at a
 ///    fixed test point).
 pub fn run_episode(
-    seed_arena: &ExprArena,
-    seed_root: ExprId,
+    session: &mut BenchSession,
+    seed: EpisodeSeed<'_>,
     model: &ExprNnue,
-    spec: EpisodeSpec<'_>,
+    spec: EpisodeSpec,
 ) -> Option<Episode> {
+    let EpisodeSeed {
+        arena: seed_arena,
+        root: seed_root,
+        name: seed_name,
+    } = seed;
     let EpisodeSpec {
-        seed_name,
         max_epochs,
         episode_id,
     } = spec;
@@ -124,29 +185,46 @@ pub fn run_episode(
         extract_neural_to_arena(&egraph, root, model);
 
     if initial_arena.has_degenerate(initial_root) {
-        eprintln!("Skipping degenerate seed expression in {episode_id} (seed={seed_name})");
+        log_exclusion(
+            &episode_id,
+            seed_name,
+            "degenerate_seed",
+            "seed expression contains NaN/Inf constants",
+        );
         return None;
     }
-    let initial_bench = match benchmark_jit_arena(&initial_arena, initial_root) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!(
-                "JIT bench failed for initial expr in episode {episode_id} (seed={seed_name}): {e}"
-            );
-            return None;
-        }
-    };
+    let initial_bench =
+        match session.benchmark_arena(&initial_arena, initial_root, BenchMode::Latency) {
+            Ok(b) => b,
+            Err(e) => {
+                log_exclusion(
+                    &episode_id,
+                    seed_name,
+                    "initial_bench_failed",
+                    &e.to_string(),
+                );
+                return None;
+            }
+        };
 
     // Domain check: if any SIMD lane is NaN or Inf at the test point, the
     // expression is undefined there. Rewrite equivalence checks would always
     // fire false positives (REWRITE BUG) because IEEE 754 NaN/Inf behavior
     // diverges across mathematically-equivalent forms. Skip early.
     if initial_bench.output.iter().any(|x| !x.is_finite()) {
-        eprintln!("[SKIP] {seed_name}: initial output contains NaN/Inf, skipping");
+        log_exclusion(
+            &episode_id,
+            seed_name,
+            "initial_output_nonfinite",
+            &format!("output at test point: {:?}", initial_bench.output),
+        );
         return None;
     }
 
-    let initial_cost_ns = initial_bench.ns;
+    // Sentinel-normalized: an episode's headline number is the RATIO of two
+    // measurements taken at different points in the session, so uncorrected
+    // drift between them shows up as a fake speedup or a fake regression.
+    let initial_cost_ns = normalized_label_ns(&initial_bench, "episode initial cost");
 
     // 3. Randomize resource constraints per episode, scaled by expression size.
     // Larger expressions need more budget to explore meaningful rewrites.
@@ -171,14 +249,20 @@ pub fn run_episode(
     // 5. Extract + JIT-benchmark the final expression
     let post_sat_nodes = egraph.node_count();
     if post_sat_nodes > 5000 {
-        eprintln!(
-            "Episode {episode_id} egraph too large ({post_sat_nodes} nodes, budget={node_budget}), skipping"
+        log_exclusion(
+            &episode_id,
+            seed_name,
+            "egraph_too_large",
+            &format!("{post_sat_nodes} nodes after saturation (budget={node_budget})"),
         );
         return None;
     }
     if std::time::Instant::now() > deadline {
-        eprintln!(
-            "Episode {episode_id} hit deadline before extraction (seed={seed_name}, nodes={post_sat_nodes})"
+        log_exclusion(
+            &episode_id,
+            seed_name,
+            "deadline_before_extraction",
+            &format!("egraph at {post_sat_nodes} nodes when the 5s episode deadline hit"),
         );
         return None;
     }
@@ -189,17 +273,23 @@ pub fn run_episode(
         pixelflow_search::egraph::choices_to_arena(&egraph, root, &final_choices);
 
     if final_arena.has_degenerate(final_arena_root) {
-        eprintln!("Rewrite produced degenerate expression in {episode_id} (seed={seed_name})");
+        log_exclusion(
+            &episode_id,
+            seed_name,
+            "degenerate_extraction",
+            "extracted expression contains NaN/Inf constants",
+        );
         return None;
     }
-    let final_bench = match benchmark_jit_arena(&final_arena, final_arena_root) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("JIT bench failed for episode {episode_id} (seed={seed_name}): {e}");
-            return None;
-        }
-    };
-    let final_cost_ns = final_bench.ns;
+    let final_bench =
+        match session.benchmark_arena(&final_arena, final_arena_root, BenchMode::Latency) {
+            Ok(b) => b,
+            Err(e) => {
+                log_exclusion(&episode_id, seed_name, "final_bench_failed", &e.to_string());
+                return None;
+            }
+        };
+    let final_cost_ns = normalized_label_ns(&final_bench, "episode final cost");
 
     if episode_start.elapsed().as_millis() > 100 {
         eprintln!(
@@ -213,20 +303,37 @@ pub fn run_episode(
     }
 
     // 6. Correctness check: rewrites must preserve semantics.
+    //
+    // The initial output was checked finite above; the final form needs no
+    // separate finiteness check because check_equivalence treats any
+    // non-finite lane pair that is not both-NaN as divergence (mirroring
+    // Tolerance::Numeric) — an extraction that goes NaN where the seed was
+    // finite lands in the REWRITE BUG branch below instead of minting a fake
+    // speedup label through a NaN-blind `diff > max_diff` comparison.
+    //
+    // WHY return None instead of a label: an equivalence failure here means
+    // saturation+extraction drove the expression into a semantically broken
+    // form — exactly the outcome a policy must be penalized for, and dropping
+    // it is the censored-failure pathology the July post-mortem killed the RL
+    // loop over (audit M2). When the episode collector is built, these
+    // episodes must become MAXIMAL-COST labels (not exclusions) so the policy
+    // sees the failure region. Returning None is acceptable only while
+    // episodes are unconsumed; the structured EPISODE_EXCLUDED line below is
+    // what the collector's exclusion-rate alarm will count in the meantime.
     const EQUIV_EPSILON: f32 = 1e-3;
     if let Err(max_diff) = initial_bench.check_equivalence(&final_bench, EQUIV_EPSILON) {
-        eprintln!(
-            "REWRITE BUG: episode {episode_id} (seed={seed_name})\n\
-             \x20 inputs: x=0.5 y=0.7 z=1.3 w=-0.2\n\
-             \x20 initial output: {:?}\n\
-             \x20 final   output: {:?}\n\
-             \x20 max_diff={max_diff:.6} epsilon={EQUIV_EPSILON}\n\
-             \x20 initial expr: {}\n\
-             \x20 final   expr: {}",
-            initial_bench.output,
-            final_bench.output,
-            arena_to_kernel_code(&initial_arena, initial_root),
-            arena_to_kernel_code(&final_arena, final_arena_root),
+        log_exclusion(
+            &episode_id,
+            seed_name,
+            "equivalence_failed",
+            &format!(
+                "REWRITE BUG at x=0.5 y=0.7 z=1.3 w=-0.2: initial output {:?}, final output {:?}, \
+                 max_diff={max_diff:.6} epsilon={EQUIV_EPSILON}; initial expr: {}; final expr: {}",
+                initial_bench.output,
+                final_bench.output,
+                arena_to_kernel_code(&initial_arena, initial_root),
+                arena_to_kernel_code(&final_arena, final_arena_root),
+            ),
         );
         return None;
     }
@@ -258,10 +365,33 @@ pub fn run_episode(
 // Corpus loading
 // ============================================================================
 
-/// Load expressions from binary corpus (`bench_corpus.bin`).
+/// The largest expression this loader will hand back, measured the way
+/// `gen_bench_corpus --max-nodes` measures: [`ExprArena::node_count_subtree`]
+/// from the root.
+pub const MAX_CORPUS_NODES: usize = 1000;
+
+/// Load expressions from a binary corpus tier.
 ///
-/// Returns up to `max_count` `(name, Expr)` pairs, sampled uniformly via
-/// LCG shuffle. Expressions with >1000 nodes are filtered out.
+/// Returns up to `max_count` `(name, arena, root)` triples, sampled uniformly
+/// via LCG shuffle. Expressions larger than [`MAX_CORPUS_NODES`] are filtered
+/// out.
+///
+/// # The size a filter must measure (bug B3)
+///
+/// This filter tested `arena.len()` — every node in the stored arena,
+/// including ones unreachable from the root — while `gen_bench_corpus
+/// --max-nodes` measures `node_count_subtree(root)`. Generator arenas are
+/// append-only scratch space, so the two numbers differ by however much
+/// rewriting the generator did, and the gap is *not* random: junkify passes
+/// leave dead nodes behind, so the filter preferentially discarded exactly
+/// the rewritten shapes. On the first end-to-end run it silently removed 110
+/// of 380 DEV entries (29%) from held-out evaluation.
+///
+/// Corpus format v3 also stores only the reachable subtree
+/// (`corpus::reachable_subtree`), which makes the two measures agree for
+/// freshly written files — but this filter measures the subtree regardless,
+/// because a filter that is only correct when its input happens to be
+/// pre-compacted is a filter waiting to be wrong again.
 ///
 /// # Panics
 ///
@@ -277,9 +407,14 @@ pub fn load_corpus_exprs(
 
     let mut parsed: Vec<(String, ExprArena, ExprId)> = Vec::new();
     let mut skipped_large = 0u64;
+    let mut dead_node_entries = 0u64;
 
     for (name, arena, root) in raw {
-        if arena.len() > 1000 {
+        let expression_nodes = arena.node_count_subtree(root);
+        if arena.len() > expression_nodes {
+            dead_node_entries += 1;
+        }
+        if expression_nodes > MAX_CORPUS_NODES {
             skipped_large += 1;
             continue;
         }
@@ -288,10 +423,24 @@ pub fn load_corpus_exprs(
 
     assert!(
         !parsed.is_empty(),
-        "Zero expressions loaded from {} ({} entries, {skipped_large} oversized)",
+        "Zero expressions loaded from {} ({} entries, {skipped_large} over {MAX_CORPUS_NODES} \
+         reachable nodes)",
         path.display(),
         total_entries
     );
+
+    // A v3 corpus is compacted at write time, so any entry whose arena is
+    // larger than its expression came from a writer that did not compact.
+    // Not fatal — the filter above measures the subtree either way — but the
+    // discrepancy is the B3 signature and must never be invisible again.
+    if dead_node_entries > 0 {
+        eprintln!(
+            "NOTE: {dead_node_entries}/{total_entries} entries in {} carry nodes unreachable \
+             from their root. Sizes here are `node_count_subtree(root)` (what --max-nodes \
+             measures), NOT `arena.len()`.",
+            path.display()
+        );
+    }
 
     // LCG-based Fisher-Yates shuffle
     let mut state = seed;
@@ -308,7 +457,8 @@ pub fn load_corpus_exprs(
     parsed.truncate(max_count);
 
     eprintln!(
-        "Loaded {} corpus expressions from {} ({} entries, {skipped_large} oversized)",
+        "Loaded {} corpus expressions from {} ({} entries, {skipped_large} over \
+         {MAX_CORPUS_NODES} reachable nodes)",
         parsed.len(),
         path.display(),
         total_entries
@@ -338,26 +488,42 @@ mod tests {
         let root = arena.push_binary(OpKind::Add, mul, x); // (x * 1.0) + x
 
         let model = ExprNnue::new();
+        let mut session = BenchSession::new();
         let episode = run_episode(
-            &arena,
-            root,
+            &mut session,
+            EpisodeSeed {
+                arena: &arena,
+                root,
+                name: "smoke_seed",
+            },
             &model,
             EpisodeSpec {
-                seed_name: "smoke_seed",
                 max_epochs: 10,
                 episode_id: "smoke_0".to_string(),
             },
         )
         .expect("episode should complete for a small, well-defined seed expression");
 
+        // Both costs are `BenchResult::adjusted_ns` — raw time MINUS the
+        // session's identity-kernel call overhead — rescaled by the sentinel's
+        // (strictly positive) drift factor, which preserves sign. For a kernel
+        // this small
+        // (`(x * 1.0) + x` saturates to one op) the marginal cost over the
+        // identity kernel is ~0 ± noise, so a NEGATIVE adjusted value is a
+        // documented measurement condition, not a failure: see
+        // `BenchResult::adjusted_ns` and `jit_bench`'s
+        // `nonpositive_adjusted_is_recorded_not_fatal`, and note `run_episode`
+        // itself branches on `final_cost_ns > 0.0` rather than assuming it.
+        // Asserting `>= 0.0` here contradicted that contract and failed under
+        // parallel-suite contention. Finiteness is the real invariant.
         assert!(
-            episode.initial_cost_ns.is_finite() && episode.initial_cost_ns >= 0.0,
-            "initial_cost_ns should be a finite non-negative measurement, got {}",
+            episode.initial_cost_ns.is_finite(),
+            "initial_cost_ns should be a finite measurement, got {}",
             episode.initial_cost_ns
         );
         assert!(
-            episode.final_cost_ns.is_finite() && episode.final_cost_ns >= 0.0,
-            "final_cost_ns should be a finite non-negative measurement, got {}",
+            episode.final_cost_ns.is_finite(),
+            "final_cost_ns should be a finite measurement, got {}",
             episode.final_cost_ns
         );
         assert!(
@@ -368,6 +534,93 @@ mod tests {
             episode.epoch_budget >= 10,
             "epoch_budget should respect the floor"
         );
+    }
+
+    // ── B3: the size filter must measure the expression, not the arena ──────
+
+    fn scratch_corpus(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is before the unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "episodes_corpus_{tag}_{}_{nanos}.bin",
+            std::process::id()
+        ))
+    }
+
+    /// A small expression (`X * 2.0`, 3 nodes) buried in an arena carrying
+    /// `dead` abandoned nodes — the shape a junkify pass leaves behind.
+    fn small_expr_in_junky_arena(dead: usize) -> (ExprArena, ExprId) {
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0);
+        for i in 0..dead {
+            let c = arena.push_const(i as f32 + 100.0);
+            let _abandoned = arena.push_binary(OpKind::Add, x, c);
+        }
+        let two = arena.push_const(2.0);
+        let root = arena.push_binary(OpKind::Mul, x, two);
+        (arena, root)
+    }
+
+    #[test]
+    fn size_filter_keeps_small_expressions_from_junk_heavy_arenas() {
+        // Straight from the smoke run: 110/380 DEV entries vanished because
+        // the filter counted dead nodes. The corpus writer compacts now, but
+        // the filter is pinned independently — a filter that is only correct
+        // on pre-compacted input is one refactor from being wrong again.
+        let (arena, root) = small_expr_in_junky_arena(2 * MAX_CORPUS_NODES);
+        assert!(
+            arena.len() > MAX_CORPUS_NODES,
+            "fixture must exceed the limit by TOTAL nodes"
+        );
+        assert!(
+            arena.node_count_subtree(root) <= MAX_CORPUS_NODES,
+            "fixture's EXPRESSION must be small"
+        );
+
+        let path = scratch_corpus("junky");
+        corpus::write_corpus(&path, &[("junky".to_string(), arena, root)]).expect("write");
+        let loaded = load_corpus_exprs(&path, 10, 7);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            loaded.len(),
+            1,
+            "a 3-node expression must survive the size filter no matter how much dead \
+             scratch its generator arena carried"
+        );
+        assert_eq!(loaded[0].1.node_count_subtree(loaded[0].2), 3);
+    }
+
+    #[test]
+    fn size_filter_still_rejects_genuinely_large_expressions() {
+        // The complement: the filter must not have become a no-op. A left
+        // spine of MAX+2 reachable nodes is over the limit by the measure
+        // that counts.
+        let mut arena = ExprArena::new();
+        let mut node = arena.push_var(0);
+        while arena.node_count_subtree(node) <= MAX_CORPUS_NODES {
+            let c = arena.push_const(1.0);
+            node = arena.push_binary(OpKind::Add, node, c);
+        }
+        let big = node;
+        let (small, small_root) = small_expr_in_junky_arena(0);
+
+        let path = scratch_corpus("mixed");
+        corpus::write_corpus(
+            &path,
+            &[
+                ("too_big".to_string(), arena, big),
+                ("ok".to_string(), small, small_root),
+            ],
+        )
+        .expect("write");
+        let loaded = load_corpus_exprs(&path, 10, 7);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded.len(), 1, "the oversized expression must be dropped");
+        assert_eq!(loaded[0].0, "ok");
     }
 
     #[test]

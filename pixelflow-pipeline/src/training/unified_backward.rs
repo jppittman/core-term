@@ -1559,9 +1559,20 @@ mod tests {
 
     #[test]
     fn numerical_gradient_check_value() {
+        // A dozen `net.clone()` sites × ~136KB of inline arrays: debug builds
+        // give each site its own stack slot (no slot reuse below opt-level 1),
+        // which overflows the 2MB default test-thread stack as a SIGSEGV, not
+        // a failed assertion. Run the body on a thread with room to spare.
         std::thread::Builder::new()
-            .stack_size(8 * 1024 * 1024)
-            .spawn(move || {
+            .name("numerical_gradient_check_value".into())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(numerical_gradient_check_value_body)
+            .expect("failed to spawn gradient-check thread")
+            .join()
+            .expect("gradient-check thread panicked");
+    }
+
+    fn numerical_gradient_check_value_body() {
         let net = make_test_net();
         let acc = make_test_acc();
         let gacc = make_test_gacc();
@@ -1774,10 +1785,6 @@ mod tests {
 
         assert!(checked >= 38, "checked {checked} value path elements");
         eprintln!("  value path max rel error: {max_err:.6e}  ({checked} elements)");
-            })
-            .unwrap()
-            .join()
-            .unwrap();
     }
 
     // ========================================================================
