@@ -113,30 +113,19 @@ jobs:
           path: flake-results/
           if-no-files-found: ignore
 
-  # Build+lint+test pass per x86-64 ISA level (SSE2/AVX2/AVX-512). Presubmit
-  # (rust.yaml) already built+linted every level with `--build-only`; this is
-  # the actual execution pass, deferred here because it's the slow part (four
-  # full test runs, one per ISA_LEVELS entry) and a bad result now means
-  # reverting the already-merged commit, not blocking a PR. `xtask isa-matrix`
-  # applies the same flaky-vs-consistent-break distinction as the `test` job
-  # above, but retries on failure only (up to 5 attempts) rather than always
-  # running 5 times: a level failing every attempt fails this job outright,
-  # which fails the workflow and triggers the automatic revert; a level that
-  # fails at least once but eventually passes writes a flake-results/*.md file
-  # (same convention as `test`'s "Run test suite 5 times" step) without
-  # failing the job.
+  # Single-run build+lint+test pass per x86-64 ISA level (SSE2/AVX2/AVX-512).
+  # Presubmit (rust.yaml) already built+linted every level with
+  # `--build-only`; this is the actual execution pass, deferred here because
+  # it's the slow part (four full test runs, one per ISA_LEVELS entry) and a
+  # bad result now means reverting the already-merged commit, not blocking a
+  # PR. No flake-retry loop like the `test` job above: a failure here is a
+  # genuine ISA-level break, and a flaky failure is exactly as real a break as
+  # a consistent one -- it fails this job outright, which fails the workflow
+  # and triggers the automatic revert.
   isa-matrix:
     name: ISA matrix (SSE2/AVX2/AVX-512) -- build+lint+test
     runs-on: ubuntu-latest
-    # Common case is unchanged from before the retry logic (one test run per
-    # level, ~45 min total across all four). Worst case is now higher: a
-    # level only stops retrying once it passes or hits 5 attempts, so one
-    # flaky-or-broken level alone can cost close to what the sibling `test`
-    # job budgets (90 min) for the same breadth of tests retried the same
-    # number of times. 120 min covers that plus the other levels' base cost
-    # with margin; it does not cover every level being simultaneously
-    # maximally flaky at once, which is not a realistic combination.
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -166,21 +155,13 @@ jobs:
         shell: bash
         run: cargo run -p xtask -- isa-matrix --clippy
 
-      - name: Upload flake report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: flake-isa-matrix
-          path: flake-results/
-          if-no-files-found: ignore
-
   # Files (or updates) a tracking issue when any suite was flaky. This job
   # must never fail the workflow: a hiccup filing an issue is not a
   # postsubmit failure and must not trigger the automatic revert.
   flake-report:
     name: File flake report
     runs-on: ubuntu-latest
-    needs: [test, isa-matrix]
+    needs: test
     if: always()
     continue-on-error: true
     permissions:
@@ -212,7 +193,7 @@ jobs:
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           BODY="Intermittent test failures detected on \`${{ github.sha }}\` ([run]($RUN_URL)).
 
-          A flaky suite failed some postsubmit attempts and passed others, so the commit was **not** reverted. Deflake or quarantine the tests below; each report states its own attempt count (the \`test\` job always makes 5, the \`isa-matrix\` job retries only on failure and may report fewer).
+          A flaky suite passed some of its 5 postsubmit iterations and failed others, so the commit was **not** reverted. Deflake or quarantine the tests below.
 
           $(cat "${reports[@]}")"
 

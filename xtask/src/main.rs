@@ -300,19 +300,10 @@ enum IsaExecutionMode {
     BuildAndTest,
 }
 
-/// Number of times a level's test step is retried before its failures are
-/// trusted. Mirrors the 5-iteration flake/consistent-break split the sibling
-/// `test` job in `postsubmit-flake-detection.yaml` already uses -- without
-/// it, a single flaky test at one ISA level would fail this job outright and
-/// trigger `automatic-revert.yaml` on a plain flake, bypassing the exact
-/// safeguard that job exists to provide.
-#[cfg(target_arch = "x86_64")]
-const TEST_RETRIES: u32 = 5;
-
 /// Outcome of attempting one [`IsaLevel`].
 #[cfg(target_arch = "x86_64")]
 enum LevelResult {
-    /// Compiled, linted, and every test attempt passed.
+    /// Compiled, linted, and the test binaries ran.
     Passed,
     /// Compiled and linted, but the tests were not executed — either
     /// [`IsaExecutionMode::BuildOnly`] was requested (presubmit's fast path)
@@ -320,12 +311,7 @@ enum LevelResult {
     /// everything that can be checked without running the binary was
     /// checked.
     BuiltNotRun { reason: String },
-    /// Failed at least once but eventually passed within [`TEST_RETRIES`]
-    /// attempts: not a consistent break, so this does not fail the job.
-    /// `attempts` is the attempt number that finally passed.
-    Flaky { attempts: u32 },
-    /// A command failed; `stage` names which for the summary. For `stage:
-    /// "test"`, every one of [`TEST_RETRIES`] attempts failed.
+    /// A command failed; `stage` names which for the summary.
     Failed { stage: &'static str },
 }
 
@@ -456,56 +442,18 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
                 continue;
             }
 
-            // A single failing run here would otherwise fail this job outright
-            // and trigger automatic-revert on a plain flake, bypassing the
-            // exact flaky-vs-consistent-break distinction the sibling `test`
-            // job makes via its own 5-iteration loop. So retry ON FAILURE up
-            // to TEST_RETRIES total attempts: a first-try pass costs exactly
-            // what this step always cost (one run), and only a failure pays
-            // for the extra attempts needed to tell "flaky" from "every
-            // attempt failed" -- unlike the `test` job, three ISA levels run
-            // sequentially in this one job, so unconditionally repeating a
-            // full `cargo test --workspace` five times per level regardless
-            // of outcome would multiply this job's typical runtime by 5x for
-            // no benefit in the common all-green case.
-            let mut attempts = 0u32;
-            let mut passed = false;
-            while attempts < TEST_RETRIES && !passed {
-                attempts += 1;
-                println!(
-                    "isa-matrix: {} — test attempt {attempts}/{TEST_RETRIES}",
-                    level.name
-                );
-                passed = run_with_rustflags(
-                    &workspace_root,
-                    &matrix_target,
-                    &rustflags,
-                    &["test", "--workspace", "--no-fail-fast"],
-                );
-            }
-
-            if !passed {
-                println!(
-                    "isa-matrix: {} — cargo test FAILED all {TEST_RETRIES} attempts",
-                    level.name
-                );
+            if !run_with_rustflags(
+                &workspace_root,
+                &matrix_target,
+                &rustflags,
+                &["test", "--workspace", "--no-fail-fast"],
+            ) {
+                println!("isa-matrix: {} — cargo test FAILED", level.name);
                 results.push((level.name, LevelResult::Failed { stage: "test" }));
                 continue;
             }
-
-            if attempts > 1 {
-                let failures = attempts - 1;
-                println!(
-                    "isa-matrix: {} — FLAKY: passed on attempt {attempts}/{TEST_RETRIES} \
-                     ({failures} failed first); not treating as a consistent break",
-                    level.name
-                );
-                write_flake_report(&workspace_root, level.name, attempts);
-                results.push((level.name, LevelResult::Flaky { attempts }));
-                continue;
-            }
-
             println!("isa-matrix: {} — cargo test passed", level.name);
+
             results.push((level.name, LevelResult::Passed));
         }
 
@@ -521,9 +469,6 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
                 LevelResult::BuiltNotRun { reason } => {
                     format!("BUILT+LINT (not run: {reason})")
                 }
-                LevelResult::Flaky { attempts } => {
-                    format!("FLAKY (passed on attempt {attempts}/{TEST_RETRIES})")
-                }
             };
             println!("  {name:<20} {line}");
         }
@@ -531,52 +476,6 @@ fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
         if any_failed {
             std::process::exit(1);
         }
-    }
-}
-
-/// Lowercase `name`, replacing every run of non-alphanumeric characters with
-/// a single `-`, trimming leading/trailing `-`. `"avx2 (no fma)"` becomes
-/// `"avx2-no-fma"` -- safe both as a filename and as the artifact-name/report
-/// slug the flake-detection convention below expects.
-#[cfg(target_arch = "x86_64")]
-fn slugify(name: &str) -> String {
-    let mut slug = String::with_capacity(name.len());
-    let mut last_was_dash = false;
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            slug.push(c.to_ascii_lowercase());
-            last_was_dash = false;
-        } else if !last_was_dash {
-            slug.push('-');
-            last_was_dash = true;
-        }
-    }
-    slug.trim_matches('-').to_string()
-}
-
-/// Record a flaky ISA level in the exact convention the sibling `test` job in
-/// `postsubmit-flake-detection.yaml` already uses: a markdown file under
-/// `flake-results/`, uploaded as an artifact matching the `flake-*` pattern.
-/// The downstream `flake-report` job globs that pattern and files a tracking
-/// issue -- it needs no changes to pick this up too.
-#[cfg(target_arch = "x86_64")]
-fn write_flake_report(workspace_root: &std::path::Path, level_name: &str, attempts: u32) {
-    let slug = format!("isa-matrix-{}", slugify(level_name));
-    let dir = workspace_root.join("flake-results");
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        panic!("isa-matrix: could not create {}: {e}", dir.display());
-    }
-    let failures = attempts - 1;
-    let body = format!(
-        "### `{slug}`: {failures}/{attempts} iterations failed\n\n\
-         ISA level **{level_name}** failed {failures} `cargo test --workspace` \
-         run(s) before passing on attempt {attempts} — flaky, not a \
-         consistent break. See the `isa-matrix` job log on this run for \
-         which tests failed on which attempt.\n"
-    );
-    let path = dir.join(format!("{slug}.md"));
-    if let Err(e) = std::fs::write(&path, body) {
-        panic!("isa-matrix: could not write {}: {e}", path.display());
     }
 }
 
