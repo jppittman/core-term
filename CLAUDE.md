@@ -19,6 +19,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Minimal public API** - Do NOT change visibility of internal APIs without explicit permission. Keep `pub(crate)` and private items encapsulated. Use Manifold composition instead of exposing internals.
 - **Subtract before you add.** The good version of a primitive is reached by removing machinery, not stacking it. If a type's signature already refuses the wrong shape, you don't need a macro, a lint, or a doc to forbid it — the opinion lives in the types. Reach for a new dependency or a new abstraction only after subtraction has failed.
 
+- **Denote before you build.** Say what a thing *means* — as a mathematical object, in the type system — before writing the code that manipulates it. Design is choosing the denotation; the implementation is then obliged to it. Where this codebase is good, it already works this way: `Lattice`/`DiscreteManifold` are a representable functor whose law is written down (`index(collapse(f)) = f`), and that law is *why* a buffer can BE a manifold rather than merely back one.
+
+  Where it is bad, the meaning lives in a comment instead of a type, and every such place has cost us a bug. One `f32` lane carries continuous values, integers, and bit patterns at once — `OpKind::is_bitwise_domain()` exists to recover at runtime what a type would have given for free, and a mask (all-ones, i.e. NaN read as a number) is one careless fold away from corruption. `Var(u8)` means a coordinate axis, a reduce binder, or a manifold-param slot depending on magic ranges. `push_reduce` encodes an `OpKind` as a `Const(f32)`. Each convention held right up until the optimizer grew strong enough to violate it — **a convention written in a comment is an invariant something else will eventually break.**
+
+  So: **when you extend a type's meaning, extend its type.** The escape hatch — "reinterpret is free", "this operand must be a literal", "these coordinates are in the caller's space" — is the moment to pay. Afterwards it is a bug hunt rather than a refactor, and the fix arrives as a runtime guard defending what a type should have made unrepresentable. Prioritize by whether a wrong value would be *silently* representable: a domain confusion produces plausible pixels and deserves a type; an out-of-range index that panics on the next line does not.
+
 ### Floating point at the edges
 
 **Rust already ships reasonably fast IEEE-754 arithmetic.** `f32::min`,
