@@ -400,12 +400,18 @@ fn launch_failure_diagnostics(app_bundle: &std::path::Path, binary_match: &str) 
                         "direct exec: alive after 3s — the binary runs; the \
                          failure is in the LaunchServices path (match: {binary_match})"
                     );
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    if let Err(e) = child.kill() {
+                        eprintln!("direct exec: kill failed: {e}");
+                    }
+                    if let Err(e) = child.wait() {
+                        eprintln!("direct exec: wait failed: {e}");
+                    }
                 }
                 Ok(Some(status)) => {
                     eprintln!("direct exec: exited within 3s: {status}");
-                    let _ = child.wait();
+                    if let Err(e) = child.wait() {
+                        eprintln!("direct exec: wait failed: {e}");
+                    }
                 }
                 Err(e) => eprintln!("direct exec: try_wait failed: {e}"),
             }
