@@ -409,7 +409,11 @@ jobs:
   # job is what would have caught it, and is what stops it from silently
   # coming back.
   macos-launch-stability:
-    name: macOS launch stability
+    # Informational while the harness is tuned against real runner timing —
+    # same policy as the WASM status job: keep the signal, don't gate merges
+    # on an unproven check. Flip to blocking once it has a green history.
+    name: macOS launch stability (informational, non-blocking)
+    continue-on-error: true
     runs-on: macos-latest
     timeout-minutes: 30
     steps:

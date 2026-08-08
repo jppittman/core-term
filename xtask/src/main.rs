@@ -285,10 +285,27 @@ fn launch_stability_check(runs: u32, watch_seconds: u64) {
             continue;
         }
 
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        let pid = find_pid(binary_match);
+        // LaunchServices returns before the process spawns, and a cold CI
+        // runner (first registration of the bundle, cold dyld cache) can
+        // take several seconds — one fixed sleep misread that as a crash.
+        // Poll with a deadline instead; a genuinely failed launch still
+        // fails, just honestly.
+        const APPEAR_DEADLINE_MS: u64 = 15_000;
+        const APPEAR_POLL_MS: u64 = 250;
+        let mut pid = None;
+        let mut waited = 0u64;
+        while waited < APPEAR_DEADLINE_MS {
+            std::thread::sleep(std::time::Duration::from_millis(APPEAR_POLL_MS));
+            waited += APPEAR_POLL_MS;
+            pid = find_pid(binary_match);
+            if pid.is_some() {
+                break;
+            }
+        }
         let Some(pid) = pid else {
-            eprintln!("::error::run {run}: process never appeared after launch");
+            eprintln!(
+                "::error::run {run}: process never appeared within {APPEAR_DEADLINE_MS}ms of launch"
+            );
             failures += 1;
             continue;
         };
