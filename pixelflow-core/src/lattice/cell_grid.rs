@@ -558,6 +558,12 @@ impl CellGridPackedProgram {
         }
     }
 
+    /// The packed kernel's emitted bytes (research/profiling harness).
+    #[cfg(test)]
+    fn jits_code_bytes(&self) -> &[u8] {
+        self.jit.code_bytes()
+    }
+
     /// The geometry this program was compiled for.
     #[must_use]
     pub fn geometry(&self) -> &CellGridGeometry {
@@ -711,6 +717,59 @@ mod tests {
             1.0, /* bg */
         ];
         (program, Arc::new(cells), Arc::new(atlas))
+    }
+
+    /// Research harness: dump the packed kernel's machine code and hot-loop
+    /// it in one process, so a sampling profiler's addresses correlate to
+    /// the dumped bytes exactly. `PIXELFLOW_CODE_DUMP=<path>` receives the
+    /// raw bytes; the base pointer prints to stdout.
+    #[test]
+    #[ignore = "manual profiling harness"]
+    fn profile_dump_packed_kernel() {
+        let geom = CellGridGeometry {
+            cols: 213,
+            rows: 66,
+            cell_w: 12.0,
+            cell_h: 24.0,
+            density: 1.0,
+            atlas_width: 64,
+            atlas_height: 32,
+            tile_w: 12,
+            tile_h: 24,
+        };
+        let program = CellGridPackedProgram::compile(geom, [0.1, 0.1, 0.1, 1.0], [0, 8, 16, 24]);
+        let code = program.jits_code_bytes();
+        std::println!(
+            "CODE_BASE=0x{:x} CODE_LEN={}",
+            code.as_ptr() as usize,
+            code.len()
+        );
+        if let Ok(path) = std::env::var("PIXELFLOW_CODE_DUMP") {
+            std::fs::write(&path, code).expect("dump write failed");
+        }
+        let mut atlas = alloc::vec![0.0f32; geom.atlas_len()];
+        for (i, t) in atlas.iter_mut().enumerate() {
+            *t = ((i * 7) % 11) as f32 / 10.0;
+        }
+        let mut cells = alloc::vec![0.0f32; geom.cells_len()];
+        for (i, c) in cells.iter_mut().enumerate() {
+            *c = ((i * 13) % 17) as f32 / 16.0;
+        }
+        let frame = program.frame(Arc::new(cells), Arc::new(atlas));
+        let (w, h) = (2560usize, 1584usize);
+        let stride = CellGridFrame::padded_width(w);
+        let mut out = alloc::vec![0u32; stride * h];
+        for _ in 0..150 {
+            frame.bake_packed_rows(
+                PlaneRegion {
+                    width: w,
+                    y0: 0,
+                    rows: h,
+                },
+                &mut out,
+            );
+            core::hint::black_box(&out);
+        }
     }
 
     /// Splicing merges buffer declarations by identity, so the nine reads in

@@ -130,6 +130,10 @@
 
 extern crate alloc;
 
+// Tests use std (println, env, fs) for harnesses; shipped code stays no_std.
+#[cfg(test)]
+extern crate std;
+
 // ============================================================================
 // Modules
 // ============================================================================

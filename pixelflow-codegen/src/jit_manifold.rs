@@ -14,6 +14,13 @@ pub struct JitManifold {
 }
 
 impl JitManifold {
+    /// The emitted machine code, for offline inspection (disassembly,
+    /// profiler correlation). The bytes are the artifact, not an ABI.
+    #[must_use]
+    pub fn code_bytes(&self) -> &[u8] {
+        self.code.as_bytes()
+    }
+
     /// Wrap compiled executable code.
     #[must_use]
     pub fn new(code: ExecutableCode) -> Self {

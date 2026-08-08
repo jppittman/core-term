@@ -370,6 +370,29 @@ mod frame_bench {
         samples[samples.len() / 2]
     }
 
+    /// Hot-loop-only target for profilers: nothing but the packed path,
+    /// long enough to sample. `cargo test --release ... --ignored
+    /// profile_packed` under samply/xctrace.
+    #[test]
+    #[ignore = "manual profiling target"]
+    fn profile_packed_hot_loop() {
+        let (geom, cells, atlas) = realistic();
+        let (w, h) = (2560usize, 1584usize);
+        let stride = CellGridFrame::padded_width(w);
+        let packed = CellGridPackedProgram::compile(
+            geom,
+            [0.1, 0.1, 0.1, 1.0],
+            RgbaColorCube::PACKED_SHIFTS,
+        )
+        .frame(Arc::new(cells), Arc::new(atlas));
+        let chunk_rows = STAGING_SCRATCH_BYTES / (stride * core::mem::size_of::<u32>());
+        let mut band = vec![Rgba8::from_u32(0); w * h];
+        for _ in 0..150 {
+            bake_packed_chunked(&packed, w, 0, &mut band, chunk_rows);
+            std::hint::black_box(&band);
+        }
+    }
+
     #[test]
     #[ignore = "manual benchmark; run in --release with --nocapture"]
     fn bench_packed_vs_four_plane() {
