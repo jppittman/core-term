@@ -48,8 +48,20 @@ impl BufferIdentity {
     #[must_use]
     pub fn mint() -> Self {
         static NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-        let id = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        assert!(id != u32::MAX, "BufferIdentity: counter exhausted");
+        // `fetch_add` + assert was wrong: the add WRAPS before the assert
+        // fires, so if that panic is ever caught — or merely unwinds a
+        // non-fatal worker thread — the counter has already returned to 0 and
+        // the next mint hands out an identity that is still live. Two
+        // unrelated buffers would then compare identical and merge into one
+        // splice/JIT slot. `fetch_update` declining to store leaves the
+        // counter permanently exhausted instead.
+        let id = NEXT
+            .fetch_update(
+                core::sync::atomic::Ordering::Relaxed,
+                core::sync::atomic::Ordering::Relaxed,
+                |n| n.checked_add(1),
+            )
+            .expect("BufferIdentity: counter exhausted");
         Self(id)
     }
 }

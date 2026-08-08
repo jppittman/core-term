@@ -94,3 +94,52 @@ fn exact_and_ordinary_folds_still_fold() {
     let m = a.push_binary(OpKind::Mul, x, c);
     assert_eq!(opt_root(&a, m), ExprNode::Const(128.0));
 }
+
+/// The refusal guard must hold during REBUILD, not just during rule
+/// application. `rebuild` drains a class's nodes with `mem::take` and only
+/// then performs congruence unions, so a guard that scanned the node vector
+/// was blind at exactly the moment congruence closure does its merging: the
+/// class looked constant-free and a contradictory merge went through.
+///
+/// Construction (the reviewer's reproduction): give `Add(X, A)` the constant
+/// 1 and `Add(X, B)` the constant 2, then union `A` with `B`. Congruence now
+/// says the two `Add` nodes are the same node, so rebuild tries to merge
+/// their classes — which would assert 1 = 2.
+#[test]
+fn refusal_survives_rebuild_congruence() {
+    use pixelflow_search::egraph::{EGraph, ENode, all_rules};
+
+    let mut eg = EGraph::with_rules(all_rules());
+    let x = eg.add(ENode::Var(0));
+    let a = eg.add(ENode::Var(1));
+    let b = eg.add(ENode::Var(2));
+
+    let add = |eg: &mut EGraph, l, r| {
+        eg.add(ENode::Op {
+            op: pixelflow_search::egraph::ops::op_from_kind(OpKind::Add).expect("Add op"),
+            children: vec![l, r],
+        })
+    };
+    let add_a = add(&mut eg, x, a);
+    let add_b = add(&mut eg, x, b);
+
+    let one = eg.add(ENode::constant(1.0));
+    let two = eg.add(ENode::constant(2.0));
+    eg.union(add_a, one);
+    eg.union(add_b, two);
+
+    // Makes the two Add nodes congruent, forcing rebuild to consider merging
+    // their classes.
+    eg.union(a, b);
+    eg.rebuild();
+
+    assert!(
+        !eg.refused_const_unions().is_empty(),
+        "rebuild-time congruence must hit the refusal guard, not slip past it"
+    );
+    assert_ne!(
+        eg.find(one),
+        eg.find(two),
+        "1 and 2 must not share a class — that is the corruption the guard exists to stop"
+    );
+}

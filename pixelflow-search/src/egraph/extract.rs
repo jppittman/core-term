@@ -735,12 +735,75 @@ pub fn build_extracted_dag_from_choices(
 ///
 /// Post-order guarantees nodes are appended in topological order (children before
 /// parents), which is a requirement of [`pixelflow_ir::ExprArena`].
+/// Re-pin every `Shl`/`Shr` count child to a `Const` representative.
+///
+/// The emitter lowers shifts to hardware immediates, so the count child MUST
+/// extract as a `Const`. But a count's e-class can legitimately hold
+/// arithmetic as well — a reachable `4 + 4` folds into the same class as `8`
+/// — and extraction picks by COST, so a cost model that prices the `Add`
+/// lower (a learned one, or any future retuning) hands codegen a non-constant
+/// child and it panics. Substituting a `Const` from the same class is sound
+/// by definition: same class means equal value.
+///
+/// # Panics
+///
+/// Panics if a shift-count class holds no `Const` at all. That cannot arise
+/// from a well-formed arena (the count entered as a literal) and would panic
+/// in the emitter regardless — failing here names the real cause.
+fn pin_shift_counts(egraph: &EGraph, choices: &[Option<usize>]) -> alloc::vec::Vec<Option<usize>> {
+    let mut pinned = choices.to_vec();
+    for idx in 0..egraph.num_classes() {
+        let canonical = egraph.find(EClassId(idx as u32));
+        if canonical.0 as usize != idx {
+            continue;
+        }
+        let Some(node_idx) = pinned.get(idx).and_then(|o| *o) else {
+            continue;
+        };
+        let Some(ENode::Op { op, children }) = egraph.nodes(canonical).get(node_idx) else {
+            continue;
+        };
+        if !matches!(
+            op.kind(),
+            pixelflow_ir::OpKind::Shl | pixelflow_ir::OpKind::Shr
+        ) {
+            continue;
+        }
+        let Some(&count) = children.get(1) else {
+            continue;
+        };
+        let count_class = egraph.find(count);
+        let ci = count_class.0 as usize;
+        let count_nodes = egraph.nodes(count_class);
+        if let Some(chosen) = pinned.get(ci).and_then(|o| *o)
+            && matches!(count_nodes.get(chosen), Some(ENode::Const(_)))
+        {
+            continue;
+        }
+        let const_idx = count_nodes
+            .iter()
+            .position(|n| matches!(n, ENode::Const(_)))
+            .unwrap_or_else(|| {
+                panic!(
+                    "pin_shift_counts: shift-count e-class {ci} holds no Const; \
+                     the emitter's immediate-only shift lowering cannot be met"
+                )
+            });
+        pinned[ci] = Some(const_idx);
+    }
+    pinned
+}
+
 pub fn choices_to_arena(
     egraph: &EGraph,
     root: EClassId,
     choices: &[Option<usize>],
 ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
     use pixelflow_ir::{ExprArena, ExprId};
+
+    // Shifts must reach codegen with a constant count — see `pin_shift_counts`.
+    let pinned = pin_shift_counts(egraph, choices);
+    let choices: &[Option<usize>] = &pinned;
 
     enum Task {
         /// Visit an e-class: push it to the result stack if cached, otherwise

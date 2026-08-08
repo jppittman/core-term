@@ -58,6 +58,14 @@ pub struct EGraph {
     /// Which rewrite application (if any) is currently executing — read by
     /// `add()`/`union()` to attribute newly created nodes/unions.
     active_application: Option<ActiveApplication>,
+    /// The constant each class is known to equal, as f32 bits, indexed by
+    /// class id — maintained independently of `EClass::nodes` on purpose.
+    /// `rebuild` drains a class's nodes with `mem::take` and only THEN
+    /// performs congruence unions, so a guard that scanned the node vector
+    /// saw an empty class and waved contradictory merges through at exactly
+    /// the moment congruence closure does its work. The fact must outlive the
+    /// nodes.
+    const_fact: Vec<Option<u32>>,
     /// Unions REFUSED because they would assert two numerically unequal
     /// constants equal — a proved falsehood the graph declines to absorb.
     /// Distinct (bits, bits) pairs, kept for reporting and tests; see
@@ -84,6 +92,7 @@ impl Clone for EGraph {
             step: self.step,
             provenance: self.provenance.clone(),
             active_application: self.active_application,
+            const_fact: self.const_fact.clone(),
             refused_const_unions: self.refused_const_unions.clone(),
         }
     }
@@ -116,6 +125,7 @@ impl EGraph {
             step: 0,
             provenance: Provenance::new(),
             active_application: None,
+            const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
         }
     }
@@ -135,6 +145,7 @@ impl EGraph {
             step: 0,
             provenance: Provenance::new(),
             active_application: None,
+            const_fact: Vec::new(),
             refused_const_unions: Vec::new(),
         }
     }
@@ -203,6 +214,7 @@ impl EGraph {
             None => Origin::Seed,
         };
         self.provenance.record_origin(enode_id, origin);
+        self.const_fact.push(node.as_f32().map(f32::to_bits));
         self.classes.push(EClass {
             nodes: vec![node.clone()],
             tags: vec![enode_id],
@@ -249,12 +261,14 @@ impl EGraph {
         // Min/Max over NaN. Bit equality additionally admits identical NaN
         // patterns, which `==` would wrongly reject: an all-ones comparison
         // mask reads as NaN and must be unionable with itself.
-        let const_of = |class: EClassId, classes: &[EClass]| {
-            classes[class.index()].nodes.iter().find_map(|n| n.as_f32())
-        };
-        if let (Some(ca), Some(cb)) = (const_of(a, &self.classes), const_of(b, &self.classes)) {
-            if ca != cb && ca.to_bits() != cb.to_bits() {
-                let pair = (ca.to_bits(), cb.to_bits());
+        // Read the class-level fact, NOT the node vector: `rebuild` drains
+        // nodes with `mem::take` before performing congruence unions, so a
+        // node-scanning guard is blind exactly when congruence closure runs.
+        let (fa, fb) = (self.const_fact[a.index()], self.const_fact[b.index()]);
+        if let (Some(ba), Some(bb)) = (fa, fb) {
+            let (ca, cb) = (f32::from_bits(ba), f32::from_bits(bb));
+            if ca != cb && ba != bb {
+                let pair = (ba, bb);
                 if !self.refused_const_unions.contains(&pair) {
                     std::eprintln!(
                         "pixelflow e-graph: refusing a union that would assert \
@@ -276,6 +290,11 @@ impl EGraph {
         let child_tags = std::mem::take(&mut self.classes[child.index()].tags);
         self.classes[parent.index()].nodes.extend(child_nodes);
         self.classes[parent.index()].tags.extend(child_tags);
+        // The guard above proved the two facts agree (or that at most one
+        // exists), so `or` is a merge, not a choice.
+        if self.const_fact[parent.index()].is_none() {
+            self.const_fact[parent.index()] = self.const_fact[child.index()];
+        }
         self.worklist.push(parent);
         self.provenance.record_union(UnionEvent {
             rule_idx: self.active_application.map(|a| a.rule_idx),
