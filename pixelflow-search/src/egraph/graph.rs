@@ -963,24 +963,27 @@ impl EGraph {
     /// `apply_action_from_rule` so provenance attribution stays correct;
     /// this function itself has no notion of "which rule" — it only knows
     /// how to execute the `RewriteAction` variants.
+    /// Union `a` and `b`, reporting whether the graph actually changed.
+    ///
+    /// [`EGraph::union`] REFUSES merges that would assert two numerically
+    /// unequal constants equal, so "the classes differed beforehand" is not
+    /// evidence that anything merged. Counting a refusal as a change made
+    /// saturation believe it had made progress, so it rebuilt and re-applied
+    /// the same refused rewrite every iteration until its limit.
+    fn union_counted(&mut self, a: EClassId, b: EClassId) -> usize {
+        if self.find(a) == self.find(b) {
+            return 0;
+        }
+        self.union(a, b);
+        usize::from(self.find(a) == self.find(b))
+    }
+
     fn apply_action(&mut self, class_id: EClassId, action: RewriteAction) -> usize {
         match action {
-            RewriteAction::Union(target_id) => {
-                if self.find(class_id) != self.find(target_id) {
-                    self.union(class_id, target_id);
-                    1
-                } else {
-                    0
-                }
-            }
+            RewriteAction::Union(target_id) => self.union_counted(class_id, target_id),
             RewriteAction::Create(new_node) => {
                 let new_id = self.add(new_node);
-                if self.find(class_id) != self.find(new_id) {
-                    self.union(class_id, new_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, new_id)
             }
             RewriteAction::Distribute {
                 outer,
@@ -1004,12 +1007,7 @@ impl EGraph {
                     children: vec![ab_id, ac_id],
                 };
                 let result_id = self.add(result_node);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Factor {
                 outer,
@@ -1028,12 +1026,7 @@ impl EGraph {
                     children: vec![common, sum_id],
                 };
                 let result_id = self.add(result_node);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Canonicalize {
                 target,
@@ -1051,12 +1044,7 @@ impl EGraph {
                     children: vec![a, inv_id],
                 };
                 let target_id = self.add(target_node);
-                if self.find(class_id) != self.find(target_id) {
-                    self.union(class_id, target_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, target_id)
             }
             RewriteAction::Associate { op, a, b, c } => {
                 let bc_node = ENode::Op {
@@ -1069,12 +1057,7 @@ impl EGraph {
                     children: vec![a, bc_id],
                 };
                 let result_id = self.add(result_node);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::ReverseAssociate { op, a, b, c } => {
                 // a op (b op c) → (a op b) op c
@@ -1088,12 +1071,7 @@ impl EGraph {
                     children: vec![ab_id, c],
                 };
                 let result_id = self.add(result_node);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::OddParity { func, inner } => {
                 // For odd functions: Op(neg(x)) → neg(Op(x))
@@ -1108,12 +1086,7 @@ impl EGraph {
                     children: vec![func_id],
                 };
                 let neg_id = self.add(neg_node);
-                if self.find(class_id) != self.find(neg_id) {
-                    self.union(class_id, neg_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, neg_id)
             }
             RewriteAction::AngleAddition {
                 term1_op1,
@@ -1190,12 +1163,7 @@ impl EGraph {
                     }
                 };
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Homomorphism {
                 func,
@@ -1227,12 +1195,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::PowerCombine { base, exp_a, exp_b } => {
                 // x^a * x^b → x^(a+b)
@@ -1251,12 +1214,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::ReverseAngleAddition { trig_op, a, b } => {
                 // sin(a)cos(b) + cos(a)sin(b) → sin(a + b)
@@ -1276,12 +1234,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::HalfAngleProduct { x } => {
                 // sin(x) * cos(x) → sin(x + x) / 2
@@ -1312,12 +1265,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Doubling { a } => {
                 // a + a → 2 * a
@@ -1329,12 +1277,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Halving { a } => {
                 // 2 * a → a + a
@@ -1344,12 +1287,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::PowerRecurrence { base, exponent } => {
                 let n_minus_1 = ENode::constant((exponent - 1) as f32);
@@ -1364,12 +1302,7 @@ impl EGraph {
                     children: vec![base, pow_id],
                 };
                 let result_id = self.add(result);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::LogPower {
                 log_op,
@@ -1386,12 +1319,7 @@ impl EGraph {
                     children: vec![exponent, log_x_id],
                 };
                 let result_id = self.add(result);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::ExpandSquare { a, b } => {
                 let a2 = ENode::Op {
@@ -1426,12 +1354,7 @@ impl EGraph {
                     children: vec![sum1_id, b2_id],
                 };
                 let result_id = self.add(result);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::DiffOfSquares { a, b } => {
                 let sum = ENode::Op {
@@ -1449,21 +1372,11 @@ impl EGraph {
                     children: vec![sum_id, diff_id],
                 };
                 let result_id = self.add(result);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Differentiate { inner, var } => {
                 let deriv_id = self.build_derivative(&inner, var);
-                if self.find(class_id) != self.find(deriv_id) {
-                    self.union(class_id, deriv_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, deriv_id)
             }
         }
     }

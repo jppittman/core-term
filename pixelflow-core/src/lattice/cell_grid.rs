@@ -445,8 +445,14 @@ impl CellGridFrame {
         let PlaneRegion { width, y0, rows } = region;
         assert!(width > 0, "bake_channel_rows: zero width");
         let stride = Self::padded_width(width);
+        // Checked for the same reason as `bake_packed_rows`: a wrapped
+        // product would admit an undersized `out` while the unsafe collapse
+        // below still wrote the real row count past its end.
+        let needed = rows
+            .checked_mul(stride)
+            .expect("bake_channel_rows: rows * stride overflows usize");
         assert!(
-            out.len() >= rows * stride,
+            out.len() >= needed,
             "bake_channel_rows: plane of {} f32s cannot hold {rows} rows at stride {stride}",
             out.len()
         );
@@ -650,8 +656,16 @@ impl CellGridPackedFrame {
         let PlaneRegion { width, y0, rows } = region;
         assert!(width > 0, "bake_packed_rows: zero width");
         let stride = CellGridFrame::padded_width(width);
+        // Checked: `rows * stride` wraps in release for a caller-supplied
+        // region large enough, and a wrapped product would let an undersized
+        // `out` pass this guard while the collapse call below still received
+        // the real (enormous) row count and wrote past the slice. The
+        // documented panic must fire before any unsafe call, not after.
+        let needed = rows
+            .checked_mul(stride)
+            .expect("bake_packed_rows: rows * stride overflows usize");
         assert!(
-            out.len() >= rows * stride,
+            out.len() >= needed,
             "bake_packed_rows: plane of {} u32s cannot hold {rows} rows at stride {stride}",
             out.len()
         );
