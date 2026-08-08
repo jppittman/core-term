@@ -67,4 +67,11 @@ impl Pixel for u32 {
         let a_u8 = (a * 255.0).clamp(0.0, 255.0) as u8;
         u32::from_le_bytes([r_u8, g_u8, b_u8, a_u8])
     }
+
+    // Same layout `from_rgba` above encodes: r is byte 0. Without this
+    // override the default `None` made `Frame<u32>` — a perfectly packed
+    // RGBA target — panic at the format guard.
+    fn packed_shifts() -> Option<[u32; 4]> {
+        Some([0, 8, 16, 24])
+    }
 }

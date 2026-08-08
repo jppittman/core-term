@@ -673,6 +673,17 @@ mod tests {
                 pack(BgraColorCube::PACKED_SHIFTS, r, g, b, a),
                 "Bgra8 disagrees with BgraColorCube::PACKED_SHIFTS"
             );
+            assert_eq!(
+                <u32 as Pixel>::from_rgba(r, g, b, a),
+                pack(
+                    <u32 as Pixel>::packed_shifts().expect("u32 is packed RGBA"),
+                    r,
+                    g,
+                    b,
+                    a
+                ),
+                "u32 disagrees with its own packed_shifts"
+            );
         }
     }
     use super::*;
