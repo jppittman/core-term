@@ -1,142 +1,30 @@
 name: Benchmark Regression Check
 
 on:
-  pull_request:
-    branches: [ "main" ]
   push:
     branches: [ "main" ]
 
-# No workflow-level permissions: the two jobs below are different trust
-# domains and each declares exactly what it holds. The PR job runs
-# unreviewed code and must hold nothing; the baseline job publishes and
-# holds writes. Their build steps are duplicated on purpose — routing both
-# through one reusable job would blur the very boundary the split draws.
+# Benchmarks are postsubmit-only (docs/POSTSUBMIT.md). A presubmit copy was
+# tried and removed: one hosted-runner sample against a single baseline point
+# alerts on noisy neighbors as readily as on code, and a check that fails for
+# reasons the author cannot act on is one that gets ignored. Attribution to a
+# specific commit, plus the issue trail, is what makes the signal actionable —
+# and that only exists once the commit is on main.
+
+# No workflow-level permissions: the job below declares exactly what it holds.
+# It publishes the baseline to gh-pages and files regression issues, so it
+# holds writes.
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Pull requests: compare, never publish ────────────────────────────────
-  #
-  # Runs PR-controlled code, so it is credential-free by construction: the
-  # token is read-only (permissions below), and checkout does not persist it
-  # into the git config for build scripts or benches to harvest. Reporting is
-  # the job summary and the check outcome — no comment, which a fork PR's
-  # read-only token could not post anyway.
-  pr-check:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    # A newer push to the same PR supersedes the running check; separate
-    # from the baseline group so a PR can never displace a queued baseline
-    # (GitHub keeps one running + one pending run per group and replaces
-    # the pending one, even with cancel-in-progress: false).
-    concurrency:
-      group: benchmark-pr-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
-    # Full workspace benchmarks are intentionally long, but a deadlocked
-    # bench must not hold the runner for GitHub's multi-hour default.
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      # The workspace includes the Linux X11 runtime; cargo builds it even
-      # though no benchmark opens a window.
-      - name: Install X11 dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libx11-dev libxcursor-dev libxrandr-dev libxi-dev
-
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-bench-
-
-      # --benches restricts cargo to declared benchmark targets. Library and
-      # binary targets run under the libtest harness, which rejects
-      # Criterion's `--output-format bencher`; every [lib] in the workspace
-      # therefore sets `bench = false` and every [[bench]] is Criterion with
-      # `harness = false`.
-      - name: Run benchmarks
-        run: |
-          set -o pipefail
-          mkdir -p benchmark_results
-          cargo bench --workspace --benches -- --output-format bencher | tee benchmark_results/output.txt
-
-      - name: Upload benchmark output
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results-${{ github.sha }}
-          path: benchmark_results/output.txt
-          if-no-files-found: error
-
-      # PR runs must never create repository state, so when no baseline
-      # exists yet there is nothing to compare against — say so loudly and
-      # pass, rather than bootstrapping gh-pages from unreviewed code.
-      - name: Check for a baseline
-        id: baseline
-        run: |
-          set -euo pipefail
-          # --exit-code: 0 = ref exists, 2 = no matching ref. Anything else
-          # is a transport/auth failure and must fail the check — treating
-          # it as "no baseline" would skip the comparison and read as green.
-          status=0
-          git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1 || status=$?
-          case "$status" in
-            0) echo "exists=true" >> "$GITHUB_OUTPUT" ;;
-            2)
-              echo "exists=false" >> "$GITHUB_OUTPUT"
-              {
-                echo "## Benchmark comparison skipped"
-                echo "No \`gh-pages\` baseline exists yet. The first push to"
-                echo "\`main\` creates it; PR runs never mutate the repository."
-              } >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            *)
-              echo "::error::git ls-remote failed with status $status (not 'ref absent')"
-              exit "$status"
-              ;;
-          esac
-
-      - name: Compare against baseline
-        if: steps.baseline.outputs.exists == 'true'
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          tool: 'cargo'
-          output-file-path: benchmark_results/output.txt
-          gh-pages-branch: gh-pages
-          # Hosted runners are noisy neighbors; 15% is within observed
-          # run-to-run variance and alerted on infrastructure, not code.
-          alert-threshold: '125%'
-          fail-on-alert: true
-          # Read-only by the job's permissions grant: the action can fetch
-          # gh-pages with it, and nothing running here can write.
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: false
-          comment-on-alert: false
-          summary-always: true
-
   # ── Pushes to main: advance the baseline, attribute regressions ──────────
   #
   # Baselines must land in commit order: never run two baseline updates at
   # once, and never skip a commit (skipping would attribute a regression to
   # the wrong commit).
   baseline:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       # Push the baseline to gh-pages and comment on regressing commits.
@@ -187,14 +75,13 @@ jobs:
 
       # github-action-benchmark's auto-push does `git fetch origin
       # gh-pages:gh-pages` and fails outright if the branch has never been
-      # created. Bootstrap an empty orphan branch on first run only — this
-      # step exists only in the push job, so a PR can never create it.
+      # created. Bootstrap an empty orphan branch on first run only.
       - name: Ensure gh-pages branch exists
         run: |
           set -euo pipefail
-          # Same tri-state as the PR job's baseline check: only "no matching
-          # ref" (status 2) may trigger a bootstrap. Bootstrapping on a
-          # transport error would race a branch that actually exists.
+          # Only "no matching ref" (status 2) may trigger a bootstrap;
+          # bootstrapping on a transport error would race a branch that
+          # actually exists.
           status=0
           git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1 || status=$?
           if [ "$status" -eq 0 ]; then
