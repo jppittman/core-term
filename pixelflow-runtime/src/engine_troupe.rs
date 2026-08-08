@@ -986,8 +986,7 @@ mod tests {
     fn skipped_frame_returns_the_vsync_token() {
         let (driver, _driver_sched) = ActorScheduler::new(LANE_BURST, LANE_BUFFER);
         let waker = {
-            let (handle, _sched) =
-                ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
+            let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(1, 1);
             handle.waker()
         };
         let (vsync_tx, mut vsync_rx) = spsc_channel::<VsyncCommand>(8);

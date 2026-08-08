@@ -372,9 +372,7 @@ mod tests {
     fn coordinator_data_debug_names_its_variant() {
         assert_eq!(format!("{:?}", CoordinatorData::Advance), "Advance");
         assert!(format!("{:?}", CoordinatorData::Submit(manifold())).contains("Submit"));
-        assert!(
-            format!("{:?}", CoordinatorData::Granted(one_to_one_window())).contains("Granted")
-        );
+        assert!(format!("{:?}", CoordinatorData::Granted(one_to_one_window())).contains("Granted"));
     }
 
     /// The delivery-feedback seam dissolved (module doc): `route` calls `request_sent` the
