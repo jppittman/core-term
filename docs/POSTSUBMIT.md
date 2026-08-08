@@ -58,6 +58,13 @@ land in commit order.
 Perf regressions do **not** auto-revert: hosted-runner noise makes a
 threshold breach evidence, not proof. The issue is the escalation path.
 
+For the same reason this job is **postsubmit-only** and deliberately does not
+run on pull requests. One hosted-runner sample against a single baseline point
+alerts on noisy neighbors as readily as on code, and a presubmit check that
+fails for reasons the author cannot act on is one that gets ignored. What makes
+the signal actionable — attribution to a specific commit, and the tracking
+issue — only exists once the commit is on `main`.
+
 `--benches` only works because every `[lib]` in the workspace sets
 `bench = false` and every `[[bench]]` target is Criterion with
 `harness = false` — the libtest harness rejects `--output-format bencher`.
