@@ -83,24 +83,31 @@ impl Dyadic {
 
     /// Exact sum, or `None` if it would exceed the mantissa's width.
     ///
+    /// Named `checked_*` rather than implementing `core::ops::Add`: the
+    /// fallibility is load-bearing (declining past the cap is what keeps this
+    /// type from ever rounding), and an operator would have to return `Self`,
+    /// forcing an unwrap that reintroduces exactly the silent wrongness the
+    /// type exists to prevent. The prefix also states the fallibility at every
+    /// call site instead of in the docs.
+    ///
     /// Aligning exponents shifts one mantissa left, which can overflow. The
     /// check must happen BEFORE the shift: `checked_shl` only reports a
     /// shift amount ≥ bit width, never bits shifted off the top, so it does
     /// not detect this. Compare the shift against `leading_zeros()` instead.
     #[must_use]
-    pub fn add(self, _rhs: Self) -> Option<Self> {
+    pub fn checked_add(self, _rhs: Self) -> Option<Self> {
         todo!("A: align exponents (checked), integer add, normalize")
     }
 
-    /// Exact difference, or `None` past the mantissa's width. See [`Self::add`].
+    /// Exact difference, or `None` past the mantissa's width. See [`Self::checked_add`].
     #[must_use]
-    pub fn sub(self, _rhs: Self) -> Option<Self> {
+    pub fn checked_sub(self, _rhs: Self) -> Option<Self> {
         todo!("A")
     }
 
     /// Exact product, or `None` past the mantissa's width.
     #[must_use]
-    pub fn mul(self, _rhs: Self) -> Option<Self> {
+    pub fn checked_mul(self, _rhs: Self) -> Option<Self> {
         todo!("A: checked mantissa product, exponents add, normalize")
     }
 
@@ -126,7 +133,7 @@ impl Dyadic {
 
     /// Negation — always exact, never widens.
     #[must_use]
-    pub fn neg(self) -> Self {
+    pub fn negate(self) -> Self {
         todo!("A")
     }
 

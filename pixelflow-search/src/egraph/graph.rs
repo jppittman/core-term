@@ -270,15 +270,22 @@ impl EGraph {
             if ca != cb && ba != bb {
                 let pair = (ba, bb);
                 if !self.refused_const_unions.contains(&pair) {
-                    std::eprintln!(
-                        "pixelflow e-graph: refusing a union that would assert \
-                         {ca} = {cb} (bits {:#010x} vs {:#010x}) — the rule set \
-                         derived contradictory constants (f32 folding vs \
-                         algebra at an ill-conditioned input); keeping the \
-                         classes separate costs only missed CSE",
-                        pair.0,
-                        pair.1
-                    );
+                    // Journal ALWAYS; print only on request. This fires
+                    // during ordinary kernel compilation — two computation
+                    // orders of one real quantity disagreeing by an ulp is
+                    // enough — so unconditional stderr would spam every
+                    // build. `refused_const_unions()` is the durable record.
+                    if std::env::var_os("PIXELFLOW_REPORT_CONST_REFUSALS").is_some() {
+                        std::eprintln!(
+                            "pixelflow e-graph: refusing a union that would assert \
+                             {ca} = {cb} (bits {:#010x} vs {:#010x}) — the rule set \
+                             derived contradictory constants (f32 folding vs \
+                             algebra at an ill-conditioned input); keeping the \
+                             classes separate costs only missed CSE",
+                            pair.0,
+                            pair.1
+                        );
+                    }
                     self.refused_const_unions.push(pair);
                 }
                 return if a.0 < b.0 { a } else { b };
