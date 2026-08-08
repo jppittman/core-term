@@ -949,3 +949,124 @@ mod index_space {
         );
     }
 }
+
+#[cfg(test)]
+mod op_map {
+    use super::{OpKind, OpMap};
+
+    #[test]
+    fn iter_yields_every_op_paired_with_its_own_slot_in_index_order() {
+        let map = OpMap::from_fn(OpKind::index);
+        let collected: Vec<(OpKind, usize)> = map.iter().map(|(op, v)| (op, *v)).collect();
+
+        assert_eq!(collected.len(), OpKind::COUNT);
+        for (i, (op, value)) in collected.iter().enumerate() {
+            assert_eq!(op.index(), i, "iter() is not in index() order at slot {i}");
+            assert_eq!(*value, i, "slot {i} does not hold its own op's value");
+        }
+    }
+
+    #[test]
+    fn as_slice_exposes_the_same_values_iter_yields_in_the_same_order() {
+        let map = OpMap::from_fn(|op| op.index());
+
+        let via_slice: Vec<usize> = map.as_slice().to_vec();
+        let via_iter: Vec<usize> = map.iter().map(|(_, v)| *v).collect();
+
+        assert_eq!(via_slice, via_iter);
+    }
+
+    #[test]
+    fn as_mut_slice_writes_are_visible_through_indexing_by_op() {
+        let mut map: OpMap<usize> = OpMap::splat(0);
+        map.as_mut_slice()[OpKind::Add.index()] = 99;
+
+        assert_eq!(map[OpKind::Add], 99, "write through as_mut_slice was lost");
+        assert_eq!(
+            map[OpKind::Sub],
+            0,
+            "as_mut_slice write bled into a neighboring op's slot"
+        );
+    }
+
+    #[test]
+    fn default_matches_splat_of_the_value_type_default() {
+        let defaulted: OpMap<usize> = OpMap::default();
+        let splatted: OpMap<usize> = OpMap::splat(usize::default());
+
+        assert_eq!(defaulted, splatted);
+    }
+}
+
+#[cfg(test)]
+mod method_names {
+    use super::{EmitStyle, OpKind, known_method_names};
+
+    #[test]
+    fn every_returned_name_round_trips_through_from_name() {
+        for name in known_method_names() {
+            assert_eq!(
+                OpKind::from_name(name).map(OpKind::name),
+                Some(name),
+                "known_method_names() produced {name:?}, which from_name() cannot parse back"
+            );
+        }
+    }
+
+    #[test]
+    fn excludes_every_op_whose_emit_style_is_special() {
+        let names: std::collections::HashSet<&str> = known_method_names().collect();
+
+        for op in OpKind::all() {
+            if matches!(op.emit_style(), EmitStyle::Special) {
+                assert!(
+                    !names.contains(op.name()),
+                    "{op:?} has EmitStyle::Special and must not have a method spelling"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn includes_an_ordinary_binary_op_by_its_method_name() {
+        let names: Vec<&str> = known_method_names().collect();
+        assert!(
+            names.contains(&"min"),
+            "Min is not EmitStyle::Special and should surface as a known method"
+        );
+    }
+}
+
+#[cfg(test)]
+mod eval_unary_libm_arms {
+    use super::OpKind;
+
+    #[test]
+    fn ceil_rounds_toward_positive_infinity() {
+        assert_eq!(OpKind::Ceil.eval_unary(1.2), Some(2.0));
+        assert_eq!(OpKind::Ceil.eval_unary(-1.2), Some(-1.0));
+    }
+
+    #[test]
+    fn round_ties_to_even_matching_x86s_vroundps() {
+        assert_eq!(OpKind::Round.eval_unary(2.5), Some(2.0));
+        assert_eq!(OpKind::Round.eval_unary(3.5), Some(4.0));
+        assert_eq!(OpKind::Round.eval_unary(1.2), Some(1.0));
+    }
+
+    #[test]
+    fn int_to_float_reinterprets_bits_rather_than_converting_the_value() {
+        // 1.0f32's bit pattern read as i32 is nowhere near 1.0.
+        let one_bits = 1.0f32.to_bits() as i32;
+        assert_eq!(
+            OpKind::IntToFloat.eval_unary(1.0),
+            Some(one_bits as f32),
+            "IntToFloat must reinterpret x's bits as i32, not convert x's value"
+        );
+    }
+
+    #[test]
+    fn recip_is_exact_reciprocal_not_an_estimate() {
+        assert_eq!(OpKind::Recip.eval_unary(4.0), Some(0.25));
+    }
+}
