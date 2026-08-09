@@ -352,7 +352,7 @@ jobs:
           done
 
   isa-matrix:
-    name: ISA matrix build+lint (SSE2/AVX2/AVX-512)
+    name: ISA matrix (SSE2/AVX2/AVX-512)
     runs-on: ubuntu-latest
     # Build+lint only -- three `cargo test --workspace --no-run` + `cargo
     # clippy` passes (one per supported ISA level), no test execution. This
