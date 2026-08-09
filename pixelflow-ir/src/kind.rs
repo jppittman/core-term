@@ -257,7 +257,12 @@ impl OpKind {
             // to narrow it. The emitters now assert this range, so a refused
             // fold cannot be laundered into a bad encoding either.
             Self::Shl | Self::Shr => match args {
-                [_, count] => !(0.0..32.0).contains(count) || count.fract() != 0.0,
+                // The range test comes first and `||` short-circuits, so the
+                // cast below only runs on a value already known to be in
+                // `0..32` — where `as u32` is exact and total. (`f32::fract`
+                // would be the obvious spelling but is std-only; this crate
+                // is `no_std`.)
+                [_, count] => !(0.0..32.0).contains(count) || (*count as u32) as f32 != *count,
                 _ => false,
             },
             // One rounding or two. `mul_add` is the single-rounding FMA every
