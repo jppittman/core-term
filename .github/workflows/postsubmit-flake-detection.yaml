@@ -157,11 +157,15 @@ jobs:
 
   # Files (or updates) a tracking issue when any suite was flaky. This job
   # must never fail the workflow: a hiccup filing an issue is not a
-  # postsubmit failure and must not trigger the automatic revert.
+  # postsubmit failure and must not trigger the automatic revert. It still
+  # needs isa-matrix's result (not its artifacts -- that job produces none):
+  # isa-matrix fails the *workflow* outright on any test failure, so a flake
+  # here and an isa-matrix failure can land on the same commit, and the issue
+  # body must not claim "not reverted" when isa-matrix is exactly why it was.
   flake-report:
     name: File flake report
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, isa-matrix]
     if: always()
     continue-on-error: true
     permissions:
@@ -177,6 +181,7 @@ jobs:
       - name: Create or update flake issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISA_MATRIX_RESULT: ${{ needs.isa-matrix.result }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -190,10 +195,16 @@ jobs:
             --color "FBCA04" --description "Test failed intermittently in postsubmit" \
             --repo "${{ github.repository }}"
 
+          if [ "$ISA_MATRIX_RESULT" = "failure" ]; then
+            DISPOSITION="This commit **was** reverted, but not for this flake: the \`isa-matrix\` job separately failed on the same commit (it does not retry -- any ISA-level test failure is treated as a real break), and that is what triggered \`automatic-revert.yaml\`. Deflake or quarantine the flaky tests below regardless."
+          else
+            DISPOSITION="A flaky suite passed some of its 5 postsubmit iterations and failed others, so the commit was **not** reverted. Deflake or quarantine the tests below."
+          fi
+
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           BODY="Intermittent test failures detected on \`${{ github.sha }}\` ([run]($RUN_URL)).
 
-          A flaky suite passed some of its 5 postsubmit iterations and failed others, so the commit was **not** reverted. Deflake or quarantine the tests below.
+          $DISPOSITION
 
           $(cat "${reports[@]}")"
 

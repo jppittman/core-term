@@ -7,12 +7,18 @@ broke them, who backs it out?
 ```
 push to main
   ├── Postsubmit Flake Detection ──(conclusion: failure)──▶ Automatic Revert
-  │     5× per (OS, suite); flaky ⇒ issue, consistent ⇒ fail
+  │     test:       5× per (OS, suite); flaky ⇒ issue, consistent ⇒ fail
+  │     isa-matrix: 1× per ISA level; any failure ⇒ fail, no flaky path
   └── Benchmark Regression Check
         Criterion vs gh-pages baseline; >25% ⇒ issue + commit comment
 ```
 
 ## Flake detection (`postsubmit-flake-detection.yaml`)
+
+Two independent jobs, two different policies, because they're answering "is
+this failure real?" at different granularities.
+
+### `test`: 5 iterations, flaky vs. consistent
 
 Each (OS × suite) job builds the tests once, then runs the suite **5 times**
 with nextest (per-test 10-minute cap from `.config/nextest.toml`). The five
@@ -28,6 +34,18 @@ The distinction is the point: a flake reverted is a lie recorded (the next
 commit "fixes" it by luck), and a hard breakage merely issue-filed rots on
 main. The `flake-report` job runs with `continue-on-error` so an issue-filing
 hiccup can never masquerade as a postsubmit failure and trigger a revert.
+
+### `isa-matrix`: single run, no flaky path
+
+Builds, lints, and runs `cargo test --workspace` once per x86-64 ISA level
+(SSE2/AVX2/AVX-512) this host's CPU supports — deliberately no retry, no
+5-iteration classification. A test that only fails at one ISA level is
+exactly as real a break as one that fails everywhere; retrying it would hide
+the nondeterminism or ISA-specific bug it's surfacing, not resolve it. Any
+failure fails the job outright, which fails the workflow and triggers the
+automatic revert — including on a run where `test` above was merely flaky:
+`flake-report`'s issue then says the revert happened because of `isa-matrix`,
+not the flake, so it never claims a reverted commit "was not reverted."
 
 ## Automatic revert (`automatic-revert.yaml`)
 
