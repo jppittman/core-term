@@ -296,13 +296,23 @@ impl Op for MaskOr {
 // or-fold builds a `u32` pixel per lane, so the production frame kernel is
 // unrepresentable — and therefore compiles with NO CSE across its four
 // channels — unless these enter the e-graph. Runtime-tier only, for the
-// same reason as the mask ops above. Opaque structure: no rewrite rule can
-// name them (nothing here or in `op_from_kind` hands them to a template),
-// their results are bit patterns the float rule set has no semantics for,
-// and `ConstantFold` cannot reach them because folding is rule-driven.
-// `Shl`/`Shr` keep `Const` shift operands by the same argument — no rule
-// can rewrite an operand of an unnameable op's node, and extraction emits
-// `Const` leaves verbatim — so the emitter's immediate-only contract holds.
+// same reason as the mask ops above. Opaque to TEMPLATES: no rewrite rule can
+// name them (nothing here or in `op_from_kind` hands them to a template), and
+// their results are bit patterns the float rule set has no semantics for.
+//
+// That is NOT opacity to folding, and this comment used to claim it was.
+// `ConstantFold::apply` destructures any `ENode::Op` and reads `op.kind()`
+// (`math::algebra`) — it never consults `op_from_kind`, so being unnameable
+// by a template stops nothing. Every op registered here folds. The claim was
+// wrong for years and a miscompile lived in the gap: `Shl`/`Shr` folded a
+// count >= 32 as `count & 31` while the hardware zeroed the lane (x86) or
+// changed element size (aarch64). `OpKind::fold_is_platform_specific` now
+// carries that guard, which is the mechanism that actually holds.
+//
+// `Shl`/`Shr` do keep `Const` shift operands, but for a narrower reason than
+// this comment used to give: extraction emits `Const` leaves verbatim, so the
+// emitter's immediate-only contract holds. The emitters assert their own
+// range rather than trusting it.
 struct IntTrunc;
 impl Op for IntTrunc {
     fn kind(&self) -> OpKind {

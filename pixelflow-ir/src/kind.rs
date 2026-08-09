@@ -218,24 +218,46 @@ impl OpKind {
             // no host whose answer is worth baking. Unconditional: an estimate
             // is only guaranteed close, never equal, so no argument is safe.
             Self::Recip | Self::Rsqrt => true,
-            // An INVALID float->int conversion — non-finite, or outside i32 —
-            // has three different answers. x86 `cvttps2dq` yields the
-            // "integer indefinite" 0x8000_0000 for every invalid input
-            // (including NaN and +inf); aarch64 `FCVTZS` SATURATES to the
-            // destination's min/max with NaN going to 0; and Rust's `as i32`,
-            // which `eval_unary` uses, saturates like aarch64. So the two
-            // architectures disagree with each other, not merely with the
-            // folder: `+inf` folds to i32::MAX's pattern but executes as
-            // i32::MIN on x86. Value-aware, like the rows above — a
-            // conversion that IS in range agrees everywhere and still folds.
+            // An invalid float->int conversion diverges in exactly two
+            // places, and only two. x86 `cvttps2dq` yields the "integer
+            // indefinite" 0x8000_0000 for every invalid input; aarch64
+            // `FCVTZS` saturates to the destination's min/max with NaN going
+            // to 0; and Rust's `as i32`, which `eval_unary` uses, saturates
+            // like aarch64. So:
+            //
+            //   NaN        x86 -> i32::MIN,  aarch64 -> 0          DIVERGES
+            //   x >= 2^31  x86 -> i32::MIN,  aarch64 -> i32::MAX   DIVERGES
+            //   x < -2^31  x86 -> i32::MIN,  aarch64 -> i32::MIN   agrees
+            //   -inf       x86 -> i32::MIN,  aarch64 -> i32::MIN   agrees
+            //
+            // The negative overflow direction agrees by arithmetic accident:
+            // the integer-indefinite pattern IS i32::MIN, which is also what
+            // saturation produces there. Refusing it too would cost ~19% of
+            // the f32 space for nothing, so the predicate names the two real
+            // cases rather than the convenient superset `!is_finite()`.
             //
             // The limit is 2^31 rather than `i32::MAX as f32`, because that
             // cast rounds UP to 2^31 and would admit values above the range.
             Self::TruncToInt => match args {
                 [x] => {
                     const I32_LIMIT: f32 = 2_147_483_648.0; // 2^31
-                    !x.is_finite() || *x >= I32_LIMIT || *x < -I32_LIMIT
+                    x.is_nan() || *x >= I32_LIMIT
                 }
+                _ => false,
+            },
+
+            // A shift count outside `0..32` has three answers. The folder
+            // reduces it mod 32 (`y as u32 & 31`, below); x86
+            // (V)PSLLD/(V)PSRLD zero the whole destination for any count > 31
+            // (Intel SDM); and aarch64's immediate encoding silently changes
+            // ELEMENT SIZE — `emit_shl` computes `immh:immb = shift + 32`, so
+            // at shift >= 32 `immh` becomes `1xxx`, which decodes as `.2D`
+            // and shifts bits across the 32-bit lane boundary. A non-integral
+            // count is refused for the same reason: the tiers disagree on how
+            // to narrow it. The emitters now assert this range, so a refused
+            // fold cannot be laundered into a bad encoding either.
+            Self::Shl | Self::Shr => match args {
+                [_, count] => !(0.0..32.0).contains(count) || count.fract() != 0.0,
                 _ => false,
             },
             // One rounding or two. `mul_add` is the single-rounding FMA every

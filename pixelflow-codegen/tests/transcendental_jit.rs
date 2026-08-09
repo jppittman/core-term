@@ -389,15 +389,12 @@ fn eq_ne_are_exact_not_epsilon() {
 fn invalid_trunc_to_int_is_platform_specific() {
     for x in [
         f32::INFINITY,
-        f32::NEG_INFINITY,
         f32::NAN,
         3e9,
-        -3e9,
         // 2^31 is the first f32 ABOVE i32::MAX. `i32::MAX as f32` rounds up to
         // exactly this value, so a naive `x > i32::MAX as f32` bound would
         // wrongly admit it.
         2_147_483_648.0,
-        -2_147_483_904.0, // first representable f32 below i32::MIN
     ] {
         assert!(
             pixelflow_ir::OpKind::TruncToInt.fold_is_platform_specific(&[x]),
@@ -407,10 +404,72 @@ fn invalid_trunc_to_int_is_platform_specific() {
 
     // Value-aware: a conversion that IS in range agrees on every target and
     // still folds. i32::MIN is exactly representable and is a valid input.
-    for x in [0.0, -0.0, 1.9, -1.9, 2_147_483_520.0, -2_147_483_648.0] {
+    // The negative overflow direction agrees by arithmetic accident: x86's
+    // integer-indefinite pattern IS i32::MIN, which is also what aarch64 and
+    // Rust saturate to. So these must still fold -- refusing them would cost
+    // ~19% of the f32 space for nothing.
+    for x in [
+        0.0,
+        -0.0,
+        1.9,
+        -1.9,
+        2_147_483_520.0,
+        -2_147_483_648.0,
+        -3e9,
+        -2_147_483_904.0,
+        f32::NEG_INFINITY,
+    ] {
         assert!(
             !pixelflow_ir::OpKind::TruncToInt.fold_is_platform_specific(&[x]),
             "in-range conversion of {x} should still fold"
         );
     }
+}
+
+/// A shift count outside `0..32` has three answers, so the folder must decline
+/// it: the folder reduces mod 32, x86 (V)PSLLD/(V)PSRLD zero the entire
+/// destination for any count > 31, and aarch64's immediate carries into
+/// `immh` and silently re-encodes the instruction as a `.2D` (64-bit element)
+/// shift that crosses the 32-bit lane boundary.
+#[test]
+fn out_of_range_shift_counts_are_platform_specific() {
+    for op in [pixelflow_ir::OpKind::Shl, pixelflow_ir::OpKind::Shr] {
+        for count in [
+            32.0,
+            33.0,
+            40.0,
+            64.0,
+            -1.0,
+            -0.0001,
+            2.5,
+            f32::NAN,
+            f32::INFINITY,
+        ] {
+            assert!(
+                op.fold_is_platform_specific(&[1.0, count]),
+                "{op:?} by {count} must not fold"
+            );
+        }
+        // In-range integral counts agree on every target and still fold.
+        for count in [0.0, 1.0, 8.0, 23.0, 31.0] {
+            assert!(
+                !op.fold_is_platform_specific(&[1.0, count]),
+                "{op:?} by {count} should still fold"
+            );
+        }
+    }
+}
+
+/// The aarch64 shift emitters must refuse an out-of-range count rather than
+/// silently encoding a different element size.
+#[test]
+#[cfg(target_arch = "aarch64")]
+#[should_panic(expected = "out of range for a 32-bit lane")]
+fn aarch64_shl_refuses_a_lane_crossing_shift() {
+    let mut a = pixelflow_ir::ExprArena::new();
+    let x = a.push_var(0);
+    let c = a.push_const(32.0);
+    let root = a.push_binary(pixelflow_ir::OpKind::Shl, x, c);
+    let compiled = pixelflow_codegen::emit::compile_arena_dag(&a, root);
+    unreachable!("the emitter must refuse first, got {:?}", compiled.is_ok());
 }

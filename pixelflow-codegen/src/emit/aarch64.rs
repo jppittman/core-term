@@ -554,6 +554,14 @@ pub fn emit_gather(code: &mut Vec<u8>, dst: Reg, idx_int: Reg, gprs: GatherGprs)
 fn emit_ushr(code: &mut Vec<u8>, dst: Reg, src: Reg, shift: u8) {
     // Encoding: 0x6F200400 | ((32 - shift) << 16) as immh:immb
     // For .4S: immh = 001x, so (32-shift) in bits [19:16]
+    // `immh` selects the element size: 01xx is .4S, 001x is .8H, 1xxx is .2D.
+    // Only shifts in 1..=32 keep `64 - shift` inside 01xx, so anything else
+    // silently encodes a DIFFERENT element size and crosses lane boundaries.
+    assert!(
+        (1..=32).contains(&shift),
+        "aarch64 USHR .4S: shift {shift} is outside 1..=32 — the immediate \
+         would encode a different element size, not a 32-bit lane shift"
+    );
     let immhb = (64 - shift as u32) & 0x3F; // USHR uses (immh:immb) = (size*2 - shift)
     let inst = 0x6F200400 | (dst.0 as u32) | ((src.0 as u32) << 5) | (immhb << 16);
     emit32(code, inst);
@@ -561,7 +569,15 @@ fn emit_ushr(code: &mut Vec<u8>, dst: Reg, src: Reg, shift: u8) {
 
 /// SHL Vd.4S, Vn.4S, #shift (shift left by immediate)
 fn emit_shl(code: &mut Vec<u8>, dst: Reg, src: Reg, shift: u8) {
-    // For .4S: immh:immb = shift + 32
+    // For .4S: immh:immb = shift + 32. At shift >= 32 that carries into
+    // `immh`, making it 1xxx — which the ARM ARM decodes as .2D, a 64-bit
+    // element shift that leaks bits across the 32-bit lane boundary. Refuse
+    // loudly rather than emit a silently different instruction.
+    assert!(
+        shift < 32,
+        "aarch64 SHL .4S: shift {shift} is out of range for a 32-bit lane — \
+         the immediate would encode .2D and cross lane boundaries"
+    );
     let immhb = (shift as u32) + 32;
     let inst = 0x4F005400 | (dst.0 as u32) | ((src.0 as u32) << 5) | (immhb << 16);
     emit32(code, inst);
