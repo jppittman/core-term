@@ -1309,3 +1309,32 @@ fn odd_scaled_helper_agrees_with_direct_construction() {
     assert_eq!(via_helper, direct);
     assert_eq!(oracle, 15.0 * 2f64.powi(10));
 }
+
+/// The exponent is finite too, and repeatedly squaring walks it up
+/// exponentially — `2^(2^k)` reaches `i32::MAX` in ~31 squarings. Normalizing
+/// past that must DECLINE, exactly as the mantissa cap does, rather than
+/// panicking in debug or wrapping to a wildly different value in release.
+#[test]
+fn exponent_overflow_declines_instead_of_wrapping() {
+    let mut value = Dyadic::from_f32(2.0).expect("2.0 is dyadic");
+    // Square until the exponent can no longer grow; every step must either
+    // succeed or decline, and none may panic.
+    let mut declined = false;
+    for _ in 0..64 {
+        match value.checked_mul(value) {
+            Some(next) => value = next,
+            None => {
+                declined = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        declined,
+        "repeated squaring must eventually decline rather than wrap the exponent"
+    );
+    // And the surviving value is still a well-formed dyadic that compares and
+    // converts without panicking.
+    assert!(value.to_f32().is_finite() || value.to_f32().is_infinite());
+    assert_eq!(value.cmp(&value), core::cmp::Ordering::Equal);
+}

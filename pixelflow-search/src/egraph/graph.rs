@@ -401,6 +401,22 @@ impl EGraph {
                         // (`active_application` is whatever the caller left
                         // it as — normally `None` outside rule application).
                         self.union(id, existing);
+
+                        // `union` REFUSES a merge that would assert two
+                        // unequal constants equal, and a refusal here needs
+                        // handling that a rule-driven refusal does not: the
+                        // node below would be pushed back into `id` while
+                        // `memo` names `existing`, leaving ONE ENode in two
+                        // contradictory classes with only one of them
+                        // reachable by lookup — later matching or extraction
+                        // could then give the same expression different
+                        // values. Leave the node with the class memo already
+                        // names. `id` loses a node congruent to one it can no
+                        // longer be merged with, which is under-merging: it
+                        // costs CSE, not correctness.
+                        if self.find(id) != self.find(existing) {
+                            continue;
+                        }
                     }
                 } else {
                     self.memo.insert(node.clone(), id);

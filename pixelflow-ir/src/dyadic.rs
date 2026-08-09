@@ -70,15 +70,20 @@ impl Dyadic {
     /// which `Eq`/`Hash` are defined. Without this, `2 × 2^0` and `1 × 2^1`
     /// would be distinct keys for one number and hash-consing would split
     /// e-classes that denote the same value.
-    fn normalize(mantissa: i128, exp: i32) -> Self {
+    /// `None` if the exponent would overflow `i32`. Reachable in O(log)
+    /// public operations — repeatedly squaring `2.0` walks the exponent up
+    /// exponentially — and an unchecked `exp + shift` would panic in debug or
+    /// wrap to a radically different value in release. Declining is the same
+    /// answer the mantissa cap gives.
+    fn normalize(mantissa: i128, exp: i32) -> Option<Self> {
         if mantissa == 0 {
-            return Self::ZERO;
+            return Some(Self::ZERO);
         }
         let shift = mantissa.trailing_zeros();
-        Self {
+        Some(Self {
             mantissa: mantissa >> shift,
-            exp: exp + shift as i32,
-        }
+            exp: exp.checked_add(shift as i32)?,
+        })
     }
 
     /// Number of significant bits in the magnitude (1 for `±1`).
@@ -110,7 +115,7 @@ impl Dyadic {
             (fraction | (1 << 23), biased - F32_EXP_BIAS_TO_BIASED)
         };
         let signed = if negative { -magnitude } else { magnitude };
-        Some(Self::normalize(signed, exp))
+        Self::normalize(signed, exp)
     }
 
     /// Round to the nearest `f32`, ties to even — exactly ONE rounding.
@@ -215,7 +220,7 @@ impl Dyadic {
         }
         let aligned = high.mantissa << shift as u32;
         let sum = low.mantissa.checked_add(aligned)?;
-        Some(Self::normalize(sum, low.exp))
+        Self::normalize(sum, low.exp)
     }
 
     /// Exact difference, or `None` past the mantissa's width. See [`Self::checked_add`].
@@ -232,7 +237,7 @@ impl Dyadic {
         }
         let mantissa = self.mantissa.checked_mul(rhs.mantissa)?;
         let exp = self.exp.checked_add(rhs.exp)?;
-        Some(Self::normalize(mantissa, exp))
+        Self::normalize(mantissa, exp)
     }
 
     /// Quotient, but ONLY when it is exactly representable as a dyadic.
@@ -254,7 +259,7 @@ impl Dyadic {
             return None;
         }
         let exp = self.exp.checked_sub(rhs.exp)?;
-        Some(Self::normalize(self.mantissa / rhs.mantissa, exp))
+        Self::normalize(self.mantissa / rhs.mantissa, exp)
     }
 
     /// Square root, but ONLY when exact.
@@ -277,7 +282,7 @@ impl Dyadic {
             return None;
         }
         let root = exact_isqrt(self.mantissa.unsigned_abs())?;
-        Some(Self::normalize(root as i128, self.exp / 2))
+        Self::normalize(root as i128, self.exp / 2)
     }
 
     /// Negation — always exact, never widens.

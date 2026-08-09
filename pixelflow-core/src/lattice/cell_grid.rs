@@ -195,7 +195,9 @@ fn packed_kernel(
             .trunc_to_int()
             .shl(shifts[c])
     };
-    byte(0).or(&byte(1)).or(&byte(2)).or(&byte(3))
+    // Fold in the bit domain, then take the single named exit: the packed
+    // pattern IS the kernel's output.
+    byte(0).or(&byte(1)).or(&byte(2)).or(&byte(3)).into_kernel()
 }
 
 /// The two blocks of memory a cell-grid program reads, identified so that
