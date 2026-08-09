@@ -44,8 +44,11 @@ exactly as real a break as one that fails everywhere; retrying it would hide
 the nondeterminism or ISA-specific bug it's surfacing, not resolve it. Any
 failure fails the job outright, which fails the workflow and triggers the
 automatic revert — including on a run where `test` above was merely flaky:
-`flake-report`'s issue then says the revert happened because of `isa-matrix`,
-not the flake, so it never claims a reverted commit "was not reverted."
+`flake-report`'s issue then says the revert was triggered/proposed because of
+`isa-matrix`, not the flake, so it never claims a commit "was not reverted"
+when it may in fact be reverted (or the revert PR may conflict or go
+unmerged -- `automatic-revert.yaml` hasn't even run yet when this issue is
+filed, since it only starts once this whole workflow concludes).
 
 ## Automatic revert (`automatic-revert.yaml`)
 
