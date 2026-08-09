@@ -12,8 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     # The flake-detection workflow concludes 'failure' on: a build failure,
     # the `test` job's suite failing all 5 iterations, or any `isa-matrix`
-    # test failure (that job does not retry -- a flaky ISA-level test is
-    # exactly as real a break as a consistent one, see its own comment in
+    # job failure at all -- build, clippy, or test, at any ISA level (that
+    # job does not retry; a flaky ISA-level test is exactly as real a break
+    # as a consistent one, see its own comment in
     # postsubmit-flake-detection.yaml). The `test` job's flaky suites file an
     # issue and leave it green instead, so this never reverts on a `test`-job
     # flake -- it does revert on any `isa-matrix` failure, by design.
@@ -108,7 +109,7 @@ jobs:
           git push -u origin "$BRANCH_NAME"
 
           ISSUE_URL=$(open_issue "Postsubmit failure: $SUBJECT" \
-            "Commit $FAILING_SHA failed postsubmit tests (the build broke, a test suite failed all 5 iterations, or an ISA-level test failed in the isa-matrix job).
+            "Commit $FAILING_SHA failed postsubmit tests (the build broke, a test suite failed all 5 iterations, or the isa-matrix job failed -- see its log for whether that was a build, lint, or test failure and at which ISA level).
 
           A revert PR has been automatically created to address this failure.
 

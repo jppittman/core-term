@@ -196,7 +196,7 @@ jobs:
             --repo "${{ github.repository }}"
 
           if [ "$ISA_MATRIX_RESULT" = "failure" ]; then
-            DISPOSITION="This commit **was** reverted, but not for this flake: the \`isa-matrix\` job separately failed on the same commit (it does not retry -- any ISA-level test failure is treated as a real break), and that is what triggered \`automatic-revert.yaml\`. Deflake or quarantine the flaky tests below regardless."
+            DISPOSITION="The \`isa-matrix\` job also failed on this commit, separately from the flake below (it does not retry -- any ISA-level failure is treated as a real break). That failure, not the flake, is what makes the overall workflow conclude failure and triggers \`automatic-revert.yaml\` to propose a revert PR. Deflake or quarantine the flaky tests below regardless."
           else
             DISPOSITION="A flaky suite passed some of its 5 postsubmit iterations and failed others, so the commit was **not** reverted. Deflake or quarantine the tests below."
           fi
