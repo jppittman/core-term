@@ -859,4 +859,32 @@ mod tests {
         let (tx_green, _rx_green) = green_channel::<u32>(2, handle.waker());
         assert!(format!("{:?}", tx_green).contains("GreenSender"));
     }
+
+    // `send`'s bounded backoff must give up and report failure rather than block forever or
+    // silently claim success: a permanently full inbox means the consumer is gone or wedged,
+    // and the caller needs to know rather than hang.
+    #[test]
+    fn green_sender_send_times_out_on_permanently_full_inbox() {
+        use std::time::Duration;
+
+        let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+        let (tx_raw, _rx_raw) = spsc_channel::<u32>(2);
+        tx_raw.try_send(1).unwrap();
+        tx_raw.try_send(2).unwrap();
+
+        let params = SchedulerParams {
+            spin_attempts: 0,
+            yield_attempts: 0,
+            min_backoff: Duration::from_micros(1),
+            max_backoff: Duration::from_micros(1),
+            jitter_min_pct: 50,
+            jitter_range_pct: 49,
+            ..SchedulerParams::DEFAULT
+        };
+        let tx_green = GreenSender::new_with_params(tx_raw, handle.waker(), params);
+        assert!(
+            matches!(tx_green.send(3), Err(SendError::Timeout)),
+            "a permanently full inbox must time out, not silently succeed"
+        );
+    }
 }
