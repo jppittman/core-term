@@ -4655,14 +4655,12 @@ mod tests {
         use super::*;
         use pixelflow_ir::arena::ExprArena;
 
-        // Tolerance reflects the degree-7 Chebyshev's ACTUAL measured accuracy
-        // (the SAME polynomial the runtime `SimdOps` path uses): ~1e-6 near 0,
-        // degrading to ~2.6e-2 at the ±π range-reduction edges — only ~2-digit
-        // accurate there. The bound catches *logic* errors (sign/coefficient/
-        // range-reduction), not approximation error; tightening the polynomial
-        // is the tunable-precision lever, applied in one place (`lowering`),
-        // later.
-        const TRIG_TOL: f32 = 3e-2;
+        // The degree-11 Chebyshev in `passes` measures 6e-7 across the whole
+        // reduced interval, so this bound sits an order of magnitude above the
+        // measured worst case: tight enough to test the polynomial, loose
+        // enough not to test the last bit of the build's rounding. A bound in
+        // the 1e-2 range would only be able to catch gross logic errors.
+        const TRIG_TOL: f32 = 1e-5;
 
         #[test]
         fn sin_cos_tan_match_scalar() {
@@ -4684,9 +4682,9 @@ mod tests {
                 let mut a = ExprArena::new();
                 let x = a.push_var(0);
                 let t = a.push_unary(OpKind::Tan, x);
-                // tan = sin/cos amplifies cos's ~2e-2 edge error as |x| grows
-                // (measured ~3.8e-2 at x=1). Honest bound for this polynomial.
-                assert!((run1(&a, t, xv) - xv.tan()).abs() <= 5e-2, "tan({xv})");
+                // tan = sin/cos amplifies both errors by 1/cos²(x); from
+                // 6e-7 apiece that is ~3e-6 at x=1.
+                assert!((run1(&a, t, xv) - xv.tan()).abs() <= 1e-4, "tan({xv})");
             }
         }
 
@@ -4728,11 +4726,16 @@ mod tests {
         /// the jet path can't differentiate. Validated vs `f32`.
         #[test]
         fn inverse_trig_match_scalar() {
-            // The degree-7 atan polynomial is worst (~6e-2) at |ratio|=1; that
-            // dominates the tolerance. It catches logic/quadrant errors (which
-            // were off by whole radians via the guard bug), not approximation
-            // error. Tightening the polynomial is the tunable-precision lever.
-            const ATAN_TOL: f32 = 7e-2;
+            // The atan polynomial is minimax: 8.7e-5 across the interval.
+            // What sets this bound is therefore not the polynomial but
+            // `Recip`, which is a hardware
+            // *estimate* — ~12 bits from `rcpps`, ~14 from `vrcp14ps` — so it
+            // injects ~1.2e-4 into the ratio and differs by ISA level. That is
+            // also why this is looser than the same check in
+            // `pixelflow-ir/tests/trig_range.rs`: the scalar oracle's `Recip`
+            // is an exact `1.0/x`, so that test bounds the polynomial and this
+            // one bounds the polynomial plus the estimate.
+            const ATAN_TOL: f32 = 1e-3;
 
             // atan over a wide range (exercises the |ratio|>1 swap branch).
             for &xv in &[0.0f32, 0.3, 1.0, 2.5, -0.7, -4.0] {
