@@ -97,15 +97,46 @@ pub struct CellGridGeometry {
 
 impl CellGridGeometry {
     /// Cell-data buffer length this geometry implies.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the product overflows `usize`. A wrapped length would be
+    /// SMALL, so `frame` would accept a correspondingly small buffer while
+    /// the compiled kernel still declared the true row width — and the
+    /// gathers would read billions of elements past the end through an
+    /// entirely safe API.
     #[must_use]
     pub fn cells_len(&self) -> usize {
-        self.cols as usize * self.rows as usize * CELL_STRIDE
+        (self.cols as usize)
+            .checked_mul(self.rows as usize)
+            .and_then(|cells| cells.checked_mul(CELL_STRIDE))
+            .expect("CellGridGeometry::cells_len overflows usize")
     }
 
     /// Atlas buffer length this geometry implies.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the product overflows `usize` — see [`Self::cells_len`].
     #[must_use]
     pub fn atlas_len(&self) -> usize {
-        self.atlas_width as usize * self.atlas_height as usize
+        (self.atlas_width as usize)
+            .checked_mul(self.atlas_height as usize)
+            .expect("CellGridGeometry::atlas_len overflows usize")
+    }
+
+    /// Width of the cell-data buffer as the kernel declares it, in `f32`s.
+    ///
+    /// # Panics
+    ///
+    /// Panics if it overflows `u32`. `channel_kernel` computed this as a
+    /// wrapping `u32` product, so a wrapped value silently declared a buffer
+    /// of a completely different shape than the one bound to it.
+    #[must_use]
+    pub(crate) fn cells_row_width(&self) -> u32 {
+        self.cols
+            .checked_mul(CELL_STRIDE as u32)
+            .expect("CellGridGeometry: cell-buffer row width overflows u32")
     }
 }
 
@@ -133,7 +164,7 @@ fn channel_kernel(
     // Per-cell data: gathers clamp to the buffer edge, so out-of-grid queries
     // read the border cell — harmless, since the final select replaces them
     // with the default background anyway.
-    let cells = DiscreteManifold::kernel_for(bufs.cells, geom.cols * CELL_STRIDE as u32, geom.rows);
+    let cells = DiscreteManifold::kernel_for(bufs.cells, geom.cells_row_width(), geom.rows);
     let cx = col.mul(&k(CELL_STRIDE as f32));
     let field = |offset: usize| {
         let idx = if offset == 0 {
@@ -273,6 +304,16 @@ fn assert_compilable(geom: &CellGridGeometry) {
         pixelflow_codegen::JIT_VECTOR_BYTES,
         "cell-grid compile: Field width does not match the JIT's emitted width"
     );
+    // Both products must be computable before anything downstream trusts
+    // them: cells_len/cells_row_width panic on overflow rather than wrapping,
+    // and a wrapped length paired with an unwrapped row width is how a safe
+    // API ends up gathering past the end of the bound buffer.
+    // (Both accessors panic on overflow; calling them here is the check.)
+    assert!(
+        geom.cells_len() > 0 && geom.cells_row_width() > 0,
+        "cell-grid compile: empty cell buffer for {geom:?}"
+    );
+
     // Gather computes its row-major linear index in f32, which is exact
     // only below 2^24 — beyond that adjacent texels alias. Refuse
     // loudly instead of rendering corrupted gathers.

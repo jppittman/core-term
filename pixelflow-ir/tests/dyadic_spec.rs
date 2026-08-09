@@ -1338,3 +1338,36 @@ fn exponent_overflow_declines_instead_of_wrapping() {
     assert!(value.to_f32().is_finite() || value.to_f32().is_infinite());
     assert_eq!(value.cmp(&value), core::cmp::Ordering::Equal);
 }
+
+/// `normalize` legitimately accepts `exp == i32::MAX` — it only rejects an
+/// ADD that would overflow — so `to_f32` must survive the extremes the type
+/// itself permits. Every exponent step there (binade, target, shift, bias)
+/// would leave `i32` for such a value; they are computed in `i64` and the
+/// result saturates to ±∞ or zero.
+#[test]
+fn to_f32_survives_the_exponent_extremes_the_type_allows() {
+    // Walk to the largest exponent reachable, then convert.
+    let mut big = Dyadic::from_f32(2.0).expect("2.0");
+    while let Some(next) = big.checked_mul(big) {
+        big = next;
+    }
+    assert!(
+        big.to_f32().is_infinite() && big.to_f32() > 0.0,
+        "an enormous positive dyadic must convert to +inf, not panic or wrap"
+    );
+    assert!(
+        big.negate().to_f32().is_infinite() && big.negate().to_f32() < 0.0,
+        "and its negation to -inf"
+    );
+
+    // The same walk downward: repeated squaring of a tiny value underflows.
+    let mut tiny = Dyadic::from_f32(0.5).expect("0.5");
+    while let Some(next) = tiny.checked_mul(tiny) {
+        tiny = next;
+    }
+    assert_eq!(
+        tiny.to_f32(),
+        0.0,
+        "an enormously small positive dyadic must convert to +0.0"
+    );
+}

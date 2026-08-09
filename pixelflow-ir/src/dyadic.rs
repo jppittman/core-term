@@ -128,37 +128,45 @@ impl Dyadic {
         let magnitude = self.mantissa.unsigned_abs();
         // floor(log2(value)): a k-bit magnitude scaled by 2^exp lies in
         // [2^(k-1+exp), 2^(k+exp)).
-        let unbiased = self.magnitude_bits() as i32 - 1 + self.exp;
+        //
+        // All exponent arithmetic here is i64. `normalize` legitimately
+        // accepts exp == i32::MAX (it only rejects an overflowing ADD), so
+        // every one of these steps — the binade, the target, the shift, and
+        // the bias below — can leave i32 for a value the type itself allows.
+        // Widening is cheaper than checking each one, and the results are
+        // clamped into f32's range regardless.
+        let exp_wide = i64::from(self.exp);
+        let unbiased = i64::from(self.magnitude_bits()) - 1 + exp_wide;
 
         // A normal result keeps 24 significand bits; below 2^-126 the
         // significand loses bits instead of the exponent falling further, so
         // the rounding position pins at 2^-149. Taking the max is what moves
         // the rounding point into the subnormal range — the case hand-rolled
         // conversions usually miss.
-        let target_exp =
-            core::cmp::max(unbiased - (F32_SIGNIFICAND_BITS - 1), F32_MIN_SUBNORMAL_EXP);
-        let shift = target_exp - self.exp;
+        let target_exp = core::cmp::max(
+            unbiased - i64::from(F32_SIGNIFICAND_BITS - 1),
+            i64::from(F32_MIN_SUBNORMAL_EXP),
+        );
+        let shift = target_exp - exp_wide;
 
         let mut significand: u128 = if shift <= 0 {
             // Widening: exact. In the normal branch `shift == bits - 24`, so a
             // negative shift means fewer than 24 bits and cannot overflow.
             magnitude << (-shift) as u32
+        } else if shift >= 128 {
+            // Everything is below the round bit. The magnitude is < 2^128
+            // ≤ 2·half, so it can only reach a tie at shift == 128 with a
+            // magnitude above 2^127.
+            u128::from(shift == 128 && magnitude > (1u128 << 127))
         } else {
             let drop = shift as u32;
-            if drop >= 128 {
-                // Everything is below the round bit. The magnitude is < 2^128
-                // = 2^(drop) ≤ 2·half, so it can only reach a tie when
-                // drop == 128 and magnitude > 2^127.
-                u128::from(drop == 128 && magnitude > (1u128 << 127))
-            } else {
-                let quotient = magnitude >> drop;
-                let dropped = magnitude & ((1u128 << drop) - 1);
-                let half = 1u128 << (drop - 1);
-                // Round-nearest, ties-to-even: up when past halfway, or
-                // exactly halfway with an odd quotient.
-                let round_up = dropped > half || (dropped == half && quotient & 1 == 1);
-                quotient + u128::from(round_up)
-            }
+            let quotient = magnitude >> drop;
+            let dropped = magnitude & ((1u128 << drop) - 1);
+            let half = 1u128 << (drop - 1);
+            // Round-nearest, ties-to-even: up when past halfway, or exactly
+            // halfway with an odd quotient.
+            let round_up = dropped > half || (dropped == half && quotient & 1 == 1);
+            quotient + u128::from(round_up)
         };
 
         // Rounding can carry the significand out of its binade (0xFF_FFFF + 1).
@@ -168,7 +176,7 @@ impl Dyadic {
             exp += 1;
         }
 
-        let biased = exp + F32_EXP_BIAS_TO_BIASED;
+        let biased = exp + i64::from(F32_EXP_BIAS_TO_BIASED);
         let magnitude_bits: u32 = if biased >= 0xFF {
             0x7F80_0000 // ±∞
         } else if significand >= 1 << (F32_SIGNIFICAND_BITS - 1) {
