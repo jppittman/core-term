@@ -380,6 +380,11 @@ impl From<Rgba8> for Bgra8 {
 // =============================================================================
 
 impl Pixel for Rgba8 {
+    /// `Rgba8::new` stores `[r, g, b, a]`, so r is byte 0.
+    fn packed_shifts() -> Option<[u32; 4]> {
+        Some([0, 8, 16, 24])
+    }
+
     #[inline]
     fn from_u32(v: u32) -> Self {
         Self(v)
@@ -399,6 +404,11 @@ impl Pixel for Rgba8 {
 }
 
 impl Pixel for Bgra8 {
+    /// `Bgra8::new` stores `[b, g, r, a]`, so r is byte 2.
+    fn packed_shifts() -> Option<[u32; 4]> {
+        Some([16, 8, 0, 24])
+    }
+
     #[inline]
     fn from_u32(v: u32) -> Self {
         Self(v)
@@ -512,6 +522,41 @@ pub type BgraColorCube = ColorCube<
     pixelflow_core::variables::W,
 >;
 
+impl RgbaColorCube {
+    /// Bit position of each `(r, g, b, a)` channel in this cube's packed
+    /// `u32` pixel. Derived from `Rgba8::new`'s `u32::from_le_bytes([r, g,
+    /// b, a])`: r is byte 0. The JIT packed cell-grid kernel takes these, so
+    /// byte order has exactly one home — if the kernel pack and
+    /// `Pixel::from_rgba` ever disagreed, they would have to disagree in
+    /// this file (`packed_shifts_agree_with_pixel_from_rgba` pins it).
+    pub const PACKED_SHIFTS: [u32; 4] = [0, 8, 16, 24];
+}
+
+// The cube constants and the `Pixel` impls above state one fact; this pins
+// them to each other so a future edit cannot move only one.
+const _: () = assert!(RgbaColorCube::PACKED_SHIFTS[0] == 0);
+const _: () = assert!(BgraColorCube::PACKED_SHIFTS[0] == 16);
+
+impl BgraColorCube {
+    /// Bit position of each `(r, g, b, a)` channel — `Bgra8::new` stores
+    /// `[b, g, r, a]`, so r is byte 2. See [`RgbaColorCube::PACKED_SHIFTS`].
+    pub const PACKED_SHIFTS: [u32; 4] = [16, 8, 0, 24];
+}
+
+/// The platform's framebuffer pixel format — the same choice
+/// [`PlatformColorCube`] makes, for code that needs the `Pixel` type rather
+/// than the cube.
+#[cfg(target_os = "macos")]
+pub type PlatformPixel = Rgba8;
+
+/// See the macOS variant.
+#[cfg(target_os = "linux")]
+pub type PlatformPixel = Bgra8;
+
+/// See the macOS variant.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub type PlatformPixel = Rgba8;
+
 /// Platform-appropriate ColorCube (handles byte order based on target OS).
 ///
 /// - macOS: RGBA byte order
@@ -602,6 +647,45 @@ pub fn color_manifold<R, G, B, A>(r: R, g: G, b: B, a: A) -> ColorManifold<R, G,
 
 #[cfg(test)]
 mod tests {
+
+    /// The cube's shift table and the scalar `Pixel::from_rgba` are the same
+    /// byte-order fact stated twice; this pins them to each other so the JIT
+    /// pack (which consumes the shifts) can never drift from the scalar pack.
+    #[test]
+    fn packed_shifts_agree_with_pixel_from_rgba() {
+        fn pack(shifts: [u32; 4], r: f32, g: f32, b: f32, a: f32) -> u32 {
+            let q = |x: f32| (x * 255.0).clamp(0.0, 255.0) as u32;
+            (q(r) << shifts[0]) | (q(g) << shifts[1]) | (q(b) << shifts[2]) | (q(a) << shifts[3])
+        }
+        let samples = [
+            (0.0, 0.25, 0.5, 1.0),
+            (1.0, 0.0, 0.999, 0.004),
+            (0.7, 0.7, 0.7, 0.0),
+        ];
+        for (r, g, b, a) in samples {
+            assert_eq!(
+                Rgba8::from_rgba(r, g, b, a).0,
+                pack(RgbaColorCube::PACKED_SHIFTS, r, g, b, a),
+                "Rgba8 disagrees with RgbaColorCube::PACKED_SHIFTS"
+            );
+            assert_eq!(
+                Bgra8::from_rgba(r, g, b, a).0,
+                pack(BgraColorCube::PACKED_SHIFTS, r, g, b, a),
+                "Bgra8 disagrees with BgraColorCube::PACKED_SHIFTS"
+            );
+            assert_eq!(
+                <u32 as Pixel>::from_rgba(r, g, b, a),
+                pack(
+                    <u32 as Pixel>::packed_shifts().expect("u32 is packed RGBA"),
+                    r,
+                    g,
+                    b,
+                    a
+                ),
+                "u32 disagrees with its own packed_shifts"
+            );
+        }
+    }
     use super::*;
 
     #[test]

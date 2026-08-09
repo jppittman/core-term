@@ -14,6 +14,8 @@ Use the stable Rust toolchain from `rust-toolchain.toml`.
 - `cargo bench -p pixelflow-core` or `cargo bench -p actor-scheduler`: run focused benchmarks.
 
 ## Coding Style & Naming Conventions
+Design denotationally: decide what a thing *means* as a mathematical object, and encode that meaning in the type system, before writing the code that manipulates it (see "Denote before you build" in `CLAUDE.md`). A rule that lives only in a doc comment — "this operand must be a constant", "these bits are a mask, not a number", "these coordinates are in the caller's space" — is an invariant some later pass will break, and the repair always costs more than the type would have.
+
 Follow `docs/STYLE.md`. Prefer clear names over explanatory comments; use Rustdoc for public APIs and regular comments only for design rationale. Keep control flow flat with guard clauses, prefer `match` over long `else if` chains, and avoid boolean parameters when an enum or separate function is clearer. Use `snake_case` for functions/modules/files, `CamelCase` for types, and named constants instead of unexplained numeric literals.
 
 ## Testing Guidelines

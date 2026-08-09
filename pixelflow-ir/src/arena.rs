@@ -25,6 +25,47 @@ pub struct ExprId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct BufferId(pub u16);
 
+/// Which block of memory a declaration refers to, independent of any arena.
+///
+/// [`BufferId`] is a slot index into *one* arena's table, so it cannot answer
+/// "the same buffer?" across a merge — two fragments each call their own
+/// buffer slot 0. Extents cannot answer it either: two atlases of equal size
+/// are a coincidence, not a fact, and treating them as one would bind a single
+/// pointer for both and silently read the wrong pixels.
+///
+/// So identity is provenance. You get one by minting it, and copy it into
+/// every declaration that names that memory; nothing else can collide with it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct BufferIdentity(u32);
+
+impl BufferIdentity {
+    /// Mint an identity distinct from every other in this process.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the counter is exhausted, rather than wrapping onto a live
+    /// identity and aliasing two unrelated buffers.
+    #[must_use]
+    pub fn mint() -> Self {
+        static NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        // `fetch_add` + assert was wrong: the add WRAPS before the assert
+        // fires, so if that panic is ever caught — or merely unwinds a
+        // non-fatal worker thread — the counter has already returned to 0 and
+        // the next mint hands out an identity that is still live. Two
+        // unrelated buffers would then compare identical and merge into one
+        // splice/JIT slot. `fetch_update` declining to store leaves the
+        // counter permanently exhausted instead.
+        let id = NEXT
+            .fetch_update(
+                core::sync::atomic::Ordering::Relaxed,
+                core::sync::atomic::Ordering::Relaxed,
+                |n| n.checked_add(1),
+            )
+            .expect("BufferIdentity: counter exhausted");
+        Self(id)
+    }
+}
+
 /// Declaration of a bound memory buffer: the static shape of a collapsed
 /// lattice. The extents are part of the IR (like a `Const`) even though the
 /// contents are bound later, at JIT-compile time. Static extents are what
@@ -34,6 +75,10 @@ pub struct BufferId(pub u16);
 /// Layout is row-major with `stride == width`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct BufferDecl {
+    /// Which memory this names. Two declarations of the same buffer must carry
+    /// the same identity — that is what lets a merge collapse them into one
+    /// slot instead of binding the pointer twice.
+    pub id: BufferIdentity,
     /// X extent (samples per row).
     pub width: u32,
     /// Y extent (number of rows).
@@ -734,13 +779,14 @@ impl ExprArena {
     /// variables directly (an identity contramap); warp it afterwards with
     /// [`ExprArena::substitute_vars_with`].
     ///
-    /// # Panics
-    ///
-    /// Panics if the fragment references bound memory (`Buffer` leaves) —
-    /// merging buffer tables is not supported yet, and no kernel surface can
-    /// produce buffers today.
+    /// Buffers the fragment reads are merged into this arena's table by
+    /// [`BufferIdentity`] and its `Buffer` leaves remapped, so a sampler
+    /// composes like anything else and reading the same memory from twenty
+    /// places still binds one pointer.
     pub fn splice(&mut self, other: &ExprArena, root: ExprId) -> ExprId {
         let mut id_map: Vec<Option<ExprId>> = vec![None; other.nodes.len()];
+        // Fragment-local BufferId -> this arena's slot, filled lazily.
+        let mut buf_map: Vec<Option<BufferId>> = vec![None; other.buffers.len()];
 
         enum Task {
             Descend(ExprId),
@@ -771,11 +817,29 @@ impl ExprArena {
                         ExprNode::Var(i) => self.push_var(i),
                         ExprNode::Const(v) => self.push_const(v),
                         ExprNode::Param(i) => self.push_param(i),
-                        ExprNode::Buffer(b) => panic!(
-                            "splice: fragment references Buffer({}) — buffer-table merging \
-                             is not supported",
-                            b.0
-                        ),
+                        ExprNode::Buffer(b) => {
+                            let slot = match buf_map[b.0 as usize] {
+                                Some(slot) => slot,
+                                None => {
+                                    let decl = other.buffers[b.0 as usize];
+                                    let slot =
+                                        match self.buffers.iter().position(|d| d.id == decl.id) {
+                                            Some(i) => {
+                                                assert_eq!(
+                                                    self.buffers[i], decl,
+                                                    "splice: two declarations share a \
+                                                 BufferIdentity but disagree on extents"
+                                                );
+                                                BufferId(i as u16)
+                                            }
+                                            None => self.declare_buffer(decl),
+                                        };
+                                    buf_map[b.0 as usize] = Some(slot);
+                                    slot
+                                }
+                            };
+                            self.push_buffer(slot)
+                        }
                         ExprNode::Unary(op, a) => {
                             let a = m(a);
                             self.push_unary(op, a)
@@ -1209,6 +1273,7 @@ mod tests {
     fn push_gather_should_create_node_when_valid() {
         let mut arena = ExprArena::new();
         let buf = arena.declare_buffer(BufferDecl {
+            id: crate::arena::BufferIdentity::mint(),
             width: 16,
             height: 8,
         });
@@ -1340,6 +1405,96 @@ mod composition_tests {
         // x, y, s, add = 4 nodes — not 6 (s duplicated).
         assert_eq!(host.nodes_raw().len() - before, 4);
         assert_eq!(eval(&host, spliced, &[3.0, 2.0, 0.0, 0.0]), 12.0);
+    }
+
+    #[test]
+    fn splice_merges_buffer_tables_keeping_reads_distinct() {
+        // Two donors that each call their own buffer slot 0. Merging must give
+        // two slots, and each gather must still read the buffer it was written
+        // against — remapping the id, not just renumbering it.
+        let mut donor_a = ExprArena::new();
+        let pa = donor_a.declare_buffer(BufferDecl {
+            id: crate::arena::BufferIdentity::mint(),
+            width: 2,
+            height: 1,
+        });
+        let (ax, ay) = (donor_a.push_var(0), donor_a.push_var(1));
+        let a_root = donor_a.push_gather(pa, ax, ay);
+
+        let mut donor_b = ExprArena::new();
+        let qb = donor_b.declare_buffer(BufferDecl {
+            id: crate::arena::BufferIdentity::mint(),
+            width: 2,
+            height: 1,
+        });
+        let (bx, by) = (donor_b.push_var(0), donor_b.push_var(1));
+        let b_root = donor_b.push_gather(qb, bx, by);
+
+        let mut host = ExprArena::new();
+        let sa = host.splice(&donor_a, a_root);
+        let sb = host.splice(&donor_b, b_root);
+        let root = host.push_binary(OpKind::Add, sa, sb);
+        assert_eq!(host.buffers().len(), 2, "two donors, two slots");
+
+        let (p, q) = ([10.0f32, 20.0], [3.0f32, 4.0]);
+        let binding = BindingTable::bind(&host, &[&p[..], &q[..]]).expect("bind");
+        assert_eq!(eval_scalar(&host, root, &[0.0; 4], &binding), 13.0);
+        assert_eq!(
+            eval_scalar(&host, root, &[1.0, 0.0, 0.0, 0.0], &binding),
+            24.0
+        );
+    }
+
+    #[test]
+    fn splice_gives_one_slot_to_a_buffer_read_twice() {
+        // Within a single splice, one buffer stays one slot however many times
+        // the fragment gathers from it. (Across separate splices it does not —
+        // that needs an identity outliving the arena-local BufferId.)
+        let mut donor = ExprArena::new();
+        let buf = donor.declare_buffer(BufferDecl {
+            id: crate::arena::BufferIdentity::mint(),
+            width: 2,
+            height: 1,
+        });
+        let (x, y) = (donor.push_var(0), donor.push_var(1));
+        let one = donor.push_const(1.0);
+        let x1 = donor.push_binary(OpKind::Add, x, one);
+        let g0 = donor.push_gather(buf, x, y);
+        let g1 = donor.push_gather(buf, x1, y);
+        let frag = donor.push_binary(OpKind::Add, g0, g1);
+
+        let mut host = ExprArena::new();
+        let root = host.splice(&donor, frag);
+        assert_eq!(host.buffers().len(), 1, "one buffer read twice, one slot");
+
+        let p = [5.0f32, 7.0];
+        let binding = BindingTable::bind(&host, &[&p[..]]).expect("bind");
+        assert_eq!(eval_scalar(&host, root, &[0.0; 4], &binding), 12.0);
+    }
+
+    #[test]
+    fn splicing_one_buffer_from_two_places_binds_it_once() {
+        // Separate splices, same memory: identity merges them. This is what
+        // lets a sampler be read from all over a kernel and still cost one
+        // binding — without it each use would want its own pointer.
+        let mut donor = ExprArena::new();
+        let buf = donor.declare_buffer(BufferDecl {
+            id: BufferIdentity::mint(),
+            width: 2,
+            height: 1,
+        });
+        let (x, y) = (donor.push_var(0), donor.push_var(1));
+        let frag = donor.push_gather(buf, x, y);
+
+        let mut host = ExprArena::new();
+        let first = host.splice(&donor, frag);
+        let second = host.splice(&donor, frag);
+        let root = host.push_binary(OpKind::Add, first, second);
+        assert_eq!(host.buffers().len(), 1, "one buffer, one slot");
+
+        let p = [5.0f32, 7.0];
+        let binding = BindingTable::bind(&host, &[&p[..]]).expect("bind");
+        assert_eq!(eval_scalar(&host, root, &[0.0; 4], &binding), 10.0);
     }
 
     #[test]

@@ -17,6 +17,20 @@ pub trait Pixel: Copy + Default + Debug + PartialEq + 'static + Send + Sync {
     /// Create from normalized RGBA components [0, 1].
     fn from_rgba(r: f32, g: f32, b: f32, a: f32) -> Self;
 
+    /// Bit position of each `(r, g, b, a)` channel in this format's packed
+    /// `u32`, or `None` for formats that are not a packed RGBA word.
+    ///
+    /// This is [`Pixel::from_rgba`]'s byte order stated as data, so a JIT
+    /// kernel can pack straight to this format instead of computing four
+    /// floats for a scalar pack to place. A renderer that hands a kernel
+    /// these shifts and then stores the result as `Self` cannot disagree
+    /// with `from_rgba` — same source. `None` means "no packed form": such a
+    /// format must go through `from_rgba`.
+    #[must_use]
+    fn packed_shifts() -> Option<[u32; 4]> {
+        None
+    }
+
     // Note: No batch methods here. The Engine knows how to load
     // pixel types into SIMD lanes (assuming valid layout).
 }
@@ -52,5 +66,12 @@ impl Pixel for u32 {
         let b_u8 = (b * 255.0).clamp(0.0, 255.0) as u8;
         let a_u8 = (a * 255.0).clamp(0.0, 255.0) as u8;
         u32::from_le_bytes([r_u8, g_u8, b_u8, a_u8])
+    }
+
+    // Same layout `from_rgba` above encodes: r is byte 0. Without this
+    // override the default `None` made `Frame<u32>` — a perfectly packed
+    // RGBA target — panic at the format guard.
+    fn packed_shifts() -> Option<[u32; 4]> {
+        Some([0, 8, 16, 24])
     }
 }

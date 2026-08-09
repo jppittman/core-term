@@ -98,6 +98,10 @@ pub struct DiscreteManifold {
     pub(crate) width: usize,
     /// Height of the grid (Y dimension).
     pub(crate) height: usize,
+    /// Which memory this is, for merging composed arenas. Clones share it,
+    /// which is sound because the buffer is write-once — there is no mutable
+    /// accessor, so a clone can never diverge from its original.
+    pub(crate) id: pixelflow_ir::arena::BufferIdentity,
 }
 
 impl DiscreteManifold {
@@ -121,6 +125,7 @@ impl DiscreteManifold {
             buffer,
             width,
             height,
+            id: pixelflow_ir::arena::BufferIdentity::mint(),
         }
     }
 
@@ -140,11 +145,6 @@ impl DiscreteManifold {
     #[must_use]
     pub fn buffer(&self) -> &[f32] {
         &self.buffer
-    }
-
-    /// Mutable access to the underlying buffer (row-major).
-    pub fn buffer_mut(&mut self) -> &mut [f32] {
-        &mut self.buffer
     }
 
     /// Consume the DiscreteManifold and return the buffer.
@@ -368,11 +368,7 @@ impl Lattice {
             }
         }
 
-        DiscreteManifold {
-            buffer,
-            width: ex,
-            height: ey * ez * ew,
-        }
+        DiscreteManifold::new(buffer, ex, ey * ez * ew)
     }
 
     /// Bake a [`Kernel`](pixelflow_ir::Kernel) — the front-end value — over the
@@ -409,8 +405,17 @@ impl Lattice {
         let mut buffer = vec![0.0f32; self.len()];
         let full_groups = ex / PARALLELISM;
         let tail = ex % PARALLELISM;
-        // A `Kernel` declares no buffers, so the context register is never
-        // read; the pointer just satisfies the ABI.
+        // Nothing here binds memory, so the context register must never be
+        // read. A kernel composed with a sampler (`BilinearSampler::kernel`)
+        // does declare buffers, and its gathers would load base pointers out
+        // of this null — refuse it here rather than fault in emitted code.
+        assert!(
+            arena.buffers().is_empty(),
+            "Lattice::bake: kernel declares {} buffer(s), but bake binds none. \
+             Bake a buffer-free kernel, or evaluate the sampler through a path \
+             that binds its memory.",
+            arena.buffers().len()
+        );
         let ctx = core::ptr::null();
         let x0 = Field::sequential(self.origin[0]);
         let x_tail = Field::sequential(self.origin[0] + (full_groups * PARALLELISM) as f32);
@@ -468,11 +473,7 @@ impl Lattice {
             }
         }
 
-        DiscreteManifold {
-            buffer,
-            width: ex,
-            height: ey * ez * ew,
-        }
+        DiscreteManifold::new(buffer, ex, ey * ez * ew)
     }
 
     /// Fold all points of the lattice into a per-lane SIMD accumulator.
@@ -731,12 +732,16 @@ pub struct BilinearSampler {
 /// `Σ tap(x?, y?) · weight` with `x0 = floor(X)`, `fx = X − x0`, and the
 /// mirrored pair in y. Gather clamps each tap to the buffer edge.
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-fn bilinear_arena(width: u32, height: u32) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
+fn bilinear_arena(
+    id: pixelflow_ir::arena::BufferIdentity,
+    width: u32,
+    height: u32,
+) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
     use pixelflow_ir::arena::BufferDecl;
     use pixelflow_ir::{ExprArena, OpKind};
 
     let mut a = ExprArena::new();
-    let buf = a.declare_buffer(BufferDecl { width, height });
+    let buf = a.declare_buffer(BufferDecl { id, width, height });
     let x = a.push_var(0);
     let y = a.push_var(1);
     let one = a.push_const(1.0);
@@ -778,10 +783,96 @@ impl BilinearSampler {
     pub fn texture(&self) -> &DiscreteManifold {
         &self.tex
     }
+
+    /// The 4-tap blend over a buffer of these extents, as a composable
+    /// fragment — read it at *computed* coordinates inside a larger kernel
+    /// with `.at(&u, &v, &z, &w)` instead of only at the caller's own.
+    ///
+    /// Takes extents rather than a sampler because extents are all the IR
+    /// carries; the data binds later. So a program can compose against a
+    /// buffer shape it has not filled yet, which is what lets a grid compile
+    /// from its geometry alone. `bilinear` compiles from this same builder,
+    /// so the composed and called forms cannot drift apart.
+    #[must_use]
+    pub fn kernel_for(
+        id: pixelflow_ir::arena::BufferIdentity,
+        width: u32,
+        height: u32,
+    ) -> pixelflow_ir::Kernel {
+        // Same guard as `DiscreteManifold::kernel_for`, for the same reason:
+        // `BindingTable::bind` accepts an empty slice against an empty
+        // declaration, and gather lowering's `saturating_sub(1)` then clamps
+        // every tap to index 0 — so an empty extent reaches the JIT and
+        // dereferences a zero-length buffer instead of failing here.
+        assert!(
+            width > 0 && height > 0,
+            "BilinearSampler::kernel_for: empty buffer ({width}x{height})"
+        );
+        let (arena, root) = bilinear_arena(id, width, height);
+        pixelflow_ir::Kernel::from_parts(arena, root)
+    }
+
+    /// This sampler's blend as a composable fragment. See [`Self::kernel_for`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when an extent exceeds `u32`.
+    #[must_use]
+    pub fn kernel(&self) -> pixelflow_ir::Kernel {
+        Self::kernel_for(
+            self.tex.id,
+            u32::try_from(self.tex.width).expect("buffer width exceeds u32"),
+            u32::try_from(self.tex.height).expect("buffer height exceeds u32"),
+        )
+    }
 }
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 impl DiscreteManifold {
+    /// A nearest-neighbour read of a buffer of these extents, as a composable
+    /// fragment — `.at(&idx, &row, &z, &w)` reads at *computed* indices.
+    ///
+    /// One `Gather`, which already carries [`Self::eval`]'s semantics: floor,
+    /// clamp to the declared extents, index row-major. Takes extents rather
+    /// than `&self` for the same reason as [`BilinearSampler::kernel_for`] —
+    /// extents are what the IR holds, the data binds later.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a zero extent, which would make every gather clamp onto an
+    /// empty buffer.
+    #[must_use]
+    pub fn kernel_for(
+        id: pixelflow_ir::arena::BufferIdentity,
+        width: u32,
+        height: u32,
+    ) -> pixelflow_ir::Kernel {
+        assert!(
+            width > 0 && height > 0,
+            "DiscreteManifold::kernel_for: empty buffer ({width}x{height})"
+        );
+        let mut a = pixelflow_ir::ExprArena::new();
+        let buf = a.declare_buffer(pixelflow_ir::arena::BufferDecl { id, width, height });
+        let (x, y) = (a.push_var(0), a.push_var(1));
+        let root = a.push_gather(buf, x, y);
+        pixelflow_ir::Kernel::from_parts(a, root)
+    }
+
+    /// This buffer's nearest-neighbour read as a composable fragment. See
+    /// [`Self::kernel_for`].
+    ///
+    /// # Panics
+    ///
+    /// Panics on an empty buffer, or when an extent exceeds `u32`.
+    #[must_use]
+    pub fn kernel(&self) -> pixelflow_ir::Kernel {
+        Self::kernel_for(
+            self.id,
+            u32::try_from(self.width).expect("buffer width exceeds u32"),
+            u32::try_from(self.height).expect("buffer height exceeds u32"),
+        )
+    }
+
     /// Wrap this buffer in a [`BilinearSampler`], JIT-compiling the 4-tap
     /// blend kernel bound to it.
     ///
@@ -804,7 +895,7 @@ impl DiscreteManifold {
         );
         let width = u32::try_from(self.width).expect("buffer width exceeds u32");
         let height = u32::try_from(self.height).expect("buffer height exceeds u32");
-        let (arena, root) = bilinear_arena(width, height);
+        let (arena, root) = bilinear_arena(self.id, width, height);
         // Bound-memory arenas are uncacheable (the code bakes buffer slot
         // metadata); compile_cached recognizes that and compiles fresh.
         let jit = pixelflow_codegen::jit_cache::compile_cached(&arena, root)

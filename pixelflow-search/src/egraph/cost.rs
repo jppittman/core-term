@@ -257,7 +257,9 @@ impl CostModel {
     /// Uses `op.kind()` to convert at the boundary from `&dyn Op` to `OpKind`.
     pub fn node_op_cost(&self, node: &ENode) -> usize {
         match node {
-            ENode::Var(_) | ENode::Const(_) => 0,
+            // Buffer is a leaf like Var/Const: the cost of the read lives on
+            // the Gather that consumes it.
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => 0,
             // `Dwrt` is the internal autodiff marker. It is rewritten away by
             // the chain rule; a surviving one is the (not-yet-wired) jet
             // fallback. Either way extraction must never choose it, so it is

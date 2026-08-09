@@ -11,8 +11,9 @@
 //! arithmetic, per-cell data gathers, a 4-tap atlas read, and the color
 //! blend — over two bound buffers (the per-cell data and the atlas). The
 //! per-frame update rewrites the cell buffer; a geometry change (grid
-//! dimensions, cell size, atlas extents) recompiles the four channel
-//! kernels, which is microseconds through the JIT. This replaces the only
+//! dimensions, cell size, atlas extents) recompiles the program — a few
+//! milliseconds through the JIT, dominated by the e-graph optimizer that
+//! the compile path always runs, and paid only on resize. This replaces the only
 //! alternative the combinator layer offered — a per-frame tree of boxed
 //! `Select`s sized by the runtime grid — with a program whose size is
 //! independent of the grid's.
@@ -45,11 +46,11 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use super::JitVec;
+use super::{BilinearSampler, DiscreteManifold, JitVec};
 use crate::Field;
 use pixelflow_codegen::JitManifold;
-use pixelflow_ir::arena::BufferDecl;
-use pixelflow_ir::{ExprArena, ExprId, OpKind};
+use pixelflow_ir::arena::BufferIdentity;
+use pixelflow_ir::{ExprArena, Kernel};
 
 /// `f32`s per cell in the cell-data buffer.
 pub const CELL_STRIDE: usize = 10;
@@ -96,133 +97,239 @@ pub struct CellGridGeometry {
 
 impl CellGridGeometry {
     /// Cell-data buffer length this geometry implies.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the product overflows `usize`. A wrapped length would be
+    /// SMALL, so `frame` would accept a correspondingly small buffer while
+    /// the compiled kernel still declared the true row width — and the
+    /// gathers would read billions of elements past the end through an
+    /// entirely safe API.
     #[must_use]
     pub fn cells_len(&self) -> usize {
-        self.cols as usize * self.rows as usize * CELL_STRIDE
+        (self.cols as usize)
+            .checked_mul(self.rows as usize)
+            .and_then(|cells| cells.checked_mul(CELL_STRIDE))
+            .expect("CellGridGeometry::cells_len overflows usize")
     }
 
     /// Atlas buffer length this geometry implies.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the product overflows `usize` — see [`Self::cells_len`].
     #[must_use]
     pub fn atlas_len(&self) -> usize {
-        self.atlas_width as usize * self.atlas_height as usize
+        (self.atlas_width as usize)
+            .checked_mul(self.atlas_height as usize)
+            .expect("CellGridGeometry::atlas_len overflows usize")
+    }
+
+    /// Width of the cell-data buffer as the kernel declares it, in `f32`s.
+    ///
+    /// # Panics
+    ///
+    /// Panics if it overflows `u32`. `channel_kernel` computed this as a
+    /// wrapping `u32` product, so a wrapped value silently declared a buffer
+    /// of a completely different shape than the one bound to it.
+    #[must_use]
+    pub(crate) fn cells_row_width(&self) -> u32 {
+        self.cols
+            .checked_mul(CELL_STRIDE as u32)
+            .expect("CellGridGeometry: cell-buffer row width overflows u32")
     }
 }
 
-/// One channel's program: everything from pixel coordinate to blended
-/// channel value, as a single arena over the two buffers.
-fn channel_arena(geom: &CellGridGeometry, channel: usize, default_bg: f32) -> (ExprArena, ExprId) {
-    let mut a = ExprArena::new();
-    // Buffer 0: per-cell data; buffer 1: the atlas. `CellGridChannel::eval`
-    // binds the context pointers in this order.
-    let cells = a.declare_buffer(BufferDecl {
-        width: geom.cols * CELL_STRIDE as u32,
-        height: geom.rows,
-    });
-    let atlas = a.declare_buffer(BufferDecl {
-        width: geom.atlas_width,
-        height: geom.atlas_height,
-    });
-
-    let x = a.push_var(0);
-    let y = a.push_var(1);
-    let one = a.push_const(1.0);
-    let half = a.push_const(0.5);
+/// One channel's program: everything from pixel coordinate to blended channel
+/// value, composed from the two samplers rather than assembled node by node.
+///
+/// Keyed on extents, not data. A sampler's fragment carries only its buffer
+/// declaration, so the whole program composes from geometry alone and the
+/// per-frame buffers bind later.
+fn channel_kernel(
+    geom: &CellGridGeometry,
+    bufs: GridBuffers,
+    channel: usize,
+    default_bg: f32,
+) -> Kernel {
+    let k = Kernel::constant;
+    let (x, y, z, w) = (Kernel::x(), Kernel::y(), Kernel::z(), Kernel::w());
 
     // Which cell, and where inside it.
-    let inv_cw = a.push_const(1.0 / geom.cell_w);
-    let inv_ch = a.push_const(1.0 / geom.cell_h);
-    let xc = a.push_binary(OpKind::Mul, x, inv_cw);
-    let yc = a.push_binary(OpKind::Mul, y, inv_ch);
-    let col = a.push_unary(OpKind::Floor, xc);
-    let row = a.push_unary(OpKind::Floor, yc);
-    let cw = a.push_const(geom.cell_w);
-    let ch = a.push_const(geom.cell_h);
-    let col_px = a.push_binary(OpKind::Mul, col, cw);
-    let row_px = a.push_binary(OpKind::Mul, row, ch);
-    let lx = a.push_binary(OpKind::Sub, x, col_px);
-    let ly = a.push_binary(OpKind::Sub, y, row_px);
+    let col = x.mul(&k(1.0 / geom.cell_w)).floor();
+    let row = y.mul(&k(1.0 / geom.cell_h)).floor();
+    let lx = x.sub(&col.mul(&k(geom.cell_w)));
+    let ly = y.sub(&row.mul(&k(geom.cell_h)));
 
-    // Per-cell data: gathers clamp to the buffer edge, so out-of-grid
-    // queries read the border cell — harmless, since the final select
-    // replaces them with the default background anyway.
-    let stride = a.push_const(CELL_STRIDE as f32);
-    let cx = a.push_binary(OpKind::Mul, col, stride);
-    let field = |a: &mut ExprArena, base: ExprId, offset: usize| {
-        let off = a.push_const(offset as f32);
-        a.push_binary(OpKind::Add, base, off)
+    // Per-cell data: gathers clamp to the buffer edge, so out-of-grid queries
+    // read the border cell — harmless, since the final select replaces them
+    // with the default background anyway.
+    let cells = DiscreteManifold::kernel_for(bufs.cells, geom.cells_row_width(), geom.rows);
+    let cx = col.mul(&k(CELL_STRIDE as f32));
+    let field = |offset: usize| {
+        let idx = if offset == 0 {
+            cx.clone()
+        } else {
+            cx.add(&k(offset as f32))
+        };
+        cells.at(&idx, &row, &z, &w)
     };
-    let u_idx = cx; // offset 0
-    let v_idx = field(&mut a, cx, 1);
-    let fg_idx = field(&mut a, cx, 2 + channel);
-    let bg_idx = field(&mut a, cx, 6 + channel);
-    let u0 = a.push_gather(cells, u_idx, row);
-    let v0 = a.push_gather(cells, v_idx, row);
-    let fg = a.push_gather(cells, fg_idx, row);
-    let bg = a.push_gather(cells, bg_idx, row);
+    let u0 = field(0);
+    let v0 = field(1);
+    let fg = field(2 + channel);
+    let bg = field(6 + channel);
 
-    // Atlas coordinates: point offset into the cell, scaled to texels,
-    // shifted to texel centers.
-    let density = a.push_const(geom.density);
-    let lxd_raw = a.push_binary(OpKind::Mul, lx, density);
-    let lyd_raw = a.push_binary(OpKind::Mul, ly, density);
-    // Clamp to half a texel past the tile content: the taps then land on
-    // this slot's apron and (at most) the neighbor's apron — both zero —
-    // so a cell larger than its tile fades to background rather than
-    // displaying fragments of the adjacent tile.
-    let tile_w_edge = a.push_const(geom.tile_w as f32 + 0.5);
-    let tile_h_edge = a.push_const(geom.tile_h as f32 + 0.5);
-    let lxd = a.push_binary(OpKind::Min, lxd_raw, tile_w_edge);
-    let lyd = a.push_binary(OpKind::Min, lyd_raw, tile_h_edge);
-    let au = a.push_binary(OpKind::Add, u0, lxd);
-    let av = a.push_binary(OpKind::Add, v0, lyd);
-    let ax = a.push_binary(OpKind::Sub, au, half);
-    let ay = a.push_binary(OpKind::Sub, av, half);
+    // Atlas coordinates: point offset into the cell, scaled to texels, shifted
+    // to texel centres. Clamping to half a texel past the tile content keeps
+    // the taps on this slot's apron and (at most) the neighbor's — both zero —
+    // so a cell larger than its tile fades to background rather than showing
+    // fragments of the adjacent tile.
+    let au = u0.add(&lx.mul(&k(geom.density)).min(&k(geom.tile_w as f32 + 0.5)));
+    let av = v0.add(&ly.mul(&k(geom.density)).min(&k(geom.tile_h as f32 + 0.5)));
+    let atlas = BilinearSampler::kernel_for(bufs.atlas, geom.atlas_width, geom.atlas_height);
+    let cov = atlas.at(&au.sub(&k(0.5)), &av.sub(&k(0.5)), &z, &w);
 
-    // 4-tap bilinear read of the atlas (the same blend `bilinear_arena`
-    // builds for a whole-buffer sampler, at computed tile coordinates).
-    let ax0 = a.push_unary(OpKind::Floor, ax);
-    let ay0 = a.push_unary(OpKind::Floor, ay);
-    let ax1 = a.push_binary(OpKind::Add, ax0, one);
-    let ay1 = a.push_binary(OpKind::Add, ay0, one);
-    let fx = a.push_binary(OpKind::Sub, ax, ax0);
-    let fy = a.push_binary(OpKind::Sub, ay, ay0);
-    let gx = a.push_binary(OpKind::Sub, one, fx);
-    let gy = a.push_binary(OpKind::Sub, one, fy);
-    let c00 = a.push_gather(atlas, ax0, ay0);
-    let c10 = a.push_gather(atlas, ax1, ay0);
-    let c01 = a.push_gather(atlas, ax0, ay1);
-    let c11 = a.push_gather(atlas, ax1, ay1);
-    let w00 = a.push_binary(OpKind::Mul, gx, gy);
-    let w10 = a.push_binary(OpKind::Mul, fx, gy);
-    let w01 = a.push_binary(OpKind::Mul, gx, fy);
-    let w11 = a.push_binary(OpKind::Mul, fx, fy);
-    let t00 = a.push_binary(OpKind::Mul, c00, w00);
-    let t10 = a.push_binary(OpKind::Mul, c10, w10);
-    let t01 = a.push_binary(OpKind::Mul, c01, w01);
-    let t11 = a.push_binary(OpKind::Mul, c11, w11);
-    let s0 = a.push_binary(OpKind::Add, t00, t10);
-    let s1 = a.push_binary(OpKind::Add, s0, t01);
-    let cov = a.push_binary(OpKind::Add, s1, t11);
+    // blended = bg + cov·(fg − bg), and the default background off-grid.
+    let blended = bg.add(&cov.mul(&fg.sub(&bg)));
+    let in_grid = x
+        .ge(&k(0.0))
+        .and(&x.lt(&k(geom.cols as f32 * geom.cell_w)))
+        .and(&y.ge(&k(0.0)))
+        .and(&y.lt(&k(geom.rows as f32 * geom.cell_h)));
+    in_grid.select(&blended, &k(default_bg))
+}
 
-    // blended = bg + cov·(fg − bg).
-    let diff = a.push_binary(OpKind::Sub, fg, bg);
-    let scaled = a.push_binary(OpKind::Mul, cov, diff);
-    let blended = a.push_binary(OpKind::Add, bg, scaled);
+/// The whole screen as ONE program: the four channel kernels, each packed to
+/// a byte exactly as `Pixel::from_rgba` does — `(x·255).clamp(0, 255)` then
+/// truncate toward zero — shifted to its byte lane and OR-folded into a
+/// `u32` pixel bit pattern at the root.
+///
+/// `shifts[c]` is the bit position of channel `c` in `(r, g, b, a)` order.
+/// Both pixel orders are little-endian byte arrays wrapping a `u32`, so byte
+/// `i` sits at bit `8·i`: `Rgba8` is `[r, g, b, a]` → `[0, 8, 16, 24]`, and
+/// `Bgra8` is `[b, g, r, a]` → `[16, 8, 0, 24]`.
+///
+/// Truncation (not rounding) is deliberate twice over: it is bit-exact with
+/// the scalar pack's `as u8`, and `cvttps2dq`/`fcvtzs` both truncate toward
+/// zero — no per-target tie divergence to inherit.
+fn packed_kernel(
+    geom: &CellGridGeometry,
+    bufs: GridBuffers,
+    default_bg: [f32; 4],
+    shifts: [u32; 4],
+) -> Kernel {
+    let k = Kernel::constant;
+    let byte = |c: usize| {
+        channel_kernel(geom, bufs, c, default_bg[c])
+            .mul(&k(255.0))
+            .clamp(&k(0.0), &k(255.0))
+            .trunc_to_int()
+            .shl(shifts[c])
+    };
+    // Fold in the bit domain, then take the single named exit: the packed
+    // pattern IS the kernel's output.
+    byte(0).or(&byte(1)).or(&byte(2)).or(&byte(3)).into_kernel()
+}
 
-    // Outside the grid there is no cell data: the default background.
-    let zero = a.push_const(0.0);
-    let grid_w = a.push_const(geom.cols as f32 * geom.cell_w);
-    let grid_h = a.push_const(geom.rows as f32 * geom.cell_h);
-    let x_lo = a.push_binary(OpKind::Ge, x, zero);
-    let x_hi = a.push_binary(OpKind::Lt, x, grid_w);
-    let y_lo = a.push_binary(OpKind::Ge, y, zero);
-    let y_hi = a.push_binary(OpKind::Lt, y, grid_h);
-    let x_in = a.push_binary(OpKind::BitAnd, x_lo, x_hi);
-    let y_in = a.push_binary(OpKind::BitAnd, y_lo, y_hi);
-    let in_grid = a.push_binary(OpKind::BitAnd, x_in, y_in);
-    let bg_default = a.push_const(default_bg);
-    let root = a.push_ternary(OpKind::Select, in_grid, blended, bg_default);
-    (a, root)
+/// The two blocks of memory a cell-grid program reads, identified so that
+/// composing many reads of one buffer still merges to one slot, and so binding
+/// can say which slot is which without inferring it from extents.
+#[derive(Clone, Copy, Debug)]
+struct GridBuffers {
+    cells: BufferIdentity,
+    atlas: BufferIdentity,
+}
+
+impl GridBuffers {
+    fn mint() -> Self {
+        Self {
+            cells: BufferIdentity::mint(),
+            atlas: BufferIdentity::mint(),
+        }
+    }
+}
+
+/// Which buffer a slot of the composed arena reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SlotReads {
+    Cells,
+    Atlas,
+}
+
+/// Attribute each declared slot to one of the program's two buffers.
+///
+/// Matching is on [`BufferIdentity`], so it is a fact rather than an inference
+/// — two buffers of equal extent would be indistinguishable by shape, and
+/// guessing there would bind one pointer for both.
+///
+/// # Panics
+///
+/// Panics on a slot belonging to neither, which would mean a fragment declared
+/// memory this program cannot bind.
+fn slot_roles(arena: &ExprArena, bufs: GridBuffers) -> Vec<SlotReads> {
+    arena
+        .buffers()
+        .iter()
+        .map(|decl| {
+            if decl.id == bufs.cells {
+                SlotReads::Cells
+            } else if decl.id == bufs.atlas {
+                SlotReads::Atlas
+            } else {
+                panic!("cell-grid kernel declared an unbindable buffer {decl:?}")
+            }
+        })
+        .collect()
+}
+
+/// The geometry preconditions every cell-grid compile shares — the
+/// four-channel and packed paths refuse the same shapes for the same reasons.
+///
+/// # Panics
+///
+/// Panics on a degenerate geometry (zero cells, non-positive cell extent or
+/// density, empty atlas), when this build's `Field` width does not match the
+/// JIT's emitted width, or on buffers too large to index exactly in f32.
+fn assert_compilable(geom: &CellGridGeometry) {
+    assert!(
+        geom.cols > 0 && geom.rows > 0 && geom.atlas_width > 0 && geom.atlas_height > 0,
+        "cell-grid compile: degenerate geometry {geom:?}"
+    );
+    assert!(
+        geom.cell_w > 0.0 && geom.cell_h > 0.0 && geom.density > 0.0,
+        "cell-grid compile: non-positive cell extent or density {geom:?}"
+    );
+    assert_eq!(
+        core::mem::size_of::<Field>(),
+        pixelflow_codegen::JIT_VECTOR_BYTES,
+        "cell-grid compile: Field width does not match the JIT's emitted width"
+    );
+    // Both products must be computable before anything downstream trusts
+    // them: cells_len/cells_row_width panic on overflow rather than wrapping,
+    // and a wrapped length paired with an unwrapped row width is how a safe
+    // API ends up gathering past the end of the bound buffer.
+    // (Both accessors panic on overflow; calling them here is the check.)
+    assert!(
+        geom.cells_len() > 0 && geom.cells_row_width() > 0,
+        "cell-grid compile: empty cell buffer for {geom:?}"
+    );
+
+    // Gather computes its row-major linear index in f32, which is exact
+    // only below 2^24 — beyond that adjacent texels alias. Refuse
+    // loudly instead of rendering corrupted gathers.
+    const EXACT_F32_INDEX: usize = 1 << 24;
+    assert!(
+        geom.atlas_len() <= EXACT_F32_INDEX,
+        "cell-grid compile: atlas of {} texels exceeds the exactly \
+         f32-indexable range (2^24); gathers would alias adjacent texels",
+        geom.atlas_len()
+    );
+    assert!(
+        geom.cells_len() <= EXACT_F32_INDEX,
+        "cell-grid compile: cell buffer of {} floats exceeds the \
+         exactly f32-indexable range (2^24)",
+        geom.cells_len()
+    );
 }
 
 /// The four compiled channel kernels for one grid/atlas geometry.
@@ -234,7 +341,18 @@ fn channel_arena(geom: &CellGridGeometry, channel: usize, default_bg: f32) -> (E
 pub struct CellGridProgram {
     geom: CellGridGeometry,
     jits: [Arc<JitManifold>; 4],
+    /// What each buffer slot of the compiled arenas reads — see [`SlotReads`].
+    /// Shared so a [`CellGridFrame`] stays cheap to clone.
+    slots: Arc<[SlotReads]>,
 }
+
+/// Upper bound on buffer slots in a composed channel kernel, so binding can
+/// build its context array on the stack: no per-frame allocation.
+///
+/// Splicing merges by [`BufferIdentity`], so this is one slot per *distinct*
+/// buffer however many times each is read — the program reads two. A third
+/// would fail the check in `compile` rather than silently overflow.
+const MAX_SLOTS: usize = 2;
 
 impl CellGridProgram {
     /// JIT-compile the four channel programs for `geom`, with `default_bg`
@@ -247,45 +365,39 @@ impl CellGridProgram {
     /// match the JIT's emitted width, or if compilation fails.
     #[must_use]
     pub fn compile(geom: CellGridGeometry, default_bg: [f32; 4]) -> Self {
+        assert_compilable(&geom);
+        let bufs = GridBuffers::mint();
+        let kernels: [Kernel; 4] =
+            core::array::from_fn(|c| channel_kernel(&geom, bufs, c, default_bg[c]));
+        let slots = slot_roles(kernels[0].parts().0, bufs);
+        for (c, kernel) in kernels.iter().enumerate().skip(1) {
+            assert_eq!(
+                slot_roles(kernel.parts().0, bufs),
+                slots,
+                "cell-grid channel {c} disagrees with channel 0 on slot layout"
+            );
+        }
         assert!(
-            geom.cols > 0 && geom.rows > 0 && geom.atlas_width > 0 && geom.atlas_height > 0,
-            "CellGridProgram::compile: degenerate geometry {geom:?}"
+            slots.len() <= MAX_SLOTS,
+            "cell-grid kernel needs {} buffer slots, over the {MAX_SLOTS} a \
+             frame can bind without allocating",
+            slots.len()
         );
-        assert!(
-            geom.cell_w > 0.0 && geom.cell_h > 0.0 && geom.density > 0.0,
-            "CellGridProgram::compile: non-positive cell extent or density {geom:?}"
-        );
-        assert_eq!(
-            core::mem::size_of::<Field>(),
-            pixelflow_codegen::JIT_VECTOR_BYTES,
-            "CellGridProgram::compile: Field width does not match the JIT's emitted width"
-        );
-        // Gather computes its row-major linear index in f32, which is exact
-        // only below 2^24 — beyond that adjacent texels alias. Refuse
-        // loudly instead of rendering corrupted gathers.
-        const EXACT_F32_INDEX: usize = 1 << 24;
-        assert!(
-            geom.atlas_len() <= EXACT_F32_INDEX,
-            "CellGridProgram::compile: atlas of {} texels exceeds the exactly \
-             f32-indexable range (2^24); gathers would alias adjacent texels",
-            geom.atlas_len()
-        );
-        assert!(
-            geom.cells_len() <= EXACT_F32_INDEX,
-            "CellGridProgram::compile: cell buffer of {} floats exceeds the \
-             exactly f32-indexable range (2^24)",
-            geom.cells_len()
-        );
+
         let jits = core::array::from_fn(|c| {
-            let (arena, root) = channel_arena(&geom, c, default_bg[c]);
+            let (arena, root) = kernels[c].parts();
             // Collapse-mode (internal 2D loop): one call bakes a whole run
             // of rows for a channel. Bound-memory arenas are uncacheable
             // (the code bakes buffer slot metadata); the cache recognizes
             // that and compiles fresh.
-            pixelflow_codegen::jit_cache::compile_collapse_cached(&arena, root)
+            pixelflow_codegen::jit_cache::compile_collapse_cached(arena, root)
                 .expect("cell-grid channel failed to compile")
         });
-        Self { geom, jits }
+        Self {
+            geom,
+            jits,
+            slots: slots.into(),
+        }
     }
 
     /// The geometry this program was compiled for.
@@ -318,6 +430,7 @@ impl CellGridProgram {
         );
         CellGridFrame {
             jits: self.jits.clone(),
+            slots: self.slots.clone(),
             cells,
             atlas,
         }
@@ -329,6 +442,7 @@ impl CellGridProgram {
 #[derive(Clone)]
 pub struct CellGridFrame {
     jits: [Arc<JitManifold>; 4],
+    slots: Arc<[SlotReads]>,
     cells: Arc<Vec<f32>>,
     atlas: Arc<Vec<f32>>,
 }
@@ -374,8 +488,14 @@ impl CellGridFrame {
         let PlaneRegion { width, y0, rows } = region;
         assert!(width > 0, "bake_channel_rows: zero width");
         let stride = Self::padded_width(width);
+        // Checked for the same reason as `bake_packed_rows`: a wrapped
+        // product would admit an undersized `out` while the unsafe collapse
+        // below still wrote the real row count past its end.
+        let needed = rows
+            .checked_mul(stride)
+            .expect("bake_channel_rows: rows * stride overflows usize");
         assert!(
-            out.len() >= rows * stride,
+            out.len() >= needed,
             "bake_channel_rows: plane of {} f32s cannot hold {rows} rows at stride {stride}",
             out.len()
         );
@@ -383,22 +503,246 @@ impl CellGridFrame {
             return;
         }
         let groups = stride / (pixelflow_codegen::JIT_VECTOR_BYTES / core::mem::size_of::<f32>());
-        let ctx = [self.cells.as_ptr(), self.atlas.as_ptr()];
+        // One base pointer per declared slot, in slot order. Stack-allocated
+        // against the MAX_SLOTS bound `compile` checked, so binding a frame
+        // allocates nothing; trailing entries stay null and are never read
+        // because the kernel only addresses slots it declared.
+        let mut ctx = [core::ptr::null::<f32>(); MAX_SLOTS];
+        for (dst, slot) in ctx.iter_mut().zip(self.slots.iter()) {
+            *dst = match slot {
+                SlotReads::Cells => self.cells.as_ptr(),
+                SlotReads::Atlas => self.atlas.as_ptr(),
+            };
+        }
         // Pixel centers: the rasterizer convention (x + ½, y + ½).
         let x0 = Field::sequential(0.5);
         let y = Field::from(y0 as f32 + 0.5);
         let zero = Field::from(0.0);
         // SAFETY: `compile` checked size_of::<Field>() == JIT_VECTOR_BYTES;
-        // the kernel was compiled from an arena declaring exactly the two
-        // buffers whose lengths `CellGridProgram::frame` asserted against
-        // the same geometry; `ctx` binds their live base pointers (in
-        // declaration order) for the duration of the call; and `out` holds
+        // every slot the kernel declared was attributed to the cell buffer or
+        // the atlas by `slot_roles` (which refuses any other declaration), and
+        // `CellGridProgram::frame` asserted both lengths against this same
+        // geometry; `ctx` binds their live base pointers for the duration of
+        // the call; and `out` holds
         // `rows` full rows of `groups` batches (asserted above) with no
         // scalar tail (row_skip = 0 — the stride IS whole batches).
         unsafe {
             self.jits[channel].call_collapse(
                 ctx.as_ptr(),
                 out.as_mut_ptr(),
+                groups,
+                rows,
+                0,
+                core::mem::transmute::<Field, JitVec>(x0),
+                core::mem::transmute::<Field, JitVec>(y),
+                core::mem::transmute::<Field, JitVec>(zero),
+                core::mem::transmute::<Field, JitVec>(zero),
+            );
+        }
+    }
+}
+
+/// The packed-pixel sibling of [`CellGridProgram`]: ONE compiled program
+/// whose root is a packed `u32` pixel, so the collapse loop stores finished
+/// pixels directly — no per-channel planes, no pack pass. A sibling type
+/// rather than a fifth entry in `jits` because the two paths have different
+/// output types, and the type should refuse baking a packed program into an
+/// `f32` plane (or vice versa) rather than a runtime check catching it.
+pub struct CellGridPackedProgram {
+    geom: CellGridGeometry,
+    /// The byte lanes this kernel packed for. A frame stores raw words, so
+    /// whoever consumes them must confirm their format agrees.
+    shifts: [u32; 4],
+    jit: Arc<JitManifold>,
+    /// What each buffer slot of the compiled arena reads — see [`SlotReads`].
+    slots: Arc<[SlotReads]>,
+}
+
+impl CellGridPackedProgram {
+    /// JIT-compile the packed program for `geom`, with `default_bg` (linear
+    /// RGBA) painted outside the grid and `shifts[c]` giving the bit position
+    /// of channel `c` in `(r, g, b, a)` order — `[0, 8, 16, 24]` for `Rgba8`,
+    /// `[16, 8, 0, 24]` for `Bgra8` (see [`packed_kernel`]'s derivation).
+    ///
+    /// # Panics
+    ///
+    /// Panics on the same geometry preconditions as
+    /// [`CellGridProgram::compile`], on shifts that are not a permutation of
+    /// the four byte lanes (channels would overlap), if the composed kernel's
+    /// buffer reads do not merge to exactly one cell slot and one atlas slot,
+    /// or if compilation fails.
+    #[must_use]
+    pub fn compile(geom: CellGridGeometry, default_bg: [f32; 4], shifts: [u32; 4]) -> Self {
+        assert_compilable(&geom);
+        {
+            let mut lanes = shifts;
+            lanes.sort_unstable();
+            assert_eq!(
+                lanes,
+                [0, 8, 16, 24],
+                "CellGridPackedProgram::compile: shifts {shifts:?} are not a \
+                 permutation of the byte lanes; channels would overlap"
+            );
+        }
+        let bufs = GridBuffers::mint();
+        let kernel = packed_kernel(&geom, bufs, default_bg, shifts);
+        let slots = slot_roles(kernel.parts().0, bufs);
+        // Identity-merge across the four channels' splices is load-bearing:
+        // all cell reads and atlas taps must land in the same two slots a
+        // frame can bind. A third slot means splice stopped merging — refuse.
+        assert_eq!(
+            slots.iter().filter(|r| **r == SlotReads::Cells).count(),
+            1,
+            "packed cell-grid kernel did not merge its cell reads to one slot"
+        );
+        assert_eq!(
+            slots.iter().filter(|r| **r == SlotReads::Atlas).count(),
+            1,
+            "packed cell-grid kernel did not merge its atlas reads to one slot"
+        );
+        let (arena, root) = kernel.parts();
+        let jit = pixelflow_codegen::jit_cache::compile_collapse_cached(arena, root)
+            .expect("packed cell-grid kernel failed to compile");
+        Self {
+            geom,
+            shifts,
+            jit,
+            slots: slots.into(),
+        }
+    }
+
+    /// The byte lanes this program's kernel packs into.
+    #[must_use]
+    pub fn shifts(&self) -> [u32; 4] {
+        self.shifts
+    }
+
+    /// The packed kernel's emitted bytes (research/profiling harness).
+    #[cfg(test)]
+    fn jits_code_bytes(&self) -> &[u8] {
+        self.jit.code_bytes()
+    }
+
+    /// The geometry this program was compiled for.
+    #[must_use]
+    pub fn geometry(&self) -> &CellGridGeometry {
+        &self.geom
+    }
+
+    /// Bind one frame's data — the same buffers, layout, and length checks as
+    /// [`CellGridProgram::frame`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if either buffer's length does not match the geometry.
+    #[must_use]
+    pub fn frame(&self, cells: Arc<Vec<f32>>, atlas: Arc<Vec<f32>>) -> CellGridPackedFrame {
+        assert_eq!(
+            cells.len(),
+            self.geom.cells_len(),
+            "cell buffer length does not match geometry {:?}",
+            self.geom
+        );
+        assert_eq!(
+            atlas.len(),
+            self.geom.atlas_len(),
+            "atlas buffer length does not match geometry {:?}",
+            self.geom
+        );
+        CellGridPackedFrame {
+            shifts: self.shifts,
+            jit: self.jit.clone(),
+            slots: self.slots.clone(),
+            cells,
+            atlas,
+        }
+    }
+}
+
+/// One frame of a packed cell grid: the compiled program plus the data it
+/// reads. Cheap to clone.
+#[derive(Clone)]
+pub struct CellGridPackedFrame {
+    /// The byte lanes the kernel packed for; a consumer storing these words
+    /// must confirm its pixel format agrees.
+    shifts: [u32; 4],
+    jit: Arc<JitManifold>,
+    slots: Arc<[SlotReads]>,
+    cells: Arc<Vec<f32>>,
+    atlas: Arc<Vec<f32>>,
+}
+
+impl CellGridPackedFrame {
+    /// The byte lanes these words are packed into.
+    #[must_use]
+    pub fn shifts(&self) -> [u32; 4] {
+        self.shifts
+    }
+
+    /// Bake packed pixels over the pixel rows `y0 .. y0 + rows` at
+    /// pixel-center coordinates, into a plane of
+    /// [`CellGridFrame::padded_width`]`(width)`-stride rows — the same
+    /// region, stride, and whole-batch contract as
+    /// [`CellGridFrame::bake_channel_rows`], with the pack already done.
+    ///
+    /// The kernel's root is int-domain: each lane already holds a packed
+    /// pixel's bit pattern. The collapse store is a raw vector store —
+    /// type-blind bit movement — so writing through the ABI's `*mut f32`
+    /// into a `u32` plane is exact: no float operation touches the value
+    /// between the OR-fold and memory.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the region's width is zero or `out` is shorter than
+    /// `rows * padded_width(width)`.
+    pub fn bake_packed_rows(&self, region: PlaneRegion, out: &mut [u32]) {
+        let PlaneRegion { width, y0, rows } = region;
+        assert!(width > 0, "bake_packed_rows: zero width");
+        let stride = CellGridFrame::padded_width(width);
+        // Checked: `rows * stride` wraps in release for a caller-supplied
+        // region large enough, and a wrapped product would let an undersized
+        // `out` pass this guard while the collapse call below still received
+        // the real (enormous) row count and wrote past the slice. The
+        // documented panic must fire before any unsafe call, not after.
+        let needed = rows
+            .checked_mul(stride)
+            .expect("bake_packed_rows: rows * stride overflows usize");
+        assert!(
+            out.len() >= needed,
+            "bake_packed_rows: plane of {} u32s cannot hold {rows} rows at stride {stride}",
+            out.len()
+        );
+        if rows == 0 {
+            return;
+        }
+        let groups = stride / (pixelflow_codegen::JIT_VECTOR_BYTES / core::mem::size_of::<f32>());
+        // One base pointer per declared slot, in slot order — identical to
+        // `bake_channel_rows`, against the same MAX_SLOTS bound (`compile`
+        // proved exactly two slots).
+        let mut ctx = [core::ptr::null::<f32>(); MAX_SLOTS];
+        for (dst, slot) in ctx.iter_mut().zip(self.slots.iter()) {
+            *dst = match slot {
+                SlotReads::Cells => self.cells.as_ptr(),
+                SlotReads::Atlas => self.atlas.as_ptr(),
+            };
+        }
+        // Pixel centers: the rasterizer convention (x + ½, y + ½).
+        let x0 = Field::sequential(0.5);
+        let y = Field::from(y0 as f32 + 0.5);
+        let zero = Field::from(0.0);
+        // SAFETY: as in `bake_channel_rows` — `assert_compilable` checked
+        // size_of::<Field>() == JIT_VECTOR_BYTES; every declared slot was
+        // attributed to the cell buffer or the atlas by `slot_roles`, and
+        // `frame` asserted both lengths against this same geometry; `ctx` binds
+        // their live base pointers for the duration of the call; `out` holds
+        // `rows` full rows of `groups` batches (asserted above) with no
+        // scalar tail (row_skip = 0). The pointer cast is sound because
+        // `u32` and `f32` share size and alignment and the store is a raw
+        // vector store of the root's bit pattern.
+        unsafe {
+            self.jit.call_collapse(
+                ctx.as_ptr(),
+                out.as_mut_ptr().cast::<f32>(),
                 groups,
                 rows,
                 0,
@@ -450,6 +794,119 @@ mod tests {
             1.0, /* bg */
         ];
         (program, Arc::new(cells), Arc::new(atlas))
+    }
+
+    /// Research harness: dump the packed kernel's machine code and hot-loop
+    /// it in one process, so a sampling profiler's addresses correlate to
+    /// the dumped bytes exactly. `PIXELFLOW_CODE_DUMP=<path>` receives the
+    /// raw bytes; the base pointer prints to stdout.
+    #[test]
+    #[ignore = "manual profiling harness"]
+    fn profile_dump_packed_kernel() {
+        let geom = CellGridGeometry {
+            cols: 213,
+            rows: 66,
+            cell_w: 12.0,
+            cell_h: 24.0,
+            density: 1.0,
+            atlas_width: 64,
+            atlas_height: 32,
+            tile_w: 12,
+            tile_h: 24,
+        };
+        let program = CellGridPackedProgram::compile(geom, [0.1, 0.1, 0.1, 1.0], [0, 8, 16, 24]);
+        let code = program.jits_code_bytes();
+        std::println!(
+            "CODE_BASE=0x{:x} CODE_LEN={}",
+            code.as_ptr() as usize,
+            code.len()
+        );
+        if let Ok(path) = std::env::var("PIXELFLOW_CODE_DUMP") {
+            std::fs::write(&path, code).expect("dump write failed");
+        }
+        let mut atlas = alloc::vec![0.0f32; geom.atlas_len()];
+        for (i, t) in atlas.iter_mut().enumerate() {
+            *t = ((i * 7) % 11) as f32 / 10.0;
+        }
+        let mut cells = alloc::vec![0.0f32; geom.cells_len()];
+        for (i, c) in cells.iter_mut().enumerate() {
+            *c = ((i * 13) % 17) as f32 / 16.0;
+        }
+        let frame = program.frame(Arc::new(cells), Arc::new(atlas));
+        let (w, h) = (2560usize, 1584usize);
+        let stride = CellGridFrame::padded_width(w);
+        let mut out = alloc::vec![0u32; stride * h];
+        for _ in 0..150 {
+            frame.bake_packed_rows(
+                PlaneRegion {
+                    width: w,
+                    y0: 0,
+                    rows: h,
+                },
+                &mut out,
+            );
+            core::hint::black_box(&out);
+        }
+    }
+
+    /// Splicing merges buffer declarations by identity, so the nine reads in
+    /// a channel program (four cell fields — `bg` twice — plus the atlas)
+    /// occupy exactly two slots: one per distinct buffer.
+    ///
+    /// Nodes are a different story, and this pins the gap. 146 against the 77
+    /// the hand-written arena built, because every *use* of a Kernel value
+    /// re-splices its whole fragment: `row` is used by four cell reads, `cx`
+    /// by four, `bg` by two. Identity fixed the slots; it cannot fix this.
+    /// Node sharing is an inlining decision, and it belongs to the e-graph —
+    /// which cannot see this arena at all while `Gather` is unrepresentable
+    /// there. This number falling is the sign that landed.
+    #[test]
+    fn reads_of_one_buffer_share_a_slot_but_not_nodes() {
+        let geom = CellGridGeometry {
+            cols: 2,
+            rows: 1,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: 12,
+            atlas_height: 6,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        let bufs = GridBuffers::mint();
+        let kernel = channel_kernel(&geom, bufs, 0, 0.0);
+        let (arena, root) = kernel.parts();
+
+        let roles = slot_roles(arena, bufs);
+        assert_eq!(
+            roles.iter().filter(|r| **r == SlotReads::Cells).count(),
+            1,
+            "five cell reads, one buffer, one slot"
+        );
+        assert_eq!(
+            roles.iter().filter(|r| **r == SlotReads::Atlas).count(),
+            1,
+            "one slot for the atlas"
+        );
+        assert_eq!(
+            reachable_nodes(arena, root),
+            146,
+            "composed node count (hand-built was 77)"
+        );
+    }
+
+    fn reachable_nodes(arena: &ExprArena, root: pixelflow_ir::ExprId) -> usize {
+        let mut seen = vec![false; arena.nodes_raw().len()];
+        let mut stack = vec![root];
+        let mut count = 0;
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut seen[id.0 as usize], true) {
+                continue;
+            }
+            count += 1;
+            stack.extend(arena.children(id));
+        }
+        count
     }
 
     /// Row-major index into an 8-wide plane.
@@ -823,5 +1280,250 @@ mod tests {
             "row-offset bake read the wrong absolute row: R = {}",
             padded[1]
         );
+    }
+
+    /// `Rgba8`'s byte lanes: little-endian `[r, g, b, a]`.
+    const RGBA_SHIFTS: [u32; 4] = [0, 8, 16, 24];
+    /// `Bgra8`'s byte lanes: little-endian `[b, g, r, a]`.
+    const BGRA_SHIFTS: [u32; 4] = [16, 8, 0, 24];
+
+    /// The scalar pack the kernel must be bit-exact with:
+    /// `Pixel::from_rgba`'s per-channel `(x·255).clamp(0, 255) as u8`,
+    /// composed with the same shifts.
+    fn pack_expected(rgba: [f32; 4], shifts: [u32; 4]) -> u32 {
+        rgba.iter()
+            .zip(shifts)
+            .map(|(&x, s)| u32::from((x * 255.0).clamp(0.0, 255.0) as u8) << s)
+            .fold(0, |acc, lane| acc | lane)
+    }
+
+    /// Bake packed pixels over pixel centers and unpad to a dense w×h plane.
+    fn packed_plane(frame: &CellGridPackedFrame, w: usize, h: usize) -> alloc::vec::Vec<u32> {
+        let stride = CellGridFrame::padded_width(w);
+        let mut padded = vec![0u32; h * stride];
+        frame.bake_packed_rows(
+            PlaneRegion {
+                width: w,
+                y0: 0,
+                rows: h,
+            },
+            &mut padded,
+        );
+        let mut dense = alloc::vec::Vec::with_capacity(w * h);
+        for row in 0..h {
+            dense.extend_from_slice(&padded[row * stride..row * stride + w]);
+        }
+        dense
+    }
+
+    #[test]
+    fn packed_bake_is_bit_exact_with_channel_bakes_under_both_byte_orders() {
+        // 12×6 over tiny_scene's 8×4 grid: the right and bottom margins are
+        // off-grid, so default_bg flows through the pack too. THE invariant:
+        // for every pixel, the packed bake equals the four channel bakes
+        // composed with the scalar pack — exact u32 equality, no epsilon.
+        let (program, cells, atlas) = tiny_scene();
+        let frame = program.frame(cells.clone(), atlas.clone());
+        let (w, h) = (12, 6);
+        let planes: [alloc::vec::Vec<f32>; 4] = core::array::from_fn(|c| plane(&frame, c, w, h));
+        for shifts in [RGBA_SHIFTS, BGRA_SHIFTS] {
+            let packed =
+                CellGridPackedProgram::compile(*program.geometry(), [0.9, 0.8, 0.7, 0.6], shifts);
+            let got = packed_plane(&packed.frame(cells.clone(), atlas.clone()), w, h);
+            for i in 0..w * h {
+                let expected = pack_expected(
+                    [planes[0][i], planes[1][i], planes[2][i], planes[3][i]],
+                    shifts,
+                );
+                assert_eq!(
+                    got[i], expected,
+                    "pixel {i} under shifts {shifts:?}: {:#010x} != {:#010x}",
+                    got[i], expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn packed_bake_parity_holds_on_an_asymmetric_grid() {
+        // The 1×2 grid from the row-offset test (cols ≠ rows, per-row
+        // colors), sampled 6×10 so the right and bottom margins exercise a
+        // non-gray default background through every channel's shift.
+        let (aw, ah, slot) = (12usize, 6usize, 6usize);
+        let mut atlas = vec![0.0f32; aw * ah];
+        for r in 0..4 {
+            for c in 0..4 {
+                atlas[(1 + r) * aw + 1 + c] = 1.0; // tile 0: solid
+                atlas[(1 + r) * aw + slot + 1 + c] = 0.5; // tile 1: half
+            }
+        }
+        let geom = CellGridGeometry {
+            cols: 1,
+            rows: 2,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: aw as u32,
+            atlas_height: ah as u32,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        let default_bg = [0.25, 0.5, 0.75, 1.0];
+        let cells = Arc::new(vec![
+            1.0, 1.0, /* row0 fg */ 1.0, 0.0, 0.0, 1.0, /* bg */ 0.0, 0.0, 0.0, 1.0, 7.0,
+            1.0, /* row1 fg */ 0.0, 0.0, 1.0, 1.0, /* bg */ 1.0, 1.0, 1.0, 1.0,
+        ]);
+        let atlas = Arc::new(atlas);
+        let (w, h) = (6, 10);
+        let program = CellGridProgram::compile(geom, default_bg);
+        let frame = program.frame(cells.clone(), atlas.clone());
+        let planes: [alloc::vec::Vec<f32>; 4] = core::array::from_fn(|c| plane(&frame, c, w, h));
+        let packed = CellGridPackedProgram::compile(geom, default_bg, RGBA_SHIFTS);
+        let got = packed_plane(&packed.frame(cells, atlas), w, h);
+        for i in 0..w * h {
+            let expected = pack_expected(
+                [planes[0][i], planes[1][i], planes[2][i], planes[3][i]],
+                RGBA_SHIFTS,
+            );
+            assert_eq!(
+                got[i], expected,
+                "pixel {i}: {:#010x} != {:#010x}",
+                got[i], expected
+            );
+        }
+    }
+
+    /// The packed kernel splices four channel fragments (each with its own
+    /// cell reads and atlas taps), and identity-merge must still land them
+    /// all in exactly two slots — one per distinct buffer.
+    #[test]
+    fn packed_kernel_reads_land_in_exactly_two_slots() {
+        let geom = CellGridGeometry {
+            cols: 2,
+            rows: 1,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: 12,
+            atlas_height: 6,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        let bufs = GridBuffers::mint();
+        let kernel = packed_kernel(&geom, bufs, [0.0; 4], RGBA_SHIFTS);
+        let roles = slot_roles(kernel.parts().0, bufs);
+        assert_eq!(
+            roles.iter().filter(|r| **r == SlotReads::Cells).count(),
+            1,
+            "all four channels' cell reads, one buffer, one slot"
+        );
+        assert_eq!(
+            roles.iter().filter(|r| **r == SlotReads::Atlas).count(),
+            1,
+            "all four channels' atlas taps, one slot"
+        );
+        assert_eq!(roles.len(), 2, "exactly {{Cells, Atlas}}, nothing else");
+    }
+
+    /// Pins the packed program's size, in the spirit of
+    /// `reads_of_one_buffer_share_a_slot_but_not_nodes`: 623 = 4 × 146 (each
+    /// `or` re-splices a whole channel fragment) + 4 × 9 (each channel's pack
+    /// chain: const 255, mul, const 0, max, const 255, min, trunc, const
+    /// shift, shl) + 3 ors. Node sharing is the e-graph's call once it can
+    /// see `Gather`; this number falling is the sign that landed.
+    #[test]
+    fn packed_kernel_node_count_is_the_channel_kernels_plus_the_pack() {
+        let geom = CellGridGeometry {
+            cols: 2,
+            rows: 1,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: 12,
+            atlas_height: 6,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        let bufs = GridBuffers::mint();
+        let kernel = packed_kernel(&geom, bufs, [0.0; 4], RGBA_SHIFTS);
+        let (arena, root) = kernel.parts();
+        assert_eq!(
+            reachable_nodes(arena, root),
+            623,
+            "composed packed node count (4 channels of 146, plus the pack)"
+        );
+    }
+
+    #[test]
+    fn packed_row_offset_region_matches_the_full_bake() {
+        // Mirrors `baking_a_row_offset_region_samples_the_correct_absolute_row`
+        // for the packed path: a bake starting at y0 = 4 must reproduce rows
+        // 4..8 of the full bake exactly (u32 equality — these are packed
+        // pixels, not floats).
+        let (aw, ah, slot) = (12usize, 6usize, 6usize);
+        let mut atlas = vec![0.0f32; aw * ah];
+        for r in 0..4 {
+            for c in 0..4 {
+                atlas[(1 + r) * aw + 1 + c] = 1.0; // tile 0: solid
+                atlas[(1 + r) * aw + slot + 1 + c] = 0.5; // tile 1: half
+            }
+        }
+        let geom = CellGridGeometry {
+            cols: 1,
+            rows: 2,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: aw as u32,
+            atlas_height: ah as u32,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        let program = CellGridPackedProgram::compile(geom, [0.0; 4], RGBA_SHIFTS);
+        let cells = Arc::new(vec![
+            1.0, 1.0, /* row0 fg */ 1.0, 0.0, 0.0, 1.0, /* bg */ 0.0, 0.0, 0.0, 1.0, 7.0,
+            1.0, /* row1 fg */ 0.0, 0.0, 1.0, 1.0, /* bg */ 1.0, 1.0, 1.0, 1.0,
+        ]);
+        let frame = program.frame(cells, Arc::new(atlas));
+
+        let full = packed_plane(&frame, 4, 8);
+
+        let stride = CellGridFrame::padded_width(4);
+        let mut padded = vec![0u32; 4 * stride];
+        frame.bake_packed_rows(
+            PlaneRegion {
+                width: 4,
+                y0: 4,
+                rows: 4,
+            },
+            &mut padded,
+        );
+        for row in 0..4 {
+            for col in 0..4 {
+                assert_eq!(
+                    padded[row * stride + col],
+                    full[(row + 4) * 4 + col],
+                    "offset bake row {row} col {col} disagrees with the full bake"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "permutation of the byte lanes")]
+    fn overlapping_pack_shifts_are_refused() {
+        let geom = CellGridGeometry {
+            cols: 1,
+            rows: 1,
+            cell_w: 4.0,
+            cell_h: 4.0,
+            density: 1.0,
+            atlas_width: 12,
+            atlas_height: 6,
+            tile_w: 4,
+            tile_h: 4,
+        };
+        // R and B both at bit 0: the OR would blend two channels' bytes.
+        let _refused = CellGridPackedProgram::compile(geom, [0.0; 4], [0, 8, 0, 24]);
     }
 }

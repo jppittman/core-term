@@ -39,7 +39,11 @@ git cat-file -e "${head_commit}^{commit}" || {
 
 commit_list=$(mktemp)
 trap 'rm -f "$commit_list"' EXIT
-git log --format='%H%x09%s' "${base_commit}..${head_commit}" >"$commit_list" || {
+# `--no-merges`: a merge commit records no change of its own, so it has no
+# description to give — the subject is git's own generated text. Requiring a
+# conventional subject there would reject every "Update branch", and main's
+# own history already contains such merges.
+git log --no-merges --format='%H%x09%s' "${base_commit}..${head_commit}" >"$commit_list" || {
   echo "failed to enumerate CL commits: ${base_commit}..${head_commit}" >&2
   exit 2
 }

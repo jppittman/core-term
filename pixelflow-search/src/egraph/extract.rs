@@ -434,7 +434,7 @@ fn break_single_cycle(egraph: &EGraph, cycle: &[usize], best_node: &mut Vec<Opti
         let canonical = egraph.find(EClassId(cid as u32));
         let nodes = egraph.nodes(canonical);
         for (idx, node) in nodes.iter().enumerate() {
-            if matches!(node, ENode::Var(_) | ENode::Const(_)) {
+            if matches!(node, ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_)) {
                 best_node[cid] = Some(idx);
                 return;
             }
@@ -469,7 +469,7 @@ fn break_single_cycle(egraph: &EGraph, cycle: &[usize], best_node: &mut Vec<Opti
     let mut best_in_cycle_count = usize::MAX;
     for (idx, node) in nodes.iter().enumerate() {
         let count = match node {
-            ENode::Var(_) | ENode::Const(_) => 0,
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => 0,
             ENode::Op { children, .. } => children
                 .iter()
                 .filter(|&&c| {
@@ -553,7 +553,9 @@ pub fn extract<C: CostFunction>(
 
             for (idx, node) in nodes.iter().enumerate() {
                 let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) => costs.node_cost(node, None),
+                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {
+                        costs.node_cost(node, None)
+                    }
                     ENode::Op { children, .. } => {
                         // Check for self-referential children
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
@@ -733,12 +735,75 @@ pub fn build_extracted_dag_from_choices(
 ///
 /// Post-order guarantees nodes are appended in topological order (children before
 /// parents), which is a requirement of [`pixelflow_ir::ExprArena`].
+/// Re-pin every `Shl`/`Shr` count child to a `Const` representative.
+///
+/// The emitter lowers shifts to hardware immediates, so the count child MUST
+/// extract as a `Const`. But a count's e-class can legitimately hold
+/// arithmetic as well — a reachable `4 + 4` folds into the same class as `8`
+/// — and extraction picks by COST, so a cost model that prices the `Add`
+/// lower (a learned one, or any future retuning) hands codegen a non-constant
+/// child and it panics. Substituting a `Const` from the same class is sound
+/// by definition: same class means equal value.
+///
+/// # Panics
+///
+/// Panics if a shift-count class holds no `Const` at all. That cannot arise
+/// from a well-formed arena (the count entered as a literal) and would panic
+/// in the emitter regardless — failing here names the real cause.
+fn pin_shift_counts(egraph: &EGraph, choices: &[Option<usize>]) -> alloc::vec::Vec<Option<usize>> {
+    let mut pinned = choices.to_vec();
+    for idx in 0..egraph.num_classes() {
+        let canonical = egraph.find(EClassId(idx as u32));
+        if canonical.0 as usize != idx {
+            continue;
+        }
+        let Some(node_idx) = pinned.get(idx).and_then(|o| *o) else {
+            continue;
+        };
+        let Some(ENode::Op { op, children }) = egraph.nodes(canonical).get(node_idx) else {
+            continue;
+        };
+        if !matches!(
+            op.kind(),
+            pixelflow_ir::OpKind::Shl | pixelflow_ir::OpKind::Shr
+        ) {
+            continue;
+        }
+        let Some(&count) = children.get(1) else {
+            continue;
+        };
+        let count_class = egraph.find(count);
+        let ci = count_class.0 as usize;
+        let count_nodes = egraph.nodes(count_class);
+        if let Some(chosen) = pinned.get(ci).and_then(|o| *o)
+            && matches!(count_nodes.get(chosen), Some(ENode::Const(_)))
+        {
+            continue;
+        }
+        let const_idx = count_nodes
+            .iter()
+            .position(|n| matches!(n, ENode::Const(_)))
+            .unwrap_or_else(|| {
+                panic!(
+                    "pin_shift_counts: shift-count e-class {ci} holds no Const; \
+                     the emitter's immediate-only shift lowering cannot be met"
+                )
+            });
+        pinned[ci] = Some(const_idx);
+    }
+    pinned
+}
+
 pub fn choices_to_arena(
     egraph: &EGraph,
     root: EClassId,
     choices: &[Option<usize>],
 ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
     use pixelflow_ir::{ExprArena, ExprId};
+
+    // Shifts must reach codegen with a constant count — see `pin_shift_counts`.
+    let pinned = pin_shift_counts(egraph, choices);
+    let choices: &[Option<usize>] = &pinned;
 
     enum Task {
         /// Visit an e-class: push it to the result stack if cached, otherwise
@@ -753,6 +818,16 @@ pub fn choices_to_arena(
     let mut arena = ExprArena::with_capacity(num_classes);
     // Cache: canonical e-class id → ExprId (None = not yet visited).
     let mut id_map: Vec<Option<ExprId>> = alloc::vec![None; num_classes];
+    // Buffer identity → declared slot in the output arena. Distinct e-classes
+    // can carry the same identity only if their decls differ, which is a
+    // corrupt graph (one memory, two extents) — assert, never alias silently.
+    let mut buffer_slots: alloc::collections::BTreeMap<
+        pixelflow_ir::arena::BufferIdentity,
+        (
+            pixelflow_ir::arena::BufferId,
+            pixelflow_ir::arena::BufferDecl,
+        ),
+    > = alloc::collections::BTreeMap::new();
     let mut result_stack: Vec<ExprId> = Vec::new();
     let mut task_stack: Vec<Task> = alloc::vec![Task::Visit(root)];
 
@@ -805,6 +880,31 @@ pub fn choices_to_arena(
                     }
                     ENode::Const(bits) => {
                         let expr_id = arena.push_const(f32::from_bits(*bits));
+                        if idx < id_map.len() {
+                            id_map[idx] = Some(expr_id);
+                        }
+                        result_stack.push(expr_id);
+                    }
+                    ENode::Buffer(decl) => {
+                        // One slot per distinct identity: e-classes already
+                        // dedupe equal decls, so a repeat identity here means
+                        // two decls disagreeing on extents.
+                        let buf_id = match buffer_slots.get(&decl.id) {
+                            Some(&(buf_id, prior)) => {
+                                assert!(
+                                    prior == *decl,
+                                    "choices_to_arena: BufferIdentity declared twice with \
+                                     different extents ({prior:?} vs {decl:?})"
+                                );
+                                buf_id
+                            }
+                            None => {
+                                let buf_id = arena.declare_buffer(*decl);
+                                buffer_slots.insert(decl.id, (buf_id, *decl));
+                                buf_id
+                            }
+                        };
+                        let expr_id = arena.push_buffer(buf_id);
                         if idx < id_map.len() {
                             id_map[idx] = Some(expr_id);
                         }
@@ -1005,7 +1105,9 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
 
             for (idx, node) in nodes.iter().enumerate() {
                 let this_node_cost = match node {
-                    ENode::Var(_) | ENode::Const(_) => costs.node_cost(node, None),
+                    ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {
+                        costs.node_cost(node, None)
+                    }
                     ENode::Op { children, .. } => {
                         if children.iter().any(|&c| egraph.find(c) == canonical) {
                             CYCLE_COST

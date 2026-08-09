@@ -11,7 +11,7 @@ use actor_scheduler::{
     Actor, ActorBuilder, ActorHandle, ActorStatus, HandlerError, HandlerResult, Message,
     SystemStatus,
 };
-use pixelflow_core::{At, CellGridGeometry, CellGridProgram};
+use pixelflow_core::{At, CellGridGeometry, CellGridPackedProgram};
 use pixelflow_graphics::render::scene::Scene;
 
 /// Adapter to send PTY commands to TerminalApp actor.
@@ -109,12 +109,14 @@ pub struct TerminalApp {
     loaded_font: Arc<LoadedFont<MmapSource>>,
     /// Baked glyph coverage tiles, gathered by the scene kernel.
     atlas: GlyphAtlas,
-    /// The compiled cell-grid scene (four channel kernels). Recompiled
-    /// whenever the geometry it was compiled against — grid dimensions,
-    /// cell size, density, atlas extents — changes; `None` until the first
-    /// frame. This is the JIT answer to dynamic resize: the program's size
-    /// and compile time are independent of the grid's.
-    program: Option<CellGridProgram>,
+    /// The compiled cell-grid scene: ONE packed kernel producing finished
+    /// `u32` pixels, byte order bound by the platform's ColorCube inside
+    /// pixelflow-graphics. Recompiled whenever the geometry it was compiled
+    /// against — grid dimensions, cell size, density, atlas extents —
+    /// changes; `None` until the first frame. This is the JIT answer to
+    /// dynamic resize: the program's size and compile time are independent
+    /// of the grid's.
+    program: Option<CellGridPackedProgram>,
     /// Whether any scene has been submitted yet. Synchronized output holds
     /// the last frame, which only exists once this is true; before that, the
     /// solid background is the only honest thing to show.
@@ -171,7 +173,30 @@ impl TerminalApp {
             panic!("Failed to open font file at {}: {}", font_path.display(), e)
         });
 
-        let loaded_font = Arc::new(LoadedFont::new(source).expect("Failed to parse font"));
+        let loaded_font = Arc::new(LoadedFont::new(source).unwrap_or_else(|| {
+            // `expect("Failed to parse font")` discarded the path and the
+            // size — and cost a CI round-trip with a bespoke diagnostic
+            // harness to learn that the "font" was a 131-byte Git LFS
+            // pointer. The parse returns no error of its own, so what the
+            // file actually IS is the only signal available; report it.
+            let size = std::fs::metadata(&font_path).map(|m| m.len());
+            let lfs_pointer = std::fs::read(&font_path)
+                .is_ok_and(|b| b.starts_with(b"version https://git-lfs.github.com/spec/v1"));
+            panic!(
+                "Failed to parse font at {} ({}){}",
+                font_path.display(),
+                match size {
+                    Ok(n) => format!("{n} bytes"),
+                    Err(e) => format!("size unknown: {e}"),
+                },
+                if lfs_pointer {
+                    " — this file is a Git LFS pointer, not a font. Run \
+                     `git lfs pull` (or check out with LFS enabled)."
+                } else {
+                    ""
+                }
+            )
+        }));
 
         // Bake the ASCII set into the atlas. Density 1.0 until the platform
         // reports the real backing scale via WindowCreated.
@@ -345,7 +370,7 @@ impl TerminalApp {
             tile_w: self.atlas.tile_px() as u32,
             tile_h: self.atlas.tile_px() as u32,
         };
-        if self.program.as_ref().map(CellGridProgram::geometry) != Some(&geom) {
+        if self.program.as_ref().map(CellGridPackedProgram::geometry) != Some(&geom) {
             log::info!(
                 "Compiling cell-grid scene: {}x{} cells, cell {}x{} pt, atlas {}x{} texels",
                 cols,
@@ -355,7 +380,12 @@ impl TerminalApp {
                 geom.atlas_width,
                 geom.atlas_height
             );
-            self.program = Some(CellGridProgram::compile(geom, [dbg_r, dbg_g, dbg_b, dbg_a]));
+            self.program = Some(
+                pixelflow_graphics::render::scene::compile_platform_cell_grid(
+                    geom,
+                    [dbg_r, dbg_g, dbg_b, dbg_a],
+                ),
+            );
         }
         let program = self.program.as_ref().expect("program compiled above");
         Some(Scene::CellGrid(
@@ -1206,7 +1236,10 @@ mod tests {
 
     #[test]
     fn scene_paints_default_background_and_recompiles_on_resize() {
-        use pixelflow_graphics::render::color::Bgra8;
+        // The app compiles its kernel for the PLATFORM's pixel format, so
+        // the frame must be that format too — a hardcoded one was correct
+        // only while rendering converted per pixel.
+        use pixelflow_graphics::render::color::PlatformPixel;
         use pixelflow_graphics::render::frame::Frame;
 
         let (mut app, _writer_rx, _tx, mut engine_scheduler) = match create_test_app() {
@@ -1224,7 +1257,7 @@ mod tests {
         let mut probe = EngineProbe::default();
         drain_engine(&mut engine_scheduler, &mut probe);
         let scene = probe.scenes.pop().expect("app sent a frame");
-        let mut frame = Frame::<Bgra8>::new(16, 16);
+        let mut frame = Frame::<PlatformPixel>::new(16, 16);
         scene.render(&mut frame, 1);
         let px = frame.data[8 * 16 + 8];
         assert!(
@@ -1249,7 +1282,7 @@ mod tests {
         let mut probe = EngineProbe::default();
         drain_engine(&mut engine_scheduler, &mut probe);
         let scene = probe.scenes.pop().expect("app sent a post-resize frame");
-        let mut frame = Frame::<Bgra8>::new(16, 16);
+        let mut frame = Frame::<PlatformPixel>::new(16, 16);
         scene.render(&mut frame, 1);
         let px = frame.data[8 * 16 + 8];
         assert!(

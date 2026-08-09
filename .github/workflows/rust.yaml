@@ -397,6 +397,66 @@ jobs:
         shell: bash
         run: cargo run -p xtask -- isa-matrix --clippy --build-only
 
+  # The `test` job above runs `cargo test` on macos-latest, but that never
+  # exercises a real LaunchServices bundle launch -- `cargo run`/`cargo test`
+  # spawn the binary directly, bypassing the app-bundle launch path entirely.
+  # A prior bug (background threads calling into AppKit unsynchronized with
+  # MetalOps's hand-pumped event queue, fixed via CocoaWaker's dispatch_async
+  # hop onto the main thread -- see pixelflow-runtime/src/platform/waker.rs)
+  # crashed ~2 out of 3 raw launches, 14-22s after startup, and was invisible
+  # to every job above: Linux runners have no window server at all, and even
+  # on macOS, only a real `open`/LaunchServices launch reproduced it. This
+  # job is what would have caught it, and is what stops it from silently
+  # coming back.
+  macos-launch-stability:
+    # Informational while the harness is tuned against real runner timing —
+    # same policy as the WASM status job: keep the signal, don't gate merges
+    # on an unproven check. Flip to blocking once it has a green history.
+    name: macOS launch stability (informational, non-blocking)
+    continue-on-error: true
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # The app's font is LFS-tracked (.gitattributes), and this is the
+          # only job that runs the real bundle — without the smudge it ships
+          # a 131-byte pointer and the app dies parsing it. Tests escape this
+          # by include_bytes!-ing the fallback font, which .gitattributes
+          # exempts from LFS for exactly that reason.
+          lfs: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-launch-stability-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-launch-stability-
+
+      - name: Launch the bundled app repeatedly and check for crash reports
+        run: cargo run -p xtask --release -- launch-stability-check
+
+      # The stability check above already fails the job on a crash; this
+      # step exists purely to attach the .ips content to the log so a
+      # failure is diagnosable without re-running locally.
+      - name: Dump any crash reports (only runs if a launch crashed)
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for f in "$HOME/Library/Logs/DiagnosticReports"/CoreTerm-*.ips; do
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
+
   # Every display driver's cfg (use_cocoa_display, use_x11_display,
   # use_web_display) should be verifiably exercised *somewhere* in CI, or its
   # buildability is a total blind spot -- exactly how the now-deleted headless

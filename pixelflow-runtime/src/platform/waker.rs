@@ -186,6 +186,17 @@ mod cocoa_waker {
     /// event queue, which wakes the runloop from [NSApp nextEventMatchingMask...].
     /// Posts are coalesced: while one wake event is already queued, `wake()`
     /// is a single atomic op and no Objective-C call.
+    ///
+    /// The event construction and posting itself is dispatched onto the main
+    /// queue rather than done inline on the calling (background) thread.
+    /// AppKit is not thread-safe, and constructing/posting an NSEvent from a
+    /// background thread was observed to intermittently crash the process
+    /// 14-22s after launch with `_NSAssertMainEventQueueIsCurrentEventQueue`
+    /// deep inside `_DPSNextEvent` — an internal AppKit consistency check
+    /// that a concurrent background-thread call had corrupted. `dispatch_async`
+    /// onto the main queue both moves the AppKit call to the main thread and
+    /// wakes `nextEventMatchingMask`, which services the main queue's
+    /// run-loop source while blocked waiting for an event.
     #[derive(Clone)]
     pub struct CocoaWaker;
 
@@ -211,56 +222,68 @@ mod cocoa_waker {
     impl EventLoopWaker for CocoaWaker {
         fn wake(&self) -> Result<(), RuntimeError> {
             // Coalesce: a wake event is already queued, the pump will see it.
+            // This check and the dispatch_async call below are the only parts
+            // of wake() that run on the calling (background) thread; both are
+            // thread-safe (an atomic op and a libdispatch primitive).
             if WAKE_EVENT_QUEUED.swap(true, Ordering::SeqCst) {
                 return Ok(());
             }
             unsafe {
-                log::trace!("CocoaWaker: Waking up NSApp");
-                let app = NSApplication::shared();
-
-                let event_cls = sys::class(b"NSEvent\0");
-                let sel_other = sys::sel(b"otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:\0");
-
-                // Signature: (Class, SEL, NSUInteger, NSPoint, NSUInteger, double, NSInteger, id, short, long, long) -> id
-                let sig: unsafe extern "C" fn(
-                    Id,
-                    sys::Sel,
-                    u64,
-                    cocoa::NSPoint,
-                    u64,
-                    f64,
-                    i64,
-                    Id,
-                    i16,
-                    i64,
-                    i64,
-                ) -> Id = std::mem::transmute(sys::objc_msgSend as *const std::ffi::c_void);
-
-                let event = sig(
-                    event_cls,
-                    sel_other,
-                    sys::NS_APP_DEFINED,
-                    cocoa::NSPoint::new(0.0, 0.0),
-                    0,
-                    0.0,
-                    0,
-                    ptr::null_mut(),
-                    0,
-                    0,
-                    0,
-                );
-
-                if !event.is_null() {
-                    let sel_post = sys::sel(b"postEvent:atStart:\0");
-                    sys::send_2::<(), Id, BOOL>(app.0, sel_post, event, NO);
-                } else {
-                    // Post failed: release the token or every future wake()
-                    // would be suppressed and the pump could sleep forever.
-                    WAKE_EVENT_QUEUED.store(false, Ordering::SeqCst);
-                    log::warn!("CocoaWaker: failed to construct wake NSEvent");
-                }
+                let queue = sys::dispatch_get_main_queue();
+                sys::dispatch_async_f(queue, ptr::null_mut(), post_wake_event);
             }
             Ok(())
+        }
+    }
+
+    /// Runs on the main thread via `dispatch_async_f`. Constructs and posts
+    /// the wake NSEvent — the only part of the wake path that touches AppKit.
+    extern "C" fn post_wake_event(_context: Id) {
+        unsafe {
+            log::trace!("CocoaWaker: Waking up NSApp");
+            let app = NSApplication::shared();
+
+            let event_cls = sys::class(b"NSEvent\0");
+            let sel_other = sys::sel(b"otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:\0");
+
+            // Signature: (Class, SEL, NSUInteger, NSPoint, NSUInteger, double, NSInteger, id, short, long, long) -> id
+            let sig: unsafe extern "C" fn(
+                Id,
+                sys::Sel,
+                u64,
+                cocoa::NSPoint,
+                u64,
+                f64,
+                i64,
+                Id,
+                i16,
+                i64,
+                i64,
+            ) -> Id = std::mem::transmute(sys::objc_msgSend as *const std::ffi::c_void);
+
+            let event = sig(
+                event_cls,
+                sel_other,
+                sys::NS_APP_DEFINED,
+                cocoa::NSPoint::new(0.0, 0.0),
+                0,
+                0.0,
+                0,
+                ptr::null_mut(),
+                0,
+                0,
+                0,
+            );
+
+            if !event.is_null() {
+                let sel_post = sys::sel(b"postEvent:atStart:\0");
+                sys::send_2::<(), Id, BOOL>(app.0, sel_post, event, NO);
+            } else {
+                // Post failed: release the token or every future wake()
+                // would be suppressed and the pump could sleep forever.
+                WAKE_EVENT_QUEUED.store(false, Ordering::SeqCst);
+                log::warn!("CocoaWaker: failed to construct wake NSEvent");
+            }
         }
     }
 }

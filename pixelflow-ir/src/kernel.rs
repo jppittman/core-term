@@ -422,6 +422,22 @@ impl Kernel {
         self.combine(rhs, OpKind::BitOr)
     }
 
+    // ─────────────────────────── int domain ───────────────────────
+
+    /// Truncate toward zero to a lane-wide `i32`, entering the BIT domain
+    /// (`cvttps2dq` / `fcvtzs`).
+    ///
+    /// Returns [`Bits`], not `Kernel`, because the result is a bit pattern
+    /// rather than a number: multiplying it by `2.0` is meaningless, and with
+    /// one shared type that mistake compiles and yields plausible pixels. The
+    /// type is the enforcement — see "Denote before you build" in CLAUDE.md.
+    #[must_use]
+    pub fn trunc_to_int(&self) -> Bits {
+        Bits {
+            inner: self.map(OpKind::TruncToInt),
+        }
+    }
+
     // ─────────────────────────── control ──────────────────────────
 
     /// `self ? if_true : if_false` — `self` is the mask.
@@ -606,6 +622,72 @@ impl Kernel {
     }
 }
 
+/// A kernel whose lanes are BIT PATTERNS rather than numbers — the discrete
+/// half of the language, entered by [`Kernel::trunc_to_int`].
+///
+/// [`Kernel`] carries continuous values; `Bits` carries the integer/bitwise
+/// domain. Keeping them apart is load-bearing rather than tidy: with a single
+/// type, `Kernel::x().shl(8)` shifts an IEEE-754 *representation* and
+/// `trunc_to_int().mul(2.0)` does float arithmetic on an `i32` bit pattern.
+/// Both compile, neither is meaningful, and both produce plausible-looking
+/// output — the worst failure mode there is. Only the operations that are
+/// meaningful on bit patterns exist here.
+///
+/// This types the *conversion* boundary. Comparison masks are also bit
+/// patterns and still travel as `Kernel` — typing those too is the general
+/// case, tracked separately.
+#[derive(Clone)]
+pub struct Bits {
+    inner: Kernel,
+}
+
+impl Bits {
+    /// `self << bits` — a logical shift of the lane's bit pattern.
+    ///
+    /// The count is pushed as a `Const` operand, which the emitter folds into
+    /// the hardware shift immediate.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bits >= 32` — a 32-bit lane has no bits there.
+    #[must_use]
+    pub fn shl(&self, bits: u32) -> Self {
+        assert!(bits < 32, "Bits::shl: shift of {bits} on a 32-bit lane");
+        let mut arena = self.inner.inner.arena.clone();
+        let count = arena.push_const(bits as f32);
+        let root = arena.push_binary(OpKind::Shl, self.inner.inner.root, count);
+        Self {
+            inner: Kernel::wrap(arena, root),
+        }
+    }
+
+    /// Bitwise OR of two lane patterns.
+    #[must_use]
+    pub fn or(&self, rhs: &Self) -> Self {
+        Self {
+            inner: self.inner.or(&rhs.inner),
+        }
+    }
+
+    /// Bitwise AND of two lane patterns.
+    #[must_use]
+    pub fn and(&self, rhs: &Self) -> Self {
+        Self {
+            inner: self.inner.and(&rhs.inner),
+        }
+    }
+
+    /// Reinterpret as a [`Kernel`] for storage or as a kernel root.
+    ///
+    /// The lanes still hold a bit pattern; this is the deliberate, named exit
+    /// from the bit domain, taken when the pattern IS the output (a packed
+    /// pixel written to a frame buffer).
+    #[must_use]
+    pub fn into_kernel(self) -> Kernel {
+        self.inner
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +746,25 @@ mod tests {
             &Kernel::w(),
         );
         assert_eq!(eval(&warped, 3.0, 4.0), 4.0 * 8.0);
+    }
+
+    #[test]
+    fn trunc_shl_or_pack_a_byte_lane() {
+        // The packing idiom: clamp-truncated bytes shifted to their lanes and
+        // OR-folded. 3.7 truncates toward zero to 3; 3 << 8 | 2 = 0x0302.
+        let lo = Kernel::x().trunc_to_int();
+        let hi = Kernel::y().trunc_to_int().shl(8);
+        let packed = hi.or(&lo).into_kernel();
+        assert_eq!(eval(&packed, 2.9, 3.7).to_bits(), 0x0302);
+    }
+
+    /// The count is still checked at runtime; the OPERAND no longer needs
+    /// checking, because `Kernel::x().shl(32)` does not compile at all now —
+    /// `shl` exists only on [`Bits`], which only `trunc_to_int` produces.
+    #[test]
+    #[should_panic(expected = "32-bit lane")]
+    fn shl_past_the_lane_is_refused() {
+        let _refused = Kernel::x().trunc_to_int().shl(32);
     }
 
     #[test]

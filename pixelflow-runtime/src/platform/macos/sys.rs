@@ -97,6 +97,25 @@ extern "C" {
     pub fn class_addMethod(cls: Class, name: Sel, imp: *const c_void, types: *const u8) -> BOOL;
 }
 
+pub type DispatchQueue = *mut c_void;
+pub type DispatchFunction = extern "C" fn(Id);
+
+// libdispatch is part of libSystem, which every macOS binary links
+// implicitly; no explicit #[link] is needed the way it is for libobjc above.
+//
+// `dispatch_get_main_queue()` is a header-only `dispatch/queue.h` inline that
+// just takes the address of this global — it is not itself an exported
+// function symbol, so we bind the global directly instead.
+extern "C" {
+    static _dispatch_main_q: c_void;
+    pub fn dispatch_async_f(queue: DispatchQueue, context: Id, work: DispatchFunction);
+}
+
+#[inline(always)]
+pub unsafe fn dispatch_get_main_queue() -> DispatchQueue {
+    std::ptr::addr_of!(_dispatch_main_q) as DispatchQueue
+}
+
 // --- Inline Helpers ---
 
 /// Get a class by name.

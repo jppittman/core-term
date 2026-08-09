@@ -1030,9 +1030,9 @@ impl EdgeAccumulator {
             }
 
             match node {
-                ENode::Var(_) | ENode::Const(_) => {
+                ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {
                     // Leaf: no edges to add. If shared, ref loads are zero-cost
-                    // (it's just a variable or constant).
+                    // (a variable, constant, or bound-buffer handle).
                 }
                 ENode::Op { op, children } => {
                     let parent_op = op.kind();
@@ -1067,6 +1067,7 @@ impl EdgeAccumulator {
                                 child_nodes.get(child_node_idx).map(|n| match n {
                                     ENode::Var(_) => OpKind::Var,
                                     ENode::Const(_) => OpKind::Const,
+                                    ENode::Buffer(_) => OpKind::Buffer,
                                     ENode::Op { op: cop, .. } => cop.kind(),
                                 })
                             }

@@ -375,6 +375,7 @@ fn gather_reads_ctx_every_iteration() {
 
     let mut a = ExprArena::new();
     let b = a.declare_buffer(BufferDecl {
+        id: pixelflow_ir::arena::BufferIdentity::mint(),
         width: w as u32,
         height: 2,
     });
@@ -408,10 +409,12 @@ fn matmul_reduce_one_call_fills_output() {
 
     let mut a = ExprArena::new();
     let wb = a.declare_buffer(BufferDecl {
+        id: pixelflow_ir::arena::BufferIdentity::mint(),
         width: in_dim as u32,
         height: out_dim as u32,
     });
     let ib = a.declare_buffer(BufferDecl {
+        id: pixelflow_ir::arena::BufferIdentity::mint(),
         width: in_dim as u32,
         height: 1,
     });

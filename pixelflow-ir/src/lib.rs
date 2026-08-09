@@ -18,6 +18,9 @@
 
 extern crate alloc;
 
+/// Exact dyadic rationals — the constant domain the e-graph folds in, so
+/// that folding cannot contradict the algebraic rewrites. See the module docs.
+pub mod dyadic;
 pub mod kind;
 pub mod traits;
 pub mod variance;

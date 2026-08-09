@@ -136,6 +136,25 @@ define_op!(Select);
 // === Aggregates ===
 define_op!(Tuple);
 
+// === Memory ===
+// `Gather(buffer, x, y)` — bound-memory read (floor indices, clamp to the
+// declared extents, row-major). Present as an `Op` so the e-graph can carry it
+// as opaque structure — two gathers hash-cons into one e-class iff buffer
+// identity and all three children match — but deliberately ABSENT from
+// [`op_from_kind`]: rewrite templates resolve ops through that lookup, and
+// returning `None` there is what keeps the rule set unable to name Gather.
+// Its semantics depend on bound memory, so no algebraic rule (and no constant
+// fold) may ever look through it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Gather;
+
+impl Op for Gather {
+    #[inline]
+    fn kind(&self) -> OpKind {
+        OpKind::Gather
+    }
+}
+
 // === Differentiation ===
 // `Dwrt(expr, var)` is the single autodiff operator. It exists only inside the
 // e-graph: chain-rule rewrites push it toward the leaves until it dissolves
@@ -199,8 +218,14 @@ pub fn op_from_kind(kind: OpKind) -> Option<&'static dyn Op> {
         | OpKind::Shr
         | OpKind::BitAnd
         | OpKind::BitOr => None,
-        // Memory ops are not yet representable in the e-graph: a Buffer leaf
-        // references an arena-local table that e-classes cannot carry.
+        // Memory ops are representable (`ENode::Buffer` carries the full
+        // `BufferDecl` — `BufferIdentity` is process-unique, so no arena-local
+        // table is needed) but stay opaque to the rule set: `None` here is
+        // what denies every rewrite template the ability to name them, so
+        // their participation is hash-consing CSE only. `add_arena` and the
+        // runtime tier resolve `Gather` directly via the crate-private
+        // `Gather` op above. `RawGather` and `Reduce` are lowered
+        // before/after the e-graph and never appear in one.
         OpKind::Buffer | OpKind::Gather | OpKind::RawGather | OpKind::Reduce => None,
     }
 }

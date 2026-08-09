@@ -58,6 +58,19 @@ pub struct EGraph {
     /// Which rewrite application (if any) is currently executing — read by
     /// `add()`/`union()` to attribute newly created nodes/unions.
     active_application: Option<ActiveApplication>,
+    /// The constant each class is known to equal, as f32 bits, indexed by
+    /// class id — maintained independently of `EClass::nodes` on purpose.
+    /// `rebuild` drains a class's nodes with `mem::take` and only THEN
+    /// performs congruence unions, so a guard that scanned the node vector
+    /// saw an empty class and waved contradictory merges through at exactly
+    /// the moment congruence closure does its work. The fact must outlive the
+    /// nodes.
+    const_fact: Vec<Option<u32>>,
+    /// Unions REFUSED because they would assert two numerically unequal
+    /// constants equal — a proved falsehood the graph declines to absorb.
+    /// Distinct (bits, bits) pairs, kept for reporting and tests; see
+    /// [`EGraph::union`].
+    refused_const_unions: Vec<(u32, u32)>,
 }
 
 impl Default for EGraph {
@@ -79,6 +92,8 @@ impl Clone for EGraph {
             step: self.step,
             provenance: self.provenance.clone(),
             active_application: self.active_application,
+            const_fact: self.const_fact.clone(),
+            refused_const_unions: self.refused_const_unions.clone(),
         }
     }
 }
@@ -110,6 +125,8 @@ impl EGraph {
             step: 0,
             provenance: Provenance::new(),
             active_application: None,
+            const_fact: Vec::new(),
+            refused_const_unions: Vec::new(),
         }
     }
 
@@ -128,6 +145,8 @@ impl EGraph {
             step: 0,
             provenance: Provenance::new(),
             active_application: None,
+            const_fact: Vec::new(),
+            refused_const_unions: Vec::new(),
         }
     }
 
@@ -165,7 +184,7 @@ impl EGraph {
 
     fn canonicalize_node(&self, node: &mut ENode) {
         match node {
-            ENode::Var(_) | ENode::Const(_) => {}
+            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {}
             ENode::Op { children, .. } => {
                 for child in children {
                     *child = self.find(*child);
@@ -195,6 +214,7 @@ impl EGraph {
             None => Origin::Seed,
         };
         self.provenance.record_origin(enode_id, origin);
+        self.const_fact.push(node.as_f32().map(f32::to_bits));
         self.classes.push(EClass {
             nodes: vec![node.clone()],
             tags: vec![enode_id],
@@ -204,11 +224,72 @@ impl EGraph {
         id
     }
 
+    /// Refused constant unions: `(bits, bits)` pairs the graph declined to
+    /// assert equal. Non-empty means some kernel hit the folding-vs-algebra
+    /// collision — see the refusal block in [`EGraph::union`].
+    #[must_use]
+    pub fn refused_const_unions(&self) -> &[(u32, u32)] {
+        &self.refused_const_unions
+    }
+
     pub fn union(&mut self, a: EClassId, b: EClassId) -> EClassId {
         let a = self.find_mut(a);
         let b = self.find_mut(b);
         if a == b {
             return a;
+        }
+        // An e-class asserts "these are all equal", so a union placing two
+        // numerically UNEQUAL constants in one class would be a proved
+        // falsehood — and congruence closure amplifies any proved falsehood
+        // into everything-equals-everything, with extraction tie-breaking
+        // arbitrarily between unequal constants. The falsehoods are real:
+        // constant folding computes f32-truths (`x + 2²⁴ = 2²⁴`) while the
+        // algebraic rules compute ℝ-truths (`(x+y)−y = x`), each sound
+        // alone. At the collision, REFUSE the union: an under-merged e-graph
+        // is still sound — every class still holds only provably-equal
+        // terms, and the cost is missed CSE at exactly the collision points
+        // — while a false merge is unbounded. First prover keeps the class;
+        // the refusal is journaled and reported so ill-conditioned kernels
+        // are loud instead of subtly nondeterministic. (Folding constants in
+        // f64 is the planned complement: it makes the folder agree with the
+        // algebra at f32-observable scales, so collisions become
+        // vanishingly rare and this valve becomes a pure detector.)
+        //
+        // `ca == cb` (not bit equality) deliberately admits ±0.0 — signed
+        // zero selection is already platform-unspecified, so an optimizer
+        // choosing a sign is within contract, same license as commuting
+        // Min/Max over NaN. Bit equality additionally admits identical NaN
+        // patterns, which `==` would wrongly reject: an all-ones comparison
+        // mask reads as NaN and must be unionable with itself.
+        // Read the class-level fact, NOT the node vector: `rebuild` drains
+        // nodes with `mem::take` before performing congruence unions, so a
+        // node-scanning guard is blind exactly when congruence closure runs.
+        let (fa, fb) = (self.const_fact[a.index()], self.const_fact[b.index()]);
+        if let (Some(ba), Some(bb)) = (fa, fb) {
+            let (ca, cb) = (f32::from_bits(ba), f32::from_bits(bb));
+            if ca != cb && ba != bb {
+                let pair = (ba, bb);
+                if !self.refused_const_unions.contains(&pair) {
+                    // Journal ALWAYS; print only on request. This fires
+                    // during ordinary kernel compilation — two computation
+                    // orders of one real quantity disagreeing by an ulp is
+                    // enough — so unconditional stderr would spam every
+                    // build. `refused_const_unions()` is the durable record.
+                    if std::env::var_os("PIXELFLOW_REPORT_CONST_REFUSALS").is_some() {
+                        std::eprintln!(
+                            "pixelflow e-graph: refusing a union that would assert \
+                             {ca} = {cb} (bits {:#010x} vs {:#010x}) — the rule set \
+                             derived contradictory constants (f32 folding vs \
+                             algebra at an ill-conditioned input); keeping the \
+                             classes separate costs only missed CSE",
+                            pair.0,
+                            pair.1
+                        );
+                    }
+                    self.refused_const_unions.push(pair);
+                }
+                return if a.0 < b.0 { a } else { b };
+            }
         }
         let (parent, child) = if a.0 < b.0 { (a, b) } else { (b, a) };
         self.parent[child.index()] = parent;
@@ -216,6 +297,11 @@ impl EGraph {
         let child_tags = std::mem::take(&mut self.classes[child.index()].tags);
         self.classes[parent.index()].nodes.extend(child_nodes);
         self.classes[parent.index()].tags.extend(child_tags);
+        // The guard above proved the two facts agree (or that at most one
+        // exists), so `or` is a merge, not a choice.
+        if self.const_fact[parent.index()].is_none() {
+            self.const_fact[parent.index()] = self.const_fact[child.index()];
+        }
         self.worklist.push(parent);
         self.provenance.record_union(UnionEvent {
             rule_idx: self.active_application.map(|a| a.rule_idx),
@@ -315,6 +401,22 @@ impl EGraph {
                         // (`active_application` is whatever the caller left
                         // it as — normally `None` outside rule application).
                         self.union(id, existing);
+
+                        // `union` REFUSES a merge that would assert two
+                        // unequal constants equal, and a refusal here needs
+                        // handling that a rule-driven refusal does not: the
+                        // node below would be pushed back into `id` while
+                        // `memo` names `existing`, leaving ONE ENode in two
+                        // contradictory classes with only one of them
+                        // reachable by lookup — later matching or extraction
+                        // could then give the same expression different
+                        // values. Leave the node with the class memo already
+                        // names. `id` loses a node congruent to one it can no
+                        // longer be merged with, which is under-merging: it
+                        // costs CSE, not correctness.
+                        if self.find(id) != self.find(existing) {
+                            continue;
+                        }
                     }
                 } else {
                     self.memo.insert(node.clone(), id);
@@ -454,6 +556,7 @@ impl EGraph {
         match &class.nodes[0] {
             ENode::Var(_) => pixelflow_ir::OpKind::Var,
             ENode::Const(_) => pixelflow_ir::OpKind::Const,
+            ENode::Buffer(_) => pixelflow_ir::OpKind::Buffer,
             ENode::Op { op, .. } => op.kind(),
         }
     }
@@ -514,13 +617,10 @@ impl EGraph {
                 ExprNode::Param(i) => {
                     panic!("add_arena: ExprNode::Param({i}) not valid after kernel compilation")
                 }
-                ExprNode::Buffer(b) => {
-                    panic!(
-                        "add_arena: ExprNode::Buffer({}) — memory ops are not yet representable \
-                         in the e-graph (KERNELS_AND_LATTICES.md M3)",
-                        b.0
-                    )
-                }
+                // The leaf carries the full decl (identity + extents), so
+                // hash-consing merges buffer references across arenas iff they
+                // name the same memory — see `ENode::Buffer`.
+                ExprNode::Buffer(b) => self.add(ENode::Buffer(*arena.buffer_decl(*b))),
                 ExprNode::Unary(op, child) => {
                     let child_id = id_map[child.0 as usize].unwrap_or_else(|| {
                         panic!(
@@ -574,8 +674,15 @@ impl EGraph {
                             c
                         )
                     });
-                    let static_op = ops::op_from_kind(*op)
-                        .unwrap_or_else(|| panic!("add_arena: no static Op for OpKind {:?}", op));
+                    // Gather is deliberately absent from `op_from_kind` (no
+                    // rewrite rule may name it) but representable as opaque
+                    // structure — resolve it directly.
+                    let static_op: &'static dyn crate::egraph::ops::Op = match *op {
+                        pixelflow_ir::OpKind::Gather => &ops::Gather,
+                        other => ops::op_from_kind(other).unwrap_or_else(|| {
+                            panic!("add_arena: no static Op for OpKind {other:?}")
+                        }),
+                    };
                     self.add(ENode::Op {
                         op: static_op,
                         children: vec![a_id, b_id, c_id],
@@ -898,24 +1005,27 @@ impl EGraph {
     /// `apply_action_from_rule` so provenance attribution stays correct;
     /// this function itself has no notion of "which rule" — it only knows
     /// how to execute the `RewriteAction` variants.
+    /// Union `a` and `b`, reporting whether the graph actually changed.
+    ///
+    /// [`EGraph::union`] REFUSES merges that would assert two numerically
+    /// unequal constants equal, so "the classes differed beforehand" is not
+    /// evidence that anything merged. Counting a refusal as a change made
+    /// saturation believe it had made progress, so it rebuilt and re-applied
+    /// the same refused rewrite every iteration until its limit.
+    fn union_counted(&mut self, a: EClassId, b: EClassId) -> usize {
+        if self.find(a) == self.find(b) {
+            return 0;
+        }
+        self.union(a, b);
+        usize::from(self.find(a) == self.find(b))
+    }
+
     fn apply_action(&mut self, class_id: EClassId, action: RewriteAction) -> usize {
         match action {
-            RewriteAction::Union(target_id) => {
-                if self.find(class_id) != self.find(target_id) {
-                    self.union(class_id, target_id);
-                    1
-                } else {
-                    0
-                }
-            }
+            RewriteAction::Union(target_id) => self.union_counted(class_id, target_id),
             RewriteAction::Create(new_node) => {
                 let new_id = self.add(new_node);
-                if self.find(class_id) != self.find(new_id) {
-                    self.union(class_id, new_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, new_id)
             }
             RewriteAction::Distribute {
                 outer,
@@ -939,12 +1049,7 @@ impl EGraph {
                     children: vec![ab_id, ac_id],
                 };
                 let result_id = self.add(result_node);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Factor {
                 outer,
@@ -963,12 +1068,7 @@ impl EGraph {
                     children: vec![common, sum_id],
                 };
                 let result_id = self.add(result_node);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Canonicalize {
                 target,
@@ -986,12 +1086,7 @@ impl EGraph {
                     children: vec![a, inv_id],
                 };
                 let target_id = self.add(target_node);
-                if self.find(class_id) != self.find(target_id) {
-                    self.union(class_id, target_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, target_id)
             }
             RewriteAction::Associate { op, a, b, c } => {
                 let bc_node = ENode::Op {
@@ -1004,12 +1099,7 @@ impl EGraph {
                     children: vec![a, bc_id],
                 };
                 let result_id = self.add(result_node);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::ReverseAssociate { op, a, b, c } => {
                 // a op (b op c) → (a op b) op c
@@ -1023,12 +1113,7 @@ impl EGraph {
                     children: vec![ab_id, c],
                 };
                 let result_id = self.add(result_node);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::OddParity { func, inner } => {
                 // For odd functions: Op(neg(x)) → neg(Op(x))
@@ -1043,12 +1128,7 @@ impl EGraph {
                     children: vec![func_id],
                 };
                 let neg_id = self.add(neg_node);
-                if self.find(class_id) != self.find(neg_id) {
-                    self.union(class_id, neg_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, neg_id)
             }
             RewriteAction::AngleAddition {
                 term1_op1,
@@ -1125,12 +1205,7 @@ impl EGraph {
                     }
                 };
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Homomorphism {
                 func,
@@ -1162,12 +1237,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::PowerCombine { base, exp_a, exp_b } => {
                 // x^a * x^b → x^(a+b)
@@ -1186,12 +1256,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::ReverseAngleAddition { trig_op, a, b } => {
                 // sin(a)cos(b) + cos(a)sin(b) → sin(a + b)
@@ -1211,12 +1276,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::HalfAngleProduct { x } => {
                 // sin(x) * cos(x) → sin(x + x) / 2
@@ -1247,12 +1307,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Doubling { a } => {
                 // a + a → 2 * a
@@ -1264,12 +1319,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Halving { a } => {
                 // 2 * a → a + a
@@ -1279,12 +1329,7 @@ impl EGraph {
                 };
                 let result_id = self.add(result);
 
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::PowerRecurrence { base, exponent } => {
                 let n_minus_1 = ENode::constant((exponent - 1) as f32);
@@ -1299,12 +1344,7 @@ impl EGraph {
                     children: vec![base, pow_id],
                 };
                 let result_id = self.add(result);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::LogPower {
                 log_op,
@@ -1321,12 +1361,7 @@ impl EGraph {
                     children: vec![exponent, log_x_id],
                 };
                 let result_id = self.add(result);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::ExpandSquare { a, b } => {
                 let a2 = ENode::Op {
@@ -1361,12 +1396,7 @@ impl EGraph {
                     children: vec![sum1_id, b2_id],
                 };
                 let result_id = self.add(result);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::DiffOfSquares { a, b } => {
                 let sum = ENode::Op {
@@ -1384,21 +1414,11 @@ impl EGraph {
                     children: vec![sum_id, diff_id],
                 };
                 let result_id = self.add(result);
-                if self.find(class_id) != self.find(result_id) {
-                    self.union(class_id, result_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, result_id)
             }
             RewriteAction::Differentiate { inner, var } => {
                 let deriv_id = self.build_derivative(&inner, var);
-                if self.find(class_id) != self.find(deriv_id) {
-                    self.union(class_id, deriv_id);
-                    1
-                } else {
-                    0
-                }
+                self.union_counted(class_id, deriv_id)
             }
         }
     }
@@ -1414,6 +1434,14 @@ impl EGraph {
             ENode::Const(_) => return self.add(ENode::constant(0.0)),
             ENode::Var(i) => {
                 return self.add(ENode::constant(if *i == var { 1.0 } else { 0.0 }));
+            }
+            // A Buffer leaf is not a value — it only ever appears as Gather's
+            // first child, and no rewrite builds `Dwrt(buffer)`. Reaching one
+            // here means the graph is malformed; fail loudly. (`Dwrt(gather)`
+            // is the Op arm below: Gather has no derivative table entry, so it
+            // reconstructs the Dwrt as the jet fallback.)
+            ENode::Buffer(decl) => {
+                panic!("build_derivative: Dwrt applied to a Buffer leaf ({decl:?})")
             }
             ENode::Op { op, children } => (*op, children.clone()),
         };
