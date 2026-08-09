@@ -24,6 +24,8 @@ fn main() {
         eprintln!("  isa-matrix    Build+lint every x86-64 ISA level (SSE2/AVX2/AVX-512);");
         eprintln!("                run the tests for those this host can execute");
         eprintln!("                [--clippy to also run clippy per level]");
+        eprintln!("                [--build-only to skip test execution entirely --");
+        eprintln!("                 presubmit's fast path; postsubmit runs the tests]");
         std::process::exit(1);
     }
 
@@ -38,7 +40,12 @@ fn main() {
         }
         "isa-matrix" => {
             let with_clippy = args[2..].iter().any(|a| a == "--clippy");
-            isa_matrix(with_clippy);
+            let mode = if args[2..].iter().any(|a| a == "--build-only") {
+                IsaExecutionMode::BuildOnly
+            } else {
+                IsaExecutionMode::BuildAndTest
+            };
+            isa_matrix(with_clippy, mode);
         }
         _ => {
             eprintln!("Unknown command: {}", args[1]);
@@ -277,31 +284,55 @@ fn host_has_feature(feature: &str) -> bool {
     }
 }
 
+/// Whether [`isa_matrix`] executes the tests it builds, or only builds and
+/// lints. These are mutually exclusive execution modes, not an independent
+/// toggle -- hence an enum rather than a `build_only: bool` alongside
+/// `with_clippy: bool` (see the repository's "avoid boolean parameters"
+/// convention in AGENTS.md). Not `x86_64`-gated like the rest of the matrix
+/// machinery below: `main` constructs one from CLI args unconditionally,
+/// before `isa_matrix` ever branches on host architecture.
+enum IsaExecutionMode {
+    /// Compile and lint every level; never execute tests, even on a host
+    /// that could run them. Presubmit's fast path.
+    BuildOnly,
+    /// Compile, lint, and execute the tests for whichever levels this
+    /// host's CPU can run. Postsubmit's job, once a change has landed.
+    BuildAndTest,
+}
+
 /// Outcome of attempting one [`IsaLevel`].
 #[cfg(target_arch = "x86_64")]
 enum LevelResult {
     /// Compiled, linted, and the test binaries ran.
     Passed,
-    /// Compiled and linted, but the tests were not executed: the host CPU
-    /// cannot run this level's instructions. NOT a skip — everything that can
-    /// be checked without the hardware was checked.
-    BuiltNotRun { missing: &'static str },
+    /// Compiled and linted, but the tests were not executed — either
+    /// [`IsaExecutionMode::BuildOnly`] was requested (presubmit's fast path)
+    /// or the host CPU cannot run this level's instructions. NOT a skip —
+    /// everything that can be checked without running the binary was
+    /// checked.
+    BuiltNotRun { reason: String },
     /// A command failed; `stage` names which for the summary.
     Failed { stage: &'static str },
 }
 
-/// Run the workspace test suite (`cargo test --workspace`), and optionally
-/// `cargo clippy --workspace --all-targets -- -D warnings`, at every x86-64
-/// ISA level this host supports. Non-x86-64 hosts (aarch64/NEON) have a
-/// single ISA level already, so there is nothing to matrix — this prints a
-/// note and exits 0 rather than silently doing nothing.
-fn isa_matrix(with_clippy: bool) {
+/// Build and lint (`cargo test --workspace --no-run`, optionally `cargo
+/// clippy --workspace --all-targets -- -D warnings`) every x86-64 ISA level.
+/// Under [`IsaExecutionMode::BuildAndTest`], also runs the tests for
+/// whichever levels this host's CPU can execute. `BuildOnly` is presubmit's
+/// fast path: every PR gets compile+lint coverage for every level without
+/// paying for a run; postsubmit calls this with `BuildAndTest` to actually
+/// execute the tests once a change has landed. Non-x86-64 hosts
+/// (aarch64/NEON) have a single ISA level already, so there is nothing to
+/// matrix — this prints a note and exits 0 rather than silently doing
+/// nothing.
+fn isa_matrix(with_clippy: bool, mode: IsaExecutionMode) {
     let workspace_root = find_workspace_root();
 
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = workspace_root;
         let _ = with_clippy;
+        let _ = mode;
         println!(
             "isa-matrix: host is not x86-64 (no SSE2/AVX2/AVX-512 split to test here — \
              e.g. aarch64/NEON has one ISA level already)."
@@ -386,17 +417,28 @@ fn isa_matrix(with_clippy: bool) {
                 println!("isa-matrix: {} — cargo clippy passed", level.name);
             }
 
-            // Executing is the part that genuinely needs the CPU. Note the
+            // Executing is the part that genuinely needs the CPU (and, under
+            // `BuildOnly`, the part presubmit explicitly defers). Note the
             // whole workspace is built with this level's target-feature, so
             // rustc may emit those instructions anywhere in the binary — it is
             // not enough that a given test avoids them.
-            if let Some(&feat) = level.requires.iter().find(|&&feat| !host_has_feature(feat)) {
+            let skip_reason = match mode {
+                IsaExecutionMode::BuildOnly => {
+                    Some("build-only mode: tests run in postsubmit".to_string())
+                }
+                IsaExecutionMode::BuildAndTest => level
+                    .requires
+                    .iter()
+                    .find(|&&feat| !host_has_feature(feat))
+                    .map(|&feat| format!("host lacks {feat}")),
+            };
+
+            if let Some(reason) = skip_reason {
                 println!(
-                    "isa-matrix: {} — built and linted; NOT running tests \
-                     (host CPU lacks {feat})",
+                    "isa-matrix: {} — built and linted; NOT running tests ({reason})",
                     level.name
                 );
-                results.push((level.name, LevelResult::BuiltNotRun { missing: feat }));
+                results.push((level.name, LevelResult::BuiltNotRun { reason }));
                 continue;
             }
 
@@ -424,8 +466,8 @@ fn isa_matrix(with_clippy: bool) {
                     any_failed = true;
                     format!("FAIL ({stage})")
                 }
-                LevelResult::BuiltNotRun { missing } => {
-                    format!("BUILT+LINT (not run: host lacks {missing})")
+                LevelResult::BuiltNotRun { reason } => {
+                    format!("BUILT+LINT (not run: {reason})")
                 }
             };
             println!("  {name:<20} {line}");

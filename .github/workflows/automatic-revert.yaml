@@ -10,9 +10,14 @@ jobs:
   revert:
     name: Revert failed commit
     runs-on: ubuntu-latest
-    # The flake-detection workflow only concludes 'failure' on consistent
-    # breakage (build failure, or a suite failing all 5 iterations); flaky
-    # suites file an issue and leave it green, so this never reverts a flake.
+    # The flake-detection workflow concludes 'failure' on: a build failure,
+    # the `test` job's suite failing all 5 iterations, or any `isa-matrix`
+    # job failure at all -- build, clippy, or test, at any ISA level (that
+    # job does not retry; a flaky ISA-level test is exactly as real a break
+    # as a consistent one, see its own comment in
+    # postsubmit-flake-detection.yaml). The `test` job's flaky suites file an
+    # issue and leave it green instead, so this never reverts on a `test`-job
+    # flake -- it does revert on any `isa-matrix` failure, by design.
     if: github.event.workflow_run.conclusion == 'failure'
     permissions:
       contents: write
@@ -104,7 +109,7 @@ jobs:
           git push -u origin "$BRANCH_NAME"
 
           ISSUE_URL=$(open_issue "Postsubmit failure: $SUBJECT" \
-            "Commit $FAILING_SHA failed postsubmit tests (all 5 iterations of a test suite failed, or the build broke).
+            "Commit $FAILING_SHA failed postsubmit tests (the build broke, a test suite failed all 5 iterations, or the isa-matrix job failed -- see its log for whether that was a build, lint, or test failure and at which ISA level).
 
           A revert PR has been automatically created to address this failure.
 
