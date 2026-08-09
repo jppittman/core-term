@@ -927,11 +927,12 @@ impl Rewrite for ConstantFold {
         // arithmetic into code that may run somewhere that computes
         // differently. `fold_is_platform_specific` owns the classification (NaN
         // and signed-zero Min/Max, NaN Gt/Ge, Round at a tie, the reciprocal
-        // estimates, MulAdd's one-vs-two roundings) so it lives in one place
-        // next to the semantics rather than as conditions here.
+        // estimates, MulAdd's one-vs-two roundings, invalid TruncToInt) so it
+        // lives in one place next to the semantics rather than as conditions
+        // here.
         //
-        // Complete for `Round`/`Recip`/`Rsqrt` (unary — no rewrite can
-        // reintroduce the fold) and for `MulAdd` (its only commutable pair is
+        // Complete for `Round`/`Recip`/`Rsqrt`/`TruncToInt` (unary — no rewrite
+        // can reintroduce the fold) and for `MulAdd` (its only commutable pair is
         // the two multiplicands, which round identically either way). Partial
         // for `Min`/`Max`: the e-graph installs commutativity for them, so a
         // commuted form can still be folded. That is permitted, since the

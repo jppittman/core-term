@@ -218,6 +218,26 @@ impl OpKind {
             // no host whose answer is worth baking. Unconditional: an estimate
             // is only guaranteed close, never equal, so no argument is safe.
             Self::Recip | Self::Rsqrt => true,
+            // An INVALID float->int conversion — non-finite, or outside i32 —
+            // has three different answers. x86 `cvttps2dq` yields the
+            // "integer indefinite" 0x8000_0000 for every invalid input
+            // (including NaN and +inf); aarch64 `FCVTZS` SATURATES to the
+            // destination's min/max with NaN going to 0; and Rust's `as i32`,
+            // which `eval_unary` uses, saturates like aarch64. So the two
+            // architectures disagree with each other, not merely with the
+            // folder: `+inf` folds to i32::MAX's pattern but executes as
+            // i32::MIN on x86. Value-aware, like the rows above — a
+            // conversion that IS in range agrees everywhere and still folds.
+            //
+            // The limit is 2^31 rather than `i32::MAX as f32`, because that
+            // cast rounds UP to 2^31 and would admit values above the range.
+            Self::TruncToInt => match args {
+                [x] => {
+                    const I32_LIMIT: f32 = 2_147_483_648.0; // 2^31
+                    !x.is_finite() || *x >= I32_LIMIT || *x < -I32_LIMIT
+                }
+                _ => false,
+            },
             // One rounding or two. `mul_add` is the single-rounding FMA every
             // first-class target has (`vfmadd`, `FMLA`); `x * y + z` is what
             // SSE2 emits without one. Value-aware, because they agree for most

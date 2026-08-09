@@ -71,6 +71,7 @@ Behavior that differs by target, because the instructions do:
 | `Round` (`-0.5 ≤ x ≤ -0.0`) | `-0.0` (sign preserved) | `-0.0` | `+0.0` |
 | `Recip`, `Rsqrt` | `rcpps` ~12 bits; `vrcp14ps` ~14 | `FRECPE` + one `FRECPS` step | estimate + NR |
 | `MulAdd` | **one** rounding with `+fma`, **two** without (`mulps`+`addps`) | one (`FMLA`) | one |
+| `TruncToInt` (invalid: non-finite or outside i32) | `cvttps2dq` → **`i32::MIN`** (integer indefinite) | `FCVTZS` **saturates**; NaN → 0 | saturates (Rust `as`) |
 
 The last two rows are the reminder that "target" is finer than "architecture":
 `Recip` and `MulAdd` differ between *ISA levels of the same machine*, which is

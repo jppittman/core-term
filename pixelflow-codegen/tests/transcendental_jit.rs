@@ -378,3 +378,39 @@ fn eq_ne_are_exact_not_epsilon() {
     // against here — the folder IS the consumer that was wrong, and these
     // assertions are what pins it.
 }
+
+/// An INVALID float->int conversion has three answers, so the folder must
+/// decline it: x86 `cvttps2dq` produces the "integer indefinite"
+/// `0x8000_0000` for every invalid input, aarch64 `FCVTZS` saturates (NaN to
+/// 0), and Rust's `as i32` — which `eval_unary` uses — saturates like aarch64.
+/// So `+inf` would fold to `i32::MAX`'s bit pattern but execute as `i32::MIN`
+/// on x86: optimizing would change the program's output.
+#[test]
+fn invalid_trunc_to_int_is_platform_specific() {
+    for x in [
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NAN,
+        3e9,
+        -3e9,
+        // 2^31 is the first f32 ABOVE i32::MAX. `i32::MAX as f32` rounds up to
+        // exactly this value, so a naive `x > i32::MAX as f32` bound would
+        // wrongly admit it.
+        2_147_483_648.0,
+        -2_147_483_904.0, // first representable f32 below i32::MIN
+    ] {
+        assert!(
+            pixelflow_ir::OpKind::TruncToInt.fold_is_platform_specific(&[x]),
+            "invalid conversion of {x} must not fold"
+        );
+    }
+
+    // Value-aware: a conversion that IS in range agrees on every target and
+    // still folds. i32::MIN is exactly representable and is a valid input.
+    for x in [0.0, -0.0, 1.9, -1.9, 2_147_483_520.0, -2_147_483_648.0] {
+        assert!(
+            !pixelflow_ir::OpKind::TruncToInt.fold_is_platform_specific(&[x]),
+            "in-range conversion of {x} should still fold"
+        );
+    }
+}
