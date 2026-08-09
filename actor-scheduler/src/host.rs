@@ -887,4 +887,109 @@ mod tests {
             "a permanently full inbox must time out, not silently succeed"
         );
     }
+
+    // Every prior test in this module drives the inbox through the `pub(crate)` `try_send`,
+    // never through the public, documented `send` — so a mutant that replaced `send`'s
+    // entire body with `Ok(())` went undetected. Delivery only: the wake path already has
+    // its own real-thread coverage in `a_green_send_wakes_a_host_asleep_on_its_doorbell`.
+    #[test]
+    fn green_sender_send_delivers_the_message() {
+        let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+        let (tx_green, mut rx_green) = green_channel::<u32>(8, handle.waker());
+
+        tx_green.send(7).expect("room in the inbox");
+        assert_eq!(
+            rx_green.try_recv(),
+            Ok(7),
+            "send must actually deliver, not just report success"
+        );
+    }
+
+    /// A `Wiring` that flushes into another green actor's inbox — the shape a multi-host
+    /// pipeline would use, exercised nowhere else in this module.
+    struct GreenWiring {
+        next: GreenSender<u32>,
+    }
+
+    impl Wiring for GreenWiring {
+        type Out = Option<u32>;
+        fn flush(&mut self, out: &mut Option<u32>) -> Flush {
+            send_port(out, &self.next)
+        }
+    }
+
+    // `GreenSender`'s `PortTarget::try_deliver` impl (how `Wiring::flush` reaches a green
+    // inbox) was never exercised: no test wired a node's output to a `GreenSender`. A mutant
+    // replacing its body with `Ok(())` would silently drop every message a green-to-green
+    // pipeline stage sends.
+    #[test]
+    fn green_sender_delivers_through_wiring_as_a_port_target() {
+        let (handle, _sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+        let (tx_in, rx_in) = spsc_channel::<u32>(8);
+        let (tx_green, mut rx_green) = green_channel::<u32>(8, handle.waker());
+
+        let mut node = Node::new(Forward { seen: 0 }, rx_in, GreenWiring { next: tx_green });
+
+        tx_in.try_send(1).unwrap();
+        assert_eq!(node.poll(), Step::Ran);
+        assert_eq!(
+            rx_green.try_recv(),
+            Ok(2),
+            "flush must reach the green inbox via try_deliver, not just report success"
+        );
+    }
+
+    // The test above proves `try_deliver` enqueues; it never puts the destination host to
+    // sleep, so it cannot tell a wake call from a dropped one. `send`'s wake path already has
+    // real-thread coverage (`a_green_send_wakes_a_host_asleep_on_its_doorbell`), but that goes
+    // through `send`, never `try_deliver` — the two are separate methods with separate
+    // `waker.wake()` calls, so one having coverage says nothing about the other.
+    #[test]
+    fn a_wiring_flush_wakes_a_host_asleep_on_its_doorbell() {
+        use std::time::{Duration, Instant};
+
+        let (handle, mut sched) = ActorScheduler::<Infallible, Infallible, Infallible>::new(4, 4);
+        let (tx_green, rx_green) = green_channel::<u32>(8, handle.waker());
+        let (tx_out, mut rx_out) = spsc_channel::<u32>(8);
+
+        // The destination host, on its own real thread, blocked in `run()` with nothing to do
+        // — a `Wiring::flush` into its green actor's inbox has to be what wakes it.
+        let worker = std::thread::spawn(move || {
+            let mut host = Host::new();
+            host.adopt(Node::new(
+                Forward { seen: 0 },
+                rx_green,
+                ForwardWiring { next: tx_out },
+            ));
+            sched.run(&mut host);
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        // The source node is driven directly, on this thread: its own wake path isn't what's
+        // under test, only what its flush does to the sleeping destination.
+        let (tx_in, rx_in) = spsc_channel::<u32>(8);
+        let mut source = Node::new(Forward { seen: 0 }, rx_in, GreenWiring { next: tx_green });
+        tx_in.try_send(1).unwrap();
+        assert_eq!(source.poll(), Step::Ran);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let got = loop {
+            if let Ok(v) = rx_out.try_recv() {
+                break v;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "destination host never woke: a wiring flush did not ring its doorbell"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            got, 3,
+            "1 forwarded once by the source, once more by the destination"
+        );
+
+        handle.send(Message::Shutdown).unwrap();
+        worker.join().unwrap();
+    }
 }

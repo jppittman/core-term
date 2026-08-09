@@ -426,6 +426,132 @@ mod tests {
         assert_eq!(inbox.shard_count(), 1);
     }
 
+    // Kills: replace || with &&, and delete !, on `total >= limit || !all_empty` (drain's
+    // status-selection guard). Every other test in this module uses a `limit` evenly
+    // divisible by the shard count, so `total` lands exactly on `limit` right as the last
+    // shard also hits its per-shard cap — the two guard conditions become true together and
+    // neither mutant is distinguishable. An indivisible limit forces per-shard caps to stop
+    // every shard *below* the total limit, so `!all_empty` alone must carry the guard.
+    #[test]
+    fn drain_reports_more_when_per_shard_caps_leave_total_below_limit() {
+        let mut builder = InboxBuilder::<u32>::new(64);
+        let tx1 = builder.add_producer();
+        let tx2 = builder.add_producer();
+        let mut inbox = builder.build();
+
+        for i in 0u32..10 {
+            tx1.try_send(i).unwrap();
+            tx2.try_send(i + 100).unwrap();
+        }
+
+        // limit=5, 2 shards -> per_shard = 2, so at most 4 messages come out even though
+        // the total limit of 5 was never reached.
+        let mut received = Vec::new();
+        let status = inbox
+            .drain(5, |msg| {
+                received.push(msg);
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            received.len(),
+            4,
+            "capped by per-shard limits, not the total"
+        );
+        assert_eq!(
+            status,
+            DrainStatus::More,
+            "per-shard caps stopped early — both shards still have queued messages"
+        );
+    }
+
+    // Kills: replace `total += 1` with `total *= 1` (drain's total-message counter). With
+    // shard_count divisible into limit evenly, `total`'s accumulated value coincides with
+    // shard_count's own per-shard cap and the mutant is equivalent — that's true for every
+    // other test in this module. It stops being equivalent once shard count exceeds limit:
+    // `per_shard = (limit / n).max(1)` floors to 1, so with `total` stuck at 0 the loop's
+    // `total >= limit` early-exit never fires and every shard independently delivers its
+    // one `per_shard`-capped message — n messages, not the requested limit.
+    #[test]
+    fn drain_total_stops_the_scan_once_the_limit_is_hit_even_with_more_shards_than_limit() {
+        let mut builder = InboxBuilder::<u32>::new(8);
+        let tx0 = builder.add_producer();
+        let tx1 = builder.add_producer();
+        let tx2 = builder.add_producer();
+        let tx3 = builder.add_producer();
+        let mut inbox = builder.build();
+
+        tx0.try_send(0).unwrap();
+        tx1.try_send(1).unwrap();
+        tx2.try_send(2).unwrap();
+        tx3.try_send(3).unwrap();
+
+        // 4 shards, limit=2: per_shard = (2/4).max(1) = 1, so nothing but `total` itself can
+        // stop the scan before it reaches the third and fourth shards.
+        let mut received = Vec::new();
+        inbox
+            .drain(2, |msg| {
+                received.push(msg);
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            received.len(),
+            2,
+            "total must cut the scan off at the requested limit, not let every \
+             per-shard-capped shard through: got {received:?}"
+        );
+    }
+
+    // Kills: replace % with /, and replace + with *, in the round_robin rotation at the end
+    // of `drain` (`self.round_robin = (self.round_robin + 1) % n`). Both mutants leave
+    // `round_robin` stuck at 0 forever (since it starts at 0), which no count-based
+    // assertion can see — item *order* across successive calls is the only observable
+    // signal, so this drains one message per shard per call and checks which shard answers
+    // first on the second call.
+    #[test]
+    fn drain_round_robin_start_rotates_across_calls() {
+        let mut builder = InboxBuilder::<u32>::new(64);
+        let tx0 = builder.add_producer();
+        let tx1 = builder.add_producer();
+        let mut inbox = builder.build();
+
+        tx0.try_send(100).unwrap();
+        tx0.try_send(101).unwrap();
+        tx1.try_send(200).unwrap();
+        tx1.try_send(201).unwrap();
+
+        let mut first = Vec::new();
+        inbox
+            .drain(2, |msg| {
+                first.push(msg);
+                Ok(())
+            })
+            .unwrap();
+
+        let mut second = Vec::new();
+        inbox
+            .drain(2, |msg| {
+                second.push(msg);
+                Ok(())
+            })
+            .unwrap();
+
+        // The contract is rotation, not a specific starting shard: which
+        // producer a call started from shows up in its first message's
+        // hundreds digit (100s = producer 0, 200s = producer 1), so assert
+        // the two calls started from different shards rather than pinning
+        // either to shard 0.
+        assert_ne!(
+            first[0] / 100,
+            second[0] / 100,
+            "the second call must start from a different shard than the first: \
+             {first:?} then {second:?}"
+        );
+    }
+
     // Kills: replace || with && in condition on line 109 (total >= limit || shard_count >= per_shard)
     // With &&: both conditions must be true to stop, so per-shard limit is effectively ignored
     // unless total limit is also reached.
@@ -471,6 +597,132 @@ mod tests {
             from_shard1 + from_shard2,
             4,
             "Total should equal limit of 4"
+        );
+    }
+
+    // `take_one` (the `Inbox::take` impl used by `mealy::Node`'s data lane) had no test
+    // coverage at all before this: every arithmetic op in its round-robin search and
+    // rotation survived mutation. Reached through the public `Inbox` trait rather than
+    // calling the private `take_one` directly.
+    use crate::mealy::Inbox;
+
+    // Kills: replace % with /, and replace + with *, in the search index
+    // `(self.round_robin + i) % n`. Both mutants collapse the search to always recheck
+    // index 0, so a call that should skip an empty leading shard and find a later one
+    // instead reports Empty.
+    #[test]
+    fn take_skips_empty_shards_via_wrapping_search() {
+        let mut builder = InboxBuilder::<u32>::new(8);
+        let _tx0 = builder.add_producer();
+        let tx1 = builder.add_producer();
+        let tx2 = builder.add_producer();
+        let mut inbox = builder.build();
+
+        // Shard 0 (round_robin's starting point) is empty; shards 1 and 2 have data.
+        tx1.try_send(20).unwrap();
+        tx2.try_send(30).unwrap();
+
+        assert_eq!(
+            inbox.take(),
+            Ok(20),
+            "search must wrap past the empty shard 0"
+        );
+    }
+
+    // Kills: replace % with /, replace + with *, on the post-hit rotation
+    // (`self.round_robin = (idx + 1) % n`), and the equivalent pair on the post-miss
+    // rotation (`self.round_robin = (self.round_robin + 1) % n`). Exercises a full lap
+    // across 3 shards, a refill with one shard left empty (proving the search wraps from
+    // the rotated start rather than always from 0), and a total-miss round-trip (proving
+    // rotation still advances when nothing was found).
+    #[test]
+    fn take_round_robins_across_shards_and_wraps() {
+        let mut builder = InboxBuilder::<u32>::new(8);
+        let tx0 = builder.add_producer();
+        let tx1 = builder.add_producer();
+        let tx2 = builder.add_producer();
+        let mut inbox = builder.build();
+
+        tx0.try_send(10).unwrap();
+        tx1.try_send(20).unwrap();
+        tx2.try_send(30).unwrap();
+
+        // One full lap must visit every shard exactly once — in whichever order
+        // round_robin happens to start (the public contract promises fairness and
+        // rotation, not that shard 0 answers first).
+        let lap = [
+            inbox.take().unwrap(),
+            inbox.take().unwrap(),
+            inbox.take().unwrap(),
+        ];
+        let mut sorted_lap = lap;
+        sorted_lap.sort_unstable();
+        assert_eq!(
+            sorted_lap,
+            [10, 20, 30],
+            "one full lap must deliver every shard's message exactly once"
+        );
+
+        // Kills the post-hit rotation's `(idx + 1) % n` -> `(idx + 1) / n`: refilling only
+        // some shards lets the search's own wraparound (which tries every index regardless
+        // of where round_robin starts) mask an error in round_robin's exact value — with a
+        // single live shard left, `take()` finds it either way. Refilling *every* shard means
+        // the very first index the search tries is guaranteed to hit immediately, so which
+        // value comes back first directly reveals round_robin's post-hit value. The shard
+        // that answered *last* in the lap above (identified by `lap[2]`'s producer tag, not
+        // an assumed absolute index) determines the correct next shard under `%`; `/`
+        // predicts a different one for every possible last-shard value.
+        let idx_of = |v: u32| (v / 10 - 1) as usize;
+        let producers = [&tx0, &tx1, &tx2];
+        let refills = [11u32, 21, 31];
+        for (i, p) in producers.iter().enumerate() {
+            p.try_send(refills[i]).unwrap();
+        }
+        let expected_next = refills[(idx_of(lap[2]) + 1) % 3];
+        assert_eq!(
+            inbox.take(),
+            Ok(expected_next),
+            "rotation must continue from the shard after the one that answered last, \
+             not from an arithmetically wrong index"
+        );
+
+        let mut rest = [inbox.take().unwrap(), inbox.take().unwrap()];
+        rest.sort_unstable();
+        let mut expected_rest: Vec<u32> = refills
+            .iter()
+            .copied()
+            .filter(|&v| v != expected_next)
+            .collect();
+        expected_rest.sort_unstable();
+        assert_eq!(
+            rest,
+            expected_rest.as_slice(),
+            "the remaining two shards, in either order"
+        );
+    }
+
+    // Kills: replace + with * on the post-miss rotation line, isolated from any lane search
+    // mutation by using a total miss (every shard empty) as the rotation trigger, then
+    // proving which shard answers first afterward.
+    #[test]
+    fn take_rotates_the_start_index_even_on_a_total_miss() {
+        let mut builder = InboxBuilder::<u32>::new(8);
+        let tx0 = builder.add_producer();
+        let tx1 = builder.add_producer();
+        let mut inbox = builder.build();
+
+        assert_eq!(
+            inbox.take(),
+            Err(TryRecvError::Empty),
+            "both shards start empty"
+        );
+
+        tx0.try_send(100).unwrap();
+        tx1.try_send(200).unwrap();
+        assert_eq!(
+            inbox.take(),
+            Ok(200),
+            "the miss still rotated the start index past shard 0"
         );
     }
 }
