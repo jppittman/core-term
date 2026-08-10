@@ -521,6 +521,33 @@ fn deep_underflow_rounds_to_correctly_signed_zero() {
     );
 }
 
+#[test]
+fn underflow_pinned_at_the_exact_128_bit_shift_boundary_still_rounds_to_zero() {
+    // `to_f32`'s deep-underflow branch (`shift >= 128`) special-cases
+    // `shift == 128` as the only place a tie against zero could in principle
+    // land. `pow2(-277)` is chosen so that boundary is hit EXACTLY: the
+    // rounding position pins at 2^-149 (F32_MIN_SUBNORMAL_EXP) for any
+    // mantissa this deep, and -149 - (-277) == 128. Every other underflow
+    // test in this file (pow2(-500) above, pow2(-150)/(-151)/(-200)
+    // elsewhere) lands off this boundary by construction, so none of them
+    // exercise this exact case.
+    //
+    // Dyadic's mantissa is an odd i128, so its magnitude is always strictly
+    // less than 2^127 -- the branch's tie condition (`magnitude >
+    // 2^127`) can therefore never actually hold, and the value must always
+    // round down to zero here, not up to the smallest subnormal.
+    assert_eq!(
+        pow2(-277).to_f32().to_bits(),
+        0.0f32.to_bits(),
+        "shift == 128 exactly must still round to +0.0, not the smallest subnormal"
+    );
+    assert_eq!(
+        pow2(-277).negate().to_f32().to_bits(),
+        (-0.0f32).to_bits(),
+        "and to -0.0 for the negative case"
+    );
+}
+
 // ============================================================================
 // 4. Rounding: ties-to-even, and carry into the next binade
 // ============================================================================
@@ -812,6 +839,34 @@ fn sub_declines_when_the_exponent_gap_exceeds_capacity() {
     assert!(
         far.checked_sub(big).is_none(),
         "sub must decline symmetrically regardless of operand order"
+    );
+}
+
+#[test]
+fn add_succeeds_when_the_aligned_sum_needs_exactly_127_magnitude_bits() {
+    // i128 has 127 magnitude bits available (checked_add's doc comment).
+    // pow2(126)'s magnitude_bits() (1, mantissa is always 1 for pow2) plus
+    // the alignment shift against pow2(0) (126) lands EXACTLY on the cap --
+    // this must still succeed, not decline one bit early.
+    let low = pow2(0);
+    let high = pow2(126);
+    assert!(
+        low.checked_add(high).is_some(),
+        "a sum requiring exactly 127 post-alignment magnitude bits must succeed \
+         (i128's cap is 127 magnitude bits), not decline"
+    );
+}
+
+#[test]
+fn add_declines_when_the_aligned_sum_needs_128_magnitude_bits() {
+    // One exponent step past the previous test: high.magnitude_bits() (1)
+    // plus the alignment shift (127) is 128, one bit past the cap.
+    let low = pow2(0);
+    let high = pow2(127);
+    assert!(
+        low.checked_add(high).is_none(),
+        "a sum requiring 128 post-alignment magnitude bits must decline \
+         (127 is the cap, not 128)"
     );
 }
 
@@ -1232,6 +1287,37 @@ fn ord_across_signs_and_around_zero() {
     assert!(pos_tiny < pos_huge);
     assert!(neg_huge < pos_tiny);
     assert!(neg_tiny < pos_huge);
+}
+
+#[test]
+fn ord_breaks_a_same_binade_tie_by_aligning_when_self_has_the_smaller_exponent() {
+    // 2.25 (mantissa 9, exp -2) and 3.0 (mantissa 3, exp 0) land in the SAME
+    // binade (magnitude_bits() + exp == 2 for both), so this is the only
+    // pair among this file's Ord tests that reaches cmp's alignment-shift
+    // branch instead of the binade fast path. self.exp (-2) <= other.exp
+    // (0) here, exercising the "self has the smaller exponent" arm.
+    let smaller = d(2.25);
+    let bigger = d(3.0);
+    assert_eq!(
+        smaller.cmp(&bigger),
+        std::cmp::Ordering::Less,
+        "2.25 must compare less than 3.0 by value, even though both share a binade"
+    );
+    assert!(smaller < bigger);
+}
+
+#[test]
+fn ord_breaks_a_same_binade_tie_by_aligning_when_self_has_the_larger_exponent() {
+    // Same pair as above, operands swapped: self.exp (0) > other.exp (-2)
+    // here, exercising the alignment branch's other arm.
+    let smaller = d(2.25);
+    let bigger = d(3.0);
+    assert_eq!(
+        bigger.cmp(&smaller),
+        std::cmp::Ordering::Greater,
+        "3.0 must compare greater than 2.25 by value, even though both share a binade"
+    );
+    assert!(bigger > smaller);
 }
 
 #[test]
