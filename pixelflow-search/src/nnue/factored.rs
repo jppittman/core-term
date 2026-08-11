@@ -5,7 +5,7 @@
 //! ## The Problem
 //!
 //! HalfEP features encode all (perspective_op, descendant_op, depth, path) tuples:
-//! - 42 ops → 42² × 8 × 256 = 3.6M possible features
+//! - 50 ops → 50² × 8 × 256 = 5.1M possible features
 //! - Feature space grows quadratically with operation count
 //! - Training requires O(GB) of memory for weight matrices
 //!
@@ -409,7 +409,8 @@ impl ArenaRuleTemplates {
 
 /// Learned dense embeddings for each operation type.
 ///
-/// Each of the 42 operations gets a K-dimensional embedding vector.
+/// Each of the [`OpKind::COUNT`] operations gets a K-dimensional embedding
+/// vector.
 /// These are the primary learned parameters that capture semantic
 /// similarity between operations.
 #[derive(Clone)]
@@ -2487,7 +2488,7 @@ impl ExprNnue {
     /// Total parameter count.
     #[must_use]
     pub const fn param_count() -> usize {
-        OpEmbeddings::param_count()           // embeddings: 42 * 32 = 1,344
+        OpEmbeddings::param_count()           // embeddings: 50 * 32 = 1,600
             + INPUT_DIM * HIDDEN_DIM          // w1: 130 * 64 = 8,320
             + HIDDEN_DIM                      // b1: 64
             // expr_proj

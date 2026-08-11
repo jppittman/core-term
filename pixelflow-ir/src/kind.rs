@@ -1180,24 +1180,76 @@ mod index_space {
     /// magic, regenerating corpora and retraining. Do not "fix" this test.
     #[test]
     fn numbering_is_the_on_disk_contract() {
-        assert_eq!(OpKind::COUNT, 50);
-        assert_eq!(OpKind::Var.index(), 0);
-        assert_eq!(OpKind::Add.index(), 2);
-        assert_eq!(OpKind::Mul.index(), 4);
-        assert_eq!(OpKind::Min.index(), 10);
-        assert_eq!(OpKind::Max.index(), 11);
-        // 17, 31 and 39 were the gaps; the ops now sitting on them are the
-        // ones a re-gapping would move first.
-        assert_eq!(OpKind::Sin.index(), 17);
-        assert_eq!(OpKind::Le.index(), 31);
-        assert_eq!(OpKind::IntToFloat.index(), 39);
-        assert_eq!(OpKind::BitAnd.index(), 43);
-        assert_eq!(OpKind::BitOr.index(), 44);
-        assert_eq!(OpKind::Buffer.index(), 46);
-        // These three sat past the gaps at 50..=52 and were unreachable.
-        assert_eq!(OpKind::Gather.index(), 47);
-        assert_eq!(OpKind::RawGather.index(), 48);
-        assert_eq!(OpKind::Reduce.index(), 49);
+        // Every byte, not a sample: a *consistent* renumbering — swapping two
+        // ops across the discriminants, `ALL`, `index()` and `from_index`
+        // together — satisfies the const block and would silently change what
+        // an already-written byte means. Only the full sequence catches it.
+        const CONTRACT: [(usize, &str); OpKind::COUNT] = [
+            (0, "var"),
+            (1, "const"),
+            (2, "add"),
+            (3, "sub"),
+            (4, "mul"),
+            (5, "div"),
+            (6, "neg"),
+            (7, "sqrt"),
+            (8, "rsqrt"),
+            (9, "abs"),
+            (10, "min"),
+            (11, "max"),
+            (12, "mul_add"),
+            (13, "recip"),
+            (14, "floor"),
+            (15, "ceil"),
+            (16, "round"),
+            (17, "sin"),
+            (18, "cos"),
+            (19, "tan"),
+            (20, "asin"),
+            (21, "acos"),
+            (22, "atan"),
+            (23, "atan2"),
+            (24, "exp"),
+            (25, "exp2"),
+            (26, "ln"),
+            (27, "log2"),
+            (28, "log10"),
+            (29, "pow"),
+            (30, "lt"),
+            (31, "le"),
+            (32, "gt"),
+            (33, "ge"),
+            (34, "eq"),
+            (35, "ne"),
+            (36, "select"),
+            (37, "tuple"),
+            (38, "trunc_to_int"),
+            (39, "int_to_float"),
+            (40, "iadd"),
+            (41, "shl"),
+            (42, "shr"),
+            (43, "bitand"),
+            (44, "bitor"),
+            (45, "dwrt"),
+            (46, "buffer"),
+            (47, "gather"),
+            (48, "raw_gather"),
+            (49, "reduce"),
+        ];
+
+        for (byte, name) in CONTRACT {
+            let op = OpKind::from_index(byte)
+                .unwrap_or_else(|| panic!("byte {byte} names no op; it must mean {name:?}"));
+            assert_eq!(
+                op.name(),
+                name,
+                "byte {byte} used to mean {name:?} and now means {:?} — \
+                 every PXCR corpus and TRIE weight file already written \
+                 decodes this byte the old way",
+                op.name()
+            );
+            assert_eq!(op.index(), byte, "{name:?} no longer writes byte {byte}");
+        }
     }
 
     /// `from_name` matches on `&str` and can never be exhaustive, so nothing

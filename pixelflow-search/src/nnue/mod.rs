@@ -1165,11 +1165,6 @@ mod tests {
     use super::*;
     use libm::fabsf;
 
-    // `op_type_roundtrip` lived here: it walked `0..COUNT` asserting
-    // `from_index(i).index() == i`. That property is now proved at compile
-    // time by the `const` block in `pixelflow-ir/src/kind.rs`, so the runtime
-    // copy was asserting something that can no longer be false.
-
     // ========================================================================
     // Pattern Match + Substitute Tests
     // ========================================================================
