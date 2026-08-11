@@ -30,8 +30,25 @@ this pass's own cutoff — the sub-agent's static pass should have caught this
 and didn't. The 2026-08-08 audit (`f676b4b8`, #985) independently found and
 fixed the same violation two passes later, before this branch was rebased
 onto it. Recorded here for the record; not re-fixed in this diff since it's
-already fixed on `main`. The rest of the apparent size of the crate-split
-diff was
+already fixed on `main`.
+
+A second violation at the same cutoff, missed by both this pass and #985 and
+recorded here for the first time:
+`pixelflow-pipeline/src/training/factored.rs`'s new
+`parse_expr_fract_builds_sub_floor_compound` and
+`parse_expr_hypot_builds_sqrt_mul_add_compound` exercise `parse_expr`, which
+is itself `#[cfg(test)]` (`factored.rs:21-22`), and all of the parsing logic
+they cover lives in the likewise test-only private `parse_expr_into`. These
+tests pin a test harness, not the crate's public API. Accepted as an
+exception rather than fixed: `parse_expr` exists only to spell corpus
+expressions compactly in *other* tests, so its own misparse is a defect in
+the fixtures every downstream test depends on, and there is no public entry
+point that reaches it. Left as-is here — fixing it means either promoting the
+parser to public API (it is not wanted there) or deleting the coverage — and
+carried forward so the next pass sees a recorded decision rather than
+rediscovering it a fourth time.
+
+The rest of the apparent size of the crate-split diff was
 mostly a `git diff --stat` artifact — without rename detection, moved files
 (e.g. `pixelflow-ir/tests/collapse_loop.rs` → `pixelflow-codegen/tests/collapse_loop.rs`,
 `pixelflow-ir/src/backend/emit/lowering.rs` → `pixelflow-ir/src/passes.rs`)
@@ -42,8 +59,9 @@ import-path updates (`pixelflow_ir::backend::emit::` →
 `core-term/src/term/tests.rs`'s damage-tracking tests, `terminal_app.rs`,
 `message_cuj_tests.rs`, `pixelflow-search/src/egraph/cost.rs`'s
 `every_op_is_priceable` module, `pixelflow-codegen/tests/prod_kernel_jit.rs` —
-drives its crate's public API only. No `raw_mul`/`raw_select`/`raw_add`/SIMD
-lane exposure found in any added test code.
+drives its crate's public API only, the two `factored.rs` parser tests above
+excepted. No `raw_mul`/`raw_select`/`raw_add`/SIMD lane exposure found in any
+added test code.
 
 ## Mutation testing: `core-term`'s new damage-tracking logic
 
@@ -51,13 +69,21 @@ Targeted the *producer* side of this delta's new logic —
 `core-term/src/term/emulator/mod.rs` (the `last_snapshot_view`/
 `last_cursor_mark` fields and `get_render_snapshot`'s use of them) and
 `core-term/src/term/screen.rs` (`scrollback_generation`, bumped at its three
-mutation sites) — not all of it: `terminal_app.rs` also gained ~68 new
-production lines at this pass's cutoff (`build_scene`'s
-`nothing_drawn_changed`/geometry damage gate, synchronized-output handling,
-`has_presented` state), the *consumer* side of the same feature, deciding
-whether a dirty snapshot actually gets rendered. That file was not included
-in this run and remains unaudited — noted here explicitly rather than
-implied covered. `cargo-mutants` doesn't scope mutation to a diff — `--file`
+sites there) — not all of it. Two files carrying this delta's new
+production lines were left out of the run and remain **unaudited**, noted
+here explicitly rather than implied covered:
+
+- `terminal_app.rs`, which gained ~68 new production lines at this pass's
+  cutoff (`build_scene`'s `nothing_drawn_changed`/geometry damage gate,
+  synchronized-output handling, `has_presented` state) — the *consumer* side
+  of the same feature, deciding whether a dirty snapshot actually gets
+  rendered.
+- `core-term/src/term/emulator/screen_ops.rs:60`, a *fourth*
+  `scrollback_generation += 1` site on the producer side (`ED` mode 3, "erase
+  saved lines") added by this same delta. Its behavior is reasoned about
+  below by hand, but reasoning is not mutation testing: no mutant was ever
+  generated for that line, so the "1 real gap" count covers the three
+  `screen.rs` sites only. `cargo-mutants` doesn't scope mutation to a diff — `--file`
 mutates the whole file — so this run necessarily also covered a large amount
 of pre-existing, previously-unaudited code in both files (`resize`,
 `set_scrolling_region`, `set_glyph`, `is_selected`, `get_selected_text*`,
@@ -73,8 +99,9 @@ addressed here.
 - `core-term/src/term/emulator/mod.rs:230` — `get_render_snapshot`'s
   active-grid branch: `let is_dirty = view_changed || self.screen.dirty.get(grid_idx)...`.
   Replacing `||` with `&&` survived. Tracing why: `view_changed` becomes true
-  whenever `scrollback_generation` bumps, and all three bump sites (`screen.rs`
-  scroll-push, resize-eviction, `ED` mode 3 / "erase saved lines") each
+  whenever `scrollback_generation` bumps, and all four bump sites
+  (`screen.rs`'s scroll-push and its two resize-eviction bumps, plus
+  `screen_ops.rs`'s `ED` mode 3 / "erase saved lines") each
   *also* touch every affected row's own per-line dirty bit through a
   different path in the same operation — a plain full-screen scroll or erase
   coincidentally dirties every row it could possibly matter for, so `||` and
