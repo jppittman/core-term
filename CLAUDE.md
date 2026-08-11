@@ -71,10 +71,11 @@ Behavior that differs by target, because the instructions do:
 | `Round` (`-0.5 ≤ x ≤ -0.0`) | `-0.0` (sign preserved) | `-0.0` | `+0.0` |
 | `Recip`, `Rsqrt` | `rcpps` ~12 bits; `vrcp14ps` ~14 | `FRECPE` + one `FRECPS` step | estimate + NR |
 | `MulAdd` | **one** rounding with `+fma`, **two** without (`mulps`+`addps`) | one (`FMLA`) | one |
-| `TruncToInt` (invalid: non-finite or outside i32) | `cvttps2dq` → **`i32::MIN`** (integer indefinite) | `FCVTZS` **saturates**; NaN → 0 | saturates (Rust `as`) |
+| `TruncToInt` (NaN, or `x >= 2^31`) | `cvttps2dq` → **`i32::MIN`** (integer indefinite) | `FCVTZS` **saturates**; NaN → 0 | — (no combinator form) |
+| `Shl`, `Shr` (count outside `0..32`) | count > 31 zeroes the **whole** destination | immediate carries into `immh` → decodes as **`.2D`**, crossing lanes | — |
 
-The last two rows are the reminder that "target" is finer than "architecture":
-`Recip` and `MulAdd` differ between *ISA levels of the same machine*, which is
+The `Recip` and `MulAdd` rows are the reminder that "target" is finer than
+"architecture": they differ between *ISA levels of the same machine*, which is
 what `cargo xtask isa-matrix` exists to keep honest. `Recip`/`Rsqrt` are
 estimates — only ever guaranteed close, never equal — so no argument to them is
 ever foldable; `MulAdd` is value-aware, since one rounding and two agree on most

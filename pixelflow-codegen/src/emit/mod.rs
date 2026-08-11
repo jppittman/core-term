@@ -1229,6 +1229,24 @@ fn mark_reachable(
     }
 }
 
+/// Narrow a `Const` shift count to the `u8` immediate the hardware encoders
+/// take, refusing anything a 32-bit lane cannot be shifted by.
+///
+/// The check belongs HERE, on the `f32`, because the narrowing is lossy in a
+/// way that manufactures a legal-looking value: `256.0 as u32 as u8` is `0`,
+/// so a count no target can honour would arrive at the encoder disguised as
+/// the identity shift. Any later validation is checking the alias, not the
+/// operand the kernel actually asked for.
+fn shift_immediate(op: OpKind, count: f32) -> u8 {
+    assert!(
+        (0.0..32.0).contains(&count) && (count as u32) as f32 == count,
+        "{op:?} shift count {count} is not an integer in 0..32 — a 32-bit lane \
+         has no bits there, and the targets disagree about what to do (x86 \
+         zeroes the whole destination, aarch64 re-encodes the element size)"
+    );
+    count as u8
+}
+
 /// Build a schedule directly from an [`ExprArena`].
 ///
 /// The arena stores nodes in topological order (children before parents by
@@ -1297,7 +1315,7 @@ fn arena_to_schedule(
             // own schedule entry (harmless/unused) if shared.
             ExprNode::Binary(op @ (OpKind::Shl | OpKind::Shr), a, b) => {
                 let amount = match arena.node(*b) {
-                    ExprNode::Const(v) => *v as u32 as u8,
+                    ExprNode::Const(v) => shift_immediate(*op, *v),
                     _ => panic!(
                         "{:?} shift count must be a Const (lowering guarantees this)",
                         op
