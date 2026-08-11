@@ -2071,20 +2071,39 @@ fn tier_corpus_path(corpus_dir: &str, tier: Tier) -> PathBuf {
     PathBuf::from(format!("{corpus_dir}/corpus_{}.bin", tier.name()))
 }
 
-/// Deterministically choose at most `max_kernels` entries of a tier.
+/// Deterministically choose at most `max_kernels` entries of a tier, always
+/// keeping the ones `is_pinned` marks.
 ///
-/// Selection is a seeded shuffle of the INDICES followed by a sort, so the
-/// chosen subset is reproducible from `(sample_seed, max_kernels, tier file)`
-/// and is measured in corpus order. `max_kernels == 0` means the whole tier.
-fn subsample<T>(entries: Vec<T>, max_kernels: usize, sample_seed: u64) -> Vec<T> {
+/// Selection is a seeded shuffle of the *unpinned* INDICES followed by a sort,
+/// so the chosen subset is reproducible from `(sample_seed, max_kernels, tier
+/// file)` and is measured in corpus order. `max_kernels == 0` means the whole
+/// tier.
+///
+/// The pinning is not a convenience. A uniform draw over FINAL is
+/// overwhelmingly a draw over its synthetic bulk: a healthy build has roughly
+/// 9,480 synthetic entries beside the five named production kernels, so the
+/// default `--final-eval --max-kernels 40` has about a 2% chance of including
+/// even one of them. The named kernels ARE the real-world half of what a
+/// publication run claims to have measured, so a run that quietly dropped all
+/// five would journal a synthetic-only result under a publication verdict.
+/// Pinned entries count against `max_kernels`; if they alone exceed it, every
+/// pinned entry is still kept and no unpinned one is.
+fn subsample<T>(
+    entries: Vec<T>,
+    max_kernels: usize,
+    sample_seed: u64,
+    is_pinned: impl Fn(&T) -> bool,
+) -> Vec<T> {
     if max_kernels == 0 || entries.len() <= max_kernels {
         return entries;
     }
-    let mut idx: Vec<usize> = (0..entries.len()).collect();
+    let mut keep: Vec<bool> = entries.iter().map(&is_pinned).collect();
+    let pinned = keep.iter().filter(|k| **k).count();
+    let budget = max_kernels.saturating_sub(pinned);
+
+    let mut idx: Vec<usize> = (0..entries.len()).filter(|i| !keep[*i]).collect();
     SeededRng::new(sample_seed).shuffle(&mut idx);
-    idx.truncate(max_kernels);
-    idx.sort_unstable();
-    let mut keep = vec![false; entries.len()];
+    idx.truncate(budget);
     for i in &idx {
         keep[*i] = true;
     }
@@ -2107,20 +2126,86 @@ fn corpus_identity(bytes: &[u8]) -> String {
     format!("{:016x}", fnv1a64(bytes, FNV_OFFSET))
 }
 
+/// Refuse to append to a journal that is still a Git LFS pointer.
+///
+/// `.gitattributes` sends every `*.jsonl` through LFS, so in a clone where the
+/// objects were never pulled `docs/results/journal.jsonl` is the three-line
+/// pointer stub rather than the journal. Appending there produces a file that
+/// is neither — malformed JSONL behind a pointer header — and staging it can
+/// commit that text as the tracked payload, taking the real history with it.
+/// A run that got this far has already spent its measurements, so say exactly
+/// what to run rather than failing in a way that reads as a corrupt journal.
+fn refuse_unsmudged_lfs_pointer(path: &Path) {
+    const POINTER_MAGIC: &str = "version https://git-lfs.github.com/spec/";
+    let Ok(head) = fs::read(path) else {
+        return; // Absent is fine — the append creates it.
+    };
+    // A pointer stub is a few hundred bytes; a real journal's first line is a
+    // JSON object. Only the prefix needs looking at.
+    let prefix = String::from_utf8_lossy(&head[..head.len().min(POINTER_MAGIC.len())]);
+    assert!(
+        prefix != POINTER_MAGIC,
+        "{} is an unsmudged Git LFS pointer, not the journal.\n\
+         Appending would corrupt it. Materialize it first:\n  \
+         git lfs install && git lfs pull --include docs/results/journal.jsonl",
+        path.display()
+    );
+}
+
+/// The build and machine this run's numbers came off.
+///
+/// Source, weights, corpus, and flags describe the *experiment*; they do not
+/// describe where it ran, and a latency benchmark's result is a property of
+/// both. The same source on aarch64 and on x86-64-with-AVX-512 emits different
+/// instructions for the same expression, and a debug build times nothing like a
+/// release one — yet without this the journal files all of those under one
+/// `config_hash` and invites a cross-machine comparison that means nothing.
+///
+/// Compile-time facts only: `target_arch`/`target_feature` are what actually
+/// select the emitter (the `#[cfg]` blocks above), and the profile decides
+/// whether the timings are meaningful at all. The specific CPU model is
+/// deliberately not read here — it needs a syscall or `/proc`, it varies across
+/// otherwise-identical cloud instances, and the sentinel calibration already
+/// records per-run clock behavior.
+fn environment_fingerprint() -> String {
+    let isa = if cfg!(target_feature = "avx512f") {
+        "avx512f"
+    } else if cfg!(target_feature = "avx2") {
+        "avx2"
+    } else if cfg!(target_feature = "fma") {
+        "fma"
+    } else {
+        "baseline"
+    };
+    format!(
+        "arch={};os={};ptr={};isa={};profile={}",
+        std::env::consts::ARCH,
+        std::env::consts::OS,
+        usize::BITS,
+        isa,
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    )
+}
+
 /// Everything that shapes the measurement, as the string the config hash is
 /// taken over: the protocol constants, the run's flags, the source revision,
-/// and the corpus identity.
+/// the corpus identity, and the environment the numbers were produced on.
 fn config_params(tier: Tier, args: &Args, source: &SourceVersion, corpus_hash: &str) -> String {
     format!(
         "saturate={SATURATE_LIMIT};top_k={EXTRACT_TOP_K};tier={};max_kernels={};\
          sample_seed={:#x};repeats={TIMED_REPEATS};order_seed={ORDER_SEED:#x};\
-         mode={};tuples={INPUT_TUPLES};grid={};rev={};corpus={corpus_hash}",
+         mode={};tuples={INPUT_TUPLES};grid={};rev={};corpus={corpus_hash};{}",
         tier.name(),
         args.max_kernels,
         args.sample_seed,
         bench_mode_slug(BENCH_MODE),
         GRID.len(),
         source.config_hash_input(),
+        environment_fingerprint(),
     )
 }
 
@@ -2292,7 +2377,12 @@ fn main() {
         corpus_path.display()
     );
     let corpus_entries = entries.len();
-    let selected = subsample(entries, args.max_kernels, args.sample_seed);
+    let selected = subsample(
+        entries,
+        args.max_kernels,
+        args.sample_seed,
+        |(name, _, _)| family_of(name) == "named",
+    );
     eprintln!(
         "Corpus: {} of {} {}-tier expressions from {} (subsample seed {:#x})",
         selected.len(),
@@ -2836,6 +2926,7 @@ fn main() {
         fs::create_dir_all(parent)
             .unwrap_or_else(|e| panic!("failed to create {}: {e}", parent.display()));
     }
+    refuse_unsmudged_lfs_pointer(&journal_path);
     let mut journal = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -2912,16 +3003,44 @@ mod tests {
     #[test]
     fn subsample_is_deterministic_bounded_and_ordered() {
         let entries: Vec<usize> = (0..100).collect();
-        let a = subsample(entries.clone(), 10, 0x1234);
-        let b = subsample(entries.clone(), 10, 0x1234);
+        let none = |_: &usize| false;
+        let a = subsample(entries.clone(), 10, 0x1234, none);
+        let b = subsample(entries.clone(), 10, 0x1234, none);
         assert_eq!(a, b, "same seed must select the same kernels");
         assert_eq!(a.len(), 10);
         assert!(a.windows(2).all(|w| w[0] < w[1]), "corpus order is kept");
-        let c = subsample(entries.clone(), 10, 0x5678);
+        let c = subsample(entries.clone(), 10, 0x5678, none);
         assert_ne!(a, c, "a different seed must select a different subset");
         // 0 and "fewer than the cap" both mean "the whole tier".
-        assert_eq!(subsample(entries.clone(), 0, 1).len(), 100);
-        assert_eq!(subsample(entries, 500, 1).len(), 100);
+        assert_eq!(subsample(entries.clone(), 0, 1, none).len(), 100);
+        assert_eq!(subsample(entries, 500, 1, none).len(), 100);
+    }
+
+    #[test]
+    fn subsample_never_drops_a_pinned_entry() {
+        // FINAL's real shape: a handful of named kernels lost in a synthetic
+        // bulk. Uniformly drawing 40 of these would take the five named ones
+        // about 2% of the time, so a publication run would almost always
+        // report synthetic-only numbers under a named-inclusive claim.
+        let entries: Vec<usize> = (0..9_485).collect();
+        let pinned = [0usize, 2_000, 4_000, 6_000, 9_484];
+        let is_pinned = |e: &usize| pinned.contains(e);
+
+        let got = subsample(entries.clone(), 40, 0x1234, is_pinned);
+        assert_eq!(got.len(), 40, "the cap still binds");
+        for p in pinned {
+            assert!(got.contains(&p), "pinned entry {p} was dropped");
+        }
+        assert!(got.windows(2).all(|w| w[0] < w[1]), "corpus order is kept");
+
+        // Pinned entries spend the budget rather than adding to it.
+        let uniform = subsample(entries.clone(), 40, 0x1234, |_: &usize| false);
+        assert_eq!(uniform.len(), got.len());
+
+        // A cap below the pinned count keeps every pinned entry and nothing
+        // else — never a run that silently measured fewer than it was told.
+        let tight = subsample(entries, 3, 0x1234, is_pinned);
+        assert_eq!(tight, pinned.to_vec());
     }
 
     // ── The objective the head was trained on (Codex R6) ────────────────────

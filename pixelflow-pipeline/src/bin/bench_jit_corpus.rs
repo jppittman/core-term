@@ -77,9 +77,20 @@ struct ModeRecord {
     local_sentinel_ns: f64,
     /// The session's opening sentinel calibration.
     sentinel_calibration_ns: f64,
-    /// `sentinel_calibration_ns / local_sentinel_ns` — multiply `ns` /
-    /// `adjusted_ns` by this to re-express the label in the run's opening
-    /// clock (slow drift is a correction, not an exclusion).
+    /// `sentinel_calibration_ns / local_sentinel_ns` — the factor that
+    /// re-expresses a measurement in the run's opening clock (slow drift is a
+    /// correction, not an exclusion).
+    ///
+    /// Apply it to `ns`, then subtract `call_overhead_ns`:
+    /// `ns * sentinel_normalization - call_overhead_ns`, which is what
+    /// `training::mint::normalized_label_ns` computes. Order matters, and the
+    /// tempting shortcut is wrong: `adjusted_ns` has *already* had the
+    /// overhead subtracted, and that overhead is denominated in the opening
+    /// clock, so scaling it a second time leaves a drift-dependent
+    /// `call_overhead_ns * (1 - factor)` residue in the label. With a ~4 ns
+    /// call overhead and drift anywhere near the accepted limit that is more
+    /// than a nanosecond of collection-order-correlated bias — small in
+    /// absolute terms, and a large fraction of a small kernel.
     sentinel_normalization: f64,
 }
 

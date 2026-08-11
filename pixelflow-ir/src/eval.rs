@@ -1170,14 +1170,22 @@ fn binary_bound_pinned(op: OpKind, a: NodeBound, b: NodeBound) -> NodeBound {
     ) {
         let window = a.radius + b.radius;
         let separation = (a.value - b.value).abs();
-        let straddles = if separation.is_nan() {
-            // A NaN operand: `Lt`/`Le`/`Eq`/`Ne` are exact on NaN on every
-            // backend and `Gt`/`Ge`'s split is already flagged divergent, so
-            // the verdict is owed unless the window itself is unbounded.
-            !window.is_finite()
-        } else {
-            separation < window
-        };
+        // An unbounded window straddles by definition, whatever the separation
+        // says. Reaching the comparison below first would be a hole: with
+        // `Lt(Recip(0.0), 0.0)` the reciprocal's value AND radius are both
+        // `inf`, so `separation` is `inf` too and `inf < inf` is *false* — the
+        // mask would come back exact and determinate at a point where the
+        // bound explicitly promises nothing, and the gates would then reject a
+        // backend that legally chose the opposite answer.
+        let straddles = !window.is_finite()
+            || if separation.is_nan() {
+                // A NaN operand with a finite window: `Lt`/`Le`/`Eq`/`Ne` are
+                // exact on NaN on every backend and `Gt`/`Ge`'s split is
+                // already flagged divergent, so the verdict is owed.
+                false
+            } else {
+                separation < window
+            };
         if straddles {
             // The verdict is a free choice, so record what the other choice
             // would produce. A pattern has no radius; `alt` is the carrier.
