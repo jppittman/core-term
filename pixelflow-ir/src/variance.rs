@@ -514,6 +514,16 @@ pub fn find_hoistable_out_of(
     candidates.into_iter().take(max).map(|(id, _)| id).collect()
 }
 
+// Several tests below call `compute_arena_variance` directly rather than
+// only through `find_hoistable_out_of`/`find_hoistable_arena_nodes` (its
+// only current public-to-the-crate callers besides `eval.rs`). That function
+// is `pub(crate)`, not module-private: it is this crate's own load-bearing
+// per-node variance table (eval.rs's interpreter memoizes against it), and
+// no larger public surface exposes the per-node `Variance` values these
+// tests pin — `find_hoistable_out_of` only reports which nodes are
+// hoistable, not each node's variance. Testing the `pub(crate)` function
+// directly, from within the same crate, is the STYLE.md "Flexibility"
+// exception rather than a violation of "test public API only".
 #[cfg(test)]
 mod tests {
     use super::*;
