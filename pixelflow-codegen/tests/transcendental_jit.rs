@@ -460,16 +460,40 @@ fn out_of_range_shift_counts_are_platform_specific() {
     }
 }
 
-/// The aarch64 shift emitters must refuse an out-of-range count rather than
-/// silently encoding a different element size.
-#[test]
-#[cfg(target_arch = "aarch64")]
-#[should_panic(expected = "out of range for a 32-bit lane")]
-fn aarch64_shl_refuses_a_lane_crossing_shift() {
+fn compile_shift(op: pixelflow_ir::OpKind, count: f32) -> bool {
     let mut a = pixelflow_ir::ExprArena::new();
     let x = a.push_var(0);
-    let c = a.push_const(32.0);
-    let root = a.push_binary(pixelflow_ir::OpKind::Shl, x, c);
-    let compiled = pixelflow_codegen::emit::compile_arena_dag(&a, root);
-    unreachable!("the emitter must refuse first, got {:?}", compiled.is_ok());
+    let c = a.push_const(count);
+    let root = a.push_binary(op, x, c);
+    pixelflow_codegen::emit::compile_arena_dag(&a, root).is_ok()
+}
+
+/// A shift count is refused where the `Const` narrows to the encoder's `u8`,
+/// not after — `256.0 as u32 as u8` is `0`, so a downstream check would see a
+/// legal identity shift where the kernel asked for something no target can do.
+#[test]
+#[should_panic(expected = "is not an integer in 0..32")]
+fn a_shift_count_that_aliases_to_zero_is_still_refused() {
+    let _ = compile_shift(pixelflow_ir::OpKind::Shl, 256.0);
+}
+
+/// The same guard covers the counts that do not alias.
+#[test]
+#[should_panic(expected = "is not an integer in 0..32")]
+fn a_lane_crossing_shift_count_is_refused() {
+    let _ = compile_shift(pixelflow_ir::OpKind::Shl, 32.0);
+}
+
+/// A count of 0 is the identity and every target agrees on it, so it must
+/// COMPILE — `fold_is_platform_specific` classifies it as portable, and the
+/// encoder has to honour that. aarch64 `USHR` cannot encode `#0`, so `Shr`
+/// lowers to a move rather than being refused.
+#[test]
+fn a_zero_shift_count_compiles_as_the_identity() {
+    for op in [pixelflow_ir::OpKind::Shl, pixelflow_ir::OpKind::Shr] {
+        assert!(
+            compile_shift(op, 0.0),
+            "{op:?} by 0 is the identity and must compile"
+        );
+    }
 }

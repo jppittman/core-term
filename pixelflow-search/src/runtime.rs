@@ -300,19 +300,17 @@ impl Op for MaskOr {
 // name them (nothing here or in `op_from_kind` hands them to a template), and
 // their results are bit patterns the float rule set has no semantics for.
 //
-// That is NOT opacity to folding, and this comment used to claim it was.
+// Template-opacity is NOT fold-opacity, and the distinction is load-bearing:
 // `ConstantFold::apply` destructures any `ENode::Op` and reads `op.kind()`
-// (`math::algebra`) — it never consults `op_from_kind`, so being unnameable
-// by a template stops nothing. Every op registered here folds. The claim was
-// wrong for years and a miscompile lived in the gap: `Shl`/`Shr` folded a
-// count >= 32 as `count & 31` while the hardware zeroed the lane (x86) or
-// changed element size (aarch64). `OpKind::fold_is_platform_specific` now
-// carries that guard, which is the mechanism that actually holds.
+// (`math::algebra`) — it never consults `op_from_kind`. So every op registered
+// here folds, and each one needs its own answer to "does this fold agree with
+// what the backends emit?" `OpKind::fold_is_platform_specific` is where that
+// answer lives; being unnameable by a template guards nothing.
 //
-// `Shl`/`Shr` do keep `Const` shift operands, but for a narrower reason than
-// this comment used to give: extraction emits `Const` leaves verbatim, so the
-// emitter's immediate-only contract holds. The emitters assert their own
-// range rather than trusting it.
+// `Shl`/`Shr` do keep `Const` shift operands, because extraction emits `Const`
+// leaves verbatim — so the emitter's immediate-only contract holds. The count's
+// RANGE is a separate matter, enforced where the `Const` narrows to an
+// immediate (`emit::shift_immediate`) rather than assumed here.
 struct IntTrunc;
 impl Op for IntTrunc {
     fn kind(&self) -> OpKind {
