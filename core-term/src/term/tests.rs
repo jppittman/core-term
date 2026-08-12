@@ -1944,6 +1944,23 @@ fn scroll_viewport_moves_by_the_requested_amount_and_returns_true() {
 }
 
 #[test]
+fn scroll_viewport_negative_decrements_the_offset_by_the_given_amount() {
+    let mut term = create_test_emulator(5, 3);
+    for _ in 0..12 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+    }
+    assert!(term.scrollback_len() >= 4);
+    term.scroll_viewport(4);
+    assert_eq!(term.viewport_offset(), 4);
+    // Regression check: negating a negative `lines` via plain `as usize` (instead of
+    // `-lines`) wraps to a huge value, and `saturating_sub` on that always floors to 0 —
+    // indistinguishable from a correct decrement-by-1 only when the offset started at or
+    // below the requested amount. Starting well above 1 isolates the actual magnitude.
+    term.scroll_viewport(-1);
+    assert_eq!(term.viewport_offset(), 3);
+}
+
+#[test]
 fn scroll_viewport_clamps_to_the_available_scrollback() {
     let mut term = create_test_emulator(5, 3);
     for _ in 0..6 {
@@ -1952,6 +1969,30 @@ fn scroll_viewport_clamps_to_the_available_scrollback() {
     let available = term.scrollback_len();
     term.scroll_viewport(1000);
     assert_eq!(term.viewport_offset(), available);
+}
+
+#[test]
+fn scrolled_back_view_shows_scrollback_lines_in_chronological_order() {
+    let mut term = create_test_emulator(10, 3);
+    fill_emulator_screen(
+        &mut term,
+        vec![
+            "line0".to_string(),
+            "line1".to_string(),
+            "line2".to_string(),
+            "line3".to_string(),
+            "line4".to_string(),
+            "line5".to_string(),
+        ],
+    );
+    assert_eq!(term.scrollback_len(), 3);
+    term.scroll_viewport(3);
+    let snapshot = term.get_render_snapshot().expect("snapshot");
+    let digit_at =
+        |row: usize| get_glyph_from_snapshot(&snapshot, row, 4).map(|g| g.display_char());
+    assert_eq!(digit_at(0), Some('0'));
+    assert_eq!(digit_at(1), Some('1'));
+    assert_eq!(digit_at(2), Some('2'));
 }
 
 #[test]
@@ -1974,6 +2015,15 @@ fn is_mouse_tracking_active_reflects_whether_any_mouse_mode_is_set() {
     assert!(!term.is_mouse_tracking_active());
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::SetModePrivate(DecModeConstant::MouseVt200 as u16),
+    )));
+    assert!(term.is_mouse_tracking_active());
+}
+
+#[test]
+fn is_mouse_tracking_active_is_true_when_only_the_any_event_mode_is_set() {
+    let mut term = create_test_emulator(10, 5);
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::MouseAnyEvent as u16),
     )));
     assert!(term.is_mouse_tracking_active());
 }

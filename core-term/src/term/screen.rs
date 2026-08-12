@@ -1332,6 +1332,15 @@ mod tests {
     }
 
     #[test]
+    fn is_selected_returns_false_for_points_above_or_below_a_multi_line_selection() {
+        let mut screen = create_test_screen(10, 5);
+        screen.start_selection(Point { x: 3, y: 1 }, SelectionMode::Cell);
+        screen.update_selection(Point { x: 2, y: 3 });
+        assert!(!screen.is_selected(Point { x: 5, y: 0 }));
+        assert!(!screen.is_selected(Point { x: 5, y: 4 }));
+    }
+
+    #[test]
     fn is_selected_returns_true_for_points_within_a_multi_line_range() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 3, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
@@ -1591,6 +1600,23 @@ mod tests {
     }
 
     #[test]
+    fn get_selected_text_returns_none_for_a_single_point_selection_entirely_past_the_grid_width() {
+        let mut screen = create_test_screen(5, 3);
+        screen.start_selection(Point { x: 10, y: 1 }, SelectionMode::Cell);
+        assert_eq!(screen.get_selected_text(), None);
+    }
+
+    #[test]
+    fn get_selected_text_pads_columns_beyond_the_grid_width_in_block_mode() {
+        let mut screen = create_test_screen(3, 2);
+        set_char(&mut screen, 0, 0, 'a');
+        set_char(&mut screen, 0, 1, 'b');
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Block);
+        screen.update_selection(Point { x: 5, y: 0 });
+        assert_eq!(screen.get_selected_text(), Some("ab    ".to_string()));
+    }
+
+    #[test]
     fn get_selected_text_pads_short_lines_with_spaces_in_block_mode() {
         let mut screen = create_test_screen(3, 2);
         {
@@ -1788,6 +1814,15 @@ mod tests {
         assert_eq!(screen.scroll_bot(), 9);
     }
 
+    #[test]
+    fn set_scrolling_region_falls_back_to_full_screen_when_bottom_equals_height() {
+        // 0-based bottom == height is one past the last valid row.
+        let mut screen = create_test_screen(10, 10);
+        screen.set_scrolling_region(2, 11);
+        assert_eq!(screen.scroll_top(), 0);
+        assert_eq!(screen.scroll_bot(), 9);
+    }
+
     // --- fill_region_with_glyph ---
 
     #[test]
@@ -1867,8 +1902,15 @@ mod tests {
     #[test]
     fn scroll_up_with_zero_scrollback_limit_does_not_grow_scrollback() {
         let mut screen = create_test_screen_with_scrollback(3, 4, 0);
+        let generation_before = screen.scrollback_generation;
         screen.scroll_up(1, ScrollHistory::Save);
+        // Asserting only `len() == 0` isn't enough: a limit-0 push-then-immediately-
+        // trim-to-limit round trip also leaves `len()` at 0, so a mutant that lets the
+        // push through (`scrollback_limit > 0` weakened to `>= 0`) would still pass a
+        // length-only check. The generation bump only happens on an actual push, so it
+        // isolates whether the guard fired at all.
         assert_eq!(screen.scrollback.len(), 0);
+        assert_eq!(screen.scrollback_generation, generation_before);
     }
 
     #[test]
@@ -1900,6 +1942,27 @@ mod tests {
         let mut screen = create_test_screen(5, 5);
         screen.scroll_top = 3;
         screen.scroll_bot = 1;
+        screen.dirty.fill(0);
+        screen.scroll_up(1, ScrollHistory::Discard);
+        assert_eq!(screen.dirty, vec![0; 5]);
+    }
+
+    #[test]
+    fn scroll_up_with_a_single_row_region_is_valid_not_an_error() {
+        // top == bot is a valid one-row region, not the invalid top > bot case.
+        let mut screen = create_test_screen(5, 5);
+        screen.scroll_top = 2;
+        screen.scroll_bot = 2;
+        set_char(&mut screen, 2, 0, 'x');
+        screen.scroll_up(1, ScrollHistory::Discard);
+        assert_eq!(line_text(&screen, 2).chars().next(), Some(' '));
+    }
+
+    #[test]
+    fn scroll_up_with_scroll_bot_past_the_screen_height_is_a_no_op() {
+        let mut screen = create_test_screen(5, 5);
+        screen.scroll_top = 0;
+        screen.scroll_bot = 10;
         screen.dirty.fill(0);
         screen.scroll_up(1, ScrollHistory::Discard);
         assert_eq!(screen.dirty, vec![0; 5]);
@@ -1946,6 +2009,26 @@ mod tests {
         let mut screen = create_test_screen(5, 5);
         screen.scroll_top = 3;
         screen.scroll_bot = 1;
+        screen.dirty.fill(0);
+        screen.scroll_down(1);
+        assert_eq!(screen.dirty, vec![0; 5]);
+    }
+
+    #[test]
+    fn scroll_down_with_a_single_row_region_is_valid_not_an_error() {
+        let mut screen = create_test_screen(5, 5);
+        screen.scroll_top = 2;
+        screen.scroll_bot = 2;
+        set_char(&mut screen, 2, 0, 'x');
+        screen.scroll_down(1);
+        assert_eq!(line_text(&screen, 2).chars().next(), Some(' '));
+    }
+
+    #[test]
+    fn scroll_down_with_scroll_bot_past_the_screen_height_is_a_no_op() {
+        let mut screen = create_test_screen(5, 5);
+        screen.scroll_top = 0;
+        screen.scroll_bot = 10;
         screen.dirty.fill(0);
         screen.scroll_down(1);
         assert_eq!(screen.dirty, vec![0; 5]);
@@ -2121,6 +2204,41 @@ mod tests {
         assert!(screen.scrollback_generation > generation_before);
     }
 
+    #[test]
+    fn resize_does_not_bump_scrollback_generation_when_exactly_at_the_limit() {
+        let mut screen = create_test_screen(3, 2);
+        let limit = crate::config::CONFIG.behavior.scrollback_lines;
+        for _ in 0..limit {
+            screen.scrollback.push_back(Arc::new(vec![
+                Glyph::Single(ContentCell {
+                    c: 'x',
+                    attr: Attributes::default(),
+                    combining: None,
+                });
+                screen.width
+            ]));
+        }
+        let generation_before = screen.scrollback_generation;
+        screen.resize(4, 3);
+        assert_eq!(screen.scrollback.len(), limit);
+        assert_eq!(screen.scrollback_generation, generation_before);
+    }
+
+    #[test]
+    fn resize_widens_existing_scrollback_lines_to_the_new_width() {
+        let mut screen = create_test_screen(3, 2);
+        screen.scrollback.push_back(Arc::new(vec![
+            Glyph::Single(ContentCell {
+                c: 'x',
+                attr: Attributes::default(),
+                combining: None,
+            });
+            screen.width
+        ]));
+        screen.resize(6, 2);
+        assert_eq!(screen.scrollback[0].len(), 6);
+    }
+
     // --- dirty-flag bookkeeping ---
 
     #[test]
@@ -2263,12 +2381,30 @@ mod tests {
     }
 
     #[test]
+    fn set_tabstop_at_the_line_width_is_a_no_op() {
+        // x == tabs.len() is one past the last valid column.
+        let mut screen = create_test_screen(10, 2);
+        screen.tabs.fill(false);
+        screen.set_tabstop(10);
+        assert!(screen.tabs.iter().all(|&t| !t));
+    }
+
+    #[test]
     fn clear_tabstops_current_column_clears_only_that_column() {
         let mut screen = create_test_screen(10, 2);
         screen.tabs.fill(true);
         screen.clear_tabstops(3, TabClearMode::CurrentColumn);
         assert!(!screen.tabs[3]);
         assert!(screen.tabs[4]);
+    }
+
+    #[test]
+    fn clear_tabstops_current_column_at_the_line_width_is_a_no_op() {
+        // cursor_x == tabs.len() is one past the last valid column.
+        let mut screen = create_test_screen(10, 2);
+        screen.tabs.fill(true);
+        screen.clear_tabstops(10, TabClearMode::CurrentColumn);
+        assert!(screen.tabs.iter().all(|&t| t));
     }
 
     #[test]
