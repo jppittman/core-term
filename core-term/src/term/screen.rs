@@ -1169,8 +1169,8 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::{
-        Arc, Attributes, ContentCell, Glyph, Point, Screen, ScrollHistory, Selection,
-        SelectionMode, SelectionRange,
+        AltScreenClear, Arc, Attributes, ContentCell, Glyph, Point, Screen, ScrollHistory,
+        Selection, SelectionMode, SelectionRange, TabClearMode,
     };
 
     // `Screen::new` always sources its scrollback limit from the global
@@ -1207,14 +1207,43 @@ mod tests {
         }
     }
 
+    fn set_char(screen: &mut Screen, y: usize, x: usize, ch: char) {
+        let row = Arc::make_mut(&mut screen.grid[y]);
+        row[x] = Glyph::Single(ContentCell {
+            c: ch,
+            attr: Attributes::default(),
+            combining: None,
+        });
+    }
+
+    fn set_alt_char(screen: &mut Screen, y: usize, x: usize, ch: char) {
+        let row = Arc::make_mut(&mut screen.alt_grid[y]);
+        row[x] = Glyph::Single(ContentCell {
+            c: ch,
+            attr: Attributes::default(),
+            combining: None,
+        });
+    }
+
+    fn line_text(screen: &Screen, y: usize) -> String {
+        screen.grid[y].iter().map(|g| g.display_char()).collect()
+    }
+
+    fn alt_line_text(screen: &Screen, y: usize) -> String {
+        screen.alt_grid[y]
+            .iter()
+            .map(|g| g.display_char())
+            .collect()
+    }
+
     #[test]
-    fn selection_default_state() {
+    fn new_screen_has_no_active_selection() {
         let screen = create_test_screen(10, 5);
         assert_eq!(screen.selection, Selection::default());
     }
 
     #[test]
-    fn verify_start_selection() {
+    fn start_selection_sets_range_and_marks_its_line_dirty() {
         let mut screen = create_test_screen(10, 5);
         let start_point = Point { x: 1, y: 1 };
         screen.dirty.fill(0);
@@ -1231,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_update_selection() {
+    fn update_selection_extends_range_and_marks_its_line_dirty() {
         let mut screen = create_test_screen(10, 5);
         let start_point = Point { x: 1, y: 1 };
         let update_point = Point { x: 5, y: 2 };
@@ -1256,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn update_selection_when_not_active() {
+    fn update_selection_is_ignored_when_selection_not_active() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.selection.is_active = false;
@@ -1266,7 +1295,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_end_selection() {
+    fn end_selection_clears_the_active_flag() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.end_selection();
@@ -1274,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_clear_selection() {
+    fn clear_selection_resets_selection_and_marks_its_lines_dirty() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 3, y: 2 });
@@ -1286,13 +1315,13 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_normal_no_selection() {
+    fn is_selected_returns_false_when_no_selection_is_active() {
         let screen = create_test_screen(10, 5);
         assert!(!screen.is_selected(Point { x: 1, y: 1 }));
     }
 
     #[test]
-    fn is_selected_normal_single_line() {
+    fn is_selected_returns_true_for_points_within_a_single_line_range() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 2, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 5, y: 1 });
@@ -1303,7 +1332,7 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_normal_multi_line() {
+    fn is_selected_returns_true_for_points_within_a_multi_line_range() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 3, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 2, y: 3 });
@@ -1315,7 +1344,7 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_normal_multi_line_selection_ends_at_width_minus_1() {
+    fn is_selected_includes_the_last_column_when_multi_line_selection_ends_there() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 8, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 2, y: 2 });
@@ -1327,7 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_normal_reverse_selection_points() {
+    fn is_selected_normalizes_reversed_start_and_end_points() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 5, y: 2 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 1, y: 1 });
@@ -1340,7 +1369,7 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_point_equals_start_or_end() {
+    fn is_selected_includes_the_exact_start_and_end_points() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 2, y: 2 }, SelectionMode::Cell); // Replaced Normal with Cell
         assert!(screen.is_selected(Point { x: 2, y: 2 }));
@@ -1350,7 +1379,7 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_out_of_bounds_point() {
+    fn is_selected_returns_false_for_points_outside_the_grid() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point {
@@ -1368,13 +1397,13 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_block_no_selection() {
+    fn is_selected_returns_false_for_block_mode_when_no_selection_is_active() {
         let screen = create_test_screen(10, 5);
         assert!(!screen.is_selected(Point { x: 1, y: 1 }));
     }
 
     #[test]
-    fn is_selected_block_simple() {
+    fn is_selected_returns_true_within_the_block_selection_rectangle() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Block);
         screen.update_selection(Point { x: 3, y: 3 });
@@ -1383,7 +1412,7 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_block_reverse_points() {
+    fn is_selected_normalizes_reversed_points_in_block_mode() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 3, y: 3 }, SelectionMode::Block);
         screen.update_selection(Point { x: 1, y: 1 });
@@ -1391,13 +1420,13 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_no_selection() {
+    fn get_selected_text_returns_none_when_no_selection_is_active() {
         let screen = create_test_screen(10, 5);
         assert_eq!(screen.get_selected_text(), None);
     }
 
     #[test]
-    fn get_selected_text_normal_single_char() {
+    fn get_selected_text_returns_a_single_character_for_a_single_cell_selection() {
         let mut screen = create_test_screen(5, 3);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
@@ -1405,7 +1434,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_single_line_partial() {
+    fn get_selected_text_returns_a_substring_for_a_partial_line_selection() {
         let mut screen = create_test_screen(5, 3);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
@@ -1414,7 +1443,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_single_line_full() {
+    fn get_selected_text_returns_the_whole_line_for_a_full_line_selection() {
         let mut screen = create_test_screen(5, 3);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
@@ -1426,7 +1455,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_multi_line() {
+    fn get_selected_text_joins_multiple_selected_lines_with_newlines() {
         let mut screen = create_test_screen(3, 3);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
@@ -1435,7 +1464,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_multi_line_reversed_points() {
+    fn get_selected_text_normalizes_reversed_multi_line_points() {
         let mut screen = create_test_screen(3, 3);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 2 }, SelectionMode::Cell); // Replaced Normal with Cell
@@ -1444,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_trailing_spaces_behavior() {
+    fn get_selected_text_includes_trailing_spaces_within_the_selected_columns() {
         let mut screen = create_test_screen(5, 2);
         {
             let row0 = Arc::make_mut(&mut screen.grid[0]);
@@ -1513,14 +1542,14 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_block_no_selection() {
+    fn get_selected_text_returns_none_for_block_mode_with_no_selection() {
         let mut screen = create_test_screen(10, 5);
         screen.selection.mode = SelectionMode::Block;
         assert_eq!(screen.get_selected_text(), None);
     }
 
     #[test]
-    fn get_selected_text_block_simple() {
+    fn get_selected_text_returns_the_block_rectangle_joined_by_newlines() {
         let mut screen = create_test_screen(5, 4);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
@@ -1532,7 +1561,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_block_reversed_points() {
+    fn get_selected_text_normalizes_reversed_points_in_block_mode() {
         let mut screen = create_test_screen(5, 4);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 3, y: 2 }, SelectionMode::Block);
@@ -1544,7 +1573,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_block_one_column() {
+    fn get_selected_text_returns_a_single_column_block_as_newline_joined_chars() {
         let mut screen = create_test_screen(5, 4);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
@@ -1553,7 +1582,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_block_one_row() {
+    fn get_selected_text_returns_a_single_row_block_as_a_plain_substring() {
         let mut screen = create_test_screen(5, 4);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Block);
@@ -1562,7 +1591,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_block_beyond_line_length() {
+    fn get_selected_text_pads_short_lines_with_spaces_in_block_mode() {
         let mut screen = create_test_screen(3, 2);
         {
             let row0 = Arc::make_mut(&mut screen.grid[0]);
@@ -1609,7 +1638,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_cleared_on_resize() {
+    fn resize_clears_the_current_selection() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 5, y: 2 });
@@ -1662,7 +1691,7 @@ mod tests {
     }
 
     #[test]
-    fn block_selection_wide_char_full() {
+    fn block_selection_includes_a_fully_covered_wide_character() {
         let mut screen = create_screen_with_wide_char();
         // Select "b" "你" "c" (columns 1 to 4)
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
@@ -1673,7 +1702,7 @@ mod tests {
     }
 
     #[test]
-    fn block_selection_wide_char_partial_left() {
+    fn block_selection_includes_a_wide_character_when_only_its_primary_cell_is_selected() {
         let mut screen = create_screen_with_wide_char();
         // Select "b" "你" (primary only) (columns 1 to 2)
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
@@ -1685,7 +1714,7 @@ mod tests {
     }
 
     #[test]
-    fn block_selection_wide_char_partial_right() {
+    fn block_selection_excludes_a_wide_character_when_only_its_spacer_cell_is_selected() {
         let mut screen = create_screen_with_wide_char();
         // Select spacer of "你" and "c" (columns 3 to 4)
         screen.start_selection(Point { x: 3, y: 0 }, SelectionMode::Block);
@@ -1696,5 +1725,574 @@ mod tests {
         // The user probably doesn't want \0 in the output, but currently it returns \0.
         // I will assert the current behavior.
         assert_eq!(text, Some("c".to_string()));
+    }
+
+    #[test]
+    fn get_selected_text_trims_trailing_spaces_only_on_interior_full_width_lines() {
+        let mut screen = create_test_screen(5, 3);
+        set_char(&mut screen, 0, 0, 'a');
+        set_char(&mut screen, 0, 1, 'b');
+        set_char(&mut screen, 2, 0, 'c');
+        screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell);
+        // The selection reaches the last column on every row, including the
+        // last row of the selection, so only the "is this the last selected
+        // line" condition (not "did this row reach full width") decides
+        // whether trailing spaces on row 2 get trimmed away.
+        screen.update_selection(Point { x: 4, y: 2 });
+        assert_eq!(screen.get_selected_text(), Some("ab\n\nc    ".to_string()));
+    }
+
+    // --- TabClearMode::from ---
+
+    #[test]
+    fn tab_clear_mode_from_zero_is_current_column() {
+        assert_eq!(TabClearMode::from(0), TabClearMode::CurrentColumn);
+    }
+
+    #[test]
+    fn tab_clear_mode_from_two_or_five_is_all() {
+        assert_eq!(TabClearMode::from(2), TabClearMode::All);
+        assert_eq!(TabClearMode::from(5), TabClearMode::All);
+    }
+
+    #[test]
+    fn tab_clear_mode_from_any_other_value_is_unsupported() {
+        assert_eq!(TabClearMode::from(3), TabClearMode::Unsupported);
+        assert_eq!(TabClearMode::from(999), TabClearMode::Unsupported);
+    }
+
+    // --- scroll_top/scroll_bot accessors and set_scrolling_region ---
+
+    #[test]
+    fn scroll_top_and_scroll_bot_report_the_configured_region() {
+        let mut screen = create_test_screen(10, 10);
+        screen.set_scrolling_region(3, 6);
+        assert_eq!(screen.scroll_top(), 2);
+        assert_eq!(screen.scroll_bot(), 5);
+    }
+
+    #[test]
+    fn set_scrolling_region_falls_back_to_full_screen_when_top_is_not_before_bottom() {
+        let mut screen = create_test_screen(10, 10);
+        screen.set_scrolling_region(3, 6);
+        screen.set_scrolling_region(5, 5);
+        assert_eq!(screen.scroll_top(), 0);
+        assert_eq!(screen.scroll_bot(), 9);
+    }
+
+    #[test]
+    fn set_scrolling_region_falls_back_to_full_screen_when_bottom_exceeds_height() {
+        let mut screen = create_test_screen(10, 10);
+        screen.set_scrolling_region(2, 20);
+        assert_eq!(screen.scroll_top(), 0);
+        assert_eq!(screen.scroll_bot(), 9);
+    }
+
+    // --- fill_region_with_glyph ---
+
+    #[test]
+    fn fill_region_with_glyph_fills_only_the_given_column_range() {
+        let mut screen = create_test_screen(5, 2);
+        fill_screen_with_pattern(&mut screen);
+        let fill = Glyph::Single(ContentCell {
+            c: 'x',
+            attr: Attributes::default(),
+            combining: None,
+        });
+        screen.fill_region_with_glyph(0, 1..3, fill);
+        assert_eq!(line_text(&screen, 0), "axxde");
+    }
+
+    #[test]
+    fn fill_region_with_glyph_with_an_empty_range_changes_nothing() {
+        let mut screen = create_test_screen(5, 2);
+        fill_screen_with_pattern(&mut screen);
+        let before = line_text(&screen, 0);
+        let fill = Glyph::Single(ContentCell {
+            c: 'x',
+            attr: Attributes::default(),
+            combining: None,
+        });
+        screen.fill_region_with_glyph(0, 2..2, fill);
+        assert_eq!(line_text(&screen, 0), before);
+    }
+
+    // --- scroll_up ---
+
+    #[test]
+    fn scroll_up_shifts_region_rows_up_and_fills_the_bottom_with_blank() {
+        let mut screen = create_test_screen_with_scrollback(3, 4, 10);
+        for y in 0..4 {
+            set_char(&mut screen, y, 0, (b'0' + y as u8) as char);
+        }
+        screen.scroll_up(1, ScrollHistory::Save);
+        assert_eq!(line_text(&screen, 0).chars().next(), Some('1'));
+        assert_eq!(line_text(&screen, 1).chars().next(), Some('2'));
+        assert_eq!(line_text(&screen, 2).chars().next(), Some('3'));
+        assert_eq!(line_text(&screen, 3).chars().next(), Some(' '));
+    }
+
+    #[test]
+    fn scroll_up_marks_only_the_scroll_region_rows_dirty() {
+        let mut screen = create_test_screen(5, 6);
+        screen.set_scrolling_region(2, 5);
+        screen.dirty.fill(0);
+        screen.scroll_up(1, ScrollHistory::Discard);
+        assert_eq!(screen.dirty, vec![0, 1, 1, 1, 1, 0]);
+    }
+
+    #[test]
+    fn scroll_up_with_discard_history_does_not_grow_scrollback() {
+        let mut screen = create_test_screen_with_scrollback(3, 4, 10);
+        screen.scroll_up(1, ScrollHistory::Discard);
+        assert_eq!(screen.scrollback.len(), 0);
+    }
+
+    #[test]
+    fn scroll_up_outside_the_screen_top_does_not_grow_scrollback() {
+        let mut screen = create_test_screen_with_scrollback(3, 5, 10);
+        screen.set_scrolling_region(2, 5);
+        screen.scroll_up(1, ScrollHistory::Save);
+        assert_eq!(screen.scrollback.len(), 0);
+    }
+
+    #[test]
+    fn scroll_up_on_the_alt_screen_does_not_grow_scrollback() {
+        let mut screen = create_test_screen_with_scrollback(3, 4, 10);
+        screen.alt_screen_active = true;
+        screen.scroll_up(1, ScrollHistory::Save);
+        assert_eq!(screen.scrollback.len(), 0);
+    }
+
+    #[test]
+    fn scroll_up_with_zero_scrollback_limit_does_not_grow_scrollback() {
+        let mut screen = create_test_screen_with_scrollback(3, 4, 0);
+        screen.scroll_up(1, ScrollHistory::Save);
+        assert_eq!(screen.scrollback.len(), 0);
+    }
+
+    #[test]
+    fn scroll_up_caps_the_scrolled_lines_to_the_region_height() {
+        let mut screen = create_test_screen_with_scrollback(3, 4, 10);
+        for y in 0..4 {
+            set_char(&mut screen, y, 0, (b'0' + y as u8) as char);
+        }
+        screen.scroll_up(100, ScrollHistory::Save);
+        assert_eq!(screen.scrollback.len(), 4);
+        for y in 0..4 {
+            assert_eq!(line_text(&screen, y).chars().next(), Some(' '));
+        }
+    }
+
+    #[test]
+    fn scroll_up_drops_the_oldest_scrollback_line_once_past_the_limit() {
+        let mut screen = create_test_screen_with_scrollback(3, 2, 1);
+        set_char(&mut screen, 0, 0, 'a');
+        screen.scroll_up(1, ScrollHistory::Save);
+        set_char(&mut screen, 0, 0, 'b');
+        screen.scroll_up(1, ScrollHistory::Save);
+        assert_eq!(screen.scrollback.len(), 1);
+        assert_eq!(screen.scrollback[0][0].display_char(), 'b');
+    }
+
+    #[test]
+    fn scroll_up_with_an_invalid_region_is_a_no_op() {
+        let mut screen = create_test_screen(5, 5);
+        screen.scroll_top = 3;
+        screen.scroll_bot = 1;
+        screen.dirty.fill(0);
+        screen.scroll_up(1, ScrollHistory::Discard);
+        assert_eq!(screen.dirty, vec![0; 5]);
+    }
+
+    // --- scroll_down ---
+
+    #[test]
+    fn scroll_down_shifts_region_rows_down_and_fills_the_top_with_blank() {
+        let mut screen = create_test_screen(3, 4);
+        for y in 0..4 {
+            set_char(&mut screen, y, 0, (b'0' + y as u8) as char);
+        }
+        screen.scroll_down(1);
+        assert_eq!(line_text(&screen, 0).chars().next(), Some(' '));
+        assert_eq!(line_text(&screen, 1).chars().next(), Some('0'));
+        assert_eq!(line_text(&screen, 2).chars().next(), Some('1'));
+        assert_eq!(line_text(&screen, 3).chars().next(), Some('2'));
+    }
+
+    #[test]
+    fn scroll_down_marks_only_the_scroll_region_rows_dirty() {
+        let mut screen = create_test_screen(5, 6);
+        screen.set_scrolling_region(2, 5);
+        screen.dirty.fill(0);
+        screen.scroll_down(1);
+        assert_eq!(screen.dirty, vec![0, 1, 1, 1, 1, 0]);
+    }
+
+    #[test]
+    fn scroll_down_caps_the_scrolled_lines_to_the_region_height() {
+        let mut screen = create_test_screen(3, 4);
+        for y in 0..4 {
+            set_char(&mut screen, y, 0, (b'0' + y as u8) as char);
+        }
+        screen.scroll_down(100);
+        for y in 0..4 {
+            assert_eq!(line_text(&screen, y).chars().next(), Some(' '));
+        }
+    }
+
+    #[test]
+    fn scroll_down_with_an_invalid_region_is_a_no_op() {
+        let mut screen = create_test_screen(5, 5);
+        screen.scroll_top = 3;
+        screen.scroll_bot = 1;
+        screen.dirty.fill(0);
+        screen.scroll_down(1);
+        assert_eq!(screen.dirty, vec![0; 5]);
+    }
+
+    // --- insert_blank_chars_in_line ---
+
+    #[test]
+    fn insert_blank_chars_shifts_content_right_and_fills_the_gap_with_blanks() {
+        let mut screen = create_test_screen(5, 1);
+        for x in 0..5 {
+            set_char(&mut screen, 0, x, (b'a' + x as u8) as char);
+        }
+        screen.insert_blank_chars_in_line(0, 1, 2);
+        assert_eq!(line_text(&screen, 0), "a  bc");
+    }
+
+    #[test]
+    fn insert_blank_chars_discards_content_pushed_past_the_line_end() {
+        let mut screen = create_test_screen(5, 1);
+        for x in 0..5 {
+            set_char(&mut screen, 0, x, (b'a' + x as u8) as char);
+        }
+        screen.insert_blank_chars_in_line(0, 3, 10);
+        assert_eq!(line_text(&screen, 0), "abc  ");
+    }
+
+    #[test]
+    fn insert_blank_chars_at_or_past_the_line_width_is_a_no_op() {
+        let mut screen = create_test_screen(5, 1);
+        for x in 0..5 {
+            set_char(&mut screen, 0, x, (b'a' + x as u8) as char);
+        }
+        screen.insert_blank_chars_in_line(0, 5, 1);
+        assert_eq!(line_text(&screen, 0), "abcde");
+    }
+
+    #[test]
+    fn insert_blank_chars_with_zero_count_is_a_no_op() {
+        let mut screen = create_test_screen(5, 1);
+        for x in 0..5 {
+            set_char(&mut screen, 0, x, (b'a' + x as u8) as char);
+        }
+        screen.insert_blank_chars_in_line(0, 1, 0);
+        assert_eq!(line_text(&screen, 0), "abcde");
+    }
+
+    #[test]
+    fn insert_blank_chars_on_an_out_of_bounds_row_is_a_no_op() {
+        let mut screen = create_test_screen(5, 1);
+        screen.dirty.fill(0);
+        screen.insert_blank_chars_in_line(5, 0, 1);
+        assert_eq!(screen.dirty, vec![0]);
+    }
+
+    // --- delete_chars_in_line ---
+
+    #[test]
+    fn delete_chars_shifts_content_left_and_fills_the_end_with_blanks() {
+        let mut screen = create_test_screen(5, 1);
+        for x in 0..5 {
+            set_char(&mut screen, 0, x, (b'a' + x as u8) as char);
+        }
+        screen.delete_chars_in_line(0, 1, 2);
+        assert_eq!(line_text(&screen, 0), "ade  ");
+    }
+
+    #[test]
+    fn delete_chars_count_is_capped_by_the_remaining_width() {
+        let mut screen = create_test_screen(5, 1);
+        for x in 0..5 {
+            set_char(&mut screen, 0, x, (b'a' + x as u8) as char);
+        }
+        screen.delete_chars_in_line(0, 3, 10);
+        assert_eq!(line_text(&screen, 0), "abc  ");
+    }
+
+    #[test]
+    fn delete_chars_at_or_past_the_line_width_is_a_no_op() {
+        let mut screen = create_test_screen(5, 1);
+        for x in 0..5 {
+            set_char(&mut screen, 0, x, (b'a' + x as u8) as char);
+        }
+        screen.delete_chars_in_line(0, 5, 1);
+        assert_eq!(line_text(&screen, 0), "abcde");
+    }
+
+    #[test]
+    fn delete_chars_with_zero_count_is_a_no_op() {
+        let mut screen = create_test_screen(5, 1);
+        for x in 0..5 {
+            set_char(&mut screen, 0, x, (b'a' + x as u8) as char);
+        }
+        screen.delete_chars_in_line(0, 1, 0);
+        assert_eq!(line_text(&screen, 0), "abcde");
+    }
+
+    #[test]
+    fn delete_chars_on_an_out_of_bounds_row_is_a_no_op() {
+        let mut screen = create_test_screen(5, 1);
+        screen.dirty.fill(0);
+        screen.delete_chars_in_line(5, 0, 1);
+        assert_eq!(screen.dirty, vec![0]);
+    }
+
+    // --- resize ---
+
+    #[test]
+    fn resize_growing_preserves_top_left_content_and_fills_new_area_with_blanks() {
+        let mut screen = create_test_screen(3, 2);
+        set_char(&mut screen, 0, 0, 'a');
+        set_char(&mut screen, 1, 0, 'b');
+        screen.resize(5, 3);
+        assert_eq!(line_text(&screen, 0), "a    ");
+        assert_eq!(line_text(&screen, 1), "b    ");
+        assert_eq!(line_text(&screen, 2), "     ");
+    }
+
+    #[test]
+    fn resize_shrinking_truncates_content_beyond_the_new_bounds() {
+        let mut screen = create_test_screen(5, 3);
+        for x in 0..5 {
+            set_char(&mut screen, 0, x, (b'a' + x as u8) as char);
+        }
+        screen.resize(3, 1);
+        assert_eq!(line_text(&screen, 0), "abc");
+        assert_eq!(screen.grid.len(), 1);
+    }
+
+    #[test]
+    fn resize_marks_every_line_dirty() {
+        let mut screen = create_test_screen(5, 3);
+        screen.dirty.fill(0);
+        screen.resize(6, 4);
+        assert_eq!(screen.dirty, vec![1; 4]);
+    }
+
+    #[test]
+    fn resize_resets_the_scrolling_region_to_the_full_new_screen() {
+        let mut screen = create_test_screen(5, 5);
+        screen.set_scrolling_region(2, 4);
+        screen.resize(5, 8);
+        assert_eq!(screen.scroll_top(), 0);
+        assert_eq!(screen.scroll_bot(), 7);
+    }
+
+    #[test]
+    fn resize_reinitializes_tab_stops_at_the_configured_spacing() {
+        let mut screen = create_test_screen(5, 2);
+        screen.resize(20, 2);
+        let spacing = crate::config::CONFIG.behavior.tabspaces as usize;
+        assert!(!screen.tabs[0]);
+        assert!(screen.tabs[spacing]);
+    }
+
+    #[test]
+    fn resize_bumps_scrollback_generation_when_trimming_to_the_configured_limit() {
+        let mut screen = create_test_screen(3, 2);
+        let limit = crate::config::CONFIG.behavior.scrollback_lines;
+        for _ in 0..(limit + 5) {
+            screen.scrollback.push_back(Arc::new(vec![
+                Glyph::Single(ContentCell {
+                    c: 'x',
+                    attr: Attributes::default(),
+                    combining: None,
+                });
+                screen.width
+            ]));
+        }
+        let generation_before = screen.scrollback_generation;
+        screen.resize(4, 3);
+        assert_eq!(screen.scrollback.len(), limit);
+        assert!(screen.scrollback_generation > generation_before);
+    }
+
+    // --- dirty-flag bookkeeping ---
+
+    #[test]
+    fn mark_all_dirty_sets_every_line_dirty() {
+        let mut screen = create_test_screen(4, 3);
+        screen.dirty.fill(0);
+        screen.mark_all_dirty();
+        assert_eq!(screen.dirty, vec![1; 3]);
+    }
+
+    #[test]
+    fn mark_all_clean_clears_every_line_dirty() {
+        let mut screen = create_test_screen(4, 3);
+        screen.dirty.fill(1);
+        screen.mark_all_clean();
+        assert_eq!(screen.dirty, vec![0; 3]);
+    }
+
+    #[test]
+    fn mark_line_dirty_marks_only_the_given_line() {
+        let mut screen = create_test_screen(4, 3);
+        screen.dirty.fill(0);
+        screen.mark_line_dirty(1);
+        assert_eq!(screen.dirty, vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn mark_line_dirty_at_or_past_the_last_row_is_a_no_op() {
+        let mut screen = create_test_screen(4, 3);
+        screen.dirty.fill(0);
+        screen.mark_line_dirty(3);
+        assert_eq!(screen.dirty, vec![0, 0, 0]);
+    }
+
+    // --- alt screen ---
+
+    #[test]
+    fn enter_alt_screen_marks_the_screen_active_and_fully_dirty() {
+        let mut screen = create_test_screen(4, 3);
+        screen.dirty.fill(0);
+        screen.enter_alt_screen(AltScreenClear::Preserve);
+        assert!(screen.alt_screen_active);
+        assert_eq!(screen.dirty, vec![1; 3]);
+    }
+
+    #[test]
+    fn enter_alt_screen_when_already_active_does_not_clear_again() {
+        let mut screen = create_test_screen(4, 3);
+        screen.enter_alt_screen(AltScreenClear::Preserve);
+        set_alt_char(&mut screen, 0, 0, 'z');
+        screen.enter_alt_screen(AltScreenClear::Clear);
+        assert_eq!(alt_line_text(&screen, 0).chars().next(), Some('z'));
+    }
+
+    #[test]
+    fn enter_alt_screen_with_clear_mode_blanks_the_alt_grid() {
+        let mut screen = create_test_screen(4, 3);
+        set_alt_char(&mut screen, 0, 0, 'z');
+        screen.enter_alt_screen(AltScreenClear::Clear);
+        assert_eq!(alt_line_text(&screen, 0).chars().next(), Some(' '));
+    }
+
+    #[test]
+    fn enter_alt_screen_with_preserve_mode_keeps_the_alt_grid_content() {
+        let mut screen = create_test_screen(4, 3);
+        set_alt_char(&mut screen, 0, 0, 'z');
+        screen.enter_alt_screen(AltScreenClear::Preserve);
+        assert_eq!(alt_line_text(&screen, 0).chars().next(), Some('z'));
+    }
+
+    #[test]
+    fn exit_alt_screen_deactivates_and_marks_fully_dirty() {
+        let mut screen = create_test_screen(4, 3);
+        screen.enter_alt_screen(AltScreenClear::Preserve);
+        screen.dirty.fill(0);
+        screen.exit_alt_screen();
+        assert!(!screen.alt_screen_active);
+        assert_eq!(screen.dirty, vec![1; 3]);
+    }
+
+    #[test]
+    fn exit_alt_screen_when_not_active_is_a_no_op() {
+        let mut screen = create_test_screen(4, 3);
+        screen.dirty.fill(0);
+        screen.exit_alt_screen();
+        assert_eq!(screen.dirty, vec![0; 3]);
+    }
+
+    // --- set_glyph ---
+
+    #[test]
+    fn set_glyph_writes_the_cell_and_marks_its_line_dirty() {
+        let mut screen = create_test_screen(4, 3);
+        screen.dirty.fill(0);
+        screen.set_glyph(
+            2,
+            1,
+            Glyph::Single(ContentCell {
+                c: 'z',
+                attr: Attributes::default(),
+                combining: None,
+            }),
+        );
+        assert_eq!(line_text(&screen, 1).chars().nth(2), Some('z'));
+        assert_eq!(screen.dirty[1], 1);
+    }
+
+    #[test]
+    fn set_glyph_out_of_bounds_is_a_no_op() {
+        let mut screen = create_test_screen(4, 3);
+        screen.dirty.fill(0);
+        screen.set_glyph(
+            10,
+            10,
+            Glyph::Single(ContentCell {
+                c: 'z',
+                attr: Attributes::default(),
+                combining: None,
+            }),
+        );
+        assert_eq!(screen.dirty, vec![0; 3]);
+    }
+
+    // --- tab stops ---
+
+    #[test]
+    fn set_tabstop_marks_the_given_column() {
+        let mut screen = create_test_screen(10, 2);
+        screen.tabs.fill(false);
+        screen.set_tabstop(4);
+        assert!(screen.tabs[4]);
+    }
+
+    #[test]
+    fn set_tabstop_out_of_bounds_is_a_no_op() {
+        let mut screen = create_test_screen(10, 2);
+        screen.tabs.fill(false);
+        screen.set_tabstop(100);
+        assert!(screen.tabs.iter().all(|&t| !t));
+    }
+
+    #[test]
+    fn clear_tabstops_current_column_clears_only_that_column() {
+        let mut screen = create_test_screen(10, 2);
+        screen.tabs.fill(true);
+        screen.clear_tabstops(3, TabClearMode::CurrentColumn);
+        assert!(!screen.tabs[3]);
+        assert!(screen.tabs[4]);
+    }
+
+    #[test]
+    fn clear_tabstops_all_clears_every_column() {
+        let mut screen = create_test_screen(10, 2);
+        screen.tabs.fill(true);
+        screen.clear_tabstops(0, TabClearMode::All);
+        assert!(screen.tabs.iter().all(|&t| !t));
+    }
+
+    #[test]
+    fn clear_tabstops_unsupported_mode_is_a_no_op() {
+        let mut screen = create_test_screen(10, 2);
+        screen.tabs.fill(true);
+        screen.clear_tabstops(0, TabClearMode::Unsupported);
+        assert!(screen.tabs.iter().all(|&t| t));
+    }
+
+    #[test]
+    fn get_next_tabstop_finds_the_first_set_column_after_the_given_one() {
+        let mut screen = create_test_screen(10, 1);
+        screen.tabs.fill(false);
+        screen.tabs[5] = true;
+        assert_eq!(screen.get_next_tabstop(2), Some(5));
+        assert_eq!(screen.get_next_tabstop(5), None);
     }
 }

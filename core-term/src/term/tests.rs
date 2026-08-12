@@ -14,6 +14,8 @@ use crate::term::{
     CursorShape,
     EmulatorAction,
     EmulatorInput,
+    MouseEncodingParams,
+    MouseEventKind,
     // Imports for new tests:
     Point,
     Selection,
@@ -1257,7 +1259,7 @@ mod selection_logic_tests {
     use crate::term::snapshot::SelectionRange;
 
     #[test]
-    fn start_selection() {
+    fn start_selection_sets_range_mode_and_active_flag_on_the_snapshot() {
         let mut emu = create_test_emulator(10, 5);
         let point = Point { x: 2, y: 1 };
 
@@ -1277,7 +1279,7 @@ mod selection_logic_tests {
     }
 
     #[test]
-    fn extend_selection_active_and_inactive() {
+    fn extend_selection_only_updates_the_range_after_a_selection_has_started() {
         let mut emu = create_test_emulator(10, 5);
         let start_point = Point { x: 2, y: 1 };
         let extend_point = Point { x: 5, y: 2 };
@@ -1303,7 +1305,7 @@ mod selection_logic_tests {
     }
 
     #[test]
-    fn apply_selection_clear_click_and_drag() {
+    fn apply_selection_clear_discards_a_click_but_finalizes_a_drag() {
         let mut emu = create_test_emulator(10, 5);
         let point1 = Point { x: 2, y: 1 };
         let point2 = Point { x: 5, y: 1 };
@@ -1347,7 +1349,7 @@ mod selection_logic_tests {
     }
 
     #[test]
-    fn verify_clear_selection() {
+    fn clear_selection_removes_a_finalized_drag_range() {
         let mut emu = create_test_emulator(10, 5);
 
         // Create and deactivate a selection
@@ -1372,13 +1374,13 @@ mod get_selected_text_tests {
     use super::*;
 
     #[test]
-    fn get_selected_text_no_selection() {
+    fn get_selected_text_returns_none_when_no_selection_is_active() {
         let emu = create_test_emulator(10, 5);
         assert_eq!(emu.get_selected_text(), None);
     }
 
     #[test]
-    fn get_selected_text_single_line() {
+    fn get_selected_text_returns_a_substring_of_a_single_line() {
         let mut emu = create_test_emulator(10, 5);
         fill_emulator_screen(&mut emu, vec!["Hello World".to_string()]);
 
@@ -1395,7 +1397,7 @@ mod get_selected_text_tests {
     }
 
     #[test]
-    fn get_selected_text_single_line_trailing_spaces_in_selection() {
+    fn get_selected_text_includes_trailing_spaces_within_the_selection() {
         let mut emu = create_test_emulator(10, 1);
         fill_emulator_screen(&mut emu, vec!["Hi   ".to_string()]);
 
@@ -1411,7 +1413,7 @@ mod get_selected_text_tests {
     }
 
     #[test]
-    fn get_selected_text_multi_line() {
+    fn get_selected_text_joins_a_partial_multi_line_selection_with_a_newline() {
         let mut emu = create_test_emulator(10, 5);
         fill_emulator_screen(
             &mut emu,
@@ -1434,7 +1436,7 @@ mod get_selected_text_tests {
     }
 
     #[test]
-    fn get_selected_text_multi_line_full_lines() {
+    fn get_selected_text_handles_both_single_and_multi_line_full_selections() {
         let mut emu = create_test_emulator(10, 3);
         fill_emulator_screen(
             &mut emu,
@@ -1470,7 +1472,7 @@ mod get_selected_text_tests {
     }
 
     #[test]
-    fn get_selected_text_line_boundaries() {
+    fn get_selected_text_spans_a_line_boundary_correctly() {
         let mut emu = create_test_emulator(10, 2);
         fill_emulator_screen(
             &mut emu,
@@ -1489,7 +1491,7 @@ mod get_selected_text_tests {
     }
 
     #[test]
-    fn get_selected_text_empty_cells_within_grid() {
+    fn get_selected_text_renders_untouched_cells_as_spaces() {
         let mut emu = create_test_emulator(5, 1);
         // Create sparse content: "A   E" by printing A, moving cursor to col 4, then printing E
         emu.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
@@ -1510,7 +1512,7 @@ mod get_selected_text_tests {
     }
 
     #[test]
-    fn get_selected_text_selection_beyond_line_length() {
+    fn get_selected_text_pads_a_selection_extending_past_the_line_content() {
         let mut emu = create_test_emulator(10, 1);
         fill_emulator_screen(&mut emu, vec!["Test".to_string()]);
 
@@ -1526,7 +1528,7 @@ mod get_selected_text_tests {
     }
 
     #[test]
-    fn get_selected_text_reversed_points() {
+    fn get_selected_text_normalizes_a_selection_dragged_backwards() {
         let mut emu = create_test_emulator(10, 5);
         fill_emulator_screen(&mut emu, vec!["Hello World".to_string()]);
 
@@ -1917,4 +1919,111 @@ fn scroll_region_push_dirties_rows_outside_the_region() {
         !idle.lines[3..6].iter().any(|l| l.is_dirty),
         "the view is unchanged and those rows were never touched: clean"
     );
+}
+
+// --- scroll_viewport / reset_viewport / scrollback_len ---
+
+#[test]
+fn scroll_viewport_with_no_scrollback_does_not_move_and_returns_false() {
+    let mut term = create_test_emulator(5, 3);
+    assert!(!term.scroll_viewport(1));
+    assert_eq!(term.viewport_offset(), 0);
+}
+
+#[test]
+fn scroll_viewport_moves_by_the_requested_amount_and_returns_true() {
+    let mut term = create_test_emulator(5, 3);
+    for _ in 0..6 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+    }
+    assert!(term.scrollback_len() >= 2);
+    assert!(term.scroll_viewport(1));
+    assert_eq!(term.viewport_offset(), 1);
+    assert!(term.scroll_viewport(-1));
+    assert_eq!(term.viewport_offset(), 0);
+}
+
+#[test]
+fn scroll_viewport_clamps_to_the_available_scrollback() {
+    let mut term = create_test_emulator(5, 3);
+    for _ in 0..6 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+    }
+    let available = term.scrollback_len();
+    term.scroll_viewport(1000);
+    assert_eq!(term.viewport_offset(), available);
+}
+
+#[test]
+fn reset_viewport_returns_to_live_and_reports_whether_it_moved() {
+    let mut term = create_test_emulator(5, 3);
+    for _ in 0..6 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(C0Control::LF)));
+    }
+    term.scroll_viewport(1);
+    assert!(term.reset_viewport());
+    assert_eq!(term.viewport_offset(), 0);
+    assert!(!term.reset_viewport());
+}
+
+// --- mouse tracking mode queries and event encoding ---
+
+#[test]
+fn is_mouse_tracking_active_reflects_whether_any_mouse_mode_is_set() {
+    let mut term = create_test_emulator(10, 5);
+    assert!(!term.is_mouse_tracking_active());
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::MouseVt200 as u16),
+    )));
+    assert!(term.is_mouse_tracking_active());
+}
+
+#[test]
+fn reports_all_motion_is_true_only_under_the_any_event_mouse_mode() {
+    let mut term = create_test_emulator(10, 5);
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::MouseButtonEvent as u16),
+    )));
+    assert!(!term.reports_all_motion());
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::MouseAnyEvent as u16),
+    )));
+    assert!(term.reports_all_motion());
+}
+
+#[test]
+fn reports_button_motion_is_true_under_button_event_or_any_event_mode() {
+    let mut term = create_test_emulator(10, 5);
+    assert!(!term.reports_button_motion());
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::MouseButtonEvent as u16),
+    )));
+    assert!(term.reports_button_motion());
+}
+
+#[test]
+fn encode_mouse_event_returns_none_when_no_tracking_mode_is_active() {
+    let term = create_test_emulator(10, 5);
+    let bytes = term.encode_mouse_event(MouseEncodingParams {
+        button: MouseButton::Left,
+        col: 1,
+        row: 1,
+        kind: MouseEventKind::Press,
+    });
+    assert_eq!(bytes, None);
+}
+
+#[test]
+fn encode_mouse_event_returns_bytes_once_a_tracking_mode_is_active() {
+    let mut term = create_test_emulator(10, 5);
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetModePrivate(DecModeConstant::MouseVt200 as u16),
+    )));
+    let bytes = term.encode_mouse_event(MouseEncodingParams {
+        button: MouseButton::Left,
+        col: 1,
+        row: 1,
+        kind: MouseEventKind::Press,
+    });
+    assert!(bytes.is_some());
 }
