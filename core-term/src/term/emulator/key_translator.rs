@@ -204,6 +204,103 @@ mod tests {
     }
 
     #[test]
+    fn it_should_map_ctrl_plus_bracket_group_punctuation_to_their_c0_control_codes() {
+        let modes = DecPrivateModes::default();
+        let cases = [
+            ('[', 0x1b), // Ctrl+[ is ESC
+            ('\\', 0x1c), // Ctrl+\ is FS
+            (']', 0x1d), // Ctrl+] is GS
+            ('^', 0x1e), // Ctrl+^ is RS
+            ('_', 0x1f), // Ctrl+_ is US
+            ('?', 0x7f), // Ctrl+? is DEL
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                translate_key_input(KeySymbol::Char(input), Modifiers::CONTROL, None, &modes),
+                vec![expected],
+                "Ctrl+{input:?} should produce byte {expected:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_translate_editing_and_navigation_keys_to_their_own_escape_sequences() {
+        let modes = DecPrivateModes::default();
+        let cases: [(KeySymbol, &[u8]); 8] = [
+            (KeySymbol::Backspace, &[0x08]),
+            (KeySymbol::Escape, &[0x1B]),
+            (KeySymbol::Home, b"\x1b[1~"),
+            (KeySymbol::End, b"\x1b[4~"),
+            (KeySymbol::PageUp, b"\x1b[5~"),
+            (KeySymbol::PageDown, b"\x1b[6~"),
+            (KeySymbol::Insert, b"\x1b[2~"),
+            (KeySymbol::Delete, b"\x1b[3~"),
+        ];
+        for (symbol, expected) in cases {
+            assert_eq!(
+                translate_key_input(symbol, Modifiers::empty(), None, &modes),
+                expected.to_vec(),
+                "{symbol:?} should produce {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_translate_each_function_key_to_its_own_escape_sequence() {
+        let modes = DecPrivateModes::default();
+        let cases: [(KeySymbol, &[u8]); 12] = [
+            (KeySymbol::F1, b"\x1bOP"),
+            (KeySymbol::F2, b"\x1bOQ"),
+            (KeySymbol::F3, b"\x1bOR"),
+            (KeySymbol::F4, b"\x1bOS"),
+            (KeySymbol::F5, b"\x1b[15~"),
+            (KeySymbol::F6, b"\x1b[17~"),
+            (KeySymbol::F7, b"\x1b[18~"),
+            (KeySymbol::F8, b"\x1b[19~"),
+            (KeySymbol::F9, b"\x1b[20~"),
+            (KeySymbol::F10, b"\x1b[21~"),
+            (KeySymbol::F11, b"\x1b[23~"),
+            (KeySymbol::F12, b"\x1b[24~"),
+        ];
+        for (symbol, expected) in cases {
+            assert_eq!(
+                translate_key_input(symbol, Modifiers::empty(), None, &modes),
+                expected.to_vec(),
+                "{symbol:?} should produce {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_translate_each_keypad_key_to_its_own_ascii_character() {
+        let modes = DecPrivateModes::default();
+        let cases = [
+            (KeySymbol::KeypadPlus, b'+'),
+            (KeySymbol::KeypadMinus, b'-'),
+            (KeySymbol::KeypadMultiply, b'*'),
+            (KeySymbol::KeypadDivide, b'/'),
+            (KeySymbol::KeypadDecimal, b'.'),
+            (KeySymbol::Keypad0, b'0'),
+            (KeySymbol::Keypad1, b'1'),
+            (KeySymbol::Keypad2, b'2'),
+            (KeySymbol::Keypad3, b'3'),
+            (KeySymbol::Keypad4, b'4'),
+            (KeySymbol::Keypad5, b'5'),
+            (KeySymbol::Keypad6, b'6'),
+            (KeySymbol::Keypad7, b'7'),
+            (KeySymbol::Keypad8, b'8'),
+            (KeySymbol::Keypad9, b'9'),
+        ];
+        for (symbol, expected) in cases {
+            assert_eq!(
+                translate_key_input(symbol, Modifiers::empty(), None, &modes),
+                vec![expected],
+                "{symbol:?} should produce byte {expected:?}"
+            );
+        }
+    }
+
+    #[test]
     fn arrow_keys_normal_mode() {
         let modes = DecPrivateModes {
             cursor_keys_app_mode: false,

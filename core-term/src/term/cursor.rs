@@ -454,7 +454,8 @@ impl<'de> Deserialize<'de> for CursorShape {
 
 #[cfg(test)]
 mod tests {
-    use super::CursorShape;
+    use super::{Cursor, CursorController, CursorShape};
+    use crate::{glyph::Attributes, term::cursor_visibility::CursorVisibility};
 
     #[test]
     fn it_should_map_each_documented_decscusr_code_to_its_own_distinct_shape() {
@@ -534,5 +535,51 @@ mod tests {
     fn it_should_reject_an_unknown_shape_name_when_deserializing() {
         let result: Result<CursorShape, _> = serde_json::from_str("\"NotAShape\"");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn it_should_default_the_unfocused_shape_independently_from_the_focused_shape() {
+        let cursor = Cursor::default();
+        // The default config gives focused and unfocused cursors distinct shapes
+        // (SteadyBlock vs SteadyBar) -- unfocused_shape must not just mirror shape.
+        assert_ne!(cursor.shape, cursor.unfocused_shape);
+    }
+
+    #[test]
+    fn it_should_start_visible_and_toggle_visibility_via_set_visible() {
+        let mut controller = CursorController::new(Attributes::default());
+        assert!(controller.is_visible());
+
+        controller.set_visible(CursorVisibility::Hidden);
+        assert!(!controller.is_visible());
+
+        controller.set_visible(CursorVisibility::Visible);
+        assert!(controller.is_visible());
+    }
+
+    #[test]
+    fn it_should_restore_default_attributes_position_and_visibility_on_reset() {
+        let custom_attributes = {
+            let mut attrs = Attributes::default();
+            attrs.fg = crate::color::Color::Indexed(9);
+            attrs
+        };
+        let context = super::ScreenContext {
+            width: 80,
+            height: 24,
+            scroll_top: 0,
+            scroll_bot: 23,
+            origin_mode_active: false,
+        };
+        let mut controller = CursorController::new(custom_attributes);
+        controller.set_visible(CursorVisibility::Hidden);
+        controller.move_to_logical(10, 5, &context);
+        assert_eq!(controller.logical_pos(), (10, 5));
+
+        controller.reset();
+
+        assert!(controller.is_visible());
+        assert_eq!(controller.attributes(), Attributes::default());
+        assert_eq!(controller.logical_pos(), (0, 0));
     }
 }
