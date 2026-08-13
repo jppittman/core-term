@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn x10_reports_press_only() {
+    fn it_should_encode_only_press_events_in_x10_mouse_mode() {
         let modes = modes_with_x10();
         let press = encode_mouse_event(
             &modes,
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn vt200_reports_press_and_release() {
+    fn it_should_encode_both_press_and_release_events_in_vt200_mouse_mode() {
         let modes = modes_with_vt200();
         let press = encode_mouse_event(
             &modes,

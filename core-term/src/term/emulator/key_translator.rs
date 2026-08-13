@@ -162,7 +162,7 @@ mod tests {
     use crate::term::modes::DecPrivateModes;
 
     #[test]
-    fn simple_chars() {
+    fn it_should_translate_printable_chars_and_enter_to_their_bytes() {
         let modes = DecPrivateModes::default();
         assert_eq!(
             translate_key_input(
@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_chars() {
+    fn it_should_map_ctrl_plus_char_to_its_control_code() {
         let modes = DecPrivateModes::default();
         // Test Ctrl+c
         assert_eq!(
@@ -195,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn alt_chars() {
+    fn it_should_prefix_alt_plus_char_with_an_escape_byte() {
         let modes = DecPrivateModes::default();
         assert_eq!(
             translate_key_input(KeySymbol::Char('a'), Modifiers::ALT, None, &modes),
@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab() {
+    fn it_should_translate_shift_tab_to_the_cbt_escape_sequence() {
         let modes = DecPrivateModes::default();
         assert_eq!(
             translate_key_input(KeySymbol::Tab, Modifiers::SHIFT, None, &modes),

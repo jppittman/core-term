@@ -451,3 +451,88 @@ impl<'de> Deserialize<'de> for CursorShape {
         deserializer.deserialize_str(CursorShapeVisitor)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::CursorShape;
+
+    #[test]
+    fn it_should_map_each_documented_decscusr_code_to_its_own_distinct_shape() {
+        let shapes: Vec<CursorShape> = (1..=6).map(CursorShape::from_decscusr_code).collect();
+        assert_eq!(
+            shapes,
+            vec![
+                CursorShape::BlinkingBlock,
+                CursorShape::SteadyBlock,
+                CursorShape::BlinkingUnderline,
+                CursorShape::SteadyUnderline,
+                CursorShape::BlinkingBar,
+                CursorShape::SteadyBar,
+            ],
+            "each DECSCUSR code 1-6 must map to a unique CursorShape variant"
+        );
+    }
+
+    #[test]
+    fn it_should_map_decscusr_code_zero_to_the_default_shape() {
+        assert_eq!(
+            CursorShape::from_decscusr_code(0),
+            CursorShape::default()
+        );
+    }
+
+    #[test]
+    fn it_should_map_an_unrecognized_decscusr_code_to_the_default_shape() {
+        assert_eq!(
+            CursorShape::from_decscusr_code(99),
+            CursorShape::default()
+        );
+    }
+
+    #[test]
+    fn it_should_round_trip_every_shape_through_serde_json() {
+        let shapes = [
+            CursorShape::BlinkingBlock,
+            CursorShape::SteadyBlock,
+            CursorShape::BlinkingUnderline,
+            CursorShape::SteadyUnderline,
+            CursorShape::BlinkingBar,
+            CursorShape::SteadyBar,
+        ];
+        for shape in shapes {
+            let json = serde_json::to_string(&shape).expect("serialize");
+            let round_tripped: CursorShape = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(round_tripped, shape, "round trip through {json} changed the shape");
+        }
+    }
+
+    #[test]
+    fn it_should_serialize_each_shape_to_its_own_distinct_json_string() {
+        let shapes = [
+            CursorShape::BlinkingBlock,
+            CursorShape::SteadyBlock,
+            CursorShape::BlinkingUnderline,
+            CursorShape::SteadyUnderline,
+            CursorShape::BlinkingBar,
+            CursorShape::SteadyBar,
+        ];
+        let jsons: Vec<String> = shapes
+            .iter()
+            .map(|s| serde_json::to_string(s).expect("serialize"))
+            .collect();
+        let mut unique = jsons.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            jsons.len(),
+            "expected each CursorShape to serialize to a distinct string, got {jsons:?}"
+        );
+    }
+
+    #[test]
+    fn it_should_reject_an_unknown_shape_name_when_deserializing() {
+        let result: Result<CursorShape, _> = serde_json::from_str("\"NotAShape\"");
+        assert!(result.is_err());
+    }
+}
