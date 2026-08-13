@@ -476,18 +476,12 @@ mod tests {
 
     #[test]
     fn it_should_map_decscusr_code_zero_to_the_default_shape() {
-        assert_eq!(
-            CursorShape::from_decscusr_code(0),
-            CursorShape::default()
-        );
+        assert_eq!(CursorShape::from_decscusr_code(0), CursorShape::default());
     }
 
     #[test]
     fn it_should_map_an_unrecognized_decscusr_code_to_the_default_shape() {
-        assert_eq!(
-            CursorShape::from_decscusr_code(99),
-            CursorShape::default()
-        );
+        assert_eq!(CursorShape::from_decscusr_code(99), CursorShape::default());
     }
 
     #[test]
@@ -503,7 +497,10 @@ mod tests {
         for shape in shapes {
             let json = serde_json::to_string(&shape).expect("serialize");
             let round_tripped: CursorShape = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(round_tripped, shape, "round trip through {json} changed the shape");
+            assert_eq!(
+                round_tripped, shape,
+                "round trip through {json} changed the shape"
+            );
         }
     }
 
@@ -559,10 +556,9 @@ mod tests {
 
     #[test]
     fn it_should_restore_default_attributes_position_and_visibility_on_reset() {
-        let custom_attributes = {
-            let mut attrs = Attributes::default();
-            attrs.fg = crate::color::Color::Indexed(9);
-            attrs
+        let custom_attributes = Attributes {
+            fg: crate::color::Color::Indexed(9),
+            ..Attributes::default()
         };
         let context = super::ScreenContext {
             width: 80,

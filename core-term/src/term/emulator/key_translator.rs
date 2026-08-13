@@ -207,12 +207,12 @@ mod tests {
     fn it_should_map_ctrl_plus_bracket_group_punctuation_to_their_c0_control_codes() {
         let modes = DecPrivateModes::default();
         let cases = [
-            ('[', 0x1b), // Ctrl+[ is ESC
+            ('[', 0x1b),  // Ctrl+[ is ESC
             ('\\', 0x1c), // Ctrl+\ is FS
-            (']', 0x1d), // Ctrl+] is GS
-            ('^', 0x1e), // Ctrl+^ is RS
-            ('_', 0x1f), // Ctrl+_ is US
-            ('?', 0x7f), // Ctrl+? is DEL
+            (']', 0x1d),  // Ctrl+] is GS
+            ('^', 0x1e),  // Ctrl+^ is RS
+            ('_', 0x1f),  // Ctrl+_ is US
+            ('?', 0x7f),  // Ctrl+? is DEL
         ];
         for (input, expected) in cases {
             assert_eq!(
