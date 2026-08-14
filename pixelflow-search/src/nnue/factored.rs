@@ -409,14 +409,14 @@ impl ArenaRuleTemplates {
 
 /// Learned dense embeddings for each operation type.
 ///
-/// Each of the [`OpKind::COUNT`] operations gets a K-dimensional embedding
+/// Each of the [`OpMap::LEN`] operations gets a K-dimensional embedding
 /// vector.
 /// These are the primary learned parameters that capture semantic
 /// similarity between operations.
 #[derive(Clone)]
 pub struct OpEmbeddings {
     /// E[op][i] = i-th dimension of op's embedding.
-    /// Stored as [OpKind::COUNT][K] = 50 × 32 = 1,600 floats.
+    /// Stored as one K-vector per op: `OpMap::LEN * K` = 50 × 32 = 1,600 floats.
     pub e: OpMap<[f32; K]>,
 }
 
@@ -517,7 +517,7 @@ impl OpEmbeddings {
     /// Total parameter count.
     #[must_use]
     pub const fn param_count() -> usize {
-        OpKind::COUNT * K
+        OpMap::<[f32; K]>::LEN * K
     }
 }
 

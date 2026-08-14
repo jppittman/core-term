@@ -38,8 +38,8 @@ use pixelflow_ir::kind::OpMap;
 ///
 /// Handcrafted cycle estimates, one per op.
 ///
-/// Written as an exhaustive `match` rather than a positional
-/// `[usize; OpKind::COUNT]`. The array form aligned to the discriminants only
+/// Written as an exhaustive `match` rather than a positional per-op array.
+/// The array form aligned to the discriminants only
 /// by convention, nothing checked the convention, and it drifted: while the
 /// discriminants had gaps the table was written densely, so 13 of 50 ops read
 /// their neighbour's cycle count. `Dwrt` came back 10 instead of 1000 — cheap
@@ -482,7 +482,7 @@ mod every_op_is_priceable {
     use super::{CostModel, latency_prior_cycles};
     use pixelflow_ir::kind::{OpKind, OpMap};
 
-    /// `cost`/`set_cost` subscript `[usize; OpKind::COUNT]` with
+    /// `cost`/`set_cost` subscript a positional per-op array with
     /// `OpKind::index()`. That is only total while the discriminants are dense.
     ///
     /// They were not, until 2026-08-02: `Gather`/`RawGather`/`Reduce` sat past
@@ -526,20 +526,21 @@ mod every_op_is_priceable {
         }
     }
 
+    /// Every op can be priced, including the ones a table-filling walk once
+    /// skipped.
+    ///
+    /// This used to assert `op.index() < OpKind::COUNT` by hand, because ops
+    /// sitting past a discriminant gap indexed 50..=52 into a 50-slot array.
+    /// Neither half of that assertion can be written any more: the subscript
+    /// and the count are `pixelflow-ir`'s own, reachable only through `OpMap`,
+    /// which has no out-of-range case to test for. What remains worth pinning
+    /// is that pricing is *total* — `Gather`/`RawGather`/`Reduce` named
+    /// outright, since being missed by a walk is how they hid.
     #[test]
-    fn pricing_never_indexes_out_of_bounds() {
+    fn every_op_can_be_priced() {
         let mut model = CostModel::latency_prior();
 
-        // Named, not reached through `from_index`, because that is precisely
-        // how the bug hid: these three sat at discriminants 50..=52, past
-        // `COUNT`, so no walk over `0..COUNT` ever produced them.
         for op in [OpKind::Gather, OpKind::RawGather, OpKind::Reduce] {
-            assert!(
-                op.index() < OpKind::COUNT,
-                "{op:?} has index {} but COUNT is {}",
-                op.index(),
-                OpKind::COUNT
-            );
             let _ = model.cost(op);
             model.set_cost(op, 1);
         }
