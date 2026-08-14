@@ -1117,3 +1117,475 @@ mod eval_unary_libm_arms {
         assert_eq!(OpKind::Recip.eval_unary(4.0), Some(0.25));
     }
 }
+
+/// Independently-authored oracles for the algebraic-property predicates,
+/// exhaustive over `OpKind::all()`. Each predicate is a total function over a
+/// closed enum, so — unlike a spot check — a single exhaustive sweep is
+/// enough to catch both "flipped the wrong op" and "always returns the same
+/// answer" mistakes.
+#[cfg(test)]
+mod algebraic_properties {
+    use super::OpKind;
+
+    const COMMUTATIVE: &[OpKind] = &[
+        OpKind::Add,
+        OpKind::Mul,
+        OpKind::Min,
+        OpKind::Max,
+        OpKind::Eq,
+        OpKind::Ne,
+    ];
+
+    #[test]
+    fn flag_add_mul_min_max_eq_ne_as_commutative_and_no_other_op() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_commutative(),
+                COMMUTATIVE.contains(&op),
+                "{op:?} commutativity mismatch"
+            );
+        }
+    }
+
+    const ASSOCIATIVE: &[OpKind] = &[OpKind::Add, OpKind::Mul, OpKind::Min, OpKind::Max];
+
+    #[test]
+    fn flag_add_mul_min_max_as_associative_and_no_other_op() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_associative(),
+                ASSOCIATIVE.contains(&op),
+                "{op:?} associativity mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn return_zero_for_add_sub_one_for_mul_div_and_none_otherwise() {
+        for op in OpKind::all() {
+            let want = match op {
+                OpKind::Add | OpKind::Sub => Some(0.0),
+                OpKind::Mul | OpKind::Div => Some(1.0),
+                _ => None,
+            };
+            assert_eq!(op.identity(), want, "{op:?} identity mismatch");
+        }
+    }
+
+    #[test]
+    fn return_zero_annihilator_only_for_mul() {
+        for op in OpKind::all() {
+            let want = if op == OpKind::Mul { Some(0.0) } else { None };
+            assert_eq!(op.annihilator(), want, "{op:?} annihilator mismatch");
+        }
+    }
+
+    const IDEMPOTENT: &[OpKind] = &[OpKind::Min, OpKind::Max, OpKind::Abs];
+
+    #[test]
+    fn flag_min_max_abs_as_idempotent_and_no_other_op() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_idempotent(),
+                IDEMPOTENT.contains(&op),
+                "{op:?} idempotence mismatch"
+            );
+        }
+    }
+
+    const NOT_SEED_OPS: &[OpKind] = &[
+        OpKind::Var,
+        OpKind::Const,
+        OpKind::Tuple,
+        OpKind::MulAdd,
+        OpKind::Lt,
+        OpKind::Le,
+        OpKind::Gt,
+        OpKind::Ge,
+        OpKind::Eq,
+        OpKind::Ne,
+        OpKind::Select,
+        OpKind::Buffer,
+        OpKind::Gather,
+        OpKind::RawGather,
+        OpKind::Reduce,
+    ];
+
+    #[test]
+    fn exclude_leaves_masks_and_memory_ops_from_seed_ops() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_seed_op(),
+                !NOT_SEED_OPS.contains(&op),
+                "{op:?} seed-op eligibility mismatch"
+            );
+        }
+    }
+
+    const BITWISE_DOMAIN: &[OpKind] = &[
+        OpKind::Lt,
+        OpKind::Le,
+        OpKind::Gt,
+        OpKind::Ge,
+        OpKind::Eq,
+        OpKind::Ne,
+        OpKind::Select,
+        OpKind::BitAnd,
+        OpKind::BitOr,
+        OpKind::TruncToInt,
+        OpKind::IntToFloat,
+        OpKind::IAdd,
+        OpKind::Shl,
+        OpKind::Shr,
+    ];
+
+    #[test]
+    fn flag_masks_bitops_and_integer_primitives_as_bitwise_domain() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_bitwise_domain(),
+                BITWISE_DOMAIN.contains(&op),
+                "{op:?} bitwise-domain mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn match_each_ops_actual_operand_count() {
+        for op in OpKind::all() {
+            let want = match op {
+                OpKind::Var | OpKind::Const | OpKind::Tuple | OpKind::Buffer => 0,
+
+                OpKind::Neg
+                | OpKind::Sqrt
+                | OpKind::Rsqrt
+                | OpKind::Abs
+                | OpKind::Recip
+                | OpKind::Floor
+                | OpKind::Ceil
+                | OpKind::Round
+                | OpKind::Sin
+                | OpKind::Cos
+                | OpKind::Tan
+                | OpKind::Asin
+                | OpKind::Acos
+                | OpKind::Atan
+                | OpKind::Exp
+                | OpKind::Exp2
+                | OpKind::Ln
+                | OpKind::Log2
+                | OpKind::Log10
+                | OpKind::TruncToInt
+                | OpKind::IntToFloat => 1,
+
+                OpKind::Add
+                | OpKind::Sub
+                | OpKind::Mul
+                | OpKind::Div
+                | OpKind::Min
+                | OpKind::Max
+                | OpKind::Atan2
+                | OpKind::Pow
+                | OpKind::Lt
+                | OpKind::Le
+                | OpKind::Gt
+                | OpKind::Ge
+                | OpKind::Eq
+                | OpKind::Ne
+                | OpKind::IAdd
+                | OpKind::Shl
+                | OpKind::Shr
+                | OpKind::BitAnd
+                | OpKind::BitOr
+                | OpKind::Dwrt
+                | OpKind::RawGather => 2,
+
+                OpKind::MulAdd | OpKind::Select | OpKind::Gather => 3,
+
+                OpKind::Reduce => 4,
+            };
+            assert_eq!(op.arity(), want, "{op:?} arity mismatch");
+        }
+    }
+
+    #[test]
+    fn distinguish_leaf_arithmetic_memory_and_transcendental_costs() {
+        // Not exhaustive (unlike the predicates above): default_cost's price
+        // table is a design choice, not a closed algebraic property, so a few
+        // ops from each priced tier is enough to catch "the whole function
+        // got replaced by a constant" without freezing every literal in the
+        // table against future re-tuning.
+        assert_eq!(OpKind::Var.default_cost(), 0);
+        assert_eq!(OpKind::Neg.default_cost(), 1);
+        assert_eq!(OpKind::Add.default_cost(), 4);
+        assert_eq!(OpKind::Mul.default_cost(), 5);
+        assert_eq!(OpKind::Gather.default_cost(), 10);
+        assert_eq!(OpKind::Sin.default_cost(), 15);
+        assert_eq!(
+            OpKind::Dwrt.default_cost(),
+            1_000_000,
+            "Dwrt must outprice every real op so a surviving one is never preferred"
+        );
+    }
+}
+
+#[cfg(test)]
+mod from_name {
+    use super::OpKind;
+
+    #[test]
+    fn round_trip_every_ops_own_name_including_special_emit_style_ops() {
+        // `method_names::every_returned_name_round_trips_through_from_name`
+        // only walks `known_method_names()`, which deliberately excludes
+        // every `EmitStyle::Special` op (Var/Const/Tuple/Dwrt/Buffer/Gather/
+        // RawGather/Reduce) — so those ops' `from_name` arms need their own
+        // coverage here.
+        for op in OpKind::all() {
+            assert_eq!(
+                OpKind::from_name(op.name()),
+                Some(op),
+                "{op:?}'s own name does not parse back to itself"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_the_powf_alias_for_pow() {
+        assert_eq!(OpKind::from_name("powf"), Some(OpKind::Pow));
+    }
+
+    #[test]
+    fn reject_an_unrecognized_name() {
+        assert_eq!(OpKind::from_name("not_a_real_op"), None);
+    }
+}
+
+#[cfg(test)]
+mod eval_binary_arms {
+    use super::OpKind;
+
+    /// Compares by bit pattern, not `==` — a true mask is the all-ones NaN
+    /// pattern, and NaN never equals itself under `f32::eq`.
+    fn assert_mask(got: Option<f32>, want: bool) {
+        assert_eq!(
+            got.expect("op is binary").to_bits(),
+            OpKind::mask(want).to_bits()
+        );
+    }
+
+    #[test]
+    fn compute_ordinary_arithmetic_for_add_sub_mul_div() {
+        assert_eq!(OpKind::Add.eval_binary(2.0, 3.0), Some(5.0));
+        assert_eq!(OpKind::Sub.eval_binary(5.0, 3.0), Some(2.0));
+        assert_eq!(OpKind::Mul.eval_binary(2.0, 3.0), Some(6.0));
+        assert_eq!(OpKind::Div.eval_binary(6.0, 3.0), Some(2.0));
+    }
+
+    #[test]
+    fn pick_the_second_operand_for_min_and_max_on_a_tie() {
+        // x86 minps/maxps: `(a OP b) ? a : b`, so equal operands return the
+        // SECOND one — see `fold_is_platform_specific`'s doc. `0.0` and
+        // `-0.0` are the tie that can actually prove this: they compare
+        // equal under `<`/`>` but carry different bit patterns, so unlike a
+        // same-value tie (e.g. `1.0, 1.0`) the result reveals which operand
+        // was returned instead of leaving it ambiguous.
+        assert_eq!(
+            OpKind::Min.eval_binary(0.0, -0.0).unwrap().to_bits(),
+            (-0.0f32).to_bits(),
+        );
+        assert_eq!(
+            OpKind::Min.eval_binary(-0.0, 0.0).unwrap().to_bits(),
+            0.0f32.to_bits(),
+        );
+        assert_eq!(
+            OpKind::Max.eval_binary(0.0, -0.0).unwrap().to_bits(),
+            (-0.0f32).to_bits(),
+        );
+        assert_eq!(
+            OpKind::Max.eval_binary(-0.0, 0.0).unwrap().to_bits(),
+            0.0f32.to_bits(),
+        );
+        assert_eq!(OpKind::Min.eval_binary(1.0, 2.0), Some(1.0));
+        assert_eq!(OpKind::Min.eval_binary(2.0, 1.0), Some(1.0));
+        assert_eq!(OpKind::Max.eval_binary(1.0, 2.0), Some(2.0));
+        assert_eq!(OpKind::Max.eval_binary(2.0, 1.0), Some(2.0));
+    }
+
+    #[test]
+    fn agree_on_strict_and_equal_operands_for_lt_and_le() {
+        assert_mask(OpKind::Lt.eval_binary(1.0, 2.0), true);
+        assert_mask(OpKind::Lt.eval_binary(2.0, 2.0), false);
+        assert_mask(OpKind::Le.eval_binary(2.0, 2.0), true);
+        assert_mask(OpKind::Le.eval_binary(3.0, 2.0), false);
+    }
+
+    #[test]
+    fn treat_gt_and_ge_as_unordered_true_for_a_nan_operand() {
+        // x86's imm8 6/5 (NLE_US/NLT_US): NaN in EITHER operand is TRUE.
+        assert_mask(OpKind::Gt.eval_binary(f32::NAN, 1.0), true);
+        assert_mask(OpKind::Gt.eval_binary(1.0, f32::NAN), true);
+        assert_mask(OpKind::Gt.eval_binary(2.0, 1.0), true);
+        assert_mask(OpKind::Gt.eval_binary(1.0, 2.0), false);
+        assert_mask(OpKind::Gt.eval_binary(1.0, 1.0), false);
+        assert_mask(OpKind::Ge.eval_binary(f32::NAN, 1.0), true);
+        assert_mask(OpKind::Ge.eval_binary(1.0, f32::NAN), true);
+        assert_mask(OpKind::Ge.eval_binary(1.0, 1.0), true);
+        assert_mask(OpKind::Ge.eval_binary(1.0, 2.0), false);
+    }
+
+    #[test]
+    fn treat_eq_and_ne_as_exact_and_disagree_only_on_nan() {
+        assert_mask(OpKind::Eq.eval_binary(1.0, 1.0), true);
+        assert_mask(OpKind::Eq.eval_binary(1.0, 2.0), false);
+        assert_mask(OpKind::Eq.eval_binary(f32::NAN, f32::NAN), false);
+        assert_mask(OpKind::Ne.eval_binary(1.0, 2.0), true);
+        assert_mask(OpKind::Ne.eval_binary(1.0, 1.0), false);
+        assert_mask(OpKind::Ne.eval_binary(f32::NAN, f32::NAN), true);
+    }
+
+    #[test]
+    fn wrap_the_bit_pattern_as_a_two_s_complement_integer_for_iadd() {
+        let got = OpKind::IAdd
+            .eval_binary(f32::from_bits(i32::MAX as u32), f32::from_bits(1))
+            .unwrap();
+        assert_eq!(got.to_bits(), i32::MIN as u32);
+    }
+
+    #[test]
+    fn mask_the_count_to_five_bits_before_shifting() {
+        // count=33 masks to 1 (33 & 31 == 1) — same as an explicit shift of 1.
+        let one_bit = f32::from_bits(1);
+        assert_eq!(OpKind::Shl.eval_binary(one_bit, 33.0).unwrap().to_bits(), 2);
+
+        let hi_bit = f32::from_bits(1u32 << 31);
+        assert_eq!(
+            OpKind::Shr.eval_binary(hi_bit, 33.0).unwrap().to_bits(),
+            1u32 << 30
+        );
+    }
+
+    #[test]
+    fn operate_on_raw_bit_patterns_for_bitand_and_bitor() {
+        let a = f32::from_bits(0b1010);
+        let b = f32::from_bits(0b0110);
+        assert_eq!(OpKind::BitAnd.eval_binary(a, b).unwrap().to_bits(), 0b0010);
+        assert_eq!(OpKind::BitOr.eval_binary(a, b).unwrap().to_bits(), 0b1110);
+    }
+
+    #[test]
+    fn return_none_from_eval_binary_for_a_unary_op() {
+        assert_eq!(OpKind::Neg.eval_binary(1.0, 2.0), None);
+    }
+}
+
+#[cfg(test)]
+mod eval_ternary_arms {
+    use super::OpKind;
+
+    #[test]
+    fn compute_x_times_y_plus_z_for_mul_add() {
+        assert_eq!(OpKind::MulAdd.eval_ternary(2.0, 3.0, 4.0), Some(10.0));
+    }
+
+    #[test]
+    fn blend_y_and_z_bitwise_by_the_x_mask_for_select() {
+        let true_mask = OpKind::mask(true);
+        let false_mask = OpKind::mask(false);
+        let y = 7.0f32;
+        let z = 9.0f32;
+        assert_eq!(
+            OpKind::Select
+                .eval_ternary(true_mask, y, z)
+                .unwrap()
+                .to_bits(),
+            y.to_bits()
+        );
+        assert_eq!(
+            OpKind::Select
+                .eval_ternary(false_mask, y, z)
+                .unwrap()
+                .to_bits(),
+            z.to_bits()
+        );
+    }
+
+    #[test]
+    fn return_none_from_eval_ternary_for_a_binary_op() {
+        assert_eq!(OpKind::Add.eval_ternary(1.0, 2.0, 3.0), None);
+    }
+}
+
+#[cfg(test)]
+mod fold_is_platform_specific {
+    use super::OpKind;
+
+    #[test]
+    fn decline_to_fold_min_and_max_on_nan_or_a_signed_zero_mismatch() {
+        assert!(OpKind::Min.fold_is_platform_specific(&[f32::NAN, 1.0]));
+        assert!(OpKind::Min.fold_is_platform_specific(&[1.0, f32::NAN]));
+        assert!(OpKind::Max.fold_is_platform_specific(&[f32::NAN, 1.0]));
+        assert!(OpKind::Min.fold_is_platform_specific(&[0.0, -0.0]));
+        assert!(OpKind::Max.fold_is_platform_specific(&[-0.0, 0.0]));
+        assert!(!OpKind::Min.fold_is_platform_specific(&[1.0, 2.0]));
+        assert!(!OpKind::Max.fold_is_platform_specific(&[0.0, 0.0]));
+        // No [a, b] pattern applies to the wrong arity, so it falls to `false`.
+        assert!(!OpKind::Min.fold_is_platform_specific(&[1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn decline_to_fold_gt_and_ge_only_when_an_operand_is_nan() {
+        assert!(OpKind::Gt.fold_is_platform_specific(&[f32::NAN, 1.0]));
+        assert!(OpKind::Ge.fold_is_platform_specific(&[1.0, f32::NAN]));
+        assert!(!OpKind::Gt.fold_is_platform_specific(&[1.0, 2.0]));
+        assert!(!OpKind::Ge.fold_is_platform_specific(&[1.0, 2.0]));
+    }
+
+    #[test]
+    fn decline_to_fold_round_at_any_exact_tie_and_in_the_negative_zero_interval() {
+        assert!(OpKind::Round.fold_is_platform_specific(&[2.5])); // positive tie
+        assert!(OpKind::Round.fold_is_platform_specific(&[-0.5])); // negative tie
+        assert!(OpKind::Round.fold_is_platform_specific(&[-0.25])); // in (-0.5, -0.0]
+        assert!(!OpKind::Round.fold_is_platform_specific(&[2.3])); // ordinary, no tie
+        assert!(!OpKind::Round.fold_is_platform_specific(&[-0.6])); // outside the interval
+    }
+
+    #[test]
+    fn decline_to_fold_trunc_to_int_on_nan_and_values_at_or_above_two_pow_31() {
+        assert!(OpKind::TruncToInt.fold_is_platform_specific(&[f32::NAN]));
+        assert!(OpKind::TruncToInt.fold_is_platform_specific(&[2_147_483_648.0]));
+        // 2^31 - 128: the nearest f32 below the limit that is exactly
+        // representable (2^31 - 1 itself rounds UP to 2^31 as an f32 literal).
+        assert!(!OpKind::TruncToInt.fold_is_platform_specific(&[2_147_483_520.0]));
+        // Both tiers agree in the negative-overflow direction — see the
+        // function's doc for why.
+        assert!(!OpKind::TruncToInt.fold_is_platform_specific(&[-2_147_483_648.0]));
+        assert!(!OpKind::TruncToInt.fold_is_platform_specific(&[f32::NEG_INFINITY]));
+    }
+
+    #[test]
+    fn decline_to_fold_shl_and_shr_on_a_count_outside_0_to_32_or_non_integral() {
+        assert!(OpKind::Shl.fold_is_platform_specific(&[1.0, 32.0]));
+        assert!(OpKind::Shr.fold_is_platform_specific(&[1.0, -1.0]));
+        assert!(OpKind::Shl.fold_is_platform_specific(&[1.0, 1.5]));
+        assert!(!OpKind::Shl.fold_is_platform_specific(&[1.0, 5.0]));
+        assert!(!OpKind::Shr.fold_is_platform_specific(&[1.0, 0.0]));
+    }
+
+    #[test]
+    fn decline_to_fold_mul_add_exactly_where_fused_and_split_rounding_disagree() {
+        assert!(OpKind::MulAdd.fold_is_platform_specific(&[1.0000001, 4097.0, 4097.0]));
+        assert!(!OpKind::MulAdd.fold_is_platform_specific(&[2.0, 3.0, 4.0]));
+    }
+
+    #[test]
+    fn always_decline_to_fold_recip_and_rsqrt() {
+        assert!(OpKind::Recip.fold_is_platform_specific(&[2.0]));
+        assert!(OpKind::Rsqrt.fold_is_platform_specific(&[4.0]));
+    }
+
+    #[test]
+    fn never_decline_to_fold_an_ordinary_op_like_add_or_lt() {
+        assert!(!OpKind::Add.fold_is_platform_specific(&[1.0, 2.0]));
+        assert!(!OpKind::Lt.fold_is_platform_specific(&[1.0, 2.0]));
+    }
+}
