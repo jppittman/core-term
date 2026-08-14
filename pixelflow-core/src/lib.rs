@@ -791,34 +791,28 @@ impl Field {
         Self(self.0.log10())
     }
 
-    // The four below derive from the same `cheby_*` functions as `sin`/`cos`/
-    // `atan2`, so `tan` is exactly this tier's `sin`/`cos` and all of them share
-    // the documented `TRIG_DOMAIN` and its NaN behaviour. Deriving them from any
-    // second approximation would give `Field::tan` a different range reduction
-    // than the `Field::sin` and `Field::cos` it is supposed to be the ratio of.
-
     /// Tangent (sin/cos).
     #[inline(always)]
     pub(crate) fn tan(self) -> Self {
-        ops::trig::cheby_tan(self)
+        Self(self.0.tan())
     }
 
     /// Arcsine.
     #[inline(always)]
     pub(crate) fn asin(self) -> Self {
-        ops::trig::cheby_asin(self)
+        Self(self.0.asin())
     }
 
     /// Arccosine.
     #[inline(always)]
     pub(crate) fn acos(self) -> Self {
-        ops::trig::cheby_acos(self)
+        Self(self.0.acos())
     }
 
     /// Arctangent.
     #[inline(always)]
     pub(crate) fn atan(self) -> Self {
-        ops::trig::cheby_atan(self)
+        Self(self.0.atan())
     }
 
     /// Ceiling (round toward positive infinity).

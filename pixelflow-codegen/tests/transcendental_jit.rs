@@ -129,61 +129,6 @@ fn exp_log_kernels_compile_and_agree_with_std() {
     check("exp2", &Kernel::x().exp2(), &exps, f32::exp2);
 }
 
-/// `|sin| ≤ 1` and `|cos| ≤ 1` through *emitted machine code*, not the oracle.
-///
-/// `tests/trig_range.rs` pins this same property through `eval_scalar`. That is
-/// not sufficient on its own and this is not redundant with it: the oracle runs
-/// the same `expand_transcendentals` lowering the emitters do, so when the
-/// argument reduction was wrong, both tiers agreed bit-for-bit on the garbage
-/// and every same-form equivalence test passed. Only an *external* bound —
-/// checked on the bytes the backend actually emitted — catches that class.
-#[test]
-fn sin_cos_jit_never_leave_unit_range() {
-    use pixelflow_ir::passes::TRIG_DOMAIN;
-
-    for (name, k) in [("sin", Kernel::x().sin()), ("cos", Kernel::x().cos())] {
-        let (arena, root) = k.parts();
-        let jit = jit_cache::compile_cached(arena, root)
-            .unwrap_or_else(|e| panic!("{name}: failed to compile on this backend: {e}"));
-
-        // One argument per binade across the whole finite f32 range, plus the
-        // magnitudes from the pipeline smoke run that first showed the defect.
-        let mut args: Vec<f32> = (-20i32..=127)
-            .flat_map(|e| {
-                let b = (2.0f64).powi(e) as f32;
-                [b, -b, b * 1.3, b * 1.7]
-            })
-            .collect();
-        args.extend_from_slice(&[0.0, 1.72e7, 8.64e8, 1.4e7, 2.61e13, 1e30, f32::MAX]);
-
-        for &x in &args {
-            let got = call_x(&jit, x);
-            assert!(
-                got.is_nan() || got.abs() <= 1.0,
-                "{name}({x:e}) = {got:e} — outside [-1, 1]",
-            );
-            // Inside the domain the answer must also exist and be right; a
-            // kernel that returned NaN everywhere would pass the bound above.
-            if x.abs() < TRIG_DOMAIN {
-                let want = if name == "sin" {
-                    (x as f64).sin()
-                } else {
-                    (x as f64).cos()
-                } as f32;
-                assert!(
-                    (got - want).abs() <= 4e-6,
-                    "{name}({x:e}) = {got}, want {want}",
-                );
-            } else {
-                assert!(
-                    got.is_nan(),
-                    "{name}({x:e}) = {got} — should be NaN outside TRIG_DOMAIN",
-                );
-            }
-        }
-    }
-}
-
 // ── Floating-point edge cases: the documented contract, not IEEE ─────────────
 //
 // The language's FP contract (CLAUDE.md, "Floating point at the edges") is

@@ -157,11 +157,53 @@ pub trait SimdOps:
         (self * Self::splat(LOG2_E)).exp2()
     }
 
-    // Trigonometry is deliberately absent: it lives in `pixelflow-ir`'s
-    // `passes::expand_sin_phase`, once, and `ops::trig` is the combinator-tier
-    // spelling of that same function. A per-width intrinsics copy here would be
-    // a second definition with its own range reduction, free to drift from the
-    // one every backend and the `eval_scalar` oracle actually lower through.
+    // =========================================================================
+    // Trigonometric Functions
+    // =========================================================================
+
+    /// Sine (SIMD vectorized Chebyshev approximation).
+    /// Accuracy: ~7-8 significant digits.
+    fn sin(self) -> Self;
+
+    /// Cosine (SIMD vectorized Chebyshev approximation).
+    /// Accuracy: ~7-8 significant digits.
+    fn cos(self) -> Self;
+
+    /// Tangent: sin(x) / cos(x).
+    #[inline(always)]
+    fn tan(self) -> Self {
+        self.sin() / self.cos()
+    }
+
+    /// Arctangent of y/x (four-quadrant).
+    /// Returns angle in [-π, π].
+    fn atan2(self, x: Self) -> Self;
+
+    /// Arctangent.
+    #[inline(always)]
+    fn atan(self) -> Self {
+        self.atan2(Self::splat(1.0))
+    }
+
+    /// Arcsine.
+    /// Uses identity: asin(x) = atan2(x, sqrt(1 - x²))
+    #[inline(always)]
+    fn asin(self) -> Self {
+        let one = Self::splat(1.0);
+        let x2 = self * self;
+        let sqrt_term = (one - x2).simd_sqrt();
+        self.atan2(sqrt_term)
+    }
+
+    /// Arccosine.
+    /// Uses identity: acos(x) = atan2(sqrt(1 - x²), x)
+    #[inline(always)]
+    fn acos(self) -> Self {
+        let one = Self::splat(1.0);
+        let x2 = self * self;
+        let sqrt_term = (one - x2).simd_sqrt();
+        sqrt_term.atan2(self)
+    }
 
     // =========================================================================
     // Additional Logarithms

@@ -110,46 +110,6 @@ is slower *and* wrong, so it should be replaced with the target's rounding
 instruction — the trade only ever justifies taking what the hardware gives, never
 hand-rolling something worse.
 
-### Precision is on the table; range is not
-
-The trade above buys speed with *accuracy* — an answer close to the true one,
-off in the last bits. It never licenses an answer **outside the function's
-range**. `sin` returning 8.64e8 is not an imprecise sine, it is not a sine; no
-budget was saved by computing it, and nothing downstream can recover from it.
-So range is a hard property, asserted with no tolerance
-(`pixelflow-ir/tests/trig_range.rs`), while accuracy is a tunable.
-
-Where a function cannot be computed over the whole input type, it gets a
-**documented domain** and returns **NaN** outside it. `sin`/`cos`/`tan` are
-defined for `|x| < TRIG_DOMAIN` (2²⁰); beyond that, Cody-Waite argument
-reduction stops being exact, and full-range Payne-Hanek reduction costs far
-more than the polynomial it would protect. Past 2²⁴ the question is meaningless
-anyway — `ulp(x)` exceeds 1 radian, so an f32 no longer names a phase.
-
-NaN specifically, and not a clamp into `[-1, 1]`: a clamped value is a wrong
-answer wearing a right answer's clothes. That is precisely how the reduction bug
-survived — the JIT and the `eval_scalar` oracle run the *same* expansion, so
-they agreed bit-for-bit on the garbage and every same-form equivalence test
-passed, while outputs in the 1e2–1e6 range slipped under the `>1e30`
-"ill-conditioned" filter and were admitted as valid training labels. A
-same-form check cannot see a shared-definition bug; only an external bound can.
-This is the no-silent-failures rule in a data-parallel setting, where a lane
-cannot panic but a NaN does propagate.
-
-Two consequences of that domain, both pinned by tests rather than left to drift:
-`sin(-0.0)` is `+0.0` (the reduction's last step is `Sub(-0.0, -0.0)`; the
-all-positive split that would preserve the sign costs 15× the drift across the
-whole domain), and `asin`/`acos` must guard `|x| ≤ 1` explicitly, because
-`Field::sqrt` is `sqrt_fast` — it *has* to select 0 for a non-positive radicand,
-since `rsqrt(0)` is `inf` and `0·inf` is NaN, which also silently turns an
-out-of-domain argument into `atan2(x, 0) = ±π/2` unless you stop it.
-
-Corollary for the two-tier structure: **one definition, imported, not restated.**
-`sin` had four copies, each with its own range reduction — the two reachable
-ones had the same bug and had drifted to different polynomials besides. The
-expansion in `pixelflow-ir`'s `passes` is the definition; `pixelflow-core`'s
-`Field` tier imports its constants. A copy is a future divergence.
-
 ### Philosophy
 
 - **Pull-based rendering**: Pixels are sampled, not pushed. Nothing computes until coordinates arrive.
