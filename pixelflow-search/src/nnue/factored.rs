@@ -2639,6 +2639,12 @@ impl ExprNnue {
 
         // Magic header (TRID = shared trunk added — retrain required for old TRIC/TRIB/etc models)
         file.write_all(b"TRIE")?;
+        // Op embeddings are laid out one row per op, in the IR's order. That
+        // order is not fixed and changing it is not a format change here, so
+        // the file records which one it was written under — otherwise a
+        // reordered table silently re-attaches every embedding to a different
+        // operation and training continues against nonsense.
+        file.write_all(&OpKind::ENCODING_ID.to_le_bytes())?;
 
         // ===== Backbone =====
         // Embeddings
@@ -2816,6 +2822,25 @@ impl ExprNnue {
                     } else {
                         "Old formats (TRIC, TRIB, TRIA, TRI5-TRI9) require retrain."
                     }
+                ),
+            ));
+        }
+
+        // The magic covers the architecture. It does not cover which operation
+        // each embedding row belongs to — that follows the IR's op order, which
+        // may change without any bump here. Shapes would still match, so the
+        // file would load clean and every row would describe a different op.
+        let mut encoding = [0u8; 8];
+        file.read_exact(&mut encoding)?;
+        let encoding = u64::from_le_bytes(encoding);
+        if encoding != OpKind::ENCODING_ID {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "weights were trained under a different op encoding ({encoding:#x}, this \
+                     build uses {:#x}); every embedding row would attach to the wrong \
+                     operation. Retrain required.",
+                    OpKind::ENCODING_ID
                 ),
             ));
         }
