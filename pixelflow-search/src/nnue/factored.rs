@@ -2638,7 +2638,7 @@ impl ExprNnue {
         let mut file = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(path)?);
 
         // Magic header (TRID = shared trunk added — retrain required for old TRIC/TRIB/etc models)
-        file.write_all(b"TRIE")?;
+        file.write_all(b"TRIF")?;
         // Op embeddings are laid out one row per op, in the IR's order. That
         // order is not fixed and changing it is not a format change here, so
         // the file records which one it was written under — otherwise a
@@ -2801,7 +2801,12 @@ impl ExprNnue {
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)?;
 
-        // TRIE: `OpKind` discriminants renumbered densely over `0..COUNT`
+        // TRIF: header carries `OpKind::ENCODING_ID`
+        // TRIE: incompatible — same weights, but no encoding id in the header.
+        //       A TRIE reader handed a TRIF file would eat those 8 bytes as the
+        //       first two embedding floats, shift every parameter by two slots,
+        //       and return Ok with a silently corrupted network — which is why
+        //       the magic had to move rather than the header grow in place.
         // TRID: incompatible — op embeddings are indexed by `OpKind::index()`,
         //       and the pre-2026-08-02 discriminants had gaps at 17/31/39. The
         //       shapes still match, so a TRID file would load without error and
@@ -2810,17 +2815,17 @@ impl ExprNnue {
         // TRIB: incompatible — GRAPH_ACC_DIM was 3K (96), GRAPH_INPUT_DIM was 100
         // TRIA: incompatible — had mask_rule_bias[1024] instead of mask_bias_proj[32]
         // TRI5-TRI9: incompatible — EMBED_DIM was 24, all weight shapes differ
-        if &magic != b"TRIE" {
+        if &magic != b"TRIF" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "Incompatible ExprNnue format {:?}. Expected 'TRIE' (dense OpKind indices). {}",
+                    "Incompatible ExprNnue format {:?}. Expected 'TRIF'. {}",
                     std::str::from_utf8(&magic).unwrap_or("????"),
-                    if &magic == b"TRID" {
-                        "'TRID' predates the OpKind renumbering; its op embeddings are \
-                         shifted past discriminants 17/31/39. Retrain required."
+                    if &magic == b"TRIE" {
+                        "'TRIE' predates the encoding-id header; its weights cannot be \
+                         attributed to operations. Retrain required."
                     } else {
-                        "Old formats (TRIC, TRIB, TRIA, TRI5-TRI9) require retrain."
+                        "Old formats (TRID, TRIC, TRIB, TRIA, TRI5-TRI9) require retrain."
                     }
                 ),
             ));

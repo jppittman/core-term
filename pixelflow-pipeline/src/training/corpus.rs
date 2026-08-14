@@ -3,11 +3,11 @@
 //! Replaces JSONL text corpus with a binary format that loads in microseconds
 //! via sequential read (no parsing, no allocation beyond the arena vecs).
 //!
-//! ## Format (v2)
+//! ## Format (v3)
 //!
 //! ```text
 //! magic: [u8; 4] = b"PXCR"
-//! version: u32 (little-endian) = 2      (this file layout)
+//! version: u32 (little-endian) = 3      (this file layout)
 //! encoding_id: u64 (little-endian)      (which op encoding the op bytes use)
 //! count: u32 (little-endian)
 //!
@@ -39,11 +39,15 @@ use pixelflow_ir::kind::OpCode;
 use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
 
 const MAGIC: &[u8; 4] = b"PXCR";
-// Bump this whenever the IR's op encoding changes. Ops are written in that
-// encoding, so a corpus written under an older one decodes its op bytes as
-// *different ops* — the bump is what turns that silent corruption into a
-// load-time error. (1 → 2 was one such change.)
-const VERSION: u32 = 2;
+// The layout of this file. Bump it whenever the header or node encoding
+// changes shape — including adding a field, which is what took 2 -> 3.
+//
+// This is NOT the op numbering's version; `encoding_id` below carries that,
+// precisely so a renumbering does not need a bump here. What a bump buys is
+// the *older* reader: without one it accepts the file on its exact-version
+// check and then reads the next four bytes as `count`, which are now the low
+// half of `encoding_id`.
+const VERSION: u32 = 3;
 
 // ── ExprNode serialization tags ──────────────────────────────────────────────
 
@@ -189,10 +193,10 @@ fn read_corpus_bytes(data: &[u8]) -> io::Result<Vec<(String, ExprArena, ExprId)>
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "unsupported corpus version: {version} (expected {VERSION}); op encodings \
-                 differ between versions, so an older corpus decodes to the wrong ops — \
-                 regenerate the corpus with `cargo run --release -p pixelflow-pipeline \
-                 --features training --bin gen_bench_corpus`"
+                "unsupported corpus version: {version} (expected {VERSION}); the layout \
+                 differs, so this file cannot be read — regenerate the corpus with \
+                 `cargo run --release -p pixelflow-pipeline --features training \
+                 --bin gen_bench_corpus`"
             ),
         ));
     }
@@ -570,10 +574,39 @@ mod tests {
         }
     }
 
+    /// A reader from before the header grew must reject our files outright.
+    ///
+    /// Adding `encoding_id` moved every field after it. Had `VERSION` stayed
+    /// at 2, that reader would have passed its exact-version check and then
+    /// read the first half of the encoding id as `count` — a ~1.4-billion
+    /// entry reservation on an otherwise empty corpus. Growing a header is a
+    /// layout change, and layout changes are what `VERSION` is for.
+    #[test]
+    fn a_pre_header_reader_rejects_us_on_version() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let root = a.push_unary(OpKind::Sqrt, x);
+        let tmp = unique_tmp("layout_bump");
+        write_corpus(&tmp, &[("e".to_string(), a, root)]).expect("write");
+        let bytes = std::fs::read(&tmp).expect("read back");
+        let _ = std::fs::remove_file(&tmp);
+
+        let written = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        assert_eq!(
+            written, VERSION,
+            "header must carry the current layout version"
+        );
+        assert!(
+            written > 2,
+            "the version must have moved when the header grew; a v2 reader would \
+             otherwise read encoding_id's low half as the entry count"
+        );
+    }
+
     /// A corpus written under a different op encoding must be refused.
     ///
-    /// `VERSION` cannot cover this: the layout is unchanged, so a renumbering
-    /// in the IR bumps nothing here. Without the recorded encoding id the file
+    /// `VERSION` cannot cover this: a renumbering in the IR changes what an op
+    /// byte means without changing this file's shape, so it bumps nothing here. Without the recorded encoding id the file
     /// parses cleanly and every op byte names a different operation — the
     /// silent-corruption case, which is the one worth a test.
     #[test]
@@ -628,7 +661,7 @@ mod tests {
                     "error must name the rejected version: {msg}"
                 );
                 assert!(
-                    msg.contains("op encodings differ"),
+                    msg.contains("the layout differs"),
                     "error must explain WHY v1 is rejected: {msg}"
                 );
                 assert!(
