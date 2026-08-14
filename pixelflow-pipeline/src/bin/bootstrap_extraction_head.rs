@@ -101,7 +101,7 @@ use pixelflow_pipeline::training::episodes::{build_rule_templates, load_corpus_e
 use pixelflow_pipeline::training::factored::arena_to_kernel_code;
 use pixelflow_pipeline::training::mint::{
     MintMetadata, NormalizationStats, bench_mode_slug, file_mtime_report, label_normalization,
-    normalized_label_ns, unix_now_s,
+    normalized_label_ns, unix_now_s, weights_identity,
 };
 use pixelflow_pipeline::training::quarantine::Quarantine;
 use pixelflow_pipeline::training::split::Tier;
@@ -200,6 +200,19 @@ struct Args {
         default_value = "pixelflow-pipeline/data/bootstrap_quarantine.jsonl"
     )]
     quarantine: PathBuf,
+
+    /// Corpus-revalidation sidecar JSONL (overwritten each run): the numeric
+    /// quarantine re-run on every loaded TRAIN/DEV corpus entry with THIS
+    /// build's JIT and oracle (Codex 3759014678). "Quarantined at generation
+    /// time" is a claim about the executable that generated the corpus — the
+    /// v3 format records neither source revision nor target, so an entry
+    /// minted by another ISA/build, or before an emitter regression, could
+    /// otherwise hand a platform-specific miscompile a timing target.
+    #[arg(
+        long,
+        default_value = "pixelflow-pipeline/data/bootstrap_corpus_revalidation.jsonl"
+    )]
+    corpus_revalidation: PathBuf,
 
     /// Maximum DEV-tier expressions to benchmark for held-out metrics
     /// (sampled deterministically from `corpus_dev.bin`).
@@ -323,6 +336,72 @@ fn mint_label(bench: &BenchResult, context: &str) -> MintedLabel {
         target_log_ns: log_ns(normalized_label_ns(bench, context)),
         normalization: label_normalization(bench, context),
     }
+}
+
+// ── Research journal (plan 0.3b) ────────────────────────────────────────────
+
+/// One line appended to `docs/results/journal.jsonl` per completed training
+/// run.
+///
+/// Until this record existed, `bench_extraction_3way` was the journal's ONLY
+/// writer, so DEV model quality (Spearman, MAE) was printed to a scrollback
+/// and lost — model-quality history across rounds was invisible, and the
+/// §2 loop's "read journal first" step could not see whether intrinsic
+/// quality moved between rounds. The record is written only after the weights
+/// AND their mint sidecar are on disk, so every journal line names a
+/// checkpoint that actually exists.
+#[derive(Serialize)]
+struct TrainerJournalRecord {
+    record: &'static str,
+    ts_unix: u64,
+    weights_path: String,
+    corpus_dir: String,
+    bench_mode: &'static str,
+    /// Training samples the head was actually fit on (post-exclusion).
+    train_samples: usize,
+    synthetic_requested: usize,
+    epochs: usize,
+    lr: f32,
+    seed: u64,
+    order_seed: u64,
+    /// DEV held-out intrinsic quality — the trainer's side of the plan §4.1
+    /// eval-intrinsic step.
+    dev_samples: usize,
+    dev_mae_log_ns: f64,
+    /// `None` (JSON `null`) when rank variance is zero — recorded, never
+    /// dropped.
+    dev_spearman_rho: Option<f64>,
+    /// Mean (predicted − measured) log-ns on DEV through the DEPLOYED
+    /// prediction path. Round-0 skew evidence was −0.291; ~0 means unbiased.
+    dev_pred_bias_log_ns: f64,
+    /// std(predicted)/std(measured) on DEV. Round-0 skew evidence was 0.45
+    /// (range compressed to 45% of true); ~1 means calibrated spread.
+    dev_pred_std_ratio: f64,
+    /// (p90−p10 predicted)/(p90−p10 measured) on DEV — the same story as the
+    /// std ratio but robust to tails.
+    dev_pred_p90p10_ratio: f64,
+}
+
+/// Append one line to the research journal, loudly on any failure.
+fn append_journal(record: &TrainerJournalRecord) {
+    let journal_path = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../docs/results/journal.jsonl"
+    ));
+    let line = serde_json::to_string(record)
+        .unwrap_or_else(|e| panic!("failed to serialize the trainer journal record: {e}"));
+    if let Some(parent) = journal_path.parent() {
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|e| panic!("failed to create {}: {e}", parent.display()));
+    }
+    let mut journal = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&journal_path)
+        .unwrap_or_else(|e| panic!("failed to open {}: {e}", journal_path.display()));
+    writeln!(journal, "{line}")
+        .unwrap_or_else(|e| panic!("failed to append to {}: {e}", journal_path.display()));
+    eprintln!("Journal appended: {}", journal_path.display());
 }
 
 /// A seeded permutation of `0..len` (LCG Fisher-Yates).
@@ -975,6 +1054,24 @@ fn main() {
     assert_label_sources(live_labelable, !args.skip_corpus, args.synthetic);
 
     // ── PHASE 1b: Add TRAIN-tier corpus expressions ──────────────────
+    //
+    // Every loaded corpus entry — TRAIN here, DEV below — is revalidated
+    // through the numeric quarantine before it can be minted (Codex
+    // 3759014678). The corpus was quarantined at generation time, but that
+    // verdict belongs to the executable that generated it: the v3 format
+    // records neither source revision nor target, so a tier built by another
+    // ISA/build — or before an emitter regression — could hand a
+    // platform-specific miscompile a timing target (TRAIN) or measure a
+    // broken backend as held-out truth (DEV). The same-form gate is re-run
+    // with THIS build's JIT and oracle; drops are recorded in their own
+    // sidecar, and the rate alarms in `finish` judge the corpus afterward.
+    let revalidation_path = args.corpus_revalidation.to_str().unwrap_or_else(|| {
+        panic!(
+            "--corpus-revalidation path {} is not valid UTF-8",
+            args.corpus_revalidation.display()
+        )
+    });
+    let mut corpus_revalidation = Quarantine::new(revalidation_path);
 
     if !args.skip_corpus {
         let train_path = args
@@ -993,13 +1090,24 @@ fn main() {
             train_path.display(),
             corpus_exprs.len()
         );
+        let mut train_revalidation_drops = 0usize;
         for (name, arena, root) in corpus_exprs {
+            if corpus_revalidation.verdict(&name, &arena, root).0.is_some() {
+                train_revalidation_drops += 1;
+                continue;
+            }
             queue.push(WorkItem {
                 source: Source::TrainCorpus,
                 name,
                 arena: Some(arena),
                 root,
             });
+        }
+        if train_revalidation_drops > 0 {
+            eprintln!(
+                "  TRAIN revalidation dropped {train_revalidation_drops} stored entries this \
+                 build cannot verify (recorded in {revalidation_path})"
+            );
         }
     }
 
@@ -1028,7 +1136,16 @@ fn main() {
         dev_path.display(),
         dev_exprs.len()
     );
+    let mut dev_revalidation_drops = 0usize;
     for (name, arena, root) in dev_exprs {
+        // Same revalidation gate as TRAIN (Codex 3759014678): a stored DEV
+        // entry this build's JIT and oracle disagree about would be measured
+        // as held-out TRUTH — worse than a bad training label, because every
+        // reported DEV metric leans on it.
+        if corpus_revalidation.verdict(&name, &arena, root).0.is_some() {
+            dev_revalidation_drops += 1;
+            continue;
+        }
         queue.push(WorkItem {
             source: Source::Dev,
             name,
@@ -1036,6 +1153,21 @@ fn main() {
             root,
         });
     }
+    if dev_revalidation_drops > 0 {
+        eprintln!(
+            "  DEV revalidation dropped {dev_revalidation_drops} stored entries this build \
+             cannot verify (recorded in {revalidation_path})"
+        );
+    }
+
+    // The corpus revalidation tally and its rate alarms: past the thresholds
+    // the corpus does not describe this build and must be regenerated, not
+    // subsetted (Codex 3759014678).
+    eprintln!(
+        "\nCorpus revalidation (TRAIN+DEV entries re-checked against this build's JIT and \
+         oracle):"
+    );
+    corpus_revalidation.finish();
 
     // ── PHASE 1d: Benchmark the pooled queue in seeded-shuffled order ─
 
@@ -1070,11 +1202,23 @@ fn main() {
         match session.benchmark_arena(queue[idx].arena(), root, MINT_MODE) {
             Ok(bench) => {
                 let label = mint_label(&bench, source.phase());
-                normalization_factors.push(label.normalization);
                 match source {
                     Source::Dev => dev_measurements.push((idx, label.target_log_ns)),
                     Source::Synthetic | Source::TrainCorpus => {
-                        let acc = EdgeAccumulator::from_arena_dedup(
+                        // Training labels only (Codex 3759014682): the sidecar
+                        // summarizes the drift correction behind the TARGETS
+                        // the weights were fit on. DEV is measured on a
+                        // different part of the drift curve, so folding its
+                        // factors in made the sidecar describe a population
+                        // its own `samples` count does not.
+                        normalization_factors.push(label.normalization);
+                        // DEPLOYMENT representation (from_arena_dag): register-
+                        // reload edges for shared nodes + populated variance
+                        // histogram — the same accumulator semantics
+                        // `IncrementalExtractor` builds from DAG choices, so
+                        // the trained function is the deployed function
+                        // (round-0 train/deploy skew fix).
+                        let acc = EdgeAccumulator::from_arena_dag(
                             queue[idx].arena(),
                             root,
                             &model.embeddings,
@@ -1275,9 +1419,13 @@ fn main() {
     let mut measured: Vec<f32> = Vec::with_capacity(dev_measurements.len());
     for &(idx, measured_log_ns) in &dev_measurements {
         let item = &queue[idx];
-        let acc = EdgeAccumulator::from_arena_dedup(item.arena(), item.root, &model.embeddings);
-        let cache = forward_cached(&model, &acc, &dummy_gacc, &dummy_rule_embed);
-        predicted.push(cache.value_pred);
+        // The DEPLOYED prediction path, end to end: the same accumulator
+        // semantics (from_arena_dag: reload edges + variance histogram) and
+        // the same forward entry point (`predict_log_cost_with_features`)
+        // that `IncrementalExtractor` calls. These metrics therefore describe
+        // the function extraction actually uses, not a trainer-only shadow.
+        let acc = EdgeAccumulator::from_arena_dag(item.arena(), item.root, &model.embeddings);
+        predicted.push(model.predict_log_cost_with_features(&acc));
         measured.push(measured_log_ns);
     }
 
@@ -1293,15 +1441,65 @@ fn main() {
         .sum::<f64>()
         / measured.len() as f64;
 
+    // Prediction bias and range compression (round-0 skew evidence): the
+    // skewed head was biased -0.291 log-ns with its prediction spread
+    // compressed to 45% of the measured spread. Bias ~0 and ratios ~1 are the
+    // direct evidence the train/deploy skew is gone.
+    let n = measured.len() as f64;
+    let dev_bias: f64 = predicted
+        .iter()
+        .zip(&measured)
+        .map(|(p, m)| f64::from(p - m))
+        .sum::<f64>()
+        / n;
+    let mean_of = |xs: &[f32]| xs.iter().map(|&x| f64::from(x)).sum::<f64>() / n;
+    let std_of = |xs: &[f32]| {
+        let mean = mean_of(xs);
+        (xs.iter()
+            .map(|&x| (f64::from(x) - mean).powi(2))
+            .sum::<f64>()
+            / n)
+            .sqrt()
+    };
+    let p90p10 = |xs: &[f32]| {
+        let mut s: Vec<f32> = xs.to_vec();
+        s.sort_by(|a, b| {
+            a.partial_cmp(b)
+                .unwrap_or_else(|| panic!("NaN in DEV predictions/measurements"))
+        });
+        f64::from(s[(s.len() - 1) * 9 / 10] - s[(s.len() - 1) / 10])
+    };
+    let (pred_std, meas_std) = (std_of(&predicted), std_of(&measured));
+    let (pred_spread, meas_spread) = (p90p10(&predicted), p90p10(&measured));
+
     eprintln!("\n=== DEV held-out metrics (families never trained on; audit L4 / plan 0.3b) ===");
     eprintln!("  DEV samples: {}", measured.len());
     eprintln!("  DEV MAE (log-ns): {dev_mae:.4}");
-    match spearman_rho(&predicted, &measured) {
+    let dev_spearman = spearman_rho(&predicted, &measured);
+    match dev_spearman {
         Some(rho) => eprintln!("  DEV Spearman rho (predicted vs measured log-ns): {rho:.4}"),
         None => eprintln!(
             "  DEV Spearman rho: UNDEFINED — zero rank variance (all predictions or all \
              measurements tied); the model or the corpus tier is degenerate"
         ),
+    }
+    eprintln!("  DEV prediction bias (mean pred-measured, log-ns): {dev_bias:+.4}");
+    if meas_std > 0.0 && meas_spread > 0.0 {
+        eprintln!(
+            "  DEV prediction range vs true: std ratio {:.4} ({:.4}/{:.4}), p90-p10 ratio {:.4} \
+             ({:.4}/{:.4})",
+            pred_std / meas_std,
+            pred_std,
+            meas_std,
+            pred_spread / meas_spread,
+            pred_spread,
+            meas_spread
+        );
+    } else {
+        eprintln!(
+            "  DEV prediction range vs true: UNDEFINED — measured spread is zero (std {meas_std}, \
+             p90-p10 {meas_spread}); the DEV tier is degenerate"
+        );
     }
 
     // Quick eval: predict a few TRAIN samples (in-sample sanity check only).
@@ -1346,13 +1544,28 @@ fn main() {
     // and the trainer minted another would otherwise be an invisible mismatch.
     // A failed sidecar write fails the run — weights whose objective is
     // unrecorded cannot be gate-checked, so they are worse than no weights.
+    //
+    // The sidecar records the hash of the bytes that actually landed on disk
+    // (Codex 3758853787): weights and sidecar are two files with a crash
+    // window between the writes, and a stale sidecar beside replaced weights
+    // used to pass every mode check. Consumers assert `require_weights`.
+    let saved_bytes = std::fs::read(&args.output).unwrap_or_else(|e| {
+        panic!(
+            "failed to read back the just-saved weights at {}: {e} — cannot record their \
+             identity in the mint sidecar",
+            args.output.display()
+        )
+    });
     let metadata = MintMetadata {
         bench_mode: bench_mode_slug(MINT_MODE).to_string(),
         trainer: "bootstrap_extraction_head".to_string(),
         samples: samples.len(),
         order_shuffle_seed: order_seed,
         sentinel_calibration_ns: session.calibration_ns(),
+        // Training labels only (Codex 3759014682): DEV factors describe the
+        // evaluation population, not the targets these weights were fit on.
         normalization: NormalizationStats::summarize(&normalization_factors),
+        weights_fnv64: weights_identity(&saved_bytes),
         written_at_unix_s: unix_now_s(),
     };
     let metadata_path = metadata.write_for(&args.output).unwrap_or_else(|e| {
@@ -1370,6 +1583,38 @@ fn main() {
         metadata.bench_mode,
         metadata.samples
     );
+
+    // DEV model quality into the research journal (plan 0.3b): the 3-way
+    // bench was the only journal writer, so intrinsic quality never had a
+    // cross-round history. Written last — after the weights and sidecar — so
+    // the line always names a checkpoint that exists.
+    append_journal(&TrainerJournalRecord {
+        record: "bootstrap_extraction_head",
+        ts_unix: unix_now_s(),
+        weights_path: args.output.display().to_string(),
+        corpus_dir: args.corpus_dir.display().to_string(),
+        bench_mode: bench_mode_slug(MINT_MODE),
+        train_samples: samples.len(),
+        synthetic_requested: args.synthetic,
+        epochs: args.epochs,
+        lr: args.lr,
+        seed: args.seed,
+        order_seed,
+        dev_samples: measured.len(),
+        dev_mae_log_ns: dev_mae,
+        dev_spearman_rho: dev_spearman,
+        dev_pred_bias_log_ns: dev_bias,
+        dev_pred_std_ratio: if meas_std > 0.0 {
+            pred_std / meas_std
+        } else {
+            f64::NAN
+        },
+        dev_pred_p90p10_ratio: if meas_spread > 0.0 {
+            pred_spread / meas_spread
+        } else {
+            f64::NAN
+        },
+    });
 }
 
 #[cfg(test)]

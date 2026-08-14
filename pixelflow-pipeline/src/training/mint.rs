@@ -199,8 +199,33 @@ pub struct MintMetadata {
     pub sentinel_calibration_ns: f64,
     /// Drift correction actually applied across the run's labels.
     pub normalization: NormalizationStats,
+    /// [`weights_identity`] of the weights bytes this sidecar describes
+    /// (Codex 3758853787). The sidecar and the weights are two files, so a
+    /// crash between the two writes can leave new weights beside a stale
+    /// sidecar; the hash turns that from an invisible mismatch into a hard
+    /// failure at [`Self::require_weights`]. Old sidecars without this field
+    /// fail to parse — their weights' identity was never recorded, which a
+    /// consumer must refuse rather than assume.
+    pub weights_fnv64: String,
     /// Unix seconds at write time.
     pub written_at_unix_s: u64,
+}
+
+/// FNV-1a 64 over the weights bytes — the identity [`MintMetadata`] records.
+///
+/// The job is binding two local files to each other, not resisting an
+/// adversary, so the same non-cryptographic hash the journal uses for corpus
+/// and diff identities is enough here too.
+#[must_use]
+pub fn weights_identity(bytes: &[u8]) -> String {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
 }
 
 impl MintMetadata {
@@ -263,6 +288,27 @@ impl MintMetadata {
              expression shapes differently, so the verdict would score the model on an \
              objective it was never trained to predict",
             self.bench_mode, self.trainer
+        );
+    }
+
+    /// Assert this sidecar describes exactly `weights_bytes` (Codex
+    /// 3758853787).
+    ///
+    /// # Panics
+    ///
+    /// Panics on a hash mismatch: the weights on disk are not the weights
+    /// this sidecar was written for — the aborted-training window where a
+    /// save succeeded but the sidecar write did not (or vice versa). A gate
+    /// that checked only the mode would accept the stale description.
+    pub fn require_weights(&self, weights_bytes: &[u8]) {
+        let actual = weights_identity(weights_bytes);
+        assert_eq!(
+            self.weights_fnv64, actual,
+            "mint sidecar / weights mismatch: the sidecar (written by {} at unix {}) describes \
+             weights with identity {}, but the weights file on disk hashes to {actual}. A \
+             training run replaced one file without the other — its description cannot be \
+             trusted for these bytes; retrain with bootstrap_extraction_head",
+            self.trainer, self.written_at_unix_s, self.weights_fnv64
         );
     }
 }
@@ -529,6 +575,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("scratch dir");
         let weights = dir.join("extraction_head.bin");
 
+        let weights_bytes = b"not real weights, but identity-checked all the same";
         let meta = MintMetadata {
             bench_mode: bench_mode_slug(BenchMode::Latency).to_string(),
             trainer: "bootstrap_extraction_head".to_string(),
@@ -536,6 +583,7 @@ mod tests {
             order_shuffle_seed: 99,
             sentinel_calibration_ns: 12.5,
             normalization: NormalizationStats::summarize(&[1.0]),
+            weights_fnv64: weights_identity(weights_bytes),
             written_at_unix_s: unix_now_s(),
         };
         let path = meta.write_for(&weights).expect("write sidecar");
@@ -548,8 +596,27 @@ mod tests {
         let read = MintMetadata::read_for(&weights).expect("read sidecar");
         assert_eq!(read, meta);
         read.require_mode(BenchMode::Latency);
+        read.require_weights(weights_bytes);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    #[should_panic(expected = "sidecar / weights mismatch")]
+    fn stale_sidecar_is_rejected_by_the_weights_hash() {
+        // Codex 3758853787: new weights beside an old sidecar — the aborted
+        // half-written training run. Mode checks alone would accept it.
+        let meta = MintMetadata {
+            bench_mode: bench_mode_slug(BenchMode::Latency).to_string(),
+            trainer: "bootstrap_extraction_head".to_string(),
+            samples: 7,
+            order_shuffle_seed: 99,
+            sentinel_calibration_ns: 12.5,
+            normalization: NormalizationStats::summarize(&[1.0]),
+            weights_fnv64: weights_identity(b"the weights the sidecar was written for"),
+            written_at_unix_s: unix_now_s(),
+        };
+        meta.require_weights(b"the replacement weights an aborted run left behind");
     }
 
     #[test]
@@ -562,6 +629,7 @@ mod tests {
             order_shuffle_seed: 0,
             sentinel_calibration_ns: 1.0,
             normalization: NormalizationStats::summarize(&[1.0]),
+            weights_fnv64: weights_identity(b""),
             written_at_unix_s: 0,
         };
         meta.require_mode(BenchMode::Throughput);

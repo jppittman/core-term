@@ -220,10 +220,22 @@ struct Args {
     /// Maximum kernels to time from the tier (0 = the whole tier). More than
     /// this many are subsampled deterministically from `--sample-seed`, and
     /// both values enter the config hash.
-    #[arg(long, default_value_t = 40)]
+    ///
+    /// The default is a POWER decision, not a convenience: round 0 measured a
+    /// geomean run-to-run spread of 0.8815/0.9285/1.0389 across 40-kernel runs
+    /// while the within-run A/A floor was 0.11–0.44% — a ~40x gap driven by
+    /// the kernel SET changing between runs. The per-kernel log-ratio
+    /// dispersion behind that spread is ~0.35, so the bootstrap CI half-width
+    /// on the geomean shrinks as ~0.35/√n: at n=40 it is ±11% (the ±5% verdict
+    /// gate sits INSIDE it, unreachable), at n=400 it is ±3.4% and the gate is
+    /// resolvable. Use `0` (the whole tier) for publication runs.
+    #[arg(long, default_value_t = 400)]
     max_kernels: usize,
 
-    /// Seed for the tier subsample.
+    /// Seed for the tier subsample. Fixed by default so the SAME eval set is
+    /// drawn run after run (given an unchanged tier file — the corpus content
+    /// hash in the journal pins that): run-to-run comparisons are then over a
+    /// constant kernel set, not a redraw.
     #[arg(long, default_value_t = 0x5A11_2026_0805_u64)]
     sample_seed: u64,
 }
@@ -1147,6 +1159,13 @@ struct PrepareCtx<'a> {
 #[derive(Clone, Copy, Debug, Default)]
 struct GateTally {
     gates: usize,
+    /// Gates run on an EXTRACTED policy (static / nnue) — the only attempts
+    /// that can produce a [`GateFailure::CrossForm`]. The no-swap gate
+    /// compares a form with itself, so counting it in the cross-form
+    /// denominator systematically diluted the rate: 12% of extractions
+    /// changing values reported as 8% under the healthy three-gate shape and
+    /// never tripped the 10% alarm (Codex 3759014680).
+    extracted_gates: usize,
     oracle_unsupported: usize,
     no_bounded_points: usize,
     compile_failed: usize,
@@ -1155,9 +1174,27 @@ struct GateTally {
 }
 
 impl GateTally {
-    /// Record one gate outcome. `None` is a pass.
-    fn record(&mut self, outcome: Option<&GateFailure>) {
+    /// Record the no-swap gate's outcome. `None` is a pass. A no-swap form is
+    /// compared with itself, so it can never yield `CrossForm` — it belongs in
+    /// the all-gate denominator only.
+    fn record_noswap(&mut self, outcome: Option<&GateFailure>) {
+        assert!(
+            !matches!(outcome, Some(GateFailure::CrossForm(_))),
+            "a no-swap gate produced CrossForm — it compares a form with itself, so this is a \
+             harness bug, not a divergence"
+        );
         self.gates += 1;
+        self.count(outcome);
+    }
+
+    /// Record an extracted-policy gate's outcome. `None` is a pass.
+    fn record_extracted(&mut self, outcome: Option<&GateFailure>) {
+        self.gates += 1;
+        self.extracted_gates += 1;
+        self.count(outcome);
+    }
+
+    fn count(&mut self, outcome: Option<&GateFailure>) {
         match outcome {
             None => {}
             Some(GateFailure::OracleUnsupported(_)) => self.oracle_unsupported += 1,
@@ -1185,15 +1222,31 @@ impl GateTally {
         self.rate(self.same_form)
     }
 
+    /// Cross-form divergence rate over EXTRACTED-policy attempts only
+    /// (Codex 3759014680) — the attempts that could have diverged.
+    ///
+    /// # Panics
+    ///
+    /// Panics if divergences were recorded with no extracted gate — that is a
+    /// tally-keeping bug, not a rate.
     fn cross_form_rate(&self) -> f64 {
-        self.rate(self.cross_form)
+        if self.extracted_gates == 0 {
+            assert_eq!(
+                self.cross_form, 0,
+                "cross-form divergences recorded without any extracted-policy gate"
+            );
+            return 0.0;
+        }
+        self.cross_form as f64 / self.extracted_gates as f64
     }
 
     fn describe(&self) -> String {
         format!(
-            "{} gates: {} same-form miscompiles ({:.2}%), {} cross-form divergences ({:.2}%), \
-             {} compile failures, {} oracle-unsupported, {} bounded nothing",
+            "{} gates ({} extracted): {} same-form miscompiles ({:.2}% of all), {} cross-form \
+             divergences ({:.2}% of extracted), {} compile failures, {} oracle-unsupported, \
+             {} bounded nothing",
             self.gates,
+            self.extracted_gates,
             self.same_form,
             self.same_form_rate() * 100.0,
             self.cross_form,
@@ -1222,13 +1275,14 @@ impl GateTally {
         if self.cross_form_rate() > MAX_CROSS_FORM_DIVERGENCE_RATE {
             alarms.push(format!(
                 "CROSS-FORM divergence rate {:.2}% exceeds {:.0}%: extracted forms disagreed with \
-                 their originals at WELL-CONDITIONED points in {} of {} gates. One such case is \
-                 contract at a singularity; this many means the extractor is systematically \
-                 changing values",
+                 their originals at WELL-CONDITIONED points in {} of {} extracted-policy gates \
+                 (no-swap gates cannot diverge and are excluded from this denominator, Codex \
+                 3759014680). One such case is contract at a singularity; this many means the \
+                 extractor is systematically changing values",
                 self.cross_form_rate() * 100.0,
                 MAX_CROSS_FORM_DIVERGENCE_RATE * 100.0,
                 self.cross_form,
-                self.gates
+                self.extracted_gates
             ));
         }
         alarms
@@ -1261,7 +1315,7 @@ fn prepare_kernel(
         (&arena, root),
         ctx.grid,
     );
-    tally.record(gated.as_ref().err());
+    tally.record_noswap(gated.as_ref().err());
     let (noswap_code, noswap_check) = match gated {
         Ok(gated) => gated,
         Err(failure) => {
@@ -1322,7 +1376,7 @@ fn prepare_kernel(
             (&cand_arena, cand_root),
             ctx.grid,
         );
-        tally.record(gated.as_ref().err());
+        tally.record_extracted(gated.as_ref().err());
         match gated {
             Ok((code, check)) => {
                 out.write(&PolicyPreparedRecord::new(
@@ -1540,6 +1594,28 @@ struct RunSummaryRecord<'a> {
     mode: &'static str,
     check_points: usize,
     geomean_nnue_static: Option<f64>,
+    /// Bootstrap 95% CI on `geomean_nnue_static` over kernels — the interval
+    /// the verdict is decided against (kernel-set variance dominated round 0's
+    /// run-to-run spread by ~40x over the A/A floor).
+    geomean_nnue_static_ci_lo: Option<f64>,
+    geomean_nnue_static_ci_hi: Option<f64>,
+    bootstrap_iters: usize,
+    bootstrap_seed: String,
+    /// Kernels contributing a paired nnue/static ratio.
+    nnue_static_pairs: usize,
+    /// Paired per-kernel ratio distribution — the geomean has repeatedly been
+    /// dominated by single kernels, so the distribution rides beside it.
+    ratio_median: Option<f64>,
+    ratio_q1: Option<f64>,
+    ratio_q3: Option<f64>,
+    ratio_wins: usize,
+    ratio_losses: usize,
+    /// Leave-one-out sensitivity: the range of geomeans dropping each kernel
+    /// in turn, and the kernel whose removal shifts it most.
+    loo_geomean_min: Option<f64>,
+    loo_geomean_max: Option<f64>,
+    loo_most_influential: Option<String>,
+    loo_max_shift_pct: Option<f64>,
     geomean_static_noswap: Option<f64>,
     aa_geomean: Option<f64>,
     noise_floor_pct: Option<f64>,
@@ -1610,6 +1686,20 @@ struct JournalRecord<'a> {
     mode: &'static str,
     weights_mint_mode: String,
     geomean_nnue_static: Option<f64>,
+    /// Bootstrap 95% CI over kernels — the verdict's instrument. A journal
+    /// line whose geomean sits inside another line's CI is a rerun, not a
+    /// change.
+    geomean_nnue_static_ci_lo: Option<f64>,
+    geomean_nnue_static_ci_hi: Option<f64>,
+    nnue_static_pairs: usize,
+    ratio_median: Option<f64>,
+    ratio_q1: Option<f64>,
+    ratio_q3: Option<f64>,
+    ratio_wins: usize,
+    ratio_losses: usize,
+    loo_geomean_min: Option<f64>,
+    loo_geomean_max: Option<f64>,
+    loo_most_influential: Option<String>,
     geomean_static_noswap: Option<f64>,
     noise_floor_pct: Option<f64>,
     kernels_excluded: usize,
@@ -1708,6 +1798,147 @@ fn fmt_opt(v: Option<f64>) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Verdict statistics: bootstrap CI over kernels, paired ratio distribution,
+// leave-one-out sensitivity.
+//
+// Round 0's estimator problem in one line: the geomean's run-to-run spread
+// (0.8815 / 0.9285 / 1.0389) was ~40x the within-run A/A noise floor
+// (0.11–0.44%), because the dominant variance source is WHICH kernels are in
+// the set, not timing noise. So the interval the verdict needs is over
+// KERNELS — a percentile bootstrap resampling the paired per-kernel ratios —
+// and the verdict compares that interval against the ±5% gate instead of a
+// point estimate that has repeatedly flipped sign on a set change (a 12-kernel
+// run's 0.9128 became 1.1031 by dropping ONE kernel).
+// ---------------------------------------------------------------------------
+
+/// Bootstrap resamples for the geomean CI. 10k keeps the percentile estimate's
+/// own Monte-Carlo error well under 0.1% at negligible cost (the resample is
+/// over at most a few thousand precomputed log-ratios).
+const BOOTSTRAP_ITERS: usize = 10_000;
+
+/// Seed for the bootstrap resampling — fixed so the CI is reproducible run to
+/// run, and recorded in the run summary.
+const BOOTSTRAP_SEED: u64 = 0xB007_57A9_2026_0810;
+
+/// Percentile-bootstrap 95% CI on the geomean of `ratios`, resampling over
+/// kernels with replacement. `None` below 2 ratios — an interval over one
+/// kernel is not an interval.
+///
+/// # Panics
+///
+/// Panics on non-positive ratios (audit L2 — same contract as [`geomean`]).
+fn bootstrap_geomean_ci(ratios: &[f64], iters: usize, seed: u64) -> Option<(f64, f64)> {
+    if ratios.len() < 2 {
+        return None;
+    }
+    let logs: Vec<f64> = ratios
+        .iter()
+        .map(|&r| {
+            assert!(
+                r > 0.0,
+                "bootstrap_geomean_ci: non-positive ratio {r} would poison ln (audit L2)"
+            );
+            r.ln()
+        })
+        .collect();
+    let n = logs.len();
+    let mut rng = SeededRng::new(seed);
+    let mut means: Vec<f64> = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let mut sum = 0.0;
+        for _ in 0..n {
+            sum += logs[(rng.next_u64() % n as u64) as usize];
+        }
+        means.push((sum / n as f64).exp());
+    }
+    means.sort_unstable_by(|a, b| {
+        a.partial_cmp(b)
+            .unwrap_or_else(|| panic!("bootstrap_geomean_ci: non-comparable means {a} vs {b}"))
+    });
+    let pick = |p: f64| means[(p * (iters - 1) as f64).round() as usize];
+    Some((pick(0.025), pick(0.975)))
+}
+
+/// The paired per-kernel ratio distribution the geomean summarizes — printed
+/// beside it because the geomean has repeatedly been dominated by single
+/// kernels.
+struct RatioDistribution {
+    median: f64,
+    q1: f64,
+    q3: f64,
+    /// Ratios < 1.0 (NNUE strictly faster).
+    wins: usize,
+    /// Ratios > 1.0 (NNUE strictly slower).
+    losses: usize,
+    ties: usize,
+}
+
+impl RatioDistribution {
+    fn of(ratios: &[f64]) -> Option<Self> {
+        if ratios.is_empty() {
+            return None;
+        }
+        let mut sorted = ratios.to_vec();
+        sorted.sort_unstable_by(|a, b| {
+            a.partial_cmp(b)
+                .unwrap_or_else(|| panic!("RatioDistribution: non-comparable ratios {a} vs {b}"))
+        });
+        let n = sorted.len();
+        Some(Self {
+            median: sorted[n / 2],
+            q1: sorted[n / 4],
+            q3: sorted[3 * n / 4],
+            wins: ratios.iter().filter(|&&r| r < 1.0).count(),
+            losses: ratios.iter().filter(|&&r| r > 1.0).count(),
+            ties: ratios.iter().filter(|&&r| r == 1.0).count(),
+        })
+    }
+}
+
+/// Leave-one-out sensitivity of the geomean: the range of geomeans obtained by
+/// dropping each kernel in turn, plus the single most influential kernel.
+struct LooSensitivity {
+    min: f64,
+    max: f64,
+    /// Kernel whose removal shifts the geomean the most.
+    most_influential: String,
+    /// That shift, in percent of the full geomean.
+    shift_pct: f64,
+}
+
+impl LooSensitivity {
+    fn of(pairs: &[(String, f64)]) -> Option<Self> {
+        if pairs.len() < 2 {
+            return None;
+        }
+        let logs: Vec<f64> = pairs.iter().map(|(_, r)| r.ln()).collect();
+        let total: f64 = logs.iter().sum();
+        let n = pairs.len();
+        let full = (total / n as f64).exp();
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+        let mut most_influential = String::new();
+        let mut best_shift = -1.0_f64;
+        for (i, (name, _)) in pairs.iter().enumerate() {
+            let loo = ((total - logs[i]) / (n - 1) as f64).exp();
+            min = min.min(loo);
+            max = max.max(loo);
+            let shift = ((loo - full) / full).abs() * 100.0;
+            if shift > best_shift {
+                best_shift = shift;
+                most_influential = name.clone();
+            }
+        }
+        Some(Self {
+            min,
+            max,
+            most_influential,
+            shift_pct: best_shift,
+        })
+    }
+}
+
 /// Per-kernel medians across the timed repeats.
 struct KernelSummary {
     name: String,
@@ -1740,8 +1971,8 @@ fn summarize(kernel: &PreparedKernel, samples: &[Vec<f64>; 4]) -> KernelSummary 
         let m = median(v.clone(), &format!("{}/{}", kernel.name, arm.name()));
         assert!(
             m > 0.0,
-            "kernel {} policy {}: median raw ns {m} must be positive before entering any \
-             geomean (audit L2)",
+            "kernel {} policy {}: median opening-clock ns {m} must be positive before entering \
+             any geomean (audit L2)",
             kernel.name,
             arm.name()
         );
@@ -1837,6 +2068,12 @@ struct VerdictInputs<'a> {
     /// run's own correctness gate failed, and no timing claim may be published.
     gate_alarms: &'a [String],
     geomean_nnue_static: f64,
+    /// Bootstrap 95% CI on the geomean over kernels
+    /// ([`bootstrap_geomean_ci`]), ratio space. `None` below 2 pairs. The
+    /// verdict compares THIS against the ±5% gate, never the point estimate:
+    /// round 0's point estimate flipped sign on a kernel-set change while the
+    /// A/A floor claimed 0.11% precision.
+    ci: Option<(f64, f64)>,
     /// How many kernels contributed an nnue/static ratio.
     nnue_static_pairs: usize,
     noise_floor_pct: f64,
@@ -1853,17 +2090,35 @@ struct VerdictInputs<'a> {
 ///    publication claim may be printed or journaled — the previous ordering
 ///    computed the alarms only *after* writing the journal line, so a run whose
 ///    correctness gate failed could publish a PASS (Codex 3744586360).
-/// 2. **Publication runs** report without selecting (plan 0.2/4.3, Codex R5).
-/// 3. **Censoring**, then the margin against the noise floor.
+/// 2. **Censoring** and the no-pairs guard, for publication and selection runs
+///    alike (Codex 3758853801): a geomean over a policy-selected survivor
+///    subset — or over nothing — grounds neither a verdict nor a publication
+///    claim, so `--final-eval` must not reach its report past these.
+/// 3. **Publication runs** report without selecting (plan 0.2/4.3, Codex R5).
+/// 4. **The margin** — as the bootstrap CI over kernels against the ±5% gate,
+///    never a point estimate. The point estimate's run-to-run spread was ~40x
+///    the A/A floor (kernel-set variance), so a point comparison against the
+///    gate was a coin whose bias nobody had measured. A directional claim now
+///    requires the WHOLE interval on the claim's side of its gate line; an
+///    interval straddling a gate line is UNDERPOWERED, and the fix it names is
+///    more kernels, not another rerun.
 fn verdict_text(inputs: &VerdictInputs<'_>) -> String {
-    let &VerdictInputs {
+    let VerdictInputs {
         final_eval,
         gate_alarms,
         geomean_nnue_static,
+        ci,
         nnue_static_pairs,
         noise_floor_pct,
         rates,
     } = inputs;
+    let (final_eval, geomean_nnue_static, ci, nnue_static_pairs, noise_floor_pct) = (
+        *final_eval,
+        *geomean_nnue_static,
+        *ci,
+        *nnue_static_pairs,
+        *noise_floor_pct,
+    );
 
     if !gate_alarms.is_empty() {
         return format!(
@@ -1876,17 +2131,13 @@ fn verdict_text(inputs: &VerdictInputs<'_>) -> String {
             gate_alarms.join("\n  ")
         );
     }
-    if final_eval {
-        return format!(
-            "PUBLICATION RUN (FINAL tier) — NO SELECTION VERDICT. Measured nnue/static geomean \
-             {geomean_nnue_static:.4} over {nnue_static_pairs} pairs, noise floor \
-             ±{noise_floor_pct:.2}%. These numbers may be published; they may NOT be used to \
-             choose weights, thresholds, or extraction policy. Selection runs use the DEV tier."
-        );
-    }
-    // Censoring gate next (Codex P1): with a policy failing >10% of kernels
-    // the geomean is computed over a policy-selected survivor subset, and no
-    // margin — however large — supports a directional claim.
+    // Censoring gate next (Codex P1 + 3758853801): with a policy failing >10%
+    // of kernels the geomean is computed over a policy-selected survivor
+    // subset, and no margin — however large — supports a directional claim.
+    // This guard sits BEFORE the publication return on purpose: a FINAL-tier
+    // geomean over a survivor subset is exactly as unpublishable as it is
+    // unselectable, and the earlier ordering let `--final-eval` say "may be
+    // published" over numbers the censoring rule rejects.
     let censoring = rates.censoring();
     if !censoring.is_empty() {
         let offenders = censoring
@@ -1897,50 +2148,69 @@ fn verdict_text(inputs: &VerdictInputs<'_>) -> String {
         return format!(
             "INCONCLUSIVE-CENSORED: policy failure rate over {:.0}% of kernels ({offenders}; \
              all rates: {}) — the surviving kernel set is selected on policy success, so the \
-             geomean cannot ground any verdict (Codex P1).",
+             geomean cannot ground any verdict or publication claim (Codex P1, 3758853801).",
             MAX_POLICY_FAILURE_RATE * 100.0,
             rates.describe()
         );
     }
-    // Positive pct = NNUE faster than static.
-    let pct = (geomean_nnue_static - 1.0) * -100.0;
     if geomean_nnue_static.is_nan() {
-        return "INCONCLUSIVE: no valid nnue/static pairs (all failed correctness/compile)."
+        return "INCONCLUSIVE: no valid nnue/static pairs (all failed correctness/compile) — \
+                nothing to select on, nothing to publish."
             .to_string();
     }
-    if noise_floor_pct.is_nan() {
+    let ci_text = match ci {
+        Some((lo, hi)) => format!("95% CI [{lo:.4}, {hi:.4}] over kernels"),
+        None => "no CI (fewer than 2 pairs)".to_string(),
+    };
+    if final_eval {
         return format!(
-            "INCONCLUSIVE: NNUE margin {pct:+.2}% geomean, but the noise floor could not be \
-             measured (no static A/A pairs) — no claim either way."
+            "PUBLICATION RUN (FINAL tier) — NO SELECTION VERDICT. Measured nnue/static geomean \
+             {geomean_nnue_static:.4} ({ci_text}) over {nnue_static_pairs} pairs, noise floor \
+             ±{noise_floor_pct:.2}%. These numbers may be published; they may NOT be used to \
+             choose weights, thresholds, or extraction policy. Selection runs use the DEV tier."
         );
     }
-    if pct.abs() <= noise_floor_pct {
+    let Some((ci_lo, ci_hi)) = ci else {
         return format!(
-            "INCONCLUSIVE: NNUE margin {pct:+.2}% geomean is inside the ±{noise_floor_pct:.2}% \
-             run noise floor (static A/A) — no claim either way (plan 0.3b)."
+            "INCONCLUSIVE: only {nnue_static_pairs} nnue/static pair(s) — no confidence interval \
+             is computable, and a verdict from a point estimate is what this protocol exists to \
+             refuse. Raise --max-kernels."
         );
-    }
-    if pct > 5.0 {
+    };
+    // Positive pct = NNUE faster than static. The interval maps ratio-space
+    // [lo, hi] onto pct-space [pct_lo, pct_hi] with the endpoints swapping.
+    let pct = (geomean_nnue_static - 1.0) * -100.0;
+    let pct_lo = (ci_hi - 1.0) * -100.0;
+    let pct_hi = (ci_lo - 1.0) * -100.0;
+    let interval = format!(
+        "geomean {pct:+.2}%, 95% CI [{pct_lo:+.2}%, {pct_hi:+.2}%] over {nnue_static_pairs} \
+         kernels, A/A noise floor ±{noise_floor_pct:.2}%"
+    );
+    if pct_lo > 5.0 {
         return format!(
-            "NNUE > static latency prior by {pct:.2}% geomean (noise floor \
-             ±{noise_floor_pct:.2}%) — Phase 2 gate PASSES, NNUE extraction earns its keep \
-             (survived failure rates: {}).",
+            "NNUE > static latency prior: the ENTIRE 95% CI clears the +5% gate ({interval}) — \
+             Phase 2 gate PASSES, NNUE extraction earns its keep (survived failure rates: {}).",
             rates.describe()
         );
     }
-    if pct < -5.0 {
+    if pct_hi < -5.0 {
         return format!(
-            "NNUE < static latency prior by {:.2}% geomean (noise floor ±{noise_floor_pct:.2}%) \
-             — Phase 2 gate FAILS per the plan: keep the static prior as default, NNUE opt-in \
-             only.",
-            -pct
+            "NNUE < static latency prior: the ENTIRE 95% CI is below the -5% line ({interval}) — \
+             Phase 2 gate FAILS per the plan: keep the static prior as default, NNUE opt-in only."
+        );
+    }
+    if pct_lo > -5.0 && pct_hi < 5.0 {
+        return format!(
+            "NNUE approx-ties static latency prior: the ENTIRE 95% CI sits inside the ±5% \
+             decision band ({interval}) — Phase 2 gate FAILS per the plan (no meaningful win): \
+             keep the static prior as default, NNUE opt-in only, iterate (plan 4.3)."
         );
     }
     format!(
-        "NNUE approx-ties static latency prior ({pct:+.2}% geomean — above the \
-         ±{noise_floor_pct:.2}% noise floor but inside the ±5% decision band) — Phase 2 gate \
-         FAILS per the plan (no meaningful win): keep the static prior as default, NNUE opt-in \
-         only."
+        "INCONCLUSIVE-UNDERPOWERED: the 95% CI straddles a ±5% gate line ({interval}) — the \
+         estimator cannot resolve a verdict at this eval-set size. Re-run with a larger \
+         --max-kernels (CI width shrinks as 1/sqrt(n); 0 = the whole tier); do NOT re-roll the \
+         same size until a verdict appears."
     )
 }
 
@@ -2072,7 +2342,7 @@ fn tier_corpus_path(corpus_dir: &str, tier: Tier) -> PathBuf {
 }
 
 /// Deterministically choose at most `max_kernels` entries of a tier, always
-/// keeping the ones `is_pinned` marks.
+/// keeping the ones `is_pinned` marks (Codex P1, comment 3744800529).
 ///
 /// Selection is a seeded shuffle of the *unpinned* INDICES followed by a sort,
 /// so the chosen subset is reproducible from `(sample_seed, max_kernels, tier
@@ -2198,6 +2468,7 @@ fn config_params(tier: Tier, args: &Args, source: &SourceVersion, corpus_hash: &
     format!(
         "saturate={SATURATE_LIMIT};top_k={EXTRACT_TOP_K};tier={};max_kernels={};\
          sample_seed={:#x};repeats={TIMED_REPEATS};order_seed={ORDER_SEED:#x};\
+         boot={BOOTSTRAP_ITERS}:{BOOTSTRAP_SEED:#x};\
          mode={};tuples={INPUT_TUPLES};grid={};rev={};corpus={corpus_hash};{}",
         tier.name(),
         args.max_kernels,
@@ -2284,11 +2555,18 @@ fn main() {
         )
     });
     mint.require_mode(BENCH_MODE);
+    // The sidecar must describe THESE bytes (Codex 3758853787): weights and
+    // sidecar are separate files, and an aborted training run can replace one
+    // without the other — a mode check alone would score stale metadata as if
+    // it described the replacement weights.
+    mint.require_weights(&weights_bytes);
     eprintln!(
-        "Weights minted by {} on {} samples in BenchMode::{} — matches this gate's mode.",
+        "Weights minted by {} on {} samples in BenchMode::{} — matches this gate's mode and \
+         weights identity {}.",
         mint.trainer,
         mint.samples,
-        bench_mode_slug(BENCH_MODE)
+        bench_mode_slug(BENCH_MODE),
+        mint.weights_fnv64
     );
 
     // Config hash: weights bytes + the parameters that shape the measurement
@@ -2383,13 +2661,19 @@ fn main() {
         args.sample_seed,
         |(name, _, _)| family_of(name) == "named",
     );
+    let selected_named = selected
+        .iter()
+        .filter(|(name, _, _)| family_of(name) == "named")
+        .count();
     eprintln!(
-        "Corpus: {} of {} {}-tier expressions from {} (subsample seed {:#x})",
+        "Corpus: {} of {} {}-tier expressions from {} (subsample seed {:#x}; {} named entries \
+         retained unconditionally — Codex P1)",
         selected.len(),
         corpus_entries,
         tier.name(),
         corpus_path.display(),
-        args.sample_seed
+        args.sample_seed,
+        selected_named,
     );
 
     let inputs: Vec<KernelInput> = selected
@@ -2495,6 +2779,7 @@ fn main() {
                 let sentinel = bench
                     .sentinel
                     .expect("session-minted BenchResult always carries a SentinelContext");
+                let normalization = sentinel.normalization();
                 out.write(&MeasurementRecord {
                     record: "measurement",
                     kernel: &kernel.name,
@@ -2510,9 +2795,15 @@ fn main() {
                     extract_us,
                     correctness: "ok",
                     local_sentinel_ns: sentinel.local_sentinel_ns,
-                    sentinel_normalization: sentinel.normalization(),
+                    sentinel_normalization: normalization,
                 });
-                samples[ki][arm.idx()].push(bench.ns);
+                // Aggregate opening-clock values (Codex 3758853795): the raw
+                // reading stays in the record beside its correction factor,
+                // but every median, policy ratio, A/A noise floor, and verdict
+                // downstream sees the drift-corrected value. The seeded arm
+                // shuffle only randomizes clock drift across arms; it cannot
+                // cancel it in a finite run.
+                samples[ki][arm.idx()].push(bench.ns * normalization);
             }
         }
         eprintln!("  repeat {} / {TIMED_REPEATS} done", repeat + 1);
@@ -2527,12 +2818,12 @@ fn main() {
         .map(|(k, s)| summarize(k, s))
         .collect();
 
-    let mut all_nnue_static: Vec<f64> = Vec::new();
+    let mut nnue_static_pairs: Vec<(String, f64)> = Vec::new();
     let mut all_static_noswap: Vec<f64> = Vec::new();
     let mut aa_ratios: Vec<f64> = Vec::new();
     for s in &summaries {
         if let (Some(nnue), Some(stat)) = (s.ns_nnue, s.ns_static) {
-            all_nnue_static.push(nnue / stat);
+            nnue_static_pairs.push((s.name.clone(), nnue / stat));
         }
         if let Some(stat) = s.ns_static {
             all_static_noswap.push(stat / s.ns_noswap);
@@ -2631,6 +2922,7 @@ fn main() {
         println!("{}", "-".repeat(rule_width));
     }
 
+    let all_nnue_static: Vec<f64> = nnue_static_pairs.iter().map(|(_, r)| *r).collect();
     let geomean_nnue_static = geomean(&all_nnue_static, "nnue/static ratios");
     let geomean_static_noswap = geomean(&all_static_noswap, "static/noswap ratios");
     println!(
@@ -2640,6 +2932,46 @@ fn main() {
         geomean_nnue_static,
         geomean_static_noswap,
     );
+
+    // The verdict's instrument (plan 4.3 rework): a CI over KERNELS — the
+    // variance source that actually dominated round 0 — plus the paired ratio
+    // distribution and leave-one-out sensitivity, because the geomean has
+    // repeatedly been dominated by single kernels.
+    let ratio_ci = bootstrap_geomean_ci(&all_nnue_static, BOOTSTRAP_ITERS, BOOTSTRAP_SEED);
+    let ratio_dist = RatioDistribution::of(&all_nnue_static);
+    let loo = LooSensitivity::of(&nnue_static_pairs);
+    match &ratio_dist {
+        Some(d) => println!(
+            "Paired nnue/static ratios (n={}): median {:.4}, IQR [{:.4}, {:.4}], \
+             wins {} (<1.0) / losses {} (>1.0) / ties {}",
+            all_nnue_static.len(),
+            d.median,
+            d.q1,
+            d.q3,
+            d.wins,
+            d.losses,
+            d.ties
+        ),
+        None => println!("Paired nnue/static ratios: none (no kernel produced both arms)"),
+    }
+    match ratio_ci {
+        Some((lo, hi)) => println!(
+            "Bootstrap 95% CI on the geomean ({BOOTSTRAP_ITERS} resamples over kernels, seed \
+             {BOOTSTRAP_SEED:#x}): [{lo:.4}, {hi:.4}]"
+        ),
+        None => println!(
+            "Bootstrap 95% CI on the geomean: unavailable ({} pair(s) < 2)",
+            all_nnue_static.len()
+        ),
+    }
+    match &loo {
+        Some(l) => println!(
+            "Leave-one-out geomean range: [{:.4}, {:.4}]; most influential kernel '{}' shifts \
+             the geomean by {:.2}%",
+            l.min, l.max, l.most_influential, l.shift_pct
+        ),
+        None => println!("Leave-one-out sensitivity: unavailable (fewer than 2 pairs)"),
+    }
 
     let named_nnue_fail = named.iter().filter(|s| s.nnue_fail).count();
     let named_static_fail = named.iter().filter(|s| s.static_fail).count();
@@ -2799,6 +3131,7 @@ fn main() {
         final_eval: args.final_eval,
         gate_alarms: &gate_alarms,
         geomean_nnue_static,
+        ci: ratio_ci,
         nnue_static_pairs: all_nnue_static.len(),
         noise_floor_pct,
         rates: &failure_rates,
@@ -2849,6 +3182,20 @@ fn main() {
         mode: bench_mode_slug(BENCH_MODE),
         check_points: grid.points.len(),
         geomean_nnue_static: finite_or_none(geomean_nnue_static),
+        geomean_nnue_static_ci_lo: ratio_ci.map(|(lo, _)| lo),
+        geomean_nnue_static_ci_hi: ratio_ci.map(|(_, hi)| hi),
+        bootstrap_iters: BOOTSTRAP_ITERS,
+        bootstrap_seed: format!("{BOOTSTRAP_SEED:#x}"),
+        nnue_static_pairs: all_nnue_static.len(),
+        ratio_median: ratio_dist.as_ref().map(|d| d.median),
+        ratio_q1: ratio_dist.as_ref().map(|d| d.q1),
+        ratio_q3: ratio_dist.as_ref().map(|d| d.q3),
+        ratio_wins: ratio_dist.as_ref().map_or(0, |d| d.wins),
+        ratio_losses: ratio_dist.as_ref().map_or(0, |d| d.losses),
+        loo_geomean_min: loo.as_ref().map(|l| l.min),
+        loo_geomean_max: loo.as_ref().map(|l| l.max),
+        loo_most_influential: loo.as_ref().map(|l| l.most_influential.clone()),
+        loo_max_shift_pct: loo.as_ref().map(|l| l.shift_pct),
         geomean_static_noswap: finite_or_none(geomean_static_noswap),
         aa_geomean: finite_or_none(aa_geomean),
         noise_floor_pct: finite_or_none(noise_floor_pct),
@@ -2900,6 +3247,17 @@ fn main() {
         mode: bench_mode_slug(BENCH_MODE),
         weights_mint_mode: mint.bench_mode.clone(),
         geomean_nnue_static: finite_or_none(geomean_nnue_static),
+        geomean_nnue_static_ci_lo: ratio_ci.map(|(lo, _)| lo),
+        geomean_nnue_static_ci_hi: ratio_ci.map(|(_, hi)| hi),
+        nnue_static_pairs: all_nnue_static.len(),
+        ratio_median: ratio_dist.as_ref().map(|d| d.median),
+        ratio_q1: ratio_dist.as_ref().map(|d| d.q1),
+        ratio_q3: ratio_dist.as_ref().map(|d| d.q3),
+        ratio_wins: ratio_dist.as_ref().map_or(0, |d| d.wins),
+        ratio_losses: ratio_dist.as_ref().map_or(0, |d| d.losses),
+        loo_geomean_min: loo.as_ref().map(|l| l.min),
+        loo_geomean_max: loo.as_ref().map(|l| l.max),
+        loo_most_influential: loo.as_ref().map(|l| l.most_influential.clone()),
         geomean_static_noswap: finite_or_none(geomean_static_noswap),
         noise_floor_pct: finite_or_none(noise_floor_pct),
         kernels_excluded,
@@ -3041,6 +3399,33 @@ mod tests {
         // else — never a run that silently measured fewer than it was told.
         let tight = subsample(entries, 3, 0x1234, is_pinned);
         assert_eq!(tight, pinned.to_vec());
+    }
+
+    #[test]
+    fn subsample_retains_every_pinned_entry_at_every_seed() {
+        // Codex P1 (comment 3744800529): ~9,480 synthetic + 5 named at
+        // --max-kernels 40 gave a ~2% chance of drawing even ONE named kernel.
+        // The named entries are the real-world portion of the claim: they must
+        // survive every subsample, at every seed.
+        let named: Vec<i64> = (0..5).map(|i| -(i + 1)).collect(); // negatives = named
+        let mut entries: Vec<i64> = (0..9_480).collect();
+        entries.extend(&named);
+        let is_named = |e: &i64| *e < 0;
+        for seed in [0x1_u64, 0x1234, 0x5A11_2026_0805, u64::MAX] {
+            let picked = subsample(entries.clone(), 40, seed, is_named);
+            assert_eq!(picked.len(), 40);
+            let picked_named: Vec<i64> = picked.iter().copied().filter(|e| is_named(e)).collect();
+            assert_eq!(
+                picked_named.len(),
+                named.len(),
+                "seed {seed:#x}: every named entry must be retained"
+            );
+            assert_eq!(
+                picked.iter().filter(|e| **e >= 0).count(),
+                35,
+                "the synthetic remainder fills the rest of the budget"
+            );
+        }
     }
 
     // ── The objective the head was trained on (Codex R6) ────────────────────
@@ -3266,11 +3651,11 @@ mod tests {
     #[test]
     fn gate_tally_counts_each_failure_kind_separately() {
         let mut t = GateTally::default();
-        t.record(None);
-        t.record(Some(&GateFailure::SameForm("m".into())));
-        t.record(Some(&GateFailure::CrossForm("c".into())));
-        t.record(Some(&GateFailure::CompileFailed("j".into())));
-        t.record(Some(&GateFailure::OracleUnsupported("o".into())));
+        t.record_extracted(None);
+        t.record_extracted(Some(&GateFailure::SameForm("m".into())));
+        t.record_extracted(Some(&GateFailure::CrossForm("c".into())));
+        t.record_extracted(Some(&GateFailure::CompileFailed("j".into())));
+        t.record_extracted(Some(&GateFailure::OracleUnsupported("o".into())));
         assert_eq!(t.gates, 5);
         assert_eq!(t.same_form, 1);
         assert_eq!(t.cross_form, 1);
@@ -3286,9 +3671,9 @@ mod tests {
         // whole run died, taking five already-passing named kernels with it.
         let mut t = GateTally::default();
         for _ in 0..99 {
-            t.record(None);
+            t.record_extracted(None);
         }
-        t.record(Some(&GateFailure::CrossForm("one".into())));
+        t.record_extracted(Some(&GateFailure::CrossForm("one".into())));
         assert!(
             t.alarms().is_empty(),
             "1% cross-form divergence is inside the documented threshold"
@@ -3299,10 +3684,10 @@ mod tests {
     fn a_systematic_cross_form_divergence_rate_fails_the_run() {
         let mut t = GateTally::default();
         for _ in 0..80 {
-            t.record(None);
+            t.record_extracted(None);
         }
         for _ in 0..20 {
-            t.record(Some(&GateFailure::CrossForm("x".into())));
+            t.record_extracted(Some(&GateFailure::CrossForm("x".into())));
         }
         let alarms = t.alarms();
         assert_eq!(alarms.len(), 1, "got: {alarms:?}");
@@ -3315,9 +3700,9 @@ mod tests {
         // arena, so a disagreement is a compiler bug, not corpus noise.
         let mut t = GateTally::default();
         for _ in 0..49 {
-            t.record(None);
+            t.record_extracted(None);
         }
-        t.record(Some(&GateFailure::SameForm("miscompile".into())));
+        t.record_extracted(Some(&GateFailure::SameForm("miscompile".into())));
         let alarms = t.alarms();
         assert_eq!(alarms.len(), 1, "got: {alarms:?}");
         assert!(alarms[0].starts_with("SAME-FORM"), "got: {}", alarms[0]);
@@ -3350,9 +3735,11 @@ mod tests {
     }
 
     /// A selection run with no correctness alarms — the baseline every verdict
-    /// test varies one thing from.
-    fn selection_verdict(
+    /// test varies one thing from. The CI defaults to a tight band around the
+    /// geomean, so tests exercising other branches stay valid.
+    fn selection_verdict_ci(
         geomean_nnue_static: f64,
+        ci: Option<(f64, f64)>,
         noise_floor_pct: f64,
         rates: &PolicyFailureRates,
     ) -> String {
@@ -3360,10 +3747,24 @@ mod tests {
             final_eval: false,
             gate_alarms: &[],
             geomean_nnue_static,
+            ci,
             nnue_static_pairs: 100,
             noise_floor_pct,
             rates,
         })
+    }
+
+    fn selection_verdict(
+        geomean_nnue_static: f64,
+        noise_floor_pct: f64,
+        rates: &PolicyFailureRates,
+    ) -> String {
+        selection_verdict_ci(
+            geomean_nnue_static,
+            Some((geomean_nnue_static * 0.99, geomean_nnue_static * 1.01)),
+            noise_floor_pct,
+            rates,
+        )
     }
 
     #[test]
@@ -3382,6 +3783,42 @@ mod tests {
     }
 
     #[test]
+    fn censoring_vetoes_a_publication_run_too() {
+        // Codex 3758853801: the publication return used to sit ABOVE the
+        // censoring gate, so a FINAL run whose policies failed >10% of kernels
+        // still printed "may be published" over a survivor-selected geomean —
+        // and a FINAL run with zero pairs published a NaN.
+        let rates = PolicyFailureRates::compute(100, 0, 0, 60);
+        let verdict = verdict_text(&VerdictInputs {
+            final_eval: true,
+            gate_alarms: &[],
+            geomean_nnue_static: 0.5,
+            ci: Some((0.45, 0.55)),
+            nnue_static_pairs: 40,
+            noise_floor_pct: 0.3,
+            rates: &rates,
+        });
+        assert!(
+            verdict.starts_with("INCONCLUSIVE-CENSORED"),
+            "got: {verdict}"
+        );
+        assert!(!verdict.contains("may be published"), "got: {verdict}");
+
+        let clean = PolicyFailureRates::compute(100, 0, 0, 0);
+        let verdict = verdict_text(&VerdictInputs {
+            final_eval: true,
+            gate_alarms: &[],
+            geomean_nnue_static: f64::NAN,
+            ci: None,
+            nnue_static_pairs: 0,
+            noise_floor_pct: f64::NAN,
+            rates: &clean,
+        });
+        assert!(verdict.starts_with("INCONCLUSIVE"), "got: {verdict}");
+        assert!(!verdict.contains("may be published"), "got: {verdict}");
+    }
+
+    #[test]
     fn clean_run_passes_and_states_the_failure_rates_it_survived() {
         let rates = PolicyFailureRates::compute(100, 1, 2, 3);
         assert!(rates.censoring().is_empty(), "1-3% is under the 10% bar");
@@ -3393,6 +3830,124 @@ mod tests {
                 && verdict.contains("nnue 4.0%"),
             "a PASS must state the failure rates it survived; got: {verdict}"
         );
+    }
+
+    // ── The verdict compares the CI against the gate, not a point estimate ──
+
+    #[test]
+    fn a_pass_requires_the_whole_interval_to_clear_the_gate() {
+        let rates = PolicyFailureRates::compute(100, 0, 0, 0);
+        // Point estimate says +12% win, but the CI's slow end (ratio 0.97 →
+        // +3%) does not clear +5%: round 0's exact failure mode, where a
+        // favorable point estimate was one kernel away from flipping.
+        let verdict = selection_verdict_ci(0.88, Some((0.80, 0.97)), 0.3, &rates);
+        assert!(
+            verdict.starts_with("INCONCLUSIVE-UNDERPOWERED"),
+            "got: {verdict}"
+        );
+        assert!(verdict.contains("--max-kernels"), "got: {verdict}");
+        // Move the whole interval past the gate and it passes.
+        let verdict = selection_verdict_ci(0.88, Some((0.80, 0.94)), 0.3, &rates);
+        assert!(verdict.contains("PASSES"), "got: {verdict}");
+        assert!(verdict.contains("ENTIRE 95% CI"), "got: {verdict}");
+    }
+
+    #[test]
+    fn a_decisive_loss_requires_the_whole_interval_below_the_line() {
+        let rates = PolicyFailureRates::compute(100, 0, 0, 0);
+        // Whole CI above ratio 1.05 (slower than -5%): decisive FAIL.
+        let verdict = selection_verdict_ci(1.10, Some((1.06, 1.15)), 0.3, &rates);
+        assert!(verdict.contains("FAILS"), "got: {verdict}");
+        assert!(verdict.contains("ENTIRE 95% CI"), "got: {verdict}");
+        // CI reaching back inside the band: underpowered, not a verdict.
+        let verdict = selection_verdict_ci(1.10, Some((1.02, 1.19)), 0.3, &rates);
+        assert!(
+            verdict.starts_with("INCONCLUSIVE-UNDERPOWERED"),
+            "got: {verdict}"
+        );
+    }
+
+    #[test]
+    fn an_interval_inside_the_band_is_a_resolved_tie_not_underpowered() {
+        let rates = PolicyFailureRates::compute(100, 0, 0, 0);
+        // CI wholly inside ±5%: the estimator RESOLVED "no meaningful win" —
+        // plan 4.3 says iterate, and the static prior stays default.
+        let verdict = selection_verdict_ci(1.01, Some((0.98, 1.04)), 0.3, &rates);
+        assert!(verdict.contains("approx-ties"), "got: {verdict}");
+        assert!(verdict.contains("FAILS"), "got: {verdict}");
+        assert!(verdict.contains("iterate"), "got: {verdict}");
+    }
+
+    #[test]
+    fn no_interval_means_no_verdict() {
+        let rates = PolicyFailureRates::compute(100, 0, 0, 0);
+        // A 50% point-estimate win with no CI must not pass: refusing the
+        // point estimate is the entire reason the interval exists.
+        let verdict = selection_verdict_ci(0.5, None, 0.3, &rates);
+        assert!(verdict.starts_with("INCONCLUSIVE"), "got: {verdict}");
+        assert!(!verdict.contains("PASSES"), "got: {verdict}");
+    }
+
+    // ── Bootstrap CI / ratio distribution / leave-one-out ───────────────────
+
+    #[test]
+    fn bootstrap_ci_is_deterministic_and_brackets_the_geomean() {
+        let ratios: Vec<f64> = (0..40).map(|i| 0.8 + 0.01 * i as f64).collect();
+        let a = bootstrap_geomean_ci(&ratios, 2000, BOOTSTRAP_SEED).expect("n=40 has a CI");
+        let b = bootstrap_geomean_ci(&ratios, 2000, BOOTSTRAP_SEED).expect("n=40 has a CI");
+        assert_eq!(a, b, "same seed must give the same interval");
+        let g = geomean(&ratios, "test ratios");
+        assert!(a.0 < g && g < a.1, "CI {a:?} must bracket the geomean {g}");
+        assert!(a.0 < a.1);
+        // More dispersion → wider interval.
+        let tight: Vec<f64> = vec![1.0; 40];
+        let t = bootstrap_geomean_ci(&tight, 2000, BOOTSTRAP_SEED).expect("CI");
+        assert_eq!(t, (1.0, 1.0), "zero dispersion is a zero-width interval");
+    }
+
+    #[test]
+    fn bootstrap_ci_refuses_fewer_than_two_kernels() {
+        assert!(bootstrap_geomean_ci(&[], 100, 1).is_none());
+        assert!(bootstrap_geomean_ci(&[0.9], 100, 1).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "non-positive ratio")]
+    fn bootstrap_ci_panics_on_nonpositive_ratios() {
+        let _ = bootstrap_geomean_ci(&[1.0, 0.0], 100, 1);
+    }
+
+    #[test]
+    fn ratio_distribution_counts_wins_and_losses() {
+        let d = RatioDistribution::of(&[0.5, 0.9, 1.0, 1.1, 1.3]).expect("nonempty");
+        assert_eq!(d.wins, 2);
+        assert_eq!(d.losses, 2);
+        assert_eq!(d.ties, 1);
+        assert_eq!(d.median, 1.0);
+        assert_eq!(d.q1, 0.9);
+        assert_eq!(d.q3, 1.1);
+        assert!(RatioDistribution::of(&[]).is_none());
+    }
+
+    #[test]
+    fn leave_one_out_finds_the_dominating_kernel() {
+        // Round 0: a 12-kernel geomean of 0.9128 flipped to 1.1031 by dropping
+        // ONE kernel. The LOO figure exists to make that visible every run.
+        let pairs: Vec<(String, f64)> = vec![
+            ("a".into(), 1.0),
+            ("b".into(), 1.02),
+            ("outlier".into(), 0.354),
+            ("c".into(), 0.98),
+        ];
+        let loo = LooSensitivity::of(&pairs).expect("n=4");
+        assert_eq!(loo.most_influential, "outlier");
+        assert!(loo.min < loo.max);
+        assert!(
+            loo.shift_pct > 20.0,
+            "dropping the outlier must shift the geomean hard, got {}%",
+            loo.shift_pct
+        );
+        assert!(LooSensitivity::of(&pairs[..1]).is_none(), "n=1 has no LOO");
     }
 
     #[test]
@@ -3412,15 +3967,49 @@ mod tests {
 
     // ── Correctness alarms precede the verdict (Codex 3744586360) ───────────
 
-    /// A tally with `same_form` miscompiles and `cross_form` divergences out of
-    /// 100 gates.
+    /// A tally with `same_form` miscompiles and `cross_form` divergences out
+    /// of 100 gates, all of them extracted-policy gates (so both rates share
+    /// the denominator and read as plain percentages).
     fn tally_with(same_form: usize, cross_form: usize) -> GateTally {
         GateTally {
             gates: 100,
+            extracted_gates: 100,
             same_form,
             cross_form,
             ..GateTally::default()
         }
+    }
+
+    #[test]
+    fn cross_form_rate_is_over_extracted_gates_only() {
+        // Codex 3759014680: the healthy three-gate shape is one no-swap gate
+        // per kernel beside two extracted gates. 12 divergences over 100
+        // extracted attempts is 12% — over the old 150-gate denominator it
+        // read 8% and slid under the 10% alarm.
+        let mut tally = GateTally::default();
+        for i in 0..50 {
+            tally.record_noswap(None);
+            let cross = GateFailure::CrossForm("test".into());
+            for arm in 0..2 {
+                let diverged = i * 2 + arm < 12;
+                tally.record_extracted(diverged.then_some(&cross));
+            }
+        }
+        assert_eq!(tally.gates, 150);
+        assert_eq!(tally.extracted_gates, 100);
+        assert!((tally.cross_form_rate() - 0.12).abs() < 1e-12);
+        assert_eq!(
+            tally.alarms().len(),
+            1,
+            "12% over extracted gates must trip the 10% alarm"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "no-swap gate produced CrossForm")]
+    fn a_noswap_cross_form_is_a_harness_bug() {
+        let mut tally = GateTally::default();
+        tally.record_noswap(Some(&GateFailure::CrossForm("impossible".into())));
     }
 
     #[test]
@@ -3435,6 +4024,7 @@ mod tests {
             final_eval: false,
             gate_alarms: &alarms,
             geomean_nnue_static: 0.5,
+            ci: Some((0.45, 0.55)),
             nnue_static_pairs: 100,
             noise_floor_pct: 1.0,
             rates: &rates,
@@ -3462,6 +4052,7 @@ mod tests {
             final_eval: true,
             gate_alarms: &alarms,
             geomean_nnue_static: 0.93,
+            ci: Some((0.90, 0.96)),
             nnue_static_pairs: 100,
             noise_floor_pct: 0.44,
             rates: &rates,
@@ -3489,6 +4080,7 @@ mod tests {
             final_eval: false,
             gate_alarms: &alarms,
             geomean_nnue_static: 0.93,
+            ci: Some((0.90, 0.96)),
             nnue_static_pairs: 100,
             noise_floor_pct: 0.44,
             rates: &rates,
@@ -3507,6 +4099,7 @@ mod tests {
             final_eval: true,
             gate_alarms: &[],
             geomean_nnue_static: 0.93,
+            ci: Some((0.90, 0.96)),
             nnue_static_pairs: 42,
             noise_floor_pct: 0.44,
             rates: &rates,
@@ -3522,8 +4115,8 @@ mod tests {
         let failure = GateFailure::NoBoundedPoints("k/nnue: all skipped".into());
         assert_eq!(failure.kind(), "no_bounded_points");
         let mut tally = GateTally::default();
-        tally.record(Some(&failure));
-        tally.record(None);
+        tally.record_extracted(Some(&failure));
+        tally.record_extracted(None);
         assert_eq!(tally.no_bounded_points, 1);
         assert_eq!(
             tally.oracle_unsupported, 0,
