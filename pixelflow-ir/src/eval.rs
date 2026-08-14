@@ -394,6 +394,30 @@ mod tests {
     }
 
     #[test]
+    fn fold_an_empty_reduce_domain_to_the_combiners_monoid_identity() {
+        // extent=0 skips `reduce`'s loop entirely, so the result IS
+        // `OpKind::monoid_identity()` — the only place that private value is
+        // observable through the public eval_scalar/push_reduce surface.
+        fn empty_reduce(combiner: OpKind) -> f32 {
+            let mut arena = ExprArena::new();
+            let body = arena.push_var(4);
+            let root = arena.push_reduce(combiner, 4, 0, body);
+            eval_scalar(&arena, root, &[0.0; 4], &BindingTable::empty())
+        }
+
+        assert_eq!(empty_reduce(OpKind::Add), 0.0);
+        assert_eq!(empty_reduce(OpKind::Mul), 1.0);
+        assert_eq!(empty_reduce(OpKind::Min), f32::INFINITY);
+        assert_eq!(empty_reduce(OpKind::Max), f32::NEG_INFINITY);
+        assert_eq!(empty_reduce(OpKind::BitOr).to_bits(), 0u32);
+        assert_eq!(
+            empty_reduce(OpKind::BitAnd).to_bits(),
+            u32::MAX,
+            "BitAnd's monoid identity is the all-ones bit pattern (never read as a number)"
+        );
+    }
+
+    #[test]
     fn reduce_lowering_preserves_semantics() {
         // Σ over i of (X + i), lowered by expand_reduce, must equal the fold.
         use crate::passes::expand_reduce;
