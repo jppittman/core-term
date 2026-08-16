@@ -115,6 +115,132 @@ mod tests {
         a.store(&mut out);
     }
 
+    // SimdOps's *provided* methods (exp, ln, log10, pow, hypot, mul_rsqrt,
+    // ceil, round, fract, clamp) are default trait-method bodies defined once
+    // in `backend::mod` and inherited by every backend (SSE2, AVX2, AVX-512,
+    // NEON) rather than reimplemented per-ISA — none of the concrete
+    // `SimdOps` impls override them. Exercising them through `F32x4` here
+    // covers the shared formula all backends actually run.
+
+    #[test]
+    fn exp_matches_the_natural_exponential() {
+        let mut out = [0.0; 4];
+        F32x4::splat(1.0).exp().store(&mut out);
+        for x in out {
+            assert!((x - std::f32::consts::E).abs() < 1e-3, "exp(1) got {x}");
+        }
+    }
+
+    #[test]
+    fn ln_matches_the_natural_logarithm() {
+        let mut out = [0.0; 4];
+        F32x4::splat(std::f32::consts::E).ln().store(&mut out);
+        for x in out {
+            assert!((x - 1.0).abs() < 1e-3, "ln(e) got {x}");
+        }
+    }
+
+    #[test]
+    fn log10_matches_the_base_ten_logarithm() {
+        let mut out = [0.0; 4];
+        F32x4::splat(100.0).log10().store(&mut out);
+        for x in out {
+            assert!((x - 2.0).abs() < 1e-3, "log10(100) got {x}");
+        }
+    }
+
+    #[test]
+    fn pow_raises_a_positive_base_to_a_real_exponent() {
+        // 4^3 = 64. Chosen so `*`->`+`/`/` mutants in `exp * self.log2()`
+        // land on 16/32 respectively instead of coincidentally hitting 64.
+        let mut out = [0.0; 4];
+        F32x4::splat(4.0).pow(F32x4::splat(3.0)).store(&mut out);
+        for x in out {
+            assert!((x - 64.0).abs() < 5e-2, "4^3 got {x}");
+        }
+    }
+
+    #[test]
+    fn hypot_computes_the_euclidean_norm_of_two_lanes() {
+        // The 3-4-5 triangle: every `+`/`*` mutation in `self*self + y*y`
+        // lands on a different wrong value (17, 22, 144, ...), none of them 5.
+        let mut out = [0.0; 4];
+        F32x4::splat(3.0).hypot(F32x4::splat(4.0)).store(&mut out);
+        for x in out {
+            assert!((x - 5.0).abs() < 1e-4, "hypot(3, 4) got {x}");
+        }
+    }
+
+    #[test]
+    fn mul_rsqrt_divides_by_the_square_root_of_the_other_operand() {
+        // 6 * rsqrt(4) ~= 6 / 2 = 3.
+        let mut out = [0.0; 4];
+        F32x4::splat(6.0)
+            .mul_rsqrt(F32x4::splat(4.0))
+            .store(&mut out);
+        for x in out {
+            assert!((x - 3.0).abs() < 1e-2, "6 * rsqrt(4) got {x}");
+        }
+    }
+
+    #[test]
+    fn ceil_rounds_toward_positive_infinity() {
+        let mut out = [0.0; 4];
+        F32x4::splat(2.3).ceil().store(&mut out);
+        assert_eq!(out, [3.0, 3.0, 3.0, 3.0]);
+
+        F32x4::splat(-2.3).ceil().store(&mut out);
+        assert_eq!(out, [-2.0, -2.0, -2.0, -2.0]);
+    }
+
+    #[test]
+    fn round_currently_implements_x_plus_half_floor_not_ieee_rounding() {
+        // Pins the *current* formula `(self + 0.5).floor()`, which CLAUDE.md
+        // documents as a known non-IEEE bug (round(-1.5) == -1 here, -2 under
+        // both x86 ties-to-even and aarch64 ties-away) rather than a
+        // guaranteed contract — this test exists to catch accidental further
+        // drift, not to certify the formula as correct.
+        let mut out = [0.0; 4];
+        F32x4::splat(2.4).round().store(&mut out);
+        assert_eq!(out, [2.0, 2.0, 2.0, 2.0]);
+
+        F32x4::splat(2.6).round().store(&mut out);
+        assert_eq!(out, [3.0, 3.0, 3.0, 3.0]);
+
+        F32x4::splat(-1.5).round().store(&mut out);
+        assert_eq!(out, [-1.0, -1.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn fract_returns_the_value_minus_its_floor() {
+        let mut out = [0.0; 4];
+        F32x4::splat(3.75).fract().store(&mut out);
+        for x in out {
+            assert!((x - 0.75).abs() < 1e-6, "fract(3.75) got {x}");
+        }
+
+        F32x4::splat(-1.25).fract().store(&mut out);
+        for x in out {
+            assert!((x - 0.75).abs() < 1e-6, "fract(-1.25) got {x}");
+        }
+    }
+
+    #[test]
+    fn clamp_bounds_a_value_between_lo_and_hi() {
+        let lo = F32x4::splat(0.0);
+        let hi = F32x4::splat(3.0);
+        let mut out = [0.0; 4];
+
+        F32x4::splat(5.0).clamp(lo, hi).store(&mut out);
+        assert_eq!(out, [3.0, 3.0, 3.0, 3.0]);
+
+        F32x4::splat(-5.0).clamp(lo, hi).store(&mut out);
+        assert_eq!(out, [0.0, 0.0, 0.0, 0.0]);
+
+        F32x4::splat(1.5).clamp(lo, hi).store(&mut out);
+        assert_eq!(out, [1.5, 1.5, 1.5, 1.5]);
+    }
+
     #[test]
     fn sse2_reciprocal_math() {
         let a = F32x4::splat(4.0);

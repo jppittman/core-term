@@ -607,3 +607,369 @@ mod every_op_is_priceable {
         }
     }
 }
+
+#[cfg(test)]
+mod construction_and_accessors {
+    use super::CostModel;
+    use pixelflow_ir::kind::OpKind;
+
+    #[test]
+    fn shallow_sets_an_aggressive_depth_penalty_but_keeps_latency_prior_costs() {
+        let model = CostModel::shallow();
+        assert_eq!(model.depth_threshold, 16);
+        assert_eq!(model.depth_penalty, 500);
+        assert_eq!(
+            model.cost(OpKind::Mul),
+            CostModel::latency_prior().cost(OpKind::Mul),
+            "shallow() should inherit latency-prior costs via ..Self::new(), not zero them"
+        );
+    }
+
+    #[test]
+    fn set_cost_is_visible_through_a_later_cost_call() {
+        let mut model = CostModel::zero();
+        assert_eq!(model.cost(OpKind::Add), 0);
+        model.set_cost(OpKind::Add, 999);
+        assert_eq!(model.cost(OpKind::Add), 999);
+    }
+
+    #[test]
+    fn depth_cost_is_zero_at_and_below_the_threshold() {
+        let mut model = CostModel::zero();
+        model.depth_threshold = 10;
+        model.depth_penalty = 3;
+        assert_eq!(model.depth_cost(0), 0);
+        assert_eq!(
+            model.depth_cost(10),
+            0,
+            "depth == threshold must not incur a penalty"
+        );
+    }
+
+    #[test]
+    fn depth_cost_scales_linearly_past_the_threshold() {
+        let mut model = CostModel::zero();
+        model.depth_threshold = 10;
+        model.depth_penalty = 3;
+        // (15 - 10) * 3 = 15. Chosen so `-`->`+`/`/` and `*`->`+`/`/` mutants
+        // each produce a different wrong answer (10, 5, 8, 1) instead of
+        // coincidentally agreeing with the correct one.
+        assert_eq!(model.depth_cost(15), 15);
+    }
+
+    // `depth_cost`'s `depth > threshold` guard has no input that distinguishes
+    // it from `depth >= threshold`: the two disagree only at depth == threshold,
+    // and there `(depth - threshold) * penalty` is 0 either way, matching the
+    // `false` branch's constant 0. Equivalent mutant, not a coverage gap —
+    // same category as kind.rs's Round `-0.5` tie documented in the
+    // 2026-08-14 audit.
+}
+
+#[cfg(test)]
+mod node_op_cost_tests {
+    use super::CostModel;
+    use crate::egraph::node::ENode;
+    use crate::egraph::ops::op_from_kind;
+    use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
+    use pixelflow_ir::kind::OpKind;
+
+    #[test]
+    fn leaves_cost_nothing() {
+        let model = CostModel::latency_prior();
+        assert_eq!(model.node_op_cost(&ENode::Var(0)), 0);
+        assert_eq!(model.node_op_cost(&ENode::Const(0)), 0);
+        let buffer = ENode::Buffer(BufferDecl {
+            id: BufferIdentity::mint(),
+            width: 4,
+            height: 4,
+        });
+        assert_eq!(model.node_op_cost(&buffer), 0);
+    }
+
+    #[test]
+    fn dwrt_is_priced_prohibitively_regardless_of_the_cost_table() {
+        let model = CostModel::zero();
+        let op = op_from_kind(OpKind::Dwrt).expect("Dwrt is a real op");
+        let node = ENode::Op {
+            op,
+            children: vec![],
+        };
+        assert_eq!(model.node_op_cost(&node), usize::MAX / 4);
+    }
+
+    #[test]
+    fn ordinary_ops_are_priced_from_the_cost_table() {
+        let model = CostModel::latency_prior();
+        let op = op_from_kind(OpKind::Mul).expect("Mul is a real op");
+        let node = ENode::Op {
+            op,
+            children: vec![],
+        };
+        assert_eq!(model.node_op_cost(&node), model.cost(OpKind::Mul));
+    }
+}
+
+#[cfg(test)]
+mod cost_function_trait_impl {
+    use super::{CostFunction, CostModel};
+    use crate::egraph::node::ENode;
+    use crate::egraph::ops::op_from_kind;
+    use pixelflow_ir::kind::OpKind;
+
+    #[test]
+    fn node_cost_delegates_to_node_op_cost() {
+        let model = CostModel::latency_prior();
+        let op = op_from_kind(OpKind::Sqrt).expect("Sqrt is a real op");
+        let node = ENode::Op {
+            op,
+            children: vec![],
+        };
+        assert_eq!(
+            CostFunction::node_cost(&model, &node, None),
+            model.node_op_cost(&node)
+        );
+    }
+
+    #[test]
+    fn cost_by_kind_delegates_to_cost() {
+        let model = CostModel::latency_prior();
+        assert_eq!(
+            CostFunction::cost_by_kind(&model, OpKind::Div, None),
+            model.cost(OpKind::Div)
+        );
+    }
+}
+
+#[cfg(test)]
+mod map_interop {
+    use super::CostModel;
+    use pixelflow_ir::kind::OpKind;
+
+    #[test]
+    fn to_map_round_trips_through_from_map() {
+        let mut model = CostModel::zero();
+        model.set_cost(OpKind::Mul, 7);
+        model.depth_threshold = 3;
+        model.depth_penalty = 9;
+
+        let map = model.to_map();
+        assert_eq!(map.len(), OpKind::COUNT + 2);
+        assert_eq!(map.get(OpKind::Mul.name()), Some(&7));
+        assert_eq!(map.get("depth_threshold"), Some(&3));
+        assert_eq!(map.get("depth_penalty"), Some(&9));
+
+        let rebuilt = CostModel::from_map(&map);
+        assert_eq!(rebuilt.cost(OpKind::Mul), 7);
+        assert_eq!(rebuilt.depth_threshold, 3);
+        assert_eq!(rebuilt.depth_penalty, 9);
+        // from_map starts from zero(), so an op the map didn't mention (it
+        // mentions all of them here) would stay 0 — spot-check a second op.
+        assert_eq!(rebuilt.cost(OpKind::Add), 0);
+    }
+
+    #[test]
+    fn from_map_ignores_an_unrecognized_key() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("not_a_real_op".to_string(), 123);
+        map.insert(OpKind::Add.name().to_string(), 4);
+        let model = CostModel::from_map(&map);
+        assert_eq!(model.cost(OpKind::Add), 4);
+    }
+}
+
+#[cfg(test)]
+mod toml_persistence {
+    use super::CostModel;
+    use pixelflow_ir::kind::OpKind;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn unique_path(name: &str) -> std::path::PathBuf {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "pf_cost_model_{name}_{}_{n}.toml",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn save_toml_round_trips_through_load_toml() {
+        let mut model = CostModel::zero();
+        model.set_cost(OpKind::Add, 11);
+        model.set_cost(OpKind::Mul, 22);
+        model.depth_threshold = 6;
+        model.depth_penalty = 13;
+
+        let path = unique_path("roundtrip");
+        model
+            .save_toml(&path)
+            .expect("save_toml should write the file");
+        let loaded = CostModel::load_toml(&path).expect("the file save_toml just wrote");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded.cost(OpKind::Add), 11);
+        assert_eq!(loaded.cost(OpKind::Mul), 22);
+        assert_eq!(loaded.depth_threshold, 6);
+        assert_eq!(loaded.depth_penalty, 13);
+        // load_toml starts from zero(), not latency_prior — an op the file
+        // never mentioned some other value should stay 0.
+        assert_eq!(loaded.cost(OpKind::Sin), 0);
+    }
+
+    #[test]
+    fn load_toml_skips_blank_lines_and_comment_lines() {
+        let path = unique_path("comments");
+        std::fs::write(&path, "# a comment\n\nadd = 3\n").unwrap();
+        let loaded = CostModel::load_toml(&path).expect("comments/blanks should not error");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(loaded.cost(OpKind::Add), 3);
+    }
+
+    #[test]
+    fn load_toml_rejects_a_line_missing_an_equals_sign() {
+        let path = unique_path("bad_line");
+        std::fs::write(&path, "not_an_assignment\n").unwrap();
+        let result = CostModel::load_toml(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_toml_rejects_a_non_numeric_value() {
+        let path = unique_path("bad_value");
+        std::fs::write(&path, "add = not_a_number\n").unwrap();
+        let result = CostModel::load_toml(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_toml_ignores_an_unrecognized_key_without_failing() {
+        let path = unique_path("unknown_key");
+        std::fs::write(&path, "not_a_real_op = 5\nadd = 3\n").unwrap();
+        let loaded = CostModel::load_toml(&path).expect("unknown keys should only warn");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(loaded.cost(OpKind::Add), 3);
+    }
+
+    #[test]
+    fn load_toml_sets_depth_threshold_and_depth_penalty_by_key() {
+        let path = unique_path("depth_keys");
+        std::fs::write(&path, "depth_threshold = 42\ndepth_penalty = 17\n").unwrap();
+        let loaded = CostModel::load_toml(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(loaded.depth_threshold, 42);
+        assert_eq!(loaded.depth_penalty, 17);
+    }
+}
+
+#[cfg(test)]
+mod load_or_default_tests {
+    use super::CostModel;
+    use pixelflow_ir::kind::OpKind;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    // `load_or_default` reads process-global env state (`PIXELFLOW_COST_MODEL`,
+    // `HOME`). Serialize this module's tests so they don't race each other
+    // (or, in principle, a future test elsewhere that touches the same vars).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn unique_path(name: &str) -> std::path::PathBuf {
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "pf_cost_model_lod_{name}_{}_{n}.toml",
+            std::process::id()
+        ))
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let prev = std::env::var_os(key);
+            // SAFETY: serialized by `ENV_LOCK`, held for this guard's whole lifetime.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, prev }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let prev = std::env::var_os(key);
+            // SAFETY: serialized by `ENV_LOCK`, held for this guard's whole lifetime.
+            unsafe { std::env::remove_var(key) };
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: serialized by `ENV_LOCK`, held for this guard's whole lifetime.
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn loads_the_file_named_by_the_env_var() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let path = unique_path("explicit");
+        let mut model = CostModel::zero();
+        model.set_cost(OpKind::Mul, 4242);
+        model.save_toml(&path).unwrap();
+
+        let _env = EnvVarGuard::set("PIXELFLOW_COST_MODEL", &path);
+        let loaded = CostModel::load_or_default();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(loaded.cost(OpKind::Mul), 4242);
+    }
+
+    #[test]
+    fn falls_back_to_the_latency_prior_when_nothing_is_configured() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvVarGuard::remove("PIXELFLOW_COST_MODEL");
+        // Point HOME at an empty directory so a real developer's
+        // `~/.config/pixelflow/cost_model.toml`, if one exists, can't leak
+        // into this test's result.
+        let _home = EnvVarGuard::set("HOME", std::env::temp_dir());
+
+        let model = CostModel::load_or_default();
+
+        assert_eq!(
+            model.cost(OpKind::Mul),
+            CostModel::latency_prior().cost(OpKind::Mul)
+        );
+    }
+
+    #[test]
+    fn falls_back_past_a_malformed_home_config_file() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let home_dir = unique_path("home_malformed_dir");
+        let config_dir = home_dir.join(".config/pixelflow");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("cost_model.toml"), "not_an_assignment\n").unwrap();
+
+        let _env = EnvVarGuard::remove("PIXELFLOW_COST_MODEL");
+        let _home = EnvVarGuard::set("HOME", &home_dir);
+
+        let model = CostModel::load_or_default();
+        let _ = std::fs::remove_dir_all(&home_dir);
+
+        // The malformed file fails to parse (not NotFound), so load_or_default
+        // must report it and keep falling back rather than surfacing a
+        // half-built model — it should land on the same latency-prior default
+        // as the "nothing configured" case.
+        assert_eq!(
+            model.cost(OpKind::Mul),
+            CostModel::latency_prior().cost(OpKind::Mul)
+        );
+    }
+}
