@@ -2,8 +2,8 @@
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use pixelflow_core::backend::x86::F32x4;
-    use pixelflow_core::backend::{MaskOps, SimdOps};
+    use pixelflow_core::backend::x86::{F32x4, U32x4};
+    use pixelflow_core::backend::{MaskOps, SimdOps, SimdU32Ops};
     use std::prelude::v1::*;
 
     #[test]
@@ -252,5 +252,144 @@ mod tests {
             lanes(F32x4::splat(15.0).clamp(F32x4::splat(0.0), F32x4::splat(10.0))),
             [10.0; 4]
         );
+    }
+
+    // ── SimdOps required primitives with no direct coverage ────────────────
+    //
+    // 2026-08-17 mutation sweep of the whole file (`cargo mutants -p
+    // pixelflow-core --file .../backend/x86.rs`, no `--lib` restriction —
+    // scoping to `--lib` hides this integration-test file and silently
+    // reports every mutant here as caught vacuously). These are `SimdOps`
+    // *required* per-ISA primitives that had zero coverage anywhere, so a
+    // "replace the whole function with `Default::default()`" (or an
+    // arithmetic-operator swap inside it) mutant survived for each.
+
+    #[test]
+    fn gather_clamps_out_of_range_indices_to_the_last_valid_slot() {
+        // idx=99 is out of range for a 4-element slice either way, so this
+        // also kills the `len - 1` -> `len + 1` / `len / 1` mutants: both
+        // would clamp to an index at or past `slice.len()` and panic on the
+        // out-of-bounds scalar load, rather than silently returning 40.0.
+        let slice = [10.0f32, 20.0, 30.0, 40.0];
+        let got = lanes(F32x4::gather(&slice, F32x4::splat(99.0)));
+        assert_eq!(got, [40.0; 4]);
+    }
+
+    #[test]
+    fn add_masked_adds_only_where_the_mask_is_true() {
+        let base = F32x4::splat(1.0);
+        let addend = F32x4::splat(2.0);
+        let all_true = F32x4::splat(1.0).cmp_gt(F32x4::splat(0.0));
+        let all_false = F32x4::splat(0.0).cmp_gt(F32x4::splat(0.0));
+        assert_eq!(lanes(base.add_masked(addend, all_true)), [3.0; 4]);
+        assert_eq!(lanes(base.add_masked(addend, all_false)), [1.0; 4]);
+    }
+
+    #[test]
+    fn from_u32_bits_reinterprets_the_bit_pattern_as_f32() {
+        let got = lanes(F32x4::from_u32_bits(2.0f32.to_bits()));
+        assert_eq!(got, [2.0; 4]);
+    }
+
+    #[test]
+    fn shr_u32_performs_a_logical_right_shift_on_the_bit_pattern() {
+        let shifted = F32x4::from_u32_bits(8).shr_u32(2);
+        for x in lanes(shifted) {
+            assert_eq!(x.to_bits(), 2);
+        }
+    }
+
+    #[test]
+    fn i32_to_f32_converts_the_reinterpreted_bits_as_a_signed_integer() {
+        let got = lanes(F32x4::from_u32_bits(5).i32_to_f32());
+        assert_eq!(got, [5.0; 4]);
+    }
+
+    #[test]
+    fn f32x4_bitor_combines_lane_bits() {
+        let a = F32x4::from_u32_bits(0b0110);
+        let b = F32x4::from_u32_bits(0b1001);
+        for x in lanes(a | b) {
+            assert_eq!(x.to_bits(), 0b1111);
+        }
+    }
+
+    #[test]
+    fn f32x4_not_flips_every_bit() {
+        for x in lanes(!F32x4::from_u32_bits(0)) {
+            assert_eq!(x.to_bits(), u32::MAX);
+        }
+    }
+
+    // ── U32x4 (packed RGBA lanes) ────────────────────────────────────────
+
+    #[test]
+    fn u32x4_debug_output_shows_each_lane_value() {
+        // U32x4::to_array is private and reachable only through Debug, so
+        // this is the only public-API way to observe it; also kills the
+        // Debug::fmt -> Ok(Default::default()) mutant, since a mutated fmt
+        // writes nothing and the formatted string comes back empty.
+        let v = U32x4::splat(7);
+        assert_eq!(format!("{v:?}"), "U32x4([7, 7, 7, 7])");
+    }
+
+    #[test]
+    fn u32x4_store_writes_every_lane_into_the_output_slice() {
+        let mut out = [0u32; 4];
+        U32x4::splat(42).store(&mut out);
+        assert_eq!(out, [42; 4]);
+    }
+
+    #[test]
+    fn u32x4_bitand_combines_lane_bits() {
+        let a = U32x4::splat(0b0110);
+        let b = U32x4::splat(0b0011);
+        let mut out = [0u32; 4];
+        (a & b).store(&mut out);
+        assert_eq!(out, [0b0010; 4]);
+    }
+
+    #[test]
+    fn u32x4_bitor_combines_lane_bits() {
+        let a = U32x4::splat(0b0110);
+        let b = U32x4::splat(0b1001);
+        let mut out = [0u32; 4];
+        (a | b).store(&mut out);
+        assert_eq!(out, [0b1111; 4]);
+    }
+
+    #[test]
+    fn u32x4_not_flips_every_bit() {
+        // Also kills the `_mm_set1_epi32(-1)` -> `_mm_set1_epi32(1)` mutant
+        // (delete `-`): that would XOR with 1 instead of all-ones, leaving
+        // every lane at 1 rather than u32::MAX.
+        let mut out = [0u32; 4];
+        (!U32x4::splat(0)).store(&mut out);
+        assert_eq!(out, [u32::MAX; 4]);
+    }
+
+    #[test]
+    fn u32x4_shl_shifts_bits_left() {
+        let mut out = [0u32; 4];
+        (U32x4::splat(1) << 4).store(&mut out);
+        assert_eq!(out, [16; 4]);
+    }
+
+    #[test]
+    fn u32x4_shr_shifts_bits_right() {
+        let mut out = [0u32; 4];
+        (U32x4::splat(16) >> 4).store(&mut out);
+        assert_eq!(out, [1; 4]);
+    }
+
+    #[test]
+    fn pack_rgba_packs_channels_as_r_or_g_shl8_or_b_shl16_or_a_shl24() {
+        let r = F32x4::splat(1.0);
+        let g = F32x4::splat(0.0);
+        let b = F32x4::splat(0.0);
+        let a = F32x4::splat(1.0);
+        let mut out = [0u32; 4];
+        U32x4::pack_rgba(r, g, b, a).store(&mut out);
+        assert_eq!(out, [0xFF0000FF; 4]);
     }
 }
