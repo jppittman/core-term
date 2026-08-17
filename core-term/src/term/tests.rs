@@ -226,7 +226,7 @@ fn assert_screen_state(
 }
 
 #[test]
-fn it_should_print_characters_left_to_right_and_advance_the_cursor() {
+fn simple_char_input() {
     let mut term = create_test_emulator(10, 1);
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     let snapshot = term.get_render_snapshot().expect("Snapshot was None");
@@ -239,7 +239,7 @@ fn it_should_print_characters_left_to_right_and_advance_the_cursor() {
 }
 
 #[test]
-fn it_should_move_to_column_zero_of_the_next_line_when_lnm_is_set_and_lf_is_received() {
+fn newline_input() {
     let mut term = create_test_emulator(10, 2);
     // Enable Linefeed/Newline Mode (LNM)
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
@@ -804,7 +804,7 @@ fn key_event_arrow_up() {
 }
 
 #[test]
-fn it_should_preserve_selection_range_and_mode_in_a_constructed_snapshot() {
+fn snapshot_with_selection() {
     let num_cols = 10;
     let num_rows = 2;
     let default_glyph = Glyph::Single(ContentCell {
@@ -1257,7 +1257,7 @@ mod selection_logic_tests {
     use crate::term::snapshot::SelectionRange;
 
     #[test]
-    fn it_should_activate_selection_at_the_point_the_start_action_targets() {
+    fn start_selection() {
         let mut emu = create_test_emulator(10, 5);
         let point = Point { x: 2, y: 1 };
 
@@ -1735,7 +1735,7 @@ mod paste_text_tests {
     }
 
     #[test]
-    fn it_should_report_current_terminal_dimensions_for_window_manipulation_ps_18() {
+    fn window_manipulation_report_size() {
         let mut emu = create_test_emulator(80, 24);
 
         let report_command = AnsiCommand::Csi(CsiCommand::WindowManipulation {

@@ -194,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn it_should_report_zero_display_width_for_combining_and_joiner_characters() {
+    fn zero_width_chars() {
         assert_eq!(
             get_char_display_width('\u{200D}'),
             0,

@@ -197,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn it_should_convert_cell_coordinates_to_pixel_coordinates_using_cell_size() {
+    fn verify_cells_to_pixels() {
         let layout = Layout {
             cols: 80,
             rows: 24,
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn it_should_compute_total_pixel_dimensions_including_padding() {
+    fn verify_pixel_dimensions() {
         let layout = Layout {
             cols: 80,
             rows: 24,
@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn it_should_update_cols_and_rows_when_resized() {
+    fn verify_resize() {
         let mut layout = Layout::new(80, 24);
 
         assert_eq!(layout.cols, 80);

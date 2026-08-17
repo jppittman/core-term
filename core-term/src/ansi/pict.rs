@@ -143,18 +143,18 @@ mod generator_tests {
     }
 
     #[test]
-    fn it_should_cover_every_pair_of_values_when_all_factors_have_the_same_arity() {
+    fn covers_uniform_factors() {
         assert_covers_all_pairs(&[3, 3, 3, 3]);
         assert_covers_all_pairs(&[4, 4, 4, 4, 4]);
     }
 
     #[test]
-    fn it_should_cover_every_pair_of_values_when_factors_have_mixed_arity() {
+    fn covers_mixed_arity_factors() {
         assert_covers_all_pairs(&[2, 3, 4, 5, 2, 1]);
     }
 
     #[test]
-    fn it_should_generate_far_fewer_rows_than_the_exhaustive_cross_product() {
+    fn is_far_smaller_than_exhaustive() {
         let counts = [4, 4, 4, 4, 4, 4];
         let rows = pairwise(&counts);
         let exhaustive: usize = counts.iter().product();
@@ -167,7 +167,7 @@ mod generator_tests {
     }
 
     #[test]
-    fn it_should_produce_the_same_rows_for_the_same_input_on_repeated_calls() {
+    fn is_deterministic() {
         assert_eq!(pairwise(&[3, 4, 2, 5]), pairwise(&[3, 4, 2, 5]));
     }
 }

@@ -1214,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn it_should_activate_selection_and_mark_start_line_dirty() {
+    fn verify_start_selection() {
         let mut screen = create_test_screen(10, 5);
         let start_point = Point { x: 1, y: 1 };
         screen.dirty.fill(0);
@@ -1231,7 +1231,7 @@ mod tests {
     }
 
     #[test]
-    fn it_should_extend_selection_range_and_mark_updated_line_dirty() {
+    fn verify_update_selection() {
         let mut screen = create_test_screen(10, 5);
         let start_point = Point { x: 1, y: 1 };
         let update_point = Point { x: 5, y: 2 };
@@ -1266,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn it_should_deactivate_selection_without_clearing_its_range() {
+    fn verify_end_selection() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.end_selection();
@@ -1274,7 +1274,7 @@ mod tests {
     }
 
     #[test]
-    fn it_should_reset_selection_and_mark_both_endpoints_lines_dirty() {
+    fn verify_clear_selection() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 3, y: 2 });
