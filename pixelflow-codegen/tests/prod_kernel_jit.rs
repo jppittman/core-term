@@ -61,8 +61,8 @@ fn optimize(arena: &ExprArena, root: ExprId, tag: &str) -> (ExprArena, ExprId) {
     // The learned "ML filter": NNUE-guided extraction of the cheapest DAG.
     let nnue = ExprNnue::new_with_latency_prior(0xC0FFEE);
     let extractor = IncrementalExtractor::new(&nnue, 8);
-    let (cost, extraction) = extractor.extract_choices_only(&eg, root_class);
-    let (out_arena, out_root) = choices_to_arena(&extraction);
+    let (cost, choices) = extractor.extract_choices_only(&eg, root_class);
+    let (out_arena, out_root) = choices_to_arena(&eg, root_class, &choices);
 
     eprintln!(
         "[{tag}] egraph {classes_before} -> {classes_after} classes, \

@@ -429,116 +429,6 @@ pub struct BenchResult {
     pub sentinel: Option<SentinelContext>,
 }
 
-// =============================================================================
-// Clock newtypes (docs/plans/2026-08-17-cost-model-domain.md, J4)
-// =============================================================================
-//
-// A nanosecond reading is meaningless without saying WHICH clock it is
-// denominated in: the local clock running when a particular sample was
-// taken (drifts over a session — thermal, contention, scheduler placement),
-// or the session's OPENING clock, the one canonical unit every label and
-// every call-overhead figure is compared in. Before these types, both were
-// the same `f64`, and the only thing stopping "subtract overhead, then
-// normalize" (WRONG — leaves a drift-dependent residue, see
-// `training::mint::normalized_label_ns`) from replacing "normalize, then
-// subtract overhead" (RIGHT) was a doc comment. Review caught the swap
-// twice. `LocalNs` has no `Sub` impl at all, so the raw reading cannot have
-// overhead taken off it before [`LocalNs::normalize`] — the sole conversion
-// to [`SessionNs`] — runs. The wrong order is now a compile error, not a
-// convention.
-
-/// A duration on the LOCAL clock: the clock that was actually running when
-/// this particular sample was taken. Not comparable to another `LocalNs`
-/// from a different point in the same session without normalizing — that is
-/// the whole reason [`SentinelContext`] exists.
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub struct LocalNs(f64);
-
-impl LocalNs {
-    /// # Panics
-    /// Panics on a non-finite reading — a raw timer sample is never NaN or
-    /// infinite short of a harness bug, and propagating one silently would
-    /// poison every downstream label.
-    #[must_use]
-    pub fn new(ns: f64) -> Self {
-        assert!(ns.is_finite(), "LocalNs::new: non-finite reading {ns}");
-        Self(ns)
-    }
-
-    #[must_use]
-    pub fn get(self) -> f64 {
-        self.0
-    }
-
-    /// The ONLY way to leave the local clock: re-express this reading in the
-    /// session's opening clock via the drift factor the sentinel measured.
-    /// Nothing else produces a [`SessionNs`] from a raw reading, so "apply
-    /// drift" cannot be skipped or reordered by a future caller.
-    #[must_use]
-    pub fn normalize(self, drift: DriftFactor) -> SessionNs {
-        SessionNs(self.0 * drift.0)
-    }
-}
-
-/// A duration in the SESSION's opening clock — the canonical, comparable
-/// unit. Every [`CostLabel::value`] and every call-overhead figure lives
-/// here. Produced either by [`LocalNs::normalize`] (a drift-corrected
-/// reading) or [`SessionNs::new`] (a value already known to be on this
-/// clock — e.g. the identity-kernel call overhead, itself measured once at
-/// session open where the local and opening clocks coincide by
-/// construction).
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub struct SessionNs(f64);
-
-impl SessionNs {
-    /// # Panics
-    /// Panics on a non-finite value, for the same reason as [`LocalNs::new`].
-    #[must_use]
-    pub fn new(ns: f64) -> Self {
-        assert!(ns.is_finite(), "SessionNs::new: non-finite value {ns}");
-        Self(ns)
-    }
-
-    #[must_use]
-    pub fn get(self) -> f64 {
-        self.0
-    }
-}
-
-impl std::ops::Sub for SessionNs {
-    type Output = SessionNs;
-    /// Call overhead is a `SessionNs`, so it can only be subtracted from a
-    /// `SessionNs` — `LocalNs` has no `Sub` impl at all. That asymmetry is
-    /// what makes "normalize, then subtract overhead" the only expression
-    /// that type-checks (J4).
-    fn sub(self, overhead: SessionNs) -> SessionNs {
-        SessionNs(self.0 - overhead.0)
-    }
-}
-
-/// The clock-speed correction factor `calibration_ns / local_sentinel_ns`
-/// (see [`SentinelContext::normalization`]) — the only producer.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DriftFactor(f64);
-
-impl DriftFactor {
-    #[must_use]
-    pub fn get(self) -> f64 {
-        self.0
-    }
-}
-
-/// How many expressions a run had already produced labels for when this one
-/// was minted — collection order, the axis timing drift correlates with
-/// (generation emits size/family bands sequentially, so an uncorrected label
-/// set turns residual drift into learnable spurious signal; see
-/// `training::mint`). Persisted alongside [`CostLabel`] so a downstream
-/// consumer can verify residual drift isn't confounded with structure,
-/// rather than assuming the benchmark-order shuffle removed the
-/// correlation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct BenchPosition(pub usize);
-
 /// The sentinel state a [`BenchResult`] was measured under: the most recent
 /// sentinel reading (`local_sentinel_ns`) and the session's opening
 /// calibration (`calibration_ns`).
@@ -577,7 +467,7 @@ impl SentinelContext {
     /// nothing cannot correct anything, and silently returning `inf`/`NaN`
     /// would poison every corrected label downstream.
     #[must_use]
-    pub fn normalization(&self) -> DriftFactor {
+    pub fn normalization(&self) -> f64 {
         assert!(
             self.calibration_ns > 0.0 && self.local_sentinel_ns > 0.0,
             "SentinelContext::normalization: non-positive sentinel reading \
@@ -585,7 +475,7 @@ impl SentinelContext {
             self.calibration_ns,
             self.local_sentinel_ns
         );
-        DriftFactor(self.calibration_ns / self.local_sentinel_ns)
+        self.calibration_ns / self.local_sentinel_ns
     }
 }
 
@@ -625,113 +515,6 @@ impl BenchResult {
         } else {
             Ok(())
         }
-    }
-
-    /// The measurement's value in the session's opening clock: the sentinel's
-    /// drift applied to the raw reading, THEN call overhead subtracted — the
-    /// only order [`LocalNs`]/[`SessionNs`] type-check (J4). Also returns the
-    /// drift factor that was applied, for callers that persist it.
-    ///
-    /// This is the one place that arithmetic happens; [`CostLabel::mint`] and
-    /// `training::mint::normalized_label_ns`/`label_normalization` both call
-    /// it rather than restating the formula.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `self.sentinel` is `None` — a sessionless measurement (no
-    /// `BenchSession`) carries no drift information, so it cannot be
-    /// corrected into a value comparable with session-minted ones. `context`
-    /// names the call site in the panic message.
-    pub fn corrected_session_ns(&self, context: &str) -> (SessionNs, DriftFactor) {
-        let calibration = self.sentinel.unwrap_or_else(|| {
-            panic!(
-                "{context}: label minted from a BenchResult with no sentinel context — the \
-                 measurement came from a sessionless wrapper (no QoS pin, no drift sentinel, no \
-                 overhead subtraction), so its drift is neither measured nor correctable. Mint \
-                 labels through a BenchSession"
-            )
-        });
-        let drift = calibration.normalization();
-        let overhead = SessionNs::new(self.call_overhead_ns);
-        let value = LocalNs::new(self.ns).normalize(drift) - overhead;
-        (value, drift)
-    }
-}
-
-/// A measurement that has left the clock it was taken on
-/// (docs/plans/2026-08-17-cost-model-domain.md, J3): a value in
-/// [`SessionNs`], plus the context that makes the value meaningful — which
-/// [`BenchMode`] it was measured under, how much drift correction it took,
-/// where in the run it was minted, and the sentinel calibration it was
-/// corrected against.
-///
-/// These five pieces used to travel separately — `ns`/`adjusted_ns`/
-/// `call_overhead_ns` as bare fields on [`BenchResult`], `mode` beside them,
-/// [`SentinelContext`] behind an `Option` — and nothing stopped a raw,
-/// unnormalized `f64` from reaching a training target. [`CostLabel::mint`] is
-/// now the only way to produce one, and [`CostLabel::target_log_ns`] is the
-/// only bridge from a label to the `f32` a model is trained on.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CostLabel {
-    value: SessionNs,
-    mode: BenchMode,
-    drift: DriftFactor,
-    position: BenchPosition,
-    calibration: SentinelContext,
-}
-
-impl CostLabel {
-    /// Mint a label from a session-produced [`BenchResult`] at collection
-    /// `position`. `context` names the call site for the panic message.
-    ///
-    /// # Panics
-    ///
-    /// See [`BenchResult::corrected_session_ns`].
-    #[must_use]
-    pub fn mint(bench: &BenchResult, position: BenchPosition, context: &str) -> Self {
-        let (value, drift) = bench.corrected_session_ns(context);
-        let calibration = bench
-            .sentinel
-            .expect("corrected_session_ns already panicked above on None");
-        Self {
-            value,
-            mode: bench.mode,
-            drift,
-            position,
-            calibration,
-        }
-    }
-
-    #[must_use]
-    pub fn value(&self) -> SessionNs {
-        self.value
-    }
-
-    #[must_use]
-    pub fn mode(&self) -> BenchMode {
-        self.mode
-    }
-
-    #[must_use]
-    pub fn drift(&self) -> DriftFactor {
-        self.drift
-    }
-
-    #[must_use]
-    pub fn position(&self) -> BenchPosition {
-        self.position
-    }
-
-    #[must_use]
-    pub fn calibration(&self) -> SentinelContext {
-        self.calibration
-    }
-
-    /// The training target: `log_ns` of the normalized value. The only way
-    /// to turn a `CostLabel` into the `f32` a model is trained on.
-    #[must_use]
-    pub fn target_log_ns(&self) -> f32 {
-        log_ns(self.value)
     }
 }
 
@@ -1479,27 +1262,22 @@ pub fn benchmark_compile_fresh(
     validate_median(median).map(|ns| CompileCostResult { ns, code_bytes })
 }
 
-/// Convert a session-clock nanosecond value to log-nanoseconds (floored at
-/// 1e-3ns, capped at 1s).
+/// Convert nanoseconds to log-nanoseconds (floored at 1e-3ns, capped at 1s).
 ///
-/// Takes [`SessionNs`], not a bare `f64` (J3/J4): a raw, un-drift-corrected
-/// reading must go through [`LocalNs::normalize`] (directly, or via
-/// [`CostLabel::mint`] / [`BenchResult::corrected_session_ns`]) before it can
-/// become a training target — that ordering is exactly the bug class this
-/// module's clock newtypes exist to make a type error. Relocated from the
-/// deleted `training::gen_es` (the ES-guided corpus-growth optimizer it lived
-/// in was RL-adjacent scaffolding removed per
-/// docs/plans/2026-07-07-guided-saturation-redesign.md).
+/// Relocated from the deleted `training::gen_es` (the ES-guided corpus-growth
+/// optimizer it lived in was RL-adjacent scaffolding removed per
+/// docs/plans/2026-07-07-guided-saturation-redesign.md); this conversion
+/// itself is just a unit change on a [`BenchResult::ns`] measurement, used by
+/// the surviving supervised extraction-head training path.
 ///
 /// # Panics
 ///
 /// Panics if `ns` is NaN.
 #[must_use]
-pub fn log_ns(ns: SessionNs) -> f32 {
-    let raw = ns.get();
-    assert!(!raw.is_nan(), "log_ns called with NaN");
+pub fn log_ns(ns: f64) -> f32 {
+    assert!(!ns.is_nan(), "log_ns called with NaN");
     // NaN already rejected above, so clamp's total order is well-defined here.
-    let clamped = raw.clamp(1e-3, 1e9);
+    let clamped = ns.clamp(1e-3, 1e9);
     libm::logf(clamped as f32)
 }
 
@@ -1511,7 +1289,7 @@ mod tests {
     #[test]
     fn verify_log_ns() {
         // log(1.0) = 0.0
-        let v = log_ns(SessionNs::new(1.0));
+        let v = log_ns(1.0);
         assert!(
             libm::fabsf(v) < 0.001,
             "log_ns(1.0) should be ~0.0, got {}",
@@ -1519,8 +1297,8 @@ mod tests {
         );
 
         // Values below 1e-3 should be floored to 1e-3.
-        let v_low = log_ns(SessionNs::new(0.0001));
-        let v_floor = log_ns(SessionNs::new(1e-3));
+        let v_low = log_ns(0.0001);
+        let v_floor = log_ns(1e-3);
         assert!(
             libm::fabsf(v_low - v_floor) < 0.001,
             "log_ns(0.0001) should equal log_ns(1e-3), got {} vs {}",
@@ -1529,7 +1307,7 @@ mod tests {
         );
 
         // log(e) ≈ 1.0
-        let v_e = log_ns(SessionNs::new(core::f64::consts::E));
+        let v_e = log_ns(core::f64::consts::E);
         assert!(
             libm::fabsf(v_e - 1.0) < 0.01,
             "log_ns(e) should be ~1.0, got {}",
@@ -1784,24 +1562,24 @@ mod tests {
             local_sentinel_ns: 125.0,
             calibration_ns: 100.0,
         };
-        assert!((slowed.normalization().get() - 0.8).abs() < 1e-12);
+        assert!((slowed.normalization() - 0.8).abs() < 1e-12);
         // An 80ns label minted under that sentinel corrects to 64ns in the
         // run's opening clock.
-        assert!((80.0 * slowed.normalization().get() - 64.0).abs() < 1e-12);
+        assert!((80.0 * slowed.normalization() - 64.0).abs() < 1e-12);
 
         // Machine sped up: factor > 1 scales deflated labels back up.
         let sped_up = SentinelContext {
             local_sentinel_ns: 80.0,
             calibration_ns: 100.0,
         };
-        assert!((sped_up.normalization().get() - 1.25).abs() < 1e-12);
+        assert!((sped_up.normalization() - 1.25).abs() < 1e-12);
 
         // No drift: identity.
         let steady = SentinelContext {
             local_sentinel_ns: 100.0,
             calibration_ns: 100.0,
         };
-        assert!((steady.normalization().get() - 1.0).abs() < 1e-12);
+        assert!((steady.normalization() - 1.0).abs() < 1e-12);
     }
 
     #[test]
@@ -1812,83 +1590,6 @@ mod tests {
             calibration_ns: 100.0,
         }
         .normalization();
-    }
-
-    // ── Clock newtypes + CostLabel (J3/J4) ──────────────────────────────────
-
-    #[test]
-    fn local_ns_normalize_is_the_only_path_to_session_ns() {
-        // 1.25x slowdown: a 125ns local reading is a 100ns session-clock
-        // value, matching SentinelContext::normalization's own worked
-        // example.
-        let drift = SentinelContext {
-            local_sentinel_ns: 125.0,
-            calibration_ns: 100.0,
-        }
-        .normalization();
-        let value = LocalNs::new(125.0).normalize(drift);
-        assert!((value.get() - 100.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn session_ns_sub_is_the_only_way_to_remove_overhead() {
-        let a = SessionNs::new(10.0);
-        let b = SessionNs::new(3.0);
-        assert!(((a - b).get() - 7.0).abs() < 1e-12);
-        // LocalNs deliberately has no `Sub` impl — there is no expression
-        // `LocalNs::new(10.0) - SessionNs::new(3.0)` that compiles, which is
-        // the point: overhead cannot be subtracted before the reading is
-        // normalized onto the session clock.
-    }
-
-    #[test]
-    fn cost_label_mint_matches_the_hand_derived_ordering() {
-        // Same drifted-measurement shape as `training::mint`'s tests: a
-        // nonzero overhead so the two possible orderings of
-        // normalize-then-subtract disagree, and CostLabel::mint must land on
-        // the correct one.
-        const OVERHEAD_NS: f64 = 4.0;
-        const KERNEL_NS: f64 = 3.0;
-        const DRIFT: f64 = 1.45;
-        const CALIBRATION_NS: f64 = 8.0;
-        let bench = BenchResult {
-            ns: (KERNEL_NS + OVERHEAD_NS) * DRIFT,
-            adjusted_ns: (KERNEL_NS + OVERHEAD_NS) * DRIFT - OVERHEAD_NS,
-            call_overhead_ns: OVERHEAD_NS,
-            iqr_ns: 0.0,
-            mode: BenchMode::Latency,
-            repeat_batches: 1,
-            output: [0.0; 4],
-            outputs: Vec::new(),
-            sentinel: Some(SentinelContext {
-                calibration_ns: CALIBRATION_NS,
-                local_sentinel_ns: CALIBRATION_NS * DRIFT,
-            }),
-        };
-        let label = CostLabel::mint(&bench, BenchPosition(7), "test");
-        assert!((label.value().get() - KERNEL_NS).abs() < 1e-9);
-        assert_eq!(label.mode(), BenchMode::Latency);
-        assert_eq!(label.position(), BenchPosition(7));
-        assert_eq!(label.calibration(), bench.sentinel.unwrap());
-        assert!((label.drift().get() - 1.0 / DRIFT).abs() < 1e-9);
-        assert_eq!(label.target_log_ns(), log_ns(SessionNs::new(KERNEL_NS)));
-    }
-
-    #[test]
-    #[should_panic(expected = "no sentinel context")]
-    fn cost_label_mint_refuses_an_unprotected_measurement() {
-        let bench = BenchResult {
-            ns: 42.0,
-            adjusted_ns: 42.0,
-            call_overhead_ns: 0.0,
-            iqr_ns: 0.0,
-            mode: BenchMode::Throughput,
-            repeat_batches: 1,
-            output: [0.0; 4],
-            outputs: Vec::new(),
-            sentinel: None,
-        };
-        let _ = CostLabel::mint(&bench, BenchPosition(0), "unit test");
     }
 
     #[test]
@@ -1978,7 +1679,7 @@ mod tests {
                 .expect("session-minted results carry a SentinelContext");
             assert_eq!(ctx.calibration_ns, session.calibration_ns());
             assert_eq!(ctx.local_sentinel_ns, session.calibration_ns());
-            assert!((ctx.normalization().get() - 1.0).abs() < 1e-12);
+            assert!((ctx.normalization() - 1.0).abs() < 1e-12);
         }
         // Outputs are mode-independent pure function values.
         throughput

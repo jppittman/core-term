@@ -27,16 +27,6 @@
 //!    never trained to predict, and those two modes rank expression shapes
 //!    differently. The sidecar exists so the gate can *assert* the match
 //!    instead of assuming it.
-//!
-//! Both functions below are thin `f64` wrappers around
-//! [`BenchResult::corrected_session_ns`] / [`crate::jit_bench::CostLabel`]
-//! (docs/plans/2026-08-17-cost-model-domain.md, J3/J4): the ordering they
-//! document is enforced there by the [`crate::jit_bench::LocalNs`] /
-//! [`crate::jit_bench::SessionNs`] newtypes, not merely described here in
-//! prose. Callers that track collection order should mint a
-//! [`crate::jit_bench::CostLabel`] directly instead of going through these —
-//! they exist for callers (e.g. `training::episodes`) that only need the
-//! scalar value.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -44,7 +34,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::jit_bench::{BenchMode, BenchResult};
-use crate::schema::{SchemaIdentity, identity_mismatch};
 
 // ── Sentinel normalization ──────────────────────────────────────────────────
 
@@ -79,11 +68,7 @@ use crate::schema::{SchemaIdentity, identity_mismatch};
 /// benchmarked. That is precisely the order-dependent contamination the
 /// sentinel exists to remove, and at the accepted sub-50% drift band with a
 /// ~4ns call overhead it is >1ns, which is a large fraction of the smallest
-/// kernels — the bulk of the corpus. This function no longer has an
-/// opportunity to get that order wrong: it delegates to
-/// [`BenchResult::corrected_session_ns`], where the raw reading is a
-/// [`crate::jit_bench::LocalNs`] with no `Sub` impl, so overhead cannot be
-/// taken off before normalization runs.
+/// kernels — the bulk of the corpus.
 ///
 /// The alternative, remeasuring the identity kernel next to every label and
 /// normalizing that too, is rejected: it buys the same number at the price of
@@ -104,7 +89,15 @@ use crate::schema::{SchemaIdentity, identity_mismatch};
 /// unnecessary. `context` names the call site in the panic.
 #[must_use]
 pub fn normalized_label_ns(bench: &BenchResult, context: &str) -> f64 {
-    bench.corrected_session_ns(context).0.get()
+    let sentinel = bench.sentinel.unwrap_or_else(|| {
+        panic!(
+            "{context}: label minted from a BenchResult with no sentinel context — the \
+             measurement came from a sessionless wrapper (no QoS pin, no drift sentinel, no \
+             overhead subtraction), so its drift is neither measured nor correctable. Mint \
+             labels through a BenchSession"
+        )
+    });
+    bench.ns * sentinel.normalization() - bench.call_overhead_ns
 }
 
 /// The sentinel normalization factor a measurement carries, for persisting
@@ -116,7 +109,13 @@ pub fn normalized_label_ns(bench: &BenchResult, context: &str) -> f64 {
 /// error in label-minting paths.
 #[must_use]
 pub fn label_normalization(bench: &BenchResult, context: &str) -> f64 {
-    bench.corrected_session_ns(context).1.get()
+    let sentinel = bench.sentinel.unwrap_or_else(|| {
+        panic!(
+            "{context}: label normalization requested for a BenchResult with no sentinel \
+             context — mint labels through a BenchSession"
+        )
+    });
+    sentinel.normalization()
 }
 
 /// Summary statistics of the per-label normalization factors a run applied.
@@ -187,17 +186,6 @@ pub fn mint_metadata_path(weights: &Path) -> PathBuf {
 /// What a weights file's training targets mean.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct MintMetadata {
-    /// Content hash of [`MintMetadata::SCHEMA`] — this sidecar's own format
-    /// identity, checked by [`MintMetadata::read_for`]
-    /// (docs/plans/2026-08-17-cost-model-domain.md, J9, kills P1(b)). A
-    /// sidecar with a JSON shape `serde` can still parse but whose FIELDS now
-    /// mean something else (not merely a byte-shape change, which `serde`
-    /// already refuses) would otherwise load silently; this field turns that
-    /// into a loud, named refusal the same way [`weights_fnv64`] turns a
-    /// swapped weights file into one.
-    ///
-    /// [`weights_fnv64`]: MintMetadata::weights_fnv64
-    pub schema_identity: String,
     /// [`bench_mode_slug`] of the mode every target was measured in.
     pub bench_mode: String,
     /// Which binary wrote these weights.
@@ -226,49 +214,21 @@ pub struct MintMetadata {
 /// FNV-1a 64 over the weights bytes — the identity [`MintMetadata`] records.
 ///
 /// The job is binding two local files to each other, not resisting an
-/// adversary, so the same non-cryptographic hash [`crate::journal`] uses for
-/// corpus and diff identities is enough here too — this is the
-/// `SchemaIdentity`-style content-hash-as-gate pattern's original instance,
-/// generalized by [`crate::schema`]
-/// (docs/plans/2026-08-17-cost-model-domain.md, J9 §2).
+/// adversary, so the same non-cryptographic hash the journal uses for corpus
+/// and diff identities is enough here too.
 #[must_use]
 pub fn weights_identity(bytes: &[u8]) -> String {
-    crate::schema::fnv1a64_hex(bytes)
-}
-
-impl SchemaIdentity for MintMetadata {
-    const MAGIC: &'static str = "PXMM";
-    // Every field this sidecar carries, and what it means. Edit this when a
-    // field's meaning changes (not merely its name/type — serde already
-    // refuses those); the derived `SCHEMA_IDENTITY` changes with it, so a
-    // sidecar written under the old meaning cannot silently be read under a
-    // consumer that expects the new one.
-    const SCHEMA: &'static str = "\
-        bench_mode: bench_mode_slug of the BenchMode every training target was \
-        measured in; \
-        trainer: which binary wrote these weights; \
-        samples: training sample count the weights were fit on, post-exclusion; \
-        order_shuffle_seed: seed of the shuffle that decided BENCHMARK order (not \
-        storage order) during minting; \
-        sentinel_calibration_ns: the minting session's opening sentinel calibration; \
-        normalization: NormalizationStats{count,min,median,max} of the per-label \
-        drift-correction factors actually applied across the minting run; \
-        weights_fnv64: FNV-1a 64 hex content hash binding this sidecar to the exact \
-        weight bytes it describes; \
-        written_at_unix_s: unix seconds at sidecar write time";
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
 }
 
 impl MintMetadata {
-    /// Hex [`SchemaIdentity::SCHEMA_IDENTITY`] for the current build — what a
-    /// freshly-written sidecar's [`Self::schema_identity`] field must equal,
-    /// and what [`Self::read_for`] checks a loaded sidecar against.
-    ///
-    /// [`Self::schema_identity`]: MintMetadata::schema_identity
-    #[must_use]
-    pub fn current_schema_identity() -> String {
-        format!("{:016x}", <Self as SchemaIdentity>::SCHEMA_IDENTITY)
-    }
-
     /// Write the sidecar for `weights`.
     ///
     /// # Errors
@@ -304,27 +264,12 @@ impl MintMetadata {
                 ),
             )
         })?;
-        let meta: Self = serde_json::from_str(&text).map_err(|e| {
+        serde_json::from_str(&text).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("mint metadata sidecar {} is malformed: {e}", path.display()),
             )
-        })?;
-        // A field can keep its JSON name and type while its MEANING changes
-        // (serde's parse succeeding says nothing about that); this is the
-        // check `serde_json::from_str` above cannot make (J9, kills P1(b)).
-        let expected = Self::current_schema_identity();
-        if meta.schema_identity != expected {
-            let stored = u64::from_str_radix(&meta.schema_identity, 16).unwrap_or(0);
-            return Err(identity_mismatch(
-                "mint sidecar",
-                stored,
-                <Self as SchemaIdentity>::SCHEMA_IDENTITY,
-                "cargo run --release -p pixelflow-pipeline --features training --bin \
-                 bootstrap_extraction_head",
-            ));
-        }
-        Ok(meta)
+        })
     }
 
     /// Assert these weights were minted in `expected`.
@@ -370,16 +315,16 @@ impl MintMetadata {
 
 /// Unix seconds now.
 ///
-/// Lives in [`crate::schema`] (unconditionally compiled) rather than here, so
-/// [`crate::journal`] — which every journal-writing binary uses regardless of
-/// the `training` feature — can share it without depending on this
-/// `training`-gated module. Re-exported here so existing callers keep
-/// importing it from `training::mint`.
-///
 /// # Panics
 ///
 /// Panics if the system clock is before the Unix epoch.
-pub use crate::schema::unix_now_s;
+#[must_use]
+pub fn unix_now_s() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is before the unix epoch")
+        .as_secs()
+}
 
 /// Human-readable modification time of `path`, as an age in seconds plus the
 /// raw unix timestamp — enough for a log line to say *which* file a warm
@@ -487,7 +432,7 @@ mod tests {
         const KERNEL_NS: f64 = 3.0;
         let drift = 1.45f64;
         let b = drifted(KERNEL_NS, OVERHEAD_NS, drift);
-        let factor = b.sentinel.expect("sentinel").normalization().get();
+        let factor = b.sentinel.expect("sentinel").normalization();
 
         let wrong = b.adjusted_ns * factor;
         let residue = wrong - KERNEL_NS;
@@ -632,7 +577,6 @@ mod tests {
 
         let weights_bytes = b"not real weights, but identity-checked all the same";
         let meta = MintMetadata {
-            schema_identity: MintMetadata::current_schema_identity(),
             bench_mode: bench_mode_slug(BenchMode::Latency).to_string(),
             trainer: "bootstrap_extraction_head".to_string(),
             samples: 7,
@@ -663,7 +607,6 @@ mod tests {
         // Codex 3758853787: new weights beside an old sidecar — the aborted
         // half-written training run. Mode checks alone would accept it.
         let meta = MintMetadata {
-            schema_identity: MintMetadata::current_schema_identity(),
             bench_mode: bench_mode_slug(BenchMode::Latency).to_string(),
             trainer: "bootstrap_extraction_head".to_string(),
             samples: 7,
@@ -680,7 +623,6 @@ mod tests {
     #[should_panic(expected = "objective mismatch")]
     fn require_mode_rejects_the_other_objective() {
         let meta = MintMetadata {
-            schema_identity: MintMetadata::current_schema_identity(),
             bench_mode: bench_mode_slug(BenchMode::Latency).to_string(),
             trainer: "bootstrap_extraction_head".to_string(),
             samples: 1,
@@ -691,37 +633,6 @@ mod tests {
             written_at_unix_s: 0,
         };
         meta.require_mode(BenchMode::Throughput);
-    }
-
-    #[test]
-    fn stale_schema_identity_is_rejected_even_though_json_parses() {
-        // The case `serde_json::from_str` alone cannot catch (J9): the JSON
-        // shape is perfectly well-formed, every field name and type matches,
-        // but `schema_identity` names an older format meaning.
-        let dir = std::env::temp_dir().join(format!("mint_meta_stale_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        let weights = dir.join("extraction_head.bin");
-        let weights_bytes = b"stale-schema fixture weights";
-
-        let meta = MintMetadata {
-            schema_identity: "0000000000000000".to_string(), // not the current identity
-            bench_mode: bench_mode_slug(BenchMode::Latency).to_string(),
-            trainer: "bootstrap_extraction_head".to_string(),
-            samples: 3,
-            order_shuffle_seed: 1,
-            sentinel_calibration_ns: 1.0,
-            normalization: NormalizationStats::summarize(&[1.0]),
-            weights_fnv64: weights_identity(weights_bytes),
-            written_at_unix_s: 0,
-        };
-        meta.write_for(&weights).expect("write sidecar");
-
-        let err = MintMetadata::read_for(&weights).expect_err("stale schema must be refused");
-        let msg = err.to_string();
-        assert!(msg.contains("schema identity mismatch"), "{msg}");
-        assert!(msg.contains("bootstrap_extraction_head"), "{msg}");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

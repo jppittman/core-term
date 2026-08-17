@@ -16,7 +16,7 @@
 // `std`-off as aspirational until the `std-off-status` job in
 // `.github/workflows/rust.yaml` is green.
 use super::cost::CostModel;
-use super::extract::{Extraction, extract_dag};
+use super::extract::extract_dag;
 use super::graph::EGraph;
 use super::node::EClassId;
 use crate::nnue::ExprNnue;
@@ -45,32 +45,15 @@ pub enum ExtractionPolicy<'a> {
 }
 
 impl ExtractionPolicy<'_> {
-    /// Per-e-class extraction choices under this policy, as a validated
-    /// [`Extraction`] — the well-founded (egraph, root, choices) triple
-    /// [`super::extract::choices_to_arena`] and the NNUE accumulator
-    /// builders require.
-    pub fn extraction<'g>(&self, egraph: &'g EGraph, root: EClassId) -> Extraction<'g> {
+    /// Per-e-class extraction choices under this policy.
+    pub fn choices(&self, egraph: &EGraph, root: EClassId) -> Vec<Option<usize>> {
         match self {
             ExtractionPolicy::Nnue(model) => {
                 let extractor = super::extract::IncrementalExtractor::new(model, 8);
                 extractor.extract_choices_only(egraph, root).1
             }
-            ExtractionPolicy::Static(costs) => {
-                let dag = extract_dag(egraph, root, costs.as_ref());
-                // `extract_dag` already repairs `dag.choices` into a
-                // well-founded set internally; `from_dp`'s repair pass is
-                // then a verified no-op (drain phase only).
-                Extraction::from_dp(egraph, root, dag.choices)
-            }
+            ExtractionPolicy::Static(costs) => extract_dag(egraph, root, costs.as_ref()).choices,
         }
-    }
-
-    /// Per-e-class extraction choices under this policy, as a raw vector —
-    /// kept for `pixelflow-compiler`'s ref-counting / DAG-codegen consumers
-    /// (`compute_ref_counts`, `build_extracted_dag_from_choices`) that
-    /// predate the [`Extraction`] type.
-    pub fn choices(&self, egraph: &EGraph, root: EClassId) -> Vec<Option<usize>> {
-        self.extraction(egraph, root).into_choices()
     }
 }
 

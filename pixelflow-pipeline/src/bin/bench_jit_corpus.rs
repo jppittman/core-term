@@ -29,9 +29,7 @@ use std::time::Instant;
 use clap::Parser;
 use serde::Serialize;
 
-use pixelflow_pipeline::jit_bench::{
-    BenchError, BenchMode, BenchPosition, BenchResult, BenchSession, CostLabel,
-};
+use pixelflow_pipeline::jit_bench::{BenchError, BenchMode, BenchResult, BenchSession};
 use pixelflow_pipeline::training::corpus;
 use pixelflow_pipeline::training::factored::arena_to_kernel_code;
 
@@ -66,11 +64,7 @@ struct Args {
 }
 
 /// One benchmark mode's measurement, with the dispersion and scaling metadata
-/// the audit found being thrown away (M5) or unrecorded (H5/M1), plus the
-/// [`CostLabel`] (docs/plans/2026-08-17-cost-model-domain.md, J3) minted from
-/// it: `value_ns` and `position` are the drift-corrected, order-tagged label
-/// a training consumer should use, computed once here rather than re-derived
-/// (and potentially re-ordered) downstream.
+/// the audit found being thrown away (M5) or unrecorded (H5/M1).
 #[derive(Serialize)]
 struct ModeRecord {
     mode: &'static str,
@@ -83,26 +77,28 @@ struct ModeRecord {
     local_sentinel_ns: f64,
     /// The session's opening sentinel calibration.
     sentinel_calibration_ns: f64,
-    /// `sentinel_calibration_ns / local_sentinel_ns` — the factor
-    /// [`CostLabel::mint`] applied to reach `value_ns`, persisted so training
-    /// can down-weight heavily-corrected samples.
+    /// `sentinel_calibration_ns / local_sentinel_ns` — the factor that
+    /// re-expresses a measurement in the run's opening clock (slow drift is a
+    /// correction, not an exclusion).
+    ///
+    /// Apply it to `ns`, then subtract `call_overhead_ns`:
+    /// `ns * sentinel_normalization - call_overhead_ns`, which is what
+    /// `training::mint::normalized_label_ns` computes. Order matters, and the
+    /// tempting shortcut is wrong: `adjusted_ns` has *already* had the
+    /// overhead subtracted, and that overhead is denominated in the opening
+    /// clock, so scaling it a second time leaves a drift-dependent
+    /// `call_overhead_ns * (1 - factor)` residue in the label. With a ~4 ns
+    /// call overhead and drift anywhere near the accepted limit that is more
+    /// than a nanosecond of collection-order-correlated bias — small in
+    /// absolute terms, and a large fraction of a small kernel.
     sentinel_normalization: f64,
-    /// [`CostLabel::value`]: `ns` normalized by `sentinel_normalization`,
-    /// THEN `call_overhead_ns` subtracted (`CostLabel::mint`'s ordering, not
-    /// `adjusted_ns * sentinel_normalization` — that scales a value that
-    /// already mixes two clocks and leaves a drift-dependent residue; see
-    /// `training::mint::normalized_label_ns`).
-    value_ns: f64,
-    /// [`CostLabel::position`]: this expression's index in the corpus file
-    /// (this binary benchmarks in stored order, unshuffled), the axis timing
-    /// drift correlates with.
-    position: usize,
 }
 
-impl ModeRecord {
-    fn mint(b: &BenchResult, position: BenchPosition) -> Self {
-        let label = CostLabel::mint(b, position, "bench_jit_corpus");
-        let sentinel = label.calibration();
+impl From<&BenchResult> for ModeRecord {
+    fn from(b: &BenchResult) -> Self {
+        let sentinel = b
+            .sentinel
+            .expect("session-minted BenchResult always carries a SentinelContext");
         Self {
             mode: match b.mode {
                 BenchMode::Throughput => "throughput",
@@ -115,9 +111,7 @@ impl ModeRecord {
             repeat_batches: b.repeat_batches,
             local_sentinel_ns: sentinel.local_sentinel_ns,
             sentinel_calibration_ns: sentinel.calibration_ns,
-            sentinel_normalization: label.drift().get(),
-            value_ns: label.value().get(),
-            position: position.0,
+            sentinel_normalization: sentinel.normalization(),
         }
     }
 }
@@ -183,19 +177,15 @@ fn main() {
     let mut excluded = 0usize;
     let total_start = Instant::now();
 
-    for (position, (name, arena, root)) in entries.iter().enumerate() {
+    for (name, arena, root) in &entries {
         let expression = arena_to_kernel_code(arena, *root);
         match session.benchmark_arena_both(arena, *root) {
             Ok((throughput, latency)) => {
-                // Both modes were measured for the same expression at the
-                // same point in the (unshuffled, stored-order) corpus walk,
-                // so they share one CostLabel position.
-                let position = BenchPosition(position);
                 let record = BenchRecord {
                     name,
                     expression: &expression,
-                    throughput: ModeRecord::mint(&throughput, position),
-                    latency: ModeRecord::mint(&latency, position),
+                    throughput: ModeRecord::from(&throughput),
+                    latency: ModeRecord::from(&latency),
                 };
                 let json = serde_json::to_string(&record).unwrap_or_else(|e| {
                     panic!("Failed to serialize bench record for '{name}': {e}")
