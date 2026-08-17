@@ -11,11 +11,30 @@
 //! (docs/plans/2026-08-17-cost-model-domain.md, J15) — a fix to one could
 //! silently fail to reach the other, the same NO-SILENT-FAILURES class as
 //! J14's `run_scalar`.
+//!
+//! The mechanics above are the writer's easy half. Its other job — owning the
+//! *shape* every journal line takes, not just how the bytes land — used to be
+//! absent: `bench_extraction_3way` hand-rolled a `config_hash` from source
+//! revision, corpus bytes, weights bytes, protocol params, and the build
+//! environment, entirely inside that one binary; `bootstrap_extraction_head`
+//! wrote a journal line with none of that provenance at all — two runs of it
+//! against different corpora or different commits were indistinguishable.
+//! [`ConfigHash`], [`ArtifactId`], and [`JournalEntry`] below are that shared
+//! shape (docs/plans/2026-08-17-cost-model-domain.md, J15): every
+//! journal-writing binary composes a `ConfigHash` the same way, names its
+//! weights the same way, and wraps its own metrics in the same envelope, so
+//! two binaries can no longer diverge on what "this run's provenance" means.
 use std::fs;
 use std::io::Write as _;
 use std::path::Path;
+use std::process::Command;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// Re-exported so journal-writing binaries need one `use` for both the
+/// writer mechanics and the content-hash primitive their `ConfigHash` inputs
+/// (corpus identity, weights identity, diff hash) are built from.
+pub use crate::schema::fnv1a64_hex;
 
 /// Refuse to append to a journal that is still a Git LFS pointer.
 ///
@@ -69,6 +88,278 @@ pub fn append_record<T: Serialize>(path: &Path, record: &T) {
     writeln!(journal, "{line}")
         .unwrap_or_else(|e| panic!("failed to append to {}: {e}", path.display()));
     eprintln!("Journal appended: {}", path.display());
+}
+
+// ── Provenance: ConfigHash, ArtifactId, JournalEntry (J15) ─────────────────
+
+/// Paths a config hash must not vary with: a run WRITES into these
+/// (`pixelflow-pipeline/data/` holds this run's own JSONL output;
+/// `docs/results/` holds the journal this line is about to join), so
+/// including them in a dirty-tree diff would make the hash depend on the
+/// run's own prior output — a second invocation of an otherwise-unchanged
+/// tree would then hash differently from the first, the opposite of an
+/// identity.
+pub const DIFF_HASH_EXCLUDES: [&str; 2] = [
+    ":(exclude)pixelflow-pipeline/data",
+    ":(exclude)docs/results",
+];
+
+fn git(args: &[&str]) -> Result<String, String> {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    match Command::new("git")
+        .args(args)
+        .current_dir(manifest_dir)
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+        Ok(out) => Err(format!(
+            "`git {}` exited {}: {}",
+            args.join(" "),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(e) => Err(format!("failed to spawn git: {e}")),
+    }
+}
+
+/// What source revision a run's numbers came off.
+///
+/// `rev` alone is not enough: every uncommitted variant of the same HEAD
+/// collapses onto one `"<sha>-dirty"` string, so two working trees measuring
+/// different code would hash identically and produce indistinguishable
+/// journal lines. `diff_hash` restores the distinction by hashing the actual
+/// uncommitted diff over tracked source (excluding [`DIFF_HASH_EXCLUDES`]).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SourceVersion {
+    /// `git rev-parse HEAD`, suffixed `-dirty` on an unclean tree, or
+    /// `"unversioned"` when git itself cannot answer.
+    pub rev: String,
+    /// FNV-1a hex of `git diff HEAD` over tracked source (excluding
+    /// [`DIFF_HASH_EXCLUDES`]). `None` on a clean tree. FNV rather than a
+    /// cryptographic hash because the job is *distinguishing* local working
+    /// trees, not resisting an adversary.
+    pub diff_hash: Option<String>,
+}
+
+impl SourceVersion {
+    /// Resolve the working tree's current version. Runs git in this crate's
+    /// manifest directory so the answer names this repo regardless of cwd.
+    ///
+    /// On any git failure the revision is `"unversioned"`, printed loudly to
+    /// stderr rather than silently swallowed — a run whose code cannot be
+    /// attributed to a commit is still worth having, but a caller must be
+    /// able to see why cross-run comparisons against it cannot be trusted.
+    #[must_use]
+    pub fn current(excludes: &[&str]) -> Self {
+        let unversioned = |why: &str| -> SourceVersion {
+            eprintln!(
+                "WARNING: could not resolve the source revision ({why}) — this run's \
+                 config hash will record source_rev=\"unversioned\", making it \
+                 UNATTRIBUTABLE to a commit."
+            );
+            SourceVersion {
+                rev: "unversioned".to_string(),
+                diff_hash: None,
+            }
+        };
+        let head = match git(&["rev-parse", "HEAD"]) {
+            Ok(s) if !s.is_empty() => s,
+            Ok(_) => return unversioned("`git rev-parse HEAD` produced no output"),
+            Err(why) => return unversioned(&why),
+        };
+        let status = match git(&["status", "--porcelain"]) {
+            Ok(s) => s,
+            Err(why) => return unversioned(&why),
+        };
+        if status.trim().is_empty() {
+            return SourceVersion {
+                rev: head,
+                diff_hash: None,
+            };
+        }
+        let mut diff_args = vec!["diff", "HEAD", "--"];
+        diff_args.extend(excludes.iter().copied());
+        match git(&diff_args) {
+            Ok(diff) => SourceVersion {
+                rev: format!("{head}-dirty"),
+                diff_hash: Some(fnv1a64_hex(diff.as_bytes())),
+            },
+            Err(why) => {
+                eprintln!(
+                    "WARNING: the working tree is dirty but the diff could not be hashed \
+                     ({why}) — this run's config hash cannot distinguish it from other \
+                     uncommitted variants of {head}."
+                );
+                SourceVersion {
+                    rev: format!("{head}-dirty"),
+                    diff_hash: None,
+                }
+            }
+        }
+    }
+
+    fn hash_input(&self) -> String {
+        match &self.diff_hash {
+            Some(h) => format!("{};diff={h}", self.rev),
+            None => self.rev.clone(),
+        }
+    }
+}
+
+/// The build and machine facts that select the emitted instructions — same
+/// source, different machine or build, different timings, so these belong in
+/// every config hash beside the source revision.
+///
+/// Compile-time facts only: `target_arch`/`target_feature` are what actually
+/// select the emitter, and the profile decides whether the timings are
+/// meaningful at all. The specific CPU model is deliberately not read here —
+/// it needs a syscall or `/proc`, varies across otherwise-identical cloud
+/// instances, and a run's sentinel calibration already records per-run clock
+/// behavior.
+#[must_use]
+pub fn environment_fingerprint() -> String {
+    let isa = if cfg!(target_feature = "avx512f") {
+        "avx512f"
+    } else if cfg!(target_feature = "avx2") {
+        "avx2"
+    } else if cfg!(target_feature = "fma") {
+        "fma"
+    } else {
+        "baseline"
+    };
+    format!(
+        "arch={};os={};ptr={};isa={};profile={}",
+        std::env::consts::ARCH,
+        std::env::consts::OS,
+        usize::BITS,
+        isa,
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    )
+}
+
+/// Where an artifact lives and the content hash binding this record to those
+/// exact bytes — the [`crate::training::mint::weights_identity`] pattern,
+/// generalized to any file a journal line needs to name.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ArtifactId {
+    pub path: String,
+    pub identity: String,
+}
+
+impl ArtifactId {
+    /// Name `path`, content-hashing `bytes` as its identity.
+    #[must_use]
+    pub fn of(path: impl Into<String>, bytes: &[u8]) -> Self {
+        Self {
+            path: path.into(),
+            identity: fnv1a64_hex(bytes),
+        }
+    }
+
+    /// Name `path` with an identity already computed elsewhere (e.g.
+    /// [`crate::training::mint::MintMetadata::weights_fnv64`], so a caller
+    /// that already loaded the mint sidecar need not re-hash the weights
+    /// bytes just to fill this in).
+    #[must_use]
+    pub fn with_identity(path: impl Into<String>, identity: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            identity: identity.into(),
+        }
+    }
+}
+
+/// Everything that shapes a measurement, content-hashed into one value: the
+/// source revision (+ diff), which corpus was measured, which weights
+/// produced the run, and the machine it ran on. Two runs with the same
+/// `value` are the same experiment; the individual fields stay alongside it
+/// so a journal reader does not have to decompose the hash to find out WHY
+/// two runs differ.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ConfigHash {
+    pub source_rev: String,
+    pub source_diff_hash: Option<String>,
+    pub corpus_identity: String,
+    pub weights_identity: String,
+    pub environment: String,
+    /// Caller-supplied protocol parameters (seeds, sample sizes, tier,
+    /// benchmark mode, epoch count, ...) that are not artifacts but still
+    /// define the experiment. Free text, since the two binaries' protocols
+    /// differ and forcing one shape onto both would be artificial
+    /// commonality (docs/plans/2026-08-17-cost-model-domain.md, journal.rs
+    /// module doc: "each with its own record schema... that stays").
+    pub protocol: String,
+    /// FNV-1a 64 hex over every field above, concatenated in declaration
+    /// order — the single value two runs compare to ask "same setup?".
+    pub value: String,
+}
+
+impl ConfigHash {
+    #[must_use]
+    pub fn compose(
+        source: &SourceVersion,
+        corpus_identity: &str,
+        weights_identity: &str,
+        protocol: &str,
+    ) -> Self {
+        let environment = environment_fingerprint();
+        let composed = format!(
+            "rev={};corpus={corpus_identity};weights={weights_identity};env={environment};\
+             protocol={protocol}",
+            source.hash_input(),
+        );
+        Self {
+            source_rev: source.rev.clone(),
+            source_diff_hash: source.diff_hash.clone(),
+            corpus_identity: corpus_identity.to_string(),
+            weights_identity: weights_identity.to_string(),
+            environment,
+            protocol: protocol.to_string(),
+            value: fnv1a64_hex(composed.as_bytes()),
+        }
+    }
+}
+
+/// One line of `docs/results/journal.jsonl`: the envelope every
+/// journal-writing binary shares — which record type, when, under what
+/// configuration, and which weights produced it — wrapping the caller's own
+/// metrics. Two binaries hand-rolling this envelope independently, so a fix
+/// or a new provenance field in one could silently fail to reach the other,
+/// is exactly the structurally-divergent-journal-line risk this type exists
+/// to close (docs/plans/2026-08-17-cost-model-domain.md, J15): the shape a
+/// caller can even attempt to serialize is fixed here, once.
+#[derive(Serialize)]
+pub struct JournalEntry<T: Serialize> {
+    pub record: &'static str,
+    pub ts_unix: u64,
+    pub config: ConfigHash,
+    pub weights: ArtifactId,
+    #[serde(flatten)]
+    pub metrics: T,
+}
+
+impl<T: Serialize> JournalEntry<T> {
+    #[must_use]
+    pub fn new(record: &'static str, config: ConfigHash, weights: ArtifactId, metrics: T) -> Self {
+        Self {
+            record,
+            ts_unix: crate::schema::unix_now_s(),
+            config,
+            weights,
+            metrics,
+        }
+    }
+
+    /// Append this entry to `path` via [`append_record`].
+    pub fn append(&self, path: &Path) {
+        append_record(path, self);
+    }
 }
 
 #[cfg(test)]
