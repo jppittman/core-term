@@ -9,7 +9,7 @@ use core_term::ansi::commands::{AnsiCommand, C0Control, CsiCommand};
 use support::minimal_test_harness::MinimalTestHarness;
 
 #[test]
-fn single_character_print() {
+fn it_should_place_a_printed_character_at_the_cursor_and_advance_the_cursor() {
     let mut harness = MinimalTestHarness::new();
 
     // TEST: Print a single character
@@ -34,7 +34,7 @@ fn single_character_print() {
 }
 
 #[test]
-fn multiple_characters() {
+fn it_should_print_a_sequence_of_characters_left_to_right() {
     let mut harness = MinimalTestHarness::new();
 
     // TEST: Print multiple characters
@@ -95,7 +95,7 @@ fn cursor_position_command() {
 }
 
 #[test]
-fn multiline_text() {
+fn it_should_wrap_to_a_new_grid_line_on_each_lf_cr_pair() {
     let mut harness = MinimalTestHarness::new();
 
     // TEST: Print text with newlines
@@ -192,7 +192,7 @@ fn grid_checksum_stable_without_changes() {
 }
 
 #[test]
-fn multiple_characters_change_checksum() {
+fn it_should_change_the_grid_checksum_after_each_character_printed() {
     let mut harness = MinimalTestHarness::new();
 
     let mut checksums = Vec::new();
