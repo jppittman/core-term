@@ -34,7 +34,7 @@
 )]
 
 use pixelflow_ir::OpKind;
-use pixelflow_ir::kind::OpMap;
+use pixelflow_ir::kind::{OpCode, OpMap};
 use pixelflow_search::nnue::factored::{
     EMBED_DIM, EdgeAccumulator, ExprNnue, GRAPH_ACC_DIM, GRAPH_INPUT_DIM, GraphAccumulator,
     HIDDEN_DIM, INPUT_DIM, K, MLP_HIDDEN, depth_pe,
@@ -339,7 +339,7 @@ pub struct UnifiedGradients {
     pub d_interaction: [[f32; EMBED_DIM]; EMBED_DIM],
     /// Bias projection gradients: EMBED_DIM.
     pub d_mask_bias_proj: [f32; EMBED_DIM],
-    /// OpEmbedding gradients: [OpKind::COUNT][K].
+    /// OpEmbedding gradients: one K-vector per op.
     pub d_embeddings: OpMap<[f32; K]>,
     /// Shared trunk weight gradients: HIDDEN_DIM x HIDDEN_DIM.
     /// Accumulates from BOTH edge and graph backward paths.
@@ -980,7 +980,7 @@ fn backward_edge_tower_from_hidden(
 ///
 /// # Panics
 ///
-/// Panics if any op index in `edges` is out of range for `OpKind::COUNT`.
+/// Panics if any op byte in `edges` encodes no op.
 pub fn backward_through_accumulator(
     d_acc_input: &[f32; INPUT_DIM],
     edges: &[(u8, u8, u16)],
@@ -1005,9 +1005,9 @@ pub fn backward_through_accumulator(
         // Decoded once, loudly. These arrive as raw bytes from a serialized
         // edge record, so "this byte names an op" is a claim about the data,
         // not something the type system already knows.
-        let pi = OpKind::from_index(parent_op_u8 as usize)
+        let pi = OpKind::unmarshal(OpCode::from_bytes([parent_op_u8]))
             .unwrap_or_else(|| panic!("parent op byte {parent_op_u8} names no OpKind"));
-        let ci = OpKind::from_index(child_op_u8 as usize)
+        let ci = OpKind::unmarshal(OpCode::from_bytes([child_op_u8]))
             .unwrap_or_else(|| panic!("child op byte {child_op_u8} names no OpKind"));
         let pe = depth_pe(depth_u16 as u32);
 
@@ -1285,7 +1285,7 @@ pub fn apply_unified_sgd(
 
     // ── Embeddings (scale_embeddings) ─────────────────────────────────────────
 
-    // embeddings: [OpKind::COUNT][K]
+    // embeddings: one K-vector per op
     for op in OpKind::all() {
         for i in 0..K {
             sgd_scalar!(

@@ -1674,7 +1674,7 @@ mod dwrt_tests {
     fn unsupported_op_errors_loudly() {
         // Differentiating a Reduce has no rule: the pass must refuse.
         let mut a = ExprArena::new();
-        let combiner = a.push_const(OpKind::Add as u8 as f32);
+        let combiner = a.push_const(OpKind::Add.index() as f32);
         let rvar = a.push_const(0.0);
         let extent = a.push_const(4.0);
         let body = a.push_var(4);
