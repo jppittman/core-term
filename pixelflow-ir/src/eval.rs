@@ -2318,17 +2318,44 @@ mod tests {
         );
         assert_eq!(near.verdict(near.value() + 0.25), PointVerdict::Reject);
 
-        // Large argument: the same 3.7e-4 seed is multiplied by ~8e7, so no
+        // Large argument, still inside `TRIG_DOMAIN`: the same seed is now
+        // multiplied by ~1e6, scrambling the phase by several radians, so no
         // backend's answer is pinned. The gate must not call this a miscompile.
-        let far = check.at(&[1.0, 9110.0, 0.0, 0.0], &b);
+        // Stay under 2^20 — past the domain the answer is NaN by construction
+        // (see `sin_past_its_domain_is_exactly_nan_not_amplified`), which is a
+        // different property and would mask this one.
+        let far = check.at(&[1.0, 1000.0, 0.0, 0.0], &b);
         assert!(
             far.relative_error_bound() > 1.0,
-            "rel bound {} at argument ~8.3e7",
+            "rel bound {} at argument ~1e6",
             far.relative_error_bound()
         );
         assert!(!far.is_well_conditioned());
         assert_ne!(far.verdict(-0.5), PointVerdict::Reject);
         assert_ne!(far.verdict(0.5), PointVerdict::Reject);
+    }
+
+    /// Past `TRIG_DOMAIN` the lowering returns NaN rather than a reduced value,
+    /// so oracle and JIT agree *exactly* and the error bound is legitimately
+    /// zero. Pinned separately because a zero bound here is correct while the
+    /// same reading in-domain would mean the walk had dropped incoming error —
+    /// telling those two apart by eye is what made the CI failure that
+    /// motivated this test look like a regression.
+    #[test]
+    fn sin_past_its_domain_is_exactly_nan_not_amplified() {
+        let mut arena = ExprArena::new();
+        let root = sin_of_recip_scaled_square(&mut arena);
+        let check = DifferentialCheck::new(&arena, root);
+        let b = BindingTable::empty();
+
+        // y = 9110 puts the argument at ~8.3e7, far past 2^20.
+        let beyond = check.at(&[1.0, 9110.0, 0.0, 0.0], &b);
+        assert!(
+            beyond.value().is_nan(),
+            "expected the guarded NaN, got {}",
+            beyond.value()
+        );
+        assert_eq!(beyond.relative_error_bound(), 0.0);
     }
 
     #[test]
