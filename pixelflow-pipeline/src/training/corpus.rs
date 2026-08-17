@@ -39,6 +39,7 @@ use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
 const MAGIC: &[u8; 4] = b"PXCR";
 // Bump this whenever anything about the bytes below changes meaning — the
 // header's shape, a node tag, or the encoding `OpKind::marshal` writes ops in.
+// See `docs/designs/opkind-numbering-is-private.md` §4.4.
 // That last one is easy to forget precisely because it changes nothing here:
 // the file still parses, and every op byte quietly names a different
 // operation. A stale corpus is cheap to replace and expensive to misread, so

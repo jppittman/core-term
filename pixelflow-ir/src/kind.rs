@@ -17,12 +17,14 @@ use core::ops::{Index, IndexMut};
 /// can be forgotten. Adding an operation is adding a line here; there is no
 /// second place to update and therefore no second place to get wrong.
 ///
-/// This is a macro reluctantly. The same guarantee was first attempted by
-/// writing the four out by hand and proving them equal in a `const` block —
-/// but a proof can only check the variants it is handed, and a variant left
-/// out of the roster is precisely the one it never sees. Subtracting the
-/// duplicate declarations is what closes that, and a macro is how you
-/// subtract them.
+/// A macro rather than four declarations kept in step by a check, because a
+/// check can only visit the variants something hands it: a variant missing
+/// from the roster is exactly the one it never sees, and its absence is
+/// therefore invisible. Generating all four removes that possibility instead
+/// of testing for it.
+///
+/// The designs this replaced, and what each got wrong, are in
+/// `docs/designs/opkind-numbering-is-private.md` §4.
 macro_rules! op_table {
     ($( $(#[$attr:meta])* $name:ident = $code:literal, )+) => {
         /// Unified enumeration of all IR operations.
@@ -923,10 +925,10 @@ const _: () = {
 /// the training corpus does — a stale file has to fail loudly rather than
 /// decode into the wrong ops.
 ///
-/// This exists because the alternative leaked: consumers reached for the
-/// internal table subscript, wrote `op.index() as u8` into their formats, and
-/// one of them ended up versioning its own file format against a renumbering
-/// that happened in here.
+/// Handing out the table subscript instead would leak: a consumer that writes
+/// `index()` into its own format has made this crate's private numbering part
+/// of that format, and owes it a version bump for a change it cannot see.
+/// See `docs/designs/opkind-numbering-is-private.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct OpCode(u8);
 
@@ -1104,10 +1106,9 @@ mod index_space {
     /// There is deliberately no test pinning op N to a particular number.
     /// The numbering is this crate's own business — see [`OpCode`] — and a
     /// test asserting `Add == 2` would turn an internal detail into a promise
-    /// that every consumer could then quietly build on, which is how a
-    /// renumbering in here once forced a file-format version bump elsewhere.
-    /// Persisted data is protected by its own format version, not by freezing
-    /// these values.
+    /// that consumers can quietly build on, leaving this crate owing a version
+    /// bump to every format that took it up. Persisted data is protected by
+    /// its own format version, not by freezing these values.
     ///
     /// What the round trip must do is survive the trip.
     #[test]

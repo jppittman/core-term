@@ -526,16 +526,12 @@ mod every_op_is_priceable {
         }
     }
 
-    /// Every op can be priced, including the ones a table-filling walk once
-    /// skipped.
+    /// Pricing is total: every op has a cost, and asking for one cannot fail.
     ///
-    /// This used to assert `op.index() < OpKind::COUNT` by hand, because ops
-    /// sitting past a discriminant gap indexed 50..=52 into a 50-slot array.
-    /// Neither half of that assertion can be written any more: the subscript
-    /// and the count are `pixelflow-ir`'s own, reachable only through `OpMap`,
-    /// which has no out-of-range case to test for. What remains worth pinning
-    /// is that pricing is *total* — `Gather`/`RawGather`/`Reduce` named
-    /// outright, since being missed by a walk is how they hid.
+    /// `Gather`/`RawGather`/`Reduce` are named outright rather than left to
+    /// the walk over `all()`. They sit at the end of the table, which is where
+    /// an op goes missing from a table-filling loop without anyone noticing,
+    /// so naming them tests the walk as much as the pricing.
     #[test]
     fn every_op_can_be_priced() {
         let mut model = CostModel::latency_prior();
