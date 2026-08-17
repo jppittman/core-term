@@ -109,17 +109,6 @@ pub struct ApplyResult {
     pub evals: usize,
 }
 
-/// Result of one [`EGraph::saturate_with_limits`] run: how many rounds it
-/// took and how many rule applications fired in total, whichever limit
-/// (iteration count, class count, timeout, or convergence) ended the run.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SaturationStats {
-    /// Number of rewrite rounds completed before the run stopped.
-    pub iterations: usize,
-    /// Sum of `ApplyResult::changes` across every round.
-    pub total_unions: usize,
-}
-
 impl EGraph {
     /// Create an empty e-graph with no rewrite rules.
     ///
@@ -809,14 +798,14 @@ impl EGraph {
     /// - 10000 class limit (prevent memory explosion)
     /// - 100 iteration limit (budget control)
     pub fn saturate(&mut self) {
-        self.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
+        self.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500))
     }
 
     /// Saturate with just an iteration limit (simple compatibility API).
     ///
     /// Warning: This can hang on complex expressions. Prefer `saturate_with_limits`.
     pub fn saturate_with_limit(&mut self, max_iters: usize) {
-        self.saturate_with_limits(max_iters, 10_000, std::time::Duration::from_millis(500));
+        self.saturate_with_limits(max_iters, 10_000, std::time::Duration::from_millis(500))
     }
 
     /// Saturate with full time and size control.
@@ -826,31 +815,22 @@ impl EGraph {
     /// - `max_classes` e-classes reached (memory protection)
     /// - `timeout` elapsed (time protection)
     /// - Saturation achieved (no more changes)
-    ///
-    /// This is the one rewrite-until-budget-exhausted loop
-    /// (docs/plans/2026-08-17-cost-model-domain.md, J11) — the training-data
-    /// policy layer in `super::saturate` drives its whole multi-iteration run
-    /// through a single call here rather than re-deciding, in a second copy,
-    /// when to stop.
     pub fn saturate_with_limits(
         &mut self,
         max_iters: usize,
         max_classes: usize,
         timeout: std::time::Duration,
-    ) -> SaturationStats {
+    ) {
         let start = std::time::Instant::now();
         let deadline = start + timeout;
-        let mut iterations = 0;
-        let mut total_unions = 0;
 
         for _ in 0..max_iters {
             if start.elapsed() >= timeout {
-                break;
+                return;
             }
             if self.classes.len() > max_classes {
-                break;
+                return;
             }
-            iterations += 1;
 
             // Advance the provenance step counter once per saturation
             // iteration — every ApplicationRecord/UnionEvent produced by
@@ -872,15 +852,9 @@ impl EGraph {
                 total
                 // rebuild happens here on drop
             };
-            total_unions += unions;
             if unions == 0 {
-                break; // Saturated
+                return; // Saturated
             }
-        }
-
-        SaturationStats {
-            iterations,
-            total_unions,
         }
     }
 
