@@ -924,6 +924,42 @@ fn load_model(path: &Path, seed: u64) -> ExprNnue {
     model
 }
 
+/// Compose the journal's corpus identity from every tier file in
+/// `corpus_dir` — not just TRAIN.
+///
+/// DEV is measured unconditionally (Phase 3) and both DEV and FINAL seed the
+/// holdout fence (Phase 1, `HoldoutFence::build`) before a single expression
+/// is queued, so a run against a different DEV or FINAL tier is a materially
+/// different experiment even when TRAIN and every CLI flag are identical — a
+/// TRAIN-only identity records the same config value for both (P2 finding on
+/// PR #1019). Each tier is hashed independently and named
+/// (`"train=<hash>;dev=<hash>;final=<hash>"`) rather than concatenated raw,
+/// so one missing/unreadable tier degrades to a named "unreadable" component
+/// instead of silently shifting every other tier's bytes in the hash input.
+fn corpus_tier_identity(corpus_dir: &Path) -> String {
+    Tier::ALL
+        .iter()
+        .map(|tier| {
+            let path = corpus_dir.join(format!("corpus_{}.bin", tier.name()));
+            let hash = std::fs::read(&path)
+                .map(|bytes| pixelflow_pipeline::journal::fnv1a64_hex(&bytes))
+                .unwrap_or_else(|e| {
+                    // A tier not being readable at journal time is a fact
+                    // about this run, not a reason to lose the rest of the
+                    // line — the weights and DEV quality are already on
+                    // disk by the time this is composed.
+                    eprintln!(
+                        "WARNING: could not hash {} for the journal's corpus identity: {e}",
+                        path.display()
+                    );
+                    "unreadable".to_string()
+                });
+            format!("{}={hash}", tier.name())
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -1620,32 +1656,27 @@ fn main() {
     // cross-round history. Written last — after the weights and sidecar — so
     // the line always names a checkpoint that exists.
     //
-    // Config hash (J15): this run's source revision, the TRAIN corpus this
-    // run actually trained on, the weights it produced, and the build
+    // Config hash (J15): this run's source revision, EVERY corpus tier this
+    // run actually loaded, the weights it produced, and the build
     // environment — the same provenance shape `bench_extraction_3way` composes,
     // shared via `pixelflow_pipeline::journal` rather than reimplemented here.
     // Before this, a `bootstrap_extraction_head` journal line carried none of
     // it: two runs against different corpora or different commits were
     // indistinguishable in the journal.
+    //
+    // TRAIN alone is not enough (P2 finding on PR #1019): DEV is measured
+    // unconditionally in Phase 3, and both DEV and FINAL seed the holdout
+    // fence in Phase 1 before a single expression is queued — so a DEV or
+    // FINAL tier swap changes which candidates the fence admits and what the
+    // reported DEV metrics mean, a materially different experiment a
+    // TRAIN-only identity could not distinguish. Every tier this run loaded
+    // (all three, always — see `HoldoutFence::build` and the DEV load below;
+    // TRAIN degrades to "unreadable" under `--skip-corpus`) is folded in.
     use pixelflow_pipeline::journal::{
         ArtifactId, ConfigHash, DIFF_HASH_EXCLUDES, JournalEntry, SourceVersion,
     };
     let source = SourceVersion::current(&DIFF_HASH_EXCLUDES);
-    let train_corpus_path = args
-        .corpus_dir
-        .join(format!("corpus_{}.bin", Tier::Train.name()));
-    let corpus_identity = std::fs::read(&train_corpus_path)
-        .map(|bytes| pixelflow_pipeline::journal::fnv1a64_hex(&bytes))
-        .unwrap_or_else(|e| {
-            // The corpus not being readable at journal time is a fact about
-            // this run, not a reason to lose the rest of the line — the
-            // weights and DEV quality above are already on disk.
-            eprintln!(
-                "WARNING: could not hash {} for the journal's corpus identity: {e}",
-                train_corpus_path.display()
-            );
-            "unreadable".to_string()
-        });
+    let corpus_identity = corpus_tier_identity(&args.corpus_dir);
     let protocol = format!(
         "epochs={};lr={};batch_size={};momentum={};weight_decay={};grad_clip={};\
          value_coeff={};synthetic={};skip_corpus={};seed={};order_seed={order_seed}",
@@ -1773,6 +1804,69 @@ mod tests {
         let c = arena.push_const(2.0);
         let add = arena.push_binary(OpKind::Add, x, c);
         assert!(!fence.blocks(&arena, add));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── Journal corpus identity covers every loaded tier (P2, PR #1019) ────
+
+    #[test]
+    fn corpus_tier_identity_changes_when_dev_changes_with_train_and_final_fixed() {
+        let dir = scratch_dir("tier_identity_dev");
+        write_tier(&dir, Tier::Train, &[scaled_var(1.0)]);
+        write_tier(&dir, Tier::Dev, &[scaled_var(2.0)]);
+        write_tier(&dir, Tier::Final, &[scaled_var(3.0)]);
+        let before = corpus_tier_identity(&dir);
+
+        // Rewrite ONLY DEV — the exact scenario the finding named: TRAIN
+        // (and FINAL) unchanged, DEV different, same directory.
+        write_tier(&dir, Tier::Dev, &[scaled_var(20.0)]);
+        let after = corpus_tier_identity(&dir);
+
+        assert_ne!(
+            before, after,
+            "corpus_tier_identity must change when DEV changes, even though TRAIN and \
+             FINAL did not — DEV shapes the holdout fence and supplies the reported \
+             quality metrics, so this is a materially different run"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corpus_tier_identity_changes_when_final_changes_with_train_and_dev_fixed() {
+        let dir = scratch_dir("tier_identity_final");
+        write_tier(&dir, Tier::Train, &[scaled_var(1.0)]);
+        write_tier(&dir, Tier::Dev, &[scaled_var(2.0)]);
+        write_tier(&dir, Tier::Final, &[scaled_var(3.0)]);
+        let before = corpus_tier_identity(&dir);
+
+        write_tier(&dir, Tier::Final, &[scaled_var(30.0)]);
+        let after = corpus_tier_identity(&dir);
+
+        assert_ne!(
+            before, after,
+            "corpus_tier_identity must change when FINAL changes — FINAL shapes the \
+             holdout fence exactly as DEV does"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corpus_tier_identity_names_a_missing_tier_rather_than_shifting_the_others() {
+        let dir = scratch_dir("tier_identity_missing");
+        write_tier(&dir, Tier::Dev, &[scaled_var(2.0)]);
+        write_tier(&dir, Tier::Final, &[scaled_var(3.0)]);
+        // TRAIN never written — the `--skip-corpus` case.
+
+        let identity = corpus_tier_identity(&dir);
+        assert!(
+            identity.contains("train=unreadable"),
+            "missing TRAIN must be named, not silently dropped: {identity}"
+        );
+        assert!(identity.contains("dev="), "{identity}");
+        assert!(identity.contains("final="), "{identity}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

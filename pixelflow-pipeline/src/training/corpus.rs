@@ -65,7 +65,7 @@ use std::path::Path;
 use pixelflow_ir::kind::OpCode;
 use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
 
-use crate::schema::{SchemaIdentity, identity_mismatch};
+use crate::schema::{SchemaIdentity, fnv1a64_const, identity_mismatch};
 
 /// Marker type naming the corpus binary format for [`SchemaIdentity`]. The
 /// format has no single Rust value of its own — it serializes a
@@ -111,6 +111,63 @@ impl SchemaIdentity for CorpusFormat {
 
 fn regen_command() -> &'static str {
     "cargo run --release -p pixelflow-pipeline --features training --bin gen_bench_corpus"
+}
+
+// ── Identity: SCHEMA text folded with the LIVE op encoding table ───────────
+//
+// `CorpusFormat::SCHEMA_IDENTITY` alone has a hole: it hashes the prose in
+// `SCHEMA` above, and that prose only *describes* the encoding as "dense
+// 0..COUNT discriminants private to pixelflow-ir" — a sentence that stays
+// true, and therefore stays byte-identical, no matter which op ends up at
+// which byte. `OpKind::marshal` is free to renumber (`docs/designs/
+// opkind-numbering-is-private.md`), and a renumbering changes nothing this
+// text says, so `SCHEMA_IDENTITY` alone cannot see it: an old corpus would
+// pass the new identity check and silently decode every affected opcode as
+// the wrong operation — exactly the failure J9 exists to make impossible.
+//
+// This is the derived-encoding-fingerprint design that opkind-numbering-is-
+// private.md §4.3 named `OpKind::ENCODING_ID` and rejected as disproportion-
+// ate — at the time, a hand-bumped `VERSION` integer was still the actual
+// gate, so the fingerprint would have been a second, redundant guard over
+// the same format. That premise is gone: this corpus format's gate is now
+// `SchemaIdentity`'s derived hash and nothing else, so a renumbering that
+// outruns the prose has no other guard left to catch it. `pixelflow-ir` is
+// out of scope for this change (its numbering stays private, per that same
+// doc), so the fingerprint is computed here, from `OpKind`'s public
+// `all()`/`marshal()`/`name()` surface, rather than as an `OpKind` const.
+//
+// Folds `(name, marshal() byte)` for every live op, in `OpKind::all()`
+// order, plus the op count — not just the byte sequence, which is always
+// `0..COUNT` by construction and so is invariant under a renumbering that
+// only swaps which op sits at which position.
+fn opcode_encoding_identity() -> u64 {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut count: u32 = 0;
+    for op in OpKind::all() {
+        let name = op.name().as_bytes();
+        assert!(
+            name.len() <= u8::MAX as usize,
+            "opcode_encoding_identity: op name '{}' exceeds u8::MAX bytes",
+            op.name()
+        );
+        buf.push(name.len() as u8);
+        buf.extend_from_slice(name);
+        buf.extend_from_slice(&op.marshal().to_bytes());
+        count += 1;
+    }
+    buf.extend_from_slice(&count.to_le_bytes());
+    fnv1a64_const(&buf)
+}
+
+/// The identity actually written to disk and checked on load: the schema
+/// prose's hash, folded with the live `(op name, encoded byte)` table so a
+/// renumbering in `pixelflow-ir` changes the identity by construction, not
+/// by someone remembering to edit `CorpusFormat::SCHEMA` to match.
+fn corpus_identity() -> u64 {
+    let mut buf = Vec::with_capacity(16);
+    buf.extend_from_slice(&CorpusFormat::SCHEMA_IDENTITY.to_le_bytes());
+    buf.extend_from_slice(&opcode_encoding_identity().to_le_bytes());
+    fnv1a64_const(&buf)
 }
 
 // ── ExprNode serialization tags ──────────────────────────────────────────────
@@ -233,7 +290,7 @@ pub fn write_corpus(path: &Path, entries: &[(String, ExprArena, ExprId)]) -> io:
 
     // Header
     w.write_all(CorpusFormat::MAGIC.as_bytes())?;
-    w.write_all(&CorpusFormat::SCHEMA_IDENTITY.to_le_bytes())?;
+    w.write_all(&corpus_identity().to_le_bytes())?;
     w.write_all(&(entries.len() as u32).to_le_bytes())?;
 
     for (name, arena, root) in entries {
@@ -354,14 +411,18 @@ fn read_corpus_bytes(data: &[u8]) -> io::Result<Vec<(String, ExprArena, ExprId)>
     // valid-looking bytes into the wrong ops rather than fail. A hand-bumped
     // integer needs a human to remember to move it every time the format's
     // meaning changes; this identity is derived from `CorpusFormat::SCHEMA`
-    // (docs/plans/2026-08-17-cost-model-domain.md, J9), so any change to what
-    // the bytes below mean changes the identity by construction.
+    // folded with the live op encoding table (`corpus_identity`, docs/plans/
+    // 2026-08-17-cost-model-domain.md, J9), so any change to what the bytes
+    // below mean — INCLUDING a silent `OpKind::marshal` renumbering the
+    // prose doesn't happen to mention — changes the identity by
+    // construction, not by someone remembering to update `SCHEMA`'s text.
     let stored_identity = r.read_u64()?;
-    if stored_identity != CorpusFormat::SCHEMA_IDENTITY {
+    let expected_identity = corpus_identity();
+    if stored_identity != expected_identity {
         return Err(identity_mismatch(
             "corpus",
             stored_identity,
-            CorpusFormat::SCHEMA_IDENTITY,
+            expected_identity,
             regen_command(),
         ));
     }
@@ -744,11 +805,72 @@ mod tests {
         // what a field means (here, simulated by comparing two schema
         // strings) changes the derived identity without a separate bump step
         // to forget.
-        use crate::schema::fnv1a64_const;
         let old_meaning = fnv1a64_const(b"root_index means an index into the WRITER's arena");
         let new_meaning = fnv1a64_const(b"root_index means an index into THIS ENTRY's nodes");
         assert_ne!(old_meaning, new_meaning);
         assert_eq!(CorpusFormat::SCHEMA_IDENTITY, CorpusFormat::SCHEMA_IDENTITY);
+    }
+
+    // ── corpus_identity folds in the live opcode encoding (P1 finding on
+    // PR #1019: SCHEMA_IDENTITY alone hashes only prose) ───────────────────
+
+    #[test]
+    fn corpus_identity_is_deterministic() {
+        assert_eq!(corpus_identity(), corpus_identity());
+        assert_eq!(opcode_encoding_identity(), opcode_encoding_identity());
+    }
+
+    #[test]
+    fn corpus_identity_depends_on_more_than_the_schema_text() {
+        // The defect this guards: `CorpusFormat::SCHEMA` describes the op
+        // encoding only as "dense 0..COUNT discriminants" — a sentence a
+        // renumbering never has to touch. If `corpus_identity` reduced to
+        // `SCHEMA_IDENTITY` alone, that renumbering would leave the on-disk
+        // gate unchanged and a stale corpus would decode every affected op
+        // as whatever now sits at its old byte. Folding the live encoding
+        // table in means the composite identity cannot equal the bare
+        // schema-text hash.
+        assert_ne!(
+            corpus_identity(),
+            CorpusFormat::SCHEMA_IDENTITY,
+            "corpus_identity must depend on the live opcode encoding, not just the \
+             schema prose describing it"
+        );
+    }
+
+    #[test]
+    fn encoding_identity_changes_if_an_op_is_reassigned_a_different_byte() {
+        // Pins the sensitivity a renumbering needs caught: hashing the byte
+        // sequence ALONE would be invariant under a swap (marshal's bytes
+        // are always the dense sequence 0..COUNT no matter which op holds
+        // which position), so the identity has to be computed over
+        // (name, byte) pairs — this reimplements that computation generically
+        // over a synthetic table, standing in for a renumbering of the real
+        // (private) `OpKind` table, which nothing outside `pixelflow-ir` can
+        // fabricate directly.
+        fn identity_of(table: &[(&str, u8)]) -> u64 {
+            let mut buf: Vec<u8> = Vec::new();
+            for (name, byte) in table {
+                buf.push(name.len() as u8);
+                buf.extend_from_slice(name.as_bytes());
+                buf.push(*byte);
+            }
+            buf.extend_from_slice(&(table.len() as u32).to_le_bytes());
+            fnv1a64_const(&buf)
+        }
+
+        let before = [("add", 0u8), ("sub", 1u8), ("mul", 2u8)];
+        // A renumbering: `add` and `sub` swap encoded bytes. The byte
+        // sequence itself (0,1,2) is unchanged; only the mapping is.
+        let after = [("add", 1u8), ("sub", 0u8), ("mul", 2u8)];
+
+        assert_ne!(
+            identity_of(&before),
+            identity_of(&after),
+            "swapping which op maps to a byte must change the identity — this is \
+             exactly what OpKind::marshal renumbering does, and a hash that can't \
+             see it defeats the corpus identity check (P1 on PR #1019)"
+        );
     }
 
     // ── Reachable-subtree compaction (bug B3) ───────────────────────────────

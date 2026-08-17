@@ -140,6 +140,26 @@ impl<'g> Extraction<'g> {
         &self.choices
     }
 
+    /// The choice vector [`choices_to_arena`] will actually materialise:
+    /// every `Shl`/`Shr` count child re-pinned to a `Const` representative of
+    /// its class ([`pin_shift_counts`]), because the emitter's shift lowering
+    /// requires an immediate and a count class can legitimately hold
+    /// arithmetic that is value-equal to a constant without being one
+    /// (e.g. `Y - Y` merged with `Const(0)`).
+    ///
+    /// Any consumer that computes *features* from an `Extraction` — not just
+    /// [`choices_to_arena`] itself — must walk this view, not [`Self::choices`]
+    /// directly: featurizing the raw (possibly non-`Const`) choice for a
+    /// count class would describe a DAG that is not the one actually
+    /// compiled, reintroducing the same train/deploy skew `Self::chosen_variance`
+    /// exists to remove for the class-wide-meet case (P1(c)). See
+    /// [`Self::chosen_variance`] and `ChoicesCostDag` in `crate::nnue::factored`,
+    /// both of which take this view rather than re-deriving it (one
+    /// definition, imported, not restated).
+    pub(crate) fn pinned_choices(&self) -> Vec<Option<usize>> {
+        pin_shift_counts(self.egraph, &self.choices)
+    }
+
     /// Unwrap into the raw choice vector.
     ///
     /// Kept for legacy raw-vector consumers (`ExtractionPolicy::choices`,
@@ -169,13 +189,29 @@ impl<'g> Extraction<'g> {
     /// Returned as a dense `Vec<Option<Variance>>` indexed by canonical
     /// e-class id; `None` for classes with no recorded choice (unreachable
     /// from root).
-    pub(crate) fn chosen_variance(&self) -> Vec<Option<Variance>> {
+    ///
+    /// Takes `pinned` — [`Self::pinned_choices`] — rather than deriving it
+    /// internally, so the caller's structural walk of the same `Extraction`
+    /// (`ChoicesCostDag` in `crate::nnue::factored`) is forced to use the
+    /// identical pinned view: a shift count e-class that legitimately holds
+    /// both a `Const` and a value-equal varying-shaped alternative (the same
+    /// merged-class situation as the `Sub(X, X)`/`Const(0)` example above,
+    /// but for a `Shl`/`Shr` count child) must be walked here as whatever
+    /// [`choices_to_arena`] will actually emit, or this variance disagrees
+    /// with the arena [`EdgeAccumulator::from_arena_dag`] featurizes for
+    /// exactly the reason unpinned [`Self::choice`] alone caused P1(c).
+    pub(crate) fn chosen_variance(&self, pinned: &[Option<usize>]) -> Vec<Option<Variance>> {
         enum Task {
             Visit(EClassId),
             /// All children of this e-class's chosen node have been
             /// resolved; combine them. `(canonical_id, node_idx)`.
             Complete(u32, usize),
         }
+
+        let choice_of = |class: EClassId| -> Option<usize> {
+            let idx = self.egraph.find(class).0 as usize;
+            pinned.get(idx).copied().flatten()
+        };
 
         let mut variance: Vec<Option<Variance>> = alloc::vec![None; self.egraph.num_classes()];
         let mut stack: Vec<Task> = alloc::vec![Task::Visit(self.root)];
@@ -188,7 +224,7 @@ impl<'g> Extraction<'g> {
                     if variance[idx].is_some() {
                         continue; // Diamond sharing: already resolved.
                     }
-                    let Some(node_idx) = self.choice(canonical) else {
+                    let Some(node_idx) = choice_of(canonical) else {
                         continue; // Not reachable via a recorded choice.
                     };
                     let nodes = self.egraph.nodes(canonical);
@@ -1099,8 +1135,9 @@ pub fn choices_to_arena(
     let egraph = extraction.egraph();
     let root = extraction.root();
 
-    // Shifts must reach codegen with a constant count — see `pin_shift_counts`.
-    let pinned = pin_shift_counts(egraph, extraction.choices());
+    // Shifts must reach codegen with a constant count — see
+    // `Extraction::pinned_choices` / `pin_shift_counts`.
+    let pinned = extraction.pinned_choices();
     let choices: &[Option<usize>] = &pinned;
 
     enum Task {
@@ -2209,6 +2246,103 @@ mod tests {
             "deploy path must classify the chosen Sub(X, X) as pixel-varying, not fold \
              it into CONST via the class-wide meet"
         );
+
+        // ---------------------------------------------------------------
+        // Shift-count pinning (review thread on PR #1019, factored.rs:984):
+        // a Shl/Shr count e-class can legitimately hold both a Const and a
+        // value-equal varying-shaped alternative (same situation as the
+        // Sub(X, X)/Const(0) merge above, but for the count child of a
+        // shift). `choices_to_arena` always pins that child to the Const
+        // representative (`pin_shift_counts` — the emitter's shift lowering
+        // requires an immediate), so if the extraction chose the varying
+        // node, the deploy-path features must reflect the PINNED arena, not
+        // the raw choice — otherwise this walker both double-counts nodes
+        // `choices_to_arena` never emits and disagrees with the arena's
+        // variance histogram.
+        // ---------------------------------------------------------------
+        struct ShlOp;
+        impl crate::egraph::ops::Op for ShlOp {
+            fn kind(&self) -> OpKind {
+                OpKind::Shl
+            }
+        }
+
+        // The arena `choices_to_arena` will actually materialise: pinning
+        // always wins, so the compiled form is `Shl(X, Const(0))` no matter
+        // which node the count class's extraction chose.
+        let mut arena3 = ExprArena::new();
+        let x3 = arena3.push_var(0);
+        let zero3 = arena3.push_const(0.0);
+        let shl3 = arena3.push_binary(OpKind::Shl, x3, zero3);
+        let train3 = EdgeAccumulator::from_arena_dag(&arena3, shl3, &nnue.embeddings);
+
+        let mut eg3 = EGraph::new();
+        let ex3 = eg3.add(ENode::Var(0));
+        let ey3 = eg3.add(ENode::Var(1));
+        let esub3 = eg3.add(ENode::Op {
+            op: &ops::Sub,
+            children: alloc::vec![ey3, ey3],
+        });
+        let econst3 = eg3.add(ENode::constant(0.0));
+        let count3 = eg3.union(esub3, econst3); // Sub(Y, Y) = 0, same class as Const(0)
+        eg3.rebuild();
+        let eshl3 = eg3.add(ENode::Op {
+            op: &ShlOp,
+            children: alloc::vec![ex3, count3],
+        });
+
+        // Choose the varying Sub(Y, Y) node for the count class, not the
+        // Const — exactly the scenario `pin_shift_counts` exists to correct
+        // at emission time.
+        let canonical_count3 = eg3.find(count3);
+        let sub_idx3 = eg3
+            .nodes(canonical_count3)
+            .iter()
+            .position(|n| matches!(n, ENode::Op { .. }))
+            .expect("merged count class holds the Sub node");
+        let mut choices3: Vec<Option<usize>> = alloc::vec![None; eg3.num_classes()];
+        choices3[eg3.find(eshl3).0 as usize] = Some(0);
+        choices3[canonical_count3.0 as usize] = Some(sub_idx3);
+        choices3[eg3.find(ex3).0 as usize] = Some(0);
+        choices3[eg3.find(ey3).0 as usize] = Some(0);
+        let extraction3 = Extraction::from_backfill(&eg3, eshl3, choices3);
+
+        let deploy3 =
+            EdgeAccumulator::from_dag_choices_with_variance(&extraction3, &nnue.embeddings, true);
+
+        assert_eq!(
+            train3.node_count, deploy3.node_count,
+            "node_count (shift-count pinning case): the deploy path must not walk into \
+             Sub(Y, Y) once the count is pinned to Const(0), or its node count will \
+             disagree with the arena choices_to_arena actually emits"
+        );
+        assert_eq!(
+            train3.edge_count, deploy3.edge_count,
+            "edge_count (shift-count pinning case)"
+        );
+        assert_eq!(
+            train3.variance_frac_pixel, deploy3.variance_frac_pixel,
+            "variance_frac_pixel (shift-count pinning case)"
+        );
+        assert_eq!(
+            train3.variance_frac_scanline, deploy3.variance_frac_scanline,
+            "deploy path must not count Y's scanline variance from the un-pinned \
+             Sub(Y, Y) count child"
+        );
+        assert_eq!(
+            train3.variance_frac_const, deploy3.variance_frac_const,
+            "variance_frac_const (shift-count pinning case)"
+        );
+        assert_eq!(
+            train3.variance_frac_frame, deploy3.variance_frac_frame,
+            "variance_frac_frame (shift-count pinning case)"
+        );
+        for i in 0..train3.values.len() {
+            assert_eq!(
+                train3.values[i], deploy3.values[i],
+                "accumulator values[{i}] diverge on the shift-count pinning case"
+            );
+        }
     }
 
     // =========================================================================

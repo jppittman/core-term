@@ -981,10 +981,18 @@ impl EdgeAccumulator {
         emb: &OpEmbeddings,
         with_variance: bool,
     ) -> Self {
-        let variance = with_variance.then(|| extraction.chosen_variance());
+        // Computed once and shared by `resolve`/`child_kind` (structure) and
+        // `chosen_variance` (variance) below, so both walk the identical
+        // Shl/Shr-pinned view `choices_to_arena` will materialise — see
+        // `ChoicesCostDag::pinned`'s doc comment for why splitting these
+        // across two different choice views is a train/deploy skew, not
+        // just a redundant computation.
+        let pinned = extraction.pinned_choices();
+        let variance = with_variance.then(|| extraction.chosen_variance(&pinned));
         Self::from_cost_dag(
             &ChoicesCostDag {
                 extraction,
+                pinned,
                 variance,
             },
             emb,
@@ -1107,7 +1115,19 @@ impl CostDag for ArenaCostDag<'_> {
 /// by `IncrementalExtractor::extract_choices_only`.
 struct ChoicesCostDag<'a> {
     extraction: &'a crate::egraph::extract::Extraction<'a>,
-    /// Chosen-node variance, indexed by canonical e-class id — see
+    /// [`Extraction::pinned_choices`] — the same `Shl`/`Shr` count
+    /// substitution `choices_to_arena` applies, computed once so `resolve`
+    /// and `child_kind` walk the DAG `choices_to_arena` will actually
+    /// materialise rather than whatever node the extraction chose for a
+    /// count class. Using the raw (unpinned) `extraction.choice` here would
+    /// let this walker descend into a count class's non-`Const` alternative
+    /// — inflating `node_count`/`edge_count` with nodes `choices_to_arena`
+    /// never emits, and (with `variance` below keyed by the pinned view)
+    /// tripping `from_cost_dag`'s "half-populated histogram" assertion the
+    /// moment a shift's count class holds a value-equal varying form.
+    pinned: Vec<Option<usize>>,
+    /// Chosen-node variance, indexed by canonical e-class id — computed over
+    /// the SAME `pinned` view via
     /// [`Extraction::chosen_variance`](crate::egraph::extract::Extraction::chosen_variance).
     /// `None` when the caller didn't ask for variance features.
     variance: Option<Vec<Option<pixelflow_ir::Variance>>>,
@@ -1122,6 +1142,11 @@ impl ChoicesCostDag<'_> {
             ENode::Buffer(_) => OpKind::Buffer,
             ENode::Op { op, .. } => op.kind(),
         }
+    }
+
+    /// The pinned choice recorded for `class`'s canonical id, if any.
+    fn pinned_choice(&self, class: crate::egraph::EClassId) -> Option<usize> {
+        self.pinned.get(class.0 as usize).copied().flatten()
     }
 }
 
@@ -1138,7 +1163,7 @@ impl CostDag for ChoicesCostDag<'_> {
         use crate::egraph::{EClassId, ENode};
         let egraph = self.extraction.egraph();
         let canonical = egraph.find(EClassId(id));
-        let node_idx = self.extraction.choice(canonical)?;
+        let node_idx = self.pinned_choice(canonical)?;
         let nodes = egraph.nodes(canonical);
         let node = nodes.get(node_idx).unwrap_or_else(|| {
             panic!(
@@ -1160,7 +1185,7 @@ impl CostDag for ChoicesCostDag<'_> {
         use crate::egraph::EClassId;
         let egraph = self.extraction.egraph();
         let canonical = egraph.find(EClassId(id));
-        let node_idx = self.extraction.choice(canonical)?;
+        let node_idx = self.pinned_choice(canonical)?;
         egraph.nodes(canonical).get(node_idx).map(Self::kind_of)
     }
 

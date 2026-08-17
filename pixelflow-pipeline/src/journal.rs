@@ -104,6 +104,14 @@ pub const DIFF_HASH_EXCLUDES: [&str; 2] = [
     ":(exclude)docs/results",
 ];
 
+/// Raw, untrimmed stdout on success. Deliberately not trimmed here: `diff
+/// HEAD` output is hashed byte-for-byte by [`SourceVersion::current`] (see
+/// [`SourceVersion::diff_hash`]), and a `.trim()` in this shared helper would
+/// have silently dropped trailing-whitespace-only differences from every
+/// caller's diff hash, aliasing two distinct working trees onto one
+/// `diff_hash` — defeating the provenance guarantee the journal exists for.
+/// Callers that want a trimmed single-line answer (`rev-parse HEAD`,
+/// `status --porcelain`) trim at their own call site instead.
 fn git(args: &[&str]) -> Result<String, String> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     match Command::new("git")
@@ -111,9 +119,7 @@ fn git(args: &[&str]) -> Result<String, String> {
         .current_dir(manifest_dir)
         .output()
     {
-        Ok(out) if out.status.success() => {
-            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-        }
+        Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
         Ok(out) => Err(format!(
             "`git {}` exited {}: {}",
             args.join(" "),
@@ -164,8 +170,11 @@ impl SourceVersion {
                 diff_hash: None,
             }
         };
+        // `git()` hands back raw stdout now (see its doc comment) — `rev-parse`
+        // and `status` are trimmed here, at their own call sites, since only
+        // the `diff` branch below needs the untrimmed bytes.
         let head = match git(&["rev-parse", "HEAD"]) {
-            Ok(s) if !s.is_empty() => s,
+            Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
             Ok(_) => return unversioned("`git rev-parse HEAD` produced no output"),
             Err(why) => return unversioned(&why),
         };
@@ -184,6 +193,11 @@ impl SourceVersion {
         match git(&diff_args) {
             Ok(diff) => SourceVersion {
                 rev: format!("{head}-dirty"),
+                // Raw bytes, untrimmed: a dirty diff whose only difference
+                // from another is trailing whitespace on the last changed
+                // line must not hash the same as that other diff (P2 finding
+                // on PR #1019) — trimming here would silently alias two
+                // distinct working trees onto one `diff_hash`.
                 diff_hash: Some(fnv1a64_hex(diff.as_bytes())),
             },
             Err(why) => {
@@ -386,6 +400,42 @@ mod tests {
         assert_eq!(lines, vec!["{\"n\":1}", "{\"n\":2}"]);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn git_returns_raw_untrimmed_stdout() {
+        // `git rev-parse HEAD` always terminates its answer with a trailing
+        // newline. If `git()` still trimmed internally (the defect this
+        // guards against — a trimmed `diff HEAD` silently loses
+        // trailing-whitespace-only differences before `SourceVersion` hashes
+        // it, aliasing two distinct working trees onto one `diff_hash`), that
+        // newline would never survive to a caller. Black-box probe of the
+        // shared helper's contract, not of this repo's source-control state.
+        match git(&["rev-parse", "HEAD"]) {
+            Ok(raw) => assert!(
+                raw.ends_with('\n'),
+                "git() must hand back raw untrimmed stdout, including the trailing \
+                 newline every git subcommand emits, or a hashed diff could silently \
+                 lose trailing whitespace: got {raw:?}"
+            ),
+            Err(_) => {
+                // No git binary, or not a repo, in this environment — nothing
+                // to assert here; SourceVersion::current's "unversioned"
+                // fallback covers this case at the call site.
+            }
+        }
+    }
+
+    #[test]
+    fn diff_hash_distinguishes_trailing_whitespace_only_changes() {
+        // The defect this guards: hashing a TRIMMED diff would collapse two
+        // working trees whose only difference is trailing whitespace on the
+        // last changed line onto the same `diff_hash` (P2 finding on PR
+        // #1019) — defeating the journal's provenance guarantee that two
+        // distinct trees never share an identity.
+        let a = "diff --git a/x b/x\n+some line\n";
+        let b = "diff --git a/x b/x\n+some line \n"; // trailing space added
+        assert_ne!(fnv1a64_hex(a.as_bytes()), fnv1a64_hex(b.as_bytes()));
     }
 
     #[test]
