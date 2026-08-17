@@ -1,6 +1,6 @@
 //! Verifies the Judge extraction-head weights round-trip through the
-//! production serializer: `ExprNnue::save` (which writes the current "TRIF"
-//! format) followed by `ExprNnue::from_bytes` (which only accepts TRIF).
+//! production serializer: `ExprNnue::save` (which writes the current "TRIE"
+//! format) followed by `ExprNnue::from_bytes` (which only accepts TRIE).
 //!
 //! Phase 2 of docs/plans/2026-07-07-guided-saturation-redesign.md: the
 //! shipped state before the retrain was NO weights (old TRIC-format file
@@ -33,13 +33,13 @@ fn judge_weights_round_trip_via_trie() {
         std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
     let _ = std::fs::remove_file(&path);
 
-    // The magic must be TRIF (not a stale TRIE/TRID), and the loader must accept it.
-    assert_eq!(&bytes[0..4], b"TRIF", "saved file is not TRIF-format");
+    // The magic must be TRIE (not a stale TRID/TRIC), and the loader must accept it.
+    assert_eq!(&bytes[0..4], b"TRIE", "saved file is not TRIE-format");
     let loaded = ExprNnue::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("ExprNnue::from_bytes rejected a freshly-saved TRIF file: {e}"));
+        .unwrap_or_else(|e| panic!("ExprNnue::from_bytes rejected a freshly-saved TRIE file: {e}"));
 
     // Beyond "magic matched": a model whose embeddings are all zero/non-finite
-    // would still parse as valid TRIF but carry no signal. Guard against a
+    // would still parse as valid TRIE but carry no signal. Guard against a
     // silently-dead file.
     let has_signal = loaded
         .embeddings

@@ -2630,21 +2630,16 @@ impl ExprNnue {
 
     /// Save weights to a binary file.
     ///
-    /// Format: magic "TRID" + all weights as little-endian f32.
-    /// TRID: shared trunk layer added between towers and projection heads.
+    /// Format: magic "TRIE" + all weights as little-endian f32.
+    /// TRIE: op embeddings are one row per op, in `OpKind`'s order.
     #[cfg(feature = "std")]
     pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
         use std::io::Write;
         let mut file = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(path)?);
 
-        // Magic header (TRID = shared trunk added — retrain required for old TRIC/TRIB/etc models)
-        file.write_all(b"TRIF")?;
-        // Op embeddings are laid out one row per op, in the IR's order. That
-        // order is not fixed and changing it is not a format change here, so
-        // the file records which one it was written under — otherwise a
-        // reordered table silently re-attaches every embedding to a different
-        // operation and training continues against nonsense.
-        file.write_all(&OpKind::ENCODING_ID.to_le_bytes())?;
+        // Magic header. Bump it whenever these bytes change meaning — including
+        // when `OpKind`'s order changes, since the embedding rows follow it.
+        file.write_all(b"TRIE")?;
 
         // ===== Backbone =====
         // Embeddings
@@ -2788,7 +2783,7 @@ impl ExprNnue {
 
     /// Load weights from a binary file.
     ///
-    /// Only supports "TRID" format (shared trunk). Old formats (TRIC and earlier) require retrain.
+    /// Only supports "TRIE" format. Older formats (TRID and earlier) require retrain.
     #[cfg(feature = "std")]
     pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
         let file = std::io::BufReader::with_capacity(256 * 1024, std::fs::File::open(path)?);
@@ -2801,12 +2796,10 @@ impl ExprNnue {
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)?;
 
-        // TRIF: header carries `OpKind::ENCODING_ID`
-        // TRIE: incompatible — same weights, but no encoding id in the header.
-        //       A TRIE reader handed a TRIF file would eat those 8 bytes as the
-        //       first two embedding floats, shift every parameter by two slots,
-        //       and return Ok with a silently corrupted network — which is why
-        //       the magic had to move rather than the header grow in place.
+        // TRIE: op embeddings are one row per op, in `OpKind`'s order. That
+        //       order is `pixelflow-ir`'s to change, and changing it silently
+        //       re-attaches every row to a different operation — so a change
+        //       there means a new magic here.
         // TRID: incompatible — op embeddings are indexed by `OpKind::index()`,
         //       and the pre-2026-08-02 discriminants had gaps at 17/31/39. The
         //       shapes still match, so a TRID file would load without error and
@@ -2815,37 +2808,18 @@ impl ExprNnue {
         // TRIB: incompatible — GRAPH_ACC_DIM was 3K (96), GRAPH_INPUT_DIM was 100
         // TRIA: incompatible — had mask_rule_bias[1024] instead of mask_bias_proj[32]
         // TRI5-TRI9: incompatible — EMBED_DIM was 24, all weight shapes differ
-        if &magic != b"TRIF" {
+        if &magic != b"TRIE" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "Incompatible ExprNnue format {:?}. Expected 'TRIF'. {}",
+                    "Incompatible ExprNnue format {:?}. Expected 'TRIE'. {}",
                     std::str::from_utf8(&magic).unwrap_or("????"),
-                    if &magic == b"TRIE" {
-                        "'TRIE' predates the encoding-id header; its weights cannot be \
-                         attributed to operations. Retrain required."
+                    if &magic == b"TRID" {
+                        "'TRID' predates the dense op numbering; its embeddings are \
+                         attributed to the wrong operations. Retrain required."
                     } else {
-                        "Old formats (TRID, TRIC, TRIB, TRIA, TRI5-TRI9) require retrain."
+                        "Old formats (TRIC, TRIB, TRIA, TRI5-TRI9) require retrain."
                     }
-                ),
-            ));
-        }
-
-        // The magic covers the architecture. It does not cover which operation
-        // each embedding row belongs to — that follows the IR's op order, which
-        // may change without any bump here. Shapes would still match, so the
-        // file would load clean and every row would describe a different op.
-        let mut encoding = [0u8; 8];
-        file.read_exact(&mut encoding)?;
-        let encoding = u64::from_le_bytes(encoding);
-        if encoding != OpKind::ENCODING_ID {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "weights were trained under a different op encoding ({encoding:#x}, this \
-                     build uses {:#x}); every embedding row would attach to the wrong \
-                     operation. Retrain required.",
-                    OpKind::ENCODING_ID
                 ),
             ));
         }
@@ -3011,7 +2985,7 @@ impl ExprNnue {
             *val = f32::from_le_bytes(buf);
         }
 
-        // Graph state backbone (TRID format: mandatory, no backward compat)
+        // Graph state backbone (TRIE format: mandatory, no backward compat)
         for row in &mut net.graph_w1 {
             for val in row {
                 let mut buf = [0u8; 4];

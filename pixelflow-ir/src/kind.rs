@@ -38,40 +38,6 @@ macro_rules! op_table {
             /// Generated from the table, so it grows with it.
             pub(crate) const COUNT: usize = [$( stringify!($name), )+].len();
 
-            /// Fingerprint of the op encoding — every name and every code.
-            ///
-            /// Anything that persists ops must store this alongside them and
-            /// refuse a file whose value differs, because the alternative is
-            /// silence: reorder two entries in the table and an old corpus
-            /// still parses, an old weight file still loads, and both now mean
-            /// different operations than they did. Nothing about the bytes
-            /// says so.
-            ///
-            /// The numbering is free to change — this crate promises nothing
-            /// about it — and that freedom is exactly why the change has to be
-            /// *detectable*. Deriving the identity from the table rather than
-            /// hand-bumping a version is what keeps the two from drifting: you
-            /// cannot renumber an op and forget to invalidate the files that
-            /// were written under the old numbering.
-            ///
-            /// FNV-1a; nothing here needs cryptographic strength, only that a
-            /// changed table gives a changed number.
-            pub const ENCODING_ID: u64 = {
-                let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-                $(
-                    let name = stringify!($name).as_bytes();
-                    let mut i = 0;
-                    while i < name.len() {
-                        hash ^= name[i] as u64;
-                        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-                        i += 1;
-                    }
-                    hash ^= $code as u64;
-                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-                )+
-                hash
-            };
-
             /// Every op, in [`OpKind::index`] order.
             ///
             /// Generated from the table; [`OpKind::all`] is the public way in.

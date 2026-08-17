@@ -3,12 +3,11 @@
 //! Replaces JSONL text corpus with a binary format that loads in microseconds
 //! via sequential read (no parsing, no allocation beyond the arena vecs).
 //!
-//! ## Format (v3)
+//! ## Format (v2)
 //!
 //! ```text
 //! magic: [u8; 4] = b"PXCR"
-//! version: u32 (little-endian) = 3      (this file layout)
-//! encoding_id: u64 (little-endian)      (which op encoding the op bytes use)
+//! version: u32 (little-endian) = 2
 //! count: u32 (little-endian)
 //!
 //! For each expression:
@@ -26,11 +25,10 @@
 //!   payload varies by tag.
 //!
 //! Ops are stored in `pixelflow-ir`'s own encoding (`OpKind::marshal`), whose
-//! bytes that crate is free to change and does not version. `VERSION` covers
-//! this layout; `encoding_id` covers what an op byte *means*. Both are refused
-//! on mismatch, because a file written under another op encoding would
-//! otherwise parse perfectly and decode into different operations — silently
-//! wrong data rather than a parse failure.
+//! bytes that crate is free to change without telling anyone. `VERSION` is
+//! what stands between that and a silent misread: a corpus written under a
+//! different encoding parses perfectly and decodes into different operations,
+//! so changing the encoding means bumping the version here.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -39,15 +37,13 @@ use pixelflow_ir::kind::OpCode;
 use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
 
 const MAGIC: &[u8; 4] = b"PXCR";
-// The layout of this file. Bump it whenever the header or node encoding
-// changes shape — including adding a field, which is what took 2 -> 3.
-//
-// This is NOT the op numbering's version; `encoding_id` below carries that,
-// precisely so a renumbering does not need a bump here. What a bump buys is
-// the *older* reader: without one it accepts the file on its exact-version
-// check and then reads the next four bytes as `count`, which are now the low
-// half of `encoding_id`.
-const VERSION: u32 = 3;
+// Bump this whenever anything about the bytes below changes meaning — the
+// header's shape, a node tag, or the encoding `OpKind::marshal` writes ops in.
+// That last one is easy to forget precisely because it changes nothing here:
+// the file still parses, and every op byte quietly names a different
+// operation. A stale corpus is cheap to replace and expensive to misread, so
+// when in doubt, bump.
+const VERSION: u32 = 2;
 
 // ── ExprNode serialization tags ──────────────────────────────────────────────
 
@@ -74,9 +70,6 @@ pub fn write_corpus(path: &Path, entries: &[(String, ExprArena, ExprId)]) -> io:
     // Header
     w.write_all(MAGIC)?;
     w.write_all(&VERSION.to_le_bytes())?;
-    // Which op encoding these bytes are written in. Derived from the IR's op
-    // table, so renumbering an op changes it without anyone remembering to.
-    w.write_all(&OpKind::ENCODING_ID.to_le_bytes())?;
     w.write_all(&(entries.len() as u32).to_le_bytes())?;
 
     for (name, arena, root) in entries {
@@ -197,24 +190,6 @@ fn read_corpus_bytes(data: &[u8]) -> io::Result<Vec<(String, ExprArena, ExprId)>
                  differs, so this file cannot be read — regenerate the corpus with \
                  `cargo run --release -p pixelflow-pipeline --features training \
                  --bin gen_bench_corpus`"
-            ),
-        ));
-    }
-
-    // `VERSION` covers the layout of this file. It does NOT cover what an op
-    // byte means — that is the IR's business and may change with no bump here,
-    // which is precisely how a stale corpus would otherwise parse cleanly into
-    // the wrong operations.
-    let encoding = r.read_u64()?;
-    if encoding != OpKind::ENCODING_ID {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "corpus was written under a different op encoding ({encoding:#x}, this build \
-                 uses {:#x}); its op bytes name different operations now — regenerate it \
-                 with `cargo run --release -p pixelflow-pipeline --features training \
-                 --bin gen_bench_corpus`",
-                OpKind::ENCODING_ID
             ),
         ));
     }
@@ -396,12 +371,6 @@ impl<'a> Cursor<'a> {
         self.read_exact(&mut buf)?;
         Ok(u32::from_le_bytes(buf))
     }
-
-    fn read_u64(&mut self) -> io::Result<u64> {
-        let mut buf = [0u8; 8];
-        self.read_exact(&mut buf)?;
-        Ok(u64::from_le_bytes(buf))
-    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -571,75 +540,6 @@ mod tests {
                 e.to_string().contains("unsupported corpus version"),
                 "unexpected error: {e}"
             ),
-        }
-    }
-
-    /// A reader from before the header grew must reject our files outright.
-    ///
-    /// Adding `encoding_id` moved every field after it. Had `VERSION` stayed
-    /// at 2, that reader would have passed its exact-version check and then
-    /// read the first half of the encoding id as `count` — a ~1.4-billion
-    /// entry reservation on an otherwise empty corpus. Growing a header is a
-    /// layout change, and layout changes are what `VERSION` is for.
-    #[test]
-    fn a_pre_header_reader_rejects_us_on_version() {
-        let mut a = ExprArena::new();
-        let x = a.push_var(0);
-        let root = a.push_unary(OpKind::Sqrt, x);
-        let tmp = unique_tmp("layout_bump");
-        write_corpus(&tmp, &[("e".to_string(), a, root)]).expect("write");
-        let bytes = std::fs::read(&tmp).expect("read back");
-        let _ = std::fs::remove_file(&tmp);
-
-        let written = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-        assert_eq!(
-            written, VERSION,
-            "header must carry the current layout version"
-        );
-        assert!(
-            written > 2,
-            "the version must have moved when the header grew; a v2 reader would \
-             otherwise read encoding_id's low half as the entry count"
-        );
-    }
-
-    /// A corpus written under a different op encoding must be refused.
-    ///
-    /// `VERSION` cannot cover this: a renumbering in the IR changes what an op
-    /// byte means without changing this file's shape, so it bumps nothing here. Without the recorded encoding id the file
-    /// parses cleanly and every op byte names a different operation — the
-    /// silent-corruption case, which is the one worth a test.
-    #[test]
-    fn corpus_from_a_different_op_encoding_is_refused() {
-        let mut a = ExprArena::new();
-        let x = a.push_var(0);
-        let root = a.push_unary(OpKind::Sqrt, x);
-        let tmp = unique_tmp("enc_written");
-        write_corpus(&tmp, &[("e".to_string(), a, root)]).expect("write");
-        let mut bytes = std::fs::read(&tmp).expect("read back");
-        let _ = std::fs::remove_file(&tmp);
-
-        // Round-trips as written.
-        read_corpus_from_bytes("enc_ok", &bytes).expect("freshly written corpus must load");
-
-        // Now claim it was written under some other op table. Offset 8 is
-        // immediately after MAGIC(4) + VERSION(4).
-        let foreign = OpKind::ENCODING_ID ^ 0xffff_ffff_ffff_ffff;
-        bytes[8..16].copy_from_slice(&foreign.to_le_bytes());
-
-        match read_corpus_from_bytes("foreign", &bytes) {
-            Ok(_) => panic!("a corpus from another op encoding must not load"),
-            Err(e) => {
-                let msg = e.to_string();
-                assert!(
-                    msg.contains("different op encoding"),
-                    "error must say the encoding differs: {msg}"
-                );
-                assert!(
-                    msg.contains("gen_bench_corpus"),
-                    "error must name the regeneration binary: {msg}"
-                );
-            }
         }
     }
 
