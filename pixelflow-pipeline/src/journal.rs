@@ -187,7 +187,16 @@ impl SourceVersion {
             Ok(_) => return unversioned("`git rev-parse HEAD` produced no output"),
             Err(why) => return unversioned(&why),
         };
-        let status = match git(&["status", "--porcelain"]) {
+        // Filtered by the SAME `excludes` the diff below uses: a tree whose
+        // only changes are under an excluded path (typically this run's own
+        // prior output, `docs/results/journal.jsonl`) must not read as dirty
+        // when the diff that follows would be empty anyway — otherwise a
+        // clean run and an excluded-paths-only rerun disagree on `rev`
+        // ("<sha>" vs "<sha>-dirty") despite hashing the identical (empty)
+        // diff (P2 finding on the fix commit for PR #1019).
+        let mut status_args = vec!["status", "--porcelain", "--"];
+        status_args.extend(excludes.iter().copied());
+        let status = match git(&status_args) {
             Ok(s) => s,
             Err(why) => return unversioned(&why),
         };
@@ -247,17 +256,25 @@ pub fn environment_fingerprint() -> String {
         "avx512f"
     } else if cfg!(target_feature = "avx2") {
         "avx2"
-    } else if cfg!(target_feature = "fma") {
-        "fma"
     } else {
         "baseline"
     };
+    // Independent of `isa`, not a rung in its fallback chain: an
+    // `avx2,+fma` build and an `avx2,-fma` build previously both read
+    // isa=avx2 (the `else if target_feature = "fma"` arm was unreachable
+    // whenever avx2 was also set), so two runs executing materially
+    // different kernels — `pixelflow-codegen`'s `emit_fmadd_c_in_dst` emits
+    // a hardware `vfmadd231ps` under `fma` and a separate multiply-then-add
+    // otherwise, with different timing and rounding — received the same
+    // environment fingerprint (P2 finding on the fix commit for PR #1019).
+    let fma = cfg!(target_feature = "fma");
     format!(
-        "arch={};os={};ptr={};isa={};profile={}",
+        "arch={};os={};ptr={};isa={};fma={};profile={}",
         std::env::consts::ARCH,
         std::env::consts::OS,
         usize::BITS,
         isa,
+        fma,
         if cfg!(debug_assertions) {
             "debug"
         } else {
@@ -388,6 +405,7 @@ impl<T: Serialize> JournalEntry<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[derive(Serialize)]
     struct Rec {
@@ -435,41 +453,37 @@ mod tests {
         }
     }
 
-    #[test]
-    fn diff_hash_exclusions_survive_running_from_a_subdirectory() {
-        // Reproduces the real defect (P2 finding on the fix commit for PR
-        // #1019): `git()` runs with `current_dir` set to THIS crate's own
-        // manifest directory, not the repository root, so a bare
-        // `:(exclude)pixelflow-pipeline/data` pathspec is resolved relative
-        // to that directory — i.e. as
-        // `pixelflow-pipeline/pixelflow-pipeline/data`, which never exists —
-        // and silently excludes nothing. `:(top,exclude)` anchors to the
-        // repo root regardless of cwd.
-        //
-        // Builds an isolated scratch repo shaped like this one (a
-        // `pixelflow-pipeline/` subdirectory below the repo root) so the
-        // pathspec-vs-cwd mismatch is exercised exactly as `git()` triggers
-        // it, without touching this session's actual working tree.
-        fn run_git(cwd: &Path, args: &[&str]) -> String {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(cwd)
-                .env("GIT_AUTHOR_NAME", "test")
-                .env("GIT_AUTHOR_EMAIL", "test@example.com")
-                .env("GIT_COMMITTER_NAME", "test")
-                .env("GIT_COMMITTER_EMAIL", "test@example.com")
-                .output()
-                .unwrap_or_else(|e| panic!("failed to spawn git {args:?}: {e}"));
-            assert!(
-                out.status.success(),
-                "git {args:?} failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            String::from_utf8_lossy(&out.stdout).into_owned()
-        }
+    /// Run `git` in `cwd`, panicking on spawn failure or nonzero exit, and
+    /// return raw stdout. Shared by the scratch-repo tests below, which
+    /// exercise `git()`'s cwd/pathspec contract against an isolated repo
+    /// rather than this session's actual working tree.
+    fn run_git(cwd: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn git {args:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
 
+    /// A scratch repo shaped like this one (a `pixelflow-pipeline/`
+    /// subdirectory below the repo root, with a `data/` output dir and a
+    /// `src/` source dir inside it), committed with one file in each. Returns
+    /// `(repo_root, crate_dir)`. Callers dirty the tree and run `git` from
+    /// `crate_dir` — exactly where the real `git()` helper runs from — to
+    /// exercise the cwd/pathspec mismatch these tests guard against.
+    fn scratch_repo(tag: &str) -> (PathBuf, PathBuf) {
         let root = std::env::temp_dir().join(format!(
-            "pf_journal_pathspec_test_{}_{}",
+            "pf_journal_{tag}_{}_{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -488,10 +502,25 @@ mod tests {
         run_git(&root, &["add", "-A"]);
         run_git(&root, &["commit", "-q", "-m", "initial"]);
 
+        (root, crate_dir)
+    }
+
+    #[test]
+    fn diff_hash_exclusions_survive_running_from_a_subdirectory() {
+        // Reproduces the real defect (P2 finding on the fix commit for PR
+        // #1019): `git()` runs with `current_dir` set to THIS crate's own
+        // manifest directory, not the repository root, so a bare
+        // `:(exclude)pixelflow-pipeline/data` pathspec is resolved relative
+        // to that directory — i.e. as
+        // `pixelflow-pipeline/pixelflow-pipeline/data`, which never exists —
+        // and silently excludes nothing. `:(top,exclude)` anchors to the
+        // repo root regardless of cwd.
+        let (root, crate_dir) = scratch_repo("pathspec_test");
+
         // Dirty the tree: change BOTH the run-output file (should be
         // excluded) and a real source file (should NOT be excluded).
-        fs::write(data_dir.join("out.jsonl"), "after\n").expect("rewrite data file");
-        fs::write(src_dir.join("lib.rs"), "// after\n").expect("rewrite source file");
+        fs::write(crate_dir.join("data/out.jsonl"), "after\n").expect("rewrite data file");
+        fs::write(crate_dir.join("src/lib.rs"), "// after\n").expect("rewrite source file");
 
         // `git()` runs from the crate directory, exactly like the real
         // helper — this is what makes the bare pathspec resolve wrong.
@@ -526,6 +555,58 @@ mod tests {
         );
 
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn status_filtering_ignores_excluded_paths_only_changes() {
+        // Reproduces the real defect (P2 finding on the fix commit for PR
+        // #1019): `git status --porcelain` without the same `excludes` the
+        // diff uses reports the tree dirty even when the ONLY changes are
+        // under an excluded path (typically this run's own prior output),
+        // so `SourceVersion::current` would record rev="<sha>-dirty" while
+        // hashing an empty diff — disagreeing with a genuinely clean run on
+        // `rev` despite both having nothing to say about tracked source.
+        let (root, crate_dir) = scratch_repo("status_filter_test");
+
+        // Dirty ONLY the excluded output file — no source change at all.
+        fs::write(crate_dir.join("data/out.jsonl"), "after\n").expect("rewrite data file");
+
+        let unfiltered = run_git(&crate_dir, &["status", "--porcelain"]);
+        assert!(
+            !unfiltered.trim().is_empty(),
+            "test assumption: unfiltered status must see the excluded-only change, or \
+             this test is no longer exercising the bug"
+        );
+
+        let mut filtered_args: Vec<&str> = vec!["status", "--porcelain", "--"];
+        filtered_args.extend(DIFF_HASH_EXCLUDES);
+        let filtered = run_git(&crate_dir, &filtered_args);
+        assert!(
+            filtered.trim().is_empty(),
+            "status filtered by DIFF_HASH_EXCLUDES must report clean when the only \
+             changes are under an excluded path: {filtered:?}"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn environment_fingerprint_records_fma_independently_of_isa() {
+        // The defect this guards: `fma` used to be the last rung of the
+        // `isa` if/else chain, so it was unreachable whenever `avx2` (or
+        // `avx512f`) was also set — an avx2+fma build and an avx2-only build
+        // read the same `isa=avx2`, hiding a real codegen difference
+        // (`emit_fmadd_c_in_dst`). `fma=` must appear as its own field,
+        // independent of whatever `isa` says.
+        let fp = environment_fingerprint();
+        assert!(
+            fp.contains(";isa=") && fp.contains(";fma="),
+            "isa and fma must both be present as independent fields: {fp}"
+        );
+        assert!(
+            fp.contains(";fma=true") || fp.contains(";fma=false"),
+            "fma must be a plain boolean, not folded into isa's value: {fp}"
+        );
     }
 
     #[test]

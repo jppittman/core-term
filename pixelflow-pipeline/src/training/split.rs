@@ -719,6 +719,19 @@ impl<T: HoldoutSide> Fence<T> {
         );
         let entries = super::corpus::read_corpus(&path)
             .unwrap_or_else(|e| panic!("failed to read {tier} corpus {}: {e}", path.display()));
+        // A zero-entry file parses fine (the writer permits an empty corpus)
+        // but is not a fence: `blocked_by_either` would silently admit every
+        // candidate on this side, and training could proceed as if the
+        // promised {tier} holdout existed when it does not — existence and a
+        // successful parse alone do not establish the fence invariant.
+        assert!(
+            !entries.is_empty(),
+            "{tier} tier corpus at {} is empty (zero entries) — a holdout fence built from it \
+             would block nothing, silently admitting every candidate on this side. Regenerate \
+             the tiered corpus with gen_bench_corpus (--output {})",
+            path.display(),
+            corpus_dir.display()
+        );
 
         let mut keys = HashSet::with_capacity(entries.len());
         let mut node_counts = Vec::with_capacity(entries.len());
@@ -867,6 +880,18 @@ mod tests {
     #[should_panic(expected = "holdout fence cannot be built")]
     fn fence_refuses_to_build_from_a_missing_tier_file() {
         let dir = scratch_dir("missing");
+        let _ = Fence::<DevSide>::build(&dir);
+    }
+
+    #[test]
+    #[should_panic(expected = "is empty (zero entries)")]
+    fn fence_refuses_to_build_from_an_empty_tier_file() {
+        // A zero-entry corpus is a valid PXCR file (the writer permits an
+        // empty corpus), but a fence built from it would block nothing —
+        // existence and a successful parse are not enough (P2 finding on the
+        // fix commit for PR #1019).
+        let dir = scratch_dir("empty_tier");
+        write_tier(&dir, Tier::Dev, &[]);
         let _ = Fence::<DevSide>::build(&dir);
     }
 

@@ -1679,7 +1679,8 @@ fn main() {
     let corpus_identity = corpus_tier_identity(&args.corpus_dir);
     let protocol = format!(
         "epochs={};lr={};batch_size={};momentum={};weight_decay={};grad_clip={};\
-         value_coeff={};synthetic={};skip_corpus={};seed={};order_seed={order_seed}",
+         value_coeff={};synthetic={};skip_corpus={};seed={};order_seed={order_seed};\
+         dev_eval_max={}",
         args.epochs,
         args.lr,
         args.batch_size,
@@ -1690,6 +1691,13 @@ fn main() {
         args.synthetic,
         args.skip_corpus,
         args.seed,
+        // Two runs differing only in --dev-eval-max select different DEV
+        // subsets (load_corpus_exprs) and so measure different populations —
+        // without this, `--epochs 0` makes that a real ConfigHash collision:
+        // identical weights, identical corpus_identity/weights_fnv64, but
+        // different reported DEV metrics (P2 finding on the fix commit for
+        // PR #1019).
+        args.dev_eval_max,
     );
     let config = ConfigHash::compose(
         &source,
