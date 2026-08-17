@@ -5,7 +5,7 @@
 //! ## The Problem
 //!
 //! HalfEP features encode all (perspective_op, descendant_op, depth, path) tuples:
-//! - 50 ops → 50² × 8 × 256 = 5.1M possible features
+//! - 42 ops → 42² × 8 × 256 = 3.6M possible features
 //! - Feature space grows quadratically with operation count
 //! - Training requires O(GB) of memory for weight matrices
 //!
@@ -409,14 +409,13 @@ impl ArenaRuleTemplates {
 
 /// Learned dense embeddings for each operation type.
 ///
-/// Each of the [`OpMap::LEN`] operations gets a K-dimensional embedding
-/// vector.
+/// Each of the 42 operations gets a K-dimensional embedding vector.
 /// These are the primary learned parameters that capture semantic
 /// similarity between operations.
 #[derive(Clone)]
 pub struct OpEmbeddings {
     /// E[op][i] = i-th dimension of op's embedding.
-    /// Stored as one K-vector per op: `OpMap::LEN * K` = 50 × 32 = 1,600 floats.
+    /// Stored as [OpKind::COUNT][K] = 42 × 32 = 1,344 floats.
     pub e: OpMap<[f32; K]>,
 }
 
@@ -517,7 +516,7 @@ impl OpEmbeddings {
     /// Total parameter count.
     #[must_use]
     pub const fn param_count() -> usize {
-        OpMap::<[f32; K]>::LEN * K
+        OpKind::COUNT * K
     }
 }
 
@@ -1508,7 +1507,7 @@ pub struct Edge {
 #[derive(Clone)]
 pub struct ExprNnue {
     // ========== SHARED (Expression Backbone) ==========
-    /// Learned embeddings for each operation (50 × 32 = 1,600 params)
+    /// Learned embeddings for each operation (42 × 32 = 1,344 params)
     pub embeddings: OpEmbeddings,
 
     /// Hidden layer weights: [INPUT_DIM][HIDDEN_DIM] (85 × 64 = 5,440 params)
@@ -2488,7 +2487,7 @@ impl ExprNnue {
     /// Total parameter count.
     #[must_use]
     pub const fn param_count() -> usize {
-        OpEmbeddings::param_count()           // embeddings: 50 * 32 = 1,600
+        OpEmbeddings::param_count()           // embeddings: 42 * 32 = 1,344
             + INPUT_DIM * HIDDEN_DIM          // w1: 130 * 64 = 8,320
             + HIDDEN_DIM                      // b1: 64
             // expr_proj
@@ -2630,15 +2629,14 @@ impl ExprNnue {
 
     /// Save weights to a binary file.
     ///
-    /// Format: magic "TRIE" + all weights as little-endian f32.
-    /// TRIE: op embeddings are one row per op, in `OpKind`'s order.
+    /// Format: magic "TRID" + all weights as little-endian f32.
+    /// TRID: shared trunk layer added between towers and projection heads.
     #[cfg(feature = "std")]
     pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
         use std::io::Write;
         let mut file = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(path)?);
 
-        // Magic header. Bump it whenever these bytes change meaning — including
-        // when `OpKind`'s order changes, since the embedding rows follow it.
+        // Magic header (TRID = shared trunk added — retrain required for old TRIC/TRIB/etc models)
         file.write_all(b"TRIE")?;
 
         // ===== Backbone =====
@@ -2783,7 +2781,7 @@ impl ExprNnue {
 
     /// Load weights from a binary file.
     ///
-    /// Only supports "TRIE" format. Older formats (TRID and earlier) require retrain.
+    /// Only supports "TRID" format (shared trunk). Old formats (TRIC and earlier) require retrain.
     #[cfg(feature = "std")]
     pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
         let file = std::io::BufReader::with_capacity(256 * 1024, std::fs::File::open(path)?);
@@ -2796,10 +2794,7 @@ impl ExprNnue {
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic)?;
 
-        // TRIE: op embeddings are one row per op, in `OpKind`'s order. That
-        //       order is `pixelflow-ir`'s to change, and changing it silently
-        //       re-attaches every row to a different operation — so a change
-        //       there means a new magic here.
+        // TRIE: `OpKind` discriminants renumbered densely over `0..COUNT`
         // TRID: incompatible — op embeddings are indexed by `OpKind::index()`,
         //       and the pre-2026-08-02 discriminants had gaps at 17/31/39. The
         //       shapes still match, so a TRID file would load without error and
@@ -2812,11 +2807,11 @@ impl ExprNnue {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "Incompatible ExprNnue format {:?}. Expected 'TRIE'. {}",
+                    "Incompatible ExprNnue format {:?}. Expected 'TRIE' (dense OpKind indices). {}",
                     std::str::from_utf8(&magic).unwrap_or("????"),
                     if &magic == b"TRID" {
-                        "'TRID' predates the dense op numbering; its embeddings are \
-                         attributed to the wrong operations. Retrain required."
+                        "'TRID' predates the OpKind renumbering; its op embeddings are \
+                         shifted past discriminants 17/31/39. Retrain required."
                     } else {
                         "Old formats (TRIC, TRIB, TRIA, TRI5-TRI9) require retrain."
                     }
@@ -2985,7 +2980,7 @@ impl ExprNnue {
             *val = f32::from_le_bytes(buf);
         }
 
-        // Graph state backbone (TRIE format: mandatory, no backward compat)
+        // Graph state backbone (TRID format: mandatory, no backward compat)
         for row in &mut net.graph_w1 {
             for val in row {
                 let mut buf = [0u8; 4];

@@ -36,7 +36,7 @@ use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator, ExprNnue};
 
 use pixelflow_pipeline::jit_bench::benchmark_jit_arena;
 
-/// Freshly retrained Judge weights (TRIE format), verified loadable by
+/// Freshly retrained Judge weights (TRID format), verified loadable by
 /// `pixelflow-pipeline/tests/judge_weights_load.rs`.
 const NNUE_WEIGHTS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/expr_nnue_trid.bin");
 
@@ -443,7 +443,7 @@ fn main() {
     let nnue = ExprNnue::from_bytes(&weights_bytes).unwrap_or_else(|e| {
         panic!(
             "ExprNnue::from_bytes rejected {NNUE_WEIGHTS_PATH}: {e}. \
-             Retrain must produce valid TRIE-format weights before this bench can run."
+             Retrain must produce valid TRID-format weights before this bench can run."
         )
     });
     eprintln!("Judge weights loaded OK ({} bytes).\n", weights_bytes.len());

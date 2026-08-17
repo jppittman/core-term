@@ -150,11 +150,13 @@ impl ExprGenerator {
     pub fn new(seed: u64, config: ExprGenConfig) -> Self {
         // Build weighted op table: each op appears proportional to its shader weight
         let mut seed_ops = Vec::new();
-        for op in OpKind::all() {
-            if op.is_seed_op() {
-                let w = Self::shader_weight(op).max(1);
-                for _ in 0..w {
-                    seed_ops.push(op);
+        for i in 0..OpKind::COUNT {
+            if let Some(op) = OpKind::from_index(i) {
+                if op.is_seed_op() {
+                    let w = Self::shader_weight(op).max(1);
+                    for _ in 0..w {
+                        seed_ops.push(op);
+                    }
                 }
             }
         }
@@ -1164,6 +1166,14 @@ impl BwdGenerator {
 mod tests {
     use super::*;
     use libm::fabsf;
+
+    #[test]
+    fn op_type_roundtrip() {
+        for i in 0..OpKind::COUNT {
+            let op = OpKind::from_index(i).unwrap();
+            assert_eq!(op.index(), i);
+        }
+    }
 
     // ========================================================================
     // Pattern Match + Substitute Tests

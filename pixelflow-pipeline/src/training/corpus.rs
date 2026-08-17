@@ -24,26 +24,22 @@
 //!   tag: u8  (0=Var, 1=Const, 2=Param, 3=Unary, 4=Binary, 5=Ternary, 6=Nary)
 //!   payload varies by tag.
 //!
-//! Ops are stored in `pixelflow-ir`'s own encoding (`OpKind::marshal`), whose
-//! bytes that crate is free to change without telling anyone. `VERSION` is
-//! what stands between that and a silent misread: a corpus written under a
-//! different encoding parses perfectly and decodes into different operations,
-//! so changing the encoding means bumping the version here.
+//! Ops are stored as their numeric `OpKind` discriminant, so the format
+//! version is coupled to the opcode numbering: v2 marks the dense 0..COUNT
+//! renumbering. A v1 file's op bytes would decode as *different* ops under
+//! the new numbering — silently wrong data, not a parse error — so any
+//! version other than the current one is a hard load error.
 
 use std::io::{self, Write};
 use std::path::Path;
 
-use pixelflow_ir::kind::OpCode;
 use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
 
 const MAGIC: &[u8; 4] = b"PXCR";
-// Bump this whenever anything about the bytes below changes meaning — the
-// header's shape, a node tag, or the encoding `OpKind::marshal` writes ops in.
-// See `docs/designs/opkind-numbering-is-private.md` §4.4.
-// That last one is easy to forget precisely because it changes nothing here:
-// the file still parses, and every op byte quietly names a different
-// operation. A stale corpus is cheap to replace and expensive to misread, so
-// when in doubt, bump.
+// Bumped 1 → 2 when OpKind discriminants were renumbered dense (0..COUNT):
+// ops serialize as their discriminant byte, so a v1 corpus decodes its op
+// bytes as different ops under the new numbering. The version bump turns
+// that silent corruption into a load-time error.
 const VERSION: u32 = 2;
 
 // ── ExprNode serialization tags ──────────────────────────────────────────────
@@ -124,26 +120,22 @@ fn write_node(w: &mut impl Write, node: &ExprNode) -> io::Result<()> {
             w.write_all(&[TAG_PARAM, *i])?;
         }
         ExprNode::Unary(op, a) => {
-            w.write_all(&[TAG_UNARY])?;
-            w.write_all(&op.marshal().to_bytes())?;
+            w.write_all(&[TAG_UNARY, *op as u8])?;
             w.write_all(&a.0.to_le_bytes())?;
         }
         ExprNode::Binary(op, a, b) => {
-            w.write_all(&[TAG_BINARY])?;
-            w.write_all(&op.marshal().to_bytes())?;
+            w.write_all(&[TAG_BINARY, *op as u8])?;
             w.write_all(&a.0.to_le_bytes())?;
             w.write_all(&b.0.to_le_bytes())?;
         }
         ExprNode::Ternary(op, a, b, c) => {
-            w.write_all(&[TAG_TERNARY])?;
-            w.write_all(&op.marshal().to_bytes())?;
+            w.write_all(&[TAG_TERNARY, *op as u8])?;
             w.write_all(&a.0.to_le_bytes())?;
             w.write_all(&b.0.to_le_bytes())?;
             w.write_all(&c.0.to_le_bytes())?;
         }
         ExprNode::Nary(op, start, len) => {
-            w.write_all(&[TAG_NARY])?;
-            w.write_all(&op.marshal().to_bytes())?;
+            w.write_all(&[TAG_NARY, *op as u8])?;
             w.write_all(&start.to_le_bytes())?;
             w.write_all(&len.to_le_bytes())?;
         }
@@ -178,19 +170,18 @@ fn read_corpus_bytes(data: &[u8]) -> io::Result<Vec<(String, ExprArena, ExprId)>
         ));
     }
 
-    // Exact-version check, no tolerance. Op bytes mean whatever the IR's
-    // encoding said when the file was written, and that encoding may change
-    // without notice — so a "best effort" read of an old file would decode
-    // valid-looking bytes into the wrong ops rather than fail.
+    // Exact-version check, no tolerance: op bytes are OpKind discriminants,
+    // and those were renumbered between v1 and v2, so "best effort" decoding
+    // of an old file would silently produce wrong expressions.
     let version = r.read_u32()?;
     if version != VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "unsupported corpus version: {version} (expected {VERSION}); the layout \
-                 differs, so this file cannot be read — regenerate the corpus with \
-                 `cargo run --release -p pixelflow-pipeline --features training \
-                 --bin gen_bench_corpus`"
+                "unsupported corpus version: {version} (expected {VERSION}); the OpKind \
+                 opcode numbering changed, so older corpora decode to the wrong ops — \
+                 regenerate the corpus with `cargo run --release -p pixelflow-pipeline \
+                 --features training --bin gen_bench_corpus`"
             ),
         ));
     }
@@ -290,14 +281,11 @@ fn read_node(r: &mut Cursor<'_>) -> io::Result<ExprNode> {
 }
 
 fn read_opkind(r: &mut Cursor<'_>) -> io::Result<OpKind> {
-    let mut bytes = [0u8; OpCode::SIZE];
-    for b in &mut bytes {
-        *b = r.read_u8()?;
-    }
-    OpKind::unmarshal(OpCode::from_bytes(bytes)).ok_or_else(|| {
+    let idx = r.read_u8()?;
+    OpKind::from_index(idx as usize).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("no op is encoded by {bytes:?}"),
+            format!("invalid OpKind index: {idx}"),
         )
     })
 }
@@ -546,12 +534,12 @@ mod tests {
 
     #[test]
     fn v1_corpus_is_refused_with_regeneration_hint() {
-        // A v1 header must be a hard error: it was written under a different
-        // op encoding, so its op bytes decode as different ops — the reader
+        // A v1 header must be a hard error: v1 predates the dense OpKind
+        // renumbering, so its op bytes decode as different ops — the reader
         // must refuse it, not fall back to decoding garbage.
         let mut data = Vec::new();
         data.extend_from_slice(MAGIC);
-        data.extend_from_slice(&1u32.to_le_bytes()); // written under an older encoding
+        data.extend_from_slice(&1u32.to_le_bytes()); // pre-renumbering version
         data.extend_from_slice(&0u32.to_le_bytes()); // count=0
         match read_corpus_from_bytes("v1_refused", &data) {
             Ok(_) => panic!("v1 corpus must be refused: its op bytes decode as wrong OpKinds"),
@@ -562,7 +550,7 @@ mod tests {
                     "error must name the rejected version: {msg}"
                 );
                 assert!(
-                    msg.contains("the layout differs"),
+                    msg.contains("opcode numbering changed"),
                     "error must explain WHY v1 is rejected: {msg}"
                 );
                 assert!(

@@ -227,25 +227,25 @@ fn canonical_key(arena: &ExprArena, root: ExprId) -> Vec<u8> {
             }
             &ExprNode::Unary(op, a) => {
                 key.push(4);
-                key.extend_from_slice(&op.marshal().to_bytes());
+                key.push(op as u8);
                 push_id(&mut key, &dense, a);
             }
             &ExprNode::Binary(op, a, b) => {
                 key.push(5);
-                key.extend_from_slice(&op.marshal().to_bytes());
+                key.push(op as u8);
                 push_id(&mut key, &dense, a);
                 push_id(&mut key, &dense, b);
             }
             &ExprNode::Ternary(op, a, b, c) => {
                 key.push(6);
-                key.extend_from_slice(&op.marshal().to_bytes());
+                key.push(op as u8);
                 push_id(&mut key, &dense, a);
                 push_id(&mut key, &dense, b);
                 push_id(&mut key, &dense, c);
             }
             &ExprNode::Nary(op, start, n) => {
                 key.push(7);
-                key.extend_from_slice(&op.marshal().to_bytes());
+                key.push(op as u8);
                 key.extend_from_slice(&n.to_le_bytes());
                 let (s, l) = (start as usize, n as usize);
                 for &child in &arena.nary_children_raw()[s..s + l] {
