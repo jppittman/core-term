@@ -1736,12 +1736,12 @@ mod tests {
     }
 
     #[test]
-    fn average_ranks_no_ties() {
+    fn average_ranks_assigns_distinct_ranks_when_there_are_no_ties() {
         assert_eq!(average_ranks(&[10.0, 30.0, 20.0]), vec![1.0, 3.0, 2.0]);
     }
 
     #[test]
-    fn average_ranks_with_ties() {
+    fn average_ranks_splits_the_average_rank_across_tied_values() {
         // 2.0 occupies ranks 2 and 3 → both get 2.5.
         assert_eq!(
             average_ranks(&[1.0, 2.0, 2.0, 4.0]),
@@ -1763,7 +1763,7 @@ mod tests {
     }
 
     #[test]
-    fn spearman_known_small_example() {
+    fn spearman_rho_matches_a_hand_computed_example() {
         // Ranks: a=[1,2,3], b=[3,1,2]; d²=[4,1,1] → ρ = 1 − 6·6/(3·8) = −0.5.
         let rho = spearman_rho(&[1.0, 2.0, 3.0], &[3.0, 1.0, 2.0]).expect("defined");
         assert!((rho + 0.5).abs() < 1e-12, "got {rho}");
@@ -1952,7 +1952,7 @@ mod tests {
     }
 
     #[test]
-    fn size_distribution_quartiles() {
+    fn size_distribution_of_reports_count_min_median_max_and_renders_them() {
         let d = SizeDistribution::of(&[7, 1, 3, 9, 5]).expect("non-empty");
         assert_eq!(d.count, 5);
         assert_eq!(d.min, 1);

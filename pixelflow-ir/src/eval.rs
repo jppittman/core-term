@@ -2135,7 +2135,7 @@ mod tests {
     }
 
     #[test]
-    fn mask_valued_root_detection() {
+    fn is_mask_valued_classifies_comparisons_bitwise_ops_select_and_trunc() {
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
         let y = arena.push_var(1);
@@ -2190,7 +2190,7 @@ mod tests {
     }
 
     #[test]
-    fn trunc_divergence_predicate_boundaries() {
+    fn trunc_input_is_divergent_beyond_the_i32_range_and_convergent_within_it() {
         const TWO_POW_31: f32 = 2_147_483_648.0;
         // Divergent: NaN, infinities, and everything at/above 2^31 or below
         // -2^31 — where cvttps2dq's 0x80000000 parts ways with saturation.

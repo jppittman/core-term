@@ -1362,7 +1362,7 @@ mod tests {
     }
 
     #[test]
-    fn iqr_computation() {
+    fn iqr_is_order_independent_and_zero_for_constant_samples() {
         // 0..20: q25 = sorted[5] = 5, q75 = sorted[15] = 15.
         let samples: Vec<f64> = (0..20).map(f64::from).collect();
         assert_eq!(iqr(&samples), 10.0);
@@ -1531,7 +1531,7 @@ mod tests {
     }
 
     #[test]
-    fn sentinel_regime_change_detection() {
+    fn sentinel_drift_exceeded_trips_only_beyond_the_fifty_percent_band() {
         let frac = SENTINEL_REGIME_CHANGE_FRAC;
         // The observed benign band (macOS post-build daemons measured 11–19%
         // drift) must NOT abort: it is recorded and post-hoc corrected.
