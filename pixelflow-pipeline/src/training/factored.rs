@@ -673,13 +673,11 @@ mod tests {
 
     const REWRITE_BUG_INPUTS: [f32; 4] = [0.5, 0.7, 1.3, -0.2];
 
+    // The scalar reference is the differential-testing oracle: it runs the same
+    // `expand_transcendentals` lowering the JIT runs, so Pow/exp/log evaluate
+    // through their one definition rather than a second host-libm semantics.
     fn eval_arena_scalar(arena: &ExprArena, id: ExprId, vars: &[f32; 4]) -> f32 {
-        pixelflow_ir::eval_scalar(
-            arena,
-            id,
-            vars,
-            &pixelflow_ir::binding::BindingTable::empty(),
-        )
+        pixelflow_ir::eval_scalar(arena, id, vars, &pixelflow_ir::BindingTable::empty())
     }
 
     fn logged_expr_scalar_output(src: &str) -> f32 {
