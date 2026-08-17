@@ -44,7 +44,6 @@ use std::io::Write;
 use std::path::Path;
 
 use pixelflow_codegen::emit::compile_arena_dag;
-use pixelflow_codegen::emit::executable::ExecutableCode;
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::{
     DifferentialCheck, ExprArena, ExprId, ExprNode, MaskVerdict, OpKind, PointVerdict,
@@ -132,90 +131,10 @@ impl QuarantineGrid {
 }
 
 // ── JIT execution helper ─────────────────────────────────────────────────────
-// Broadcasts one coordinate to all lanes, reads lane 0. Verbatim from
-// `pixelflow-search/tests/prod_kernel_jit.rs`.
-
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::{_mm_cvtss_f32, _mm_set1_ps};
-    use pixelflow_codegen::emit::executable::KernelFn;
-    // SAFETY: SSE2 is the baseline on x86-64; the JIT emitted the `__m128` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            _mm_set1_ps(x),
-            _mm_set1_ps(y),
-            _mm_set1_ps(z),
-            _mm_set1_ps(w),
-        );
-        _mm_cvtss_f32(r)
-    }
-}
-
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::{_mm256_cvtss_f32, _mm256_set1_ps};
-    use pixelflow_codegen::emit::executable::KernelFn;
-    // SAFETY: built with +avx2 (not +avx512f), so the JIT emitted the
-    // `__m256` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            _mm256_set1_ps(x),
-            _mm256_set1_ps(y),
-            _mm256_set1_ps(z),
-            _mm256_set1_ps(w),
-        );
-        _mm256_cvtss_f32(r)
-    }
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::{_mm512_cvtss_f32, _mm512_set1_ps};
-    use pixelflow_codegen::emit::executable::KernelFn;
-    // SAFETY: built with +avx512f, so the JIT emitted the `__m512` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            _mm512_set1_ps(x),
-            _mm512_set1_ps(y),
-            _mm512_set1_ps(z),
-            _mm512_set1_ps(w),
-        );
-        _mm512_cvtss_f32(r)
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::aarch64::{vdupq_n_f32, vgetq_lane_f32};
-    use pixelflow_codegen::emit::executable::KernelFn;
-    // SAFETY: NEON is mandatory on aarch64; the JIT emitted the `float32x4_t` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            vdupq_n_f32(x),
-            vdupq_n_f32(y),
-            vdupq_n_f32(z),
-            vdupq_n_f32(w),
-        );
-        vgetq_lane_f32(r, 0)
-    }
-}
-
-#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-fn run_scalar(_code: &ExecutableCode, _x: f32, _y: f32, _z: f32, _w: f32) -> f32 {
-    panic!("numeric quarantine requires a JIT-capable architecture")
-}
+// `run_scalar` (broadcast to all lanes, read lane 0) lives in
+// `crate::oracle_compare` — the one copy every JIT/oracle cross-check harness
+// imports (docs/plans/2026-08-17-cost-model-domain.md, J14).
+use crate::oracle_compare::run_scalar;
 
 // ── Exclusions ───────────────────────────────────────────────────────────────
 

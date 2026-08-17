@@ -383,25 +383,16 @@ struct TrainerJournalRecord {
 }
 
 /// Append one line to the research journal, loudly on any failure.
+///
+/// Mechanics (serialize, mkdir, LFS-pointer guard, append-or-panic) live in
+/// `pixelflow_pipeline::journal` — the one writer every journal-producing
+/// binary shares (docs/plans/2026-08-17-cost-model-domain.md, J15).
 fn append_journal(record: &TrainerJournalRecord) {
     let journal_path = PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../docs/results/journal.jsonl"
     ));
-    let line = serde_json::to_string(record)
-        .unwrap_or_else(|e| panic!("failed to serialize the trainer journal record: {e}"));
-    if let Some(parent) = journal_path.parent() {
-        std::fs::create_dir_all(parent)
-            .unwrap_or_else(|e| panic!("failed to create {}: {e}", parent.display()));
-    }
-    let mut journal = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&journal_path)
-        .unwrap_or_else(|e| panic!("failed to open {}: {e}", journal_path.display()));
-    writeln!(journal, "{line}")
-        .unwrap_or_else(|e| panic!("failed to append to {}: {e}", journal_path.display()));
-    eprintln!("Journal appended: {}", journal_path.display());
+    pixelflow_pipeline::journal::append_record(&journal_path, record);
 }
 
 /// A seeded permutation of `0..len` (LCG Fisher-Yates).

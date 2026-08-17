@@ -111,7 +111,7 @@ use clap::Parser;
 use serde::Serialize;
 
 use pixelflow_codegen::emit::compile_arena_dag;
-use pixelflow_codegen::emit::executable::{ExecutableCode, KernelFn};
+use pixelflow_codegen::emit::executable::ExecutableCode;
 use pixelflow_ir::{
     BindingTable, DifferentialCheck, ExprArena, ExprId, MaskComparison, MaskVerdict, PointCheck,
     PointVerdict, compare_mask_root,
@@ -460,82 +460,12 @@ fn named_kernels() -> Vec<(&'static str, ExprArena, ExprId)> {
 }
 
 // ---------------------------------------------------------------------------
-// JIT execution helper — verbatim from pixelflow-search/tests/prod_kernel_jit.rs.
-// Broadcasts one coordinate to all lanes, reads lane 0.
+// JIT execution helper: `run_scalar` (broadcast to all lanes, read lane 0)
+// lives in `pixelflow_pipeline::oracle_compare` — the one copy every
+// JIT/oracle cross-check harness imports
+// (docs/plans/2026-08-17-cost-model-domain.md, J14).
 // ---------------------------------------------------------------------------
-
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::{_mm_cvtss_f32, _mm_set1_ps};
-    // SAFETY: SSE2 is the baseline on x86-64; the JIT emitted `__m128` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            _mm_set1_ps(x),
-            _mm_set1_ps(y),
-            _mm_set1_ps(z),
-            _mm_set1_ps(w),
-        );
-        _mm_cvtss_f32(r)
-    }
-}
-
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::{_mm256_cvtss_f32, _mm256_set1_ps};
-    // SAFETY: built with +avx2 (not +avx512f), so the JIT emitted the
-    // `__m256` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            _mm256_set1_ps(x),
-            _mm256_set1_ps(y),
-            _mm256_set1_ps(z),
-            _mm256_set1_ps(w),
-        );
-        _mm256_cvtss_f32(r)
-    }
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::{_mm512_cvtss_f32, _mm512_set1_ps};
-    // SAFETY: built with +avx512f, so the JIT emitted the `__m512` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            _mm512_set1_ps(x),
-            _mm512_set1_ps(y),
-            _mm512_set1_ps(z),
-            _mm512_set1_ps(w),
-        );
-        _mm512_cvtss_f32(r)
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn run_scalar(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::aarch64::{vdupq_n_f32, vgetq_lane_f32};
-    // SAFETY: NEON is mandatory on aarch64; the JIT emitted the `float32x4_t` ABI.
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        let r = f(
-            vdupq_n_f32(x),
-            vdupq_n_f32(y),
-            vdupq_n_f32(z),
-            vdupq_n_f32(w),
-        );
-        vgetq_lane_f32(r, 0)
-    }
-}
+use pixelflow_pipeline::oracle_compare::run_scalar;
 
 // ---------------------------------------------------------------------------
 // Oracle-referenced correctness gate (H1/H2)
@@ -2396,31 +2326,11 @@ fn corpus_identity(bytes: &[u8]) -> String {
     format!("{:016x}", fnv1a64(bytes, FNV_OFFSET))
 }
 
-/// Refuse to append to a journal that is still a Git LFS pointer.
-///
-/// `.gitattributes` sends every `*.jsonl` through LFS, so in a clone where the
-/// objects were never pulled `docs/results/journal.jsonl` is the three-line
-/// pointer stub rather than the journal. Appending there produces a file that
-/// is neither — malformed JSONL behind a pointer header — and staging it can
-/// commit that text as the tracked payload, taking the real history with it.
-/// A run that got this far has already spent its measurements, so say exactly
-/// what to run rather than failing in a way that reads as a corrupt journal.
-fn refuse_unsmudged_lfs_pointer(path: &Path) {
-    const POINTER_MAGIC: &str = "version https://git-lfs.github.com/spec/";
-    let Ok(head) = fs::read(path) else {
-        return; // Absent is fine — the append creates it.
-    };
-    // A pointer stub is a few hundred bytes; a real journal's first line is a
-    // JSON object. Only the prefix needs looking at.
-    let prefix = String::from_utf8_lossy(&head[..head.len().min(POINTER_MAGIC.len())]);
-    assert!(
-        prefix != POINTER_MAGIC,
-        "{} is an unsmudged Git LFS pointer, not the journal.\n\
-         Appending would corrupt it. Materialize it first:\n  \
-         git lfs install && git lfs pull --include docs/results/journal.jsonl",
-        path.display()
-    );
-}
+// `refuse_unsmudged_lfs_pointer` moved to
+// `pixelflow_pipeline::journal::append_record`, which now performs the whole
+// append (serialize, mkdir, LFS guard, append-or-panic) for this binary's
+// journal write below — the one writer every journal-producing binary shares
+// (docs/plans/2026-08-17-cost-model-domain.md, J15).
 
 /// The build and machine this run's numbers came off.
 ///
@@ -3233,7 +3143,7 @@ fn main() {
         env!("CARGO_MANIFEST_DIR"),
         "/../docs/results/journal.jsonl"
     ));
-    let journal_line = serde_json::to_string(&JournalRecord {
+    let journal_record = JournalRecord {
         record: "bench_extraction_3way",
         ts_unix,
         config_hash: &config_hash,
@@ -3276,25 +3186,10 @@ fn main() {
         verdict_censored: !failure_rates.censoring().is_empty(),
         verdict: &verdict,
         data_jsonl: data_path.display().to_string(),
-    })
-    .unwrap_or_else(|e| panic!("failed to serialize journal record: {e}"));
-    // `OpenOptions::create` does not create parent directories, and a run that
-    // measured everything correctly must not die on a missing folder.
-    if let Some(parent) = journal_path.parent() {
-        fs::create_dir_all(parent)
-            .unwrap_or_else(|e| panic!("failed to create {}: {e}", parent.display()));
-    }
-    refuse_unsmudged_lfs_pointer(&journal_path);
-    let mut journal = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&journal_path)
-        .unwrap_or_else(|e| panic!("failed to open {}: {e}", journal_path.display()));
-    writeln!(journal, "{journal_line}")
-        .unwrap_or_else(|e| panic!("failed to append to {}: {e}", journal_path.display()));
+    };
+    pixelflow_pipeline::journal::append_record(&journal_path, &journal_record);
 
     println!("\nMachine-readable results: {}", data_path.display());
-    println!("Journal appended: {}", journal_path.display());
 
     // The gate alarms fire LAST, after every record is on disk: they are a
     // verdict on the run's exclusions, and the exclusions they cite must be
