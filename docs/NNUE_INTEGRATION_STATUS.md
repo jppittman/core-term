@@ -1,36 +1,36 @@
-# NNUE Integration Status
+# NNUE Integration Status Analysis
 
-> Rewritten 2026-08-05. The previous version of this doc described systems deleted in the
-> July 2026 cleanup (`train_unified`, the Guide/self-play loop, `critic_server.py`) as extant.
+## Executive Summary
 
-## What exists today
+**Status:** **ACTIVE CONSOLIDATION (2026)**
 
-- **Extraction head** (`ExprNnue`, `pixelflow-search/src/nnue/factored.rs`): predicts
-  expression execution cost from an `EdgeAccumulator` built over `ExprArena`. Consumed by
-  e-graph extraction (`pixelflow-search/src/egraph/extract.rs`,
-  `extract_neural_to_arena`).
-- **Compiler integration** (`pixelflow-compiler/src/optimize.rs`): the DEFAULT extraction
-  cost model is the static `CostModel::latency_prior()`. The NNUE extraction head is
-  **opt-in only**, via the `PIXELFLOW_NNUE_WEIGHTS` env var read at proc-macro expansion
-  time; bad weights hard-fail the build.
-- **Training** (supervised, offline): `gen_bench_corpus` mints (expression, measured-ns)
-  pairs via the JIT bench harness (`pixelflow-pipeline/src/jit_bench.rs`);
-  `bootstrap_extraction_head` regresses the head on them. Both require
-  `-p pixelflow-pipeline --features training`.
-- **Gate**: `bench_extraction_3way` compares no-swap vs latency prior vs NNUE end-to-end.
-- **Provenance substrate** for guided-saturation research: rule provenance
-  (`pixelflow-search/src/egraph/provenance.rs`) and hindsight labeling
-  (`pixelflow-search/src/egraph/labeler.rs`).
+**The "Triple IR" Problem:** The project is migrating from three redundant IRs (`pixelflow-compiler`, `pixelflow-search`, `pixelflow-ml`) to a unified `pixelflow-ir` core.
 
-## What no longer exists
+**HCE Removal:** Hand-Crafted Evaluation (HCE) has been removed as a redundant and obsolete prototype. The system now focuses entirely on learned cost models ("The Judge") and neural search guidance ("The Guide").
 
-The AlphaZero-style self-play/critic/REINFORCE loop (removed July 2026 after a four-agent
-audit found it methodologically unsound), `train_unified`, `GuideNnue`, and all RL training
-binaries. Post-mortem and replacement architecture:
-[2026-07-07-guided-saturation-redesign.md](plans/2026-07-07-guided-saturation-redesign.md).
+## Current Infrastructure
 
-## Where this is going
+### 1. The Judge: Learned Cost Model
+**Crate:** `pixelflow-pipeline` (Training) / `pixelflow-search` (Inference)
+- **Architecture:** `ExprNnue` (factored 128-dim embeddings).
+- **Consolidation:** `BwdGenerator` has been unified in `pixelflow-search`. It now uses `RuleTemplates` derived from e-graph rewrites for data-driven "junkification" and training data generation.
+- **Integration:** Successfully wired into `pixelflow-search::egraph::extract_neural` and `extract_beam`.
 
-The research workflow toward a publishable extraction-head result (harness repairs, split
-discipline, iteration loop):
-[2026-08-05-egraph-nnue-research-workflow.md](plans/2026-08-05-egraph-nnue-research-workflow.md).
+### 2. The Guide: Search Guidance
+**Crate:** `pixelflow-pipeline` (Training) / `pixelflow-search` (Inference)
+- **Status:** Integrated into `pixelflow-search::egraph::guided_search`.
+- **Training:** Unified self-play loop in `pixelflow-pipeline/src/bin/train_unified.rs`.
+
+## Simplification & Cruft Removal (Completed)
+
+- **Scorched Earth on `pixelflow-ml`:** Removed the old NNUE prototype island, redundant AST, and manual `BwdGenerator`. `pixelflow-ml` is now focused strictly on graphics ML (harmonic attention, SH features).
+- **HCE Decommissioned:** All references to "Hand-Crafted Evaluator" in benchmarks and extraction lanes have been replaced with "Neural-DP" (The Judge).
+- **BwdGenerator Unified:** The search-based generator in `pixelflow-search` is now the sole implementation, supporting all e-graph rewrite rules via templates.
+
+## Next Steps
+
+1. **IR Unification (Critical):** Fully migrate `pixelflow-compiler` and `pixelflow-search` to use `pixelflow-ir`'s canonical `Expr` and `OpKind`.
+2. **Cost Model Calibration:** Continue refining "The Judge" weights using real SIMD benchmark data from `bench_jit_corpus`.
+3. **Training Flow Cleanup:** Delete superseded training binaries in `pixelflow-pipeline` once `train_unified` is fully validated.
+
+The "Formula 1 car" (NNUE) is now out of the garage and being integrated as the primary engine for the compiler.

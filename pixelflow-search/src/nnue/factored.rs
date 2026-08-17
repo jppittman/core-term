@@ -36,7 +36,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use libm::{logf, sqrtf};
+use libm::sqrtf;
 
 use crate::egraph::Rewrite;
 use crate::egraph::cost::latency_prior_cycles;
@@ -54,19 +54,12 @@ use pixelflow_ir::kind::OpMap;
 /// stores 2K values: K for parent roles, K for child roles.
 pub const K: usize = 32;
 
-/// Number of scalar features appended to each accumulator.
-///
-/// For the edge tower (`w1`, [`INPUT_DIM`]) these four slots carry the
-/// variance histogram (const / frame / scanline / pixel fractions) — see
-/// [`EdgeAccumulator::extraction_input`], the single place that builds them.
-/// For the graph tower (`graph_w1`, [`GRAPH_INPUT_DIM`]) they carry
-/// log2-compressed search-resource scalars (edge_count, node_count,
-/// node_budget, epoch_budget).
+/// Number of scalar features appended to the dual accumulator.
+/// edge_count, node_count, node_budget, epoch_budget.
 pub const SCALAR_FEATURE_COUNT: usize = 4;
 
 /// Total input dimension to the hidden layer:
-/// 4K (dual accumulator: 2K flat + 2K depth-encoded) + 4 scalars
-/// (the variance histogram — see [`EdgeAccumulator::extraction_input`]).
+/// 4K (dual accumulator: 2K flat + 2K depth-encoded) + 4 scalars.
 pub const INPUT_DIM: usize = 4 * K + SCALAR_FEATURE_COUNT;
 
 /// Graph accumulator dimension: marginals (2K) + 1-hop VSA binding (K) + 2-hop VSA binding (K).
@@ -109,7 +102,7 @@ pub const MASK_MAX_RULES: usize = 1024;
 /// Used when encoding rules from their LHS/RHS expression templates.
 pub const RULE_CONCAT_DIM: usize = 4 * EMBED_DIM;
 
-/// Mask MLP input dimension: expr_embed directly (EMBED_DIM = 32 dims).
+/// Mask MLP input dimension: expr_embed directly (24 dims).
 /// value_pred was removed — it is a deterministic function of expr_embed and adds zero information.
 pub const MASK_INPUT_DIM: usize = EMBED_DIM;
 
@@ -468,34 +461,24 @@ impl OpEmbeddings {
 
     /// Initialize with latency priors in place.
     ///
-    /// Dimension 0 = latency, squashed to `[0, 1]` from the shared
+    /// Dimension 0 = latency, normalized to `[0, 1]` by dividing the shared
     /// [`latency_prior_cycles`] cycle table (source of truth, also used by
-    /// `egraph::cost::CostModel::latency_prior`) via
-    /// `ln(1+cycles) / ln(1+1000)`.
-    ///
-    /// The squash is logarithmic, not linear: the 2026-08-10 re-measurement
-    /// of the cycle table spread real ops across 3..=196 cycles (Pow's
-    /// lowered form is 196, not the old 12), so the previous linear `/20`
-    /// clamp would pin every op from Rsqrt (21) to Pow (196) at 1.0 —
-    /// indistinguishable from each other *and* from Dwrt's prohibitive 1000.
-    /// The log curve keeps both ends discriminable: Add 0.23, Sqrt 0.40,
-    /// Sin 0.62, Pow 0.77, Dwrt 1.0. Affects fresh initializations only;
-    /// trained weight files are untouched.
+    /// `egraph::cost::CostModel::latency_prior`) by `LATENCY_NORMALIZER`.
     pub fn init_with_latency_prior(&mut self, seed: u64) {
-        // Dwrt's deliberately-prohibitive 1000-cycle entry maps to exactly
-        // 1.0; everything real lands strictly below it.
-        const LATENCY_CEILING_CYCLES: f32 = 1000.0;
+        // Cycle estimate above which we don't bother distinguishing further;
+        // used only to squash the cycle table into [0, 1]. Dwrt's
+        // deliberately-prohibitive 1000-cycle entry saturates to 1.0 here,
+        // same as before this table was shared with CostModel.
+        const LATENCY_NORMALIZER: f32 = 20.0;
 
         let mut rng_state = seed.wrapping_add(1);
         let small_scale = 0.1; // Small noise for other dimensions
 
         let cycles_of = latency_prior_cycles();
         for op in OpKind::all() {
-            // Dimension 0: latency prior, log-squashed from the shared cycle
-            // table.
+            // Dimension 0: latency prior, normalized from the shared cycle table.
             let cycles = cycles_of[op] as f32;
-            let squashed = logf(1.0 + cycles) / logf(1.0 + LATENCY_CEILING_CYCLES);
-            self.e[op][0] = squashed.min(1.0);
+            self.e[op][0] = (cycles / LATENCY_NORMALIZER).min(1.0);
 
             // Dimensions 1..K: small random for learning interactions
             for dim in 1..K {
@@ -716,13 +699,20 @@ pub struct EdgeAccumulator {
     /// Node count (O(1) additive scalar).
     pub node_count: u32,
 
+    /// Number of shared subtrees skipped via CSE deduplication.
+    ///
+    /// Incremented by `from_arena_dedup` each time a subtree that was already
+    /// walked is encountered again. The duplicate's edges are NOT re-added to
+    /// the accumulator — this field is purely diagnostic and does NOT feed into
+    /// the network.
+    pub backref_count: u32,
+
     /// E-graph node budget for this trajectory (how many nodes the saturator may create).
-    /// Carried for saturation-head experiments; NOT fed to the extraction head
-    /// (see [`EdgeAccumulator::extraction_input`]).
+    /// Serialized into the accumulator vector so the model can condition on its budget.
     pub node_budget: u32,
 
     /// Epoch budget for this trajectory (max saturation epochs).
-    /// Carried for saturation-head experiments; NOT fed to the extraction head.
+    /// Serialized into the accumulator vector alongside node_budget.
     pub epoch_budget: u32,
 
     // -- Variance features (fed to extraction head) --
@@ -753,6 +743,7 @@ impl EdgeAccumulator {
             values: [0.0; 4 * K],
             edge_count: 0,
             node_count: 0,
+            backref_count: 0,
             node_budget: 0,
             epoch_budget: 0,
             variance_frac_const: 0.0,
@@ -770,43 +761,7 @@ impl EdgeAccumulator {
         self.values = [0.0; 4 * K];
         self.edge_count = 0;
         self.node_count = 0;
-    }
-
-    /// The extraction head's network input vector — the SINGLE feature
-    /// construction point shared by deployment
-    /// ([`ExprNnue::forward_expr_only`], called by
-    /// `IncrementalExtractor::extract_choices_only`) and training
-    /// (`pixelflow-pipeline`'s `forward_cached`).
-    ///
-    /// Layout:
-    /// - `[0 .. 4K)`: the dual accumulator, scaled by `1/sqrt(node_count)`
-    ///   (prevents variance explosion from summing N embedding vectors).
-    /// - `[4K .. 4K+4)`: the variance histogram — fractions of nodes that are
-    ///   const / frame-uniform / scanline-uniform / pixel-varying.
-    ///
-    /// Round 0 of the 2026-08 workflow found the trainer feeding
-    /// log2-compressed count/budget scalars into slots `4K..4K+4` while
-    /// deployment fed variance fractions into the same `w1` rows — two
-    /// meanings for one weight, a −0.29 log-ns deployed bias. Any future
-    /// feature must be added HERE, where both paths inherit it at once.
-    #[must_use]
-    pub fn extraction_input(&self) -> [f32; INPUT_DIM] {
-        let mut input = [0.0f32; INPUT_DIM];
-
-        let scale = if self.node_count > 0 {
-            1.0 / sqrtf(self.node_count as f32)
-        } else {
-            1.0
-        };
-        for (slot, &val) in input.iter_mut().zip(self.values.iter()) {
-            *slot = val * scale;
-        }
-
-        input[4 * K] = self.variance_frac_const;
-        input[4 * K + 1] = self.variance_frac_frame;
-        input[4 * K + 2] = self.variance_frac_scanline;
-        input[4 * K + 3] = self.variance_frac_pixel;
-        input
+        self.backref_count = 0;
     }
 
     /// Add a single edge contribution (both flat and depth-encoded).
@@ -915,61 +870,123 @@ impl EdgeAccumulator {
         self.edge_count = self.edge_count.saturating_sub(1);
     }
 
+    /// Build dual accumulator from an arena DAG, counting each shared node once.
+    #[must_use]
+    pub fn from_arena_dedup(arena: &ExprArena, root: ExprId, emb: &OpEmbeddings) -> Self {
+        use alloc::collections::BTreeSet;
+
+        let mut acc = Self::new();
+        let mut seen = BTreeSet::<ExprId>::new();
+        let mut stack: Vec<(ExprId, u32)> = alloc::vec![(root, 0)];
+
+        while let Some((id, depth)) = stack.pop() {
+            if !seen.insert(id) {
+                acc.backref_count += 1;
+                continue;
+            }
+
+            acc.node_count += 1;
+            match arena.node(id) {
+                ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Buffer(_) => {}
+                ExprNode::Param(i) => {
+                    panic!("ExprNode::Param({i}) reached NNUE cost model — substitute params first")
+                }
+                ExprNode::Unary(op, child) => {
+                    acc.add_edge(emb, *op, arena.kind(*child), depth * MAX_ARITY as u32);
+                    stack.push((*child, depth + 1));
+                }
+                ExprNode::Binary(op, left, right) => {
+                    acc.add_edge(emb, *op, arena.kind(*left), depth * MAX_ARITY as u32);
+                    acc.add_edge(emb, *op, arena.kind(*right), depth * MAX_ARITY as u32 + 1);
+                    stack.push((*right, depth + 1));
+                    stack.push((*left, depth + 1));
+                }
+                ExprNode::Ternary(op, a, b, c) => {
+                    acc.add_edge(emb, *op, arena.kind(*a), depth * MAX_ARITY as u32);
+                    acc.add_edge(emb, *op, arena.kind(*b), depth * MAX_ARITY as u32 + 1);
+                    acc.add_edge(emb, *op, arena.kind(*c), depth * MAX_ARITY as u32 + 2);
+                    stack.push((*c, depth + 1));
+                    stack.push((*b, depth + 1));
+                    stack.push((*a, depth + 1));
+                }
+                ExprNode::Nary(op, _, _) => {
+                    for (idx, child) in arena.children(id).enumerate() {
+                        let eff_depth = depth * MAX_ARITY as u32 + (idx.min(MAX_ARITY - 1)) as u32;
+                        acc.add_edge(emb, *op, arena.kind(child), eff_depth);
+                    }
+                    for child in arena.children(id) {
+                        stack.push((child, depth + 1));
+                    }
+                }
+            }
+        }
+
+        acc
+    }
+
     // ========================================================================
-    // DAG-Aware Accumulator Construction (the ONE walker)
+    // DAG-Aware Accumulator Construction
     // ========================================================================
 
-    /// Build an accumulator from any [`CostDag`] view.
+    /// Build accumulator from e-graph extraction choices with DAG-aware sharing.
     ///
-    /// This is the ONLY function that turns an expression DAG into extraction
-    /// head features, no matter whether the DAG lives in an [`ExprArena`]
-    /// (training labels, DEV evaluation, rule templates) or in an e-graph with
-    /// extraction choices (deployment). The 2026-08 round-0 audit found the
-    /// trainer and the extractor building accumulators with different edge
-    /// policies — no register-reload edges and zero variance fractions at
-    /// train time — which biased the deployed head by −0.29 log-ns and
-    /// compressed its prediction range to 45% of true. Routing both paths
-    /// through one walker makes that divergence structurally unrepresentable:
-    /// there is no second edge policy left to drift.
+    /// For each reachable e-class:
+    /// - If `ref_count[class] == 1`: add edges normally (unique use).
+    /// - If `ref_count[class] > 1`: add edges once (the computation), plus
+    ///   `(ref_count - 1)` Var->parent edges (register loads for reuse).
     ///
-    /// Edge policy (matches what the JIT emits):
-    /// - The first reference to a node is its computation edge
-    ///   `(parent_op, child_op)` at the referencing slot's effective depth.
-    /// - Every later reference is a register reload: a single
-    ///   `(parent_op, Var)` edge — shared subexpressions become let-bindings,
-    ///   so the DAG is not tree-bloated.
-    /// - Nodes with no recorded choice contribute nothing (speculative
-    ///   extraction candidates may reference not-yet-backfilled classes).
+    /// This matches what the JIT emits: shared subexpressions become let-bindings,
+    /// and subsequent uses are cheap register loads.
+    pub fn from_dag_choices(
+        egraph: &crate::egraph::EGraph,
+        root: crate::egraph::EClassId,
+        choices: &[Option<usize>],
+        ref_count: &[u32],
+        emb: &OpEmbeddings,
+    ) -> Self {
+        Self::from_dag_choices_with_variance(egraph, root, choices, ref_count, emb, None)
+    }
+
+    /// Build accumulator from DAG choices, optionally incorporating variance analysis.
     ///
-    /// # Panics
-    ///
-    /// Panics if a node id is out of bounds, or if the view classifies
-    /// variance for some expanded nodes but not all of them (a half-populated
-    /// histogram would silently feed the model garbage fractions).
-    fn from_cost_dag<D: CostDag>(dag: &D, emb: &OpEmbeddings) -> Self {
+    /// If `variance_analysis` is provided, the accumulator's variance histogram
+    /// features are populated (fraction of nodes at each variance level).
+    pub fn from_dag_choices_with_variance(
+        egraph: &crate::egraph::EGraph,
+        root: crate::egraph::EClassId,
+        choices: &[Option<usize>],
+        ref_count: &[u32],
+        emb: &OpEmbeddings,
+        variance_analysis: Option<&crate::egraph::deps::DepsAnalysis>,
+    ) -> Self {
+        use crate::egraph::{EClassId, ENode};
+
         let mut acc = Self::new();
-        let bound = dag.id_bound();
-        let mut expanded = alloc::vec![false; bound];
-        // Tracks which child nodes have already received their computation
-        // edge. The first reference is a computation edge; every later
-        // reference is a register reload (a single var_ref edge).
-        let mut edge_emitted = alloc::vec![false; bound];
+        let num_classes = egraph.num_classes();
+        let mut expanded = alloc::vec![false; num_classes];
+        // Tracks which child classes have already received their computation
+        // edge. The first reference to a class is a computation edge; every
+        // later reference is a register reload (a single var_ref edge), so a
+        // node shared `ref_count` times yields `ref_count - 1` var_ref edges.
+        let mut edge_emitted = alloc::vec![false; num_classes];
         // Variance counters
         let mut n_const: u32 = 0;
         let mut n_frame: u32 = 0;
         let mut n_scanline: u32 = 0;
         let mut n_pixel: u32 = 0;
-        let mut variance_classified: u32 = 0;
-        // Stack: (node id, depth). Reused children scratch buffer.
-        let mut stack: Vec<(u32, u32)> = alloc::vec![(dag.root(), 0)];
-        let mut children: Vec<u32> = Vec::new();
+        // Stack: (class_id, depth)
+        let mut stack: alloc::vec::Vec<(EClassId, u32)> = alloc::vec![(root, 0)];
 
-        while let Some((id, depth)) = stack.pop() {
-            let idx = id as usize;
-            assert!(
-                idx < bound,
-                "from_cost_dag: node id {id} out of bounds (bound={bound})"
-            );
+        while let Some((class, depth)) = stack.pop() {
+            let canonical = egraph.find(class);
+            let idx = canonical.0 as usize;
+
+            if idx >= num_classes {
+                panic!(
+                    "from_dag_choices: e-class {} out of bounds (num_classes={})",
+                    canonical.0, num_classes
+                );
+            }
 
             // Always increment node_count on first expansion.
             // Subsequent visits to a shared node only add var_ref edges.
@@ -978,15 +995,27 @@ impl EdgeAccumulator {
             }
             expanded[idx] = true;
 
-            children.clear();
-            let Some(parent_op) = dag.resolve(id, &mut children) else {
-                continue; // No recorded choice — contributes nothing.
+            let node_idx = match choices[idx] {
+                Some(ni) => ni,
+                None => continue, // Unreachable class — skip
             };
+
+            let nodes = egraph.nodes(canonical);
+            if node_idx >= nodes.len() {
+                panic!(
+                    "from_dag_choices: node_idx {} out of bounds for e-class {} (has {} nodes)",
+                    node_idx,
+                    canonical.0,
+                    nodes.len()
+                );
+            }
+
+            let node = &nodes[node_idx];
             acc.node_count += 1;
 
             // Classify this node's variance if analysis is available
-            if let Some(v) = dag.variance(id) {
-                variance_classified += 1;
+            if let Some(va) = variance_analysis {
+                let v = va.get(egraph, canonical);
                 if v.is_const() {
                     n_const += 1;
                 } else if v.is_x_invariant() && !v.depends_on_y() {
@@ -1001,43 +1030,77 @@ impl EdgeAccumulator {
                 }
             }
 
-            // One edge per child slot; leaves have no slots and add no edges.
-            for (child_idx, &child) in children.iter().enumerate() {
-                // `None`-tolerant unlike the parent resolve above: on
-                // SPECULATIVE, in-progress `choices` during
-                // `extract_choices_only`'s candidate search, a tentative swap
-                // is scored *before* it is accepted, and children introduced
-                // by that (possibly-rejected) swap are only backfilled if the
-                // swap wins. Skip the edge rather than fabricating one from a
-                // guessed node.
-                let Some(child_op) = dag.child_kind(child) else {
-                    continue;
-                };
-
-                let eff_depth = depth * MAX_ARITY as u32 + (child_idx.min(MAX_ARITY - 1)) as u32;
-
-                if edge_emitted[child as usize] {
-                    // Shared reuse: a register reload, not a recomputation.
-                    acc.add_var_ref_edges(emb, parent_op, eff_depth, 1);
-                } else {
-                    edge_emitted[child as usize] = true;
-                    acc.add_edge(emb, parent_op, child_op, eff_depth);
+            match node {
+                ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => {
+                    // Leaf: no edges to add. If shared, ref loads are zero-cost
+                    // (a variable, constant, or bound-buffer handle).
                 }
+                ENode::Op { op, children } => {
+                    let parent_op = op.kind();
 
-                // Push child for expansion (guarded by `expanded`).
-                stack.push((child, depth + 1));
+                    // One edge per child slot. The first reference to a child
+                    // class is its computation edge; subsequent references
+                    // (shared subexpressions) are register reloads, each a
+                    // single var_ref edge — so the DAG is not tree-bloated.
+                    for (child_idx, &child_class) in children.iter().enumerate() {
+                        let child_canonical = egraph.find(child_class);
+                        // NOTE on why this is `None`-tolerant unlike the parent
+                        // choice lookup above (which panics on out-of-bounds):
+                        // this function is also called on SPECULATIVE, in-progress
+                        // `choices` during `extract_choices_only`'s candidate
+                        // search (extract.rs ~121-137) — a tentative swap is
+                        // applied to `choices[canonical]` and evaluated for cost
+                        // *before* it is accepted, and children introduced by that
+                        // tentative (possibly-rejected) swap are only transitively
+                        // backfilled via `backfill_reachable_defaults` if/when the
+                        // swap actually wins (extract.rs ~149-169). So an
+                        // unrecorded child choice here is a legitimate, expected
+                        // case, not an invariant violation like the ones above.
+                        // Treat it the same way the parent lookup treats an
+                        // unreachable class (line ~1057: `None => continue`): skip
+                        // contributing an edge rather than fabricating one from a
+                        // guessed node 0 / `OpKind::Var`, which would silently
+                        // feed the cost model a made-up feature.
+                        let child_op = match choices[child_canonical.0 as usize] {
+                            None => None,
+                            Some(child_node_idx) => {
+                                let child_nodes = egraph.nodes(child_canonical);
+                                child_nodes.get(child_node_idx).map(|n| match n {
+                                    ENode::Var(_) => OpKind::Var,
+                                    ENode::Const(_) => OpKind::Const,
+                                    ENode::Buffer(_) => OpKind::Buffer,
+                                    ENode::Op { op: cop, .. } => cop.kind(),
+                                })
+                            }
+                        };
+                        let Some(child_op) = child_op else {
+                            // No recorded (or in-bounds) choice for this child yet
+                            // — skip the edge for this speculative candidate; it
+                            // contributes no signal to the cost estimate rather
+                            // than a fabricated one.
+                            continue;
+                        };
+
+                        let eff_depth =
+                            depth * MAX_ARITY as u32 + (child_idx.min(MAX_ARITY - 1)) as u32;
+
+                        if edge_emitted[child_canonical.0 as usize] {
+                            // Shared reuse: a register reload, not a recomputation.
+                            acc.add_var_ref_edges(emb, parent_op, eff_depth, 1);
+                        } else {
+                            edge_emitted[child_canonical.0 as usize] = true;
+                            acc.add_edge(emb, parent_op, child_op, eff_depth);
+                        }
+
+                        // Push child for expansion (guarded by `expanded`).
+                        stack.push((child_class, depth + 1));
+                    }
+                }
             }
         }
 
-        // Populate variance histogram fractions. Either every expanded node
-        // was classified or none were — a mixed view is a bug, not a mode.
-        assert!(
-            variance_classified == 0 || variance_classified == acc.node_count,
-            "from_cost_dag: variance classified for {variance_classified} of {} nodes — \
-             a partially-populated histogram would silently corrupt the features",
-            acc.node_count
-        );
-        if variance_classified > 0 && acc.node_count > 0 {
+        // Populate variance histogram fractions
+        if variance_analysis.is_some() && acc.node_count > 0 {
             let total = acc.node_count as f32;
             acc.variance_frac_const = n_const as f32 / total;
             acc.variance_frac_frame = n_frame as f32 / total;
@@ -1046,71 +1109,6 @@ impl EdgeAccumulator {
         }
 
         acc
-    }
-
-    /// Build the accumulator from an arena DAG, in the DEPLOYMENT
-    /// representation (register-reload edges for shared nodes, variance
-    /// histogram populated).
-    ///
-    /// This is the training-side entry point: labels are minted by JIT-timing
-    /// the arena, and the JIT let-binds shared `ExprId`s, so featurizing the
-    /// same sharing the same way keeps features faithful to the measured
-    /// object — and identical to what [`Self::from_dag_choices_with_variance`]
-    /// produces for the equivalent e-graph DAG (both are thin adapters over
-    /// [`Self::from_cost_dag`]; see `train_and_deploy_feature_paths_agree` in
-    /// `egraph::extract`).
-    ///
-    /// # Panics
-    ///
-    /// Panics if the subtree contains `ExprNode::Param` — substitute
-    /// parameters before costing.
-    #[must_use]
-    pub fn from_arena_dag(arena: &ExprArena, root: ExprId, emb: &OpEmbeddings) -> Self {
-        let variance = pixelflow_ir::variance::compute_arena_variance(arena);
-        Self::from_cost_dag(
-            &ArenaCostDag {
-                arena,
-                root,
-                variance,
-            },
-            emb,
-        )
-    }
-
-    /// Build accumulator from e-graph extraction choices with DAG-aware
-    /// sharing (no variance histogram — prefer
-    /// [`Self::from_dag_choices_with_variance`]).
-    pub fn from_dag_choices(
-        egraph: &crate::egraph::EGraph,
-        root: crate::egraph::EClassId,
-        choices: &[Option<usize>],
-        emb: &OpEmbeddings,
-    ) -> Self {
-        Self::from_dag_choices_with_variance(egraph, root, choices, emb, None)
-    }
-
-    /// Build accumulator from DAG choices, optionally incorporating variance
-    /// analysis — the DEPLOYMENT-side adapter over [`Self::from_cost_dag`].
-    ///
-    /// If `variance_analysis` is provided, the accumulator's variance
-    /// histogram features are populated (fraction of nodes at each variance
-    /// level).
-    pub fn from_dag_choices_with_variance(
-        egraph: &crate::egraph::EGraph,
-        root: crate::egraph::EClassId,
-        choices: &[Option<usize>],
-        emb: &OpEmbeddings,
-        variance_analysis: Option<&crate::egraph::deps::DepsAnalysis>,
-    ) -> Self {
-        Self::from_cost_dag(
-            &ChoicesCostDag {
-                egraph,
-                root,
-                choices,
-                variance_analysis,
-            },
-            emb,
-        )
     }
 
     /// Add N var-reference edges (representing register loads of a shared value).
@@ -1140,155 +1138,6 @@ impl EdgeAccumulator {
         for _ in 0..count {
             self.remove_edge(emb, parent_op, OpKind::Var, depth);
         }
-    }
-}
-
-// ============================================================================
-// CostDag: the single view both feature paths walk
-// ============================================================================
-
-/// A DAG of chosen expression nodes, as the extraction head featurizes it.
-///
-/// Implemented by exactly two adapters — [`ArenaCostDag`] (training / rule
-/// templates) and [`ChoicesCostDag`] (deployment) — and consumed by exactly
-/// one walker, [`EdgeAccumulator::from_cost_dag`]. Ids must be canonical:
-/// structurally shared subexpressions present the same id on every reference,
-/// because sharing is what the reload-edge policy keys on.
-trait CostDag {
-    /// Exclusive upper bound on node ids.
-    fn id_bound(&self) -> usize;
-
-    /// Canonical id of the root node.
-    fn root(&self) -> u32;
-
-    /// Resolve the chosen representation of `id`: append its canonical child
-    /// ids to `out` (nothing for leaves) and return its op kind. `None` when
-    /// the node has no recorded choice (speculative extraction candidates).
-    ///
-    /// # Panics
-    ///
-    /// Panics when a recorded choice is malformed (e.g. out-of-bounds node
-    /// index) — that is a broken invariant, not a tolerable state.
-    fn resolve(&self, id: u32, out: &mut Vec<u32>) -> Option<OpKind>;
-
-    /// Tolerant kind lookup for child edges: `None` when the child has no
-    /// recorded (in-bounds) choice, in which case the edge is skipped rather
-    /// than fabricated.
-    fn child_kind(&self, id: u32) -> Option<OpKind>;
-
-    /// Variance of the node, when variance analysis is available. Must be
-    /// `Some` for every node or for none (asserted by the walker).
-    fn variance(&self, id: u32) -> Option<pixelflow_ir::Variance>;
-}
-
-/// Training-side [`CostDag`]: an [`ExprArena`] subtree.
-///
-/// Sharing is by `ExprId` — exactly the sharing the JIT's let-binding emitter
-/// sees when this same arena is benchmarked for its label, so the reload-edge
-/// policy describes the measured object.
-struct ArenaCostDag<'a> {
-    arena: &'a ExprArena,
-    root: ExprId,
-    /// Per-`ExprId` variance from `pixelflow_ir::variance::compute_arena_variance`.
-    variance: Vec<pixelflow_ir::Variance>,
-}
-
-impl CostDag for ArenaCostDag<'_> {
-    fn id_bound(&self) -> usize {
-        self.arena.len()
-    }
-
-    fn root(&self) -> u32 {
-        self.root.0
-    }
-
-    fn resolve(&self, id: u32, out: &mut Vec<u32>) -> Option<OpKind> {
-        let eid = ExprId(id);
-        if let ExprNode::Param(i) = self.arena.node(eid) {
-            panic!("ExprNode::Param({i}) reached NNUE cost model — substitute params first");
-        }
-        for child in self.arena.children(eid) {
-            out.push(child.0);
-        }
-        Some(self.arena.kind(eid))
-    }
-
-    fn child_kind(&self, id: u32) -> Option<OpKind> {
-        // `arena.kind` maps Param to Const; the child itself is expanded (and
-        // `resolve` panics) right after, so a Param still fails loudly.
-        Some(self.arena.kind(ExprId(id)))
-    }
-
-    fn variance(&self, id: u32) -> Option<pixelflow_ir::Variance> {
-        Some(self.variance[id as usize])
-    }
-}
-
-/// Deployment-side [`CostDag`]: an e-graph plus per-e-class extraction
-/// choices, as walked by `IncrementalExtractor::extract_choices_only`.
-struct ChoicesCostDag<'a> {
-    egraph: &'a crate::egraph::EGraph,
-    root: crate::egraph::EClassId,
-    choices: &'a [Option<usize>],
-    variance_analysis: Option<&'a crate::egraph::deps::DepsAnalysis>,
-}
-
-impl ChoicesCostDag<'_> {
-    fn kind_of(node: &crate::egraph::ENode) -> OpKind {
-        use crate::egraph::ENode;
-        match node {
-            ENode::Var(_) => OpKind::Var,
-            ENode::Const(_) => OpKind::Const,
-            ENode::Buffer(_) => OpKind::Buffer,
-            ENode::Op { op, .. } => op.kind(),
-        }
-    }
-}
-
-impl CostDag for ChoicesCostDag<'_> {
-    fn id_bound(&self) -> usize {
-        self.egraph.num_classes()
-    }
-
-    fn root(&self) -> u32 {
-        self.egraph.find(self.root).0
-    }
-
-    fn resolve(&self, id: u32, out: &mut Vec<u32>) -> Option<OpKind> {
-        use crate::egraph::{EClassId, ENode};
-        let canonical = self.egraph.find(EClassId(id));
-        let node_idx = self.choices[canonical.0 as usize]?;
-        let nodes = self.egraph.nodes(canonical);
-        let node = nodes.get(node_idx).unwrap_or_else(|| {
-            panic!(
-                "from_dag_choices: node_idx {} out of bounds for e-class {} (has {} nodes)",
-                node_idx,
-                canonical.0,
-                nodes.len()
-            )
-        });
-        if let ENode::Op { children, .. } = node {
-            for &child in children {
-                out.push(self.egraph.find(child).0);
-            }
-        }
-        Some(Self::kind_of(node))
-    }
-
-    fn child_kind(&self, id: u32) -> Option<OpKind> {
-        use crate::egraph::EClassId;
-        let canonical = self.egraph.find(EClassId(id));
-        let node_idx = self.choices[canonical.0 as usize]?;
-        self.egraph
-            .nodes(canonical)
-            .get(node_idx)
-            .map(Self::kind_of)
-    }
-
-    fn variance(&self, id: u32) -> Option<pixelflow_ir::Variance> {
-        use crate::egraph::EClassId;
-        self.variance_analysis
-            .map(|va| va.get(self.egraph, EClassId(id)))
     }
 }
 
@@ -1662,7 +1511,7 @@ pub struct ExprNnue {
     /// Learned embeddings for each operation (50 × 32 = 1,600 params)
     pub embeddings: OpEmbeddings,
 
-    /// Hidden layer weights: [INPUT_DIM][HIDDEN_DIM] (132 × 64 = 8,448 params)
+    /// Hidden layer weights: [INPUT_DIM][HIDDEN_DIM] (85 × 64 = 5,440 params)
     pub w1: [[f32; HIDDEN_DIM]; INPUT_DIM],
 
     /// Hidden layer biases: [HIDDEN_DIM] (64 params)
@@ -1685,7 +1534,7 @@ pub struct ExprNnue {
     /// Expr projection bias: [EMBED_DIM]
     pub expr_proj_b: [f32; EMBED_DIM],
 
-    /// Value MLP layer 1 weights: expr_embed (32) → hidden (16)
+    /// Value MLP layer 1 weights: expr_embed (24) → hidden (16)
     pub value_mlp_w1: [[f32; MLP_HIDDEN]; EMBED_DIM],
     /// Value MLP layer 1 bias
     pub value_mlp_b1: [f32; MLP_HIDDEN],
@@ -1694,13 +1543,12 @@ pub struct ExprNnue {
     /// Value MLP layer 2 bias
     pub value_mlp_b2: f32,
 
-    /// Mask MLP layer 1 weights: expr_embed (32) → hidden (16).
-    /// value_pred was removed from the input — it is a deterministic function
-    /// of expr_embed and adds zero information (see `MASK_INPUT_DIM`).
+    /// Mask MLP layer 1 weights: [expr_embed (24), value_pred (1)] → hidden (16)
+    /// The mask sees value prediction as input: "Given this costs X, should I try rule R?"
     pub mask_mlp_w1: [[f32; MLP_HIDDEN]; MASK_INPUT_DIM],
     /// Mask MLP layer 1 bias
     pub mask_mlp_b1: [f32; MLP_HIDDEN],
-    /// Mask MLP layer 2 weights: hidden (16) → mask_features (32)
+    /// Mask MLP layer 2 weights: hidden (16) → mask_features (24)
     pub mask_mlp_w2: [[f32; EMBED_DIM]; MLP_HIDDEN],
     /// Mask MLP layer 2 bias
     pub mask_mlp_b2: [f32; EMBED_DIM],
@@ -1711,7 +1559,7 @@ pub struct ExprNnue {
     pub rule_mlp_w1: [[f32; MLP_HIDDEN]; RULE_FEATURE_DIM],
     /// Rule MLP layer 1 bias
     pub rule_mlp_b1: [f32; MLP_HIDDEN],
-    /// Rule MLP layer 2 weights: hidden (16) → rule_embed (32)
+    /// Rule MLP layer 2 weights: hidden (16) → rule_embed (24)
     pub rule_mlp_w2: [[f32; EMBED_DIM]; MLP_HIDDEN],
     /// Rule MLP layer 2 bias
     pub rule_mlp_b2: [f32; EMBED_DIM],
@@ -1720,11 +1568,11 @@ pub struct ExprNnue {
     // These fields support encoding rules from their LHS/RHS expression
     // templates using the SAME expr_embed as extraction/saturation heads.
     //
-    // 4-way concat: [z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS] (128) → rule_embed (32)
-    /// Rule projection weights: [RULE_CONCAT_DIM x EMBED_DIM] = [128 x 32] = 4,096 params.
+    // 4-way concat: [z_LHS | z_RHS | z_LHS-z_RHS | z_LHS*z_RHS] (96) → rule_embed (24)
+    /// Rule projection weights: [RULE_CONCAT_DIM x EMBED_DIM] = [96 x 24] = 2,304 params.
     /// Projects 4-way concatenation to rule embedding.
     pub rule_proj_w: [[f32; EMBED_DIM]; RULE_CONCAT_DIM],
-    /// Rule projection bias: [EMBED_DIM] = 32 params
+    /// Rule projection bias: [EMBED_DIM] = 24 params
     pub rule_proj_b: [f32; EMBED_DIM],
 
     /// Bilinear interaction matrix: mask_features @ interaction @ rule_embed
@@ -2176,41 +2024,115 @@ impl ExprNnue {
         out
     }
 
+    /// Shared forward pass through dual accumulator + hidden layer.
+    ///
+    /// Input: 128 dual accumulator dims (64 flat + 64 depth-encoded)
+    ///        + 4 scalar features (edge_count, node_count, node_budget, epoch_budget).
+    /// Returns the hidden layer activations after tower ReLU + shared trunk.
+    #[inline]
+    pub fn forward_shared(&self, acc: &EdgeAccumulator) -> [f32; HIDDEN_DIM] {
+        let mut hidden = self.b1;
+
+        // Scale factor to prevent AST explosion (up to massive kernels).
+        // 1/sqrt(N) prevents variance explosion from summing N embedding vectors.
+        let scale = if acc.node_count > 0 {
+            1.0 / libm::sqrtf(acc.node_count as f32)
+        } else {
+            1.0
+        };
+
+        // Process dual accumulator (128 dims: 64 flat + 64 depth-encoded)
+        for (i, &val) in acc.values.iter().enumerate() {
+            let scaled_val = val * scale;
+            for (j, h) in hidden.iter_mut().enumerate() {
+                *h += scaled_val * self.w1[i][j];
+            }
+        }
+
+        // Process scalar features (4 dims: edge_count, node_count, node_budget, epoch_budget).
+        // Use log2 to compress the range for large ASTs.
+        let base = 4 * K;
+        let ec = libm::log2f(1.0 + acc.edge_count as f32);
+        let nc = libm::log2f(1.0 + acc.node_count as f32);
+        let nb = libm::log2f(1.0 + acc.node_budget as f32);
+        let eb = libm::log2f(1.0 + acc.epoch_budget as f32);
+        for (j, h) in hidden.iter_mut().enumerate() {
+            *h += ec * self.w1[base][j];
+            *h += nc * self.w1[base + 1][j];
+            *h += nb * self.w1[base + 2][j];
+            *h += eb * self.w1[base + 3][j];
+        }
+
+        // ReLU activation
+        for h in &mut hidden {
+            *h = h.max(0.0);
+        }
+
+        // Shared trunk
+        let hidden = self.apply_trunk(&hidden);
+
+        hidden
+    }
+
     /// Extraction head with pre-computed accumulator.
     ///
-    /// More efficient when you already have the accumulator. This is the
-    /// DEPLOYED entry point: `IncrementalExtractor` scores every candidate
-    /// through it, and the trainer's forward pass
-    /// (`pixelflow-pipeline`'s `forward_cached`) consumes the identical
-    /// [`EdgeAccumulator::extraction_input`] vector, so the function being
-    /// trained is the function being called.
+    /// More efficient when you already have the accumulator.
     #[must_use]
     pub fn predict_log_cost_with_features(&self, acc: &EdgeAccumulator) -> f32 {
+        // Extraction head uses expression structure ONLY — no search resource
+        // scalars (node_budget, epoch_budget, edge_count, node_count).
+        // Those features exist for the saturation head which needs to reason
+        // about search resources. The extraction head predicts execution cost
+        // which depends only on what ops are in the expression, not how many
+        // nodes the e-graph had or what budget was used.
         let hidden = self.forward_expr_only(acc);
         let expr_embed = self.compute_expr_embed(&hidden);
         self.value_mlp_forward(&expr_embed)
     }
 
-    /// Forward pass through the shared backbone on
-    /// [`EdgeAccumulator::extraction_input`] features.
+    /// Forward pass through shared backbone using ONLY expression structure.
     ///
-    /// The extraction head uses expression structure plus the variance
-    /// histogram ONLY — no search-resource scalars (node_budget,
-    /// epoch_budget, edge_count, node_count). Those exist for the saturation
-    /// head's graph tower ([`Self::forward_graph`]), which needs to reason
-    /// about search resources; execution cost depends only on what the
-    /// expression computes.
+    /// Skips the 4 scalar features (edge_count, node_count, node_budget,
+    /// epoch_budget) that are search-state metadata, not expression properties.
+    /// Use this for the extraction head; use `forward_shared` for the saturation head
+    /// which needs resource-awareness.
     pub fn forward_expr_only(&self, acc: &EdgeAccumulator) -> [f32; HIDDEN_DIM] {
-        let input = acc.extraction_input();
         let mut hidden = self.b1;
 
-        for (i, &val) in input.iter().enumerate() {
+        let scale = if acc.node_count > 0 {
+            1.0 / libm::sqrtf(acc.node_count as f32)
+        } else {
+            1.0
+        };
+
+        // Dual accumulator values (expression structure): dims 0..128
+        for (i, &val) in acc.values.iter().enumerate() {
+            let scaled_val = val * scale;
             for (j, h) in hidden.iter_mut().enumerate() {
-                *h += val * self.w1[i][j];
+                *h += scaled_val * self.w1[i][j];
             }
         }
 
-        // ReLU activation
+        // Variance histogram features: dims 128..132
+        // Uses the w1 slots that forward_shared uses for scalars.
+        // After retraining, the extraction head learns that low-variance
+        // nodes are cheap (hoisted out of inner loops).
+        let variance_features = [
+            acc.variance_frac_const,
+            acc.variance_frac_frame,
+            acc.variance_frac_scanline,
+            acc.variance_frac_pixel,
+        ];
+        for (k, &val) in variance_features.iter().enumerate() {
+            let i = 4 * K + k; // w1 index 128..132
+            if i < INPUT_DIM {
+                for (j, h) in hidden.iter_mut().enumerate() {
+                    *h += val * self.w1[i][j];
+                }
+            }
+        }
+
+        // ReLU (same as forward_shared)
         for h in &mut hidden {
             *h = h.max(0.0);
         }
@@ -2492,15 +2414,12 @@ impl ExprNnue {
         lhs: ExprId,
         rhs: ExprId,
     ) -> [f32; EMBED_DIM] {
-        // Same feature path as everything else that touches `w1`: the slot
-        // semantics of `extraction_input` (variance fractions in 4K..4K+4)
-        // must have exactly one meaning across the whole net.
-        let lhs_acc = EdgeAccumulator::from_arena_dag(arena, lhs, &self.embeddings);
-        let lhs_hidden = self.forward_expr_only(&lhs_acc);
+        let lhs_acc = EdgeAccumulator::from_arena_dedup(arena, lhs, &self.embeddings);
+        let lhs_hidden = self.forward_shared(&lhs_acc);
         let z_lhs = self.compute_expr_embed(&lhs_hidden);
 
-        let rhs_acc = EdgeAccumulator::from_arena_dag(arena, rhs, &self.embeddings);
-        let rhs_hidden = self.forward_expr_only(&rhs_acc);
+        let rhs_acc = EdgeAccumulator::from_arena_dedup(arena, rhs, &self.embeddings);
+        let rhs_hidden = self.forward_shared(&rhs_acc);
         let z_rhs = self.compute_expr_embed(&rhs_hidden);
 
         let mut concat = [0.0f32; RULE_CONCAT_DIM];
@@ -2570,34 +2489,31 @@ impl ExprNnue {
     #[must_use]
     pub const fn param_count() -> usize {
         OpEmbeddings::param_count()           // embeddings: 50 * 32 = 1,600
-            + INPUT_DIM * HIDDEN_DIM          // w1: 132 * 64 = 8,448
+            + INPUT_DIM * HIDDEN_DIM          // w1: 130 * 64 = 8,320
             + HIDDEN_DIM                      // b1: 64
-            // shared trunk
-            + HIDDEN_DIM * HIDDEN_DIM         // trunk_w: 64 * 64 = 4,096
-            + HIDDEN_DIM                      // trunk_b: 64
             // expr_proj
-            + HIDDEN_DIM * EMBED_DIM          // expr_proj_w: 64 * 32 = 2,048
-            + EMBED_DIM                       // expr_proj_b: 32
+            + HIDDEN_DIM * EMBED_DIM          // expr_proj_w: 64 * 24 = 1,536
+            + EMBED_DIM                       // expr_proj_b: 24
             // value MLP
-            + EMBED_DIM * MLP_HIDDEN          // value_mlp_w1: 32 * 16 = 512
+            + EMBED_DIM * MLP_HIDDEN          // value_mlp_w1: 24 * 16 = 384
             + MLP_HIDDEN                      // value_mlp_b1: 16
             + MLP_HIDDEN                      // value_mlp_w2: 16
             + 1                               // value_mlp_b2: 1
             // mask MLP
-            + MASK_INPUT_DIM * MLP_HIDDEN     // mask_mlp_w1: 32 * 16 = 512
+            + MASK_INPUT_DIM * MLP_HIDDEN     // mask_mlp_w1: 24 * 16 = 384
             + MLP_HIDDEN                      // mask_mlp_b1: 16
-            + MLP_HIDDEN * EMBED_DIM          // mask_mlp_w2: 16 * 32 = 512
-            + EMBED_DIM                       // mask_mlp_b2: 32
+            + MLP_HIDDEN * EMBED_DIM          // mask_mlp_w2: 16 * 24 = 384
+            + EMBED_DIM                       // mask_mlp_b2: 24
             // rule MLP
             + RULE_FEATURE_DIM * MLP_HIDDEN   // rule_mlp_w1: 8 * 16 = 128
             + MLP_HIDDEN                      // rule_mlp_b1: 16
-            + MLP_HIDDEN * EMBED_DIM          // rule_mlp_w2: 16 * 32 = 512
-            + EMBED_DIM                       // rule_mlp_b2: 32
+            + MLP_HIDDEN * EMBED_DIM          // rule_mlp_w2: 16 * 24 = 384
+            + EMBED_DIM                       // rule_mlp_b2: 24
             // rule projection
-            + RULE_CONCAT_DIM * EMBED_DIM     // rule_proj_w: 128 * 32 = 4,096
-            + EMBED_DIM                       // rule_proj_b: 32
+            + RULE_CONCAT_DIM * EMBED_DIM     // rule_proj_w: 96 * 24 = 2,304
+            + EMBED_DIM                       // rule_proj_b: 24
             // bilinear
-            + EMBED_DIM * EMBED_DIM           // interaction: 32 * 32 = 1,024
+            + EMBED_DIM * EMBED_DIM           // interaction: 24 * 24 = 576
             + EMBED_DIM                        // mask_bias_proj: 32
             // graph state backbone
             + GRAPH_INPUT_DIM * HIDDEN_DIM    // graph_w1: 132 * 64 = 8,448
@@ -2612,14 +2528,105 @@ impl ExprNnue {
         Self::param_count() * 4
     }
 
-    // NOTE: the MCTS-support policy samplers (`policy_from_accumulator`,
-    // `policy_from_features`, `bernoulli_policy_from_accumulator`,
-    // `sample_rules_bernoulli`) were deleted 2026-08-10: no callers anywhere
-    // in the workspace, and they were the last consumers of the old
-    // `forward_shared` path that fed log2 count/budget scalars into the same
-    // `w1` slots the extraction head uses for the variance histogram — the
-    // exact train/deploy skew this round removed. The saturation head scores
-    // rules through the graph tower (`forward_graph`), not the edge tower.
+    // ========================================================================
+    // MCTS Support: Accumulator-based Evaluation
+    //
+    // These methods enable cheap MCTS simulation without e-graph cloning.
+    // The accumulator can be incrementally updated as rules are applied.
+    // ========================================================================
+
+    /// Get policy logits from accumulator (for MCTS prior).
+    ///
+    /// Returns scores for all rules. Use softmax to get probabilities.
+    /// This is the MCTS policy prior P(s, a) for UCB.
+    #[must_use]
+    pub fn policy_from_accumulator(
+        &self,
+        acc: &EdgeAccumulator,
+        rule_embeds: &[[f32; EMBED_DIM]],
+    ) -> Vec<f32> {
+        let hidden = self.forward_shared(acc);
+        let expr_embed = self.compute_expr_embed(&hidden);
+
+        let mask_features = self.compute_mask_features(&expr_embed);
+
+        rule_embeds
+            .iter()
+            .map(|rule_embed| self.bilinear_score(&mask_features, rule_embed))
+            .collect()
+    }
+
+    /// Get policy logits with pre-computed accumulator.
+    #[must_use]
+    pub fn policy_from_features(
+        &self,
+        acc: &EdgeAccumulator,
+        rule_embeds: &[[f32; EMBED_DIM]],
+    ) -> Vec<f32> {
+        let hidden = self.forward_shared(acc);
+        let expr_embed = self.compute_expr_embed(&hidden);
+
+        let mask_features = self.compute_mask_features(&expr_embed);
+
+        rule_embeds
+            .iter()
+            .map(|rule_embed| self.bilinear_score(&mask_features, rule_embed))
+            .collect()
+    }
+
+    /// Get Bernoulli policy probabilities: P(apply) = sigmoid(logit / temp).
+    ///
+    /// Each rule is an independent binary decision (Bernoulli trial).
+    /// Use these to stochastically decide: `if random() < prob[rule] { apply(rule) }`.
+    ///
+    /// Note: softmax on binary [logit, 0] = sigmoid(logit), so this IS the
+    /// correct softmax formulation for independent apply/don't-apply decisions.
+    ///
+    /// Temperature controls exploration:
+    /// - temp → 0: deterministic (prob → 0 or 1)
+    /// - temp = 1: standard sigmoid
+    /// - temp > 1: more exploration (probs pushed toward 0.5)
+    #[must_use]
+    pub fn bernoulli_policy_from_accumulator(
+        &self,
+        acc: &EdgeAccumulator,
+        rule_embeds: &[[f32; EMBED_DIM]],
+        temperature: f32,
+    ) -> Vec<f32> {
+        let logits = self.policy_from_accumulator(acc, rule_embeds);
+        let temp = temperature.max(0.01);
+        logits.iter().map(|&x| sigmoid(x / temp)).collect()
+    }
+
+    /// Stochastically sample which rules to apply using Bernoulli policy.
+    ///
+    /// For each rule independently: apply if `random() < sigmoid(logit / temp)`.
+    /// Returns indices of rules to apply.
+    ///
+    /// This is the correct exploration strategy for independent rule decisions.
+    /// Each rule is sampled according to its own probability - rules don't compete.
+    #[must_use]
+    pub fn sample_rules_bernoulli(
+        &self,
+        acc: &EdgeAccumulator,
+        rule_embeds: &[[f32; EMBED_DIM]],
+        temperature: f32,
+        rng_state: &mut u64,
+    ) -> Vec<usize> {
+        let probs = self.bernoulli_policy_from_accumulator(acc, rule_embeds, temperature);
+
+        probs
+            .iter()
+            .enumerate()
+            .filter(|&(_, prob)| {
+                // Simple LCG for random number
+                *rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let random = (*rng_state >> 33) as f32 / (1u64 << 31) as f32;
+                random < *prob
+            })
+            .map(|(idx, _)| idx)
+            .collect()
+    }
 
     /// Save weights to a binary file.
     ///

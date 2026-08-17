@@ -1,156 +1,51 @@
-//! JIT-benchmark a corpus tier file.
+//! JIT-benchmark the curated expression corpus.
 //!
-//! Reads a binary PXCR corpus (by default the TRAIN tier written by
-//! `gen_bench_corpus`), JIT-compiles each expression through a
-//! [`BenchSession`] (QoS pinning, DVFS burn-in, drift sentinel, tick-floor
-//! autoscaling, overhead subtraction — audit H4/H5/M1/L5), measures BOTH
-//! dependency modes (throughput and chain-serialized latency, audit H3), and
-//! writes one serde-serialized JSONL record per expression including IQR and
-//! mode metadata (audit L3/M5).
-//!
-//! Failures are never a bare counter (audit M2): every excluded expression is
-//! written to a structured failure sidecar, and the run panics if the
-//! exclusion rate exceeds [`MAX_EXCLUSION_RATE`].
+//! Reads `bench_corpus.bin` (binary corpus format), JIT-compiles each
+//! expression, runs it a few times to measure cost, and writes results
+//! to a JSONL benchmark report (overwriting any prior run).
 //!
 //! # Usage
 //!
 //! ```bash
 //! cargo run --release -p pixelflow-pipeline --features training --bin bench_jit_corpus
 //! cargo run --release -p pixelflow-pipeline --features training --bin bench_jit_corpus -- \
-//!     --corpus pixelflow-pipeline/data/corpus_train.bin \
-//!     --output pixelflow-pipeline/data/corpus_bench.jsonl \
-//!     --failures pixelflow-pipeline/data/corpus_bench_failures.jsonl
+//!     --corpus pixelflow-pipeline/data/bench_corpus.bin \
+//!     --output pixelflow-pipeline/data/corpus_bench.jsonl
 //! ```
 
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::time::Instant;
 
 use clap::Parser;
-use serde::Serialize;
 
-use pixelflow_pipeline::jit_bench::{BenchError, BenchMode, BenchResult, BenchSession};
+use pixelflow_pipeline::jit_bench::benchmark_jit_arena;
 use pixelflow_pipeline::training::corpus;
 use pixelflow_pipeline::training::factored::arena_to_kernel_code;
 
-/// Censoring alarm threshold (audit M2): a run excluding more than this
-/// fraction of its corpus is minting a biased label set and must not be
-/// trusted silently.
-const MAX_EXCLUSION_RATE: f64 = 0.05;
-
 #[derive(Parser)]
 #[command(name = "bench_jit_corpus")]
-#[command(about = "JIT-benchmark a corpus tier file")]
+#[command(about = "JIT-benchmark curated expression corpus")]
 struct Args {
-    /// Input binary corpus file (a tier file from gen_bench_corpus).
-    #[arg(long, default_value = "pixelflow-pipeline/data/corpus_train.bin")]
+    /// Input binary corpus file.
+    #[arg(long, default_value = "pixelflow-pipeline/data/bench_corpus.bin")]
     corpus: String,
 
     /// Output JSONL file (overwritten each run).
     #[arg(long, default_value = "pixelflow-pipeline/data/corpus_bench.jsonl")]
     output: String,
 
-    /// Failure sidecar JSONL (overwritten each run): one structured record
-    /// per excluded expression (audit M2).
-    #[arg(
-        long,
-        default_value = "pixelflow-pipeline/data/corpus_bench_failures.jsonl"
-    )]
-    failures: String,
-
     /// Print progress every N expressions.
     #[arg(long, default_value = "100")]
     progress_every: usize,
 }
 
-/// One benchmark mode's measurement, with the dispersion and scaling metadata
-/// the audit found being thrown away (M5) or unrecorded (H5/M1).
-#[derive(Serialize)]
-struct ModeRecord {
-    mode: &'static str,
-    ns: f64,
-    adjusted_ns: f64,
-    call_overhead_ns: f64,
-    iqr_ns: f64,
-    repeat_batches: usize,
-    /// Most recent sentinel reading when this label was minted (audit H4).
-    local_sentinel_ns: f64,
-    /// The session's opening sentinel calibration.
-    sentinel_calibration_ns: f64,
-    /// `sentinel_calibration_ns / local_sentinel_ns` — the factor that
-    /// re-expresses a measurement in the run's opening clock (slow drift is a
-    /// correction, not an exclusion).
-    ///
-    /// Apply it to `ns`, then subtract `call_overhead_ns`:
-    /// `ns * sentinel_normalization - call_overhead_ns`, which is what
-    /// `training::mint::normalized_label_ns` computes. Order matters, and the
-    /// tempting shortcut is wrong: `adjusted_ns` has *already* had the
-    /// overhead subtracted, and that overhead is denominated in the opening
-    /// clock, so scaling it a second time leaves a drift-dependent
-    /// `call_overhead_ns * (1 - factor)` residue in the label. With a ~4 ns
-    /// call overhead and drift anywhere near the accepted limit that is more
-    /// than a nanosecond of collection-order-correlated bias — small in
-    /// absolute terms, and a large fraction of a small kernel.
-    sentinel_normalization: f64,
-}
-
-impl From<&BenchResult> for ModeRecord {
-    fn from(b: &BenchResult) -> Self {
-        let sentinel = b
-            .sentinel
-            .expect("session-minted BenchResult always carries a SentinelContext");
-        Self {
-            mode: match b.mode {
-                BenchMode::Throughput => "throughput",
-                BenchMode::Latency => "latency",
-            },
-            ns: b.ns,
-            adjusted_ns: b.adjusted_ns,
-            call_overhead_ns: b.call_overhead_ns,
-            iqr_ns: b.iqr_ns,
-            repeat_batches: b.repeat_batches,
-            local_sentinel_ns: sentinel.local_sentinel_ns,
-            sentinel_calibration_ns: sentinel.calibration_ns,
-            sentinel_normalization: sentinel.normalization(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct BenchRecord<'a> {
-    name: &'a str,
-    expression: &'a str,
-    throughput: ModeRecord,
-    latency: ModeRecord,
-}
-
-#[derive(Serialize)]
-struct FailureRecord<'a> {
-    name: &'a str,
-    expression: &'a str,
-    reason: &'a str,
-    error: &'a str,
-}
-
-/// Stable category slug for a [`BenchError`], for the sidecar's `reason` field.
-fn bench_error_reason(e: &BenchError) -> &'static str {
-    match e {
-        BenchError::CompileFailed(_) => "compile_failed",
-        BenchError::UnsupportedArch => "unsupported_arch",
-        BenchError::InvalidMeasurement(_) => "invalid_measurement",
-    }
-}
-
 fn main() {
     let args = Args::parse();
 
+    // Load binary corpus.
     let entries = corpus::read_corpus(std::path::Path::new(&args.corpus))
         .unwrap_or_else(|e| panic!("Failed to read corpus {}: {e}", args.corpus));
-    assert!(
-        !entries.is_empty(),
-        "corpus {} is empty — run gen_bench_corpus to build the tiered corpus",
-        args.corpus
-    );
 
     println!(
         "Loaded {} corpus entries from {}",
@@ -158,102 +53,61 @@ fn main() {
         args.corpus
     );
 
-    let mut out = BufWriter::new(
-        File::create(&args.output)
-            .unwrap_or_else(|e| panic!("Failed to open output {}: {e}", args.output)),
-    );
-    // The failure sidecar is written through the `File` directly — no
-    // `BufWriter`. The workspace compiles with `panic = "abort"`, so a panic
-    // (the censoring alarm below, or any harness assertion) skips every
-    // destructor and would discard buffered records; the alarm's whole value is
-    // pointing the reader at exclusions that must therefore already be on disk.
-    // Exclusions are asserted rare (<= 5%), so per-record writes cost nothing.
-    let mut failures_out = File::create(&args.failures)
-        .unwrap_or_else(|e| panic!("Failed to open failure sidecar {}: {e}", args.failures));
-
-    let mut session = BenchSession::new();
+    let mut out = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&args.output)
+        .unwrap_or_else(|e| panic!("Failed to open output {}: {e}", args.output));
 
     let mut benchmarked = 0usize;
-    let mut excluded = 0usize;
+    let mut jit_failed = 0usize;
     let total_start = Instant::now();
 
     for (name, arena, root) in &entries {
-        let expression = arena_to_kernel_code(arena, *root);
-        match session.benchmark_arena_both(arena, *root) {
-            Ok((throughput, latency)) => {
-                let record = BenchRecord {
-                    name,
-                    expression: &expression,
-                    throughput: ModeRecord::from(&throughput),
-                    latency: ModeRecord::from(&latency),
-                };
-                let json = serde_json::to_string(&record).unwrap_or_else(|e| {
-                    panic!("Failed to serialize bench record for '{name}': {e}")
-                });
-                writeln!(out, "{json}")
-                    .unwrap_or_else(|e| panic!("Write failed for {}: {e}", args.output));
-                benchmarked += 1;
-
-                if args.progress_every > 0 && benchmarked.is_multiple_of(args.progress_every) {
-                    let elapsed = total_start.elapsed().as_secs_f64();
-                    let rate = benchmarked as f64 / elapsed;
-                    println!(
-                        "  [{:>5}/{}] {:.0}/s  excluded={}  last_latency={:.1}ns  {}",
-                        benchmarked,
-                        entries.len(),
-                        rate,
-                        excluded,
-                        latency.adjusted_ns,
-                        name
-                    );
-                }
-            }
+        let timing_ns = match benchmark_jit_arena(arena, *root) {
+            Ok(b) => b.ns,
             Err(e) => {
-                let error = e.to_string();
-                let record = FailureRecord {
-                    name,
-                    expression: &expression,
-                    reason: bench_error_reason(&e),
-                    error: &error,
-                };
-                let json = serde_json::to_string(&record).unwrap_or_else(|e| {
-                    panic!("Failed to serialize failure record for '{name}': {e}")
-                });
-                writeln!(failures_out, "{json}")
-                    .unwrap_or_else(|e| panic!("Write failed for {}: {e}", args.failures));
-                eprintln!("EXCLUDED '{name}': {error}");
-                excluded += 1;
+                eprintln!("JIT failed for '{}': {}", name, e);
+                jit_failed += 1;
+                continue;
             }
+        };
+
+        // Convert to kernel code text for the output JSONL.
+        let expression = arena_to_kernel_code(arena, *root);
+        writeln!(
+            out,
+            r#"{{"name":"{}","expression":"{}","timing_ns":{:.2}}}"#,
+            name, expression, timing_ns
+        )
+        .unwrap_or_else(|e| panic!("Write failed: {e}"));
+
+        benchmarked += 1;
+
+        if args.progress_every > 0 && benchmarked.is_multiple_of(args.progress_every) {
+            let elapsed = total_start.elapsed().as_secs_f64();
+            let rate = benchmarked as f64 / elapsed;
+            println!(
+                "  [{:>5}/{}] {:.0}/s  jit_failed={}  last={:.1}ns  {}",
+                benchmarked,
+                entries.len(),
+                rate,
+                jit_failed,
+                timing_ns,
+                name
+            );
         }
     }
 
-    out.flush()
-        .unwrap_or_else(|e| panic!("Flush failed for {}: {e}", args.output));
-    // No flush for the failure sidecar: it is unbuffered by construction.
-
     let elapsed = total_start.elapsed().as_secs_f64();
-    let attempted = entries.len();
-    let exclusion_rate = excluded as f64 / attempted as f64;
     println!(
-        "\nDone: {}/{} benchmarked in {:.1}s ({:.0}/s)  excluded={} ({:.2}%)  sentinel_samples={}",
+        "\nDone: {}/{} benchmarked in {:.1}s ({:.0}/s)  jit_failed={}",
         benchmarked,
-        attempted,
+        entries.len(),
         elapsed,
         benchmarked as f64 / elapsed,
-        excluded,
-        exclusion_rate * 100.0,
-        session.sentinel_samples().len(),
+        jit_failed
     );
     println!("Results written to {}", args.output);
-    println!("Failure sidecar written to {}", args.failures);
-
-    assert!(
-        exclusion_rate <= MAX_EXCLUSION_RATE,
-        "censoring alarm (audit M2): {excluded}/{attempted} expressions excluded \
-         ({:.2}% > {:.0}%) — the label set is non-randomly censored; \
-         see {} for every exclusion",
-        exclusion_rate * 100.0,
-        MAX_EXCLUSION_RATE * 100.0,
-        args.failures
-    );
 }

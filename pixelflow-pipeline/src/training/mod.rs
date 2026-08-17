@@ -2,16 +2,10 @@
 //!
 //! This is the live training surface:
 //! - binary corpus I/O
-//! - the tiered split manifest (`split`, plan 0.2)
 //! - expression serialization helpers
 //! - value-head backward pass (`forward_cached` / `backward_value` /
 //!   `backward_through_accumulator`)
 //! - budget-bounded episode generation (`episodes`)
-//! - the numeric quarantine every label source must pass (`quarantine`,
-//!   plan 0.4) — shared so the corpus build and the trainer's live synthetic
-//!   stream apply one predicate, not two
-//! - label minting: sentinel drift normalization and the weights-objective
-//!   sidecar (`mint`)
 //!
 //! The RL apparatus this module used to host (self-play mask policy,
 //! REINFORCE `backward_policy`, PFTJ/PFAD trajectory export, the ES-guided
@@ -27,19 +21,7 @@ pub mod factored;
 pub mod corpus;
 
 #[cfg(feature = "training")]
-pub mod split;
-
-#[cfg(feature = "training")]
 pub mod unified_backward;
 
 #[cfg(feature = "training")]
 pub mod episodes;
-
-#[cfg(feature = "training")]
-pub mod mint;
-
-#[cfg(feature = "training")]
-pub mod structural;
-
-#[cfg(feature = "training")]
-pub mod quarantine;

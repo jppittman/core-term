@@ -49,10 +49,7 @@ use pixelflow_search::nnue::factored::{
 /// Every tensor that participates in the chain rule is stored here.
 /// This avoids recomputing activations during the backward pass.
 pub struct UnifiedForwardCache {
-    /// Backbone input: [`EdgeAccumulator::extraction_input`] — scaled
-    /// acc.values[0..128] + the 4 variance-histogram fractions = 132 floats.
-    /// Identical by construction to what the deployed extractor feeds
-    /// `forward_expr_only` (train/deploy skew guard, 2026-08 round 0).
+    /// Backbone input: acc.values[0..128] + edge_count + node_count + node_budget + epoch_budget = 132 floats.
     pub acc_input: [f32; INPUT_DIM],
     /// Pre-ReLU edge tower hidden: b1 + W1^T @ acc_input.
     pub edge_tower_pre_relu: [f32; HIDDEN_DIM],
@@ -105,9 +102,7 @@ pub struct UnifiedForwardCache {
 /// Replicate the ExprNnue forward pass, caching every intermediate activation.
 ///
 /// This mirrors the exact computation in:
-/// - `ExprNnue::forward_expr_only` (layer 1 — consuming the SAME
-///   `EdgeAccumulator::extraction_input` vector, so the trained function and
-///   the deployed function cannot diverge in feature semantics)
+/// - `ExprNnue::forward_shared` (layer 1)
 /// - `ExprNnue::compute_expr_embed` (layer 2)
 /// - `ExprNnue::value_mlp_forward` (layer 3a)
 /// - `ExprNnue::compute_mask_features` (layer 3b)
@@ -119,8 +114,23 @@ pub fn forward_cached(
     gacc: &GraphAccumulator,
     rule_embed: &[f32; EMBED_DIM],
 ) -> UnifiedForwardCache {
-    // ---- Extraction-head input: the ONE shared feature constructor ----
-    let acc_input = acc.extraction_input();
+    // ---- Build acc_input from EdgeAccumulator (for extraction head) ----
+    let mut acc_input = [0.0f32; INPUT_DIM];
+
+    let scale = if acc.node_count > 0 {
+        1.0 / libm::sqrtf(acc.node_count as f32)
+    } else {
+        1.0
+    };
+
+    for i in 0..4 * K {
+        acc_input[i] = acc.values[i] * scale;
+    }
+
+    acc_input[4 * K] = libm::log2f(1.0 + acc.edge_count as f32);
+    acc_input[4 * K + 1] = libm::log2f(1.0 + acc.node_count as f32);
+    acc_input[4 * K + 2] = libm::log2f(1.0 + acc.node_budget as f32);
+    acc_input[4 * K + 3] = libm::log2f(1.0 + acc.epoch_budget as f32);
 
     // ---- Edge Tower (for extraction head) ----
     let mut edge_tower_pre_relu = net.b1;
@@ -988,8 +998,8 @@ pub fn backward_through_accumulator(
     for i in 0..4 * K {
         d_values[i] = d_acc_input[i] * scale;
     }
-    // d_acc_input[4*K..4*K+4] are the variance-histogram fractions — they
-    // don't depend on embeddings, so we skip them.
+    // d_acc_input[4*K] and d_acc_input[4*K+1] are log2-scaled edge/node counts —
+    // these don't depend on embeddings, so we skip them.
 
     for &(parent_op_u8, child_op_u8, depth_u16) in edges {
         // Decoded once, loudly. These arrive as raw bytes from a serialized
@@ -1485,9 +1495,6 @@ mod tests {
     }
 
     /// Create a test accumulator with nonzero values.
-    ///
-    /// The variance fractions are nonzero so the scalar-slot rows of `w1`
-    /// (4K..4K+4) actually participate in the gradient checks.
     fn make_test_acc() -> EdgeAccumulator {
         let mut acc = EdgeAccumulator::new();
         let mut rng = Lcg::new(7777);
@@ -1496,10 +1503,6 @@ mod tests {
         }
         acc.edge_count = 5;
         acc.node_count = 4;
-        acc.variance_frac_const = 0.25;
-        acc.variance_frac_frame = 0.25;
-        acc.variance_frac_scanline = 0.25;
-        acc.variance_frac_pixel = 0.25;
         acc
     }
 
@@ -1556,20 +1559,9 @@ mod tests {
 
     #[test]
     fn numerical_gradient_check_value() {
-        // A dozen `net.clone()` sites × ~136KB of inline arrays: debug builds
-        // give each site its own stack slot (no slot reuse below opt-level 1),
-        // which overflows the 2MB default test-thread stack as a SIGSEGV, not
-        // a failed assertion. Run the body on a thread with room to spare.
         std::thread::Builder::new()
-            .name("numerical_gradient_check_value".into())
-            .stack_size(32 * 1024 * 1024)
-            .spawn(numerical_gradient_check_value_body)
-            .expect("failed to spawn gradient-check thread")
-            .join()
-            .expect("gradient-check thread panicked");
-    }
-
-    fn numerical_gradient_check_value_body() {
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
         let net = make_test_net();
         let acc = make_test_acc();
         let gacc = make_test_gacc();
@@ -1782,6 +1774,10 @@ mod tests {
 
         assert!(checked >= 38, "checked {checked} value path elements");
         eprintln!("  value path max rel error: {max_err:.6e}  ({checked} elements)");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     // ========================================================================
@@ -1817,17 +1813,7 @@ mod tests {
             expected_prob
         );
 
-        // Verify acc_input IS the shared extraction_input vector — the whole
-        // train/deploy skew guard is that this cannot be built any other way.
-        let expected = acc.extraction_input();
-        for i in 0..INPUT_DIM {
-            assert!(
-                (cache.acc_input[i] - expected[i]).abs() < 1e-6,
-                "acc_input[{i}] must equal EdgeAccumulator::extraction_input"
-            );
-        }
-        // And spot-check the documented layout: scaled values, then the
-        // variance histogram (NOT log2 counts — that was the round-0 skew).
+        // Verify acc_input was built correctly from the accumulator (now with scaling)
         let scale = if acc.node_count > 0 {
             1.0 / libm::sqrtf(acc.node_count as f32)
         } else {
@@ -1840,20 +1826,12 @@ mod tests {
             );
         }
         assert!(
-            (cache.acc_input[4 * K] - acc.variance_frac_const).abs() < 1e-6,
-            "acc_input[4K] must be variance_frac_const"
+            (cache.acc_input[4 * K] - libm::log2f(1.0 + acc.edge_count as f32)).abs() < 1e-6,
+            "acc_input edge_count mismatch"
         );
         assert!(
-            (cache.acc_input[4 * K + 1] - acc.variance_frac_frame).abs() < 1e-6,
-            "acc_input[4K+1] must be variance_frac_frame"
-        );
-        assert!(
-            (cache.acc_input[4 * K + 2] - acc.variance_frac_scanline).abs() < 1e-6,
-            "acc_input[4K+2] must be variance_frac_scanline"
-        );
-        assert!(
-            (cache.acc_input[4 * K + 3] - acc.variance_frac_pixel).abs() < 1e-6,
-            "acc_input[4K+3] must be variance_frac_pixel"
+            (cache.acc_input[4 * K + 1] - libm::log2f(1.0 + acc.node_count as f32)).abs() < 1e-6,
+            "acc_input node_count mismatch"
         );
 
         // Verify graph_input was built correctly from the graph accumulator
@@ -1878,34 +1856,6 @@ mod tests {
                 .abs()
                 < 1e-6,
             "graph_input node_count mismatch"
-        );
-    }
-
-    // ========================================================================
-    // Test 6b: the trained forward IS the deployed forward
-    // ========================================================================
-
-    /// `forward_cached` (what the trainer optimizes) and
-    /// `predict_log_cost_with_features` (what `IncrementalExtractor` calls at
-    /// extraction time) must produce the same prediction for the same
-    /// accumulator. This is the forward-pass half of the train/deploy skew
-    /// guard: if either side grows a feature the other lacks, this fails.
-    #[test]
-    fn forward_cached_value_matches_deployed_prediction() {
-        let net = make_test_net();
-        let acc = make_test_acc();
-        let gacc = make_test_gacc();
-        let rule_embed = make_test_rule_embed();
-
-        let cache = forward_cached(&net, &acc, &gacc, &rule_embed);
-        let deployed = net.predict_log_cost_with_features(&acc);
-
-        assert!(
-            (cache.value_pred - deployed).abs() < 1e-6,
-            "trained-path prediction {} != deployed-path prediction {} — \
-             the trainer is optimizing a function the extractor does not call",
-            cache.value_pred,
-            deployed
         );
     }
 

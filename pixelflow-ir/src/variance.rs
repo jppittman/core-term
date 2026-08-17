@@ -303,13 +303,8 @@ use alloc::vec::Vec;
 /// when we visit node `i`, all its children `j < i` are already computed.
 ///
 /// Cost: O(n) where n = `arena.len()`. No allocations beyond the result vec.
-///
-/// Public because it is the input the public `find_hoistable_*` functions
-/// require, and because `pixelflow-search`'s NNUE featurizer uses it to
-/// populate the variance histogram on arena-built accumulators (the same
-/// classification `egraph::deps::DepsAnalysis` provides on e-graphs).
 #[must_use]
-pub fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> {
+pub(crate) fn compute_arena_variance(arena: &crate::arena::ExprArena) -> Vec<Variance> {
     use crate::arena::{ExprId, ExprNode};
     use crate::kind::OpKind;
 

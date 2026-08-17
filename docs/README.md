@@ -72,15 +72,15 @@ specified by [`templates/DESIGN_DOC.md`](templates/DESIGN_DOC.md). Use `Supersed
   guided-saturation redesign; do not use it as the live architecture.
 - [`SEARCH_PIPELINE_DESIGN.md`](SEARCH_PIPELINE_DESIGN.md) — unshipped MCTS/REINFORCE
   interface proposal, superseded by the guided-saturation redesign.
-- [`plans/2026-02-25-unified-training-design.md`](plans/2026-02-25-unified-training-design.md)
+- [`NNUE_TRAINING_RECIPE.md`](NNUE_TRAINING_RECIPE.md),
+  [`plans/2026-02-25-unified-training-design.md`](plans/2026-02-25-unified-training-design.md),
   and [`plans/2026-02-25-unified-training-plan.md`](plans/2026-02-25-unified-training-plan.md)
-  — obsolete critic/REINFORCE training path (`NNUE_TRAINING_RECIPE.md`, which described the
-  same deleted system, was removed 2026-08-05).
+  — obsolete critic/REINFORCE training path.
 - [`designs/nnue-training-pipeline.md`](designs/nnue-training-pipeline.md) — earlier curriculum
   and best-first proposal.
 - [`NNUE_INTEGRATION_STATUS.md`](NNUE_INTEGRATION_STATUS.md) and
-  [`EGRAPH_SEARCH_INTEGRATION.md`](EGRAPH_SEARCH_INTEGRATION.md) — short current-state
-  stubs (rewritten 2026-08-05) pointing at the guided-saturation and research-workflow plans.
+  [`EGRAPH_SEARCH_INTEGRATION.md`](EGRAPH_SEARCH_INTEGRATION.md) — point-in-time status
+  audits; use the current architecture and guided-saturation documents above instead.
 - [`designs/actor-scheduler-supervisor-migration.md`](designs/actor-scheduler-supervisor-migration.md)
   — explicitly superseded by the Mealy-transducer design.
 - [`designs/2026-07-23-lower-realize-boundary.md`](designs/2026-07-23-lower-realize-boundary.md)
