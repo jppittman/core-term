@@ -3966,8 +3966,16 @@ mod tests {
         // A run writes its JSONL under pixelflow-pipeline/data and appends to
         // docs/results/journal.jsonl. If those counted, a second run of an
         // otherwise unchanged tree would hash differently from the first.
-        assert!(DIFF_HASH_EXCLUDES.contains(&":(exclude)pixelflow-pipeline/data"));
-        assert!(DIFF_HASH_EXCLUDES.contains(&":(exclude)docs/results"));
+        //
+        // `top,` is load-bearing, not decoration: `git()` runs with
+        // current_dir set to this crate's own manifest directory, so a bare
+        // `:(exclude)pixelflow-pipeline/data` resolves relative to THAT
+        // directory (i.e. `pixelflow-pipeline/pixelflow-pipeline/data`,
+        // which never exists) and excludes nothing — see the real
+        // behavioral regression in journal.rs's own test module
+        // (`diff_hash_exclusions_survive_running_from_a_subdirectory`).
+        assert!(DIFF_HASH_EXCLUDES.contains(&":(top,exclude)pixelflow-pipeline/data"));
+        assert!(DIFF_HASH_EXCLUDES.contains(&":(top,exclude)docs/results"));
     }
 
     #[test]

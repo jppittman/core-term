@@ -99,9 +99,18 @@ pub fn append_record<T: Serialize>(path: &Path, record: &T) {
 /// run's own prior output — a second invocation of an otherwise-unchanged
 /// tree would then hash differently from the first, the opposite of an
 /// identity.
+///
+/// The `top,` magic is load-bearing, not decoration: [`git`] runs with
+/// `current_dir` set to this crate's own manifest directory
+/// (`.../pixelflow-pipeline`), so a bare `:(exclude)pixelflow-pipeline/data`
+/// is resolved relative to THAT directory — i.e. as
+/// `pixelflow-pipeline/pixelflow-pipeline/data`, which never exists — and
+/// silently excludes nothing. `:(top,exclude)` anchors the pathspec to the
+/// repository root regardless of the process's cwd, which is what a
+/// repo-root-relative path here was always meant to mean.
 pub const DIFF_HASH_EXCLUDES: [&str; 2] = [
-    ":(exclude)pixelflow-pipeline/data",
-    ":(exclude)docs/results",
+    ":(top,exclude)pixelflow-pipeline/data",
+    ":(top,exclude)docs/results",
 ];
 
 /// Raw, untrimmed stdout on success. Deliberately not trimmed here: `diff
@@ -424,6 +433,99 @@ mod tests {
                 // fallback covers this case at the call site.
             }
         }
+    }
+
+    #[test]
+    fn diff_hash_exclusions_survive_running_from_a_subdirectory() {
+        // Reproduces the real defect (P2 finding on the fix commit for PR
+        // #1019): `git()` runs with `current_dir` set to THIS crate's own
+        // manifest directory, not the repository root, so a bare
+        // `:(exclude)pixelflow-pipeline/data` pathspec is resolved relative
+        // to that directory — i.e. as
+        // `pixelflow-pipeline/pixelflow-pipeline/data`, which never exists —
+        // and silently excludes nothing. `:(top,exclude)` anchors to the
+        // repo root regardless of cwd.
+        //
+        // Builds an isolated scratch repo shaped like this one (a
+        // `pixelflow-pipeline/` subdirectory below the repo root) so the
+        // pathspec-vs-cwd mismatch is exercised exactly as `git()` triggers
+        // it, without touching this session's actual working tree.
+        fn run_git(cwd: &Path, args: &[&str]) -> String {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap_or_else(|e| panic!("failed to spawn git {args:?}: {e}"));
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "pf_journal_pathspec_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is before the unix epoch")
+                .as_nanos()
+        ));
+        let crate_dir = root.join("pixelflow-pipeline");
+        let data_dir = crate_dir.join("data");
+        let src_dir = crate_dir.join("src");
+        fs::create_dir_all(&data_dir).expect("create data dir");
+        fs::create_dir_all(&src_dir).expect("create src dir");
+
+        run_git(&root, &["init", "-q"]);
+        fs::write(data_dir.join("out.jsonl"), "before\n").expect("write data file");
+        fs::write(src_dir.join("lib.rs"), "// before\n").expect("write source file");
+        run_git(&root, &["add", "-A"]);
+        run_git(&root, &["commit", "-q", "-m", "initial"]);
+
+        // Dirty the tree: change BOTH the run-output file (should be
+        // excluded) and a real source file (should NOT be excluded).
+        fs::write(data_dir.join("out.jsonl"), "after\n").expect("rewrite data file");
+        fs::write(src_dir.join("lib.rs"), "// after\n").expect("rewrite source file");
+
+        // `git()` runs from the crate directory, exactly like the real
+        // helper — this is what makes the bare pathspec resolve wrong.
+        let bare_diff = run_git(
+            &crate_dir,
+            &[
+                "diff",
+                "HEAD",
+                "--",
+                ":(exclude)pixelflow-pipeline/data",
+                ":(exclude)docs/results",
+            ],
+        );
+        assert!(
+            bare_diff.contains("out.jsonl"),
+            "test assumption: the bare pathspec must reproduce the bug (fail to \
+             exclude the data file) when run from the crate subdirectory, or this \
+             test is no longer exercising it:\n{bare_diff}"
+        );
+
+        let mut anchored_args: Vec<&str> = vec!["diff", "HEAD", "--"];
+        anchored_args.extend(DIFF_HASH_EXCLUDES);
+        let anchored_diff = run_git(&crate_dir, &anchored_args);
+        assert!(
+            !anchored_diff.contains("out.jsonl"),
+            "the top-anchored exclude must drop the run's own output file even when \
+             git runs from the crate subdirectory:\n{anchored_diff}"
+        );
+        assert!(
+            anchored_diff.contains("lib.rs"),
+            "the top-anchored exclude must NOT drop a real source change:\n{anchored_diff}"
+        );
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

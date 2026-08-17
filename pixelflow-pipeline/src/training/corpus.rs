@@ -3,14 +3,13 @@
 //! Replaces JSONL text corpus with a binary format that loads in microseconds
 //! via sequential read (no parsing, no allocation beyond the arena vecs).
 //!
-//! ## Format (v4; byte layout unchanged since v3 — v4 bumps because the
-//! ## cross-tier dedup key a stored TRAIN tier was built against changed,
-//! ## not because any byte here did; see "Version is coupled to the
+//! ## Format (the header's second field is a derived identity, not a
+//! ## hand-bumped version — see "The schema identity is coupled to the
 //! ## payload's meaning" below)
 //!
 //! ```text
 //! magic: [u8; 4] = b"PXCR"
-//! version: u32 (little-endian) = 4
+//! schema_identity: u64 (little-endian) = corpus_identity()
 //! count: u32 (little-endian)
 //!
 //! For each expression:
@@ -52,12 +51,15 @@
 //! instead of the feature-quotient [`FenceKey`](super::structural::FenceKey)
 //! parses fine but can hold a DEV/FINAL leak in TRAIN — P1(d)). A hand-bumped
 //! `VERSION` integer needs a human to remember to move it every time any of
-//! the three changes; this format instead carries a
-//! [`crate::schema::SchemaIdentity`] (`CorpusFormat`) whose identity is a
-//! content hash of `CorpusFormat::SCHEMA` — editing that description IS the
-//! version bump, so there is no separate step to forget
-//! (docs/plans/2026-08-17-cost-model-domain.md, J9, kills P1(b)). Any stored
-//! identity other than the current one is a hard load error.
+//! the three changes; this format instead carries [`corpus_identity`], which
+//! folds [`crate::schema::SchemaIdentity`]'s content hash of
+//! `CorpusFormat::SCHEMA` (editing that description IS the version bump, so
+//! there is no separate step to forget) together with a hash of the LIVE
+//! `OpKind` encoding table — the op-renumbering case that prose alone cannot
+//! see, since "dense 0..COUNT discriminants" reads the same before and after
+//! a renumbering (docs/plans/2026-08-17-cost-model-domain.md, J9, kills
+//! P1(b)). Any stored identity other than the current one is a hard load
+//! error.
 
 use std::io::{self, Write};
 use std::path::Path;
