@@ -952,37 +952,40 @@ impl EdgeAccumulator {
         )
     }
 
-    /// Build accumulator from e-graph extraction choices with DAG-aware
-    /// sharing (no variance histogram — prefer
+    /// Build accumulator from an [`Extraction`](crate::egraph::extract::Extraction)
+    /// with DAG-aware sharing (no variance histogram — prefer
     /// [`Self::from_dag_choices_with_variance`]).
     pub fn from_dag_choices(
-        egraph: &crate::egraph::EGraph,
-        root: crate::egraph::EClassId,
-        choices: &[Option<usize>],
+        extraction: &crate::egraph::extract::Extraction<'_>,
         emb: &OpEmbeddings,
     ) -> Self {
-        Self::from_dag_choices_with_variance(egraph, root, choices, emb, None)
+        Self::from_dag_choices_with_variance(extraction, emb, false)
     }
 
-    /// Build accumulator from DAG choices, optionally incorporating variance
-    /// analysis — the DEPLOYMENT-side adapter over [`Self::from_cost_dag`].
+    /// Build accumulator from an [`Extraction`](crate::egraph::extract::Extraction),
+    /// optionally populating the variance histogram — the DEPLOYMENT-side
+    /// adapter over [`Self::from_cost_dag`].
     ///
-    /// If `variance_analysis` is provided, the accumulator's variance
-    /// histogram features are populated (fraction of nodes at each variance
-    /// level).
+    /// When `with_variance` is set, variance is computed recursively over
+    /// the extraction's CHOSEN nodes
+    /// ([`Extraction::chosen_variance`](crate::egraph::extract::Extraction::chosen_variance)),
+    /// not the class-wide meet `DepsAnalysis` computes — see P1(c) in
+    /// docs/plans/2026-08-17-cost-model-domain.md. Once a rewrite merges a
+    /// pixel-varying node into a class alongside a constant one, the
+    /// class-wide meet reports CONST regardless of which node the
+    /// extraction actually chose; recursing over the chosen nodes instead
+    /// keeps this identical to what [`Self::from_arena_dag`] computes on
+    /// the exact arena the extraction emits.
     pub fn from_dag_choices_with_variance(
-        egraph: &crate::egraph::EGraph,
-        root: crate::egraph::EClassId,
-        choices: &[Option<usize>],
+        extraction: &crate::egraph::extract::Extraction<'_>,
         emb: &OpEmbeddings,
-        variance_analysis: Option<&crate::egraph::deps::DepsAnalysis>,
+        with_variance: bool,
     ) -> Self {
+        let variance = with_variance.then(|| extraction.chosen_variance());
         Self::from_cost_dag(
             &ChoicesCostDag {
-                egraph,
-                root,
-                choices,
-                variance_analysis,
+                extraction,
+                variance,
             },
             emb,
         )
@@ -1099,13 +1102,15 @@ impl CostDag for ArenaCostDag<'_> {
     }
 }
 
-/// Deployment-side [`CostDag`]: an e-graph plus per-e-class extraction
-/// choices, as walked by `IncrementalExtractor::extract_choices_only`.
+/// Deployment-side [`CostDag`]: an [`Extraction`](crate::egraph::extract::Extraction)
+/// (an e-graph plus a validated, well-founded choice function), as produced
+/// by `IncrementalExtractor::extract_choices_only`.
 struct ChoicesCostDag<'a> {
-    egraph: &'a crate::egraph::EGraph,
-    root: crate::egraph::EClassId,
-    choices: &'a [Option<usize>],
-    variance_analysis: Option<&'a crate::egraph::deps::DepsAnalysis>,
+    extraction: &'a crate::egraph::extract::Extraction<'a>,
+    /// Chosen-node variance, indexed by canonical e-class id — see
+    /// [`Extraction::chosen_variance`](crate::egraph::extract::Extraction::chosen_variance).
+    /// `None` when the caller didn't ask for variance features.
+    variance: Option<Vec<Option<pixelflow_ir::Variance>>>,
 }
 
 impl ChoicesCostDag<'_> {
@@ -1122,18 +1127,19 @@ impl ChoicesCostDag<'_> {
 
 impl CostDag for ChoicesCostDag<'_> {
     fn id_bound(&self) -> usize {
-        self.egraph.num_classes()
+        self.extraction.egraph().num_classes()
     }
 
     fn root(&self) -> u32 {
-        self.egraph.find(self.root).0
+        self.extraction.root().0
     }
 
     fn resolve(&self, id: u32, out: &mut Vec<u32>) -> Option<OpKind> {
         use crate::egraph::{EClassId, ENode};
-        let canonical = self.egraph.find(EClassId(id));
-        let node_idx = self.choices[canonical.0 as usize]?;
-        let nodes = self.egraph.nodes(canonical);
+        let egraph = self.extraction.egraph();
+        let canonical = egraph.find(EClassId(id));
+        let node_idx = self.extraction.choice(canonical)?;
+        let nodes = egraph.nodes(canonical);
         let node = nodes.get(node_idx).unwrap_or_else(|| {
             panic!(
                 "from_dag_choices: node_idx {} out of bounds for e-class {} (has {} nodes)",
@@ -1144,7 +1150,7 @@ impl CostDag for ChoicesCostDag<'_> {
         });
         if let ENode::Op { children, .. } = node {
             for &child in children {
-                out.push(self.egraph.find(child).0);
+                out.push(egraph.find(child).0);
             }
         }
         Some(Self::kind_of(node))
@@ -1152,18 +1158,18 @@ impl CostDag for ChoicesCostDag<'_> {
 
     fn child_kind(&self, id: u32) -> Option<OpKind> {
         use crate::egraph::EClassId;
-        let canonical = self.egraph.find(EClassId(id));
-        let node_idx = self.choices[canonical.0 as usize]?;
-        self.egraph
-            .nodes(canonical)
-            .get(node_idx)
-            .map(Self::kind_of)
+        let egraph = self.extraction.egraph();
+        let canonical = egraph.find(EClassId(id));
+        let node_idx = self.extraction.choice(canonical)?;
+        egraph.nodes(canonical).get(node_idx).map(Self::kind_of)
     }
 
     fn variance(&self, id: u32) -> Option<pixelflow_ir::Variance> {
         use crate::egraph::EClassId;
-        self.variance_analysis
-            .map(|va| va.get(self.egraph, EClassId(id)))
+        let canonical = self.extraction.egraph().find(EClassId(id));
+        self.variance
+            .as_ref()
+            .and_then(|v| v.get(canonical.0 as usize).copied().flatten())
     }
 }
 
