@@ -28,6 +28,17 @@
 //! What remains is the value loss: MSE against ground-truth JIT cost,
 //! chain-ruled through `value_mlp` → `expr_proj` → trunk → `w1` (edge tower).
 //! This is what `bootstrap_extraction_head` trains with.
+//!
+//! ## Op embeddings are frozen (P1(a))
+//!
+//! The chain above stops at `w1` — [`backward_value`] never reaches
+//! [`backward_through_accumulator`], which is the only function that turns a
+//! `d_acc_input` gradient into a `d_embeddings` one, and it has no live
+//! caller (grep it). So `grads.d_embeddings` is always exactly zero on the
+//! live path. [`apply_unified_sgd`] does not update `net.embeddings` from it
+//! — see that function's doc for why running weight decay and unit-sphere
+//! projection against an always-zero gradient was the confirmed defect
+//! (docs/plans/2026-08-17-cost-model-domain.md, P1(a)) this freeze closes.
 
 #![expect(
     clippy::needless_range_loop,
@@ -748,10 +759,11 @@ pub fn apply_unified_sgd(
     } = config;
     // Per-group L2 norm clipping.  Each semantic pathway is clipped
     // independently so an explosion in one group cannot suppress others.
+    // (Embeddings are not among these groups — see the frozen-embeddings
+    // block below.)
     let clip_stats = grads.clip_stats(grad_clip);
     let scale_backbone = clip_stats.backbone_scale;
     let scale_value = clip_stats.value_scale;
-    let scale_embeddings = clip_stats.embeddings_scale;
     let scale_trunk = clip_stats.trunk_scale;
 
     // Macro to apply SGD update to a single scalar parameter.
@@ -852,19 +864,32 @@ pub fn apply_unified_sgd(
         scale_value
     );
 
-    // ── Embeddings (scale_embeddings) ─────────────────────────────────────────
-
-    // embeddings: one K-vector per op
-    for op in OpKind::all() {
-        for i in 0..K {
-            sgd_scalar!(
-                net.embeddings.e[op][i],
-                grads.d_embeddings[op][i],
-                momentum_buf.d_embeddings[op][i],
-                scale_embeddings
-            );
-        }
-    }
+    // ── Embeddings: FROZEN (P1(a)) ───────────────────────────────────────────
+    //
+    // `net.embeddings` is deliberately left untouched here — no SGD update,
+    // no weight decay, no momentum accumulation — because nothing in this
+    // trainer's live call graph computes a gradient for it: `backward_value`
+    // never calls `backward_through_accumulator` (the only function that
+    // turns a `d_acc_input` gradient into `d_embeddings`), so
+    // `grads.d_embeddings` is always exactly zero. Running weight decay
+    // against an always-zero gradient is not "no update", it is a slow decay
+    // toward zero with no opposing signal — pure drift, not training.
+    //
+    // That drift was P1(a): `ValueSample::acc` is cached ONCE (from
+    // `model.embeddings` before any SGD step), but this function used to
+    // mutate `net.embeddings` every batch regardless, so the cached
+    // accumulator's baked-in embeddings silently diverged from the live
+    // `model.embeddings` used to build DEV-time features
+    // (`bootstrap_extraction_head`'s Phase 3) — a train/deploy skew with no
+    // training benefit behind it. Freezing embeddings makes both paths read
+    // the same (constant) embeddings by construction; see
+    // `embeddings_are_frozen_without_a_gradient_producer` and
+    // `dev_and_train_path_features_match_after_training_with_frozen_embeddings`
+    // below.
+    //
+    // Unfreeze this block only once a real gradient producer exists (wiring
+    // `backward_through_accumulator` into `backward_value`) — mutation
+    // without a gradient is the defect, not the freeze.
 
     // ── Shared trunk (scale_trunk) ───────────────────────────────────────────
 
@@ -890,27 +915,13 @@ pub fn apply_unified_sgd(
         );
     }
 
-    // ── Post-SGD embedding normalization ────────────────────────────────────
-    // Op embeddings drift in L2 norm over training rounds (can reach 100+).
-    // This makes stale replay trajectories inconsistent: old trajectories
-    // stored small-norm embeddings, new ones store large-norm. Re-normalizing
-    // at replay load time (embed_from_replay) is a band-aid — it destroys
-    // the relative geometry between rule embeddings from the same round.
-    //
-    // Instead, keep embeddings on the unit sphere after every update.
-    // This is equivalent to projected gradient descent on S^{K-1}.
-    for op in OpKind::all() {
-        let l2 = net.embeddings.e[op]
-            .iter()
-            .map(|x| x * x)
-            .sum::<f32>()
-            .sqrt();
-        if l2 > 1e-8 {
-            for i in 0..K {
-                net.embeddings.e[op][i] /= l2;
-            }
-        }
-    }
+    // No post-SGD embedding normalization: the unit-sphere projection that
+    // used to run here unconditionally is itself a mutation, and P1(a)
+    // applies to it exactly as it does to the SGD update above — projecting
+    // a parameter every batch with no gradient behind it is drift, not
+    // training. Re-introduce it (as projected gradient descent on the
+    // embeddings' own update, not a blanket post-pass) only alongside a real
+    // gradient producer.
 }
 
 // ============================================================================
@@ -1427,6 +1438,103 @@ mod tests {
         assert!(
             (delta + 1.0).abs() < 1e-6,
             "trunk update should be clipped to -1.0, got {delta}"
+        );
+    }
+
+    // ========================================================================
+    // Test 8b: P1(a) — embeddings are frozen without a gradient producer
+    // ========================================================================
+
+    #[test]
+    fn embeddings_are_frozen_without_a_gradient_producer() {
+        // `backward_value` never populates `d_embeddings` on the live path
+        // (only `backward_through_accumulator` would, and it has no live
+        // caller — see this module's doc). `apply_unified_sgd` must
+        // therefore never decay, project, or otherwise move
+        // `net.embeddings`: with no opposing gradient, doing so anyway is
+        // pure drift, not training (P1(a)).
+        let mut net = make_test_net();
+        let init = net.embeddings.clone();
+
+        let mut momentum_buf = UnifiedGradients::zero();
+        let config = SgdConfig {
+            lr: 0.05,
+            momentum: 0.9,
+            weight_decay: 1e-2,
+            grad_clip: 5.0,
+        };
+
+        for step in 0..50u32 {
+            let mut grads = UnifiedGradients::zero();
+            // Nonzero everywhere else, so this exercises the same
+            // multi-group clipping/momentum path a real batch does.
+            grads.d_w1[0][0] = 1.0;
+            grads.d_trunk_w[3][4] = -2.0;
+            grads.d_value_mlp_b2 = 0.7;
+            // Deliberately nonzero (unlike reality) to prove the freeze is
+            // unconditional — a decay-of-an-always-zero-gradient coincidence
+            // would not catch a regression that starts reading this field.
+            for op in OpKind::all() {
+                grads.d_embeddings[op][0] = 3.0 + step as f32;
+            }
+            apply_unified_sgd(&mut net, &grads, &mut momentum_buf, config);
+        }
+
+        assert_eq!(
+            net.embeddings.e.as_slice(),
+            init.e.as_slice(),
+            "embeddings must be bit-identical to init after training batches: \
+             apply_unified_sgd must not decay, project, or otherwise update embeddings while \
+             nothing computes a gradient for them"
+        );
+    }
+
+    #[test]
+    fn dev_and_train_path_features_match_after_training_with_frozen_embeddings() {
+        // P1(a)'s DEV-path/train-path skew: `ValueSample::acc` is built once
+        // (train-path snapshot), embeddings decayed/projected every batch
+        // with no gradient behind it, and `EdgeAccumulator::from_arena_dag`
+        // was rebuilt for DEV against the now-drifted `model.embeddings` —
+        // two different embeddings for the same expression. With embeddings
+        // frozen, the two paths must read identical features.
+        use pixelflow_ir::ExprArena;
+
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0);
+        let one = arena.push_const(1.0);
+        let sum = arena.push_binary(OpKind::Add, x, one);
+        let two = arena.push_const(2.0);
+        let root = arena.push_binary(OpKind::Mul, sum, two);
+
+        let mut net = make_test_net();
+        // TRAIN-path snapshot: built once, as `bootstrap_extraction_head`'s
+        // Phase 1d does, before any SGD step.
+        let train_acc = EdgeAccumulator::from_arena_dag(&arena, root, &net.embeddings);
+
+        let mut momentum_buf = UnifiedGradients::zero();
+        let config = SgdConfig {
+            lr: 0.05,
+            momentum: 0.9,
+            weight_decay: 1e-2,
+            grad_clip: 5.0,
+        };
+        for _ in 0..20 {
+            let cache = forward_cached(&net, &train_acc);
+            let mut grads = UnifiedGradients::zero();
+            backward_value(&net, &cache, 4.0, 1.0, &mut grads);
+            apply_unified_sgd(&mut net, &grads, &mut momentum_buf, config);
+        }
+
+        // DEV-path: rebuilt from the SAME arena, AFTER training, against
+        // whatever `net.embeddings` training left behind — the deployed
+        // prediction path (`bootstrap_extraction_head`'s Phase 3).
+        let dev_acc = EdgeAccumulator::from_arena_dag(&arena, root, &net.embeddings);
+
+        assert_eq!(
+            train_acc.extraction_input(),
+            dev_acc.extraction_input(),
+            "train-path and DEV-path features diverged for the same expression — embeddings \
+             drifted between accumulator construction and DEV evaluation (P1(a))"
         );
     }
 

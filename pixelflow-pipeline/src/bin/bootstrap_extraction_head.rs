@@ -34,12 +34,15 @@
 //!
 //! # One clock, one order
 //!
-//! Every label — synthetic, TRAIN corpus, DEV — is minted through
-//! [`normalized_label_ns`], which re-expresses the measurement in the
-//! session's opening clock using the sentinel's measured drift. And all three
-//! sources are pooled into one queue and benchmarked in a seeded shuffle of
-//! it rather than source-by-source in generation order. The two are
-//! complementary:
+//! Every label — synthetic, TRAIN corpus, DEV — is minted as a
+//! [`CostLabel`](pixelflow_pipeline::jit_bench::CostLabel)
+//! (docs/plans/2026-08-17-cost-model-domain.md, J3/J4), which re-expresses
+//! the measurement in the session's opening clock using the sentinel's
+//! measured drift — normalize, then subtract call overhead, the only order
+//! [`LocalNs`](pixelflow_pipeline::jit_bench::LocalNs)/[`SessionNs`](pixelflow_pipeline::jit_bench::SessionNs)
+//! type-check. And all three sources are pooled into one queue and
+//! benchmarked in a seeded shuffle of it rather than source-by-source in
+//! generation order. The two are complementary:
 //! normalization removes slow drift, shuffling decorrelates whatever it
 //! cannot remove from expression structure. Without the shuffle, generation
 //! order emits size and family bands sequentially, so residual drift is
@@ -50,14 +53,21 @@
 //! # The holdout fence
 //!
 //! The TRAIN corpus is fenced off from DEV/FINAL by `gen_bench_corpus`'s
-//! cross-tier structural ledger, but the live [`BwdGenerator`] stream in
-//! Phase 1 consults nothing: a shallow motif it happens to redraw may already
-//! live in `corpus_dev.bin`, in which case the same structure is trained on
-//! and then "held out", and the DEV MAE/Spearman stop measuring a holdout.
-//! So the DEV and FINAL tiers are loaded up front, hashed with the *same*
-//! [`arena_structural_key`](pixelflow_pipeline::training::structural) the
+//! cross-tier dedup ledger, but the live [`BwdGenerator`] stream in Phase 1
+//! consults nothing: a shallow motif it happens to redraw may already live in
+//! `corpus_dev.bin` — or merely be a literal-differing twin of something that
+//! does (P1(d): the extraction head collapses literals, so `X * 2.0` and
+//! `X * 3.0` are the identical input) — in which case the same structure is
+//! trained on and then "held out", and the DEV MAE/Spearman stop measuring a
+//! holdout. So the DEV and FINAL tiers are loaded up front into a
+//! [`Fence`](pixelflow_pipeline::training::split::Fence) per tier, keyed by
+//! the *same*
+//! [`FenceKey`](pixelflow_pipeline::training::structural::FenceKey) the
 //! corpus ledger uses, and every colliding live expression is dropped —
-//! counted, written to the exclusion sidecar, and reported loudly.
+//! counted, written to the exclusion sidecar, and reported loudly. The loaded
+//! TRAIN corpus is re-checked against the same fence for the same reason: a
+//! TRAIN tier built before this key existed (or by another build) could hold
+//! an entry the current fence would have refused.
 //!
 //! The fence reports the node-size distribution of BOTH populations, because
 //! its headline number is otherwise unreadable: the first end-to-end run saw
@@ -95,17 +105,17 @@ use pixelflow_search::nnue::factored::{EdgeAccumulator, ExprNnue};
 use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator};
 
 use pixelflow_pipeline::extraction_head_weights_path;
-use pixelflow_pipeline::jit_bench::{BenchError, BenchMode, BenchResult, BenchSession, log_ns};
-use pixelflow_pipeline::training::corpus::read_corpus;
+use pixelflow_pipeline::jit_bench::{
+    BenchError, BenchMode, BenchPosition, BenchResult, BenchSession, CostLabel,
+};
 use pixelflow_pipeline::training::episodes::{build_rule_templates, load_corpus_exprs};
 use pixelflow_pipeline::training::factored::arena_to_kernel_code;
 use pixelflow_pipeline::training::mint::{
-    MintMetadata, NormalizationStats, bench_mode_slug, file_mtime_report, label_normalization,
-    normalized_label_ns, unix_now_s, weights_identity,
+    MintMetadata, NormalizationStats, bench_mode_slug, file_mtime_report, unix_now_s,
+    weights_identity,
 };
 use pixelflow_pipeline::training::quarantine::Quarantine;
-use pixelflow_pipeline::training::split::Tier;
-use pixelflow_pipeline::training::structural::StructuralKeySet;
+use pixelflow_pipeline::training::split::{DevSide, Fence, FinalSide, Tier, blocked_by_either};
 use pixelflow_pipeline::training::unified_backward::{
     UnifiedGradients, apply_unified_sgd, backward_value, forward_cached,
 };
@@ -305,7 +315,7 @@ impl WorkItem {
 
 /// A benchmark measurement turned into a training target.
 struct MintedLabel {
-    /// `log_ns` of the drift-corrected measurement.
+    /// [`CostLabel::target_log_ns`] of the drift-corrected measurement.
     target_log_ns: f32,
     /// The correction factor that was applied, kept for the sample.
     normalization: f64,
@@ -319,29 +329,43 @@ struct MintedLabel {
 /// correlated with collection position, and collection position correlates
 /// with expression structure unless something breaks the correlation. Both
 /// halves are here — this function removes the drift the sentinel measured,
-/// and [`shuffled_order`] decorrelates whatever is left.
+/// via [`CostLabel::mint`], and [`shuffled_order`] decorrelates whatever is
+/// left.
 ///
 /// All three label sources (the synthetic stream, the TRAIN corpus, and DEV)
 /// are minted here, so they sit on one clock by construction — including the
-/// order in which [`normalized_label_ns`] applies the factor and subtracts the
+/// order in which [`CostLabel::mint`] applies the factor and subtracts the
 /// opening-clock call overhead, which is not commutative and biases small
-/// kernels if swapped.
+/// kernels if swapped. That ordering used to be a doc comment a future edit
+/// could reorder; `CostLabel::mint` builds it through
+/// [`pixelflow_pipeline::jit_bench::LocalNs::normalize`], which has no `Sub`
+/// impl to subtract overhead through before normalizing, so the wrong order
+/// no longer compiles.
+///
+/// `position` is this measurement's index in [`shuffled_order`]'s benchmark
+/// order (not corpus/generation order) — the axis [`CostLabel`] persists so a
+/// downstream consumer can verify residual drift isn't confounded with
+/// expression structure.
 ///
 /// # Panics
 ///
 /// Panics when the measurement carries no sentinel context (see
-/// [`normalized_label_ns`]).
-fn mint_label(bench: &BenchResult, context: &str) -> MintedLabel {
+/// [`CostLabel::mint`]).
+fn mint_label(bench: &BenchResult, position: usize, context: &str) -> MintedLabel {
+    let label = CostLabel::mint(bench, BenchPosition(position), context);
     MintedLabel {
-        target_log_ns: log_ns(normalized_label_ns(bench, context)),
-        normalization: label_normalization(bench, context),
+        target_log_ns: label.target_log_ns(),
+        normalization: label.drift().get(),
     }
 }
 
 // ── Research journal (plan 0.3b) ────────────────────────────────────────────
 
-/// One line appended to `docs/results/journal.jsonl` per completed training
-/// run.
+/// This binary's own metrics for one line of `docs/results/journal.jsonl` —
+/// the fields that are specific to a training run, wrapped by
+/// [`pixelflow_pipeline::journal::JournalEntry`] for the provenance envelope
+/// (config hash, weights identity, timestamp) every journal-writing binary
+/// shares (docs/plans/2026-08-17-cost-model-domain.md, J15).
 ///
 /// Until this record existed, `bench_extraction_3way` was the journal's ONLY
 /// writer, so DEV model quality (Spearman, MAE) was printed to a scrollback
@@ -351,10 +375,7 @@ fn mint_label(bench: &BenchResult, context: &str) -> MintedLabel {
 /// AND their mint sidecar are on disk, so every journal line names a
 /// checkpoint that actually exists.
 #[derive(Serialize)]
-struct TrainerJournalRecord {
-    record: &'static str,
-    ts_unix: u64,
-    weights_path: String,
+struct TrainerMetrics {
     corpus_dir: String,
     bench_mode: &'static str,
     /// Training samples the head was actually fit on (post-exclusion).
@@ -387,12 +408,12 @@ struct TrainerJournalRecord {
 /// Mechanics (serialize, mkdir, LFS-pointer guard, append-or-panic) live in
 /// `pixelflow_pipeline::journal` — the one writer every journal-producing
 /// binary shares (docs/plans/2026-08-17-cost-model-domain.md, J15).
-fn append_journal(record: &TrainerJournalRecord) {
+fn append_journal(entry: &pixelflow_pipeline::journal::JournalEntry<TrainerMetrics>) {
     let journal_path = PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../docs/results/journal.jsonl"
     ));
-    pixelflow_pipeline::journal::append_record(&journal_path, record);
+    pixelflow_pipeline::journal::append_record(&journal_path, entry);
 }
 
 /// A seeded permutation of `0..len` (LCG Fisher-Yates).
@@ -582,9 +603,13 @@ impl ExclusionLog {
     /// buffered away by a mid-run abort) but NOT echoed per line to stderr:
     /// drops are expected in the hundreds on a 50k stream, and the loud
     /// signal is the phase-1 summary plus this sidecar.
-    fn record_holdout_drop(&mut self, name: &str, expression: &str) {
+    ///
+    /// `phase` distinguishes a live-generated drop from a loaded-TRAIN
+    /// revalidation drop — both fence against the same DEV/FINAL structures,
+    /// but only the live stream's rate is folded into the phase-1 summary.
+    fn record_holdout_drop(&mut self, phase: &'static str, name: &str, expression: &str) {
         let record = HoldoutDropRecord {
-            phase: "synthetic",
+            phase,
             name,
             expression,
             reason: "holdout_structural_collision",
@@ -623,98 +648,91 @@ impl ExclusionLog {
     }
 }
 
-// ── Holdout fence (DEV/FINAL leakage, plan 0.2) ─────────────────────────────
+// ── Holdout fence (DEV/FINAL leakage, plan 0.2 / P1(d)) ─────────────────────
 
-/// The path of a tier's corpus file inside `corpus_dir`.
-fn tier_corpus_path(corpus_dir: &Path, tier: Tier) -> PathBuf {
-    corpus_dir.join(format!("corpus_{}.bin", tier.name()))
-}
-
-/// Every structure owned by the held-out tiers, so the live generator stream
-/// can be filtered against it.
+/// Every feature-quotient structure owned by the held-out tiers (DEV and
+/// FINAL, each its own [`Fence`]), so the live generator stream and the
+/// loaded TRAIN corpus can both be filtered against it.
 ///
-/// Built from the *complete* tier files (`read_corpus`), not the sampled and
-/// size-filtered [`load_corpus_exprs`]: a structure that exists anywhere in
-/// DEV or FINAL is holdout, whether or not this run's DEV evaluation happens
-/// to draw it. Sampling the fence would leak exactly the expressions the
-/// sampler skipped.
+/// Built from the *complete* tier files (`Fence::build` reads the whole
+/// corpus, not the sampled and size-filtered [`load_corpus_exprs`]): a
+/// structure that exists anywhere in DEV or FINAL is holdout, whether or not
+/// this run's DEV evaluation happens to draw it. Sampling the fence would
+/// leak exactly the expressions the sampler skipped.
 struct HoldoutFence {
-    keys: StructuralKeySet,
-    dev_entries: usize,
-    final_entries: usize,
-    /// Node count of every fenced structure, so the fence's drop count can be
-    /// read against the size range it could possibly have matched (see
-    /// [`disjointness_note`]).
+    dev: Fence<DevSide>,
+    final_: Fence<FinalSide>,
+    /// Node count of every fenced *entry* (DEV then FINAL), so the fence's
+    /// drop count can be read against the size range it could possibly have
+    /// matched (see [`disjointness_note`]).
     node_counts: Vec<usize>,
 }
 
 impl HoldoutFence {
-    /// Load DEV and FINAL and hash every expression.
+    /// Load DEV and FINAL and key every expression.
     ///
     /// # Panics
     ///
-    /// Panics when either tier file is missing. `gen_bench_corpus` writes all
-    /// three tiers in one loop, so a directory holding DEV but not FINAL is a
-    /// partial artifact; and DEV's absence is already fatal at the
-    /// held-out-evaluation phase — failing here rather than after an hour of
-    /// benchmarking is the same verdict, delivered sooner.
+    /// Panics when either tier file is missing — see [`Fence::build`].
     fn build(corpus_dir: &Path) -> Self {
-        let mut keys = StructuralKeySet::new();
-        let mut counts = [0usize; 2];
-        let mut node_counts: Vec<usize> = Vec::new();
-        for (slot, tier) in [Tier::Dev, Tier::Final].into_iter().enumerate() {
-            let path = tier_corpus_path(corpus_dir, tier);
-            assert!(
-                path.exists(),
-                "{} tier corpus not found at {} — the live-generation holdout fence cannot be \
-                 built without it, and training an unfenced stream would put DEV/FINAL \
-                 structures into the training set (the DEV metrics would stop being held out). \
-                 Run gen_bench_corpus (--output {}), which writes all three tiers together",
-                tier,
-                path.display(),
-                corpus_dir.display()
-            );
-            let entries = read_corpus(&path).unwrap_or_else(|e| {
-                panic!("failed to read {} corpus {}: {e}", tier, path.display())
-            });
-            counts[slot] = entries.len();
-            for (_name, arena, root) in &entries {
-                keys.insert(arena, *root);
-                node_counts.push(arena.node_count_subtree(*root));
-            }
-        }
+        let dev = Fence::<DevSide>::build(corpus_dir);
+        let final_ = Fence::<FinalSide>::build(corpus_dir);
+        let node_counts: Vec<usize> = dev
+            .node_counts()
+            .iter()
+            .chain(final_.node_counts())
+            .copied()
+            .collect();
         Self {
-            keys,
-            dev_entries: counts[0],
-            final_entries: counts[1],
+            dev,
+            final_,
             node_counts,
         }
     }
 
+    fn dev_entries(&self) -> usize {
+        self.dev.entries()
+    }
+
+    fn final_entries(&self) -> usize {
+        self.final_.entries()
+    }
+
+    /// Distinct feature-quotient structures fenced, DEV plus FINAL (a
+    /// structure shared by both sides counts twice — informational only).
+    fn distinct_structures(&self) -> usize {
+        self.dev.len() + self.final_.len()
+    }
+
     /// Whether this structure is already owned by a holdout tier.
     fn blocks(&self, arena: &ExprArena, root: ExprId) -> bool {
-        self.keys.contains(arena, root)
+        blocked_by_either(&self.dev, &self.final_, arena, root)
     }
+}
+
+/// What Phase 1 (live generation) did against the fence: node sizes of what
+/// survived, and how many of the total requested were dropped. Bundled so
+/// [`report_holdout_fence`] stays under the 4-argument limit (J7).
+struct FenceOutcome {
+    kept_node_counts: Vec<usize>,
+    dropped: usize,
+    requested: usize,
 }
 
 /// Report what the fence did, with enough context that its headline number
 /// cannot be misread (see [`disjointness_note`]).
-fn report_holdout_fence(
-    fence: &HoldoutFence,
-    live_counts: &[usize],
-    dropped: usize,
-    requested_synthetic: usize,
-    sidecar: &Path,
-) {
+fn report_holdout_fence(fence: &HoldoutFence, outcome: &FenceOutcome, sidecar: &Path) {
     let fenced = SizeDistribution::of(&fence.node_counts);
-    let live = SizeDistribution::of(live_counts);
+    let live = SizeDistribution::of(&outcome.kept_node_counts);
 
     eprintln!(
-        "\nHoldout fence: dropped {dropped}/{requested_synthetic} live-generated expressions \
-         ({:.2}%) whose structure already lives in DEV or FINAL — every one is a \
+        "\nHoldout fence: dropped {}/{} live-generated expressions ({:.2}%) whose \
+         feature-quotient structure already lives in DEV or FINAL — every one is a \
          `holdout_structural_collision` record in {}. Without this the DEV metrics would not \
          measure a holdout.",
-        100.0 * dropped as f64 / requested_synthetic.max(1) as f64,
+        outcome.dropped,
+        outcome.requested,
+        100.0 * outcome.dropped as f64 / outcome.requested.max(1) as f64,
         sidecar.display()
     );
 
@@ -738,9 +756,9 @@ fn report_holdout_fence(
             }
         }
         (None, Some(fenced)) => eprintln!(
-            "  No live expressions survived to be sized (--synthetic {requested_synthetic}), so \
-             the drop count is 0 by construction and says nothing about the fence. Fenced \
-             structures: {}",
+            "  No live expressions survived to be sized (--synthetic {}), so the drop count is \
+             0 by construction and says nothing about the fence. Fenced structures: {}",
+            outcome.requested,
             fenced.render()
         ),
         (_, None) => eprintln!(
@@ -906,6 +924,42 @@ fn load_model(path: &Path, seed: u64) -> ExprNnue {
     model
 }
 
+/// Compose the journal's corpus identity from every tier file in
+/// `corpus_dir` — not just TRAIN.
+///
+/// DEV is measured unconditionally (Phase 3) and both DEV and FINAL seed the
+/// holdout fence (Phase 1, `HoldoutFence::build`) before a single expression
+/// is queued, so a run against a different DEV or FINAL tier is a materially
+/// different experiment even when TRAIN and every CLI flag are identical — a
+/// TRAIN-only identity records the same config value for both (P2 finding on
+/// PR #1019). Each tier is hashed independently and named
+/// (`"train=<hash>;dev=<hash>;final=<hash>"`) rather than concatenated raw,
+/// so one missing/unreadable tier degrades to a named "unreadable" component
+/// instead of silently shifting every other tier's bytes in the hash input.
+fn corpus_tier_identity(corpus_dir: &Path) -> String {
+    Tier::ALL
+        .iter()
+        .map(|tier| {
+            let path = corpus_dir.join(format!("corpus_{}.bin", tier.name()));
+            let hash = std::fs::read(&path)
+                .map(|bytes| pixelflow_pipeline::journal::fnv1a64_hex(&bytes))
+                .unwrap_or_else(|e| {
+                    // A tier not being readable at journal time is a fact
+                    // about this run, not a reason to lose the rest of the
+                    // line — the weights and DEV quality are already on
+                    // disk by the time this is composed.
+                    eprintln!(
+                        "WARNING: could not hash {} for the journal's corpus identity: {e}",
+                        path.display()
+                    );
+                    "unreadable".to_string()
+                });
+            format!("{}={hash}", tier.name())
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -921,10 +975,11 @@ fn main() {
     // so no unfenced expression can reach the training set.
     let fence = HoldoutFence::build(&args.corpus_dir);
     eprintln!(
-        "Holdout fence: {} distinct structures from DEV ({} entries) + FINAL ({} entries) in {}",
-        fence.keys.len(),
-        fence.dev_entries,
-        fence.final_entries,
+        "Holdout fence: {} distinct feature-quotient structures from DEV ({} entries) + FINAL \
+         ({} entries) in {}",
+        fence.distinct_structures(),
+        fence.dev_entries(),
+        fence.final_entries(),
         args.corpus_dir.display()
     );
 
@@ -970,7 +1025,7 @@ fn main() {
         // become a label, and recorded structurally in the sidecar.
         if fence.blocks(&pair.arena, pair.unoptimized) {
             let expression = arena_to_kernel_code(&pair.arena, pair.unoptimized);
-            exclusions.record_holdout_drop(&name, &expression);
+            exclusions.record_holdout_drop(Source::Synthetic.phase(), &name, &expression);
             continue;
         }
 
@@ -1011,9 +1066,11 @@ fn main() {
 
     report_holdout_fence(
         &fence,
-        &live_counts,
-        exclusions.holdout_dropped,
-        args.synthetic,
+        &FenceOutcome {
+            kept_node_counts: live_counts,
+            dropped: exclusions.holdout_dropped,
+            requested: args.synthetic,
+        },
         &args.exclusions,
     );
 
@@ -1056,6 +1113,13 @@ fn main() {
     // broken backend as held-out truth (DEV). The same-form gate is re-run
     // with THIS build's JIT and oracle; drops are recorded in their own
     // sidecar, and the rate alarms in `finish` judge the corpus afterward.
+    //
+    // TRAIN entries also cross the SAME holdout fence the live stream does
+    // (P1(d)): `gen_bench_corpus` dedups at build time, but a TRAIN tier
+    // built before the feature-quotient key existed — or by a build whose
+    // corpus predates it — can still hold an entry that is feature-identical
+    // to something in DEV/FINAL. Loading it unchecked would train on exactly
+    // the structure the fence exists to hold out.
     let revalidation_path = args.corpus_revalidation.to_str().unwrap_or_else(|| {
         panic!(
             "--corpus-revalidation path {} is not valid UTF-8",
@@ -1082,7 +1146,14 @@ fn main() {
             corpus_exprs.len()
         );
         let mut train_revalidation_drops = 0usize;
+        let mut train_fence_drops = 0usize;
         for (name, arena, root) in corpus_exprs {
+            if fence.blocks(&arena, root) {
+                let expression = arena_to_kernel_code(&arena, root);
+                exclusions.record_holdout_drop(Source::TrainCorpus.phase(), &name, &expression);
+                train_fence_drops += 1;
+                continue;
+            }
             if corpus_revalidation.verdict(&name, &arena, root).0.is_some() {
                 train_revalidation_drops += 1;
                 continue;
@@ -1093,6 +1164,14 @@ fn main() {
                 arena: Some(arena),
                 root,
             });
+        }
+        if train_fence_drops > 0 {
+            eprintln!(
+                "  TRAIN holdout fence dropped {train_fence_drops} stored entries whose \
+                 feature-quotient structure already lives in DEV or FINAL (recorded as \
+                 `holdout_structural_collision` in {})",
+                args.exclusions.display()
+            );
         }
         if train_revalidation_drops > 0 {
             eprintln!(
@@ -1192,7 +1271,7 @@ fn main() {
         // the distribution instead of having it censored away.
         match session.benchmark_arena(queue[idx].arena(), root, MINT_MODE) {
             Ok(bench) => {
-                let label = mint_label(&bench, source.phase());
+                let label = mint_label(&bench, position, source.phase());
                 match source {
                     Source::Dev => dev_measurements.push((idx, label.target_log_ns)),
                     Source::Synthetic | Source::TrainCorpus => {
@@ -1544,6 +1623,7 @@ fn main() {
         )
     });
     let metadata = MintMetadata {
+        schema_identity: MintMetadata::current_schema_identity(),
         bench_mode: bench_mode_slug(MINT_MODE).to_string(),
         trainer: "bootstrap_extraction_head".to_string(),
         samples: samples.len(),
@@ -1575,33 +1655,90 @@ fn main() {
     // bench was the only journal writer, so intrinsic quality never had a
     // cross-round history. Written last — after the weights and sidecar — so
     // the line always names a checkpoint that exists.
-    append_journal(&TrainerJournalRecord {
-        record: "bootstrap_extraction_head",
-        ts_unix: unix_now_s(),
-        weights_path: args.output.display().to_string(),
-        corpus_dir: args.corpus_dir.display().to_string(),
-        bench_mode: bench_mode_slug(MINT_MODE),
-        train_samples: samples.len(),
-        synthetic_requested: args.synthetic,
-        epochs: args.epochs,
-        lr: args.lr,
-        seed: args.seed,
-        order_seed,
-        dev_samples: measured.len(),
-        dev_mae_log_ns: dev_mae,
-        dev_spearman_rho: dev_spearman,
-        dev_pred_bias_log_ns: dev_bias,
-        dev_pred_std_ratio: if meas_std > 0.0 {
-            pred_std / meas_std
-        } else {
-            f64::NAN
+    //
+    // Config hash (J15): this run's source revision, EVERY corpus tier this
+    // run actually loaded, the weights it produced, and the build
+    // environment — the same provenance shape `bench_extraction_3way` composes,
+    // shared via `pixelflow_pipeline::journal` rather than reimplemented here.
+    // Before this, a `bootstrap_extraction_head` journal line carried none of
+    // it: two runs against different corpora or different commits were
+    // indistinguishable in the journal.
+    //
+    // TRAIN alone is not enough (P2 finding on PR #1019): DEV is measured
+    // unconditionally in Phase 3, and both DEV and FINAL seed the holdout
+    // fence in Phase 1 before a single expression is queued — so a DEV or
+    // FINAL tier swap changes which candidates the fence admits and what the
+    // reported DEV metrics mean, a materially different experiment a
+    // TRAIN-only identity could not distinguish. Every tier this run loaded
+    // (all three, always — see `HoldoutFence::build` and the DEV load below;
+    // TRAIN degrades to "unreadable" under `--skip-corpus`) is folded in.
+    use pixelflow_pipeline::journal::{
+        ArtifactId, ConfigHash, DIFF_HASH_EXCLUDES, JournalEntry, SourceVersion,
+    };
+    let source = SourceVersion::current(&DIFF_HASH_EXCLUDES);
+    let corpus_identity = corpus_tier_identity(&args.corpus_dir);
+    let protocol = format!(
+        "epochs={};lr={};batch_size={};momentum={};weight_decay={};grad_clip={};\
+         value_coeff={};synthetic={};skip_corpus={};seed={};order_seed={order_seed};\
+         dev_eval_max={}",
+        args.epochs,
+        args.lr,
+        args.batch_size,
+        args.momentum,
+        args.weight_decay,
+        args.grad_clip,
+        args.value_coeff,
+        args.synthetic,
+        args.skip_corpus,
+        args.seed,
+        // Two runs differing only in --dev-eval-max select different DEV
+        // subsets (load_corpus_exprs) and so measure different populations —
+        // without this, `--epochs 0` makes that a real ConfigHash collision:
+        // identical weights, identical corpus_identity/weights_fnv64, but
+        // different reported DEV metrics (P2 finding on the fix commit for
+        // PR #1019).
+        args.dev_eval_max,
+    );
+    let config = ConfigHash::compose(
+        &source,
+        &corpus_identity,
+        &metadata.weights_fnv64,
+        &protocol,
+    );
+    let weights = ArtifactId::with_identity(
+        args.output.display().to_string(),
+        metadata.weights_fnv64.clone(),
+    );
+
+    append_journal(&JournalEntry::new(
+        "bootstrap_extraction_head",
+        config,
+        weights,
+        TrainerMetrics {
+            corpus_dir: args.corpus_dir.display().to_string(),
+            bench_mode: bench_mode_slug(MINT_MODE),
+            train_samples: samples.len(),
+            synthetic_requested: args.synthetic,
+            epochs: args.epochs,
+            lr: args.lr,
+            seed: args.seed,
+            order_seed,
+            dev_samples: measured.len(),
+            dev_mae_log_ns: dev_mae,
+            dev_spearman_rho: dev_spearman,
+            dev_pred_bias_log_ns: dev_bias,
+            dev_pred_std_ratio: if meas_std > 0.0 {
+                pred_std / meas_std
+            } else {
+                f64::NAN
+            },
+            dev_pred_p90p10_ratio: if meas_spread > 0.0 {
+                pred_spread / meas_spread
+            } else {
+                f64::NAN
+            },
         },
-        dev_pred_p90p10_ratio: if meas_spread > 0.0 {
-            pred_spread / meas_spread
-        } else {
-            f64::NAN
-        },
-    });
+    ));
 }
 
 #[cfg(test)]
@@ -1609,6 +1746,7 @@ mod tests {
     use super::*;
 
     use pixelflow_ir::OpKind;
+    use pixelflow_pipeline::jit_bench::{SessionNs, log_ns};
     use pixelflow_pipeline::training::corpus::write_corpus;
 
     // ── Holdout fence ───────────────────────────────────────────────────────
@@ -1640,7 +1778,7 @@ mod tests {
             .enumerate()
             .map(|(i, (a, r))| (format!("{}_{i}", tier.name()), a.clone(), *r))
             .collect();
-        write_corpus(&tier_corpus_path(dir, tier), &entries)
+        write_corpus(&dir.join(format!("corpus_{}.bin", tier.name())), &entries)
             .unwrap_or_else(|e| panic!("failed to write {} corpus: {e}", tier.name()));
     }
 
@@ -1651,9 +1789,8 @@ mod tests {
         write_tier(&dir, Tier::Final, &[scaled_var(3.0)]);
 
         let fence = HoldoutFence::build(&dir);
-        assert_eq!(fence.dev_entries, 1);
-        assert_eq!(fence.final_entries, 1);
-        assert_eq!(fence.keys.len(), 2);
+        assert_eq!(fence.dev_entries(), 1);
+        assert_eq!(fence.final_entries(), 1);
 
         // A freshly built arena with the SAME structure as a DEV expression
         // is the leak: different arena, different ids, same computation.
@@ -1662,16 +1799,82 @@ mod tests {
         // FINAL is fenced identically.
         let (final_shape, final_root) = scaled_var(3.0);
         assert!(fence.blocks(&final_shape, final_root));
-        // A different constant is a different structure (Const compares by
-        // bits) and must survive.
+        // P1(d): a DIFFERENT literal is not a different structure to the
+        // extraction head — `OpKind::Const` carries no value — so it must
+        // ALSO be blocked, even though it matches neither fenced entry
+        // byte-for-byte. This is the exact review case (X*2.0 fencing out
+        // X*3.0), restated with a third literal for good measure.
         let (other, other_root) = scaled_var(4.0);
-        assert!(!fence.blocks(&other, other_root));
-        // So must a different operator over the same leaves.
+        assert!(fence.blocks(&other, other_root));
+        // A genuinely different operator over the same leaves must survive.
         let mut arena = ExprArena::new();
         let x = arena.push_var(0);
         let c = arena.push_const(2.0);
         let add = arena.push_binary(OpKind::Add, x, c);
         assert!(!fence.blocks(&arena, add));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── Journal corpus identity covers every loaded tier (P2, PR #1019) ────
+
+    #[test]
+    fn corpus_tier_identity_changes_when_dev_changes_with_train_and_final_fixed() {
+        let dir = scratch_dir("tier_identity_dev");
+        write_tier(&dir, Tier::Train, &[scaled_var(1.0)]);
+        write_tier(&dir, Tier::Dev, &[scaled_var(2.0)]);
+        write_tier(&dir, Tier::Final, &[scaled_var(3.0)]);
+        let before = corpus_tier_identity(&dir);
+
+        // Rewrite ONLY DEV — the exact scenario the finding named: TRAIN
+        // (and FINAL) unchanged, DEV different, same directory.
+        write_tier(&dir, Tier::Dev, &[scaled_var(20.0)]);
+        let after = corpus_tier_identity(&dir);
+
+        assert_ne!(
+            before, after,
+            "corpus_tier_identity must change when DEV changes, even though TRAIN and \
+             FINAL did not — DEV shapes the holdout fence and supplies the reported \
+             quality metrics, so this is a materially different run"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corpus_tier_identity_changes_when_final_changes_with_train_and_dev_fixed() {
+        let dir = scratch_dir("tier_identity_final");
+        write_tier(&dir, Tier::Train, &[scaled_var(1.0)]);
+        write_tier(&dir, Tier::Dev, &[scaled_var(2.0)]);
+        write_tier(&dir, Tier::Final, &[scaled_var(3.0)]);
+        let before = corpus_tier_identity(&dir);
+
+        write_tier(&dir, Tier::Final, &[scaled_var(30.0)]);
+        let after = corpus_tier_identity(&dir);
+
+        assert_ne!(
+            before, after,
+            "corpus_tier_identity must change when FINAL changes — FINAL shapes the \
+             holdout fence exactly as DEV does"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corpus_tier_identity_names_a_missing_tier_rather_than_shifting_the_others() {
+        let dir = scratch_dir("tier_identity_missing");
+        write_tier(&dir, Tier::Dev, &[scaled_var(2.0)]);
+        write_tier(&dir, Tier::Final, &[scaled_var(3.0)]);
+        // TRAIN never written — the `--skip-corpus` case.
+
+        let identity = corpus_tier_identity(&dir);
+        assert!(
+            identity.contains("train=unreadable"),
+            "missing TRAIN must be named, not silently dropped: {identity}"
+        );
+        assert!(identity.contains("dev="), "{identity}");
+        assert!(identity.contains("final="), "{identity}");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1700,8 +1903,8 @@ mod tests {
         let dir = scratch_dir("log");
         let sidecar = dir.join("exclusions.jsonl");
         let mut log = ExclusionLog::create(&sidecar);
-        log.record_holdout_drop("synthetic_7", "X * 2.0");
-        log.record_holdout_drop("synthetic_9", "X * 3.0");
+        log.record_holdout_drop("synthetic", "synthetic_7", "X * 2.0");
+        log.record_holdout_drop("synthetic", "synthetic_9", "X * 3.0");
 
         // A fence drop is not a measurement exclusion: the censoring alarm's
         // counter must be untouched, or a working fence would look like a
@@ -1856,7 +2059,7 @@ mod tests {
             .enumerate()
             .map(|(position, &expr)| {
                 let bench = drifted(truth[expr], drift[position]);
-                (expr, mint_label(&bench, "test").target_log_ns)
+                (expr, mint_label(&bench, position, "test").target_log_ns)
             })
             .collect()
     }
@@ -1886,7 +2089,7 @@ mod tests {
                      another — drift is still correlated with collection order"
                 );
                 assert!(
-                    (target - log_ns(truth[expr])).abs() < 1e-6,
+                    (target - log_ns(SessionNs::new(truth[expr]))).abs() < 1e-6,
                     "the normalized target must be the undrifted truth"
                 );
             }
@@ -1900,19 +2103,27 @@ mod tests {
         // two different targets.
         let early = drifted(100.0, 1.0);
         let late = drifted(100.0, 2.0);
+        // Deliberately wraps the uncorrected `adjusted_ns` as if it were
+        // already a `SessionNs` — exactly the WRONG usage `log_ns`'s
+        // signature exists to make hard to reach by accident on the real
+        // label-minting path. This is the control the test below needs to
+        // mean anything.
         assert!(
-            (log_ns(early.adjusted_ns) - log_ns(late.adjusted_ns)).abs() > 0.5,
+            (log_ns(SessionNs::new(early.adjusted_ns)) - log_ns(SessionNs::new(late.adjusted_ns)))
+                .abs()
+                > 0.5,
             "the drift profile must actually move an uncorrected target"
         );
         assert!(
-            (mint_label(&early, "t").target_log_ns - mint_label(&late, "t").target_log_ns).abs()
+            (mint_label(&early, 0, "t").target_log_ns - mint_label(&late, 1, "t").target_log_ns)
+                .abs()
                 < 1e-6
         );
     }
 
     #[test]
     fn mint_label_reports_the_factor_it_applied() {
-        let label = mint_label(&drifted(100.0, 1.25), "t");
+        let label = mint_label(&drifted(100.0, 1.25), 0, "t");
         assert!(
             (label.normalization - 0.8).abs() < 1e-9,
             "a 1.25x slowdown is corrected by 0.8, got {}",
@@ -1928,7 +2139,7 @@ mod tests {
         // a normalized set on a different clock.
         let mut bench = drifted(100.0, 1.0);
         bench.sentinel = None;
-        let _ = mint_label(&bench, "unit test");
+        let _ = mint_label(&bench, 0, "unit test");
     }
 
     // ── Population sizes (item 5) ───────────────────────────────────────────

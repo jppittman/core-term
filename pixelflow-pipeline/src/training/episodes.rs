@@ -21,7 +21,7 @@ use std::path::Path;
 use pixelflow_ir::{ExprArena, ExprId};
 use pixelflow_search::egraph::saturate::saturate_with_full_budget;
 use pixelflow_search::egraph::{
-    EGraph, IncrementalExtractor, Rewrite, all_rules, compute_ref_counts, extract_neural_to_arena,
+    EGraph, IncrementalExtractor, Rewrite, all_rules, extract_neural_to_arena,
 };
 use pixelflow_search::nnue::ExprNnue;
 use pixelflow_search::nnue::RuleTemplates;
@@ -268,9 +268,8 @@ pub fn run_episode(
     }
     let extractor = IncrementalExtractor::new(model, 8);
     let (_final_cost, final_choices) = extractor.extract_choices_only(&egraph, root);
-    let _final_ref_counts = compute_ref_counts(&egraph, root, &final_choices);
     let (final_arena, final_arena_root) =
-        pixelflow_search::egraph::choices_to_arena(&egraph, root, &final_choices);
+        pixelflow_search::egraph::choices_to_arena(&final_choices);
 
     if final_arena.has_degenerate(final_arena_root) {
         log_exclusion(
