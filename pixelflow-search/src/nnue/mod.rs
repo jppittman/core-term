@@ -11,6 +11,7 @@
 extern crate alloc;
 
 pub mod factored;
+pub mod guide;
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -21,17 +22,19 @@ use pixelflow_ir::kind::OpMap;
 /// Re-export canonical IR types as the source of truth.
 pub use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
 
-/// Re-export ExprNnue for dual-head AlphaZero-style architecture.
+/// Re-export ExprNnue: the shared backbone + extraction (value) head.
 pub use factored::ExprNnue;
 
 /// Re-export key types from factored module.
-pub use factored::{EdgeAccumulator, GraphAccumulator, OpEmbeddings};
+pub use factored::{EdgeAccumulator, OpEmbeddings};
 
-/// Re-export unified mask architecture constants and types.
-pub use factored::{
-    ArenaRuleTemplates, EMBED_DIM, GRAPH_ACC_DIM, GRAPH_INPUT_DIM, MASK_INPUT_DIM, MASK_MAX_RULES,
-    MLP_HIDDEN, RULE_CONCAT_DIM, RULE_FEATURE_DIM, RuleFeatures, RuleTemplates,
-};
+/// Re-export shared embedding-space constants and rule-template types.
+///
+/// `RuleTemplates`/`ArenaRuleTemplates` feed `BwdGenerator`'s corpus
+/// junkification below — unrelated to `nnue::guide` despite the similarly
+/// named (and now-deleted) `RuleFeatures`, whose hand-crafted 8-dim feature
+/// vector `encode_rule_from_arena` superseded.
+pub use factored::{ArenaRuleTemplates, EMBED_DIM, MLP_HIDDEN, RuleTemplates};
 
 // Note: ExprGenConfig, ExprGenerator, BwdGenConfig, and BwdGenerator are already
 // public structs defined in this module - no re-export needed.

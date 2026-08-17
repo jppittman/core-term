@@ -91,7 +91,7 @@ use serde::Serialize;
 
 use pixelflow_ir::{ExprArena, ExprId};
 use pixelflow_search::egraph::all_rules;
-use pixelflow_search::nnue::factored::{EMBED_DIM, EdgeAccumulator, ExprNnue, GraphAccumulator};
+use pixelflow_search::nnue::factored::{EdgeAccumulator, ExprNnue};
 use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator};
 
 use pixelflow_pipeline::extraction_head_weights_path;
@@ -383,25 +383,16 @@ struct TrainerJournalRecord {
 }
 
 /// Append one line to the research journal, loudly on any failure.
+///
+/// Mechanics (serialize, mkdir, LFS-pointer guard, append-or-panic) live in
+/// `pixelflow_pipeline::journal` — the one writer every journal-producing
+/// binary shares (docs/plans/2026-08-17-cost-model-domain.md, J15).
 fn append_journal(record: &TrainerJournalRecord) {
     let journal_path = PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../docs/results/journal.jsonl"
     ));
-    let line = serde_json::to_string(record)
-        .unwrap_or_else(|e| panic!("failed to serialize the trainer journal record: {e}"));
-    if let Some(parent) = journal_path.parent() {
-        std::fs::create_dir_all(parent)
-            .unwrap_or_else(|e| panic!("failed to create {}: {e}", parent.display()));
-    }
-    let mut journal = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&journal_path)
-        .unwrap_or_else(|e| panic!("failed to open {}: {e}", journal_path.display()));
-    writeln!(journal, "{line}")
-        .unwrap_or_else(|e| panic!("failed to append to {}: {e}", journal_path.display()));
-    eprintln!("Journal appended: {}", journal_path.display());
+    pixelflow_pipeline::journal::append_record(&journal_path, record);
 }
 
 /// A seeded permutation of `0..len` (LCG Fisher-Yates).
@@ -1334,10 +1325,6 @@ fn main() {
         rng_state >> 33
     };
 
-    // We need a dummy rule embedding for forward_cached — value head doesn't use it
-    let dummy_rule_embed = [0.0f32; EMBED_DIM];
-    let dummy_gacc = GraphAccumulator::new();
-
     for epoch in 0..args.epochs {
         // Shuffle indices
         let mut indices: Vec<usize> = (0..samples.len()).collect();
@@ -1354,7 +1341,7 @@ fn main() {
 
             for &idx in chunk {
                 let sample = &samples[idx];
-                let cache = forward_cached(&model, &sample.acc, &dummy_gacc, &dummy_rule_embed);
+                let cache = forward_cached(&model, &sample.acc);
 
                 backward_value(
                     &model,
@@ -1512,7 +1499,7 @@ fn main() {
         samples.len() - 1,
     ] {
         let sample = &samples[i];
-        let cache = forward_cached(&model, &sample.acc, &dummy_gacc, &dummy_rule_embed);
+        let cache = forward_cached(&model, &sample.acc);
         let pred_ns = libm::expf(cache.value_pred) as f64;
         let actual_ns = libm::expf(sample.target_log_ns) as f64;
         eprintln!(
