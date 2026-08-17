@@ -6,7 +6,7 @@
 //! On the SAME saturated e-graph, compares three extraction policies with
 //! real JIT wall-clock:
 //!   (a) NNUE      — `IncrementalExtractor` guided by the trained Judge
-//!   (b) STATIC    — `extract_dag` + `CostModel::latency_prior()`
+//!   (b) STATIC    — `extract` + `CostModel::latency_prior()`
 //!   (c) NO-SWAP   — the original expression form, un-extracted
 //! plus a fourth A/A arm (STATIC measured twice, `static_aa`) whose delta is
 //! the run's noise floor: any verdict inside that floor is INCONCLUSIVE.
@@ -104,7 +104,7 @@
 
 use std::fs;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
@@ -117,7 +117,7 @@ use pixelflow_ir::{
     PointVerdict, compare_mask_root,
 };
 use pixelflow_search::egraph::{
-    CostModel, EGraph, IncrementalExtractor, all_rules, choices_to_arena, extract_dag,
+    CostModel, EGraph, IncrementalExtractor, all_rules, choices_to_arena, extract,
 };
 use pixelflow_search::nnue::ExprNnue;
 
@@ -286,20 +286,19 @@ impl SeededRng {
 }
 
 // ---------------------------------------------------------------------------
-// Config hash: FNV-1a over the weights bytes then the key parameters, so a
-// journal line identifies exactly which (weights, protocol) produced it.
+// Config hash: source revision + corpus identity + weights identity +
+// environment + this binary's protocol params, composed into one journal
+// line's provenance. The composition itself (`SourceVersion`,
+// `environment_fingerprint`, `ConfigHash::compose`, the FNV-1a primitive) now
+// lives in `pixelflow_pipeline::journal` — `bootstrap_extraction_head` needs
+// the exact same shape, and hand-rolling it independently in each binary was
+// the structurally-divergent-journal-line risk J15 exists to close
+// (docs/plans/2026-08-17-cost-model-domain.md).
 // ---------------------------------------------------------------------------
 
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-fn fnv1a64(bytes: &[u8], mut hash: u64) -> u64 {
-    for &b in bytes {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
+use pixelflow_pipeline::journal::{
+    ArtifactId, ConfigHash, DIFF_HASH_EXCLUDES, JournalEntry, SourceVersion, fnv1a64_hex,
+};
 
 // ---------------------------------------------------------------------------
 // The four measurement arms. STATIC appears twice: the `static_aa` arm is the
@@ -1284,14 +1283,17 @@ fn prepare_kernel(
     let t_nnue = Instant::now();
     let extractor = IncrementalExtractor::new(ctx.nnue, EXTRACT_TOP_K);
     let (_cost, nnue_choices) = extractor.extract_choices_only(&eg, root_class);
-    let (nnue_arena, nnue_root) = choices_to_arena(&eg, root_class, &nnue_choices);
+    let (nnue_arena, nnue_root) = choices_to_arena(&nnue_choices);
     let extract_us_nnue = t_nnue.elapsed().as_secs_f64() * 1e6;
 
-    // (b) STATIC extraction — CostModel::latency_prior() via extract_dag.
+    // (b) STATIC extraction — CostModel::latency_prior() via `extract`, which
+    // seals its DP choices into an `Extraction` and calls `choices_to_arena`
+    // itself (one definition, imported, not restated). `extract_dag`'s extra
+    // DAG-sharing metadata (`.shared`/`.schedule`, for codegen let-binding)
+    // is unused here — this call site only ever wanted the arena.
     let t_static = Instant::now();
     let static_costs = CostModel::latency_prior();
-    let static_dag = extract_dag(&eg, root_class, &static_costs);
-    let (static_arena, static_root) = choices_to_arena(&eg, root_class, &static_dag.choices);
+    let (static_arena, static_root, _static_cost) = extract(&eg, root_class, &static_costs);
     let extract_us_static = t_static.elapsed().as_secs_f64() * 1e6;
 
     let mut gate = |policy: &'static str,
@@ -1595,21 +1597,15 @@ struct RunSummaryRecord<'a> {
 }
 
 #[derive(Serialize)]
-struct JournalRecord<'a> {
-    record: &'static str,
-    ts_unix: u64,
-    config_hash: &'a str,
-    /// The revision the measurement logic itself came from (Codex P2). A
-    /// journal line without this cannot be attributed to a commit.
-    source_rev: &'a str,
-    /// Hash of the uncommitted diff behind a `-dirty` revision (Codex
-    /// 3741889899).
-    source_diff_hash: Option<&'a str>,
+/// This binary's own metrics for one line of `docs/results/journal.jsonl` —
+/// wrapped by [`pixelflow_pipeline::journal::JournalEntry`] for the
+/// provenance envelope (`record`, `ts_unix`, `config: ConfigHash`, `weights:
+/// ArtifactId`) every journal-writing binary now shares
+/// (docs/plans/2026-08-17-cost-model-domain.md, J15) — `config` already
+/// carries the corpus identity and source revision this struct used to
+/// duplicate as flat fields.
+struct BenchMetrics<'a> {
     tier: &'static str,
-    /// Corpus identity, its own field beside the hash it now feeds (Codex
-    /// 3744586352): two runs of the same executable over regenerated tiers are
-    /// different experiments and must be distinguishable here at a glance.
-    corpus_hash: &'a str,
     corpus_path: String,
     corpus_entries: usize,
     final_eval: bool,
@@ -2144,123 +2140,6 @@ fn verdict_text(inputs: &VerdictInputs<'_>) -> String {
     )
 }
 
-/// Paths excluded from the dirty-tree diff hash: a run WRITES into these, so
-/// including them would make the hash depend on the run's own output — the
-/// second invocation of an unchanged tree would hash differently from the
-/// first, which is the opposite of an identity.
-const DIFF_HASH_EXCLUDES: [&str; 2] = [
-    ":(exclude)pixelflow-pipeline/data",
-    ":(exclude)docs/results",
-];
-
-/// What source this measurement came from.
-///
-/// `rev` alone was not enough (Codex 3741889899): every uncommitted variant of
-/// the same HEAD collapsed onto the single string `"<sha>-dirty"`, so two
-/// working trees measuring different code produced identical config hashes and
-/// indistinguishable journal lines. `diff_hash` restores the distinction by
-/// hashing the actual uncommitted diff over tracked source.
-#[derive(Clone, Debug)]
-struct SourceVersion {
-    /// `git rev-parse HEAD`, suffixed `-dirty`, or `"unversioned"`.
-    rev: String,
-    /// FNV-1a of `git diff HEAD` over tracked source, excluding the run's own
-    /// outputs — `None` on a clean tree. FNV rather than SHA-256 because the
-    /// job is *distinguishing* working trees in a local research journal, and
-    /// a cryptographic hash would be a new dependency for no added property.
-    diff_hash: Option<String>,
-}
-
-impl SourceVersion {
-    /// Resolve the working tree's version. Runs git in the crate's manifest
-    /// directory so the answer names THIS repo regardless of cwd.
-    ///
-    /// On any git failure the revision is `"unversioned"` — after printing the
-    /// failure loudly on stderr, never silently.
-    fn resolve() -> Self {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let unversioned = |why: &str| -> SourceVersion {
-            eprintln!(
-                "WARNING: could not resolve the source revision ({why}) — the journal line will \
-                 record source_rev=\"unversioned\", which makes this run UNATTRIBUTABLE to a \
-                 commit. Fix git availability before trusting cross-run comparisons."
-            );
-            SourceVersion {
-                rev: "unversioned".to_string(),
-                diff_hash: None,
-            }
-        };
-        let git = |args: &[&str]| -> Result<String, String> {
-            match std::process::Command::new("git")
-                .args(args)
-                .current_dir(manifest_dir)
-                .output()
-            {
-                Ok(out) if out.status.success() => {
-                    Ok(String::from_utf8_lossy(&out.stdout).to_string())
-                }
-                Ok(out) => Err(format!(
-                    "`git {}` exited {}: {}",
-                    args.join(" "),
-                    out.status,
-                    String::from_utf8_lossy(&out.stderr).trim()
-                )),
-                Err(e) => Err(format!("failed to spawn git: {e}")),
-            }
-        };
-
-        let head = match git(&["rev-parse", "HEAD"]) {
-            Ok(s) => s.trim().to_string(),
-            Err(why) => return unversioned(&why),
-        };
-        if head.is_empty() {
-            return unversioned("`git rev-parse HEAD` produced no output");
-        }
-        let status = match git(&["status", "--porcelain"]) {
-            Ok(s) => s,
-            Err(why) => return unversioned(&why),
-        };
-        if !status.bytes().any(|b| !b.is_ascii_whitespace()) {
-            return SourceVersion {
-                rev: head,
-                diff_hash: None,
-            };
-        }
-
-        let mut diff_args = vec!["diff", "HEAD", "--"];
-        diff_args.extend(DIFF_HASH_EXCLUDES);
-        let diff = match git(&diff_args) {
-            Ok(s) => s,
-            Err(why) => {
-                // The tree IS dirty and the diff could not be read: say so and
-                // record no hash rather than pretending the variants are one.
-                eprintln!(
-                    "WARNING: the working tree is dirty but the diff could not be hashed ({why}) \
-                     — this run's config hash cannot distinguish it from other uncommitted \
-                     variants of {head}."
-                );
-                return SourceVersion {
-                    rev: format!("{head}-dirty"),
-                    diff_hash: None,
-                };
-            }
-        };
-        SourceVersion {
-            rev: format!("{head}-dirty"),
-            diff_hash: Some(format!("{:016x}", fnv1a64(diff.as_bytes(), FNV_OFFSET))),
-        }
-    }
-
-    /// The string that enters the config hash: revision plus, when dirty, the
-    /// diff's own hash.
-    fn config_hash_input(&self) -> String {
-        match &self.diff_hash {
-            Some(h) => format!("{};diff={h}", self.rev),
-            None => self.rev.clone(),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -2320,73 +2199,37 @@ fn subsample<T>(
 /// expressions were measured: `gen_bench_corpus` rewrites a tier in place, and
 /// a tier regenerated from a different seed, target, or manifest is a different
 /// experiment (Codex 3744586352). FNV rather than a cryptographic hash for the
-/// same reason `SourceVersion::diff_hash` uses it — the job is distinguishing
-/// setups in a local research journal, not resisting an adversary.
+/// same reason [`pixelflow_pipeline::journal::SourceVersion::diff_hash`] uses
+/// it — the job is distinguishing setups in a local research journal, not
+/// resisting an adversary. A thin, semantically-named wrapper around
+/// [`fnv1a64_hex`] (`pixelflow_pipeline::journal`'s shared primitive) rather
+/// than a second hash implementation.
 fn corpus_identity(bytes: &[u8]) -> String {
-    format!("{:016x}", fnv1a64(bytes, FNV_OFFSET))
+    fnv1a64_hex(bytes)
 }
 
-// `refuse_unsmudged_lfs_pointer` moved to
-// `pixelflow_pipeline::journal::append_record`, which now performs the whole
-// append (serialize, mkdir, LFS guard, append-or-panic) for this binary's
-// journal write below — the one writer every journal-producing binary shares
-// (docs/plans/2026-08-17-cost-model-domain.md, J15).
+// `refuse_unsmudged_lfs_pointer`, `SourceVersion`, `environment_fingerprint`,
+// and the FNV-1a primitive all moved to `pixelflow_pipeline::journal`, which
+// now performs the whole append (serialize, mkdir, LFS guard, append-or-panic)
+// AND composes the `ConfigHash` below — the one writer/composer every
+// journal-producing binary shares (docs/plans/2026-08-17-cost-model-domain.md,
+// J15).
 
-/// The build and machine this run's numbers came off.
-///
-/// Source, weights, corpus, and flags describe the *experiment*; they do not
-/// describe where it ran, and a latency benchmark's result is a property of
-/// both. The same source on aarch64 and on x86-64-with-AVX-512 emits different
-/// instructions for the same expression, and a debug build times nothing like a
-/// release one — yet without this the journal files all of those under one
-/// `config_hash` and invites a cross-machine comparison that means nothing.
-///
-/// Compile-time facts only: `target_arch`/`target_feature` are what actually
-/// select the emitter (the `#[cfg]` blocks above), and the profile decides
-/// whether the timings are meaningful at all. The specific CPU model is
-/// deliberately not read here — it needs a syscall or `/proc`, it varies across
-/// otherwise-identical cloud instances, and the sentinel calibration already
-/// records per-run clock behavior.
-fn environment_fingerprint() -> String {
-    let isa = if cfg!(target_feature = "avx512f") {
-        "avx512f"
-    } else if cfg!(target_feature = "avx2") {
-        "avx2"
-    } else if cfg!(target_feature = "fma") {
-        "fma"
-    } else {
-        "baseline"
-    };
-    format!(
-        "arch={};os={};ptr={};isa={};profile={}",
-        std::env::consts::ARCH,
-        std::env::consts::OS,
-        usize::BITS,
-        isa,
-        if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "release"
-        },
-    )
-}
-
-/// Everything that shapes the measurement, as the string the config hash is
-/// taken over: the protocol constants, the run's flags, the source revision,
-/// the corpus identity, and the environment the numbers were produced on.
-fn config_params(tier: Tier, args: &Args, source: &SourceVersion, corpus_hash: &str) -> String {
+/// This binary's own protocol parameters, as the free-text `protocol` field
+/// [`ConfigHash::compose`] folds in beside the source revision, corpus
+/// identity, weights identity, and environment it composes generically. Only
+/// what's specific to THIS measurement protocol lives here now — the shared
+/// parts moved to `pixelflow_pipeline::journal`.
+fn config_params(tier: Tier, args: &Args) -> String {
     format!(
         "saturate={SATURATE_LIMIT};top_k={EXTRACT_TOP_K};tier={};max_kernels={};\
          sample_seed={:#x};repeats={TIMED_REPEATS};order_seed={ORDER_SEED:#x};\
-         boot={BOOTSTRAP_ITERS}:{BOOTSTRAP_SEED:#x};\
-         mode={};tuples={INPUT_TUPLES};grid={};rev={};corpus={corpus_hash};{}",
+         boot={BOOTSTRAP_ITERS}:{BOOTSTRAP_SEED:#x};mode={};tuples={INPUT_TUPLES};grid={}",
         tier.name(),
         args.max_kernels,
         args.sample_seed,
         bench_mode_slug(BENCH_MODE),
         GRID.len(),
-        source.config_hash_input(),
-        environment_fingerprint(),
     )
 }
 
@@ -2479,13 +2322,16 @@ fn main() {
         mint.weights_fnv64
     );
 
-    // Config hash: weights bytes + the parameters that shape the measurement
-    // protocol + the SOURCE VERSION, so every journal line is attributable to
-    // one exact setup. Without the revision (Codex P2) two commits that change
-    // the measurement logic itself — the grid, the gate, the timing loop —
-    // hash identically while measuring different things; without the diff hash
-    // (Codex 3741889899) every uncommitted variant of one commit does.
-    let source = SourceVersion::resolve();
+    // Config hash: source revision + corpus identity + weights identity +
+    // environment + this binary's protocol params, composed by
+    // `pixelflow_pipeline::journal::ConfigHash` so every journal line is
+    // attributable to one exact setup the same way `bootstrap_extraction_head`
+    // now composes its own. Without the revision (Codex P2) two commits that
+    // change the measurement logic itself — the grid, the gate, the timing
+    // loop — hash identically while measuring different things; without the
+    // diff hash (Codex 3741889899) every uncommitted variant of one commit
+    // does.
+    let source = SourceVersion::current(&DIFF_HASH_EXCLUDES);
     eprintln!("Source revision: {}", source.rev);
     if let Some(h) = &source.diff_hash {
         eprintln!("Uncommitted diff hash: {h}");
@@ -2513,11 +2359,14 @@ fn main() {
         corpus_path.display(),
         corpus_bytes.len()
     );
-    let params = config_params(tier, &args, &source, &corpus_hash);
-    let config_hash = format!(
-        "{:016x}",
-        fnv1a64(params.as_bytes(), fnv1a64(&weights_bytes, FNV_OFFSET))
-    );
+    let protocol = config_params(tier, &args);
+    // `mint.weights_fnv64` is already this exact FNV-1a hash of
+    // `weights_bytes` (Codex 3758853787's `weights_identity`, asserted equal
+    // to these bytes above by `require_weights`) — reusing it here means the
+    // config hash names the weights the sidecar itself vouches for, not a
+    // second independently-computed hash of the same bytes.
+    let config = ConfigHash::compose(&source, &corpus_hash, &mint.weights_fnv64, &protocol);
+    let config_hash = config.value.clone();
     eprintln!("Config hash: {config_hash}");
 
     let ts_unix = SystemTime::now()
@@ -2689,7 +2538,7 @@ fn main() {
                 let sentinel = bench
                     .sentinel
                     .expect("session-minted BenchResult always carries a SentinelContext");
-                let normalization = sentinel.normalization();
+                let normalization = sentinel.normalization().get();
                 out.write(&MeasurementRecord {
                     record: "measurement",
                     kernel: &kernel.name,
@@ -3143,51 +2992,54 @@ fn main() {
         env!("CARGO_MANIFEST_DIR"),
         "/../docs/results/journal.jsonl"
     ));
-    let journal_record = JournalRecord {
-        record: "bench_extraction_3way",
-        ts_unix,
-        config_hash: &config_hash,
-        source_rev: &source.rev,
-        source_diff_hash: source.diff_hash.as_deref(),
-        tier: tier.name(),
-        corpus_hash: &corpus_hash,
-        corpus_path: corpus_path.display().to_string(),
-        corpus_entries,
-        final_eval: args.final_eval,
-        mode: bench_mode_slug(BENCH_MODE),
-        weights_mint_mode: mint.bench_mode.clone(),
-        geomean_nnue_static: finite_or_none(geomean_nnue_static),
-        geomean_nnue_static_ci_lo: ratio_ci.map(|(lo, _)| lo),
-        geomean_nnue_static_ci_hi: ratio_ci.map(|(_, hi)| hi),
-        nnue_static_pairs: all_nnue_static.len(),
-        ratio_median: ratio_dist.as_ref().map(|d| d.median),
-        ratio_q1: ratio_dist.as_ref().map(|d| d.q1),
-        ratio_q3: ratio_dist.as_ref().map(|d| d.q3),
-        ratio_wins: ratio_dist.as_ref().map_or(0, |d| d.wins),
-        ratio_losses: ratio_dist.as_ref().map_or(0, |d| d.losses),
-        loo_geomean_min: loo.as_ref().map(|l| l.min),
-        loo_geomean_max: loo.as_ref().map(|l| l.max),
-        loo_most_influential: loo.as_ref().map(|l| l.most_influential.clone()),
-        geomean_static_noswap: finite_or_none(geomean_static_noswap),
-        noise_floor_pct: finite_or_none(noise_floor_pct),
-        kernels_excluded,
-        named_static_fail,
-        named_nnue_fail,
-        syn_static_fail,
-        syn_nnue_fail,
-        failure_rate_noswap: failure_rates.noswap,
-        failure_rate_static: failure_rates.static_,
-        failure_rate_nnue: failure_rates.nnue,
-        same_form_miscompile_rate: gate_tally.same_form_rate(),
-        cross_form_divergence_rate: gate_tally.cross_form_rate(),
-        correctness_gate_failed: !gate_alarms.is_empty(),
-        gate_alarms: gate_alarms.clone(),
-        bound_coverage_mean_pct,
-        verdict_censored: !failure_rates.censoring().is_empty(),
-        verdict: &verdict,
-        data_jsonl: data_path.display().to_string(),
-    };
-    pixelflow_pipeline::journal::append_record(&journal_path, &journal_record);
+    let weights_artifact = ArtifactId::with_identity(
+        weights_path.display().to_string(),
+        mint.weights_fnv64.clone(),
+    );
+    let journal_entry = JournalEntry::new(
+        "bench_extraction_3way",
+        config,
+        weights_artifact,
+        BenchMetrics {
+            tier: tier.name(),
+            corpus_path: corpus_path.display().to_string(),
+            corpus_entries,
+            final_eval: args.final_eval,
+            mode: bench_mode_slug(BENCH_MODE),
+            weights_mint_mode: mint.bench_mode.clone(),
+            geomean_nnue_static: finite_or_none(geomean_nnue_static),
+            geomean_nnue_static_ci_lo: ratio_ci.map(|(lo, _)| lo),
+            geomean_nnue_static_ci_hi: ratio_ci.map(|(_, hi)| hi),
+            nnue_static_pairs: all_nnue_static.len(),
+            ratio_median: ratio_dist.as_ref().map(|d| d.median),
+            ratio_q1: ratio_dist.as_ref().map(|d| d.q1),
+            ratio_q3: ratio_dist.as_ref().map(|d| d.q3),
+            ratio_wins: ratio_dist.as_ref().map_or(0, |d| d.wins),
+            ratio_losses: ratio_dist.as_ref().map_or(0, |d| d.losses),
+            loo_geomean_min: loo.as_ref().map(|l| l.min),
+            loo_geomean_max: loo.as_ref().map(|l| l.max),
+            loo_most_influential: loo.as_ref().map(|l| l.most_influential.clone()),
+            geomean_static_noswap: finite_or_none(geomean_static_noswap),
+            noise_floor_pct: finite_or_none(noise_floor_pct),
+            kernels_excluded,
+            named_static_fail,
+            named_nnue_fail,
+            syn_static_fail,
+            syn_nnue_fail,
+            failure_rate_noswap: failure_rates.noswap,
+            failure_rate_static: failure_rates.static_,
+            failure_rate_nnue: failure_rates.nnue,
+            same_form_miscompile_rate: gate_tally.same_form_rate(),
+            cross_form_divergence_rate: gate_tally.cross_form_rate(),
+            correctness_gate_failed: !gate_alarms.is_empty(),
+            gate_alarms: gate_alarms.clone(),
+            bound_coverage_mean_pct,
+            verdict_censored: !failure_rates.censoring().is_empty(),
+            verdict: &verdict,
+            data_jsonl: data_path.display().to_string(),
+        },
+    );
+    pixelflow_pipeline::journal::append_record(&journal_path, &journal_entry);
 
     println!("\nMachine-readable results: {}", data_path.display());
 
@@ -3448,8 +3300,7 @@ mod tests {
         let root_class = eg.add_arena(&arena, root);
         eg.saturate_with_limit(SATURATE_LIMIT);
         let costs = CostModel::latency_prior();
-        let dag = extract_dag(&eg, root_class, &costs);
-        let (static_arena, static_root) = choices_to_arena(&eg, root_class, &dag.choices);
+        let (static_arena, static_root, _cost) = extract(&eg, root_class, &costs);
         let (code, check) = check_policy(
             "poly/static",
             (&arena, root),
@@ -4040,10 +3891,12 @@ mod tests {
     }
 
     #[test]
-    fn config_params_change_when_only_the_corpus_changed() {
+    fn config_hash_changes_when_only_the_corpus_changed() {
         // The regression: same executable, same flags, same revision, a tier
         // regenerated from a different seed. Before the fix these two runs
         // were one `config_hash`, and the journal called them the same setup.
+        // `config_params` now supplies only the protocol half; the corpus
+        // identity is a `ConfigHash::compose` argument in its own right.
         let args = Args {
             corpus_dir: "pixelflow-pipeline/data".into(),
             final_eval: false,
@@ -4054,26 +3907,19 @@ mod tests {
             rev: "0".repeat(40),
             diff_hash: None,
         };
-        let before = config_params(Tier::Dev, &args, &source, "1111111111111111");
-        let after = config_params(Tier::Dev, &args, &source, "2222222222222222");
-        assert_ne!(before, after);
-        assert!(before.contains("corpus=1111111111111111"), "{before}");
-        // And the hash over them differs, which is what the journal records.
-        let weights = b"weights";
-        let hash = |p: &str| {
-            format!(
-                "{:016x}",
-                fnv1a64(p.as_bytes(), fnv1a64(weights, FNV_OFFSET))
-            )
-        };
-        assert_ne!(hash(&before), hash(&after));
+        let protocol = config_params(Tier::Dev, &args);
+        let before = ConfigHash::compose(&source, "1111111111111111", "weights", &protocol);
+        let after = ConfigHash::compose(&source, "2222222222222222", "weights", &protocol);
+        assert_ne!(before.value, after.value);
+        assert_eq!(before.corpus_identity, "1111111111111111");
+        assert_eq!(after.corpus_identity, "2222222222222222");
     }
 
     // ── Source version in the config hash (Codex P2 + 3741889899) ───────────
 
     #[test]
     fn source_revision_is_a_sha_or_a_loud_unversioned() {
-        let source = SourceVersion::resolve();
+        let source = SourceVersion::current(&DIFF_HASH_EXCLUDES);
         if source.rev == "unversioned" {
             return; // git unavailable in this environment; the warning printed.
         }
@@ -4108,7 +3954,8 @@ mod tests {
             rev: "abc-dirty".into(),
             diff_hash: Some("2222".into()),
         };
-        let hash = |s: &SourceVersion| fnv1a64(s.config_hash_input().as_bytes(), FNV_OFFSET);
+        let hash =
+            |s: &SourceVersion| ConfigHash::compose(s, "corpus", "weights", "protocol").value;
         assert_ne!(hash(&dirty_a), hash(&dirty_b));
         assert_ne!(hash(&clean), hash(&dirty_a));
         assert_eq!(hash(&dirty_a), hash(&dirty_a));
@@ -4124,13 +3971,19 @@ mod tests {
     }
 
     #[test]
-    fn config_hash_input_changes_with_the_revision() {
-        let weights = [1u8, 2, 3];
-        let params_a = "mode=latency;rev=aaaaaaa";
-        let params_b = "mode=latency;rev=bbbbbbb";
-        let hash = |p: &str| fnv1a64(p.as_bytes(), fnv1a64(&weights, FNV_OFFSET));
-        assert_ne!(hash(params_a), hash(params_b));
-        assert_eq!(hash(params_a), hash(params_a));
+    fn config_hash_changes_with_the_revision() {
+        let source_a = SourceVersion {
+            rev: "aaaaaaa".into(),
+            diff_hash: None,
+        };
+        let source_b = SourceVersion {
+            rev: "bbbbbbb".into(),
+            diff_hash: None,
+        };
+        let hash =
+            |s: &SourceVersion| ConfigHash::compose(s, "corpus", "weights", "mode=latency").value;
+        assert_ne!(hash(&source_a), hash(&source_b));
+        assert_eq!(hash(&source_a), hash(&source_a));
     }
 
     #[test]
