@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786953314346,
+  "lastUpdate": 1786958512596,
   "repoUrl": "https://github.com/jppittman/pixelflow",
   "entries": {
     "Benchmark": [
@@ -42435,6 +42435,1704 @@ window.BENCHMARK_DATA = {
           {
             "name": "transcendental/pow",
             "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "166569057+jppittman@users.noreply.github.com",
+            "name": "JP Pittman",
+            "username": "jppittman"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "be4f98df33751cb496c75f4955c03f27c664f8b8",
+          "message": "fix(pixelflow-pipeline): harden the e-graph NNUE measurement pipeline (#984)\n\n## What\n\nMakes the e-graph NNUE measurement pipeline trustworthy, then uses it to\nget the first real answer on the research question.\n\n**Harness integrity.** `BenchSession` owns QoS pinning, DVFS burn-in, a\ndrift sentinel (record-and-normalize with a 50% regime-change abort, not\na hair-trigger), identity-overhead subtraction, tick-floor autoscaling,\nIQR, a raw-ns plausibility floor, and varied inputs with\n`BenchMode::{Throughput, Latency}`. Correctness is checked against an\nindependent scalar oracle with a **per-point compositional error bound**\n— the max-over-ops fold it replaces was rejecting valid kernels wherever\na `Recip`/`Rsqrt` estimate amplified through composition (14.4% of a\nreal corpus).\n\n**Experiment integrity.** TRAIN/DEV/FINAL tiers held out *by generator\nfamily* with cross-tier structural dedup and a checked-in manifest; the\ntrainer fences its live stream against the held-out tiers;\nconstant-folded zero-ns labels kept rather than censored; correctness\nalarms gate the verdict *before* it is formed; a policy failing >10% of\nkernels forces `INCONCLUSIVE-CENSORED`; verdicts inside the A/A noise\nfloor read inconclusive; the config hash covers weights, corpus, source\nrevision and environment.\n\n**Train/deploy unification.** The trainer and the extractor were putting\ndifferent quantities in the same four weight slots and building\naccumulators differently — the model was optimizing a function nobody\ncalled. Now one walker (`from_cost_dag`) and one input vector\n(`extraction_input()`), with the divergent paths deleted so they cannot\ndrift, plus `train_and_deploy_feature_paths_agree` as a guard.\n\n**Latency prior re-derived by measurement.** The table priced `Sqrt =\n15` above `Pow = 12` while `Pow` lowers to log2+mul+exp2 — measured 60.2\nns vs 21.3 ns on the same kernel. This is a shipping fix (the static\nprior is the default cost model), and it makes the baseline *harder* to\nbeat.\n\n## Result\n\nWith the head well-calibrated (DEV Spearman 0.9799, MAE 0.181 log-ns,\nbias +0.020, dispersion restored to 0.93 of true), NNUE-guided\nextraction is still **~1.8% slower** than the corrected prior: geomean\n1.0181, bootstrap 95% CI [1.0106, 1.0254], 73W/238L/5T over 316 paired\ncomparisons, leave-one-out stable, A/A floor ±0.05%.\n\nTwo measured mechanisms: NNUE is the *conservative* policy (it declines\nhardware-primitive substitutions the prior takes, and per-pair speed is\nnear-monotone in that delta), and corpus-level ranking does not transfer\nto ranking rewrite variants of the same expression — on the same DEV set\nthe static prior scores ρ 0.9438 and a bare op-count scores 0.9486, so\nthat metric is saturated. Separately: `static/noswap = 0.51`, i.e.\nextraction *with the static prior* is worth ~2× — the machinery pays,\nthe learned head does not, yet.\n\n## Reviewer notes\n\n- Full workspace green: 102 test suites, 0 failures; clippy clean; fmt\nclean.\n- Docs: reconciles `2026-08-17-egraph-vsa-nnue-research-notes.md`\n(written on main against the pre-fix tree) with what landed here, and\nrecords the Round-1 numbers it predates. The notes' defect 3 — embedding\ngradients never wired, so op embeddings cannot learn — survives review\nand is the top remaining lever.\n- Also measured and worth knowing before more is built on the NNUE\npremise: the extractor performs zero incremental updates today, and the\nmedian base-vs-candidate edge delta is **44.9%**, so a correct O(Δ)\nimplementation buys ~2× rather than the ~50× the chess analogy assumes.\n- ~30 review findings from the automated reviewer were addressed across\nthe branch; a handful were declined with measurements (e.g. the claim\nthat the JIT constant-folds — neither emitter has a constant-propagation\npass).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n---------\n\nCo-authored-by: JP Pittman <jppittman@jpptech.dev>\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-08-17T01:22:29-07:00",
+          "tree_id": "f64641c253a7c7fba67f755c6d847140f3a56181",
+          "url": "https://github.com/jppittman/pixelflow/commit/be4f98df33751cb496c75f4955c03f27c664f8b8"
+        },
+        "date": 1786958511882,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "data_throughput_under_control_flood",
+            "value": 60406855,
+            "range": "± 22112",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "burst_limit_vs_unlimited",
+            "value": 50332025,
+            "range": "± 29077",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "four_control_flooders_vs_data",
+            "value": 60550780,
+            "range": "± 416351",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "slow_receiver_backpressure",
+            "value": 63529368,
+            "range": "± 295766",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_latency_steady_state/buffer/10",
+            "value": 22671,
+            "range": "± 3346",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_latency_steady_state/buffer/32",
+            "value": 22724,
+            "range": "± 3282",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_latency_steady_state/buffer/100",
+            "value": 23295,
+            "range": "± 3384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_latency_under_data_flood",
+            "value": 1799,
+            "range": "± 916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "management_latency_steady_state/buffer/10",
+            "value": 22616,
+            "range": "± 3391",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "management_latency_steady_state/buffer/32",
+            "value": 22841,
+            "range": "± 3303",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "management_latency_steady_state/buffer/100",
+            "value": 23226,
+            "range": "± 3003",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "management_latency_under_control_flood",
+            "value": 2159,
+            "range": "± 3330",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dispatch/actor_sends/1000",
+            "value": 15955,
+            "range": "± 266",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dispatch/transducer_returns/1000",
+            "value": 14919,
+            "range": "± 63",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dispatch/actor_sends/10000",
+            "value": 163823,
+            "range": "± 668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dispatch/transducer_returns/10000",
+            "value": 158165,
+            "range": "± 3536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dispatch/actor_sends/100000",
+            "value": 1574090,
+            "range": "± 18513",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "dispatch/transducer_returns/100000",
+            "value": 1519714,
+            "range": "± 23859",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline_3_stage/three_threads/1000",
+            "value": 154440,
+            "range": "± 1450",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline_3_stage/one_thread/1000",
+            "value": 28368,
+            "range": "± 261",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline_3_stage/three_threads/10000",
+            "value": 916228,
+            "range": "± 21492",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline_3_stage/one_thread/10000",
+            "value": 323450,
+            "range": "± 991",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline_3_stage/three_threads/100000",
+            "value": 8657310,
+            "range": "± 526398",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pipeline_3_stage/one_thread/100000",
+            "value": 3150952,
+            "range": "± 9622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "priority/data_uncontended",
+            "value": 25311,
+            "range": "± 384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "priority/data_under_control_flood",
+            "value": 33656,
+            "range": "± 466",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_producer_throughput/mpsc/10000",
+            "value": 179646,
+            "range": "± 5335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_producer_throughput/spsc/10000",
+            "value": 108557,
+            "range": "± 1578",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_producer_throughput/mpsc/100000",
+            "value": 1440491,
+            "range": "± 22423",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_producer_throughput/spsc/100000",
+            "value": 603581,
+            "range": "± 2270",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_producer_throughput/mpsc/1000000",
+            "value": 15375354,
+            "range": "± 277550",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_producer_throughput/spsc/1000000",
+            "value": 4231387,
+            "range": "± 15793",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_producer_throughput/mpsc/2",
+            "value": 1731362,
+            "range": "± 46314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_producer_throughput/sharded_spsc/2",
+            "value": 786786,
+            "range": "± 7349",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_producer_throughput/mpsc/4",
+            "value": 5234688,
+            "range": "± 144712",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_producer_throughput/sharded_spsc/4",
+            "value": 1477617,
+            "range": "± 32196",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_producer_throughput/mpsc/8",
+            "value": 10456726,
+            "range": "± 291371",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_producer_throughput/sharded_spsc/8",
+            "value": 2786676,
+            "range": "± 353662",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "send_latency_ns/mpsc",
+            "value": 13,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "send_latency_ns/spsc",
+            "value": 8,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "send_latency_contended/mpsc/2",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "send_latency_contended/sharded_spsc/2",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "send_latency_contended/mpsc/4",
+            "value": 16,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "send_latency_contended/sharded_spsc/4",
+            "value": 3,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "roundtrip_latency/mpsc",
+            "value": 24515,
+            "range": "± 4151",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "roundtrip_latency/spsc",
+            "value": 978,
+            "range": "± 159",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "data_throughput/messages/1000",
+            "value": 81196,
+            "range": "± 2079",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "data_throughput/messages/10000",
+            "value": 267871,
+            "range": "± 11696",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "data_throughput/messages/100000",
+            "value": 2211464,
+            "range": "± 54851",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_throughput/messages/100",
+            "value": 81472,
+            "range": "± 19797",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_throughput/messages/1000",
+            "value": 109363,
+            "range": "± 4488",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "control_throughput/messages/10000",
+            "value": 590462,
+            "range": "± 13643",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mixed_lanes_10k_each",
+            "value": 664956,
+            "range": "± 11810",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/ascii_text/1024",
+            "value": 16997,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/csi_heavy/1024",
+            "value": 21735,
+            "range": "± 471",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/sgr_256_colors/1024",
+            "value": 16642,
+            "range": "± 91",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/cursor_movement/1024",
+            "value": 12649,
+            "range": "± 220",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/unicode_heavy/1024",
+            "value": 11420,
+            "range": "± 52",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/scrolling/1024",
+            "value": 17980,
+            "range": "± 61",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/ascii_text/4096",
+            "value": 67807,
+            "range": "± 218",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/csi_heavy/4096",
+            "value": 85587,
+            "range": "± 108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/sgr_256_colors/4096",
+            "value": 63963,
+            "range": "± 304",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/cursor_movement/4096",
+            "value": 48547,
+            "range": "± 225",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/unicode_heavy/4096",
+            "value": 44483,
+            "range": "± 2322",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/scrolling/4096",
+            "value": 68062,
+            "range": "± 189",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/ascii_text/16384",
+            "value": 267449,
+            "range": "± 3781",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/csi_heavy/16384",
+            "value": 356447,
+            "range": "± 2721",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/sgr_256_colors/16384",
+            "value": 254400,
+            "range": "± 7836",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/cursor_movement/16384",
+            "value": 185295,
+            "range": "± 1702",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/unicode_heavy/16384",
+            "value": 173109,
+            "range": "± 233",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/scrolling/16384",
+            "value": 266934,
+            "range": "± 440",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/ascii_text/65536",
+            "value": 1061837,
+            "range": "± 10932",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/csi_heavy/65536",
+            "value": 1298474,
+            "range": "± 93950",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/sgr_256_colors/65536",
+            "value": 994554,
+            "range": "± 59774",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/cursor_movement/65536",
+            "value": 848360,
+            "range": "± 7090",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/unicode_heavy/65536",
+            "value": 694374,
+            "range": "± 5628",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ansi_parser/scrolling/65536",
+            "value": 1083256,
+            "range": "± 2931",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vtebench_scenarios/alt_screen_random_write",
+            "value": 786378,
+            "range": "± 35688",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vtebench_scenarios/scrolling",
+            "value": 1047654,
+            "range": "± 11403",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vtebench_scenarios/unicode_random_write",
+            "value": 773436,
+            "range": "± 4024",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "vtebench_scenarios/osc_heavy",
+            "value": 826349,
+            "range": "± 2787",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keybindings/lookup_map_size_10",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keybindings/lookup_vec_size_10",
+            "value": 14,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keybindings/lookup_binsearch_size_10",
+            "value": 13,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keybindings/lookup_map_size_100",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keybindings/lookup_vec_size_100",
+            "value": 133,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keybindings/lookup_binsearch_size_100",
+            "value": 21,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keybindings/lookup_map_size_1000",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keybindings/lookup_vec_size_1000",
+            "value": 1259,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keybindings/lookup_binsearch_size_1000",
+            "value": 37,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jit_collapse_call_overhead/rust_per_batch_loop/4",
+            "value": 102626,
+            "range": "± 2665",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jit_collapse_call_overhead/one_2d_collapse_call/4",
+            "value": 59559,
+            "range": "± 1851",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_construction/zero_params",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_construction/one_param",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_construction/two_params",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_construction/with_block",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_construction/complex_expression",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_evaluation/zero_params_eval",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_evaluation/one_param_eval",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_evaluation/two_params_eval",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_evaluation/circle_sdf_eval",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "macro_vs_manual/macro_circle",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "macro_vs_manual/manual_circle",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "type_depth/depth_1",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "type_depth/depth_2",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "type_depth/depth_3",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "type_depth/depth_4",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_creation/from_f32_splat",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_creation/sequential",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_arithmetic/add",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_arithmetic/sub",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_arithmetic/mul",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_arithmetic/div",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_arithmetic/chained_mad",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_math/sqrt",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_math/abs",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_math/min",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_math/max",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_transcendental/log2_small",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_transcendental/log2_mid",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_transcendental/log2_large",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_transcendental/exp2_small",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_transcendental/exp2_mid",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_transcendental/exp2_large",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_transcendental/log2_exp2_roundtrip",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_comparisons/lt_manifold",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_comparisons/le_manifold",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_comparisons/gt_manifold",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_comparisons/ge_manifold",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_select/select_with_gt_ast",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_select/select_with_field_condition",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_select/select_gt_recompute_each_iter",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_bitwise/and_manifold",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "field_bitwise/or_manifold",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_constants/f32_constant",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_constants/X_variable",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_constants/Y_variable",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_simple/X_plus_Y",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_simple/X_mul_Y",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_simple/X_squared",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_simple/fma_X_mul_Y_plus_Z",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_simple/distance_squared",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_simple/distance_from_origin",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_circle/unit_circle_sdf",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_circle/circle_inside_test",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_select/simple_select",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_select/circle_select",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_select/nested_select",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_complex/polynomial_degree3",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_complex/bilinear_interp",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifold_complex/min_max_chain",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_creation/x_seeded",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_creation/y_seeded",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_creation/constant",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_arithmetic/add",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_arithmetic/sub",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_arithmetic/mul",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_arithmetic/div",
+            "value": 5,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_math/sqrt",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_math/abs",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_math/min",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_math/max",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_gradient/circle_sdf_gradient",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "jet2_gradient/polynomial_gradient",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fix_iteration/converge_fast_all_lanes",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fix_iteration/converge_10_iterations",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fix_iteration/converge_variable_lanes",
+            "value": 5,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "evaluation_throughput/circle_sdf_64px",
+            "value": 22,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "evaluation_throughput/circle_sdf_256px",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "evaluation_throughput/circle_sdf_1024px",
+            "value": 336,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fastmath_denormals/denormal_mul_no_guard",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fastmath_denormals/denormal_mul_with_guard",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fastmath_denormals/denormal_div_no_guard",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fastmath_denormals/denormal_div_with_guard",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fastmath_denormals/manifold_denormal_heavy_no_guard",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fastmath_denormals/manifold_denormal_heavy_with_guard",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fastmath_denormals/normal_mul_no_guard",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fastmath_denormals/normal_mul_with_guard",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fastmath_denormals/denormal_accumulation_no_guard",
+            "value": 75,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fastmath_denormals/denormal_accumulation_with_guard",
+            "value": 85,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pixelflow_single_char/A_linear",
+            "value": 8583,
+            "range": "± 92",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pixelflow_single_char/O_quadratic",
+            "value": 79536,
+            "range": "± 781",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pixelflow_single_char/S_complex",
+            "value": 124438,
+            "range": "± 2555",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pixelflow_text_sizes/5",
+            "value": 724672,
+            "range": "± 8779",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pixelflow_text_sizes/10",
+            "value": 4058242,
+            "range": "± 14340",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pixelflow_text_sizes/26",
+            "value": 56727347,
+            "range": "± 404625",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pixelflow_text_sizes/50",
+            "value": 107659806,
+            "range": "± 343384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pixelflow_caching/uncached_HELLO",
+            "value": 553545,
+            "range": "± 30241",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pixelflow_caching/cached_HELLO",
+            "value": 65734,
+            "range": "± 549",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pixelflow_caching/cache_warmup_alphabet",
+            "value": 495492520,
+            "range": "± 3070104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "polynomial_optimization/manual_unfused",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "polynomial_optimization/kernel_optimized",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_construction/zero_params",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_construction/one_param",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_construction/two_params",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_construction/with_block",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_construction/complex_expression",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_evaluation/zero_params_eval",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_evaluation/one_param_eval",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_evaluation/two_params_eval",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_evaluation/circle_sdf_eval",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "macro_vs_manual/macro_circle",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "macro_vs_manual/manual_circle",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "type_depth/depth_1",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "type_depth/depth_2",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "type_depth/depth_3",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "type_depth/depth_4",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/add_xy",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/mul_xy",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/sub_xy",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/div_xy",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/add_mul",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/mul_add",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/chain3_add",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/chain3_mul",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/chain4_add",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/chain4_mul",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/wide2_add",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/wide2_mul",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "basic_arithmetic/wide2_mix",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/sqrt_x",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/sqrt_xy",
+            "value": 5,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/sqrt2_wide",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/sqrt3_wide",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/sqrt4_wide",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/sqrt2_deep",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/sqrt3_deep",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/div2_wide",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/div2_deep",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/div3_deep",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/sqrt_div_wide",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "expensive_ops/sqrt_div_deep",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "distance_functions/dist2d",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "distance_functions/dist3d",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "distance_functions/dist4d",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "distance_functions/dist2d_sq",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "distance_functions/dist3d_sq",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "distance_functions/circle_sdf",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "distance_functions/sphere_sdf",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "distance_functions/box2d_sdf",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "distance_functions/normalize_x",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "polynomials/linear",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "polynomials/quadratic",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "polynomials/cubic",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "polynomials/quartic",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "polynomials/quad2v",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "polynomials/cubic2v",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "polynomials/cross_xy",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "polynomials/cross_xyz",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "polynomials/full_quad2d",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "depth_vs_width/d2w4",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "depth_vs_width/d3w2_left",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "depth_vs_width/d3w2_right",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "depth_vs_width/d4w1",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "depth_vs_width/wide_sqrt4",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "depth_vs_width/deep_sqrt3",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "depth_vs_width/wide_div2",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "depth_vs_width/deep_div3",
+            "value": 7,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "minmax/min_xy",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "minmax/max_xy",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "minmax/clamp",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "minmax/abs_via_max",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "minmax/sdf_union",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "minmax/sdf_intersect",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_raw/add_manual",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_raw/add_kernel_raw",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_raw/dist2d_manual",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_raw/dist2d_kernel_raw",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_raw/sdf_union_manual",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_raw/sdf_union_kernel_raw",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_raw/fma_manual",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "kernel_raw/fma_kernel_raw",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "transcendental/sin",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "transcendental/cos",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "transcendental/sin_cos",
+            "value": 12,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "transcendental/exp",
+            "value": 5,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "transcendental/ln",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "transcendental/atan2",
+            "value": 6,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "transcendental/pow",
+            "value": 12,
             "range": "± 0",
             "unit": "ns/iter"
           }
