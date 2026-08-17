@@ -91,7 +91,7 @@ use serde::Serialize;
 
 use pixelflow_ir::{ExprArena, ExprId};
 use pixelflow_search::egraph::all_rules;
-use pixelflow_search::nnue::factored::{EMBED_DIM, EdgeAccumulator, ExprNnue, GraphAccumulator};
+use pixelflow_search::nnue::factored::{EdgeAccumulator, ExprNnue};
 use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator};
 
 use pixelflow_pipeline::extraction_head_weights_path;
@@ -1334,10 +1334,6 @@ fn main() {
         rng_state >> 33
     };
 
-    // We need a dummy rule embedding for forward_cached — value head doesn't use it
-    let dummy_rule_embed = [0.0f32; EMBED_DIM];
-    let dummy_gacc = GraphAccumulator::new();
-
     for epoch in 0..args.epochs {
         // Shuffle indices
         let mut indices: Vec<usize> = (0..samples.len()).collect();
@@ -1354,7 +1350,7 @@ fn main() {
 
             for &idx in chunk {
                 let sample = &samples[idx];
-                let cache = forward_cached(&model, &sample.acc, &dummy_gacc, &dummy_rule_embed);
+                let cache = forward_cached(&model, &sample.acc);
 
                 backward_value(
                     &model,
@@ -1512,7 +1508,7 @@ fn main() {
         samples.len() - 1,
     ] {
         let sample = &samples[i];
-        let cache = forward_cached(&model, &sample.acc, &dummy_gacc, &dummy_rule_embed);
+        let cache = forward_cached(&model, &sample.acc);
         let pred_ns = libm::expf(cache.value_pred) as f64;
         let actual_ns = libm::expf(sample.target_log_ns) as f64;
         eprintln!(
