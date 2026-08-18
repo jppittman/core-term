@@ -8,7 +8,10 @@
 //! to also host.
 
 pub mod jit_bench;
+pub mod journal;
+pub mod oracle_compare;
 pub mod oracle_lowering;
+pub mod schema;
 
 // Training infrastructure (requires std feature)
 #[cfg(feature = "training")]

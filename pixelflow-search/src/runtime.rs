@@ -133,8 +133,8 @@ fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(E
     );
 
     let policy = env_extraction_policy();
-    let choices = policy.choices(&egraph, root_class);
-    let (extracted, extracted_root) = choices_to_arena(&egraph, root_class, &choices);
+    let extraction = policy.extraction(&egraph, root_class);
+    let (extracted, extracted_root) = choices_to_arena(&extraction);
 
     // The extracted arena declares buffers in extraction-traversal order,
     // which need not match the input's — and slot order is ABI: the JIT

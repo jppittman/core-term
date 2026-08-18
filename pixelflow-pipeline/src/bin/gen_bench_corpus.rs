@@ -59,8 +59,8 @@ use clap::Parser;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
 use pixelflow_pipeline::training::corpus::write_corpus;
 use pixelflow_pipeline::training::quarantine::Quarantine;
-use pixelflow_pipeline::training::split::{SplitManifest, Tier};
-use pixelflow_pipeline::training::structural::{SigNode, arena_structural_key};
+use pixelflow_pipeline::training::split::{Family, SplitManifest, Tier};
+use pixelflow_pipeline::training::structural::FenceKey;
 use pixelflow_search::egraph::collect_rule_templates;
 use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator};
 
@@ -301,9 +301,10 @@ const BANDS: &[Band] = &[
     },
 ];
 
-// Structural hashing lives in `pixelflow_pipeline::training::structural` —
-// shared with bootstrap_extraction_head's live-stream holdout fence so both
-// stages agree on what "same structure" means.
+// The feature-quotient key lives in `pixelflow_pipeline::training::structural`
+// — shared with bootstrap_extraction_head's live-stream holdout fence and its
+// loaded-TRAIN revalidation, so all three stages agree on what "the model has
+// already seen this" means (P1(d)).
 
 // ============================================================================
 // Tier-aware structural dedup (plan 0.2)
@@ -500,13 +501,12 @@ const MIN_FAMILY_ADMISSIONS: usize = 8;
 /// the global rate alarm cannot see (it averages over ~300 families).
 const MAX_FAMILY_QUARANTINE_RATE: f64 = 0.20;
 
-/// Everything one `(tier, band, seed)` family did with its attempts. Every
-/// candidate is accounted for: `attempts == admitted + too_large +
-/// duplicate_within + cross_tier_drop + quarantined`.
+/// Everything one `(tier, family)` did with its attempts. Every candidate is
+/// accounted for: `attempts == admitted + too_large + duplicate_within +
+/// cross_tier_drop + quarantined`.
 struct FamilyOutcome {
     tier: Tier,
-    band: usize,
-    seed: u64,
+    family: Family,
     /// Expressions this family was asked for.
     quota: usize,
     attempts: usize,
@@ -519,11 +519,10 @@ struct FamilyOutcome {
 }
 
 impl FamilyOutcome {
-    fn new(tier: Tier, band: usize, seed: u64, quota: usize) -> Self {
+    fn new(tier: Tier, family: Family, quota: usize) -> Self {
         Self {
             tier,
-            band,
-            seed,
+            family,
             quota,
             attempts: 0,
             admitted: 0,
@@ -537,7 +536,7 @@ impl FamilyOutcome {
     fn label(&self) -> String {
         format!(
             "{} band {:>2} family {:>2}",
-            self.tier, self.band, self.seed
+            self.tier, self.family.band, self.family.seed
         )
     }
 
@@ -642,10 +641,10 @@ fn assert_family_integrity(families: &[FamilyOutcome]) {
 /// Decorrelated per-family RNG seed (SplitMix64 finalizer over a unique
 /// (band, family) encoding), so adjacent family indices do not produce
 /// correlated generator streams.
-fn family_rng_seed(global_seed: u64, band: usize, family_seed: u64) -> u64 {
+fn family_rng_seed(global_seed: u64, family: Family) -> u64 {
     let mut z = global_seed
-        .wrapping_add((band as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))
-        .wrapping_add(family_seed.wrapping_mul(0xBF58_476D_1CE4_E5B9))
+        .wrapping_add((family.band as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        .wrapping_add(family.seed.wrapping_mul(0xBF58_476D_1CE4_E5B9))
         .wrapping_add(0x94D0_49BB_1331_11EB);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -768,7 +767,7 @@ fn main() {
         .unwrap_or_else(|| format!("{}/corpus_quarantine.jsonl", args.output));
     let mut quarantine = Quarantine::new(&quarantine_log_path);
 
-    let mut ledger: DedupLedger<Vec<SigNode>> = DedupLedger::new();
+    let mut ledger: DedupLedger<FenceKey> = DedupLedger::new();
     let mut tier_entries: [Vec<(String, ExprArena, ExprId)>; 3] =
         [Vec::new(), Vec::new(), Vec::new()];
 
@@ -781,7 +780,7 @@ fn main() {
                  (known: swirl, circle_sdf, poly, redundant, normalize)"
             )
         });
-        let key = arena_structural_key(&arena, root);
+        let key = FenceKey::of(&arena, root);
         assert_eq!(
             ledger.probe(&key, Tier::Final),
             Admission::New,
@@ -816,8 +815,8 @@ fn main() {
     for tier in [Tier::Final, Tier::Dev, Tier::Train] {
         let spec = manifest.spec(tier);
         let mut tier_generated = 0usize;
-        for (band_idx, fseed) in spec.families() {
-            let band = &BANDS[band_idx];
+        for family in spec.families() {
+            let band = &BANDS[family.band];
             let config = BwdGenConfig {
                 max_depth: band.max_depth,
                 leaf_prob: band.leaf_prob,
@@ -826,12 +825,12 @@ fn main() {
                 ..BwdGenConfig::default()
             };
             let mut rng = BwdGenerator::new(
-                family_rng_seed(args.seed, band_idx, fseed),
+                family_rng_seed(args.seed, family),
                 config,
                 collect_rule_templates(),
             );
 
-            let mut outcome = FamilyOutcome::new(tier, band_idx, fseed, per_family);
+            let mut outcome = FamilyOutcome::new(tier, family, per_family);
             let max_attempts = per_family * 10;
 
             while outcome.admitted < per_family && outcome.attempts < max_attempts {
@@ -845,7 +844,7 @@ fn main() {
                     continue;
                 }
 
-                let key = arena_structural_key(&arena, root);
+                let key = FenceKey::of(&arena, root);
                 match ledger.probe(&key, tier) {
                     Admission::New => {}
                     Admission::DuplicateWithin => {
@@ -861,8 +860,8 @@ fn main() {
                 let name = format!(
                     "{}_b{:02}_f{:02}_{:05}",
                     tier.name(),
-                    band_idx,
-                    fseed,
+                    family.band,
+                    family.seed,
                     tier_generated + outcome.admitted
                 );
                 let (exclusion, _conditioning) = quarantine.verdict(&name, &arena, root);
@@ -1012,7 +1011,7 @@ mod tests {
         for band in 0..BANDS.len() {
             for fseed in 0..8u64 {
                 assert!(
-                    seen.insert(family_rng_seed(42, band, fseed)),
+                    seen.insert(family_rng_seed(42, Family::new(band, fseed))),
                     "seed collision at band {band}, family {fseed}"
                 );
             }
@@ -1023,7 +1022,7 @@ mod tests {
 
     /// A family that admitted everything it was asked for.
     fn healthy_family() -> FamilyOutcome {
-        let mut f = FamilyOutcome::new(Tier::Dev, 3, 7, 40);
+        let mut f = FamilyOutcome::new(Tier::Dev, Family::new(3, 7), 40);
         f.attempts = 40;
         f.admitted = 40;
         f
@@ -1045,7 +1044,7 @@ mod tests {
         // note and continued, and the five named kernels kept corpus_final.bin
         // nonempty — so the "tier is nonempty" check saw nothing wrong while
         // the manifest's held-out family had vanished.
-        let mut f = FamilyOutcome::new(Tier::Final, 5, 2, 40);
+        let mut f = FamilyOutcome::new(Tier::Final, Family::new(5, 2), 40);
         f.attempts = 400;
         f.too_large = 300;
         f.duplicate_within = 100;
@@ -1054,7 +1053,7 @@ mod tests {
 
     #[test]
     fn zero_admission_failure_names_the_family_and_its_attrition() {
-        let mut f = FamilyOutcome::new(Tier::Final, 5, 2, 40);
+        let mut f = FamilyOutcome::new(Tier::Final, Family::new(5, 2), 40);
         f.attempts = 400;
         f.too_large = 300;
         f.duplicate_within = 100;
@@ -1067,7 +1066,7 @@ mod tests {
 
     #[test]
     fn family_short_of_the_admission_floor_fails() {
-        let mut f = FamilyOutcome::new(Tier::Train, 0, 1, 40);
+        let mut f = FamilyOutcome::new(Tier::Train, Family::new(0, 1), 40);
         f.attempts = 400;
         f.admitted = MIN_FAMILY_ADMISSIONS - 1;
         f.too_large = 400 - f.admitted;
@@ -1082,7 +1081,7 @@ mod tests {
         // A run with more families than target expressions asks each family for
         // less than MIN_FAMILY_ADMISSIONS; judging it against the floor would
         // fail every family on an arithmetic impossibility.
-        let mut f = FamilyOutcome::new(Tier::Dev, 1, 1, 3);
+        let mut f = FamilyOutcome::new(Tier::Dev, Family::new(1, 1), 3);
         f.attempts = 3;
         f.admitted = 3;
         assert_eq!(f.required(), 3);
@@ -1095,7 +1094,7 @@ mod tests {
         // reached the numeric gate was refused: the survivors are selected by
         // whatever the quarantine happens to reject. The GLOBAL rate alarm
         // averages over hundreds of families and cannot see this.
-        let mut f = FamilyOutcome::new(Tier::Train, 2, 4, 40);
+        let mut f = FamilyOutcome::new(Tier::Train, Family::new(2, 4), 40);
         f.attempts = 40;
         f.admitted = 20;
         f.quarantined.insert("numeric_mismatch", 20);
@@ -1108,7 +1107,7 @@ mod tests {
     #[test]
     fn quarantine_rate_ignores_candidates_that_never_reached_the_gate() {
         // Too-large and duplicate candidates are not evidence about numerics.
-        let mut f = FamilyOutcome::new(Tier::Train, 2, 4, 40);
+        let mut f = FamilyOutcome::new(Tier::Train, Family::new(2, 4), 40);
         f.attempts = 400;
         f.admitted = 40;
         f.too_large = 300;
@@ -1128,7 +1127,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "failed the per-family integrity check")]
     fn one_bad_family_fails_a_run_of_healthy_ones() {
-        let mut bad = FamilyOutcome::new(Tier::Final, 9, 9, 40);
+        let mut bad = FamilyOutcome::new(Tier::Final, Family::new(9, 9), 40);
         bad.attempts = 400;
         bad.too_large = 400;
         assert_family_integrity(&[healthy_family(), bad, healthy_family()]);
