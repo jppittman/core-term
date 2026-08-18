@@ -116,7 +116,7 @@ fn read_from_pty_with_timeout(pty: &mut NixPty, expected_str: &str) -> Result<St
 }
 
 #[test]
-fn pty_spawn_successful() {
+fn it_should_run_a_command_and_read_its_output_after_spawning_a_pty() {
     // Use sh -c to be more robust across platforms and ensure output flushing
     let config = PtyConfig {
         command_executable: "/bin/sh",
@@ -154,7 +154,7 @@ fn pty_spawn_successful() {
 }
 
 #[test]
-fn pty_read_write_interaction() {
+fn it_should_deliver_written_input_to_the_child_and_read_back_its_response() {
     let shell_command = "read r_line; echo \"input was: $r_line\"";
     let config = PtyConfig {
         command_executable: "/bin/sh",
@@ -195,7 +195,7 @@ fn pty_read_write_interaction() {
 }
 
 #[test]
-fn pty_child_acquires_controlling_terminal() {
+fn it_should_give_the_child_a_controlling_terminal_that_dev_tty_resolves_to() {
     // /dev/tty resolves only through the controlling terminal. The spawn
     // path acquires the ctty via setsid + first-tty-open (posix_spawn has no
     // TIOCSCTTY); if that dance broke, the redirect below would fail and
@@ -214,7 +214,7 @@ fn pty_child_acquires_controlling_terminal() {
 }
 
 #[test]
-fn pty_child_gets_default_sigpipe() {
+fn it_should_reset_sigpipe_disposition_so_pipelines_terminate_normally() {
     // Rust ignores SIGPIPE and ignored dispositions survive exec; the spawn
     // path must reset it or `foo | head`-style pipelines never terminate.
     // `yes` only exits here by dying of SIGPIPE when `head` closes the pipe.
@@ -232,7 +232,7 @@ fn pty_child_gets_default_sigpipe() {
 }
 
 #[test]
-fn pty_resize_successful() {
+fn it_should_return_ok_when_resizing_the_pty() {
     // Use `sleep` from PATH to be cross-platform (macOS has /bin/sleep, Linux /usr/bin/sleep)
     let config = PtyConfig {
         command_executable: "sleep",
@@ -270,7 +270,7 @@ fn pty_resize_successful() {
 }
 
 #[test]
-fn pty_child_termination_on_drop() {
+fn it_should_terminate_the_child_process_when_the_pty_is_dropped() {
     let config = PtyConfig {
         command_executable: "sleep",
         args: &["2"], // Arg for sleep is just the duration
@@ -333,7 +333,7 @@ fn pty_child_termination_on_drop() {
 }
 
 #[test]
-fn pty_spawn_invalid_command() {
+fn it_should_return_a_not_found_error_when_spawning_a_nonexistent_command() {
     let non_existent_cmd = "/path/to/absolutely/nonexistent/command_39291az";
     let config = PtyConfig {
         command_executable: non_existent_cmd,

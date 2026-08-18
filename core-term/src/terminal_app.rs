@@ -931,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_control_resize() {
+    fn it_should_resize_emulator_and_send_pty_resize_on_control_resize_event() {
         let (mut app, mut writer_rx, _, _scheduler) = match create_test_app() {
             Some(v) => v,
             None => return,
@@ -1013,7 +1013,7 @@ mod tests {
     /// injects the exact KeyDown the X11 mapper produces for Ctrl+C and
     /// asserts the child dies (i.e. 0x03 reached the PTY line discipline).
     #[test]
-    fn ctrl_c_interrupts_yes_flood() {
+    fn it_should_interrupt_a_flooding_child_process_when_ctrl_c_is_pressed_during_frame_pressure() {
         use crate::io::event_monitor_actor::PtyTroupe;
         use crate::io::pty::{NixPty, PtyChannel, PtyConfig};
         use std::time::{Duration, Instant};
@@ -1155,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_management_keydown() {
+    fn it_should_write_key_input_to_pty_on_management_keydown() {
         let (mut app, mut writer_rx, _, _scheduler) = match create_test_app() {
             Some(v) => v,
             None => return,
@@ -1235,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_paints_default_background_and_recompiles_on_resize() {
+    fn it_should_render_default_background_and_recompile_kernel_after_resize() {
         // The app compiles its kernel for the PLATFORM's pixel format, so
         // the frame must be that format too — a hardcoded one was correct
         // only while rendering converted per pixel.

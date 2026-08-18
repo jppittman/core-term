@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn wake_unblocks_armed_event_monitor() {
+    fn it_should_unblock_an_armed_event_monitor_when_woken() {
         let waker = Arc::new(FdWaker::new().expect("waker"));
         let monitor = EventMonitor::new().expect("monitor");
         monitor
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn wake_while_disarmed_writes_no_byte_and_fails_next_arm() {
+    fn it_should_write_no_byte_when_disarmed_and_surface_the_missed_wake_on_next_arm() {
         let waker = FdWaker::new().expect("waker");
 
         waker.wake();
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn wake_is_idempotent_when_pipe_fills() {
+    fn it_should_not_block_or_panic_when_woken_far_more_than_the_pipe_buffer_holds() {
         let waker = FdWaker::new().expect("waker");
         assert!(waker.arm());
         // Far more wakes than the pipe buffer holds; must not block or panic.

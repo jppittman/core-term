@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn troupe_delivers_output_and_child_exit() {
+    fn it_should_deliver_child_output_and_report_exit_after_eof() {
         let (sink, writer, handle) = spawn_troupe("/bin/sh", &["-c", "printf 'hello-troupe'"]);
 
         assert!(
@@ -385,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn troupe_round_trips_writes_through_child() {
+    fn it_should_round_trip_written_data_through_the_child_process() {
         let (sink, writer, handle) = spawn_troupe("/bin/cat", &[]);
 
         writer
@@ -405,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_interrupts_blocked_reader() {
+    fn it_should_not_hang_when_dropping_writer_and_handle_while_reader_is_blocked() {
         let (_sink, writer, handle) = spawn_troupe("/bin/cat", &[]);
 
         // Give the reader time to enter its epoll/kqueue wait.
@@ -455,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn resize_before_bind_is_applied() {
+    fn it_should_survive_a_resize_sent_before_the_writer_is_bound() {
         // A resize sent on the writer handle immediately (likely before the
         // Bind lands, since Control outranks Management) must not be lost or
         // panic — the writer coalesces it and applies it at Bind.
