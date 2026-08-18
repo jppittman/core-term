@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn write_before_bind_is_flushed_at_bind() {
+    fn it_should_flush_writes_queued_before_bind_once_bound() {
         // Data sent on the writer handle before spawn() (before Bind lands)
         // must queue and flush once bound, not be dropped.
         let pty = NixPty::spawn_with_config(&PtyConfig {

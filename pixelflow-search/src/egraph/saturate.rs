@@ -110,55 +110,28 @@ pub fn saturate_with_full_budget(
     let classes_before = egraph.classes.len();
     egraph.match_counts.clear();
 
-    let start = std::time::Instant::now();
-    let mut iterations = 0;
-    let mut total_unions = 0;
+    // One call drives the entire multi-round run — the loop that decides
+    // when to stop (timeout, class limit, or convergence) lives exactly
+    // once, in `EGraph::saturate_with_limits`
+    // (docs/plans/2026-08-17-cost-model-domain.md, J11). This module
+    // previously re-decided the same stopping conditions in a second,
+    // hand-rolled outer loop that drove the e-graph one round at a time —
+    // the duplicate-loop drift the domain model doc calls out by name.
+    let stats = egraph.saturate_with_limits(max_iterations, max_classes, timeout);
 
-    for _ in 0..max_iterations {
-        // Global time limit
-        if start.elapsed() >= timeout {
-            break;
-        }
-        // Global class limit
-        if egraph.classes.len() > max_classes {
-            break;
-        }
-
-        iterations += 1;
-        let remaining = timeout.saturating_sub(start.elapsed());
-        let unions = apply_rules_counted_with_limits(egraph, max_classes, remaining);
-        total_unions += unions;
-
-        if unions == 0 {
-            break;
-        }
-    }
-
-    let saturated = iterations < max_iterations || total_unions == 0;
+    let saturated = stats.iterations < max_iterations || stats.total_unions == 0;
     let classes_after = egraph.classes.len();
     let rule_matches = egraph.match_counts.clone();
 
     SaturationResult {
-        iterations,
-        total_unions,
+        iterations: stats.iterations,
+        total_unions: stats.total_unions,
         saturated,
         classes_before,
         classes_after,
         rule_matches,
         budget: max_iterations,
     }
-}
-
-/// Apply all rules once and count new classes, with safety limits.
-fn apply_rules_counted_with_limits(
-    egraph: &mut EGraph,
-    max_classes: usize,
-    timeout: std::time::Duration,
-) -> usize {
-    let classes_before = egraph.classes.len();
-    egraph.saturate_with_limits(1, max_classes, timeout);
-    let classes_after = egraph.classes.len();
-    classes_after.saturating_sub(classes_before)
 }
 
 // ============================================================================

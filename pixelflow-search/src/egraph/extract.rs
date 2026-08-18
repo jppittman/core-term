@@ -5,10 +5,268 @@
 //! [`pixelflow_ir::ExprArena`].
 
 use super::cost::{CostFunction, CostModel};
+use super::deps::var_variance;
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
 use crate::nnue::{EdgeAccumulator, ExprNnue};
 use alloc::vec::Vec;
+use pixelflow_ir::Variance;
+
+/// A witnessed selection: an e-graph, a root e-class, and a well-founded
+/// choice function from every e-class reachable from `root` to the node
+/// index selected for it.
+///
+/// "Well-founded" means: every reachable e-class has a recorded choice, and
+/// the choice graph is acyclic (bottom-up realizable). Those two properties
+/// are exactly what let a choice function be materialised at all — an
+/// unvalidated `Vec<Option<usize>>` can loop forever when walked (a real
+/// 2.7GB OOM, see `choices_to_arena`'s doc comment), and a call site that
+/// forgets to repair or backfill it produces that bug silently.
+///
+/// `Extraction` makes the bug class unrepresentable: the only ways to
+/// obtain a value of this type are [`Extraction::from_dp`] (wraps
+/// [`repair_choices_well_founded`]) and [`Extraction::from_backfill`]
+/// (wraps [`backfill_well_founded`]) — both establish well-foundedness as
+/// part of construction, so a bare unvalidated vector can never cross into
+/// [`choices_to_arena`] or the extraction-head accumulator builders
+/// ([`EdgeAccumulator::from_dag_choices`],
+/// [`EdgeAccumulator::from_dag_choices_with_variance`]), which accept only
+/// `&Extraction`. See docs/plans/2026-08-17-cost-model-domain.md §1
+/// "Extraction (J2)".
+pub struct Extraction<'g> {
+    egraph: &'g EGraph,
+    root: EClassId,
+    choices: Vec<Option<usize>>,
+}
+
+impl<'g> Extraction<'g> {
+    /// The DP path's smart constructor: makes `choices` well-founded via
+    /// [`repair_choices_well_founded`] (resolving any mutual cycles the
+    /// bottom-up DP recorded — `CYCLE_COST` penalizes only
+    /// self-references, so two merged classes can each cheapest-pick a
+    /// node through the other), then seals the result.
+    pub(crate) fn from_dp(
+        egraph: &'g EGraph,
+        root: EClassId,
+        mut choices: Vec<Option<usize>>,
+    ) -> Self {
+        let root = egraph.find(root);
+        repair_choices_well_founded(egraph, root, &mut choices);
+        Self {
+            egraph,
+            root,
+            choices,
+        }
+    }
+
+    /// The NNUE refinement path's smart constructor: fills any e-class
+    /// reachable from `root` still lacking a choice via
+    /// [`backfill_well_founded`], then seals the result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the result is cyclic. A well-founded backfill cannot
+    /// itself introduce a cycle — reaching this means the caller sealed a
+    /// choice state that was never cycle-checked, which is a bug at the
+    /// call site, not a recoverable outcome (NO SILENT FAILURES).
+    pub(crate) fn from_backfill(
+        egraph: &'g EGraph,
+        root: EClassId,
+        mut choices: Vec<Option<usize>>,
+    ) -> Self {
+        let root = egraph.find(root);
+        backfill_well_founded(egraph, root, &mut choices);
+        assert!(
+            !choices_have_cycle_from(egraph, root, &choices),
+            "Extraction::from_backfill: choice graph is cyclic after backfill for root {} — \
+             a well-founded backfill cannot itself introduce a cycle; the caller sealed a \
+             state that was never cycle-checked",
+            root.0
+        );
+        Self {
+            egraph,
+            root,
+            choices,
+        }
+    }
+
+    /// Attempt to build a candidate extraction that swaps `class`'s choice
+    /// to `node_idx`, backfilling any newly-introduced children and
+    /// rejecting (returning `None`) if the swap closes a cycle through
+    /// already-chosen classes.
+    ///
+    /// This is the NNUE refinement search's per-candidate constructor —
+    /// unlike [`Extraction::from_backfill`], a cycle here is a normal
+    /// search outcome (reject this candidate, try another), not a bug.
+    pub(crate) fn try_swap(&self, class: EClassId, node_idx: usize) -> Option<Self> {
+        let canonical = self.egraph.find(class);
+        let mut choices = self.choices.clone();
+        choices[canonical.0 as usize] = Some(node_idx);
+        if let Some(ENode::Op { children, .. }) = self.egraph.nodes(canonical).get(node_idx) {
+            for &child in children {
+                backfill_well_founded(self.egraph, child, &mut choices);
+            }
+        }
+        if choices_have_cycle_from(self.egraph, self.root, &choices) {
+            return None;
+        }
+        Some(Self {
+            egraph: self.egraph,
+            root: self.root,
+            choices,
+        })
+    }
+
+    /// The e-graph this extraction selects nodes from.
+    pub fn egraph(&self) -> &'g EGraph {
+        self.egraph
+    }
+
+    /// The extraction's (canonical) root e-class.
+    pub fn root(&self) -> EClassId {
+        self.root
+    }
+
+    /// The chosen node index for `class`, if `class` is reachable from
+    /// [`Self::root`]. `None` for classes outside the extraction.
+    pub fn choice(&self, class: EClassId) -> Option<usize> {
+        let idx = self.egraph.find(class).0 as usize;
+        self.choices.get(idx).copied().flatten()
+    }
+
+    /// Read-only view of the raw choice vector, indexed by canonical
+    /// e-class id. Still only reachable through a sealed `Extraction`.
+    pub(crate) fn choices(&self) -> &[Option<usize>] {
+        &self.choices
+    }
+
+    /// The choice vector [`choices_to_arena`] will actually materialise:
+    /// every `Shl`/`Shr` count child re-pinned to a `Const` representative of
+    /// its class ([`pin_shift_counts`]), because the emitter's shift lowering
+    /// requires an immediate and a count class can legitimately hold
+    /// arithmetic that is value-equal to a constant without being one
+    /// (e.g. `Y - Y` merged with `Const(0)`).
+    ///
+    /// Any consumer that computes *features* from an `Extraction` — not just
+    /// [`choices_to_arena`] itself — must walk this view, not [`Self::choices`]
+    /// directly: featurizing the raw (possibly non-`Const`) choice for a
+    /// count class would describe a DAG that is not the one actually
+    /// compiled, reintroducing the same train/deploy skew `Self::chosen_variance`
+    /// exists to remove for the class-wide-meet case (P1(c)). See
+    /// [`Self::chosen_variance`] and `ChoicesCostDag` in `crate::nnue::factored`,
+    /// both of which take this view rather than re-deriving it (one
+    /// definition, imported, not restated).
+    pub(crate) fn pinned_choices(&self) -> Vec<Option<usize>> {
+        pin_shift_counts(self.egraph, &self.choices)
+    }
+
+    /// Unwrap into the raw choice vector.
+    ///
+    /// Kept for legacy raw-vector consumers (`ExtractionPolicy::choices`,
+    /// `compute_ref_counts`, `build_extracted_dag_from_choices`) that
+    /// predate this type; new code should consume `&Extraction` instead.
+    pub(crate) fn into_choices(self) -> Vec<Option<usize>> {
+        self.choices
+    }
+
+    /// Variance (coordinate dependency) of the node this extraction
+    /// actually selected for each reachable e-class — computed
+    /// recursively over the CHOSEN nodes, not the class-wide meet
+    /// [`super::deps::DepsAnalysis`] computes.
+    ///
+    /// `DepsAnalysis::get` answers "what's the best variance ANY node in
+    /// this class could give" (a meet across every e-node in the class).
+    /// Once a rewrite merges a pixel-varying node into a class alongside a
+    /// constant one (e.g. `Sub(X, X)` unioned with `Const(0)`), that meet
+    /// reports CONST even when the extraction actually chose the varying
+    /// node — so deploy-path features would silently disagree with what
+    /// [`EdgeAccumulator::from_arena_dag`] computes on the exact arena the
+    /// extraction emits (P1(c)). This walk instead evaluates variance of
+    /// exactly the node [`Self::choice`] selected, recursing into its
+    /// children's chosen variance — the deploy-side counterpart of
+    /// `pixelflow_ir::variance::compute_arena_variance`.
+    ///
+    /// Returned as a dense `Vec<Option<Variance>>` indexed by canonical
+    /// e-class id; `None` for classes with no recorded choice (unreachable
+    /// from root).
+    ///
+    /// Takes `pinned` — [`Self::pinned_choices`] — rather than deriving it
+    /// internally, so the caller's structural walk of the same `Extraction`
+    /// (`ChoicesCostDag` in `crate::nnue::factored`) is forced to use the
+    /// identical pinned view: a shift count e-class that legitimately holds
+    /// both a `Const` and a value-equal varying-shaped alternative (the same
+    /// merged-class situation as the `Sub(X, X)`/`Const(0)` example above,
+    /// but for a `Shl`/`Shr` count child) must be walked here as whatever
+    /// [`choices_to_arena`] will actually emit, or this variance disagrees
+    /// with the arena [`EdgeAccumulator::from_arena_dag`] featurizes for
+    /// exactly the reason unpinned [`Self::choice`] alone caused P1(c).
+    pub(crate) fn chosen_variance(&self, pinned: &[Option<usize>]) -> Vec<Option<Variance>> {
+        enum Task {
+            Visit(EClassId),
+            /// All children of this e-class's chosen node have been
+            /// resolved; combine them. `(canonical_id, node_idx)`.
+            Complete(u32, usize),
+        }
+
+        let choice_of = |class: EClassId| -> Option<usize> {
+            let idx = self.egraph.find(class).0 as usize;
+            pinned.get(idx).copied().flatten()
+        };
+
+        let mut variance: Vec<Option<Variance>> = alloc::vec![None; self.egraph.num_classes()];
+        let mut stack: Vec<Task> = alloc::vec![Task::Visit(self.root)];
+
+        while let Some(task) = stack.pop() {
+            match task {
+                Task::Visit(class) => {
+                    let canonical = self.egraph.find(class);
+                    let idx = canonical.0 as usize;
+                    if variance[idx].is_some() {
+                        continue; // Diamond sharing: already resolved.
+                    }
+                    let Some(node_idx) = choice_of(canonical) else {
+                        continue; // Not reachable via a recorded choice.
+                    };
+                    let nodes = self.egraph.nodes(canonical);
+                    match &nodes[node_idx] {
+                        ENode::Var(v) => variance[idx] = Some(var_variance(*v)),
+                        ENode::Const(_) | ENode::Buffer(_) => {
+                            variance[idx] = Some(Variance::CONST);
+                        }
+                        ENode::Op { children, .. } => {
+                            stack.push(Task::Complete(canonical.0, node_idx));
+                            for &child in children {
+                                stack.push(Task::Visit(child));
+                            }
+                        }
+                    }
+                }
+                Task::Complete(canonical_id, node_idx) => {
+                    let idx = canonical_id as usize;
+                    if variance[idx].is_some() {
+                        continue; // Diamond sharing: already resolved.
+                    }
+                    let canonical = EClassId(canonical_id);
+                    let nodes = self.egraph.nodes(canonical);
+                    let ENode::Op { children, .. } = &nodes[node_idx] else {
+                        panic!(
+                            "Extraction::chosen_variance: Complete task for non-Op node \
+                             (e-class {canonical_id})"
+                        );
+                    };
+                    let mut v = Variance::CONST;
+                    for &child in children {
+                        let cidx = self.egraph.find(child).0 as usize;
+                        v = v.union(variance[cidx].unwrap_or(Variance::ALL));
+                    }
+                    variance[idx] = Some(v);
+                }
+            }
+        }
+
+        variance
+    }
+}
 
 /// Incremental 3-pass neural extractor.
 ///
@@ -37,40 +295,36 @@ impl<'a> IncrementalExtractor<'a> {
         Self { nnue, top_k }
     }
 
-    /// Run the extraction refinement loop and return only `(cost, choices)`.
+    /// Run the extraction refinement loop and return `(cost, extraction)`.
     ///
-    /// The `choices` vector maps canonical e-class ID to the chosen node index.
-    /// Call [`choices_to_arena`] to materialise the extracted DAG.
-    pub fn extract_choices_only(
+    /// Call [`choices_to_arena`] on the returned [`Extraction`] to
+    /// materialise the extracted DAG.
+    pub fn extract_choices_only<'g>(
         &self,
-        egraph: &EGraph,
+        egraph: &'g EGraph,
         root_class: EClassId,
-    ) -> (f32, Vec<Option<usize>>) {
+    ) -> (f32, Extraction<'g>) {
         const MAX_PASSES: usize = 10;
 
-        // Pass 1: Bootstrap with the ORIGINAL expression's nodes (index 0 per
-        // e-class = the first node added, which is the original). This ensures
-        // we start from the input expression and only move to alternatives the
-        // NNUE extraction head certifies as cheaper.
+        // Pass 1: Bootstrap with a well-founded choice per reachable e-class.
+        // For unmerged classes this is the original expression's node; where
+        // saturation merges reordered node lists it is the first admissible
+        // node instead — "node 0 everywhere" is cyclic on merged graphs (see
+        // `backfill_well_founded`), and refinement below then improves
+        // whatever valid start this provides.
         let num_classes = egraph.num_classes();
-        let mut choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
-        backfill_reachable_defaults(egraph, root_class, &mut choices);
+        let choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
+        let mut current_extraction = Extraction::from_backfill(egraph, root_class, choices);
 
-        // Run variance analysis once — O(n) over e-graph, provides
-        // per-e-class coordinate dependency info to the extraction head.
-        let variance_analysis = super::deps::DepsAnalysis::analyze(egraph);
-
-        // Build initial DAG-aware accumulator using ref counts.
-        // This avoids the tree-bloating problem: shared subexpressions are
-        // counted once (computation) + (ref_count-1) var_ref edges (register loads).
-        let ref_count = compute_ref_counts(egraph, root_class, &choices);
+        // Build initial DAG-aware accumulator. Sharing-aware by construction:
+        // shared subexpressions are counted once (computation) plus one
+        // var_ref edge (register load) per later reference. Variance is
+        // computed from the CHOSEN nodes (P1(c)) — see
+        // `Extraction::chosen_variance`.
         let current_acc = EdgeAccumulator::from_dag_choices_with_variance(
-            egraph,
-            root_class,
-            &choices,
-            &ref_count,
+            &current_extraction,
             &self.nnue.embeddings,
-            Some(&variance_analysis),
+            true,
         );
         let mut current_cost = self.nnue.predict_log_cost_with_features(&current_acc);
 
@@ -82,7 +336,7 @@ impl<'a> IncrementalExtractor<'a> {
         // This is O(reachable_classes) per candidate, same as the old tree-based path,
         // but now sharing-aware. True incremental updates can be added later.
         for _pass in 0..MAX_PASSES {
-            let active = self.get_active_classes(egraph, root_class, &choices);
+            let active = self.get_active_classes(&current_extraction);
             let mut improved = false;
 
             for &class in &active {
@@ -92,10 +346,10 @@ impl<'a> IncrementalExtractor<'a> {
                     continue;
                 }
 
-                let current_node_idx = choices[canonical.0 as usize].unwrap_or_else(|| {
+                let current_node_idx = current_extraction.choice(canonical).unwrap_or_else(|| {
                     panic!(
                         "extract_choices_only: e-class {} is active (reachable from root) \
-                         but has no recorded choice — backfill_reachable_defaults should have \
+                         but has no recorded choice — backfill_well_founded should have \
                          populated every class returned by get_active_classes",
                         canonical.0
                     )
@@ -103,8 +357,18 @@ impl<'a> IncrementalExtractor<'a> {
                 let candidates_to_try = nodes.len().min(self.top_k);
 
                 // Best-improvement: evaluate ALL candidates, pick the cheapest.
+                //
+                // Each candidate is evaluated on a COMPLETE choice state: the
+                // swap applied AND the newly reachable subtree backfilled,
+                // then cycle-checked via `Extraction::try_swap`. The previous
+                // shape checked the swap with unfilled classes modeled as
+                // node 0 and only backfilled after acceptance — so the state
+                // it verified was not the state it adopted. Cloning is
+                // O(classes), the same order as the accumulator rebuild
+                // below, so this costs nothing asymptotically and removes
+                // the drift.
                 let mut best_swap_cost = current_cost;
-                let mut best_swap_idx: Option<usize> = None;
+                let mut best_swap: Option<Extraction<'g>> = None;
 
                 for node_idx in 0..candidates_to_try {
                     if node_idx == current_node_idx {
@@ -118,55 +382,31 @@ impl<'a> IncrementalExtractor<'a> {
                         }
                     }
 
-                    // Tentatively apply the swap. First check it doesn't create a cycle.
-                    let old_choice = choices[canonical.0 as usize];
-                    choices[canonical.0 as usize] = Some(node_idx);
-                    if choices_have_cycle_from(egraph, root_class, &choices) {
-                        choices[canonical.0 as usize] = old_choice;
+                    // Rejects candidates that close a cycle through classes
+                    // that already held choices.
+                    let Some(candidate) = current_extraction.try_swap(canonical, node_idx) else {
                         continue;
-                    }
+                    };
 
-                    let test_refs = compute_ref_counts(egraph, root_class, &choices);
                     let test_acc = EdgeAccumulator::from_dag_choices_with_variance(
-                        egraph,
-                        root_class,
-                        &choices,
-                        &test_refs,
+                        &candidate,
                         &self.nnue.embeddings,
-                        Some(&variance_analysis),
+                        true,
                     );
                     let test_cost = self.nnue.predict_log_cost_with_features(&test_acc);
 
-                    // Restore original choice.
-                    choices[canonical.0 as usize] = old_choice;
-
                     if test_cost < best_swap_cost {
                         best_swap_cost = test_cost;
-                        best_swap_idx = Some(node_idx);
+                        best_swap = Some(candidate);
                     }
                 }
 
-                if let Some(idx) = best_swap_idx {
-                    choices[canonical.0 as usize] = Some(idx);
+                if let Some(swapped) = best_swap {
+                    // Adopt EXACTLY the state that was cycle-checked and
+                    // scored — no post-acceptance re-derivation.
+                    current_extraction = swapped;
                     current_cost = best_swap_cost;
                     improved = true;
-
-                    // The newly-chosen node may have children in e-classes
-                    // that weren't reachable before (saturation merges can
-                    // introduce new children). Backfill the ENTIRE newly
-                    // reachable subtree (not just direct children) so the
-                    // invariant "every class in `active` has Some(choice)"
-                    // actually holds — a shallow, direct-children-only
-                    // backfill left grandchildren `None`, which callers
-                    // like `get_active_classes` and the refinement loop
-                    // below were then silently defaulting to node 0 for,
-                    // masking a real gap instead of restoring it.
-                    let nodes = egraph.nodes(canonical);
-                    if let Some(ENode::Op { children, .. }) = nodes.get(idx) {
-                        for &child in children {
-                            backfill_reachable_defaults(egraph, child, &mut choices);
-                        }
-                    }
                 }
             }
 
@@ -175,16 +415,13 @@ impl<'a> IncrementalExtractor<'a> {
             }
         }
 
-        (current_cost, choices)
+        (current_cost, current_extraction)
     }
 
     /// Walk the current best tree and collect active (reachable) e-class IDs.
-    fn get_active_classes(
-        &self,
-        egraph: &EGraph,
-        root: EClassId,
-        choices: &[Option<usize>],
-    ) -> Vec<EClassId> {
+    fn get_active_classes(&self, extraction: &Extraction<'_>) -> Vec<EClassId> {
+        let egraph = extraction.egraph();
+        let root = extraction.root();
         use alloc::collections::BTreeSet;
 
         let mut active = Vec::new();
@@ -199,10 +436,10 @@ impl<'a> IncrementalExtractor<'a> {
 
             active.push(canonical);
 
-            let node_idx = choices[canonical.0 as usize].unwrap_or_else(|| {
+            let node_idx = extraction.choice(canonical).unwrap_or_else(|| {
                 panic!(
                     "get_active_classes: e-class {} reachable from root has no recorded \
-                     choice — extract_choices_only must call backfill_reachable_defaults \
+                     choice — extract_choices_only must call backfill_well_founded \
                      transitively before invoking get_active_classes",
                     canonical.0
                 )
@@ -221,42 +458,133 @@ impl<'a> IncrementalExtractor<'a> {
     }
 }
 
-/// Transitively fill in `Some(0)` (the original/first node) for every
-/// e-class reachable from `start` that doesn't yet have a recorded choice.
+/// Fill in a **well-founded** choice for every e-class reachable from
+/// `start` that doesn't yet have a recorded choice.
 ///
 /// This restores the invariant relied on throughout `extract_choices_only`
 /// and its helpers (`get_active_classes`, the refinement loop, and
 /// `choices_to_arena`): every e-class reachable from the root via the
-/// *currently chosen* nodes has `Some` entry in `choices`. Saturation merges
-/// and NNUE-guided swaps can both introduce children that were not part of
-/// the original bootstrap walk; if those children are left `None`, callers
-/// fall back to `unwrap_or(0)`, which silently (and possibly incorrectly,
-/// since node 0 may not be the reachable/consistent variant) treats an
-/// unrecorded choice as if it were recorded. Making the backfill transitive
-/// here means that fallback becomes unreachable in practice, and any future
-/// gap is a real bug caught loudly rather than papered over downstream.
+/// *currently chosen* nodes has a `Some` entry in `choices`, and the choice
+/// graph is a DAG.
 ///
-/// Already-visited classes (`choices[idx].is_some()`) stop the walk — this
-/// keeps the traversal to genuinely new subtrees.
-fn backfill_reachable_defaults(egraph: &EGraph, start: EClassId, choices: &mut [Option<usize>]) {
+/// The previous version filled `Some(0)` (the "original/first" node) — which
+/// is only the original expression's node for an UNMERGED class. After
+/// saturation unions, a class's node list is a merge, so two classes can each
+/// hold a node referencing the other at index 0 and the node-0 choice
+/// function is CYCLIC. A cyclic bootstrap is unrecoverable downstream: every
+/// refinement swap fails the cycle check (the pre-existing cycle is reachable
+/// no matter what is swapped) and the cyclic set flows to `choices_to_arena`
+/// (observed: a full-DEV bench run died by OOM there; the restart-DFS
+/// `break_choice_cycles` repair did not terminate on the same graph).
+///
+/// So the fill is constructed well-founded instead of repaired after the
+/// fact: Kahn-style admission. A class is admitted once ANY of its nodes has
+/// all children admitted (leaves admit immediately; classes that already hold
+/// a choice count as admitted, since their subtrees are complete by this same
+/// invariant). The admitted node is recorded as the choice. Every well-formed
+/// e-graph admits all reachable classes — each class was created holding a
+/// node whose children existed before it, so creation order is a topological
+/// witness — and a class that never admits is a corrupt graph, reported by
+/// panic rather than papered over.
+///
+/// # Panics
+///
+/// Panics if some reachable class cannot be admitted (the e-graph holds a
+/// class none of whose nodes has admissible children — a structurally corrupt
+/// graph, never a rewrite judgment call).
+fn backfill_well_founded(egraph: &EGraph, start: EClassId, choices: &mut [Option<usize>]) {
     let num_classes = choices.len();
-    let mut stack = alloc::vec![start];
 
+    // Scope: canonical classes reachable from `start` through EVERY node of
+    // each not-yet-chosen class. Classes with an existing choice are complete
+    // subtrees and stop the walk.
+    let mut scope_pos: Vec<Option<usize>> = alloc::vec![None; num_classes];
+    let mut scope: Vec<u32> = Vec::new();
+    let mut stack = alloc::vec![egraph.find(start)];
     while let Some(class) = stack.pop() {
         let canonical = egraph.find(class);
         let idx = canonical.0 as usize;
-        if idx >= num_classes || choices[idx].is_some() {
+        if idx >= num_classes || scope_pos[idx].is_some() || choices[idx].is_some() {
             continue;
         }
-        choices[idx] = Some(0); // Original/first node in the e-class.
-        if let Some(node) = egraph.nodes(canonical).first() {
+        scope_pos[idx] = Some(scope.len());
+        scope.push(canonical.0);
+        for node in egraph.nodes(canonical) {
             if let ENode::Op { children, .. } = node {
                 for &child in children {
-                    stack.push(child);
+                    stack.push(egraph.find(child));
                 }
             }
         }
     }
+    if scope.is_empty() {
+        return;
+    }
+
+    // Per (scope class, node): how many child references still await
+    // admission. Duplicate children count once per occurrence. Reverse edges
+    // record which (class, node) counters to decrement when a class admits.
+    let mut pending: Vec<Vec<usize>> = Vec::with_capacity(scope.len());
+    let mut reverse: Vec<Vec<(usize, usize)>> = alloc::vec![Vec::new(); scope.len()];
+    let mut ready: Vec<u32> = Vec::new();
+    for (pos, &cid) in scope.iter().enumerate() {
+        let canonical = EClassId(cid);
+        let nodes = egraph.nodes(canonical);
+        let mut per_node = Vec::with_capacity(nodes.len());
+        let mut any_ready = false;
+        for (node_idx, node) in nodes.iter().enumerate() {
+            let mut count = 0usize;
+            if let ENode::Op { children, .. } = node {
+                for &child in children {
+                    let child_idx = egraph.find(child).0 as usize;
+                    if let Some(child_pos) = scope_pos[child_idx] {
+                        count += 1;
+                        reverse[child_pos].push((pos, node_idx));
+                    }
+                }
+            }
+            if count == 0 {
+                any_ready = true;
+            }
+            per_node.push(count);
+        }
+        pending.push(per_node);
+        if any_ready {
+            ready.push(cid);
+        }
+    }
+
+    let mut admitted = 0usize;
+    let mut queue: alloc::collections::VecDeque<u32> = ready.into_iter().collect();
+    while let Some(cid) = queue.pop_front() {
+        let idx = cid as usize;
+        if choices[idx].is_some() {
+            continue; // Admitted through an earlier queue entry.
+        }
+        let pos = scope_pos[idx].expect("queued class is in scope");
+        let node_idx = pending[pos]
+            .iter()
+            .position(|&count| count == 0)
+            .expect("queued class has a zero-pending node");
+        choices[idx] = Some(node_idx);
+        admitted += 1;
+        for &(parent_pos, parent_node) in &reverse[pos] {
+            pending[parent_pos][parent_node] -= 1;
+            if pending[parent_pos][parent_node] == 0 {
+                queue.push_back(scope[parent_pos]);
+            }
+        }
+    }
+
+    assert!(
+        admitted == scope.len(),
+        "backfill_well_founded: {} of {} reachable e-classes cannot be given a well-founded \
+         choice — the e-graph holds classes none of whose nodes has admissible children, which \
+         is structural corruption, not a rewrite outcome (root {})",
+        scope.len() - admitted,
+        scope.len(),
+        start.0
+    );
 }
 
 /// Extract directly into an [`pixelflow_ir::ExprArena`].
@@ -267,8 +595,8 @@ pub fn extract_neural_to_arena(
     nnue: &ExprNnue,
 ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId, f32) {
     let extractor = IncrementalExtractor::new(nnue, 8);
-    let (cost, choices) = extractor.extract_choices_only(egraph, root);
-    let (arena, root_id) = choices_to_arena(egraph, root, &choices);
+    let (cost, extraction) = extractor.extract_choices_only(egraph, root);
+    let (arena, root_id) = choices_to_arena(&extraction);
     (arena, root_id, cost)
 }
 
@@ -310,180 +638,185 @@ fn choices_have_cycle_from(egraph: &EGraph, root: EClassId, choices: &[Option<us
     false
 }
 
-/// Post-pass: detect and break cycles in the choice graph.
+/// Make an existing choice function well-founded, keeping every recorded
+/// choice that participates in no cycle.
 ///
-/// After the bottom-up DP, mutual cycles can exist (e.g. class 68 picks
-/// neg(69) and class 69 picks neg(68)). This function performs a DFS from
-/// `root` following the choice graph, detects back-edges via 3-color
-/// marking (white/gray/black), and breaks each cycle by swapping a cycle
-/// member's choice to a leaf or a non-cycle-referencing node.
+/// The bottom-up DP can record mutual cycles (class 68 picks `neg(69)` while
+/// class 69 picks `neg(68)`): `CYCLE_COST` penalizes only SELF-references, so
+/// two merged classes can each cheapest-pick a node through the other. The
+/// previous repair (`break_choice_cycles`, a restart-DFS that broke one cycle
+/// per pass) did not terminate on saturated FULL-tier graphs — its Strategy-3
+/// fallback can leave the cycle intact, and the restart then rediscovers the
+/// same cycle forever (observed live on two DEV kernels, each pinning a core
+/// for minutes before the run was killed).
 ///
-/// Restarts from root after each break to handle nested cycles.
-fn break_choice_cycles(egraph: &EGraph, root: EClassId, best_node: &mut Vec<Option<usize>>) {
-    // Restart-DFS approach (like the original) but with dense Vecs instead
-    // of BTreeSet. Each iteration finds one cycle and breaks it, then restarts.
-    // Correctness requires restart because breaking a cycle changes the choice
-    // graph — new cycles may appear or old ones may disappear.
-    //
-    // Complexity: O(cycles × classes). Dense Vecs make each DFS pass O(classes)
-    // instead of O(classes × log classes) with BTreeSet.
+/// So, like [`backfill_well_founded`], the repair is a construction rather
+/// than a patch loop — Kahn admission in two interleaved phases:
+///
+/// 1. **Drain**: admit every class whose RECORDED node has all children
+///    admitted. Acyclic regions of the DP's choice graph are admitted here
+///    unchanged, so their cost-optimal selection is kept.
+/// 2. **Unstick**: when the drain stalls before every class is admitted, the
+///    remaining classes all sit on cycles (or behind them). Admit ONE ready
+///    class through its first admissible node — rewriting its choice — and
+///    return to draining. Each unstick admits a class, so the loop is bounded
+///    by the class count; total work is linear in e-graph edges.
+///
+/// # Panics
+///
+/// Panics if admission exhausts with classes left over — a class none of
+/// whose nodes has admissible children is a structurally corrupt e-graph
+/// (every well-formed class holds a creation-order witness node).
+fn repair_choices_well_founded(egraph: &EGraph, root: EClassId, choices: &mut [Option<usize>]) {
+    let num_classes = choices.len();
 
-    let capacity = best_node.len();
-    let root_can = egraph.find(root).0 as usize;
-    if root_can >= capacity {
-        return;
-    }
-
-    // Reusable buffers (cleared each iteration, not reallocated)
-    let mut color: Vec<u8> = vec![0; capacity]; // 0=white, 1=gray, 2=black
-    let mut stack: Vec<(usize, usize)> = Vec::with_capacity(256);
-
-    loop {
-        // Reset for this DFS pass
-        color.iter_mut().for_each(|c| *c = 0);
-        stack.clear();
-        stack.push((root_can, 0));
-        color[root_can] = 1;
-
-        let mut cycle_found = false;
-
-        'dfs: while !stack.is_empty() {
-            let (cid, ref_ci) = {
-                let top = stack.last().unwrap();
-                (top.0, top.1)
-            };
-
-            let node_idx = best_node[cid].unwrap_or(0);
-            let canonical = egraph.find(EClassId(cid as u32));
-            let nodes = egraph.nodes(canonical);
-
-            let children: Vec<usize> = if node_idx < nodes.len() {
-                if let ENode::Op { children, .. } = &nodes[node_idx] {
-                    children
-                        .iter()
-                        .map(|&c| egraph.find(c).0 as usize)
-                        .collect()
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            };
-
-            let mut found_child = false;
-            let mut ci = ref_ci;
-            while ci < children.len() {
-                let child_can = children[ci];
-                ci += 1;
-                if child_can >= capacity {
-                    continue;
-                }
-
-                match color[child_can] {
-                    0 => {
-                        stack.last_mut().unwrap().1 = ci;
-                        color[child_can] = 1;
-                        stack.push((child_can, 0));
-                        found_child = true;
-                        break;
-                    }
-                    1 => {
-                        // Back-edge → cycle. Extract and break it.
-                        let cycle: Vec<usize> = stack
-                            .iter()
-                            .map(|&(s, _)| s)
-                            .skip_while(|&s| s != child_can)
-                            .collect();
-                        break_single_cycle(egraph, &cycle, best_node);
-                        cycle_found = true;
-                        break 'dfs;
-                    }
-                    _ => {} // black, skip
-                }
-            }
-
-            if !found_child {
-                stack.last_mut().unwrap().1 = ci;
-                color[cid] = 2;
-                stack.pop();
-            }
+    // Scope: every canonical class reachable from `root` through ANY node —
+    // the repair may switch a class to a node whose children the recorded
+    // graph never visited, so the full downward closure is the safe scope.
+    let mut scope_pos: Vec<Option<usize>> = alloc::vec![None; num_classes];
+    let mut scope: Vec<u32> = Vec::new();
+    let mut stack = alloc::vec![egraph.find(root)];
+    while let Some(class) = stack.pop() {
+        let canonical = egraph.find(class);
+        let idx = canonical.0 as usize;
+        if idx >= num_classes || scope_pos[idx].is_some() {
+            continue;
         }
-
-        if !cycle_found {
-            break; // No cycles remain
-        }
-    }
-}
-
-/// Break a cycle by switching the chosen node for one member to a leaf
-/// or a node whose children are all outside the cycle.
-fn break_single_cycle(egraph: &EGraph, cycle: &[usize], best_node: &mut Vec<Option<usize>>) {
-    if cycle.is_empty() {
-        return;
-    }
-
-    // Build cycle membership set for O(1) lookup
-    let max_id = cycle.iter().copied().max().unwrap_or(0);
-    let mut in_cycle = vec![false; max_id + 1];
-    for &cid in cycle {
-        in_cycle[cid] = true;
-    }
-
-    // Strategy 1: find ANY cycle member with a leaf node
-    for &cid in cycle {
-        let canonical = egraph.find(EClassId(cid as u32));
-        let nodes = egraph.nodes(canonical);
-        for (idx, node) in nodes.iter().enumerate() {
-            if matches!(node, ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_)) {
-                best_node[cid] = Some(idx);
-                return;
-            }
-        }
-    }
-
-    // Strategy 2: find a cycle member with an Op whose children
-    // are ALL outside the cycle
-    for &cid in cycle {
-        let canonical = egraph.find(EClassId(cid as u32));
-        let nodes = egraph.nodes(canonical);
-        for (idx, node) in nodes.iter().enumerate() {
+        scope_pos[idx] = Some(scope.len());
+        scope.push(canonical.0);
+        for node in egraph.nodes(canonical) {
             if let ENode::Op { children, .. } = node {
-                let all_outside = children.iter().all(|&c| {
-                    let cc = egraph.find(c).0 as usize;
-                    cc >= in_cycle.len() || !in_cycle[cc]
-                });
-                if all_outside {
-                    best_node[cid] = Some(idx);
-                    return;
+                for &child in children {
+                    stack.push(egraph.find(child));
                 }
             }
         }
     }
+    if scope.is_empty() {
+        return;
+    }
 
-    // Strategy 3: pick the first cycle member, choose its node with
-    // fewest children in the cycle (minimize remaining cycle edges)
-    let cid = cycle[0];
-    let canonical = egraph.find(EClassId(cid as u32));
-    let nodes = egraph.nodes(canonical);
-    let mut best_idx = 0;
-    let mut best_in_cycle_count = usize::MAX;
-    for (idx, node) in nodes.iter().enumerate() {
-        let count = match node {
-            ENode::Var(_) | ENode::Const(_) | ENode::Buffer(_) => 0,
-            ENode::Op { children, .. } => children
-                .iter()
-                .filter(|&&c| {
-                    let cc = egraph.find(c).0 as usize;
-                    cc < in_cycle.len() && in_cycle[cc]
-                })
-                .count(),
-        };
-        if count < best_in_cycle_count {
-            best_in_cycle_count = count;
-            best_idx = idx;
+    // Pending child-admissions per (scope class, node); reverse edges say
+    // which counters an admission decrements. Duplicate children count per
+    // occurrence.
+    let mut pending: Vec<Vec<usize>> = Vec::with_capacity(scope.len());
+    let mut reverse: Vec<Vec<(usize, usize)>> = alloc::vec![Vec::new(); scope.len()];
+    for (pos, &cid) in scope.iter().enumerate() {
+        let nodes = egraph.nodes(EClassId(cid));
+        let mut per_node = Vec::with_capacity(nodes.len());
+        for (node_idx, node) in nodes.iter().enumerate() {
+            let mut count = 0usize;
+            if let ENode::Op { children, .. } = node {
+                for &child in children {
+                    let child_pos = scope_pos[egraph.find(child).0 as usize]
+                        .expect("child of a scope class is in scope");
+                    count += 1;
+                    reverse[child_pos].push((pos, node_idx));
+                }
+            }
+            per_node.push(count);
+        }
+        pending.push(per_node);
+    }
+
+    let mut admitted: Vec<bool> = alloc::vec![false; scope.len()];
+    let mut admitted_count = 0usize;
+    // Classes whose RECORDED node is ready (drain phase pulls from here).
+    let mut recorded_ready: Vec<usize> = Vec::new();
+    // Classes with ANY ready node (unstick phase pulls from here).
+    let mut any_ready: Vec<usize> = Vec::new();
+    for (pos, &cid) in scope.iter().enumerate() {
+        let recorded = choices[cid as usize];
+        for (node_idx, &count) in pending[pos].iter().enumerate() {
+            if count == 0 {
+                if recorded == Some(node_idx) {
+                    recorded_ready.push(pos);
+                }
+                any_ready.push(pos);
+            }
         }
     }
-    best_node[cid] = Some(best_idx);
+
+    // Admit `pos` through `node_idx`, propagating readiness to parents.
+    let mut admit = |pos: usize,
+                     node_idx: usize,
+                     admitted: &mut Vec<bool>,
+                     admitted_count: &mut usize,
+                     recorded_ready: &mut Vec<usize>,
+                     any_ready: &mut Vec<usize>,
+                     pending: &mut Vec<Vec<usize>>,
+                     choices: &mut [Option<usize>]| {
+        admitted[pos] = true;
+        *admitted_count += 1;
+        choices[scope[pos] as usize] = Some(node_idx);
+        for &(parent_pos, parent_node) in &reverse[pos] {
+            pending[parent_pos][parent_node] -= 1;
+            if pending[parent_pos][parent_node] == 0 && !admitted[parent_pos] {
+                if choices[scope[parent_pos] as usize] == Some(parent_node) {
+                    recorded_ready.push(parent_pos);
+                }
+                any_ready.push(parent_pos);
+            }
+        }
+    };
+
+    while admitted_count < scope.len() {
+        // Phase 1 — drain: keep recorded choices wherever they admit.
+        let mut progressed = false;
+        while let Some(pos) = recorded_ready.pop() {
+            if admitted[pos] {
+                continue;
+            }
+            let node_idx = choices[scope[pos] as usize]
+                .expect("recorded_ready holds only classes with a recorded choice");
+            admit(
+                pos,
+                node_idx,
+                &mut admitted,
+                &mut admitted_count,
+                &mut recorded_ready,
+                &mut any_ready,
+                &mut pending,
+                choices,
+            );
+            progressed = true;
+        }
+        if admitted_count == scope.len() {
+            break;
+        }
+        // Phase 2 — unstick: everything left sits on or behind a cycle of
+        // recorded choices. Rewrite ONE class to its first admissible node.
+        while let Some(pos) = any_ready.pop() {
+            if admitted[pos] {
+                continue;
+            }
+            let node_idx = pending[pos]
+                .iter()
+                .position(|&count| count == 0)
+                .expect("any_ready holds only classes with a zero-pending node");
+            admit(
+                pos,
+                node_idx,
+                &mut admitted,
+                &mut admitted_count,
+                &mut recorded_ready,
+                &mut any_ready,
+                &mut pending,
+                choices,
+            );
+            progressed = true;
+            break;
+        }
+        assert!(
+            progressed,
+            "repair_choices_well_founded: {} of {} reachable e-classes cannot be admitted — \
+             the e-graph holds classes none of whose nodes has admissible children, which is \
+             structural corruption, not a rewrite outcome (root {})",
+            scope.len() - admitted_count,
+            scope.len(),
+            root.0
+        );
+    }
 }
 
 /// Extract the minimum-cost arena expression from an e-class.
@@ -587,10 +920,10 @@ pub fn extract<C: CostFunction>(
 
     let total_cost = best_cost[egraph.find(root).0 as usize].unwrap_or(usize::MAX);
 
-    // Break any mutual cycles in the choice graph before building the tree.
-    break_choice_cycles(egraph, root, &mut best_node);
-
-    let (arena, root_id) = choices_to_arena(egraph, root, &best_node);
+    // Seals `best_node` into an `Extraction`, repairing any mutual cycles
+    // the DP recorded before the tree is built.
+    let extraction = Extraction::from_dp(egraph, root, best_node);
+    let (arena, root_id) = choices_to_arena(&extraction);
     (arena, root_id, total_cost)
 }
 
@@ -795,14 +1128,16 @@ fn pin_shift_counts(egraph: &EGraph, choices: &[Option<usize>]) -> alloc::vec::V
 }
 
 pub fn choices_to_arena(
-    egraph: &EGraph,
-    root: EClassId,
-    choices: &[Option<usize>],
+    extraction: &Extraction<'_>,
 ) -> (pixelflow_ir::ExprArena, pixelflow_ir::ExprId) {
     use pixelflow_ir::{ExprArena, ExprId};
 
-    // Shifts must reach codegen with a constant count — see `pin_shift_counts`.
-    let pinned = pin_shift_counts(egraph, choices);
+    let egraph = extraction.egraph();
+    let root = extraction.root();
+
+    // Shifts must reach codegen with a constant count — see
+    // `Extraction::pinned_choices` / `pin_shift_counts`.
+    let pinned = extraction.pinned_choices();
     let choices: &[Option<usize>] = &pinned;
 
     enum Task {
@@ -818,6 +1153,14 @@ pub fn choices_to_arena(
     let mut arena = ExprArena::with_capacity(num_classes);
     // Cache: canonical e-class id → ExprId (None = not yet visited).
     let mut id_map: Vec<Option<ExprId>> = alloc::vec![None; num_classes];
+    // DFS color per canonical class: 0 = unvisited, 1 = on the current path
+    // (children scheduled, Complete pending). Re-entering a gray class means
+    // the choice graph reaches a class through its own descendants — a CYCLE.
+    // Without this check the walk re-schedules the cycle forever and the
+    // process dies by OOM instead of an error (observed: a full-DEV bench run
+    // SIGKILLed at 2.7GB inside this loop). A cyclic choice set is an
+    // extractor bug and must be reported as one, loudly, with the class id.
+    let mut color: Vec<u8> = alloc::vec![0; num_classes];
     // Buffer identity → declared slot in the output arena. Distinct e-classes
     // can carry the same identity only if their decls differ, which is a
     // corrupt graph (one memory, two extents) — assert, never alias silently.
@@ -911,6 +1254,17 @@ pub fn choices_to_arena(
                         result_stack.push(expr_id);
                     }
                     ENode::Op { children, .. } => {
+                        assert!(
+                            color[idx] != 1,
+                            "choices_to_arena: extraction choices are CYCLIC — e-class {} is \
+                             reached again through its own chosen descendants (root {}). The \
+                             extractor that produced these choices must guarantee a \
+                             well-founded choice DAG; materializing this one would loop until \
+                             the process is OOM-killed",
+                            idx,
+                            root.0
+                        );
+                        color[idx] = 1;
                         // Schedule completion after children are processed.
                         task_stack.push(Task::Complete {
                             canonical_id: canonical.0,
@@ -1138,8 +1492,8 @@ pub fn extract_dag<C: CostFunction>(egraph: &EGraph, root: EClassId, costs: &C) 
 
     let total_cost = best_cost[egraph.find(root).0 as usize].unwrap_or(usize::MAX);
 
-    // Break any mutual cycles in the choice graph before counting refs.
-    break_choice_cycles(egraph, root, &mut best_node);
+    // Repair any mutual cycles in the choice graph before counting refs.
+    repair_choices_well_founded(egraph, root, &mut best_node);
 
     // Phase 2: Count references to each e-class in the extracted DAG
     let mut ref_counts: Vec<usize> = alloc::vec![0; num_classes];
@@ -1331,6 +1685,140 @@ mod tests {
                 pixelflow_ir::arena::ExprNode::Binary(pixelflow_ir::OpKind::Add, _, _)
             ),
             "extraction with the latency-prior cost model should pick the Add form, got {root_node:?}"
+        );
+    }
+
+    // ========================================================================
+    // Cyclic choice sets (2026-08 round 1: full-DEV bench OOM)
+    // ========================================================================
+
+    /// An e-graph whose merged root class holds a node referencing a class
+    /// that references it back: x unioned with neg(neg(x)). Returns
+    /// (egraph, merged_root, inner_neg_class).
+    fn cyclic_capable_egraph() -> (EGraph, EClassId, EClassId) {
+        let mut egraph = EGraph::new();
+        let x = egraph.add(ENode::Var(0));
+        let n1 = egraph.add(ENode::Op {
+            op: &super::super::ops::Neg,
+            children: alloc::vec![x],
+        });
+        let n2 = egraph.add(ENode::Op {
+            op: &super::super::ops::Neg,
+            children: alloc::vec![n1],
+        });
+        let merged = egraph.union(x, n2); // neg(neg(x)) = x
+        egraph.rebuild();
+        (egraph, merged, n1)
+    }
+
+    /// Node index of the Neg op inside a class, if present.
+    fn neg_index(egraph: &EGraph, class: EClassId) -> Option<usize> {
+        egraph
+            .nodes(egraph.find(class))
+            .iter()
+            .position(|n| matches!(n, ENode::Op { .. }))
+    }
+
+    #[test]
+    #[should_panic(expected = "CYCLIC")]
+    fn choices_to_arena_refuses_a_cyclic_choice_set() {
+        // Before the gray-marking assert, this walk re-scheduled the cycle
+        // forever: a full-DEV bench run grew to 2.7GB and died by SIGKILL
+        // with zero diagnostics. The cycle must be a loud extractor
+        // accusation instead. `Extraction`'s own constructors now refuse a
+        // cyclic choice set before this point is ever reached (see
+        // `extraction_constructors_refuse_a_cyclic_choice_set`) — this test
+        // exercises `choices_to_arena`'s own belt-and-suspenders check by
+        // constructing the `Extraction` directly (private-field literal,
+        // valid from within this module), bypassing the smart constructors
+        // on purpose.
+        let (egraph, merged, n1) = cyclic_capable_egraph();
+        let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
+        let m = egraph.find(merged).0 as usize;
+        let i = egraph.find(n1).0 as usize;
+        choices[m] = Some(neg_index(&egraph, merged).expect("merged class holds Neg(n1)"));
+        choices[i] = Some(neg_index(&egraph, n1).expect("n1 holds Neg(x)"));
+        let extraction = Extraction {
+            egraph: &egraph,
+            root: egraph.find(merged),
+            choices,
+        };
+        let _ = choices_to_arena(&extraction);
+    }
+
+    #[test]
+    #[should_panic(expected = "cyclic")]
+    fn extraction_constructors_refuse_a_cyclic_choice_set() {
+        // The type-level guarantee J2 adds: a cyclic choice vector can no
+        // longer become an `Extraction` at all, so the 2.7GB-OOM class of
+        // bug can't reach `choices_to_arena` in the first place.
+        let (egraph, merged, n1) = cyclic_capable_egraph();
+        let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
+        let m = egraph.find(merged).0 as usize;
+        let i = egraph.find(n1).0 as usize;
+        choices[m] = Some(neg_index(&egraph, merged).expect("merged class holds Neg(n1)"));
+        choices[i] = Some(neg_index(&egraph, n1).expect("n1 holds Neg(x)"));
+        let _ = Extraction::from_backfill(&egraph, merged, choices);
+    }
+
+    #[test]
+    fn neural_bootstrap_survives_a_merge_reordered_class() {
+        // The real round-1 failure: the old bootstrap picked node index 0
+        // everywhere, but after saturation merges "node 0" of two classes
+        // can reference each other — a CYCLIC bootstrap. Every refinement
+        // swap then failed `choices_have_cycle_from` (the cycle is reachable
+        // no matter what is swapped), so the cyclic bootstrap flowed to
+        // `choices_to_arena` unrepaired. `backfill_well_founded` must return
+        // a well-founded choice set for ANY node ordering, which
+        // materializes without panicking.
+        let (egraph, merged, _n1) = cyclic_capable_egraph();
+        let nnue = ExprNnue::new_with_latency_prior(42);
+        let extractor = IncrementalExtractor::new(&nnue, 8);
+        let (_cost, extraction) = extractor.extract_choices_only(&egraph, merged);
+        let (arena, root) = choices_to_arena(&extraction);
+        // The merged class IS x, so whatever form was chosen must evaluate
+        // like x — and with cycles broken toward leaves, the only consistent
+        // forms are Var(0) or neg-chains over it inside one arena.
+        assert!(arena.len() >= 1);
+        assert!(root.0 < arena.len() as u32);
+    }
+
+    #[test]
+    fn repair_keeps_acyclic_choices_and_terminates_on_a_recorded_cycle() {
+        // The static DP's failure shape: a recorded mutual cycle (merged
+        // class picks Neg(n1), n1 picks Neg(merged)). The old restart-DFS
+        // breaker could rediscover the same cycle forever — two DEV kernels
+        // pinned a core for minutes. The repair must terminate, produce a
+        // well-founded set, and leave already-acyclic choices alone.
+        let (egraph, merged, n1) = cyclic_capable_egraph();
+        let m = egraph.find(merged).0 as usize;
+        let i = egraph.find(n1).0 as usize;
+        let mut choices: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
+        choices[m] = Some(neg_index(&egraph, merged).expect("merged class holds Neg(n1)"));
+        choices[i] = Some(neg_index(&egraph, n1).expect("n1 holds Neg(x)"));
+
+        repair_choices_well_founded(&egraph, merged, &mut choices);
+        assert!(
+            !choices_have_cycle_from(&egraph, merged, &choices),
+            "repair must leave a well-founded choice set"
+        );
+        // Materialization is the proof of well-foundedness.
+        let extraction = Extraction {
+            egraph: &egraph,
+            root: egraph.find(merged),
+            choices,
+        };
+        let (arena, root) = choices_to_arena(&extraction);
+        assert!(root.0 < arena.len() as u32);
+
+        // And a set that is ALREADY acyclic passes through untouched.
+        let mut acyclic: Vec<Option<usize>> = alloc::vec![None; egraph.num_classes()];
+        backfill_well_founded(&egraph, merged, &mut acyclic);
+        let before = acyclic.clone();
+        repair_choices_well_founded(&egraph, merged, &mut acyclic);
+        assert_eq!(
+            before, acyclic,
+            "an acyclic choice function must be kept verbatim (drain phase only)"
         );
     }
 
@@ -1562,20 +2050,299 @@ mod tests {
         let nnue = ExprNnue::new_with_latency_prior(42);
 
         // DAG accumulator
-        let ref_counts = compute_ref_counts(&egraph, product, &choices);
-        let dag_acc = EdgeAccumulator::from_dag_choices(
-            &egraph,
-            product,
-            &choices,
-            &ref_counts,
-            &nnue.embeddings,
-        );
+        let extraction = Extraction {
+            egraph: &egraph,
+            root: egraph.find(product),
+            choices,
+        };
+        let dag_acc = EdgeAccumulator::from_dag_choices(&extraction, &nnue.embeddings);
 
         assert_eq!(dag_acc.node_count, 3, "DAG acc should count 3 unique nodes");
         assert_eq!(
             dag_acc.edge_count, 3,
             "shared reuse should contribute a var_ref edge"
         );
+    }
+
+    // =========================================================================
+    // Train/deploy feature-path equivalence (2026-08 round-0 skew guard)
+    // =========================================================================
+
+    /// The trainer featurizes arenas (`EdgeAccumulator::from_arena_dag`); the
+    /// extractor featurizes e-graph choices
+    /// (`EdgeAccumulator::from_dag_choices_with_variance`). Both are thin
+    /// adapters over one walker, and this test pins that: for the same DAG —
+    /// shared subexpressions, shared leaves, mixed variance — the two paths
+    /// must produce bit-identical features and identical predictions. If a
+    /// future change gives either path its own edge policy, scalar slots, or
+    /// variance classification, this fails.
+    #[test]
+    fn train_and_deploy_feature_paths_agree() {
+        use crate::nnue::{EdgeAccumulator, ExprNnue};
+        use pixelflow_ir::{ExprArena, OpKind};
+
+        // Arena: (sin(Z * 0.3) * (X + Y) + sin(Z * 0.3)) + Y * 0.3
+        // - sin(Z * 0.3) is SHARED (register reload on the second reference)
+        // - Y and 0.3 are shared leaves (leaf reload policy)
+        // - variance mix: const (0.3), frame (Z chain), scanline (Y, Y*0.3),
+        //   pixel (everything touching X)
+        let mut arena = ExprArena::new();
+        let z = arena.push_var(2);
+        let c = arena.push_const(0.3);
+        let zm = arena.push_binary(OpKind::Mul, z, c);
+        let sin = arena.push_unary(OpKind::Sin, zm);
+        let x = arena.push_var(0);
+        let y = arena.push_var(1);
+        let xy = arena.push_binary(OpKind::Add, x, y);
+        let m = arena.push_binary(OpKind::Mul, sin, xy);
+        let a = arena.push_binary(OpKind::Add, m, sin);
+        let yc = arena.push_binary(OpKind::Mul, y, c);
+        let root = arena.push_binary(OpKind::Add, a, yc);
+
+        // The SAME DAG as an e-graph (sharing preserved node for node).
+        use crate::egraph::ops;
+        let mut eg = EGraph::new();
+        let ez = eg.add(ENode::Var(2));
+        let ec = eg.add(ENode::constant(0.3));
+        let ezm = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: alloc::vec![ez, ec],
+        });
+        let esin = eg.add(ENode::Op {
+            op: &ops::Sin,
+            children: alloc::vec![ezm],
+        });
+        let ex = eg.add(ENode::Var(0));
+        let ey = eg.add(ENode::Var(1));
+        let exy = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: alloc::vec![ex, ey],
+        });
+        let em = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: alloc::vec![esin, exy],
+        });
+        let ea = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: alloc::vec![em, esin],
+        });
+        let eyc = eg.add(ENode::Op {
+            op: &ops::Mul,
+            children: alloc::vec![ey, ec],
+        });
+        let eroot = eg.add(ENode::Op {
+            op: &ops::Add,
+            children: alloc::vec![ea, eyc],
+        });
+
+        let choices: Vec<Option<usize>> = alloc::vec![None; eg.num_classes()];
+        let extraction = Extraction::from_backfill(&eg, eroot, choices);
+
+        let nnue = ExprNnue::new_with_latency_prior(7);
+        let deploy =
+            EdgeAccumulator::from_dag_choices_with_variance(&extraction, &nnue.embeddings, true);
+        let train = EdgeAccumulator::from_arena_dag(&arena, root, &nnue.embeddings);
+
+        assert_eq!(train.node_count, deploy.node_count, "node_count");
+        assert_eq!(train.edge_count, deploy.edge_count, "edge_count");
+        for i in 0..train.values.len() {
+            assert_eq!(
+                train.values[i], deploy.values[i],
+                "accumulator values[{i}] diverge between the train-path and \
+                 deploy-path feature builders"
+            );
+        }
+        assert_eq!(train.variance_frac_const, deploy.variance_frac_const);
+        assert_eq!(train.variance_frac_frame, deploy.variance_frac_frame);
+        assert_eq!(train.variance_frac_scanline, deploy.variance_frac_scanline);
+        assert_eq!(train.variance_frac_pixel, deploy.variance_frac_pixel);
+
+        // Pin the variance semantics themselves, not just path symmetry:
+        // 11 nodes — const {0.3}; frame {Z, Z*0.3, sin}; scanline {Y, Y*0.3};
+        // pixel {X, X+Y, mul, add, root}.
+        assert_eq!(train.node_count, 11);
+        assert!((train.variance_frac_const - 1.0 / 11.0).abs() < 1e-6);
+        assert!((train.variance_frac_frame - 3.0 / 11.0).abs() < 1e-6);
+        assert!((train.variance_frac_scanline - 2.0 / 11.0).abs() < 1e-6);
+        assert!((train.variance_frac_pixel - 5.0 / 11.0).abs() < 1e-6);
+
+        // And the predictions extraction would act on are identical.
+        let p_train = nnue.predict_log_cost_with_features(&train);
+        let p_deploy = nnue.predict_log_cost_with_features(&deploy);
+        assert_eq!(
+            p_train, p_deploy,
+            "identical features must produce identical predicted log-cost"
+        );
+        assert!(p_train.is_finite());
+
+        // ---------------------------------------------------------------
+        // P1(c) extension: a merged e-class holding BOTH a pixel-varying
+        // node (Sub(X, X)) and a constant (Const(0)) — the class-wide meet
+        // `DepsAnalysis` computes collapses this to CONST (see
+        // `deps::meet_across_enodes_x_minus_x_is_const`), but if the
+        // extraction actually CHOSE the varying node, the emitted arena is
+        // pixel-varying and the deploy features must say so too. This is
+        // exactly the scenario that fails under the old meet-based lookup.
+        // ---------------------------------------------------------------
+        let mut arena2 = ExprArena::new();
+        let x2 = arena2.push_var(0);
+        let sub2 = arena2.push_binary(OpKind::Sub, x2, x2);
+        let train2 = EdgeAccumulator::from_arena_dag(&arena2, sub2, &nnue.embeddings);
+
+        let mut eg2 = EGraph::new();
+        let ex2 = eg2.add(ENode::Var(0));
+        let esub2 = eg2.add(ENode::Op {
+            op: &ops::Sub,
+            children: alloc::vec![ex2, ex2],
+        });
+        let econst2 = eg2.add(ENode::constant(0.0));
+        let merged2 = eg2.union(esub2, econst2); // Sub(X, X) = 0
+        eg2.rebuild();
+
+        // Sanity: the class-wide meet DOES collapse to CONST — the exact
+        // data source P1(c) replaces. If this assumption ever stops
+        // holding, the regression below is no longer exercising the bug.
+        let canonical2 = eg2.find(merged2);
+        let meet = crate::egraph::deps::DepsAnalysis::analyze(&eg2);
+        assert_eq!(
+            meet.get(&eg2, canonical2),
+            pixelflow_ir::Variance::CONST,
+            "test assumes the class-wide meet collapses to CONST after the merge"
+        );
+
+        // Choose the Sub(X, X) node explicitly — not the Const — the
+        // extraction scenario the bug requires.
+        let sub_idx = eg2
+            .nodes(canonical2)
+            .iter()
+            .position(|n| matches!(n, ENode::Op { .. }))
+            .expect("merged class holds the Sub node");
+        // `backfill_well_founded` (and thus `Extraction::from_backfill`)
+        // short-circuits the moment `root`'s own entry is already `Some` —
+        // it never descends to fill still-missing descendants in that case
+        // (that's what makes `Extraction::try_swap`'s per-child calls
+        // necessary during refinement). So the merged class's leaf, `X`,
+        // needs its own choice set explicitly too.
+        let mut choices2: Vec<Option<usize>> = alloc::vec![None; eg2.num_classes()];
+        choices2[canonical2.0 as usize] = Some(sub_idx);
+        choices2[eg2.find(ex2).0 as usize] = Some(0);
+        let extraction2 = Extraction::from_backfill(&eg2, merged2, choices2);
+
+        let deploy2 =
+            EdgeAccumulator::from_dag_choices_with_variance(&extraction2, &nnue.embeddings, true);
+
+        assert_eq!(
+            train2.node_count, deploy2.node_count,
+            "node_count (merged-class case)"
+        );
+        assert_eq!(
+            train2.variance_frac_pixel, deploy2.variance_frac_pixel,
+            "variance_frac_pixel must reflect the CHOSEN Sub(X, X) node, not the \
+             class-wide meet"
+        );
+        assert_eq!(train2.variance_frac_const, deploy2.variance_frac_const);
+        assert!(
+            deploy2.variance_frac_pixel > 0.0,
+            "deploy path must classify the chosen Sub(X, X) as pixel-varying, not fold \
+             it into CONST via the class-wide meet"
+        );
+
+        // ---------------------------------------------------------------
+        // Shift-count pinning (review thread on PR #1019, factored.rs:984):
+        // a Shl/Shr count e-class can legitimately hold both a Const and a
+        // value-equal varying-shaped alternative (same situation as the
+        // Sub(X, X)/Const(0) merge above, but for the count child of a
+        // shift). `choices_to_arena` always pins that child to the Const
+        // representative (`pin_shift_counts` — the emitter's shift lowering
+        // requires an immediate), so if the extraction chose the varying
+        // node, the deploy-path features must reflect the PINNED arena, not
+        // the raw choice — otherwise this walker both double-counts nodes
+        // `choices_to_arena` never emits and disagrees with the arena's
+        // variance histogram.
+        // ---------------------------------------------------------------
+        struct ShlOp;
+        impl crate::egraph::ops::Op for ShlOp {
+            fn kind(&self) -> OpKind {
+                OpKind::Shl
+            }
+        }
+
+        // The arena `choices_to_arena` will actually materialise: pinning
+        // always wins, so the compiled form is `Shl(X, Const(0))` no matter
+        // which node the count class's extraction chose.
+        let mut arena3 = ExprArena::new();
+        let x3 = arena3.push_var(0);
+        let zero3 = arena3.push_const(0.0);
+        let shl3 = arena3.push_binary(OpKind::Shl, x3, zero3);
+        let train3 = EdgeAccumulator::from_arena_dag(&arena3, shl3, &nnue.embeddings);
+
+        let mut eg3 = EGraph::new();
+        let ex3 = eg3.add(ENode::Var(0));
+        let ey3 = eg3.add(ENode::Var(1));
+        let esub3 = eg3.add(ENode::Op {
+            op: &ops::Sub,
+            children: alloc::vec![ey3, ey3],
+        });
+        let econst3 = eg3.add(ENode::constant(0.0));
+        let count3 = eg3.union(esub3, econst3); // Sub(Y, Y) = 0, same class as Const(0)
+        eg3.rebuild();
+        let eshl3 = eg3.add(ENode::Op {
+            op: &ShlOp,
+            children: alloc::vec![ex3, count3],
+        });
+
+        // Choose the varying Sub(Y, Y) node for the count class, not the
+        // Const — exactly the scenario `pin_shift_counts` exists to correct
+        // at emission time.
+        let canonical_count3 = eg3.find(count3);
+        let sub_idx3 = eg3
+            .nodes(canonical_count3)
+            .iter()
+            .position(|n| matches!(n, ENode::Op { .. }))
+            .expect("merged count class holds the Sub node");
+        let mut choices3: Vec<Option<usize>> = alloc::vec![None; eg3.num_classes()];
+        choices3[eg3.find(eshl3).0 as usize] = Some(0);
+        choices3[canonical_count3.0 as usize] = Some(sub_idx3);
+        choices3[eg3.find(ex3).0 as usize] = Some(0);
+        choices3[eg3.find(ey3).0 as usize] = Some(0);
+        let extraction3 = Extraction::from_backfill(&eg3, eshl3, choices3);
+
+        let deploy3 =
+            EdgeAccumulator::from_dag_choices_with_variance(&extraction3, &nnue.embeddings, true);
+
+        assert_eq!(
+            train3.node_count, deploy3.node_count,
+            "node_count (shift-count pinning case): the deploy path must not walk into \
+             Sub(Y, Y) once the count is pinned to Const(0), or its node count will \
+             disagree with the arena choices_to_arena actually emits"
+        );
+        assert_eq!(
+            train3.edge_count, deploy3.edge_count,
+            "edge_count (shift-count pinning case)"
+        );
+        assert_eq!(
+            train3.variance_frac_pixel, deploy3.variance_frac_pixel,
+            "variance_frac_pixel (shift-count pinning case)"
+        );
+        assert_eq!(
+            train3.variance_frac_scanline, deploy3.variance_frac_scanline,
+            "deploy path must not count Y's scanline variance from the un-pinned \
+             Sub(Y, Y) count child"
+        );
+        assert_eq!(
+            train3.variance_frac_const, deploy3.variance_frac_const,
+            "variance_frac_const (shift-count pinning case)"
+        );
+        assert_eq!(
+            train3.variance_frac_frame, deploy3.variance_frac_frame,
+            "variance_frac_frame (shift-count pinning case)"
+        );
+        for i in 0..train3.values.len() {
+            assert_eq!(
+                train3.values[i], deploy3.values[i],
+                "accumulator values[{i}] diverge on the shift-count pinning case"
+            );
+        }
     }
 
     // =========================================================================
@@ -1599,7 +2366,12 @@ mod tests {
         choices[egraph.find(x).0 as usize] = Some(0);
         choices[egraph.find(y).0 as usize] = Some(0);
 
-        let (arena, root_id) = choices_to_arena(&egraph, add, &choices);
+        let extraction = Extraction {
+            egraph: &egraph,
+            root: egraph.find(add),
+            choices,
+        };
+        let (arena, root_id) = choices_to_arena(&extraction);
 
         assert_eq!(arena.len(), 3, "X + Y should have exactly 3 arena nodes");
         // Root should be the last node (post-order: X, Y, Add)
@@ -1622,7 +2394,12 @@ mod tests {
         choices[egraph.find(mul).0 as usize] = Some(0);
         choices[egraph.find(x).0 as usize] = Some(0);
 
-        let (arena, root_id) = choices_to_arena(&egraph, mul, &choices);
+        let extraction = Extraction {
+            egraph: &egraph,
+            root: egraph.find(mul),
+            choices,
+        };
+        let (arena, root_id) = choices_to_arena(&extraction);
 
         assert_eq!(
             arena.len(),
@@ -1649,7 +2426,12 @@ mod tests {
         choices[egraph.find(x).0 as usize] = Some(0);
         choices[egraph.find(y).0 as usize] = Some(0);
 
-        let (arena, root_id) = choices_to_arena(&egraph, add, &choices);
+        let extraction = Extraction {
+            egraph: &egraph,
+            root: egraph.find(add),
+            choices,
+        };
+        let (arena, root_id) = choices_to_arena(&extraction);
         let (extracted_arena, extracted_root, _cost) = extract(&egraph, add, &CostModel::default());
         assert_eq!(arena.len(), extracted_arena.len());
         assert_eq!(root_id, extracted_root);
