@@ -96,8 +96,8 @@ pub use trig::{
 ///
 /// Total: 59 math rules
 ///
-/// For the full set including fusion rules (FMA, rsqrt),
-/// use [`all_rules`] which returns 61 rules.
+/// For the full set including fusion (FMA, rsqrt) and differentiation rules,
+/// use [`all_rules`] which returns 62 rules.
 pub fn all_math_rules() -> Vec<Box<dyn Rewrite>> {
     let mut rules = Vec::new();
     rules.extend(algebra_rules());
