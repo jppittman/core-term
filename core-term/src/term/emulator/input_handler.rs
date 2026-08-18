@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn paste_text_action_bracketed_on() {
+    fn it_should_wrap_pasted_text_in_bracketed_paste_escapes_when_bracketed_paste_is_enabled() {
         let mut emu = create_test_emu_for_input();
         // Enable bracketed paste mode via the public message-passing surface (CSI ? 2004 h).
         use crate::ansi::commands::CsiCommand;
@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn paste_text_action_bracketed_off() {
+    fn it_should_write_pasted_text_directly_to_the_screen_when_bracketed_paste_is_disabled() {
         let mut emu = create_test_emu_for_input();
         assert!(!emu.dec_modes.bracketed_paste_mode);
 
@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn control_event_resize_returns_resize_pty_action() {
+    fn it_should_return_resize_pty_action_with_cell_dimensions_on_resize_control_event() {
         let mut emu = create_test_emu_for_input();
 
         // Default cell size is 10x16 (from config)
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn control_event_resize_minimum_dimensions() {
+    fn it_should_clamp_resize_dimensions_to_the_minimum_grid_size() {
         let mut emu = create_test_emu_for_input();
 
         // Very small resize (should clamp to MIN_GRID_DIMENSION)
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn control_event_request_snapshot_returns_none() {
+    fn it_should_return_none_for_request_snapshot_control_event() {
         let mut emu = create_test_emu_for_input();
 
         let result = emu.interpret_input(EmulatorInput::Control(ControlEvent::RequestSnapshot));
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn control_event_pty_data_ready_returns_none() {
+    fn it_should_return_none_for_pty_data_ready_control_event() {
         let mut emu = create_test_emu_for_input();
 
         let result = emu.interpret_input(EmulatorInput::Control(ControlEvent::PtyDataReady));

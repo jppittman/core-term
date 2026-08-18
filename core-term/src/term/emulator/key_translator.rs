@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn arrow_keys_normal_mode() {
+    fn it_should_translate_arrow_keys_to_csi_sequences_in_normal_cursor_key_mode() {
         let modes = DecPrivateModes {
             cursor_keys_app_mode: false,
             ..Default::default()
@@ -325,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn arrow_keys_app_mode() {
+    fn it_should_translate_arrow_keys_to_ss3_sequences_in_application_cursor_key_mode() {
         let modes = DecPrivateModes {
             cursor_keys_app_mode: true,
             ..Default::default()
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_private_use_area_characters_ignored_for_arrow_keys() {
+    fn it_should_ignore_macos_private_use_area_characters_and_translate_arrow_keys_by_symbol() {
         // macOS sends U+F700-F703 for arrow keys in the `characters` field
         // These should be ignored and the KeySymbol should be used instead
         let modes = DecPrivateModes::default();

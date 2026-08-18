@@ -129,7 +129,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pixels_to_cells_basic() {
+    fn it_should_convert_pixel_coordinates_to_cell_coordinates_with_no_padding() {
         let layout = Layout {
             cols: 80,
             rows: 24,
@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn pixels_to_cells_with_padding() {
+    fn it_should_treat_coordinates_inside_padding_on_either_axis_as_a_miss() {
         let layout = Layout {
             cols: 80,
             rows: 24,
@@ -164,9 +164,15 @@ mod tests {
             padding_y: 10,
         };
 
-        // Click in padding
+        // Click in padding on both axes
         assert_eq!(layout.pixels_to_cells(0, 0), None);
         assert_eq!(layout.pixels_to_cells(4, 9), None);
+
+        // Click inside x-padding only (y is past its padding boundary)
+        assert_eq!(layout.pixels_to_cells(4, 10), None);
+
+        // Click inside y-padding only (x is past its padding boundary)
+        assert_eq!(layout.pixels_to_cells(5, 9), None);
 
         // Top-left cell (accounting for padding)
         assert_eq!(layout.pixels_to_cells(5, 10), Some((0, 0)));
@@ -176,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn pixels_to_cells_out_of_bounds() {
+    fn it_should_return_none_when_pixel_coordinates_fall_outside_the_grid() {
         let layout = Layout {
             cols: 80,
             rows: 24,
