@@ -2134,6 +2134,31 @@ mod mutation_tests {
     }
 
     // -----------------------------------------------------------------------
+    // OSC MAX_OSC_LEN boundary enforcement
+    // Mutation: `<` to `<=` in add_string_byte would allow the buffer to grow
+    //           one byte past MAX_OSC_LEN before dropping further bytes.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn it_should_truncate_an_osc_string_to_the_max_osc_len_limit() {
+        let payload = vec![b'x'; 2000];
+        let mut input = b"\x1b]0;".to_vec();
+        input.extend_from_slice(&payload);
+        input.push(0x07); // BEL
+
+        let cmds = process_bytes(&input);
+        let Some(AnsiCommand::Osc(data)) = cmds.first() else {
+            panic!("expected Osc command, got {:?}", cmds);
+        };
+        assert_eq!(
+            data.len(),
+            1024,
+            "OSC string must be truncated at MAX_OSC_LEN, got {} bytes",
+            data.len()
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // UTF-8 boundary: exact invalid/valid byte transitions
     // Mutations: off-by-one on UTF8_2_BYTE_MIN (0xC2), UTF8_4_BYTE_MAX (0xF4),
     //            continuation range (0x80..=0xBF)
@@ -2263,6 +2288,24 @@ mod mutation_tests {
             !cmds.iter().any(|c| matches!(c, AnsiCommand::Dcs(_))),
             "CAN must cancel DCS; got {:?}",
             cmds
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // A CAN-cancelled string sequence must not leak its bytes into the next
+    // OSC/DCS/PM/APC string.
+    // Mutation: replacing AnsiParser::clear_string_buffer with a no-op leaves
+    // the cancelled sequence's bytes in the buffer, so the next dispatched
+    // string command's payload would be prefixed with the stale bytes.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn it_should_not_leak_a_can_cancelled_osc_strings_bytes_into_the_next_osc() {
+        let cmds = process_bytes(b"\x1b]0;oldjunk\x18\x1b]1;newdata\x07");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Osc(b"1;newdata".to_vec())],
+            "the cancelled sequence's bytes must not appear in the next OSC's payload"
         );
     }
 
