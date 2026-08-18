@@ -242,6 +242,35 @@ mod tests {
         buf[0]
     }
 
+    /// The approximation's own error budget, per the module's documented
+    /// accuracy. Every comparison against an external reference allows this.
+    const APPROX_TOL: f32 = 1e-5;
+
+    /// `TWO_PI - 2π`: the phase one winding of the f32 constant loses against
+    /// the real period.
+    const WINDING_PHASE_ERROR: f32 = 1.748_455_5e-7;
+
+    /// The distance from `x` to the next representable f32 above it.
+    fn ulp(x: f32) -> f32 {
+        let bits = x.abs().to_bits();
+        f32::from_bits(bits + 1) - f32::from_bits(bits)
+    }
+
+    /// How far apart `sin`/`cos` of `x` and of `x + windings*TWO_PI` may land
+    /// without the range reduction being at fault.
+    ///
+    /// The shifted angle is not `windings` exact periods from `x`: `TWO_PI` is
+    /// an f32, so each winding sheds `WINDING_PHASE_ERROR` of phase, and the
+    /// sum then rounds to f32. Both are errors in the *test's* construction of
+    /// the argument rather than in the reduction under test, and `|d/dx| ≤ 1`
+    /// passes them straight into the value — so the budget carries them
+    /// alongside the approximation error each of the two evaluations has.
+    fn periodicity_tolerance(shifted: f32, windings: i32) -> f32 {
+        let accumulated_phase = (windings.unsigned_abs() as f32) * WINDING_PHASE_ERROR;
+        let rounding = ulp(shifted) * 0.5;
+        2.0 * APPROX_TOL + accumulated_phase + rounding
+    }
+
     const PRINCIPAL_RANGE_ANGLES: &[f32] = &[
         0.0,
         PI / 6.0,
@@ -260,7 +289,10 @@ mod tests {
         for &x in PRINCIPAL_RANGE_ANGLES {
             let got = eval_scalar(Field::from(x).sin());
             let want = x.sin();
-            assert!((got - want).abs() < 1e-5, "sin({x}) = {got}, want {want}");
+            assert!(
+                (got - want).abs() < APPROX_TOL,
+                "sin({x}) = {got}, want {want}"
+            );
         }
     }
 
@@ -269,7 +301,10 @@ mod tests {
         for &x in PRINCIPAL_RANGE_ANGLES {
             let got = eval_scalar(Field::from(x).cos());
             let want = x.cos();
-            assert!((got - want).abs() < 1e-5, "cos({x}) = {got}, want {want}");
+            assert!(
+                (got - want).abs() < APPROX_TOL,
+                "cos({x}) = {got}, want {want}"
+            );
         }
     }
 
@@ -285,9 +320,10 @@ mod tests {
             for &k in &[-37i32, -5, -2, -1, 1, 2, 5, 37] {
                 let shifted = x + (k as f32) * TWO_PI;
                 let got = eval_scalar(Field::from(shifted).sin());
+                let tol = periodicity_tolerance(shifted, k);
                 assert!(
-                    (got - base).abs() < 1e-5,
-                    "sin({x} + {k}*2π) = {got}, want {base} (periodicity)"
+                    (got - base).abs() < tol,
+                    "sin({x} + {k}*2π) = {got}, want {base} +/- {tol} (periodicity)"
                 );
             }
         }
@@ -300,9 +336,10 @@ mod tests {
             for &k in &[-37i32, -5, -2, -1, 1, 2, 5, 37] {
                 let shifted = x + (k as f32) * TWO_PI;
                 let got = eval_scalar(Field::from(shifted).cos());
+                let tol = periodicity_tolerance(shifted, k);
                 assert!(
-                    (got - base).abs() < 1e-5,
-                    "cos({x} + {k}*2π) = {got}, want {base} (periodicity)"
+                    (got - base).abs() < tol,
+                    "cos({x} + {k}*2π) = {got}, want {base} +/- {tol} (periodicity)"
                 );
             }
         }
@@ -314,12 +351,12 @@ mod tests {
             let got_sin = eval_scalar(Field::from(x).sin());
             let got_cos = eval_scalar(Field::from(x).cos());
             assert!(
-                (got_sin - x.sin()).abs() < 1e-5,
+                (got_sin - x.sin()).abs() < APPROX_TOL,
                 "sin({x}) = {got_sin}, want {}",
                 x.sin()
             );
             assert!(
-                (got_cos - x.cos()).abs() < 1e-5,
+                (got_cos - x.cos()).abs() < APPROX_TOL,
                 "cos({x}) = {got_cos}, want {}",
                 x.cos()
             );
@@ -411,7 +448,7 @@ mod tests {
             assert!(s.abs() <= 1.0, "sin({x:e}) = {s} outside [-1, 1]");
             assert!(c.abs() <= 1.0, "cos({x:e}) = {c} outside [-1, 1]");
             assert!(
-                (s - x.sin()).abs() < 1e-5,
+                (s - x.sin()).abs() < APPROX_TOL,
                 "sin({x:e}) = {s}, want {}",
                 x.sin()
             );
