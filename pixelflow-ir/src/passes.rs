@@ -27,8 +27,16 @@
 //! transcendental assembly, the polynomial has one home, and precision is a
 //! property of this code rather than of whichever backend you landed on.
 //! The expansions deliberately avoid `MulAdd` and `Select`, staying inside the
-//! differentiable primitive set so `lower_dwrt` can still get through them;
-//! fusing `mul`+`add` back into `MulAdd` is the optimizer's job afterwards.
+//! differentiable primitive set so `lower_dwrt` can still get through them.
+//!
+//! They may use `Select`. [`legalize`] runs `lower_dwrt` *before*
+//! `expand_transcendentals` — the chain rule manufactures `Sin`/`Cos` nodes
+//! that the transcendental pass must still lower — so an expansion is only ever
+//! evaluated, never differentiated, and derivatives are taken against the
+//! symbolic rules in `diff_node` instead. (`lower_dwrt` carries a `Select` rule
+//! regardless: it blends the branch derivatives on the primal mask.)
+//!
+//! Nothing re-fuses `mul`+`add` into `MulAdd` afterwards — see `horner_step`.
 
 use crate::arena::{ExprArena, ExprId, ExprNode};
 use crate::kind::OpKind;
@@ -908,18 +916,13 @@ fn d_neg(arena: &mut ExprArena, a: ExprId) -> ExprId {
 fn expand_unary(arena: &mut ExprArena, op: OpKind, arg: ExprId) -> ExprId {
     match op {
         OpKind::Sin => expand_sin(arena, arg),
-        // cos(x) = sin(x + π/2)
-        OpKind::Cos => {
-            let half_pi = arena.push_const(core::f32::consts::FRAC_PI_2);
-            let shifted = arena.push_binary(OpKind::Add, arg, half_pi);
-            expand_sin(arena, shifted)
-        }
+        // cos(x) = sin(x + π/2), with the π/2 applied to the *reduced*
+        // argument (see `expand_sin_phase`).
+        OpKind::Cos => expand_sin_phase(arena, arg, core::f32::consts::FRAC_PI_2),
         // tan(x) = sin(x) / cos(x). Expand both so neither reaches a backend.
         OpKind::Tan => {
             let s = expand_sin(arena, arg);
-            let half_pi = arena.push_const(core::f32::consts::FRAC_PI_2);
-            let shifted = arena.push_binary(OpKind::Add, arg, half_pi);
-            let c = expand_sin(arena, shifted);
+            let c = expand_sin_phase(arena, arg, core::f32::consts::FRAC_PI_2);
             arena.push_binary(OpKind::Div, s, c)
         }
         OpKind::Exp2 => expand_exp2(arena, arg),
@@ -983,6 +986,19 @@ fn expand_binary(arena: &mut ExprArena, op: OpKind, a: ExprId, b: ExprId) -> Exp
     }
 }
 
+/// Degree-7 odd **minimax** coefficients for `atan(t)` on `t ∈ [-1, 1]`.
+///
+/// Max error 8.7e-5. The Taylor coefficients for the same degree
+/// (`1, -1/3, 1/5, -1/7`) are 6.2e-2 at `|t| = 1` — 704× worse for exactly the
+/// same four multiplies and three adds, because Taylor spends its accuracy
+/// budget at the origin while this interval's error is dominated by the
+/// endpoint. Fitting the interval instead of the point is free: `atan2` expands
+/// to 27 ops either way.
+///
+/// The fit is over `[0, 1]`, but both `atan` and an odd polynomial are odd, so
+/// the error is antisymmetric and the bound carries to `[-1, 1]` unchanged.
+pub const ATAN_MINIMAX: [f32; 4] = [0.999_268_04, -0.321_431_33, 0.146_614_41, -0.039_132_48];
+
 /// `atan2(y, x)` (four-quadrant) as a primitive subgraph.
 ///
 /// Mirrors the runtime `SimdOps` version: reduce to a ratio in [-1,1] (swapping
@@ -1008,13 +1024,11 @@ fn expand_atan2(arena: &mut ExprArena, y: ExprId, x: ExprId) -> ExprId {
 
     // atan(ratio) on [-1,1]: ratio · Horner(c7,c5,c3,c1)(ratio²).
     let r2 = arena.push_binary(OpKind::Mul, ratio, ratio);
-    let c1 = arena.push_const(1.0);
-    let c3 = arena.push_const(-0.333_333_33);
-    let c5 = arena.push_const(0.2);
-    let c7 = arena.push_const(-0.142_857_14);
-    let p = horner_step(arena, c7, r2, c5);
-    let p = horner_step(arena, p, r2, c3);
-    let p = horner_step(arena, p, r2, c1);
+    let mut p = arena.push_const(ATAN_MINIMAX[ATAN_MINIMAX.len() - 1]);
+    for &c in ATAN_MINIMAX.iter().rev().skip(1) {
+        let c = arena.push_const(c);
+        p = horner_step(arena, p, r2, c);
+    }
     let atan_small = arena.push_binary(OpKind::Mul, ratio, p);
 
     // If swapped, result is ±π/2 − atan_small (sign from ratio).
@@ -1156,49 +1170,174 @@ fn expand_log2(arena: &mut ExprArena, x: ExprId) -> ExprId {
     arena.push_binary(OpKind::Add, z, e)
 }
 
-/// `sin(x)` as a primitive subgraph (Chebyshev, matching the runtime path).
+/// Largest `|x|` for which `sin`/`cos`/`tan` return a value. Beyond it they
+/// return NaN — see [`expand_sin_phase`] for why the boundary is here.
 ///
-/// Range-reduce to `[-π, π]`, normalize to `[-1, 1]`, then a degree-7 odd
-/// Chebyshev polynomial. Built from `Add`/`Sub`/`Mul`/`Floor` only (no `MulAdd`/
-/// `Select`), so the jet path differentiates it via the chain rule.
+/// `pixelflow-core`'s combinator tier re-exports this and the constants below
+/// rather than restating them: it and this expansion have to be the same
+/// function, and a silently drifted coefficient between them is a parity bug.
+pub const TRIG_DOMAIN: f32 = 1_048_576.0; // 2^20
+
+/// `2π` split so that `k·term` is *exact* for every `k` the domain admits.
+///
+/// `TAU_HI` is 25·2⁻², `TAU_MID` is 17·2⁻⁹ — 5-bit significands, so the
+/// products stay exact until `|k|` reaches 2²⁴/25 ≈ 671089 and 2²⁴/17 ≈ 986895
+/// respectively. [`TRIG_DOMAIN`] needs only `|k| ≤ 166887`, a 4× margin.
+/// `TAU_LO` carries the remainder at full precision; the three together
+/// represent `2π` to within 6.6e-13, so the reduction drifts by at most
+/// `166887 · 6.6e-13 ≈ 1.1e-7` radians at the domain edge.
+pub const TAU_HI: f32 = 6.25;
+pub const TAU_MID: f32 = 0.033_203_125;
+pub const TAU_LO: f32 = -1.781_782e-5;
+
+/// Degree-11 odd Chebyshev coefficients for `sin(π·t)` on `t ∈ [-1, 1]`.
+///
+/// Degree 7 in Taylor coefficients is accurate to 7.5e-2 at the interval ends
+/// — two digits — which would make the reduction work below pointless, since
+/// the polynomial would then own the entire error budget.
+/// Degree 9 is accurate to 6e-6 but peaks at 1.0000029: it *returns values
+/// outside sin's range*, which is the defect being fixed here, so it is not an
+/// option. Degree 11 is the first that both stays inside `[-1, 1]` and is
+/// accurate to 6e-7, near the f32 ulp of a result near 1.
+pub const SIN_CHEB: [f32; 6] = [
+    3.141_591_3,
+    -5.167_677_4,
+    2.549_879_3,
+    -0.598_278_8,
+    0.080_476_06,
+    -0.005_990_654,
+];
+
+/// `sin(x)` as a primitive subgraph (Chebyshev, matching the runtime path).
 fn expand_sin(arena: &mut ExprArena, x: ExprId) -> ExprId {
-    use core::f32::consts::{PI, TAU};
-
-    // k = floor(x / 2π + 0.5)
-    let two_pi_inv = arena.push_const(1.0 / TAU);
-    let half = arena.push_const(0.5);
-    let xr = arena.push_binary(OpKind::Mul, x, two_pi_inv);
-    let xr = arena.push_binary(OpKind::Add, xr, half);
-    let k = arena.push_unary(OpKind::Floor, xr);
-
-    // xx = x - k·2π
-    let tau = arena.push_const(TAU);
-    let k_tau = arena.push_binary(OpKind::Mul, k, tau);
-    let xx = arena.push_binary(OpKind::Sub, x, k_tau);
-
-    // t = xx / π
-    let pi_inv = arena.push_const(1.0 / PI);
-    let t = arena.push_binary(OpKind::Mul, xx, pi_inv);
-
-    // t2 = t·t
-    let t2 = arena.push_binary(OpKind::Mul, t, t);
-
-    // Horner: p = ((c7·t2 + c5)·t2 + c3)·t2 + c1, expanded as mul+add.
-    let c1 = arena.push_const(core::f32::consts::PI);
-    let c3 = arena.push_const(-5.167_712_7);
-    let c5 = arena.push_const(2.550_164);
-    let c7 = arena.push_const(-0.599_264_5);
-    let p = horner_step(arena, c7, t2, c5);
-    let p = horner_step(arena, p, t2, c3);
-    let p = horner_step(arena, p, t2, c1);
-
-    // sin ≈ t·p
-    arena.push_binary(OpKind::Mul, t, p)
+    expand_sin_phase(arena, x, 0.0)
 }
 
-/// `acc·x + add` as `Add(Mul(acc, x), add)` — plain mul+add so the jet path
-/// (which has no `MulAdd` rule) can differentiate it. The optimizer re-fuses to
-/// `MulAdd` on the non-jet paths.
+/// `sin(x + phase)` for a constant `phase`, as a primitive subgraph.
+///
+/// Range-reduce to `[-π, π]`, normalize to `[-1, 1]`, then [`SIN_CHEB`].
+///
+/// # Why the argument reduction is three terms and not one
+///
+/// The obvious reduction — `xx = x − k·2π` with `2π` a single f32 — is wrong
+/// for large `x`, and wrong in the worst way: `k·2π` rounds to a multiple of
+/// `ulp(x)`, so `xx` inherits an error that grows with `|x|` until the reduced
+/// argument leaves `[-π, π]` entirely. Past that point `t` leaves `[-1, 1]`,
+/// the polynomial is evaluated outside the interval it was fit on, and the
+/// result diverges: `|sin|` first exceeds 1 near `x ≈ 1.4e7` and reaches `inf`
+/// by `x ≈ 2.6e13`. Splitting `2π` into [`TAU_HI`]/[`TAU_MID`]/[`TAU_LO`]
+/// (Cody-Waite) keeps each `k·term` exact, so the cancellation happens against
+/// the true product rather than a rounded one.
+///
+/// # Why there is a domain limit rather than more terms
+///
+/// Cody-Waite buys accuracy only while `k` is exactly representable and the
+/// products stay exact; extending it to the whole f32 range means Payne-Hanek
+/// — a multi-word integer multiply by the bits of `1/2π` — which costs far
+/// more than the polynomial it protects and is not worth it in a per-pixel
+/// kernel. Past `|x| = 2²⁴` the question stops being meaningful anyway:
+/// `ulp(x)` there exceeds 1 radian, so an f32 argument no longer resolves the
+/// phase it is asking about.
+///
+/// So the reduction is honest over [`TRIG_DOMAIN`] (worst case 1.5e-6) and
+/// returns NaN outside it. NaN and not a clamp into `[-1, 1]`: a clamped value
+/// is a wrong answer that looks like a right one, which is exactly how this
+/// defect survived — the JIT and the `eval_scalar` oracle run this same
+/// expansion, so they agreed bit-for-bit on the garbage and every same-form
+/// equivalence test passed.
+///
+/// `phase` is folded in *after* reduction rather than added to `x` up front:
+/// `cos` is `sin(x + π/2)`, and at the top of the domain `ulp(x)` is 0.0625,
+/// so adding π/2 to `x` there would lose most of the shift before reduction
+/// ever ran.
+///
+/// # `sin(-0.0)` is `+0.0`, deliberately
+///
+/// [`TAU_LO`] is negative, so at `k = 0` the term `k·TAU_LO` is `-0.0` and the
+/// last reduction step is `Sub(-0.0, -0.0)`, which is `+0.0`. Reordering the
+/// three subtractions does not help — the sign dies wherever the negative
+/// constant sits. Making all three positive requires `TAU_MID = 2⁻⁵`, which
+/// leaves a coarser remainder and multiplies the reduction's drift by 15
+/// (1.7e-6 vs 1.1e-7 at the domain edge) — that would roughly double the
+/// function's total error, everywhere, to buy the sign of zero at one point.
+/// Not worth it, and squarely the trade CLAUDE.md's "Floating point at the
+/// edges" describes: edge-case IEEE conformance is not on offer.
+fn expand_sin_phase(arena: &mut ExprArena, x: ExprId, phase: f32) -> ExprId {
+    use core::f32::consts::{PI, TAU};
+
+    let shift = |arena: &mut ExprArena, v: ExprId| {
+        if phase == 0.0 {
+            return v;
+        }
+        let p = arena.push_const(phase);
+        arena.push_binary(OpKind::Add, v, p)
+    };
+
+    // k = floor((x + phase)/2π + 0.5) — the multiple of 2π nearest the
+    // argument. An off-by-one in k can only happen when the argument sits on a
+    // period boundary, where the two candidate reductions are ±π: the same
+    // point, and sin agrees at both.
+    let arg = shift(arena, x);
+    let two_pi_inv = arena.push_const(1.0 / TAU);
+    let half = arena.push_const(0.5);
+    let u = arena.push_binary(OpKind::Mul, arg, two_pi_inv);
+    let u = arena.push_binary(OpKind::Add, u, half);
+    let k = arena.push_unary(OpKind::Floor, u);
+
+    // xx = x − k·2π, in three exact pieces, then the phase back in.
+    let hi = arena.push_const(TAU_HI);
+    let mid = arena.push_const(TAU_MID);
+    let lo = arena.push_const(TAU_LO);
+    let k_hi = arena.push_binary(OpKind::Mul, k, hi);
+    let k_mid = arena.push_binary(OpKind::Mul, k, mid);
+    let k_lo = arena.push_binary(OpKind::Mul, k, lo);
+    let xx = arena.push_binary(OpKind::Sub, x, k_hi);
+    let xx = arena.push_binary(OpKind::Sub, xx, k_mid);
+    let xx = arena.push_binary(OpKind::Sub, xx, k_lo);
+    let xx = shift(arena, xx);
+
+    // t = xx / π ∈ [-1, 1]. Reduction error can push |t| to ~1.03 at the
+    // domain edge; SIN_CHEB still holds |p| ≤ 1 out to |t| = 1.3.
+    let pi_inv = arena.push_const(1.0 / PI);
+    let t = arena.push_binary(OpKind::Mul, xx, pi_inv);
+    let t2 = arena.push_binary(OpKind::Mul, t, t);
+
+    // Horner in t², expanded as mul+add.
+    let mut p = arena.push_const(SIN_CHEB[SIN_CHEB.len() - 1]);
+    for &c in SIN_CHEB.iter().rev().skip(1) {
+        let c = arena.push_const(c);
+        p = horner_step(arena, p, t2, c);
+    }
+    let s = arena.push_binary(OpKind::Mul, t, p);
+
+    // Outside the domain, NaN. Guarded on the *unshifted* x so sin, cos and
+    // the two halves of tan all agree about where the answer stops existing.
+    // NaN itself is unguarded: |NaN| < limit is false, so it propagates.
+    let limit = arena.push_const(TRIG_DOMAIN);
+    let abs_x = arena.push_unary(OpKind::Abs, x);
+    let in_domain = arena.push_binary(OpKind::Lt, abs_x, limit);
+    let nan = arena.push_const(f32::NAN);
+    arena.push_ternary(OpKind::Select, in_domain, s, nan)
+}
+
+/// `acc·x + add` as `Add(Mul(acc, x), add)` — two nodes, not one `MulAdd`.
+///
+/// Two tempting justifications for it are simply untrue, and worth stating so
+/// they are not assumed: the jet path *does* have a `MulAdd` rule (`diff_node`,
+/// `ExprNode::Ternary`), and nothing re-fuses these afterwards — [`legalize`] is
+/// the last thing to touch the arena, and the only thing that becomes an FMA
+/// instruction is an `OpKind::MulAdd` node already in it. So the Horner chains
+/// here reach the emitter unfused: 5 mul + 5 add for `sin`, where 5 `MulAdd`s
+/// would do.
+///
+/// The real reason to keep it is parity. Unfused mul+add rounds twice on every
+/// target, so the `eval_scalar` oracle and every backend agree exactly. `MulAdd`
+/// rounds *once* where FMA exists and twice where it does not (CLAUDE.md,
+/// "Floating point at the edges"), which would reintroduce a tier divergence —
+/// small, but this expansion is precisely where a shared-definition disagreement
+/// between oracle and JIT went unnoticed for so long. Fusing is a real ~5-op win
+/// per `sin` available for the taking; it should be taken deliberately, with the
+/// parity tests updated to expect a 1-ulp tier difference, not as a side effect.
 fn horner_step(arena: &mut ExprArena, acc: ExprId, x: ExprId, add: ExprId) -> ExprId {
     let prod = arena.push_binary(OpKind::Mul, acc, x);
     arena.push_binary(OpKind::Add, prod, add)
@@ -1535,7 +1674,7 @@ mod dwrt_tests {
     fn unsupported_op_errors_loudly() {
         // Differentiating a Reduce has no rule: the pass must refuse.
         let mut a = ExprArena::new();
-        let combiner = a.push_const(OpKind::Add as u8 as f32);
+        let combiner = a.push_const(OpKind::Add.index() as f32);
         let rvar = a.push_const(0.0);
         let extent = a.push_const(4.0);
         let body = a.push_var(4);
