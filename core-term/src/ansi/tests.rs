@@ -49,7 +49,7 @@ fn it_should_process_c0_bel() {
 }
 
 #[test]
-fn c0control_from_byte_accepts_only_the_documented_control_range() {
+fn it_should_accept_only_documented_control_bytes_in_c0control_from_byte() {
     // Valid C0 range (0x00..=0x1F) except ESC, which is handled separately,
     // plus DEL (0x7F). `from_byte` transmutes the byte into `C0Control`, so
     // any byte outside this exact set must return `None` rather than
@@ -78,7 +78,7 @@ fn c0control_from_byte_accepts_only_the_documented_control_range() {
 }
 
 #[test]
-fn c0control_display_prints_the_mnemonic_for_every_variant() {
+fn it_should_display_the_correct_mnemonic_for_every_c0control_variant() {
     let expected: &[(C0Control, &str)] = &[
         (C0Control::NUL, "NUL"),
         (C0Control::SOH, "SOH"),
@@ -1431,7 +1431,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn sgr_bold_is_1() {
+    fn it_should_set_bold_attribute_for_sgr_code_1() {
         let cmds = process_bytes(b"\x1b[1m");
         assert_eq!(
             cmds,
@@ -1442,7 +1442,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_faint_is_2() {
+    fn it_should_set_faint_attribute_for_sgr_code_2() {
         let cmds = process_bytes(b"\x1b[2m");
         assert_eq!(
             cmds,
@@ -1453,7 +1453,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_italic_is_3() {
+    fn it_should_set_italic_attribute_for_sgr_code_3() {
         let cmds = process_bytes(b"\x1b[3m");
         assert_eq!(
             cmds,
@@ -1464,7 +1464,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_underline_is_4() {
+    fn it_should_set_underline_attribute_for_sgr_code_4() {
         let cmds = process_bytes(b"\x1b[4m");
         assert_eq!(
             cmds,
@@ -1475,7 +1475,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_blink_slow_is_5() {
+    fn it_should_set_slow_blink_attribute_for_sgr_code_5() {
         let cmds = process_bytes(b"\x1b[5m");
         assert_eq!(
             cmds,
@@ -1486,7 +1486,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_blink_rapid_is_6() {
+    fn it_should_set_rapid_blink_attribute_for_sgr_code_6() {
         let cmds = process_bytes(b"\x1b[6m");
         assert_eq!(
             cmds,
@@ -1497,7 +1497,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_reverse_is_7() {
+    fn it_should_set_reverse_attribute_for_sgr_code_7() {
         let cmds = process_bytes(b"\x1b[7m");
         assert_eq!(
             cmds,
@@ -1508,7 +1508,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_conceal_is_8() {
+    fn it_should_set_conceal_attribute_for_sgr_code_8() {
         let cmds = process_bytes(b"\x1b[8m");
         assert_eq!(
             cmds,
@@ -1519,7 +1519,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_strikethrough_is_9() {
+    fn it_should_set_strikethrough_attribute_for_sgr_code_9() {
         let cmds = process_bytes(b"\x1b[9m");
         assert_eq!(
             cmds,
@@ -1530,7 +1530,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_underline_double_is_21() {
+    fn it_should_set_double_underline_attribute_for_sgr_code_21() {
         let cmds = process_bytes(b"\x1b[21m");
         assert_eq!(
             cmds,
@@ -1541,7 +1541,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_normal_intensity_is_22() {
+    fn it_should_set_no_bold_attribute_for_sgr_code_22() {
         let cmds = process_bytes(b"\x1b[22m");
         assert_eq!(
             cmds,
@@ -1552,7 +1552,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_no_italic_is_23() {
+    fn it_should_set_no_italic_attribute_for_sgr_code_23() {
         let cmds = process_bytes(b"\x1b[23m");
         assert_eq!(
             cmds,
@@ -1563,7 +1563,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_no_underline_is_24() {
+    fn it_should_set_no_underline_attribute_for_sgr_code_24() {
         let cmds = process_bytes(b"\x1b[24m");
         assert_eq!(
             cmds,
@@ -1574,7 +1574,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_no_blink_is_25() {
+    fn it_should_set_no_blink_attribute_for_sgr_code_25() {
         let cmds = process_bytes(b"\x1b[25m");
         assert_eq!(
             cmds,
@@ -1585,7 +1585,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_no_reverse_is_27() {
+    fn it_should_set_no_reverse_attribute_for_sgr_code_27() {
         let cmds = process_bytes(b"\x1b[27m");
         assert_eq!(
             cmds,
@@ -1596,7 +1596,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_no_conceal_is_28() {
+    fn it_should_set_no_conceal_attribute_for_sgr_code_28() {
         let cmds = process_bytes(b"\x1b[28m");
         assert_eq!(
             cmds,
@@ -1607,7 +1607,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_no_strikethrough_is_29() {
+    fn it_should_set_no_strikethrough_attribute_for_sgr_code_29() {
         let cmds = process_bytes(b"\x1b[29m");
         assert_eq!(
             cmds,
@@ -1618,7 +1618,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_overlined_is_53() {
+    fn it_should_set_overlined_attribute_for_sgr_code_53() {
         let cmds = process_bytes(b"\x1b[53m");
         assert_eq!(
             cmds,
@@ -1629,7 +1629,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_no_overlined_is_55() {
+    fn it_should_set_no_overlined_attribute_for_sgr_code_55() {
         let cmds = process_bytes(b"\x1b[55m");
         assert_eq!(
             cmds,
@@ -1640,7 +1640,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_underline_color_set_is_58() {
+    fn it_should_parse_indexed_and_rgb_underline_color_for_sgr_code_58() {
         // 58;5;42 -> UnderlineColor(Indexed(42))
         let cmds = process_bytes(b"\x1b[58;5;42m");
         assert_eq!(
@@ -1661,7 +1661,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_underline_color_default_is_59() {
+    fn it_should_set_default_underline_color_for_sgr_code_59() {
         let cmds = process_bytes(b"\x1b[59m");
         assert_eq!(
             cmds,
@@ -1677,7 +1677,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn sgr_fg_all_eight_normal_colors() {
+    fn it_should_map_sgr_codes_30_to_37_to_the_eight_normal_foreground_colors() {
         // Tests every entry in map_basic_code_to_color for Normal intensity.
         // A mutation that shifts the base constant by ±1 would fail on Black or White.
         let cases: &[(u8, NamedColor)] = &[
@@ -1706,7 +1706,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_fg_default_is_39() {
+    fn it_should_set_default_foreground_color_for_sgr_code_39() {
         // Mutation: wrong constant (38 vs 39 would change to extended-color path)
         let cmds = process_bytes(b"\x1b[39m");
         assert_eq!(
@@ -1723,7 +1723,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn sgr_bg_all_eight_normal_colors() {
+    fn it_should_map_sgr_codes_40_to_47_to_the_eight_normal_background_colors() {
         let cases: &[(u8, NamedColor)] = &[
             (40, NamedColor::Black),
             (41, NamedColor::Red),
@@ -1750,7 +1750,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_bg_default_is_49() {
+    fn it_should_set_default_background_color_for_sgr_code_49() {
         let cmds = process_bytes(b"\x1b[49m");
         assert_eq!(
             cmds,
@@ -1766,7 +1766,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn sgr_fg_all_eight_bright_colors() {
+    fn it_should_map_sgr_codes_90_to_97_to_the_eight_bright_foreground_colors() {
         let cases: &[(u8, NamedColor)] = &[
             (90, NamedColor::BrightBlack),
             (91, NamedColor::BrightRed),
@@ -1797,7 +1797,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn sgr_bg_all_eight_bright_colors() {
+    fn it_should_map_sgr_codes_100_to_107_to_the_eight_bright_background_colors() {
         let cases: &[(u8, NamedColor)] = &[
             (100, NamedColor::BrightBlack),
             (101, NamedColor::BrightRed),
@@ -1829,7 +1829,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn sgr_fg_256_color_index_min() {
+    fn it_should_parse_256_color_foreground_index_0() {
         // 38;5;0 -> Foreground(Indexed(0))
         let cmds = process_bytes(b"\x1b[38;5;0m");
         assert_eq!(
@@ -1841,7 +1841,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_fg_256_color_index_max() {
+    fn it_should_parse_256_color_foreground_index_255() {
         // 38;5;255 -> Foreground(Indexed(255))
         let cmds = process_bytes(b"\x1b[38;5;255m");
         assert_eq!(
@@ -1853,7 +1853,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_bg_256_color() {
+    fn it_should_parse_256_color_background_index() {
         // 48;5;100 -> Background(Indexed(100))
         // Mutation: mixing up 38 and 48 would swap Fg/Bg
         let cmds = process_bytes(b"\x1b[48;5;100m");
@@ -1866,7 +1866,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_fg_rgb_truecolor() {
+    fn it_should_parse_truecolor_rgb_foreground() {
         // 38;2;255;128;0 -> Foreground(Rgb(255, 128, 0))
         let cmds = process_bytes(b"\x1b[38;2;255;128;0m");
         assert_eq!(
@@ -1878,7 +1878,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_bg_rgb_truecolor() {
+    fn it_should_parse_truecolor_rgb_background() {
         // 48;2;10;20;30 -> Background(Rgb(10, 20, 30))
         let cmds = process_bytes(b"\x1b[48;2;10;20;30m");
         assert_eq!(
@@ -1890,7 +1890,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn sgr_rgb_channel_order_is_r_g_b_not_b_g_r() {
+    fn it_should_preserve_r_g_b_channel_order_for_truecolor_foreground() {
         // Explicitly verify R,G,B order - a mutation swapping two channel reads would survive
         // a test using equal values. Using distinct non-symmetric values.
         let cmds = process_bytes(b"\x1b[38;2;1;2;3m");
@@ -1908,56 +1908,56 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn csi_cursor_up_no_param_defaults_to_1() {
+    fn it_should_default_cursor_up_count_to_1_when_no_param_is_given() {
         let cmds = process_bytes(b"\x1b[A");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::CursorUp(1))]);
     }
 
     #[test]
-    fn csi_cursor_up_param_zero_is_coerced_to_1() {
+    fn it_should_coerce_cursor_up_param_zero_to_1() {
         // param_or_1 applies max(1), so 0 -> 1
         let cmds = process_bytes(b"\x1b[0A");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::CursorUp(1))]);
     }
 
     #[test]
-    fn csi_cursor_up_explicit_5() {
+    fn it_should_move_cursor_up_by_explicit_count_5() {
         let cmds = process_bytes(b"\x1b[5A");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::CursorUp(5))]);
     }
 
     #[test]
-    fn csi_cursor_down_defaults_to_1() {
+    fn it_should_default_cursor_down_count_to_1_when_no_param_is_given() {
         let cmds = process_bytes(b"\x1b[B");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::CursorDown(1))]);
     }
 
     #[test]
-    fn csi_cursor_forward_defaults_to_1() {
+    fn it_should_default_cursor_forward_count_to_1_when_no_param_is_given() {
         let cmds = process_bytes(b"\x1b[C");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::CursorForward(1))]);
     }
 
     #[test]
-    fn csi_cursor_backward_defaults_to_1() {
+    fn it_should_default_cursor_backward_count_to_1_when_no_param_is_given() {
         let cmds = process_bytes(b"\x1b[D");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::CursorBackward(1))]);
     }
 
     #[test]
-    fn csi_cursor_next_line_defaults_to_1() {
+    fn it_should_default_cursor_next_line_count_to_1_when_no_param_is_given() {
         let cmds = process_bytes(b"\x1b[E");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::CursorNextLine(1))]);
     }
 
     #[test]
-    fn csi_cursor_prev_line_defaults_to_1() {
+    fn it_should_default_cursor_prev_line_count_to_1_when_no_param_is_given() {
         let cmds = process_bytes(b"\x1b[F");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::CursorPrevLine(1))]);
     }
 
     #[test]
-    fn csi_cursor_char_absolute_defaults_to_1() {
+    fn it_should_default_cursor_character_absolute_column_to_1_when_no_param_is_given() {
         let cmds = process_bytes(b"\x1b[G");
         assert_eq!(
             cmds,
@@ -1970,7 +1970,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn csi_cup_both_params_present() {
+    fn it_should_set_cursor_position_from_explicit_row_and_column_params() {
         let cmds = process_bytes(b"\x1b[5;10H");
         assert_eq!(
             cmds,
@@ -1979,7 +1979,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_cup_row_only_col_defaults_to_1() {
+    fn it_should_default_cursor_position_column_to_1_when_only_row_is_given() {
         let cmds = process_bytes(b"\x1b[3H");
         assert_eq!(
             cmds,
@@ -1988,7 +1988,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_cup_no_params_both_default_to_1() {
+    fn it_should_default_cursor_position_row_and_column_to_1_when_no_params_are_given() {
         // ESC [ H with no params = home (1,1); tested above but repeat here for clarity
         let cmds = process_bytes(b"\x1b[H");
         assert_eq!(
@@ -2003,25 +2003,25 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn csi_erase_in_display_no_param_defaults_to_0() {
+    fn it_should_default_erase_in_display_mode_to_0_when_no_param_is_given() {
         let cmds = process_bytes(b"\x1b[J");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::EraseInDisplay(0))]);
     }
 
     #[test]
-    fn csi_erase_in_display_explicit_2() {
+    fn it_should_erase_entire_display_for_explicit_mode_2() {
         let cmds = process_bytes(b"\x1b[2J");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::EraseInDisplay(2))]);
     }
 
     #[test]
-    fn csi_erase_in_line_no_param_defaults_to_0() {
+    fn it_should_default_erase_in_line_mode_to_0_when_no_param_is_given() {
         let cmds = process_bytes(b"\x1b[K");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::EraseInLine(0))]);
     }
 
     #[test]
-    fn csi_erase_in_line_explicit_1() {
+    fn it_should_erase_line_for_explicit_mode_1() {
         let cmds = process_bytes(b"\x1b[1K");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::EraseInLine(1))]);
     }
@@ -2032,43 +2032,43 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn esc_d_is_index() {
+    fn it_should_map_esc_d_to_index_command() {
         let cmds = process_bytes(b"\x1bD");
         assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::Index)]);
     }
 
     #[test]
-    fn esc_e_is_next_line() {
+    fn it_should_map_esc_e_to_next_line_command() {
         let cmds = process_bytes(b"\x1bE");
         assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::NextLine)]);
     }
 
     #[test]
-    fn esc_h_is_set_tab_stop() {
+    fn it_should_map_esc_h_to_set_tab_stop_command() {
         let cmds = process_bytes(b"\x1bH");
         assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::SetTabStop)]);
     }
 
     #[test]
-    fn esc_m_is_reverse_index() {
+    fn it_should_map_esc_m_to_reverse_index_command() {
         let cmds = process_bytes(b"\x1bM");
         assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::ReverseIndex)]);
     }
 
     #[test]
-    fn esc_7_is_save_cursor() {
+    fn it_should_map_esc_7_to_save_cursor_command() {
         let cmds = process_bytes(b"\x1b7");
         assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::SaveCursor)]);
     }
 
     #[test]
-    fn esc_8_is_restore_cursor() {
+    fn it_should_map_esc_8_to_restore_cursor_command() {
         let cmds = process_bytes(b"\x1b8");
         assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::RestoreCursor)]);
     }
 
     #[test]
-    fn esc_c_is_reset_to_initial_state() {
+    fn it_should_map_esc_c_to_reset_to_initial_state_command() {
         let cmds = process_bytes(b"\x1bc");
         assert_eq!(
             cmds,
@@ -2077,13 +2077,13 @@ mod mutation_tests {
     }
 
     #[test]
-    fn esc_n_is_single_shift_2() {
+    fn it_should_map_esc_n_to_single_shift_2_command() {
         let cmds = process_bytes(b"\x1bN");
         assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::SingleShift2)]);
     }
 
     #[test]
-    fn esc_o_is_single_shift_3() {
+    fn it_should_map_esc_o_to_single_shift_3_command() {
         let cmds = process_bytes(b"\x1bO");
         assert_eq!(cmds, vec![AnsiCommand::Esc(EscCommand::SingleShift3)]);
     }
@@ -2095,7 +2095,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn csi_accepts_exactly_16_params() {
+    fn it_should_retain_all_16_params_at_the_max_params_limit() {
         // SGR with 16 parameters: 1;2;0;0;... (14 zeros)
         // All 16 must be collected and processed.
         let cmds = process_bytes(b"\x1b[1;2;0;0;0;0;0;0;0;0;0;0;0;0;0;0m");
@@ -2117,7 +2117,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_silently_drops_17th_param() {
+    fn it_should_drop_the_17th_csi_param_beyond_the_max_params_limit() {
         // 16 zeros then ;7 (Reverse). The 17th param (7) must be ignored.
         // We send: ESC [ 0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;7m
         //          that's 16 zeros + 1 extra -> the 7 (Reverse) is the 17th and dropped.
@@ -2140,7 +2140,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn utf8_0xc1_is_invalid_start_produces_replacement() {
+    fn it_should_treat_0xc1_as_an_invalid_utf8_start_byte() {
         // 0xC1 is just below the valid 2-byte start range (0xC2)
         let cmds = process_bytes(&[0xC1, 0x80]);
         // Both bytes should produce replacement characters, not a valid char
@@ -2153,7 +2153,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn utf8_0xc2_is_valid_2_byte_start() {
+    fn it_should_decode_0xc2_as_a_valid_2_byte_utf8_start() {
         // 0xC2 0x80 = U+0080 (PAD) - lowest valid 2-byte sequence
         let cmds = process_bytes(&[0xC2, 0x80]);
         assert_eq!(
@@ -2164,7 +2164,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn utf8_0xf4_0x8f_0xbf_0xbf_is_valid() {
+    fn it_should_decode_the_highest_valid_utf8_code_point_u10ffff() {
         // 0xF4 0x8F 0xBF 0xBF = U+10FFFF (highest valid code point)
         let cmds = process_bytes(&[0xF4, 0x8F, 0xBF, 0xBF]);
         assert_eq!(
@@ -2175,7 +2175,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn utf8_0xf5_is_invalid_start_produces_replacement() {
+    fn it_should_treat_0xf5_as_an_invalid_utf8_start_byte() {
         // 0xF5 is just above the valid 4-byte start range (0xF4)
         let cmds = process_bytes(&[0xF5, 0x80, 0x80, 0x80]);
         assert!(
@@ -2187,7 +2187,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn utf8_continuation_0x7f_is_not_valid_continuation() {
+    fn it_should_reject_0x7f_as_a_utf8_continuation_byte() {
         // 0xE2 starts a 3-byte sequence; 0x7F is DEL (not a continuation byte 0x80..=0xBF)
         // Should abort the UTF-8 sequence and emit replacement + DEL control
         let cmds = process_bytes(&[0xE2, 0x7F]);
@@ -2200,7 +2200,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn utf8_continuation_0xc0_is_not_valid_continuation() {
+    fn it_should_reject_0xc0_as_a_utf8_continuation_byte() {
         // 0xC0 is above the continuation range (0x80..=0xBF)
         // Should abort the UTF-8 sequence
         let cmds = process_bytes(&[0xE2, 0xC0]);
@@ -2213,7 +2213,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn utf8_continuation_0xbf_is_valid_continuation() {
+    fn it_should_accept_0xbf_as_the_highest_valid_utf8_continuation_byte() {
         // 0xDF 0xBF = U+07FF - uses 0xBF which is the highest continuation byte
         let cmds = process_bytes(&[0xDF, 0xBF]);
         assert_eq!(
@@ -2229,7 +2229,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn osc_cancelled_by_can() {
+    fn it_should_cancel_osc_string_on_can_and_resume_printing() {
         // CAN (0x18) inside an OSC should discard the string and return to ground
         let cmds = process_bytes(b"\x1b]0;title\x18rest");
         // No Osc command should appear; "rest" prints normally
@@ -2246,7 +2246,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn osc_cancelled_by_sub() {
+    fn it_should_cancel_osc_string_on_sub() {
         // SUB (0x1A) inside an OSC should also discard it
         let cmds = process_bytes(b"\x1b]0;title\x1Arest");
         assert!(
@@ -2257,7 +2257,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn dcs_cancelled_by_can() {
+    fn it_should_cancel_dcs_string_on_can() {
         let cmds = process_bytes(b"\x1bPdata\x18rest");
         assert!(
             !cmds.iter().any(|c| matches!(c, AnsiCommand::Dcs(_))),
@@ -2272,7 +2272,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn csi_param_overflow_saturates_not_panics() {
+    fn it_should_saturate_csi_param_overflow_to_u16_max_instead_of_panicking() {
         // A number larger than u16::MAX (65535) should saturate to u16::MAX, not panic
         let cmds = process_bytes(b"\x1b[99999A");
         // Should produce CursorUp with some value (saturated), not panic
@@ -2290,19 +2290,19 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn csi_ctc_0_is_set_tab_stop() {
+    fn it_should_map_ctc_param_0_to_set_tab_stop() {
         let cmds = process_bytes(b"\x1b[0W");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::SetTabStop)]);
     }
 
     #[test]
-    fn csi_ctc_2_clears_current_tab_stop() {
+    fn it_should_map_ctc_param_2_to_clear_current_tab_stop() {
         let cmds = process_bytes(b"\x1b[2W");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::ClearTabStops(0))]);
     }
 
     #[test]
-    fn csi_ctc_5_clears_all_tab_stops() {
+    fn it_should_map_ctc_param_5_to_clear_all_tab_stops() {
         let cmds = process_bytes(b"\x1b[5W");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::ClearTabStops(3))]);
     }
@@ -2313,13 +2313,13 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn csi_s_uppercase_is_scroll_up() {
+    fn it_should_map_uppercase_csi_s_to_scroll_up() {
         let cmds = process_bytes(b"\x1b[3S");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::ScrollUp(3))]);
     }
 
     #[test]
-    fn csi_t_uppercase_is_scroll_down() {
+    fn it_should_map_uppercase_csi_t_to_scroll_down() {
         let cmds = process_bytes(b"\x1b[3T");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::ScrollDown(3))]);
     }
@@ -2330,19 +2330,19 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn csi_at_is_insert_character() {
+    fn it_should_map_csi_at_to_insert_character() {
         let cmds = process_bytes(b"\x1b[2@");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::InsertCharacter(2))]);
     }
 
     #[test]
-    fn csi_p_uppercase_is_delete_character() {
+    fn it_should_map_uppercase_csi_p_to_delete_character() {
         let cmds = process_bytes(b"\x1b[2P");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::DeleteCharacter(2))]);
     }
 
     #[test]
-    fn csi_x_uppercase_is_erase_character() {
+    fn it_should_map_uppercase_csi_x_to_erase_character() {
         let cmds = process_bytes(b"\x1b[2X");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::EraseCharacter(2))]);
     }
@@ -2352,13 +2352,13 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn csi_l_uppercase_is_insert_line() {
+    fn it_should_map_uppercase_csi_l_to_insert_line() {
         let cmds = process_bytes(b"\x1b[4L");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::InsertLine(4))]);
     }
 
     #[test]
-    fn csi_m_uppercase_is_delete_line() {
+    fn it_should_map_uppercase_csi_m_to_delete_line() {
         let cmds = process_bytes(b"\x1b[4M");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::DeleteLine(4))]);
     }
@@ -2369,7 +2369,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn csi_decstbm_explicit_top_and_bottom() {
+    fn it_should_set_scrolling_region_from_explicit_top_and_bottom_params() {
         let cmds = process_bytes(b"\x1b[5;24r");
         assert_eq!(
             cmds,
@@ -2381,7 +2381,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_decstbm_top_defaults_to_1() {
+    fn it_should_default_scrolling_region_top_to_1_and_bottom_to_0_when_no_params_are_given() {
         // No params: top=1, bottom=0 (convention for "last line")
         let cmds = process_bytes(b"\x1b[r");
         assert_eq!(
@@ -2399,7 +2399,7 @@ mod mutation_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn csi_f_is_cup_alias_for_h() {
+    fn it_should_treat_csi_f_as_an_alias_for_cursor_position() {
         // 'f' is an alias for 'H' (CursorPosition / HVP).
         // A mutation removing the `| (false, b"", b'f')` arm would produce Error.
         let cmds = process_bytes(b"\x1b[5;10f");
@@ -2410,7 +2410,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_d_is_vpa_column_always_1() {
+    fn it_should_hardcode_vpa_column_to_1_for_csi_d() {
         // 'd' = VPA (Vertical Position Absolute). Column is hardcoded to 1.
         // Mutation: changing the hardcoded 1 to 0, or wiring column to param.
         let cmds = process_bytes(b"\x1b[7d");
@@ -2421,7 +2421,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_d_default_row_is_1() {
+    fn it_should_default_vpa_row_to_1_when_no_param_is_given() {
         // No param: row defaults to 1 (param_or_1), column always 1.
         let cmds = process_bytes(b"\x1b[d");
         assert_eq!(
@@ -2431,7 +2431,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_c_is_primary_device_attributes() {
+    fn it_should_map_csi_c_to_primary_device_attributes() {
         // 'c' with no params triggers PrimaryDeviceAttributes.
         // Mutation: confusing 'c' with other single-char finals.
         let cmds = process_bytes(b"\x1b[c");
@@ -2442,7 +2442,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_n_is_device_status_report() {
+    fn it_should_map_csi_6n_to_device_status_report() {
         // 'n' with param 6 = DSR cursor position request.
         // Mutation: confusing 'n' with 'm' (SGR) or wrong default.
         let cmds = process_bytes(b"\x1b[6n");
@@ -2453,7 +2453,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_n_default_param_is_0() {
+    fn it_should_default_device_status_report_param_to_0() {
         // No param: DSR(0).
         let cmds = process_bytes(b"\x1b[n");
         assert_eq!(
@@ -2463,14 +2463,14 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_s_is_save_cursor() {
+    fn it_should_map_lowercase_csi_s_to_save_cursor() {
         // 's' = save cursor (ANSI). Mutation: confusing 's' with 'S' (ScrollUp).
         let cmds = process_bytes(b"\x1b[s");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::SaveCursor)]);
     }
 
     #[test]
-    fn csi_u_is_restore_cursor() {
+    fn it_should_map_csi_u_to_restore_cursor() {
         // 'u' = restore cursor (ANSI). Mutation: confusing 'u' with 'U'.
         let cmds = process_bytes(b"\x1b[u");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::RestoreCursor)]);

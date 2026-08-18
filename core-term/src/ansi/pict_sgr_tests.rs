@@ -137,7 +137,7 @@ fn parsed_attrs(seq: &[u8]) -> Option<Vec<Attribute>> {
 }
 
 #[test]
-fn pict_sgr_pairwise_matches_oracle() {
+fn it_should_match_the_oracle_for_every_pairwise_generated_sgr_sequence() {
     let factors = sgr_factors();
     let level_counts: Vec<usize> = factors.iter().map(Vec::len).collect();
     let rows = pairwise(&level_counts);
@@ -173,7 +173,7 @@ fn pict_sgr_pairwise_matches_oracle() {
 /// sequence whose codes are all *unrecognized* must be ignored, not turned into
 /// a full attribute reset.
 #[test]
-fn unknown_only_sgr_is_ignored_not_reset() {
+fn it_should_ignore_an_sgr_sequence_containing_only_unknown_codes_instead_of_resetting() {
     // `ESC[73m` — a single unimplemented code. Correct behavior: no-op.
     assert_eq!(
         parsed_attrs(b"\x1b[73m"),
@@ -186,7 +186,7 @@ fn unknown_only_sgr_is_ignored_not_reset() {
 /// is silently dropped when it shares the sequence with a recognized attribute,
 /// so `ESC[73m` and `ESC[1;73m` disagree on how `73` is handled.
 #[test]
-fn unknown_sgr_is_dropped_when_mixed_with_known() {
+fn it_should_drop_unknown_sgr_codes_while_keeping_known_attributes_when_mixed() {
     assert_eq!(
         parsed_attrs(b"\x1b[1;73m"),
         Some(vec![Attribute::Bold]),
