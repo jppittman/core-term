@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn x10_reports_press_only() {
+    fn it_should_encode_only_press_events_in_x10_mouse_mode() {
         let modes = modes_with_x10();
         let press = encode_mouse_event(
             &modes,
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn vt200_reports_press_and_release() {
+    fn it_should_encode_both_press_and_release_events_in_vt200_mouse_mode() {
         let modes = modes_with_vt200();
         let press = encode_mouse_event(
             &modes,
@@ -514,5 +514,162 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, b"\x1b[<0;501;301M");
+    }
+
+    fn modes_with_button_event_legacy() -> DecPrivateModes {
+        DecPrivateModes {
+            mouse_button_event_mode: true,
+            ..Default::default()
+        }
+    }
+
+    fn modes_with_any_event_legacy() -> DecPrivateModes {
+        DecPrivateModes {
+            mouse_any_event_mode: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn it_should_report_press_events_when_only_button_event_mode_is_enabled() {
+        let modes = modes_with_button_event_legacy();
+        let result = encode_mouse_event(
+            &modes,
+            MouseEncodingParams {
+                button: MouseButton::Left,
+                col: 0,
+                row: 0,
+                kind: MouseEventKind::Press,
+            },
+        );
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn it_should_report_release_events_when_only_button_event_mode_is_enabled() {
+        let modes = modes_with_button_event_legacy();
+        let result = encode_mouse_event(
+            &modes,
+            MouseEncodingParams {
+                button: MouseButton::Left,
+                col: 0,
+                row: 0,
+                kind: MouseEventKind::Release,
+            },
+        );
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn it_should_add_32_to_the_button_code_for_legacy_motion_events() {
+        let modes = modes_with_any_event_legacy();
+        let result = encode_mouse_event(
+            &modes,
+            MouseEncodingParams {
+                button: MouseButton::Left,
+                col: 5,
+                row: 10,
+                kind: MouseEventKind::Motion,
+            },
+        )
+        .unwrap();
+        // base(Left)=0, +32 for motion = 32, then +32 legacy offset = 64
+        assert_eq!(result, vec![0x1b, b'[', b'M', 64, 38, 43]);
+    }
+
+    #[test]
+    fn it_should_use_the_raw_button_number_for_other_buttons_below_four() {
+        let modes = modes_with_sgr();
+        let result = encode_mouse_event(
+            &modes,
+            MouseEncodingParams {
+                button: MouseButton::Other(3),
+                col: 0,
+                row: 0,
+                kind: MouseEventKind::Press,
+            },
+        )
+        .unwrap();
+        assert_eq!(result, b"\x1b[<3;1;1M");
+    }
+
+    #[test]
+    fn it_should_map_other_buttons_at_or_above_four_using_128_plus_n_minus_4() {
+        let modes = modes_with_sgr();
+        let boundary = encode_mouse_event(
+            &modes,
+            MouseEncodingParams {
+                button: MouseButton::Other(4),
+                col: 0,
+                row: 0,
+                kind: MouseEventKind::Press,
+            },
+        )
+        .unwrap();
+        assert_eq!(boundary, b"\x1b[<128;1;1M");
+
+        let above = encode_mouse_event(
+            &modes,
+            MouseEncodingParams {
+                button: MouseButton::Other(8),
+                col: 0,
+                row: 0,
+                kind: MouseEventKind::Press,
+            },
+        )
+        .unwrap();
+        assert_eq!(above, b"\x1b[<132;1;1M");
+    }
+
+    #[test]
+    fn it_should_accept_column_222_but_reject_223_in_legacy_encoding() {
+        let modes = modes_with_vt200();
+        let at_boundary = encode_mouse_event(
+            &modes,
+            MouseEncodingParams {
+                button: MouseButton::Left,
+                col: 222,
+                row: 0,
+                kind: MouseEventKind::Press,
+            },
+        );
+        assert!(at_boundary.is_some());
+
+        let over_boundary = encode_mouse_event(
+            &modes,
+            MouseEncodingParams {
+                button: MouseButton::Left,
+                col: 223,
+                row: 0,
+                kind: MouseEventKind::Press,
+            },
+        );
+        assert_eq!(over_boundary, None);
+    }
+
+    #[test]
+    fn it_should_accept_row_222_but_reject_223_in_legacy_encoding() {
+        let modes = modes_with_vt200();
+        let at_boundary = encode_mouse_event(
+            &modes,
+            MouseEncodingParams {
+                button: MouseButton::Left,
+                col: 0,
+                row: 222,
+                kind: MouseEventKind::Press,
+            },
+        );
+        assert!(at_boundary.is_some());
+
+        let over_boundary = encode_mouse_event(
+            &modes,
+            MouseEncodingParams {
+                button: MouseButton::Left,
+                col: 0,
+                row: 223,
+                kind: MouseEventKind::Press,
+            },
+        );
+        assert_eq!(over_boundary, None);
     }
 }

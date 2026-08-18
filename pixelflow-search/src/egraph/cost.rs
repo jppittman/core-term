@@ -38,8 +38,8 @@ use pixelflow_ir::kind::OpMap;
 ///
 /// Handcrafted cycle estimates, one per op.
 ///
-/// Written as an exhaustive `match` rather than a positional
-/// `[usize; OpKind::COUNT]`. The array form aligned to the discriminants only
+/// Written as an exhaustive `match` rather than a positional per-op array.
+/// The array form aligned to the discriminants only
 /// by convention, nothing checked the convention, and it drifted: while the
 /// discriminants had gaps the table was written densely, so 13 of 50 ops read
 /// their neighbour's cycle count. `Dwrt` came back 10 instead of 1000 — cheap
@@ -48,39 +48,68 @@ use pixelflow_ir::kind::OpMap;
 /// 1000 instead of 1.
 ///
 /// A `match` cannot drift: adding an op is a compile error until it is priced.
+///
+/// # Measured basis (2026-08-10, Apple M2 Max, aarch64 NEON JIT)
+///
+/// The non-trivial entries below are **measured, not guessed**: serial chains
+/// of K=8 vs K=32 applications of each op, JIT-compiled through
+/// `compile_arena_dag` (so transcendentals are timed in their
+/// `expand_transcendentals` lowered form — the form this table is actually
+/// pricing) and timed under `BenchMode::Latency`; the per-stage slope cancels
+/// call overhead exactly. Units are normalized so `Add = 4` (the table's
+/// historical unit; measured FADD slope 0.87ns/stage ≈ 3 real cycles at
+/// ~3.4GHz). Two independent runs agreed within 3% on every corrected entry.
+/// Protocol: `pixelflow-pipeline/examples/measure_latency_prior.rs`.
+///
+/// The headline correction: `Pow` was priced 12 — cheaper than a hardware
+/// `Sqrt` at 15 — but `expand_transcendentals` lowers `Pow(a,b)` to
+/// `exp2(b·log2 a)`, two bit-manipulation polynomial kernels. Measured: 196
+/// (and the measurement is internally consistent: Log2 121 + Mul 5 + Exp2 69
+/// ≈ 196, likewise Ln ≈ Log2+Mul, Asin ≈ Atan2+Sqrt+Mul+Sub). With the old
+/// table, extraction preferred `Pow(x, 0.5)` over `Sqrt(x)` — a measured
+/// 2.8x kernel slowdown shipped by the DEFAULT cost model.
+///
+/// Also corrected by the same measurement: `Recip` (10 → 16) and `Rsqrt`
+/// (5 → 21) are *slower* serially than the hardware `Div` (11) and `Sqrt`
+/// (15) they approximate on this backend — the NEON lowering is
+/// estimate + Newton steps, a serial chain, not a cheap single instruction.
+///
+/// Caveat: measured on one machine (aarch64 NEON). The lowered subgraphs are
+/// the same shape on x86, so the ordering is expected to transfer, but the
+/// exact ratios are host-specific — see `cargo xtask isa-matrix`.
 #[must_use]
 pub fn latency_prior_cycles() -> OpMap<usize> {
     OpMap::from_fn(|op| match op {
-        OpKind::Var => 0,   // free
-        OpKind::Const => 0, // free
-        OpKind::Add => 4,
-        OpKind::Sub => 4,
-        OpKind::Mul => 5,
-        OpKind::Div => 15,
-        OpKind::Neg => 1,
-        OpKind::Sqrt => 15,
-        OpKind::Rsqrt => 5, // fast approximation
-        OpKind::Abs => 1,
-        OpKind::Min => 4,
-        OpKind::Max => 4,
-        OpKind::MulAdd => 5, // fused
-        OpKind::Recip => 10,
-        OpKind::Floor => 4,
-        OpKind::Ceil => 4,
-        OpKind::Round => 4,
-        OpKind::Sin => 10,
-        OpKind::Cos => 10,
-        OpKind::Tan => 10,
-        OpKind::Asin => 10,
-        OpKind::Acos => 10,
-        OpKind::Atan => 10,
-        OpKind::Exp => 10,
-        OpKind::Exp2 => 10,
-        OpKind::Ln => 10,
-        OpKind::Log2 => 10,
-        OpKind::Log10 => 10,
-        OpKind::Atan2 => 10,
-        OpKind::Pow => 12,
+        OpKind::Var => 0,     // free
+        OpKind::Const => 0,   // free
+        OpKind::Add => 4,     // measured 4.0 (anchor)
+        OpKind::Sub => 4,     // measured 4.0
+        OpKind::Mul => 5,     // measured 5.3
+        OpKind::Div => 11,    // measured 11.3 (was 15)
+        OpKind::Neg => 3,     // measured 3.1 (was 1)
+        OpKind::Sqrt => 15,   // measured 14.5
+        OpKind::Rsqrt => 21,  // measured 21.5 — estimate + NR chain (was 5)
+        OpKind::Abs => 3,     // measured 3.1 (was 1)
+        OpKind::Min => 3,     // measured 2.7 (was 4)
+        OpKind::Max => 3,     // measured 2.7 (was 4)
+        OpKind::MulAdd => 5,  // fused; measured 5.5, kept at Mul parity
+        OpKind::Recip => 16,  // measured 16.0 — estimate + NR chain (was 10)
+        OpKind::Floor => 4,   // measured ~4
+        OpKind::Ceil => 4,    // measured 4.3
+        OpKind::Round => 4,   // measured 4.3
+        OpKind::Sin => 70,    // measured 70.6 (was 10)
+        OpKind::Cos => 75,    // measured 74.8 (was 10)
+        OpKind::Tan => 87,    // measured 86.8 (was 10)
+        OpKind::Asin => 103,  // measured 102.8 (was 10)
+        OpKind::Acos => 103,  // measured 102.9 (was 10)
+        OpKind::Atan => 79,   // measured 79.3 (was 10)
+        OpKind::Exp => 75,    // measured 74.7 (was 10)
+        OpKind::Exp2 => 69,   // measured 69.1 (was 10)
+        OpKind::Ln => 128,    // measured 127.6 (was 10)
+        OpKind::Log2 => 122,  // measured 122.0 (was 10)
+        OpKind::Log10 => 134, // measured 133.6 (was 10)
+        OpKind::Atan2 => 79,  // measured 78.8 (was 10)
+        OpKind::Pow => 196,   // measured 196.2 ≈ Log2 + Mul + Exp2 (was 12)
         OpKind::Lt => 3,
         OpKind::Le => 3,
         OpKind::Gt => 3,
@@ -482,7 +511,7 @@ mod every_op_is_priceable {
     use super::{CostModel, latency_prior_cycles};
     use pixelflow_ir::kind::{OpKind, OpMap};
 
-    /// `cost`/`set_cost` subscript `[usize; OpKind::COUNT]` with
+    /// `cost`/`set_cost` subscript a positional per-op array with
     /// `OpKind::index()`. That is only total while the discriminants are dense.
     ///
     /// They were not, until 2026-08-02: `Gather`/`RawGather`/`Reduce` sat past
@@ -526,26 +555,22 @@ mod every_op_is_priceable {
         }
     }
 
+    /// Pricing is total: every op has a cost, and asking for one cannot fail.
+    ///
+    /// `Gather`/`RawGather`/`Reduce` are named outright rather than left to
+    /// the walk over `all()`. They sit at the end of the table, which is where
+    /// an op goes missing from a table-filling loop without anyone noticing,
+    /// so naming them tests the walk as much as the pricing.
     #[test]
-    fn pricing_never_indexes_out_of_bounds() {
+    fn every_op_can_be_priced() {
         let mut model = CostModel::latency_prior();
 
-        // Named, not reached through `from_index`, because that is precisely
-        // how the bug hid: these three sat at discriminants 50..=52, past
-        // `COUNT`, so no walk over `0..COUNT` ever produced them.
         for op in [OpKind::Gather, OpKind::RawGather, OpKind::Reduce] {
-            assert!(
-                op.index() < OpKind::COUNT,
-                "{op:?} has index {} but COUNT is {}",
-                op.index(),
-                OpKind::COUNT
-            );
             let _ = model.cost(op);
             model.set_cost(op, 1);
         }
 
-        for i in 0..OpKind::COUNT {
-            let op = OpKind::from_index(i).expect("dense over 0..COUNT");
+        for op in OpKind::all() {
             let _ = model.cost(op);
             model.set_cost(op, 1);
         }
