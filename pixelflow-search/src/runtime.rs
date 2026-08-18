@@ -133,8 +133,8 @@ fn optimize_runtime_arena_uncached(arena: &ExprArena, root: ExprId) -> Option<(E
     );
 
     let policy = env_extraction_policy();
-    let choices = policy.choices(&egraph, root_class);
-    let (extracted, extracted_root) = choices_to_arena(&egraph, root_class, &choices);
+    let extraction = policy.extraction(&egraph, root_class);
+    let (extracted, extracted_root) = choices_to_arena(&extraction);
 
     // The extracted arena declares buffers in extraction-traversal order,
     // which need not match the input's — and slot order is ABI: the JIT
@@ -227,25 +227,25 @@ fn canonical_key(arena: &ExprArena, root: ExprId) -> Vec<u8> {
             }
             &ExprNode::Unary(op, a) => {
                 key.push(4);
-                key.push(op as u8);
+                key.extend_from_slice(&op.marshal().to_bytes());
                 push_id(&mut key, &dense, a);
             }
             &ExprNode::Binary(op, a, b) => {
                 key.push(5);
-                key.push(op as u8);
+                key.extend_from_slice(&op.marshal().to_bytes());
                 push_id(&mut key, &dense, a);
                 push_id(&mut key, &dense, b);
             }
             &ExprNode::Ternary(op, a, b, c) => {
                 key.push(6);
-                key.push(op as u8);
+                key.extend_from_slice(&op.marshal().to_bytes());
                 push_id(&mut key, &dense, a);
                 push_id(&mut key, &dense, b);
                 push_id(&mut key, &dense, c);
             }
             &ExprNode::Nary(op, start, n) => {
                 key.push(7);
-                key.push(op as u8);
+                key.extend_from_slice(&op.marshal().to_bytes());
                 key.extend_from_slice(&n.to_le_bytes());
                 let (s, l) = (start as usize, n as usize);
                 for &child in &arena.nary_children_raw()[s..s + l] {

@@ -8,12 +8,14 @@
 # broken: nothing else in the workspace needed `bitflags/serde`, so
 # `--all-features` never noticed it wasn't wired up.
 #
-# Two gaps are already known and tracked elsewhere (pixelflow-ir's no_std
-# build: 218 errors; pixelflow-search's std-off build) -- see the
-# `std-off-status` job. This script is not the place to fix those; it exists
-# so any *other*, *new* single-feature break gets caught automatically
-# instead of requiring another one-off manual audit like the one that found
-# the pixelflow-graphics bug in the first place.
+# One gap is already known and tracked elsewhere (pixelflow-search's std-off
+# build) -- see the `std-off-status` job. This script is not the place to fix
+# that; it exists so any *other*, *new* single-feature break gets caught
+# automatically instead of requiring another one-off manual audit like the
+# one that found the pixelflow-graphics bug in the first place.
+# (pixelflow-ir's no_std build went green on 2026-08-02 and its `oracle`
+# feature on 2026-08-08; both are enforced by the `no-std` job now, so they
+# are deliberately NOT listed below -- a regression must fail this script.)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,9 +24,6 @@ cd "$repo_root"
 # Each entry is "<crate>|<space-separated --no-default-features feature args>"
 # exactly as cargo-hack prints it in its "failed commands:" summary.
 KNOWN_BROKEN=(
-  "pixelflow-ir|"
-  "pixelflow-ir|--features alloc"
-  "pixelflow-ir|--features oracle"
   "pixelflow-search|"
 )
 

@@ -10,10 +10,66 @@
 use crate::traits::EmitStyle;
 use core::ops::{Index, IndexMut};
 
-/// Unified enumeration of all IR operations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum OpKind {
+/// The op table: the single place an operation is declared.
+///
+/// The enum, the roster, the count and both directions of the numbering are
+/// all generated from this one list, so they cannot disagree and none of them
+/// can be forgotten. Adding an operation is adding a line here; there is no
+/// second place to update and therefore no second place to get wrong.
+///
+/// A macro rather than four declarations kept in step by a check, because a
+/// check can only visit the variants something hands it: a variant missing
+/// from the roster is exactly the one it never sees, and its absence is
+/// therefore invisible. Generating all four removes that possibility instead
+/// of testing for it.
+///
+/// The designs this replaced, and what each got wrong, are in
+/// `docs/designs/opkind-numbering-is-private.md` §4.
+macro_rules! op_table {
+    ($( $(#[$attr:meta])* $name:ident = $code:literal, )+) => {
+        /// Unified enumeration of all IR operations.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(u8)]
+        pub enum OpKind {
+            $( $(#[$attr])* $name = $code, )+
+        }
+
+        impl OpKind {
+            /// Total number of operations.
+            ///
+            /// Generated from the table, so it grows with it.
+            pub(crate) const COUNT: usize = [$( stringify!($name), )+].len();
+
+            /// Every op, in [`OpKind::index`] order.
+            ///
+            /// Generated from the table; [`OpKind::all`] is the public way in.
+            pub(crate) const ALL: [Self; Self::COUNT] = [$( Self::$name, )+];
+
+            /// This op's slot number — the subscript [`OpMap`] uses, and
+            /// nothing else.
+            ///
+            /// Crate-private on purpose. It is not an opcode, not a wire byte,
+            /// and carries no promise outside: it exists so a per-op table has
+            /// somewhere to put things. Code that needs an op in bytes wants
+            /// [`OpKind::marshal`], whose encoding this crate may change.
+            #[inline]
+            #[must_use]
+            pub(crate) const fn index(self) -> usize {
+                match self { $( Self::$name => $code, )+ }
+            }
+
+            /// Inverse of [`OpKind::index`]. `None` for any integer that names
+            /// no op — no `unsafe`, so an unnamed integer cannot be conjured
+            /// into a variant that does not exist.
+            #[must_use]
+            pub(crate) const fn from_index(idx: usize) -> Option<Self> {
+                match idx { $( $code => Some(Self::$name), )+ _ => None }
+            }
+        }
+    };
+}
+
+op_table! {
     // --- Basic Arithmetic ---
     Var = 0,
     Const = 1,
@@ -123,9 +179,6 @@ pub enum OpKind {
 }
 
 impl OpKind {
-    /// Total number of operations.
-    pub const COUNT: usize = 50;
-
     /// Monoid identity for an op usable as a reduction combiner
     /// (`Add`→0, `Mul`→1, `Min`→+∞, `Max`→−∞). `None` if `self` is not a valid
     /// combiner.
@@ -284,34 +337,13 @@ impl OpKind {
         self.monoid_identity().is_some()
     }
 
-    /// Convert to array index. Dense over `0..COUNT`, so `[T; OpKind::COUNT]`
-    /// indexed by this is total — see [`OpKind::from_index`].
-    #[inline]
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self as usize
-    }
-
     /// Every op, in [`OpKind::index`] order.
     ///
     /// Prefer this to walking `0..COUNT` and calling [`OpKind::from_index`] —
     /// that spelling is why the three ops sitting past the old discriminant
     /// gaps were never visited by any table-filling loop.
     pub fn all() -> impl Iterator<Item = Self> + Clone {
-        (0..Self::COUNT).map(|i| Self::from_index(i).expect("index_is_dense_and_total"))
-    }
-
-    /// Convert index to `OpKind`. Inverse of [`OpKind::index`].
-    #[must_use]
-    pub fn from_index(idx: usize) -> Option<Self> {
-        if idx >= Self::COUNT {
-            return None;
-        }
-        // SAFETY: `OpKind` is `repr(u8)` with discriminants assigned densely
-        // over `0..COUNT`, so every value passing the bound above names a
-        // variant. `index_is_dense_and_total` is what keeps that true — it
-        // fails the moment a discriminant is skipped or `COUNT` drifts.
-        Some(unsafe { core::mem::transmute::<u8, Self>(idx as u8) })
+        Self::ALL.into_iter()
     }
 
     /// Get the arity of the operation.
@@ -681,8 +713,6 @@ impl OpKind {
         }
     }
 
-    // NOTE: KNOWN_METHODS was removed - now derived from ALL_OPS via known_method_names()
-
     /// Evaluate a unary operation on a constant argument.
     ///
     /// Returns `None` for non-unary operations or operations that can't be
@@ -849,6 +879,107 @@ impl OpKind {
     }
 }
 
+// `op_table!` makes the enum, the roster, the count and both directions agree
+// by generating them from one list — but it takes the numbers on faith. It
+// cannot tell whether the numbers written there are dense.
+//
+// That is what this checks. Give an entry a number that skips one (`Const = 5`
+// after `Var = 0`) and every generated item is still internally consistent,
+// while `ALL[1]` no longer sits at index 1 — a per-op table would then have a
+// slot nothing reaches, and the ops past the gap would run off its end. Which
+// is the original bug, and the reason `COUNT` counts entries rather than
+// naming the largest number.
+//
+// Duplicates need no help here: two entries sharing a number is E0081 on the
+// discriminants before this block ever runs.
+const _: () = {
+    let mut i = 0;
+    while i < OpKind::COUNT {
+        let op = OpKind::ALL[i];
+        assert!(op.index() == i, "OpKind::ALL is out of index() order");
+        assert!(op as usize == i, "discriminant disagrees with index()");
+        match OpKind::from_index(i) {
+            Some(back) => assert!(back.index() == i, "from_index is not index()'s inverse"),
+            None => panic!("from_index has a gap inside 0..COUNT"),
+        }
+        i += 1;
+    }
+    assert!(
+        OpKind::from_index(OpKind::COUNT).is_none(),
+        "from_index answers past COUNT"
+    );
+};
+
+// ============================================================================
+// Marshalling
+// ============================================================================
+
+/// An [`OpKind`] in transit — the form it takes in a byte stream.
+///
+/// **The bytes are this crate's business, not yours.** What is promised is the
+/// round trip: [`OpKind::unmarshal`] undoes [`OpKind::marshal`] for every op,
+/// and [`OpCode::SIZE`] is however wide that happens to be right now. What is
+/// *not* promised is which value any op encodes to, that the value is stable
+/// across releases, or that `SIZE` stays 1. Persisted data must therefore
+/// carry a format version and refuse anything it does not recognise, the way
+/// the training corpus does — a stale file has to fail loudly rather than
+/// decode into the wrong ops.
+///
+/// Handing out the table subscript instead would leak: a consumer that writes
+/// `index()` into its own format has made this crate's private numbering part
+/// of that format, and owes it a version bump for a change it cannot see.
+/// See `docs/designs/opkind-numbering-is-private.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OpCode(u8);
+
+impl OpCode {
+    /// Width of an encoded op, in bytes.
+    ///
+    /// A `const`, not a literal, so that widening the encoding is a
+    /// recompile at every call site rather than a silent truncation.
+    pub const SIZE: usize = 1;
+
+    /// The encoded bytes, to hand to a writer.
+    #[must_use]
+    pub const fn to_bytes(self) -> [u8; Self::SIZE] {
+        [self.0]
+    }
+
+    /// Rebuild from bytes previously produced by [`OpCode::to_bytes`].
+    ///
+    /// Any byte is accepted here; whether it names an op is
+    /// [`OpKind::unmarshal`]'s answer.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; Self::SIZE]) -> Self {
+        Self(bytes[0])
+    }
+}
+
+impl OpKind {
+    /// Encode for transmission or storage. See [`OpCode`].
+    #[must_use]
+    pub const fn marshal(self) -> OpCode {
+        // The subscript is a convenient encoding today. Nothing outside may
+        // depend on that staying true, which is the whole point of `OpCode`.
+        OpCode(self.index() as u8)
+    }
+
+    /// Decode. `None` if the code names no op — which is what a truncated,
+    /// corrupt, or stale-format stream looks like from in here.
+    #[must_use]
+    pub const fn unmarshal(code: OpCode) -> Option<Self> {
+        Self::from_index(code.0 as usize)
+    }
+}
+
+// `marshal` narrows the subscript to one byte. That is sound only while the
+// op set fits in a byte, and it would otherwise wrap silently — so it is
+// checked here rather than left to whoever adds the 257th op.
+const _: () = assert!(
+    OpKind::COUNT <= u8::MAX as usize + 1,
+    "op set outgrew OpCode's width: widen OpCode::SIZE"
+);
+
 // ============================================================================
 // OpMap
 // ============================================================================
@@ -883,23 +1014,25 @@ pub struct OpMap<T> {
 }
 
 impl<T> OpMap<T> {
+    /// Number of slots — one per op.
+    ///
+    /// This is the public spelling of "how many ops are there", for sizing
+    /// things built alongside a per-op table. It says nothing about which
+    /// number any particular op sits at.
+    pub const LEN: usize = OpKind::COUNT;
+
     /// Build a table by answering for every op. Write the body as a `match`
     /// and the compiler will not let you forget one.
     pub fn from_fn(mut f: impl FnMut(OpKind) -> T) -> Self {
         Self {
-            slots: core::array::from_fn(|i| {
-                f(OpKind::from_index(i).expect("index_is_dense_and_total"))
-            }),
+            slots: core::array::from_fn(|i| f(OpKind::ALL[i])),
         }
     }
 
     /// Iterate in [`OpKind::index`] order — the order [`OpMap::as_slice`]
     /// serializes in.
     pub fn iter(&self) -> impl Iterator<Item = (OpKind, &T)> {
-        self.slots
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (OpKind::from_index(i).expect("index_is_dense_and_total"), v))
+        OpKind::ALL.into_iter().zip(self.slots.iter())
     }
 
     /// The backing slots in `index()` order. For serialization; prefer
@@ -965,35 +1098,57 @@ pub fn known_method_names() -> impl Iterator<Item = &'static str> {
 
 #[cfg(test)]
 mod index_space {
-    use super::OpKind;
+    use super::{OpCode, OpKind};
 
-    /// `index()` must be dense over `0..COUNT`, and `from_index` must be its
-    /// exact inverse.
+    /// Density, totality and round-tripping are proved at compile time by the
+    /// `const` block above, so there is no runtime test for them here.
     ///
-    /// Both halves are load-bearing, and both were false before 2026-08-02.
-    /// Every `[T; OpKind::COUNT]` in the workspace is subscripted by `index()`
-    /// — the NNUE op embeddings, the latency-prior cost table, the extraction
-    /// feature sets — so a *gap* in the discriminants pushes the ops after it
-    /// past the end of every one of those arrays. `Gather`/`RawGather`/`Reduce`
-    /// sat past three gaps and indexed 50..=52 into `[_; 50]`; the only reason
-    /// that was not a live panic is that the e-graph refuses `Buffer` leaves
-    /// earlier, and every `Gather` has one.
+    /// There is deliberately no test pinning op N to a particular number.
+    /// The numbering is this crate's own business — see [`OpCode`] — and a
+    /// test asserting `Add == 2` would turn an internal detail into a promise
+    /// that consumers can quietly build on, leaving this crate owing a version
+    /// bump to every format that took it up. Persisted data is protected by
+    /// its own format version, not by freezing these values.
     ///
-    /// The second half is worse: `from_index` bounds-checks against `COUNT`
-    /// and then transmutes, so any index that is inside `COUNT` but names no
-    /// variant is undefined behaviour rather than a `None`.
+    /// What the round trip must do is survive the trip.
     #[test]
-    fn index_is_dense_and_total() {
-        for i in 0..OpKind::COUNT {
-            let op = OpKind::from_index(i)
-                .unwrap_or_else(|| panic!("from_index({i}) is None inside 0..COUNT — gap"));
-            assert_eq!(op.index(), i, "{op:?} does not round-trip at index {i}");
+    fn every_op_survives_marshalling() {
+        for op in OpKind::all() {
+            let bytes = op.marshal().to_bytes();
+            let back = OpKind::unmarshal(OpCode::from_bytes(bytes));
+            assert_eq!(back, Some(op), "{op:?} did not survive marshalling");
         }
-        assert_eq!(
-            OpKind::from_index(OpKind::COUNT),
-            None,
-            "COUNT must be one past the last discriminant"
-        );
+    }
+
+    /// A code naming no op is a `None`, not a wrong op and not a panic — this
+    /// is the untrusted-input path (a truncated or stale stream).
+    #[test]
+    fn codes_naming_no_op_decode_to_none() {
+        let live: alloc::vec::Vec<[u8; OpCode::SIZE]> =
+            OpKind::all().map(|op| op.marshal().to_bytes()).collect();
+        for b in 0..=u8::MAX {
+            let decoded = OpKind::unmarshal(OpCode::from_bytes([b]));
+            assert_eq!(
+                decoded.is_some(),
+                live.contains(&[b]),
+                "byte {b} decoded to {decoded:?}"
+            );
+        }
+    }
+
+    /// `from_name` matches on `&str` and can never be exhaustive, so nothing
+    /// makes a new op's name mandatory. Written name-first because the reverse
+    /// is not injective: `"pow"` and `"powf"` both parse to `Pow`.
+    #[test]
+    fn every_op_round_trips_through_its_name() {
+        for op in OpKind::all() {
+            assert_eq!(
+                OpKind::from_name(op.name()),
+                Some(op),
+                "{op:?} names {:?}, which does not parse back",
+                op.name()
+            );
+        }
     }
 }
 
