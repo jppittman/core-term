@@ -278,6 +278,17 @@ mod tests {
     }
 
     #[test]
+    fn float_to_mask_reinterprets_a_nonzero_bit_pattern_as_a_true_mask() {
+        // An all-zero input would make `float_to_mask`'s real reinterpret and
+        // a `Default::default()` stand-in coincide (both all-zero) — use an
+        // all-ones pattern so they diverge.
+        let ones = F32x4::from_u32_bits(u32::MAX);
+        let mask = ones.float_to_mask();
+        assert!(mask.all());
+        assert_eq!(mask_bits(mask), [u32::MAX; 4]);
+    }
+
+    #[test]
     fn cmp_le_ge_eq_ne_each_produce_a_distinct_comparison_mask() {
         let a = F32x4::sequential(0.0); // [0, 1, 2, 3]
         let b = F32x4::splat(2.0);
