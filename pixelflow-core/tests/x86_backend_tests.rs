@@ -2,8 +2,8 @@
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use pixelflow_core::backend::x86::F32x4;
-    use pixelflow_core::backend::{MaskOps, SimdOps};
+    use pixelflow_core::backend::x86::{F32x4, Mask4, U32x4};
+    use pixelflow_core::backend::{MaskOps, SimdOps, SimdU32Ops};
     use std::prelude::v1::*;
 
     #[test]
@@ -252,5 +252,185 @@ mod tests {
             lanes(F32x4::splat(15.0).clamp(F32x4::splat(0.0), F32x4::splat(10.0))),
             [10.0; 4]
         );
+    }
+
+    // ── Remaining `SimdOps`/`SimdU32Ops` required methods ──────────────────
+    //
+    // Continuation of the 2026-08-15 audit's `backend/mod.rs` pass, one level
+    // down: these close the per-ISA `x86.rs` gap the mutants tool found for
+    // the SSE2 (`F32x4`/`Mask4`/`U32x4`) lane types specifically. Every input
+    // below is chosen so the real result differs from what a
+    // `Default::default()` (all-zero) stand-in for the whole function would
+    // produce, and bitwise ops use raw non-float bit patterns rather than
+    // float values so an accidental zero result (e.g. `1.0 & 2.0 == 0.0`)
+    // can't coincide with the all-zero default and hide a missing mutant.
+
+    fn mask_bits(m: Mask4) -> [u32; 4] {
+        let mut out = [0.0f32; 4];
+        F32x4::mask_to_float(m).store(&mut out);
+        out.map(f32::to_bits)
+    }
+
+    fn u32_lanes(v: U32x4) -> [u32; 4] {
+        let mut out = [0u32; 4];
+        v.store(&mut out);
+        out
+    }
+
+    #[test]
+    fn cmp_le_ge_eq_ne_each_produce_a_distinct_comparison_mask() {
+        let a = F32x4::sequential(0.0); // [0, 1, 2, 3]
+        let b = F32x4::splat(2.0);
+        const T: u32 = u32::MAX;
+
+        assert_eq!(mask_bits(a.cmp_le(b)), [T, T, T, 0], "0,1,2 <= 2; 3 is not");
+        assert_eq!(
+            mask_bits(a.cmp_ge(b)),
+            [0, 0, T, T],
+            "2,3 >= 2; 0,1 are not"
+        );
+        assert_eq!(mask_bits(a.cmp_eq(b)), [0, 0, T, 0], "only lane 2 equals 2");
+        assert_eq!(
+            mask_bits(a.cmp_ne(b)),
+            [T, T, 0, T],
+            "every lane but 2 differs"
+        );
+    }
+
+    #[test]
+    fn from_slice_loads_four_consecutive_values_starting_at_the_given_offset() {
+        let data = [7.0f32, 8.0, 9.0, 10.0, 11.0];
+        assert_eq!(lanes(F32x4::from_slice(&data[1..])), [8.0, 9.0, 10.0, 11.0]);
+    }
+
+    #[test]
+    fn gather_reads_scalar_values_at_indices_clamped_to_the_slice_bounds() {
+        let data = [10.0f32, 20.0, 30.0, 40.0, 50.0];
+
+        let in_range = F32x4::from_slice(&[0.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            lanes(F32x4::gather(&data, in_range)),
+            [10.0, 30.0, 40.0, 50.0]
+        );
+
+        // Indices past the end clamp to the last element instead of reading
+        // out of bounds.
+        let past_end = F32x4::splat(10.0);
+        assert_eq!(lanes(F32x4::gather(&data, past_end)), [50.0; 4]);
+    }
+
+    #[test]
+    fn mul_add_computes_self_times_b_plus_c() {
+        // self=2, b=3, c=4: `-`/`*` for `+`, and `+`/`/` for `*`, all disagree
+        // with the correct 10.0 at these operands.
+        let got = lanes(F32x4::splat(2.0).mul_add(F32x4::splat(3.0), F32x4::splat(4.0)));
+        assert_eq!(got, [10.0; 4]);
+    }
+
+    #[test]
+    fn add_masked_adds_val_only_where_the_mask_is_true() {
+        let base = F32x4::splat(1.0);
+        let val = F32x4::splat(100.0);
+        let mask = F32x4::sequential(0.0).cmp_gt(F32x4::splat(1.5)); // [F, F, T, T]
+        assert_eq!(lanes(base.add_masked(val, mask)), [1.0, 1.0, 101.0, 101.0]);
+    }
+
+    #[test]
+    fn from_u32_bits_reinterprets_the_integer_as_an_ieee754_bit_pattern() {
+        assert_eq!(lanes(F32x4::from_u32_bits(0x3F80_0000)), [1.0; 4]);
+        assert_eq!(lanes(F32x4::from_u32_bits(0x4000_0000)), [2.0; 4]);
+    }
+
+    #[test]
+    fn shr_u32_shifts_the_raw_bit_pattern_right_by_n_bits() {
+        let v = F32x4::from_u32_bits(0x8000_0000);
+        let mut out = [0.0f32; 4];
+        v.shr_u32(1).store(&mut out);
+        assert_eq!(out.map(f32::to_bits), [0x4000_0000; 4]);
+    }
+
+    #[test]
+    fn i32_to_f32_numerically_converts_the_lanes_int32_value() {
+        assert_eq!(lanes(F32x4::from_u32_bits(5).i32_to_f32()), [5.0; 4]);
+        assert_eq!(
+            lanes(F32x4::from_u32_bits(u32::MAX /* i32 -1 */).i32_to_f32()),
+            [-1.0; 4]
+        );
+    }
+
+    #[test]
+    fn f32x4_bitwise_operators_combine_raw_bit_patterns() {
+        let a = F32x4::from_u32_bits(0b1100);
+        let b = F32x4::from_u32_bits(0b1010);
+        let bits = |v: F32x4| -> [u32; 4] {
+            let mut out = [0.0f32; 4];
+            v.store(&mut out);
+            out.map(f32::to_bits)
+        };
+
+        assert_eq!(bits(a & b), [0b1000; 4]);
+        assert_eq!(bits(a | b), [0b1110; 4]);
+        assert_eq!(bits(!a), [!0b1100u32; 4]);
+    }
+
+    #[test]
+    fn mask4_bitwise_operators_combine_lane_truth_values_bit_exactly() {
+        let mask_a = F32x4::sequential(0.0).cmp_gt(F32x4::splat(1.5)); // [F, F, T, T]
+        let mask_b = F32x4::sequential(0.0).cmp_lt(F32x4::splat(2.5)); // [T, T, T, F]
+        const T: u32 = u32::MAX;
+
+        assert_eq!(mask_bits(mask_a & mask_b), [0, 0, T, 0]);
+        assert_eq!(mask_bits(mask_a | mask_b), [T, T, T, T]);
+        assert_eq!(mask_bits(!mask_a), [T, T, 0, 0]);
+    }
+
+    #[test]
+    fn debug_formatting_reflects_the_stored_lane_values() {
+        let v = F32x4::from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(std::format!("{v:?}"), "F32x4([1.0, 2.0, 3.0, 4.0])");
+
+        let u = U32x4::splat(7);
+        assert_eq!(std::format!("{u:?}"), "U32x4([7, 7, 7, 7])");
+
+        let all_true = F32x4::splat(1.0).cmp_gt(F32x4::splat(0.0));
+        assert_eq!(std::format!("{all_true:?}"), "Mask4(1111)");
+    }
+
+    #[test]
+    fn u32x4_splat_and_store_round_trip_every_lane() {
+        assert_eq!(u32_lanes(U32x4::splat(0xDEAD_BEEF)), [0xDEAD_BEEF; 4]);
+    }
+
+    #[test]
+    fn u32x4_bitwise_operators_combine_lanes() {
+        let a = U32x4::splat(0b1100);
+        let b = U32x4::splat(0b1010);
+
+        assert_eq!(u32_lanes(a & b), [0b1000; 4]);
+        assert_eq!(u32_lanes(a | b), [0b1110; 4]);
+        assert_eq!(u32_lanes(!a), [!0b1100u32; 4]);
+    }
+
+    #[test]
+    fn u32x4_shift_operators_shift_every_lane() {
+        let v = U32x4::splat(0b1000);
+        assert_eq!(u32_lanes(v << 2), [0b10_0000; 4]);
+        assert_eq!(u32_lanes(v >> 2), [0b10; 4]);
+    }
+
+    #[test]
+    fn pack_rgba_clamps_each_channel_to_0_1_and_packs_it_into_a_byte() {
+        let r = F32x4::splat(1.0); // in range -> 255
+        let g = F32x4::splat(0.5); // in range -> 127 (truncated, not rounded)
+        let b = F32x4::splat(0.0); // in range -> 0
+        let a = F32x4::splat(2.0); // out of range -> clamped to 255
+
+        let packed = u32_lanes(U32x4::pack_rgba(r, g, b, a));
+        for p in packed {
+            assert_eq!(p & 0xFF, 255, "R channel");
+            assert_eq!((p >> 8) & 0xFF, 127, "G channel");
+            assert_eq!((p >> 16) & 0xFF, 0, "B channel");
+            assert_eq!((p >> 24) & 0xFF, 255, "A channel (clamped)");
+        }
     }
 }

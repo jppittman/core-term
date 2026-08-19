@@ -2050,11 +2050,7 @@ mod tests {
         let nnue = ExprNnue::new_with_latency_prior(42);
 
         // DAG accumulator
-        let extraction = Extraction {
-            egraph: &egraph,
-            root: egraph.find(product),
-            choices,
-        };
+        let extraction = Extraction::from_backfill(&egraph, product, choices);
         let dag_acc = EdgeAccumulator::from_dag_choices(&extraction, &nnue.embeddings);
 
         assert_eq!(dag_acc.node_count, 3, "DAG acc should count 3 unique nodes");
@@ -2366,11 +2362,7 @@ mod tests {
         choices[egraph.find(x).0 as usize] = Some(0);
         choices[egraph.find(y).0 as usize] = Some(0);
 
-        let extraction = Extraction {
-            egraph: &egraph,
-            root: egraph.find(add),
-            choices,
-        };
+        let extraction = Extraction::from_backfill(&egraph, add, choices);
         let (arena, root_id) = choices_to_arena(&extraction);
 
         assert_eq!(arena.len(), 3, "X + Y should have exactly 3 arena nodes");
@@ -2394,11 +2386,7 @@ mod tests {
         choices[egraph.find(mul).0 as usize] = Some(0);
         choices[egraph.find(x).0 as usize] = Some(0);
 
-        let extraction = Extraction {
-            egraph: &egraph,
-            root: egraph.find(mul),
-            choices,
-        };
+        let extraction = Extraction::from_backfill(&egraph, mul, choices);
         let (arena, root_id) = choices_to_arena(&extraction);
 
         assert_eq!(
@@ -2426,11 +2414,7 @@ mod tests {
         choices[egraph.find(x).0 as usize] = Some(0);
         choices[egraph.find(y).0 as usize] = Some(0);
 
-        let extraction = Extraction {
-            egraph: &egraph,
-            root: egraph.find(add),
-            choices,
-        };
+        let extraction = Extraction::from_backfill(&egraph, add, choices);
         let (arena, root_id) = choices_to_arena(&extraction);
         let (extracted_arena, extracted_root, _cost) = extract(&egraph, add, &CostModel::default());
         assert_eq!(arena.len(), extracted_arena.len());

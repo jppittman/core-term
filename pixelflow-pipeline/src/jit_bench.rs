@@ -1584,7 +1584,7 @@ mod tests {
     }
 
     #[test]
-    fn iqr_computation() {
+    fn iqr_is_order_independent_and_zero_for_a_flat_sample() {
         // 0..20: q25 = sorted[5] = 5, q75 = sorted[15] = 15.
         let samples: Vec<f64> = (0..20).map(f64::from).collect();
         assert_eq!(iqr(&samples), 10.0);
