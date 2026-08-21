@@ -2,8 +2,8 @@
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use pixelflow_core::backend::x86::F32x4;
-    use pixelflow_core::backend::{MaskOps, SimdOps};
+    use pixelflow_core::backend::x86::{F32x4, U32x4};
+    use pixelflow_core::backend::{MaskOps, SimdOps, SimdU32Ops};
     use std::prelude::v1::*;
 
     #[test]
@@ -252,5 +252,137 @@ mod tests {
             lanes(F32x4::splat(15.0).clamp(F32x4::splat(0.0), F32x4::splat(10.0))),
             [10.0; 4]
         );
+    }
+
+    // ── Debug, bit manipulation, and U32x4 packed-pixel coverage ───────────
+    //
+    // `cargo mutants --file backend/x86.rs` (26min sweep against the SSE2
+    // baseline this environment builds) found these missed: none of the
+    // above tests touch `Debug`, the raw bit-manipulation primitives
+    // (`from_u32_bits`/`shr_u32`/`i32_to_f32`), `add_masked`, `gather`'s
+    // clamp boundary, `F32x4`'s `|`/`!` operators, or any of `U32x4` (the
+    // packed-RGBA-pixel lane), which had zero coverage at all.
+
+    #[test]
+    fn f32x4_debug_prints_all_four_lane_values() {
+        let v = F32x4::sequential(1.0);
+        assert_eq!(format!("{:?}", v), "F32x4([1.0, 2.0, 3.0, 4.0])");
+    }
+
+    #[test]
+    fn mask4_debug_prints_the_lane_truth_pattern_as_binary() {
+        let all_true = F32x4::splat(1.0).cmp_gt(F32x4::splat(0.0));
+        assert_eq!(format!("{:?}", all_true), "Mask4(1111)");
+    }
+
+    #[test]
+    fn gather_clamps_an_out_of_range_index_to_the_last_valid_slot() {
+        let slice = [10.0f32, 20.0, 30.0, 40.0];
+        // One past the end: the real clamp (`len - 1`) resolves this to the
+        // last element; a mutated clamp bound (`len + 1` or `len / 1`)
+        // leaves it in range and indexes `slice[4]`, panicking.
+        let got = lanes(F32x4::gather(&slice, F32x4::splat(4.0)));
+        assert_eq!(got, [40.0; 4]);
+    }
+
+    #[test]
+    fn add_masked_adds_val_only_where_the_mask_is_true() {
+        let base = F32x4::splat(1.0);
+        let val = F32x4::splat(100.0);
+        // Lanes 0 and 1 are 0.0 and 1.0 (mask false); lanes 2 and 3 are 2.0
+        // and 3.0 (mask true).
+        let mask = F32x4::sequential(0.0).cmp_gt(F32x4::splat(1.5));
+        let got = lanes(base.add_masked(val, mask));
+        assert_eq!(got, [1.0, 1.0, 101.0, 101.0]);
+    }
+
+    #[test]
+    fn from_u32_bits_reinterprets_the_bit_pattern_as_a_float() {
+        let got = lanes(F32x4::from_u32_bits(0x3F80_0000));
+        assert_eq!(got, [1.0; 4]);
+    }
+
+    #[test]
+    fn shr_u32_shifts_the_bit_pattern_right_by_the_given_count() {
+        let start = F32x4::from_u32_bits(0b10000);
+        let want = F32x4::from_u32_bits(0b100);
+        assert_eq!(lanes(start.shr_u32(2)), lanes(want));
+    }
+
+    #[test]
+    fn i32_to_f32_numerically_converts_the_bit_pattern_as_a_signed_integer() {
+        let five = F32x4::from_u32_bits(5);
+        assert_eq!(lanes(five.i32_to_f32()), [5.0; 4]);
+    }
+
+    #[test]
+    fn f32x4_bitor_computes_the_bitwise_or_of_both_operands() {
+        let a = F32x4::from_u32_bits(0b1010);
+        let b = F32x4::from_u32_bits(0b0101);
+        assert_eq!(lanes(a | b), lanes(F32x4::from_u32_bits(0b1111)));
+    }
+
+    #[test]
+    fn f32x4_not_flips_every_bit() {
+        let a = F32x4::from_u32_bits(0x0000_000F);
+        for x in lanes(!a) {
+            assert_eq!(x.to_bits(), 0xFFFF_FFF0);
+        }
+    }
+
+    fn u32_lanes(v: U32x4) -> [u32; 4] {
+        let mut out = [0u32; 4];
+        v.store(&mut out);
+        out
+    }
+
+    #[test]
+    fn u32x4_debug_prints_all_four_lane_values() {
+        let v = U32x4::splat(42);
+        assert_eq!(format!("{:?}", v), "U32x4([42, 42, 42, 42])");
+    }
+
+    #[test]
+    fn u32x4_splat_and_store_roundtrip_the_value() {
+        assert_eq!(u32_lanes(U32x4::splat(42)), [42; 4]);
+    }
+
+    #[test]
+    fn u32x4_bitand_computes_the_bitwise_and_of_both_operands() {
+        let a = U32x4::splat(0b1100);
+        let b = U32x4::splat(0b1010);
+        assert_eq!(u32_lanes(a & b), [0b1000; 4]);
+    }
+
+    #[test]
+    fn u32x4_bitor_computes_the_bitwise_or_of_both_operands() {
+        let a = U32x4::splat(0b1100);
+        let b = U32x4::splat(0b1010);
+        assert_eq!(u32_lanes(a | b), [0b1110; 4]);
+    }
+
+    #[test]
+    fn u32x4_not_flips_every_bit() {
+        assert_eq!(u32_lanes(!U32x4::splat(0)), [u32::MAX; 4]);
+    }
+
+    #[test]
+    fn u32x4_shl_shifts_bits_left_by_the_given_count() {
+        assert_eq!(u32_lanes(U32x4::splat(1) << 4), [16; 4]);
+    }
+
+    #[test]
+    fn u32x4_shr_shifts_bits_right_by_the_given_count() {
+        assert_eq!(u32_lanes(U32x4::splat(16) >> 4), [1; 4]);
+    }
+
+    #[test]
+    fn pack_rgba_packs_four_clamped_channels_into_argb_u32_lanes() {
+        let r = F32x4::splat(1.0);
+        let g = F32x4::splat(0.0);
+        let b = F32x4::splat(0.0);
+        let a = F32x4::splat(1.0);
+        let packed = U32x4::pack_rgba(r, g, b, a);
+        assert_eq!(u32_lanes(packed), [0xFF00_00FF; 4]);
     }
 }
