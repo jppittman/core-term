@@ -1845,7 +1845,7 @@ mod tests {
 
     #[test]
     #[cfg(target_feature = "avx512f")]
-    fn avx512_log2() {
+    fn log2_matches_the_scalar_base_2_logarithm() {
         let test_vals = [0.5f32, 0.75, 1.0, 1.5, 2.0, 4.0, 8.0];
         for &val in &test_vals {
             let v = F32x16::splat(val);
