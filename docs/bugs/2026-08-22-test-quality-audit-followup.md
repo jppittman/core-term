@@ -3,7 +3,7 @@
 Scope: scheduled continuation of
 `docs/bugs/2026-08-15-test-quality-audit-followup.md`. `main` had not moved
 on any of that pass's "recommended next steps" targets since `ce2df0e8`, so
-this pass picks up two of the five open items directly:
+this pass picks up three of the five open items directly:
 
 1. `pixelflow-search/src/egraph/cost.rs` — flagged since 08-08 as never
    mutation-tested to completion (a partial run had timed out on the
@@ -12,6 +12,9 @@ this pass picks up two of the five open items directly:
    passes (07-26 through 08-15) as a STYLE.md "test public API" violation:
    19 tests reached into the private `bsp.interiors` field. Each prior pass
    called it "a design call" and left it open; this pass makes the call.
+3. `pixelflow-core/src/backend/x86.rs`'s *required* `SimdOps` methods —
+   flagged as the natural next target once `backend/mod.rs`'s *provided*
+   methods closed in 08-15.
 
 `cargo-mutants` v27.1.0 (freshly installed — not present in this
 environment, consistent with every prior pass).
@@ -162,6 +165,95 @@ tests already covered the same assertions before and after; only the
 access path changed). A mutants sweep of `spatial_bsp.rs` remains open for
 a future pass.
 
+## `pixelflow-core/src/backend/x86.rs` — backlog item 5 from 08-15
+
+Picked up the last open item from the 08-15 audit's backlog: the *required*
+`SimdOps`/`SimdU32Ops` per-ISA primitives in `x86.rs` (as opposed to the
+*provided* expansions the 08-15 pass already closed in `backend/mod.rs`)
+had never been swept as a whole file.
+
+### Methodology finding: `cargo mutants` is blind to `#[cfg(target_feature)]` reachability
+
+First sweep (`cargo mutants -p pixelflow-core --file .../x86.rs -j 4`, no
+other flags): **229 mutants, 172 missed.** That number is misleading. This
+crate's default build (`.cargo/config.toml` sets no `target-cpu`/
+`target-feature`; confirmed with `cargo rustc -- --print cfg`, which shows
+only `sse2`) never compiles the `#[cfg(target_feature = "avx2")]`- and
+`#[cfg(target_feature = "avx512f")]`-gated `F32x8`/`U32x8`/`Mask8` and
+`F32x16`/`U32x16`/`Mask16` impls at all — `xtask isa-matrix` is how those
+ISA levels actually get built and tested, with matching `-C target-feature`
+flags, per CLAUDE.md's "SIMD Backend Selection" section.
+
+`cargo mutants`' `--list`/mutate step parses the source with `syn` and does
+not evaluate `#[cfg(...)]` at all, so it happily generates and "tests"
+mutants inside code that a plain build strips out entirely. For such a
+mutant, the mutated line never makes it into the compiled artifact — the
+baseline and mutant binaries are identical — so it trivially "survives" no
+matter how well-tested the reachable code is. Of the 229 mutants, **149**
+(65%) were inside `F32x8`/`F32x16`/`U32x8`/`U32x16`/`Mask8`/`Mask16` or
+their `Avx2`/backend-selector impls — confirmed by grepping the mutant
+names and cross-checking against `--print cfg`. These are not real
+findings for this build configuration; treating them as "missed coverage"
+and writing tests to silence them would just be chasing a tooling
+artifact. (Separately, real coverage for those ISA levels is worth
+checking under a build that actually activates them — see "not done here"
+below — but that's a different, not-yet-attempted piece of work.)
+
+Re-ran scoped to the reachable code only
+(`-E "F32x8|F32x16|U32x8|U32x16|Mask8|Mask16|Avx2|Avx512"` to exclude the
+unreachable-at-this-build-config mutants): **80 mutants, 1 missed.** All 80
+are real: `Mask4`, `F32x4`, and `U32x4` are unconditionally compiled at the
+SSE2 baseline, so every mutant here reflects actual reachable,
+actually-tested-or-not code.
+
+### Fixed: 17 new tests in `pixelflow-core/tests/x86_backend_tests.rs`
+
+Extended the file's existing `SimdOps`-required-method coverage (the
+08-15 audit closed the *provided*-method gap in the same file) with the
+required primitives, `Debug` impls, and `U32x4` operators that had none:
+
+- **`Debug` for `Mask4`/`F32x4`/`U32x4`** — each had a
+  `replace fmt with Ok(Default::default())` mutant survive, meaning
+  nothing checks the formatted string has any content. Added one test per
+  type asserting the exact `{:?}` output against a value chosen to be
+  unambiguous (e.g. `Mask4`'s bit order, `U32x4`'s `to_array` — the latter
+  had two more mutants of its own, `[0;4]`/`[1;4]`, killed by the same
+  assertion).
+- **`gather`'s index clamp** — `(idx[i] as isize).clamp(0, len as isize -
+  1)`. A `- with +` or `- with /` mutant on `len - 1` only diverges from
+  correct behavior when an index is clamped past the end of a short slice;
+  picked a 3-element slice with an index of 100 so a wrong clamp bound
+  indexes out of range and panics instead of returning the last element.
+- **`add_masked`, `from_u32_bits`, `shr_u32`, `i32_to_f32`** — each had
+  zero coverage; added one direct test per method against a value where a
+  `Default::default()` (`0.0`) mutant is obviously wrong.
+- **`BitOr`/`Not` for `F32x4`** — `sse2_bitwise` already covered `BitAnd`
+  but not its siblings; added matching tests using `from_u32_bits` so the
+  expected bit pattern is exact rather than approximate.
+- **`U32x4`**: `splat`+`store` round trip, `BitAnd`, `BitOr`, `Not`, `Shl`,
+  `Shr`, and `pack_rgba` (clamp+scale+pack of four `F32x4` channels into
+  one `u32` per lane) — none had any coverage at all.
+
+Not fixed: `SimdU32Ops::from_f32_scaled`'s mutant
+(`replace ... with Default::default()`) is equivalent — the function's own
+body is already `Self::default()` verbatim (it's a documented
+placeholder; "actual packing is done via `pack_rgba`"), so the mutant and
+the real code are byte-identical. Nothing to test. Re-verified after the
+fixes: **80 mutants, 1 missed** (that same equivalent mutant, and nothing
+else).
+
+### Verified
+
+- `cargo test -p pixelflow-core --test x86_backend_tests`: 35 passed, 0
+  failed (8 pre-existing SSE2-required + 10 pre-existing SSE2-provided
+  [08-15] + 17 new).
+- `cargo test -p pixelflow-core` (all targets incl. doctests): passed, 0
+  failed.
+- `cargo clippy -p pixelflow-core --tests`: clean.
+- `cargo fmt -p pixelflow-core -- --check`: clean.
+- `cargo mutants -p pixelflow-core --file pixelflow-core/src/backend/x86.rs -E "F32x8|F32x16|U32x8|U32x16|Mask8|Mask16|Avx2|Avx512"`:
+  80 mutants, 1 missed (the equivalent mutant above), 79 caught.
+
 ## Recommended next steps (not done here)
 
 1. `pixelflow-codegen/src/emit/*` (~1,400 lines) — still open per 08-08/
@@ -171,6 +263,18 @@ a future pass.
    `send_with_backoff` functions it tests were never re-verified.
 3. `pixelflow-graphics/src/spatial_bsp.rs` — now STYLE.md-clean, but never
    mutation-tested; a natural pairing with item 1's un-tested surface.
-4. `pixelflow-core/src/backend/x86.rs`/`arm.rs`'s *required* `SimdOps`
-   methods — see below; `x86.rs` sweep started this pass but did not
-   finish within the session's time budget.
+4. `pixelflow-core/src/backend/x86.rs`'s `F32x8`/`F32x16`/`U32x8`/`U32x16`/
+   `Mask8`/`Mask16` (AVX2/AVX-512) impls, and `arm.rs`'s NEON impls — never
+   tested at the unit level at all (`pixelflow-core/tests/` has zero
+   references to any of those types; they're only exercised indirectly,
+   through generic `Field`-level integration tests, when the crate happens
+   to be built at a matching ISA level via `xtask isa-matrix`). A real
+   `x86_backend_tests.rs`-style direct test file for each ISA level, run
+   under `xtask isa-matrix`'s `-C target-feature` flags, is the natural
+   fix — distinct from, and larger than, this pass's SSE2-only sweep.
+5. If `cargo mutants` becomes a routine part of this audit series, its
+   cfg-blindness (this pass's methodology finding, above) is worth
+   automating around — e.g. a repo-level `.cargo/mutants.toml` with an
+   `exclude_regex` for the higher-ISA type names, so a plain
+   `cargo mutants -p pixelflow-core` doesn't need the `-E` flag
+   reconstructed by hand every time.
