@@ -1208,7 +1208,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_default_state() {
+    fn it_should_have_no_selection_by_default() {
         let screen = create_test_screen(10, 5);
         assert_eq!(screen.selection, Selection::default());
     }
@@ -1245,7 +1245,7 @@ mod tests {
     }
 
     #[test]
-    fn update_selection_marks_old_and_new_lines_dirty() {
+    fn it_should_mark_both_the_old_and_new_lines_dirty_when_selection_moves_to_another_line() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 3, y: 1 });
@@ -1256,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn update_selection_when_not_active() {
+    fn it_should_leave_selection_state_unchanged_when_updating_an_inactive_selection() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.selection.is_active = false;
@@ -1286,13 +1286,13 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_normal_no_selection() {
+    fn it_should_report_no_cell_selected_when_there_is_no_active_selection() {
         let screen = create_test_screen(10, 5);
         assert!(!screen.is_selected(Point { x: 1, y: 1 }));
     }
 
     #[test]
-    fn is_selected_normal_single_line() {
+    fn it_should_select_cells_within_a_single_line_cell_selection_range() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 2, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 5, y: 1 });
@@ -1303,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_normal_multi_line() {
+    fn it_should_select_cells_spanning_multiple_lines_in_cell_mode() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 3, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 2, y: 3 });
@@ -1315,7 +1315,8 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_normal_multi_line_selection_ends_at_width_minus_1() {
+    fn it_should_include_the_last_column_when_a_multi_line_cell_selection_ends_at_width_minus_one()
+    {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 8, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 2, y: 2 });
@@ -1327,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_normal_reverse_selection_points() {
+    fn it_should_normalize_a_cell_selection_dragged_upward_before_testing_membership() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 5, y: 2 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 1, y: 1 });
@@ -1340,7 +1341,7 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_point_equals_start_or_end() {
+    fn it_should_include_the_selection_start_and_end_points_themselves() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 2, y: 2 }, SelectionMode::Cell); // Replaced Normal with Cell
         assert!(screen.is_selected(Point { x: 2, y: 2 }));
@@ -1350,7 +1351,7 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_out_of_bounds_point() {
+    fn it_should_report_out_of_bounds_points_as_not_selected() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point {
@@ -1368,13 +1369,13 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_block_no_selection() {
+    fn it_should_report_no_cell_selected_in_block_mode_when_there_is_no_active_selection() {
         let screen = create_test_screen(10, 5);
         assert!(!screen.is_selected(Point { x: 1, y: 1 }));
     }
 
     #[test]
-    fn is_selected_block_simple() {
+    fn it_should_select_cells_within_the_block_selection_rectangle() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Block);
         screen.update_selection(Point { x: 3, y: 3 });
@@ -1383,7 +1384,7 @@ mod tests {
     }
 
     #[test]
-    fn is_selected_block_reverse_points() {
+    fn it_should_normalize_a_block_selection_dragged_upward_before_testing_membership() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 3, y: 3 }, SelectionMode::Block);
         screen.update_selection(Point { x: 1, y: 1 });
@@ -1391,13 +1392,13 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_no_selection() {
+    fn it_should_return_none_when_there_is_no_selection_to_extract_text_from() {
         let screen = create_test_screen(10, 5);
         assert_eq!(screen.get_selected_text(), None);
     }
 
     #[test]
-    fn get_selected_text_normal_single_char() {
+    fn it_should_extract_a_single_selected_character_in_cell_mode() {
         let mut screen = create_test_screen(5, 3);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
@@ -1405,7 +1406,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_single_line_partial() {
+    fn it_should_extract_a_partial_line_of_selected_text_in_cell_mode() {
         let mut screen = create_test_screen(5, 3);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
@@ -1414,7 +1415,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_single_line_full() {
+    fn it_should_extract_a_full_line_of_selected_text_in_cell_mode() {
         let mut screen = create_test_screen(5, 3);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 0, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
@@ -1426,7 +1427,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_multi_line() {
+    fn it_should_join_multi_line_cell_selected_text_with_newlines() {
         let mut screen = create_test_screen(3, 3);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Cell); // Replaced Normal with Cell
@@ -1435,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_multi_line_reversed_points() {
+    fn it_should_extract_the_same_text_regardless_of_selection_drag_direction_in_cell_mode() {
         let mut screen = create_test_screen(3, 3);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 2 }, SelectionMode::Cell); // Replaced Normal with Cell
@@ -1444,7 +1445,8 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_normal_trailing_spaces_behavior() {
+    fn it_should_preserve_trailing_spaces_on_a_full_width_line_but_trim_them_on_interior_lines_of_a_multi_line_selection(
+    ) {
         let mut screen = create_test_screen(5, 2);
         {
             let row0 = Arc::make_mut(&mut screen.grid[0]);
@@ -1513,14 +1515,14 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_block_no_selection() {
+    fn it_should_return_none_for_block_mode_text_extraction_when_there_is_no_selection() {
         let mut screen = create_test_screen(10, 5);
         screen.selection.mode = SelectionMode::Block;
         assert_eq!(screen.get_selected_text(), None);
     }
 
     #[test]
-    fn get_selected_text_block_simple() {
+    fn it_should_extract_the_rectangular_region_of_a_block_selection() {
         let mut screen = create_test_screen(5, 4);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
@@ -1532,7 +1534,8 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_block_reversed_points() {
+    fn it_should_extract_the_same_rectangular_region_regardless_of_block_selection_drag_direction()
+    {
         let mut screen = create_test_screen(5, 4);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 3, y: 2 }, SelectionMode::Block);
@@ -1544,7 +1547,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_block_one_column() {
+    fn it_should_extract_a_single_column_block_selection_as_newline_separated_characters() {
         let mut screen = create_test_screen(5, 4);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
@@ -1553,7 +1556,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_block_one_row() {
+    fn it_should_extract_a_single_row_block_selection_as_one_line() {
         let mut screen = create_test_screen(5, 4);
         fill_screen_with_pattern(&mut screen);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Block);
@@ -1562,7 +1565,7 @@ mod tests {
     }
 
     #[test]
-    fn get_selected_text_block_beyond_line_length() {
+    fn it_should_pad_block_selection_columns_beyond_line_content_with_spaces() {
         let mut screen = create_test_screen(3, 2);
         {
             let row0 = Arc::make_mut(&mut screen.grid[0]);
@@ -1609,7 +1612,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_cleared_on_resize() {
+    fn it_should_clear_the_selection_when_the_screen_is_resized() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.update_selection(Point { x: 5, y: 2 });
@@ -1619,7 +1622,8 @@ mod tests {
     }
 
     #[test]
-    fn scroll_up_populates_scrollback() {
+    fn it_should_move_the_scrolled_off_top_line_into_scrollback_when_scrolling_up_with_history_save(
+    ) {
         let mut screen = create_test_screen_with_scrollback(10, 5, 10);
         fill_screen_with_pattern(&mut screen);
         // scroll up 1 line. Top line should go to scrollback.
@@ -1662,7 +1666,7 @@ mod tests {
     }
 
     #[test]
-    fn block_selection_wide_char_full() {
+    fn it_should_include_the_full_wide_character_glyph_when_a_block_selection_fully_covers_it() {
         let mut screen = create_screen_with_wide_char();
         // Select "b" "你" "c" (columns 1 to 4)
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
@@ -1673,7 +1677,7 @@ mod tests {
     }
 
     #[test]
-    fn block_selection_wide_char_partial_left() {
+    fn it_should_include_the_wide_character_when_a_block_selection_covers_only_its_primary_cell() {
         let mut screen = create_screen_with_wide_char();
         // Select "b" "你" (primary only) (columns 1 to 2)
         screen.start_selection(Point { x: 1, y: 0 }, SelectionMode::Block);
@@ -1685,16 +1689,16 @@ mod tests {
     }
 
     #[test]
-    fn block_selection_wide_char_partial_right() {
+    fn it_should_omit_the_wide_character_placeholder_when_a_block_selection_starts_at_its_spacer_cell(
+    ) {
         let mut screen = create_screen_with_wide_char();
         // Select spacer of "你" and "c" (columns 3 to 4)
         screen.start_selection(Point { x: 3, y: 0 }, SelectionMode::Block);
         screen.update_selection(Point { x: 4, y: 0 });
 
         let text = screen.get_selected_text();
-        // Spacer is \0. "c" is c.
-        // The user probably doesn't want \0 in the output, but currently it returns \0.
-        // I will assert the current behavior.
+        // The spacer's display_char() is WIDE_CHAR_PLACEHOLDER, which is skipped
+        // rather than emitted, so only "c" appears in the output.
         assert_eq!(text, Some("c".to_string()));
     }
 }
