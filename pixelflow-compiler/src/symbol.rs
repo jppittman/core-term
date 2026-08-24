@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_registration() {
+    fn register_parameter_marks_name_as_parameter_and_not_intrinsic() {
         let mut table = SymbolTable::new();
         let ident = Ident::new("radius", Span::call_site());
         let ty: Type = syn::parse_quote!(f32);
