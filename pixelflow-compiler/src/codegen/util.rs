@@ -38,6 +38,9 @@ pub fn sort_by_index(indexed: impl IntoIterator<Item = (usize, TokenStream)>) ->
 #[allow(dead_code)]
 pub fn build_tuple(values: &[TokenStream]) -> TokenStream {
     match values.len() {
+        // Kept as its own arm for symmetry with the `1` case's trailing-comma
+        // rule, even though the `_` arm below would emit the identical `()`
+        // for zero values — a mutation-testing-confirmed equivalent case.
         0 => quote! { () },
         1 => {
             let val = &values[0];
