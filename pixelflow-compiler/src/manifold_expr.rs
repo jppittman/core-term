@@ -49,8 +49,7 @@ mod tests {
             pub struct Sqrt<M>(pub M);
         };
         let generated = derive_manifold_expr(input).to_string();
-        let expected =
-            quote! { impl<M> ::pixelflow_core::ManifoldExpr for Sqrt<M> {} }.to_string();
+        let expected = quote! { impl<M> ::pixelflow_core::ManifoldExpr for Sqrt<M> {} }.to_string();
         assert_eq!(generated, expected);
     }
 
@@ -60,8 +59,7 @@ mod tests {
             pub struct Constant(pub f32);
         };
         let generated = derive_manifold_expr(input).to_string();
-        let expected =
-            quote! { impl ::pixelflow_core::ManifoldExpr for Constant {} }.to_string();
+        let expected = quote! { impl ::pixelflow_core::ManifoldExpr for Constant {} }.to_string();
         assert_eq!(generated, expected);
     }
 }

@@ -738,7 +738,13 @@ mod tests {
             LiteralSpace::Domain,
             "the select mask must not be forced"
         );
-        assert_eq!(literal_space_at_value(&literals, 1.0), LiteralSpace::Projected);
-        assert_eq!(literal_space_at_value(&literals, 2.0), LiteralSpace::Projected);
+        assert_eq!(
+            literal_space_at_value(&literals, 1.0),
+            LiteralSpace::Projected
+        );
+        assert_eq!(
+            literal_space_at_value(&literals, 2.0),
+            LiteralSpace::Projected
+        );
     }
 }

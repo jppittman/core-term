@@ -74,10 +74,7 @@ mod tests {
     #[test]
     fn build_tuple_of_one_value_keeps_the_disambiguating_trailing_comma() {
         let val = quote! { a };
-        assert_eq!(
-            build_tuple(&[val]).to_string(),
-            quote! { (a,) }.to_string()
-        );
+        assert_eq!(build_tuple(&[val]).to_string(), quote! { (a,) }.to_string());
     }
 
     #[test]

@@ -622,7 +622,11 @@ mod tests {
         let kernel = parse(input).unwrap();
         match kernel.body {
             Expr::Block(block) => {
-                assert_eq!(block.stmts.len(), 1, "the semicolon-terminated X is a statement");
+                assert_eq!(
+                    block.stmts.len(),
+                    1,
+                    "the semicolon-terminated X is a statement"
+                );
                 assert!(
                     block.expr.is_none(),
                     "a block ending in `expr;` has no final expression"

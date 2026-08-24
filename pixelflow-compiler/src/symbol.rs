@@ -227,11 +227,16 @@ mod tests {
     #[test]
     fn all_names_lists_intrinsics_and_every_registered_parameter() {
         let mut table = SymbolTable::new();
-        table.register_parameter(Ident::new("radius", Span::call_site()), syn::parse_quote!(f32));
+        table.register_parameter(
+            Ident::new("radius", Span::call_site()),
+            syn::parse_quote!(f32),
+        );
 
         let names: std::collections::HashSet<String> = table.all_names().collect();
-        let expected: std::collections::HashSet<String> =
-            ["X", "Y", "Z", "W", "radius"].iter().map(|s| s.to_string()).collect();
+        let expected: std::collections::HashSet<String> = ["X", "Y", "Z", "W", "radius"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(names, expected);
     }
 
