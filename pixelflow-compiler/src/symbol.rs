@@ -223,4 +223,29 @@ mod tests {
         assert!(table.is_parameter("radius"));
         assert!(!table.is_intrinsic("radius"));
     }
+
+    #[test]
+    fn all_names_lists_intrinsics_and_every_registered_parameter() {
+        let mut table = SymbolTable::new();
+        table.register_parameter(Ident::new("radius", Span::call_site()), syn::parse_quote!(f32));
+
+        let names: std::collections::HashSet<String> = table.all_names().collect();
+        let expected: std::collections::HashSet<String> =
+            ["X", "Y", "Z", "W", "radius"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn pop_scope_removes_locals_registered_since_the_matching_push_scope() {
+        let mut table = SymbolTable::new();
+        table.push_scope();
+        table.register_local(Ident::new("dx", Span::call_site()), None);
+        assert!(table.lookup("dx").is_some());
+
+        table.pop_scope();
+
+        assert!(table.lookup("dx").is_none());
+        // The outer scope (and its intrinsics) must be untouched.
+        assert!(table.is_intrinsic("X"));
+    }
 }

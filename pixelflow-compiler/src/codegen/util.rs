@@ -58,3 +58,45 @@ pub fn build_array(values: &[TokenStream]) -> TokenStream {
         quote! { ([#(#values),*],) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_tuple_of_zero_values_is_unit() {
+        assert_eq!(build_tuple(&[]).to_string(), quote! { () }.to_string());
+    }
+
+    #[test]
+    fn build_tuple_of_one_value_keeps_the_disambiguating_trailing_comma() {
+        let val = quote! { a };
+        assert_eq!(
+            build_tuple(&[val]).to_string(),
+            quote! { (a,) }.to_string()
+        );
+    }
+
+    #[test]
+    fn build_tuple_of_multiple_values_has_no_trailing_comma() {
+        let vals = vec![quote! { a }, quote! { b }];
+        assert_eq!(
+            build_tuple(&vals).to_string(),
+            quote! { (a, b) }.to_string()
+        );
+    }
+
+    #[test]
+    fn build_array_of_zero_values_is_unit() {
+        assert_eq!(build_array(&[]).to_string(), quote! { () }.to_string());
+    }
+
+    #[test]
+    fn build_array_of_values_wraps_a_bracketed_list_in_a_one_tuple() {
+        let vals = vec![quote! { a }, quote! { b }];
+        assert_eq!(
+            build_array(&vals).to_string(),
+            quote! { ([a, b],) }.to_string()
+        );
+    }
+}

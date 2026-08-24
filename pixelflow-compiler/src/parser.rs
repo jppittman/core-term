@@ -574,6 +574,65 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_a_multi_segment_path_as_a_plain_identifier() {
+        // A multi-segment path (qself-free but len() != 1) must fall through
+        // to Verbatim, not be silently truncated to an Ident of its first
+        // segment.
+        let input = quote! { || std::f32::consts::PI };
+        let kernel = parse(input).unwrap();
+        assert!(
+            matches!(kernel.body, Expr::Verbatim(_)),
+            "expected Verbatim for a multi-segment path, got {:?}",
+            kernel.body
+        );
+    }
+
+    #[test]
+    fn parse_let_with_type_annotation_extracts_both_name_and_type() {
+        let input = quote! {
+            || {
+                let dx: f32 = X;
+                dx
+            }
+        };
+        let kernel = parse(input).unwrap();
+        match kernel.body {
+            Expr::Block(block) => {
+                assert_eq!(block.stmts.len(), 1);
+                match &block.stmts[0] {
+                    Stmt::Let(let_stmt) => {
+                        assert_eq!(let_stmt.name.to_string(), "dx");
+                        let ty = let_stmt.ty.as_ref().expect("expected a type annotation");
+                        if let Type::Path(type_path) = ty {
+                            assert_eq!(type_path.path.segments[0].ident.to_string(), "f32");
+                        } else {
+                            panic!("expected path type");
+                        }
+                    }
+                    _ => panic!("expected let statement"),
+                }
+            }
+            _ => panic!("expected block expression"),
+        }
+    }
+
+    #[test]
+    fn a_terminal_statement_with_a_trailing_semicolon_is_not_the_blocks_final_expression() {
+        let input = quote! { || { X; } };
+        let kernel = parse(input).unwrap();
+        match kernel.body {
+            Expr::Block(block) => {
+                assert_eq!(block.stmts.len(), 1, "the semicolon-terminated X is a statement");
+                assert!(
+                    block.expr.is_none(),
+                    "a block ending in `expr;` has no final expression"
+                );
+            }
+            _ => panic!("expected block expression"),
+        }
+    }
+
+    #[test]
     fn parse_domain_with_block() {
         // This is the syntax that's failing
         let input = quote! {
