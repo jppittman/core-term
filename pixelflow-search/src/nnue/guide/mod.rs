@@ -128,6 +128,87 @@ impl SaturationGuide for Guide {
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // shift_by / shift1
+    // ========================================================================
+
+    /// A K-element ramp `[0.0, 1.0, ..., K-1 as f32]` — every element
+    /// distinct, so a rotation, a constant fill, or a mis-indexed lookup all
+    /// produce visibly different arrays from the correct answer.
+    fn ramp() -> [f32; K] {
+        let mut a = [0.0f32; K];
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = i as f32;
+        }
+        a
+    }
+
+    /// Left-rotation computed independently of [`shift_by`] (slice-style,
+    /// not the `(i + amount) % K` formula under test), used as the expected
+    /// value in the tests below.
+    fn rotate_left(a: &[f32; K], amount: usize) -> [f32; K] {
+        let amount = amount % K;
+        let mut out = [0.0f32; K];
+        out[..K - amount].copy_from_slice(&a[amount..]);
+        out[K - amount..].copy_from_slice(&a[..amount]);
+        out
+    }
+
+    #[test]
+    fn shift_by_zero_amount_is_the_identity() {
+        let arr = ramp();
+        assert_eq!(shift_by(&arr, 0), arr);
+    }
+
+    #[test]
+    fn shift_by_one_rotates_every_element_left_by_one() {
+        let arr = ramp();
+        assert_eq!(shift_by(&arr, 1), rotate_left(&arr, 1));
+    }
+
+    #[test]
+    fn shift_by_k_minus_one_rotates_almost_all_the_way_around() {
+        let arr = ramp();
+        assert_eq!(shift_by(&arr, K - 1), rotate_left(&arr, K - 1));
+    }
+
+    #[test]
+    fn shift_by_k_wraps_back_to_the_identity() {
+        let arr = ramp();
+        assert_eq!(shift_by(&arr, K), arr);
+    }
+
+    #[test]
+    fn shift_by_k_plus_one_matches_shift_by_one() {
+        let arr = ramp();
+        assert_eq!(shift_by(&arr, K + 1), shift_by(&arr, 1));
+    }
+
+    #[test]
+    fn shift_by_near_usize_max_does_not_overflow_and_matches_its_residue_mod_k() {
+        // `amount % K` never overflows, but a `%` -> `+` mutation of the
+        // internal `amount = amount % K` line is arithmetically equivalent
+        // to the correct code for every amount that doesn't overflow
+        // `amount + K` (both feed into an outer `% K` that discards any
+        // added multiple of K). usize::MAX is chosen specifically to make
+        // that mutated addition overflow (and panic, under this workspace's
+        // debug overflow-checks) where the correct code would not.
+        let arr = ramp();
+        let want = rotate_left(&arr, usize::MAX % K);
+        assert_eq!(shift_by(&arr, usize::MAX), want);
+    }
+
+    #[test]
+    fn shift1_is_shift_by_one() {
+        let arr = ramp();
+        assert_eq!(shift1(&arr), shift_by(&arr, 1));
+        assert_eq!(shift1(&arr), rotate_left(&arr, 1));
+    }
+
+    // ========================================================================
+    // Guide::score_candidates
+    // ========================================================================
+
     #[test]
     fn guide_score_candidates_returns_one_finite_score_per_candidate() {
         let backbone = ExprNnue::new_random(1);

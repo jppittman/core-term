@@ -515,4 +515,361 @@ mod tests {
         acc.remove_leaf();
         assert_eq!(acc.node_count, 0, "node_count must not underflow");
     }
+
+    /// An arbitrary, all-distinct baseline for [`GraphAccumulator::values`]
+    /// (never all-zero, never uniform), so that a subtraction mutated into
+    /// an addition, a multiply, or a mis-indexed write is visible at every
+    /// lane rather than only at ones that happen to coincide with zero.
+    fn distinct_baseline() -> [f32; GRAPH_ACC_DIM] {
+        let mut v = [0.0f32; GRAPH_ACC_DIM];
+        for (i, x) in v.iter_mut().enumerate() {
+            *x = 10.0 + i as f32;
+        }
+        v
+    }
+
+    // ========================================================================
+    // reset
+    // ========================================================================
+
+    #[test]
+    fn reset_zeroes_values_and_counts_but_preserves_budgets() {
+        let emb = OpEmbeddings::new_random(3);
+        let mut gacc = GraphAccumulator::new();
+        gacc.add_edge(&emb, OpKind::Add, OpKind::Mul);
+        gacc.add_leaf();
+        gacc.node_budget = 77;
+        gacc.epoch_budget = 42;
+
+        gacc.reset();
+
+        assert_eq!(gacc.values, [0.0f32; GRAPH_ACC_DIM]);
+        assert_eq!(gacc.edge_count, 0);
+        assert_eq!(gacc.node_count, 0);
+        assert_eq!(gacc.node_budget, 77, "node_budget must survive reset");
+        assert_eq!(gacc.epoch_budget, 42, "epoch_budget must survive reset");
+    }
+
+    // ========================================================================
+    // add_edge_at_depth / remove_edge_at_depth (exact values)
+    // ========================================================================
+
+    #[test]
+    fn add_edge_at_depth_writes_the_exact_marginal_and_binding_values() {
+        let emb = OpEmbeddings::new_random(7);
+        let p = *emb.get(OpKind::Add);
+        let c = *emb.get(OpKind::Mul);
+        let depth = 3;
+        let c_shifted = shift_by(&c, depth);
+
+        let mut expected = [0.0f32; GRAPH_ACC_DIM];
+        for i in 0..K {
+            expected[i] = p[i]; // marginal parent
+            expected[K + i] = c[i]; // marginal child
+            expected[2 * K + i] = p[i] * c_shifted[i]; // 1-hop VSA binding
+            // expected[3*K+i] stays 0.0: add_edge_at_depth must not touch the 2-hop section.
+        }
+
+        let mut gacc = GraphAccumulator::new();
+        gacc.add_edge_at_depth(&emb, OpKind::Add, OpKind::Mul, depth);
+
+        assert_eq!(gacc.values, expected);
+        assert_eq!(
+            gacc.edge_count, 1,
+            "edge_count must increment by exactly one"
+        );
+        assert_eq!(
+            gacc.node_count, 0,
+            "add_edge_at_depth must not touch node_count"
+        );
+    }
+
+    #[test]
+    fn remove_edge_at_depth_subtracts_the_exact_marginal_and_binding_values() {
+        let emb = OpEmbeddings::new_random(11);
+        let p = *emb.get(OpKind::Sub);
+        let c = *emb.get(OpKind::Sqrt);
+        let depth = 2;
+        let c_shifted = shift_by(&c, depth);
+
+        let mut gacc = GraphAccumulator::new();
+        gacc.values = distinct_baseline();
+        gacc.edge_count = 5;
+
+        gacc.remove_edge_at_depth(&emb, OpKind::Sub, OpKind::Sqrt, depth);
+
+        let mut expected = distinct_baseline();
+        for i in 0..K {
+            expected[i] -= p[i];
+            expected[K + i] -= c[i];
+            expected[2 * K + i] -= p[i] * c_shifted[i];
+        }
+
+        assert_eq!(gacc.values, expected);
+        assert_eq!(
+            gacc.edge_count, 4,
+            "edge_count must decrement by exactly one"
+        );
+    }
+
+    #[test]
+    fn add_edge_at_depth_then_remove_edge_at_depth_returns_to_the_previous_state() {
+        let emb = OpEmbeddings::new_random(11);
+        let mut gacc = GraphAccumulator::new();
+        gacc.values = distinct_baseline();
+        let baseline = gacc.values;
+        let baseline_edges = gacc.edge_count;
+
+        gacc.add_edge_at_depth(&emb, OpKind::Sub, OpKind::Sqrt, 2);
+        gacc.remove_edge_at_depth(&emb, OpKind::Sub, OpKind::Sqrt, 2);
+
+        // Round-tripping through a large baseline (values up to ~140) loses
+        // a few ULPs to floating-point rounding, so this compares within a
+        // tight epsilon rather than bit-for-bit.
+        for i in 0..GRAPH_ACC_DIM {
+            assert!(
+                (gacc.values[i] - baseline[i]).abs() < 1e-4,
+                "values[{i}] mismatch: got {} want {}",
+                gacc.values[i],
+                baseline[i]
+            );
+        }
+        assert_eq!(gacc.edge_count, baseline_edges);
+    }
+
+    #[test]
+    fn remove_edge_matches_remove_edge_at_depth_one() {
+        let emb = OpEmbeddings::new_random(15);
+        let mut gacc = GraphAccumulator::new();
+        gacc.add_edge(&emb, OpKind::Add, OpKind::Mul);
+        gacc.remove_edge(&emb, OpKind::Add, OpKind::Mul);
+
+        assert_eq!(
+            gacc.values, [0.0f32; GRAPH_ACC_DIM],
+            "add_edge then remove_edge must return to zero"
+        );
+        assert_eq!(gacc.edge_count, 0);
+    }
+
+    // ========================================================================
+    // add_leaf / remove_leaf
+    // ========================================================================
+
+    #[test]
+    fn add_leaf_increments_node_count_by_exactly_one() {
+        let mut gacc = GraphAccumulator::new();
+        gacc.node_count = 5;
+        gacc.add_leaf();
+        assert_eq!(gacc.node_count, 6);
+    }
+
+    #[test]
+    fn remove_leaf_decrements_node_count_by_exactly_one_when_nonzero() {
+        let mut gacc = GraphAccumulator::new();
+        gacc.node_count = 5;
+        gacc.remove_leaf();
+        assert_eq!(gacc.node_count, 4);
+    }
+
+    // ========================================================================
+    // add_op_node_at_depth / add_op_node / remove_op_node_at_depth / remove_op_node
+    // ========================================================================
+
+    #[test]
+    fn add_op_node_at_depth_increments_node_count_once_regardless_of_child_count() {
+        let emb = OpEmbeddings::new_random(9);
+        let mut gacc = GraphAccumulator::new();
+        gacc.node_count = 2;
+        gacc.edge_count = 1;
+
+        gacc.add_op_node_at_depth(
+            &emb,
+            OpKind::Add,
+            &[OpKind::Mul, OpKind::Var, OpKind::Sqrt],
+            4,
+        );
+
+        assert_eq!(
+            gacc.node_count, 3,
+            "node_count increments by exactly one, not once per child"
+        );
+        assert_eq!(
+            gacc.edge_count, 4,
+            "edge_count increments once per child edge"
+        );
+    }
+
+    #[test]
+    fn add_op_node_at_depth_increments_node_count_once_even_with_zero_children() {
+        let emb = OpEmbeddings::new_random(9);
+        let mut gacc = GraphAccumulator::new();
+        gacc.node_count = 2;
+
+        gacc.add_op_node_at_depth(&emb, OpKind::Neg, &[], 0);
+
+        assert_eq!(gacc.node_count, 3);
+        assert_eq!(gacc.edge_count, 0);
+    }
+
+    #[test]
+    fn remove_op_node_at_depth_decrements_node_count_by_exactly_one() {
+        let emb = OpEmbeddings::new_random(9);
+        let mut gacc = GraphAccumulator::new();
+        gacc.node_count = 5;
+        gacc.edge_count = 10;
+
+        gacc.remove_op_node_at_depth(&emb, OpKind::Add, &[OpKind::Mul, OpKind::Var], 2);
+
+        assert_eq!(gacc.node_count, 4);
+        assert_eq!(
+            gacc.edge_count, 8,
+            "edge_count decrements once per child edge"
+        );
+    }
+
+    #[test]
+    fn add_op_node_matches_add_op_node_at_depth_one() {
+        let emb = OpEmbeddings::new_random(9);
+
+        let mut via_wrapper = GraphAccumulator::new();
+        via_wrapper.add_op_node(&emb, OpKind::Add, &[OpKind::Mul, OpKind::Var]);
+
+        let mut via_direct = GraphAccumulator::new();
+        via_direct.add_op_node_at_depth(&emb, OpKind::Add, &[OpKind::Mul, OpKind::Var], 1);
+
+        assert_eq!(via_wrapper.values, via_direct.values);
+        assert_eq!(via_wrapper.edge_count, via_direct.edge_count);
+        assert_eq!(via_wrapper.node_count, via_direct.node_count);
+        assert_ne!(
+            via_wrapper.node_count, 0,
+            "sanity: add_op_node must actually do something"
+        );
+    }
+
+    #[test]
+    fn remove_op_node_matches_remove_op_node_at_depth_one_and_returns_to_zero() {
+        let emb = OpEmbeddings::new_random(9);
+
+        let mut via_wrapper = GraphAccumulator::new();
+        via_wrapper.add_op_node(&emb, OpKind::Add, &[OpKind::Mul, OpKind::Var]);
+        via_wrapper.remove_op_node(&emb, OpKind::Add, &[OpKind::Mul, OpKind::Var]);
+
+        let mut via_direct = GraphAccumulator::new();
+        via_direct.add_op_node_at_depth(&emb, OpKind::Add, &[OpKind::Mul, OpKind::Var], 1);
+        via_direct.remove_op_node_at_depth(&emb, OpKind::Add, &[OpKind::Mul, OpKind::Var], 1);
+
+        assert_eq!(via_wrapper.values, via_direct.values);
+        assert_eq!(via_wrapper.edge_count, via_direct.edge_count);
+        assert_eq!(via_wrapper.node_count, via_direct.node_count);
+
+        // Two edges' worth of add-then-subtract can leave a few ULPs of
+        // floating-point rounding noise, so this compares within a tight
+        // epsilon rather than bit-for-bit.
+        for (i, &v) in via_wrapper.values.iter().enumerate() {
+            assert!(
+                v.abs() < 1e-4,
+                "add_op_node then remove_op_node must return to ~zero: values[{i}] = {v}"
+            );
+        }
+        assert_eq!(via_wrapper.node_count, 0);
+        assert_eq!(via_wrapper.edge_count, 0);
+    }
+
+    // ========================================================================
+    // add_2hop_edge / remove_2hop_edge
+    // ========================================================================
+
+    #[test]
+    fn add_2hop_edge_writes_the_exact_triple_product_into_the_2hop_section() {
+        let emb = OpEmbeddings::new_random(13);
+        let gp = *emb.get(OpKind::Div);
+        let p = shift1(emb.get(OpKind::Neg));
+        let c = shift_by(emb.get(OpKind::Abs), 2);
+
+        let mut expected = [0.0f32; GRAPH_ACC_DIM];
+        for i in 0..K {
+            expected[3 * K + i] = gp[i] * p[i] * c[i];
+        }
+
+        let mut gacc = GraphAccumulator::new();
+        gacc.add_2hop_edge(&emb, OpKind::Div, OpKind::Neg, OpKind::Abs);
+
+        assert_eq!(gacc.values, expected);
+        assert_eq!(
+            gacc.edge_count, 0,
+            "add_2hop_edge must not touch edge_count"
+        );
+        assert_eq!(
+            gacc.node_count, 0,
+            "add_2hop_edge must not touch node_count"
+        );
+    }
+
+    #[test]
+    fn remove_2hop_edge_subtracts_the_exact_triple_product() {
+        let emb = OpEmbeddings::new_random(13);
+        let gp = *emb.get(OpKind::Div);
+        let p = shift1(emb.get(OpKind::Neg));
+        let c = shift_by(emb.get(OpKind::Abs), 2);
+
+        let mut gacc = GraphAccumulator::new();
+        gacc.values = distinct_baseline();
+
+        let mut expected = distinct_baseline();
+        for i in 0..K {
+            expected[3 * K + i] -= gp[i] * p[i] * c[i];
+        }
+
+        gacc.remove_2hop_edge(&emb, OpKind::Div, OpKind::Neg, OpKind::Abs);
+
+        assert_eq!(gacc.values, expected);
+    }
+
+    #[test]
+    fn add_2hop_edge_then_remove_2hop_edge_returns_to_the_previous_state() {
+        let emb = OpEmbeddings::new_random(13);
+        let mut gacc = GraphAccumulator::new();
+        gacc.values = distinct_baseline();
+        let baseline = gacc.values;
+
+        gacc.add_2hop_edge(&emb, OpKind::Div, OpKind::Neg, OpKind::Abs);
+        gacc.remove_2hop_edge(&emb, OpKind::Div, OpKind::Neg, OpKind::Abs);
+
+        for i in 0..GRAPH_ACC_DIM {
+            assert!(
+                (gacc.values[i] - baseline[i]).abs() < 1e-4,
+                "values[{i}] mismatch: got {} want {}",
+                gacc.values[i],
+                baseline[i]
+            );
+        }
+    }
+
+    // ========================================================================
+    // normalize_in_place: 2-hop section
+    // ========================================================================
+
+    #[test]
+    fn normalize_in_place_normalizes_the_2hop_section_when_populated() {
+        let emb = OpEmbeddings::new_random(21);
+        let mut gacc = GraphAccumulator::new();
+        gacc.add_2hop_edge(&emb, OpKind::Add, OpKind::Mul, OpKind::Var);
+        gacc.add_2hop_edge(&emb, OpKind::Sub, OpKind::Div, OpKind::Sqrt);
+
+        let normed = gacc.normalized();
+
+        let sum_sq: f32 = normed.values[3 * K..4 * K].iter().map(|v| v * v).sum();
+        let norm = sqrtf(sum_sq);
+        assert!(
+            (norm - 1.0).abs() < 1e-5,
+            "2-hop section norm should be 1.0, got {norm}"
+        );
+    }
+
+    // Note on the `norm < 1e-12` guard in `l2_normalize_section` (the `<` vs
+    // `<=` mutant at that line): the boundary is only observable when a
+    // section's L2 norm lands on *exactly* 1e-12, which no combination of
+    // `OpEmbeddings::new_random` seeds and edge counts here can be made to
+    // hit deterministically — it is not exercised by any test in this file,
+    // by design rather than oversight.
 }
