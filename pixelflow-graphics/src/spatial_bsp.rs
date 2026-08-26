@@ -181,6 +181,11 @@ impl<L> SpatialBSP<L> {
             (Axis::X, threshold)
         } else {
             // Sort by Y center, split at median
+            //
+            // `/ 2.0` here is an equivalent mutant to `* 2.0` under cargo-mutants: both are
+            // positive monotonic scalings, so they never change the comparator's ordering for
+            // any input, only its constant factor. No test can distinguish them — left as `/`
+            // to match the actual center-of-bounds formula.
             items.sort_by(|a, b| {
                 let ca = (a.bounds.1 + a.bounds.3) / 2.0;
                 let cb = (b.bounds.1 + b.bounds.3) / 2.0;
