@@ -2008,19 +2008,22 @@ mod tests {
         // differs from their X product-order. Kills a `+` -> `*` mutant in the
         // sort-by-center-x comparator: sorting by product instead of sum reorders
         // the items, changing which pair straddles the median split and so which
-        // threshold comes out.
+        // threshold comes out. Given in descending sum-order (rather than already
+        // sorted) so the sort actually has to move every element and exercises the
+        // comparator's mutated argument in every slot — an already-sorted input
+        // lets insertion sort skip the comparisons that would expose it.
         let items = vec![
             Positioned {
-                bounds: (-10.0, 0.0, -9.0, 10.0), // center x = -9.5, sum-sorted 1st
-                leaf: SolidColor::new(255, 0, 0, 255),
+                bounds: (8.0, 0.0, 12.0, 10.0), // center x = 10.0, sum-sorted last
+                leaf: SolidColor::new(0, 0, 255, 255),
             },
             Positioned {
-                bounds: (-2.0, 0.0, 3.0, 10.0), // center x = 0.5, sum-sorted 2nd
+                bounds: (-2.0, 0.0, 3.0, 10.0), // center x = 0.5, sum-sorted middle
                 leaf: SolidColor::new(0, 255, 0, 255),
             },
             Positioned {
-                bounds: (8.0, 0.0, 12.0, 10.0), // center x = 10.0, sum-sorted 3rd
-                leaf: SolidColor::new(0, 0, 255, 255),
+                bounds: (-10.0, 0.0, -9.0, 10.0), // center x = -9.5, sum-sorted first
+                leaf: SolidColor::new(255, 0, 0, 255),
             },
         ];
 
@@ -2030,32 +2033,34 @@ mod tests {
         assert_eq!(root.axis, Axis::X, "identical Y bounds force an X split");
         assert_eq!(
             root.threshold, -5.5,
-            "sum order is [item0, item1, item2]; median threshold = \
-             (item0.x_max + item1.x_min) / 2 = (-9 + -2) / 2"
+            "sum order is [(-10,-9), (-2,3), (8,12)]; median threshold = \
+             (-9 + -2) / 2"
         );
     }
 
     #[test]
     fn y_axis_threshold_sorts_by_sum_of_bounds_not_product_or_wrong_neighbor() {
         // Same construction as the X-axis test above, transposed onto Y (identical
-        // X forces a Y split). Kills the analogous `+` -> `*` sort-key mutants for
-        // the Y branch, plus a `mid_idx - 1` -> `mid_idx / 1` mutant in the
-        // threshold formula: that mutant reads `items[mid_idx]` for *both* sides of
-        // the average instead of `items[mid_idx - 1]` and `items[mid_idx]`, which
-        // this asymmetric item set turns into a different number (0.5 instead of
-        // -5.5).
+        // X forces a Y split) and likewise given in descending sum-order so the
+        // sort has to move every element. Kills the analogous `+` -> `*`/`-`
+        // sort-key mutants for the Y branch's `ca`/`cb` (both arguments of the
+        // comparator, not just one), a `/` -> `%` mutant in `cb`, and a
+        // `mid_idx - 1` -> `mid_idx / 1` mutant in the threshold formula: that
+        // mutant reads `items[mid_idx]` for *both* sides of the average instead of
+        // `items[mid_idx - 1]` and `items[mid_idx]`, which this asymmetric item set
+        // turns into a different number (0.5 instead of -5.5).
         let items = vec![
             Positioned {
-                bounds: (0.0, -10.0, 10.0, -9.0), // center y = -9.5, sum-sorted 1st
-                leaf: SolidColor::new(255, 0, 0, 255),
+                bounds: (0.0, 8.0, 10.0, 12.0), // center y = 10.0, sum-sorted last
+                leaf: SolidColor::new(0, 0, 255, 255),
             },
             Positioned {
-                bounds: (0.0, -2.0, 10.0, 3.0), // center y = 0.5, sum-sorted 2nd
+                bounds: (0.0, -2.0, 10.0, 3.0), // center y = 0.5, sum-sorted middle
                 leaf: SolidColor::new(0, 255, 0, 255),
             },
             Positioned {
-                bounds: (0.0, 8.0, 10.0, 12.0), // center y = 10.0, sum-sorted 3rd
-                leaf: SolidColor::new(0, 0, 255, 255),
+                bounds: (0.0, -10.0, 10.0, -9.0), // center y = -9.5, sum-sorted first
+                leaf: SolidColor::new(255, 0, 0, 255),
             },
         ];
 
@@ -2065,8 +2070,8 @@ mod tests {
         assert_eq!(root.axis, Axis::Y, "identical X bounds force a Y split");
         assert_eq!(
             root.threshold, -5.5,
-            "sum order is [item0, item1, item2]; median threshold = \
-             (item0.y_max + item1.y_min) / 2 = (-9 + -2) / 2"
+            "sum order is [(-10,-9), (-2,3), (8,12)]; median threshold = \
+             (-9 + -2) / 2"
         );
     }
 
