@@ -2463,7 +2463,7 @@ mod mutation_tests {
     }
 
     #[test]
-    fn csi_s_is_save_cursor() {
+    fn csi_lowercase_s_is_save_cursor() {
         // 's' = save cursor (ANSI). Mutation: confusing 's' with 'S' (ScrollUp).
         let cmds = process_bytes(b"\x1b[s");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::SaveCursor)]);
@@ -2474,5 +2474,51 @@ mod mutation_tests {
         // 'u' = restore cursor (ANSI). Mutation: confusing 'u' with 'U'.
         let cmds = process_bytes(b"\x1b[u");
         assert_eq!(cmds, vec![AnsiCommand::Csi(CsiCommand::RestoreCursor)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // String buffer lifecycle (OSC/DCS/PM/APC share one buffer)
+    // Mutations: dropping the buffer/length-cap resets entirely (no-op).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn osc_buffer_does_not_leak_across_a_cancelled_sequence() {
+        // Abort one OSC with CAN, then start and finish a second OSC. If the
+        // string buffer weren't cleared on cancellation, the second OSC's
+        // data would still carry bytes left over from the first, aborted one.
+        let cmds = process_bytes(b"\x1b]0;abc\x18\x1b]0;def\x07");
+        let osc_payloads: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                AnsiCommand::Osc(data) => Some(data.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            osc_payloads,
+            vec![b"0;def".to_vec()],
+            "a cancelled OSC's bytes must not leak into the next OSC; got {:?}",
+            cmds
+        );
+    }
+
+    #[test]
+    fn osc_string_length_is_capped_not_grown_past_max_osc_len() {
+        // Mirrors `AnsiParser::MAX_OSC_LEN` (parser.rs) — kept as a local
+        // constant since the parser's cap is a private implementation detail.
+        const OSC_STRING_CAP: usize = 1024;
+        let mut bytes = vec![0x1b, b']'];
+        bytes.extend(std::iter::repeat_n(b'a', OSC_STRING_CAP + 1));
+        bytes.push(0x07); // BEL terminates the OSC
+        let cmds = process_bytes(&bytes);
+        let osc_payload = cmds.iter().find_map(|c| match c {
+            AnsiCommand::Osc(data) => Some(data.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            osc_payload,
+            Some(vec![b'a'; OSC_STRING_CAP]),
+            "OSC payload must be capped at {OSC_STRING_CAP} bytes, not grown past it"
+        );
     }
 }

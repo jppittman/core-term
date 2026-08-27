@@ -1256,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn update_selection_when_not_active() {
+    fn it_should_leave_selection_unchanged_when_updating_while_inactive() {
         let mut screen = create_test_screen(10, 5);
         screen.start_selection(Point { x: 1, y: 1 }, SelectionMode::Cell); // Replaced Normal with Cell
         screen.selection.is_active = false;

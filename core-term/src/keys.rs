@@ -42,7 +42,7 @@ mod tests {
     }
 
     #[test]
-    fn map_key_found() {
+    fn it_should_return_the_bound_action_when_key_and_modifiers_match_a_binding() {
         let bindings = vec![
             Keybinding {
                 key: KeySymbol::Char('C'),

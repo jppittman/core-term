@@ -1,5 +1,4 @@
 use super::*;
-use crate::numeric::Numeric;
 use crate::variables::{X, Y};
 
 // A trivial manifold for testing: returns X + Y.
@@ -13,7 +12,7 @@ impl Manifold<(Field, Field, Field, Field)> for XPlusY {
     #[inline(always)]
     fn eval(&self, p: (Field, Field, Field, Field)) -> Field {
         let (x, y, _, _) = p;
-        x.raw_add(y)
+        (x + y).eval(p)
     }
 }
 
@@ -473,10 +472,8 @@ fn box_collapse_4d_layout() {
     struct ZTimes100;
     impl Manifold<(Field, Field, Field, Field)> for ZTimes100 {
         type Output = Field;
-        fn eval(&self, (x, y, z, _): (Field, Field, Field, Field)) -> Field {
-            z.raw_mul(Field::from(100.0))
-                .raw_add(y.raw_mul(Field::from(10.0)))
-                .raw_add(x)
+        fn eval(&self, p @ (x, y, z, _): (Field, Field, Field, Field)) -> Field {
+            (z * Field::from(100.0) + y * Field::from(10.0) + x).eval(p)
         }
     }
 

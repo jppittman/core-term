@@ -129,7 +129,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pixels_to_cells_basic() {
+    fn it_should_map_pixel_coordinates_to_the_containing_cell() {
         let layout = Layout {
             cols: 80,
             rows: 24,
@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn pixels_to_cells_with_padding() {
+    fn it_should_account_for_padding_when_mapping_pixels_to_cells() {
         let layout = Layout {
             cols: 80,
             rows: 24,
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn pixels_to_cells_out_of_bounds() {
+    fn it_should_return_none_for_pixel_coordinates_outside_the_grid() {
         let layout = Layout {
             cols: 80,
             rows: 24,

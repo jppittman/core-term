@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn paste_text_action_bracketed_on() {
+    fn it_should_wrap_pasted_text_in_bracketed_paste_markers_when_the_mode_is_enabled() {
         let mut emu = create_test_emu_for_input();
         // Enable bracketed paste mode via the public message-passing surface (CSI ? 2004 h).
         use crate::ansi::commands::CsiCommand;
@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn paste_text_action_bracketed_off() {
+    fn it_should_print_pasted_text_directly_when_bracketed_paste_is_disabled() {
         let mut emu = create_test_emu_for_input();
         assert!(!emu.dec_modes.bracketed_paste_mode);
 
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn control_event_resize_minimum_dimensions() {
+    fn it_should_clamp_resize_dimensions_to_the_minimum_grid_size() {
         let mut emu = create_test_emu_for_input();
 
         // Very small resize (should clamp to MIN_GRID_DIMENSION)

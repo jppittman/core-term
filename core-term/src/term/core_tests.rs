@@ -346,7 +346,7 @@ fn it_should_wrap_wide_character_correctly() {
 }
 
 #[test]
-fn it_should_not_print_second_half_of_wide_char_if_at_edge_and_no_wrap_mode_or_similar_logic() {
+fn it_should_wrap_a_wide_char_to_the_next_line_when_it_does_not_fit_in_the_last_column() {
     let mut term = create_test_emulator(2, 1);
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('世')));

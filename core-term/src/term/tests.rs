@@ -256,7 +256,7 @@ fn it_should_move_to_column_zero_of_the_next_line_when_lnm_is_set_and_lf_is_rece
 }
 
 #[test]
-fn carriage_return_input() {
+fn it_should_move_cursor_to_column_zero_and_overwrite_from_start_on_carriage_return() {
     let mut term = create_test_emulator(10, 1);
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
@@ -269,7 +269,7 @@ fn carriage_return_input() {
 }
 
 #[test]
-fn csi_cursor_forward_cuf() {
+fn it_should_move_cursor_forward_by_n_columns_on_csi_cuf() {
     let mut term = create_test_emulator(10, 1); // Cursor at (0,0)
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
         CsiCommand::CursorForward(1),
@@ -285,7 +285,7 @@ fn csi_cursor_forward_cuf() {
 }
 
 #[test]
-fn csi_ed_clear_below_csi_j() {
+fn it_should_clear_from_cursor_to_end_of_screen_on_csi_erase_in_display_0() {
     let mut term = create_test_emulator(3, 2);
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('B')));
@@ -313,7 +313,7 @@ fn csi_ed_clear_below_csi_j() {
 }
 
 #[test]
-fn csi_sgr_fg_color() {
+fn it_should_apply_and_reset_foreground_color_via_sgr() {
     let mut term = create_test_emulator(5, 1);
     let red_attr = vec![Attribute::Foreground(Color::Named(NamedColor::Red))];
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
@@ -491,14 +491,14 @@ fn mouse_release_ends_selection_activity() {
 
 // --- Copy Action Tests ---
 #[test]
-fn initiate_copy_no_selection() {
+fn it_should_return_none_when_initiating_copy_with_no_active_selection() {
     let mut emu = create_test_emulator(10, 5);
     let action = emu.interpret_input(EmulatorInput::User(UserInputAction::InitiateCopy));
     assert_eq!(action, None, "Should return None if no selection exists.");
 }
 
 #[test]
-fn initiate_copy_with_selection() {
+fn it_should_copy_the_selected_text_to_clipboard_when_a_selection_exists() {
     let mut emu = create_test_emulator(10, 2);
     fill_emulator_screen(&mut emu, vec!["Hello".to_string(), "World".to_string()]);
 
@@ -519,7 +519,7 @@ fn initiate_copy_with_selection() {
 }
 
 #[test]
-fn initiate_copy_block_selection() {
+fn it_should_copy_block_selected_text_joined_by_newlines() {
     let mut emu = create_test_emulator(3, 3);
     fill_emulator_screen(
         &mut emu,
@@ -705,7 +705,7 @@ fn selection_on_alt_screen_then_exit() {
 // --- End of Selection with Alternate Screen Test ---
 
 #[test]
-fn resize_larger() {
+fn it_should_preserve_content_and_cursor_when_resizing_to_a_larger_grid() {
     let mut term = create_test_emulator(5, 2);
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('1')));
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('2')));
@@ -747,7 +747,7 @@ fn resize_smaller_content_truncation() {
 }
 
 #[test]
-fn osc_set_window_title() {
+fn it_should_set_the_window_title_via_osc_0_and_osc_2() {
     let mut term = create_test_emulator(10, 1);
 
     let action = term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Osc(
@@ -768,7 +768,7 @@ fn osc_set_window_title() {
 }
 
 #[test]
-fn key_event_printable_char() {
+fn it_should_write_and_echo_a_printable_character_key_input_to_the_pty() {
     let mut term = create_test_emulator(5, 1);
     let key_input = UserInputAction::KeyInput {
         symbol: KeySymbol::Char('x'),
@@ -787,7 +787,7 @@ fn key_event_printable_char() {
 }
 
 #[test]
-fn key_event_arrow_up() {
+fn it_should_write_the_up_arrow_escape_sequence_without_moving_the_cursor() {
     let mut term = create_test_emulator(5, 1);
     let key_input = UserInputAction::KeyInput {
         symbol: KeySymbol::Up,
@@ -863,7 +863,7 @@ fn it_should_preserve_selection_range_and_mode_in_a_constructed_snapshot() {
 }
 
 #[test]
-fn mode_show_cursor_dectcem() {
+fn it_should_hide_and_show_the_cursor_via_dectcem_reset_and_set() {
     let mut term = create_test_emulator(5, 1);
 
     let snap_default = term.get_render_snapshot().expect("Snapshot was None");
@@ -1235,7 +1235,7 @@ fn lf_at_bottom_of_partial_scrolling_region_no_origin_mode() {
     );
 }
 #[test]
-fn primary_device_attributes_response() {
+fn it_should_respond_to_a_primary_device_attributes_query_with_the_vt102_id() {
     let mut term = create_test_emulator(80, 24);
 
     let input_da = EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::PrimaryDeviceAttributes));
@@ -1277,7 +1277,7 @@ mod selection_logic_tests {
     }
 
     #[test]
-    fn extend_selection_active_and_inactive() {
+    fn it_should_ignore_extend_when_no_selection_is_active_and_update_the_range_when_one_is() {
         let mut emu = create_test_emulator(10, 5);
         let start_point = Point { x: 2, y: 1 };
         let extend_point = Point { x: 5, y: 2 };
@@ -1303,7 +1303,7 @@ mod selection_logic_tests {
     }
 
     #[test]
-    fn apply_selection_clear_click_and_drag() {
+    fn it_should_clear_the_selection_on_click_but_retain_its_range_inactive_after_a_drag() {
         let mut emu = create_test_emulator(10, 5);
         let point1 = Point { x: 2, y: 1 };
         let point2 = Point { x: 5, y: 1 };
@@ -1347,7 +1347,7 @@ mod selection_logic_tests {
     }
 
     #[test]
-    fn verify_clear_selection() {
+    fn it_should_clear_an_existing_selection_via_clear_selection() {
         let mut emu = create_test_emulator(10, 5);
 
         // Create and deactivate a selection

@@ -931,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_control_resize() {
+    fn it_should_resize_the_emulator_and_forward_the_pty_resize_on_a_control_resize_event() {
         let (mut app, mut writer_rx, _, _scheduler) = match create_test_app() {
             Some(v) => v,
             None => return,
@@ -1013,7 +1013,7 @@ mod tests {
     /// injects the exact KeyDown the X11 mapper produces for Ctrl+C and
     /// asserts the child dies (i.e. 0x03 reached the PTY line discipline).
     #[test]
-    fn ctrl_c_interrupts_yes_flood() {
+    fn it_should_deliver_ctrl_c_through_a_real_pty_and_kill_a_flooding_child_process() {
         use crate::io::event_monitor_actor::PtyTroupe;
         use crate::io::pty::{NixPty, PtyChannel, PtyConfig};
         use std::time::{Duration, Instant};
@@ -1155,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_management_keydown() {
+    fn it_should_write_the_pressed_key_byte_to_the_pty_on_a_keydown_management_event() {
         let (mut app, mut writer_rx, _, _scheduler) = match create_test_app() {
             Some(v) => v,
             None => return,
