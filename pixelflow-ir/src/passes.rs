@@ -2027,14 +2027,29 @@ mod dwrt_tests {
         // themselves. This test evaluates each expansion directly across a
         // spread of magnitudes and signs (range reduction and quadrant
         // selection inside the expansions branch on both), checked against
-        // host libm. The tolerance here is looser than `assert_close`'s
-        // default: these polynomial expansions (see `expand_sin`'s degree-7
-        // Chebyshev fit) have real, larger-than-1e-3 approximation error by
-        // design — the point of this test is catching a wrong coefficient,
-        // sign, or branch, which would miss by far more than that error.
+        // host libm, at a tolerance sized per expansion rather than one loose
+        // bound for all of them.
+        //
+        // `LIBM_TOL` is for the expansions that genuinely need it — `exp`,
+        // `exp2`, and `atan`, whose fits carry real approximation error by
+        // design (`ATAN_MINIMAX` is documented at ~8.7e-5).
+        //
+        // `TRIG_TOL` is separate because `SIN_CHEB` is six odd coefficients —
+        // a degree-11 fit, not the degree-7 one an earlier version of this
+        // comment claimed — and the module documents ~1.5e-6 for sin/cos.
+        // Measured against libm at exactly the points below, the worst error
+        // is 4.2e-7 in this test's own metric, so 3e-2 was roughly 70,000x
+        // looser than the implementation: at `x = 0.1`, where
+        // `assert_close_rel`'s `max(|want|, 1)` floor makes the bound a plain
+        // absolute 0.03, a `sin` that returned 0.13 would have passed. 1e-5
+        // keeps ~24x headroom over the measurement and still sits above the
+        // documented accuracy, which leaves room for the ISA levels where FMA
+        // contraction shifts the last bits, while staying tight enough that a
+        // wrong coefficient, sign, or branch cannot hide.
         type Reference = fn(f32) -> f32;
 
         const LIBM_TOL: f32 = 3e-2;
+        const TRIG_TOL: f32 = 1e-5;
         let periodic_pts = [-100.0f32, -7.0, -0.6, 0.1, 0.6, 2.5, 7.0, 100.0];
         let unary: [(OpKind, Reference); 3] = [
             (OpKind::Sin, libm::sinf),
@@ -2049,7 +2064,7 @@ mod dwrt_tests {
                 let pt = [x, 0.0, 0.0, 0.0];
                 let got = eval(&a, e, &pt);
                 let want = reference(x);
-                assert_close_rel(got, want, &pt, LIBM_TOL);
+                assert_close_rel(got, want, &pt, TRIG_TOL);
             }
         }
 
