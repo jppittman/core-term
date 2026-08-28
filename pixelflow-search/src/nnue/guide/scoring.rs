@@ -382,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn bilinear_score_matches_manual_computation_for_all_ones_vectors() {
+    fn bilinear_score_should_match_manual_computation_for_all_ones_vectors() {
         let head = SaturationHead::new();
         let mut randomized = head.clone();
         randomized.randomize(42);
@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn randomize_is_deterministic_and_finite_with_near_identity_diagonal() {
+    fn randomize_should_be_deterministic_and_finite_with_a_near_identity_diagonal() {
         let mut a = SaturationHead::new();
         a.randomize(42);
         let mut b = SaturationHead::new();
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn forward_graph_uses_backbone_trunk() {
+    fn forward_graph_should_use_the_backbone_trunk() {
         let backbone = test_backbone();
         let mut head = SaturationHead::new();
         head.randomize(7);
@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_rule_from_arena_is_deterministic() {
+    fn encode_rule_from_arena_should_be_deterministic() {
         let backbone = test_backbone();
         let mut head = SaturationHead::new();
         head.randomize(3);
@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_input_dim_is_the_sum_of_graph_acc_dim_and_scalar_feature_count() {
+    fn graph_input_dim_should_equal_graph_acc_dim_plus_the_scalar_feature_count() {
         // GRAPH_ACC_DIM (128) + SCALAR_FEATURE_COUNT (4) = 132. Written as a
         // literal (rather than re-deriving via `+`) so a `+` -> `*` mutation
         // on the const declaration (128 * 4 = 512) is unambiguously wrong.
@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn forward_graph_uses_scale_one_when_node_count_is_zero() {
+    fn forward_graph_should_use_a_scale_of_one_when_node_count_is_zero() {
         let backbone = identity_trunk_backbone();
         let mut head = SaturationHead::new();
         head.graph_b1 = [5.0; HIDDEN_DIM];
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_graph_embed_matches_hand_computed_value_for_constant_inputs() {
+    fn compute_graph_embed_should_match_a_hand_computed_value_for_constant_inputs() {
         let mut head = SaturationHead::new();
         head.graph_proj_b = [1.0; EMBED_DIM];
         head.graph_proj_w = [[4.0; EMBED_DIM]; HIDDEN_DIM];
@@ -592,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_mask_features_matches_hand_computed_value_for_constant_inputs() {
+    fn compute_mask_features_should_match_a_hand_computed_value_for_constant_inputs() {
         let mut head = SaturationHead::new();
         head.mask_mlp_b1 = [1.0; MLP_HIDDEN];
         head.mask_mlp_w1 = [[4.0; MLP_HIDDEN]; MASK_INPUT_DIM];
@@ -619,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn mask_score_all_rules_with_hidden_matches_manual_composition_of_backbone_and_head() {
+    fn mask_score_all_rules_with_hidden_should_match_a_manual_composition_of_backbone_and_head() {
         let backbone = test_backbone();
         let mut head = SaturationHead::new();
         head.randomize(11);
@@ -652,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn bilinear_score_responds_to_bias_addition_and_rule_embed_scaling() {
+    fn bilinear_score_should_respond_to_bias_addition_and_rule_embed_scaling() {
         let mut head = SaturationHead::new();
         head.interaction = [[1.0; EMBED_DIM]; EMBED_DIM];
         head.mask_bias_proj = [3.0; EMBED_DIM];
@@ -702,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_rule_from_arena_places_lhs_embedding_at_the_first_concat_block() {
+    fn encode_rule_from_arena_should_place_the_lhs_embedding_at_the_first_concat_block() {
         let backbone = test_backbone();
         let (arena, lhs, rhs) = sample_rule_arena();
         let z_lhs = embed_of(&backbone, &arena, lhs);
@@ -721,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_rule_from_arena_places_rhs_embedding_at_the_second_concat_block() {
+    fn encode_rule_from_arena_should_place_the_rhs_embedding_at_the_second_concat_block() {
         let backbone = test_backbone();
         let (arena, lhs, rhs) = sample_rule_arena();
         let z_rhs = embed_of(&backbone, &arena, rhs);
@@ -740,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_rule_from_arena_concat_block_three_is_the_elementwise_difference() {
+    fn encode_rule_from_arena_should_place_the_elementwise_difference_at_the_third_concat_block() {
         let backbone = test_backbone();
         let (arena, lhs, rhs) = sample_rule_arena();
         let z_lhs = embed_of(&backbone, &arena, lhs);
@@ -760,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_rule_from_arena_concat_block_four_is_the_elementwise_product() {
+    fn encode_rule_from_arena_should_place_the_elementwise_product_at_the_fourth_concat_block() {
         let backbone = test_backbone();
         let (arena, lhs, rhs) = sample_rule_arena();
         let z_lhs = embed_of(&backbone, &arena, lhs);
@@ -780,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn randomize_matches_a_hand_recomputed_he_initialization_reference() {
+    fn randomize_should_match_a_hand_recomputed_he_initialization_reference() {
         let seed = 99u64;
         let mut head = SaturationHead::new();
         head.randomize(seed);

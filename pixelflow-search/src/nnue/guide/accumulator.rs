@@ -353,7 +353,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn graph_acc_normalize_unit_norm_per_section() {
+    fn normalized_should_give_each_section_unit_norm() {
         let emb = OpEmbeddings::new_random(42);
         let mut gacc = GraphAccumulator::new();
         // Build a non-trivial accumulator: several edges
@@ -391,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_acc_normalize_scalars_preserved() {
+    fn normalized_should_preserve_the_scalar_fields() {
         let emb = OpEmbeddings::new_random(42);
         let mut gacc = GraphAccumulator::new();
         gacc.add_edge(&emb, OpKind::Add, OpKind::Mul);
@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_acc_normalize_zero_is_safe() {
+    fn normalized_should_leave_an_all_zero_accumulator_untouched() {
         // A fresh (zero) accumulator should normalize without NaN/Inf.
         let gacc = GraphAccumulator::new();
         let normed = gacc.normalized();
@@ -434,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_acc_normalize_in_place_matches_normalized() {
+    fn normalize_in_place_should_match_normalized() {
         let emb = OpEmbeddings::new_random(42);
         let mut gacc = GraphAccumulator::new();
         gacc.add_edge(&emb, OpKind::Add, OpKind::Mul);
@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_acc_normalize_scale_invariance() {
+    fn normalized_should_be_invariant_to_input_scale() {
         // Doubling all edges (adding each edge twice) should yield the same
         // normalized vector, proving scale invariance.
         let emb = OpEmbeddings::new_random(42);
@@ -485,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_acc_normalize_idempotent() {
+    fn normalized_should_be_idempotent() {
         // Normalizing twice should produce the same result.
         let emb = OpEmbeddings::new_random(42);
         let mut gacc = GraphAccumulator::new();
@@ -510,7 +510,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn graph_acc_remove_leaf_saturates_at_zero() {
+    fn remove_leaf_should_saturate_at_zero() {
         let mut acc = GraphAccumulator::new();
         acc.remove_leaf();
         assert_eq!(acc.node_count, 0, "node_count must not underflow");
@@ -555,7 +555,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn add_edge_at_depth_writes_the_exact_marginal_and_binding_values() {
+    fn add_edge_at_depth_should_write_the_exact_marginal_and_binding_values() {
         let emb = OpEmbeddings::new_random(7);
         let p = *emb.get(OpKind::Add);
         let c = *emb.get(OpKind::Mul);
@@ -585,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_edge_at_depth_subtracts_the_exact_marginal_and_binding_values() {
+    fn remove_edge_at_depth_should_subtract_the_exact_marginal_and_binding_values() {
         let emb = OpEmbeddings::new_random(11);
         let p = *emb.get(OpKind::Sub);
         let c = *emb.get(OpKind::Sqrt);
@@ -613,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn add_edge_at_depth_then_remove_edge_at_depth_returns_to_the_previous_state() {
+    fn add_edge_at_depth_then_remove_edge_at_depth_should_return_to_the_previous_state() {
         let emb = OpEmbeddings::new_random(11);
         let mut gacc = GraphAccumulator::new();
         gacc.values = distinct_baseline();
@@ -638,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_edge_matches_remove_edge_at_depth_one() {
+    fn remove_edge_should_match_remove_edge_at_depth_one() {
         let emb = OpEmbeddings::new_random(15);
         let mut gacc = GraphAccumulator::new();
         gacc.add_edge(&emb, OpKind::Add, OpKind::Mul);
@@ -656,7 +656,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn add_leaf_increments_node_count_by_exactly_one() {
+    fn add_leaf_should_increment_node_count_by_exactly_one() {
         let mut gacc = GraphAccumulator::new();
         gacc.node_count = 5;
         gacc.add_leaf();
@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_leaf_decrements_node_count_by_exactly_one_when_nonzero() {
+    fn remove_leaf_should_decrement_node_count_by_exactly_one_when_nonzero() {
         let mut gacc = GraphAccumulator::new();
         gacc.node_count = 5;
         gacc.remove_leaf();
@@ -676,7 +676,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn add_op_node_at_depth_increments_node_count_once_regardless_of_child_count() {
+    fn add_op_node_at_depth_should_increment_node_count_once_regardless_of_child_count() {
         let emb = OpEmbeddings::new_random(9);
         let mut gacc = GraphAccumulator::new();
         gacc.node_count = 2;
@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn add_op_node_at_depth_increments_node_count_once_even_with_zero_children() {
+    fn add_op_node_at_depth_should_increment_node_count_once_even_with_zero_children() {
         let emb = OpEmbeddings::new_random(9);
         let mut gacc = GraphAccumulator::new();
         gacc.node_count = 2;
@@ -712,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_op_node_at_depth_decrements_node_count_by_exactly_one() {
+    fn remove_op_node_at_depth_should_decrement_node_count_by_exactly_one() {
         let emb = OpEmbeddings::new_random(9);
         let mut gacc = GraphAccumulator::new();
         gacc.node_count = 5;
@@ -728,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn add_op_node_matches_add_op_node_at_depth_one() {
+    fn add_op_node_should_match_add_op_node_at_depth_one() {
         let emb = OpEmbeddings::new_random(9);
 
         let mut via_wrapper = GraphAccumulator::new();
@@ -747,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_op_node_matches_remove_op_node_at_depth_one_and_returns_to_zero() {
+    fn remove_op_node_should_match_remove_op_node_at_depth_one_and_return_to_zero() {
         let emb = OpEmbeddings::new_random(9);
 
         let mut via_wrapper = GraphAccumulator::new();
@@ -780,7 +780,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn add_2hop_edge_writes_the_exact_triple_product_into_the_2hop_section() {
+    fn add_2hop_edge_should_write_the_exact_triple_product_into_the_2hop_section() {
         let emb = OpEmbeddings::new_random(13);
         let gp = *emb.get(OpKind::Div);
         let p = shift1(emb.get(OpKind::Neg));
@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_2hop_edge_subtracts_the_exact_triple_product() {
+    fn remove_2hop_edge_should_subtract_the_exact_triple_product() {
         let emb = OpEmbeddings::new_random(13);
         let gp = *emb.get(OpKind::Div);
         let p = shift1(emb.get(OpKind::Neg));
@@ -826,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn add_2hop_edge_then_remove_2hop_edge_returns_to_the_previous_state() {
+    fn add_2hop_edge_then_remove_2hop_edge_should_return_to_the_previous_state() {
         let emb = OpEmbeddings::new_random(13);
         let mut gacc = GraphAccumulator::new();
         gacc.values = distinct_baseline();
@@ -850,7 +850,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn normalize_in_place_normalizes_the_2hop_section_when_populated() {
+    fn normalize_in_place_should_normalize_the_2hop_section_when_populated() {
         let emb = OpEmbeddings::new_random(21);
         let mut gacc = GraphAccumulator::new();
         gacc.add_2hop_edge(&emb, OpKind::Add, OpKind::Mul, OpKind::Var);
@@ -867,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_in_place_normalizes_a_section_whose_norm_is_exactly_the_guard_threshold() {
+    fn normalize_in_place_should_normalize_a_section_whose_norm_is_exactly_the_guard_threshold() {
         // `l2_normalize_section` skips a section when `norm < 1e-12`, so the
         // threshold itself must still normalize. A single populated lane makes
         // the section norm `sqrtf(x*x)`, which is exactly `x` for this value —
@@ -894,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_in_place_leaves_a_section_whose_norm_is_below_the_guard_threshold_untouched() {
+    fn normalize_in_place_should_leave_a_section_below_the_guard_threshold_untouched() {
         // The other side of the same boundary: strictly below 1e-12 the
         // section is left alone rather than amplified toward 1.0.
         const BELOW_THRESHOLD: f32 = 1e-13;

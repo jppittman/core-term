@@ -210,7 +210,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn guide_score_candidates_returns_one_finite_score_per_candidate() {
+    fn guide_score_candidates_should_return_one_finite_score_per_candidate() {
         let backbone = ExprNnue::new_random(1);
         let guide = Guide::new_random(backbone, 2);
 
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn guide_score_candidates_returns_empty_for_empty_candidates() {
+    fn guide_score_candidates_should_return_empty_for_empty_candidates() {
         let backbone = ExprNnue::new_random(1);
         let guide = Guide::new_random(backbone, 2);
         let graph = GraphSummary {
