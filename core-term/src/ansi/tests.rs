@@ -2266,6 +2266,40 @@ mod mutation_tests {
         );
     }
 
+    #[test]
+    fn osc_string_longer_than_the_length_limit_is_truncated_not_dropped() {
+        // Mirrors MAX_OSC_LEN in ansi/parser.rs. A hostile or buggy peer can send an
+        // unbounded OSC payload, so the parser caps it — but the command must still
+        // arrive, truncated, rather than being discarded or growing without bound.
+        const MAX_OSC_LEN: usize = 1024;
+
+        let mut input = b"\x1b]0;".to_vec();
+        input.extend_from_slice(&vec![b'x'; MAX_OSC_LEN * 2]);
+        input.push(0x07); // BEL terminates the string
+
+        let cmds = process_bytes(&input);
+        let Some(AnsiCommand::Osc(data)) = cmds.first() else {
+            panic!("an over-long OSC must still yield an Osc command; got {cmds:?}");
+        };
+        assert_eq!(
+            data.len(),
+            MAX_OSC_LEN,
+            "OSC payload must be capped at MAX_OSC_LEN (ansi/parser.rs)"
+        );
+    }
+
+    #[test]
+    fn osc_cancelled_by_can_does_not_leak_its_bytes_into_the_next_osc() {
+        // Cancelling must clear the string buffer, not merely return to ground:
+        // a retained buffer would prefix the *next* OSC's payload.
+        let cmds = process_bytes(b"\x1b]0;oldjunk\x18\x1b]1;newdata\x07");
+        assert_eq!(
+            cmds,
+            vec![AnsiCommand::Osc(b"1;newdata".to_vec())],
+            "the cancelled sequence's bytes must not appear in the next OSC's payload"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // CSI param overflow: u16 saturation at MAX
     // Mutation: removing checked_mul/checked_add would panic or wrap on overflow

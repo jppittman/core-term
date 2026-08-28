@@ -176,6 +176,34 @@ mod tests {
     }
 
     #[test]
+    fn pixels_to_cells_misses_when_only_one_axis_is_inside_the_padding() {
+        let layout = Layout {
+            cols: 80,
+            rows: 24,
+            cell_width_px: 10,
+            cell_height_px: 20,
+            padding_x: 5,
+            padding_y: 10,
+        };
+
+        // Both coordinates inside the padding is the easy case; each axis must also
+        // reject on its own, or dropping either bounds check still passes.
+        assert_eq!(
+            layout.pixels_to_cells(4, 10),
+            None,
+            "x inside padding, y past it"
+        );
+        assert_eq!(
+            layout.pixels_to_cells(5, 9),
+            None,
+            "y inside padding, x past it"
+        );
+
+        // The corner where both axes have just cleared their padding is a hit.
+        assert_eq!(layout.pixels_to_cells(5, 10), Some((0, 0)));
+    }
+
+    #[test]
     fn pixels_to_cells_out_of_bounds() {
         let layout = Layout {
             cols: 80,
