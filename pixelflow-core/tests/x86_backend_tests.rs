@@ -2,7 +2,7 @@
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use pixelflow_core::backend::x86::{F32x4, U32x4};
+    use pixelflow_core::backend::x86::{F32x4, Mask4, U32x4};
     use pixelflow_core::backend::{MaskOps, SimdOps, SimdU32Ops};
     use std::prelude::v1::*;
 
@@ -437,5 +437,79 @@ mod tests {
         // OR rather than written as a no-op shift.
         let expected: u32 = 255 | (127 << 16) | (255 << 24);
         assert_eq!(packed, [expected; 4]);
+    }
+
+    // ── Additional required-method coverage (from the 2026-08-19 audit) ────
+    //
+    // Operations the 08-22 pass did not reach: the comparison masks, the
+    // mask/float reinterpret pair, `from_slice`'s offset handling, `mul_add`,
+    // and the `U32x4` operator impls.
+
+    fn mask_bits(m: Mask4) -> [u32; 4] {
+        let mut out = [0.0f32; 4];
+        F32x4::mask_to_float(m).store(&mut out);
+        out.map(f32::to_bits)
+    }
+
+    #[test]
+    fn float_to_mask_should_reinterpret_a_nonzero_bit_pattern_as_a_true_mask() {
+        // An all-zero input would make `float_to_mask`'s real reinterpret and
+        // a `Default::default()` stand-in coincide (both all-zero) — use an
+        // all-ones pattern so they diverge.
+        let ones = F32x4::from_u32_bits(u32::MAX);
+        let mask = ones.float_to_mask();
+        assert!(mask.all());
+        assert_eq!(mask_bits(mask), [u32::MAX; 4]);
+    }
+
+    #[test]
+    fn cmp_le_ge_eq_and_ne_should_each_produce_a_distinct_comparison_mask() {
+        let a = F32x4::sequential(0.0); // [0, 1, 2, 3]
+        let b = F32x4::splat(2.0);
+        const T: u32 = u32::MAX;
+
+        assert_eq!(mask_bits(a.cmp_le(b)), [T, T, T, 0], "0,1,2 <= 2; 3 is not");
+        assert_eq!(
+            mask_bits(a.cmp_ge(b)),
+            [0, 0, T, T],
+            "2,3 >= 2; 0,1 are not"
+        );
+        assert_eq!(mask_bits(a.cmp_eq(b)), [0, 0, T, 0], "only lane 2 equals 2");
+        assert_eq!(
+            mask_bits(a.cmp_ne(b)),
+            [T, T, 0, T],
+            "every lane but 2 differs"
+        );
+    }
+
+    #[test]
+    fn from_slice_should_load_four_consecutive_values_starting_at_the_given_offset() {
+        let data = [7.0f32, 8.0, 9.0, 10.0, 11.0];
+        assert_eq!(lanes(F32x4::from_slice(&data[1..])), [8.0, 9.0, 10.0, 11.0]);
+    }
+
+    #[test]
+    fn mul_add_should_compute_self_times_b_plus_c() {
+        // self=2, b=3, c=4: `-`/`*` for `+`, and `+`/`/` for `*`, all disagree
+        // with the correct 10.0 at these operands.
+        let got = lanes(F32x4::splat(2.0).mul_add(F32x4::splat(3.0), F32x4::splat(4.0)));
+        assert_eq!(got, [10.0; 4]);
+    }
+
+    #[test]
+    fn u32x4_bitwise_operators_should_combine_lanes() {
+        let a = U32x4::splat(0b1100);
+        let b = U32x4::splat(0b1010);
+
+        assert_eq!(u32_lanes(a & b), [0b1000; 4]);
+        assert_eq!(u32_lanes(a | b), [0b1110; 4]);
+        assert_eq!(u32_lanes(!a), [!0b1100u32; 4]);
+    }
+
+    #[test]
+    fn u32x4_shift_operators_should_shift_every_lane() {
+        let v = U32x4::splat(0b1000);
+        assert_eq!(u32_lanes(v << 2), [0b10_0000; 4]);
+        assert_eq!(u32_lanes(v >> 2), [0b10; 4]);
     }
 }
