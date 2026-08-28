@@ -81,7 +81,7 @@ fn per_batch_frame(
             let mut x = _mm512_loadu_ps(seq.as_ptr());
             let yv = _mm512_set1_ps(y);
             let zero = _mm512_setzero_ps();
-            for chunk in row_out.chunks_exact_mut(LANES) {
+            for chunk in row_out.as_chunks_mut::<LANES>().0 {
                 _mm512_storeu_ps(chunk.as_mut_ptr(), f(x, yv, zero, zero));
                 x = _mm512_add_ps(x, step);
             }
@@ -93,7 +93,7 @@ fn per_batch_frame(
             let mut x = _mm256_loadu_ps(seq.as_ptr());
             let yv = _mm256_set1_ps(y);
             let zero = _mm256_setzero_ps();
-            for chunk in row_out.chunks_exact_mut(LANES) {
+            for chunk in row_out.as_chunks_mut::<LANES>().0 {
                 _mm256_storeu_ps(chunk.as_mut_ptr(), f(x, yv, zero, zero));
                 x = _mm256_add_ps(x, step);
             }
@@ -105,7 +105,7 @@ fn per_batch_frame(
             let mut x = _mm_loadu_ps(seq.as_ptr());
             let yv = _mm_set1_ps(y);
             let zero = _mm_setzero_ps();
-            for chunk in row_out.chunks_exact_mut(LANES) {
+            for chunk in row_out.as_chunks_mut::<LANES>().0 {
                 _mm_storeu_ps(chunk.as_mut_ptr(), f(x, yv, zero, zero));
                 x = _mm_add_ps(x, step);
             }
@@ -130,7 +130,7 @@ fn per_batch_frame(
             let mut x = vld1q_f32(seq.as_ptr());
             let y = vdupq_n_f32(row as f32 + 0.5);
             let row_out = &mut out[row * groups * LANES..][..groups * LANES];
-            for chunk in row_out.chunks_exact_mut(LANES) {
+            for chunk in row_out.as_chunks_mut::<LANES>().0 {
                 vst1q_f32(chunk.as_mut_ptr(), f(x, y, zero, zero));
                 x = vaddq_f32(x, step);
             }

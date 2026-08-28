@@ -409,6 +409,22 @@ mod tests {
     }
 
     #[test]
+    fn error_on_undefined_symbol_in_block_final_expression() {
+        // A block's final expression must still be analyzed for undefined
+        // symbols, not just its `let` statements.
+        let input = quote! { struct Test = |cx: f32| {
+            let dx = X - cx;
+            dx * undefined_var
+        }};
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("undefined symbol"), "{err}");
+    }
+
+    #[test]
     fn block_scoping() {
         let input = quote! {
             |cx: f32| {
@@ -448,6 +464,45 @@ mod tests {
     }
 
     #[test]
+    fn typo_suggestion_for_parameter_names_the_exact_match_at_the_two_char_diff_boundary() {
+        // "sigxb" differs from "sigma" in exactly 2 chars (m->x, a->b) — the
+        // inclusive boundary of the "similar enough to suggest" rule.
+        let input = quote! { struct Test = |sigma: f32| X - sigxb };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("did you mean 'sigma'"), "{err}");
+    }
+
+    #[test]
+    fn typo_suggestion_for_parameter_is_absent_past_the_two_char_diff_boundary() {
+        // "wigxo" differs from "sigma" in 3 chars — one past the boundary
+        // where a same-length typo is considered similar enough to suggest.
+        let input = quote! { struct Test = |sigma: f32| X - wigxo };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(!err.contains("did you mean"), "{err}");
+    }
+
+    #[test]
+    fn typo_suggestion_for_parameter_matches_case_insensitively_regardless_of_char_diff_count() {
+        // "GAMMA" differs from "gamma" in every character position
+        // case-sensitively, so only the case-insensitive fallback catches it.
+        let input = quote! { struct Test = |gamma: f32| X - GAMMA };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("did you mean 'gamma'"), "{err}");
+    }
+
+    #[test]
     fn error_on_unknown_method() {
         let input = quote! { |r: f32| X.unknownmethod() };
         let kernel = parse(input).unwrap();
@@ -468,6 +523,49 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("unknown method"));
+    }
+
+    #[test]
+    fn typo_suggestion_for_method_matches_case_insensitively() {
+        // "SQRT" differs from "sqrt" in every char position case-sensitively,
+        // so only the case-insensitive fallback catches it.
+        let input = quote! { || X.SQRT() };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("did you mean 'sqrt'"), "{err}");
+    }
+
+    #[test]
+    fn typo_suggestion_for_method_names_the_exact_match_at_the_two_char_diff_boundary() {
+        // "bba" differs from "abs" in exactly 2 chars (position 0: b vs a,
+        // position 2: a vs s; position 1 matches) and differs by 3 from
+        // every other same-length method name (add, sub, mul, div, neg,
+        // min, max, sin, cos, tan, exp, pow, shl, shr) — an unambiguous
+        // 2-char-diff match.
+        let input = quote! { || X.bba() };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("did you mean 'abs'"), "{err}");
+    }
+
+    #[test]
+    fn typo_suggestion_for_method_is_absent_when_no_same_length_method_is_close() {
+        // "qqq" shares a length with several 3-letter methods (sin, cos,
+        // tan, abs, neg) but differs from every one of them in all 3 chars —
+        // matching length alone must not be enough to suggest one.
+        let input = quote! { || X.qqq() };
+        let kernel = parse(input).unwrap();
+        let result = analyze(kernel);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(!err.contains("did you mean"), "{err}");
     }
 
     #[test]

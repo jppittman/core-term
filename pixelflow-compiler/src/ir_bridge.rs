@@ -822,6 +822,15 @@ mod expansion_derivative_tests {
     /// `Dwrt`-free, params round-tripped, and mathematically equivalent.
     /// Whether the output is also *cheaper* is a cost-model concern for the
     /// bench harness (`bench_extraction_3way` precedent), not a unit test.
+    ///
+    /// These tests build arenas by hand and call the private
+    /// `differentiate_in_optimizer` directly (STYLE.md "Test Public API"
+    /// exception): the claim under test is that this expansion-time pass
+    /// agrees numerically with the independent runtime `lower_dwrt` tier,
+    /// which is only checkable by comparing the two tiers' arena-level
+    /// output directly — the public `ast_to_runtime_arena` entry point only
+    /// exposes generated `TokenStream`, not the intermediate arena needed for
+    /// this differential check.
     fn assert_matches_runtime_tier(a: &ExprArena, root: ExprId, params: &[f32], pts: &[[f32; 4]]) {
         let Some((out, out_root)) = differentiate_in_optimizer(a, root) else {
             return; // fallback tier's job; nothing claimed, nothing to check
@@ -921,11 +930,11 @@ mod expansion_derivative_tests {
     /// No `Dwrt` -> nothing to do; the caller keeps the original arena (and
     /// the AST-level optimizer's existing output is not perturbed).
     #[test]
-    fn no_dwrt_is_untouched() {
+    fn differentiate_in_optimizer_returns_none_when_arena_has_no_dwrt() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let y = a.push_var(1);
-        let _root = a.push_binary(OpKind::Add, x, y);
-        assert!(differentiate_in_optimizer(&a, _root).is_none());
+        let root = a.push_binary(OpKind::Add, x, y);
+        assert!(differentiate_in_optimizer(&a, root).is_none());
     }
 }

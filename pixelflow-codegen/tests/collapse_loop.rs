@@ -143,7 +143,7 @@ fn run_per_batch(
     w: f32,
 ) {
     assert_eq!(out.len() % LANES, 0);
-    for (g, chunk) in out.chunks_exact_mut(LANES).enumerate() {
+    for (g, chunk) in out.as_chunks_mut::<LANES>().0.iter_mut().enumerate() {
         let base = x0 + (g * LANES) as f32;
         let seq: Vec<f32> = (0..LANES).map(|i| base + i as f32).collect();
 

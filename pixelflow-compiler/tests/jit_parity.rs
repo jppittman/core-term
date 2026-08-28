@@ -164,7 +164,7 @@ fn jit_sqrt_norm() {
 }
 
 #[test]
-fn jit_minmax() {
+fn jit_chained_max_then_min_matches_scalar_reference() {
     jit_truth!(
         "min_max",
         kernel_jit!(|| X.max(Y).min(Z)),
