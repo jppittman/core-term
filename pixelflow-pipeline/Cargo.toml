@@ -18,6 +18,10 @@ default = ["training"]
 # `[dev-dependencies]` feature does not reach them.
 training = ["pixelflow-search/std", "pixelflow-ir/oracle"]
 profiling = ["pprof"]
+# Pass-through to pixelflow-search's opt-in extraction-loop phase timers
+# (Round 2b extraction-overhead investigation). See
+# `pixelflow-search::egraph::profile` and `profile_extraction`'s bin doc.
+extraction-profile = ["pixelflow-search/extraction-profile"]
 
 [dependencies]
 pixelflow-codegen = { path = "../pixelflow-codegen" }
@@ -92,6 +96,13 @@ bench = false
 [[bin]]
 name = "bench_jit_compile_cost"
 path = "src/bin/bench_jit_compile_cost.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "profile_extraction"
+path = "src/bin/profile_extraction.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false

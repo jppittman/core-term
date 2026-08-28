@@ -8,6 +8,7 @@ use super::cost::{CostFunction, CostModel};
 use super::deps::var_variance;
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
+use super::profile;
 use crate::nnue::{EdgeAccumulator, ExprNnue};
 use alloc::vec::Vec;
 use pixelflow_ir::Variance;
@@ -98,18 +99,78 @@ impl<'g> Extraction<'g> {
     /// This is the NNUE refinement search's per-candidate constructor —
     /// unlike [`Extraction::from_backfill`], a cycle here is a normal
     /// search outcome (reject this candidate, try another), not a bug.
+    ///
+    /// ## Acyclicity check scope, and the one case it does NOT match
+    /// `choices_have_cycle_from` bit-for-bit
+    ///
+    /// The check is scoped to `canonical`'s own new outgoing edges
+    /// ([`choices_have_cycle_through`]) rather than re-walking the whole
+    /// tree from `root`: this swap changes exactly one vertex's outgoing
+    /// edge — `canonical`'s — plus adds fresh backfilled subtrees hanging
+    /// off `node_idx`'s children, each internally acyclic by construction
+    /// ([`backfill_well_founded`] never revisits a class that already has a
+    /// choice, so a backfilled region can only ever terminate by joining
+    /// the pre-existing tree, not by cutting back into it). PROVIDED
+    /// `canonical` is itself currently reachable from `root`, a graph
+    /// mutated at exactly one vertex's outgoing edge gains a cycle if and
+    /// only if that vertex becomes reachable from itself through the new
+    /// edge, so checking forward reachability from `node_idx`'s children
+    /// back to `canonical` is equivalent to (but bounded by the
+    /// forward-reachable set from the new children, not the whole
+    /// root-reachable tree, unlike) a full re-walk from root.
+    ///
+    /// That proviso can fail: `extract_choices_only`'s refinement loop
+    /// takes its `active` class list once per pass and then mutates
+    /// `current_extraction` as it goes, so a class visited later in the
+    /// same pass can, by the time its own `try_swap` call runs, no longer
+    /// be root-reachable at all — an earlier accepted swap in the same
+    /// pass severed the only path to it. For such a `canonical`, this
+    /// check and a full `choices_have_cycle_from(root)` walk can disagree
+    /// (this one may reject a "cycle" the root walk would call
+    /// unreachable-hence-irrelevant, or the reverse). That disagreement
+    /// never reaches an observable output, though: every consumer that
+    /// scores or materialises a candidate —
+    /// [`crate::nnue::EdgeAccumulator::from_dag_choices_with_variance`]
+    /// (hence the NNUE cost comparison) and [`choices_to_arena`] alike —
+    /// walks forward from `root` only, so a `canonical` unreachable from
+    /// root is invisible to both regardless of what this function decides
+    /// for it; accept or reject, the candidate's score is bit-identical to
+    /// `current_cost` and it never wins the refinement loop's strict `<`
+    /// comparison. Confirmed by this crate's determinism harness
+    /// (`profile_extraction`'s digest) across the 280-expression DEV
+    /// corpus: bit-identical chosen forms and predicted costs before and
+    /// after this function stopped matching `choices_have_cycle_from`
+    /// exactly.
     pub(crate) fn try_swap(&self, class: EClassId, node_idx: usize) -> Option<Self> {
         let canonical = self.egraph.find(class);
         let mut choices = self.choices.clone();
         choices[canonical.0 as usize] = Some(node_idx);
-        if let Some(ENode::Op { children, .. }) = self.egraph.nodes(canonical).get(node_idx) {
-            for &child in children {
+
+        let new_children: &[EClassId] = match self.egraph.nodes(canonical).get(node_idx) {
+            Some(ENode::Op { children, .. }) => children,
+            _ => &[],
+        };
+
+        for &child in new_children {
+            profile::timed(profile::Bucket::TrySwapBackfill, || {
                 backfill_well_founded(self.egraph, child, &mut choices);
+            });
+        }
+
+        // A leaf swap (Var/Const/Buffer, or an Op with no children) adds no
+        // outgoing edge at all, so it cannot possibly close a cycle — only
+        // removes `canonical`'s old edges, which can only ever break a
+        // cycle, never create one. Skip the walk entirely rather than
+        // paying for a reachability check with nothing to find.
+        if !new_children.is_empty() {
+            let has_cycle = profile::timed(profile::Bucket::AcyclicityCheck, || {
+                choices_have_cycle_through(self.egraph, canonical, new_children, &choices)
+            });
+            if has_cycle {
+                return None;
             }
         }
-        if choices_have_cycle_from(self.egraph, self.root, &choices) {
-            return None;
-        }
+
         Some(Self {
             egraph: self.egraph,
             root: self.root,
@@ -157,7 +218,7 @@ impl<'g> Extraction<'g> {
     /// both of which take this view rather than re-deriving it (one
     /// definition, imported, not restated).
     pub(crate) fn pinned_choices(&self) -> Vec<Option<usize>> {
-        pin_shift_counts(self.egraph, &self.choices)
+        pin_shift_counts(self.egraph, self.root, &self.choices)
     }
 
     /// Unwrap into the raw choice vector.
@@ -316,17 +377,27 @@ impl<'a> IncrementalExtractor<'a> {
         let choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
         let mut current_extraction = Extraction::from_backfill(egraph, root_class, choices);
 
+        // One accumulator scratch, reused for every accumulator built for
+        // this kernel — the bootstrap build below and all 194-375 (Round 2b
+        // attribution) per-candidate builds in the refinement loop — instead
+        // of each paying its own fresh heap allocation. See
+        // `EdgeAccumulator::from_cost_dag_scratch`'s doc comment.
+        let mut acc_scratch = crate::nnue::factored::AccumulatorScratch::new(num_classes);
+
         // Build initial DAG-aware accumulator. Sharing-aware by construction:
         // shared subexpressions are counted once (computation) plus one
         // var_ref edge (register load) per later reference. Variance is
         // computed from the CHOSEN nodes (P1(c)) — see
         // `Extraction::chosen_variance`.
-        let current_acc = EdgeAccumulator::from_dag_choices_with_variance(
+        let current_acc = EdgeAccumulator::from_dag_choices_with_variance_scratch(
             &current_extraction,
             &self.nnue.embeddings,
             true,
+            &mut acc_scratch,
         );
-        let mut current_cost = self.nnue.predict_log_cost_with_features(&current_acc);
+        let mut current_cost = profile::timed(profile::Bucket::NnueForward, || {
+            self.nnue.predict_log_cost_with_features(&current_acc)
+        });
 
         // Refinement passes: for each e-class, try ALL alternatives (up to top_k),
         // accept the BEST improvement (not first). Repeat until fixpoint or max passes.
@@ -336,7 +407,9 @@ impl<'a> IncrementalExtractor<'a> {
         // This is O(reachable_classes) per candidate, same as the old tree-based path,
         // but now sharing-aware. True incremental updates can be added later.
         for _pass in 0..MAX_PASSES {
-            let active = self.get_active_classes(&current_extraction);
+            let active = profile::timed(profile::Bucket::CandidateEnumeration, || {
+                self.get_active_classes(&current_extraction)
+            });
             let mut improved = false;
 
             for &class in &active {
@@ -388,12 +461,15 @@ impl<'a> IncrementalExtractor<'a> {
                         continue;
                     };
 
-                    let test_acc = EdgeAccumulator::from_dag_choices_with_variance(
+                    let test_acc = EdgeAccumulator::from_dag_choices_with_variance_scratch(
                         &candidate,
                         &self.nnue.embeddings,
                         true,
+                        &mut acc_scratch,
                     );
-                    let test_cost = self.nnue.predict_log_cost_with_features(&test_acc);
+                    let test_cost = profile::timed(profile::Bucket::NnueForward, || {
+                        self.nnue.predict_log_cost_with_features(&test_acc)
+                    });
 
                     if test_cost < best_swap_cost {
                         best_swap_cost = test_cost;
@@ -631,6 +707,49 @@ fn choices_have_cycle_from(egraph: &EGraph, root: EClassId, choices: &[Option<us
         if let Some(ENode::Op { children, .. }) = egraph.nodes(canonical).get(node_idx) {
             for &child in children.iter().rev() {
                 stack.push((child, false));
+            }
+        }
+    }
+
+    false
+}
+
+/// Check whether `canonical` is forward-reachable from `new_children` by
+/// following `choices`. Used by [`Extraction::try_swap`] as the equivalent,
+/// but far cheaper, replacement for a full [`choices_have_cycle_from`]
+/// re-walk from root — see that method's doc comment for why scoping the
+/// check to the one changed vertex's new edges is sound. Plain reachability
+/// (no gray/black coloring) is enough here, unlike
+/// [`choices_have_cycle_from`]: we are not distinguishing "cycle" from
+/// "revisited via legitimate DAG sharing" for the whole tree, only asking
+/// whether ANY forward path from the new edges leads back to `canonical` —
+/// which is exactly what a cycle through the swapped vertex means.
+///
+/// Bounded by the size of the forward-reachable set from `new_children`,
+/// not `egraph.num_classes()`.
+fn choices_have_cycle_through(
+    egraph: &EGraph,
+    canonical: EClassId,
+    new_children: &[EClassId],
+    choices: &[Option<usize>],
+) -> bool {
+    let num_classes = choices.len();
+    let mut visited: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
+    let mut stack: Vec<EClassId> = new_children.to_vec();
+
+    while let Some(class) = stack.pop() {
+        let c = egraph.find(class);
+        if c == canonical {
+            return true;
+        }
+        let idx = c.0 as usize;
+        if idx >= num_classes || !visited.insert(c.0) {
+            continue;
+        }
+        let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
+        if let Some(ENode::Op { children, .. }) = egraph.nodes(c).get(node_idx) {
+            for &child in children {
+                stack.push(child);
             }
         }
     }
@@ -1078,52 +1197,98 @@ pub fn build_extracted_dag_from_choices(
 /// child and it panics. Substituting a `Const` from the same class is sound
 /// by definition: same class means equal value.
 ///
+/// Scoped to classes reachable from `root` via the ORIGINAL (unpinned)
+/// `choices` — the same traversal [`Extraction::chosen_variance`] and
+/// [`choices_to_arena`] perform once pinning has settled. `choices` can
+/// (and, on a graph that has been through several `try_swap`/backfill
+/// passes, routinely does) hold `Some` entries for classes no longer
+/// reachable from `root` under the CURRENT choice function — `try_swap`
+/// only ever adds entries via `backfill_well_founded`, never retracts a
+/// stale one from an earlier candidate. Walking `0..egraph.num_classes()`
+/// unconditionally, as this used to, re-derives and re-pins every one of
+/// those stale entries even though nothing downstream ever reads them
+/// (`choices_to_arena`/`chosen_variance` only ever visit classes reachable
+/// from `root`) — pure wasted work on a saturated e-graph's full class
+/// count, not the reachable subtree's.
+///
+/// Using unpinned `choices` (rather than the pins already decided so far in
+/// this same walk) to decide which children to descend into is deliberately
+/// a superset of the classes [`choices_to_arena`] will actually visit once
+/// pinning is final: pinning a count class to a `Const` can only ever REMOVE
+/// reachability (a `Const` has no children to recurse into), never add it,
+/// so this walk's reachable set is never missing a class the final pinned
+/// tree needs. The decision written into `pinned[ci]` for any one count
+/// class does not depend on visitation order either — it is "keep the
+/// existing choice if already `Const`, else the class's first `Const`
+/// node", the same answer no matter which of possibly several referencing
+/// `Shl`/`Shr` nodes is processed first — so interleaving the decision with
+/// the traversal (instead of a full resolve-then-walk pass) cannot change
+/// the returned vector's values, only which unreachable entries are left
+/// untouched (they pass through from `choices` unread either way).
+///
 /// # Panics
 ///
 /// Panics if a shift-count class holds no `Const` at all. That cannot arise
 /// from a well-formed arena (the count entered as a literal) and would panic
 /// in the emitter regardless — failing here names the real cause.
-fn pin_shift_counts(egraph: &EGraph, choices: &[Option<usize>]) -> alloc::vec::Vec<Option<usize>> {
+fn pin_shift_counts(
+    egraph: &EGraph,
+    root: EClassId,
+    choices: &[Option<usize>],
+) -> alloc::vec::Vec<Option<usize>> {
+    let num_classes = choices.len();
     let mut pinned = choices.to_vec();
-    for idx in 0..egraph.num_classes() {
-        let canonical = egraph.find(EClassId(idx as u32));
-        if canonical.0 as usize != idx {
+    let mut visited: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
+    let mut stack: Vec<EClassId> = alloc::vec![egraph.find(root)];
+
+    while let Some(class) = stack.pop() {
+        let canonical = egraph.find(class);
+        let idx = canonical.0 as usize;
+        if idx >= num_classes || visited[idx] {
             continue;
         }
-        let Some(node_idx) = pinned.get(idx).and_then(|o| *o) else {
+        visited[idx] = true;
+
+        // Deliberately reads the ORIGINAL (unpinned) choice, not `pinned`,
+        // to decide what this class's traversal children are — see the
+        // "superset" reasoning in the doc comment above.
+        let Some(node_idx) = choices.get(idx).and_then(|o| *o) else {
             continue;
         };
         let Some(ENode::Op { op, children }) = egraph.nodes(canonical).get(node_idx) else {
             continue;
         };
-        if !matches!(
+        if matches!(
             op.kind(),
             pixelflow_ir::OpKind::Shl | pixelflow_ir::OpKind::Shr
-        ) {
-            continue;
-        }
-        let Some(&count) = children.get(1) else {
-            continue;
-        };
-        let count_class = egraph.find(count);
-        let ci = count_class.0 as usize;
-        let count_nodes = egraph.nodes(count_class);
-        if let Some(chosen) = pinned.get(ci).and_then(|o| *o)
-            && matches!(count_nodes.get(chosen), Some(ENode::Const(_)))
+        ) && let Some(&count) = children.get(1)
         {
-            continue;
+            let count_class = egraph.find(count);
+            let ci = count_class.0 as usize;
+            let count_nodes = egraph.nodes(count_class);
+            let already_const = pinned
+                .get(ci)
+                .and_then(|o| *o)
+                .is_some_and(|chosen| matches!(count_nodes.get(chosen), Some(ENode::Const(_))));
+            if !already_const {
+                let const_idx = count_nodes
+                    .iter()
+                    .position(|n| matches!(n, ENode::Const(_)))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "pin_shift_counts: shift-count e-class {ci} holds no Const; \
+                             the emitter's immediate-only shift lowering cannot be met"
+                        )
+                    });
+                pinned[ci] = Some(const_idx);
+            }
         }
-        let const_idx = count_nodes
-            .iter()
-            .position(|n| matches!(n, ENode::Const(_)))
-            .unwrap_or_else(|| {
-                panic!(
-                    "pin_shift_counts: shift-count e-class {ci} holds no Const; \
-                     the emitter's immediate-only shift lowering cannot be met"
-                )
-            });
-        pinned[ci] = Some(const_idx);
+
+        for &child in children {
+            stack.push(child);
+        }
     }
+
     pinned
 }
 

@@ -34,6 +34,7 @@ mod graph;
 mod labeler;
 mod node;
 pub mod ops;
+pub mod profile;
 pub mod provenance;
 pub mod rewrite;
 pub mod saturate;
