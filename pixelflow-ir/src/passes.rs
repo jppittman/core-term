@@ -1411,7 +1411,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_var_is_one_or_zero() {
+    fn differentiating_a_variable_gives_one_for_itself_and_zero_for_the_others() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let (out, root) = lowered_derivative(&a, x, 0);
@@ -1432,7 +1432,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_sqrt_sum_of_squares() {
+    fn the_sqrt_rule_composes_with_the_chain_rule_over_a_sum_of_squares() {
         // d/dx √(x² + y²) = x / √(x² + y²) — the font-SDF core.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1453,7 +1453,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_min_max_pick_branch_derivative() {
+    fn min_and_max_take_the_derivative_of_whichever_branch_they_select() {
         // d/dx min(x·2, y·3) is 2 where x·2 < y·3, else 0 (and dually for max).
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1497,7 +1497,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_select_blends_branch_derivatives() {
+    fn select_blends_its_branches_derivatives_by_the_same_mask() {
         // d/dx select(y > 0, x·x, x·5) = 2x above the axis, 5 below.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1522,7 +1522,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_clamp_saturates() {
+    fn a_clamped_expression_has_zero_derivative_outside_its_bounds() {
         // d/dx clamp(x·x, 0, 10): 2x inside, 0 once saturated. `clamp` is
         // library, so this is the min/max composition and the derivative comes
         // from the min/max rules — no clamp-specific rule exists any more.
@@ -1547,7 +1547,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_mul_add_matches_product_rule() {
+    fn mul_add_differentiates_by_the_product_rule_plus_the_addends_derivative() {
         // d/dx (x·y + x) = y + 1.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1560,7 +1560,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_transcendentals() {
+    fn sin_exp_and_ln_differentiate_to_their_own_rules_under_composition() {
         // d/dx sin(x) = cos(x); d/dx exp(x·x) = 2x·exp(x²); d/dx ln(x) = 1/x.
         //
         // The expected value is built as an arena expression and evaluated the
@@ -1685,7 +1685,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_neg_and_recip() {
+    fn neg_flips_the_sign_of_its_operands_derivative_and_recip_squares_the_denominator() {
         // d/dx -(x·x) = -2x.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1707,7 +1707,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_abs_is_the_sign() {
+    fn abs_differentiates_to_the_sign_of_its_operand() {
         // d/dx |x| = x/|x| — +1 above zero, -1 below.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1726,7 +1726,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_rsqrt() {
+    fn rsqrt_differentiates_to_minus_half_x_to_the_negative_three_halves() {
         // d/dx x^(-1/2) = -0.5 · x^(-3/2).
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1740,10 +1740,10 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_cos_tan_asin_acos_atan() {
+    fn the_remaining_trig_and_inverse_trig_rules_match_their_closed_forms() {
         // Expected values for the transcendental cases are built as arena
         // expressions and evaluated the same way as the derivative under
-        // test, NOT taken from host libm — see `d_transcendentals` for why:
+        // test, NOT taken from host libm — see `sin_exp_and_ln_differentiate_to_their_own_rules_under_composition` for why:
         // it isolates the chain-rule from the polynomial-approximation error.
         let pt = [0.4f32, 0.0, 0.0, 0.0];
 
@@ -1798,7 +1798,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_exp2_log2_log10() {
+    fn the_base_two_and_base_ten_exponential_and_log_rules_carry_their_own_constants() {
         // d/dx 2^x = 2^x · ln2.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1837,7 +1837,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_sub_and_div() {
+    fn sub_negates_its_right_operands_derivative_and_div_follows_the_quotient_rule() {
         // d/dx (x·x - x) = 2x - 1. Both operands must depend on x: with a
         // constant-in-x right operand `db` is zero, and `da - db` and
         // `da + db` agree — the sign of Sub's right term would go unpinned.
@@ -1866,7 +1866,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_atan2_and_pow() {
+    fn atan2_and_pow_differentiate_through_both_of_their_operands() {
         // d/dX atan2(Y, X) = (X·dY - Y·dX)/(X²+Y²) = -Y/(X²+Y²), since Y does
         // not depend on X. `Atan2`'s children are (y, x), matching `f32::atan2`.
         let mut a = ExprArena::new();
@@ -1918,17 +1918,102 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_raw_comparison_is_zero() {
+    fn every_unary_rule_multiplies_by_its_operands_derivative() {
+        // Each rule above applies its op to `Var(0)` directly, where the chain
+        // rule's `da` factor is exactly 1 — so a rule that dropped or miswired
+        // `da` would still pass every one of them. Here each op wraps `x·x`,
+        // whose derivative is `2x`, which makes that factor observable.
+        //
+        // The oracle is the same rule evaluated one level up: `d/du f(u)` at
+        // `u = x²`, times `2x`. That deliberately does not re-derive f' by
+        // hand — this test is about the chain rule's factor, and reusing the
+        // rule for `f'` keeps a polynomial's accuracy out of the comparison
+        // exactly as `sin_exp_and_ln_differentiate_to_their_own_rules_under_composition` explains.
+        //
+        // `x = 0.6` puts `x² = 0.36` inside every domain at once: within
+        // [-1, 1] for Asin/Acos, strictly positive for the logs, and nonzero
+        // for Recip/Rsqrt.
+        const X: f32 = 0.6;
+        let outer = [X, 0.0, 0.0, 0.0];
+        let inner = [X * X, 0.0, 0.0, 0.0];
+
+        for op in [
+            OpKind::Sin,
+            OpKind::Cos,
+            OpKind::Tan,
+            OpKind::Asin,
+            OpKind::Acos,
+            OpKind::Atan,
+            OpKind::Exp,
+            OpKind::Exp2,
+            OpKind::Ln,
+            OpKind::Log2,
+            OpKind::Log10,
+            OpKind::Sqrt,
+            OpKind::Rsqrt,
+            OpKind::Recip,
+            OpKind::Neg,
+            OpKind::Abs,
+        ] {
+            // d/dx f(x²)
+            let mut composed = ExprArena::new();
+            let x = composed.push_var(0);
+            let xx = composed.push_binary(OpKind::Mul, x, x);
+            let e = composed.push_unary(op, xx);
+            let (out, root) = lowered_derivative(&composed, e, 0);
+            let got = eval(&out, root, &outer);
+
+            // f'(u) at u = x², from the same rule with a unit-derivative
+            // operand — the case the tests above already cover.
+            let mut bare = ExprArena::new();
+            let u = bare.push_var(0);
+            let e = bare.push_unary(op, u);
+            let (out, root) = lowered_derivative(&bare, e, 0);
+            let want = eval(&out, root, &inner) * 2.0 * X;
+
+            // Guard against a vacuous comparison: if `f'(x²)·2x` happened to
+            // land on zero, dropping `da` entirely would also produce zero.
+            assert!(
+                want.abs() > 1e-3,
+                "{op:?}: oracle {want} is too near zero at x={X} to distinguish \
+                 a present chain-rule factor from a missing one"
+            );
+            assert_close(got, want, &outer);
+        }
+    }
+
+    #[test]
+    fn a_raw_comparison_of_any_kind_differentiates_to_zero() {
         // A bare comparison (not wrapped in a Select) is a step function:
         // zero derivative, and — unlike an op with no rule at all —
         // `lower_dwrt` must succeed rather than error.
-        let mut a = ExprArena::new();
-        let x = a.push_var(0);
-        let y = a.push_var(1);
-        let e = a.push_binary(OpKind::Lt, x, y);
-        let (out, root) = lowered_derivative(&a, e, 0);
-        let p = [1.0f32, 2.0, 0.0, 0.0];
-        assert_close(eval(&out, root, &p), 0.0, &p);
+        //
+        // All six are separate alternatives in `diff_node`'s and
+        // `push_deriv_children`'s grouped matches, so covering only `Lt` would
+        // let a dropped or misrouted arm for any of the other five through.
+        for op in [
+            OpKind::Lt,
+            OpKind::Le,
+            OpKind::Gt,
+            OpKind::Ge,
+            OpKind::Eq,
+            OpKind::Ne,
+        ] {
+            let mut a = ExprArena::new();
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let e = a.push_binary(op, x, y);
+            let (out, root) = lowered_derivative(&a, e, 0);
+            // Both orderings and equality, so no arm can pass by accident of
+            // the operands it was handed.
+            for p in &[
+                [1.0f32, 2.0, 0.0, 0.0],
+                [2.0f32, 1.0, 0.0, 0.0],
+                [1.0f32, 1.0, 0.0, 0.0],
+            ] {
+                assert_close(eval(&out, root, p), 0.0, p);
+            }
+        }
     }
 
     #[test]
@@ -2093,7 +2178,7 @@ mod dwrt_tests {
     /// exact message everywhere below so a deleted specific-op arm — which
     /// falls through to the generic one — is observable.
     #[test]
-    fn dwrt_refuses_integer_domain_and_raw_memory_ops() {
+    fn lower_dwrt_refuses_integer_domain_and_raw_memory_ops() {
         const BOUND_MEMORY: &str = "lower_dwrt: cannot differentiate a bound-memory read";
         const INT_BIT: &str = "lower_dwrt: cannot differentiate integer/bit-manipulation ops";
 
@@ -2121,17 +2206,47 @@ mod dwrt_tests {
             Ok(_) => panic!("expected {INT_BIT:?}"),
         }
 
-        // IAdd/Shl/Shr/BitAnd/BitOr: integer/bit-manipulation primitives, at
-        // the binary-op level.
+        // IntToFloat, the other half of the unary integer-domain arm. Wrapped
+        // around a Gather for the same reason as TruncToInt above.
         let mut a = ExprArena::new();
-        let x = a.push_var(0);
-        let y = a.push_var(1);
-        let e = a.push_binary(OpKind::IAdd, x, y);
+        let b = a.declare_buffer(BufferDecl {
+            id: BufferIdentity::mint(),
+            width: 2,
+            height: 1,
+        });
+        let gx = a.push_var(0);
+        let zero = a.push_const(0.0);
+        let g = a.push_gather(b, gx, zero);
+        let e = a.push_unary(OpKind::IntToFloat, g);
         let v0 = a.push_const(0.0);
         let root = a.push_binary(OpKind::Dwrt, e, v0);
         match lower_dwrt_owned(&a, root) {
             Err(msg) => assert_eq!(msg, INT_BIT),
             Ok(_) => panic!("expected {INT_BIT:?}"),
+        }
+
+        // IAdd/Shl/Shr/BitAnd/BitOr: integer/bit-manipulation primitives, at
+        // the binary-op level. Each is its own alternative in the grouped arm,
+        // so testing only `IAdd` would let any of the other four fall through
+        // to the generic per-arity fallback — a different message, or worse, a
+        // derivative — while this test still passed.
+        for op in [
+            OpKind::IAdd,
+            OpKind::Shl,
+            OpKind::Shr,
+            OpKind::BitAnd,
+            OpKind::BitOr,
+        ] {
+            let mut a = ExprArena::new();
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let e = a.push_binary(op, x, y);
+            let v0 = a.push_const(0.0);
+            let root = a.push_binary(OpKind::Dwrt, e, v0);
+            match lower_dwrt_owned(&a, root) {
+                Err(msg) => assert_eq!(msg, INT_BIT, "for {op:?}"),
+                Ok(_) => panic!("expected {INT_BIT:?} for {op:?}"),
+            }
         }
 
         // A bare Gather (bound-memory read) cannot be differentiated, and
@@ -2171,7 +2286,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_floor_ceil_round_are_zero_and_never_touch_the_operand() {
+    fn floor_ceil_and_round_differentiate_to_zero_without_touching_their_operand() {
         // Floor/Ceil/Round are step functions: zero derivative, and — unlike
         // every other unary rule — the rule never reads the operand's own
         // derivative. Wrapping a Gather (itself undifferentiable) proves
@@ -2345,6 +2460,19 @@ mod dwrt_tests {
         let y = a.push_var(1);
         let z = a.push_const(0.0);
         let root = a.push_ternary(OpKind::Dwrt, x, y, z);
+        match lower_dwrt_owned(&a, root) {
+            Err(msg) => assert_eq!(msg, MALFORMED),
+            Ok(_) => panic!("expected {MALFORMED:?}"),
+        }
+
+        // `Nary` is its own alternative in the malformed-shape matcher, and
+        // `push_nary` can build one — so without this case, removing that
+        // alternative would leave a malformed `Dwrt` reachable while the unary
+        // and ternary assertions above still passed.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let root = a.push_nary(OpKind::Dwrt, &[x, y]);
         match lower_dwrt_owned(&a, root) {
             Err(msg) => assert_eq!(msg, MALFORMED),
             Ok(_) => panic!("expected {MALFORMED:?}"),
