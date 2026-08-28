@@ -202,6 +202,12 @@ These points are particularly relevant when working with or generating code usin
 
 1.  **Test Public API:** Unit tests (`#[test]`) should primarily focus on testing the public/exported API of a module or crate against its documented contract. Testing internal implementation details can make tests brittle and harder to refactor.
 
+2.  **Descriptive Names — the "it should" Test:** A test function's name should read as a complete, comprehensible sentence once you mentally prefix it with "it should". Reading only the name should tell you what behavior is broken if the test fails, without opening the test body.
+
+    * **Bad:** `test1`, `min_max`, `handles_edge_case`
+    * **Good:** `render_letter_when_it_receives_letter_keypress` — reads as "it should render letter when it receives letter keypress".
+    * **Good:** `push_reduce_should_panic_when_the_combiner_is_not_a_monoid_op` — already a complete sentence on its own; the file-local convention of spelling out `_should_` explicitly is an acceptable variant of the same rule.
+
 ## Flexibility
 
 1.  **Break Rules Sensibly:** These are guidelines, not immutable laws. If strictly adhering to a rule would result in code that is significantly more complex, less readable, or otherwise detrimental, use your judgment and break the rule. If you do, consider leaving a brief `//` comment explaining *why* the rule was broken in this specific instance.

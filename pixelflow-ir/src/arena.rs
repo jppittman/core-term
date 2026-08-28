@@ -1302,6 +1302,22 @@ mod tests {
         let _ = arena.push_buffer(BufferId(0));
     }
 
+    #[test]
+    #[should_panic(expected = "is not a valid reduction combiner")]
+    fn push_reduce_should_panic_when_the_combiner_is_not_a_monoid_op() {
+        let mut arena = ExprArena::new();
+        let body = arena.push_var(4);
+        let _ = arena.push_reduce(OpKind::Sin, 4, 4, body);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn push_reduce_should_panic_when_the_reduce_var_is_outside_4_to_8() {
+        let mut arena = ExprArena::new();
+        let body = arena.push_var(0);
+        let _ = arena.push_reduce(OpKind::Add, 3, 4, body);
+    }
+
     // 8. test_nary
     #[test]
     fn nary() {

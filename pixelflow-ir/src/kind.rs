@@ -10,10 +10,66 @@
 use crate::traits::EmitStyle;
 use core::ops::{Index, IndexMut};
 
-/// Unified enumeration of all IR operations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum OpKind {
+/// The op table: the single place an operation is declared.
+///
+/// The enum, the roster, the count and both directions of the numbering are
+/// all generated from this one list, so they cannot disagree and none of them
+/// can be forgotten. Adding an operation is adding a line here; there is no
+/// second place to update and therefore no second place to get wrong.
+///
+/// A macro rather than four declarations kept in step by a check, because a
+/// check can only visit the variants something hands it: a variant missing
+/// from the roster is exactly the one it never sees, and its absence is
+/// therefore invisible. Generating all four removes that possibility instead
+/// of testing for it.
+///
+/// The designs this replaced, and what each got wrong, are in
+/// `docs/designs/opkind-numbering-is-private.md` §4.
+macro_rules! op_table {
+    ($( $(#[$attr:meta])* $name:ident = $code:literal, )+) => {
+        /// Unified enumeration of all IR operations.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(u8)]
+        pub enum OpKind {
+            $( $(#[$attr])* $name = $code, )+
+        }
+
+        impl OpKind {
+            /// Total number of operations.
+            ///
+            /// Generated from the table, so it grows with it.
+            pub(crate) const COUNT: usize = [$( stringify!($name), )+].len();
+
+            /// Every op, in [`OpKind::index`] order.
+            ///
+            /// Generated from the table; [`OpKind::all`] is the public way in.
+            pub(crate) const ALL: [Self; Self::COUNT] = [$( Self::$name, )+];
+
+            /// This op's slot number — the subscript [`OpMap`] uses, and
+            /// nothing else.
+            ///
+            /// Crate-private on purpose. It is not an opcode, not a wire byte,
+            /// and carries no promise outside: it exists so a per-op table has
+            /// somewhere to put things. Code that needs an op in bytes wants
+            /// [`OpKind::marshal`], whose encoding this crate may change.
+            #[inline]
+            #[must_use]
+            pub(crate) const fn index(self) -> usize {
+                match self { $( Self::$name => $code, )+ }
+            }
+
+            /// Inverse of [`OpKind::index`]. `None` for any integer that names
+            /// no op — no `unsafe`, so an unnamed integer cannot be conjured
+            /// into a variant that does not exist.
+            #[must_use]
+            pub(crate) const fn from_index(idx: usize) -> Option<Self> {
+                match idx { $( $code => Some(Self::$name), )+ _ => None }
+            }
+        }
+    };
+}
+
+op_table! {
     // --- Basic Arithmetic ---
     Var = 0,
     Const = 1,
@@ -123,9 +179,6 @@ pub enum OpKind {
 }
 
 impl OpKind {
-    /// Total number of operations.
-    pub const COUNT: usize = 50;
-
     /// Monoid identity for an op usable as a reduction combiner
     /// (`Add`→0, `Mul`→1, `Min`→+∞, `Max`→−∞). `None` if `self` is not a valid
     /// combiner.
@@ -284,34 +337,13 @@ impl OpKind {
         self.monoid_identity().is_some()
     }
 
-    /// Convert to array index. Dense over `0..COUNT`, so `[T; OpKind::COUNT]`
-    /// indexed by this is total — see [`OpKind::from_index`].
-    #[inline]
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self as usize
-    }
-
     /// Every op, in [`OpKind::index`] order.
     ///
     /// Prefer this to walking `0..COUNT` and calling [`OpKind::from_index`] —
     /// that spelling is why the three ops sitting past the old discriminant
     /// gaps were never visited by any table-filling loop.
     pub fn all() -> impl Iterator<Item = Self> + Clone {
-        (0..Self::COUNT).map(|i| Self::from_index(i).expect("index_is_dense_and_total"))
-    }
-
-    /// Convert index to `OpKind`. Inverse of [`OpKind::index`].
-    #[must_use]
-    pub fn from_index(idx: usize) -> Option<Self> {
-        if idx >= Self::COUNT {
-            return None;
-        }
-        // SAFETY: `OpKind` is `repr(u8)` with discriminants assigned densely
-        // over `0..COUNT`, so every value passing the bound above names a
-        // variant. `index_is_dense_and_total` is what keeps that true — it
-        // fails the moment a discriminant is skipped or `COUNT` drifts.
-        Some(unsafe { core::mem::transmute::<u8, Self>(idx as u8) })
+        Self::ALL.into_iter()
     }
 
     /// Get the arity of the operation.
@@ -681,8 +713,6 @@ impl OpKind {
         }
     }
 
-    // NOTE: KNOWN_METHODS was removed - now derived from ALL_OPS via known_method_names()
-
     /// Evaluate a unary operation on a constant argument.
     ///
     /// Returns `None` for non-unary operations or operations that can't be
@@ -849,6 +879,107 @@ impl OpKind {
     }
 }
 
+// `op_table!` makes the enum, the roster, the count and both directions agree
+// by generating them from one list — but it takes the numbers on faith. It
+// cannot tell whether the numbers written there are dense.
+//
+// That is what this checks. Give an entry a number that skips one (`Const = 5`
+// after `Var = 0`) and every generated item is still internally consistent,
+// while `ALL[1]` no longer sits at index 1 — a per-op table would then have a
+// slot nothing reaches, and the ops past the gap would run off its end. Which
+// is the original bug, and the reason `COUNT` counts entries rather than
+// naming the largest number.
+//
+// Duplicates need no help here: two entries sharing a number is E0081 on the
+// discriminants before this block ever runs.
+const _: () = {
+    let mut i = 0;
+    while i < OpKind::COUNT {
+        let op = OpKind::ALL[i];
+        assert!(op.index() == i, "OpKind::ALL is out of index() order");
+        assert!(op as usize == i, "discriminant disagrees with index()");
+        match OpKind::from_index(i) {
+            Some(back) => assert!(back.index() == i, "from_index is not index()'s inverse"),
+            None => panic!("from_index has a gap inside 0..COUNT"),
+        }
+        i += 1;
+    }
+    assert!(
+        OpKind::from_index(OpKind::COUNT).is_none(),
+        "from_index answers past COUNT"
+    );
+};
+
+// ============================================================================
+// Marshalling
+// ============================================================================
+
+/// An [`OpKind`] in transit — the form it takes in a byte stream.
+///
+/// **The bytes are this crate's business, not yours.** What is promised is the
+/// round trip: [`OpKind::unmarshal`] undoes [`OpKind::marshal`] for every op,
+/// and [`OpCode::SIZE`] is however wide that happens to be right now. What is
+/// *not* promised is which value any op encodes to, that the value is stable
+/// across releases, or that `SIZE` stays 1. Persisted data must therefore
+/// carry a format version and refuse anything it does not recognise, the way
+/// the training corpus does — a stale file has to fail loudly rather than
+/// decode into the wrong ops.
+///
+/// Handing out the table subscript instead would leak: a consumer that writes
+/// `index()` into its own format has made this crate's private numbering part
+/// of that format, and owes it a version bump for a change it cannot see.
+/// See `docs/designs/opkind-numbering-is-private.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OpCode(u8);
+
+impl OpCode {
+    /// Width of an encoded op, in bytes.
+    ///
+    /// A `const`, not a literal, so that widening the encoding is a
+    /// recompile at every call site rather than a silent truncation.
+    pub const SIZE: usize = 1;
+
+    /// The encoded bytes, to hand to a writer.
+    #[must_use]
+    pub const fn to_bytes(self) -> [u8; Self::SIZE] {
+        [self.0]
+    }
+
+    /// Rebuild from bytes previously produced by [`OpCode::to_bytes`].
+    ///
+    /// Any byte is accepted here; whether it names an op is
+    /// [`OpKind::unmarshal`]'s answer.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; Self::SIZE]) -> Self {
+        Self(bytes[0])
+    }
+}
+
+impl OpKind {
+    /// Encode for transmission or storage. See [`OpCode`].
+    #[must_use]
+    pub const fn marshal(self) -> OpCode {
+        // The subscript is a convenient encoding today. Nothing outside may
+        // depend on that staying true, which is the whole point of `OpCode`.
+        OpCode(self.index() as u8)
+    }
+
+    /// Decode. `None` if the code names no op — which is what a truncated,
+    /// corrupt, or stale-format stream looks like from in here.
+    #[must_use]
+    pub const fn unmarshal(code: OpCode) -> Option<Self> {
+        Self::from_index(code.0 as usize)
+    }
+}
+
+// `marshal` narrows the subscript to one byte. That is sound only while the
+// op set fits in a byte, and it would otherwise wrap silently — so it is
+// checked here rather than left to whoever adds the 257th op.
+const _: () = assert!(
+    OpKind::COUNT <= u8::MAX as usize + 1,
+    "op set outgrew OpCode's width: widen OpCode::SIZE"
+);
+
 // ============================================================================
 // OpMap
 // ============================================================================
@@ -883,23 +1014,25 @@ pub struct OpMap<T> {
 }
 
 impl<T> OpMap<T> {
+    /// Number of slots — one per op.
+    ///
+    /// This is the public spelling of "how many ops are there", for sizing
+    /// things built alongside a per-op table. It says nothing about which
+    /// number any particular op sits at.
+    pub const LEN: usize = OpKind::COUNT;
+
     /// Build a table by answering for every op. Write the body as a `match`
     /// and the compiler will not let you forget one.
     pub fn from_fn(mut f: impl FnMut(OpKind) -> T) -> Self {
         Self {
-            slots: core::array::from_fn(|i| {
-                f(OpKind::from_index(i).expect("index_is_dense_and_total"))
-            }),
+            slots: core::array::from_fn(|i| f(OpKind::ALL[i])),
         }
     }
 
     /// Iterate in [`OpKind::index`] order — the order [`OpMap::as_slice`]
     /// serializes in.
     pub fn iter(&self) -> impl Iterator<Item = (OpKind, &T)> {
-        self.slots
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (OpKind::from_index(i).expect("index_is_dense_and_total"), v))
+        OpKind::ALL.into_iter().zip(self.slots.iter())
     }
 
     /// The backing slots in `index()` order. For serialization; prefer
@@ -965,35 +1098,57 @@ pub fn known_method_names() -> impl Iterator<Item = &'static str> {
 
 #[cfg(test)]
 mod index_space {
-    use super::OpKind;
+    use super::{OpCode, OpKind};
 
-    /// `index()` must be dense over `0..COUNT`, and `from_index` must be its
-    /// exact inverse.
+    /// Density, totality and round-tripping are proved at compile time by the
+    /// `const` block above, so there is no runtime test for them here.
     ///
-    /// Both halves are load-bearing, and both were false before 2026-08-02.
-    /// Every `[T; OpKind::COUNT]` in the workspace is subscripted by `index()`
-    /// — the NNUE op embeddings, the latency-prior cost table, the extraction
-    /// feature sets — so a *gap* in the discriminants pushes the ops after it
-    /// past the end of every one of those arrays. `Gather`/`RawGather`/`Reduce`
-    /// sat past three gaps and indexed 50..=52 into `[_; 50]`; the only reason
-    /// that was not a live panic is that the e-graph refuses `Buffer` leaves
-    /// earlier, and every `Gather` has one.
+    /// There is deliberately no test pinning op N to a particular number.
+    /// The numbering is this crate's own business — see [`OpCode`] — and a
+    /// test asserting `Add == 2` would turn an internal detail into a promise
+    /// that consumers can quietly build on, leaving this crate owing a version
+    /// bump to every format that took it up. Persisted data is protected by
+    /// its own format version, not by freezing these values.
     ///
-    /// The second half is worse: `from_index` bounds-checks against `COUNT`
-    /// and then transmutes, so any index that is inside `COUNT` but names no
-    /// variant is undefined behaviour rather than a `None`.
+    /// What the round trip must do is survive the trip.
     #[test]
-    fn index_is_dense_and_total() {
-        for i in 0..OpKind::COUNT {
-            let op = OpKind::from_index(i)
-                .unwrap_or_else(|| panic!("from_index({i}) is None inside 0..COUNT — gap"));
-            assert_eq!(op.index(), i, "{op:?} does not round-trip at index {i}");
+    fn every_op_survives_marshalling() {
+        for op in OpKind::all() {
+            let bytes = op.marshal().to_bytes();
+            let back = OpKind::unmarshal(OpCode::from_bytes(bytes));
+            assert_eq!(back, Some(op), "{op:?} did not survive marshalling");
         }
-        assert_eq!(
-            OpKind::from_index(OpKind::COUNT),
-            None,
-            "COUNT must be one past the last discriminant"
-        );
+    }
+
+    /// A code naming no op is a `None`, not a wrong op and not a panic — this
+    /// is the untrusted-input path (a truncated or stale stream).
+    #[test]
+    fn codes_naming_no_op_decode_to_none() {
+        let live: alloc::vec::Vec<[u8; OpCode::SIZE]> =
+            OpKind::all().map(|op| op.marshal().to_bytes()).collect();
+        for b in 0..=u8::MAX {
+            let decoded = OpKind::unmarshal(OpCode::from_bytes([b]));
+            assert_eq!(
+                decoded.is_some(),
+                live.contains(&[b]),
+                "byte {b} decoded to {decoded:?}"
+            );
+        }
+    }
+
+    /// `from_name` matches on `&str` and can never be exhaustive, so nothing
+    /// makes a new op's name mandatory. Written name-first because the reverse
+    /// is not injective: `"pow"` and `"powf"` both parse to `Pow`.
+    #[test]
+    fn every_op_round_trips_through_its_name() {
+        for op in OpKind::all() {
+            assert_eq!(
+                OpKind::from_name(op.name()),
+                Some(op),
+                "{op:?} names {:?}, which does not parse back",
+                op.name()
+            );
+        }
     }
 }
 
@@ -1118,355 +1273,245 @@ mod eval_unary_libm_arms {
     }
 }
 
-#[cfg(test)]
-mod min_max_platform_specific {
-    use super::OpKind;
-
-    /// `pixelflow-codegen`'s `min_max_nan_handling_agrees_between_tiers`
-    /// exercises the same inputs but *gates* its own assertion on this
-    /// function's result (`if op.fold_is_platform_specific(..) { continue }`)
-    /// — that structurally can't prove what the function should return, only
-    /// that whatever it returns is self-consistent. These are the direct
-    /// assertions on the classification itself.
-    #[test]
-    fn true_when_either_operand_is_nan() {
-        assert!(OpKind::Min.fold_is_platform_specific(&[f32::NAN, 1.0]));
-        assert!(OpKind::Max.fold_is_platform_specific(&[1.0, f32::NAN]));
-    }
-
-    #[test]
-    fn true_for_equal_but_oppositely_signed_zeros() {
-        // Equal but distinguishable is exactly ±0.0: x86 picks by operand
-        // order, aarch64 by sign — `==` can't see it, only the bit pattern.
-        assert!(OpKind::Min.fold_is_platform_specific(&[-0.0, 0.0]));
-        assert!(OpKind::Max.fold_is_platform_specific(&[0.0, -0.0]));
-    }
-
-    #[test]
-    fn false_for_equal_operands_with_identical_bits() {
-        assert!(!OpKind::Min.fold_is_platform_specific(&[1.0, 1.0]));
-        assert!(!OpKind::Max.fold_is_platform_specific(&[1.0, 1.0]));
-    }
-
-    #[test]
-    fn false_for_ordinary_distinct_finite_operands() {
-        assert!(!OpKind::Min.fold_is_platform_specific(&[2.0, 3.0]));
-        assert!(!OpKind::Max.fold_is_platform_specific(&[2.0, 3.0]));
-    }
-}
-
-#[cfg(test)]
-mod round_platform_specific {
-    use super::OpKind;
-
-    #[test]
-    fn round_platform_specific_true_at_an_exact_tie() {
-        assert!(OpKind::Round.fold_is_platform_specific(&[2.5]));
-    }
-
-    #[test]
-    fn round_platform_specific_true_in_the_negative_zero_sign_interval() {
-        // `-0.5 < x <= -0.0`: both JIT tiers round to `-0.0` (sign
-        // preserved) while the combinator tier's `(x + 0.5).floor()` gives
-        // `+0.0`. `-0.5` itself is already covered by the tie clause above.
-        assert!(OpKind::Round.fold_is_platform_specific(&[-0.3]));
-    }
-
-    #[test]
-    fn round_platform_specific_false_for_a_negative_value_outside_the_interval() {
-        assert!(!OpKind::Round.fold_is_platform_specific(&[-10.0]));
-    }
-
-    #[test]
-    fn round_platform_specific_false_for_an_ordinary_non_tie_value() {
-        assert!(!OpKind::Round.fold_is_platform_specific(&[1.7]));
-    }
-}
-
-#[cfg(test)]
-mod arity {
-    use super::OpKind;
-
-    #[test]
-    fn arity_of_leaf_ops_is_zero() {
-        for op in [OpKind::Var, OpKind::Const, OpKind::Tuple, OpKind::Buffer] {
-            assert_eq!(op.arity(), 0, "{op:?} is a leaf and takes no operands");
-        }
-    }
-
-    #[test]
-    fn arity_of_unary_ops_is_one() {
-        for op in [OpKind::Neg, OpKind::Sqrt, OpKind::TruncToInt, OpKind::Round] {
-            assert_eq!(op.arity(), 1, "{op:?} is unary");
-        }
-    }
-
-    #[test]
-    fn arity_of_binary_ops_is_two() {
-        for op in [OpKind::Add, OpKind::Shl, OpKind::Eq, OpKind::Dwrt] {
-            assert_eq!(op.arity(), 2, "{op:?} is binary");
-        }
-    }
-
-    #[test]
-    fn arity_of_ternary_ops_is_three() {
-        for op in [OpKind::MulAdd, OpKind::Select, OpKind::Gather] {
-            assert_eq!(op.arity(), 3, "{op:?} is ternary");
-        }
-    }
-
-    #[test]
-    fn arity_of_reduce_is_four_for_its_combiner_var_extent_body_operands() {
-        assert_eq!(OpKind::Reduce.arity(), 4);
-    }
-}
-
-#[cfg(test)]
-mod op_names {
-    use super::OpKind;
-
-    /// `known_method_names()` (and its round-trip test in `method_names`)
-    /// deliberately excludes `EmitStyle::Special` ops (`Var`, `Const`,
-    /// `Tuple`, `Dwrt`, `Buffer`, `Gather`, `RawGather`, `Reduce`) because
-    /// they have no method spelling — but `from_name`/`name` must still
-    /// round-trip for those, since the arena's textual dump/parse round-trip
-    /// (and `Reduce`'s combiner-by-name encoding) depends on it.
-    #[test]
-    fn from_name_round_trips_every_op_including_special_ones() {
-        for op in OpKind::all() {
-            assert_eq!(
-                OpKind::from_name(op.name()),
-                Some(op),
-                "{op:?}'s name() does not round-trip through from_name()"
-            );
-        }
-    }
-
-    #[test]
-    fn from_name_accepts_the_powf_alias_for_pow() {
-        assert_eq!(OpKind::from_name("powf"), Some(OpKind::Pow));
-    }
-
-    #[test]
-    fn from_name_rejects_an_unknown_name() {
-        assert_eq!(OpKind::from_name("this_is_not_an_op"), None);
-    }
-}
-
-#[cfg(test)]
-mod default_cost {
-    use super::OpKind;
-
-    #[test]
-    fn default_cost_of_structural_leaves_is_zero() {
-        for op in [
-            OpKind::Var,
-            OpKind::Const,
-            OpKind::Tuple,
-            OpKind::Buffer,
-            OpKind::Reduce,
-        ] {
-            assert_eq!(op.default_cost(), 0, "{op:?} should cost nothing");
-        }
-    }
-
-    #[test]
-    fn default_cost_prices_dwrt_far_above_every_ordinary_op() {
-        // `Dwrt` must be rewritten away before extraction; if it ever
-        // survives, the extractor must never prefer it over a decomposed
-        // form, which only holds if its price dwarfs everything else.
-        assert!(OpKind::Dwrt.default_cost() > 1_000);
-    }
-
-    #[test]
-    fn default_cost_of_ordinary_arithmetic_is_a_handful_of_cycles() {
-        assert_eq!(OpKind::Add.default_cost(), 4);
-        assert_eq!(OpKind::Mul.default_cost(), 5);
-    }
-}
-
+/// Independently-authored oracles for the algebraic-property predicates,
+/// exhaustive over `OpKind::all()`. Each predicate is a total function over a
+/// closed enum, so — unlike a spot check — a single exhaustive sweep is
+/// enough to catch both "flipped the wrong op" and "always returns the same
+/// answer" mistakes.
 #[cfg(test)]
 mod algebraic_properties {
     use super::OpKind;
 
+    const COMMUTATIVE: &[OpKind] = &[
+        OpKind::Add,
+        OpKind::Mul,
+        OpKind::Min,
+        OpKind::Max,
+        OpKind::Eq,
+        OpKind::Ne,
+    ];
+
     #[test]
-    fn is_commutative_is_true_for_add_mul_min_max_eq_ne() {
-        for op in [
-            OpKind::Add,
-            OpKind::Mul,
-            OpKind::Min,
-            OpKind::Max,
-            OpKind::Eq,
-            OpKind::Ne,
-        ] {
-            assert!(op.is_commutative(), "{op:?} should be commutative");
+    fn flag_add_mul_min_max_eq_ne_as_commutative_and_no_other_op() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_commutative(),
+                COMMUTATIVE.contains(&op),
+                "{op:?} commutativity mismatch"
+            );
         }
     }
 
-    #[test]
-    fn is_commutative_is_false_for_sub_div_and_shl() {
-        for op in [OpKind::Sub, OpKind::Div, OpKind::Shl] {
-            assert!(!op.is_commutative(), "{op:?} should not be commutative");
-        }
-    }
+    const ASSOCIATIVE: &[OpKind] = &[OpKind::Add, OpKind::Mul, OpKind::Min, OpKind::Max];
 
     #[test]
-    fn is_associative_is_true_for_add_mul_min_max() {
-        for op in [OpKind::Add, OpKind::Mul, OpKind::Min, OpKind::Max] {
-            assert!(op.is_associative(), "{op:?} should be associative");
-        }
-    }
-
-    #[test]
-    fn is_associative_is_false_for_sub_div_and_a_non_arithmetic_op() {
-        for op in [OpKind::Sub, OpKind::Div, OpKind::Eq] {
-            assert!(!op.is_associative(), "{op:?} should not be associative");
-        }
-    }
-
-    #[test]
-    fn identity_of_additive_ops_is_zero() {
-        assert_eq!(OpKind::Add.identity(), Some(0.0));
-        assert_eq!(OpKind::Sub.identity(), Some(0.0));
-    }
-
-    #[test]
-    fn identity_of_multiplicative_ops_is_one() {
-        assert_eq!(OpKind::Mul.identity(), Some(1.0));
-        assert_eq!(OpKind::Div.identity(), Some(1.0));
-    }
-
-    #[test]
-    fn identity_is_none_for_an_op_with_no_identity_element() {
-        assert_eq!(OpKind::Min.identity(), None);
-        assert_eq!(OpKind::Eq.identity(), None);
-    }
-
-    #[test]
-    fn annihilator_of_mul_is_zero() {
-        assert_eq!(OpKind::Mul.annihilator(), Some(0.0));
-    }
-
-    #[test]
-    fn annihilator_is_none_for_an_op_with_no_annihilating_element() {
-        assert_eq!(OpKind::Add.annihilator(), None);
-        assert_eq!(OpKind::Min.annihilator(), None);
-    }
-
-    #[test]
-    fn is_idempotent_is_true_for_min_max_and_abs() {
-        for op in [OpKind::Min, OpKind::Max, OpKind::Abs] {
-            assert!(op.is_idempotent(), "{op:?} should be idempotent");
-        }
-    }
-
-    #[test]
-    fn is_idempotent_is_false_for_add() {
-        assert!(!OpKind::Add.is_idempotent());
-    }
-
-    #[test]
-    fn is_monoid_is_true_for_ops_with_a_monoid_identity() {
-        assert!(OpKind::Add.is_monoid());
-        assert!(OpKind::Mul.is_monoid());
-    }
-
-    #[test]
-    fn is_monoid_is_true_for_min_max_and_the_mask_monoids() {
-        // Reachable only as a `Reduce` combiner, so nothing in this crate
-        // otherwise exercises `Min`/`BitOr`/`BitAnd` through
-        // `monoid_identity` — unlike `Add`/`Mul`, which the dwrt/passes
-        // tests reduce over already.
-        for op in [OpKind::Min, OpKind::Max, OpKind::BitOr, OpKind::BitAnd] {
-            assert!(
-                op.is_monoid(),
-                "{op:?} should be a valid reduction combiner"
+    fn flag_add_mul_min_max_as_associative_and_no_other_op() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_associative(),
+                ASSOCIATIVE.contains(&op),
+                "{op:?} associativity mismatch"
             );
         }
     }
 
     #[test]
-    fn monoid_identity_of_min_max_are_the_extended_reals_bounds() {
-        assert_eq!(OpKind::Min.monoid_identity(), Some(f32::INFINITY));
-        assert_eq!(OpKind::Max.monoid_identity(), Some(f32::NEG_INFINITY));
+    fn return_zero_for_add_sub_one_for_mul_div_and_none_otherwise() {
+        for op in OpKind::all() {
+            let want = match op {
+                OpKind::Add | OpKind::Sub => Some(0.0),
+                OpKind::Mul | OpKind::Div => Some(1.0),
+                _ => None,
+            };
+            assert_eq!(op.identity(), want, "{op:?} identity mismatch");
+        }
     }
 
     #[test]
-    fn monoid_identity_of_bitor_is_the_all_clear_pattern() {
-        assert_eq!(OpKind::BitOr.monoid_identity(), Some(0.0));
+    fn return_zero_annihilator_only_for_mul() {
+        for op in OpKind::all() {
+            let want = if op == OpKind::Mul { Some(0.0) } else { None };
+            assert_eq!(op.annihilator(), want, "{op:?} annihilator mismatch");
+        }
+    }
+
+    const IDEMPOTENT: &[OpKind] = &[OpKind::Min, OpKind::Max, OpKind::Abs];
+
+    #[test]
+    fn flag_min_max_abs_as_idempotent_and_no_other_op() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_idempotent(),
+                IDEMPOTENT.contains(&op),
+                "{op:?} idempotence mismatch"
+            );
+        }
+    }
+
+    const NOT_SEED_OPS: &[OpKind] = &[
+        OpKind::Var,
+        OpKind::Const,
+        OpKind::Tuple,
+        OpKind::MulAdd,
+        OpKind::Lt,
+        OpKind::Le,
+        OpKind::Gt,
+        OpKind::Ge,
+        OpKind::Eq,
+        OpKind::Ne,
+        OpKind::Select,
+        OpKind::Buffer,
+        OpKind::Gather,
+        OpKind::RawGather,
+        OpKind::Reduce,
+    ];
+
+    #[test]
+    fn exclude_leaves_masks_and_memory_ops_from_seed_ops() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_seed_op(),
+                !NOT_SEED_OPS.contains(&op),
+                "{op:?} seed-op eligibility mismatch"
+            );
+        }
+    }
+
+    const BITWISE_DOMAIN: &[OpKind] = &[
+        OpKind::Lt,
+        OpKind::Le,
+        OpKind::Gt,
+        OpKind::Ge,
+        OpKind::Eq,
+        OpKind::Ne,
+        OpKind::Select,
+        OpKind::BitAnd,
+        OpKind::BitOr,
+        OpKind::TruncToInt,
+        OpKind::IntToFloat,
+        OpKind::IAdd,
+        OpKind::Shl,
+        OpKind::Shr,
+    ];
+
+    #[test]
+    fn flag_masks_bitops_and_integer_primitives_as_bitwise_domain() {
+        for op in OpKind::all() {
+            assert_eq!(
+                op.is_bitwise_domain(),
+                BITWISE_DOMAIN.contains(&op),
+                "{op:?} bitwise-domain mismatch"
+            );
+        }
     }
 
     #[test]
-    fn monoid_identity_of_bitand_is_the_all_set_pattern() {
-        // The all-ones pattern reads as NaN, so compare bits, not `f32`
-        // equality (NaN != NaN).
+    fn match_each_ops_actual_operand_count() {
+        for op in OpKind::all() {
+            let want = match op {
+                OpKind::Var | OpKind::Const | OpKind::Tuple | OpKind::Buffer => 0,
+
+                OpKind::Neg
+                | OpKind::Sqrt
+                | OpKind::Rsqrt
+                | OpKind::Abs
+                | OpKind::Recip
+                | OpKind::Floor
+                | OpKind::Ceil
+                | OpKind::Round
+                | OpKind::Sin
+                | OpKind::Cos
+                | OpKind::Tan
+                | OpKind::Asin
+                | OpKind::Acos
+                | OpKind::Atan
+                | OpKind::Exp
+                | OpKind::Exp2
+                | OpKind::Ln
+                | OpKind::Log2
+                | OpKind::Log10
+                | OpKind::TruncToInt
+                | OpKind::IntToFloat => 1,
+
+                OpKind::Add
+                | OpKind::Sub
+                | OpKind::Mul
+                | OpKind::Div
+                | OpKind::Min
+                | OpKind::Max
+                | OpKind::Atan2
+                | OpKind::Pow
+                | OpKind::Lt
+                | OpKind::Le
+                | OpKind::Gt
+                | OpKind::Ge
+                | OpKind::Eq
+                | OpKind::Ne
+                | OpKind::IAdd
+                | OpKind::Shl
+                | OpKind::Shr
+                | OpKind::BitAnd
+                | OpKind::BitOr
+                | OpKind::Dwrt
+                | OpKind::RawGather => 2,
+
+                OpKind::MulAdd | OpKind::Select | OpKind::Gather => 3,
+
+                OpKind::Reduce => 4,
+            };
+            assert_eq!(op.arity(), want, "{op:?} arity mismatch");
+        }
+    }
+
+    #[test]
+    fn distinguish_leaf_arithmetic_memory_and_transcendental_costs() {
+        // Not exhaustive (unlike the predicates above): default_cost's price
+        // table is a design choice, not a closed algebraic property, so a few
+        // ops from each priced tier is enough to catch "the whole function
+        // got replaced by a constant" without freezing every literal in the
+        // table against future re-tuning.
+        assert_eq!(OpKind::Var.default_cost(), 0);
+        assert_eq!(OpKind::Neg.default_cost(), 1);
+        assert_eq!(OpKind::Add.default_cost(), 4);
+        assert_eq!(OpKind::Mul.default_cost(), 5);
+        assert_eq!(OpKind::Gather.default_cost(), 10);
+        assert_eq!(OpKind::Sin.default_cost(), 15);
         assert_eq!(
-            OpKind::BitAnd.monoid_identity().map(f32::to_bits),
-            Some(u32::MAX)
+            OpKind::Dwrt.default_cost(),
+            1_000_000,
+            "Dwrt must outprice every real op so a surviving one is never preferred"
         );
-    }
-
-    #[test]
-    fn is_monoid_is_false_for_an_op_with_no_monoid_identity() {
-        assert!(!OpKind::Eq.is_monoid());
-        assert!(!OpKind::Sub.is_monoid());
     }
 }
 
 #[cfg(test)]
-mod domain_classification {
+mod from_name {
     use super::OpKind;
 
     #[test]
-    fn is_seed_op_excludes_structural_and_type_invalid_ops() {
-        for op in [
-            OpKind::Var,
-            OpKind::Const,
-            OpKind::Tuple,
-            OpKind::MulAdd,
-            OpKind::Lt,
-            OpKind::Select,
-            OpKind::Buffer,
-            OpKind::Gather,
-            OpKind::RawGather,
-            OpKind::Reduce,
-        ] {
-            assert!(
-                !op.is_seed_op(),
-                "{op:?} should be excluded from seed expressions"
+    fn round_trip_every_ops_own_name_including_special_emit_style_ops() {
+        // `method_names::every_returned_name_round_trips_through_from_name`
+        // only walks `known_method_names()`, which deliberately excludes
+        // every `EmitStyle::Special` op (Var/Const/Tuple/Dwrt/Buffer/Gather/
+        // RawGather/Reduce) — so those ops' `from_name` arms need their own
+        // coverage here.
+        for op in OpKind::all() {
+            assert_eq!(
+                OpKind::from_name(op.name()),
+                Some(op),
+                "{op:?}'s own name does not parse back to itself"
             );
         }
     }
 
     #[test]
-    fn is_seed_op_includes_ordinary_arithmetic() {
-        for op in [OpKind::Add, OpKind::Mul, OpKind::Sin] {
-            assert!(op.is_seed_op(), "{op:?} should be eligible as a seed op");
-        }
+    fn accept_the_powf_alias_for_pow() {
+        assert_eq!(OpKind::from_name("powf"), Some(OpKind::Pow));
     }
 
     #[test]
-    fn is_bitwise_domain_is_true_for_comparisons_and_integer_domain_ops() {
-        for op in [
-            OpKind::Lt,
-            OpKind::Eq,
-            OpKind::Select,
-            OpKind::BitAnd,
-            OpKind::Shl,
-            OpKind::TruncToInt,
-        ] {
-            assert!(op.is_bitwise_domain(), "{op:?} should be bitwise-domain");
-        }
-    }
-
-    #[test]
-    fn is_bitwise_domain_is_false_for_ordinary_arithmetic() {
-        for op in [OpKind::Add, OpKind::Mul, OpKind::Sin] {
-            assert!(
-                !op.is_bitwise_domain(),
-                "{op:?} should not be bitwise-domain"
-            );
-        }
+    fn reject_an_unrecognized_name() {
+        assert_eq!(OpKind::from_name("not_a_real_op"), None);
     }
 }
 
@@ -1474,8 +1519,17 @@ mod domain_classification {
 mod eval_binary_arms {
     use super::OpKind;
 
+    /// Compares by bit pattern, not `==` — a true mask is the all-ones NaN
+    /// pattern, and NaN never equals itself under `f32::eq`.
+    fn assert_mask(got: Option<f32>, want: bool) {
+        assert_eq!(
+            got.expect("op is binary").to_bits(),
+            OpKind::mask(want).to_bits()
+        );
+    }
+
     #[test]
-    fn arithmetic_matches_direct_computation() {
+    fn compute_ordinary_arithmetic_for_add_sub_mul_div() {
         assert_eq!(OpKind::Add.eval_binary(2.0, 3.0), Some(5.0));
         assert_eq!(OpKind::Sub.eval_binary(5.0, 3.0), Some(2.0));
         assert_eq!(OpKind::Mul.eval_binary(2.0, 3.0), Some(6.0));
@@ -1483,109 +1537,98 @@ mod eval_binary_arms {
     }
 
     #[test]
-    fn min_max_on_equal_operands_return_the_second_operands_bit_pattern() {
-        // x86 `minps`/`maxps` compute `(a OP b) ? a : b`, so when neither
-        // operand is strictly less/greater the SECOND operand wins — a fact
-        // that plain numeric equality can't see (`-0.0 == 0.0`), only bits.
-        let neg_zero = -0.0f32;
-        let pos_zero = 0.0f32;
+    fn pick_the_second_operand_for_min_and_max_on_a_tie() {
+        // x86 minps/maxps: `(a OP b) ? a : b`, so equal operands return the
+        // SECOND one — see `fold_is_platform_specific`'s doc. `0.0` and
+        // `-0.0` are the tie that can actually prove this: they compare
+        // equal under `<`/`>` but carry different bit patterns, so unlike a
+        // same-value tie (e.g. `1.0, 1.0`) the result reveals which operand
+        // was returned instead of leaving it ambiguous.
         assert_eq!(
-            OpKind::Min
-                .eval_binary(neg_zero, pos_zero)
-                .unwrap()
-                .to_bits(),
-            pos_zero.to_bits(),
-            "Min(-0.0, 0.0) must return the second operand's bit pattern"
+            OpKind::Min.eval_binary(0.0, -0.0).unwrap().to_bits(),
+            (-0.0f32).to_bits(),
         );
         assert_eq!(
-            OpKind::Max
-                .eval_binary(pos_zero, neg_zero)
-                .unwrap()
-                .to_bits(),
-            neg_zero.to_bits(),
-            "Max(0.0, -0.0) must return the second operand's bit pattern"
-        );
-    }
-
-    /// `mask(true)` is an all-ones bit pattern, which reads as NaN — so
-    /// `assert_eq!` on the raw `f32` is always false even when the masks
-    /// match. Compare bit patterns instead, as every consumer of a mask does.
-    fn assert_mask_eq(got: Option<f32>, want_true: bool, msg: &str) {
-        assert_eq!(
-            got.map(f32::to_bits),
-            Some(OpKind::mask(want_true).to_bits()),
-            "{msg}"
-        );
-    }
-
-    #[test]
-    fn lt_le_are_strict_and_non_strict_at_the_boundary() {
-        // At x == y, Lt is false and Le is true — exactly what distinguishes
-        // `<` from `<=`.
-        assert_mask_eq(OpKind::Lt.eval_binary(3.0, 3.0), false, "Lt(3, 3)");
-        assert_mask_eq(OpKind::Le.eval_binary(3.0, 3.0), true, "Le(3, 3)");
-    }
-
-    #[test]
-    fn gt_ge_are_true_when_either_operand_is_nan() {
-        assert_mask_eq(OpKind::Gt.eval_binary(f32::NAN, 1.0), true, "Gt(NaN, 1.0)");
-        assert_mask_eq(OpKind::Ge.eval_binary(1.0, f32::NAN), true, "Ge(1.0, NaN)");
-    }
-
-    #[test]
-    fn gt_ge_agree_with_ordered_comparison_on_finite_operands() {
-        assert_mask_eq(OpKind::Gt.eval_binary(3.0, 3.0), false, "Gt(3, 3)");
-        assert_mask_eq(OpKind::Ge.eval_binary(3.0, 3.0), true, "Ge(3, 3)");
-        assert_mask_eq(OpKind::Gt.eval_binary(1.0, 2.0), false, "Gt(1, 2)");
-    }
-
-    #[test]
-    fn eq_ne_are_exact_and_disagree_only_at_equality() {
-        assert_mask_eq(OpKind::Eq.eval_binary(3.0, 3.0), true, "Eq(3, 3)");
-        assert_mask_eq(OpKind::Ne.eval_binary(3.0, 3.0), false, "Ne(3, 3)");
-        assert_mask_eq(OpKind::Eq.eval_binary(3.0, 4.0), false, "Eq(3, 4)");
-        assert_mask_eq(OpKind::Ne.eval_binary(3.0, 4.0), true, "Ne(3, 4)");
-    }
-
-    #[test]
-    fn iadd_wraps_the_bit_pattern_as_a_twos_complement_integer() {
-        let max = f32::from_bits(i32::MAX as u32);
-        let one = f32::from_bits(1u32);
-        assert_eq!(
-            OpKind::IAdd.eval_binary(max, one),
-            Some(f32::from_bits(i32::MIN as u32)),
-            "IAdd must wrap on overflow, not saturate"
-        );
-    }
-
-    #[test]
-    fn shl_shifts_the_bit_pattern_toward_the_high_end() {
-        let x = f32::from_bits(0b1);
-        assert_eq!(OpKind::Shl.eval_binary(x, 1.0), Some(f32::from_bits(0b10)));
-    }
-
-    #[test]
-    fn shr_shifts_the_bit_pattern_toward_the_low_end() {
-        let x = f32::from_bits(0b10);
-        assert_eq!(OpKind::Shr.eval_binary(x, 1.0), Some(f32::from_bits(0b1)));
-    }
-
-    #[test]
-    fn bitand_bitor_operate_on_the_bit_pattern() {
-        let a = f32::from_bits(0b1100);
-        let b = f32::from_bits(0b1010);
-        assert_eq!(
-            OpKind::BitAnd.eval_binary(a, b),
-            Some(f32::from_bits(0b1000))
+            OpKind::Min.eval_binary(-0.0, 0.0).unwrap().to_bits(),
+            0.0f32.to_bits(),
         );
         assert_eq!(
-            OpKind::BitOr.eval_binary(a, b),
-            Some(f32::from_bits(0b1110))
+            OpKind::Max.eval_binary(0.0, -0.0).unwrap().to_bits(),
+            (-0.0f32).to_bits(),
+        );
+        assert_eq!(
+            OpKind::Max.eval_binary(-0.0, 0.0).unwrap().to_bits(),
+            0.0f32.to_bits(),
+        );
+        assert_eq!(OpKind::Min.eval_binary(1.0, 2.0), Some(1.0));
+        assert_eq!(OpKind::Min.eval_binary(2.0, 1.0), Some(1.0));
+        assert_eq!(OpKind::Max.eval_binary(1.0, 2.0), Some(2.0));
+        assert_eq!(OpKind::Max.eval_binary(2.0, 1.0), Some(2.0));
+    }
+
+    #[test]
+    fn agree_on_strict_and_equal_operands_for_lt_and_le() {
+        assert_mask(OpKind::Lt.eval_binary(1.0, 2.0), true);
+        assert_mask(OpKind::Lt.eval_binary(2.0, 2.0), false);
+        assert_mask(OpKind::Le.eval_binary(2.0, 2.0), true);
+        assert_mask(OpKind::Le.eval_binary(3.0, 2.0), false);
+    }
+
+    #[test]
+    fn treat_gt_and_ge_as_unordered_true_for_a_nan_operand() {
+        // x86's imm8 6/5 (NLE_US/NLT_US): NaN in EITHER operand is TRUE.
+        assert_mask(OpKind::Gt.eval_binary(f32::NAN, 1.0), true);
+        assert_mask(OpKind::Gt.eval_binary(1.0, f32::NAN), true);
+        assert_mask(OpKind::Gt.eval_binary(2.0, 1.0), true);
+        assert_mask(OpKind::Gt.eval_binary(1.0, 2.0), false);
+        assert_mask(OpKind::Gt.eval_binary(1.0, 1.0), false);
+        assert_mask(OpKind::Ge.eval_binary(f32::NAN, 1.0), true);
+        assert_mask(OpKind::Ge.eval_binary(1.0, f32::NAN), true);
+        assert_mask(OpKind::Ge.eval_binary(1.0, 1.0), true);
+        assert_mask(OpKind::Ge.eval_binary(1.0, 2.0), false);
+    }
+
+    #[test]
+    fn treat_eq_and_ne_as_exact_and_disagree_only_on_nan() {
+        assert_mask(OpKind::Eq.eval_binary(1.0, 1.0), true);
+        assert_mask(OpKind::Eq.eval_binary(1.0, 2.0), false);
+        assert_mask(OpKind::Eq.eval_binary(f32::NAN, f32::NAN), false);
+        assert_mask(OpKind::Ne.eval_binary(1.0, 2.0), true);
+        assert_mask(OpKind::Ne.eval_binary(1.0, 1.0), false);
+        assert_mask(OpKind::Ne.eval_binary(f32::NAN, f32::NAN), true);
+    }
+
+    #[test]
+    fn wrap_the_bit_pattern_as_a_two_s_complement_integer_for_iadd() {
+        let got = OpKind::IAdd
+            .eval_binary(f32::from_bits(i32::MAX as u32), f32::from_bits(1))
+            .unwrap();
+        assert_eq!(got.to_bits(), i32::MIN as u32);
+    }
+
+    #[test]
+    fn mask_the_count_to_five_bits_before_shifting() {
+        // count=33 masks to 1 (33 & 31 == 1) — same as an explicit shift of 1.
+        let one_bit = f32::from_bits(1);
+        assert_eq!(OpKind::Shl.eval_binary(one_bit, 33.0).unwrap().to_bits(), 2);
+
+        let hi_bit = f32::from_bits(1u32 << 31);
+        assert_eq!(
+            OpKind::Shr.eval_binary(hi_bit, 33.0).unwrap().to_bits(),
+            1u32 << 30
         );
     }
 
     #[test]
-    fn returns_none_for_a_non_binary_op() {
+    fn operate_on_raw_bit_patterns_for_bitand_and_bitor() {
+        let a = f32::from_bits(0b1010);
+        let b = f32::from_bits(0b0110);
+        assert_eq!(OpKind::BitAnd.eval_binary(a, b).unwrap().to_bits(), 0b0010);
+        assert_eq!(OpKind::BitOr.eval_binary(a, b).unwrap().to_bits(), 0b1110);
+    }
+
+    #[test]
+    fn return_none_from_eval_binary_for_a_unary_op() {
         assert_eq!(OpKind::Neg.eval_binary(1.0, 2.0), None);
     }
 }
@@ -1595,22 +1638,109 @@ mod eval_ternary_arms {
     use super::OpKind;
 
     #[test]
-    fn muladd_computes_the_fused_product_plus_addend() {
-        assert_eq!(OpKind::MulAdd.eval_ternary(2.0, 3.0, 1.0), Some(7.0));
+    fn compute_x_times_y_plus_z_for_mul_add() {
+        assert_eq!(OpKind::MulAdd.eval_ternary(2.0, 3.0, 4.0), Some(10.0));
     }
 
     #[test]
-    fn select_blends_bit_patterns_by_mask() {
-        let mask_true = OpKind::mask(true);
-        let mask_false = OpKind::mask(false);
-        let a = 5.0f32;
-        let b = 9.0f32;
-        assert_eq!(OpKind::Select.eval_ternary(mask_true, a, b), Some(a));
-        assert_eq!(OpKind::Select.eval_ternary(mask_false, a, b), Some(b));
+    fn blend_y_and_z_bitwise_by_the_x_mask_for_select() {
+        let true_mask = OpKind::mask(true);
+        let false_mask = OpKind::mask(false);
+        let y = 7.0f32;
+        let z = 9.0f32;
+        assert_eq!(
+            OpKind::Select
+                .eval_ternary(true_mask, y, z)
+                .unwrap()
+                .to_bits(),
+            y.to_bits()
+        );
+        assert_eq!(
+            OpKind::Select
+                .eval_ternary(false_mask, y, z)
+                .unwrap()
+                .to_bits(),
+            z.to_bits()
+        );
     }
 
     #[test]
-    fn returns_none_for_a_non_ternary_op() {
+    fn return_none_from_eval_ternary_for_a_binary_op() {
         assert_eq!(OpKind::Add.eval_ternary(1.0, 2.0, 3.0), None);
+    }
+}
+
+#[cfg(test)]
+mod fold_is_platform_specific {
+    use super::OpKind;
+
+    #[test]
+    fn decline_to_fold_min_and_max_on_nan_or_a_signed_zero_mismatch() {
+        assert!(OpKind::Min.fold_is_platform_specific(&[f32::NAN, 1.0]));
+        assert!(OpKind::Min.fold_is_platform_specific(&[1.0, f32::NAN]));
+        assert!(OpKind::Max.fold_is_platform_specific(&[f32::NAN, 1.0]));
+        assert!(OpKind::Min.fold_is_platform_specific(&[0.0, -0.0]));
+        assert!(OpKind::Max.fold_is_platform_specific(&[-0.0, 0.0]));
+        assert!(!OpKind::Min.fold_is_platform_specific(&[1.0, 2.0]));
+        assert!(!OpKind::Max.fold_is_platform_specific(&[0.0, 0.0]));
+        // No [a, b] pattern applies to the wrong arity, so it falls to `false`.
+        assert!(!OpKind::Min.fold_is_platform_specific(&[1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn decline_to_fold_gt_and_ge_only_when_an_operand_is_nan() {
+        assert!(OpKind::Gt.fold_is_platform_specific(&[f32::NAN, 1.0]));
+        assert!(OpKind::Ge.fold_is_platform_specific(&[1.0, f32::NAN]));
+        assert!(!OpKind::Gt.fold_is_platform_specific(&[1.0, 2.0]));
+        assert!(!OpKind::Ge.fold_is_platform_specific(&[1.0, 2.0]));
+    }
+
+    #[test]
+    fn decline_to_fold_round_at_any_exact_tie_and_in_the_negative_zero_interval() {
+        assert!(OpKind::Round.fold_is_platform_specific(&[2.5])); // positive tie
+        assert!(OpKind::Round.fold_is_platform_specific(&[-0.5])); // negative tie
+        assert!(OpKind::Round.fold_is_platform_specific(&[-0.25])); // in (-0.5, -0.0]
+        assert!(!OpKind::Round.fold_is_platform_specific(&[2.3])); // ordinary, no tie
+        assert!(!OpKind::Round.fold_is_platform_specific(&[-0.6])); // outside the interval
+    }
+
+    #[test]
+    fn decline_to_fold_trunc_to_int_on_nan_and_values_at_or_above_two_pow_31() {
+        assert!(OpKind::TruncToInt.fold_is_platform_specific(&[f32::NAN]));
+        assert!(OpKind::TruncToInt.fold_is_platform_specific(&[2_147_483_648.0]));
+        // 2^31 - 128: the nearest f32 below the limit that is exactly
+        // representable (2^31 - 1 itself rounds UP to 2^31 as an f32 literal).
+        assert!(!OpKind::TruncToInt.fold_is_platform_specific(&[2_147_483_520.0]));
+        // Both tiers agree in the negative-overflow direction — see the
+        // function's doc for why.
+        assert!(!OpKind::TruncToInt.fold_is_platform_specific(&[-2_147_483_648.0]));
+        assert!(!OpKind::TruncToInt.fold_is_platform_specific(&[f32::NEG_INFINITY]));
+    }
+
+    #[test]
+    fn decline_to_fold_shl_and_shr_on_a_count_outside_0_to_32_or_non_integral() {
+        assert!(OpKind::Shl.fold_is_platform_specific(&[1.0, 32.0]));
+        assert!(OpKind::Shr.fold_is_platform_specific(&[1.0, -1.0]));
+        assert!(OpKind::Shl.fold_is_platform_specific(&[1.0, 1.5]));
+        assert!(!OpKind::Shl.fold_is_platform_specific(&[1.0, 5.0]));
+        assert!(!OpKind::Shr.fold_is_platform_specific(&[1.0, 0.0]));
+    }
+
+    #[test]
+    fn decline_to_fold_mul_add_exactly_where_fused_and_split_rounding_disagree() {
+        assert!(OpKind::MulAdd.fold_is_platform_specific(&[1.0000001, 4097.0, 4097.0]));
+        assert!(!OpKind::MulAdd.fold_is_platform_specific(&[2.0, 3.0, 4.0]));
+    }
+
+    #[test]
+    fn always_decline_to_fold_recip_and_rsqrt() {
+        assert!(OpKind::Recip.fold_is_platform_specific(&[2.0]));
+        assert!(OpKind::Rsqrt.fold_is_platform_specific(&[4.0]));
+    }
+
+    #[test]
+    fn never_decline_to_fold_an_ordinary_op_like_add_or_lt() {
+        assert!(!OpKind::Add.fold_is_platform_specific(&[1.0, 2.0]));
+        assert!(!OpKind::Lt.fold_is_platform_specific(&[1.0, 2.0]));
     }
 }

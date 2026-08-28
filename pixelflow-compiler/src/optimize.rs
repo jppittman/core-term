@@ -42,7 +42,7 @@ use syn::{Ident, Lit};
 // Canonical Rule Set
 // ============================================================================
 
-/// All rewrite rules for PixelFlow optimization: 40 math + 3 fusion = 43 total.
+/// All rewrite rules for PixelFlow optimization: 59 math + 2 fusion + 1 differentiation = 62 total.
 ///
 /// Delegates to `pixelflow_search::math::all_rules()` which is the canonical
 /// source of truth for all rewrite rules.

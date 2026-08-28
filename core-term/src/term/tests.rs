@@ -226,7 +226,7 @@ fn assert_screen_state(
 }
 
 #[test]
-fn simple_char_input() {
+fn it_should_print_characters_left_to_right_and_advance_the_cursor() {
     let mut term = create_test_emulator(10, 1);
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Print('A')));
     let snapshot = term.get_render_snapshot().expect("Snapshot was None");
@@ -239,7 +239,7 @@ fn simple_char_input() {
 }
 
 #[test]
-fn newline_input() {
+fn it_should_move_to_column_zero_of_the_next_line_when_lnm_is_set_and_lf_is_received() {
     let mut term = create_test_emulator(10, 2);
     // Enable Linefeed/Newline Mode (LNM)
     term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(CsiCommand::SetMode(
@@ -804,7 +804,7 @@ fn key_event_arrow_up() {
 }
 
 #[test]
-fn snapshot_with_selection() {
+fn it_should_preserve_selection_range_and_mode_in_a_constructed_snapshot() {
     let num_cols = 10;
     let num_rows = 2;
     let default_glyph = Glyph::Single(ContentCell {
@@ -1257,7 +1257,7 @@ mod selection_logic_tests {
     use crate::term::snapshot::SelectionRange;
 
     #[test]
-    fn start_selection() {
+    fn it_should_activate_selection_at_the_point_the_start_action_targets() {
         let mut emu = create_test_emulator(10, 5);
         let point = Point { x: 2, y: 1 };
 
@@ -1735,7 +1735,7 @@ mod paste_text_tests {
     }
 
     #[test]
-    fn window_manipulation_report_size() {
+    fn it_should_report_current_terminal_dimensions_for_window_manipulation_ps_18() {
         let mut emu = create_test_emulator(80, 24);
 
         let report_command = AnsiCommand::Csi(CsiCommand::WindowManipulation {
@@ -1875,5 +1875,46 @@ fn cursor_only_movement_marks_its_rows_dirty() {
         rowed.lines.iter().filter(|l| l.is_dirty).count(),
         2,
         "a row change dirties the row left and the row entered"
+    );
+}
+
+// White-box test of `get_render_snapshot`'s documented per-line dirty
+// contract, not a claim any consumer reads per-row state — no production
+// code checks `is_dirty` per row today, only whole-snapshot (`any()`).
+// Row-specific on purpose: rows inside the region are independently dirty
+// from their own content change regardless of `view_changed`, so only rows
+// outside it (with no other dirty reason) isolate `view_changed`'s own
+// contribution to the OR.
+#[test]
+fn scroll_region_push_dirties_rows_outside_the_region() {
+    let mut term = create_test_emulator(4, 6);
+    term.interpret_input(EmulatorInput::Ansi(AnsiCommand::Csi(
+        CsiCommand::SetScrollingRegion { top: 1, bottom: 3 },
+    )));
+    let _ = term.get_render_snapshot().expect("snapshot");
+
+    // Cursor starts at the region's top row; three linefeeds walk it to the
+    // region's bottom and then scroll the region, pushing row 0 into
+    // scrollback and bumping the generation. Rows 3-5 sit outside the
+    // region and are never touched by the scroll — nothing except
+    // `view_changed` can dirty them.
+    for _ in 0..3 {
+        term.interpret_input(EmulatorInput::Ansi(AnsiCommand::C0Control(
+            crate::ansi::commands::C0Control::LF,
+        )));
+    }
+
+    let after_scroll = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        after_scroll.lines[3..6].iter().all(|l| l.is_dirty),
+        "the view changed (scrollback generation bumped): `get_render_snapshot`'s \
+         documented contract dirties every row, including ones the scroll itself \
+         never touched"
+    );
+
+    let idle = term.get_render_snapshot().expect("snapshot");
+    assert!(
+        !idle.lines[3..6].iter().any(|l| l.is_dirty),
+        "the view is unchanged and those rows were never touched: clean"
     );
 }
