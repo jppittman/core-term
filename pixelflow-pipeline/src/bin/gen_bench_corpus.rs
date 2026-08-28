@@ -467,7 +467,10 @@ fn normalize() -> (ExprArena, ExprId) {
     (a, out)
 }
 
-/// Resolve a manifest kernel name to its arena builder.
+/// Resolve a manifest kernel name to its arena builder. Falls back to the
+/// withheld ShaderToy benchmark set
+/// ([`pixelflow_pipeline::shader_bench::SHADERTOY_KERNEL_NAMES`]) for any
+/// name not among the five original production kernels above.
 fn named_kernel(name: &str) -> Option<(ExprArena, ExprId)> {
     match name {
         "swirl" => Some(swirl()),
@@ -475,7 +478,7 @@ fn named_kernel(name: &str) -> Option<(ExprArena, ExprId)> {
         "poly" => Some(poly()),
         "redundant" => Some(redundant()),
         "normalize" => Some(normalize()),
-        _ => None,
+        _ => pixelflow_pipeline::shader_bench::named_shadertoy_kernel(name),
     }
 }
 
@@ -777,7 +780,8 @@ fn main() {
         let (arena, root) = named_kernel(name).unwrap_or_else(|| {
             panic!(
                 "split manifest FINAL kernel \"{name}\" is not a known production kernel \
-                 (known: swirl, circle_sdf, poly, redundant, normalize)"
+                 (known: swirl, circle_sdf, poly, redundant, normalize, plus the withheld \
+                 ShaderToy set — see pixelflow_pipeline::shader_bench::SHADERTOY_KERNEL_NAMES)"
             )
         });
         let key = FenceKey::of(&arena, root);
@@ -1194,12 +1198,21 @@ mod tests {
     // where it now lives so the trainer's live synthetic stream runs the same
     // predicate. What belongs here is that THIS binary's inputs pass it.
 
+    /// The five original production kernels plus the withheld ShaderToy set
+    /// — every name `named_kernel` must resolve.
+    fn all_named_kernels() -> Vec<&'static str> {
+        ["swirl", "circle_sdf", "poly", "redundant", "normalize"]
+            .into_iter()
+            .chain(pixelflow_pipeline::shader_bench::SHADERTOY_KERNEL_NAMES)
+            .collect()
+    }
+
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
     #[test]
     fn named_kernels_pass_the_numeric_quarantine() {
         use pixelflow_pipeline::training::quarantine::{QuarantineGrid, quarantine_verdict};
         let grid = QuarantineGrid::new();
-        for name in ["swirl", "circle_sdf", "poly", "redundant", "normalize"] {
+        for name in all_named_kernels() {
             let (arena, root) = named_kernel(name).expect("known kernel");
             let verdict = quarantine_verdict(&arena, root, &grid);
             assert!(
@@ -1213,7 +1226,7 @@ mod tests {
     #[test]
     fn named_kernels_are_screenable_by_the_oracle() {
         use pixelflow_pipeline::training::quarantine::screen_for_oracle;
-        for name in ["swirl", "circle_sdf", "poly", "redundant", "normalize"] {
+        for name in all_named_kernels() {
             let (arena, root) = named_kernel(name).expect("known kernel");
             screen_for_oracle(&arena, root)
                 .unwrap_or_else(|e| panic!("named kernel {name} is not quarantinable: {e}"));
@@ -1223,6 +1236,7 @@ mod tests {
     #[test]
     fn named_kernel_lookup_rejects_unknown_names() {
         assert!(named_kernel("swirl").is_some());
+        assert!(named_kernel("mandelbrot_distance").is_some());
         assert!(named_kernel("does_not_exist").is_none());
     }
 }

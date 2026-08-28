@@ -12,6 +12,7 @@ pub mod journal;
 pub mod oracle_compare;
 pub mod oracle_lowering;
 pub mod schema;
+pub mod shader_bench;
 
 // Training infrastructure (requires std feature)
 #[cfg(feature = "training")]

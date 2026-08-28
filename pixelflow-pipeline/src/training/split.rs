@@ -970,8 +970,9 @@ kernels = ["swirl", "poly"]
         let m = SplitManifest::parse(text).expect("checked-in corpus_split.toml must be valid");
         assert_eq!(
             m.final_kernels.len(),
-            5,
-            "the five named production kernels"
+            17,
+            "the five original named production kernels plus the withheld \
+             12-kernel ShaderToy benchmark set (pixelflow_pipeline::shader_bench)"
         );
         assert_eq!(m.max_band_index(), 37, "band table has 38 bands (0..=37)");
         // Spot-check the by-family holdout: dev band 22 is dev at every seed,
