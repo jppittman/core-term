@@ -223,17 +223,6 @@ impl<L> SpatialBSP<L> {
     pub fn leaf_count(&self) -> usize {
         self.leaves.len()
     }
-
-    /// Read-only access to interior node `idx` — the routing info (axis,
-    /// threshold, children) that governs traversal at that node.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `idx >= self.interior_count()`.
-    #[must_use]
-    pub fn interior(&self, idx: usize) -> &InteriorNode {
-        &self.interiors[idx]
-    }
 }
 
 // ============================================================================
@@ -511,7 +500,7 @@ mod tests {
         // Verify the split axis and threshold are correct
         // Left item spans [0, 25], right item spans [75, 100]
         // Threshold should be in the gap (25, 75), ideally around 50
-        let root = bsp.interior(0);
+        let root = &bsp.interiors[0];
         assert_eq!(
             root.axis,
             Axis::X,
@@ -539,7 +528,7 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        let root = bsp.interior(0);
+        let root = &bsp.interiors[0];
 
         assert_eq!(root.axis, Axis::Y, "Should split on Y for tall items");
     }
@@ -559,7 +548,7 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        let root = bsp.interior(0);
+        let root = &bsp.interiors[0];
 
         assert_eq!(root.axis, Axis::X, "Should split on X for wide items");
     }
@@ -672,7 +661,7 @@ mod tests {
 
         // Verify threshold is in the gap between items
         // Left item spans [-100, -50], right item spans [-50, 0]
-        let root = bsp.interior(0);
+        let root = &bsp.interiors[0];
         assert!(
             root.threshold >= -100.0 && root.threshold <= 0.0,
             "Threshold must separate the items: {} should be in [-100, 0]",
@@ -696,7 +685,7 @@ mod tests {
         let bsp = SpatialBSP::from_positioned(items);
 
         assert_eq!(bsp.leaf_count(), 2);
-        assert!(bsp.interior(0).threshold > 1e6);
+        assert!(bsp.interiors[0].threshold > 1e6);
     }
 
     #[test]
@@ -943,7 +932,7 @@ mod tests {
         assert_eq!(bsp.interior_count(), 1);
         assert_eq!(bsp.leaf_count(), 2);
 
-        let root = bsp.interior(0);
+        let root = &bsp.interiors[0];
 
         // Both children should be leaves (not interiors)
         matches!(root.left, NodeRef::Leaf(_));
@@ -978,7 +967,7 @@ mod tests {
         assert_eq!(bsp.leaf_count(), 4);
 
         // Root should be last interior
-        let root = bsp.interior(2);
+        let root = &bsp.interiors[2];
 
         // At least one child should be an interior node
         let has_interior_child =
@@ -1085,7 +1074,7 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        let root = bsp.interior(0);
+        let root = &bsp.interiors[0];
 
         // Based on line 148: width >= height, so square splits on X
         assert_eq!(root.axis, Axis::X);
@@ -1105,7 +1094,7 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        assert_eq!(bsp.interior(0).axis, Axis::X);
+        assert_eq!(bsp.interiors[0].axis, Axis::X);
     }
 
     #[test]
@@ -1122,7 +1111,7 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        assert_eq!(bsp.interior(0).axis, Axis::Y);
+        assert_eq!(bsp.interiors[0].axis, Axis::Y);
     }
 
     // ========================================================================
@@ -1144,7 +1133,7 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        let root = bsp.interior(0);
+        let root = &bsp.interiors[0];
 
         // Threshold should be between 40.0 and 60.0 (in the gap)
         assert!(
@@ -1169,7 +1158,7 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        let root = bsp.interior(0);
+        let root = &bsp.interiors[0];
 
         // Threshold should be at or very close to 50.0
         assert!(
@@ -1195,7 +1184,7 @@ mod tests {
 
         let bsp = SpatialBSP::from_positioned(items);
         assert_eq!(bsp.leaf_count(), 2);
-        assert!(bsp.interior(0).threshold.is_finite());
+        assert!(bsp.interiors[0].threshold.is_finite());
     }
 
     // ========================================================================
@@ -1217,7 +1206,7 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        let threshold = bsp.interior(0).threshold;
+        let threshold = bsp.interiors[0].threshold;
 
         // Sample exactly at threshold (should go right, >= threshold)
         let result = bsp.eval_raw(
@@ -1245,7 +1234,7 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        let threshold = bsp.interior(0).threshold;
+        let threshold = bsp.interiors[0].threshold;
 
         // Sample just below threshold
         let result = bsp.eval_raw(
@@ -1272,7 +1261,7 @@ mod tests {
         ];
 
         let bsp = SpatialBSP::from_positioned(items);
-        let threshold = bsp.interior(0).threshold;
+        let threshold = bsp.interiors[0].threshold;
 
         // Sample just above threshold
         let result = bsp.eval_raw(
@@ -1496,7 +1485,7 @@ mod tests {
 
         // Every interior node must point to valid indices
         for i in 0..bsp.interior_count() {
-            let interior = bsp.interior(i);
+            let interior = &bsp.interiors[i];
             match interior.left {
                 NodeRef::Interior(i) => {
                     assert!(
@@ -1564,7 +1553,7 @@ mod tests {
                     reachable.insert(i);
                 }
                 NodeRef::Interior(i) => {
-                    let interior = bsp.interior(i as usize);
+                    let interior = &bsp.interiors[i as usize];
                     collect_leaves(bsp, interior.left, reachable);
                     collect_leaves(bsp, interior.right, reachable);
                 }
@@ -1618,7 +1607,7 @@ mod tests {
         // Verify each interior node's threshold correctly partitions
         fn verify_partition<L>(bsp: &SpatialBSP<L>, node: NodeRef, centers: &[f32], depth: usize) {
             if let NodeRef::Interior(i) = node {
-                let interior = bsp.interior(i as usize);
+                let interior = &bsp.interiors[i as usize];
                 let threshold = interior.threshold;
                 let axis = interior.axis;
 
@@ -1639,7 +1628,7 @@ mod tests {
                             }
                         }
                         NodeRef::Interior(i) => {
-                            let interior = bsp.interior(i as usize);
+                            let interior = &bsp.interiors[i as usize];
                             collect_centers(bsp, interior.left, centers, output);
                             collect_centers(bsp, interior.right, centers, output);
                         }
@@ -1700,7 +1689,7 @@ mod tests {
 
         // Interior nodes shouldn't point to themselves or have identical children
         for idx in 0..bsp.interior_count() {
-            let interior = bsp.interior(idx);
+            let interior = &bsp.interiors[idx];
             // Left and right must be different
             let left_is_self = matches!(interior.left, NodeRef::Interior(i) if i as usize == idx);
             let right_is_self = matches!(interior.right, NodeRef::Interior(i) if i as usize == idx);
@@ -1776,7 +1765,7 @@ mod tests {
         let bsp = SpatialBSP::from_positioned(items);
 
         for idx in 0..bsp.interior_count() {
-            let interior = bsp.interior(idx);
+            let interior = &bsp.interiors[idx];
             assert!(
                 interior.threshold.is_finite(),
                 "Interior {} has non-finite threshold: {}",
