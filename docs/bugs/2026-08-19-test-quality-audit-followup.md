@@ -23,24 +23,24 @@ genuinely new/changed tests from code that only moved during the two large
 refactors), against STYLE.md's two testing rules: descriptive "it should"
 names, and public-API-only test surfaces.
 
-**7 violations found, 6 fixed:**
+**8 violations found, 7 fixed:**
 
 Descriptive-name fixes (all pre-existing behavior unchanged):
 
 - `pixelflow-pipeline/src/jit_bench.rs`: `iqr_computation` →
-  `iqr_is_order_independent_and_zero_for_a_flat_sample`
+  `iqr_should_be_order_independent_and_zero_for_a_flat_sample`
 - `pixelflow-pipeline/src/schema.rs`: `hex_and_const_agree` →
-  `fnv1a64_hex_and_fnv1a64_const_agree_on_the_same_bytes`
+  `fnv1a64_hex_and_fnv1a64_const_should_agree_on_the_same_bytes`
 - `pixelflow-pipeline/src/training/split.rs`: `seed_range_helpers` (tested
   three unrelated behaviors under one non-descriptive name) →
-  `seed_range_contains_count_and_overlap_match_their_definitions`
+  `seed_range_contains_count_and_overlap_should_match_their_definitions`
 - `pixelflow-search/src/nnue/guide/scoring.rs`:
   `bilinear_score_computation` →
-  `bilinear_score_matches_the_manual_dot_product_and_stays_finite`;
+  `bilinear_score_should_match_the_manual_dot_product_and_stay_finite`;
   `verify_randomize_is_deterministic_and_finite` (redundant `verify_`
-  prefix) → `randomize_is_deterministic_and_finite`;
+  prefix) → `randomize_should_be_deterministic_and_finite`;
   `encode_rule_from_arena_deterministic` (missing verb) →
-  `encode_rule_from_arena_is_deterministic`
+  `encode_rule_from_arena_should_be_deterministic`
 
 Public-API fix:
 
@@ -96,7 +96,7 @@ required primitive had zero direct coverage: `cmp_le`/`cmp_ge`/`cmp_eq`/
 `Mask4`/`U32x4` bitwise operators (`BitAnd`/`BitOr`/`Not`), `U32x4`'s
 `Shl`/`Shr`, `pack_rgba`, and every `Debug` impl in the file.
 
-### Fixed: 16 new tests in `pixelflow-core/tests/x86_backend_tests.rs`
+### Fixed: 17 new tests in `pixelflow-core/tests/x86_backend_tests.rs`
 
 One test per gap (or per closely-related group, matching the file's
 existing `sse2_bitwise`/`sse2_logic`-style grouping), against the public
@@ -131,8 +131,8 @@ tested with an index past the slice end, which also catches the
 read past the slice and panic, which mutation testing counts as caught
 same as a failed assertion).
 
-`cargo test -p pixelflow-core --test x86_backend_tests`: 34/34 passed (18
-pre-existing + 16 new). `cargo fmt -p pixelflow-core -- --check` and
+`cargo test -p pixelflow-core --test x86_backend_tests`: 35/35 passed (18
+pre-existing + 17 new). `cargo fmt -p pixelflow-core -- --check` and
 `cargo clippy -p pixelflow-core --tests`: clean.
 
 **Re-running the mutants sweep: 76/77 caught.**
@@ -161,7 +161,7 @@ adding a test that can't mean anything.
 
 ## Verified
 
-- `cargo test -p pixelflow-core --test x86_backend_tests`: 34 passed, 0
+- `cargo test -p pixelflow-core --test x86_backend_tests`: 35 passed, 0
   failed.
 - `cargo test -p pixelflow-core` (all targets incl. doctests): passed, 0
   failed.
