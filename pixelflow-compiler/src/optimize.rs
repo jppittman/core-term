@@ -1411,82 +1411,79 @@ mod tests {
     use crate::parser::parse;
     use crate::sema::analyze;
     use pixelflow_search::egraph::CostModel;
-    use pixelflow_search::nnue::ExprNnue;
     use quote::quote;
 
     // ========================================================================
     // DAG Extraction Tests
     // ========================================================================
+    //
+    // These go through the public `optimize()` entry point (the default,
+    // no-`PIXELFLOW_NNUE_WEIGHTS` static-latency-prior path) rather than
+    // constructing an explicit `ExtractionPolicy`: DAG/CSE let-binding
+    // placement is driven by ref-counting in `compute_ref_counts`, which is
+    // independent of which cost model picked the extraction — the public
+    // entry point exercises the same sharing logic these tests care about.
 
-    /// Test DAG optimization with shared subexpressions.
+    /// The optimizer should emit a shared binding when the same subexpression
+    /// (`sin(X)`) is used twice.
     #[test]
-    fn dag_optimization_shared_subexpr() {
-        // sin(X) * sin(X) should emit a let-binding
+    fn dag_extraction_preserves_sin_when_subexpression_is_shared_twice() {
         let input = quote! { || X.sin() * X.sin() };
         let kernel = parse(input).unwrap();
         let analyzed = analyze(kernel).unwrap();
 
-        // Use neural optimizer
-        let model = ExprNnue::new_random(42);
-        let optimized =
-            optimize_expr_with_model(analyzed.def.body.clone(), &ExtractionPolicy::Nnue(&model));
+        let optimized = optimize(analyzed);
 
-        let debug = format!("{:?}", optimized);
+        let debug = format!("{:?}", optimized.def.body);
         eprintln!("DAG optimized sin(X)*sin(X): {}", debug);
 
-        // The output should either:
-        // 1. Have a let-binding for the shared sin(X), OR
-        // 2. Reference the same subexpression (e-graph dedup)
-        // For now, just verify it's well-formed
         assert!(
             debug.contains("sin") || debug.contains("Sin"),
             "Expected sin in output"
         );
     }
 
-    /// Test DAG optimization with triple use of shared subexpr.
+    /// The optimizer should preserve the shared operator when the same
+    /// subexpression (`sqrt(X)`) is used three times.
     #[test]
-    fn dag_optimization_triple_shared() {
-        // sqrt(X) * sqrt(X) + sqrt(X) should emit let-binding
+    fn dag_extraction_preserves_sqrt_when_subexpression_is_shared_three_times() {
         let input = quote! { || X.sqrt() * X.sqrt() + X.sqrt() };
         let kernel = parse(input).unwrap();
         let analyzed = analyze(kernel).unwrap();
 
-        let model = ExprNnue::new_random(42);
-        let optimized =
-            optimize_expr_with_model(analyzed.def.body.clone(), &ExtractionPolicy::Nnue(&model));
+        let optimized = optimize(analyzed);
 
-        let debug = format!("{:?}", optimized);
+        let debug = format!("{:?}", optimized.def.body);
         eprintln!("DAG optimized sqrt(X)*sqrt(X)+sqrt(X): {}", debug);
 
-        // Should have sqrt in output
         assert!(debug.contains("sqrt"), "Expected sqrt in output");
     }
 
-    /// Test that simple expressions without sharing don't get wrapped in blocks.
+    /// A simple expression with no shared subexpressions should not be
+    /// wrapped in a `Block` — DAG extraction must not introduce a let-binding
+    /// where nothing is actually shared.
     #[test]
-    fn dag_optimization_no_sharing() {
-        // X + Y has no sharing, should remain simple
+    fn dag_extraction_does_not_wrap_output_in_block_when_nothing_is_shared() {
         let input = quote! { || X + Y };
         let kernel = parse(input).unwrap();
         let analyzed = analyze(kernel).unwrap();
 
-        let model = ExprNnue::new_random(42);
-        let optimized =
-            optimize_expr_with_model(analyzed.def.body.clone(), &ExtractionPolicy::Nnue(&model));
+        let optimized = optimize(analyzed);
 
-        let debug = format!("{:?}", optimized);
+        let debug = format!("{:?}", optimized.def.body);
         eprintln!("DAG optimized X+Y: {}", debug);
 
-        // Should NOT be wrapped in a block
         assert!(
             !debug.starts_with("Block"),
             "Simple expression should not be wrapped in block"
         );
     }
 
+    /// `optimize()` should wrap `.neg()` around the whole `(c_sq - r_sq)`
+    /// subtraction rather than distributing the negation into `r * r`, which
+    /// would silently change the result from `-c_sq + r²` to `c_sq + r²`.
     #[test]
-    fn full_pipeline_discriminant() {
+    fn optimize_wraps_neg_around_subtraction_instead_of_distributing_into_r_squared() {
         use crate::codegen;
 
         // Full pipeline test matching actual kernel! macro
@@ -1531,6 +1528,13 @@ mod tests {
     /// explicitly running `ExtractionPolicy::Static(CostModel::latency_prior())` —
     /// proving the default neither silently picks up learned weights nor
     /// silently degrades to a zero-cost (no-op) model.
+    ///
+    /// This intentionally calls the private `optimize_expr`/
+    /// `optimize_expr_with_model` directly (STYLE.md "Test Public API"
+    /// exception): the whole point is comparing the default's *implicit*
+    /// policy selection against an *explicit* one, and the only public path
+    /// to policy selection is the process-global `PIXELFLOW_NNUE_WEIGHTS` env
+    /// var, which would race across the parallel test harness.
     #[test]
     fn default_path_extraction_is_static_latency_prior() {
         use crate::codegen;

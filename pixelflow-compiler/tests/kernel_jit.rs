@@ -134,7 +134,7 @@ fn jit_macro_abs() {
 }
 
 #[test]
-fn jit_macro_min_max() {
+fn jit_macro_min_returns_smaller_and_max_returns_larger() {
     let m_min = kernel_jit!(|| X.min(Y));
     let m_max = kernel_jit!(|| X.max(Y));
     assert_eq!(eval2(&m_min, 10.0, 42.0), 10.0);
@@ -218,7 +218,7 @@ fn kernel_jit_same_semantics_as_kernel() {
 
 #[test]
 #[cfg(not(target_feature = "avx512f"))] // transcendentals: not in AVX-512 Stage-1 op set
-fn jit_macro_atan2_basic() {
+fn jit_macro_atan2_matches_reference_at_boundary_and_interior_points() {
     let m = kernel_jit!(|| Y.atan2(X));
     // atan2(1, 1) = π/4 — polynomial has ~0.06 error at t=1 boundary
     let val = eval2(&m, 1.0, 1.0);

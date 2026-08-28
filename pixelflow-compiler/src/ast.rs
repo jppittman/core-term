@@ -145,7 +145,7 @@ pub struct LiteralExpr {
 }
 
 /// Binary operators we recognize.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -174,7 +174,7 @@ pub struct BinaryExpr {
 }
 
 /// Unary operators.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
     Neg,
     Not,
@@ -267,5 +267,46 @@ impl UnaryOp {
             syn::UnOp::Not(_) => Some(UnaryOp::Not),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binary_op_from_syn_maps_every_supported_syn_binop_to_its_own_variant() {
+        let cases: &[(syn::BinOp, BinaryOp)] = &[
+            (syn::parse_quote!(+), BinaryOp::Add),
+            (syn::parse_quote!(-), BinaryOp::Sub),
+            (syn::parse_quote!(*), BinaryOp::Mul),
+            (syn::parse_quote!(/), BinaryOp::Div),
+            (syn::parse_quote!(%), BinaryOp::Rem),
+            (syn::parse_quote!(<), BinaryOp::Lt),
+            (syn::parse_quote!(<=), BinaryOp::Le),
+            (syn::parse_quote!(>), BinaryOp::Gt),
+            (syn::parse_quote!(>=), BinaryOp::Ge),
+            (syn::parse_quote!(==), BinaryOp::Eq),
+            (syn::parse_quote!(!=), BinaryOp::Ne),
+            (syn::parse_quote!(&), BinaryOp::BitAnd),
+            (syn::parse_quote!(|), BinaryOp::BitOr),
+        ];
+        for (syn_op, expected) in cases {
+            assert_eq!(BinaryOp::from_syn(syn_op), Some(*expected), "{syn_op:?}");
+        }
+    }
+
+    #[test]
+    fn binary_op_from_syn_rejects_an_unsupported_syn_binop() {
+        let syn_op: syn::BinOp = syn::parse_quote!(+=);
+        assert_eq!(BinaryOp::from_syn(&syn_op), None);
+    }
+
+    #[test]
+    fn unary_op_from_syn_maps_neg_and_not_to_their_own_variants() {
+        let neg: syn::UnOp = syn::parse_quote!(-);
+        let not: syn::UnOp = syn::parse_quote!(!);
+        assert_eq!(UnaryOp::from_syn(&neg), Some(UnaryOp::Neg));
+        assert_eq!(UnaryOp::from_syn(&not), Some(UnaryOp::Not));
     }
 }
