@@ -181,6 +181,11 @@ impl<L> SpatialBSP<L> {
             (Axis::X, threshold)
         } else {
             // Sort by Y center, split at median
+            //
+            // `/ 2.0` here is an equivalent mutant to `* 2.0` under cargo-mutants: both are
+            // positive monotonic scalings, so they never change the comparator's ordering for
+            // any input, only its constant factor. No test can distinguish them — left as `/`
+            // to match the actual center-of-bounds formula.
             items.sort_by(|a, b| {
                 let ca = (a.bounds.1 + a.bounds.3) / 2.0;
                 let cb = (b.bounds.1 + b.bounds.3) / 2.0;
@@ -914,7 +919,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn node_ref_types_are_distinct() {
+    fn both_children_are_leaves_when_two_items_are_split_once() {
         let items = vec![
             Positioned {
                 bounds: (0.0, 0.0, 50.0, 100.0),
@@ -935,8 +940,16 @@ mod tests {
         let root = &bsp.interiors[0];
 
         // Both children should be leaves (not interiors)
-        matches!(root.left, NodeRef::Leaf(_));
-        matches!(root.right, NodeRef::Leaf(_));
+        assert!(
+            matches!(root.left, NodeRef::Leaf(_)),
+            "left child should be a leaf, got {:?}",
+            root.left
+        );
+        assert!(
+            matches!(root.right, NodeRef::Leaf(_)),
+            "right child should be a leaf, got {:?}",
+            root.right
+        );
     }
 
     #[test]
@@ -1845,6 +1858,275 @@ mod tests {
         assert_eq!(
             pixels[0], expected_blue,
             "Item 2 should be visible on left side"
+        );
+    }
+
+    // ========================================================================
+    // Split Heuristic Arithmetic Tests (cargo-mutants gaps, 2026-08-26 audit)
+    // ========================================================================
+
+    #[test]
+    fn split_axis_prefers_center_spread_when_it_exceeds_bbox_extent() {
+        // Two items whose center-to-center spread is larger on Y (15) than on X
+        // (10), computed via item *centers* rather than raw bounding-box extent.
+        // Kills three surviving mutants in the cx/cy formula (`* 0.5` -> `/ 0.5`,
+        // `* 0.5` -> `+ 0.5`, and `bounds.0 + bounds.2` -> `bounds.0 * bounds.2`):
+        // each inflates the X center-spread well past 15, wrongly flipping the
+        // split axis to X.
+        let items = vec![
+            Positioned {
+                bounds: (-5.0, -7.5, 5.0, 7.5), // center (0, 0)
+                leaf: SolidColor::new(255, 0, 0, 255),
+            },
+            Positioned {
+                bounds: (5.0, 7.5, 15.0, 22.5), // center (10, 15)
+                leaf: SolidColor::new(0, 0, 255, 255),
+            },
+        ];
+
+        let bsp = SpatialBSP::from_positioned(items);
+        assert_eq!(
+            bsp.interiors[0].axis,
+            Axis::Y,
+            "Y center-spread (15) exceeds X center-spread (10), so split must be on Y"
+        );
+    }
+
+    #[test]
+    fn split_prefers_strictly_larger_center_spread_over_bbox_fallback() {
+        // X center-spread (~20) is strictly greater than Y center-spread (10), so
+        // the split must be on X via the first `extent_x > extent_y` branch — even
+        // though the items are so thin in X and so tall in Y that the *bounding-box*
+        // fallback (width vs height) would independently prefer Y. Kills a `>` ->
+        // `==` mutant on that branch: under the mutant, 20 == 10 is false, so the
+        // code falls through the `else if` (also false) into the bbox fallback and
+        // wrongly picks Y.
+        let items = vec![
+            Positioned {
+                bounds: (0.0, 0.0, 0.001, 500.0), // center (~0.0005, 250)
+                leaf: SolidColor::new(255, 0, 0, 255),
+            },
+            Positioned {
+                bounds: (20.0, 10.0, 20.001, 510.0), // center (~20.0005, 260)
+                leaf: SolidColor::new(0, 0, 255, 255),
+            },
+        ];
+
+        let bsp = SpatialBSP::from_positioned(items);
+        assert_eq!(
+            bsp.interiors[0].axis,
+            Axis::X,
+            "X center-spread (~20) strictly exceeds Y center-spread (10)"
+        );
+    }
+
+    #[test]
+    fn split_axis_tie_break_uses_bbox_width_against_a_small_min_x() {
+        // Item centers coincide exactly on both axes (extent_x == extent_y == 0),
+        // so the split falls through to the bbox width-vs-height tie-break. Bounds
+        // are eighths (exactly representable in f32) so the two items' centers are
+        // bit-for-bit equal rather than merely close. Real width (10.0, from
+        // max_x - min_x = 10.125 - 0.125) is less than height (50), so the split
+        // must be on Y. Kills two surviving mutants:
+        //  - `max_x - min_x` -> `max_x / min_x`: with min_x this close to zero, the
+        //    ratio (81.0) blows past height and wrongly flips the axis to X.
+        //  - `extent_x > extent_y` -> `extent_x >= extent_y`: with the tie at
+        //    exactly 0, `>=` fires immediately and picks X before the bbox
+        //    fallback ever runs.
+        let items = vec![
+            Positioned {
+                bounds: (0.125, 40.0, 10.125, 60.0), // center (5.125, 50)
+                leaf: SolidColor::new(255, 0, 0, 255),
+            },
+            Positioned {
+                bounds: (3.125, 25.0, 7.125, 75.0), // center (5.125, 50) — tied
+                leaf: SolidColor::new(0, 0, 255, 255),
+            },
+        ];
+
+        let bsp = SpatialBSP::from_positioned(items);
+        assert_eq!(
+            bsp.interiors[0].axis,
+            Axis::Y,
+            "tied centers fall back to bbox width (10.0) vs height (50), favoring Y"
+        );
+    }
+
+    #[test]
+    fn split_axis_tie_break_width_subtracts_not_adds_the_bbox_bounds() {
+        // Same tie-break setup as above, but with the x-range shifted far from zero
+        // (1000..1010) so a `max_x - min_x` -> `max_x + min_x` mutant produces a
+        // huge sum (2010) instead of the true width (10), wrongly flipping the
+        // axis to X.
+        let items = vec![
+            Positioned {
+                bounds: (1000.0, 40.0, 1010.0, 60.0), // center (1005, 50)
+                leaf: SolidColor::new(255, 0, 0, 255),
+            },
+            Positioned {
+                bounds: (1002.0, 25.0, 1008.0, 75.0), // center (1005, 50) — tied
+                leaf: SolidColor::new(0, 0, 255, 255),
+            },
+        ];
+
+        let bsp = SpatialBSP::from_positioned(items);
+        assert_eq!(
+            bsp.interiors[0].axis,
+            Axis::Y,
+            "tied centers fall back to bbox width (10) vs height (50), favoring Y"
+        );
+    }
+
+    #[test]
+    fn split_axis_tie_break_height_subtracts_not_adds_the_bbox_bounds() {
+        // Mirrors the width test above but for height: y-range shifted to
+        // 1000..1005 so a `max_y - min_y` -> `max_y + min_y` mutant produces 2005
+        // instead of the true height (5), wrongly flipping the axis from X to Y.
+        let items = vec![
+            Positioned {
+                bounds: (0.0, 1000.0, 50.0, 1005.0), // center (25, 1002.5)
+                leaf: SolidColor::new(255, 0, 0, 255),
+            },
+            Positioned {
+                bounds: (10.0, 1001.0, 40.0, 1004.0), // center (25, 1002.5) — tied
+                leaf: SolidColor::new(0, 0, 255, 255),
+            },
+        ];
+
+        let bsp = SpatialBSP::from_positioned(items);
+        assert_eq!(
+            bsp.interiors[0].axis,
+            Axis::X,
+            "tied centers fall back to bbox width (50) vs height (5), favoring X"
+        );
+    }
+
+    #[test]
+    fn x_axis_threshold_sorts_by_sum_of_bounds_not_product() {
+        // Three items with identical Y (forcing an X split) whose X sum-order
+        // differs from their X product-order. Kills a `+` -> `*` mutant in the
+        // sort-by-center-x comparator: sorting by product instead of sum reorders
+        // the items, changing which pair straddles the median split and so which
+        // threshold comes out. Given in descending sum-order (rather than already
+        // sorted) so the sort actually has to move every element and exercises the
+        // comparator's mutated argument in every slot — an already-sorted input
+        // lets insertion sort skip the comparisons that would expose it.
+        let items = vec![
+            Positioned {
+                bounds: (8.0, 0.0, 12.0, 10.0), // center x = 10.0, sum-sorted last
+                leaf: SolidColor::new(0, 0, 255, 255),
+            },
+            Positioned {
+                bounds: (-2.0, 0.0, 3.0, 10.0), // center x = 0.5, sum-sorted middle
+                leaf: SolidColor::new(0, 255, 0, 255),
+            },
+            Positioned {
+                bounds: (-10.0, 0.0, -9.0, 10.0), // center x = -9.5, sum-sorted first
+                leaf: SolidColor::new(255, 0, 0, 255),
+            },
+        ];
+
+        let bsp = SpatialBSP::from_positioned(items);
+        let root = &bsp.interiors[bsp.interior_count() - 1];
+
+        assert_eq!(root.axis, Axis::X, "identical Y bounds force an X split");
+        assert_eq!(
+            root.threshold, -5.5,
+            "sum order is [(-10,-9), (-2,3), (8,12)]; median threshold = \
+             (-9 + -2) / 2"
+        );
+    }
+
+    #[test]
+    fn y_axis_threshold_sorts_by_sum_of_bounds_not_product_or_wrong_neighbor() {
+        // Same construction as the X-axis test above, transposed onto Y (identical
+        // X forces a Y split) and likewise given in descending sum-order so the
+        // sort has to move every element. Kills the analogous `+` -> `*`/`-`
+        // sort-key mutants for the Y branch's `ca`/`cb` (both arguments of the
+        // comparator, not just one), a `/` -> `%` mutant in `cb`, and a
+        // `mid_idx - 1` -> `mid_idx / 1` mutant in the threshold formula: that
+        // mutant reads `items[mid_idx]` for *both* sides of the average instead of
+        // `items[mid_idx - 1]` and `items[mid_idx]`, which this asymmetric item set
+        // turns into a different number (0.5 instead of -5.5).
+        let items = vec![
+            Positioned {
+                bounds: (0.0, 8.0, 10.0, 12.0), // center y = 10.0, sum-sorted last
+                leaf: SolidColor::new(0, 0, 255, 255),
+            },
+            Positioned {
+                bounds: (0.0, -2.0, 10.0, 3.0), // center y = 0.5, sum-sorted middle
+                leaf: SolidColor::new(0, 255, 0, 255),
+            },
+            Positioned {
+                bounds: (0.0, -10.0, 10.0, -9.0), // center y = -9.5, sum-sorted first
+                leaf: SolidColor::new(255, 0, 0, 255),
+            },
+        ];
+
+        let bsp = SpatialBSP::from_positioned(items);
+        let root = &bsp.interiors[bsp.interior_count() - 1];
+
+        assert_eq!(root.axis, Axis::Y, "identical X bounds force a Y split");
+        assert_eq!(
+            root.threshold, -5.5,
+            "sum order is [(-10,-9), (-2,3), (8,12)]; median threshold = \
+             (-9 + -2) / 2"
+        );
+    }
+
+    // ========================================================================
+    // SIMD Lane Blending Tests
+    // ========================================================================
+
+    #[test]
+    fn eval_blends_correctly_when_simd_lanes_straddle_the_threshold() {
+        use pixelflow_core::{materialize_discrete, PARALLELISM};
+
+        // Kills a `delete !` mutant on `!mask.any()` in `traverse`: once the
+        // `mask.all()` early-out is ruled out, a *mixed* mask (some lanes left of
+        // the threshold, some right) must fall through to the `Select` blend.
+        // Deleting the `!` makes any mixed mask take the right-only early return,
+        // silently dropping the left-child values for the lanes that need them.
+        let items = vec![
+            Positioned {
+                bounds: (0.0, 0.0, 50.0, 100.0),
+                leaf: SolidColor::new(255, 0, 0, 255),
+            },
+            Positioned {
+                bounds: (50.0, 0.0, 100.0, 100.0),
+                leaf: SolidColor::new(0, 0, 255, 255),
+            },
+        ];
+        let bsp = SpatialBSP::from_positioned(items);
+        let threshold = bsp.interiors[0].threshold;
+
+        // Start one unit below the threshold so consecutive SIMD lanes straddle it:
+        // lane 0 is left of the split, the last lane is at/right of it.
+        let mut pixels = [0u32; PARALLELISM];
+        materialize_discrete(&bsp, threshold - 1.0, 50.0, &mut pixels);
+
+        let expected_red = {
+            let red = SolidColor::new(255, 0, 0, 255);
+            let mut buf = [0u32; PARALLELISM];
+            materialize_discrete(&red, 0.0, 0.0, &mut buf);
+            buf[0]
+        };
+        let expected_blue = {
+            let blue = SolidColor::new(0, 0, 255, 255);
+            let mut buf = [0u32; PARALLELISM];
+            materialize_discrete(&blue, 0.0, 0.0, &mut buf);
+            buf[0]
+        };
+
+        assert_eq!(
+            pixels[0], expected_red,
+            "lane at threshold - 1 is left of the split and must stay red"
+        );
+        assert_eq!(
+            pixels[PARALLELISM - 1],
+            expected_blue,
+            "the last lane is at/right of the split and must be blue, even though \
+             lane 0 in the same SIMD group is red"
         );
     }
 }
