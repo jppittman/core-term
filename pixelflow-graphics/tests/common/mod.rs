@@ -141,12 +141,7 @@ pub fn assert_golden(
     let mut worst_delta = 0u8;
     let mut mismatched_pixels = 0usize;
     let mut diff_rgb = vec![0u8; actual_rgb.len()];
-    for (actual_px, golden_px) in actual_rgb
-        .as_chunks::<3>()
-        .0
-        .iter()
-        .zip(golden.rgb.as_chunks::<3>().0.iter())
-    {
+    for (actual_px, golden_px) in actual_rgb.chunks_exact(3).zip(golden.rgb.chunks_exact(3)) {
         let mut pixel_mismatched = false;
         for c in 0..3 {
             let delta = actual_px[c].abs_diff(golden_px[c]);
@@ -190,9 +185,7 @@ pub fn assert_golden(
         width: frame.width,
         height: frame.height,
         data: diff_rgb
-            .as_chunks::<3>()
-            .0
-            .iter()
+            .chunks_exact(3)
             .map(|c| Rgba8::new(c[0], c[1], c[2], 255))
             .collect(),
     };
