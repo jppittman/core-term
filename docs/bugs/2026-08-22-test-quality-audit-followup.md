@@ -60,9 +60,12 @@ rather than more tests:
   to check an omitted key directly.
 - `load_or_default`'s `PIXELFLOW_COST_MODEL` env-var override is the one
   path with a `return` on success, so it's the only part of that function
-  whose *return value* is testable; added one test for it, serialized on a
-  file-local `Mutex` since the env var is process-global and no other test
-  in the crate touches it.
+  whose *return value* is testable. The test spawns a child process with
+  the variable set rather than mutating this one's environment: a
+  file-local `Mutex` cannot satisfy `set_var`'s requirement that no other
+  thread touch the environment concurrently, since the harness runs tests
+  on parallel threads and `load_or_default` itself reads `HOME`. See the
+  note on the parent/child pair further down.
 - Added a minimal second `CostFunction` implementor to exercise the trait's
   own default `cost_by_kind` (`panic!("not implemented")`) — `CostModel`
   overrides it, so nothing else in the crate ever calls the default body.
@@ -211,7 +214,7 @@ are real: `Mask4`, `F32x4`, and `U32x4` are unconditionally compiled at the
 SSE2 baseline, so every mutant here reflects actual reachable,
 actually-tested-or-not code.
 
-### Fixed: 17 new tests in `pixelflow-core/tests/x86_backend_tests.rs`
+### Fixed: 19 new tests in `pixelflow-core/tests/x86_backend_tests.rs`
 
 Extended the file's existing `SimdOps`-required-method coverage (the
 08-15 audit closed the *provided*-method gap in the same file) with the
@@ -249,9 +252,9 @@ else).
 
 ### Verified
 
-- `cargo test -p pixelflow-core --test x86_backend_tests`: 35 passed, 0
+- `cargo test -p pixelflow-core --test x86_backend_tests`: 37 passed, 0
   failed (8 pre-existing SSE2-required + 10 pre-existing SSE2-provided
-  [08-15] + 17 new).
+  [08-15] + 19 new).
 - `cargo test -p pixelflow-core` (all targets incl. doctests): passed, 0
   failed.
 - `cargo clippy -p pixelflow-core --tests`: clean.
