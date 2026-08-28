@@ -612,4 +612,139 @@ mod tests {
         assert_eq!(literals[0].index, 0); // collection order
         assert_eq!(literals[1].index, 1); // collection order
     }
+
+    // ========================================================================
+    // Literal Space Inference (`SpaceInference::resolve`/`force`)
+    // ========================================================================
+
+    /// Find the collected literal with the given numeric value, regardless of
+    /// collection order — several tests below have more than one literal and
+    /// only care about a specific one's inferred space.
+    fn literal_space_at_value(literals: &[CollectedLiteral], value: f64) -> LiteralSpace {
+        literals
+            .iter()
+            .find(|l| match &l.lit {
+                Lit::Float(f) => f.base10_parse::<f64>().unwrap() == value,
+                Lit::Int(i) => i.base10_parse::<f64>().unwrap() == value,
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("no literal with value {value} in {literals:?}"))
+            .space
+    }
+
+    #[test]
+    fn a_literal_joined_with_a_projection_call_is_forced_projected() {
+        let input = quote! { || DX(X) + 1.0 };
+        let kernel = parse(input).unwrap();
+        let (_, _, literals) = annotate(&kernel.body, AnnotationCtx::new());
+        assert_eq!(literals.len(), 1);
+        assert_eq!(literals[0].space, LiteralSpace::Projected);
+    }
+
+    #[test]
+    fn a_literal_joined_with_a_non_projection_call_stays_domain() {
+        // "foo" is not one of V/DX/DY/DZ/DXX/DXY/DYY, so the call must resolve
+        // as an opaque Unknown, not Projected — the sibling literal must not
+        // be force-assigned at all and falls back to the Domain default.
+        let input = quote! { || foo(X) + 1.0 };
+        let kernel = parse(input).unwrap();
+        let (_, _, literals) = annotate(&kernel.body, AnnotationCtx::new());
+        assert_eq!(literals.len(), 1);
+        assert_eq!(literals[0].space, LiteralSpace::Domain);
+    }
+
+    #[test]
+    fn resolve_treats_bare_x_as_the_domain_intrinsic_even_if_a_local_named_x_shadows_it() {
+        // A local literally named "X" must never be consulted for the bare
+        // intrinsic identifier "X" — the intrinsic always resolves Domain.
+        let input = quote! { || { let X = DX(Y); X + 1.0 } };
+        let kernel = parse(input).unwrap();
+        let (_, _, literals) = annotate(&kernel.body, AnnotationCtx::new());
+        assert_eq!(literals.len(), 1);
+        assert_eq!(literals[0].space, LiteralSpace::Domain);
+    }
+
+    #[test]
+    fn select_does_not_join_its_mask_receiver_into_the_forced_space() {
+        // The mask receiver of `.select()` is a Projected value, but select
+        // must treat it as an independent island: since both value args are
+        // bare literals (Unknown on their own), the join stays Unknown and
+        // neither arg is force-assigned.
+        let input = quote! { || DX(X).select(1.0, 2.0) };
+        let kernel = parse(input).unwrap();
+        let (_, _, literals) = annotate(&kernel.body, AnnotationCtx::new());
+        assert_eq!(literals.len(), 2);
+        assert!(literals.iter().all(|l| l.space == LiteralSpace::Domain));
+    }
+
+    #[test]
+    fn select_forces_its_args_when_their_own_joined_space_is_known() {
+        let input = quote! { || Y.select(DX(Z), 1.0) };
+        let kernel = parse(input).unwrap();
+        let (_, _, literals) = annotate(&kernel.body, AnnotationCtx::new());
+        assert_eq!(literals.len(), 1);
+        assert_eq!(literals[0].space, LiteralSpace::Projected);
+    }
+
+    #[test]
+    fn at_does_not_join_its_receiver_or_coordinate_args_into_the_forced_space() {
+        // `.at()` re-maps the domain: neither the receiver nor the
+        // coordinate-list args may leak their space onto each other.
+        let input = quote! { || DX(X).at(1.0, 2.0) };
+        let kernel = parse(input).unwrap();
+        let (_, _, literals) = annotate(&kernel.body, AnnotationCtx::new());
+        assert_eq!(literals.len(), 2);
+        assert!(literals.iter().all(|l| l.space == LiteralSpace::Domain));
+    }
+
+    #[test]
+    fn comparison_methods_discard_their_internal_join_and_resolve_as_unknown() {
+        // Both operands of `.gt()` are Projected, but a comparison produces a
+        // mask — that must not leak Projected out to an unrelated sibling
+        // literal added elsewhere in the tree.
+        let input = quote! { || DX(X).gt(DX(Y)) + 1.0 };
+        let kernel = parse(input).unwrap();
+        let (_, _, literals) = annotate(&kernel.body, AnnotationCtx::new());
+        assert_eq!(literals.len(), 1);
+        assert_eq!(literals[0].space, LiteralSpace::Domain);
+    }
+
+    #[test]
+    fn join_and_force_pushes_a_known_space_onto_an_unconstrained_literal_arg() {
+        let input = quote! { || DX(X).min(1.0) };
+        let kernel = parse(input).unwrap();
+        let (_, _, literals) = annotate(&kernel.body, AnnotationCtx::new());
+        assert_eq!(literals.len(), 1);
+        assert_eq!(literals[0].space, LiteralSpace::Projected);
+    }
+
+    #[test]
+    fn force_does_not_recurse_into_an_at_calls_receiver_or_args() {
+        let input = quote! { || DX(Y) + X.at(1.0) };
+        let kernel = parse(input).unwrap();
+        let (_, _, literals) = annotate(&kernel.body, AnnotationCtx::new());
+        assert_eq!(literals.len(), 1);
+        assert_eq!(literals[0].space, LiteralSpace::Domain);
+    }
+
+    #[test]
+    fn force_recurses_into_select_args_but_leaves_its_mask_receiver_untouched() {
+        let input = quote! { || DX(Z) + (1.5).select(1.0, 2.0) };
+        let kernel = parse(input).unwrap();
+        let (_, _, literals) = annotate(&kernel.body, AnnotationCtx::new());
+        assert_eq!(literals.len(), 3);
+        assert_eq!(
+            literal_space_at_value(&literals, 1.5),
+            LiteralSpace::Domain,
+            "the select mask must not be forced"
+        );
+        assert_eq!(
+            literal_space_at_value(&literals, 1.0),
+            LiteralSpace::Projected
+        );
+        assert_eq!(
+            literal_space_at_value(&literals, 2.0),
+            LiteralSpace::Projected
+        );
+    }
 }

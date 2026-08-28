@@ -600,7 +600,7 @@ mod node_tests {
                 }
 
                 let _ = self.driver_sched.poll_once(&mut self.driver_spy);
-                let granted: Vec<_> = self.driver_spy.granted.drain(..).collect();
+                let granted = std::mem::take(&mut self.driver_spy.granted);
                 if granted.is_empty() {
                     return;
                 }

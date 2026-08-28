@@ -375,14 +375,14 @@ impl SaturationHead {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nnue::factored::OpKind;
+    use crate::nnue::factored::{OpEmbeddings, OpKind};
 
     fn test_backbone() -> ExprNnue {
         ExprNnue::new_random(42)
     }
 
     #[test]
-    fn bilinear_score_should_match_the_manual_dot_product_and_stay_finite() {
+    fn bilinear_score_should_match_manual_computation_for_all_ones_vectors() {
         let head = SaturationHead::new();
         let mut randomized = head.clone();
         randomized.randomize(42);
@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn randomize_should_be_deterministic_and_finite() {
+    fn randomize_should_be_deterministic_and_finite_with_a_near_identity_diagonal() {
         let mut a = SaturationHead::new();
         a.randomize(42);
         let mut b = SaturationHead::new();
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn forward_graph_uses_backbone_trunk() {
+    fn forward_graph_should_use_the_backbone_trunk() {
         let backbone = test_backbone();
         let mut head = SaturationHead::new();
         head.randomize(7);
@@ -477,5 +477,689 @@ mod tests {
             assert!((e1[i] - e2[i]).abs() < 1e-6, "must be deterministic");
             assert!(e1[i].is_finite());
         }
+    }
+
+    #[test]
+    fn graph_input_dim_should_equal_graph_acc_dim_plus_the_scalar_feature_count() {
+        // GRAPH_ACC_DIM (128) + SCALAR_FEATURE_COUNT (4) = 132. Written as a
+        // literal (rather than re-deriving via `+`) so a `+` -> `*` mutation
+        // on the const declaration (128 * 4 = 512) is unambiguously wrong.
+        assert_eq!(GRAPH_INPUT_DIM, 132);
+        assert_eq!(GRAPH_ACC_DIM, 128);
+        assert_eq!(SCALAR_FEATURE_COUNT, 4);
+    }
+
+    /// An `ExprNnue` whose shared trunk is the identity (zero bias, identity
+    /// weight matrix). `apply_trunk` then returns its input unchanged for any
+    /// non-negative vector, letting `forward_graph` tests assert an exact
+    /// pre-trunk hidden value without also having to hand-verify the trunk.
+    fn identity_trunk_backbone() -> ExprNnue {
+        let mut backbone = ExprNnue::new();
+        for i in 0..HIDDEN_DIM {
+            backbone.trunk_w[i][i] = 1.0;
+        }
+        backbone
+    }
+
+    #[test]
+    fn forward_graph_should_index_the_weight_matrix_by_both_lane_and_hidden_column() {
+        // The hand-computed test below fills every accumulator lane and every
+        // weight row uniformly, which pins the arithmetic but not the
+        // indexing: with `values` all 2.0 and every row `[3.0; HIDDEN_DIM]`,
+        // reading `graph_w1[0][j]` or `graph_w1[i][0]` instead of
+        // `graph_w1[i][j]` produces the same answer. This one is sparse
+        // instead, so exactly one (lane, column) pair is live.
+        //
+        // Neither index is zero, so both substitutions read a zero and
+        // collapse the output.
+        const LANE: usize = 7;
+        const COLUMN: usize = 5;
+
+        let backbone = identity_trunk_backbone();
+        let mut head = SaturationHead::new();
+        head.graph_w1[LANE][COLUMN] = 3.0;
+
+        let mut gacc = GraphAccumulator::new();
+        gacc.values[LANE] = 2.0;
+        gacc.node_count = 1; // scale = 1/sqrt(1) = 1
+
+        // Every scalar-feature row is left at zero, so `log2(1 + node_count)`
+        // being nonzero here contributes nothing either way.
+        let hidden = head.forward_graph(&backbone, &gacc);
+
+        for (j, &h) in hidden.iter().enumerate() {
+            let want = if j == COLUMN { 6.0 } else { 0.0 };
+            assert!(
+                (h - want).abs() < 1e-6,
+                "hidden[{j}]: got {h}, expected {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_graph_should_match_a_hand_computed_value_when_node_count_is_positive() {
+        let backbone = identity_trunk_backbone();
+        let mut head = SaturationHead::new();
+        head.graph_b1 = [10.0; HIDDEN_DIM];
+        for i in 0..GRAPH_ACC_DIM {
+            head.graph_w1[i] = [3.0; HIDDEN_DIM];
+        }
+        head.graph_w1[GRAPH_ACC_DIM] = [100.0; HIDDEN_DIM]; // edge_count row
+        head.graph_w1[GRAPH_ACC_DIM + 1] = [200.0; HIDDEN_DIM]; // node_count row
+        head.graph_w1[GRAPH_ACC_DIM + 2] = [300.0; HIDDEN_DIM]; // node_budget row
+        head.graph_w1[GRAPH_ACC_DIM + 3] = [400.0; HIDDEN_DIM]; // epoch_budget row
+
+        let mut gacc = GraphAccumulator::new();
+        gacc.values = [2.0; GRAPH_ACC_DIM];
+        gacc.node_count = 4; // sqrtf(4) = 2 -> scale = 0.5
+        gacc.edge_count = 2;
+        gacc.node_budget = 5;
+        gacc.epoch_budget = 6;
+
+        let hidden = head.forward_graph(&backbone, &gacc);
+
+        let scale = 1.0 / sqrtf(4.0f32);
+        let main_sum = GRAPH_ACC_DIM as f32 * (2.0 * scale) * 3.0;
+        let ec = log2f(1.0 + 2.0f32);
+        let nc = log2f(1.0 + 4.0f32);
+        let nb = log2f(1.0 + 5.0f32);
+        let eb = log2f(1.0 + 6.0f32);
+        let expected = 10.0 + main_sum + ec * 100.0 + nc * 200.0 + nb * 300.0 + eb * 400.0;
+        assert!(
+            expected > 0.0,
+            "fixture must stay in the ReLU's positive branch"
+        );
+
+        for (j, &h) in hidden.iter().enumerate() {
+            assert!(
+                (h - expected).abs() < 1e-2,
+                "hidden[{j}]: got {h}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_graph_should_use_a_scale_of_one_when_node_count_is_zero() {
+        let backbone = identity_trunk_backbone();
+        let mut head = SaturationHead::new();
+        head.graph_b1 = [5.0; HIDDEN_DIM];
+        head.graph_w1[0] = [1.0; HIDDEN_DIM];
+
+        // One populated lane, so the output depends on the scale's *value* and
+        // not merely on its finiteness: an all-zero accumulator multiplies
+        // every candidate scale by 0.0 and lands on the bias either way, which
+        // would leave 0.0, 1.0 and 2.0 indistinguishable here.
+        let mut gacc = GraphAccumulator::new();
+        gacc.values[0] = 8.0;
+
+        // node_count stays 0, so `node_count > 0` is false and the scale is
+        // 1.0. Every scalar feature is log2(1 + 0) = 0 and contributes nothing.
+        // A `>` -> `>=`/`==` mutation takes the other branch and computes
+        // `1.0 / sqrtf(0.0)` = inf, sending the lane to inf rather than 13.0.
+        let expected = 5.0 + 8.0 * 1.0;
+
+        let hidden = head.forward_graph(&backbone, &gacc);
+        for (j, &h) in hidden.iter().enumerate() {
+            assert!(
+                (h - expected).abs() < 1e-6,
+                "hidden[{j}]: got {h}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn compute_graph_embed_should_match_a_hand_computed_value_for_constant_inputs() {
+        let mut head = SaturationHead::new();
+        head.graph_proj_b = [1.0; EMBED_DIM];
+        head.graph_proj_w = [[4.0; EMBED_DIM]; HIDDEN_DIM];
+        let hidden = [2.0f32; HIDDEN_DIM];
+
+        let embed = head.compute_graph_embed(&hidden);
+
+        // expected[k] = b[k] + sum_j hidden[j] * w[j][k] = 1.0 + 64 * (2.0 * 4.0)
+        let expected = 1.0 + HIDDEN_DIM as f32 * (2.0 * 4.0);
+        for (k, &e) in embed.iter().enumerate() {
+            assert!(
+                (e - expected).abs() < 1e-2,
+                "embed[{k}]: got {e}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn compute_mask_features_should_match_a_hand_computed_value_for_constant_inputs() {
+        let mut head = SaturationHead::new();
+        head.mask_mlp_b1 = [1.0; MLP_HIDDEN];
+        head.mask_mlp_w1 = [[4.0; MLP_HIDDEN]; MASK_INPUT_DIM];
+        head.mask_mlp_b2 = [5.0; EMBED_DIM];
+        head.mask_mlp_w2 = [[3.0; EMBED_DIM]; MLP_HIDDEN];
+        let embed = [2.0f32; EMBED_DIM];
+
+        let out = head.compute_mask_features(&embed);
+
+        // h[j] = 1.0 + 32 * (2.0 * 4.0) = 257.0 (positive, ReLU is a no-op)
+        let hidden_val = 1.0 + MASK_INPUT_DIM as f32 * (2.0 * 4.0);
+        assert!(
+            hidden_val > 0.0,
+            "fixture must stay in the ReLU's positive branch"
+        );
+        // out[k] = 5.0 + 16 * (257.0 * 3.0)
+        let expected = 5.0 + MLP_HIDDEN as f32 * (hidden_val * 3.0);
+        for (k, &o) in out.iter().enumerate() {
+            assert!(
+                (o - expected).abs() < 1e-1,
+                "out[{k}]: got {o}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn mask_score_all_rules_with_hidden_should_match_a_manual_composition_of_backbone_and_head() {
+        let backbone = test_backbone();
+        let mut head = SaturationHead::new();
+        head.randomize(11);
+
+        let hidden = [0.3f32; HIDDEN_DIM];
+        let rule_embeds = [[0.2f32; EMBED_DIM], [0.7f32; EMBED_DIM]];
+
+        // Reference: replay the same two steps `mask_score_all_rules_with_hidden`
+        // is documented to perform, calling the same (private, same-module)
+        // helpers it calls.
+        let expr_embed = backbone.compute_expr_embed(&hidden);
+        let mask_features = head.compute_mask_features(&expr_embed);
+        let expected: Vec<f32> = rule_embeds
+            .iter()
+            .map(|re| head.bilinear_score(&mask_features, re))
+            .collect();
+
+        let actual = head.mask_score_all_rules_with_hidden(&backbone, &hidden, &rule_embeds);
+
+        assert_eq!(actual.len(), expected.len(), "one score per rule embed");
+        for (a, e) in actual.iter().zip(expected.iter()) {
+            assert!((a - e).abs() < 1e-4, "got {a}, expected {e}");
+        }
+        // Distinct rule embeddings must not collapse to the same score — guards
+        // against a constant-vector replacement of the whole function body.
+        assert!(
+            (actual[0] - actual[1]).abs() > 1e-6,
+            "distinct rule embeds should score differently"
+        );
+    }
+
+    #[test]
+    fn bilinear_score_should_respond_to_bias_addition_and_rule_embed_scaling() {
+        let mut head = SaturationHead::new();
+        head.interaction = [[1.0; EMBED_DIM]; EMBED_DIM];
+        head.mask_bias_proj = [3.0; EMBED_DIM];
+        let mask_features = [1.0f32; EMBED_DIM];
+        let rule_embed = [2.0f32; EMBED_DIM];
+
+        let score = head.bilinear_score(&mask_features, &rule_embed);
+
+        // transformed[k] = sum_i mask_features[i] * interaction[i][k] = 32.0
+        // score = sum_k (transformed[k] + bias[k]) * rule_embed[k]
+        //       = 32 * ((32.0 + 3.0) * 2.0)
+        let transformed = EMBED_DIM as f32;
+        let expected = EMBED_DIM as f32 * ((transformed + 3.0) * 2.0);
+        assert!(
+            (score - expected).abs() < 1e-2,
+            "got {score}, expected {expected}"
+        );
+    }
+
+    fn sample_rule_arena() -> (ExprArena, ExprId, ExprId) {
+        let mut arena = ExprArena::with_capacity(4);
+        let x = arena.push_var(0);
+        let one = arena.push_const(1.0);
+        let lhs = arena.push_binary(OpKind::Add, x, one);
+        let rhs = arena.push_binary(OpKind::Mul, x, one);
+        (arena, lhs, rhs)
+    }
+
+    fn embed_of(backbone: &ExprNnue, arena: &ExprArena, root: ExprId) -> [f32; EMBED_DIM] {
+        let acc = EdgeAccumulator::from_arena_dag(arena, root, &backbone.embeddings);
+        let hidden = backbone.forward_expr_only(&acc);
+        backbone.compute_expr_embed(&hidden)
+    }
+
+    /// A `SaturationHead` whose `rule_proj_w` is a "selector": projecting
+    /// picks out `concat[block_start + k]` (scaled by `weight`) as output `k`,
+    /// with every other row zeroed. Lets a concat-block test read that block
+    /// straight out of `encode_rule_from_arena`'s output without disturbing
+    /// the other three blocks (a real `RULE_CONCAT_DIM x EMBED_DIM` matrix
+    /// would mix them all together).
+    fn concat_block_selector(block_start: usize, weight: f32) -> SaturationHead {
+        let mut head = SaturationHead::new();
+        for k in 0..EMBED_DIM {
+            head.rule_proj_w[block_start + k][k] = weight;
+        }
+        head
+    }
+
+    #[test]
+    fn encode_rule_from_arena_should_place_the_lhs_embedding_at_the_first_concat_block() {
+        let backbone = test_backbone();
+        let (arena, lhs, rhs) = sample_rule_arena();
+        let z_lhs = embed_of(&backbone, &arena, lhs);
+
+        let head = concat_block_selector(0, 2.0);
+        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+
+        for k in 0..EMBED_DIM {
+            let expected = 2.0 * z_lhs[k];
+            assert!(
+                (out[k] - expected).abs() < 1e-3,
+                "block1[{k}]: got {}, expected {expected}",
+                out[k]
+            );
+        }
+    }
+
+    #[test]
+    fn encode_rule_from_arena_should_place_the_rhs_embedding_at_the_second_concat_block() {
+        let backbone = test_backbone();
+        let (arena, lhs, rhs) = sample_rule_arena();
+        let z_rhs = embed_of(&backbone, &arena, rhs);
+
+        let head = concat_block_selector(EMBED_DIM, 2.0);
+        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+
+        for k in 0..EMBED_DIM {
+            let expected = 2.0 * z_rhs[k];
+            assert!(
+                (out[k] - expected).abs() < 1e-3,
+                "block2[{k}]: got {}, expected {expected}",
+                out[k]
+            );
+        }
+    }
+
+    #[test]
+    fn encode_rule_from_arena_should_place_the_elementwise_difference_at_the_third_concat_block() {
+        let backbone = test_backbone();
+        let (arena, lhs, rhs) = sample_rule_arena();
+        let z_lhs = embed_of(&backbone, &arena, lhs);
+        let z_rhs = embed_of(&backbone, &arena, rhs);
+
+        let head = concat_block_selector(2 * EMBED_DIM, 2.0);
+        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+
+        for k in 0..EMBED_DIM {
+            let expected = 2.0 * (z_lhs[k] - z_rhs[k]);
+            assert!(
+                (out[k] - expected).abs() < 1e-3,
+                "block3[{k}]: got {}, expected {expected}",
+                out[k]
+            );
+        }
+    }
+
+    #[test]
+    fn encode_rule_from_arena_should_place_the_elementwise_product_at_the_fourth_concat_block() {
+        let backbone = test_backbone();
+        let (arena, lhs, rhs) = sample_rule_arena();
+        let z_lhs = embed_of(&backbone, &arena, lhs);
+        let z_rhs = embed_of(&backbone, &arena, rhs);
+
+        let head = concat_block_selector(3 * EMBED_DIM, 2.0);
+        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+
+        for k in 0..EMBED_DIM {
+            let expected = 2.0 * (z_lhs[k] * z_rhs[k]);
+            assert!(
+                (out[k] - expected).abs() < 1e-3,
+                "block4[{k}]: got {}, expected {expected}",
+                out[k]
+            );
+        }
+    }
+
+    #[test]
+    fn randomize_should_match_a_hand_recomputed_he_initialization_reference() {
+        let seed = 99u64;
+        let mut head = SaturationHead::new();
+        head.randomize(seed);
+
+        // Independent reference re-implementation of the same LCG stepping and
+        // He-init formulas, kept out of `SaturationHead::randomize` on
+        // purpose: an operator mutation there (RNG update, a scale formula, or
+        // a `next_f32() * scale` use site) shows up here as a numeric
+        // mismatch instead of hiding behind an `is_finite()`/determinism-only
+        // check.
+        let mut rng_state = seed.wrapping_add(54321);
+        let mut next_f32 = || {
+            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (rng_state >> 33) as f32 / (1u64 << 31) as f32 * 2.0 - 1.0
+        };
+
+        let scale_mask_input = sqrtf(2.0 / MASK_INPUT_DIM as f32);
+        let scale_hidden = sqrtf(2.0 / MLP_HIDDEN as f32);
+        let scale_concat = sqrtf(2.0 / RULE_CONCAT_DIM as f32);
+        let scale_graph = sqrtf(2.0 / GRAPH_INPUT_DIM as f32);
+        let scale_proj = sqrtf(2.0 / HIDDEN_DIM as f32);
+
+        let mut exp_mask_mlp_w1 = [[0.0f32; MLP_HIDDEN]; MASK_INPUT_DIM];
+        for i in 0..MASK_INPUT_DIM {
+            for j in 0..MLP_HIDDEN {
+                exp_mask_mlp_w1[i][j] = next_f32() * scale_mask_input;
+            }
+        }
+        let mut exp_mask_mlp_b1 = [0.0f32; MLP_HIDDEN];
+        for b in &mut exp_mask_mlp_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+        let mut exp_mask_mlp_w2 = [[0.0f32; EMBED_DIM]; MLP_HIDDEN];
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                exp_mask_mlp_w2[j][k] = next_f32() * scale_hidden;
+            }
+        }
+        // mask_mlp_b2 is set to a literal 0.0 in `randomize` — no RNG consumed.
+
+        let mut exp_rule_proj_w = [[0.0f32; EMBED_DIM]; RULE_CONCAT_DIM];
+        for i in 0..RULE_CONCAT_DIM {
+            for k in 0..EMBED_DIM {
+                exp_rule_proj_w[i][k] = next_f32() * scale_concat;
+            }
+        }
+        // rule_proj_b: literal 0.0, no RNG consumed.
+
+        let mut exp_interaction = [[0.0f32; EMBED_DIM]; EMBED_DIM];
+        for i in 0..EMBED_DIM {
+            for j in 0..EMBED_DIM {
+                exp_interaction[i][j] = if i == j { 1.0 } else { next_f32() * 0.1 };
+            }
+        }
+        // mask_bias_proj: literal 0.0, no RNG consumed.
+
+        let mut exp_graph_w1 = [[0.0f32; HIDDEN_DIM]; GRAPH_INPUT_DIM];
+        for row in 0..GRAPH_INPUT_DIM {
+            for col in 0..HIDDEN_DIM {
+                exp_graph_w1[row][col] = next_f32() * scale_graph;
+            }
+        }
+        let mut exp_graph_b1 = [0.0f32; HIDDEN_DIM];
+        for b in &mut exp_graph_b1 {
+            *b = next_f32().abs() * 0.1;
+        }
+        let mut exp_graph_proj_w = [[0.0f32; EMBED_DIM]; HIDDEN_DIM];
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                exp_graph_proj_w[j][k] = next_f32() * scale_proj;
+            }
+        }
+        let mut exp_graph_proj_b = [0.0f32; EMBED_DIM];
+        for b in &mut exp_graph_proj_b {
+            *b = next_f32().abs() * 0.1;
+        }
+
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+
+        for i in 0..MASK_INPUT_DIM {
+            for j in 0..MLP_HIDDEN {
+                assert!(
+                    close(head.mask_mlp_w1[i][j], exp_mask_mlp_w1[i][j]),
+                    "mask_mlp_w1[{i}][{j}]: got {}, expected {}",
+                    head.mask_mlp_w1[i][j],
+                    exp_mask_mlp_w1[i][j]
+                );
+            }
+        }
+        for j in 0..MLP_HIDDEN {
+            assert!(
+                close(head.mask_mlp_b1[j], exp_mask_mlp_b1[j]),
+                "mask_mlp_b1[{j}]"
+            );
+        }
+        for j in 0..MLP_HIDDEN {
+            for k in 0..EMBED_DIM {
+                assert!(
+                    close(head.mask_mlp_w2[j][k], exp_mask_mlp_w2[j][k]),
+                    "mask_mlp_w2[{j}][{k}]"
+                );
+            }
+        }
+        // The three arrays `randomize` leaves at a literal 0.0. Asserted rather
+        // than merely noted above: without these, `randomize` could start
+        // writing a nonzero literal into any of them, or consume RNG while
+        // populating them, and every other assertion here would still pass —
+        // the reference stream would simply shift in lockstep.
+        for k in 0..EMBED_DIM {
+            assert!(
+                close(head.mask_mlp_b2[k], 0.0),
+                "mask_mlp_b2[{k}] must stay zero, got {}",
+                head.mask_mlp_b2[k]
+            );
+        }
+
+        for i in 0..RULE_CONCAT_DIM {
+            for k in 0..EMBED_DIM {
+                assert!(
+                    close(head.rule_proj_w[i][k], exp_rule_proj_w[i][k]),
+                    "rule_proj_w[{i}][{k}]"
+                );
+            }
+        }
+        for k in 0..EMBED_DIM {
+            assert!(
+                close(head.rule_proj_b[k], 0.0),
+                "rule_proj_b[{k}] must stay zero, got {}",
+                head.rule_proj_b[k]
+            );
+        }
+        for i in 0..EMBED_DIM {
+            for j in 0..EMBED_DIM {
+                assert!(
+                    close(head.interaction[i][j], exp_interaction[i][j]),
+                    "interaction[{i}][{j}]"
+                );
+            }
+        }
+        for k in 0..EMBED_DIM {
+            assert!(
+                close(head.mask_bias_proj[k], 0.0),
+                "mask_bias_proj[{k}] must stay zero, got {}",
+                head.mask_bias_proj[k]
+            );
+        }
+        for row in 0..GRAPH_INPUT_DIM {
+            for col in 0..HIDDEN_DIM {
+                assert!(
+                    close(head.graph_w1[row][col], exp_graph_w1[row][col]),
+                    "graph_w1[{row}][{col}]"
+                );
+            }
+        }
+        for j in 0..HIDDEN_DIM {
+            assert!(close(head.graph_b1[j], exp_graph_b1[j]), "graph_b1[{j}]");
+        }
+        for j in 0..HIDDEN_DIM {
+            for k in 0..EMBED_DIM {
+                assert!(
+                    close(head.graph_proj_w[j][k], exp_graph_proj_w[j][k]),
+                    "graph_proj_w[{j}][{k}]"
+                );
+            }
+        }
+        for k in 0..EMBED_DIM {
+            assert!(
+                close(head.graph_proj_b[k], exp_graph_proj_b[k]),
+                "graph_proj_b[{k}]"
+            );
+        }
+    }
+
+    // ── Index and orientation pinning ────────────────────────────────────
+    //
+    // The exact-value tests above use uniform fixtures, which pin arithmetic
+    // but not indexing: when every input and weight is the same number,
+    // reading row 0, column 0, or the transpose gives the same answer. Each
+    // test below makes exactly one (index, index) pair live, with no index
+    // equal to zero, so a substituted index reads a zero and collapses the
+    // result.
+
+    #[test]
+    fn compute_graph_embed_should_index_the_projection_by_both_hidden_lane_and_column() {
+        const LANE: usize = 3;
+        const COLUMN: usize = 5;
+
+        let mut head = SaturationHead::new();
+        head.graph_proj_w[LANE][COLUMN] = 3.0;
+        let mut hidden = [0.0f32; HIDDEN_DIM];
+        hidden[LANE] = 2.0;
+
+        let embed = head.compute_graph_embed(&hidden);
+
+        for (k, &v) in embed.iter().enumerate() {
+            let want = if k == COLUMN { 6.0 } else { 0.0 };
+            assert!(
+                (v - want).abs() < 1e-6,
+                "embed[{k}]: got {v}, expected {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn compute_mask_features_should_index_both_mlp_layers_by_lane_and_column() {
+        const IN: usize = 2;
+        const MID: usize = 4;
+        const OUT: usize = 7;
+
+        let mut head = SaturationHead::new();
+        head.mask_mlp_w1[IN][MID] = 3.0;
+        head.mask_mlp_w2[MID][OUT] = 5.0;
+
+        let mut embed = [0.0f32; EMBED_DIM];
+        embed[IN] = 2.0;
+
+        // Layer 1: h[MID] = 2*3 = 6, every other hidden lane 0 (and the ReLU
+        // leaves both alone). Layer 2: out[OUT] = 6*5 = 30.
+        let out = head.compute_mask_features(&embed);
+
+        for (k, &v) in out.iter().enumerate() {
+            let want = if k == OUT { 30.0 } else { 0.0 };
+            assert!(
+                (v - want).abs() < 1e-6,
+                "out[{k}]: got {v}, expected {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn bilinear_score_should_respect_the_interaction_orientation_and_the_bias_lane() {
+        // `transformed[j] += mask_features[i] * interaction[i][j]`, so with a
+        // single off-diagonal entry live the transpose sends the mass to a
+        // different lane than the rule embedding reads.
+        const ROW: usize = 2;
+        const COL: usize = 5;
+
+        let mut head = SaturationHead::new();
+        head.interaction[ROW][COL] = 1.0;
+        head.mask_bias_proj[COL] = 7.0;
+
+        let mut mask_features = [0.0f32; EMBED_DIM];
+        mask_features[ROW] = 1.0;
+        let mut rule_embed = [0.0f32; EMBED_DIM];
+        rule_embed[COL] = 1.0;
+
+        // transformed[COL] = 1, plus the bias lane 7, times rule_embed[COL].
+        // Transposing the interaction puts the 1 on lane ROW instead, which
+        // rule_embed does not read, leaving 7. Reading `mask_bias_proj[0]`
+        // instead of `[k]` drops the 7, leaving 1.
+        let score = head.bilinear_score(&mask_features, &rule_embed);
+        assert!(
+            (score - 8.0).abs() < 1e-6,
+            "score: got {score}, expected 8.0"
+        );
+    }
+
+    #[test]
+    fn forward_graph_should_clamp_a_negative_preactivation_before_the_shared_trunk() {
+        // `apply_trunk` ends in its own ReLU, so an identity trunk cannot
+        // separate the two stages — a negative lane is clamped either way.
+        // A negating trunk can: clamped-then-negated stays 0, while
+        // negated-without-clamping becomes positive and survives the trunk's
+        // own ReLU.
+        let mut backbone = ExprNnue::new();
+        for i in 0..HIDDEN_DIM {
+            backbone.trunk_w[i][i] = -1.0;
+        }
+
+        let mut head = SaturationHead::new();
+        head.graph_b1 = [-1.0; HIDDEN_DIM];
+
+        let hidden = head.forward_graph(&backbone, &GraphAccumulator::new());
+
+        for (j, &h) in hidden.iter().enumerate() {
+            assert!(
+                h.abs() < 1e-6,
+                "hidden[{j}]: got {h}, expected 0.0 — a -1.0 preactivation must be \
+                 clamped by the tower's ReLU before the negating trunk sees it"
+            );
+        }
+    }
+
+    #[test]
+    fn encode_rule_from_arena_should_start_the_projection_from_the_rule_bias() {
+        // Every selector fixture above leaves `rule_proj_b` at zero, and
+        // `randomize` deliberately zeroes it too, so replacing
+        // `let mut out = self.rule_proj_b` with an all-zero array is
+        // invisible everywhere else. Zero the projection weights and give the
+        // bias distinct lanes: the output is then exactly the bias.
+        let backbone = test_backbone();
+        let (arena, lhs, rhs) = sample_rule_arena();
+
+        let mut head = SaturationHead::new();
+        for k in 0..EMBED_DIM {
+            head.rule_proj_b[k] = k as f32 + 1.0;
+        }
+
+        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+
+        for (k, &v) in out.iter().enumerate() {
+            let want = k as f32 + 1.0;
+            assert!(
+                (v - want).abs() < 1e-4,
+                "out[{k}]: got {v}, expected {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn mask_score_all_rules_graph_should_compose_the_graph_tower_projection_and_scorer() {
+        // `Guide::score_candidates` routes through this path, but the only
+        // exact composition test covers the `_with_hidden` variant; the graph
+        // variant was checked for length and finiteness alone. Rewiring it to
+        // `backbone.compute_expr_embed` instead of `self.compute_graph_embed`
+        // would go unnoticed.
+        let backbone = test_backbone();
+        let mut head = SaturationHead::new();
+        head.randomize(7);
+
+        let mut gacc = GraphAccumulator::new();
+        let emb = OpEmbeddings::new_random(3);
+        gacc.add_edge(&emb, OpKind::Add, OpKind::Mul);
+        gacc.add_edge(&emb, OpKind::Sub, OpKind::Div);
+        gacc.node_count = 3;
+        gacc.edge_count = 2;
+
+        let (arena, lhs, rhs) = sample_rule_arena();
+        let rule = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+        let rules = [rule];
+
+        let got = head.mask_score_all_rules_graph(&backbone, &gacc, &rules);
+
+        let hidden = head.forward_graph(&backbone, &gacc);
+        let graph_embed = head.compute_graph_embed(&hidden);
+        let mask_features = head.compute_mask_features(&graph_embed);
+        let want = head.bilinear_score(&mask_features, &rules[0]);
+
+        assert_eq!(got.len(), 1);
+        assert!(
+            (got[0] - want).abs() < 1e-3,
+            "graph scoring must be forward_graph -> compute_graph_embed -> \
+             compute_mask_features -> bilinear_score; got {}, want {want}",
+            got[0]
+        );
     }
 }

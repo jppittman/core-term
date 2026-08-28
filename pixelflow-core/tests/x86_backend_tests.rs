@@ -254,28 +254,201 @@ mod tests {
         );
     }
 
-    // ── Remaining `SimdOps`/`SimdU32Ops` required methods ──────────────────
+    // ── Remaining SimdOps required methods, Debug impls, and U32x4 ─────────
     //
-    // Covers the SSE2 lane types (`F32x4`/`Mask4`/`U32x4`) specifically.
-    //
-    // Two constraints on the inputs below, both load-bearing rather than
-    // incidental: every input is chosen so the real result differs from what
-    // an all-zero `Default::default()` stand-in for the whole function would
-    // return, and the bitwise ops use raw non-float bit patterns rather than
-    // float values — otherwise an accidental zero result (`1.0 & 2.0 == 0.0`)
-    // coincides with that all-zero default and the assertion stops
-    // distinguishing them.
-
-    fn mask_bits(m: Mask4) -> [u32; 4] {
-        let mut out = [0.0f32; 4];
-        F32x4::mask_to_float(m).store(&mut out);
-        out.map(f32::to_bits)
-    }
+    // These are the `SimdOps`/`SimdU32Ops` *required* per-ISA primitives (as
+    // opposed to the *provided* expansions above) that a 2026-08-22 mutants
+    // sweep found had no direct coverage at all under this crate's default
+    // SSE2-baseline build.
 
     fn u32_lanes(v: U32x4) -> [u32; 4] {
         let mut out = [0u32; 4];
         v.store(&mut out);
         out
+    }
+
+    #[test]
+    fn mask4_debug_format_shows_the_actual_lane_pattern() {
+        // Lane 0 is false (0 > 0), lanes 1-3 are true — movemask reads
+        // lane 3..0 MSB-first, so the mixed pattern prints as "1110".
+        let mixed = F32x4::sequential(0.0).cmp_gt(F32x4::splat(0.0));
+        assert_eq!(format!("{:?}", mixed), "Mask4(1110)");
+    }
+
+    #[test]
+    fn f32x4_debug_format_shows_the_actual_lane_values() {
+        assert_eq!(
+            format!("{:?}", F32x4::splat(3.5)),
+            "F32x4([3.5, 3.5, 3.5, 3.5])"
+        );
+    }
+
+    #[test]
+    fn u32x4_debug_format_shows_the_actual_lane_values() {
+        assert_eq!(
+            format!("{:?}", <U32x4 as SimdU32Ops>::splat(42)),
+            "U32x4([42, 42, 42, 42])"
+        );
+    }
+
+    #[test]
+    fn simd_gather_clamps_an_out_of_range_index_to_the_last_valid_element() {
+        // slice has 3 elements (indices 0..=2); an index far past the end
+        // must clamp to len - 1, not len or len + 1 (either of which would
+        // index out of bounds and panic).
+        let slice = [10.0f32, 20.0, 30.0];
+        let indices = F32x4::splat(100.0);
+        let got = lanes(F32x4::gather(&slice, indices));
+        assert_eq!(got, [30.0; 4]);
+    }
+
+    #[test]
+    fn add_masked_should_add_only_in_the_lanes_where_the_mask_is_true() {
+        let base = F32x4::splat(5.0);
+        let val = F32x4::splat(10.0);
+
+        let all_true = F32x4::splat(1.0).cmp_gt(F32x4::splat(0.0));
+        assert_eq!(lanes(base.add_masked(val, all_true)), [15.0; 4]);
+
+        let all_false = F32x4::splat(0.0).cmp_gt(F32x4::splat(1.0));
+        assert_eq!(lanes(base.add_masked(val, all_false)), [5.0; 4]);
+
+        // The uniform masks above are both satisfied by an implementation
+        // that consults `mask.any()` and then adds to every lane. Only a
+        // mixed mask separates per-lane masking from that: lanes 0..4 are
+        // [0, 1, 2, 3], so `> 1` is false, false, true, true.
+        let mixed = F32x4::sequential(0.0).cmp_gt(F32x4::splat(1.0));
+        assert_eq!(lanes(base.add_masked(val, mixed)), [5.0, 5.0, 15.0, 15.0]);
+    }
+
+    #[test]
+    fn from_u32_bits_reinterprets_the_bit_pattern_as_f32() {
+        let got = lanes(F32x4::from_u32_bits(1.0f32.to_bits()));
+        assert_eq!(got, [1.0; 4]);
+    }
+
+    #[test]
+    fn shr_u32_shifts_the_reinterpreted_bit_pattern_right() {
+        let v = F32x4::from_u32_bits(128);
+        let got = lanes(v.shr_u32(3));
+        for x in got {
+            assert_eq!(x.to_bits(), 16, "128 >> 3 should be 16");
+        }
+    }
+
+    #[test]
+    fn i32_to_f32_should_convert_the_reinterpreted_integer_not_the_bit_pattern() {
+        // from_u32_bits(5) reinterprets the integer 5 as raw bits; i32_to_f32
+        // then converts that integer value to a float — 5.0, not the float
+        // whose bit pattern happens to be 5 (a subnormal near zero).
+        let got = lanes(F32x4::from_u32_bits(5).i32_to_f32());
+        assert_eq!(got, [5.0; 4]);
+    }
+
+    #[test]
+    fn i32_to_f32_should_read_the_lane_as_signed_when_the_high_bit_is_set() {
+        // A positive operand cannot tell the required signed conversion from
+        // an unsigned one — both render 5 as 5.0. With the high bit set the
+        // two answers diverge: as `i32` this is -1, as `u32` it would be
+        // 4294967295.0.
+        let got = lanes(F32x4::from_u32_bits(0xFFFF_FFFF).i32_to_f32());
+        assert_eq!(got, [-1.0; 4]);
+    }
+
+    #[test]
+    fn f32x4_bitor_combines_the_reinterpreted_bit_patterns() {
+        let a = F32x4::from_u32_bits(0b1010);
+        let b = F32x4::from_u32_bits(0b0101);
+        let got = lanes(a | b);
+        for x in got {
+            assert_eq!(x.to_bits(), 0b1111);
+        }
+    }
+
+    #[test]
+    fn f32x4_not_flips_every_bit_of_the_pattern() {
+        let got = lanes(!F32x4::from_u32_bits(0));
+        for x in got {
+            assert_eq!(x.to_bits(), u32::MAX);
+        }
+    }
+
+    #[test]
+    fn u32x4_splat_then_store_round_trips_the_value() {
+        assert_eq!(u32_lanes(<U32x4 as SimdU32Ops>::splat(7)), [7; 4]);
+    }
+
+    #[test]
+    fn u32x4_bitand_masks_the_lanes() {
+        let a = <U32x4 as SimdU32Ops>::splat(0b1010);
+        let b = <U32x4 as SimdU32Ops>::splat(0b0110);
+        assert_eq!(u32_lanes(a & b), [0b0010; 4]);
+    }
+
+    #[test]
+    fn u32x4_bitor_combines_the_lanes() {
+        let a = <U32x4 as SimdU32Ops>::splat(0b1010);
+        let b = <U32x4 as SimdU32Ops>::splat(0b0101);
+        assert_eq!(u32_lanes(a | b), [0b1111; 4]);
+    }
+
+    #[test]
+    fn u32x4_not_flips_every_bit_of_every_lane() {
+        assert_eq!(u32_lanes(!<U32x4 as SimdU32Ops>::splat(0)), [u32::MAX; 4]);
+    }
+
+    #[test]
+    fn u32x4_shl_shifts_every_lane_left_by_the_given_count() {
+        let v = <U32x4 as SimdU32Ops>::splat(1);
+        assert_eq!(u32_lanes(v << 4), [16; 4]);
+    }
+
+    #[test]
+    fn u32x4_shr_shifts_every_lane_right_by_the_given_count() {
+        let v = <U32x4 as SimdU32Ops>::splat(16);
+        assert_eq!(u32_lanes(v >> 4), [1; 4]);
+    }
+
+    #[test]
+    fn pack_rgba_should_scale_in_range_channels_and_pack_them_one_u32_per_lane() {
+        let r = F32x4::splat(1.0); // -> 255
+        let g = F32x4::splat(0.5); // -> 127 (truncated, not rounded)
+        let b = F32x4::splat(0.25); // -> 63
+        let a = F32x4::splat(0.0); // -> 0
+
+        let packed = u32_lanes(U32x4::pack_rgba(r, g, b, a));
+        let expected: u32 = 255 | (127 << 8) | (63 << 16); // A channel is 0
+        assert_eq!(packed, [expected; 4]);
+    }
+
+    #[test]
+    fn pack_rgba_should_clamp_a_channel_outside_0_1_before_scaling_it() {
+        // Split from the in-range case deliberately: every channel there is
+        // already within [0, 1], so deleting all four clamps from `pack_rgba`
+        // leaves that assertion passing. Only an out-of-range channel
+        // exercises them — above 1.0 must saturate at 255 and below 0.0 at 0,
+        // rather than wrapping through the `cvttps` conversion.
+        let above = F32x4::splat(2.5); // clamps to 1.0 -> 255
+        let below = F32x4::splat(-1.5); // clamps to 0.0 -> 0
+        let mid = F32x4::splat(0.5); // -> 127
+
+        let packed = u32_lanes(U32x4::pack_rgba(above, below, mid, above));
+        // G is the clamped-to-zero channel, so its byte is absent from the
+        // OR rather than written as a no-op shift.
+        let expected: u32 = 255 | (127 << 16) | (255 << 24);
+        assert_eq!(packed, [expected; 4]);
+    }
+
+    // ── Additional required-method coverage (from the 2026-08-19 audit) ────
+    //
+    // Operations the 08-22 pass did not reach: the comparison masks, the
+    // mask/float reinterpret pair, `from_slice`'s offset handling, `mul_add`,
+    // and the `U32x4` operator impls.
+
+    fn mask_bits(m: Mask4) -> [u32; 4] {
+        let mut out = [0.0f32; 4];
+        F32x4::mask_to_float(m).store(&mut out);
+        out.map(f32::to_bits)
     }
 
     #[test]
@@ -316,112 +489,11 @@ mod tests {
     }
 
     #[test]
-    fn f32x4_gather_should_read_the_slice_element_at_each_lanes_index() {
-        let data = [10.0f32, 20.0, 30.0, 40.0, 50.0];
-
-        let in_range = F32x4::from_slice(&[0.0, 2.0, 3.0, 4.0]);
-        assert_eq!(
-            lanes(F32x4::gather(&data, in_range)),
-            [10.0, 30.0, 40.0, 50.0]
-        );
-    }
-
-    #[test]
-    fn f32x4_gather_should_clamp_an_out_of_range_index_to_the_last_element() {
-        // Scoped to `F32x4` deliberately, and NOT a `SimdOps::gather`
-        // guarantee: the clamp is a property of the scalar-loop
-        // implementations (SSE2 here, NEON on aarch64), which index with
-        // `(idx as isize).clamp(0, len - 1)`. `F32x8` and `F32x16` issue
-        // `_mm256_i32gather_ps`/`_mm512_i32gather_ps` with no bounds
-        // treatment at all and instead document a precondition that the
-        // caller has already clamped. So an assertion phrased as "gather
-        // clamps" would claim, from a baseline-ISA test run, a property the
-        // wider builds do not provide.
-        let data = [10.0f32, 20.0, 30.0, 40.0, 50.0];
-        let past_end = F32x4::splat(10.0);
-        assert_eq!(lanes(F32x4::gather(&data, past_end)), [50.0; 4]);
-    }
-
-    #[test]
     fn mul_add_should_compute_self_times_b_plus_c() {
         // self=2, b=3, c=4: `-`/`*` for `+`, and `+`/`/` for `*`, all disagree
         // with the correct 10.0 at these operands.
         let got = lanes(F32x4::splat(2.0).mul_add(F32x4::splat(3.0), F32x4::splat(4.0)));
         assert_eq!(got, [10.0; 4]);
-    }
-
-    #[test]
-    fn add_masked_should_add_val_only_where_the_mask_is_true() {
-        let base = F32x4::splat(1.0);
-        let val = F32x4::splat(100.0);
-        let mask = F32x4::sequential(0.0).cmp_gt(F32x4::splat(1.5)); // [F, F, T, T]
-        assert_eq!(lanes(base.add_masked(val, mask)), [1.0, 1.0, 101.0, 101.0]);
-    }
-
-    #[test]
-    fn from_u32_bits_should_reinterpret_the_integer_as_an_ieee754_bit_pattern() {
-        assert_eq!(lanes(F32x4::from_u32_bits(0x3F80_0000)), [1.0; 4]);
-        assert_eq!(lanes(F32x4::from_u32_bits(0x4000_0000)), [2.0; 4]);
-    }
-
-    #[test]
-    fn shr_u32_should_shift_the_raw_bit_pattern_right_by_n_bits() {
-        let v = F32x4::from_u32_bits(0x8000_0000);
-        let mut out = [0.0f32; 4];
-        v.shr_u32(1).store(&mut out);
-        assert_eq!(out.map(f32::to_bits), [0x4000_0000; 4]);
-    }
-
-    #[test]
-    fn i32_to_f32_should_numerically_convert_the_lanes_int32_value() {
-        assert_eq!(lanes(F32x4::from_u32_bits(5).i32_to_f32()), [5.0; 4]);
-        assert_eq!(
-            lanes(F32x4::from_u32_bits(u32::MAX /* i32 -1 */).i32_to_f32()),
-            [-1.0; 4]
-        );
-    }
-
-    #[test]
-    fn f32x4_bitwise_operators_should_combine_raw_bit_patterns() {
-        let a = F32x4::from_u32_bits(0b1100);
-        let b = F32x4::from_u32_bits(0b1010);
-        let bits = |v: F32x4| -> [u32; 4] {
-            let mut out = [0.0f32; 4];
-            v.store(&mut out);
-            out.map(f32::to_bits)
-        };
-
-        assert_eq!(bits(a & b), [0b1000; 4]);
-        assert_eq!(bits(a | b), [0b1110; 4]);
-        assert_eq!(bits(!a), [!0b1100u32; 4]);
-    }
-
-    #[test]
-    fn mask4_bitwise_operators_should_combine_lane_truth_values_bit_exactly() {
-        let mask_a = F32x4::sequential(0.0).cmp_gt(F32x4::splat(1.5)); // [F, F, T, T]
-        let mask_b = F32x4::sequential(0.0).cmp_lt(F32x4::splat(2.5)); // [T, T, T, F]
-        const T: u32 = u32::MAX;
-
-        assert_eq!(mask_bits(mask_a & mask_b), [0, 0, T, 0]);
-        assert_eq!(mask_bits(mask_a | mask_b), [T, T, T, T]);
-        assert_eq!(mask_bits(!mask_a), [T, T, 0, 0]);
-    }
-
-    #[test]
-    fn debug_formatting_should_reflect_the_stored_lane_values() {
-        let v = F32x4::from_slice(&[1.0, 2.0, 3.0, 4.0]);
-        assert_eq!(std::format!("{v:?}"), "F32x4([1.0, 2.0, 3.0, 4.0])");
-
-        let u = U32x4::splat(7);
-        assert_eq!(std::format!("{u:?}"), "U32x4([7, 7, 7, 7])");
-
-        let all_true = F32x4::splat(1.0).cmp_gt(F32x4::splat(0.0));
-        assert_eq!(std::format!("{all_true:?}"), "Mask4(1111)");
-    }
-
-    #[test]
-    fn u32x4_splat_and_store_should_round_trip_every_lane() {
-        assert_eq!(u32_lanes(U32x4::splat(0xDEAD_BEEF)), [0xDEAD_BEEF; 4]);
     }
 
     #[test]
@@ -439,24 +511,5 @@ mod tests {
         let v = U32x4::splat(0b1000);
         assert_eq!(u32_lanes(v << 2), [0b10_0000; 4]);
         assert_eq!(u32_lanes(v >> 2), [0b10; 4]);
-    }
-
-    #[test]
-    fn pack_rgba_should_clamp_each_channel_to_0_1_and_pack_it_into_a_byte() {
-        // Both clamps have to be load-bearing, so each direction gets an
-        // out-of-range channel. B at exactly 0.0 would need no clamping at
-        // all, leaving the lower-bound `max(_, 0)` free to be deleted.
-        let r = F32x4::splat(1.0); // at the upper edge -> 255
-        let g = F32x4::splat(0.5); // in range -> 127 (truncated, not rounded)
-        let b = F32x4::splat(-1.5); // below range -> clamped to 0
-        let a = F32x4::splat(2.0); // above range -> clamped to 255
-
-        let packed = u32_lanes(U32x4::pack_rgba(r, g, b, a));
-        for p in packed {
-            assert_eq!(p & 0xFF, 255, "R channel");
-            assert_eq!((p >> 8) & 0xFF, 127, "G channel");
-            assert_eq!((p >> 16) & 0xFF, 0, "B channel");
-            assert_eq!((p >> 24) & 0xFF, 255, "A channel (clamped)");
-        }
     }
 }
