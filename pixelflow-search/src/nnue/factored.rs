@@ -1757,7 +1757,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn param_count_exceeds_10k_and_memory_stays_under_200kb() {
+    fn param_count_should_exceed_10k_and_memory_should_stay_under_200kb() {
         // Param count should include the whole backbone + value head.
         let count = ExprNnue::param_count();
         // Backbone (embeddings + w1 + b1 + trunk) ~13,808, plus expr_proj +
@@ -1777,7 +1777,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn edge_accumulator_add_then_remove_returns_to_zero() {
+    fn edge_accumulator_add_then_remove_should_return_to_zero() {
         let emb = OpEmbeddings::new_random(42);
         let mut acc = EdgeAccumulator::new();
 

@@ -1229,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn bwd_generator_applies_rewrites_from_templates() {
+    fn bwd_generator_should_apply_rewrites_from_templates() {
         use crate::egraph::collect_rule_templates;
         let templates = collect_rule_templates();
         let config = BwdGenConfig::default();
