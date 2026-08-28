@@ -7,7 +7,7 @@ mod tests {
     use std::prelude::v1::*;
 
     #[test]
-    fn sse2_arithmetic() {
+    fn add_sub_mul_and_div_should_operate_lanewise_on_all_four_lanes() {
         let a = F32x4::splat(2.0);
         let b = F32x4::splat(3.0);
 
@@ -30,7 +30,7 @@ mod tests {
     }
 
     #[test]
-    fn sse2_sequential() {
+    fn sequential_should_produce_four_consecutive_values_from_the_given_start() {
         let seq = F32x4::sequential(10.0);
         let mut out = [0.0; 4];
         seq.store(&mut out);
@@ -38,7 +38,7 @@ mod tests {
     }
 
     #[test]
-    fn sse2_logic() {
+    fn cmp_lt_and_simd_select_should_choose_lanes_by_the_comparison_result() {
         let a = F32x4::splat(1.0);
         let b = F32x4::splat(2.0);
 
@@ -62,7 +62,7 @@ mod tests {
     }
 
     #[test]
-    fn sse2_bitwise() {
+    fn bitand_should_compute_the_lanewise_bitwise_and() {
         let a = F32x4::splat(1.0); // 1.0 is 0x3f800000
         let b = F32x4::splat(2.0); // 2.0 is 0x40000000
         let c = a & b;
@@ -72,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn sse2_math() {
+    fn simd_sqrt_simd_abs_and_simd_min_should_compute_correct_lane_results() {
         let a = F32x4::splat(4.0);
         let sqrt = a.simd_sqrt();
         let mut out = [0.0; 4];
@@ -90,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn sse2_mask_any_all() {
+    fn any_and_all_should_report_whether_any_or_every_lane_is_true() {
         // Test MaskOps methods directly on masks
         let zero = F32x4::splat(0.0);
         let zero_mask = zero.float_to_mask();
@@ -109,14 +109,14 @@ mod tests {
 
     #[test]
     #[should_panic]
-    fn sse2_store_panic() {
+    fn store_should_panic_when_the_output_slice_is_shorter_than_four_lanes() {
         let a = F32x4::default();
         let mut out = [0.0; 3]; // Too small
         a.store(&mut out);
     }
 
     #[test]
-    fn sse2_reciprocal_math() {
+    fn recip_and_simd_rsqrt_should_approximate_the_reciprocal_and_inverse_sqrt() {
         let a = F32x4::splat(4.0);
         let mut out = [0.0; 4];
 
