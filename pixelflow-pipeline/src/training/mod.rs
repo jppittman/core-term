@@ -44,3 +44,9 @@ pub mod structural;
 
 #[cfg(feature = "training")]
 pub mod quarantine;
+
+#[cfg(feature = "training")]
+pub mod variant_set;
+
+#[cfg(feature = "training")]
+pub mod stats;

@@ -27,7 +27,11 @@
 //!
 //! What remains is the value loss: MSE against ground-truth JIT cost,
 //! chain-ruled through `value_mlp` → `expr_proj` → trunk → `w1` (edge tower).
-//! This is what `bootstrap_extraction_head` trains with.
+//! This is what `bootstrap_extraction_head` trains with. A second loss,
+//! [`backward_pairwise`] (Round 2b, `train_contrastive`), shares the same
+//! tail through `backward_from_d_value` — it differs from `backward_value`
+//! only in supplying two `d_value`s (one per side of a ranked pair, opposite
+//! sign) instead of one, so everything below applies to it identically.
 //!
 //! ## Op embeddings train through the recorded edge stream
 //!
@@ -37,7 +41,13 @@
 //! [`backward_through_accumulator`], which differentiates the same fold
 //! [`EdgeTrace::realize`] runs forward. So `grads.d_embeddings` is real, and
 //! [`apply_unified_sgd`] applies it (momentum + clip, deliberately no weight
-//! decay — see the embeddings block there).
+//! decay — see the embeddings block there). [`backward_pairwise`] takes ONE
+//! trace per side and calls the same accumulator backward for both, so a
+//! contrastive run trains embeddings too — the "frozen reference
+//! embeddings, shared across every lambda" framing `train_contrastive`'s own
+//! module doc used to describe (written when this file's `backward_value`/
+//! `backward_pairwise` had no accumulator-backward path at all) no longer
+//! holds; see that binary's updated doc for what changed operationally.
 //!
 //! History (P1(a), docs/plans/2026-08-17-cost-model-domain.md): before the
 //! trace existed, nothing produced `d_embeddings`, yet SGD decayed and
@@ -523,7 +533,26 @@ pub fn backward_value(
         coeff,
     } = objective;
     let d_value = (2.0 * (cache.value_pred - target_log_ns) * coeff).clamp(-10.0, 10.0);
+    backward_from_d_value(net, cache, trace, d_value, grads);
+}
 
+/// Backprop an upstream scalar gradient `d_value` (= dL/d(value_pred))
+/// through value_mlp → expr_proj → backbone → embeddings.
+///
+/// This is the tail every scalar-output loss on `value_pred` shares —
+/// [`backward_value`] (regression MSE) and [`backward_pairwise`] (ranking
+/// hinge, below) differ only in what `d_value` (and which sample's `trace`)
+/// they hand it, not in how it propagates from there. Both flow into
+/// `grads.d_embeddings` through the same [`backward_through_accumulator`]
+/// call — there is no cached-accumulator/frozen-embeddings tier left for
+/// either loss to opt out of.
+fn backward_from_d_value(
+    net: &ExprNnue,
+    cache: &UnifiedForwardCache,
+    trace: &EdgeTrace,
+    d_value: f32,
+    grads: &mut UnifiedGradients,
+) {
     // ---- Value MLP backward ----
     grads.d_value_mlp_b2 += d_value;
 
@@ -558,6 +587,75 @@ pub fn backward_value(
 
     // ---- Through the accumulator fold into the embedding table ----
     backward_through_accumulator(&d_acc_input, trace, grads);
+}
+
+// ============================================================================
+// Backward Pass: Pairwise Ranking (Round 2b, contrastive objective)
+// ============================================================================
+
+/// Margin-zero pairwise hinge ("contrastive") loss over one ordered pair of
+/// forward caches from the SAME e-graph/base expression: `cheaper` is the
+/// member whose measured `target_log_ns` is lower than `pricier`'s.
+///
+/// # Why hinge, and why margin zero
+///
+/// The task allows margin or logistic (RankNet-style); hinge is chosen
+/// because it saturates: once the model ranks the pair correctly by ANY
+/// amount, `violation <= 0` and the term contributes exactly zero loss and
+/// zero gradient. A logistic pairwise loss never reaches zero gradient, so
+/// two loss terms would keep pulling `value_pred` in different directions
+/// (the MSE term toward calibrated absolute log-ns, the ranking term toward
+/// ever-larger separation) even on pairs the model already orders correctly
+/// — an argument for a *second* hyperparameter (its temperature) on top of
+/// `lambda`. A zero margin (rather than a positive one sized to the noise
+/// floor) keeps this a one-hyperparameter addition to the existing MSE loss,
+/// which is what the task's lambda sweep is actually measuring; a nonzero
+/// margin is deliberately not introduced as a second axis to sweep.
+///
+/// `cheaper`/`pricier` must already be pairs the minting pipeline judged
+/// orderable (measured `|delta|` at/above the run's noise floor,
+/// docs/plans/2026-08-05-egraph-nnue-research-workflow.md §4) — a pair
+/// UNDER the floor is not training signal and the caller must not construct
+/// one here (see `training/variant_set.rs` and the noise-floor filtering in
+/// `bin/train_contrastive.rs`).
+///
+/// Loss = max(0, pred(cheaper) − pred(pricier)) · lambda
+///
+/// `cheaper_trace`/`pricier_trace` are each side's [`EdgeTrace`] — the same
+/// per-sample provenance [`backward_value`] requires, for the same reason:
+/// each side's forward pass realized its features from the LIVE
+/// [`ExprNnue::embeddings`] table (`cheaper`/`pricier` are the resulting
+/// caches), so the pairwise gradient flows into `grads.d_embeddings`
+/// through both sides' recorded edge streams, not just the shared trunk.
+/// There is no longer a frozen-embeddings tier for this loss to skip that
+/// path through — see the module docs' `EdgeTrace` discussion.
+///
+/// Returns the UNWEIGHTED hinge violation (`max(0, pred(cheaper) -
+/// pred(pricier))`, before `lambda` is applied) for the caller's loss
+/// reporting; `0.0` exactly when the pair was already correctly ordered
+/// (which is also when this function contributes no gradient).
+pub fn backward_pairwise(
+    net: &ExprNnue,
+    cheaper: &UnifiedForwardCache,
+    cheaper_trace: &EdgeTrace,
+    pricier: &UnifiedForwardCache,
+    pricier_trace: &EdgeTrace,
+    lambda: f32,
+    grads: &mut UnifiedGradients,
+) -> f32 {
+    let violation = cheaper.value_pred - pricier.value_pred;
+    if violation <= 0.0 {
+        // Already correctly ordered: hinge is flat here, zero gradient by
+        // design (see the function doc for why zero margin, not a "close
+        // enough" epsilon — this is an exact comparison of two f32
+        // predictions from the same forward pass shape, not a measurement).
+        return 0.0;
+    }
+    // d(violation * lambda)/d(pred(cheaper)) = +lambda
+    // d(violation * lambda)/d(pred(pricier)) = -lambda
+    backward_from_d_value(net, cheaper, cheaper_trace, lambda, grads);
+    backward_from_d_value(net, pricier, pricier_trace, -lambda, grads);
+    violation
 }
 
 // ============================================================================
@@ -1772,6 +1870,231 @@ mod tests {
 
         assert!(checked >= 20, "checked {checked} embedding entries");
         eprintln!("  embedding path max rel error: {max_err:.6e}  ({checked} entries)");
+    }
+
+    // ========================================================================
+    // Test 8d: Pairwise ranking hinge (Round 2b) — numerical gradient check
+    // ========================================================================
+
+    /// Combined pairwise hinge loss for two forward passes sharing one
+    /// `net` (matches how `backward_pairwise` is called: two forward
+    /// caches, one shared `net`), with BOTH sides' features realized from
+    /// the net's LIVE embeddings — the perturbation target for finite
+    /// differences, including embedding perturbations (mirrors
+    /// `value_loss_traced` above, doubled for the pair).
+    fn pairwise_loss_traced(
+        net: &ExprNnue,
+        trace_cheaper: &EdgeTrace,
+        trace_pricier: &EdgeTrace,
+        lambda: f32,
+    ) -> f64 {
+        let acc_cheaper = trace_cheaper.realize(&net.embeddings);
+        let acc_pricier = trace_pricier.realize(&net.embeddings);
+        let cache_cheaper = forward_cached(net, &acc_cheaper);
+        let cache_pricier = forward_cached(net, &acc_pricier);
+        (f64::from(cache_cheaper.value_pred - cache_pricier.value_pred)).max(0.0)
+            * f64::from(lambda)
+    }
+
+    /// A second arena, structurally distinct from [`make_test_trace`]'s —
+    /// the pairwise check needs two genuinely different expressions (not
+    /// the same trace compared against itself), realized against the SAME
+    /// embeddings table `emb` so both sides' `d_embeddings` contributions
+    /// land in the finite-difference perturbation together.
+    fn make_test_trace_b(emb: &pixelflow_search::nnue::OpEmbeddings) -> EdgeTrace {
+        use pixelflow_ir::ExprArena;
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0); // pixel
+        let y = arena.push_var(1); // scanline
+        let c = arena.push_const(3.0); // const
+        let xy = arena.push_binary(OpKind::Mul, x, y); // pixel
+        let root = arena.push_binary(OpKind::Add, xy, c); // pixel
+        let (_, trace) = EdgeAccumulator::from_arena_dag_traced(&arena, root, emb);
+        trace
+    }
+
+    #[test]
+    fn numerical_gradient_check_pairwise() {
+        // Same stack-size note as `numerical_gradient_check_value`.
+        std::thread::Builder::new()
+            .name("numerical_gradient_check_pairwise".into())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(numerical_gradient_check_pairwise_body)
+            .expect("failed to spawn gradient-check thread")
+            .join()
+            .expect("gradient-check thread panicked");
+    }
+
+    fn numerical_gradient_check_pairwise_body() {
+        let (emb, _, trace_a) = make_test_trace();
+        let trace_b = make_test_trace_b(&emb);
+        let mut net = make_test_net();
+        net.embeddings = emb;
+        let lambda = 0.5f32;
+
+        // Force the hinge into its gradient-carrying regime: whichever side
+        // starts with the higher value_pred is "cheaper" in the call, so
+        // pred(cheaper) - pred(pricier) > 0 and the early-return does not
+        // fire, exercising the actual backward path rather than its zero
+        // branch.
+        let cache_a0 = forward_cached(&net, &trace_a.realize(&net.embeddings));
+        let cache_b0 = forward_cached(&net, &trace_b.realize(&net.embeddings));
+        let (trace_cheaper, trace_pricier) = if cache_a0.value_pred > cache_b0.value_pred {
+            (&trace_a, &trace_b)
+        } else {
+            (&trace_b, &trace_a)
+        };
+
+        let acc_cheaper = trace_cheaper.realize(&net.embeddings);
+        let acc_pricier = trace_pricier.realize(&net.embeddings);
+        let cache_cheaper = forward_cached(&net, &acc_cheaper);
+        let cache_pricier = forward_cached(&net, &acc_pricier);
+        let mut grads = Box::new(UnifiedGradients::zero());
+        let violation = backward_pairwise(
+            &net,
+            &cache_cheaper,
+            trace_cheaper,
+            &cache_pricier,
+            trace_pricier,
+            lambda,
+            &mut grads,
+        );
+        assert!(
+            violation > 0.0,
+            "test setup should exercise the gradient-carrying branch, got violation={violation}"
+        );
+
+        let eps = 1e-3f32;
+        let mut max_err = 0.0f64;
+        let mut checked = 0;
+
+        // w1 perturbation affects BOTH forward passes (shared net), so the
+        // finite difference must perturb once and re-run both caches — this
+        // is exactly what makes the pairwise case a distinct check from the
+        // single-cache value-loss test above.
+        for i in [0, 64, 129] {
+            for j in [0, 32, 63] {
+                let mut net_p = net.clone();
+                net_p.w1[i][j] += eps;
+                let loss_plus =
+                    pairwise_loss_traced(&net_p, trace_cheaper, trace_pricier, lambda);
+
+                let mut net_m = net.clone();
+                net_m.w1[i][j] -= eps;
+                let loss_minus =
+                    pairwise_loss_traced(&net_m, trace_cheaper, trace_pricier, lambda);
+
+                let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
+                let (a, n, err) = check_gradient(grads.d_w1[i][j], num_grad);
+                if err > max_err {
+                    max_err = err;
+                }
+                assert!(
+                    err < 0.05,
+                    "w1[{i}][{j}] (pairwise): analytical={a:.8}, numerical={n:.8}, rel_err={err:.6}"
+                );
+                checked += 1;
+            }
+        }
+
+        // value_mlp_w2: direct participant in d_value on both sides.
+        for j in [0, 8, 15] {
+            let mut net_p = net.clone();
+            net_p.value_mlp_w2[j] += eps;
+            let loss_plus = pairwise_loss_traced(&net_p, trace_cheaper, trace_pricier, lambda);
+
+            let mut net_m = net.clone();
+            net_m.value_mlp_w2[j] -= eps;
+            let loss_minus = pairwise_loss_traced(&net_m, trace_cheaper, trace_pricier, lambda);
+
+            let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
+            let (a, n, err) = check_gradient(grads.d_value_mlp_w2[j], num_grad);
+            if err > max_err {
+                max_err = err;
+            }
+            assert!(
+                err < 0.05,
+                "value_mlp_w2[{j}] (pairwise): analytical={a:.8}, numerical={n:.8}, rel_err={err:.6}"
+            );
+            checked += 1;
+        }
+
+        // d_embeddings: the path that did not exist when this test was
+        // first written (P1(a) — see the module docs and
+        // `backward_pairwise`'s doc). Both traces reference `OpKind::Mul`,
+        // so perturbing it moves both forward passes at once, and the
+        // analytical gradient must already carry both sides' contributions
+        // in this one accumulated entry — exactly what
+        // `backward_from_d_value`'s two calls (one per side, opposite
+        // sign) are supposed to produce.
+        for &d in &[0usize, 7, 31] {
+            let mut net_p = net.clone();
+            net_p.embeddings.e[OpKind::Mul][d] += eps;
+            let loss_plus = pairwise_loss_traced(&net_p, trace_cheaper, trace_pricier, lambda);
+
+            let mut net_m = net.clone();
+            net_m.embeddings.e[OpKind::Mul][d] -= eps;
+            let loss_minus = pairwise_loss_traced(&net_m, trace_cheaper, trace_pricier, lambda);
+
+            let num_grad = (loss_plus - loss_minus) / (2.0 * eps as f64);
+            let (a, n, err) = check_gradient(grads.d_embeddings[OpKind::Mul][d], num_grad);
+            if err > max_err {
+                max_err = err;
+            }
+            let abs_diff = (a as f64 - n).abs();
+            assert!(
+                err < 0.05 || abs_diff < 1e-5,
+                "d_embeddings[Mul][{d}] (pairwise): analytical={a:.8}, numerical={n:.8}, \
+                 rel_err={err:.6}, abs_diff={abs_diff:.6e}"
+            );
+            checked += 1;
+        }
+
+        assert!(checked >= 15, "checked {checked} pairwise elements");
+        eprintln!("  pairwise path max rel error: {max_err:.6e}  ({checked} elements)");
+    }
+
+    #[test]
+    fn pairwise_already_ordered_pair_has_zero_gradient() {
+        // The other side of the hinge: when `cheaper` already predicts
+        // lower than `pricier`, the term must contribute exactly nothing —
+        // this is the "coexist with the regression term without a margin
+        // hyperparameter" property the function doc claims. Zero gradient
+        // must hold for `d_embeddings` too, not just the backbone/head.
+        let (emb, _, trace_a) = make_test_trace();
+        let trace_b = make_test_trace_b(&emb);
+        let mut net = make_test_net();
+        net.embeddings = emb;
+
+        let cache_a = forward_cached(&net, &trace_a.realize(&net.embeddings));
+        let cache_b = forward_cached(&net, &trace_b.realize(&net.embeddings));
+        let (cheaper, cheaper_trace, pricier, pricier_trace) = if cache_a.value_pred
+            <= cache_b.value_pred
+        {
+            (&cache_a, &trace_a, &cache_b, &trace_b)
+        } else {
+            (&cache_b, &trace_b, &cache_a, &trace_a)
+        };
+
+        let mut grads = UnifiedGradients::zero();
+        let violation = backward_pairwise(
+            &net,
+            cheaper,
+            cheaper_trace,
+            pricier,
+            pricier_trace,
+            0.5,
+            &mut grads,
+        );
+        assert_eq!(
+            violation, 0.0,
+            "already-ordered pair must report zero violation"
+        );
+        assert_eq!(
+            grads.norm(),
+            0.0,
+            "already-ordered pair must contribute exactly zero gradient"
+        );
     }
 
     // ========================================================================

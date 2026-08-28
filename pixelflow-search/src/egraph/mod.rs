@@ -38,6 +38,7 @@ pub mod profile;
 pub mod provenance;
 pub mod rewrite;
 pub mod saturate;
+pub mod variants;
 
 // Re-export public API
 pub use cost::{CostFunction, CostModel};
@@ -61,6 +62,7 @@ pub use saturate::{
     SaturationConfig, SaturationResult, achievable_cost_within_budget, config_for_node_count,
     saturate_with_budget, saturate_with_full_budget,
 };
+pub use variants::{Candidate, ESTIMATE_OPS, enumerate_candidates};
 
 // Re-export rule types from math module for backward compatibility
 pub use crate::math::{

@@ -116,6 +116,7 @@ use pixelflow_pipeline::training::mint::{
 };
 use pixelflow_pipeline::training::quarantine::Quarantine;
 use pixelflow_pipeline::training::split::{DevSide, Fence, FinalSide, Tier, blocked_by_either};
+use pixelflow_pipeline::training::stats::spearman_rho;
 use pixelflow_pipeline::training::unified_backward::{
     UnifiedGradients, ValueObjective, apply_unified_sgd, backward_value, forward_cached,
 };
@@ -803,86 +804,6 @@ fn assert_exclusion_rate(excluded: usize, attempted: usize, context: &str, sidec
         MAX_EXCLUSION_RATE * 100.0,
         sidecar.display()
     );
-}
-
-// ── Ranking metrics (plan 0.3b) ─────────────────────────────────────────────
-
-/// Ranks (1-based) with ties assigned their average rank.
-///
-/// # Panics
-///
-/// Panics on NaN values — a NaN prediction or measurement is a bug upstream,
-/// not something a metric should order arbitrarily.
-fn average_ranks(values: &[f32]) -> Vec<f64> {
-    let n = values.len();
-    let mut idx: Vec<usize> = (0..n).collect();
-    idx.sort_by(|&i, &j| {
-        values[i].partial_cmp(&values[j]).unwrap_or_else(|| {
-            panic!(
-                "average_ranks: non-comparable (NaN) values at indices {i} ({}) and {j} ({})",
-                values[i], values[j]
-            )
-        })
-    });
-    let mut ranks = vec![0.0f64; n];
-    let mut i = 0;
-    while i < n {
-        let mut j = i;
-        while j + 1 < n && values[idx[j + 1]] == values[idx[i]] {
-            j += 1;
-        }
-        // Average of 1-based ranks i+1 ..= j+1.
-        let avg = (i + j) as f64 / 2.0 + 1.0;
-        for &k in &idx[i..=j] {
-            ranks[k] = avg;
-        }
-        i = j + 1;
-    }
-    ranks
-}
-
-/// Spearman rank correlation: Pearson correlation of average ranks (exact
-/// under ties, unlike the 6Σd²/n(n²−1) shortcut).
-///
-/// Returns `None` when either side has zero rank variance (all values tied) —
-/// the coefficient is undefined there, and the caller must report that
-/// explicitly rather than receive a fabricated number.
-///
-/// # Panics
-///
-/// Panics on length mismatch, fewer than 2 samples, or NaN values.
-fn spearman_rho(a: &[f32], b: &[f32]) -> Option<f64> {
-    assert_eq!(
-        a.len(),
-        b.len(),
-        "spearman_rho: length mismatch ({} vs {})",
-        a.len(),
-        b.len()
-    );
-    assert!(
-        a.len() >= 2,
-        "spearman_rho: need at least 2 samples, got {}",
-        a.len()
-    );
-    let ra = average_ranks(a);
-    let rb = average_ranks(b);
-    // With average ranks the rank sum is always n(n+1)/2, so the mean rank
-    // is (n+1)/2 regardless of ties.
-    let mean = (a.len() as f64 + 1.0) / 2.0;
-    let mut cov = 0.0f64;
-    let mut var_a = 0.0f64;
-    let mut var_b = 0.0f64;
-    for (x, y) in ra.iter().zip(&rb) {
-        let dx = x - mean;
-        let dy = y - mean;
-        cov += dx * dy;
-        var_a += dx * dx;
-        var_b += dy * dy;
-    }
-    if var_a == 0.0 || var_b == 0.0 {
-        return None;
-    }
-    Some(cov / (var_a.sqrt() * var_b.sqrt()))
 }
 
 /// Load the starting weights, stating unmissably which of the two very
