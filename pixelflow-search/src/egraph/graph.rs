@@ -2247,30 +2247,25 @@ mod tests {
     }
 
     #[test]
-    fn depth_penalty_calculation() {
-        // Test the hinge penalty function
+    fn depth_cost_should_apply_linear_penalty_only_above_threshold() {
         let mut costs = CostModel::new();
         costs.depth_threshold = 5;
         costs.depth_penalty = 100;
 
-        // Below threshold: no penalty
         assert_eq!(costs.depth_cost(0), 0);
         assert_eq!(costs.depth_cost(5), 0);
 
-        // Above threshold: linear penalty
         assert_eq!(costs.depth_cost(6), 100);
         assert_eq!(costs.depth_cost(7), 200);
         assert_eq!(costs.depth_cost(10), 500);
     }
 
     #[test]
-    fn shallow_cost_model() {
-        // Shallow model should have aggressive depth penalty
+    fn shallow_should_set_aggressive_depth_threshold_and_penalty() {
         let costs = CostModel::shallow();
         assert_eq!(costs.depth_threshold, 16);
         assert_eq!(costs.depth_penalty, 500);
 
-        // Penalty kicks in after 16
         assert_eq!(costs.depth_cost(16), 0);
         assert_eq!(costs.depth_cost(17), 500);
         assert_eq!(costs.depth_cost(20), 2000);
