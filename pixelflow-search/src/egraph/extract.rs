@@ -377,15 +377,23 @@ impl<'a> IncrementalExtractor<'a> {
         let choices: Vec<Option<usize>> = alloc::vec![None; num_classes];
         let mut current_extraction = Extraction::from_backfill(egraph, root_class, choices);
 
+        // One accumulator scratch, reused for every accumulator built for
+        // this kernel — the bootstrap build below and all 194-375 (Round 2b
+        // attribution) per-candidate builds in the refinement loop — instead
+        // of each paying its own fresh heap allocation. See
+        // `EdgeAccumulator::from_cost_dag_scratch`'s doc comment.
+        let mut acc_scratch = crate::nnue::factored::AccumulatorScratch::new(num_classes);
+
         // Build initial DAG-aware accumulator. Sharing-aware by construction:
         // shared subexpressions are counted once (computation) plus one
         // var_ref edge (register load) per later reference. Variance is
         // computed from the CHOSEN nodes (P1(c)) — see
         // `Extraction::chosen_variance`.
-        let current_acc = EdgeAccumulator::from_dag_choices_with_variance(
+        let current_acc = EdgeAccumulator::from_dag_choices_with_variance_scratch(
             &current_extraction,
             &self.nnue.embeddings,
             true,
+            &mut acc_scratch,
         );
         let mut current_cost = profile::timed(profile::Bucket::NnueForward, || {
             self.nnue.predict_log_cost_with_features(&current_acc)
@@ -453,10 +461,11 @@ impl<'a> IncrementalExtractor<'a> {
                         continue;
                     };
 
-                    let test_acc = EdgeAccumulator::from_dag_choices_with_variance(
+                    let test_acc = EdgeAccumulator::from_dag_choices_with_variance_scratch(
                         &candidate,
                         &self.nnue.embeddings,
                         true,
+                        &mut acc_scratch,
                     );
                     let test_cost = profile::timed(profile::Bucket::NnueForward, || {
                         self.nnue.predict_log_cost_with_features(&test_acc)

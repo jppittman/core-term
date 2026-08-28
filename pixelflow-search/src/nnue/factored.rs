@@ -620,6 +620,44 @@ impl Default for EdgeAccumulator {
     }
 }
 
+/// Reusable working buffers for [`EdgeAccumulator::from_cost_dag_scratch`] —
+/// see that method's doc comment. Sized to a `CostDag::id_bound()`; call
+/// [`Self::reset_for`] before each use rather than reconstructing.
+pub(crate) struct AccumulatorScratch {
+    expanded: alloc::vec::Vec<bool>,
+    edge_emitted: alloc::vec::Vec<bool>,
+    stack: alloc::vec::Vec<(u32, u32)>,
+    children: alloc::vec::Vec<u32>,
+}
+
+impl AccumulatorScratch {
+    pub(crate) fn new(bound: usize) -> Self {
+        Self {
+            expanded: alloc::vec![false; bound],
+            edge_emitted: alloc::vec![false; bound],
+            stack: alloc::vec::Vec::new(),
+            children: alloc::vec::Vec::new(),
+        }
+    }
+
+    /// Reset every buffer to its "fresh, empty" state for a walk over a
+    /// `CostDag` with the given `id_bound()`. Resizes `expanded`/
+    /// `edge_emitted` only when `bound` actually changed (it doesn't, across
+    /// candidates for the same e-graph) — otherwise reuses the existing
+    /// allocation and just re-fills it with `false`, which is the same
+    /// content a fresh `vec![false; bound]` would hold.
+    fn reset_for(&mut self, bound: usize) {
+        if self.expanded.len() != bound {
+            self.expanded.resize(bound, false);
+            self.edge_emitted.resize(bound, false);
+        }
+        self.expanded.fill(false);
+        self.edge_emitted.fill(false);
+        self.stack.clear();
+        self.children.clear();
+    }
+}
+
 impl EdgeAccumulator {
     /// Create a zero-initialized dual accumulator.
     #[must_use]
@@ -822,22 +860,45 @@ impl EdgeAccumulator {
     /// variance for some expanded nodes but not all of them (a half-populated
     /// histogram would silently feed the model garbage fractions).
     fn from_cost_dag<D: CostDag>(dag: &D, emb: &OpEmbeddings) -> Self {
+        let mut scratch = AccumulatorScratch::new(dag.id_bound());
+        Self::from_cost_dag_scratch(dag, emb, &mut scratch)
+    }
+
+    /// Same walk as [`Self::from_cost_dag`], but its four working buffers
+    /// (`expanded`, `edge_emitted`, the DFS `stack`, and the per-node
+    /// `children` scratch) live in caller-supplied `scratch` instead of
+    /// being freshly heap-allocated on every call.
+    ///
+    /// [`IncrementalExtractor::extract_choices_only`](crate::egraph::extract::IncrementalExtractor::extract_choices_only)
+    /// evaluates 194-375 candidates per kernel (Round 2b attribution), each
+    /// needing a fresh accumulator — reusing one `AccumulatorScratch`
+    /// across all of them turns that many `malloc`/`free` pairs per buffer
+    /// into one allocation for the whole kernel. Every buffer is fully
+    /// reset (resized if needed, then zero/empty-filled) at the top of
+    /// this call before anything reads it, so reuse changes only where the
+    /// backing memory comes from, never what value the walk below
+    /// observes — behaviorally identical to [`Self::from_cost_dag`].
+    fn from_cost_dag_scratch<D: CostDag>(
+        dag: &D,
+        emb: &OpEmbeddings,
+        scratch: &mut AccumulatorScratch,
+    ) -> Self {
         let mut acc = Self::new();
         let bound = dag.id_bound();
-        let mut expanded = alloc::vec![false; bound];
-        // Tracks which child nodes have already received their computation
-        // edge. The first reference is a computation edge; every later
-        // reference is a register reload (a single var_ref edge).
-        let mut edge_emitted = alloc::vec![false; bound];
+        scratch.reset_for(bound);
+        let AccumulatorScratch {
+            expanded,
+            edge_emitted,
+            stack,
+            children,
+        } = scratch;
         // Variance counters
         let mut n_const: u32 = 0;
         let mut n_frame: u32 = 0;
         let mut n_scanline: u32 = 0;
         let mut n_pixel: u32 = 0;
         let mut variance_classified: u32 = 0;
-        // Stack: (node id, depth). Reused children scratch buffer.
-        let mut stack: Vec<(u32, u32)> = alloc::vec![(dag.root(), 0)];
-        let mut children: Vec<u32> = Vec::new();
+        stack.push((dag.root(), 0));
 
         while let Some((id, depth)) = stack.pop() {
             let idx = id as usize;
@@ -854,7 +915,7 @@ impl EdgeAccumulator {
             expanded[idx] = true;
 
             children.clear();
-            let Some(parent_op) = dag.resolve(id, &mut children) else {
+            let Some(parent_op) = dag.resolve(id, children) else {
                 continue; // No recorded choice — contributes nothing.
             };
             acc.node_count += 1;
@@ -981,6 +1042,25 @@ impl EdgeAccumulator {
         emb: &OpEmbeddings,
         with_variance: bool,
     ) -> Self {
+        let mut scratch = AccumulatorScratch::new(extraction.egraph().num_classes());
+        Self::from_dag_choices_with_variance_scratch(extraction, emb, with_variance, &mut scratch)
+    }
+
+    /// Same as [`Self::from_dag_choices_with_variance`], but the
+    /// `EdgeAccumulator::from_cost_dag` walk's working buffers come from
+    /// caller-supplied `scratch` instead of a fresh allocation — see
+    /// [`Self::from_cost_dag_scratch`]'s doc comment for why that matters
+    /// on `IncrementalExtractor`'s hot path
+    /// ([`crate::egraph::extract::IncrementalExtractor::extract_choices_only`],
+    /// the only caller). `pinned`/`variance` are still freshly computed and
+    /// owned per call — they are `ChoicesCostDag`'s DATA, read throughout
+    /// the walk, not scratch that could be reset mid-walk.
+    pub(crate) fn from_dag_choices_with_variance_scratch(
+        extraction: &crate::egraph::extract::Extraction<'_>,
+        emb: &OpEmbeddings,
+        with_variance: bool,
+        scratch: &mut AccumulatorScratch,
+    ) -> Self {
         // Computed once and shared by `resolve`/`child_kind` (structure) and
         // `chosen_variance` (variance) below, so both walk the identical
         // Shl/Shr-pinned view `choices_to_arena` will materialise — see
@@ -996,13 +1076,14 @@ impl EdgeAccumulator {
             })
         });
         crate::egraph::profile::timed(crate::egraph::profile::Bucket::AccumulatorRebuild, || {
-            Self::from_cost_dag(
+            Self::from_cost_dag_scratch(
                 &ChoicesCostDag {
                     extraction,
                     pinned,
                     variance,
                 },
                 emb,
+                scratch,
             )
         })
     }
