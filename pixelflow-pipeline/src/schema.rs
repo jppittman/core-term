@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn fnv1a64_hex_and_fnv1a64_const_agree_on_the_same_bytes() {
+    fn fnv1a64_hex_and_fnv1a64_const_should_agree_on_the_same_bytes() {
         let bytes = b"some artifact bytes";
         assert_eq!(fnv1a64_hex(bytes), format!("{:016x}", fnv1a64_const(bytes)));
     }

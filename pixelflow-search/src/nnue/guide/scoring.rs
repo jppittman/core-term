@@ -382,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn bilinear_score_matches_the_manual_dot_product_and_stays_finite() {
+    fn bilinear_score_should_match_the_manual_dot_product_and_stay_finite() {
         let head = SaturationHead::new();
         let mut randomized = head.clone();
         randomized.randomize(42);
@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn randomize_is_deterministic_and_finite() {
+    fn randomize_should_be_deterministic_and_finite() {
         let mut a = SaturationHead::new();
         a.randomize(42);
         let mut b = SaturationHead::new();
@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_rule_from_arena_is_deterministic() {
+    fn encode_rule_from_arena_should_be_deterministic() {
         let backbone = test_backbone();
         let mut head = SaturationHead::new();
         head.randomize(3);

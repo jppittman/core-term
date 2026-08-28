@@ -1156,7 +1156,7 @@ kernels = ["swirl"]
     }
 
     #[test]
-    fn seed_range_contains_count_and_overlap_match_their_definitions() {
+    fn seed_range_contains_count_and_overlap_should_match_their_definitions() {
         let r = SeedRange { start: 2, end: 5 };
         assert!(r.contains(2) && r.contains(5) && !r.contains(6));
         assert_eq!(r.count(), 4);
