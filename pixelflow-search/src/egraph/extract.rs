@@ -99,23 +99,78 @@ impl<'g> Extraction<'g> {
     /// This is the NNUE refinement search's per-candidate constructor —
     /// unlike [`Extraction::from_backfill`], a cycle here is a normal
     /// search outcome (reject this candidate, try another), not a bug.
+    ///
+    /// ## Acyclicity check scope, and the one case it does NOT match
+    /// `choices_have_cycle_from` bit-for-bit
+    ///
+    /// The check is scoped to `canonical`'s own new outgoing edges
+    /// ([`choices_have_cycle_through`]) rather than re-walking the whole
+    /// tree from `root`: this swap changes exactly one vertex's outgoing
+    /// edge — `canonical`'s — plus adds fresh backfilled subtrees hanging
+    /// off `node_idx`'s children, each internally acyclic by construction
+    /// ([`backfill_well_founded`] never revisits a class that already has a
+    /// choice, so a backfilled region can only ever terminate by joining
+    /// the pre-existing tree, not by cutting back into it). PROVIDED
+    /// `canonical` is itself currently reachable from `root`, a graph
+    /// mutated at exactly one vertex's outgoing edge gains a cycle if and
+    /// only if that vertex becomes reachable from itself through the new
+    /// edge, so checking forward reachability from `node_idx`'s children
+    /// back to `canonical` is equivalent to (but bounded by the
+    /// forward-reachable set from the new children, not the whole
+    /// root-reachable tree, unlike) a full re-walk from root.
+    ///
+    /// That proviso can fail: `extract_choices_only`'s refinement loop
+    /// takes its `active` class list once per pass and then mutates
+    /// `current_extraction` as it goes, so a class visited later in the
+    /// same pass can, by the time its own `try_swap` call runs, no longer
+    /// be root-reachable at all — an earlier accepted swap in the same
+    /// pass severed the only path to it. For such a `canonical`, this
+    /// check and a full `choices_have_cycle_from(root)` walk can disagree
+    /// (this one may reject a "cycle" the root walk would call
+    /// unreachable-hence-irrelevant, or the reverse). That disagreement
+    /// never reaches an observable output, though: every consumer that
+    /// scores or materialises a candidate —
+    /// [`crate::nnue::EdgeAccumulator::from_dag_choices_with_variance`]
+    /// (hence the NNUE cost comparison) and [`choices_to_arena`] alike —
+    /// walks forward from `root` only, so a `canonical` unreachable from
+    /// root is invisible to both regardless of what this function decides
+    /// for it; accept or reject, the candidate's score is bit-identical to
+    /// `current_cost` and it never wins the refinement loop's strict `<`
+    /// comparison. Confirmed by this crate's determinism harness
+    /// (`profile_extraction`'s digest) across the 280-expression DEV
+    /// corpus: bit-identical chosen forms and predicted costs before and
+    /// after this function stopped matching `choices_have_cycle_from`
+    /// exactly.
     pub(crate) fn try_swap(&self, class: EClassId, node_idx: usize) -> Option<Self> {
         let canonical = self.egraph.find(class);
         let mut choices = self.choices.clone();
         choices[canonical.0 as usize] = Some(node_idx);
-        if let Some(ENode::Op { children, .. }) = self.egraph.nodes(canonical).get(node_idx) {
-            for &child in children {
-                profile::timed(profile::Bucket::TrySwapBackfill, || {
-                    backfill_well_founded(self.egraph, child, &mut choices);
-                });
+
+        let new_children: &[EClassId] = match self.egraph.nodes(canonical).get(node_idx) {
+            Some(ENode::Op { children, .. }) => children,
+            _ => &[],
+        };
+
+        for &child in new_children {
+            profile::timed(profile::Bucket::TrySwapBackfill, || {
+                backfill_well_founded(self.egraph, child, &mut choices);
+            });
+        }
+
+        // A leaf swap (Var/Const/Buffer, or an Op with no children) adds no
+        // outgoing edge at all, so it cannot possibly close a cycle — only
+        // removes `canonical`'s old edges, which can only ever break a
+        // cycle, never create one. Skip the walk entirely rather than
+        // paying for a reachability check with nothing to find.
+        if !new_children.is_empty() {
+            let has_cycle = profile::timed(profile::Bucket::AcyclicityCheck, || {
+                choices_have_cycle_through(self.egraph, canonical, new_children, &choices)
+            });
+            if has_cycle {
+                return None;
             }
         }
-        let has_cycle = profile::timed(profile::Bucket::AcyclicityCheck, || {
-            choices_have_cycle_from(self.egraph, self.root, &choices)
-        });
-        if has_cycle {
-            return None;
-        }
+
         Some(Self {
             egraph: self.egraph,
             root: self.root,
@@ -643,6 +698,49 @@ fn choices_have_cycle_from(egraph: &EGraph, root: EClassId, choices: &[Option<us
         if let Some(ENode::Op { children, .. }) = egraph.nodes(canonical).get(node_idx) {
             for &child in children.iter().rev() {
                 stack.push((child, false));
+            }
+        }
+    }
+
+    false
+}
+
+/// Check whether `canonical` is forward-reachable from `new_children` by
+/// following `choices`. Used by [`Extraction::try_swap`] as the equivalent,
+/// but far cheaper, replacement for a full [`choices_have_cycle_from`]
+/// re-walk from root — see that method's doc comment for why scoping the
+/// check to the one changed vertex's new edges is sound. Plain reachability
+/// (no gray/black coloring) is enough here, unlike
+/// [`choices_have_cycle_from`]: we are not distinguishing "cycle" from
+/// "revisited via legitimate DAG sharing" for the whole tree, only asking
+/// whether ANY forward path from the new edges leads back to `canonical` —
+/// which is exactly what a cycle through the swapped vertex means.
+///
+/// Bounded by the size of the forward-reachable set from `new_children`,
+/// not `egraph.num_classes()`.
+fn choices_have_cycle_through(
+    egraph: &EGraph,
+    canonical: EClassId,
+    new_children: &[EClassId],
+    choices: &[Option<usize>],
+) -> bool {
+    let num_classes = choices.len();
+    let mut visited: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
+    let mut stack: Vec<EClassId> = new_children.to_vec();
+
+    while let Some(class) = stack.pop() {
+        let c = egraph.find(class);
+        if c == canonical {
+            return true;
+        }
+        let idx = c.0 as usize;
+        if idx >= num_classes || !visited.insert(c.0) {
+            continue;
+        }
+        let node_idx = choices.get(idx).and_then(|o| *o).unwrap_or(0);
+        if let Some(ENode::Op { children, .. }) = egraph.nodes(c).get(node_idx) {
+            for &child in children {
+                stack.push(child);
             }
         }
     }
