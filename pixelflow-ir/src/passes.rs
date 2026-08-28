@@ -1411,7 +1411,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_var_is_one_or_zero() {
+    fn differentiate_a_variable_to_one_for_itself_and_zero_for_the_others() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let (out, root) = lowered_derivative(&a, x, 0);
@@ -1432,7 +1432,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_sqrt_sum_of_squares() {
+    fn compose_the_sqrt_rule_with_the_chain_rule_over_a_sum_of_squares() {
         // d/dx √(x² + y²) = x / √(x² + y²) — the font-SDF core.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1453,7 +1453,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_min_max_pick_branch_derivative() {
+    fn take_the_derivative_of_whichever_branch_min_and_max_select() {
         // d/dx min(x·2, y·3) is 2 where x·2 < y·3, else 0 (and dually for max).
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1497,7 +1497,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_select_blends_branch_derivatives() {
+    fn blend_the_branches_derivatives_by_the_same_mask_select_used() {
         // d/dx select(y > 0, x·x, x·5) = 2x above the axis, 5 below.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1522,7 +1522,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_clamp_saturates() {
+    fn give_a_clamped_expression_zero_derivative_outside_its_bounds() {
         // d/dx clamp(x·x, 0, 10): 2x inside, 0 once saturated. `clamp` is
         // library, so this is the min/max composition and the derivative comes
         // from the min/max rules — no clamp-specific rule exists any more.
@@ -1547,7 +1547,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_mul_add_matches_product_rule() {
+    fn differentiate_mul_add_by_the_product_rule_plus_the_addends_derivative() {
         // d/dx (x·y + x) = y + 1.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1560,7 +1560,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn d_transcendentals() {
+    fn differentiate_sin_exp_and_ln_to_their_own_rules_under_composition() {
         // d/dx sin(x) = cos(x); d/dx exp(x·x) = 2x·exp(x²); d/dx ln(x) = 1/x.
         //
         // The expected value is built as an arena expression and evaluated the
@@ -1682,5 +1682,815 @@ mod dwrt_tests {
         let v0 = a.push_const(0.0);
         let root = a.push_binary(OpKind::Dwrt, red, v0);
         assert!(lower_dwrt_owned(&a, root).is_err());
+    }
+
+    #[test]
+    fn flip_the_sign_for_neg_and_square_the_denominator_for_recip() {
+        // d/dx -(x·x) = -2x.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let xx = a.push_binary(OpKind::Mul, x, x);
+        let e = a.push_unary(OpKind::Neg, xx);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        for p in &[[3.0f32, 0.0, 0.0, 0.0], [-2.0, 0.0, 0.0, 0.0]] {
+            assert_close(eval(&out, root, p), -2.0 * p[0], p);
+        }
+
+        // d/dx (1/x) = -1/x².
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_unary(OpKind::Recip, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        for p in &[[2.0f32, 0.0, 0.0, 0.0], [-4.0, 0.0, 0.0, 0.0]] {
+            assert_close(eval(&out, root, p), -1.0 / (p[0] * p[0]), p);
+        }
+    }
+
+    #[test]
+    fn differentiate_abs_to_the_sign_of_its_operand() {
+        // d/dx |x| = x/|x| — +1 above zero, -1 below.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_unary(OpKind::Abs, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        assert_close(
+            eval(&out, root, &[3.0, 0.0, 0.0, 0.0]),
+            1.0,
+            &[3.0, 0.0, 0.0, 0.0],
+        );
+        assert_close(
+            eval(&out, root, &[-3.0, 0.0, 0.0, 0.0]),
+            -1.0,
+            &[-3.0, 0.0, 0.0, 0.0],
+        );
+    }
+
+    #[test]
+    fn differentiate_rsqrt_to_minus_half_x_to_the_negative_three_halves() {
+        // d/dx x^(-1/2) = -0.5 · x^(-3/2).
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_unary(OpKind::Rsqrt, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        for xv in [4.0f32, 9.0] {
+            let want = -0.5 * xv.powf(-1.5);
+            let p = [xv, 0.0, 0.0, 0.0];
+            assert_close(eval(&out, root, &p), want, &p);
+        }
+    }
+
+    #[test]
+    fn match_the_closed_forms_for_the_remaining_trig_and_inverse_trig_rules() {
+        // Expected values for the transcendental cases are built as arena
+        // expressions and evaluated the same way as the derivative under
+        // test, NOT taken from host libm — see `differentiate_sin_exp_and_ln_to_their_own_rules_under_composition` for why:
+        // it isolates the chain-rule from the polynomial-approximation error.
+        let pt = [0.4f32, 0.0, 0.0, 0.0];
+
+        // d/dx cos(x) = -sin(x).
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_unary(OpKind::Cos, x);
+        let sinx = a.push_unary(OpKind::Sin, x);
+        let expected = a.push_unary(OpKind::Neg, sinx);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        let want = eval(&a, expected, &pt);
+        assert_close(eval(&out, root, &pt), want, &pt);
+
+        // d/dx tan(x) = 1/cos²(x).
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_unary(OpKind::Tan, x);
+        let cosx = a.push_unary(OpKind::Cos, x);
+        let cos2 = a.push_binary(OpKind::Mul, cosx, cosx);
+        let one = a.push_const(1.0);
+        let expected = a.push_binary(OpKind::Div, one, cos2);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        let want = eval(&a, expected, &pt);
+        assert_close(eval(&out, root, &pt), want, &pt);
+
+        // d/dx asin(x) = 1/√(1-x²); d/dx acos(x) = -that. √ and arithmetic
+        // are exact in this interpreter, so a closed form is fine here.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_unary(OpKind::Asin, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        let want = 1.0 / (1.0 - pt[0] * pt[0]).sqrt();
+        assert_close(eval(&out, root, &pt), want, &pt);
+
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_unary(OpKind::Acos, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        assert_close(eval(&out, root, &pt), -want, &pt);
+
+        // d/dx atan(x) = 1/(1+x²) — pure arithmetic, no transcendental in
+        // the derivative expression itself.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_unary(OpKind::Atan, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        for xv in [0.5f32, 2.0, -3.0] {
+            let p = [xv, 0.0, 0.0, 0.0];
+            let want = 1.0 / (1.0 + xv * xv);
+            assert_close(eval(&out, root, &p), want, &p);
+        }
+    }
+
+    #[test]
+    fn carry_the_right_constants_in_the_base_two_and_base_ten_exp_and_log_rules() {
+        // d/dx 2^x = 2^x · ln2.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_unary(OpKind::Exp2, x);
+        let exp2x = a.push_unary(OpKind::Exp2, x);
+        let ln2 = a.push_const(core::f32::consts::LN_2);
+        let expected = a.push_binary(OpKind::Mul, exp2x, ln2);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        for xv in [0.3f32, 2.0, -1.0] {
+            let p = [xv, 0.0, 0.0, 0.0];
+            let want = eval(&a, expected, &p);
+            assert_close(eval(&out, root, &p), want, &p);
+        }
+
+        // d/dx log2(x) = 1/(x·ln2) — pure arithmetic given ln2 is a constant.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_unary(OpKind::Log2, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        for xv in [0.5f32, 3.0] {
+            let p = [xv, 0.0, 0.0, 0.0];
+            let want = 1.0 / (xv * core::f32::consts::LN_2);
+            assert_close(eval(&out, root, &p), want, &p);
+        }
+
+        // d/dx log10(x) = 1/(x·ln10).
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_unary(OpKind::Log10, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        for xv in [0.5f32, 3.0] {
+            let p = [xv, 0.0, 0.0, 0.0];
+            let want = 1.0 / (xv * core::f32::consts::LN_10);
+            assert_close(eval(&out, root, &p), want, &p);
+        }
+    }
+
+    #[test]
+    fn negate_subs_right_derivative_and_follow_the_quotient_rule_for_div() {
+        // d/dx (x·x - x) = 2x - 1. Both operands must depend on x: with a
+        // constant-in-x right operand `db` is zero, and `da - db` and
+        // `da + db` agree — the sign of Sub's right term would go unpinned.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let xx = a.push_binary(OpKind::Mul, x, x);
+        let e = a.push_binary(OpKind::Sub, xx, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        let p = [3.0f32, 5.0, 0.0, 0.0];
+        assert_close(eval(&out, root, &p), 2.0 * p[0] - 1.0, &p);
+
+        // d/dx (x·x / (x + y)) = (2x(x+y) - x²)/(x+y)² — the full quotient
+        // rule. Same reason: an x-independent denominator makes `db` zero and
+        // collapses the rule to `da / b`, so the `-a·db` term could be
+        // deleted outright and this would still pass.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let xx = a.push_binary(OpKind::Mul, x, x);
+        let denom = a.push_binary(OpKind::Add, x, y);
+        let e = a.push_binary(OpKind::Div, xx, denom);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        let p = [3.0f32, 2.0, 0.0, 0.0];
+        let (xv, b) = (p[0], p[0] + p[1]);
+        assert_close(eval(&out, root, &p), (2.0 * xv * b - xv * xv) / (b * b), &p);
+    }
+
+    #[test]
+    fn differentiate_atan2_and_pow_through_both_of_their_operands() {
+        // d/dX atan2(Y, X) = (X·dY - Y·dX)/(X²+Y²) = -Y/(X²+Y²), since Y does
+        // not depend on X. `Atan2`'s children are (y, x), matching `f32::atan2`.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let e = a.push_binary(OpKind::Atan2, y, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        let p = [3.0f32, 4.0, 0.0, 0.0];
+        let want = -p[1] / (p[0] * p[0] + p[1] * p[1]);
+        assert_close(eval(&out, root, &p), want, &p);
+
+        // Both Atan2 children depending on X, so the `x·dy` half of
+        // (x·dy - y·dx)/(x²+y²) is exercised too — with `dy == 0` above, that
+        // whole term could be deleted and the assertion would not notice.
+        // d/dX atan2(X², X) = (X·2X - X²)/(X⁴ + X²) = X²/(X⁴ + X²).
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let xx = a.push_binary(OpKind::Mul, x, x);
+        let e = a.push_binary(OpKind::Atan2, xx, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        let p = [3.0f32, 0.0, 0.0, 0.0];
+        let xv = p[0];
+        let want = (xv * xv) / (xv * xv * xv * xv + xv * xv);
+        assert_close(eval(&out, root, &p), want, &p);
+
+        // d/dx x³ (constant exponent) = 3x², the ordinary power rule falling
+        // out of Pow's general f^g·(g'·ln f + g·f'/f) formula.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let three = a.push_const(3.0);
+        let e = a.push_binary(OpKind::Pow, x, three);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        let p = [2.0f32, 0.0, 0.0, 0.0];
+        assert_close(eval(&out, root, &p), 3.0 * p[0] * p[0], &p);
+
+        // A constant exponent leaves `dg` zero, so the general rule's
+        // `g'·ln(f)` term is unexercised above and could be deleted. With the
+        // exponent varying too: d/dx x^x = x^x·(ln x + 1).
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e = a.push_binary(OpKind::Pow, x, x);
+        let (out, root) = lowered_derivative(&a, e, 0);
+        let p = [2.0f32, 0.0, 0.0, 0.0];
+        let xv = p[0];
+        let want = libm::powf(xv, xv) * (libm::logf(xv) + 1.0);
+        // Pow expands through exp/ln polynomial fits, so hold this to the
+        // same looser relative tolerance the expansions are checked at.
+        assert_close_rel(eval(&out, root, &p), want, &p, 3e-2);
+    }
+
+    #[test]
+    fn multiply_every_unary_rule_by_its_operands_derivative() {
+        // Each rule above applies its op to `Var(0)` directly, where the chain
+        // rule's `da` factor is exactly 1 — so a rule that dropped or miswired
+        // `da` would still pass every one of them. Here each op wraps `x·x`,
+        // whose derivative is `2x`, which makes that factor observable.
+        //
+        // The oracle is the same rule evaluated one level up: `d/du f(u)` at
+        // `u = x²`, times `2x`. That deliberately does not re-derive f' by
+        // hand — this test is about the chain rule's factor, and reusing the
+        // rule for `f'` keeps a polynomial's accuracy out of the comparison
+        // exactly as `differentiate_sin_exp_and_ln_to_their_own_rules_under_composition` explains.
+        //
+        // `x = 0.6` puts `x² = 0.36` inside every domain at once: within
+        // [-1, 1] for Asin/Acos, strictly positive for the logs, and nonzero
+        // for Recip/Rsqrt.
+        const X: f32 = 0.6;
+        let outer = [X, 0.0, 0.0, 0.0];
+        let inner = [X * X, 0.0, 0.0, 0.0];
+
+        for op in [
+            OpKind::Sin,
+            OpKind::Cos,
+            OpKind::Tan,
+            OpKind::Asin,
+            OpKind::Acos,
+            OpKind::Atan,
+            OpKind::Exp,
+            OpKind::Exp2,
+            OpKind::Ln,
+            OpKind::Log2,
+            OpKind::Log10,
+            OpKind::Sqrt,
+            OpKind::Rsqrt,
+            OpKind::Recip,
+            OpKind::Neg,
+            OpKind::Abs,
+        ] {
+            // d/dx f(x²)
+            let mut composed = ExprArena::new();
+            let x = composed.push_var(0);
+            let xx = composed.push_binary(OpKind::Mul, x, x);
+            let e = composed.push_unary(op, xx);
+            let (out, root) = lowered_derivative(&composed, e, 0);
+            let got = eval(&out, root, &outer);
+
+            // f'(u) at u = x², from the same rule with a unit-derivative
+            // operand — the case the tests above already cover.
+            let mut bare = ExprArena::new();
+            let u = bare.push_var(0);
+            let e = bare.push_unary(op, u);
+            let (out, root) = lowered_derivative(&bare, e, 0);
+            let want = eval(&out, root, &inner) * 2.0 * X;
+
+            // Guard against a vacuous comparison: if `f'(x²)·2x` happened to
+            // land on zero, dropping `da` entirely would also produce zero.
+            assert!(
+                want.abs() > 1e-3,
+                "{op:?}: oracle {want} is too near zero at x={X} to distinguish \
+                 a present chain-rule factor from a missing one"
+            );
+            assert_close(got, want, &outer);
+        }
+    }
+
+    #[test]
+    fn differentiate_a_raw_comparison_of_any_kind_to_zero() {
+        // A bare comparison (not wrapped in a Select) is a step function:
+        // zero derivative, and — unlike an op with no rule at all —
+        // `lower_dwrt` must succeed rather than error.
+        //
+        // All six are separate alternatives in `diff_node`'s and
+        // `push_deriv_children`'s grouped matches, so covering only `Lt` would
+        // let a dropped or misrouted arm for any of the other five through.
+        for op in [
+            OpKind::Lt,
+            OpKind::Le,
+            OpKind::Gt,
+            OpKind::Ge,
+            OpKind::Eq,
+            OpKind::Ne,
+        ] {
+            let mut a = ExprArena::new();
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let e = a.push_binary(op, x, y);
+            let (out, root) = lowered_derivative(&a, e, 0);
+            // Both orderings and equality, so no arm can pass by accident of
+            // the operands it was handed.
+            for p in &[
+                [1.0f32, 2.0, 0.0, 0.0],
+                [2.0f32, 1.0, 0.0, 0.0],
+                [1.0f32, 1.0, 0.0, 0.0],
+            ] {
+                assert_close(eval(&out, root, p), 0.0, p);
+            }
+        }
+    }
+
+    #[test]
+    fn transcendentals_evaluate_close_to_host_libm() {
+        // No transcendental has a scalar `eval_unary`/`eval_binary` arm (see
+        // `kind.rs`) — evaluating one at all requires `expand_transcendentals`
+        // to have lowered it to arithmetic first. The derivative-rule tests
+        // above build several of these ops as intermediate values, but most
+        // of them (Log2, Log10, Ln, Atan, Asin, Acos, Atan2, Pow) only ever
+        // appear as pure-arithmetic derivative *results*, never evaluated
+        // themselves. This test evaluates each expansion directly across a
+        // spread of magnitudes and signs (range reduction and quadrant
+        // selection inside the expansions branch on both), checked against
+        // host libm, at a tolerance sized per expansion rather than one loose
+        // bound for all of them.
+        //
+        // `LIBM_TOL` is for the expansions that genuinely need it — `exp`,
+        // `exp2`, and `atan`, whose fits carry real approximation error by
+        // design (`ATAN_MINIMAX` is documented at ~8.7e-5).
+        //
+        // `TRIG_TOL` is separate because `SIN_CHEB` is six odd coefficients —
+        // a degree-11 fit, not the degree-7 one an earlier version of this
+        // comment claimed — and the module documents ~1.5e-6 for sin/cos.
+        // Measured against libm at exactly the points below, the worst error
+        // is 4.2e-7 in this test's own metric, so 3e-2 was roughly 70,000x
+        // looser than the implementation: at `x = 0.1`, where
+        // `assert_close_rel`'s `max(|want|, 1)` floor makes the bound a plain
+        // absolute 0.03, a `sin` that returned 0.13 would have passed. 1e-5
+        // keeps ~24x headroom over the measurement and still sits above the
+        // documented accuracy, which leaves room for the ISA levels where FMA
+        // contraction shifts the last bits, while staying tight enough that a
+        // wrong coefficient, sign, or branch cannot hide.
+        type Reference = fn(f32) -> f32;
+
+        const LIBM_TOL: f32 = 3e-2;
+        const TRIG_TOL: f32 = 1e-5;
+        let periodic_pts = [-100.0f32, -7.0, -0.6, 0.1, 0.6, 2.5, 7.0, 100.0];
+        let unary: [(OpKind, Reference); 3] = [
+            (OpKind::Sin, libm::sinf),
+            (OpKind::Cos, libm::cosf),
+            (OpKind::Tan, libm::tanf),
+        ];
+        for (op, reference) in unary {
+            for &x in &periodic_pts {
+                let mut a = ExprArena::new();
+                let xv = a.push_var(0);
+                let e = a.push_unary(op, xv);
+                let pt = [x, 0.0, 0.0, 0.0];
+                let got = eval(&a, e, &pt);
+                let want = reference(x);
+                assert_close_rel(got, want, &pt, TRIG_TOL);
+            }
+        }
+
+        // The exponentials are checked purely relatively, on their own points.
+        // `assert_close_rel`'s `want.abs().max(1.0)` floor turns into a plain
+        // absolute 0.03 once the reference falls below 1, which is most of the
+        // negative half-line here: `expf(-100)` is ~3.8e-44, so returning zero
+        // would pass. And at +100 `expf` is `inf`, making `|got - inf| <= inf`
+        // accept anything finite. A relative-only comparison over a range
+        // where both sides stay finite and nonzero keeps every point binding.
+        let exp_pts = [-20.0f32, -7.0, -0.6, 0.1, 0.6, 2.5, 7.0, 20.0];
+        for (op, reference) in [
+            (OpKind::Exp, libm::expf as Reference),
+            (OpKind::Exp2, libm::exp2f as Reference),
+        ] {
+            for &x in &exp_pts {
+                let mut a = ExprArena::new();
+                let xv = a.push_var(0);
+                let e = a.push_unary(op, xv);
+                let pt = [x, 0.0, 0.0, 0.0];
+                let got = eval(&a, e, &pt);
+                let want = reference(x);
+                assert!(
+                    want.is_finite() && want > 0.0,
+                    "{op:?} oracle at {x} is {want}: a relative check needs a finite, nonzero reference"
+                );
+                let rel_err = (got - want).abs() / want;
+                assert!(
+                    rel_err <= LIBM_TOL,
+                    "at {pt:?}: {op:?} got {got}, want {want} (relative error {rel_err} > {LIBM_TOL})"
+                );
+            }
+        }
+
+        // Atan is unbounded; Asin/Acos are domain-restricted to [-1, 1].
+        let atan_pts = [-100.0f32, -1.7, -0.3, 0.3, 1.7, 100.0];
+        for &x in &atan_pts {
+            let mut a = ExprArena::new();
+            let xv = a.push_var(0);
+            let e = a.push_unary(OpKind::Atan, xv);
+            let pt = [x, 0.0, 0.0, 0.0];
+            assert_close_rel(eval(&a, e, &pt), libm::atanf(x), &pt, LIBM_TOL);
+        }
+        let inverse_trig_pts = [-0.9f32, -0.5, -0.1, 0.1, 0.5, 0.9];
+        for &x in &inverse_trig_pts {
+            let mut a = ExprArena::new();
+            let xv = a.push_var(0);
+            let asin_e = a.push_unary(OpKind::Asin, xv);
+            let pt = [x, 0.0, 0.0, 0.0];
+            assert_close_rel(eval(&a, asin_e, &pt), libm::asinf(x), &pt, LIBM_TOL);
+
+            let mut a = ExprArena::new();
+            let xv = a.push_var(0);
+            let acos_e = a.push_unary(OpKind::Acos, xv);
+            assert_close_rel(eval(&a, acos_e, &pt), libm::acosf(x), &pt, LIBM_TOL);
+        }
+
+        // Ln/Log2/Log10's Cephes-style minimax fit is far tighter than the
+        // trig/exp expansions above (worst case a few times 1e-7 relative,
+        // vs. the percent-level `LIBM_TOL` those need), so hold it to its
+        // own much narrower tolerance — loose enough for f32 rounding, tight
+        // enough that a wrong Horner coefficient cannot hide inside it.
+        const LOG_TOL: f32 = 3e-5;
+        // The mantissa extraction reduces every input to the SAME fixed
+        // range regardless of magnitude (`t ∈ [-0.293, 0.414]`, see
+        // `expand_log2`), so a few magnitudes spanning decades sample almost
+        // the same handful of `t` values — not enough to reliably land near
+        // a Horner coefficient's worst point. Sweep the mantissa densely
+        // (plus a couple of magnitudes to touch the exponent path, and the
+        // range-reduction threshold itself at √2, each coefficient's most
+        // sensitive point) instead.
+        let mut log_pts: Vec<f32> = (0..256).map(|k| 1.0 + k as f32 * (0.999 / 256.0)).collect();
+        log_pts.extend([1e-3f32, 10.0, 1e6, core::f32::consts::SQRT_2]);
+        let logs: [(OpKind, Reference); 3] = [
+            (OpKind::Ln, libm::logf),
+            (OpKind::Log2, libm::log2f),
+            (OpKind::Log10, libm::log10f),
+        ];
+        for (op, reference) in logs {
+            for &x in &log_pts {
+                let mut a = ExprArena::new();
+                let xv = a.push_var(0);
+                let e = a.push_unary(op, xv);
+                let pt = [x, 0.0, 0.0, 0.0];
+                let got = eval(&a, e, &pt);
+                let want = reference(x);
+                assert_close_rel(got, want, &pt, LOG_TOL);
+            }
+        }
+
+        // Atan2 over all four quadrants plus the axis-aligned cases.
+        for (y, x) in [
+            (3.0f32, 4.0),
+            (3.0, -4.0),
+            (-3.0, 4.0),
+            (-3.0, -4.0),
+            (0.0, -1.0), // pi
+            (1.0, 0.0),  // pi/2
+        ] {
+            let mut a = ExprArena::new();
+            let yv = a.push_var(0);
+            let xv = a.push_var(1);
+            let e = a.push_binary(OpKind::Atan2, yv, xv);
+            let pt = [y, x, 0.0, 0.0];
+            let got = eval(&a, e, &pt);
+            let want = libm::atan2f(y, x);
+            assert_close_rel(got, want, &pt, LIBM_TOL);
+        }
+
+        // Pow needs a positive base (it lowers through log2/exp2).
+        for (base, exp) in [(2.0f32, 3.3), (0.5, 2.0), (10.0, -1.5)] {
+            let mut a = ExprArena::new();
+            let bv = a.push_var(0);
+            let ev = a.push_var(1);
+            let e = a.push_binary(OpKind::Pow, bv, ev);
+            let pt = [base, exp, 0.0, 0.0];
+            let got = eval(&a, e, &pt);
+            let want = libm::powf(base, exp);
+            assert_close_rel(got, want, &pt, LIBM_TOL);
+        }
+    }
+
+    /// `is_err()` alone can't tell a specific "no rule for this op" message
+    /// apart from the generic per-arity fallback (`"no derivative rule for
+    /// this {unary,binary,ternary} op"`), since both are `Err`. Assert the
+    /// exact message everywhere below so a deleted specific-op arm — which
+    /// falls through to the generic one — is observable.
+    #[test]
+    fn lower_dwrt_refuses_integer_domain_and_raw_memory_ops() {
+        const BOUND_MEMORY: &str = "lower_dwrt: cannot differentiate a bound-memory read";
+        const INT_BIT: &str = "lower_dwrt: cannot differentiate integer/bit-manipulation ops";
+
+        // TruncToInt: no derivative for a discontinuous bit-reinterpret.
+        // Wrapping a Gather (itself undifferentiable) distinguishes this
+        // arm's own message from a leaked child error — if
+        // `push_deriv_children`'s TruncToInt/IntToFloat arm wrongly marked
+        // the operand as needing a derivative, the child's `BOUND_MEMORY`
+        // error would surface here instead of `INT_BIT`.
+        use crate::arena::{BufferDecl, BufferIdentity};
+        let mut a = ExprArena::new();
+        let b = a.declare_buffer(BufferDecl {
+            id: BufferIdentity::mint(),
+            width: 2,
+            height: 1,
+        });
+        let gx = a.push_var(0);
+        let zero = a.push_const(0.0);
+        let g = a.push_gather(b, gx, zero);
+        let e = a.push_unary(OpKind::TruncToInt, g);
+        let v0 = a.push_const(0.0);
+        let root = a.push_binary(OpKind::Dwrt, e, v0);
+        match lower_dwrt_owned(&a, root) {
+            Err(msg) => assert_eq!(msg, INT_BIT),
+            Ok(_) => panic!("expected {INT_BIT:?}"),
+        }
+
+        // IntToFloat, the other half of the unary integer-domain arm. Wrapped
+        // around a Gather for the same reason as TruncToInt above.
+        let mut a = ExprArena::new();
+        let b = a.declare_buffer(BufferDecl {
+            id: BufferIdentity::mint(),
+            width: 2,
+            height: 1,
+        });
+        let gx = a.push_var(0);
+        let zero = a.push_const(0.0);
+        let g = a.push_gather(b, gx, zero);
+        let e = a.push_unary(OpKind::IntToFloat, g);
+        let v0 = a.push_const(0.0);
+        let root = a.push_binary(OpKind::Dwrt, e, v0);
+        match lower_dwrt_owned(&a, root) {
+            Err(msg) => assert_eq!(msg, INT_BIT),
+            Ok(_) => panic!("expected {INT_BIT:?}"),
+        }
+
+        // IAdd/Shl/Shr/BitAnd/BitOr: integer/bit-manipulation primitives, at
+        // the binary-op level. Each is its own alternative in the grouped arm,
+        // so testing only `IAdd` would let any of the other four fall through
+        // to the generic per-arity fallback — a different message, or worse, a
+        // derivative — while this test still passed.
+        for op in [
+            OpKind::IAdd,
+            OpKind::Shl,
+            OpKind::Shr,
+            OpKind::BitAnd,
+            OpKind::BitOr,
+        ] {
+            let mut a = ExprArena::new();
+            let x = a.push_var(0);
+            let y = a.push_var(1);
+            let e = a.push_binary(op, x, y);
+            let v0 = a.push_const(0.0);
+            let root = a.push_binary(OpKind::Dwrt, e, v0);
+            match lower_dwrt_owned(&a, root) {
+                Err(msg) => assert_eq!(msg, INT_BIT, "for {op:?}"),
+                Ok(_) => panic!("expected {INT_BIT:?} for {op:?}"),
+            }
+        }
+
+        // A bare Gather (bound-memory read) cannot be differentiated, and
+        // neither can its lowered RawGather form.
+        let mut a = ExprArena::new();
+        let b = a.declare_buffer(BufferDecl {
+            id: BufferIdentity::mint(),
+            width: 2,
+            height: 1,
+        });
+        let gx = a.push_var(0);
+        let zero = a.push_const(0.0);
+        let g = a.push_gather(b, gx, zero);
+        let v0 = a.push_const(0.0);
+        let root = a.push_binary(OpKind::Dwrt, g, v0);
+        match lower_dwrt_owned(&a, root) {
+            Err(msg) => assert_eq!(msg, BOUND_MEMORY),
+            Ok(_) => panic!("expected {BOUND_MEMORY:?}"),
+        }
+
+        let mut a2 = ExprArena::new();
+        let b2 = a2.declare_buffer(BufferDecl {
+            id: BufferIdentity::mint(),
+            width: 2,
+            height: 1,
+        });
+        let gx2 = a2.push_var(0);
+        let zero2 = a2.push_const(0.0);
+        let g2 = a2.push_gather(b2, gx2, zero2);
+        let raw_root = expand_gather(&mut a2, g2);
+        let v0b = a2.push_const(0.0);
+        let root2 = a2.push_binary(OpKind::Dwrt, raw_root, v0b);
+        match lower_dwrt_owned(&a2, root2) {
+            Err(msg) => assert_eq!(msg, BOUND_MEMORY),
+            Ok(_) => panic!("expected {BOUND_MEMORY:?}"),
+        }
+    }
+
+    #[test]
+    fn differentiate_floor_ceil_and_round_to_zero_without_touching_their_operand() {
+        // Floor/Ceil/Round are step functions: zero derivative, and — unlike
+        // every other unary rule — the rule never reads the operand's own
+        // derivative. Wrapping a Gather (itself undifferentiable) proves
+        // that: if `push_deriv_children` wrongly marked the operand as
+        // needing a derivative, the Gather's error would surface and this
+        // would fail to lower at all instead of yielding 0.
+        use crate::arena::{BufferDecl, BufferIdentity};
+        for op in [OpKind::Floor, OpKind::Ceil, OpKind::Round] {
+            let mut a = ExprArena::new();
+            let b = a.declare_buffer(BufferDecl {
+                id: BufferIdentity::mint(),
+                width: 2,
+                height: 1,
+            });
+            let gx = a.push_var(0);
+            let zero = a.push_const(0.0);
+            let g = a.push_gather(b, gx, zero);
+            let e = a.push_unary(op, g);
+            let (out, root) = lowered_derivative(&a, e, 0);
+            let p = [0.0f32, 0.0, 0.0, 0.0];
+            assert_close(eval(&out, root, &p), 0.0, &p);
+        }
+    }
+
+    #[test]
+    fn rebuild_copies_nary_children_slice_correctly() {
+        // `copy_node`'s Nary arm reads `nodes_raw()[start..start+len]` — a
+        // second Nary node makes `start` nonzero, which is what distinguishes
+        // `start+len` from `start*len` (they coincide when start is 0).
+        let mut a = ExprArena::new();
+        let p = a.push_var(0);
+        let _throwaway = a.push_nary(OpKind::Tuple, &[p]); // start=0, len=1
+
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let z = a.push_var(2);
+        let root = a.push_nary(OpKind::Tuple, &[x, y, z]); // start=1, len=3
+
+        // Any rebuild pass runs every reachable node through `copy_node` for
+        // its non-matching arms; `expand_transcendentals` is the simplest
+        // public one and this arena has nothing for it to actually lower.
+        let new_root = expand_transcendentals(&mut a, root);
+        let ExprNode::Nary(OpKind::Tuple, start, len) = a.node(new_root) else {
+            panic!("expected a rebuilt Tuple, got {:?}", a.node(new_root));
+        };
+        let children = a.nary_children_slice(*start, *len);
+        assert_eq!(children.len(), 3, "wrong slice length");
+        for (child, expected_var) in children.iter().zip([0u8, 1, 2]) {
+            assert!(
+                matches!(a.node(*child), ExprNode::Var(v) if *v == expected_var),
+                "child {child:?} should be Var({expected_var})"
+            );
+        }
+    }
+
+    #[test]
+    fn legalize_lowers_gather() {
+        use crate::arena::{BufferDecl, BufferIdentity};
+
+        let mut a = ExprArena::new();
+        let buf = a.declare_buffer(BufferDecl {
+            id: BufferIdentity::mint(),
+            width: 4,
+            height: 1,
+        });
+        let x = a.push_var(0);
+        let zero = a.push_const(0.0);
+        let root = a.push_gather(buf, x, zero);
+
+        let (out, out_root) = legalize(&a, root).expect("legalize");
+
+        let mut seen = alloc::vec![false; out.nodes_raw().len()];
+        let mut stack = alloc::vec![out_root];
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut seen[id.0 as usize], true) {
+                continue;
+            }
+            assert!(
+                !matches!(out.node(id), ExprNode::Ternary(OpKind::Gather, _, _, _)),
+                "legalize left a high-level Gather reachable"
+            );
+            stack.extend(out.children(id));
+        }
+
+        let buf_data = [10.0f32, 20.0, 30.0, 40.0];
+        let bindings = BindingTable::bind(&out, &[&buf_data[..]]).unwrap();
+        assert_eq!(
+            eval_scalar(&out, out_root, &[2.0, 0.0, 0.0, 0.0], &bindings),
+            30.0
+        );
+    }
+
+    #[test]
+    fn legalize_lowers_reduce_transcendentals_and_dwrt_together() {
+        // (Σ_{i<3} i) + d/dX[sin(X)], exercising `expand_reduce`, `lower_dwrt`,
+        // and the `expand_transcendentals` pass that `lower_dwrt`'s own output
+        // (a `Cos`) feeds into — all three passes `legalize` composes, on one
+        // arena. `Dwrt` can only wrap what it can differentiate (`lower_dwrt`
+        // has no rule for a raw `Reduce`, see `unsupported_op_errors_loudly`),
+        // so the reduction and the derivative are independent subtrees joined
+        // by `Add` rather than one nested inside the other.
+        let mut a = ExprArena::new();
+        let i = a.push_var(4);
+        let red = a.push_reduce(OpKind::Add, 4, 3, i); // Σ_{i<3} i = 0+1+2 = 3
+
+        let x = a.push_var(0);
+        let s = a.push_unary(OpKind::Sin, x);
+        let v0 = a.push_const(0.0);
+        let dwrt_sin = a.push_binary(OpKind::Dwrt, s, v0); // d/dX sin(X) = cos(X)
+
+        let root = a.push_binary(OpKind::Add, red, dwrt_sin);
+
+        let (out, out_root) = legalize(&a, root).expect("legalize");
+
+        let mut seen = alloc::vec![false; out.nodes_raw().len()];
+        let mut stack = alloc::vec![out_root];
+        while let Some(id) = stack.pop() {
+            if core::mem::replace(&mut seen[id.0 as usize], true) {
+                continue;
+            }
+            let node = out.node(id);
+            assert!(
+                !matches!(
+                    node,
+                    ExprNode::Nary(OpKind::Reduce, _, _)
+                        | ExprNode::Unary(OpKind::Dwrt, _)
+                        | ExprNode::Binary(OpKind::Dwrt, _, _)
+                        | ExprNode::Ternary(OpKind::Dwrt, _, _, _)
+                ),
+                "legalize left a {node:?} reachable"
+            );
+            // Every transcendental, not just the input `Sin`: `lower_dwrt`
+            // replaces that `Sin` with a `Cos`, so naming one op would let a
+            // `legalize` that skipped its final expansion pass slip through.
+            // The value check below cannot catch it either — `eval_scalar`
+            // runs `expand_transcendentals_owned` itself.
+            let leftover = match node {
+                ExprNode::Unary(op, _) => is_transcendental_unary(*op),
+                ExprNode::Binary(op, _, _) => is_transcendental_binary(*op),
+                _ => false,
+            };
+            assert!(!leftover, "legalize left a backend-illegal {node:?}");
+            stack.extend(out.children(id));
+        }
+
+        // 3 + cos(X), at X = 0.5.
+        let want = 3.0 + 0.5f32.cos();
+        let bindings = BindingTable::empty();
+        let pt = [0.5f32, 0.0, 0.0, 0.0];
+        let got = eval_scalar(&out, out_root, &pt, &bindings);
+        assert_close_rel(got, want, &pt, 3e-2);
+    }
+
+    #[test]
+    fn lower_dwrt_refuses_a_malformed_dwrt_shape() {
+        // `Dwrt` is only well-formed as `Binary(expr, var)`; any other arity
+        // is a malformed node the pass must refuse outright, not silently
+        // reinterpret.
+        const MALFORMED: &str = "lower_dwrt: malformed Dwrt node (must be Binary(expr, var))";
+
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let root = a.push_unary(OpKind::Dwrt, x);
+        match lower_dwrt_owned(&a, root) {
+            Err(msg) => assert_eq!(msg, MALFORMED),
+            Ok(_) => panic!("expected {MALFORMED:?}"),
+        }
+
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let z = a.push_const(0.0);
+        let root = a.push_ternary(OpKind::Dwrt, x, y, z);
+        match lower_dwrt_owned(&a, root) {
+            Err(msg) => assert_eq!(msg, MALFORMED),
+            Ok(_) => panic!("expected {MALFORMED:?}"),
+        }
+
+        // `Nary` is its own alternative in the malformed-shape matcher, and
+        // `push_nary` can build one — so without this case, removing that
+        // alternative would leave a malformed `Dwrt` reachable while the unary
+        // and ternary assertions above still passed.
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let root = a.push_nary(OpKind::Dwrt, &[x, y]);
+        match lower_dwrt_owned(&a, root) {
+            Err(msg) => assert_eq!(msg, MALFORMED),
+            Ok(_) => panic!("expected {MALFORMED:?}"),
+        }
     }
 }

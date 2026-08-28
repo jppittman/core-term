@@ -519,6 +519,13 @@ pub fn find_hoistable_out_of(
     candidates.into_iter().take(max).map(|(id, _)| id).collect()
 }
 
+// Several tests below call `compute_arena_variance` directly. That is testing
+// the public API, not an exception to it: the function is `pub`, and
+// `pixelflow-search`'s `nnue::factored` calls it from outside this crate. Its
+// in-crate callers are `passes::unroll_reduce` and `eval::eval_scalar`, both of
+// which consume the whole per-node table; `find_hoistable_out_of` and
+// `find_hoistable_arena_nodes` are not callers at all — they take an
+// already-computed variance slice from theirs.
 #[cfg(test)]
 mod tests {
     use super::*;
