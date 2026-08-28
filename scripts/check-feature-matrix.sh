@@ -23,8 +23,18 @@ cd "$repo_root"
 
 # Each entry is "<crate>|<space-separated --no-default-features feature args>"
 # exactly as cargo-hack prints it in its "failed commands:" summary.
+#
+# Both pixelflow-search entries are the same single defect: `ExprNnue::from_bytes`
+# is used unguarded in `egraph/extraction.rs` while its definition sits behind the
+# `std` feature, so *every* std-off combination of that crate fails identically
+# (same error, same line). Adding a feature to pixelflow-search therefore adds a
+# row here rather than revealing anything new -- `extraction-profile` is off by
+# default and its own code compiles fine. The defect itself is tracked by the
+# `std-off-status` job and documented at the top of `egraph/extraction.rs`; when
+# it is fixed, both entries go away together.
 KNOWN_BROKEN=(
   "pixelflow-search|"
+  "pixelflow-search|--features extraction-profile"
 )
 
 log="$(mktemp)"
