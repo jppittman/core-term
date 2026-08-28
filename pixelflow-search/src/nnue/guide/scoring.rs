@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn forward_graph_matches_hand_computed_value_when_node_count_is_positive() {
+    fn forward_graph_should_match_a_hand_computed_value_when_node_count_is_positive() {
         let backbone = identity_trunk_backbone();
         let mut head = SaturationHead::new();
         head.graph_b1 = [10.0; HIDDEN_DIM];
@@ -548,17 +548,27 @@ mod tests {
         let backbone = identity_trunk_backbone();
         let mut head = SaturationHead::new();
         head.graph_b1 = [5.0; HIDDEN_DIM];
+        head.graph_w1[0] = [1.0; HIDDEN_DIM];
 
-        // All-zero accumulator: node_count == 0 takes the `else` branch
-        // (scale = 1.0). Under a `>` -> `==`/`>=` mutation the `if` branch is
-        // taken instead, computing `1.0 / sqrtf(0.0) = inf`; since
-        // `gacc.values` are all zero, `0.0 * inf` is NaN, which poisons every
-        // hidden entry and is trivially distinguishable from the expected 5.0.
-        let gacc = GraphAccumulator::new();
+        // One populated lane, so the output depends on the scale's *value* and
+        // not merely on its finiteness: an all-zero accumulator multiplies
+        // every candidate scale by 0.0 and lands on the bias either way, which
+        // would leave 0.0, 1.0 and 2.0 indistinguishable here.
+        let mut gacc = GraphAccumulator::new();
+        gacc.values[0] = 8.0;
+
+        // node_count stays 0, so `node_count > 0` is false and the scale is
+        // 1.0. Every scalar feature is log2(1 + 0) = 0 and contributes nothing.
+        // A `>` -> `>=`/`==` mutation takes the other branch and computes
+        // `1.0 / sqrtf(0.0)` = inf, sending the lane to inf rather than 13.0.
+        let expected = 5.0 + 8.0 * 1.0;
 
         let hidden = head.forward_graph(&backbone, &gacc);
         for (j, &h) in hidden.iter().enumerate() {
-            assert!((h - 5.0).abs() < 1e-6, "hidden[{j}]: got {h}, expected 5.0");
+            assert!(
+                (h - expected).abs() < 1e-6,
+                "hidden[{j}]: got {h}, expected {expected}"
+            );
         }
     }
 
@@ -689,6 +699,25 @@ mod tests {
             head.rule_proj_w[block_start + k][k] = weight;
         }
         head
+    }
+
+    #[test]
+    fn encode_rule_from_arena_places_lhs_embedding_at_the_first_concat_block() {
+        let backbone = test_backbone();
+        let (arena, lhs, rhs) = sample_rule_arena();
+        let z_lhs = embed_of(&backbone, &arena, lhs);
+
+        let head = concat_block_selector(0, 2.0);
+        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+
+        for k in 0..EMBED_DIM {
+            let expected = 2.0 * z_lhs[k];
+            assert!(
+                (out[k] - expected).abs() < 1e-3,
+                "block1[{k}]: got {}, expected {expected}",
+                out[k]
+            );
+        }
     }
 
     #[test]
@@ -855,6 +884,19 @@ mod tests {
                 );
             }
         }
+        // The three arrays `randomize` leaves at a literal 0.0. Asserted rather
+        // than merely noted above: without these, `randomize` could start
+        // writing a nonzero literal into any of them, or consume RNG while
+        // populating them, and every other assertion here would still pass —
+        // the reference stream would simply shift in lockstep.
+        for k in 0..EMBED_DIM {
+            assert!(
+                close(head.mask_mlp_b2[k], 0.0),
+                "mask_mlp_b2[{k}] must stay zero, got {}",
+                head.mask_mlp_b2[k]
+            );
+        }
+
         for i in 0..RULE_CONCAT_DIM {
             for k in 0..EMBED_DIM {
                 assert!(
@@ -863,6 +905,13 @@ mod tests {
                 );
             }
         }
+        for k in 0..EMBED_DIM {
+            assert!(
+                close(head.rule_proj_b[k], 0.0),
+                "rule_proj_b[{k}] must stay zero, got {}",
+                head.rule_proj_b[k]
+            );
+        }
         for i in 0..EMBED_DIM {
             for j in 0..EMBED_DIM {
                 assert!(
@@ -870,6 +919,13 @@ mod tests {
                     "interaction[{i}][{j}]"
                 );
             }
+        }
+        for k in 0..EMBED_DIM {
+            assert!(
+                close(head.mask_bias_proj[k], 0.0),
+                "mask_bias_proj[{k}] must stay zero, got {}",
+                head.mask_bias_proj[k]
+            );
         }
         for row in 0..GRAPH_INPUT_DIM {
             for col in 0..HIDDEN_DIM {

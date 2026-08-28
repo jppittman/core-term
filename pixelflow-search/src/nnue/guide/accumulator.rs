@@ -533,7 +533,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn reset_zeroes_values_and_counts_but_preserves_budgets() {
+    fn reset_should_zero_values_and_counts_but_preserve_budgets() {
         let emb = OpEmbeddings::new_random(3);
         let mut gacc = GraphAccumulator::new();
         gacc.add_edge(&emb, OpKind::Add, OpKind::Mul);
@@ -866,10 +866,47 @@ mod tests {
         );
     }
 
-    // Note on the `norm < 1e-12` guard in `l2_normalize_section` (the `<` vs
-    // `<=` mutant at that line): the boundary is only observable when a
-    // section's L2 norm lands on *exactly* 1e-12, which no combination of
-    // `OpEmbeddings::new_random` seeds and edge counts here can be made to
-    // hit deterministically — it is not exercised by any test in this file,
-    // by design rather than oversight.
+    #[test]
+    fn normalize_in_place_normalizes_a_section_whose_norm_is_exactly_the_guard_threshold() {
+        // `l2_normalize_section` skips a section when `norm < 1e-12`, so the
+        // threshold itself must still normalize. A single populated lane makes
+        // the section norm `sqrtf(x*x)`, which is exactly `x` for this value —
+        // asserted below so the fixture cannot drift off the boundary — and
+        // that pins `<` against a `<=` mutant: `<=` would return early and
+        // leave the lane at 1e-12 instead of scaling it to 1.0.
+        const GUARD_THRESHOLD: f32 = 1e-12;
+
+        let mut gacc = GraphAccumulator::new();
+        gacc.values[0] = GUARD_THRESHOLD;
+        let section_norm = sqrtf(gacc.values[0] * gacc.values[0]);
+        assert_eq!(
+            section_norm, GUARD_THRESHOLD,
+            "fixture must sit exactly on the guard boundary, not below it"
+        );
+
+        gacc.normalize_in_place();
+
+        assert!(
+            (gacc.values[0] - 1.0).abs() < 1e-5,
+            "a section at exactly the guard threshold must normalize; got {}",
+            gacc.values[0]
+        );
+    }
+
+    #[test]
+    fn normalize_in_place_leaves_a_section_whose_norm_is_below_the_guard_threshold_untouched() {
+        // The other side of the same boundary: strictly below 1e-12 the
+        // section is left alone rather than amplified toward 1.0.
+        const BELOW_THRESHOLD: f32 = 1e-13;
+
+        let mut gacc = GraphAccumulator::new();
+        gacc.values[0] = BELOW_THRESHOLD;
+
+        gacc.normalize_in_place();
+
+        assert_eq!(
+            gacc.values[0], BELOW_THRESHOLD,
+            "a section below the guard threshold must be left untouched"
+        );
+    }
 }
