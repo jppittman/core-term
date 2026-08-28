@@ -1411,7 +1411,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn differentiating_a_variable_gives_one_for_itself_and_zero_for_the_others() {
+    fn differentiate_a_variable_to_one_for_itself_and_zero_for_the_others() {
         let mut a = ExprArena::new();
         let x = a.push_var(0);
         let (out, root) = lowered_derivative(&a, x, 0);
@@ -1432,7 +1432,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn the_sqrt_rule_composes_with_the_chain_rule_over_a_sum_of_squares() {
+    fn compose_the_sqrt_rule_with_the_chain_rule_over_a_sum_of_squares() {
         // d/dx √(x² + y²) = x / √(x² + y²) — the font-SDF core.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1453,7 +1453,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn min_and_max_take_the_derivative_of_whichever_branch_they_select() {
+    fn take_the_derivative_of_whichever_branch_min_and_max_select() {
         // d/dx min(x·2, y·3) is 2 where x·2 < y·3, else 0 (and dually for max).
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1497,7 +1497,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn select_blends_its_branches_derivatives_by_the_same_mask() {
+    fn blend_the_branches_derivatives_by_the_same_mask_select_used() {
         // d/dx select(y > 0, x·x, x·5) = 2x above the axis, 5 below.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1522,7 +1522,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn a_clamped_expression_has_zero_derivative_outside_its_bounds() {
+    fn give_a_clamped_expression_zero_derivative_outside_its_bounds() {
         // d/dx clamp(x·x, 0, 10): 2x inside, 0 once saturated. `clamp` is
         // library, so this is the min/max composition and the derivative comes
         // from the min/max rules — no clamp-specific rule exists any more.
@@ -1547,7 +1547,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn mul_add_differentiates_by_the_product_rule_plus_the_addends_derivative() {
+    fn differentiate_mul_add_by_the_product_rule_plus_the_addends_derivative() {
         // d/dx (x·y + x) = y + 1.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1560,7 +1560,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn sin_exp_and_ln_differentiate_to_their_own_rules_under_composition() {
+    fn differentiate_sin_exp_and_ln_to_their_own_rules_under_composition() {
         // d/dx sin(x) = cos(x); d/dx exp(x·x) = 2x·exp(x²); d/dx ln(x) = 1/x.
         //
         // The expected value is built as an arena expression and evaluated the
@@ -1685,7 +1685,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn neg_flips_the_sign_of_its_operands_derivative_and_recip_squares_the_denominator() {
+    fn flip_the_sign_for_neg_and_square_the_denominator_for_recip() {
         // d/dx -(x·x) = -2x.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1707,7 +1707,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn abs_differentiates_to_the_sign_of_its_operand() {
+    fn differentiate_abs_to_the_sign_of_its_operand() {
         // d/dx |x| = x/|x| — +1 above zero, -1 below.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1726,7 +1726,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn rsqrt_differentiates_to_minus_half_x_to_the_negative_three_halves() {
+    fn differentiate_rsqrt_to_minus_half_x_to_the_negative_three_halves() {
         // d/dx x^(-1/2) = -0.5 · x^(-3/2).
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1740,10 +1740,10 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn the_remaining_trig_and_inverse_trig_rules_match_their_closed_forms() {
+    fn match_the_closed_forms_for_the_remaining_trig_and_inverse_trig_rules() {
         // Expected values for the transcendental cases are built as arena
         // expressions and evaluated the same way as the derivative under
-        // test, NOT taken from host libm — see `sin_exp_and_ln_differentiate_to_their_own_rules_under_composition` for why:
+        // test, NOT taken from host libm — see `differentiate_sin_exp_and_ln_to_their_own_rules_under_composition` for why:
         // it isolates the chain-rule from the polynomial-approximation error.
         let pt = [0.4f32, 0.0, 0.0, 0.0];
 
@@ -1798,7 +1798,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn the_base_two_and_base_ten_exponential_and_log_rules_carry_their_own_constants() {
+    fn carry_the_right_constants_in_the_base_two_and_base_ten_exp_and_log_rules() {
         // d/dx 2^x = 2^x · ln2.
         let mut a = ExprArena::new();
         let x = a.push_var(0);
@@ -1837,7 +1837,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn sub_negates_its_right_operands_derivative_and_div_follows_the_quotient_rule() {
+    fn negate_subs_right_derivative_and_follow_the_quotient_rule_for_div() {
         // d/dx (x·x - x) = 2x - 1. Both operands must depend on x: with a
         // constant-in-x right operand `db` is zero, and `da - db` and
         // `da + db` agree — the sign of Sub's right term would go unpinned.
@@ -1866,7 +1866,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn atan2_and_pow_differentiate_through_both_of_their_operands() {
+    fn differentiate_atan2_and_pow_through_both_of_their_operands() {
         // d/dX atan2(Y, X) = (X·dY - Y·dX)/(X²+Y²) = -Y/(X²+Y²), since Y does
         // not depend on X. `Atan2`'s children are (y, x), matching `f32::atan2`.
         let mut a = ExprArena::new();
@@ -1918,7 +1918,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn every_unary_rule_multiplies_by_its_operands_derivative() {
+    fn multiply_every_unary_rule_by_its_operands_derivative() {
         // Each rule above applies its op to `Var(0)` directly, where the chain
         // rule's `da` factor is exactly 1 — so a rule that dropped or miswired
         // `da` would still pass every one of them. Here each op wraps `x·x`,
@@ -1928,7 +1928,7 @@ mod dwrt_tests {
         // `u = x²`, times `2x`. That deliberately does not re-derive f' by
         // hand — this test is about the chain rule's factor, and reusing the
         // rule for `f'` keeps a polynomial's accuracy out of the comparison
-        // exactly as `sin_exp_and_ln_differentiate_to_their_own_rules_under_composition` explains.
+        // exactly as `differentiate_sin_exp_and_ln_to_their_own_rules_under_composition` explains.
         //
         // `x = 0.6` puts `x² = 0.36` inside every domain at once: within
         // [-1, 1] for Asin/Acos, strictly positive for the logs, and nonzero
@@ -1983,7 +1983,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn a_raw_comparison_of_any_kind_differentiates_to_zero() {
+    fn differentiate_a_raw_comparison_of_any_kind_to_zero() {
         // A bare comparison (not wrapped in a Select) is a step function:
         // zero derivative, and — unlike an op with no rule at all —
         // `lower_dwrt` must succeed rather than error.
@@ -2301,7 +2301,7 @@ mod dwrt_tests {
     }
 
     #[test]
-    fn floor_ceil_and_round_differentiate_to_zero_without_touching_their_operand() {
+    fn differentiate_floor_ceil_and_round_to_zero_without_touching_their_operand() {
         // Floor/Ceil/Round are step functions: zero derivative, and — unlike
         // every other unary rule — the rule never reads the operand's own
         // derivative. Wrapping a Gather (itself undifferentiable) proves
