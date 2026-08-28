@@ -639,6 +639,7 @@ mod cost_model_accessors {
     use crate::egraph::ops::op_from_kind;
     use crate::egraph::{EGraph, ENode};
     use pixelflow_ir::OpKind;
+    use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
 
     /// `set_cost` followed by `cost` for the same op should observe the
     /// value just written, and must not disturb any other op's price —
@@ -714,11 +715,24 @@ mod cost_model_accessors {
     /// `Var`/`Const`/`Buffer` are leaves; the cost of reading a `Buffer` is
     /// charged to the `Gather` that consumes it, so all three price at
     /// zero regardless of what the op-cost table says.
+    ///
+    /// `Buffer` is asserted alongside the other two rather than left to the
+    /// shared match arm: runtime arenas do contain buffer leaves, so if that
+    /// arm ever started taking the table price, the buffer *and* its
+    /// consuming gather would both be charged and extraction could change
+    /// its choices.
     #[test]
-    fn node_op_cost_prices_var_and_const_leaves_at_zero() {
+    fn node_op_cost_should_price_var_const_and_buffer_leaves_at_zero() {
         let model = CostModel::latency_prior();
         assert_eq!(model.node_op_cost(&ENode::Var(0)), 0);
         assert_eq!(model.node_op_cost(&ENode::constant(2.0)), 0);
+
+        let decl = BufferDecl {
+            id: BufferIdentity::mint(),
+            width: 8,
+            height: 4,
+        };
+        assert_eq!(model.node_op_cost(&ENode::Buffer(decl)), 0);
     }
 
     /// `Dwrt` is the unlowered-autodiff marker and must never look cheap to
@@ -753,9 +767,9 @@ mod cost_model_accessors {
 
     /// The `CostFunction` trait impl for `CostModel` is a thin delegation
     /// layer; `node_cost` must route to `node_op_cost` rather than return a
-    /// constant. Uses an `Add` op node (cost 4), not a leaf (cost 0), so a
-    /// mutant that replaces the method with a constant `0` cannot
-    /// coincidentally pass.
+    /// constant. The node is an `Add` (cost 4) rather than a leaf (cost 0)
+    /// so that a delegation which quietly returned zero is distinguishable
+    /// from one that works.
     #[test]
     fn node_cost_trait_method_delegates_to_node_op_cost() {
         let mut egraph = EGraph::new();
@@ -850,9 +864,9 @@ mod persistence {
 
     /// A key the file never mentions is not silently filled in from the
     /// latency prior — `load_toml` starts from an all-zero model, so an
-    /// omitted op stays at 0. This is what distinguishes `load_toml` from
-    /// a mutant that returns `Default::default()` (which would be the
-    /// latency-prior table, not zero, for the omitted op).
+    /// omitted op stays at 0. Asserting the omitted op specifically is what
+    /// separates that from a `load_toml` that returned a default model,
+    /// where the omitted op would carry its latency-prior price instead.
     #[test]
     fn load_toml_leaves_unmentioned_ops_at_zero_rather_than_the_latency_prior() {
         let path = unique_temp_path("sparse");
@@ -910,31 +924,74 @@ mod persistence {
         assert_eq!(restored.depth_penalty, 7);
     }
 
-    /// `load_or_default` must actually load and return the file named by
-    /// `PIXELFLOW_COST_MODEL` when it's set — not a freshly constructed
-    /// default model, which would happen to look identical for every op
-    /// this test doesn't check. Serialized on `ENV_GUARD` because the env
-    /// var is process-global and no other test in this crate touches it.
+    /// The assertion half of
+    /// [`load_or_default_should_return_the_model_named_by_the_env_var_override`],
+    /// run in a child process that was spawned with `PIXELFLOW_COST_MODEL`
+    /// already set. `#[ignore]` keeps it out of the ordinary sweep, where
+    /// the variable is unset and there would be nothing to assert.
     #[test]
-    fn load_or_default_returns_the_model_named_by_the_env_var_override() {
-        static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-
-        let path = unique_temp_path("env-override");
-        std::fs::write(&path, "add = 42\n").expect("write test fixture");
-
-        // SAFETY: serialized by ENV_GUARD; no other test reads or writes
-        // PIXELFLOW_COST_MODEL.
-        unsafe { std::env::set_var("PIXELFLOW_COST_MODEL", &path) };
+    #[ignore = "spawned by its parent test with PIXELFLOW_COST_MODEL set"]
+    fn env_var_override_child() {
         let model = CostModel::load_or_default();
-        unsafe { std::env::remove_var("PIXELFLOW_COST_MODEL") };
-        let _ = std::fs::remove_file(&path);
 
-        assert_eq!(model.cost(OpKind::Add), 42);
+        assert_eq!(
+            model.cost(OpKind::Add),
+            42,
+            "the env var names a file with `add = 42`; a default model would not have it"
+        );
         assert_eq!(
             model.cost(OpKind::Mul),
             0,
             "load_toml starts from zero, not the latency prior"
+        );
+    }
+
+    /// `load_or_default` must actually load and return the file named by
+    /// `PIXELFLOW_COST_MODEL` when it's set — not a freshly constructed
+    /// default model, which would happen to look identical for every op
+    /// this test doesn't check.
+    ///
+    /// The override is exercised in a **child process** rather than by
+    /// mutating this one's environment. `std::env::set_var` is unsafe
+    /// because it requires that no other thread touch the environment
+    /// concurrently, and the test harness runs tests on parallel threads —
+    /// a mutex private to one test cannot establish that, and
+    /// `load_or_default` itself goes on to read `HOME`. Spawning gives the
+    /// child an environment nothing races on, so there is no `unsafe` here
+    /// at all.
+    #[test]
+    fn load_or_default_should_return_the_model_named_by_the_env_var_override() {
+        let path = unique_temp_path("env-override");
+        std::fs::write(&path, "add = 42\n").expect("write test fixture");
+
+        const CHILD: &str = "egraph::cost::persistence::env_var_override_child";
+
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("locate this test binary to re-run a single test"),
+        )
+        .args(["--exact", CHILD, "--ignored"])
+        .env("PIXELFLOW_COST_MODEL", &path)
+        .output()
+        .expect("spawn the child test process");
+
+        let _ = std::fs::remove_file(&path);
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        // Checked before `status.success()`, and the reason this is an
+        // `output()` rather than a `status()`: libtest exits 0 when a filter
+        // matches nothing, so a `CHILD` path that drifts out of date would
+        // make the success assertion below pass without ever running the
+        // assertions it is standing in for.
+        assert!(
+            stdout.contains("1 passed"),
+            "expected the child to run exactly one test; if `{CHILD}` no longer names it, \
+             this test is asserting nothing. Child stdout:\n{stdout}"
+        );
+        assert!(
+            output.status.success(),
+            "{CHILD} failed under PIXELFLOW_COST_MODEL={}. Child stdout:\n{stdout}",
+            path.display()
         );
     }
 }

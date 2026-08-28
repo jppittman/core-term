@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn add_masked_adds_only_where_the_mask_is_true() {
+    fn add_masked_should_add_only_in_the_lanes_where_the_mask_is_true() {
         let base = F32x4::splat(5.0);
         let val = F32x4::splat(10.0);
 
@@ -312,6 +312,13 @@ mod tests {
 
         let all_false = F32x4::splat(0.0).cmp_gt(F32x4::splat(1.0));
         assert_eq!(lanes(base.add_masked(val, all_false)), [5.0; 4]);
+
+        // The uniform masks above are both satisfied by an implementation
+        // that consults `mask.any()` and then adds to every lane. Only a
+        // mixed mask separates per-lane masking from that: lanes 0..4 are
+        // [0, 1, 2, 3], so `> 1` is false, false, true, true.
+        let mixed = F32x4::sequential(0.0).cmp_gt(F32x4::splat(1.0));
+        assert_eq!(lanes(base.add_masked(val, mixed)), [5.0, 5.0, 15.0, 15.0]);
     }
 
     #[test]
@@ -330,12 +337,22 @@ mod tests {
     }
 
     #[test]
-    fn i32_to_f32_converts_the_reinterpreted_integer_not_the_bit_pattern() {
+    fn i32_to_f32_should_convert_the_reinterpreted_integer_not_the_bit_pattern() {
         // from_u32_bits(5) reinterprets the integer 5 as raw bits; i32_to_f32
         // then converts that integer value to a float — 5.0, not the float
         // whose bit pattern happens to be 5 (a subnormal near zero).
         let got = lanes(F32x4::from_u32_bits(5).i32_to_f32());
         assert_eq!(got, [5.0; 4]);
+    }
+
+    #[test]
+    fn i32_to_f32_should_read_the_lane_as_signed_when_the_high_bit_is_set() {
+        // A positive operand cannot tell the required signed conversion from
+        // an unsigned one — both render 5 as 5.0. With the high bit set the
+        // two answers diverge: as `i32` this is -1, as `u32` it would be
+        // 4294967295.0.
+        let got = lanes(F32x4::from_u32_bits(0xFFFF_FFFF).i32_to_f32());
+        assert_eq!(got, [-1.0; 4]);
     }
 
     #[test]
@@ -393,14 +410,32 @@ mod tests {
     }
 
     #[test]
-    fn pack_rgba_clamps_scales_and_packs_channels_into_one_u32_per_lane() {
-        let r = F32x4::splat(1.0); // clamps to 1.0 -> 255
+    fn pack_rgba_should_scale_in_range_channels_and_pack_them_one_u32_per_lane() {
+        let r = F32x4::splat(1.0); // -> 255
         let g = F32x4::splat(0.5); // -> 127 (truncated, not rounded)
         let b = F32x4::splat(0.25); // -> 63
         let a = F32x4::splat(0.0); // -> 0
 
         let packed = u32_lanes(U32x4::pack_rgba(r, g, b, a));
         let expected: u32 = 255 | (127 << 8) | (63 << 16); // A channel is 0
+        assert_eq!(packed, [expected; 4]);
+    }
+
+    #[test]
+    fn pack_rgba_should_clamp_a_channel_outside_0_1_before_scaling_it() {
+        // Split from the in-range case deliberately: every channel there is
+        // already within [0, 1], so deleting all four clamps from `pack_rgba`
+        // leaves that assertion passing. Only an out-of-range channel
+        // exercises them — above 1.0 must saturate at 255 and below 0.0 at 0,
+        // rather than wrapping through the `cvttps` conversion.
+        let above = F32x4::splat(2.5); // clamps to 1.0 -> 255
+        let below = F32x4::splat(-1.5); // clamps to 0.0 -> 0
+        let mid = F32x4::splat(0.5); // -> 127
+
+        let packed = u32_lanes(U32x4::pack_rgba(above, below, mid, above));
+        // G is the clamped-to-zero channel, so its byte is absent from the
+        // OR rather than written as a no-op shift.
+        let expected: u32 = 255 | (127 << 16) | (255 << 24);
         assert_eq!(packed, [expected; 4]);
     }
 }

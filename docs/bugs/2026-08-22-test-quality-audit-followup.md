@@ -34,7 +34,7 @@ Scoped the mutants run to this file with the test filter `--lib cost::` (not
 `math::pict_rewrite_tests::pict_rewrite_rules_preserve_semantics`, which has
 nothing to do with this file. First sweep: **73 mutants, 11 missed.**
 
-### Fixed: 12 new tests, two new test modules
+### Fixed: 19 new tests, two new test modules
 
 Added `cost_model_accessors` (accessor/pricing methods, matching the
 existing `every_op_is_priceable` module's per-concern-module convention) and
@@ -88,7 +88,12 @@ contract can distinguish:
 
 ### Verified
 
-- `cargo test -p pixelflow-search --lib cost::`: 22 passed, 0 failed.
+- `cargo test -p pixelflow-search --lib egraph::cost::`: 22 passed, 0 failed,
+  1 ignored. The count breaks down as the 4 pre-existing
+  `every_op_is_priceable` tests plus 19 new ones — 12 in
+  `cost_model_accessors` and 7 in `persistence`. One of the 19 is the
+  `#[ignore]`d `env_var_override_child`, which does run, but in a child
+  process spawned by its parent rather than in the ordinary sweep.
 - `cargo test -p pixelflow-search` (all targets incl. doctests): passed, 0
   failed.
 - `cargo clippy -p pixelflow-search --tests`: clean.
