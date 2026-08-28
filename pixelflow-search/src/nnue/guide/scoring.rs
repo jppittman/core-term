@@ -502,6 +502,41 @@ mod tests {
     }
 
     #[test]
+    fn forward_graph_should_index_the_weight_matrix_by_both_lane_and_hidden_column() {
+        // The hand-computed test below fills every accumulator lane and every
+        // weight row uniformly, which pins the arithmetic but not the
+        // indexing: with `values` all 2.0 and every row `[3.0; HIDDEN_DIM]`,
+        // reading `graph_w1[0][j]` or `graph_w1[i][0]` instead of
+        // `graph_w1[i][j]` produces the same answer. This one is sparse
+        // instead, so exactly one (lane, column) pair is live.
+        //
+        // Neither index is zero, so both substitutions read a zero and
+        // collapse the output.
+        const LANE: usize = 7;
+        const COLUMN: usize = 5;
+
+        let backbone = identity_trunk_backbone();
+        let mut head = SaturationHead::new();
+        head.graph_w1[LANE][COLUMN] = 3.0;
+
+        let mut gacc = GraphAccumulator::new();
+        gacc.values[LANE] = 2.0;
+        gacc.node_count = 1; // scale = 1/sqrt(1) = 1
+
+        // Every scalar-feature row is left at zero, so `log2(1 + node_count)`
+        // being nonzero here contributes nothing either way.
+        let hidden = head.forward_graph(&backbone, &gacc);
+
+        for (j, &h) in hidden.iter().enumerate() {
+            let want = if j == COLUMN { 6.0 } else { 0.0 };
+            assert!(
+                (h - want).abs() < 1e-6,
+                "hidden[{j}]: got {h}, expected {want}"
+            );
+        }
+    }
+
+    #[test]
     fn forward_graph_should_match_a_hand_computed_value_when_node_count_is_positive() {
         let backbone = identity_trunk_backbone();
         let mut head = SaturationHead::new();
