@@ -273,6 +273,111 @@ mod unary_ops_tests {
 }
 
 // ============================================================================
+// Transcendental / Rounding Operations Tests
+//
+// `SimdOps`'s provided methods (pixelflow-core/src/backend/mod.rs) back the
+// combinator evaluation path `.eval()` exercises here (as opposed to the JIT
+// path `kernel!` produces) and had never been asserted on directly through
+// the public API.
+// ============================================================================
+
+mod transcendental_ops_tests {
+    use super::*;
+    use std::f32::consts::{E, FRAC_PI_3, FRAC_PI_4, FRAC_PI_6};
+
+    fn one_var_coords(x: f32) -> (Field, Field, Field, Field) {
+        let zero = Field::from(0.0);
+        (Field::from(x), zero, zero, zero)
+    }
+
+    fn two_var_coords(x: f32, y: f32) -> (Field, Field, Field, Field) {
+        let zero = Field::from(0.0);
+        (Field::from(x), Field::from(y), zero, zero)
+    }
+
+    #[test]
+    fn exp_of_one_equals_eulers_number() {
+        assert_field_approx_eq(X.exp().eval(one_var_coords(1.0)), E);
+    }
+
+    #[test]
+    fn tan_of_pi_over_four_equals_one() {
+        assert_field_approx_eq(X.tan().eval(one_var_coords(FRAC_PI_4)), 1.0);
+    }
+
+    #[test]
+    fn atan_of_one_equals_pi_over_four() {
+        assert_field_approx_eq(X.atan().eval(one_var_coords(1.0)), FRAC_PI_4);
+    }
+
+    #[test]
+    fn asin_of_one_half_equals_pi_over_six() {
+        assert_field_approx_eq(X.asin().eval(one_var_coords(0.5)), FRAC_PI_6);
+    }
+
+    #[test]
+    fn acos_of_one_half_equals_pi_over_three() {
+        assert_field_approx_eq(X.acos().eval(one_var_coords(0.5)), FRAC_PI_3);
+    }
+
+    #[test]
+    fn ln_of_two_matches_std_ln() {
+        assert_field_approx_eq(X.ln().eval(one_var_coords(2.0)), 2.0f32.ln());
+    }
+
+    #[test]
+    fn log10_of_ten_equals_one() {
+        assert_field_approx_eq(X.log10().eval(one_var_coords(10.0)), 1.0);
+    }
+
+    #[test]
+    fn pow_raises_base_to_a_fractional_exponent() {
+        // 4^0.5 == sqrt(4); a fractional, non-1.0 log2(base) distinguishes
+        // the `*` in the implementation from a `/` (both agree when
+        // log2(base) == 1).
+        assert_field_approx_eq(X.pow(Y).eval(two_var_coords(4.0, 0.5)), 2.0);
+    }
+
+    #[test]
+    fn hypot_of_three_and_four_equals_five() {
+        assert_field_approx_eq(X.hypot(Y).eval(two_var_coords(3.0, 4.0)), 5.0);
+    }
+
+    #[test]
+    fn mul_rsqrt_divides_by_the_square_root_of_the_second_argument() {
+        assert_field_approx_eq(X.mul_rsqrt(Y).eval(two_var_coords(8.0, 4.0)), 4.0);
+    }
+
+    #[test]
+    fn ceil_rounds_a_fractional_value_up_to_the_next_integer() {
+        assert_field_approx_eq(X.ceil().eval(one_var_coords(1.3)), 2.0);
+    }
+
+    #[test]
+    fn round_rounds_a_fractional_value_to_the_nearest_integer() {
+        assert_field_approx_eq(X.round().eval(one_var_coords(2.3)), 2.0);
+    }
+
+    #[test]
+    fn fract_returns_the_fractional_part_of_a_value() {
+        assert_field_approx_eq(X.fract().eval(one_var_coords(2.75)), 0.75);
+    }
+
+    #[test]
+    fn clamp_restricts_a_value_to_the_given_range() {
+        let coords = |v: f32| {
+            let lo = Field::from(0.0);
+            let hi = Field::from(3.0);
+            (Field::from(v), lo, hi, Field::from(0.0))
+        };
+
+        assert_field_approx_eq(X.clamp(Y, Z).eval(coords(5.0)), 3.0);
+        assert_field_approx_eq(X.clamp(Y, Z).eval(coords(-1.0)), 0.0);
+        assert_field_approx_eq(X.clamp(Y, Z).eval(coords(2.0)), 2.0);
+    }
+}
+
+// ============================================================================
 // Select Combinator Tests
 // ============================================================================
 
