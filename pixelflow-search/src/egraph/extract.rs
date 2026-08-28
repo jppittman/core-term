@@ -8,6 +8,7 @@ use super::cost::{CostFunction, CostModel};
 use super::deps::var_variance;
 use super::graph::EGraph;
 use super::node::{EClassId, ENode};
+use super::profile;
 use crate::nnue::{EdgeAccumulator, ExprNnue};
 use alloc::vec::Vec;
 use pixelflow_ir::Variance;
@@ -104,10 +105,15 @@ impl<'g> Extraction<'g> {
         choices[canonical.0 as usize] = Some(node_idx);
         if let Some(ENode::Op { children, .. }) = self.egraph.nodes(canonical).get(node_idx) {
             for &child in children {
-                backfill_well_founded(self.egraph, child, &mut choices);
+                profile::timed(profile::Bucket::TrySwapBackfill, || {
+                    backfill_well_founded(self.egraph, child, &mut choices);
+                });
             }
         }
-        if choices_have_cycle_from(self.egraph, self.root, &choices) {
+        let has_cycle = profile::timed(profile::Bucket::AcyclicityCheck, || {
+            choices_have_cycle_from(self.egraph, self.root, &choices)
+        });
+        if has_cycle {
             return None;
         }
         Some(Self {
@@ -157,7 +163,7 @@ impl<'g> Extraction<'g> {
     /// both of which take this view rather than re-deriving it (one
     /// definition, imported, not restated).
     pub(crate) fn pinned_choices(&self) -> Vec<Option<usize>> {
-        pin_shift_counts(self.egraph, &self.choices)
+        pin_shift_counts(self.egraph, self.root, &self.choices)
     }
 
     /// Unwrap into the raw choice vector.
@@ -326,7 +332,9 @@ impl<'a> IncrementalExtractor<'a> {
             &self.nnue.embeddings,
             true,
         );
-        let mut current_cost = self.nnue.predict_log_cost_with_features(&current_acc);
+        let mut current_cost = profile::timed(profile::Bucket::NnueForward, || {
+            self.nnue.predict_log_cost_with_features(&current_acc)
+        });
 
         // Refinement passes: for each e-class, try ALL alternatives (up to top_k),
         // accept the BEST improvement (not first). Repeat until fixpoint or max passes.
@@ -336,7 +344,9 @@ impl<'a> IncrementalExtractor<'a> {
         // This is O(reachable_classes) per candidate, same as the old tree-based path,
         // but now sharing-aware. True incremental updates can be added later.
         for _pass in 0..MAX_PASSES {
-            let active = self.get_active_classes(&current_extraction);
+            let active = profile::timed(profile::Bucket::CandidateEnumeration, || {
+                self.get_active_classes(&current_extraction)
+            });
             let mut improved = false;
 
             for &class in &active {
@@ -393,7 +403,9 @@ impl<'a> IncrementalExtractor<'a> {
                         &self.nnue.embeddings,
                         true,
                     );
-                    let test_cost = self.nnue.predict_log_cost_with_features(&test_acc);
+                    let test_cost = profile::timed(profile::Bucket::NnueForward, || {
+                        self.nnue.predict_log_cost_with_features(&test_acc)
+                    });
 
                     if test_cost < best_swap_cost {
                         best_swap_cost = test_cost;
@@ -1078,52 +1090,98 @@ pub fn build_extracted_dag_from_choices(
 /// child and it panics. Substituting a `Const` from the same class is sound
 /// by definition: same class means equal value.
 ///
+/// Scoped to classes reachable from `root` via the ORIGINAL (unpinned)
+/// `choices` — the same traversal [`Extraction::chosen_variance`] and
+/// [`choices_to_arena`] perform once pinning has settled. `choices` can
+/// (and, on a graph that has been through several `try_swap`/backfill
+/// passes, routinely does) hold `Some` entries for classes no longer
+/// reachable from `root` under the CURRENT choice function — `try_swap`
+/// only ever adds entries via `backfill_well_founded`, never retracts a
+/// stale one from an earlier candidate. Walking `0..egraph.num_classes()`
+/// unconditionally, as this used to, re-derives and re-pins every one of
+/// those stale entries even though nothing downstream ever reads them
+/// (`choices_to_arena`/`chosen_variance` only ever visit classes reachable
+/// from `root`) — pure wasted work on a saturated e-graph's full class
+/// count, not the reachable subtree's.
+///
+/// Using unpinned `choices` (rather than the pins already decided so far in
+/// this same walk) to decide which children to descend into is deliberately
+/// a superset of the classes [`choices_to_arena`] will actually visit once
+/// pinning is final: pinning a count class to a `Const` can only ever REMOVE
+/// reachability (a `Const` has no children to recurse into), never add it,
+/// so this walk's reachable set is never missing a class the final pinned
+/// tree needs. The decision written into `pinned[ci]` for any one count
+/// class does not depend on visitation order either — it is "keep the
+/// existing choice if already `Const`, else the class's first `Const`
+/// node", the same answer no matter which of possibly several referencing
+/// `Shl`/`Shr` nodes is processed first — so interleaving the decision with
+/// the traversal (instead of a full resolve-then-walk pass) cannot change
+/// the returned vector's values, only which unreachable entries are left
+/// untouched (they pass through from `choices` unread either way).
+///
 /// # Panics
 ///
 /// Panics if a shift-count class holds no `Const` at all. That cannot arise
 /// from a well-formed arena (the count entered as a literal) and would panic
 /// in the emitter regardless — failing here names the real cause.
-fn pin_shift_counts(egraph: &EGraph, choices: &[Option<usize>]) -> alloc::vec::Vec<Option<usize>> {
+fn pin_shift_counts(
+    egraph: &EGraph,
+    root: EClassId,
+    choices: &[Option<usize>],
+) -> alloc::vec::Vec<Option<usize>> {
+    let num_classes = choices.len();
     let mut pinned = choices.to_vec();
-    for idx in 0..egraph.num_classes() {
-        let canonical = egraph.find(EClassId(idx as u32));
-        if canonical.0 as usize != idx {
+    let mut visited: alloc::vec::Vec<bool> = alloc::vec![false; num_classes];
+    let mut stack: Vec<EClassId> = alloc::vec![egraph.find(root)];
+
+    while let Some(class) = stack.pop() {
+        let canonical = egraph.find(class);
+        let idx = canonical.0 as usize;
+        if idx >= num_classes || visited[idx] {
             continue;
         }
-        let Some(node_idx) = pinned.get(idx).and_then(|o| *o) else {
+        visited[idx] = true;
+
+        // Deliberately reads the ORIGINAL (unpinned) choice, not `pinned`,
+        // to decide what this class's traversal children are — see the
+        // "superset" reasoning in the doc comment above.
+        let Some(node_idx) = choices.get(idx).and_then(|o| *o) else {
             continue;
         };
         let Some(ENode::Op { op, children }) = egraph.nodes(canonical).get(node_idx) else {
             continue;
         };
-        if !matches!(
+        if matches!(
             op.kind(),
             pixelflow_ir::OpKind::Shl | pixelflow_ir::OpKind::Shr
-        ) {
-            continue;
-        }
-        let Some(&count) = children.get(1) else {
-            continue;
-        };
-        let count_class = egraph.find(count);
-        let ci = count_class.0 as usize;
-        let count_nodes = egraph.nodes(count_class);
-        if let Some(chosen) = pinned.get(ci).and_then(|o| *o)
-            && matches!(count_nodes.get(chosen), Some(ENode::Const(_)))
+        ) && let Some(&count) = children.get(1)
         {
-            continue;
+            let count_class = egraph.find(count);
+            let ci = count_class.0 as usize;
+            let count_nodes = egraph.nodes(count_class);
+            let already_const = pinned
+                .get(ci)
+                .and_then(|o| *o)
+                .is_some_and(|chosen| matches!(count_nodes.get(chosen), Some(ENode::Const(_))));
+            if !already_const {
+                let const_idx = count_nodes
+                    .iter()
+                    .position(|n| matches!(n, ENode::Const(_)))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "pin_shift_counts: shift-count e-class {ci} holds no Const; \
+                             the emitter's immediate-only shift lowering cannot be met"
+                        )
+                    });
+                pinned[ci] = Some(const_idx);
+            }
         }
-        let const_idx = count_nodes
-            .iter()
-            .position(|n| matches!(n, ENode::Const(_)))
-            .unwrap_or_else(|| {
-                panic!(
-                    "pin_shift_counts: shift-count e-class {ci} holds no Const; \
-                     the emitter's immediate-only shift lowering cannot be met"
-                )
-            });
-        pinned[ci] = Some(const_idx);
+
+        for &child in children {
+            stack.push(child);
+        }
     }
+
     pinned
 }
 

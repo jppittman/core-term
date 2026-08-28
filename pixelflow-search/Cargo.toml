@@ -26,3 +26,9 @@ pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
 # `training = ["pixelflow-search/std"]` resolving.
 std = []
 default = ["std"]
+# Round 2b extraction-overhead investigation (docs/plans/2026-08-17-cost-model-domain.md,
+# anti-row A6): thread-local wall-clock buckets in `egraph::profile`, wrapped
+# around specific phases of `IncrementalExtractor::extract_choices_only`.
+# Off by default and not re-exported from `egraph`'s public API list — an
+# opt-in measurement instrument, not a shipped capability.
+extraction-profile = []

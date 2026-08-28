@@ -987,16 +987,24 @@ impl EdgeAccumulator {
         // `ChoicesCostDag::pinned`'s doc comment for why splitting these
         // across two different choice views is a train/deploy skew, not
         // just a redundant computation.
-        let pinned = extraction.pinned_choices();
-        let variance = with_variance.then(|| extraction.chosen_variance(&pinned));
-        Self::from_cost_dag(
-            &ChoicesCostDag {
-                extraction,
-                pinned,
-                variance,
-            },
-            emb,
-        )
+        let pinned = crate::egraph::profile::timed(crate::egraph::profile::Bucket::PinnedChoices, || {
+            extraction.pinned_choices()
+        });
+        let variance = with_variance.then(|| {
+            crate::egraph::profile::timed(crate::egraph::profile::Bucket::ChosenVariance, || {
+                extraction.chosen_variance(&pinned)
+            })
+        });
+        crate::egraph::profile::timed(crate::egraph::profile::Bucket::AccumulatorRebuild, || {
+            Self::from_cost_dag(
+                &ChoicesCostDag {
+                    extraction,
+                    pinned,
+                    variance,
+                },
+                emb,
+            )
+        })
     }
 
     /// Add N var-reference edges (representing register loads of a shared value).
