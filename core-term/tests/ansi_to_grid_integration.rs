@@ -78,7 +78,7 @@ fn newline_advances_row() {
 }
 
 #[test]
-fn cursor_position_command() {
+fn it_should_move_the_cursor_to_the_position_specified_by_cup() {
     let mut harness = MinimalTestHarness::new();
 
     // TEST: Move cursor to (5, 10), then print
@@ -215,22 +215,14 @@ fn it_should_change_the_grid_checksum_after_each_character_printed() {
     }
 }
 
-// =============================================================================
-// Bug Reproduction: Grid changes but render not triggered
-// =============================================================================
-
 #[test]
-fn bug_grid_changes_without_render_trigger() {
-    // This test documents the ACTUAL BUG:
-    // Grid state changes when ANSI commands are processed,
-    // but send_frame() is never called, so the display doesn't update.
-
+fn it_should_change_the_grid_checksum_when_ansi_print_commands_are_processed() {
+    // Note: despite its history as a "bug reproduction" test, this only
+    // exercises MinimalTestHarness's grid/checksum path (identical in
+    // substance to `it_should_change_the_grid_checksum_after_each_character_printed`
+    // above) — it never touches `TerminalApp`/`send_frame`, so it does not
+    // cover the render-trigger behavior its old name implied.
     let mut harness = MinimalTestHarness::new();
-
-    // Simulate PTY output being processed in handle_os()
-    // In the real app, handle_os() calls:
-    //   self.emulator.interpret_input(EmulatorInput::Ansi(cmd))
-    // But it NEVER calls send_frame() afterward!
 
     harness.inject_ansi(AnsiCommand::Print('a'));
     let checksum_after_a = harness.compute_grid_checksum();
@@ -238,14 +230,5 @@ fn bug_grid_changes_without_render_trigger() {
     harness.inject_ansi(AnsiCommand::Print('b'));
     let checksum_after_b = harness.compute_grid_checksum();
 
-    // Grid DOES change (this passes)
-    assert_ne!(
-        checksum_after_a, checksum_after_b,
-        "BUG CONFIRMED: Grid changes but no render triggered"
-    );
-
-    // But in the real app, handle_os() doesn't call send_frame(),
-    // so the manifold is never rebuilt and the frame checksum stays the same!
-
-    // THE FIX: handle_os() should call self.send_frame() after processing PTY output
+    assert_ne!(checksum_after_a, checksum_after_b);
 }
