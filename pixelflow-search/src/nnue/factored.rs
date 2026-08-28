@@ -1752,12 +1752,24 @@ mod tests {
     use alloc::boxed::Box;
     use alloc::sync::Arc;
 
+    #[test]
+    fn verify_param_count() {
+        // Verify parameter count is reasonable and finite
+        let count = ExprNnue::param_count();
+        assert!(count > 0, "Should have parameters");
+        assert!(
+            ExprNnue::memory_bytes() < 200_000,
+            "NNUE should use < 200KB, got {} bytes",
+            ExprNnue::memory_bytes()
+        );
+    }
+
     // ========================================================================
     // ExprNnue Tests
     // ========================================================================
 
     #[test]
-    fn param_count_should_exceed_10k_and_memory_should_stay_under_200kb() {
+    fn consolidated_param_count() {
         // Param count should include the whole backbone + value head.
         let count = ExprNnue::param_count();
         // Backbone (embeddings + w1 + b1 + trunk) ~13,808, plus expr_proj +
@@ -1777,7 +1789,8 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn edge_accumulator_add_then_remove_should_return_to_zero() {
+    fn complex_pe_roundtrip() {
+        // add_edge + remove_edge should return the accumulator to zero.
         let emb = OpEmbeddings::new_random(42);
         let mut acc = EdgeAccumulator::new();
 

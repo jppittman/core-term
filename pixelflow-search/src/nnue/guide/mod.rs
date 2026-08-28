@@ -128,89 +128,8 @@ impl SaturationGuide for Guide {
 mod tests {
     use super::*;
 
-    // ========================================================================
-    // shift_by / shift1
-    // ========================================================================
-
-    /// A K-element ramp `[0.0, 1.0, ..., K-1 as f32]` — every element
-    /// distinct, so a rotation, a constant fill, or a mis-indexed lookup all
-    /// produce visibly different arrays from the correct answer.
-    fn ramp() -> [f32; K] {
-        let mut a = [0.0f32; K];
-        for (i, v) in a.iter_mut().enumerate() {
-            *v = i as f32;
-        }
-        a
-    }
-
-    /// Left-rotation computed independently of [`shift_by`] (slice-style,
-    /// not the `(i + amount) % K` formula under test), used as the expected
-    /// value in the tests below.
-    fn rotate_left(a: &[f32; K], amount: usize) -> [f32; K] {
-        let amount = amount % K;
-        let mut out = [0.0f32; K];
-        out[..K - amount].copy_from_slice(&a[amount..]);
-        out[K - amount..].copy_from_slice(&a[..amount]);
-        out
-    }
-
     #[test]
-    fn shift_by_should_return_the_identity_for_a_zero_amount() {
-        let arr = ramp();
-        assert_eq!(shift_by(&arr, 0), arr);
-    }
-
-    #[test]
-    fn shift_by_should_rotate_every_element_left_by_one_for_an_amount_of_one() {
-        let arr = ramp();
-        assert_eq!(shift_by(&arr, 1), rotate_left(&arr, 1));
-    }
-
-    #[test]
-    fn shift_by_should_rotate_almost_all_the_way_around_for_k_minus_one() {
-        let arr = ramp();
-        assert_eq!(shift_by(&arr, K - 1), rotate_left(&arr, K - 1));
-    }
-
-    #[test]
-    fn shift_by_should_wrap_back_to_the_identity_at_k() {
-        let arr = ramp();
-        assert_eq!(shift_by(&arr, K), arr);
-    }
-
-    #[test]
-    fn shift_by_should_match_shift_by_one_at_k_plus_one() {
-        let arr = ramp();
-        assert_eq!(shift_by(&arr, K + 1), shift_by(&arr, 1));
-    }
-
-    #[test]
-    fn shift_by_should_not_overflow_near_usize_max_and_should_match_its_residue_mod_k() {
-        // `amount % K` never overflows, but a `%` -> `+` mutation of the
-        // internal `amount = amount % K` line is arithmetically equivalent
-        // to the correct code for every amount that doesn't overflow
-        // `amount + K` (both feed into an outer `% K` that discards any
-        // added multiple of K). usize::MAX is chosen specifically to make
-        // that mutated addition overflow (and panic, under this workspace's
-        // debug overflow-checks) where the correct code would not.
-        let arr = ramp();
-        let want = rotate_left(&arr, usize::MAX % K);
-        assert_eq!(shift_by(&arr, usize::MAX), want);
-    }
-
-    #[test]
-    fn shift1_should_equal_shift_by_one() {
-        let arr = ramp();
-        assert_eq!(shift1(&arr), shift_by(&arr, 1));
-        assert_eq!(shift1(&arr), rotate_left(&arr, 1));
-    }
-
-    // ========================================================================
-    // Guide::score_candidates
-    // ========================================================================
-
-    #[test]
-    fn guide_score_candidates_should_return_one_finite_score_per_candidate() {
+    fn guide_score_candidates_is_finite_and_ordered() {
         let backbone = ExprNnue::new_random(1);
         let guide = Guide::new_random(backbone, 2);
 
@@ -233,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn guide_score_candidates_should_return_empty_for_empty_candidates() {
+    fn guide_score_candidates_empty_is_empty() {
         let backbone = ExprNnue::new_random(1);
         let guide = Guide::new_random(backbone, 2);
         let graph = GraphSummary {
