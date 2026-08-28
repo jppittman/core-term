@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn single_leaf() {
+    fn single_leaf_bsp_evaluates_without_panicking() {
         let bsp = SpatialBSP::single(SolidColor::new(255, 0, 0, 255));
 
         assert_eq!(
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn two_leaves() {
+    fn two_positioned_items_produce_one_interior_and_two_leaves() {
         let items = vec![
             Positioned {
                 bounds: (0.0, 0.0, 50.0, 100.0),
@@ -388,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_bsp() {
+    fn empty_positioned_list_produces_a_bsp_with_no_nodes() {
         let bsp: SpatialBSP<SolidColor> = SpatialBSP::from_positioned(vec![]);
 
         assert_eq!(bsp.interior_count(), 0, "Empty BSP has no interior nodes");
@@ -400,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn four_leaves_grid() {
+    fn four_item_grid_produces_three_interiors_and_four_leaves() {
         // 2x2 grid
         let items = vec![
             Positioned {
@@ -477,7 +477,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn threshold_split_semantics_left_is_less_than() {
+    fn left_child_receives_coordinates_below_the_split_threshold() {
         // Create two items split at x=50
         let items = vec![
             Positioned {
@@ -558,7 +558,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn identical_bounds_creates_valid_tree() {
+    fn identical_bounds_create_a_valid_tree() {
         // All items at same position (overlapping glyphs scenario)
         let items = vec![
             Positioned {
@@ -620,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn point_bounds_creates_valid_tree() {
+    fn point_bounds_create_a_valid_tree() {
         // Degenerate rectangles (points)
         let items = vec![
             Positioned {
@@ -642,7 +642,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn negative_coordinates_handled_correctly() {
+    fn negative_coordinates_are_handled_correctly() {
         let items = vec![
             Positioned {
                 bounds: (-100.0, -100.0, -50.0, -50.0),
@@ -670,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn large_coordinates_handled_correctly() {
+    fn large_coordinates_are_handled_correctly() {
         let items = vec![
             Positioned {
                 bounds: (1e6, 1e6, 2e6, 2e6),
@@ -689,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_positive_negative_coordinates() {
+    fn mixed_sign_coordinates_produce_the_expected_leaf_count() {
         let items = vec![
             Positioned {
                 bounds: (-50.0, -50.0, 0.0, 0.0),
@@ -714,7 +714,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn binary_tree_property_interior_count() {
+    fn binary_tree_has_n_minus_one_interiors_for_n_leaves() {
         // For n leaves, binary tree has n-1 interior nodes
         for n in 2..=16 {
             let items: Vec<_> = (0..n)
@@ -760,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn many_items_stress_test() {
+    fn one_thousand_items_produce_the_expected_leaf_and_interior_counts() {
         // Create 1000 non-overlapping items
         let items: Vec<_> = (0..1000)
             .map(|i| {
@@ -834,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn eval_at_multiple_coords_with_single_leaf() {
+    fn single_leaf_bsp_does_not_panic_when_sampled_at_several_coordinates() {
         let bsp = SpatialBSP::single(SolidColor::new(100, 150, 200, 255));
 
         // Sample at various locations - all should return same color without panicking
@@ -857,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn quadtree_like_structure_four_quadrants() {
+    fn four_quadrants_each_evaluate_to_a_distinct_color() {
         use pixelflow_core::{materialize_discrete, PARALLELISM};
 
         // Create 4 quadrants to test 2D partitioning
@@ -983,7 +983,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn overlapping_bounds_creates_valid_tree() {
+    fn overlapping_bounds_create_a_valid_tree() {
         // Items with overlapping regions (common in terminal rendering)
         let items = vec![
             Positioned {
@@ -1003,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn fully_contained_bounds_creates_valid_tree() {
+    fn fully_contained_bounds_create_a_valid_tree() {
         // One item fully contains another
         let items = vec![
             Positioned {
@@ -1060,7 +1060,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn square_bounds_splits_on_either_axis() {
+    fn square_bounds_split_on_the_x_axis() {
         // When width == height, should split on X (width >= height)
         let items = vec![
             Positioned {
@@ -1119,7 +1119,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn threshold_between_non_overlapping_items() {
+    fn threshold_falls_in_the_gap_between_non_overlapping_items() {
         // Two items with a gap between them
         let items = vec![
             Positioned {
@@ -1144,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn threshold_calculation_with_touching_items() {
+    fn threshold_lands_near_the_touching_point_of_adjacent_items() {
         // Two items that touch at x=50
         let items = vec![
             Positioned {
@@ -1169,7 +1169,7 @@ mod tests {
     }
 
     #[test]
-    fn threshold_with_very_small_items() {
+    fn threshold_stays_finite_for_very_small_items() {
         // Items with very small dimensions
         let items = vec![
             Positioned {
@@ -1298,7 +1298,7 @@ mod tests {
     }
 
     #[test]
-    fn infinity_bounds_handled() {
+    fn infinity_bounds_do_not_panic_during_construction() {
         // Infinity should not cause panic (partial_cmp works)
         let items = vec![
             Positioned {
@@ -1316,7 +1316,7 @@ mod tests {
     }
 
     #[test]
-    fn negative_infinity_bounds_handled() {
+    fn negative_infinity_bounds_do_not_panic_during_construction() {
         let items = vec![
             Positioned {
                 bounds: (f32::NEG_INFINITY, 0.0, -50.0, 100.0),
@@ -1371,7 +1371,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn inverted_x_bounds_handled() {
+    fn inverted_x_bounds_do_not_panic_during_construction() {
         // Bounds where min_x > max_x (malformed input)
         let items = vec![
             Positioned {
@@ -1389,7 +1389,7 @@ mod tests {
     }
 
     #[test]
-    fn inverted_y_bounds_handled() {
+    fn inverted_y_bounds_do_not_panic_during_construction() {
         // Bounds where min_y > max_y (malformed input)
         let items = vec![
             Positioned {
@@ -1411,7 +1411,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn linear_chain_creates_unbalanced_tree() {
+    fn sorted_items_still_produce_the_correct_leaf_and_interior_counts() {
         // Items already perfectly sorted should still create valid tree
         let items: Vec<_> = (0..32)
             .map(|i| {
@@ -1430,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn alternating_dimensions_creates_balanced_tree() {
+    fn grid_layout_produces_the_correct_leaf_and_interior_counts() {
         // Grid layout should split alternately on X and Y
         let items: Vec<_> = (0..16)
             .map(|i| {
@@ -1484,7 +1484,8 @@ mod tests {
         let num_leaves = bsp.leaf_count();
 
         // Every interior node must point to valid indices
-        for interior in bsp.interiors.iter() {
+        for i in 0..bsp.interior_count() {
+            let interior = &bsp.interiors[i];
             match interior.left {
                 NodeRef::Interior(i) => {
                     assert!(
@@ -1687,7 +1688,8 @@ mod tests {
         let bsp = SpatialBSP::from_positioned(items);
 
         // Interior nodes shouldn't point to themselves or have identical children
-        for (idx, interior) in bsp.interiors.iter().enumerate() {
+        for idx in 0..bsp.interior_count() {
+            let interior = &bsp.interiors[idx];
             // Left and right must be different
             let left_is_self = matches!(interior.left, NodeRef::Interior(i) if i as usize == idx);
             let right_is_self = matches!(interior.right, NodeRef::Interior(i) if i as usize == idx);
@@ -1721,7 +1723,7 @@ mod tests {
     }
 
     #[test]
-    fn binary_tree_exact_interior_count() {
+    fn binary_tree_has_exactly_n_minus_one_interiors_not_more_or_fewer() {
         // For n leaves, must have EXACTLY n-1 interiors (not >=, not <=, exactly)
         for n in 2..=20 {
             let items: Vec<_> = (0..n)
@@ -1748,7 +1750,7 @@ mod tests {
     }
 
     #[test]
-    fn threshold_is_finite() {
+    fn every_interior_threshold_is_finite() {
         let items = vec![
             Positioned {
                 bounds: (0.0, 0.0, 50.0, 100.0),
@@ -1762,7 +1764,8 @@ mod tests {
 
         let bsp = SpatialBSP::from_positioned(items);
 
-        for (idx, interior) in bsp.interiors.iter().enumerate() {
+        for idx in 0..bsp.interior_count() {
+            let interior = &bsp.interiors[idx];
             assert!(
                 interior.threshold.is_finite(),
                 "Interior {} has non-finite threshold: {}",
@@ -1797,7 +1800,7 @@ mod tests {
     }
 
     #[test]
-    fn stack_of_wide_strips() {
+    fn stacked_wide_items_evaluate_to_the_correct_color_at_each_row() {
         use pixelflow_core::{materialize_discrete, PARALLELISM};
 
         // Create 2 wide, short items, stacked vertically.
