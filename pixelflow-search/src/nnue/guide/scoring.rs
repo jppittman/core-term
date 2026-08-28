@@ -375,7 +375,7 @@ impl SaturationHead {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nnue::factored::OpKind;
+    use crate::nnue::factored::{OpEmbeddings, OpKind};
 
     fn test_backbone() -> ExprNnue {
         ExprNnue::new_random(42)
@@ -987,5 +987,179 @@ mod tests {
                 "graph_proj_b[{k}]"
             );
         }
+    }
+
+    // ── Index and orientation pinning ────────────────────────────────────
+    //
+    // The exact-value tests above use uniform fixtures, which pin arithmetic
+    // but not indexing: when every input and weight is the same number,
+    // reading row 0, column 0, or the transpose gives the same answer. Each
+    // test below makes exactly one (index, index) pair live, with no index
+    // equal to zero, so a substituted index reads a zero and collapses the
+    // result.
+
+    #[test]
+    fn compute_graph_embed_should_index_the_projection_by_both_hidden_lane_and_column() {
+        const LANE: usize = 3;
+        const COLUMN: usize = 5;
+
+        let mut head = SaturationHead::new();
+        head.graph_proj_w[LANE][COLUMN] = 3.0;
+        let mut hidden = [0.0f32; HIDDEN_DIM];
+        hidden[LANE] = 2.0;
+
+        let embed = head.compute_graph_embed(&hidden);
+
+        for (k, &v) in embed.iter().enumerate() {
+            let want = if k == COLUMN { 6.0 } else { 0.0 };
+            assert!(
+                (v - want).abs() < 1e-6,
+                "embed[{k}]: got {v}, expected {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn compute_mask_features_should_index_both_mlp_layers_by_lane_and_column() {
+        const IN: usize = 2;
+        const MID: usize = 4;
+        const OUT: usize = 7;
+
+        let mut head = SaturationHead::new();
+        head.mask_mlp_w1[IN][MID] = 3.0;
+        head.mask_mlp_w2[MID][OUT] = 5.0;
+
+        let mut embed = [0.0f32; EMBED_DIM];
+        embed[IN] = 2.0;
+
+        // Layer 1: h[MID] = 2*3 = 6, every other hidden lane 0 (and the ReLU
+        // leaves both alone). Layer 2: out[OUT] = 6*5 = 30.
+        let out = head.compute_mask_features(&embed);
+
+        for (k, &v) in out.iter().enumerate() {
+            let want = if k == OUT { 30.0 } else { 0.0 };
+            assert!(
+                (v - want).abs() < 1e-6,
+                "out[{k}]: got {v}, expected {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn bilinear_score_should_respect_the_interaction_orientation_and_the_bias_lane() {
+        // `transformed[j] += mask_features[i] * interaction[i][j]`, so with a
+        // single off-diagonal entry live the transpose sends the mass to a
+        // different lane than the rule embedding reads.
+        const ROW: usize = 2;
+        const COL: usize = 5;
+
+        let mut head = SaturationHead::new();
+        head.interaction[ROW][COL] = 1.0;
+        head.mask_bias_proj[COL] = 7.0;
+
+        let mut mask_features = [0.0f32; EMBED_DIM];
+        mask_features[ROW] = 1.0;
+        let mut rule_embed = [0.0f32; EMBED_DIM];
+        rule_embed[COL] = 1.0;
+
+        // transformed[COL] = 1, plus the bias lane 7, times rule_embed[COL].
+        // Transposing the interaction puts the 1 on lane ROW instead, which
+        // rule_embed does not read, leaving 7. Reading `mask_bias_proj[0]`
+        // instead of `[k]` drops the 7, leaving 1.
+        let score = head.bilinear_score(&mask_features, &rule_embed);
+        assert!(
+            (score - 8.0).abs() < 1e-6,
+            "score: got {score}, expected 8.0"
+        );
+    }
+
+    #[test]
+    fn forward_graph_should_clamp_a_negative_preactivation_before_the_shared_trunk() {
+        // `apply_trunk` ends in its own ReLU, so an identity trunk cannot
+        // separate the two stages — a negative lane is clamped either way.
+        // A negating trunk can: clamped-then-negated stays 0, while
+        // negated-without-clamping becomes positive and survives the trunk's
+        // own ReLU.
+        let mut backbone = ExprNnue::new();
+        for i in 0..HIDDEN_DIM {
+            backbone.trunk_w[i][i] = -1.0;
+        }
+
+        let mut head = SaturationHead::new();
+        head.graph_b1 = [-1.0; HIDDEN_DIM];
+
+        let hidden = head.forward_graph(&backbone, &GraphAccumulator::new());
+
+        for (j, &h) in hidden.iter().enumerate() {
+            assert!(
+                h.abs() < 1e-6,
+                "hidden[{j}]: got {h}, expected 0.0 — a -1.0 preactivation must be \
+                 clamped by the tower's ReLU before the negating trunk sees it"
+            );
+        }
+    }
+
+    #[test]
+    fn encode_rule_from_arena_should_start_the_projection_from_the_rule_bias() {
+        // Every selector fixture above leaves `rule_proj_b` at zero, and
+        // `randomize` deliberately zeroes it too, so replacing
+        // `let mut out = self.rule_proj_b` with an all-zero array is
+        // invisible everywhere else. Zero the projection weights and give the
+        // bias distinct lanes: the output is then exactly the bias.
+        let backbone = test_backbone();
+        let (arena, lhs, rhs) = sample_rule_arena();
+
+        let mut head = SaturationHead::new();
+        for k in 0..EMBED_DIM {
+            head.rule_proj_b[k] = k as f32 + 1.0;
+        }
+
+        let out = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+
+        for (k, &v) in out.iter().enumerate() {
+            let want = k as f32 + 1.0;
+            assert!(
+                (v - want).abs() < 1e-4,
+                "out[{k}]: got {v}, expected {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn mask_score_all_rules_graph_should_compose_the_graph_tower_projection_and_scorer() {
+        // `Guide::score_candidates` routes through this path, but the only
+        // exact composition test covers the `_with_hidden` variant; the graph
+        // variant was checked for length and finiteness alone. Rewiring it to
+        // `backbone.compute_expr_embed` instead of `self.compute_graph_embed`
+        // would go unnoticed.
+        let backbone = test_backbone();
+        let mut head = SaturationHead::new();
+        head.randomize(7);
+
+        let mut gacc = GraphAccumulator::new();
+        let emb = OpEmbeddings::new_random(3);
+        gacc.add_edge(&emb, OpKind::Add, OpKind::Mul);
+        gacc.add_edge(&emb, OpKind::Sub, OpKind::Div);
+        gacc.node_count = 3;
+        gacc.edge_count = 2;
+
+        let (arena, lhs, rhs) = sample_rule_arena();
+        let rule = head.encode_rule_from_arena(&backbone, &arena, lhs, rhs);
+        let rules = [rule];
+
+        let got = head.mask_score_all_rules_graph(&backbone, &gacc, &rules);
+
+        let hidden = head.forward_graph(&backbone, &gacc);
+        let graph_embed = head.compute_graph_embed(&hidden);
+        let mask_features = head.compute_mask_features(&graph_embed);
+        let want = head.bilinear_score(&mask_features, &rules[0]);
+
+        assert_eq!(got.len(), 1);
+        assert!(
+            (got[0] - want).abs() < 1e-3,
+            "graph scoring must be forward_graph -> compute_graph_embed -> \
+             compute_mask_features -> bilinear_score; got {}, want {want}",
+            got[0]
+        );
     }
 }

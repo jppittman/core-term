@@ -640,15 +640,37 @@ mod tests {
     #[test]
     fn remove_edge_should_match_remove_edge_at_depth_one() {
         let emb = OpEmbeddings::new_random(15);
-        let mut gacc = GraphAccumulator::new();
-        gacc.add_edge(&emb, OpKind::Add, OpKind::Mul);
-        gacc.remove_edge(&emb, OpKind::Add, OpKind::Mul);
+
+        // Compared against `remove_edge_at_depth(.., 1)` from an equivalent
+        // nonzero state rather than by adding and removing through the
+        // wrappers alone. A round trip through both wrappers cancels whatever
+        // depth they agree on, so it holds even if both drifted to the same
+        // wrong depth — and depth selects the cyclic shift in the binding
+        // section, so a coordinated drift silently changes the encoding the
+        // backward-compatible wrappers exist to preserve.
+        let mut through_wrapper = GraphAccumulator::new();
+        through_wrapper.add_edge_at_depth(&emb, OpKind::Mul, OpKind::Sqrt, 1);
+        through_wrapper.remove_edge(&emb, OpKind::Add, OpKind::Mul);
+
+        let mut at_depth_one = GraphAccumulator::new();
+        at_depth_one.add_edge_at_depth(&emb, OpKind::Mul, OpKind::Sqrt, 1);
+        at_depth_one.remove_edge_at_depth(&emb, OpKind::Add, OpKind::Mul, 1);
 
         assert_eq!(
-            gacc.values, [0.0f32; GRAPH_ACC_DIM],
+            through_wrapper.values, at_depth_one.values,
+            "remove_edge must be remove_edge_at_depth(.., 1)"
+        );
+        assert_eq!(through_wrapper.edge_count, at_depth_one.edge_count);
+
+        // The round trip still has to hold.
+        let mut round_trip = GraphAccumulator::new();
+        round_trip.add_edge(&emb, OpKind::Add, OpKind::Mul);
+        round_trip.remove_edge(&emb, OpKind::Add, OpKind::Mul);
+        assert_eq!(
+            round_trip.values, [0.0f32; GRAPH_ACC_DIM],
             "add_edge then remove_edge must return to zero"
         );
-        assert_eq!(gacc.edge_count, 0);
+        assert_eq!(round_trip.edge_count, 0);
     }
 
     // ========================================================================
