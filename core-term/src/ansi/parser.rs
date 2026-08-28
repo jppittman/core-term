@@ -13,13 +13,6 @@ const MAX_PARAMS: usize = 16;
 const MAX_INTERMEDIATES: usize = 2;
 const MAX_OSC_LEN: usize = 1024; // Limit OSC/DCS/PM/APC string length
 
-/// State of ST consumption
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ConsumeSt {
-    Consume,
-    Keep,
-}
-
 /// Represents the current state of the ANSI parser state machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum State {
@@ -196,39 +189,35 @@ impl AnsiParser {
         self.state = State::Ground;
     }
 
-    fn dispatch_osc(&mut self, consume_st: ConsumeSt) {
+    fn dispatch_osc(&mut self) {
         let data = mem::take(&mut self.string_buffer);
         trace!("Dispatching OSC: Data length {}", data.len());
         self.commands.push(AnsiCommand::Osc(data));
         self.clear_string_buffer();
-        if consume_st == ConsumeSt::Keep { /* ST handled separately */ }
         self.state = State::Ground;
     }
 
-    fn dispatch_dcs(&mut self, consume_st: ConsumeSt) {
+    fn dispatch_dcs(&mut self) {
         let data = mem::take(&mut self.string_buffer);
         trace!("Dispatching DCS: Data length {}", data.len());
         self.commands.push(AnsiCommand::Dcs(data));
         self.clear_string_buffer();
-        if consume_st == ConsumeSt::Keep { /* ST handled separately */ }
         self.state = State::Ground;
     }
 
-    fn dispatch_pm(&mut self, consume_st: ConsumeSt) {
+    fn dispatch_pm(&mut self) {
         let data = mem::take(&mut self.string_buffer);
         trace!("Dispatching PM: Data length {}", data.len());
         self.commands.push(AnsiCommand::Pm(data));
         self.clear_string_buffer();
-        if consume_st == ConsumeSt::Keep { /* ST handled separately */ }
         self.state = State::Ground;
     }
 
-    fn dispatch_apc(&mut self, consume_st: ConsumeSt) {
+    fn dispatch_apc(&mut self) {
         let data = mem::take(&mut self.string_buffer);
         trace!("Dispatching APC: Data length {}", data.len());
         self.commands.push(AnsiCommand::Apc(data));
         self.clear_string_buffer();
-        if consume_st == ConsumeSt::Keep { /* ST handled separately */ }
         self.state = State::Ground;
     }
 
@@ -434,7 +423,7 @@ impl AnsiParser {
                     AnsiToken::C0Control(b)
                         if b == C0Control::BEL as u8 && self.state == State::OscString =>
                     {
-                        self.dispatch_osc(ConsumeSt::Keep)
+                        self.dispatch_osc()
                     }
                     AnsiToken::C0Control(b)
                         if b == C0Control::CAN as u8 || b == C0Control::SUB as u8 =>
@@ -454,10 +443,10 @@ impl AnsiParser {
             }
             State::EscInString => match token {
                 AnsiToken::Print('\\') => match self.string_state_origin {
-                    Some(State::OscString) => self.dispatch_osc(ConsumeSt::Consume),
-                    Some(State::DcsEntry) => self.dispatch_dcs(ConsumeSt::Consume),
-                    Some(State::PmString) => self.dispatch_pm(ConsumeSt::Consume),
-                    Some(State::ApcString) => self.dispatch_apc(ConsumeSt::Consume),
+                    Some(State::OscString) => self.dispatch_osc(),
+                    Some(State::DcsEntry) => self.dispatch_dcs(),
+                    Some(State::PmString) => self.dispatch_pm(),
+                    Some(State::ApcString) => self.dispatch_apc(),
                     _ => {
                         error!("EscInString state missing origin!");
                         self.dispatch_st_standalone();
