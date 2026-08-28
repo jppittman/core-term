@@ -443,10 +443,13 @@ mod tests {
 
     #[test]
     fn pack_rgba_should_clamp_each_channel_to_0_1_and_pack_it_into_a_byte() {
-        let r = F32x4::splat(1.0); // in range -> 255
+        // Both clamps have to be load-bearing, so each direction gets an
+        // out-of-range channel. B at exactly 0.0 would need no clamping at
+        // all, leaving the lower-bound `max(_, 0)` free to be deleted.
+        let r = F32x4::splat(1.0); // at the upper edge -> 255
         let g = F32x4::splat(0.5); // in range -> 127 (truncated, not rounded)
-        let b = F32x4::splat(0.0); // in range -> 0
-        let a = F32x4::splat(2.0); // out of range -> clamped to 255
+        let b = F32x4::splat(-1.5); // below range -> clamped to 0
+        let a = F32x4::splat(2.0); // above range -> clamped to 255
 
         let packed = u32_lanes(U32x4::pack_rgba(r, g, b, a));
         for p in packed {
