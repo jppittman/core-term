@@ -56,6 +56,10 @@ impl InterferenceGraph {
     /// Grow dense Vecs to accommodate a ValueId.
     fn ensure_capacity(&mut self, v: ValueId) {
         let idx = v.0 as usize + 1;
+        // `>` vs `>=`: equivalent mutant. At idx == self.capacity, the body
+        // would just resize every Vec to its current length and reassign
+        // `capacity` to the value it already holds — both no-ops — so no
+        // test can observe a difference. No test targets this boundary.
         if idx > self.capacity {
             self.capacity = idx;
             self.neighbors.resize_with(idx, Vec::new);
@@ -326,6 +330,13 @@ fn simplicial_elimination_order(graph: &InterferenceGraph) -> Vec<ValueId> {
         let v = loop {
             let (w, v) = heap.pop().expect("heap must be non-empty during MCS");
             let vi = v.0 as usize;
+            // `&&` vs `||`: equivalent mutant. `in_remaining[vi]` and
+            // `w == weight[vi]` always agree here: a vertex's pushed weights
+            // strictly increase, so the heap (max first) always surfaces a
+            // remaining vertex's single freshest entry (matching its current
+            // weight) before any of its staler, smaller ones; once removed,
+            // weight[vi] is frozen and no remaining entry can equal it again.
+            // No test can make the two operands disagree.
             if in_remaining[vi] && w == weight[vi] {
                 break v;
             }
@@ -391,6 +402,14 @@ where
         // `live_list` for the rest of the walk and interfere with every
         // value scheduled earlier, regardless of whether their live ranges
         // actually overlapped.
+        //
+        // `vi < live_capacity` is an equivalent-mutant guard for both `&&`
+        // vs `||` and `<` vs `<=`: vi is v.0 for a v drawn directly from
+        // `schedule`, the same source live_capacity's max is computed from,
+        // so vi <= max_vid < live_capacity always holds — no schedule can
+        // make it false. (The mirroring guard below on `ui`, sourced from
+        // caller-supplied `uses_of`, has no such invariant and is covered by
+        // build_interference_graph_should_not_panic_when_uses_of_reports_a_value_outside_the_schedule.)
         if vi < live_capacity && live[vi] {
             live[vi] = false;
             live_list.retain(|&other| other != *v);
@@ -557,6 +576,10 @@ pub fn linear_scan(
             let reg = Reg(r + scratch_base);
             assignment.insert(*vid, reg);
             reg_owner[r as usize] = Some(*vid);
+            // `>` vs `>=`: equivalent mutant for a running-max update —
+            // when r + 1 == max_reg_used, assigning it to itself is a no-op,
+            // so `>` and `>=` produce identical final values of max_reg_used
+            // for every input.
             if r + 1 > max_reg_used {
                 max_reg_used = r + 1;
             }
@@ -938,6 +961,47 @@ mod tests {
             graph.add_value(ValueId(i));
         }
         for &(a, b) in &[(0, 1), (1, 2), (0, 2), (3, 5), (3, 4), (4, 5), (2, 5)] {
+            graph.add_edge(ValueId(a), ValueId(b));
+        }
+
+        let alloc = color_graph(&graph, 3, 4);
+
+        assert!(alloc.spilled.is_empty(), "{alloc:?}");
+        assert_eq!(alloc.num_regs, 3, "{alloc:?}");
+    }
+
+    #[test]
+    fn color_graph_should_use_the_real_cardinality_weights_not_a_frozen_tie_break() {
+        // A chordal graph (built from a random simplicial elimination
+        // ordering, so chordality is guaranteed by construction) found by
+        // search: a correct MCS coloring order needs only 3 colors, but the
+        // order MCS would degenerate to if a remaining vertex's weight were
+        // never actually incremented — leaving every vertex perpetually
+        // "tied" at weight 0, so ties break by descending ValueId alone —
+        // needs 5. That gap is what pins the weight-update logic itself,
+        // independent of the two-triangle test above (which happens to
+        // produce the same order whether or not weights update, for its
+        // specific graph — this one does not).
+        let mut graph = InterferenceGraph::new();
+        for i in 0..8 {
+            graph.add_value(ValueId(i));
+        }
+        for &(a, b) in &[
+            (0, 1),
+            (0, 2),
+            (0, 3),
+            (0, 4),
+            (0, 7),
+            (1, 2),
+            (1, 3),
+            (1, 4),
+            (1, 6),
+            (2, 5),
+            (2, 6),
+            (3, 6),
+            (4, 6),
+            (5, 6),
+        ] {
             graph.add_edge(ValueId(a), ValueId(b));
         }
 
