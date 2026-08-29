@@ -211,7 +211,8 @@ pub fn color_graph(graph: &InterferenceGraph, num_regs: u8, scratch_base: u8) ->
         }
     }
 
-    // Build simplicial elimination ordering (reverse order for greedy coloring).
+    // Build the MCS coloring order (see simplicial_elimination_order's doc
+    // comment for why it's used directly, without reversing).
     let ordering = simplicial_elimination_order(graph);
 
     // Greedy coloring in the computed order.
@@ -283,10 +284,18 @@ pub fn color_graph(graph: &InterferenceGraph, num_regs: u8, scratch_base: u8) ->
     }
 }
 
-/// Compute a simplicial elimination ordering using maximum cardinality search (MCS).
+/// Compute a greedy-coloring order using maximum cardinality search (MCS).
 ///
-/// MCS produces a perfect elimination ordering for chordal graphs, making
-/// subsequent greedy coloring optimal. Uses a max-heap for O(n log n) rather
+/// MCS visits vertices in decreasing order of "neighbors visited so far",
+/// which numbers them n, n-1, ..., 1 in visitation order. For a chordal
+/// graph this numbering is a perfect elimination scheme: each vertex's
+/// higher-numbered (later-visited) neighbors form a clique. Coloring greedily
+/// in that same visitation order is then optimal — by the time a vertex is
+/// colored, its higher-numbered neighbors (a clique, already colored) bound
+/// how many colors it can possibly need. The visitation order returned here
+/// is used as-is; it must NOT be reversed before coloring, since reversing
+/// would color each vertex before its constraining (higher-numbered)
+/// neighbors instead of after them. Uses a max-heap for O(n log n) rather
 /// than the naive O(n²) scan.
 fn simplicial_elimination_order(graph: &InterferenceGraph) -> Vec<ValueId> {
     let n = graph.len();
@@ -336,8 +345,6 @@ fn simplicial_elimination_order(graph: &InterferenceGraph) -> Vec<ValueId> {
         }
     }
 
-    // Reverse so that simplicial vertices (colored last in MCS) are colored first.
-    order.reverse();
     order
 }
 
@@ -682,14 +689,19 @@ mod tests {
     fn is_precolored_should_be_false_for_a_value_id_beyond_the_graphs_capacity() {
         let mut graph = InterferenceGraph::new();
         graph.add_value(ValueId(0));
-        assert!(!graph.is_precolored(ValueId(5)));
+        // ValueId(1) sits exactly at the capacity boundary (capacity is 1
+        // after adding only ValueId(0)) — the case that distinguishes the
+        // bounds guard from an off-by-one variant that would index out of
+        // range instead of safely returning false.
+        assert!(!graph.is_precolored(ValueId(1)));
     }
 
     #[test]
     fn precolor_of_should_return_none_for_a_value_id_beyond_the_graphs_capacity() {
         let mut graph = InterferenceGraph::new();
         graph.add_value(ValueId(0));
-        assert_eq!(graph.precolor_of(ValueId(5)), None);
+        // See is_precolored's boundary test above for why ValueId(1) specifically.
+        assert_eq!(graph.precolor_of(ValueId(1)), None);
     }
 
     #[test]
@@ -894,14 +906,45 @@ mod tests {
     {
         // uses_of is caller-supplied and can name a ValueId the schedule
         // never defines. The bounds guard on the live-set update must skip
-        // it rather than index out of range.
+        // it rather than index out of range. ValueId(1) sits exactly at the
+        // live-set capacity boundary (1, from the sole schedule entry's
+        // ValueId(0)) — the case that distinguishes the guard from an
+        // off-by-one variant that would index out of range instead.
         let schedule = [(ValueId(0), ())];
-        let out_of_range = ValueId(1_000);
+        let out_of_range = ValueId(1);
         let uses_of = move |_: ValueId| alloc::vec![out_of_range];
 
         let graph = build_interference_graph(&schedule, uses_of);
 
         assert!(graph.neighbors(ValueId(0)).is_empty());
+    }
+
+    #[test]
+    fn color_graph_should_use_cardinality_not_value_id_order_to_pick_the_elimination_sequence() {
+        // Two triangles {0,1,2} and {3,4,5} joined by a single bridge edge
+        // 2-5. Chordal (the only cycles are the two triangles), so a correct
+        // maximum-cardinality-search coloring order colors it optimally with
+        // 3 registers regardless of how ties are broken. This specific
+        // ValueId assignment was found by brute-force search over all vertex
+        // labelings for one where coloring in plain ascending-ValueId order
+        // instead needs a 4th color — which is what MCS's real order
+        // degenerates to if either a remaining vertex's weight is never
+        // actually incremented from its neighbors being visited, or the
+        // computed order is reversed before coloring (this test caught both:
+        // an actual `order.reverse()` bug that colored simplicial vertices
+        // first instead of last, discovered while building this test).
+        let mut graph = InterferenceGraph::new();
+        for i in 0..6 {
+            graph.add_value(ValueId(i));
+        }
+        for &(a, b) in &[(0, 1), (1, 2), (0, 2), (3, 5), (3, 4), (4, 5), (2, 5)] {
+            graph.add_edge(ValueId(a), ValueId(b));
+        }
+
+        let alloc = color_graph(&graph, 3, 4);
+
+        assert!(alloc.spilled.is_empty(), "{alloc:?}");
+        assert_eq!(alloc.num_regs, 3, "{alloc:?}");
     }
 
     fn const_op(bits: f32) -> ScheduledOp {
