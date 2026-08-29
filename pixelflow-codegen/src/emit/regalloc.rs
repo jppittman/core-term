@@ -345,7 +345,7 @@ fn simplicial_elimination_order(graph: &InterferenceGraph) -> Vec<ValueId> {
 ///
 /// # Arguments
 /// * `schedule` - Topologically sorted list of (value_id, definition)
-/// * `uses` - For each value, list of values that use it
+/// * `uses_of` - For each value, its operands (the values it uses)
 ///
 /// Returns an interference graph where two values interfere if
 /// their live ranges overlap.
@@ -378,10 +378,15 @@ where
             graph.add_edge(*v, other);
         }
 
-        // v is now live (just defined).
-        if vi < live_capacity && !live[vi] {
-            live[vi] = true;
-            live_list.push(*v);
+        // v is defined here, so its live range (going backward) ends at this
+        // point — kill it before propagating its operands' liveness.
+        // Without this, a value that ever became live would stay in
+        // `live_list` for the rest of the walk and interfere with every
+        // value scheduled earlier, regardless of whether their live ranges
+        // actually overlapped.
+        if vi < live_capacity && live[vi] {
+            live[vi] = false;
+            live_list.retain(|&other| other != *v);
         }
 
         // Add uses of v to the live set.
@@ -628,11 +633,13 @@ pub fn linear_scan(
 
 #[cfg(test)]
 mod tests {
+    use super::super::ScheduledOp;
     use super::*;
     use alloc::collections::BTreeSet;
+    use pixelflow_ir::kind::OpKind;
 
     #[test]
-    fn empty_graph() {
+    fn color_graph_should_assign_and_spill_nothing_for_an_empty_graph() {
         let graph = InterferenceGraph::new();
         let alloc = color_graph(&graph, 8, 4);
         assert!(alloc.assignment.is_empty());
@@ -640,21 +647,19 @@ mod tests {
     }
 
     #[test]
-    fn no_interference() {
+    fn color_graph_should_assign_every_value_when_none_interfere() {
         let mut graph = InterferenceGraph::new();
         graph.add_value(ValueId(0));
         graph.add_value(ValueId(1));
         graph.add_value(ValueId(2));
-        // No edges - no interference
 
         let alloc = color_graph(&graph, 8, 4);
         assert_eq!(alloc.assignment.len(), 3);
         assert!(alloc.spilled.is_empty());
-        // All can use the same register since they don't interfere
     }
 
     #[test]
-    fn chain_interference() {
+    fn color_graph_should_give_adjacent_chain_values_different_colors() {
         let mut graph = InterferenceGraph::new();
         // Linear chain: 0 -- 1 -- 2
         graph.add_value(ValueId(0));
@@ -678,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn clique_needs_more_colors() {
+    fn color_graph_should_use_three_distinct_colors_for_a_triangle_clique() {
         let mut graph = InterferenceGraph::new();
         // Triangle (3-clique): all interfere with all
         for i in 0..3 {
@@ -699,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn precolored() {
+    fn color_graph_should_keep_a_precolored_value_pinned_to_its_register() {
         let mut graph = InterferenceGraph::new();
         graph.precolor(ValueId(0), Reg(0)); // Input register
         graph.add_value(ValueId(1));
@@ -711,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn spilling() {
+    fn color_graph_should_spill_the_excess_values_of_a_clique_too_large_for_the_register_budget() {
         let mut graph = InterferenceGraph::new();
         // 4-clique with only 2 registers available
         for i in 0..4 {
@@ -726,5 +731,124 @@ mod tests {
         let alloc = color_graph(&graph, 2, 4); // Only 2 registers!
         assert_eq!(alloc.spilled.len(), 2); // 2 must spill
         assert_eq!(alloc.assignment.len(), 2); // 2 got colors
+    }
+
+    #[test]
+    fn build_interference_graph_should_connect_two_operands_simultaneously_live_at_their_shared_use()
+     {
+        // v0, v1: constants (no operands). v2 = v0 + v1, the only consumer of
+        // either. v0 and v1 are both live going into v2's definition, so they
+        // must interfere; v2 doesn't interfere with either operand, since an
+        // operand's live range can end exactly at the instruction consuming it.
+        let schedule = [(ValueId(0), ()), (ValueId(1), ()), (ValueId(2), ())];
+        let uses_of = |v: ValueId| match v.0 {
+            2 => alloc::vec![ValueId(0), ValueId(1)],
+            _ => alloc::vec![],
+        };
+
+        let graph = build_interference_graph(&schedule, uses_of);
+
+        assert_eq!(graph.neighbors(ValueId(0)), &[ValueId(1)]);
+        assert_eq!(graph.neighbors(ValueId(1)), &[ValueId(0)]);
+        assert!(graph.neighbors(ValueId(2)).is_empty());
+    }
+
+    #[test]
+    fn build_interference_graph_should_not_connect_values_from_unrelated_def_use_chains() {
+        // Two independent single-use chains in the same schedule: v0 -> v1,
+        // and (unrelated) v2 -> v3. Every value dies at its sole use, so
+        // nothing should interfere with anything else — including values
+        // that are merely adjacent in schedule order but never simultaneously
+        // live (the bug this regression test targets: liveness that is never
+        // killed makes every later-scheduled value interfere with every
+        // earlier one, regardless of whether their live ranges ever overlap).
+        let schedule = [
+            (ValueId(0), ()),
+            (ValueId(1), ()),
+            (ValueId(2), ()),
+            (ValueId(3), ()),
+        ];
+        let uses_of = |v: ValueId| match v.0 {
+            1 => alloc::vec![ValueId(0)],
+            3 => alloc::vec![ValueId(2)],
+            _ => alloc::vec![],
+        };
+
+        let graph = build_interference_graph(&schedule, uses_of);
+
+        for v in [ValueId(0), ValueId(1), ValueId(2), ValueId(3)] {
+            assert!(
+                graph.neighbors(v).is_empty(),
+                "{v:?} should have no interferences, got {:?}",
+                graph.neighbors(v)
+            );
+        }
+    }
+
+    fn const_op(bits: f32) -> ScheduledOp {
+        ScheduledOp::Const(bits)
+    }
+
+    fn add_op(a: ValueId, b: ValueId) -> ScheduledOp {
+        ScheduledOp::Binary(OpKind::Add, a, b)
+    }
+
+    #[test]
+    fn linear_scan_should_return_an_empty_allocation_for_an_empty_schedule() {
+        let alloc = linear_scan(&[], &[], &BTreeMap::new(), 4, 4);
+        assert!(alloc.assignment.is_empty());
+        assert!(alloc.spilled.is_empty());
+        assert_eq!(alloc.num_regs, 0);
+    }
+
+    #[test]
+    fn linear_scan_should_assign_distinct_registers_when_supply_is_sufficient() {
+        // v0 = const, v1 = const, v2 = v0 + v1 (root).
+        let schedule = [
+            (ValueId(0), const_op(1.0)),
+            (ValueId(1), const_op(2.0)),
+            (ValueId(2), add_op(ValueId(0), ValueId(1))),
+        ];
+        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 4, 4);
+
+        assert!(alloc.spilled.is_empty());
+        assert_eq!(alloc.assignment.len(), 3);
+        let regs: BTreeSet<_> = alloc.assignment.values().collect();
+        assert_eq!(
+            regs.len(),
+            3,
+            "each simultaneously-live value needs its own register"
+        );
+    }
+
+    #[test]
+    fn linear_scan_should_rematerialize_a_constant_instead_of_spilling_it_when_evicted() {
+        // v0, v1 are constants live across v2's definition; only 1 register
+        // available, so one of them must be evicted. A constant should be
+        // rematerialized (free), never pushed to `spilled`.
+        let schedule = [
+            (ValueId(0), const_op(1.0)),
+            (ValueId(1), const_op(2.0)),
+            (ValueId(2), add_op(ValueId(0), ValueId(1))),
+        ];
+        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 1, 4);
+
+        assert!(
+            alloc.spilled.is_empty(),
+            "a constant eviction must rematerialize, not spill: {:?}",
+            alloc.spilled
+        );
+        assert!(!alloc.rematerialize.is_empty());
+    }
+
+    #[test]
+    fn linear_scan_should_keep_a_precolored_value_at_its_assigned_register() {
+        let schedule = [(ValueId(0), ScheduledOp::Var(0))];
+        let mut precolored = BTreeMap::new();
+        precolored.insert(ValueId(0), Reg(9));
+
+        let alloc = linear_scan(&schedule, &[], &precolored, 4, 4);
+
+        assert_eq!(alloc.assignment[&ValueId(0)], Reg(9));
     }
 }
