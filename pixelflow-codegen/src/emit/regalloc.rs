@@ -639,6 +639,68 @@ mod tests {
     use pixelflow_ir::kind::OpKind;
 
     #[test]
+    fn degree_should_count_deduplicated_neighbors_after_dedup_edges() {
+        let mut graph = InterferenceGraph::new();
+        graph.add_edge(ValueId(0), ValueId(1));
+        graph.add_edge(ValueId(0), ValueId(1)); // duplicate, pushed twice pre-dedup
+        graph.add_edge(ValueId(0), ValueId(2));
+        graph.dedup_edges();
+
+        assert_eq!(graph.degree(ValueId(0)), 2);
+    }
+
+    #[test]
+    fn degree_should_be_zero_for_a_value_never_added_to_the_graph() {
+        let graph = InterferenceGraph::new();
+        assert_eq!(graph.degree(ValueId(0)), 0);
+    }
+
+    #[test]
+    fn neighbors_should_be_empty_for_a_value_id_beyond_the_graphs_capacity() {
+        let mut graph = InterferenceGraph::new();
+        graph.add_value(ValueId(0));
+        assert!(graph.neighbors(ValueId(1)).is_empty());
+    }
+
+    #[test]
+    fn is_precolored_should_be_false_for_a_value_added_without_precoloring() {
+        let mut graph = InterferenceGraph::new();
+        graph.add_value(ValueId(0));
+        assert!(!graph.is_precolored(ValueId(0)));
+    }
+
+    #[test]
+    fn is_precolored_should_be_true_only_for_the_value_that_was_precolored() {
+        let mut graph = InterferenceGraph::new();
+        graph.precolor(ValueId(0), Reg(3));
+        graph.add_value(ValueId(1));
+        assert!(graph.is_precolored(ValueId(0)));
+        assert!(!graph.is_precolored(ValueId(1)));
+    }
+
+    #[test]
+    fn is_precolored_should_be_false_for_a_value_id_beyond_the_graphs_capacity() {
+        let mut graph = InterferenceGraph::new();
+        graph.add_value(ValueId(0));
+        assert!(!graph.is_precolored(ValueId(5)));
+    }
+
+    #[test]
+    fn precolor_of_should_return_none_for_a_value_id_beyond_the_graphs_capacity() {
+        let mut graph = InterferenceGraph::new();
+        graph.add_value(ValueId(0));
+        assert_eq!(graph.precolor_of(ValueId(5)), None);
+    }
+
+    #[test]
+    fn is_empty_should_be_true_before_any_value_is_added_and_false_after() {
+        let mut graph = InterferenceGraph::new();
+        assert!(graph.is_empty());
+        graph.add_value(ValueId(0));
+        assert!(!graph.is_empty());
+    }
+
+    #[test]
     fn color_graph_should_assign_and_spill_nothing_for_an_empty_graph() {
         let graph = InterferenceGraph::new();
         let alloc = color_graph(&graph, 8, 4);
@@ -696,11 +758,32 @@ mod tests {
         let alloc = color_graph(&graph, 8, 4);
         assert_eq!(alloc.assignment.len(), 3);
         assert!(alloc.spilled.is_empty());
-        assert!(alloc.num_regs >= 3);
+        assert_eq!(alloc.num_regs, 3);
 
         // All must have different colors
         let colors: BTreeSet<_> = alloc.assignment.values().collect();
         assert_eq!(colors.len(), 3);
+    }
+
+    #[test]
+    fn color_graph_should_ignore_a_precolored_neighbor_whose_register_is_outside_the_scratch_range()
+    {
+        // Precolor value 0 with a register exactly at `scratch_base + num_regs`
+        // (one past the last valid scratch color). color_graph must not
+        // index `used_colors` with it — it's out of range for the scratch
+        // coloring space, so it must be silently ignored rather than panic.
+        let scratch_base = 4;
+        let num_regs = 4;
+        let mut graph = InterferenceGraph::new();
+        graph.precolor(ValueId(0), Reg(scratch_base + num_regs));
+        graph.add_value(ValueId(1));
+        graph.add_edge(ValueId(0), ValueId(1));
+
+        let alloc = color_graph(&graph, num_regs, scratch_base);
+
+        assert_eq!(alloc.assignment[&ValueId(0)], Reg(scratch_base + num_regs));
+        assert!(alloc.assignment.contains_key(&ValueId(1)));
+        assert!(alloc.spilled.is_empty());
     }
 
     #[test]
@@ -731,6 +814,7 @@ mod tests {
         let alloc = color_graph(&graph, 2, 4); // Only 2 registers!
         assert_eq!(alloc.spilled.len(), 2); // 2 must spill
         assert_eq!(alloc.assignment.len(), 2); // 2 got colors
+        assert_eq!(alloc.num_regs, 2); // both available colors are in use
     }
 
     #[test]
@@ -785,12 +869,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn build_interference_graph_should_size_the_live_set_to_cover_the_highest_value_id() {
+        // v2 has the highest ValueId but is defined FIRST (ids need not match
+        // schedule position). v0 and v2 are both operands of v1, so they're
+        // simultaneously live and must interfere. A live-set sized one too
+        // small (an off-by-one in the capacity computation) would silently
+        // drop v2's liveness tracking instead of connecting it to v0.
+        let schedule = [(ValueId(2), ()), (ValueId(0), ()), (ValueId(1), ())];
+        let uses_of = |v: ValueId| match v.0 {
+            1 => alloc::vec![ValueId(0), ValueId(2)],
+            _ => alloc::vec![],
+        };
+
+        let graph = build_interference_graph(&schedule, uses_of);
+
+        assert_eq!(graph.neighbors(ValueId(0)), &[ValueId(2)]);
+        assert_eq!(graph.neighbors(ValueId(2)), &[ValueId(0)]);
+        assert!(graph.neighbors(ValueId(1)).is_empty());
+    }
+
+    #[test]
+    fn build_interference_graph_should_not_panic_when_uses_of_reports_a_value_outside_the_schedule()
+    {
+        // uses_of is caller-supplied and can name a ValueId the schedule
+        // never defines. The bounds guard on the live-set update must skip
+        // it rather than index out of range.
+        let schedule = [(ValueId(0), ())];
+        let out_of_range = ValueId(1_000);
+        let uses_of = move |_: ValueId| alloc::vec![out_of_range];
+
+        let graph = build_interference_graph(&schedule, uses_of);
+
+        assert!(graph.neighbors(ValueId(0)).is_empty());
+    }
+
     fn const_op(bits: f32) -> ScheduledOp {
         ScheduledOp::Const(bits)
     }
 
     fn add_op(a: ValueId, b: ValueId) -> ScheduledOp {
         ScheduledOp::Binary(OpKind::Add, a, b)
+    }
+
+    fn var_op(id: u8) -> ScheduledOp {
+        ScheduledOp::Var(id)
+    }
+
+    fn neg_op(a: ValueId) -> ScheduledOp {
+        ScheduledOp::Unary(OpKind::Neg, a)
     }
 
     #[test]
@@ -819,6 +946,24 @@ mod tests {
             3,
             "each simultaneously-live value needs its own register"
         );
+        assert_eq!(alloc.num_regs, 3);
+    }
+
+    #[test]
+    fn linear_scan_should_free_a_dead_values_register_at_the_next_instruction() {
+        // v0 is a constant with no further uses — its live range ends at its
+        // own definition, so its register must be free again by v1's turn.
+        // With only one register available, that reuse is the only way both
+        // values get assigned instead of one being rematerialized.
+        let schedule = [(ValueId(0), const_op(1.0)), (ValueId(1), const_op(2.0))];
+        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 1, 4);
+
+        assert!(
+            alloc.rematerialize.is_empty(),
+            "v0's register should have been freed and reused, not evicted: {:?}",
+            alloc.rematerialize
+        );
+        assert_eq!(alloc.assignment.len(), 2);
     }
 
     #[test]
@@ -850,5 +995,116 @@ mod tests {
         let alloc = linear_scan(&schedule, &[], &precolored, 4, 4);
 
         assert_eq!(alloc.assignment[&ValueId(0)], Reg(9));
+    }
+
+    #[test]
+    fn linear_scan_should_prefer_evicting_a_constant_occupant_over_a_non_constant_one() {
+        // v0 (const) and v1 (non-const) both occupy the only 2 registers when
+        // v_new needs a third. v1's next use is farther away than v0's, so a
+        // pure Belady rule would evict v1 — but a constant is free to
+        // rematerialize, so v0 must be evicted instead regardless of lu.
+        let schedule = [
+            (ValueId(0), const_op(1.0)),      // lu -> 3
+            (ValueId(1), var_op(0)),          // lu -> 4 (farther out than v0's)
+            (ValueId(2), var_op(1)),          // forces eviction
+            (ValueId(3), neg_op(ValueId(0))), // v0's last use
+            (ValueId(4), neg_op(ValueId(1))), // v1's last use
+        ];
+        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 2, 4);
+
+        assert!(
+            alloc.rematerialize.contains_key(&ValueId(0)),
+            "the constant should be evicted (rematerialized), not the non-constant: {alloc:?}"
+        );
+        assert!(alloc.assignment.contains_key(&ValueId(1)));
+        assert!(alloc.spilled.is_empty());
+    }
+
+    #[test]
+    fn linear_scan_should_break_a_tied_constant_eviction_candidate_toward_the_first_one_seen() {
+        // v0 and v1 are both constants with the SAME last-use index (tied via
+        // their shared consumer at i3), occupying the only 2 registers when
+        // v_new needs a third. A strict farthest-use comparison must not let
+        // the second-seen candidate overwrite the first on a tie.
+        let schedule = [
+            (ValueId(0), const_op(1.0)),
+            (ValueId(1), const_op(2.0)),
+            (ValueId(2), var_op(0)),                      // forces eviction
+            (ValueId(3), add_op(ValueId(0), ValueId(1))), // ties both lus at 3
+        ];
+        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 2, 4);
+
+        assert!(
+            alloc.rematerialize.contains_key(&ValueId(0)),
+            "the first-seen tied candidate (v0) should be evicted: {alloc:?}"
+        );
+        assert!(!alloc.rematerialize.contains_key(&ValueId(1)));
+        assert!(alloc.assignment.contains_key(&ValueId(1)));
+    }
+
+    #[test]
+    fn linear_scan_should_evict_the_non_constant_occupant_used_furthest_in_the_future() {
+        // No constants at all: pure Belady eviction among v0 and v1, which
+        // both occupy the only 2 registers when v_new needs a third. v1's
+        // next use is farther away, so v1 (not v0) must be the one evicted.
+        let schedule = [
+            (ValueId(0), var_op(0)),          // lu -> 3
+            (ValueId(1), var_op(1)),          // lu -> 4 (farther out)
+            (ValueId(2), var_op(2)),          // forces eviction
+            (ValueId(3), neg_op(ValueId(0))), // v0's last use
+            (ValueId(4), neg_op(ValueId(1))), // v1's last use
+        ];
+        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 2, 4);
+
+        assert!(
+            alloc.spilled.contains(&ValueId(1)),
+            "v1 (used furthest in the future) should be evicted: {alloc:?}"
+        );
+        assert!(!alloc.spilled.contains(&ValueId(0)));
+        assert!(alloc.assignment.contains_key(&ValueId(0)));
+    }
+
+    #[test]
+    fn linear_scan_should_break_a_tied_non_constant_eviction_candidate_toward_the_first_one_seen() {
+        // No constants; v0 and v1 have the SAME last-use index (tied via
+        // their shared consumer at i3), occupying the only 2 registers when
+        // v_new needs a third.
+        let schedule = [
+            (ValueId(0), var_op(0)),
+            (ValueId(1), var_op(1)),
+            (ValueId(2), var_op(2)),                      // forces eviction
+            (ValueId(3), add_op(ValueId(0), ValueId(1))), // ties both lus at 3
+        ];
+        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 2, 4);
+
+        assert!(
+            alloc.spilled.contains(&ValueId(0)),
+            "the first-seen tied candidate (v0) should be evicted: {alloc:?}"
+        );
+        assert!(!alloc.spilled.contains(&ValueId(1)));
+        assert!(alloc.assignment.contains_key(&ValueId(1)));
+    }
+
+    #[test]
+    fn linear_scan_should_evict_the_new_value_over_a_non_constant_occupant_on_a_tied_last_use() {
+        // Only 1 register. v0 holds it; v_new arrives needing it with v0's
+        // last use tied exactly with v_new's own (both consumed together by
+        // v_c at i2). On a tie, Belady's rule keeps the resident and evicts
+        // the arriving value — evicting the resident here would just repeat
+        // the same tied decision one instruction later, for no benefit.
+        let schedule = [
+            (ValueId(0), var_op(0)),
+            (ValueId(1), var_op(1)),
+            (ValueId(2), add_op(ValueId(0), ValueId(1))), // ties both lus at 2
+        ];
+        let alloc = linear_scan(&schedule, &[], &BTreeMap::new(), 1, 4);
+
+        assert_eq!(
+            alloc.assignment.keys().collect::<alloc::vec::Vec<_>>(),
+            alloc::vec![&ValueId(0)],
+            "v0 should stay resident throughout: {alloc:?}"
+        );
+        let spilled: BTreeSet<_> = alloc.spilled.iter().collect();
+        assert_eq!(spilled, BTreeSet::from([&ValueId(1), &ValueId(2)]));
     }
 }
