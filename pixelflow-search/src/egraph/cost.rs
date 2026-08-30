@@ -274,6 +274,11 @@ impl CostModel {
     /// Calculate the hinge penalty for a given depth.
     #[inline]
     pub fn depth_cost(&self, depth: usize) -> usize {
+        // `>` is an equivalent mutant to `>=` under cargo-mutants: at
+        // `depth == self.depth_threshold` the multiplier `(depth -
+        // self.depth_threshold)` is 0 either way, so both branches return the
+        // same 0. No test can distinguish them — left as `>` to match the
+        // "strictly past the threshold" reading of a hinge penalty.
         if depth > self.depth_threshold {
             (depth - self.depth_threshold) * self.depth_penalty
         } else {
@@ -992,6 +997,188 @@ mod persistence {
             output.status.success(),
             "{CHILD} failed under PIXELFLOW_COST_MODEL={}. Child stdout:\n{stdout}",
             path.display()
+        );
+    }
+
+    /// Builds a directory path under the OS temp dir that's unique per call,
+    /// so parallel test threads never collide on the same directory.
+    fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "pixelflow-cost-model-test-{tag}-{}-{n}",
+            std::process::id()
+        ))
+    }
+
+    /// Re-runs this test binary, filtered to the single ignored `child` test,
+    /// under the given `HOME` and current directory, and returns its
+    /// (stdout, stderr). Asserts the child ran exactly one test and exited
+    /// successfully — an `output()` rather than a `status()` because libtest
+    /// exits 0 when a filter matches nothing, so a `child` name that drifts
+    /// out of sync with the actual test function would otherwise pass while
+    /// asserting nothing.
+    ///
+    /// `--nocapture` is required, not cosmetic: libtest buffers a passing
+    /// test's stdout/stderr internally and only releases it on failure, so
+    /// without this flag `load_or_default`'s `eprintln!` warnings would never
+    /// reach the real process stderr this function reads.
+    fn run_child(
+        child: &str,
+        home: &std::path::Path,
+        current_dir: &std::path::Path,
+    ) -> (String, String) {
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("locate this test binary to re-run a single test"),
+        )
+        .args(["--exact", child, "--ignored", "--nocapture"])
+        .env("HOME", home)
+        .env_remove("PIXELFLOW_COST_MODEL")
+        .current_dir(current_dir)
+        .output()
+        .expect("spawn the child test process");
+
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+        assert!(
+            stdout.contains("1 passed"),
+            "expected the child to run exactly one test; if `{child}` no longer names it, \
+             this test is asserting nothing. Child stdout:\n{stdout}"
+        );
+        assert!(
+            output.status.success(),
+            "{child} failed. Child stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+
+        (stdout, stderr)
+    }
+
+    #[test]
+    #[ignore = "spawned by its parent test with HOME set to a directory whose config file is malformed"]
+    fn load_or_default_home_config_parse_failure_child() {
+        let _ = CostModel::load_or_default();
+    }
+
+    #[test]
+    #[ignore = "spawned by its parent test with HOME set to a directory with no config file"]
+    fn load_or_default_home_config_absent_child() {
+        let _ = CostModel::load_or_default();
+    }
+
+    #[test]
+    #[ignore = "spawned by its parent test with a malformed workspace-relative cost file"]
+    fn load_or_default_workspace_config_parse_failure_child() {
+        let _ = CostModel::load_or_default();
+    }
+
+    #[test]
+    #[ignore = "spawned by its parent test with no workspace-relative cost file present"]
+    fn load_or_default_workspace_config_absent_child() {
+        let _ = CostModel::load_or_default();
+    }
+
+    /// `load_or_default`'s `HOME`-config branch must report a real parse
+    /// failure loudly: a malformed `~/.config/pixelflow/cost_model.toml` is a
+    /// misconfiguration, not an absent optional file, and swallowing the
+    /// warning would hide it from whoever wrote the file.
+    #[test]
+    fn load_or_default_should_warn_on_stderr_when_the_home_config_exists_but_fails_to_parse() {
+        let home = unique_temp_dir("home-malformed");
+        let cwd = unique_temp_dir("home-malformed-cwd");
+        std::fs::create_dir_all(home.join(".config/pixelflow")).expect("create config dir");
+        std::fs::create_dir_all(&cwd).expect("create scratch cwd");
+        std::fs::write(
+            home.join(".config/pixelflow/cost_model.toml"),
+            "add = not_a_number\n",
+        )
+        .expect("write malformed config");
+
+        const CHILD: &str =
+            "egraph::cost::persistence::load_or_default_home_config_parse_failure_child";
+        let (_, stderr) = run_child(CHILD, &home, &cwd);
+
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&cwd);
+
+        assert!(
+            stderr.contains("exists but failed to load"),
+            "a malformed HOME config file must produce a load-failure warning; stderr:\n{stderr}"
+        );
+    }
+
+    /// Mirror image of the test above: when `~/.config/pixelflow/cost_model.toml`
+    /// simply doesn't exist — the ordinary case, since most users never set
+    /// one — `load_or_default` must stay silent rather than warn on every
+    /// run just because the optional override is missing.
+    #[test]
+    fn load_or_default_should_stay_silent_on_stderr_when_the_home_config_is_absent() {
+        let home = unique_temp_dir("home-absent");
+        let cwd = unique_temp_dir("home-absent-cwd");
+        std::fs::create_dir_all(&home).expect("create home dir"); // no .config/pixelflow at all
+        std::fs::create_dir_all(&cwd).expect("create scratch cwd");
+
+        const CHILD: &str = "egraph::cost::persistence::load_or_default_home_config_absent_child";
+        let (_, stderr) = run_child(CHILD, &home, &cwd);
+
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&cwd);
+
+        assert!(
+            !stderr.contains("exists but failed to load"),
+            "a simply-absent HOME config file must not warn; stderr:\n{stderr}"
+        );
+    }
+
+    /// Mirrors the `HOME`-config test above for the workspace-relative
+    /// fallback locations: a malformed `pixelflow-ml/data/learned_cost_model.toml`
+    /// must warn, not fail silently. `HOME` is pointed at a config-free
+    /// directory so the earlier `HOME` branch stays silent and the warning
+    /// this test asserts on can only have come from the workspace-path loop.
+    #[test]
+    fn load_or_default_should_warn_on_stderr_when_a_workspace_config_exists_but_fails_to_parse() {
+        let home = unique_temp_dir("workspace-malformed-home");
+        let cwd = unique_temp_dir("workspace-malformed-cwd");
+        std::fs::create_dir_all(&home).expect("create home dir");
+        std::fs::create_dir_all(cwd.join("pixelflow-ml/data")).expect("create workspace data dir");
+        std::fs::write(
+            cwd.join("pixelflow-ml/data/learned_cost_model.toml"),
+            "add = not_a_number\n",
+        )
+        .expect("write malformed workspace config");
+
+        const CHILD: &str =
+            "egraph::cost::persistence::load_or_default_workspace_config_parse_failure_child";
+        let (_, stderr) = run_child(CHILD, &home, &cwd);
+
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&cwd);
+
+        assert!(
+            stderr.contains("exists but failed to load"),
+            "a malformed workspace config file must produce a load-failure warning; stderr:\n{stderr}"
+        );
+    }
+
+    /// Mirror image: no workspace-relative cost file present at all — the
+    /// ordinary case for most checkouts — must stay silent.
+    #[test]
+    fn load_or_default_should_stay_silent_on_stderr_when_no_workspace_config_is_present() {
+        let home = unique_temp_dir("workspace-absent-home");
+        let cwd = unique_temp_dir("workspace-absent-cwd");
+        std::fs::create_dir_all(&home).expect("create home dir");
+        std::fs::create_dir_all(&cwd).expect("create scratch cwd"); // no pixelflow-ml/data at all
+
+        const CHILD: &str =
+            "egraph::cost::persistence::load_or_default_workspace_config_absent_child";
+        let (_, stderr) = run_child(CHILD, &home, &cwd);
+
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&cwd);
+
+        assert!(
+            !stderr.contains("exists but failed to load"),
+            "no workspace config present must not warn; stderr:\n{stderr}"
         );
     }
 }
