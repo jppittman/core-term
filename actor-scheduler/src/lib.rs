@@ -111,6 +111,7 @@ pub use actor_scheduler_macros::{actor_impl, ports, troupe};
 
 use sharded::{InboxBuilder, ShardedInbox};
 use spsc::SpscSender;
+use std::sync::atomic::{Ordering, fence};
 use std::sync::{
     Arc,
     mpsc::{self, Receiver, SyncSender},
@@ -924,6 +925,15 @@ impl<D, C, M> ActorHandle<D, C, M> {
     ///
     /// Doorbell uses try_send (drops if full) - safe because one pending wake is sufficient.
     fn wake(&self) {
+        // The lane publish (a Release store of the ring's tail) must be globally
+        // visible before the doorbell is inspected: try_send's Full path is
+        // loads-only, and a release store followed by loads may reorder
+        // (StoreLoad). Without this fence, "full means a wake is already
+        // pending" is unsound — the pending wake's consumer can drain, miss the
+        // not-yet-visible message, and sleep, stranding it. Pairs with the
+        // fence at the top of ActorScheduler::handle_wake and
+        // DedicatedThread::sweep.
+        fence(Ordering::SeqCst);
         if let Some(waker) = &self.wake_handler {
             waker.wake();
         }
@@ -979,6 +989,11 @@ impl Waker {
     /// Never blocks and never fails. A full doorbell means a wake is already pending, and a
     /// disconnected one means the actor is gone — in both cases there is nothing to do.
     pub fn wake(&self) {
+        // Same fence as ActorHandle::wake, for the same reason: the caller's
+        // inbox push must be globally visible before the doorbell is inspected,
+        // or the wake this call coalesces with can drain, miss the message, and
+        // sleep on it.
+        fence(Ordering::SeqCst);
         if let Some(waker) = &self.wake_handler {
             waker.wake();
         }
@@ -1124,6 +1139,13 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     where
         A: Actor<D, C, M>,
     {
+        // Pairs with the fence in ActorHandle::wake / Waker::wake: sequencing
+        // this fence after the doorbell take and before the drains guarantees
+        // the drains observe every lane publish made by a sender that saw the
+        // doorbell full and stood down. Without it, this thread could read
+        // stale ring tails, report Idle, and block with a message stranded.
+        fence(Ordering::SeqCst);
+
         // Drain Control → Mgmt → Control → Data
         // Control budget is split evenly between the two control runs to prevent double priority.
         // Floor at 1: integer halving would otherwise zero the budget when the
@@ -1426,6 +1448,11 @@ where
     ///
     /// Returns the busy hint for the doorbell loop's `working` flag.
     fn sweep(&mut self) -> bool {
+        // Pairs with the fence in ActorHandle::wake / Waker::wake — same
+        // contract as ActorScheduler::handle_wake's fence: the lane polls below
+        // must see every publish whose sender found the doorbell full.
+        fence(Ordering::SeqCst);
+
         let mut polls = 0usize;
         let lane_step = loop {
             match self.node.poll() {
