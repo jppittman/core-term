@@ -26,63 +26,18 @@ impl ExecutableCode {
     /// for the current architecture.
     #[cfg(unix)]
     pub unsafe fn from_code(code: &[u8]) -> Result<Self, &'static str> {
-        use libc::{MAP_ANON, MAP_PRIVATE, PROT_EXEC, PROT_READ, PROT_WRITE, mmap, mprotect};
-
         if code.is_empty() {
             return Err("empty code buffer");
         }
 
-        // Round up to page size (usually 4KB, but 16KB on Apple Silicon)
         let page_size = page_size();
         let capacity = (code.len() + page_size - 1) & !(page_size - 1);
 
-        // SAFETY: All syscalls below are safe given valid arguments (which we ensure).
-        unsafe {
-            // 1. Allocate read-write memory
-            let ptr = mmap(
-                ptr::null_mut(),
-                capacity,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANON,
-                -1,
-                0,
-            );
-
-            if ptr == libc::MAP_FAILED {
-                return Err("mmap failed");
-            }
-
-            let ptr = ptr as *mut u8;
-
-            // 2. Copy code into the buffer
-            ptr::copy_nonoverlapping(code.as_ptr(), ptr, code.len());
-
-            // 3. Flip to read-execute (W^X)
-            let result = mprotect(ptr as *mut libc::c_void, capacity, PROT_READ | PROT_EXEC);
-
-            if result != 0 {
-                libc::munmap(ptr as *mut libc::c_void, capacity);
-                return Err("mprotect failed");
-            }
-
-            // Instruction cache coherence on Apple Silicon: the I-cache is not
-            // automatically coherent with the D-cache, so code written via the
-            // store above can otherwise be invisible (or stale) to the fetch
-            // unit until explicitly invalidated.
-            #[cfg(target_os = "macos")]
-            {
-                unsafe extern "C" {
-                    fn sys_icache_invalidate(start: *mut core::ffi::c_void, size: usize);
-                }
-                sys_icache_invalidate(ptr as *mut core::ffi::c_void, code.len());
-            }
-
-            Ok(Self {
-                ptr,
-                len: code.len(),
-                capacity,
-            })
-        }
+        let mut pages = CodePages::map(capacity)?;
+        pages.write(code);
+        // Any `?` above unmapped the page through `Drop`; from here the
+        // mapping's ownership moves into the returned `ExecutableCode`.
+        pages.finish(code.len())
     }
 
     /// Get a function pointer to the compiled code.
@@ -135,17 +90,205 @@ impl Drop for ExecutableCode {
 }
 
 /// Get the system page size.
+///
+/// Asked of the machine rather than assumed from the OS: it is 4 KiB on
+/// x86-64 and 16 KiB on Apple Silicon, which is a property of the hardware
+/// the process is running on, not of the platform it was built for. This used
+/// to hardcode 16384 whenever `target_os = "macos"`, which over-allocated on
+/// Intel Macs.
 #[cfg(unix)]
 fn page_size() -> usize {
-    // Apple Silicon uses 16KB pages
-    #[cfg(target_os = "macos")]
-    {
-        16384
+    // SAFETY: `sysconf` with a valid name has no preconditions.
+    let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    // A negative return means the name was not recognised, which cannot
+    // happen for `_SC_PAGESIZE`; fall back to the smallest size anything here
+    // runs on rather than wrapping into a huge allocation.
+    if n > 0 { n as usize } else { 4096 }
+}
+
+// =============================================================================
+// Page preparation
+// =============================================================================
+
+/// A mapped, writable code page that is not yet executable.
+///
+/// The W^X transition happens exactly once, in [`CodePages::finish`], which is
+/// the only way to reach an [`ExecutableCode`] — so "flip the permissions and
+/// make the writes fetchable" cannot be forgotten or done twice. Anything that
+/// leaves this scope without calling it (an early return, a `?`, a panic)
+/// reaches `Drop`, which unmaps the page, so a writable mapping cannot leak.
+/// The hand-written `munmap` on the old `mprotect` failure path is gone with
+/// it, along with the obligation on every future error path to remember one.
+#[cfg(unix)]
+struct CodePages {
+    ptr: *mut u8,
+    capacity: usize,
+}
+
+#[cfg(unix)]
+impl CodePages {
+    /// Map `capacity` bytes readable and writable.
+    fn map(capacity: usize) -> Result<Self, &'static str> {
+        use libc::{MAP_ANON, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap};
+
+        // SAFETY: a null hint with a non-zero length and no backing fd is the
+        // ordinary anonymous-mapping call.
+        let ptr = unsafe {
+            mmap(
+                ptr::null_mut(),
+                capacity,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANON,
+                -1,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err("mmap failed");
+        }
+        Ok(Self {
+            ptr: ptr.cast::<u8>(),
+            capacity,
+        })
     }
-    #[cfg(not(target_os = "macos"))]
+
+    /// Copy `code` to the start of the page.
+    fn write(&mut self, code: &[u8]) {
+        debug_assert!(code.len() <= self.capacity);
+        // SAFETY: the mapping is writable and at least `code.len()` long.
+        unsafe { ptr::copy_nonoverlapping(code.as_ptr(), self.ptr, code.len()) };
+    }
+
+    /// Flip to read-execute, make the written bytes visible to instruction
+    /// fetch, and hand the mapping to an [`ExecutableCode`].
+    fn finish(self, len: usize) -> Result<ExecutableCode, &'static str> {
+        use libc::{PROT_EXEC, PROT_READ, mprotect};
+
+        // SAFETY: `self` owns this mapping and `capacity` is its length.
+        let rc = unsafe {
+            mprotect(
+                self.ptr.cast::<libc::c_void>(),
+                self.capacity,
+                PROT_READ | PROT_EXEC,
+            )
+        };
+        if rc != 0 {
+            // `self` is still live, so `Drop` unmaps on the way out.
+            return Err("mprotect failed");
+        }
+
+        sync_instruction_cache(self.ptr, len);
+
+        // The mapping now belongs to the returned value; suppress our `Drop`.
+        let me = core::mem::ManuallyDrop::new(self);
+        Ok(ExecutableCode {
+            ptr: me.ptr,
+            len,
+            capacity: me.capacity,
+        })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for CodePages {
+    fn drop(&mut self) {
+        // SAFETY: we own this mapping and have not released it.
+        unsafe { libc::munmap(self.ptr.cast::<libc::c_void>(), self.capacity) };
+    }
+}
+
+// =============================================================================
+// Instruction-cache coherence
+// =============================================================================
+
+/// Make the bytes written to `[ptr, ptr + len)` visible to instruction fetch.
+///
+/// This is an **architectural** property, not an OS one, and that distinction
+/// is the whole point of the function. aarch64's instruction cache is not
+/// coherent with its data cache, so code just written through a data store can
+/// be stale — or invisible — to the fetch unit until the range is cleaned and
+/// invalidated. x86-64's instruction cache is coherent and needs nothing.
+///
+/// It used to be gated on `target_os = "macos"`, with a comment attributing
+/// the requirement to Apple Silicon. Apple Silicon is aarch64, so the code was
+/// right about the machine and wrong about the axis: **Linux aarch64 skipped
+/// the maintenance its architecture requires.** Nothing caught it, because the
+/// only place aarch64 code is *executed* in CI is macOS — the aarch64 job only
+/// type-checks — which is the same blind spot that produced the glyph-ink
+/// regression and cost this crate a red CI run in #1055.
+///
+/// The risk is not theoretical: [`jit_cache`](crate::jit_cache) recompiles, so
+/// mappings get recycled, and a stale I-cache line at a reused address is
+/// exactly the failure this prevents.
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn sync_instruction_cache(_ptr: *mut u8, _len: usize) {}
+
+/// aarch64 on Apple platforms: libc exposes the maintenance sequence, and it
+/// is the entry point Apple supports.
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[inline]
+fn sync_instruction_cache(ptr: *mut u8, len: usize) {
+    unsafe extern "C" {
+        fn sys_icache_invalidate(start: *mut core::ffi::c_void, size: usize);
+    }
+    // SAFETY: the range was just written by this process and is mapped.
+    unsafe { sys_icache_invalidate(ptr.cast::<core::ffi::c_void>(), len) };
+}
+
+/// aarch64 elsewhere (Linux): issue the maintenance ourselves.
+///
+/// The sequence is the architecturally specified one for self-modifying code:
+/// clean the data cache to the point of unification so the stores are visible
+/// to fetch, then invalidate any instruction-cache lines already holding the
+/// same addresses, with the barriers that order the two against the
+/// subsequent branch into the code.
+///
+/// Written as inline assembly rather than a call to `__clear_cache` on
+/// purpose: an `extern` would only fail at link time, and nothing in CI links
+/// for this target — the aarch64 job type-checks. Assembly is settled during
+/// codegen, which `cargo build -p pixelflow-codegen --lib --target
+/// aarch64-unknown-linux-gnu` does reach (an rlib needs no linker), so this
+/// form is one the available checks can actually verify.
+#[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
+fn sync_instruction_cache(ptr: *mut u8, len: usize) {
+    use core::arch::asm;
+
+    if len == 0 {
+        return;
+    }
+    let start = ptr as usize;
+    let end = start + len;
+
+    // CTR_EL0 reports the minimum line sizes as log2 of a count of 4-byte
+    // words: D-cache in bits [19:16], I-cache in bits [3:0].
+    let ctr: u64;
+    // SAFETY: CTR_EL0 is readable from EL0 and the read has no side effects.
     unsafe {
-        libc::sysconf(libc::_SC_PAGESIZE) as usize
+        asm!("mrs {ctr}, ctr_el0", ctr = out(reg) ctr, options(nomem, nostack, preserves_flags))
+    };
+    let dline = 4usize << ((ctr >> 16) & 0xF);
+    let iline = 4usize << (ctr & 0xF);
+
+    // Clean D-cache lines covering the range to the point of unification.
+    let mut addr = start & !(dline - 1);
+    while addr < end {
+        // SAFETY: `dc cvau` is permitted at EL0 and only affects cache state.
+        unsafe { asm!("dc cvau, {addr}", addr = in(reg) addr, options(nostack, preserves_flags)) };
+        addr += dline;
     }
+    // SAFETY: a barrier; no memory operands.
+    unsafe { asm!("dsb ish", options(nostack, preserves_flags)) };
+
+    // Invalidate I-cache lines covering the same range.
+    let mut addr = start & !(iline - 1);
+    while addr < end {
+        // SAFETY: `ic ivau` is permitted at EL0 and only affects cache state.
+        unsafe { asm!("ic ivau, {addr}", addr = in(reg) addr, options(nostack, preserves_flags)) };
+        addr += iline;
+    }
+    // SAFETY: barriers ordering the maintenance before any later fetch.
+    unsafe { asm!("dsb ish", "isb", options(nostack, preserves_flags)) };
 }
 
 // =============================================================================
@@ -342,6 +485,86 @@ pub type CollapseKernelFn =
 // 128-bit `KernelFn`, so they are specific to the SSE2 (no AVX2, no AVX-512)
 // ABI. Under `+avx512f` or `+avx2`, `KernelFn` is `__m512`/`__m256` and these
 // `__m128` call sites don't type check; those paths are covered by the
+/// Page preparation, independent of ISA level and architecture.
+///
+/// Ungated on purpose: `CodePages`, `page_size` and `sync_instruction_cache`
+/// are exercised by every build, not just the SSE2 one the module below is
+/// limited to.
+#[cfg(all(test, unix))]
+mod page_tests {
+    use super::*;
+
+    /// A single `ret` for the host, so the buffer really is valid machine code
+    /// and `from_code`'s safety contract holds. Nothing here executes it.
+    fn host_ret() -> Vec<u8> {
+        #[cfg(target_arch = "x86_64")]
+        {
+            alloc::vec![0xC3]
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            0xD65F_03C0u32.to_le_bytes().to_vec()
+        }
+    }
+
+    /// Asked of the machine, not assumed from the OS. A bad `sysconf` fallback
+    /// would show up here as a non-power-of-two or an absurd size.
+    #[test]
+    fn page_size_is_a_sane_power_of_two() {
+        let n = page_size();
+        assert!(n >= 4096, "page size {n} below the smallest we run on");
+        assert!(n <= 1 << 20, "page size {n} implausibly large");
+        assert!(n.is_power_of_two(), "page size {n} is not a power of two");
+    }
+
+    /// The whole `CodePages` path: map writable, write, flip to executable,
+    /// sync the instruction cache. Reads the bytes back rather than running
+    /// them, so it is meaningful on every host.
+    #[test]
+    fn code_survives_the_w_xor_x_flip() {
+        let code = host_ret();
+        // SAFETY: `code` is a single valid `ret` for this architecture.
+        let exec = unsafe { ExecutableCode::from_code(&code) }.expect("map + flip");
+        assert_eq!(exec.len(), code.len());
+        assert!(!exec.is_empty());
+        assert_eq!(
+            exec.as_bytes(),
+            code.as_slice(),
+            "bytes changed across the flip"
+        );
+    }
+
+    /// The mapping is rounded up to a whole page, so a one-byte kernel and a
+    /// page-sized one both work and neither reports padding as code.
+    #[test]
+    fn length_reported_is_the_code_not_the_mapping() {
+        let mut code = host_ret();
+        let ret_len = code.len();
+        code.resize(page_size() + ret_len, 0);
+        code.rotate_right(ret_len); // keep the `ret` first
+        // SAFETY: entry point is a valid `ret`; the padding is never executed.
+        let exec = unsafe { ExecutableCode::from_code(&code) }.expect("map + flip");
+        assert_eq!(exec.len(), code.len(), "len must be the code, not the page");
+    }
+
+    #[test]
+    fn an_empty_buffer_is_refused() {
+        // SAFETY: empty slice; rejected before anything is mapped.
+        match unsafe { ExecutableCode::from_code(&[]) } {
+            Err(e) => assert_eq!(e, "empty code buffer"),
+            Ok(_) => panic!("an empty buffer must not map"),
+        }
+    }
+
+    /// `sync_instruction_cache` must accept an empty range without touching
+    /// memory — the aarch64 path computes a loop bound from it.
+    #[test]
+    fn syncing_an_empty_range_is_a_no_op() {
+        let mut byte = 0u8;
+        sync_instruction_cache(&raw mut byte, 0);
+    }
+}
+
 // `avx512`/`avx2` tests in `mod.rs`.
 #[cfg(all(test, not(target_feature = "avx512f"), not(target_feature = "avx2")))]
 mod tests {
