@@ -926,11 +926,11 @@ impl IsaBackend for Aarch64Backend {
         // macOS glyph-ink regression). `push_f32` dedups, and each compile
         // constructs a fresh backend, so appending is reset-equivalent for
         // single-body compiles.
-        for (_, op) in schedule {
-            if let ScheduledOp::Const(val) = op
-                && aarch64::needs_const_pool(*val)
+        for def in schedule {
+            if let ScheduledOp::Const(val) = def.op
+                && aarch64::needs_const_pool(val)
             {
-                self.pool.push_f32(*val)?;
+                self.pool.push_f32(val)?;
             }
         }
         // Builtins add up to ~60 polynomial coefficients during emission; bail
@@ -5706,11 +5706,7 @@ mod tests {
         #[cfg(target_arch = "aarch64")]
         #[test]
         fn aarch64_backend_covers_required_ops() {
-            let mut backend = Aarch64Backend {
-                pool: ConstPool::new(),
-                adr_patch_pos: 0,
-                max_regs: EmitCtx::default().max_regs,
-            };
+            let mut backend = Aarch64Backend::new(EmitCtx::default());
             assert_covers_required_ops("Aarch64Backend", &mut backend);
         }
     }
