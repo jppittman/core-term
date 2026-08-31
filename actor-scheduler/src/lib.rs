@@ -7,9 +7,10 @@
 //!
 //! # Architecture
 //!
-//! The scheduler uses a "doorbell" pattern where:
-//! 1. The receiver blocks on the Control channel
-//! 2. Data messages send a Wake signal to unblock the receiver
+//! The scheduler uses a "doorbell" pattern (see `doorbell.rs`) where:
+//! 1. Senders publish into per-producer SPSC lanes, then ring the doorbell
+//! 2. The receiver parks on the doorbell when idle; a ring (level) wakes it,
+//!    a shutdown (latch) stops it
 //! 3. Priority processing drains Control → Management → Data
 //!
 //! # Troupe System
@@ -93,6 +94,7 @@
 //! ```
 
 pub mod actors;
+mod doorbell;
 mod error;
 pub mod host;
 pub mod mealy;
@@ -109,13 +111,10 @@ pub use spsc::TrySendError;
 // Re-export macros from the proc-macro crate
 pub use actor_scheduler_macros::{actor_impl, ports, troupe};
 
+use doorbell::{Chime, Doorbell, Ring};
 use sharded::{InboxBuilder, ShardedInbox};
 use spsc::SpscSender;
-use std::sync::atomic::{Ordering, fence};
-use std::sync::{
-    Arc,
-    mpsc::{self, Receiver, SyncSender},
-};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The types of messages supported by the scheduler.
@@ -498,8 +497,8 @@ pub fn create_actor<D, C, M>(
 /// let mut scheduler = builder.build();    // Seals — no more producers
 /// ```
 pub struct ActorBuilder<D, C, M> {
-    tx_doorbell: SyncSender<System>,
-    rx_doorbell: Option<Receiver<System>>,
+    doorbell_ring: Ring,
+    doorbell: Option<Doorbell>,
     data_inbox: InboxBuilder<D>,
     control_inbox: InboxBuilder<C>,
     mgmt_inbox: InboxBuilder<M>,
@@ -532,11 +531,11 @@ impl<D, C, M> ActorBuilder<D, C, M> {
         );
         params.validate();
 
-        let (tx_doorbell, rx_doorbell) = mpsc::sync_channel(1);
+        let (doorbell_ring, bell) = Doorbell::new();
 
         Self {
-            tx_doorbell,
-            rx_doorbell: Some(rx_doorbell),
+            doorbell_ring,
+            doorbell: Some(bell),
             data_inbox: InboxBuilder::new(data_buffer_size),
             control_inbox: InboxBuilder::new(params.control_mgmt_buffer_size),
             mgmt_inbox: InboxBuilder::new(params.control_mgmt_buffer_size),
@@ -551,7 +550,7 @@ impl<D, C, M> ActorBuilder<D, C, M> {
     /// Call this once per producer during initialization, before [`build`](Self::build).
     pub fn add_producer(&mut self) -> ActorHandle<D, C, M> {
         ActorHandle {
-            tx_doorbell: self.tx_doorbell.clone(),
+            doorbell: self.doorbell_ring.clone(),
             tx_data: self.data_inbox.add_producer(),
             tx_control: self.control_inbox.add_producer(),
             tx_mgmt: self.mgmt_inbox.add_producer(),
@@ -578,7 +577,7 @@ impl<D, C, M> ActorBuilder<D, C, M> {
         shutdown_mode: ShutdownMode,
     ) -> ActorScheduler<D, C, M> {
         ActorScheduler {
-            rx_doorbell: self.rx_doorbell.expect("ActorBuilder::build called twice"),
+            doorbell: self.doorbell.expect("ActorBuilder::build called twice"),
             rx_data: self.data_inbox.build(),
             rx_control: self.control_inbox.build(),
             rx_mgmt: self.mgmt_inbox.build(),
@@ -631,8 +630,8 @@ impl<D, C, M> ActorBuilder<D, C, M> {
         DedicatedThread {
             node,
             sweep_burst,
-            rx_doorbell: self
-                .rx_doorbell
+            doorbell: self
+                .doorbell
                 .expect("ActorBuilder::build_node called twice"),
         }
     }
@@ -685,23 +684,14 @@ fn backoff_with_jitter(attempt: u32, params: &SchedulerParams) -> Result<Duratio
     Ok(Duration::from_micros(jittered_micros))
 }
 
-/// System messages - combines wake and shutdown into one channel
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum System {
-    /// Wake the scheduler to process messages
-    Wake,
-    /// Shutdown the scheduler
-    Shutdown,
-}
-
 /// A unified sender handle that routes messages to the scheduler with priority lanes.
 ///
 /// Each handle owns dedicated SPSC channels (one per lane) to the target actor.
 /// Not `Clone` — use [`ActorBuilder::add_producer`] to create additional handles.
 /// This eliminates all send-side contention: each producer gets its own wait-free path.
 pub struct ActorHandle<D, C, M> {
-    // Doorbell channel (buffer: 1) - wake and shutdown signals (MPSC, shared)
-    tx_doorbell: SyncSender<System>,
+    // Doorbell producer end - wake (level) and shutdown (latch) signals
+    doorbell: Ring,
     // Each lane is a dedicated SPSC channel (one producer per handle)
     tx_data: SpscSender<D>,
     tx_control: SpscSender<C>,
@@ -825,16 +815,15 @@ impl<D, C, M> ActorHandle<D, C, M> {
                 self.wake();
             }
             Message::Shutdown => {
-                // Shutdown: blocking send to guarantee delivery. The wake handler fires on
-                // BOTH sides of it: before, because the doorbell may be full while the
-                // consumer is blocked inside an OS wait (`step_os`/`handle_os`) — the handler
-                // is what interrupts that wait so the consumer can drain the slot this send
-                // needs; and after, because the consumer may have re-entered the wait between
-                // the drain and this send landing.
-                if let Some(waker) = &self.wake_handler {
-                    waker.wake();
+                // Shutdown is a sticky latch on the doorbell, so delivery is guaranteed by
+                // construction — no blocking send, and no wake-on-both-sides dance to keep a
+                // capacity-1 slot drainable. Latch first, THEN fire the platform waker: a
+                // consumer blocked inside an OS wait (`step_os`/`handle_os`) that the waker
+                // interrupts must find the latch already set, or it would re-enter the wait
+                // with nothing left to re-wake it.
+                if !self.doorbell.shutdown() {
+                    return Err(SendError::Disconnected);
                 }
-                self.tx_doorbell.send(System::Shutdown)?;
                 if let Some(waker) = &self.wake_handler {
                     waker.wake();
                 }
@@ -900,15 +889,15 @@ impl<D, C, M> ActorHandle<D, C, M> {
                     Err(TrySendError::Disconnected(Message::Management(m)))
                 }
             },
-            // Shutdown travels on the doorbell, not a lane ring, so there is no `Full`/
-            // `Disconnected` of its own to report non-blockingly — forward to the same
-            // delivery `send` uses and report success, matching the spec's carve-out for the
-            // one variant with no ring to be full.
+            // Shutdown travels on the doorbell, not a lane ring, so there is no `Full` of its
+            // own to report non-blockingly — forward to the same delivery `send` uses and
+            // report success, matching the spec's carve-out for the one variant with no ring
+            // to be full.
             Message::Shutdown => {
-                // Always reported as delivered: `send`'s own `Message::Shutdown` arm only ever
-                // fails via the doorbell's blocking `SyncSender::send`, which is a disconnect —
-                // and a disconnected doorbell means the scheduler is already gone, which is not
-                // this call's problem to report a second way.
+                // Always reported as delivered: shutdown is a sticky latch that never blocks,
+                // and `send`'s own `Message::Shutdown` arm only ever fails when the doorbell
+                // is abandoned — meaning the scheduler is already gone, which is not this
+                // call's problem to report a second way.
                 match self.send_message(Message::Shutdown) {
                     Ok(()) | Err(_) => {}
                 }
@@ -919,32 +908,18 @@ impl<D, C, M> ActorHandle<D, C, M> {
 
     /// Wake the scheduler to process messages.
     ///
-    /// If a custom wake handler is configured, calls it first to wake the platform
-    /// event loop (e.g., sending NSEvent on macOS). Then sends a doorbell signal to
-    /// unblock ActorScheduler.run().
-    ///
-    /// Doorbell uses try_send (drops if full) - safe because one pending wake is sufficient.
+    /// Rings the doorbell first — its RMW is what orders the lane publish
+    /// before the scheduler's sleep/wake decision (see `doorbell.rs`; no fence
+    /// needed) and coalescing is inherent, a set bit stays one bit. Then the
+    /// custom wake handler, if any, wakes the platform event loop (e.g.,
+    /// sending NSEvent on macOS): state first, mechanisms second, so a
+    /// consumer the mechanism rouses always finds the state already set.
     fn wake(&self) {
-        // The lane publish (a Release store of the ring's tail) must be globally
-        // visible before the doorbell is inspected: try_send's Full path is
-        // loads-only, and a release store followed by loads may reorder
-        // (StoreLoad). Without this fence, "full means a wake is already
-        // pending" is unsound — the pending wake's consumer can drain, miss the
-        // not-yet-visible message, and sleep, stranding it. Pairs with the
-        // fence at the top of ActorScheduler::handle_wake and
-        // DedicatedThread::sweep.
-        fence(Ordering::SeqCst);
+        if !self.doorbell.ring() {
+            panic!("Doorbell abandoned - scheduler dropped unexpectedly");
+        }
         if let Some(waker) = &self.wake_handler {
             waker.wake();
-        }
-        match self.tx_doorbell.try_send(System::Wake) {
-            Ok(()) => {}
-            Err(mpsc::TrySendError::Full(_)) => {
-                // Doorbell is bounded(1) - if full, a wake is already pending
-            }
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                panic!("Doorbell receiver disconnected - scheduler dropped unexpectedly");
-            }
         }
     }
 }
@@ -971,7 +946,7 @@ impl<D, C, M> mealy::PortTarget<Message<D, C, M>> for ActorHandle<D, C, M> {
 ///
 /// This is the same contract as a `Waker` in a futures runtime — "there is work for you now"
 /// — and it is deliberately *not* `ActorHandle::send`: a wake carries no payload and cannot
-/// back up, because the doorbell holds one pending wake and coalesces the rest.
+/// back up, because the doorbell is a level, not a queue — asserting it twice is one bit.
 ///
 /// # Ordering
 ///
@@ -979,32 +954,23 @@ impl<D, C, M> mealy::PortTarget<Message<D, C, M>> for ActorHandle<D, C, M> {
 /// wake, find nothing, and go back to sleep before the message lands.
 #[derive(Clone)]
 pub struct Waker {
-    tx_doorbell: SyncSender<System>,
+    doorbell: Ring,
     wake_handler: Option<Arc<dyn WakeHandler>>,
 }
 
 impl Waker {
     /// Signal the actor that it has work.
     ///
-    /// Never blocks and never fails. A full doorbell means a wake is already pending, and a
-    /// disconnected one means the actor is gone — in both cases there is nothing to do.
+    /// Never blocks and never fails. The doorbell is a level, so repeated wakes coalesce
+    /// into one bit; the ring's RMW orders the caller's inbox push before the scheduler's
+    /// sleep/wake decision (see `doorbell.rs`), so no fence is needed here. Unlike
+    /// `ActorHandle::wake`, a waker outliving its scheduler is ordinary — a green actor
+    /// can be fed after its host is gone. There is nobody to wake, so an abandoned
+    /// doorbell is ignored rather than a panic.
     pub fn wake(&self) {
-        // Same fence as ActorHandle::wake, for the same reason: the caller's
-        // inbox push must be globally visible before the doorbell is inspected,
-        // or the wake this call coalesces with can drain, miss the message, and
-        // sleep on it.
-        fence(Ordering::SeqCst);
+        let _ = self.doorbell.ring();
         if let Some(waker) = &self.wake_handler {
             waker.wake();
-        }
-        match self.tx_doorbell.try_send(System::Wake) {
-            Ok(()) => {}
-            // The doorbell holds one wake and coalesces the rest: full means a wake is
-            // already pending, which is exactly the signal this call wanted to send.
-            Err(mpsc::TrySendError::Full(_)) => {}
-            // Unlike `ActorHandle::wake`, a waker outliving its scheduler is ordinary — a
-            // green actor can be fed after its host is gone. There is nobody to wake.
-            Err(mpsc::TrySendError::Disconnected(_)) => {}
         }
     }
 }
@@ -1024,7 +990,7 @@ impl<D, C, M> ActorHandle<D, C, M> {
     #[must_use]
     pub fn waker(&self) -> Waker {
         Waker {
-            tx_doorbell: self.tx_doorbell.clone(),
+            doorbell: self.doorbell.clone(),
             wake_handler: self.wake_handler.clone(),
         }
     }
@@ -1036,7 +1002,7 @@ impl<D, C, M> ActorHandle<D, C, M> {
 /// a dedicated SPSC ring buffer, and the scheduler drains all shards with
 /// round-robin fairness. The MPSC doorbell channel is kept for wake/shutdown signals.
 pub struct ActorScheduler<D, C, M> {
-    rx_doorbell: Receiver<System>, // Wake and shutdown signals (MPSC)
+    doorbell: Doorbell, // Wake (level) and shutdown (latch) signals
     rx_data: ShardedInbox<D>,
     rx_control: ShardedInbox<C>,
     rx_mgmt: ShardedInbox<M>,
@@ -1139,12 +1105,10 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     where
         A: Actor<D, C, M>,
     {
-        // Pairs with the fence in ActorHandle::wake / Waker::wake: sequencing
-        // this fence after the doorbell take and before the drains guarantees
-        // the drains observe every lane publish made by a sender that saw the
-        // doorbell full and stood down. Without it, this thread could read
-        // stale ring tails, report Idle, and block with a message stranded.
-        fence(Ordering::SeqCst);
+        // No fence needed before the drains: the doorbell poll/wait that led
+        // here is an RMW, which both orders every publish made before the
+        // consumed ring() (see doorbell.rs) and — via the sleep-commit RMW —
+        // makes it impossible to block while a published message is stranded.
 
         // Drain Control → Mgmt → Control → Data
         // Control budget is split evenly between the two control runs to prevent double priority.
@@ -1313,25 +1277,21 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     where
         A: Actor<D, C, M>,
     {
-        use std::sync::mpsc::TryRecvError;
-
-        let signal = self.rx_doorbell.try_recv();
-
-        match signal {
-            Ok(System::Shutdown) => {
+        match self.doorbell.poll() {
+            Chime::Shutdown => {
                 if let Err(e) = self.handle_shutdown(actor) {
                     e.panic();
                 }
                 true
             }
 
-            Ok(System::Wake) | Err(TryRecvError::Empty) => match self.handle_wake(actor) {
+            Chime::Work | Chime::Quiet => match self.handle_wake(actor) {
                 Ok(Some(_)) => false, // still running
                 Ok(None) => true,     // all disconnected
                 Err(e) => e.panic(),
             },
 
-            Err(TryRecvError::Disconnected) => {
+            Chime::Orphaned => {
                 // All handles dropped — drain one batch, report done when empty
                 match self.handle_wake(actor) {
                     Ok(Some(_)) => false, // more buffered work; caller polls again
@@ -1346,25 +1306,21 @@ impl<D, C, M> ActorScheduler<D, C, M> {
     where
         A: Actor<D, C, M>,
     {
-        use std::sync::mpsc::TryRecvError;
-
         let mut working = false;
 
         loop {
-            let signal = if working {
-                self.rx_doorbell.try_recv()
+            let chime = if working {
+                self.doorbell.poll()
             } else {
-                self.rx_doorbell
-                    .recv()
-                    .map_err(|_| TryRecvError::Disconnected)
+                self.doorbell.wait()
             };
 
-            match signal {
-                Ok(System::Shutdown) => {
+            match chime {
+                Chime::Shutdown => {
                     self.handle_shutdown(actor)?;
                     return Ok(());
                 }
-                Ok(System::Wake) | Err(TryRecvError::Empty) => {
+                Chime::Work | Chime::Quiet => {
                     match self.handle_wake(actor)? {
                         Some(status) => {
                             working = matches!(status, SchedulerLoopStatus::Working);
@@ -1372,8 +1328,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
                         None => return Ok(()), // All channels disconnected
                     }
                 }
-                Err(TryRecvError::Disconnected) => {
-                    // Doorbell disconnected — all handles dropped.
+                Chime::Orphaned => {
+                    // Doorbell orphaned — all handles and wakers dropped.
                     // SPSC shards may still have buffered messages.
                     // Drain until all shards report Disconnected.
                     loop {
@@ -1393,8 +1349,8 @@ impl<D, C, M> ActorScheduler<D, C, M> {
 /// The mealy-tier mirror of [`host::GreenThread`]: same doorbell, same wake/shutdown vocabulary,
 /// same "stay awake rather than risk a lost wakeup" reasoning — but driving one actor's own
 /// thread instead of hosting many inside someone else's `handle_os`. Lives here rather than in
-/// `host.rs` because its doorbell is [`Receiver<System>`], and `System` is private to this
-/// module — `host.rs` has no way to name the field's type.
+/// `host.rs` so the doorbell-loop discipline it must mirror ([`ActorScheduler::run_inner`])
+/// stays on the same page as the mirror.
 ///
 /// Built by [`ActorBuilder::build_node`], never directly: the doorbell receiver and the three
 /// sharded lanes must come from the same builder as the [`ActorHandle`]s that feed them, and
@@ -1412,10 +1368,10 @@ pub struct DedicatedThread<
     node: mealy::Node<T, W, RD, RC, RM>,
     /// Lane polls allowed per sweep before the driver revisits the doorbell — the same role
     /// as the classic scheduler's per-wake burst limits. Without it, a continuously-fed lane
-    /// would keep the sweep loop from ever seeing a queued `Shutdown` or giving `step_os` a
+    /// would keep the sweep loop from ever seeing a latched `Shutdown` or giving `step_os` a
     /// turn.
     sweep_burst: usize,
-    rx_doorbell: Receiver<System>,
+    doorbell: Doorbell,
 }
 
 impl<T, W, RD, RC, RM> DedicatedThread<T, W, RD, RC, RM>
@@ -1448,11 +1404,6 @@ where
     ///
     /// Returns the busy hint for the doorbell loop's `working` flag.
     fn sweep(&mut self) -> bool {
-        // Pairs with the fence in ActorHandle::wake / Waker::wake — same
-        // contract as ActorScheduler::handle_wake's fence: the lane polls below
-        // must see every publish whose sender found the doorbell full.
-        fence(Ordering::SeqCst);
-
         let mut polls = 0usize;
         let lane_step = loop {
             match self.node.poll() {
@@ -1507,21 +1458,19 @@ where
         let mut working = false;
 
         loop {
-            let signal = if working {
-                self.rx_doorbell.try_recv()
+            let chime = if working {
+                self.doorbell.poll()
             } else {
-                self.rx_doorbell
-                    .recv()
-                    .map_err(|_| mpsc::TryRecvError::Disconnected)
+                self.doorbell.wait()
             };
 
-            match signal {
-                Ok(System::Shutdown) => return,
-                Ok(System::Wake) | Err(mpsc::TryRecvError::Empty) => working = self.sweep(),
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    // All handles dropped. Keep sweeping — buffered shard messages, a parked
-                    // outbox, or step_os's own work can all outlive the last `ActorHandle` —
-                    // until a sweep reports genuinely nothing left to do.
+            match chime {
+                Chime::Shutdown => return,
+                Chime::Work | Chime::Quiet => working = self.sweep(),
+                Chime::Orphaned => {
+                    // All handles and wakers dropped. Keep sweeping — buffered shard
+                    // messages, a parked outbox, or step_os's own work can all outlive the
+                    // last `ActorHandle` — until a sweep reports genuinely nothing left to do.
                     while self.sweep() {}
                     return;
                 }
