@@ -347,8 +347,30 @@ impl Arm {
 use pixelflow_ir::OpKind;
 
 /// Names `gen_bench_corpus` writes the production kernels under, so a corpus
-/// row can be labeled `named` vs `synthetic` in the report.
-const NAMED_KERNELS: [&str; 5] = ["swirl", "circle_sdf", "poly", "redundant", "normalize"];
+/// row can be labeled `named` vs `synthetic` in the report. The last twelve
+/// are the withheld ShaderToy benchmark set
+/// (`pixelflow_pipeline::shader_bench::SHADERTOY_KERNEL_NAMES`) — listed
+/// literally here rather than via the const import, matching how this array
+/// already duplicates (rather than imports) the original five names.
+const NAMED_KERNELS: [&str; 17] = [
+    "swirl",
+    "circle_sdf",
+    "poly",
+    "redundant",
+    "normalize",
+    "cosine_palette",
+    "smooth_min_scene",
+    "mandelbrot_distance",
+    "star_sdf",
+    "gyroid_slice",
+    "plasma",
+    "domain_warp_fbm",
+    "kaleidoscope_fold",
+    "metaballs",
+    "julia_set",
+    "smoothstep_vignette",
+    "torus_slice",
+];
 
 /// Report family of one corpus entry.
 fn family_of(name: &str) -> &'static str {
@@ -2160,11 +2182,13 @@ fn tier_corpus_path(corpus_dir: &str, tier: Tier) -> PathBuf {
 ///
 /// The pinning is not a convenience. A uniform draw over FINAL is
 /// overwhelmingly a draw over its synthetic bulk: a healthy build has roughly
-/// 9,480 synthetic entries beside the five named production kernels, so the
+/// 9,480 synthetic entries beside the named production kernels (the five
+/// original plus the withheld ShaderToy set, `NAMED_KERNELS`), so the
 /// default `--final-eval --max-kernels 40` has about a 2% chance of including
 /// even one of them. The named kernels ARE the real-world half of what a
-/// publication run claims to have measured, so a run that quietly dropped all
-/// five would journal a synthetic-only result under a publication verdict.
+/// publication run claims to have measured, so a run that quietly dropped
+/// all of them would journal a synthetic-only result under a publication
+/// verdict.
 /// Pinned entries count against `max_kernels`; if they alone exceed it, every
 /// pinned entry is still kept and no unpinned one is.
 fn subsample<T>(
@@ -4014,5 +4038,23 @@ mod tests {
     fn family_labels_split_named_production_kernels_from_synthetics() {
         assert_eq!(family_of("swirl"), "named");
         assert_eq!(family_of("dev_b03_f07_00012"), "synthetic");
+    }
+
+    /// Registration check for the withheld ShaderToy set (--final-eval path):
+    /// every name `corpus_split.toml`'s `[final].kernels` adds beyond the
+    /// five original production kernels must report `family_of == "named"`
+    /// here too, or a `corpus_final.bin` row for one would be silently
+    /// mislabeled `synthetic` in the report `--final-eval` prints.
+    #[test]
+    fn family_labels_cover_the_withheld_shadertoy_set() {
+        use pixelflow_pipeline::shader_bench::SHADERTOY_KERNEL_NAMES;
+        for name in SHADERTOY_KERNEL_NAMES {
+            assert_eq!(
+                family_of(name),
+                "named",
+                "{name} is in SHADERTOY_KERNEL_NAMES but NAMED_KERNELS does not know it"
+            );
+        }
+        assert_eq!(NAMED_KERNELS.len(), 5 + SHADERTOY_KERNEL_NAMES.len());
     }
 }

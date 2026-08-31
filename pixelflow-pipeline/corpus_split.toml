@@ -42,4 +42,9 @@ seeds = [[0, 7]]
 # sized like the real production kernels below.
 bands = [12]
 seeds = [[0, 7]]
-kernels = ["swirl", "circle_sdf", "poly", "redundant", "normalize"]
+# The five original named production kernels, plus the withheld real-shader
+# benchmark set (12 ShaderToy/iquilezles.org ports, pixelflow-pipeline/src/
+# shader_bench.rs — attribution table + porting notes in that module's doc
+# comment). Same FINAL discipline as everything else in this list: never
+# used for a SELECT decision, touched only for the paper's claimed numbers.
+kernels = ["swirl", "circle_sdf", "poly", "redundant", "normalize", "cosine_palette", "smooth_min_scene", "mandelbrot_distance", "star_sdf", "gyroid_slice", "plasma", "domain_warp_fbm", "kaleidoscope_fold", "metaballs", "julia_set", "smoothstep_vignette", "torus_slice"]
