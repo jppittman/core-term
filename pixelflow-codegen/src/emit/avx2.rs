@@ -332,18 +332,6 @@ pub fn emit_const(code: &mut Vec<u8>, dst: Reg, val: f32) {
 // Stack frame (real frame; a ymm spill is 32 bytes)
 // =============================================================================
 
-pub fn emit_sub_rsp(code: &mut Vec<u8>, size: u32) {
-    code.extend_from_slice(&[0x48, 0x81, 0xEC]);
-    code.extend_from_slice(&size.to_le_bytes());
-}
-pub fn emit_add_rsp(code: &mut Vec<u8>, size: u32) {
-    code.extend_from_slice(&[0x48, 0x81, 0xC4]);
-    code.extend_from_slice(&size.to_le_bytes());
-}
-pub fn emit_ret(code: &mut Vec<u8>) {
-    code.push(0xC3);
-}
-
 // =============================================================================
 // Op dispatch
 // =============================================================================
@@ -519,7 +507,7 @@ mod tests {
 
         fn run(body: &[u8], xs: [f32; 8], ys: [f32; 8], zs: [f32; 8]) -> [f32; 8] {
             let mut code = body.to_vec();
-            emit_ret(&mut code);
+            crate::emit::x86_64::ret(&mut code);
             let exec = unsafe { ExecutableCode::from_code(&code).expect("mmap") };
             unsafe {
                 let f: K = exec.as_fn();
@@ -657,12 +645,12 @@ mod tests {
         fn spill_frame_roundtrip() {
             let (xs, ys, zs) = lanes();
             let mut c = Vec::new();
-            emit_sub_rsp(&mut c, 32);
+            crate::emit::x86_64::emit_sub_rsp(&mut c, 32);
             emit_binary(&mut c, OpKind::Mul, Reg(6), X, Y);
             emit_store_rsp(&mut c, Reg(6), 0);
             emit_binary(&mut c, OpKind::Add, Reg(6), X, X); // clobber
             emit_load_rsp(&mut c, X, 0);
-            emit_add_rsp(&mut c, 32);
+            crate::emit::x86_64::emit_add_rsp(&mut c, 32);
             check(run(&c, xs, ys, zs), |i| xs[i] * ys[i], "spill roundtrip");
         }
 
@@ -686,7 +674,7 @@ mod tests {
                 value: Reg(14),
             };
             emit_gather_scalar(&mut c, Reg(0), Reg(0), 0, s, Reg(9), Reg(8));
-            emit_ret(&mut c);
+            crate::emit::x86_64::ret(&mut c);
 
             let buf: Vec<f32> = (0..64).map(|i| (i as f32) * 1.5 + 0.25).collect();
             let idx: [f32; 8] = [0.0, 63.0, 1.0, 2.0, 10.0, 5.0, 32.0, 7.0];
@@ -733,7 +721,9 @@ mod tests {
 #[allow(dead_code)]
 pub(crate) mod driver {
     use super::super::*;
+    use crate::emit::x86_64 as x86;
     use crate::emit::x86_64::driver::SSE2_FILE;
+    use crate::emit::x86_64::gpr::*;
     use alloc::vec::Vec;
     use pixelflow_ir::kind::OpKind;
 
@@ -800,7 +790,7 @@ pub(crate) mod driver {
         fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32) {
             let bytes = frame_size;
             if bytes > 0 {
-                super::emit_sub_rsp(code, bytes);
+                x86::emit_sub_rsp(code, bytes);
             }
         }
 
@@ -965,9 +955,9 @@ pub(crate) mod driver {
             }
             let bytes = frame_size;
             if bytes > 0 {
-                super::emit_add_rsp(code, bytes);
+                x86::emit_add_rsp(code, bytes);
             }
-            super::emit_ret(code);
+            x86::ret(code);
         }
 
         // Same register roles as `X86Backend::emit_collapse_loop` at ymm width;
@@ -988,32 +978,28 @@ pub(crate) mod driver {
             let mut code: Vec<u8> =
                 Vec::with_capacity(frame_hoist.len() + row_hoist.len() + body.len() + 160);
 
-            super::emit_sub_rsp(&mut code, total);
+            x86::emit_sub_rsp(&mut code, total);
             for k in 0..4u32 {
                 super::emit_store_rsp(&mut code, Reg(k as u8), slot(k));
             }
             super::emit_store_rsp(&mut code, Reg(0), slot(4));
             code.extend_from_slice(frame_hoist);
-            code.extend_from_slice(&[0x49, 0x89, 0xCA]); // mov r10, rcx
-            code.extend_from_slice(&[0x4D, 0x31, 0xDB]); // xor r11, r11
+            x86::mov(&mut code, R10, RCX);
+            x86::xor(&mut code, R11, R11);
 
             let outer_top = code.len();
-            code.extend_from_slice(&[0x4D, 0x39, 0xD3]); // cmp r11, r10
-            code.extend_from_slice(&[0x0F, 0x83]);
-            let outer_jae_at = code.len();
-            code.extend_from_slice(&[0, 0, 0, 0]);
+            x86::cmp(&mut code, R11, R10);
+            let outer_jae = x86::jae(&mut code);
 
             for k in 0..4u32 {
                 super::emit_load_rsp(&mut code, Reg(k as u8), slot(k));
             }
             code.extend_from_slice(row_hoist);
-            code.extend_from_slice(&[0x4D, 0x31, 0xC9]); // xor r9, r9
+            x86::xor(&mut code, R9, R9);
 
             let inner_top = code.len();
-            code.extend_from_slice(&[0x49, 0x39, 0xD1]); // cmp r9, rdx
-            code.extend_from_slice(&[0x0F, 0x83]);
-            let inner_jae_at = code.len();
-            code.extend_from_slice(&[0, 0, 0, 0]);
+            x86::cmp(&mut code, R9, RDX);
+            let inner_jae = x86::jae(&mut code);
 
             for k in 0..4u32 {
                 super::emit_load_rsp(&mut code, Reg(k as u8), slot(k));
@@ -1022,7 +1008,7 @@ pub(crate) mod driver {
 
             // out[i] = result ; add rsi, 32.
             super::emit_store_base(&mut code, result_reg, 6);
-            code.extend_from_slice(&[0x48, 0x83, 0xC6, vw as u8]);
+            x86::add(&mut code, RSI, x86::Imm8(vw as i8));
 
             // X += lane count.
             super::emit_load_rsp(&mut code, Reg(0), slot(0));
@@ -1030,16 +1016,12 @@ pub(crate) mod driver {
             super::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
             super::emit_store_rsp(&mut code, Reg(0), slot(0));
 
-            code.extend_from_slice(&[0x49, 0xFF, 0xC1]); // inc r9
-            code.push(0xE9);
-            let inner_jmp_at = code.len();
-            code.extend_from_slice(&[0, 0, 0, 0]);
+            x86::inc(&mut code, R9);
+            let inner_jmp = x86::jmp(&mut code);
 
             let row_end = code.len();
-            let inner_jae_rel = (row_end as i32) - (inner_jae_at as i32 + 4);
-            code[inner_jae_at..inner_jae_at + 4].copy_from_slice(&inner_jae_rel.to_le_bytes());
-            let inner_jmp_rel = (inner_top as i32) - (inner_jmp_at as i32 + 4);
-            code[inner_jmp_at..inner_jmp_at + 4].copy_from_slice(&inner_jmp_rel.to_le_bytes());
+            inner_jae.patch(&mut code, row_end);
+            inner_jmp.patch(&mut code, inner_top);
 
             super::emit_load_rsp(&mut code, Reg(0), slot(4));
             super::emit_store_rsp(&mut code, Reg(0), slot(0));
@@ -1047,21 +1029,17 @@ pub(crate) mod driver {
             super::emit_const(&mut code, Reg(1), 1.0);
             super::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
             super::emit_store_rsp(&mut code, Reg(0), slot(1));
-            code.extend_from_slice(&[0x4C, 0x01, 0xC6]); // add rsi, r8
+            x86::add(&mut code, RSI, R8);
 
-            code.extend_from_slice(&[0x49, 0xFF, 0xC3]); // inc r11
-            code.push(0xE9);
-            let outer_jmp_at = code.len();
-            code.extend_from_slice(&[0, 0, 0, 0]);
+            x86::inc(&mut code, R11);
+            let outer_jmp = x86::jmp(&mut code);
 
             let end = code.len();
-            super::emit_add_rsp(&mut code, total);
-            super::emit_ret(&mut code);
+            x86::emit_add_rsp(&mut code, total);
+            x86::ret(&mut code);
 
-            let outer_jae_rel = (end as i32) - (outer_jae_at as i32 + 4);
-            code[outer_jae_at..outer_jae_at + 4].copy_from_slice(&outer_jae_rel.to_le_bytes());
-            let outer_jmp_rel = (outer_top as i32) - (outer_jmp_at as i32 + 4);
-            code[outer_jmp_at..outer_jmp_at + 4].copy_from_slice(&outer_jmp_rel.to_le_bytes());
+            outer_jae.patch(&mut code, end);
+            outer_jmp.patch(&mut code, outer_top);
             Ok(code)
         }
     }
