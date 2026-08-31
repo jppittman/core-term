@@ -861,3 +861,448 @@ mod tests {
         );
     }
 }
+
+// =============================================================================
+// The SSE2 `IsaBackend` driver
+// =============================================================================
+
+/// The SSE2 half of code generation.
+///
+/// **This file is where SSE2-specific bugs live, and the only place they
+/// can.** Emission is a pure function into `Vec<u8>`, so everything here
+/// compiles, typechecks and is swept for op coverage on every host, whatever
+/// CPU it has. Only [`Native`](super::super::Native) decides which backend a
+/// build instantiates, and only [`executable`](super::super::executable) needs
+/// the matching hardware.
+///
+/// The consequence worth stating: a change that does not touch an ISA file
+/// cannot introduce a platform-specific bug. That is the bargain `unsafe`
+/// makes — confine what cannot be checked, so the rest is checked by
+/// construction.
+///
+/// Dead in a build that selected a different `Native`; that is the intended
+/// shape, not an oversight, which is why the allow sits here once rather than
+/// on each item.
+#[allow(dead_code)]
+pub(crate) mod driver {
+    use super::super::*;
+    use alloc::vec::Vec;
+    use pixelflow_ir::kind::OpKind;
+
+    /// The SSE2 register file (xmm, 128-bit).
+    ///
+    /// SysV has no callee-saved XMM registers, so every register past the inputs
+    /// is fair game; the pool stops at xmm9 to leave xmm10 as the two-operand
+    /// hazard/select temp, xmm11-12 for reloads, and xmm13-15 for builtins.
+    pub(crate) const SSE2_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
+        inputs: INPUT_REGS,
+        scratch_base: 4,
+        scratch_count: 6,
+        reload: [Reg(11), Reg(12)],
+        // xmm13: builtin scratch, unused by `emit_select` (whose internal temp is
+        // X86_SCRATCH/xmm10) and by the reload path (movups / RIP-relative consts
+        // touch no scratch).
+        select_reload: Reg(13),
+        vector_bytes: 16,
+    }
+    .checked();
+
+    /// Fixed scratch outside the allocatable range / reload regs: used for the
+    /// binary two-operand hazard and as the select blend temp.
+    ///
+    /// SSE2-only (like the rest of this section down to `X86Backend`): dead under
+    /// a build that selects `Avx2Backend`/`Avx512Backend` instead, so gated off
+    /// those widths — otherwise it (and `X86Backend`) would be unreachable dead
+    /// code under `+avx2`/`+avx512f`, which the test-matrix's per-ISA clippy pass
+    /// would then flag as a *new* failure on those levels only.
+    const X86_SCRATCH: Reg = Reg(10);
+
+    /// Scratch quad for builtins (sin/cos/exp/atan2/...), which need FOUR distinct
+    /// scratch registers. Clear of the allocatable range (4-9) and the reload regs
+    /// (11,12). Includes `X86_SCRATCH` (xmm10): builtins don't use it for the
+    /// hazard/select roles, so it is free as a fourth scratch here.
+    const X86_BUILTIN_SCRATCH: [Reg; 4] = [Reg(10), Reg(13), Reg(14), Reg(15)];
+
+    /// Map a `FrameLayout` spill offset to a red-zone `[rsp+disp8]` displacement.
+    fn x86_redzone_disp(offset: u32) -> Result<i8, &'static str> {
+        // Slots live below rsp: offset 0 -> [rsp-16], 16 -> [rsp-32], ...
+        // Only called in red-zone mode (the prologue switches to an allocated
+        // frame when the layout exceeds the zone), so overflow here is an
+        // internal invariant violation, not a kernel-size limit.
+        let disp = -(offset as i64 + 16);
+        if disp < -128 {
+            return Err("x86 spill: red-zone displacement out of range (prologue mode bug)");
+        }
+        Ok(disp as i8)
+    }
+
+    /// `dst = left op right` honoring SSE's two-operand form for *any* register
+    /// assignment from the allocator.
+    ///
+    /// `emit_binary` computes `dst <- left; dst op= right`, which corrupts `right`
+    /// when `dst == right` and `dst != left`. The allocator may assign `dst ==
+    /// right`, so handle it: swap for commutative ops, otherwise stash `right` in
+    /// the fixed scratch.
+    fn emit_binary_safe(code: &mut Vec<u8>, op: OpKind, dst: Reg, left: Reg, right: Reg) {
+        use super::*;
+        let commutative = matches!(
+            op,
+            OpKind::Add | OpKind::Mul | OpKind::Min | OpKind::Max | OpKind::Eq | OpKind::Ne
+        );
+        if dst == left || dst != right {
+            emit_binary(code, op, dst, left, right);
+        } else if commutative {
+            emit_binary(code, op, dst, right, left);
+        } else {
+            emit_movaps(code, X86_SCRATCH, right);
+            emit_movaps(code, dst, left);
+            emit_binary(code, op, dst, dst, X86_SCRATCH);
+        }
+    }
+
+    /// x86-64 implementation of the shared driver's leaf operations.
+    ///
+    /// `frame_bytes` is set by `prologue`: 0 = spills fit the 128-byte red zone
+    /// (no frame is allocated), otherwise the size of the allocated frame and
+    /// spill slots are `[rsp + offset]`.
+    pub(crate) struct X86Backend {
+        frame_bytes: u32,
+        file: regalloc::RegisterFile,
+    }
+
+    impl X86Backend {
+        pub(crate) fn new(ctx: EmitCtx) -> Self {
+            Self {
+                frame_bytes: 0,
+                file: SSE2_FILE.capped(ctx.max_regs),
+            }
+        }
+
+        fn spill_store(&self, code: &mut Vec<u8>, src: Reg, offset: u32) {
+            if self.frame_bytes == 0 {
+                let disp = x86_redzone_disp(offset).expect("red-zone mode implies fitting offsets");
+                super::emit_movups_store_rsp(code, src, disp);
+            } else {
+                super::emit_movups_store_rsp32(code, src, offset as i32);
+            }
+        }
+
+        fn spill_load(&self, code: &mut Vec<u8>, dst: Reg, offset: u32) {
+            if self.frame_bytes == 0 {
+                let disp = x86_redzone_disp(offset).expect("red-zone mode implies fitting offsets");
+                super::emit_movups_load_rsp(code, dst, disp);
+            } else {
+                super::emit_movups_load_rsp32(code, dst, offset as i32);
+            }
+        }
+    }
+
+    impl IsaBackend for X86Backend {
+        /// rel32 field offset of the branch (uniform for jcc/jmp on x86).
+        type Branch = usize;
+
+        fn register_file(&self) -> regalloc::RegisterFile {
+            self.file
+        }
+
+        fn begin(&mut self, _schedule: &[regalloc::Def]) -> Result<(), &'static str> {
+            Ok(()) // x86 const loads are self-contained; no pool.
+        }
+
+        fn frame_ready(&mut self, frame_size: u32) {
+            // Red zone when it fits (max slot offset frame_size-16 maps to disp
+            // -(frame_size) >= -128); otherwise an allocated frame, with slots at
+            // [rsp + offset]. Latched here so the body's spill addressing agrees
+            // with the prologue emitted afterwards.
+            self.frame_bytes = if frame_size <= 128 { 0 } else { frame_size };
+        }
+
+        fn prologue(&mut self, code: &mut Vec<u8>, _frame_size: u32) {
+            // movups is alignment-agnostic, so the frame only needs its
+            // 16-multiple size; red-zone mode needs no setup for a leaf.
+            if self.frame_bytes > 0 {
+                super::emit_sub_rsp(code, self.frame_bytes);
+            }
+        }
+
+        fn emit_plan(
+            &mut self,
+            code: &mut Vec<u8>,
+            plan: &InstructionPlan,
+        ) -> Result<(), &'static str> {
+            use super::*;
+            for reload in &plan.reloads {
+                match reload {
+                    Reload::FromStack { target, offset } => {
+                        self.spill_load(code, *target, *offset);
+                    }
+                    Reload::Const { target, val_bits } => {
+                        emit_const(
+                            code,
+                            *target,
+                            f32::from_bits(*val_bits),
+                            X86_BUILTIN_SCRATCH,
+                        );
+                    }
+                }
+            }
+            if let Some((dst, src)) = plan.setup_mov {
+                emit_movaps(code, dst, src);
+            }
+            match &plan.op {
+                ResolvedOp::Nop => {}
+                ResolvedOp::LoadConst { dst, val_bits } => {
+                    emit_const(code, *dst, f32::from_bits(*val_bits), X86_BUILTIN_SCRATCH);
+                }
+                ResolvedOp::Unary { op, dst, src } => {
+                    emit_unary(code, *op, *dst, *src, X86_BUILTIN_SCRATCH);
+                }
+                ResolvedOp::ShiftImm {
+                    op,
+                    dst,
+                    src,
+                    amount,
+                } => {
+                    emit_shift_imm(code, *op, *dst, *src, *amount);
+                }
+                ResolvedOp::Gather { dst, idx, slot } => {
+                    // No AVX2 here, so no 128-bit vgatherdps: assemble the lanes
+                    // from four scalar loads. The context pointer (array of buffer
+                    // base pointers) is caller-provided in rdi and never touched by
+                    // arithmetic/const emission, so it survives to here; rax/rcx
+                    // are caller-saved and unused by the rest of the body.
+                    // Both vector scratch registers are outside the allocatable
+                    // range and the reload pair (see X86_BUILTIN_SCRATCH).
+                    super::emit_gather_scalar(
+                        code,
+                        *dst,
+                        *idx,
+                        *slot,
+                        super::GatherScratch {
+                            base_gpr: 0,  // rax
+                            index_gpr: 1, // rcx
+                            ctx_gpr: 7,   // rdi
+                            idx_lanes: Reg(13),
+                            value: Reg(14),
+                        },
+                    );
+                }
+                ResolvedOp::Binary {
+                    op,
+                    dst,
+                    left,
+                    right,
+                } => emit_binary_safe(code, *op, *dst, *left, *right),
+                ResolvedOp::Select {
+                    dst,
+                    if_true,
+                    if_false,
+                } => {
+                    // setup_mov already placed the mask in `dst`; blend in place.
+                    emit_select(code, *dst, *dst, *if_true, *if_false, X86_SCRATCH);
+                }
+                ResolvedOp::FusedMulAdd { dst, a, b } => {
+                    // No hardware FMA assumed: `dst` already holds c (setup_mov);
+                    // compute a*b in the fixed scratch, then add. a,b are never
+                    // X86_SCRATCH (allocator/reload regs), and `a` is copied out
+                    // before any write, so c==a / c==b are handled.
+                    emit_movaps(code, X86_SCRATCH, *a);
+                    emit_binary(code, OpKind::Mul, X86_SCRATCH, X86_SCRATCH, *b);
+                    emit_binary(code, OpKind::Add, *dst, *dst, X86_SCRATCH);
+                }
+                ResolvedOp::DecomposedMulAdd {
+                    dst,
+                    a,
+                    b,
+                    c,
+                    c_deferred,
+                } => {
+                    // dst = a*b, reload c (after the multiply, if deferred), dst += c.
+                    emit_binary_safe(code, OpKind::Mul, *dst, *a, *b);
+                    match c_deferred {
+                        Some(DeferredReload::FromStack(off)) => {
+                            self.spill_load(code, *c, *off);
+                        }
+                        Some(DeferredReload::Const(bits)) => {
+                            emit_const(code, *c, f32::from_bits(*bits), X86_BUILTIN_SCRATCH);
+                        }
+                        None => {}
+                    }
+                    emit_binary_safe(code, OpKind::Add, *dst, *dst, *c);
+                }
+            }
+            if let Some(store) = &plan.store {
+                self.spill_store(code, store.src, store.offset);
+            }
+            Ok(())
+        }
+
+        fn emit_mov(&mut self, code: &mut Vec<u8>, dst: Reg, src: Reg) {
+            super::emit_movaps(code, dst, src);
+        }
+
+        fn emit_store(
+            &mut self,
+            code: &mut Vec<u8>,
+            src: Reg,
+            offset: u32,
+        ) -> Result<(), &'static str> {
+            self.spill_store(code, src, offset);
+            Ok(())
+        }
+
+        fn emit_resolve(
+            &mut self,
+            code: &mut Vec<u8>,
+            vid: regalloc::ValueId,
+            target: Reg,
+            locs: &[Option<Loc>],
+        ) -> Reg {
+            match location_of(locs, vid) {
+                Loc::Reg(reg) => reg,
+                Loc::Remat(bits) => {
+                    super::emit_const(code, target, f32::from_bits(bits), X86_BUILTIN_SCRATCH);
+                    target
+                }
+                Loc::Spill(offset) => {
+                    self.spill_load(code, target, offset);
+                    target
+                }
+            }
+        }
+
+        fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+            super::emit_movmskps_eax(code, mask_reg);
+            super::emit_test_eax(code);
+            super::emit_jcc_rel32(code, 0x84) // jz: taken when eax == 0 (all lanes false)
+        }
+
+        fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
+            super::emit_movmskps_eax(code, mask_reg);
+            super::emit_cmp_eax_imm8(code, 0x0F);
+            super::emit_jcc_rel32(code, 0x84) // je: taken when eax == 0xF (all lanes true)
+        }
+
+        fn emit_jump(&mut self, code: &mut Vec<u8>) -> usize {
+            super::emit_jmp_rel32(code)
+        }
+
+        fn patch_branch(&mut self, code: &mut Vec<u8>, branch: usize, target: usize) {
+            super::patch_rel32(code, branch, target);
+        }
+
+        fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, _frame_size: u32) {
+            if result_reg.0 != 0 {
+                super::emit_movaps(code, Reg(0), result_reg);
+            }
+            if self.frame_bytes > 0 {
+                super::emit_add_rsp(code, self.frame_bytes);
+            }
+            code.push(0xC3); // RET
+        }
+
+        // SysV: rdi = ctx (read-only in the body's gathers), rsi = out,
+        // rdx = groups, rcx = rows, r8 = row-skip bytes, xmm0..3 = x0/y0/z/w.
+        // Loop registers: r9 = inner counter, r10 = preserved row count, r11 =
+        // outer counter; the body's scratch GPRs are rax/rcx (gather, movmskps) — disjoint. In
+        // red-zone mode (`frame_bytes == 0`) the body spills below rsp, so the
+        // coordinate slots allocated here at [rsp..) never collide with it.
+        fn emit_collapse_loop(
+            &mut self,
+            frame_hoist: &[u8],
+            row_hoist: &[u8],
+            body: &[u8],
+            result_reg: Reg,
+            _frame_size: u32,
+            hoist_slots: u32,
+        ) -> Result<Vec<u8>, &'static str> {
+            let vw = self.file.vector_bytes;
+            let f = self.frame_bytes;
+            let total = f + (5 + hoist_slots) * vw;
+            let slot = |k: u32| (f + k * vw) as i32;
+            let mut code: Vec<u8> =
+                Vec::with_capacity(frame_hoist.len() + row_hoist.len() + body.len() + 160);
+
+            super::emit_sub_rsp(&mut code, total);
+            for k in 0..4u32 {
+                super::emit_movups_store_rsp32(&mut code, Reg(k as u8), slot(k));
+            }
+            super::emit_movups_store_rsp32(&mut code, Reg(0), slot(4));
+            code.extend_from_slice(frame_hoist);
+            // Preserve rows away from rcx, which gather/select guards may clobber.
+            code.extend_from_slice(&[0x49, 0x89, 0xCA]); // mov r10, rcx
+            code.extend_from_slice(&[0x4D, 0x31, 0xDB]); // xor r11, r11
+
+            let outer_top = code.len();
+            code.extend_from_slice(&[0x4D, 0x39, 0xD3]); // cmp r11, r10
+            code.extend_from_slice(&[0x0F, 0x83]);
+            let outer_jae_at = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+
+            // LICM prologue: X-invariant values, recomputed once per row. Reload
+            // coordinates first because the previous body/Y-step clobbered xmm0..3.
+            for k in 0..4u32 {
+                super::emit_movups_load_rsp32(&mut code, Reg(k as u8), slot(k));
+            }
+            code.extend_from_slice(row_hoist);
+            code.extend_from_slice(&[0x4D, 0x31, 0xC9]); // xor r9, r9
+
+            let inner_top = code.len();
+            code.extend_from_slice(&[0x49, 0x39, 0xD1]); // cmp r9, rdx
+            code.extend_from_slice(&[0x0F, 0x83]);
+            let inner_jae_at = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+
+            for k in 0..4u32 {
+                super::emit_movups_load_rsp32(&mut code, Reg(k as u8), slot(k));
+            }
+            code.extend_from_slice(body);
+
+            // out[i] = result ; add rsi, 16.
+            super::emit_movups_store_base(&mut code, result_reg, 6);
+            code.extend_from_slice(&[0x48, 0x83, 0xC6, vw as u8]);
+
+            // X += lane count (xmm0/1 are about to be reloaded next iteration).
+            super::emit_movups_load_rsp32(&mut code, Reg(0), slot(0));
+            super::emit_const(&mut code, Reg(1), (vw / 4) as f32, X86_BUILTIN_SCRATCH);
+            super::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
+            super::emit_movups_store_rsp32(&mut code, Reg(0), slot(0));
+
+            // inc r9 ; jmp inner_top (backward).
+            code.extend_from_slice(&[0x49, 0xFF, 0xC1]);
+            code.push(0xE9);
+            let inner_jmp_at = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+
+            let row_end = code.len();
+            let inner_jae_rel = (row_end as i32) - (inner_jae_at as i32 + 4);
+            code[inner_jae_at..inner_jae_at + 4].copy_from_slice(&inner_jae_rel.to_le_bytes());
+            let inner_jmp_rel = (inner_top as i32) - (inner_jmp_at as i32 + 4);
+            code[inner_jmp_at..inner_jmp_at + 4].copy_from_slice(&inner_jmp_rel.to_le_bytes());
+
+            // Reset X, advance Y, and skip any scalar tail in the output row.
+            super::emit_movups_load_rsp32(&mut code, Reg(0), slot(4));
+            super::emit_movups_store_rsp32(&mut code, Reg(0), slot(0));
+            super::emit_movups_load_rsp32(&mut code, Reg(0), slot(1));
+            super::emit_const(&mut code, Reg(1), 1.0, X86_BUILTIN_SCRATCH);
+            super::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
+            super::emit_movups_store_rsp32(&mut code, Reg(0), slot(1));
+            code.extend_from_slice(&[0x4C, 0x01, 0xC6]); // add rsi, r8
+
+            code.extend_from_slice(&[0x49, 0xFF, 0xC3]); // inc r11
+            code.push(0xE9);
+            let outer_jmp_at = code.len();
+            code.extend_from_slice(&[0, 0, 0, 0]);
+
+            let end = code.len();
+            super::emit_add_rsp(&mut code, total);
+            code.push(0xC3); // RET
+
+            let outer_jae_rel = (end as i32) - (outer_jae_at as i32 + 4);
+            code[outer_jae_at..outer_jae_at + 4].copy_from_slice(&outer_jae_rel.to_le_bytes());
+            let outer_jmp_rel = (outer_top as i32) - (outer_jmp_at as i32 + 4);
+            code[outer_jmp_at..outer_jmp_at + 4].copy_from_slice(&outer_jmp_rel.to_le_bytes());
+            Ok(code)
+        }
+    }
+}

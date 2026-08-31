@@ -649,7 +649,7 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_unary(
     code: &mut Vec<u8>,
-    _pool: &mut super::ConstPool,
+    _pool: &mut driver::ConstPool,
     op: OpKind,
     dst: Reg,
     src: Reg,
@@ -2164,5 +2164,566 @@ mod tests {
         );
         // 4 lanes x (umov + ldr + ins) = 12 instructions.
         assert_eq!(code.len(), 12 * 4);
+    }
+}
+
+// =============================================================================
+// The NEON `IsaBackend` driver
+// =============================================================================
+
+/// The aarch64 half of code generation: the [`IsaBackend`](super::super::IsaBackend)
+/// implementation and the constant pool it needs.
+///
+/// **This file is where aarch64-specific bugs live, and the only place they
+/// can.** Emission is a pure function into `Vec<u8>`, so everything here
+/// compiles, typechecks and is swept for op coverage on every host — an x86
+/// machine computes NEON instruction words perfectly well. Only
+/// [`Native`](super::super::Native) decides which backend a build instantiates,
+/// and only [`executable`](super::super::executable) needs the matching CPU.
+///
+/// The consequence worth stating: a change that does not touch an ISA file
+/// cannot introduce a platform-specific bug. That is the same bargain `unsafe`
+/// makes — confine what cannot be checked, so the rest is checked by
+/// construction.
+///
+/// Dead in a build that selected a different `Native`; that is the intended
+/// shape, not an oversight, which is why the allow sits here once rather than
+/// on each item.
+#[allow(dead_code)]
+pub(crate) mod driver {
+    use super::super::*;
+    use alloc::vec::Vec;
+
+    /// Constant pool: maps f32 bit patterns to pool indices.
+    ///
+    /// Non-zero, non-FMOV-encodable constants are stored in a data section after
+    /// the RET instruction. Each entry is 16 bytes (the f32 splatted 4x to fill
+    /// a 128-bit NEON register). During code emission, these constants are loaded
+    /// with a single `LDR Qt, [X17, #offset]` instead of the 3-instruction
+    /// MOVZ+MOVK+DUP sequence.
+    pub(crate) struct ConstPool {
+        /// Deduplicated entries: f32 bit patterns in pool order.
+        entries: Vec<u32>,
+        /// Map from f32 bits → pool index.
+        index: alloc::collections::BTreeMap<u32, u16>,
+    }
+    impl ConstPool {
+        /// Create an empty constant pool.
+        pub(crate) fn new() -> Self {
+            Self {
+                entries: Vec::new(),
+                index: alloc::collections::BTreeMap::new(),
+            }
+        }
+
+        /// Insert an f32 into the pool (deduplicating by bit pattern) and return
+        /// the byte offset for an `LDR Qt, [X17, #offset]` load.
+        ///
+        /// Zero and FMOV-encodable constants are NOT filtered here — callers
+        /// that want the fast path should check `needs_const_pool` first.
+        /// Builtin emitters call this unconditionally because every constant
+        /// they use benefits from the pool (they are transcendental coefficients,
+        /// never zero or FMOV-encodable).
+        pub(crate) fn push_f32(&mut self, val: f32) -> Result<u16, &'static str> {
+            let bits = val.to_bits();
+            if let Some(&idx) = self.index.get(&bits) {
+                return Ok(idx * 16);
+            }
+            let idx = self.entries.len();
+            if idx >= 4096 {
+                return Err(
+                    "constant pool overflow: exceeded 12-bit LDR offset limit (max 4095 entries)",
+                );
+            }
+            self.entries.push(bits);
+            self.index.insert(bits, idx as u16);
+            Ok((idx * 16) as u16)
+        }
+
+        /// Get the byte offset for a constant, or None if it's not in the pool.
+        fn offset_for(&self, val_bits: u32) -> Option<u16> {
+            self.index.get(&val_bits).map(|&idx| idx * 16)
+        }
+
+        /// Returns true if the pool has any entries.
+        fn is_empty(&self) -> bool {
+            self.entries.is_empty()
+        }
+    }
+    /// Emit a constant load, using the constant pool when available.
+    ///
+    /// Falls back to `emit_fmov_imm` for zero and FMOV-encodable values.
+    fn emit_const_load(code: &mut Vec<u8>, dst: Reg, val_bits: u32, pool: &ConstPool) {
+        if let Some(offset) = pool.offset_for(val_bits) {
+            super::emit_ldr_q_x17(code, dst, offset);
+        } else {
+            let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
+            super::emit_fmov_imm(code, dst, f32::from_bits(val_bits), scratch);
+        }
+    }
+    /// A pending aarch64 branch: CBZ and B are patched differently.
+    pub(crate) enum Aarch64Branch {
+        Cbz(usize),
+        B(usize),
+    }
+
+    /// aarch64 implementation of the shared driver's leaf operations.
+    ///
+    /// Mechanically wraps the existing aarch64 encoders + constant pool, so the
+    /// emitted code is the same as the previous bespoke `compile_from_schedule`.
+    /// The aarch64 (NEON) register file.
+    ///
+    /// AAPCS64 callee-saves the low 64 bits of v8-v15. These kernels are leaf
+    /// functions emitted with no prologue that preserves them, so the scratch pool
+    /// must steer clear of that range entirely — handing the allocator one of
+    /// v8-v15 would silently corrupt whatever the *caller* had live there across
+    /// the JIT call.
+    ///
+    ///   v0-v3:   inputs (X, Y, Z, W)
+    ///   v8-v15:  callee-saved, never allocatable
+    ///   v16-v25: allocatable scratch
+    ///   v26-v27: reload
+    ///   v28-v31: fixed-purpose scratch (select guard reduction, imm construction)
+    const AARCH64_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
+        inputs: INPUT_REGS,
+        scratch_base: 16,
+        scratch_count: 10,
+        reload: [Reg(26), Reg(27)],
+        // v28: fixed-purpose scratch outside the allocatable range; BSL reads its
+        // three operands directly and never touches it.
+        select_reload: Reg(28),
+        vector_bytes: 16,
+    }
+    .checked();
+
+    pub(crate) struct Aarch64Backend {
+        pool: ConstPool,
+        adr_patch_pos: usize,
+        file: regalloc::RegisterFile,
+    }
+
+    impl Aarch64Backend {
+        /// The constant pool as emitted so far.
+        ///
+        /// Read-only, and read by exactly one thing: the test pinning that the
+        /// pool APPENDS across the two bodies a collapse compile pushes
+        /// through one backend. A reset there is the glyph-ink regression.
+        pub(crate) fn pool_entries(&self) -> &[u32] {
+            &self.pool.entries
+        }
+
+        pub(crate) fn new(ctx: EmitCtx) -> Self {
+            Self {
+                pool: ConstPool::new(),
+                adr_patch_pos: 0,
+                file: AARCH64_FILE.capped(ctx.max_regs),
+            }
+        }
+
+        /// Append the constant pool after the final RET and patch the ADR anchor
+        /// (upgrading to ADRP+ADD when the pool is out of ADR range). Shared by
+        /// the per-batch epilogue and the collapse-loop scaffold.
+        fn finish_pool(&mut self, code: &mut Vec<u8>) {
+            if self.pool.is_empty() {
+                return;
+            }
+            let adr_pos = self.adr_patch_pos;
+            let estimated_offset = (code.len() as i64) - (adr_pos as i64);
+            let needs_adrp = estimated_offset >= (1 << 20) - 32;
+            if needs_adrp {
+                code.splice(adr_pos + 4..adr_pos + 4, [0, 0, 0, 0]);
+            }
+            while !code.len().is_multiple_of(16) {
+                code.push(0);
+            }
+            let pool_start = code.len();
+            for &bits in &self.pool.entries {
+                super::emit_pool_entry(code, bits);
+            }
+            super::patch_adr_or_adrp(code, adr_pos, pool_start, needs_adrp);
+        }
+    }
+
+    impl IsaBackend for Aarch64Backend {
+        type Branch = Aarch64Branch;
+
+        fn register_file(&self) -> regalloc::RegisterFile {
+            self.file
+        }
+
+        fn begin(&mut self, schedule: &[regalloc::Def]) -> Result<(), &'static str> {
+            // Seed by APPENDING into the existing pool, never replacing it: a
+            // collapse compile emits two bodies through one backend (the LICM
+            // prologue, then the loop body), and the prologue's bytes have the
+            // first pool's X17-relative offsets baked in — resetting here left
+            // them pointing into the body's rebuilt pool (wrong constants; the
+            // macOS glyph-ink regression). `push_f32` dedups, and each compile
+            // constructs a fresh backend, so appending is reset-equivalent for
+            // single-body compiles.
+            for def in schedule {
+                if let ScheduledOp::Const(val) = def.op
+                    && super::needs_const_pool(val)
+                {
+                    self.pool.push_f32(val)?;
+                }
+            }
+            // Builtins add up to ~60 polynomial coefficients during emission; bail
+            // if the expression constants + headroom would exceed the 12-bit LDR
+            // offset limit.
+            const BUILTIN_HEADROOM: usize = 128;
+            if self.pool.entries.len() + BUILTIN_HEADROOM > 4095 {
+                return Err(
+                    "expression too large: constant pool would exceed 12-bit LDR offset limit",
+                );
+            }
+            Ok(())
+        }
+
+        fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32) {
+            if frame_size > 0 {
+                super::emit_sub_sp(code, frame_size);
+            }
+            // Builtins may add pool entries during emission, so always reserve the
+            // ADR anchor (harmless if the pool ends up empty).
+            self.adr_patch_pos = super::emit_adr_x17_placeholder(code);
+        }
+
+        fn emit_plan(
+            &mut self,
+            code: &mut Vec<u8>,
+            plan: &InstructionPlan,
+        ) -> Result<(), &'static str> {
+            emit_instruction_plan(code, plan, &mut self.pool)
+        }
+
+        fn emit_mov(&mut self, code: &mut Vec<u8>, dst: Reg, src: Reg) {
+            emit_mov_reg(code, dst, src);
+        }
+
+        fn emit_store(
+            &mut self,
+            code: &mut Vec<u8>,
+            src: Reg,
+            offset: u32,
+        ) -> Result<(), &'static str> {
+            super::emit_str_sp(code, src, offset);
+            Ok(())
+        }
+
+        fn emit_resolve(
+            &mut self,
+            code: &mut Vec<u8>,
+            vid: regalloc::ValueId,
+            target: Reg,
+            locs: &[Option<Loc>],
+        ) -> Reg {
+            match location_of(locs, vid) {
+                Loc::Reg(reg) => reg,
+                Loc::Remat(bits) => {
+                    emit_const_load(code, target, bits, &self.pool);
+                    target
+                }
+                Loc::Spill(offset) => {
+                    super::emit_ldr_sp(code, target, offset);
+                    target
+                }
+            }
+        }
+
+        fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> Aarch64Branch {
+            let scratch = Reg(28);
+            super::emit_umaxv(code, scratch, mask_reg); // max lane; 0 => all-false
+            super::emit_fmov_to_gp(code, scratch);
+            Aarch64Branch::Cbz(super::emit_cbz_w16(code))
+        }
+
+        fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> Aarch64Branch {
+            let scratch = Reg(28);
+            super::emit_uminv(code, scratch, mask_reg); // min lane; 0xFFFFFFFF => all-true
+            super::emit_fmov_to_gp(code, scratch);
+            super::emit32(code, 0x2A3003F0); // MVN W16, W16  -> 0 iff all-true
+            Aarch64Branch::Cbz(super::emit_cbz_w16(code))
+        }
+
+        fn emit_jump(&mut self, code: &mut Vec<u8>) -> Aarch64Branch {
+            Aarch64Branch::B(super::emit_b(code))
+        }
+
+        fn patch_branch(&mut self, code: &mut Vec<u8>, branch: Aarch64Branch, target: usize) {
+            match branch {
+                Aarch64Branch::Cbz(p) => super::patch_cbz_cbnz(code, p, target),
+                Aarch64Branch::B(p) => super::patch_b(code, p, target),
+            }
+        }
+
+        fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32) {
+            if result_reg.0 != 0 {
+                emit_mov_reg(code, Reg(0), result_reg);
+            }
+            if frame_size > 0 {
+                super::emit_add_sp(code, frame_size);
+            }
+            // RET
+            code.extend_from_slice(&0xD65F03C0u32.to_le_bytes());
+            self.finish_pool(code);
+        }
+
+        // AAPCS64: x0 = ctx (read-only in the body's gathers), x1 = out,
+        // x2 = groups, x3 = rows, x4 = row-skip bytes, v0..3 = x0/y0/z/w.
+        // Loop registers: x5 = inner counter, x6 = outer counter; the body's
+        // scratch GPRs are x9-x11 (gather), w16 (branch tests), x17 (pool anchor)
+        // — all disjoint. Coordinate slots live above the body's spill frame;
+        // slot 4 preserves the row-start X while slot 0 advances within a row.
+        fn emit_collapse_loop(
+            &mut self,
+            frame_hoist: &[u8],
+            row_hoist: &[u8],
+            body: &[u8],
+            result_reg: Reg,
+            frame_size: u32,
+            hoist_slots: u32,
+        ) -> Result<Vec<u8>, &'static str> {
+            let vw = self.file.vector_bytes;
+            let total = frame_size + (5 + hoist_slots) * vw;
+            let slot = |k: u32| frame_size + k * vw;
+            let mut code: Vec<u8> =
+                Vec::with_capacity(frame_hoist.len() + row_hoist.len() + body.len() + 160);
+
+            super::emit_sub_sp(&mut code, total);
+            // Anchor the pool (the prologue's and body's constants load
+            // X17-relative).
+            self.adr_patch_pos = super::emit_adr_x17_placeholder(&mut code);
+            for k in 0..4u32 {
+                super::emit_str_sp(&mut code, Reg(k as u8), slot(k));
+            }
+            super::emit_str_sp(&mut code, Reg(0), slot(4));
+            // Frame LICM: X/Y-invariant values are computed once per call.
+            code.extend_from_slice(frame_hoist);
+            // mov x6, xzr — row counter.
+            super::emit32(&mut code, 0xD280_0006);
+
+            let outer_top = code.len();
+            // cmp x6, x3 ; b.hs end (forward, patched below).
+            super::emit32(&mut code, 0xEB03_00DF);
+            let outer_bhs_at = code.len();
+            super::emit32(&mut code, 0x5400_0002);
+
+            // LICM prologue: X-invariant values, recomputed once per row. Reload
+            // coordinates first because the previous body/Y-step clobbered v0..3.
+            for k in 0..4u32 {
+                super::emit_ldr_sp(&mut code, Reg(k as u8), slot(k));
+            }
+            code.extend_from_slice(row_hoist);
+            // mov x5, xzr — batch counter.
+            super::emit32(&mut code, 0xD280_0005);
+
+            let inner_top = code.len();
+            // cmp x5, x2 ; b.hs row_end (forward, patched below).
+            super::emit32(&mut code, 0xEB02_00BF);
+            let inner_bhs_at = code.len();
+            super::emit32(&mut code, 0x5400_0002);
+
+            for k in 0..4u32 {
+                super::emit_ldr_sp(&mut code, Reg(k as u8), slot(k));
+            }
+            code.extend_from_slice(body);
+
+            // str q(result), [x1] ; add x1, x1, #16.
+            super::emit32(&mut code, 0x3D80_0000 | (1 << 5) | u32::from(result_reg.0));
+            super::emit32(&mut code, 0x9100_4021);
+
+            // X += lane count (4.0 is FMOV-immediate encodable; v0/v1 are about
+            // to be reloaded next iteration, so they are free here).
+            super::emit_ldr_sp(&mut code, Reg(0), slot(0));
+            super::emit_fmov_imm(
+                &mut code,
+                Reg(1),
+                vw as f32 / 4.0,
+                [Reg(28), Reg(29), Reg(30), Reg(31)],
+            );
+            super::emit_fadd(&mut code, Reg(0), Reg(0), Reg(1));
+            super::emit_str_sp(&mut code, Reg(0), slot(0));
+
+            // add x5, x5, #1 ; b inner_top (backward).
+            super::emit32(&mut code, 0x9100_04A5);
+            let back = ((inner_top as i64 - code.len() as i64) / 4) as i32;
+            super::emit32(&mut code, 0x1400_0000 | ((back as u32) & 0x03FF_FFFF));
+
+            let row_end = code.len();
+            let inner_imm19 = (((row_end - inner_bhs_at) / 4) as u32) & 0x7FFFF;
+            let inner_bhs = 0x5400_0000 | (inner_imm19 << 5) | 0x2;
+            code[inner_bhs_at..inner_bhs_at + 4].copy_from_slice(&inner_bhs.to_le_bytes());
+
+            // Reset X, advance Y, and skip any scalar tail in the output row.
+            super::emit_ldr_sp(&mut code, Reg(0), slot(4));
+            super::emit_str_sp(&mut code, Reg(0), slot(0));
+            super::emit_ldr_sp(&mut code, Reg(0), slot(1));
+            super::emit_fmov_imm(&mut code, Reg(1), 1.0, [Reg(28), Reg(29), Reg(30), Reg(31)]);
+            super::emit_fadd(&mut code, Reg(0), Reg(0), Reg(1));
+            super::emit_str_sp(&mut code, Reg(0), slot(1));
+            super::emit32(&mut code, 0x8B04_0021); // add x1, x1, x4
+
+            // add x6, x6, #1 ; b outer_top (backward).
+            super::emit32(&mut code, 0x9100_04C6);
+            let outer_back = ((outer_top as i64 - code.len() as i64) / 4) as i32;
+            super::emit32(&mut code, 0x1400_0000 | ((outer_back as u32) & 0x03FF_FFFF));
+
+            // end: patch outer b.hs here, tear down, RET, pool.
+            let end = code.len();
+            let outer_imm19 = (((end - outer_bhs_at) / 4) as u32) & 0x7FFFF;
+            let outer_bhs = 0x5400_0000 | (outer_imm19 << 5) | 0x2;
+            code[outer_bhs_at..outer_bhs_at + 4].copy_from_slice(&outer_bhs.to_le_bytes());
+
+            super::emit_add_sp(&mut code, total);
+            code.extend_from_slice(&0xD65F_03C0u32.to_le_bytes());
+            self.finish_pool(&mut code);
+            Ok(code)
+        }
+    }
+    /// Emit MOV (vector register copy) — used by emit_instruction_plan.
+    fn emit_mov_reg(code: &mut Vec<u8>, dst: Reg, src: Reg) {
+        if dst.0 != src.0 {
+            // ORR Vd.16B, Vn.16B, Vn.16B
+            let inst =
+                0x4EA01C00u32 | (dst.0 as u32) | ((src.0 as u32) << 5) | ((src.0 as u32) << 16);
+            code.extend_from_slice(&inst.to_le_bytes());
+        }
+    }
+    /// Emit machine code for a resolved instruction plan.
+    ///
+    /// This is a DETERMINISTIC DISPATCH: given a plan, emit the exact
+    /// instructions. No decisions are made here — all decisions were
+    /// made by resolve_operands.
+    fn emit_instruction_plan(
+        code: &mut Vec<u8>,
+        plan: &InstructionPlan,
+        pool: &mut ConstPool,
+    ) -> Result<(), &'static str> {
+        use super::*;
+
+        // 1. Emit reloads (from stack or rematerialized constants)
+        for reload in &plan.reloads {
+            match reload {
+                Reload::FromStack { target, offset } => {
+                    emit_ldr_sp(code, *target, *offset);
+                }
+                Reload::Const { target, val_bits } => {
+                    emit_const_load(code, *target, *val_bits, pool);
+                }
+            }
+        }
+
+        // 2. Emit setup MOV (for FMLA accumulator or BSL mask)
+        if let Some((dst, src)) = plan.setup_mov {
+            emit_mov_reg(code, dst, src);
+        }
+
+        // 3. Emit main op
+        match &plan.op {
+            ResolvedOp::Nop => {}
+            ResolvedOp::LoadConst { dst, val_bits } => {
+                emit_const_load(code, *dst, *val_bits, pool);
+            }
+            ResolvedOp::Unary { op, dst, src } => {
+                let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
+                emit_unary(code, pool, *op, *dst, *src, scratch);
+            }
+            ResolvedOp::ShiftImm {
+                op,
+                dst,
+                src,
+                amount,
+            } => {
+                super::emit_shift_imm(code, *op, *dst, *src, *amount);
+            }
+            ResolvedOp::Gather { dst, idx, slot } => {
+                // dst = buffer[slot][idx], via four scalar loads (NEON has no
+                // native gather). The context pointer (array of buffer base
+                // pointers) is caller-provided in x0 per AAPCS64 — disjoint from
+                // the coordinate vectors in v0..3 and never touched by the
+                // arithmetic/const emit, so it survives to here.
+                // v28 is fixed-purpose scratch (outside the allocatable range);
+                // x9-x11 are caller-saved GPR scratch clear of the branch guard
+                // (w16) and the const-pool anchor (x17).
+                const IDX_INT: Reg = Reg(28);
+                const BASE_GPR: u8 = 9;
+                const IDX_GPR: u8 = 10;
+                const VAL_GPR: u8 = 11;
+                const CTX_GPR: u8 = 0;
+                emit_fcvtzs(code, IDX_INT, *idx); // float idx -> int32 lanes
+                emit_ldr_x_imm(code, BASE_GPR, CTX_GPR, (*slot as u32) * 8);
+                emit_gather(
+                    code,
+                    *dst,
+                    IDX_INT,
+                    super::GatherGprs {
+                        base: BASE_GPR,
+                        idx: IDX_GPR,
+                        val: VAL_GPR,
+                    },
+                );
+            }
+            ResolvedOp::Binary {
+                op,
+                dst,
+                left,
+                right,
+            } => {
+                // Every transcendental is expanded to arithmetic by
+                // `expand_transcendentals` before codegen, so only primitives
+                // reach here.
+                emit_binary(code, *op, *dst, *left, *right);
+            }
+            ResolvedOp::FusedMulAdd { dst, a, b } => {
+                // setup_mov already placed c into dst
+                emit_fmla(code, *dst, *a, *b);
+            }
+            ResolvedOp::DecomposedMulAdd {
+                dst,
+                a,
+                b,
+                c,
+                c_deferred,
+            } => {
+                // FMUL(dst, a, b) — consumes a and b (loaded upfront).
+                emit_fmul(code, *dst, *a, *b);
+                // Reload c after FMUL (c may reuse tmp_op which held b).
+                emit_deferred(code, *c, c_deferred.as_ref(), pool);
+                // FADD(dst, dst, c)
+                emit_fadd(code, *dst, *dst, *c);
+            }
+            ResolvedOp::Select {
+                dst,
+                if_true,
+                if_false,
+            } => {
+                // setup_mov already placed mask into dst
+                emit_bsl(code, *dst, *if_true, *if_false);
+            }
+        }
+
+        // 4. Emit store
+        if let Some(store) = &plan.store {
+            emit_str_sp(code, store.src, store.offset);
+        }
+
+        Ok(())
+    }
+    /// Emit a deferred reload: either from stack or rematerialized constant.
+    fn emit_deferred(
+        code: &mut Vec<u8>,
+        target: Reg,
+        deferred: Option<&DeferredReload>,
+        pool: &ConstPool,
+    ) {
+        match deferred {
+            Some(DeferredReload::FromStack(offset)) => {
+                super::emit_ldr_sp(code, target, *offset);
+            }
+            Some(DeferredReload::Const(val_bits)) => {
+                emit_const_load(code, target, *val_bits, pool);
+            }
+            None => {}
+        }
     }
 }
