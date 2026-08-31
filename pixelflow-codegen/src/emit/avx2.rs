@@ -723,7 +723,6 @@ pub(crate) mod driver {
     use super::super::*;
     use crate::emit::x86_64 as x86;
     use crate::emit::x86_64::driver::SSE2_FILE;
-    use crate::emit::x86_64::gpr::*;
     use alloc::vec::Vec;
     use pixelflow_ir::kind::OpKind;
 
@@ -960,87 +959,58 @@ pub(crate) mod driver {
             x86::ret(code);
         }
 
-        // Same register roles as `X86Backend::emit_collapse_loop` at ymm width;
-        // AVX2 always uses an allocated frame (mirrors AVX-512).
-        fn emit_collapse_loop(
-            &mut self,
-            frame_hoist: &[u8],
-            row_hoist: &[u8],
-            body: &[u8],
-            result_reg: Reg,
-            frame_size: u32,
-            hoist_slots: u32,
-        ) -> Result<Vec<u8>, &'static str> {
-            let vw = self.file.vector_bytes;
-            let f = frame_size;
-            let total = f + (5 + hoist_slots) * vw;
-            let slot = |k: u32| (f + k * vw) as i32;
-            let mut code: Vec<u8> =
-                Vec::with_capacity(frame_hoist.len() + row_hoist.len() + body.len() + 160);
+        // Same scaffold register roles as SSE2 — see `x86_64::scaffold` — at
+        // this vector width. Unlike SSE2 there is no red-zone mode: the body
+        // always spills into an allocated frame, and the scaffold's coordinate
+        // slots sit above it.
 
-            x86::emit_sub_rsp(&mut code, total);
-            for k in 0..4u32 {
-                super::emit_store_rsp(&mut code, Reg(k as u8), slot(k));
-            }
-            super::emit_store_rsp(&mut code, Reg(0), slot(4));
-            code.extend_from_slice(frame_hoist);
-            x86::mov(&mut code, R10, RCX);
-            x86::xor(&mut code, R11, R11);
+        fn frame_alloc(&mut self, code: &mut Vec<u8>, bytes: u32) {
+            x86::emit_sub_rsp(code, bytes);
+        }
 
-            let outer_top = code.len();
-            x86::cmp(&mut code, R11, R10);
-            let outer_jae = x86::jae(&mut code);
+        fn frame_free(&mut self, code: &mut Vec<u8>, bytes: u32) {
+            x86::emit_add_rsp(code, bytes);
+        }
 
-            for k in 0..4u32 {
-                super::emit_load_rsp(&mut code, Reg(k as u8), slot(k));
-            }
-            code.extend_from_slice(row_hoist);
-            x86::xor(&mut code, R9, R9);
+        fn slot_store(&mut self, code: &mut Vec<u8>, src: Reg, offset: u32) {
+            super::emit_store_rsp(code, src, offset as i32);
+        }
 
-            let inner_top = code.len();
-            x86::cmp(&mut code, R9, RDX);
-            let inner_jae = x86::jae(&mut code);
+        fn slot_load(&mut self, code: &mut Vec<u8>, dst: Reg, offset: u32) {
+            super::emit_load_rsp(code, dst, offset as i32);
+        }
 
-            for k in 0..4u32 {
-                super::emit_load_rsp(&mut code, Reg(k as u8), slot(k));
-            }
-            code.extend_from_slice(body);
+        fn latch_bounds(&mut self, code: &mut Vec<u8>) {
+            x86::scaffold::latch_bounds(code);
+        }
 
-            // out[i] = result ; add rsi, 32.
-            super::emit_store_base(&mut code, result_reg, 6);
-            x86::add(&mut code, RSI, x86::Imm8(vw as i8));
+        fn counter_clear(&mut self, code: &mut Vec<u8>, counter: Counter) {
+            x86::scaffold::counter_clear(code, counter);
+        }
 
-            // X += lane count.
-            super::emit_load_rsp(&mut code, Reg(0), slot(0));
-            super::emit_const(&mut code, Reg(1), (vw / 4) as f32);
-            super::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
-            super::emit_store_rsp(&mut code, Reg(0), slot(0));
+        fn counter_step(&mut self, code: &mut Vec<u8>, counter: Counter) {
+            x86::scaffold::counter_step(code, counter);
+        }
 
-            x86::inc(&mut code, R9);
-            let inner_jmp = x86::jmp(&mut code);
+        fn branch_if_counter_done(&mut self, code: &mut Vec<u8>, counter: Counter) -> usize {
+            x86::scaffold::branch_if_counter_done(code, counter)
+        }
 
-            let row_end = code.len();
-            inner_jae.patch(&mut code, row_end);
-            inner_jmp.patch(&mut code, inner_top);
+        fn store_result(&mut self, code: &mut Vec<u8>, src: Reg) {
+            super::emit_store_base(code, src, x86::scaffold::OUT_PTR);
+        }
 
-            super::emit_load_rsp(&mut code, Reg(0), slot(4));
-            super::emit_store_rsp(&mut code, Reg(0), slot(0));
-            super::emit_load_rsp(&mut code, Reg(0), slot(1));
-            super::emit_const(&mut code, Reg(1), 1.0);
-            super::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
-            super::emit_store_rsp(&mut code, Reg(0), slot(1));
-            x86::add(&mut code, RSI, R8);
+        fn advance_out(&mut self, code: &mut Vec<u8>, step: OutStep) {
+            x86::scaffold::advance_out(code, step, self.file.vector_bytes);
+        }
 
-            x86::inc(&mut code, R11);
-            let outer_jmp = x86::jmp(&mut code);
+        fn add_scalar(&mut self, code: &mut Vec<u8>, dst: Reg, scratch: Reg, scalar: f32) {
+            super::emit_const(code, scratch, scalar);
+            super::emit_binary(code, OpKind::Add, dst, dst, scratch);
+        }
 
-            let end = code.len();
-            x86::emit_add_rsp(&mut code, total);
-            x86::ret(&mut code);
-
-            outer_jae.patch(&mut code, end);
-            outer_jmp.patch(&mut code, outer_top);
-            Ok(code)
+        fn emit_ret(&mut self, code: &mut Vec<u8>) {
+            x86::ret(code);
         }
     }
 }

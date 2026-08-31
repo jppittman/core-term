@@ -408,8 +408,69 @@ trait IsaBackend {
     /// append + anchor the constant pool). After this, `code` is complete.
     fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32);
 
-    /// Wrap a per-batch `body` (result in `result_reg`, spilling into a
-    /// `frame_size`-slot frame) in the collapse loop scaffold, producing a
+    // -------------------------------------------------------------------------
+    // Collapse-loop scaffold
+    //
+    // The verbs below exist only to serve `emit_collapse_loop`, which is a
+    // provided method: the loop nest, its branch fixups and its coordinate
+    // stepping are written once, here, and every backend gets the same one.
+    // What a backend supplies is the meaning of each verb on its ISA.
+    // -------------------------------------------------------------------------
+
+    /// How many bytes the *body's own* spill frame occupies inside the
+    /// scaffold's allocation, given the layout's frame size.
+    ///
+    /// Defaults to that size. x86-64 overrides it: in red-zone mode the body
+    /// spills below `rsp` and allocates nothing, so the scaffold's coordinate
+    /// slots start at zero.
+    fn body_frame_bytes(&self, frame_size: u32) -> u32 {
+        frame_size
+    }
+
+    /// Reserve / release `bytes` of stack.
+    fn frame_alloc(&mut self, code: &mut Vec<u8>, bytes: u32);
+    fn frame_free(&mut self, code: &mut Vec<u8>, bytes: u32);
+
+    /// Anchor whatever the body's constant loads are relative to, once the
+    /// frame exists. Default: nothing to anchor (x86 const loads are
+    /// self-contained).
+    fn scaffold_anchor(&mut self, _code: &mut Vec<u8>) {}
+
+    /// Append whatever must trail the emitted function — a constant pool and
+    /// the fixup that points at it. Default: nothing trails.
+    fn scaffold_finish(&mut self, _code: &mut Vec<u8>) {}
+
+    /// Save / restore one of the scaffold's coordinate slots.
+    ///
+    /// Distinct from [`IsaBackend::emit_store`], which addresses the *body's*
+    /// spill slots and may reach into x86's red zone. These are always at a
+    /// positive offset from the stack pointer.
+    fn slot_store(&mut self, code: &mut Vec<u8>, src: Reg, offset: u32);
+    fn slot_load(&mut self, code: &mut Vec<u8>, dst: Reg, offset: u32);
+
+    /// Move the caller's loop bounds somewhere the body cannot clobber.
+    /// Default: the ABI already put them out of the body's way.
+    fn latch_bounds(&mut self, _code: &mut Vec<u8>) {}
+
+    /// `counter = 0`.
+    fn counter_clear(&mut self, code: &mut Vec<u8>, counter: Counter);
+    /// `counter += 1`.
+    fn counter_step(&mut self, code: &mut Vec<u8>, counter: Counter);
+    /// Branch taken once `counter` has reached the bound it is compared against.
+    fn branch_if_counter_done(&mut self, code: &mut Vec<u8>, counter: Counter) -> Self::Branch;
+
+    /// Store one batch of results through the output pointer.
+    fn store_result(&mut self, code: &mut Vec<u8>, src: Reg);
+    /// Advance the output pointer.
+    fn advance_out(&mut self, code: &mut Vec<u8>, step: OutStep);
+
+    /// `dst += scalar` across every lane, clobbering `scratch`.
+    fn add_scalar(&mut self, code: &mut Vec<u8>, dst: Reg, scratch: Reg, scalar: f32);
+
+    /// Function return.
+    fn emit_ret(&mut self, code: &mut Vec<u8>);
+
+    /// Wrap a [`CollapseBody`] in the collapse loop scaffold, producing a
     /// complete [`CollapseKernelFn`](executable::CollapseKernelFn): the
     /// caller's lane-sequential X is an induction value stepped by the batch
     /// width in the inner loop and reset for each row; Y advances by 1.0 in
@@ -422,21 +483,156 @@ trait IsaBackend {
     /// each iteration reloads X/Y/Z/W into the input registers from the
     /// slots and the X slot alone is stepped.
     ///
-    /// `frame_hoist` contains X/Y-invariant code emitted once per call;
-    /// `row_hoist` contains X-invariant code emitted once per Y iteration.
-    /// Both park results in `hoist_slots` vector slots directly above the
-    /// coordinate slots reserved by the scaffold.
-    #[allow(clippy::too_many_arguments)] // the scaffold's full framing contract
-    fn emit_collapse_loop(
-        &mut self,
-        frame_hoist: &[u8],
-        row_hoist: &[u8],
-        body: &[u8],
-        result_reg: Reg,
-        frame_size: u32,
-        hoist_slots: u32,
-    ) -> Result<Vec<u8>, &'static str>;
+    /// The two LICM tiers in [`CollapseBody`] park their results in vector
+    /// slots directly above the coordinate slots reserved here.
+    fn emit_collapse_loop(&mut self, emitted: &CollapseBody<'_>) -> Vec<u8> {
+        let vw = self.register_file().vector_bytes;
+        let base = self.body_frame_bytes(emitted.frame_size);
+        let total = base + (COORD_SLOTS + emitted.hoist_slots) * vw;
+        let slot = |k: u32| base + k * vw;
+        let mut code: Vec<u8> = Vec::with_capacity(
+            emitted.frame_hoist.len()
+                + emitted.row_hoist.len()
+                + emitted.batch.len()
+                + SCAFFOLD_HEADROOM,
+        );
+
+        self.frame_alloc(&mut code, total);
+        self.scaffold_anchor(&mut code);
+        for k in 0..INPUT_COORDS {
+            self.slot_store(&mut code, coord_reg(k), slot(k));
+        }
+        self.slot_store(&mut code, coord_reg(SLOT_X), slot(SLOT_ROW_START_X));
+        // Frame LICM: X/Y-invariant values, computed once per call.
+        code.extend_from_slice(emitted.frame_hoist);
+        self.latch_bounds(&mut code);
+        self.counter_clear(&mut code, Counter::Row);
+
+        let row_top = code.len();
+        let rows_done = self.branch_if_counter_done(&mut code, Counter::Row);
+
+        // Row LICM: X-invariant values, recomputed once per row. Reload the
+        // coordinates first — the previous body and Y-step clobbered them.
+        for k in 0..INPUT_COORDS {
+            self.slot_load(&mut code, coord_reg(k), slot(k));
+        }
+        code.extend_from_slice(emitted.row_hoist);
+        self.counter_clear(&mut code, Counter::Batch);
+
+        let batch_top = code.len();
+        let batches_done = self.branch_if_counter_done(&mut code, Counter::Batch);
+
+        for k in 0..INPUT_COORDS {
+            self.slot_load(&mut code, coord_reg(k), slot(k));
+        }
+        code.extend_from_slice(emitted.batch);
+
+        self.store_result(&mut code, emitted.result);
+        self.advance_out(&mut code, OutStep::Batch);
+
+        // X += one batch of lanes. The coordinate registers are reloaded at
+        // the top of the next iteration, so they are free scratch here.
+        let lanes = (vw / BYTES_PER_LANE) as f32;
+        self.slot_load(&mut code, SCAFFOLD_ACC, slot(SLOT_X));
+        self.add_scalar(&mut code, SCAFFOLD_ACC, SCAFFOLD_SCRATCH, lanes);
+        self.slot_store(&mut code, SCAFFOLD_ACC, slot(SLOT_X));
+
+        self.counter_step(&mut code, Counter::Batch);
+        let repeat_batch = self.emit_jump(&mut code);
+        self.patch_branch(&mut code, repeat_batch, batch_top);
+
+        let row_end = code.len();
+        self.patch_branch(&mut code, batches_done, row_end);
+
+        // Reset X, advance Y, and skip any scalar tail in the output row.
+        self.slot_load(&mut code, SCAFFOLD_ACC, slot(SLOT_ROW_START_X));
+        self.slot_store(&mut code, SCAFFOLD_ACC, slot(SLOT_X));
+        self.slot_load(&mut code, SCAFFOLD_ACC, slot(SLOT_Y));
+        self.add_scalar(&mut code, SCAFFOLD_ACC, SCAFFOLD_SCRATCH, 1.0);
+        self.slot_store(&mut code, SCAFFOLD_ACC, slot(SLOT_Y));
+        self.advance_out(&mut code, OutStep::RowSkip);
+
+        self.counter_step(&mut code, Counter::Row);
+        let repeat_row = self.emit_jump(&mut code);
+        self.patch_branch(&mut code, repeat_row, row_top);
+
+        let end = code.len();
+        self.patch_branch(&mut code, rows_done, end);
+        self.frame_free(&mut code, total);
+        self.emit_ret(&mut code);
+        self.scaffold_finish(&mut code);
+        code
+    }
 }
+
+/// The emitted code a collapse loop wraps: the per-batch body, plus the two
+/// LICM tiers lifted out of it and the framing they were laid out against.
+///
+/// One emit pass produces all six together, and the scaffold needs all six —
+/// which is what makes them one argument rather than six.
+struct CollapseBody<'a> {
+    /// X/Y-invariant code, emitted once per call.
+    frame_hoist: &'a [u8],
+    /// X-invariant code, re-emitted at the top of every row.
+    row_hoist: &'a [u8],
+    /// The per-batch body proper.
+    batch: &'a [u8],
+    /// Where the batch leaves its result.
+    result: Reg,
+    /// Bytes of spill frame the body was laid out against.
+    frame_size: u32,
+    /// Vector slots the two hoist tiers park their roots in, directly above
+    /// the scaffold's coordinate slots.
+    hoist_slots: u32,
+}
+
+/// Which of the collapse loop's two counters a scaffold verb addresses.
+///
+/// Each is compared against a bound the caller passed in a register, which is
+/// why the backend — not the scaffold — knows where either lives.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Counter {
+    /// Batches within a row, against the caller's group count.
+    Batch,
+    /// Rows, against the caller's row count.
+    Row,
+}
+
+/// How far the output pointer moves.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum OutStep {
+    /// Past the batch just written — one vector width.
+    Batch,
+    /// Past whatever tail the row has beyond its last full batch.
+    RowSkip,
+}
+
+/// Coordinate slots the scaffold reserves above the body's frame: X/Y/Z/W as
+/// the body expects to find them, plus a copy of the row's starting X.
+const COORD_SLOTS: u32 = 5;
+/// The leading slots that are reloaded into the ABI's input registers.
+const INPUT_COORDS: u32 = 4;
+const SLOT_X: u32 = 0;
+const SLOT_Y: u32 = 1;
+/// Where the row's starting X is kept so the inner loop's stepping can be undone.
+const SLOT_ROW_START_X: u32 = 4;
+/// Slack for the scaffold's own instructions on top of the code it wraps.
+const SCAFFOLD_HEADROOM: usize = 160;
+/// A lane is one `f32`.
+const BYTES_PER_LANE: u32 = 4;
+
+/// The register a coordinate slot is passed and reloaded in. Every ABI here
+/// puts X/Y/Z/W in the first four vector registers, in that order.
+const fn coord_reg(slot: u32) -> Reg {
+    Reg(slot as u8)
+}
+
+/// Scratch the scaffold's own arithmetic uses between iterations. Both
+/// registers hold coordinates inside the body, but every coordinate is
+/// reloaded from its slot at the top of each iteration, so the scaffold is
+/// free to clobber them once the body has run.
+const SCAFFOLD_ACC: Reg = Reg(0);
+const SCAFFOLD_SCRATCH: Reg = Reg(1);
 
 /// Drive a schedule to machine code via an [`IsaBackend`].
 ///
@@ -1848,7 +2044,14 @@ fn compile_collapse_via_backend<B: IsaBackend>(
     if frame_roots.is_empty() && row_roots.is_empty() {
         // Nothing loop-invariant worth hoisting: the plain loop nest.
         let (body, result_reg, frame_size, spill_count) = emit_dag_body(body_schedule, backend)?;
-        let code = backend.emit_collapse_loop(&[], &[], &body, result_reg, frame_size, 0)?;
+        let code = backend.emit_collapse_loop(&CollapseBody {
+            frame_hoist: &[],
+            row_hoist: &[],
+            batch: &body,
+            result: result_reg,
+            frame_size,
+            hoist_slots: 0,
+        });
         let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
         return Ok(CompileResult {
             code: exec,
@@ -1944,8 +2147,14 @@ fn compile_collapse_via_backend<B: IsaBackend>(
         emit_dag_body_hoisted(body_schedule, backend, HoistCtx::Body(&hoist_map), Some(m))?;
 
     let hoisted_values = (frame_roots.len() + row_roots.len()) as u32;
-    let code =
-        backend.emit_collapse_loop(&frame_code, &row_code, &body, result_reg, m, hoisted_values)?;
+    let code = backend.emit_collapse_loop(&CollapseBody {
+        frame_hoist: &frame_code,
+        row_hoist: &row_code,
+        batch: &body,
+        result: result_reg,
+        frame_size: m,
+        hoist_slots: hoisted_values,
+    });
     let exec = unsafe { executable::ExecutableCode::from_code(&code)? };
     Ok(CompileResult {
         code: exec,
@@ -1978,6 +2187,74 @@ mod tests {
         let v = a.push_const(0.0);
         let root = a.push_binary(OpKind::Dwrt, x, v);
         let _ = arena_to_schedule(&a, root);
+    }
+
+    /// The scaffold's size does not depend on the frame it wraps.
+    ///
+    /// Every backend now shares one `emit_collapse_loop`, so the loop nest's
+    /// branch displacements are computed in exactly one place — and they are
+    /// only correct if the instructions between two labels keep their widths
+    /// as the frame grows. A slot displacement that silently widened from an
+    /// 8-bit to a 32-bit form would move every label after it.
+    ///
+    /// Checking it needs no host CPU: emission is a pure function into
+    /// `Vec<u8>`, so all four backends are measured from whichever host runs
+    /// the tests.
+    #[test]
+    fn scaffold_size_is_independent_of_the_frame() {
+        let ctx = EmitCtx::default();
+        let batch: Vec<u8> = alloc::vec![0x90; 8];
+        let fh: Vec<u8> = alloc::vec![0x90; 4];
+        let rh: Vec<u8> = alloc::vec![0x90; 12];
+        let wrapped = |result, frame_size, hoist_slots| CollapseBody {
+            frame_hoist: &fh,
+            row_hoist: &rh,
+            batch: &batch,
+            result,
+            frame_size,
+            hoist_slots,
+        };
+        // Red-zone and allocated frames, with and without hoisted values.
+        const SHAPES: [(u32, u32); 3] = [(0, 0), (64, 2), (160, 3)];
+
+        let mut sizes = alloc::vec::Vec::new();
+        for (frame_size, hoist_slots) in SHAPES {
+            let mut sse2 = x86_64::driver::X86Backend::new(ctx.clone());
+            sse2.frame_ready(frame_size);
+            let mut avx2b = avx2::driver::Avx2Backend::new(ctx.clone());
+            avx2b.frame_ready(frame_size);
+            let mut avx512b = avx512::driver::Avx512Backend::new(ctx.clone());
+            avx512b.frame_ready(frame_size);
+            let mut neon = aarch64::driver::Aarch64Backend::new(ctx.clone());
+            neon.frame_ready(frame_size);
+
+            let neon_code = neon.emit_collapse_loop(&wrapped(Reg(16), frame_size, hoist_slots));
+            assert!(
+                neon_code.len().is_multiple_of(4),
+                "aarch64 is fixed-width, got {} bytes",
+                neon_code.len()
+            );
+            sizes.push([
+                sse2.emit_collapse_loop(&wrapped(Reg(4), frame_size, hoist_slots))
+                    .len(),
+                avx2b
+                    .emit_collapse_loop(&wrapped(Reg(4), frame_size, hoist_slots))
+                    .len(),
+                avx512b
+                    .emit_collapse_loop(&wrapped(Reg(4), frame_size, hoist_slots))
+                    .len(),
+                neon_code.len(),
+            ]);
+        }
+        assert!(sizes[0].iter().all(|&n| n > 0), "every backend emits");
+        assert_eq!(
+            sizes[0], sizes[1],
+            "frame mode must not resize the scaffold"
+        );
+        assert_eq!(
+            sizes[1], sizes[2],
+            "hoist slots must not resize the scaffold"
+        );
     }
 
     // =========================================================================

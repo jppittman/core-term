@@ -9,7 +9,7 @@
 //! Transcendental builtins (atan2, atan, asin, acos) use VEX encoding for the
 //! 3-operand form which avoids extra MOV instructions in multi-step sequences.
 
-use super::{Reg, unimplemented_op};
+use super::{Counter, OutStep, Reg, unimplemented_op};
 use alloc::vec::Vec;
 use pixelflow_ir::kind::OpKind;
 
@@ -694,42 +694,9 @@ fn emit_cmp_tail(code: &mut Vec<u8>, dst: Reg, src2: Reg, pred: u8) {
     code.push(pred);
 }
 
-/// Emit ternary operation
-#[allow(clippy::too_many_arguments)]
-pub fn emit_ternary(code: &mut Vec<u8>, op: OpKind, dst: Reg, a: Reg, b: Reg, c: Reg) {
-    match op {
-        OpKind::MulAdd => {
-            // Without FMA: dst = a * b; dst = dst + c
-            if dst.0 != a.0 {
-                emit_sse_rr(code, None, &[0x0F, 0x28], dst, a);
-            }
-            emit_mulps(code, dst, b);
-            emit_addps(code, dst, c);
-        }
-
-        _ => unimplemented_op("x86-64", op),
-    }
-}
-
 // =============================================================================
 // Prologue / Epilogue
 // =============================================================================
-
-/// Emit function prologue
-pub fn emit_prologue(_code: &mut Vec<u8>) {
-    // Input pointer in rdi (System V) or rcx (Windows)
-    // For now, assume System V
-}
-
-/// Emit function epilogue
-pub fn emit_epilogue(code: &mut Vec<u8>, result: Reg) {
-    // Move result to xmm0 if not already there
-    if result.0 != 0 {
-        emit_sse_rr(code, None, &[0x0F, 0x28], Reg(0), result);
-    }
-    // RET
-    code.push(0xC3);
-}
 
 // =============================================================================
 // Branches — for the shared driver's Select short-circuit guards.
@@ -835,7 +802,7 @@ mod tests {
 #[allow(dead_code)]
 pub(crate) mod driver {
     use super::super::*;
-    use super::gpr::*;
+    use super::scaffold;
     use alloc::vec::Vec;
     use pixelflow_ir::kind::OpKind;
 
@@ -1153,93 +1120,137 @@ pub(crate) mod driver {
 
         // SysV: rdi = ctx (read-only in the body's gathers), rsi = out,
         // rdx = groups, rcx = rows, r8 = row-skip bytes, xmm0..3 = x0/y0/z/w.
-        // Loop registers: r9 = inner counter, r10 = preserved row count, r11 =
-        // outer counter; the body's scratch GPRs are rax/rcx (gather, movmskps) — disjoint. In
-        // red-zone mode (`frame_bytes == 0`) the body spills below rsp, so the
-        // coordinate slots allocated here at [rsp..) never collide with it.
-        fn emit_collapse_loop(
-            &mut self,
-            frame_hoist: &[u8],
-            row_hoist: &[u8],
-            body: &[u8],
-            result_reg: Reg,
-            _frame_size: u32,
-            hoist_slots: u32,
-        ) -> Result<Vec<u8>, &'static str> {
-            let vw = self.file.vector_bytes;
-            let f = self.frame_bytes;
-            let total = f + (5 + hoist_slots) * vw;
-            let slot = |k: u32| (f + k * vw) as i32;
-            let mut code: Vec<u8> =
-                Vec::with_capacity(frame_hoist.len() + row_hoist.len() + body.len() + 160);
+        // Loop registers: r9 = batch counter, r10 = preserved row count, r11 =
+        // row counter; the body's scratch GPRs are rax/rcx (gather, movmskps)
+        // — disjoint.
 
-            super::emit_sub_rsp(&mut code, total);
-            for k in 0..4u32 {
-                super::emit_movups_store_rsp32(&mut code, Reg(k as u8), slot(k));
-            }
-            super::emit_movups_store_rsp32(&mut code, Reg(0), slot(4));
-            code.extend_from_slice(frame_hoist);
-            // Preserve rows away from rcx, which gather/select guards may clobber.
-            super::mov(&mut code, R10, RCX);
-            super::xor(&mut code, R11, R11);
+        /// In red-zone mode the body spills *below* `rsp` and allocates
+        /// nothing, so the scaffold's slots start at zero rather than above a
+        /// frame that does not exist.
+        fn body_frame_bytes(&self, _frame_size: u32) -> u32 {
+            self.frame_bytes
+        }
 
-            let outer_top = code.len();
-            super::cmp(&mut code, R11, R10);
-            let outer_jae = super::jae(&mut code);
+        fn frame_alloc(&mut self, code: &mut Vec<u8>, bytes: u32) {
+            super::emit_sub_rsp(code, bytes);
+        }
 
-            // LICM prologue: X-invariant values, recomputed once per row. Reload
-            // coordinates first because the previous body/Y-step clobbered xmm0..3.
-            for k in 0..4u32 {
-                super::emit_movups_load_rsp32(&mut code, Reg(k as u8), slot(k));
-            }
-            code.extend_from_slice(row_hoist);
-            super::xor(&mut code, R9, R9);
+        fn frame_free(&mut self, code: &mut Vec<u8>, bytes: u32) {
+            super::emit_add_rsp(code, bytes);
+        }
 
-            let inner_top = code.len();
-            super::cmp(&mut code, R9, RDX);
-            let inner_jae = super::jae(&mut code);
+        // The scaffold's slots are always at a positive displacement, unlike
+        // `emit_store`/`emit_resolve`, which follow the body's frame mode.
+        fn slot_store(&mut self, code: &mut Vec<u8>, src: Reg, offset: u32) {
+            super::emit_movups_store_rsp32(code, src, offset as i32);
+        }
 
-            for k in 0..4u32 {
-                super::emit_movups_load_rsp32(&mut code, Reg(k as u8), slot(k));
-            }
-            code.extend_from_slice(body);
+        fn slot_load(&mut self, code: &mut Vec<u8>, dst: Reg, offset: u32) {
+            super::emit_movups_load_rsp32(code, dst, offset as i32);
+        }
 
-            // out[i] = result ; add rsi, 16.
-            super::emit_movups_store_base(&mut code, result_reg, 6);
-            super::add(&mut code, RSI, super::Imm8(vw as i8));
+        /// Preserve the row count away from `rcx`, which the body's gather and
+        /// select guards may clobber.
+        fn latch_bounds(&mut self, code: &mut Vec<u8>) {
+            scaffold::latch_bounds(code);
+        }
 
-            // X += lane count (xmm0/1 are about to be reloaded next iteration).
-            super::emit_movups_load_rsp32(&mut code, Reg(0), slot(0));
-            super::emit_const(&mut code, Reg(1), (vw / 4) as f32, X86_BUILTIN_SCRATCH);
-            super::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
-            super::emit_movups_store_rsp32(&mut code, Reg(0), slot(0));
+        fn counter_clear(&mut self, code: &mut Vec<u8>, counter: Counter) {
+            scaffold::counter_clear(code, counter);
+        }
 
-            super::inc(&mut code, R9);
-            let inner_jmp = super::jmp(&mut code);
+        fn counter_step(&mut self, code: &mut Vec<u8>, counter: Counter) {
+            scaffold::counter_step(code, counter);
+        }
 
-            let row_end = code.len();
-            inner_jae.patch(&mut code, row_end);
-            inner_jmp.patch(&mut code, inner_top);
+        fn branch_if_counter_done(&mut self, code: &mut Vec<u8>, counter: Counter) -> usize {
+            scaffold::branch_if_counter_done(code, counter)
+        }
 
-            // Reset X, advance Y, and skip any scalar tail in the output row.
-            super::emit_movups_load_rsp32(&mut code, Reg(0), slot(4));
-            super::emit_movups_store_rsp32(&mut code, Reg(0), slot(0));
-            super::emit_movups_load_rsp32(&mut code, Reg(0), slot(1));
-            super::emit_const(&mut code, Reg(1), 1.0, X86_BUILTIN_SCRATCH);
-            super::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
-            super::emit_movups_store_rsp32(&mut code, Reg(0), slot(1));
-            super::add(&mut code, RSI, R8);
+        fn store_result(&mut self, code: &mut Vec<u8>, src: Reg) {
+            super::emit_movups_store_base(code, src, scaffold::OUT_PTR);
+        }
 
-            super::inc(&mut code, R11);
-            let outer_jmp = super::jmp(&mut code);
+        fn advance_out(&mut self, code: &mut Vec<u8>, step: OutStep) {
+            scaffold::advance_out(code, step, self.file.vector_bytes);
+        }
 
-            let end = code.len();
-            super::emit_add_rsp(&mut code, total);
-            super::ret(&mut code);
+        fn add_scalar(&mut self, code: &mut Vec<u8>, dst: Reg, scratch: Reg, scalar: f32) {
+            super::emit_const(code, scratch, scalar, X86_BUILTIN_SCRATCH);
+            super::emit_binary(code, OpKind::Add, dst, dst, scratch);
+        }
 
-            outer_jae.patch(&mut code, end);
-            outer_jmp.patch(&mut code, outer_top);
-            Ok(code)
+        fn emit_ret(&mut self, code: &mut Vec<u8>) {
+            super::ret(code);
+        }
+    }
+}
+
+// =============================================================================
+// The SysV collapse-loop scaffold
+// =============================================================================
+
+/// The general-register half of the collapse loop, shared by every x86 vector
+/// width.
+///
+/// Counters, bounds and the output pointer are the same registers stepped by
+/// the same instructions whether the body is SSE2, AVX2 or AVX-512 — these are
+/// general-register ops, and the width only reaches them as the batch stride.
+pub(in crate::emit) mod scaffold {
+    use super::gpr::*;
+    use super::{Counter, Gpr, OutStep};
+    use alloc::vec::Vec;
+
+    /// `rsi` as a ModRM base — the output pointer the scaffold writes through.
+    pub(in crate::emit) const OUT_PTR: u8 = 6;
+
+    /// The register each loop counter lives in.
+    const fn counter_reg(counter: Counter) -> Gpr {
+        match counter {
+            Counter::Batch => R9,
+            Counter::Row => R11,
+        }
+    }
+
+    /// The register each counter is compared against: the caller's group count
+    /// arrives in `rdx`, and the row count is latched out of `rcx`.
+    const fn bound_reg(counter: Counter) -> Gpr {
+        match counter {
+            Counter::Batch => RDX,
+            Counter::Row => R10,
+        }
+    }
+
+    /// Preserve the row count away from `rcx`, which the body's gather and
+    /// select guards may clobber.
+    #[inline(always)]
+    pub(in crate::emit) fn latch_bounds(code: &mut Vec<u8>) {
+        super::mov(code, R10, RCX);
+    }
+
+    #[inline(always)]
+    pub(in crate::emit) fn counter_clear(code: &mut Vec<u8>, counter: Counter) {
+        let r = counter_reg(counter);
+        super::xor(code, r, r);
+    }
+
+    #[inline(always)]
+    pub(in crate::emit) fn counter_step(code: &mut Vec<u8>, counter: Counter) {
+        super::inc(code, counter_reg(counter));
+    }
+
+    /// The loop's exit test: unsigned `counter >= bound`.
+    #[inline(always)]
+    pub(in crate::emit) fn branch_if_counter_done(code: &mut Vec<u8>, counter: Counter) -> usize {
+        super::cmp(code, counter_reg(counter), bound_reg(counter));
+        super::jae(code).field()
+    }
+
+    #[inline(always)]
+    pub(in crate::emit) fn advance_out(code: &mut Vec<u8>, step: OutStep, vector_bytes: u32) {
+        match step {
+            OutStep::Batch => super::add(code, RSI, super::Imm8(vector_bytes as i8)),
+            OutStep::RowSkip => super::add(code, RSI, R8),
         }
     }
 }
