@@ -875,8 +875,11 @@ mod tests {
     #[test]
     fn emit_movaps_load_with_offset_128_switches_to_the_disp32_form() {
         let mut code = Vec::new();
-        emit_movaps_load(&mut code, Reg(0), 128);
-        assert_eq!(code, vec![0x0F, 0x28, 0x87, 0x80, 0x00, 0x00, 0x00]);
+        emit_movaps_load(&mut code, Reg(3), 128);
+        assert_eq!(
+            code,
+            vec![0x0F, 0x28, 0x87 | (3 << 3), 0x80, 0x00, 0x00, 0x00]
+        );
     }
 
     #[test]
@@ -903,8 +906,11 @@ mod tests {
     #[test]
     fn emit_movaps_store_with_offset_128_switches_to_the_disp32_form() {
         let mut code = Vec::new();
-        emit_movaps_store(&mut code, Reg(0), 128);
-        assert_eq!(code, vec![0x0F, 0x29, 0x87, 0x80, 0x00, 0x00, 0x00]);
+        emit_movaps_store(&mut code, Reg(5), 128);
+        assert_eq!(
+            code,
+            vec![0x0F, 0x29, 0x87 | (5 << 3), 0x80, 0x00, 0x00, 0x00]
+        );
     }
 
     #[test]
@@ -992,7 +998,14 @@ mod tests {
         emit_vmovss_load_scaled(&mut code, Reg(3), 6, 2);
         assert_eq!(
             code,
-            vec![0xC4, 0xE1, 0x7A, 0x10, ((3 & 7) << 3) | 0b100, (0b10 << 6) | (2 << 3) | 6]
+            vec![
+                0xC4,
+                0xE1,
+                0x7A,
+                0x10,
+                ((3 & 7) << 3) | 0b100,
+                (0b10 << 6) | (2 << 3) | 6
+            ]
         );
     }
 
