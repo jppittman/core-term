@@ -2192,6 +2192,7 @@ mod tests {
 #[allow(dead_code)]
 pub(crate) mod driver {
     use super::super::*;
+    use super::xr::*;
     use alloc::vec::Vec;
 
     /// Constant pool: maps f32 bit patterns to pool indices.
@@ -2443,7 +2444,8 @@ pub(crate) mod driver {
             let scratch = Reg(28);
             super::emit_uminv(code, scratch, mask_reg); // min lane; 0xFFFFFFFF => all-true
             super::emit_fmov_to_gp(code, scratch);
-            super::emit32(code, 0x2A3003F0); // MVN W16, W16  -> 0 iff all-true
+            // MVN W16, W16 -> 0 iff all-true, which the cbz below tests.
+            super::mvn_w(code, super::Xr(16), super::Xr(16));
             Aarch64Branch::Cbz(super::emit_cbz_w16(code))
         }
 
@@ -2501,14 +2503,11 @@ pub(crate) mod driver {
             super::emit_str_sp(&mut code, Reg(0), slot(4));
             // Frame LICM: X/Y-invariant values are computed once per call.
             code.extend_from_slice(frame_hoist);
-            // mov x6, xzr — row counter.
-            super::emit32(&mut code, 0xD280_0006);
+            super::movz(&mut code, X6, 0); // row counter
 
             let outer_top = code.len();
-            // cmp x6, x3 ; b.hs end (forward, patched below).
-            super::emit32(&mut code, 0xEB03_00DF);
-            let outer_bhs_at = code.len();
-            super::emit32(&mut code, 0x5400_0002);
+            super::cmp(&mut code, X6, X3);
+            let outer_bhs = super::b_hs(&mut code);
 
             // LICM prologue: X-invariant values, recomputed once per row. Reload
             // coordinates first because the previous body/Y-step clobbered v0..3.
@@ -2516,23 +2515,19 @@ pub(crate) mod driver {
                 super::emit_ldr_sp(&mut code, Reg(k as u8), slot(k));
             }
             code.extend_from_slice(row_hoist);
-            // mov x5, xzr — batch counter.
-            super::emit32(&mut code, 0xD280_0005);
+            super::movz(&mut code, X5, 0); // batch counter
 
             let inner_top = code.len();
-            // cmp x5, x2 ; b.hs row_end (forward, patched below).
-            super::emit32(&mut code, 0xEB02_00BF);
-            let inner_bhs_at = code.len();
-            super::emit32(&mut code, 0x5400_0002);
+            super::cmp(&mut code, X5, X2);
+            let inner_bhs = super::b_hs(&mut code);
 
             for k in 0..4u32 {
                 super::emit_ldr_sp(&mut code, Reg(k as u8), slot(k));
             }
             code.extend_from_slice(body);
 
-            // str q(result), [x1] ; add x1, x1, #16.
-            super::emit32(&mut code, 0x3D80_0000 | (1 << 5) | u32::from(result_reg.0));
-            super::emit32(&mut code, 0x9100_4021);
+            super::str_q(&mut code, result_reg, X1);
+            super::add(&mut code, X1, X1, super::Imm12(16));
 
             // X += lane count (4.0 is FMOV-immediate encodable; v0/v1 are about
             // to be reloaded next iteration, so they are free here).
@@ -2546,15 +2541,11 @@ pub(crate) mod driver {
             super::emit_fadd(&mut code, Reg(0), Reg(0), Reg(1));
             super::emit_str_sp(&mut code, Reg(0), slot(0));
 
-            // add x5, x5, #1 ; b inner_top (backward).
-            super::emit32(&mut code, 0x9100_04A5);
-            let back = ((inner_top as i64 - code.len() as i64) / 4) as i32;
-            super::emit32(&mut code, 0x1400_0000 | ((back as u32) & 0x03FF_FFFF));
+            super::add(&mut code, X5, X5, super::Imm12(1));
+            super::b(&mut code, inner_top);
 
             let row_end = code.len();
-            let inner_imm19 = (((row_end - inner_bhs_at) / 4) as u32) & 0x7FFFF;
-            let inner_bhs = 0x5400_0000 | (inner_imm19 << 5) | 0x2;
-            code[inner_bhs_at..inner_bhs_at + 4].copy_from_slice(&inner_bhs.to_le_bytes());
+            inner_bhs.patch(&mut code, row_end);
 
             // Reset X, advance Y, and skip any scalar tail in the output row.
             super::emit_ldr_sp(&mut code, Reg(0), slot(4));
@@ -2563,21 +2554,17 @@ pub(crate) mod driver {
             super::emit_fmov_imm(&mut code, Reg(1), 1.0, [Reg(28), Reg(29), Reg(30), Reg(31)]);
             super::emit_fadd(&mut code, Reg(0), Reg(0), Reg(1));
             super::emit_str_sp(&mut code, Reg(0), slot(1));
-            super::emit32(&mut code, 0x8B04_0021); // add x1, x1, x4
+            super::add(&mut code, X1, X1, X4);
 
-            // add x6, x6, #1 ; b outer_top (backward).
-            super::emit32(&mut code, 0x9100_04C6);
-            let outer_back = ((outer_top as i64 - code.len() as i64) / 4) as i32;
-            super::emit32(&mut code, 0x1400_0000 | ((outer_back as u32) & 0x03FF_FFFF));
+            super::add(&mut code, X6, X6, super::Imm12(1));
+            super::b(&mut code, outer_top);
 
             // end: patch outer b.hs here, tear down, RET, pool.
             let end = code.len();
-            let outer_imm19 = (((end - outer_bhs_at) / 4) as u32) & 0x7FFFF;
-            let outer_bhs = 0x5400_0000 | (outer_imm19 << 5) | 0x2;
-            code[outer_bhs_at..outer_bhs_at + 4].copy_from_slice(&outer_bhs.to_le_bytes());
+            outer_bhs.patch(&mut code, end);
 
             super::emit_add_sp(&mut code, total);
-            code.extend_from_slice(&0xD65F_03C0u32.to_le_bytes());
+            super::ret(&mut code);
             self.finish_pool(&mut code);
             Ok(code)
         }
@@ -2727,5 +2714,231 @@ pub(crate) mod driver {
             }
             None => {}
         }
+    }
+}
+
+// =============================================================================
+// General-purpose registers
+// =============================================================================
+
+/// The aarch64 general register file (`x0`–`x30`, plus the zero register).
+///
+/// A distinct type from [`Reg`], which names the *vector* file `v0`–`v31`.
+/// They are different files that share a numbering, so `Xr(1)` is `x1` and
+/// `Reg(1)` is `v1`, and neither can be passed where the other belongs.
+///
+/// A SIMD language barely touches these: loop counters, the output pointer,
+/// and the row stride. That is the whole list, which is why the vocabulary
+/// below is seven instructions rather than an assembler.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Xr(pub u8);
+
+/// AAPCS64 registers the collapse-loop scaffold uses.
+pub mod xr {
+    use super::Xr;
+
+    /// 2nd argument: the output pointer, advanced per batch and per row.
+    pub const X1: Xr = Xr(1);
+    /// 3rd argument: group count (the inner bound).
+    pub const X2: Xr = Xr(2);
+    /// 4th argument: row count (the outer bound).
+    pub const X3: Xr = Xr(3);
+    /// 5th argument: row-skip in bytes.
+    pub const X4: Xr = Xr(4);
+    /// Inner (batch) loop counter.
+    pub const X5: Xr = Xr(5);
+    /// Outer (row) loop counter.
+    pub const X6: Xr = Xr(6);
+    /// The zero register in the positions where `xzr` is meant.
+    pub const XZR: Xr = Xr(31);
+}
+
+/// A 12-bit unsigned immediate, the width `add`'s immediate form encodes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Imm12(pub u16);
+
+/// `movz dst, #imm16` — also how `mov dst, xzr` is spelled, as `movz dst, #0`.
+#[inline(always)]
+pub fn movz(code: &mut Vec<u8>, dst: Xr, imm: u16) {
+    emit32(code, 0xD280_0000 | ((imm as u32) << 5) | dst.0 as u32);
+}
+
+/// `cmp lhs, rhs` — `subs xzr, lhs, rhs`, setting the flags [`b_hs`] reads.
+#[inline(always)]
+pub fn cmp(code: &mut Vec<u8>, lhs: Xr, rhs: Xr) {
+    emit32(
+        code,
+        0xEB00_0000 | ((rhs.0 as u32) << 16) | ((lhs.0 as u32) << 5) | 31,
+    );
+}
+
+/// What an [`add`] can add: another register, or a 12-bit immediate.
+///
+/// As on x86, the operand's *type* selects the encoding, so the mnemonic stays
+/// one name instead of splitting into `add_reg` / `add_imm`.
+pub trait AddOperand {
+    /// Emit `add dst, src, self`.
+    fn add_into(self, code: &mut Vec<u8>, dst: Xr, src: Xr);
+}
+
+impl AddOperand for Xr {
+    #[inline(always)]
+    fn add_into(self, code: &mut Vec<u8>, dst: Xr, src: Xr) {
+        emit32(
+            code,
+            0x8B00_0000 | ((self.0 as u32) << 16) | ((src.0 as u32) << 5) | dst.0 as u32,
+        );
+    }
+}
+
+impl AddOperand for Imm12 {
+    #[inline(always)]
+    fn add_into(self, code: &mut Vec<u8>, dst: Xr, src: Xr) {
+        emit32(
+            code,
+            0x9100_0000 | ((self.0 as u32) << 10) | ((src.0 as u32) << 5) | dst.0 as u32,
+        );
+    }
+}
+
+/// `add dst, src, operand`
+#[inline(always)]
+pub fn add(code: &mut Vec<u8>, dst: Xr, src: Xr, operand: impl AddOperand) {
+    operand.add_into(code, dst, src);
+}
+
+/// `str q<src>, [base]` — store one 128-bit vector through a pointer.
+#[inline(always)]
+pub fn str_q(code: &mut Vec<u8>, src: Reg, base: Xr) {
+    emit32(code, 0x3D80_0000 | ((base.0 as u32) << 5) | src.0 as u32);
+}
+
+/// `mvn w<dst>, w<src>` — bitwise NOT of a 32-bit general register.
+///
+/// `ORN Wd, WZR, Wm`; the guard path uses it to turn "all lanes set" into
+/// zero so a following `cbz` tests it.
+#[inline(always)]
+pub fn mvn_w(code: &mut Vec<u8>, dst: Xr, src: Xr) {
+    emit32(code, 0x2A20_03E0 | ((src.0 as u32) << 16) | dst.0 as u32);
+}
+
+/// `ret`
+#[inline(always)]
+pub fn ret(code: &mut Vec<u8>) {
+    emit32(code, 0xD65F_03C0);
+}
+
+/// A conditional branch whose 19-bit displacement is not filled in yet.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[must_use = "an unpatched branch falls through to itself"]
+pub struct Cond19(usize);
+
+impl Cond19 {
+    /// Point the branch at `target`, a byte offset into the same buffer.
+    #[inline(always)]
+    pub fn patch(self, code: &mut [u8], target: usize) {
+        let imm19 = (((target - self.0) / 4) as u32) & 0x7FFFF;
+        let word = 0x5400_0000 | (imm19 << 5) | 0x2; // cond = HS
+        code[self.0..self.0 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+}
+
+/// `b.hs` — taken when the previous [`cmp`] found `lhs >= rhs` unsigned.
+#[inline(always)]
+pub fn b_hs(code: &mut Vec<u8>) -> Cond19 {
+    let at = code.len();
+    emit32(code, 0x5400_0002);
+    Cond19(at)
+}
+
+/// `b target` — an unconditional branch to an already-known offset.
+///
+/// Unlike the x86 counterpart this needs no fixup token: every use in the
+/// scaffold jumps *backwards* to a label already emitted.
+#[inline(always)]
+pub fn b(code: &mut Vec<u8>, target: usize) {
+    let rel = ((target as i64 - code.len() as i64) / 4) as i32;
+    emit32(code, 0x1400_0000 | ((rel as u32) & 0x03FF_FFFF));
+}
+
+#[cfg(test)]
+mod xr_tests {
+    use super::xr::*;
+    use super::*;
+
+    fn word(f: impl FnOnce(&mut Vec<u8>)) -> u32 {
+        let mut c = Vec::new();
+        f(&mut c);
+        assert_eq!(c.len(), 4, "aarch64 instructions are fixed-width");
+        u32::from_le_bytes([c[0], c[1], c[2], c[3]])
+    }
+
+    /// Each encoding checked against the ARM ARM's form for that mnemonic.
+    /// These are the exact words the collapse-loop scaffold used to spell
+    /// inline, which is what makes the replacement provably byte-identical.
+    #[test]
+    fn encodings_match_the_manual() {
+        // MOVZ Xd, #imm16 — `mov xN, xzr` is `movz xN, #0`.
+        assert_eq!(word(|c| movz(c, X6, 0)), 0xD280_0006);
+        assert_eq!(word(|c| movz(c, X5, 0)), 0xD280_0005);
+        // SUBS XZR, Xn, Xm
+        assert_eq!(word(|c| cmp(c, X6, X3)), 0xEB03_00DF);
+        assert_eq!(word(|c| cmp(c, X5, X2)), 0xEB02_00BF);
+        // ADD Xd, Xn, #imm12
+        assert_eq!(word(|c| add(c, X1, X1, Imm12(16))), 0x9100_4021);
+        assert_eq!(word(|c| add(c, X5, X5, Imm12(1))), 0x9100_04A5);
+        assert_eq!(word(|c| add(c, X6, X6, Imm12(1))), 0x9100_04C6);
+        // ADD Xd, Xn, Xm
+        assert_eq!(word(|c| add(c, X1, X1, X4)), 0x8B04_0021);
+        // STR Qt, [Xn]
+        assert_eq!(word(|c| str_q(c, Reg(0), X1)), 0x3D80_0020);
+        // RET
+        assert_eq!(word(ret), 0xD65F_03C0);
+    }
+
+    /// The immediate and register forms of `add` are different instructions
+    /// reached through one name; the operand type is what chooses.
+    #[test]
+    fn the_operand_type_selects_the_add_encoding() {
+        assert_eq!(
+            word(|c| add(c, X1, X1, Imm12(16))) >> 24,
+            0x91,
+            "immediate form"
+        );
+        assert_eq!(word(|c| add(c, X1, X1, X4)) >> 24, 0x8B, "register form");
+    }
+
+    /// A conditional branch is emitted as a placeholder and patched to a
+    /// forward target; the displacement counts instructions, not bytes.
+    #[test]
+    fn conditional_branches_patch_forward_in_instructions() {
+        let mut c = Vec::new();
+        let br = b_hs(&mut c);
+        c.resize(24, 0); // three more instructions
+        br.patch(&mut c, 24);
+        let w = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+        assert_eq!((w >> 5) & 0x7FFFF, 6, "24 bytes ahead is 6 instructions");
+        assert_eq!(w & 0xF, 0x2, "cond = HS");
+    }
+
+    /// An unconditional backward branch encodes a negative instruction count.
+    #[test]
+    fn unconditional_branches_go_backwards() {
+        let mut c = vec![0u8; 16];
+        b(&mut c, 0);
+        let w = u32::from_le_bytes([c[16], c[17], c[18], c[19]]);
+        assert_eq!(w >> 26, 0x05, "B opcode");
+        // -4 instructions, in 26-bit two's complement.
+        assert_eq!(w & 0x03FF_FFFF, (-4i32 as u32) & 0x03FF_FFFF);
+    }
+
+    /// `Xr` and `Reg` name different files; the same index is a different
+    /// register in each, which is why they are different types.
+    #[test]
+    fn the_two_register_files_are_not_interchangeable() {
+        assert_eq!(X1.0, Reg(1).0);
+        // `str_q` takes both, in their own positions: the vector operand lands
+        // in Rt and the pointer in Rn, so swapping them cannot typecheck.
+        assert_eq!(word(|c| str_q(c, Reg(3), X1)), 0x3D80_0023);
     }
 }

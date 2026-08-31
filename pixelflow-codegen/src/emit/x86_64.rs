@@ -451,15 +451,17 @@ pub fn emit_movups_load_rsp32(code: &mut Vec<u8>, dst: Reg, disp: i32) {
 
 /// `sub rsp, imm32` — allocate a spill frame (kernels stay leaf functions;
 /// no base pointer, offsets are rsp-relative).
+///
+/// Spelled through the shared vocabulary: stack adjustment is a general-register
+/// instruction and is identical at every vector width, so it is defined once
+/// here rather than once per width.
 pub fn emit_sub_rsp(code: &mut Vec<u8>, size: u32) {
-    code.extend_from_slice(&[0x48, 0x81, 0xEC]);
-    code.extend_from_slice(&size.to_le_bytes());
+    sub(code, gpr::RSP, Imm32(size as i32));
 }
 
 /// `add rsp, imm32` — release the spill frame before `ret`.
 pub fn emit_add_rsp(code: &mut Vec<u8>, size: u32) {
-    code.extend_from_slice(&[0x48, 0x81, 0xC4]);
-    code.extend_from_slice(&size.to_le_bytes());
+    add(code, gpr::RSP, Imm32(size as i32));
 }
 
 /// MOVUPS xmm, [rsp+disp8] — red-zone reload (unaligned, leaf-safe).
@@ -833,6 +835,7 @@ mod tests {
 #[allow(dead_code)]
 pub(crate) mod driver {
     use super::super::*;
+    use super::gpr::*;
     use alloc::vec::Vec;
     use pixelflow_ir::kind::OpKind;
 
@@ -1145,7 +1148,7 @@ pub(crate) mod driver {
             if self.frame_bytes > 0 {
                 super::emit_add_rsp(code, self.frame_bytes);
             }
-            code.push(0xC3); // RET
+            super::ret(code);
         }
 
         // SysV: rdi = ctx (read-only in the body's gathers), rsi = out,
@@ -1177,14 +1180,12 @@ pub(crate) mod driver {
             super::emit_movups_store_rsp32(&mut code, Reg(0), slot(4));
             code.extend_from_slice(frame_hoist);
             // Preserve rows away from rcx, which gather/select guards may clobber.
-            code.extend_from_slice(&[0x49, 0x89, 0xCA]); // mov r10, rcx
-            code.extend_from_slice(&[0x4D, 0x31, 0xDB]); // xor r11, r11
+            super::mov(&mut code, R10, RCX);
+            super::xor(&mut code, R11, R11);
 
             let outer_top = code.len();
-            code.extend_from_slice(&[0x4D, 0x39, 0xD3]); // cmp r11, r10
-            code.extend_from_slice(&[0x0F, 0x83]);
-            let outer_jae_at = code.len();
-            code.extend_from_slice(&[0, 0, 0, 0]);
+            super::cmp(&mut code, R11, R10);
+            let outer_jae = super::jae(&mut code);
 
             // LICM prologue: X-invariant values, recomputed once per row. Reload
             // coordinates first because the previous body/Y-step clobbered xmm0..3.
@@ -1192,13 +1193,11 @@ pub(crate) mod driver {
                 super::emit_movups_load_rsp32(&mut code, Reg(k as u8), slot(k));
             }
             code.extend_from_slice(row_hoist);
-            code.extend_from_slice(&[0x4D, 0x31, 0xC9]); // xor r9, r9
+            super::xor(&mut code, R9, R9);
 
             let inner_top = code.len();
-            code.extend_from_slice(&[0x49, 0x39, 0xD1]); // cmp r9, rdx
-            code.extend_from_slice(&[0x0F, 0x83]);
-            let inner_jae_at = code.len();
-            code.extend_from_slice(&[0, 0, 0, 0]);
+            super::cmp(&mut code, R9, RDX);
+            let inner_jae = super::jae(&mut code);
 
             for k in 0..4u32 {
                 super::emit_movups_load_rsp32(&mut code, Reg(k as u8), slot(k));
@@ -1207,7 +1206,7 @@ pub(crate) mod driver {
 
             // out[i] = result ; add rsi, 16.
             super::emit_movups_store_base(&mut code, result_reg, 6);
-            code.extend_from_slice(&[0x48, 0x83, 0xC6, vw as u8]);
+            super::add(&mut code, RSI, super::Imm8(vw as i8));
 
             // X += lane count (xmm0/1 are about to be reloaded next iteration).
             super::emit_movups_load_rsp32(&mut code, Reg(0), slot(0));
@@ -1215,17 +1214,12 @@ pub(crate) mod driver {
             super::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
             super::emit_movups_store_rsp32(&mut code, Reg(0), slot(0));
 
-            // inc r9 ; jmp inner_top (backward).
-            code.extend_from_slice(&[0x49, 0xFF, 0xC1]);
-            code.push(0xE9);
-            let inner_jmp_at = code.len();
-            code.extend_from_slice(&[0, 0, 0, 0]);
+            super::inc(&mut code, R9);
+            let inner_jmp = super::jmp(&mut code);
 
             let row_end = code.len();
-            let inner_jae_rel = (row_end as i32) - (inner_jae_at as i32 + 4);
-            code[inner_jae_at..inner_jae_at + 4].copy_from_slice(&inner_jae_rel.to_le_bytes());
-            let inner_jmp_rel = (inner_top as i32) - (inner_jmp_at as i32 + 4);
-            code[inner_jmp_at..inner_jmp_at + 4].copy_from_slice(&inner_jmp_rel.to_le_bytes());
+            inner_jae.patch(&mut code, row_end);
+            inner_jmp.patch(&mut code, inner_top);
 
             // Reset X, advance Y, and skip any scalar tail in the output row.
             super::emit_movups_load_rsp32(&mut code, Reg(0), slot(4));
@@ -1234,22 +1228,306 @@ pub(crate) mod driver {
             super::emit_const(&mut code, Reg(1), 1.0, X86_BUILTIN_SCRATCH);
             super::emit_binary(&mut code, OpKind::Add, Reg(0), Reg(0), Reg(1));
             super::emit_movups_store_rsp32(&mut code, Reg(0), slot(1));
-            code.extend_from_slice(&[0x4C, 0x01, 0xC6]); // add rsi, r8
+            super::add(&mut code, RSI, R8);
 
-            code.extend_from_slice(&[0x49, 0xFF, 0xC3]); // inc r11
-            code.push(0xE9);
-            let outer_jmp_at = code.len();
-            code.extend_from_slice(&[0, 0, 0, 0]);
+            super::inc(&mut code, R11);
+            let outer_jmp = super::jmp(&mut code);
 
             let end = code.len();
             super::emit_add_rsp(&mut code, total);
-            code.push(0xC3); // RET
+            super::ret(&mut code);
 
-            let outer_jae_rel = (end as i32) - (outer_jae_at as i32 + 4);
-            code[outer_jae_at..outer_jae_at + 4].copy_from_slice(&outer_jae_rel.to_le_bytes());
-            let outer_jmp_rel = (outer_top as i32) - (outer_jmp_at as i32 + 4);
-            code[outer_jmp_at..outer_jmp_at + 4].copy_from_slice(&outer_jmp_rel.to_le_bytes());
+            outer_jae.patch(&mut code, end);
+            outer_jmp.patch(&mut code, outer_top);
             Ok(code)
         }
+    }
+}
+
+// =============================================================================
+// General-purpose registers
+// =============================================================================
+
+/// The x86-64 general register file.
+///
+/// A distinct type from [`Reg`], which names the *vector* file. They are
+/// different register files that happen to be numbered the same way, so
+/// `Gpr(10)` is `r10` and `Reg(10)` is `xmm10`, and nothing can silently pass
+/// one where the other belongs. Before this existed the general file had no
+/// type at all: it appeared as bare `u8` in a few encoder signatures and as
+/// raw opcode bytes everywhere else.
+///
+/// A SIMD language barely touches these — loop counters, pointers, and the
+/// scalar half of a gather — which is why the vocabulary below is nine
+/// instructions rather than an assembler.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Gpr(pub u8);
+
+/// SysV argument and scratch registers the emitted kernels use.
+pub mod gpr {
+    use super::Gpr;
+
+    /// Scratch / `movmskps` destination.
+    pub const RAX: Gpr = Gpr(0);
+    /// 4th integer argument; the collapse loop's row count on entry.
+    pub const RCX: Gpr = Gpr(1);
+    /// 3rd integer argument: group count.
+    pub const RDX: Gpr = Gpr(2);
+    /// 2nd integer argument: the output pointer, advanced per batch.
+    pub const RSI: Gpr = Gpr(6);
+    /// The stack pointer.
+    pub const RSP: Gpr = Gpr(4);
+    /// 5th integer argument: row-skip in bytes.
+    pub const R8: Gpr = Gpr(8);
+    /// Inner (batch) loop counter.
+    pub const R9: Gpr = Gpr(9);
+    /// Preserved copy of the row count, away from `rcx`.
+    pub const R10: Gpr = Gpr(10);
+    /// Outer (row) loop counter.
+    pub const R11: Gpr = Gpr(11);
+}
+
+/// A sign-extended 8-bit immediate.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Imm8(pub i8);
+
+/// `REX.W` plus the extension bits for a two-register form.
+///
+/// `R` extends the ModRM.reg field (the source here), `B` extends ModRM.rm
+/// (the destination).
+#[inline(always)]
+const fn rex_w(reg: Gpr, rm: Gpr) -> u8 {
+    0x48 | (((reg.0 >> 3) & 1) << 2) | ((rm.0 >> 3) & 1)
+}
+
+/// ModRM for the register-direct form: `mod = 11`.
+#[inline(always)]
+const fn modrm_rr(reg: u8, rm: Gpr) -> u8 {
+    0xC0 | ((reg & 7) << 3) | (rm.0 & 7)
+}
+
+/// Emit one `REX.W opcode /r` instruction with both operands in registers.
+#[inline(always)]
+fn rr(code: &mut Vec<u8>, opcode: u8, dst: Gpr, src: Gpr) {
+    code.extend_from_slice(&[rex_w(src, dst), opcode, modrm_rr(src.0, dst)]);
+}
+
+/// `mov dst, src`
+#[inline(always)]
+pub fn mov(code: &mut Vec<u8>, dst: Gpr, src: Gpr) {
+    rr(code, 0x89, dst, src);
+}
+
+/// `xor dst, src` — the idiomatic zeroing form when `dst == src`.
+#[inline(always)]
+pub fn xor(code: &mut Vec<u8>, dst: Gpr, src: Gpr) {
+    rr(code, 0x31, dst, src);
+}
+
+/// `cmp lhs, rhs` — sets the flags a following [`jae`] reads.
+#[inline(always)]
+pub fn cmp(code: &mut Vec<u8>, lhs: Gpr, rhs: Gpr) {
+    rr(code, 0x39, lhs, rhs);
+}
+
+/// `inc dst`
+#[inline(always)]
+pub fn inc(code: &mut Vec<u8>, dst: Gpr) {
+    code.extend_from_slice(&[rex_w(Gpr(0), dst), 0xFF, modrm_rr(0, dst)]);
+}
+
+/// What an [`add`] can add: another register, or a small immediate.
+///
+/// The operand's *type* picks the encoding, so callers write `add(c, RSI, R8)`
+/// and `add(c, RSI, Imm8(16))` rather than choosing between differently-named
+/// functions — which would put the operand kinds back in the name.
+pub trait AddSrc {
+    /// Emit `add dst, self`.
+    fn add_into(self, code: &mut Vec<u8>, dst: Gpr);
+}
+
+impl AddSrc for Gpr {
+    #[inline(always)]
+    fn add_into(self, code: &mut Vec<u8>, dst: Gpr) {
+        rr(code, 0x01, dst, self);
+    }
+}
+
+impl AddSrc for Imm8 {
+    #[inline(always)]
+    fn add_into(self, code: &mut Vec<u8>, dst: Gpr) {
+        code.extend_from_slice(&[rex_w(Gpr(0), dst), 0x83, modrm_rr(0, dst), self.0 as u8]);
+    }
+}
+
+/// `add dst, src`
+#[inline(always)]
+pub fn add(code: &mut Vec<u8>, dst: Gpr, src: impl AddSrc) {
+    src.add_into(code, dst);
+}
+
+/// A 32-bit immediate.
+///
+/// Distinct from [`Imm8`] because x86 gives them different opcodes — `81 /n id`
+/// versus the sign-extended `83 /n ib`. The caller writes `add(c, RSP,
+/// Imm32(n))` or `add(c, RSI, Imm8(n))` and the operand type picks; nothing
+/// upstream has to know which opcode that implies.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Imm32(pub i32);
+
+/// `REX.W 81 /ext id` — the immediate group with a 32-bit operand.
+#[inline(always)]
+fn ri32(code: &mut Vec<u8>, ext: u8, dst: Gpr, imm: i32) {
+    code.extend_from_slice(&[rex_w(Gpr(0), dst), 0x81, modrm_rr(ext, dst)]);
+    code.extend_from_slice(&imm.to_le_bytes());
+}
+
+impl AddSrc for Imm32 {
+    #[inline(always)]
+    fn add_into(self, code: &mut Vec<u8>, dst: Gpr) {
+        ri32(code, 0, dst, self.0);
+    }
+}
+
+/// `sub dst, imm32`
+#[inline(always)]
+pub fn sub(code: &mut Vec<u8>, dst: Gpr, Imm32(imm): Imm32) {
+    ri32(code, 5, dst, imm);
+}
+
+/// `ret`
+#[inline(always)]
+pub fn ret(code: &mut Vec<u8>) {
+    code.push(0xC3);
+}
+
+/// A branch whose 32-bit displacement is not known yet.
+///
+/// Holds the offset of the displacement field, so the target can be filled in
+/// once its address is known. Returned by [`jae`] and [`jmp`] so a caller
+/// cannot emit a branch and forget it needs patching.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[must_use = "an unpatched branch jumps to itself"]
+pub struct Rel32(usize);
+
+impl Rel32 {
+    /// Point the branch at `target`, a byte offset into the same buffer.
+    #[inline(always)]
+    pub fn patch(self, code: &mut [u8], target: usize) {
+        let rel = (target as i32) - (self.0 as i32 + 4);
+        code[self.0..self.0 + 4].copy_from_slice(&rel.to_le_bytes());
+    }
+
+    /// The offset of the displacement field.
+    #[must_use]
+    #[inline(always)]
+    pub const fn field(self) -> usize {
+        self.0
+    }
+}
+
+/// `jae rel32` — taken when the previous [`cmp`] found `lhs >= rhs` unsigned.
+#[inline(always)]
+pub fn jae(code: &mut Vec<u8>) -> Rel32 {
+    code.extend_from_slice(&[0x0F, 0x83]);
+    let at = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    Rel32(at)
+}
+
+/// `jmp rel32`
+#[inline(always)]
+pub fn jmp(code: &mut Vec<u8>) -> Rel32 {
+    code.push(0xE9);
+    let at = code.len();
+    code.extend_from_slice(&[0, 0, 0, 0]);
+    Rel32(at)
+}
+
+#[cfg(test)]
+mod gpr_tests {
+    use super::gpr::*;
+    use super::*;
+
+    fn asm(f: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
+        let mut c = Vec::new();
+        f(&mut c);
+        c
+    }
+
+    /// Each encoding checked against the Intel SDM's form for that mnemonic.
+    /// These are the exact bytes the collapse-loop scaffold used to spell
+    /// inline, which is what makes the replacement provably byte-identical.
+    #[test]
+    fn encodings_match_the_manual() {
+        // REX.W 89 /r — MOV r/m64, r64
+        assert_eq!(asm(|c| mov(c, R10, RCX)), [0x49, 0x89, 0xCA]);
+        // REX.W 31 /r — XOR r/m64, r64
+        assert_eq!(asm(|c| xor(c, R11, R11)), [0x4D, 0x31, 0xDB]);
+        assert_eq!(asm(|c| xor(c, R9, R9)), [0x4D, 0x31, 0xC9]);
+        // REX.W 39 /r — CMP r/m64, r64
+        assert_eq!(asm(|c| cmp(c, R11, R10)), [0x4D, 0x39, 0xD3]);
+        assert_eq!(asm(|c| cmp(c, R9, RDX)), [0x49, 0x39, 0xD1]);
+        // REX.W FF /0 — INC r/m64
+        assert_eq!(asm(|c| inc(c, R9)), [0x49, 0xFF, 0xC1]);
+        assert_eq!(asm(|c| inc(c, R11)), [0x49, 0xFF, 0xC3]);
+        // REX.W 01 /r — ADD r/m64, r64
+        assert_eq!(asm(|c| add(c, RSI, R8)), [0x4C, 0x01, 0xC6]);
+        // REX.W 83 /0 ib — ADD r/m64, imm8
+        assert_eq!(asm(|c| add(c, RSI, Imm8(16))), [0x48, 0x83, 0xC6, 0x10]);
+        assert_eq!(asm(|c| add(c, RSI, Imm8(64))), [0x48, 0x83, 0xC6, 0x40]);
+        // C3 — RET
+        assert_eq!(asm(ret), [0xC3]);
+    }
+
+    /// REX.R extends the source, REX.B the destination; a register above r7
+    /// on either side must set its own bit and no other.
+    #[test]
+    fn rex_extends_each_operand_independently() {
+        assert_eq!(asm(|c| mov(c, RCX, RDX))[0], 0x48, "neither extended");
+        assert_eq!(
+            asm(|c| mov(c, R9, RDX))[0],
+            0x49,
+            "destination extended → B"
+        );
+        assert_eq!(asm(|c| mov(c, RCX, R9))[0], 0x4C, "source extended → R");
+        assert_eq!(asm(|c| mov(c, R9, R10))[0], 0x4D, "both extended");
+    }
+
+    /// A branch reports where its displacement lives, and patching aims it at
+    /// a byte offset in the same buffer.
+    #[test]
+    fn branches_patch_relative_to_the_next_instruction() {
+        let mut c = Vec::new();
+        let br = jmp(&mut c);
+        assert_eq!(c.len(), 5, "E9 + rel32");
+        assert_eq!(br.field(), 1);
+        // Jump forward to the end of a 16-byte buffer.
+        c.resize(16, 0x90);
+        br.patch(&mut c, 16);
+        assert_eq!(
+            &c[1..5],
+            &(16i32 - 5).to_le_bytes(),
+            "rel is from the next insn"
+        );
+
+        let mut c = Vec::new();
+        let br = jae(&mut c);
+        assert_eq!(c[..2], [0x0F, 0x83]);
+        // A backward jump is negative.
+        c.resize(10, 0x90);
+        br.patch(&mut c, 0);
+        assert_eq!(&c[2..6], &(-6i32).to_le_bytes());
+    }
+
+    /// `Gpr` and `Reg` name different files; the same index is a different
+    /// register in each, which is why they are different types.
+    #[test]
+    fn the_two_register_files_are_not_interchangeable() {
+        // r10 and xmm10 share an index and nothing else.
+        assert_eq!(R10.0, Reg(10).0);
+        // `mov` takes Gpr; passing Reg(10) would not compile. Encoding r10 as
+        // the destination sets REX.B, which a vector encoder never emits here.
+        assert_eq!(asm(|c| mov(c, R10, RAX))[0] & 1, 1);
     }
 }
