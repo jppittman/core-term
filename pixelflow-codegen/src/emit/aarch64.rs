@@ -2305,9 +2305,11 @@ pub(crate) mod driver {
     impl Aarch64Backend {
         /// The constant pool as emitted so far.
         ///
-        /// Read-only, and read by exactly one thing: the test pinning that the
-        /// pool APPENDS across the two bodies a collapse compile pushes
-        /// through one backend. A reset there is the glyph-ink regression.
+        /// Test-only, and says so in the type: its one reader is the test
+        /// pinning that the pool APPENDS across the two bodies a collapse
+        /// compile pushes through one backend. A reset there is the glyph-ink
+        /// regression.
+        #[cfg(test)]
         pub(crate) fn pool_entries(&self) -> &[u32] {
             &self.pool.entries
         }

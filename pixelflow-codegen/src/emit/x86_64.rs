@@ -54,45 +54,6 @@ fn emit_sse_rr(code: &mut Vec<u8>, prefix: Option<u8>, opcode: &[u8], dst: Reg, 
 // Load / Store
 // =============================================================================
 
-/// MOVAPS xmm, [rdi + offset] - Load 128-bit aligned
-pub fn emit_movaps_load(code: &mut Vec<u8>, dst: Reg, offset: u16) {
-    // REX if needed
-    if dst.0 >= 8 {
-        code.push(0x44); // REX.R
-    }
-    code.push(0x0F);
-    code.push(0x28);
-
-    if offset == 0 {
-        code.push(0x07 | ((dst.0 & 7) << 3)); // [rdi]
-    } else if offset < 128 {
-        code.push(0x47 | ((dst.0 & 7) << 3)); // [rdi + disp8]
-        code.push(offset as u8);
-    } else {
-        code.push(0x87 | ((dst.0 & 7) << 3)); // [rdi + disp32]
-        code.extend_from_slice(&(offset as u32).to_le_bytes());
-    }
-}
-
-/// MOVAPS [rdi + offset], xmm - Store 128-bit aligned
-pub fn emit_movaps_store(code: &mut Vec<u8>, src: Reg, offset: u16) {
-    if src.0 >= 8 {
-        code.push(0x44);
-    }
-    code.push(0x0F);
-    code.push(0x29);
-
-    if offset == 0 {
-        code.push(0x07 | ((src.0 & 7) << 3));
-    } else if offset < 128 {
-        code.push(0x47 | ((src.0 & 7) << 3));
-        code.push(offset as u8);
-    } else {
-        code.push(0x87 | ((src.0 & 7) << 3));
-        code.extend_from_slice(&(offset as u32).to_le_bytes());
-    }
-}
-
 /// MOVAPS xmm, xmm - Register-to-register copy
 pub fn emit_movaps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
     emit_sse_rr(code, None, &[0x0F, 0x28], dst, src);
@@ -173,20 +134,6 @@ fn emit_vorps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
 /// VXORPS dst, src1, src2 — bitwise XOR
 fn emit_vxorps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
     emit_vex_128_0f(code, 0x57, dst, src1, src2);
-}
-
-// =============================================================================
-// Bitwise (SSE legacy 2-operand)
-// =============================================================================
-
-/// XORPS xmm, xmm (also used for negation via sign bit flip)
-pub fn emit_xorps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x57], dst, src);
-}
-
-/// ANDPS xmm, xmm
-pub fn emit_andps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x54], dst, src);
 }
 
 // =============================================================================
