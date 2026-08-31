@@ -176,20 +176,6 @@ fn emit_vxorps(code: &mut Vec<u8>, dst: Reg, src1: Reg, src2: Reg) {
 }
 
 // =============================================================================
-// Bitwise (SSE legacy 2-operand)
-// =============================================================================
-
-/// XORPS xmm, xmm (also used for negation via sign bit flip)
-pub fn emit_xorps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x57], dst, src);
-}
-
-/// ANDPS xmm, xmm
-pub fn emit_andps(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-    emit_sse_rr(code, None, &[0x0F, 0x54], dst, src);
-}
-
-// =============================================================================
 // Comparisons (VEX)
 // =============================================================================
 
@@ -859,5 +845,248 @@ mod tests {
             unselected.is_empty(),
             "X86BinaryInsn::select has no mnemonic for: {unselected:?}"
         );
+    }
+
+    // Most of the byte-construction below ORs together bit-disjoint fields
+    // (a REX bit, a ModRM.reg nibble shifted into bits 3-5, a ModRM.rm nibble
+    // in bits 0-2, ...) — that's what makes ModRM/VEX encoding decodable at
+    // all. Where two operands of a `|` can never share a set bit, replacing
+    // that `|` with `^` produces the identical byte for every input: a
+    // mutant no test can distinguish. Each test below still pins the real
+    // byte sequence (catching a genuine encoding bug), but where the
+    // corresponding `cargo mutants` finding is one of these disjoint-`|`
+    // mutants, `cargo mutants` will keep reporting it as missed — that is
+    // documented here as a real equivalent, not a gap.
+
+    #[test]
+    fn emit_movaps_load_with_zero_offset_and_low_dst_uses_direct_rdi_addressing() {
+        let mut code = Vec::new();
+        emit_movaps_load(&mut code, Reg(3), 0);
+        assert_eq!(code, vec![0x0F, 0x28, 0x07 | (3 << 3)]);
+    }
+
+    #[test]
+    fn emit_movaps_load_with_offset_just_under_128_uses_the_disp8_form() {
+        let mut code = Vec::new();
+        emit_movaps_load(&mut code, Reg(0), 127);
+        assert_eq!(code, vec![0x0F, 0x28, 0x47, 127]);
+    }
+
+    #[test]
+    fn emit_movaps_load_with_offset_128_switches_to_the_disp32_form() {
+        let mut code = Vec::new();
+        emit_movaps_load(&mut code, Reg(0), 128);
+        assert_eq!(code, vec![0x0F, 0x28, 0x87, 0x80, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn emit_movaps_load_with_high_dst_register_emits_rex_r_and_masks_the_modrm_reg_field() {
+        let mut code = Vec::new();
+        emit_movaps_load(&mut code, Reg(9), 64);
+        assert_eq!(code, vec![0x44, 0x0F, 0x28, 0x47 | (1 << 3), 64]);
+    }
+
+    #[test]
+    fn emit_movaps_store_with_zero_offset_and_low_src_uses_direct_rdi_addressing() {
+        let mut code = Vec::new();
+        emit_movaps_store(&mut code, Reg(3), 0);
+        assert_eq!(code, vec![0x0F, 0x29, 0x07 | (3 << 3)]);
+    }
+
+    #[test]
+    fn emit_movaps_store_with_offset_just_under_128_uses_the_disp8_form() {
+        let mut code = Vec::new();
+        emit_movaps_store(&mut code, Reg(0), 127);
+        assert_eq!(code, vec![0x0F, 0x29, 0x47, 127]);
+    }
+
+    #[test]
+    fn emit_movaps_store_with_offset_128_switches_to_the_disp32_form() {
+        let mut code = Vec::new();
+        emit_movaps_store(&mut code, Reg(0), 128);
+        assert_eq!(code, vec![0x0F, 0x29, 0x87, 0x80, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn emit_movaps_store_with_high_src_register_emits_rex_r_and_masks_the_modrm_reg_field() {
+        let mut code = Vec::new();
+        emit_movaps_store(&mut code, Reg(9), 64);
+        assert_eq!(code, vec![0x44, 0x0F, 0x29, 0x47 | (1 << 3), 64]);
+    }
+
+    #[test]
+    fn emit_f32_const_with_zero_value_delegates_to_a_self_xor_splat() {
+        let mut code = Vec::new();
+        emit_f32_const(&mut code, Reg(5), 0.0);
+        let mut expected = Vec::new();
+        emit_vxorps(&mut expected, Reg(5), Reg(5), Reg(5));
+        assert_eq!(code, expected);
+    }
+
+    #[test]
+    fn emit_f32_const_with_nonzero_value_embeds_four_le_copies_and_a_rip_relative_load() {
+        let mut code = Vec::new();
+        emit_f32_const(&mut code, Reg(1), 1.5f32);
+        let bits = 1.5f32.to_bits();
+        let mut expected = vec![0xEB, 0x10];
+        for _ in 0..4 {
+            expected.extend_from_slice(&bits.to_le_bytes());
+        }
+        // No REX (dst < 8): instruction is 7 bytes, so disp = -(16 + 7).
+        expected.push(0x0F);
+        expected.push(0x10);
+        expected.push(0x05 | (1 << 3));
+        expected.extend_from_slice(&(-23i32).to_le_bytes());
+        assert_eq!(code, expected);
+    }
+
+    #[test]
+    fn emit_f32_const_with_high_dst_register_adds_rex_and_grows_the_rip_displacement() {
+        let mut code = Vec::new();
+        emit_f32_const(&mut code, Reg(10), 1.5f32);
+        let bits = 1.5f32.to_bits();
+        let mut expected = vec![0xEB, 0x10];
+        for _ in 0..4 {
+            expected.extend_from_slice(&bits.to_le_bytes());
+        }
+        // REX present (dst >= 8): instruction is 8 bytes, so disp = -(16 + 8).
+        expected.push(0x44);
+        expected.push(0x0F);
+        expected.push(0x10);
+        expected.push(0x05 | ((10 & 7) << 3));
+        expected.extend_from_slice(&(-24i32).to_le_bytes());
+        assert_eq!(code, expected);
+    }
+
+    #[test]
+    fn emit_vex_sets_the_w_bit_and_the_inverted_vvvv_and_pp_fields() {
+        let mut code = Vec::new();
+        emit_vex(&mut code, 0b10, 0b011, 1, Reg(9), Reg(5), Reg(2), 0x77);
+        assert_eq!(code, vec![0xC4, 0x63, 0xD2, 0x77, 0xCA]);
+    }
+
+    #[test]
+    fn emit_load_ptr_from_ctx_masks_both_gprs_into_disjoint_modrm_fields() {
+        let mut code = Vec::new();
+        emit_load_ptr_from_ctx(&mut code, 3, 2, 96);
+        assert_eq!(code, vec![0x48, 0x8B, 0x80 | (3 << 3) | 2, 96, 0, 0, 0]);
+    }
+
+    #[test]
+    fn emit_vpextrd_to_gpr_clears_rex_r_when_the_source_register_needs_it() {
+        let mut code = Vec::new();
+        emit_vpextrd_to_gpr(&mut code, 3, Reg(9), 2);
+        assert_eq!(code, vec![0xC4, 0x63, 0x79, 0x16, 0xCB, 2]);
+    }
+
+    #[test]
+    fn emit_vpextrd_to_gpr_sets_rex_r_for_a_low_source_register() {
+        let mut code = Vec::new();
+        emit_vpextrd_to_gpr(&mut code, 5, Reg(1), 0);
+        assert_eq!(code, vec![0xC4, 0xE3, 0x79, 0x16, 0xCD, 0]);
+    }
+
+    #[test]
+    fn emit_vmovss_load_scaled_encodes_a_scale_4_sib_addressed_load() {
+        let mut code = Vec::new();
+        emit_vmovss_load_scaled(&mut code, Reg(3), 6, 2);
+        assert_eq!(
+            code,
+            vec![0xC4, 0xE1, 0x7A, 0x10, ((3 & 7) << 3) | 0b100, (0b10 << 6) | (2 << 3) | 6]
+        );
+    }
+
+    #[test]
+    fn emit_movups_store_base_omits_rex_when_both_registers_are_low() {
+        let mut code = Vec::new();
+        emit_movups_store_base(&mut code, Reg(3), 3);
+        assert_eq!(code, vec![0x0F, 0x11, ((3 & 7) << 3) | 3]);
+    }
+
+    #[test]
+    fn emit_movups_store_base_sets_rex_r_when_only_the_source_register_is_high() {
+        let mut code = Vec::new();
+        emit_movups_store_base(&mut code, Reg(9), 3);
+        assert_eq!(code, vec![0x44, 0x0F, 0x11, ((9 & 7) << 3) | 3]);
+    }
+
+    #[test]
+    fn emit_movups_store_base_sets_rex_b_when_only_the_base_register_is_high() {
+        let mut code = Vec::new();
+        emit_movups_store_base(&mut code, Reg(2), 11);
+        assert_eq!(code, vec![0x41, 0x0F, 0x11, ((2 & 7) << 3) | (11 & 7)]);
+    }
+
+    #[test]
+    fn emit_movups_store_base_sets_both_rex_bits_when_both_registers_are_high() {
+        let mut code = Vec::new();
+        emit_movups_store_base(&mut code, Reg(11), 14);
+        assert_eq!(code, vec![0x45, 0x0F, 0x11, ((11 & 7) << 3) | (14 & 7)]);
+    }
+
+    #[test]
+    fn emit_cmp_tail_appends_the_vcmpps_predicate_immediate_after_the_modrm_byte() {
+        let mut code = Vec::new();
+        emit_cmp_tail(&mut code, Reg(1), Reg(9), CMP_LE);
+        assert_eq!(code, vec![0x41, 0x0F, 0xC2, 0xC0 | (1 << 3) | 1, CMP_LE]);
+    }
+
+    #[test]
+    fn emit_ternary_mul_add_moves_a_into_dst_first_when_dst_and_a_differ() {
+        let mut code = Vec::new();
+        emit_ternary(&mut code, OpKind::MulAdd, Reg(0), Reg(1), Reg(2), Reg(3));
+        let mut expected = Vec::new();
+        emit_sse_rr(&mut expected, None, &[0x0F, 0x28], Reg(0), Reg(1));
+        emit_mulps(&mut expected, Reg(0), Reg(2));
+        emit_addps(&mut expected, Reg(0), Reg(3));
+        assert_eq!(code, expected);
+    }
+
+    #[test]
+    fn emit_ternary_mul_add_skips_the_setup_move_when_dst_already_holds_a() {
+        let mut code = Vec::new();
+        emit_ternary(&mut code, OpKind::MulAdd, Reg(1), Reg(1), Reg(2), Reg(3));
+        let mut expected = Vec::new();
+        emit_mulps(&mut expected, Reg(1), Reg(2));
+        emit_addps(&mut expected, Reg(1), Reg(3));
+        assert_eq!(code, expected);
+    }
+
+    #[test]
+    fn emit_epilogue_moves_the_result_into_xmm0_when_it_is_not_already_there() {
+        let mut code = Vec::new();
+        emit_epilogue(&mut code, Reg(3));
+        let mut expected = Vec::new();
+        emit_sse_rr(&mut expected, None, &[0x0F, 0x28], Reg(0), Reg(3));
+        expected.push(0xC3);
+        assert_eq!(code, expected);
+    }
+
+    #[test]
+    fn emit_epilogue_skips_the_move_when_the_result_is_already_in_xmm0() {
+        let mut code = Vec::new();
+        emit_epilogue(&mut code, Reg(0));
+        assert_eq!(code, vec![0xC3]);
+    }
+
+    #[test]
+    fn emit_movmskps_eax_emits_rex_b_for_a_high_source_register() {
+        let mut code = Vec::new();
+        emit_movmskps_eax(&mut code, Reg(11));
+        assert_eq!(code, vec![0x41, 0x0F, 0x50, 0xC0 | (11 & 7)]);
+    }
+
+    #[test]
+    fn emit_movmskps_eax_omits_rex_for_a_low_source_register() {
+        let mut code = Vec::new();
+        emit_movmskps_eax(&mut code, Reg(2));
+        assert_eq!(code, vec![0x0F, 0x50, 0xC0 | 2]);
+    }
+
+    #[test]
+    fn emit_cmp_eax_imm8_emits_the_cmp_opcode_and_the_immediate_byte() {
+        let mut code = Vec::new();
+        emit_cmp_eax_imm8(&mut code, 0x0F);
+        assert_eq!(code, vec![0x83, 0xF8, 0x0F]);
     }
 }
