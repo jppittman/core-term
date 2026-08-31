@@ -288,10 +288,6 @@ pub struct EmitCtx {
     /// has would hand the allocator registers reserved for reloads or
     /// builtins. Setting it low is how a caller forces spilling deliberately.
     pub max_regs: u8,
-    /// Current spill offset from SP.
-    pub spill_offset: u32,
-    /// Number of spills performed (for cost modeling).
-    pub spill_count: u32,
 }
 
 impl Default for EmitCtx {
@@ -300,8 +296,6 @@ impl Default for EmitCtx {
             // At or above every backend's own pool (aarch64's 10 is the
             // largest), so the default caps nothing.
             max_regs: 10,
-            spill_offset: 0,
-            spill_count: 0,
         }
     }
 }
@@ -310,18 +304,7 @@ impl EmitCtx {
     /// Create context with custom register budget.
     #[must_use]
     pub fn with_max_regs(max_regs: u8) -> Self {
-        Self {
-            max_regs,
-            ..Default::default()
-        }
-    }
-
-    /// Allocate a spill slot, returns offset.
-    pub fn alloc_spill(&mut self) -> u32 {
-        let off = self.spill_offset;
-        self.spill_offset += 16; // 128-bit vector
-        self.spill_count += 1;
-        off
+        Self { max_regs }
     }
 }
 
