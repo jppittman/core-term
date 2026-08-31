@@ -18,12 +18,12 @@ pixelflow-ir = { path = "../pixelflow-ir", default-features = false, features = 
 pixelflow-ir = { path = "../pixelflow-ir", features = ["oracle"] }
 
 [features]
-# Vestigial: it no longer gates anything. It cannot simply be deleted, because
-# the crate does not actually build without `std` — `egraph/extraction.rs`
-# calls `std::env::var`/`std::fs::read` with no gate on the callers — so the
-# feature is a claim the crate cannot honour either way. Gating those callers
-# is the real fix; until then this keeps `pixelflow-pipeline`'s
-# `training = ["pixelflow-search/std"]` resolving.
+# Gates the capabilities that need a process environment or filesystem:
+# `ExprNnue::save`/`load`/`from_bytes` and the `PIXELFLOW_NNUE_WEIGHTS`
+# opt-in branch of `env_extraction_policy`. With `std` off, the static
+# latency prior is the only extraction policy compiled in — not a fallback,
+# the opt-in mechanism simply doesn't exist without an environment. CI's
+# `no-std` job checks this configuration keeps building.
 std = []
 default = ["std"]
 # Round 2b extraction-overhead investigation (docs/plans/2026-08-17-cost-model-domain.md,
