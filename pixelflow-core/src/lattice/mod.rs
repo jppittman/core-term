@@ -398,8 +398,8 @@ impl Lattice {
             "Lattice::bake: Field width does not match the JIT's emitted width"
         );
         let (arena, root) = kernel.parts();
-        let jit = pixelflow_codegen::jit_cache::compile_collapse_cached(arena, root)
-            .expect("kernel failed to compile");
+        let jit =
+            pixelflow_codegen::jit_cache::compile(arena, root).expect("kernel failed to compile");
 
         let [ex, ey, ez, ew] = self.extent.map(|e| e as usize);
         let mut buffer = vec![0.0f32; self.len()];
@@ -435,14 +435,13 @@ impl Lattice {
                     unsafe {
                         jit.call_collapse(
                             ctx,
-                            buffer[plane_offset..].as_mut_ptr(),
-                            full_groups,
-                            ey,
-                            tail * core::mem::size_of::<f32>(),
-                            core::mem::transmute::<Field, JitVec>(x0),
-                            core::mem::transmute::<Field, JitVec>(y0),
-                            core::mem::transmute::<Field, JitVec>(z_field),
-                            core::mem::transmute::<Field, JitVec>(w_field),
+                            pixelflow_codegen::TileSlice::new(
+                                buffer[plane_offset..].as_mut_ptr(),
+                                full_groups,
+                                ey,
+                                tail * core::mem::size_of::<f32>(),
+                            ),
+                            pixelflow_codegen::Point4::new(x0, y0, z_field, w_field),
                         );
                     }
                 }
@@ -455,14 +454,8 @@ impl Lattice {
                         unsafe {
                             jit.call_collapse(
                                 ctx,
-                                scratch.as_mut_ptr(),
-                                1,
-                                1,
-                                0,
-                                core::mem::transmute::<Field, JitVec>(x_tail),
-                                core::mem::transmute::<Field, JitVec>(y_field),
-                                core::mem::transmute::<Field, JitVec>(z_field),
-                                core::mem::transmute::<Field, JitVec>(w_field),
+                                pixelflow_codegen::TileSlice::single(scratch.as_mut_ptr()),
+                                pixelflow_codegen::Point4::new(x_tail, y_field, z_field, w_field),
                             );
                         }
                         buffer[row_offset + full_groups * PARALLELISM..row_offset + ex]
@@ -671,25 +664,6 @@ pub mod cell_grid;
 #[cfg(test)]
 mod tests;
 
-/// The vector type of the JIT's call ABI on this build. Mirrors
-/// `pixelflow_codegen::JIT_VECTOR_BYTES`'s 3-way split (SSE2/AVX2/AVX-512).
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    not(target_feature = "avx2")
-))]
-type JitVec = core::arch::x86_64::__m128;
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-type JitVec = core::arch::x86_64::__m256;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-type JitVec = core::arch::x86_64::__m512;
-#[cfg(target_arch = "aarch64")]
-type JitVec = core::arch::aarch64::float32x4_t;
-
 // ============================================================================
 // BilinearSampler: smooth read-back of a collapsed lattice
 // ============================================================================
@@ -897,8 +871,8 @@ impl DiscreteManifold {
         let height = u32::try_from(self.height).expect("buffer height exceeds u32");
         let (arena, root) = bilinear_arena(self.id, width, height);
         // Bound-memory arenas are uncacheable (the code bakes buffer slot
-        // metadata); compile_cached recognizes that and compiles fresh.
-        let jit = pixelflow_codegen::jit_cache::compile_cached(&arena, root)
+        // metadata); compile recognizes that and compiles fresh.
+        let jit = pixelflow_codegen::jit_cache::compile(&arena, root)
             .expect("bilinear sampler failed to compile");
         BilinearSampler { tex: self, jit }
     }
@@ -919,13 +893,8 @@ impl Manifold<(Field, Field, Field, Field)> for BilinearSampler {
         // whose decl matches `tex`'s extents, and `ctx` binds that buffer's
         // live base pointer for the duration of the call.
         unsafe {
-            core::mem::transmute::<JitVec, Field>(self.jit.call_bound(
-                ctx.as_ptr(),
-                core::mem::transmute::<Field, JitVec>(x),
-                core::mem::transmute::<Field, JitVec>(y),
-                core::mem::transmute::<Field, JitVec>(z),
-                core::mem::transmute::<Field, JitVec>(w),
-            ))
+            self.jit
+                .call_bound(ctx.as_ptr(), pixelflow_codegen::Point4::new(x, y, z, w))
         }
     }
 }
