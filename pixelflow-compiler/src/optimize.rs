@@ -104,13 +104,10 @@ pub fn optimize_with_model(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
     // Named kernels (`kernel! { pub struct Circle |...| {...} }`) carry a
     // real identity; anonymous closures don't — telemetry never invents one
     // for those (`kernel_label: None`), per the saturation-telemetry spec.
-    let kernel_label = analyzed
-        .def
-        .struct_decl
-        .as_ref()
-        .map(|s| s.name.to_string());
-    analyzed.def.body =
-        optimize_expr_with_model(analyzed.def.body, &extraction, kernel_label.as_deref());
+    // Passed as the borrowed `Ident` so nothing is allocated for the label
+    // unless the telemetry record is actually being written.
+    let kernel_label = analyzed.def.struct_decl.as_ref().map(|s| &s.name);
+    analyzed.def.body = optimize_expr_with_model(analyzed.def.body, &extraction, kernel_label);
     analyzed
 }
 
@@ -118,7 +115,7 @@ pub fn optimize_with_model(mut analyzed: AnalyzedKernel) -> AnalyzedKernel {
 fn optimize_expr_with_model(
     expr: Expr,
     extraction: &ExtractionPolicy,
-    kernel_label: Option<&str>,
+    kernel_label: Option<&syn::Ident>,
 ) -> Expr {
     // Blocks: pass directly to optimize_via_model. The e-graph's expr_to_egraph
     // already handles Block by adding each let-binding to var_to_eclass, so
@@ -152,7 +149,7 @@ fn optimize_expr_with_model(
 fn optimize_via_model(
     expr: &Expr,
     extraction: &ExtractionPolicy,
-    _kernel_label: Option<&str>,
+    _kernel_label: Option<&syn::Ident>,
 ) -> Expr {
     let mut ctx = EGraphContext::new();
     let root = ctx.expr_to_egraph(expr);
@@ -183,6 +180,7 @@ fn optimize_via_model(
         let telemetry_extraction = extraction.extraction(&ctx.egraph, root);
         let (telemetry_arena, telemetry_root) =
             pixelflow_search::egraph::choices_to_arena(&telemetry_extraction);
+        let kernel_label = _kernel_label.map(|ident| ident.to_string());
         pixelflow_search::telemetry::record(pixelflow_search::telemetry::SaturationInvocation {
             tier: "macro",
             node_count,
@@ -195,7 +193,7 @@ fn optimize_via_model(
             extracted_arena: &telemetry_arena,
             extracted_root: telemetry_root,
             wall_clock: telemetry_start.elapsed(),
-            kernel_label: _kernel_label,
+            kernel_label: kernel_label.as_deref(),
         });
     }
 
@@ -484,7 +482,7 @@ fn is_coordinate_intrinsic(name: &str) -> bool {
 fn optimize_block_preserving_structure(
     mut block: BlockExpr,
     extraction: &ExtractionPolicy,
-    kernel_label: Option<&str>,
+    kernel_label: Option<&syn::Ident>,
 ) -> Expr {
     for stmt in &mut block.stmts {
         if let Stmt::Let(let_stmt) = stmt {
