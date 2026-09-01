@@ -1121,7 +1121,7 @@ mod tests {
 /// core-term kernel quiesces or is cut off by the iteration cap, the class
 /// cap, or the wall-clock ceiling. This `#[ignore]`d test replays the same
 /// three production calls, reads the stop reason off
-/// `SaturationResult::stop_reason` — the loop's own decision, never inferred
+/// `SaturationResult::stop` — the loop's own decision, never inferred
 /// from counts or from extra runs — and measures what the budget cost by
 /// re-running each kernel with a generous budget and no wall clock. It
 /// replays — `EGraph::with_rules(all_rules())` (`:122`),
@@ -1135,15 +1135,15 @@ mod tests {
 /// them out would be the public-API change this measurement must not make.
 ///
 /// Nothing here changes production behavior. The one production change this
-/// measurement depends on is `SaturationStopReason` / `stop_reason` on
-/// `SaturationStats` and `SaturationResult` (with `ApplyResult::stop` feeding
+/// measurement depends on is `SaturationStop` / `stop` on
+/// `SaturationStats` and `SaturationResult` (with `ApplyResult::truncated` feeding
 /// it): a type for a meaning the loop already had, so the reason can be read
 /// instead of inferred. Everything else is `#[cfg(test)]`.
 #[cfg(test)]
 mod production_telemetry {
     use super::*;
     use crate::egraph::{
-        CostModel, ExtractionPolicy, SaturationConfig, SaturationStopReason, extract_dag,
+        CostModel, ExtractionPolicy, SaturationConfig, SaturationStop, extract_dag,
     };
     use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
     use std::fmt::Write as _;
@@ -1290,7 +1290,7 @@ mod production_telemetry {
     }
 
     struct Run {
-        stop: SaturationStopReason,
+        stop: SaturationStop,
         iterations: usize,
         total_unions: usize,
         classes_after: usize,
@@ -1360,7 +1360,7 @@ mod production_telemetry {
         let dp_cost = extract_dag(&egraph, root_class, &costs).total_cost;
 
         Run {
-            stop: result.stop_reason,
+            stop: result.stop,
             iterations: result.iterations,
             total_unions: result.total_unions,
             classes_after: result.classes_after,
@@ -1387,7 +1387,7 @@ mod production_telemetry {
     /// against) or when both costs are zero (the 1-node space glyph: 0/0 is
     /// undefined, not 0%).
     fn loss_pct(prod: &Run, generous: &Run) -> Option<f64> {
-        if generous.stop == SaturationStopReason::Timeout {
+        if generous.stop == SaturationStop::Timeout {
             return None;
         }
         if generous.cost == 0 {
@@ -1478,9 +1478,9 @@ mod production_telemetry {
         struct Row {
             name: String,
             group: String,
-            stop: SaturationStopReason,
-            ref_stop: SaturationStopReason,
-            lifted_stop: SaturationStopReason,
+            stop: SaturationStop,
+            ref_stop: SaturationStop,
+            lifted_stop: SaturationStop,
             loss_vs_ref: Option<f64>,
             loss_vs_lifted: Option<f64>,
             apps: usize,
@@ -1526,10 +1526,10 @@ mod production_telemetry {
             let mut fatal = false;
             let clock_did_not_decide = matches!(
                 prod.stop,
-                SaturationStopReason::Converged | SaturationStopReason::ClassLimit
+                SaturationStop::Quiesced | SaturationStop::ClassCap
             );
             if clock_did_not_decide
-                && refr.stop != SaturationStopReason::Timeout
+                && refr.stop != SaturationStop::Timeout
                 && prod.signature() != refr.signature()
             {
                 // Production stopped on its own (no clock involved), so the
@@ -1552,13 +1552,13 @@ mod production_telemetry {
                     refr.cost
                 ));
             }
-            if refr.stop == SaturationStopReason::Timeout {
+            if refr.stop == SaturationStop::Timeout {
                 anomaly.push(format!(
                     "same-cap generous run cut by the {ceiling:?} harness ceiling after {} iterations: loss_vs_ref unmeasured",
                     refr.iterations
                 ));
             }
-            if lifted.stop == SaturationStopReason::Timeout {
+            if lifted.stop == SaturationStop::Timeout {
                 anomaly.push(format!(
                     "cap-lifted generous run cut by the harness ceiling ({remaining:?} left of {ceiling:?}) after {} iterations: loss_vs_lifted unmeasured",
                     lifted.iterations
@@ -1566,8 +1566,8 @@ mod production_telemetry {
             }
             if loss_vs_ref.is_some_and(|l| l < 0.0)
                 || loss_vs_lifted.is_some_and(|l| l < 0.0)
-                || (lifted.stop != SaturationStopReason::Timeout
-                    && refr.stop != SaturationStopReason::Timeout
+                || (lifted.stop != SaturationStop::Timeout
+                    && refr.stop != SaturationStop::Timeout
                     && refr.cost < lifted.cost)
             {
                 anomaly.push(format!(
@@ -1583,7 +1583,7 @@ mod production_telemetry {
                  \t{:?}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}",
                 tier_name(&config),
                 prod.stop,
-                prod.stop == SaturationStopReason::Timeout,
+                prod.stop == SaturationStop::Timeout,
                 prod.iterations,
                 config.max_iterations,
                 prod.classes_after,
@@ -1653,17 +1653,17 @@ mod production_telemetry {
         groups.dedup();
         groups.push("ALL".to_string());
         println!(
-            "\n== summary (stop = SaturationResult::stop_reason; ref = {mult}x iterations/same cap; lifted = {mult}x iterations/{mult}x cap; both without production's clock, under a {ceiling:?} per-kernel ceiling) =="
+            "\n== summary (stop = SaturationResult::stop; ref = {mult}x iterations/same cap; lifted = {mult}x iterations/{mult}x cap; both without production's clock, under a {ceiling:?} per-kernel ceiling) =="
         );
         println!(
-            "group\tn\tconverged\titer_limit\tclass_limit\ttimeout\tref_class_limit\tlifted_class_limit\tn_loss_ref\tmed_loss_ref%\tp90_loss_ref%\tmax_loss_ref%\tn_loss_lifted\tmed_loss_lifted%\tp90_loss_lifted%\tmax_loss_lifted%\tmed_apps\tmax_apps"
+            "group\tn\tquiesced\titer_ceiling\tclass_cap\ttimeout\tref_class_cap\tlifted_class_cap\tn_loss_ref\tmed_loss_ref%\tp90_loss_ref%\tmax_loss_ref%\tn_loss_lifted\tmed_loss_lifted%\tp90_loss_lifted%\tmax_loss_lifted%\tmed_apps\tmax_apps"
         );
         for g in &groups {
             let sel: Vec<&Row> = rows
                 .iter()
                 .filter(|r| g == "ALL" || &r.group == g)
                 .collect();
-            let count = |s: SaturationStopReason| sel.iter().filter(|r| r.stop == s).count();
+            let count = |s: SaturationStop| sel.iter().filter(|r| r.stop == s).count();
             let lr: Vec<f64> = sel.iter().filter_map(|r| r.loss_vs_ref).collect();
             let ll: Vec<f64> = sel.iter().filter_map(|r| r.loss_vs_lifted).collect();
             let apps: Vec<f64> = sel.iter().map(|r| r.apps as f64).collect();
@@ -1682,15 +1682,15 @@ mod production_telemetry {
             println!(
                 "{g}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}",
                 sel.len(),
-                count(SaturationStopReason::Converged),
-                count(SaturationStopReason::IterationLimit),
-                count(SaturationStopReason::ClassLimit),
-                count(SaturationStopReason::Timeout),
+                count(SaturationStop::Quiesced),
+                count(SaturationStop::IterationCeiling),
+                count(SaturationStop::ClassCap),
+                count(SaturationStop::Timeout),
                 sel.iter()
-                    .filter(|r| r.ref_stop == SaturationStopReason::ClassLimit)
+                    .filter(|r| r.ref_stop == SaturationStop::ClassCap)
                     .count(),
                 sel.iter()
-                    .filter(|r| r.lifted_stop == SaturationStopReason::ClassLimit)
+                    .filter(|r| r.lifted_stop == SaturationStop::ClassCap)
                     .count(),
                 lr.len(),
                 q(&lr),
@@ -1711,8 +1711,7 @@ mod production_telemetry {
         let ceiling_hits: Vec<&Row> = rows
             .iter()
             .filter(|r| {
-                r.ref_stop == SaturationStopReason::Timeout
-                    || r.lifted_stop == SaturationStopReason::Timeout
+                r.ref_stop == SaturationStop::Timeout || r.lifted_stop == SaturationStop::Timeout
             })
             .collect();
         println!(
