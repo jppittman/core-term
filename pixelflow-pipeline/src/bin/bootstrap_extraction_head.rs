@@ -902,12 +902,15 @@ fn spearman_rho(a: &[f32], b: &[f32]) -> Option<f64> {
 fn load_model(path: &Path, seed: u64) -> ExprNnue {
     if !path.exists() {
         eprintln!(
-            "\n########## COLD START ##########\n\
-             No weights at {} — initializing randomly from seed {seed}.\n\
-             ################################\n",
+            "\n########## COLD START (prior-seeded) ##########\n\
+             No weights at {} — initializing from the latency prior (seed {seed}):\n\
+             dimension 0 of every op embedding starts from the handwritten cycle table\n\
+             (`latency_prior_cycles`), not from noise; remaining dimensions and all\n\
+             network weights are random.\n\
+             ################################################\n",
             path.display()
         );
-        return ExprNnue::new_random(seed);
+        return ExprNnue::new_with_latency_prior(seed);
     }
 
     let model = ExprNnue::load(path).unwrap_or_else(|e| {
