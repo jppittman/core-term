@@ -112,12 +112,21 @@ pub struct ApplyResult {
 /// Result of one [`EGraph::saturate_with_limits`] run: how many rounds it
 /// took and how many rule applications fired in total, whichever limit
 /// (iteration count, class count, timeout, or convergence) ended the run.
-#[derive(Clone, Copy, Debug, Default)]
+///
+/// Deliberately not `Default`: a defaulted `stop` would be an invented
+/// stop reason, and nothing constructs an empty stats value.
+#[derive(Clone, Copy, Debug)]
 pub struct SaturationStats {
     /// Number of rewrite rounds completed before the run stopped.
     pub iterations: usize,
     /// Sum of `ApplyResult::changes` across every round.
     pub total_unions: usize,
+    /// Which condition ended the run — READ from the loop that stopped, so a
+    /// caller never has to infer "quiesced" from `iterations < max_iters`
+    /// (which conflates a timeout or class cap with quiescence).
+    /// [`SaturationStop::ApplicationBudget`] never occurs here: this loop has
+    /// no application budget.
+    pub stop: SaturationStop,
 }
 
 /// Why an [`EGraph::saturate_until_applications`] call stopped — an explicit
@@ -912,12 +921,17 @@ impl EGraph {
         let deadline = start + timeout;
         let mut iterations = 0;
         let mut total_unions = 0;
+        // Recorded at the point the loop decides to stop — never inferred
+        // afterwards from the counters.
+        let mut stop = SaturationStop::IterationCeiling;
 
         for _ in 0..max_iters {
             if start.elapsed() >= timeout {
+                stop = SaturationStop::Timeout;
                 break;
             }
             if self.classes.len() > max_classes {
+                stop = SaturationStop::ClassCap;
                 break;
             }
             iterations += 1;
@@ -944,13 +958,23 @@ impl EGraph {
             };
             total_unions += unions;
             if unions == 0 {
-                break; // Saturated
+                // `apply_rule` truncates its own scan once the deadline has
+                // passed, so a zero-union sweep with the deadline expired is
+                // a truncated scan, not quiescence (same distinction
+                // `saturate_until_applications` draws).
+                stop = if start.elapsed() >= timeout {
+                    SaturationStop::Timeout
+                } else {
+                    SaturationStop::Quiesced
+                };
+                break;
             }
         }
 
         SaturationStats {
             iterations,
             total_unions,
+            stop,
         }
     }
 

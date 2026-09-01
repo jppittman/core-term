@@ -43,7 +43,8 @@ pub mod saturate;
 
 // Re-export public API
 pub use anytime::{
-    APP_CHECKPOINT_GRID, AnytimeCheckpoint, AnytimeCurve, AnytimeCurveOutput, run_anytime_curve,
+    APP_CHECKPOINT_GRID, AnytimeCheckpoint, AnytimeCurve, AnytimeCurveOutput, AnytimeStep,
+    AnytimeStepper, UnguidedStepper, run_anytime_curve, run_anytime_curve_with,
 };
 pub use candidate::{
     CandidateFeatures, CandidateKey, ClassContentKey, Firing,
@@ -70,8 +71,9 @@ pub use provenance::{
 };
 pub use rewrite::{Rewrite, RewriteAction};
 pub use saturate::{
-    SaturationConfig, SaturationResult, achievable_cost_within_budget, config_for_node_count,
-    saturate_guided_until_applications, saturate_with_budget, saturate_with_full_budget,
+    GuidedSaturation, SaturationConfig, SaturationResult, achievable_cost_within_budget,
+    config_for_node_count, saturate_guided_until_applications, saturate_with_budget,
+    saturate_with_full_budget,
 };
 
 // Re-export rule types from math module for backward compatibility
