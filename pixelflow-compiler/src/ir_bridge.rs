@@ -982,9 +982,7 @@ mod expansion_derivative_tests {
 #[cfg(test)]
 mod production_telemetry {
     use super::*;
-    use pixelflow_search::egraph::{
-        CostModel, EGraph, SaturationStats, SaturationStopReason, extract,
-    };
+    use pixelflow_search::egraph::{CostModel, EGraph, SaturationStats, SaturationStop, extract};
     use std::time::{Duration, Instant};
 
     /// Verbatim closure body from
@@ -1063,7 +1061,7 @@ mod production_telemetry {
     }
 
     struct DwrtRun {
-        stop: SaturationStopReason,
+        stop: SaturationStop,
         iterations: usize,
         total_unions: usize,
         classes_after: usize,
@@ -1165,7 +1163,7 @@ mod production_telemetry {
         };
 
         Ok(DwrtRun {
-            stop: stats.stop_reason,
+            stop: stats.stop,
             iterations: stats.iterations,
             total_unions: stats.total_unions,
             classes_after: eg.num_classes(),
@@ -1324,7 +1322,7 @@ mod production_telemetry {
             "reference/lifted run left Dwrt unresolved despite a larger budget — investigate before trusting cost numbers"
         );
 
-        // Read off the loop's own decision (`SaturationStats::stop_reason`),
+        // Read off the loop's own decision (`SaturationStats::stop`),
         // never inferred from the reference runs; those exist only to price
         // the truncation.
         let stop = prod.stop;
