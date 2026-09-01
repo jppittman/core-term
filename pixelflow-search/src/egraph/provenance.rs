@@ -197,6 +197,18 @@ impl Provenance {
         &self.unions
     }
 
+    /// Iterate every recorded `(ENodeId, Origin)` pair, in arbitrary order
+    /// (backed by a `HashMap`). Read-only counterpart to [`Self::applications`]
+    /// / [`Self::union_events`] for callers that need the reverse direction —
+    /// e.g. "which e-nodes did this `ApplicationId` create?" — without
+    /// changing what gets recorded or how ancestry is computed. Added for the
+    /// guided-saturation scoping measurements (`derivation_ancestors`'s
+    /// over-approximation looseness, docs/plans/2026-07-07-guided-saturation-redesign.md
+    /// lines 88-90): purely additive, no existing behavior touched.
+    pub fn origins(&self) -> impl Iterator<Item = (ENodeId, Origin)> + '_ {
+        self.origins.iter().map(|(&id, &origin)| (id, origin))
+    }
+
     /// Iterate every recorded application, in firing order, paired with its
     /// `ApplicationId`. The counterpart to indexed lookup via [`Self::application`]
     /// for callers (e.g. the hindsight labeler) that need to walk the whole log.

@@ -106,3 +106,17 @@ path = "src/bin/profile_extraction.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "guide_headroom"
+path = "src/bin/guide_headroom.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
+
+[[bin]]
+name = "guide_scope_saturation_delta"
+path = "src/bin/guide_scope_saturation_delta.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
