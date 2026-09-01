@@ -96,7 +96,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use serde::Serialize;
 
 use pixelflow_ir::{ExprArena, ExprId};
@@ -165,9 +165,22 @@ struct Args {
     #[arg(long, default_value_t = 256)]
     batch_size: usize,
 
-    /// Input model weights: loaded if the file exists, else random init.
+    /// Input model weights: loaded if the file exists, else a cold start
+    /// per `--cold-start`.
     #[arg(long, default_value_os_t = extraction_head_weights_path())]
     model: PathBuf,
+
+    /// How a cold start initializes the op embeddings, when `--model` names
+    /// no existing file.
+    ///
+    /// An explicit choice rather than a consequence of which code is current:
+    /// the paper's Round-3 ablation compares a random-init run against a
+    /// prior-seeded one, and with the initializer hard-coded the losing arm
+    /// could only be reproduced by editing this file — which changes the
+    /// recorded experiment identity and so is not a reproduction. Journaled
+    /// as `cold_start` so a run's initializer is readable off its own record.
+    #[arg(long, value_enum, default_value_t = ColdStart::Prior)]
+    cold_start: ColdStart,
 
     /// Output path for the trained weights.
     #[arg(long, default_value_os_t = extraction_head_weights_path())]
@@ -390,6 +403,10 @@ struct TrainerMetrics {
     epochs: usize,
     lr: f32,
     seed: u64,
+    /// Which cold-start initializer produced this run's embeddings, when it
+    /// was a cold start. Recorded so a journal line identifies its own
+    /// ablation arm.
+    cold_start: &'static str,
     order_seed: u64,
     /// DEV held-out intrinsic quality — the trainer's side of the plan §4.1
     /// eval-intrinsic step.
@@ -899,18 +916,53 @@ fn spearman_rho(a: &[f32], b: &[f32]) -> Option<f64> {
 ///
 /// A file that exists but fails to parse is corrupt and fails loudly rather
 /// than silently retraining from scratch.
-fn load_model(path: &Path, seed: u64) -> ExprNnue {
+/// How a cold start seeds the op embeddings.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum ColdStart {
+    /// Dimension 0 of every op embedding starts from the handwritten cycle
+    /// table (`latency_prior_cycles`); the rest is noise.
+    Prior,
+    /// Every embedding is He-scaled noise — the pre-2026-09-01 default, and
+    /// the arm the paper's §5.4 ablation compares against.
+    Random,
+}
+
+impl ColdStart {
+    fn slug(self) -> &'static str {
+        match self {
+            Self::Prior => "prior",
+            Self::Random => "random",
+        }
+    }
+}
+
+fn load_model(path: &Path, seed: u64, cold_start: ColdStart) -> ExprNnue {
     if !path.exists() {
-        eprintln!(
-            "\n########## COLD START (prior-seeded) ##########\n\
-             No weights at {} — initializing from the latency prior (seed {seed}):\n\
-             dimension 0 of every op embedding starts from the handwritten cycle table\n\
-             (`latency_prior_cycles`), not from noise; remaining dimensions and all\n\
-             network weights are random.\n\
-             ################################################\n",
-            path.display()
-        );
-        return ExprNnue::new_with_latency_prior(seed);
+        match cold_start {
+            ColdStart::Prior => {
+                eprintln!(
+                    "\n########## COLD START (prior-seeded) ##########\n\
+                     No weights at {} — initializing from the latency prior (seed {seed}):\n\
+                     dimension 0 of every op embedding starts from the handwritten cycle table\n\
+                     (`latency_prior_cycles`), not from noise; remaining dimensions and all\n\
+                     network weights are random.\n\
+                     ################################################\n",
+                    path.display()
+                );
+                return ExprNnue::new_with_latency_prior(seed);
+            }
+            ColdStart::Random => {
+                eprintln!(
+                    "\n########## COLD START (random) ##########\n\
+                     No weights at {} — initializing every embedding from He-scaled noise\n\
+                     (seed {seed}). This is the ablation arm: the latency prior is NOT\n\
+                     seeded, so dimension 0 carries no cycle-table information.\n\
+                     #########################################\n",
+                    path.display()
+                );
+                return ExprNnue::new_random(seed);
+            }
+        }
     }
 
     let model = ExprNnue::load(path).unwrap_or_else(|e| {
@@ -972,7 +1024,7 @@ fn corpus_tier_identity(corpus_dir: &Path) -> String {
 fn main() {
     let args = Args::parse();
 
-    let mut model = load_model(&args.model, args.seed);
+    let mut model = load_model(&args.model, args.seed, args.cold_start);
 
     let rules = all_rules();
     let templates = build_rule_templates(&rules);
@@ -1743,6 +1795,7 @@ fn main() {
             epochs: args.epochs,
             lr: args.lr,
             seed: args.seed,
+            cold_start: args.cold_start.slug(),
             order_seed,
             dev_samples: measured.len(),
             dev_mae_log_ns: dev_mae,
