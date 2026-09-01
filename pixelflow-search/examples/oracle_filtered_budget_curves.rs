@@ -115,6 +115,12 @@ use pixelflow_search::egraph::{
 use pixelflow_search::nnue::{BwdGenConfig, BwdGenerator};
 
 /// Safety ceiling only — see module docs. Never approached by anything here.
+/// Applies to one expression's WHOLE curve (`run_anytime_curve`'s single-
+/// iteration `saturate_with_limits` calls each pass the *remaining* duration
+/// against one deadline computed once, not this constant re-passed fresh —
+/// `saturate_with_limits` starts its own `Instant::now()` clock on every
+/// call, so re-passing the constant would let a `ceiling_iters`-long curve
+/// run for up to `ceiling_iters * SAFETY_TIMEOUT`, not `SAFETY_TIMEOUT`).
 const SAFETY_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Standardized work-fraction grid, expressed as a multiple of the
@@ -491,9 +497,21 @@ fn run_anytime_curve(
     let mut checkpoints: Vec<Checkpoint> = Vec::with_capacity(FRACS.len());
     let mut quiesced_at: Option<usize> = None;
     let mut target_idx = 0;
+    // One deadline for the whole curve, not one per single-iteration call
+    // (see `SAFETY_TIMEOUT`'s doc comment for why re-passing the constant
+    // would let this loop run far longer than the documented ceiling).
+    let curve_deadline = std::time::Instant::now() + SAFETY_TIMEOUT;
 
     for iter in 1..=ceiling_iters {
-        let stats = egraph.saturate_with_limits(1, ceiling_classes, SAFETY_TIMEOUT);
+        let remaining = curve_deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "oracle_filtered_budget_curves: one expression's curve ran past the \
+             {SAFETY_TIMEOUT:?} safety ceiling (iteration {iter}/{ceiling_iters}) -- this \
+             was expected to never bind at this corpus's scale; fail loud rather than \
+             silently truncate and report a partial curve"
+        );
+        let stats = egraph.saturate_with_limits(1, ceiling_classes, remaining);
         if target_idx < target_iters.len() && iter == target_iters[target_idx] {
             let extraction = extract_dag(&egraph, root_class, &costs);
             checkpoints.push(make_checkpoint(
@@ -615,9 +633,22 @@ fn measure_expression(item: &CorpusItem) -> ExprMeasurement {
         .min()
         .expect("FRACS non-empty => at least one checkpoint per curve");
 
+    // `global_best == 0` means SOME checkpoint (either curve, any frac)
+    // extracted to a free `Const`/`Var`. A checkpoint that matches that
+    // (cost == 0 too) is exactly as good -- 0% regret, correct. A checkpoint
+    // with positive cost is not "equally good relative to a free reference"
+    // -- (cost - 0) / 0 is not 0, it is unboundedly worse, since ANY nonzero
+    // cost is infinitely far from free. Reporting 0.0 there (the previous
+    // behavior) silently erased a real regret signal for any expression
+    // whose curve simplifies to zero-cost only at a LATER checkpoint than
+    // an earlier positive-cost one -- not observed in this corpus's current
+    // checkpoint grid (see the report's "checkpoint-grid miscalibration"
+    // finding: costs are flat across checkpoints for every sampled
+    // expression here), but exactly the failure mode a recalibrated,
+    // finer-grained rerun would be vulnerable to.
     let regret = |cost: usize| -> f64 {
         if global_best == 0 {
-            0.0
+            if cost == 0 { 0.0 } else { f64::INFINITY }
         } else {
             (cost as f64 - global_best as f64) / global_best as f64 * 100.0
         }

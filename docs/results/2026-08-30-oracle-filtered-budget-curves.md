@@ -23,6 +23,29 @@ originally — only what the CSV itself contains. Do not re-run this harness whi
 worktree's timed benchmark may be live; check `pgrep -fl "bootstrap_extraction_head|bench_extraction_3way"`
 first.
 
+**Revision note (2026-09-01):** an automated review of PR #1067 (`chatgpt-codex-connector`) found
+two defects in this harness, both fixed but neither re-run (the CSV above is unaffected by either
+— see why for each):
+
+1. *Safety timeout scoped per-iteration, not per-curve.* `run_anytime_curve` re-passed the same
+   300s `Duration` to every single-iteration `saturate_with_limits` call, and that function starts
+   its own `Instant::now()` clock on every call — so a `ceiling_iters`-long curve could in
+   principle run for up to `ceiling_iters * 300s`, not the documented 300s ceiling. Fixed: one
+   deadline is now computed per expression, and each call passes the *remaining* duration
+   (fail-loud `assert!` if it's ever exhausted). Not re-run because it had no effect on the
+   existing data: the full 225-expression run completed in ~5 minutes total, nowhere near any
+   iteration individually approaching 300s.
+2. *Zero-baseline regret could mask real regret.* `regret(cost)` returned `0.0` whenever
+   `global_best == 0`, regardless of `cost` — so an expression whose curve simplifies to a free
+   `Const`/`Var` only at a *later* checkpoint than an earlier positive-cost one would have that
+   earlier regret silently erased. Fixed: a positive cost over a zero baseline now reports
+   `f64::INFINITY`. Not re-run because it had no effect on the existing data either: as this
+   report's own "checkpoint-grid miscalibration" finding establishes, every sampled expression's
+   cost is flat across all five checkpoints (97.8% never advance past the first one at all) — the
+   masking scenario requires cost to *vary* within an expression's checkpoint set, which does not
+   happen anywhere in this dataset. This is exactly the failure mode a recalibrated,
+   finer-grained re-run (§ "Design implications", point 1) would be vulnerable to if left unfixed.
+
 ## Methodology, from the harness's own module doc
 
 The kernel language is strongly normalizing and this optimizer is budget-only by design:
