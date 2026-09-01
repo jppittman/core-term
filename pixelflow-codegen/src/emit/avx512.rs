@@ -716,6 +716,42 @@ mod tests {
             check(run(&c, xs, ys, zs), |i| xs[i] * ys[i] + zs[i], "fma231");
         }
 
+        /// The FMA bytes really are an FMA: **one** rounding, not a multiply
+        /// followed by an add.
+        ///
+        /// `fma_231`'s 1e-3 tolerance cannot tell those apart — the whole
+        /// difference is the last mantissa bit — so a stand-in built out of a
+        /// multiply and an add would pass it. `1.0000001 * 4097 + 4097` is one
+        /// of the inputs CLAUDE.md's `MulAdd` row is about, where the two
+        /// forms genuinely disagree, and this asserts the bits.
+        #[test]
+        fn fma_rounds_once() {
+            let xs = [1.000_000_1f32; 16];
+            let ys = [4097.0f32; 16];
+            let zs = [4097.0f32; 16];
+            let one = xs[0].mul_add(ys[0], zs[0]);
+            // `black_box` stops LLVM contracting the reference into the very
+            // instruction it exists to be different from.
+            let two = core::hint::black_box(xs[0] * ys[0]) + zs[0];
+            assert_ne!(
+                one.to_bits(),
+                two.to_bits(),
+                "this input no longer separates one rounding from two"
+            );
+
+            let mut c = Vec::new();
+            emit_mov(&mut c, Reg(5), Z);
+            emit_fmadd_c_in_dst(&mut c, Reg(5), X, Y);
+            emit_mov(&mut c, X, Reg(5));
+            for (i, &g) in run(&c, xs, ys, zs).iter().enumerate() {
+                assert_eq!(
+                    g.to_bits(),
+                    one.to_bits(),
+                    "lane {i}: {g} rounded twice; the fused answer is {one}"
+                );
+            }
+        }
+
         #[test]
         fn gather_from_buffer() {
             // JIT a function: fn(*const f32 base [rdi], __m512 idx_float [zmm0]) -> __m512
