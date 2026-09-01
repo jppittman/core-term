@@ -536,8 +536,25 @@ jobs:
   # `use alloc::vec::Vec;` lines; the rest were `format!`/`String`/`vec!`
   # imports and seven `f32` inherent methods routed through the `libm`
   # dependency the crate already carried.
+  #
+  # `pixelflow-search` with its own `std` feature off is enforced here too
+  # (since 2026-08-30, when that feature became honest: the
+  # `PIXELFLOW_NNUE_WEIGHTS` opt-in callers in `egraph/extraction.rs` gained
+  # the `#[cfg(feature = "std")]` gates matching `ExprNnue::from_bytes`). This
+  # replaced the informational `std-off-status` job that tracked the gap
+  # while it existed.
+  #
+  # Unlike the pixelflow-ir check above, this is not a no_std guarantee:
+  # pixelflow-search's `lib.rs` never applies `#![no_std]`, `egraph/graph.rs`
+  # uses `std::` unconditionally outside the NNUE opt-in path, and this
+  # crate's own Cargo.toml hard-forces its `pixelflow-ir` dependency's `std`
+  # feature on. So this step only proves the crate's own `std` Cargo feature
+  # can be turned off without breaking the build (i.e. the NNUE opt-in is
+  # properly gated) on a host that still has libstd -- not that the crate
+  # builds without it. Making pixelflow-search genuinely no_std is separate,
+  # larger work.
   no-std:
-    name: pixelflow-ir builds with std off
+    name: pixelflow-ir no_std + pixelflow-search std-feature-off builds
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -565,31 +582,5 @@ jobs:
         env:
           RUSTFLAGS: "-D warnings"
 
-  # `pixelflow-search` still declares `std` as an optional, default-on feature
-  # it cannot honour: `env_extraction_policy`/`load_opt_in_weights` in
-  # `egraph/extraction.rs` call `std::env::var`/`std::fs::read`/
-  # `ExprNnue::from_bytes` unconditionally, with no matching
-  # `#[cfg(feature = "std")]` gate on the callers. Gating them is real work of
-  # unknown scope, so this job keeps the gap visible rather than dark. Delete
-  # it once the crate passes and fold the check into `no-std` above.
-  std-off-status:
-    name: pixelflow-search std-off status (informational, non-blocking)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 15
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Check with std off
-        shell: bash
-        run: |
-          set -uo pipefail
-          if cargo check -p pixelflow-search --no-default-features; then
-            echo "PASS: pixelflow-search --no-default-features -- fold this into the no-std job"
-          else
-            echo "::warning::FAIL (known, tracked): pixelflow-search --no-default-features"
-          fi
+      - name: cargo check -p pixelflow-search --no-default-features
+        run: cargo check -p pixelflow-search --no-default-features

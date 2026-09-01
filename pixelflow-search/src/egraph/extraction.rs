@@ -8,18 +8,18 @@
 //! [`ExtractionPolicy::choices`] — one implementation, not two copies of the
 //! `PIXELFLOW_NNUE_WEIGHTS` opt-in.
 
-// NOTE: this module uses `std::env::var`/`std::fs::read`/`OnceLock`
-// unconditionally, with no `#[cfg(feature = "std")]` gate, even though the
-// crate's `std` feature is optional and default-on. `cargo check -p
-// pixelflow-search --no-default-features` fails here today; no CI job
-// builds this crate with `std` off, so that's never been exercised. Treat
-// `std`-off as aspirational until the `std-off-status` job in
-// `.github/workflows/rust.yaml` is green.
+// The `PIXELFLOW_NNUE_WEIGHTS` opt-in reads a process env var and a weights
+// file, so that branch — and only that branch — is gated on the crate's
+// `std` feature, matching the gate on `ExprNnue::from_bytes` it calls. With
+// `std` off, the static latency prior is the only policy compiled in; the
+// `no-std` job in `.github/workflows/rust.yaml` enforces that this crate
+// keeps building in that configuration.
 use super::cost::CostModel;
 use super::extract::{Extraction, extract_dag};
 use super::graph::EGraph;
 use super::node::EClassId;
 use crate::nnue::ExprNnue;
+#[cfg(feature = "std")]
 use std::sync::OnceLock;
 
 /// Which cost model drives e-graph extraction.
@@ -36,6 +36,9 @@ use std::sync::OnceLock;
 /// extraction. Any failure to load — missing file, wrong magic, wrong length
 /// — is a hard failure with a precise diagnostic: if you asked for learned
 /// weights, you get them or the caller panics. There is no silent fallback.
+/// The mechanism is an env var plus a weights file, so it exists only with
+/// the `std` feature (default-on); without it, [`env_extraction_policy`]
+/// compiles down to the static branch alone.
 pub enum ExtractionPolicy<'a> {
     /// Opt-in learned extraction (`PIXELFLOW_NNUE_WEIGHTS` set).
     Nnue(&'a ExprNnue),
@@ -75,6 +78,7 @@ impl ExtractionPolicy<'_> {
 }
 
 /// The opt-in NNUE weights, loaded once and cached for the process lifetime.
+#[cfg(feature = "std")]
 static OPTIMIZATION_MODEL: OnceLock<ExprNnue> = OnceLock::new();
 
 /// Select the extraction policy from the environment: `PIXELFLOW_NNUE_WEIGHTS`
@@ -83,6 +87,7 @@ static OPTIMIZATION_MODEL: OnceLock<ExprNnue> = OnceLock::new();
 /// Read at the call site's own time — macro expansion time for the AOT tier,
 /// first-bake time for the runtime tier — so both tiers honor the same env
 /// var the same way.
+#[cfg(feature = "std")]
 pub fn env_extraction_policy() -> ExtractionPolicy<'static> {
     match std::env::var("PIXELFLOW_NNUE_WEIGHTS") {
         Ok(path) => {
@@ -92,11 +97,22 @@ pub fn env_extraction_policy() -> ExtractionPolicy<'static> {
     }
 }
 
+/// With `std` off there is no process environment to consult, so the
+/// `PIXELFLOW_NNUE_WEIGHTS` opt-in mechanism is not compiled in at all — the
+/// static latency prior is the only policy, by contract rather than as a
+/// fallback. Nothing is silently ignored: an env var cannot be "set" for a
+/// build configuration that has no environment.
+#[cfg(not(feature = "std"))]
+pub fn env_extraction_policy() -> ExtractionPolicy<'static> {
+    ExtractionPolicy::Static(Box::new(CostModel::latency_prior()))
+}
+
 /// Load NNUE weights from an opt-in path set via `PIXELFLOW_NNUE_WEIGHTS`.
 ///
 /// Hard-fails on any error, per the repo's no-silent-failures rule: the
 /// caller explicitly asked for learned weights, so a failure to honor that
 /// request must not be swallowed.
+#[cfg(feature = "std")]
 fn load_opt_in_weights(path: &str) -> ExprNnue {
     let bytes = std::fs::read(path).unwrap_or_else(|e| {
         panic!(
