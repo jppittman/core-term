@@ -53,7 +53,7 @@ pub fn compile(arena: &ExprArena, root: ExprId) -> Result<Arc<JitManifold>, &'st
             .as_deref()
             .map(|(a, r)| (a, *r))
             .unwrap_or((arena, root));
-        emit::compile_collapse(arena, root)
+        emit::compile(arena, root)
     };
 
     let Some(key) = canonical_key(arena, root) else {

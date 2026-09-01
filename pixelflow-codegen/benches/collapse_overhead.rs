@@ -11,8 +11,7 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use pixelflow_codegen::JIT_VECTOR_BYTES;
-use pixelflow_codegen::emit::executable::Collapse;
-use pixelflow_codegen::emit::{CompileResult, compile_collapse};
+use pixelflow_codegen::emit::{CompileResult, compile};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::ExprArena;
 
@@ -38,7 +37,7 @@ fn arena() -> (ExprArena, pixelflow_ir::arena::ExprId) {
 
 fn bench_collapse_overhead(c: &mut Criterion) {
     let (arena, root) = arena();
-    let collapse = compile_collapse(&arena, root).expect("collapse compile must succeed");
+    let collapse = compile(&arena, root).expect("collapse compile must succeed");
     let mut out = vec![0.0f32; GROUPS * LANES * ROWS];
     let seq: Vec<f32> = (0..LANES).map(|lane| lane as f32 + 0.5).collect();
 
@@ -75,7 +74,7 @@ fn bench_collapse_overhead(c: &mut Criterion) {
 
 /// One boundary crossing per SIMD group, driven from a Rust loop.
 fn per_group_frame(
-    result: &CompileResult<Collapse>,
+    result: &CompileResult,
     out: &mut [f32],
     _seq: &[f32],
     groups: usize,
@@ -104,7 +103,7 @@ fn per_group_frame(
 
 /// One boundary crossing for the whole frame.
 fn collapse_frame(
-    result: &CompileResult<Collapse>,
+    result: &CompileResult,
     out: &mut [f32],
     _seq: &[f32],
     groups: usize,

@@ -1008,14 +1008,6 @@ pub(crate) mod driver {
             self.frame_bytes = if frame_size <= 128 { 0 } else { frame_size };
         }
 
-        fn prologue(&mut self, code: &mut Vec<u8>, _frame_size: u32) {
-            // movups is alignment-agnostic, so the frame only needs its
-            // 16-multiple size; red-zone mode needs no setup for a leaf.
-            if self.frame_bytes > 0 {
-                super::emit_sub_rsp(code, self.frame_bytes);
-            }
-        }
-
         fn emit_plan(
             &mut self,
             code: &mut Vec<u8>,
@@ -1175,16 +1167,6 @@ pub(crate) mod driver {
 
         fn patch_branch(&mut self, code: &mut Vec<u8>, branch: usize, target: usize) {
             super::patch_rel32(code, branch, target);
-        }
-
-        fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, _frame_size: u32) {
-            if result_reg.0 != 0 {
-                super::emit_movaps(code, Reg(0), result_reg);
-            }
-            if self.frame_bytes > 0 {
-                super::emit_add_rsp(code, self.frame_bytes);
-            }
-            super::ret(code);
         }
 
         // SysV: rdi = ctx (read-only in the body's gathers), rsi = out,

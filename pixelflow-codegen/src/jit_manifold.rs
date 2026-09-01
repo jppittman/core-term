@@ -4,25 +4,21 @@
 //! and low-level collapse execution methods.
 
 use crate::JIT_VECTOR_BYTES;
-use crate::emit::executable::{Collapse, ExecutableCode, Extent2D, Point4, TileSlice};
+use crate::emit::executable::{ExecutableCode, Extent2D, Point4, TileSlice};
 
 const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 
 /// A JIT-compiled kernel. Owns the executable memory for one specific parameter
 /// combination. No cache — caller decides lifetime.
 pub struct JitManifold {
-    code: ExecutableCode<Collapse>,
+    code: ExecutableCode,
 }
 
 impl JitManifold {
     /// Wrap newly compiled executable code into a `JitManifold`.
     ///
-    /// Every method on this type is a collapse call, so the argument is
-    /// `ExecutableCode<Collapse>` and not merely documented as such: handing
-    /// it a per-batch kernel used to compile fine and then read whatever the
-    /// callee happened to leave on the stack.
     #[must_use]
-    pub const fn new(code: ExecutableCode<Collapse>) -> Self {
+    pub const fn new(code: ExecutableCode) -> Self {
         Self { code }
     }
 
@@ -34,10 +30,6 @@ impl JitManifold {
     }
 
     /// Evaluate the kernel over a single SIMD vector batch coordinate point `origin`.
-    ///
-    /// This is a one-batch collapse call, not a per-batch one: the result is
-    /// read back from the output slot the kernel writes, never from a return
-    /// register.
     ///
     /// # Safety
     ///
@@ -60,7 +52,7 @@ impl JitManifold {
 
     /// Evaluate a bound-memory kernel for a single SIMD vector batch:
     /// `ctx` is the array of buffer base pointers passed in the first integer
-    /// register. Like [`Self::call`], a one-batch collapse call.
+    /// register.
     ///
     /// # Safety
     ///
@@ -99,7 +91,7 @@ impl JitManifold {
         tile: TileSlice,
         origin: Point4<V>,
     ) {
-        // SAFETY: Delegated to ExecutableCode which invokes the emitted CollapseKernelFn.
+        // SAFETY: Delegated to ExecutableCode which invokes the emitted KernelFn.
         unsafe { self.code.call_collapse(ctx, tile, origin) }
     }
 
@@ -153,6 +145,19 @@ impl JitManifold {
             }
             out[offset..].copy_from_slice(&scratch[..tail]);
         }
+    }
+
+    /// Evaluate the kernel at a single point.
+    ///
+    /// The safe counterpart to the hand-written `extern "C"` signature every
+    /// caller used to spell for itself: no intrinsics, no transmute, and no
+    /// per-ISA `cfg` — the batch width is the kernel's business, not the
+    /// caller's.
+    #[must_use]
+    pub fn eval_at(&self, origin: Point4<f32>) -> f32 {
+        let mut out = [0.0f32; 1];
+        self.eval_row(&mut out, origin);
+        out[0]
     }
 
     /// Safe evaluator for a 2D rectangular grid of pixels.

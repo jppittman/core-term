@@ -504,7 +504,7 @@ mod tests {
     #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
     mod runtime {
         use super::super::*;
-        use crate::emit::executable::{ExecutableCode, PerBatch};
+        use crate::emit::executable::ExecutableCode;
         use core::arch::x86_64::*;
 
         #[allow(improper_ctypes_definitions)]
@@ -513,7 +513,7 @@ mod tests {
         fn run(body: &[u8], xs: [f32; 8], ys: [f32; 8], zs: [f32; 8]) -> [f32; 8] {
             let mut code = body.to_vec();
             crate::emit::x86_64::ret(&mut code);
-            let exec = unsafe { ExecutableCode::<PerBatch>::from_code(&code).expect("mmap") };
+            let exec = unsafe { ExecutableCode::from_code(&code).expect("mmap") };
             unsafe {
                 let f: K = exec.as_fn();
                 let r = f(
@@ -731,7 +731,7 @@ mod tests {
             let idx: [f32; 8] = [0.0, 63.0, 1.0, 2.0, 10.0, 5.0, 32.0, 7.0];
             let ctx: [*const f32; 1] = [buf.as_ptr()];
 
-            let exec = unsafe { ExecutableCode::<PerBatch>::from_code(&c).expect("mmap") };
+            let exec = unsafe { ExecutableCode::from_code(&c).expect("mmap") };
             let out = unsafe {
                 let f: G = exec.as_fn();
                 let r = f(ctx.as_ptr(), _mm256_loadu_ps(idx.as_ptr()));
@@ -854,13 +854,6 @@ pub(crate) mod driver {
 
         fn begin(&mut self, _schedule: &[regalloc::Def]) -> Result<(), &'static str> {
             Ok(()) // const broadcast is self-contained; no pool.
-        }
-
-        fn prologue(&mut self, code: &mut Vec<u8>, frame_size: u32) {
-            let bytes = frame_size;
-            if bytes > 0 {
-                x86::emit_sub_rsp(code, bytes);
-            }
         }
 
         fn emit_plan(
@@ -1018,17 +1011,6 @@ pub(crate) mod driver {
         }
         fn patch_branch(&mut self, code: &mut Vec<u8>, branch: usize, target: usize) {
             x86_64::patch_rel32(code, branch, target);
-        }
-
-        fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32) {
-            if result_reg.0 != 0 {
-                super::emit_mov(code, Reg(0), result_reg);
-            }
-            let bytes = frame_size;
-            if bytes > 0 {
-                x86::emit_add_rsp(code, bytes);
-            }
-            x86::ret(code);
         }
 
         // Same scaffold register roles as SSE2 — see `x86_64::scaffold` — at

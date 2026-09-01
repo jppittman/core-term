@@ -110,8 +110,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use clap::Parser;
 use serde::Serialize;
 
-use pixelflow_codegen::emit::compile_collapse;
-use pixelflow_codegen::emit::executable::{Collapse, ExecutableCode};
+use pixelflow_codegen::emit::compile;
+use pixelflow_codegen::emit::executable::ExecutableCode;
 use pixelflow_ir::{
     BindingTable, DifferentialCheck, ExprArena, ExprId, MaskComparison, MaskVerdict, PointCheck,
     PointVerdict, compare_mask_root,
@@ -804,7 +804,7 @@ fn check_policy(
     original: (&ExprArena, ExprId),
     candidate: (&ExprArena, ExprId),
     grid: &CheckGrid,
-) -> Result<(ExecutableCode<Collapse>, PolicyCheck), GateFailure> {
+) -> Result<(ExecutableCode, PolicyCheck), GateFailure> {
     let (orig_arena, orig_root) = original;
     let (cand_arena, cand_root) = candidate;
 
@@ -818,7 +818,7 @@ fn check_policy(
         }
     }
 
-    let compiled = compile_collapse(cand_arena, cand_root)
+    let compiled = compile(cand_arena, cand_root)
         .map_err(|e| GateFailure::CompileFailed(format!("{label}: JIT compile failed: {e}")))?;
 
     let bindings = BindingTable::empty();
@@ -1067,7 +1067,7 @@ fn verify_repeat_outputs(label: &str, repeat: usize, check: &PolicyCheck, output
 struct PreparedPolicy {
     arena: ExprArena,
     root: ExprId,
-    code: ExecutableCode<Collapse>,
+    code: ExecutableCode,
     check: PolicyCheck,
 }
 

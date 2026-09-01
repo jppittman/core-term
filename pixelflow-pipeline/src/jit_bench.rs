@@ -8,8 +8,8 @@
 
 use std::fmt;
 
-use pixelflow_codegen::emit::compile_collapse;
-use pixelflow_codegen::emit::executable::{Collapse, ExecutableCode};
+use pixelflow_codegen::emit::compile;
+use pixelflow_codegen::emit::executable::ExecutableCode;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
 
 /// Number of timed samples per expression. Take the median.
@@ -303,7 +303,7 @@ fn op_count(arena: &ExprArena, root: ExprId) -> usize {
 ///
 /// Not used to weaken the plausibility floor, and deliberately so: a var-free
 /// arena is only *foldable in principle*. Neither emitter folds
-/// (`compile_arena_dag_with_ctx` lowers Dwrt/Reduce/Gather/transcendentals and
+/// (`compile` lowers Dwrt/Reduce/Gather/transcendentals and
 /// then schedules every remaining node on both aarch64 and x86-64 — there is
 /// no constant-propagation pass), so a var-free expression still executes its
 /// ops and the floor still describes real work. Exempting it would silently
@@ -752,7 +752,7 @@ const LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / 4;
 /// samples reduced to median + IQR (audit M5).
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn measure_exec_code(
-    exec_code: &ExecutableCode<Collapse>,
+    exec_code: &ExecutableCode,
     start_batches: usize,
     mode: BenchMode,
 ) -> Result<RawMeasurement, BenchError> {
@@ -893,7 +893,7 @@ fn measure_exec_code(
 
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 fn measure_exec_code(
-    exec_code: &ExecutableCode<Collapse>,
+    exec_code: &ExecutableCode,
     start_batches: usize,
     mode: BenchMode,
 ) -> Result<RawMeasurement, BenchError> {
@@ -948,7 +948,7 @@ pub fn benchmark_jit_arena_repeated(
     root: ExprId,
     repeat_batches: usize,
 ) -> Result<BenchResult, BenchError> {
-    let result = compile_collapse(arena, root).map_err(BenchError::CompileFailed)?;
+    let result = compile(arena, root).map_err(BenchError::CompileFailed)?;
     let raw = measure_exec_code(&result.code, repeat_batches, BenchMode::Throughput)?;
     Ok(finalize(raw, op_count(arena, root), 0.0, None))
 }
@@ -1019,7 +1019,7 @@ fn identity_arena() -> (ExprArena, ExprId) {
 /// E-core-placement class of shift that no scalar correction can repair; see
 /// that constant's doc for the full three-tier drift policy.
 pub struct BenchSession {
-    sentinel_code: ExecutableCode<Collapse>,
+    sentinel_code: ExecutableCode,
     calibration_ns: f64,
     sentinel_samples: Vec<SentinelSample>,
     overhead_throughput_ns: f64,
@@ -1042,7 +1042,7 @@ impl BenchSession {
         pin_qos();
 
         let (sentinel_arena, sentinel_root) = sentinel_arena();
-        let sentinel_code = compile_collapse(&sentinel_arena, sentinel_root)
+        let sentinel_code = compile(&sentinel_arena, sentinel_root)
             .unwrap_or_else(|e| panic!("BenchSession: sentinel kernel failed to compile: {e}"))
             .code;
 
@@ -1059,7 +1059,7 @@ impl BenchSession {
         // latency overheads differ (overlapped vs serialized call/ret), so
         // each mode subtracts its own.
         let (identity_arena, identity_root) = identity_arena();
-        let identity_code = compile_collapse(&identity_arena, identity_root)
+        let identity_code = compile(&identity_arena, identity_root)
             .unwrap_or_else(|e| panic!("BenchSession: identity kernel failed to compile: {e}"))
             .code;
         let overhead_throughput_ns = measure_exec_code(&identity_code, 1, BenchMode::Throughput)
@@ -1152,7 +1152,7 @@ impl BenchSession {
         // immediately ahead of the timed loop. Delegating wholesale to
         // `benchmark_compiled` would silently reorder that.
         self.check_sentinel_if_due();
-        let compiled = compile_collapse(arena, root).map_err(BenchError::CompileFailed)?;
+        let compiled = compile(arena, root).map_err(BenchError::CompileFailed)?;
         self.measure_gated(&compiled.code, arena, root, mode)
     }
 
@@ -1177,7 +1177,7 @@ impl BenchSession {
     /// per-expression plausibility floor (audit M4).
     pub fn benchmark_compiled(
         &mut self,
-        code: &ExecutableCode<Collapse>,
+        code: &ExecutableCode,
         arena: &ExprArena,
         root: ExprId,
         mode: BenchMode,
@@ -1194,7 +1194,7 @@ impl BenchSession {
     /// one delegating to the other.
     fn measure_gated(
         &mut self,
-        code: &ExecutableCode<Collapse>,
+        code: &ExecutableCode,
         arena: &ExprArena,
         root: ExprId,
         mode: BenchMode,
@@ -1217,7 +1217,7 @@ impl BenchSession {
         root: ExprId,
     ) -> Result<(BenchResult, BenchResult), BenchError> {
         self.check_sentinel_if_due();
-        let compiled = compile_collapse(arena, root).map_err(BenchError::CompileFailed)?;
+        let compiled = compile(arena, root).map_err(BenchError::CompileFailed)?;
         let ops = op_count(arena, root);
         let throughput = measure_exec_code(&compiled.code, 1, BenchMode::Throughput)?;
         let latency = measure_exec_code(&compiled.code, 1, BenchMode::Latency)?;
@@ -1313,7 +1313,7 @@ pub struct CompileCostResult {
 /// point runs canonical-key construction, the cache lock,
 /// `optimize_runtime_arena` (e-graph saturation + extraction, itself keyed by
 /// the same structure and therefore also a miss for a distinct kernel),
-/// `compile_collapse`, and cache insertion. This is what one distinct kernel
+/// `compile`, and cache insertion. This is what one distinct kernel
 /// actually costs at runtime; [`benchmark_compile_fresh`] times only the emit
 /// step and exists for attribution.
 ///
@@ -1371,7 +1371,7 @@ pub fn benchmark_compile_cached_miss(kernels: Vec<(ExprArena, ExprId)>) -> Resul
     validate_median(times[COMPILE_TIMED_RUNS / 2] as f64)
 }
 
-/// Median wall-clock cost of one `compile_arena_dag` call, fresh-allocation
+/// Median wall-clock cost of one `compile` call, fresh-allocation
 /// path: every compile mmaps a new executable region and munmaps it on drop.
 /// Both syscalls are inside the timed window.
 ///
@@ -1385,7 +1385,7 @@ pub fn benchmark_compile_fresh(
     root: ExprId,
 ) -> Result<CompileCostResult, BenchError> {
     for _ in 0..COMPILE_WARMUP_ITERS {
-        let result = compile_collapse(arena, root).map_err(BenchError::CompileFailed)?;
+        let result = compile(arena, root).map_err(BenchError::CompileFailed)?;
         std::hint::black_box(result.code.as_bytes().first());
     }
 
@@ -1393,7 +1393,7 @@ pub fn benchmark_compile_fresh(
     let mut code_bytes = 0usize;
     for t in &mut times {
         let start = nanos_now();
-        let result = compile_collapse(arena, root).map_err(BenchError::CompileFailed)?;
+        let result = compile(arena, root).map_err(BenchError::CompileFailed)?;
         std::hint::black_box(result.code.as_bytes().first());
         code_bytes = result.code.len();
         drop(result); // munmap inside the timed window
@@ -1581,9 +1581,9 @@ mod tests {
     fn var_free_arenas_still_execute_their_ops() {
         // The premise behind exempting var-free arenas from the plausibility
         // floor is that the JIT folds them to a constant `ret`. It does not:
-        // neither `compile_arena_dag_with_ctx` lowers through a constant-
-        // propagation pass, so a 300-op var-free kernel really runs 300 ops
-        // and sits far above the 15ns floor (measured ~185ns on M-series).
+        // `compile` has no constant-propagation pass, so a 300-op var-free
+        // kernel really runs 300 ops and sits far above the 15ns floor
+        // (measured ~185ns on M-series).
         //
         // If this test ever fails, a folding pass has landed — and the fix is
         // to compute the floor from the LOWERED schedule the emitter built,
@@ -1611,7 +1611,7 @@ mod tests {
         // directly, with no compile inside the session call, and yields the
         // same outputs as the compile-inside path.
         let (arena, root) = sentinel_arena();
-        let compiled = compile_collapse(&arena, root).expect("sentinel kernel compiles");
+        let compiled = compile(&arena, root).expect("sentinel kernel compiles");
         let mut session = BenchSession::new();
         let via_code = session
             .benchmark_compiled(&compiled.code, &arena, root, BenchMode::Throughput)

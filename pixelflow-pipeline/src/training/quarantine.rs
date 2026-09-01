@@ -43,7 +43,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use pixelflow_codegen::emit::compile_collapse;
+use pixelflow_codegen::emit::compile;
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::{
     DifferentialCheck, ExprArena, ExprId, ExprNode, MaskVerdict, OpKind, PointVerdict,
@@ -446,7 +446,7 @@ pub fn quarantine_verdict(arena: &ExprArena, root: ExprId, grid: &QuarantineGrid
         };
     }
 
-    let compiled = match compile_collapse(arena, root) {
+    let compiled = match compile(arena, root) {
         Ok(c) => c,
         Err(e) => {
             return Verdict {
