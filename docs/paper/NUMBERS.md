@@ -4,6 +4,31 @@ Every number in the paper traces to one of the sources below. Numbers with no
 valid trace do not appear in the paper. Last reconciled: 2026-09-01 (Round-3
 final form).
 
+## Reproduction debt: what is named here but not in the repository
+
+Four things this paper cites are not recoverable from this commit. Listed
+together so a reader hits the whole list once rather than discovering it a
+row at a time, and so a future run knows exactly what to commit.
+
+| Missing | Cited by | Why it is gone |
+|---|---|---|
+| `D2a` / `D3` per-kernel JSONL | extraction overheads, gate counts, floor restatements, mechanism cross-reference, flip analysis | written under `pixelflow-pipeline/data/` (gitignored) on the run machine; those worktrees no longer exist |
+| The Round-2a and Round-3 checkpoints | Appendix B's `inspect_flip` recipe, which requires `--r2a-weights` and `--r3-weights` | never committed; the journal records weight *identities* and former paths, not the model bytes |
+| Source revision `b706cb67-dirty` | the §5.1 learning curve and the best-calibration checkpoint | the base revision is absent from `git rev-list --all` and the uncommitted patch was never stored; a diff hash identifies a patch, it cannot reconstruct one |
+| The Round-2b journal line | every `R2B` figure in §5.3 | that worktree was discarded before the line was committed |
+
+Consequences, stated plainly: **Appendix B's flip reproduction cannot be run
+from this commit**, retraining will not reproduce the exact forms and
+predicted costs §5.4 quotes (different weights, different decisions), and
+the §5.1 curve cannot be audited against the trainer that produced it.
+
+The fix is the same in every row and is not a re-derivation from what is
+here: re-execute with the per-kernel output, the checkpoints, and a
+committed source revision, and commit all three to LFS beside
+`journal.jsonl`. Until then these figures are attributable but not
+reproducible, which is a weaker guarantee than the header of this file used
+to claim.
+
 ## Harness defects affecting every timing row (2026-09-01 review)
 
 Four, all confirmed in code and none repaired retroactively — see §5.0 of the
