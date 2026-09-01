@@ -67,7 +67,7 @@ pub use provenance::{
 pub use rewrite::{Rewrite, RewriteAction};
 pub use saturate::{
     SaturationConfig, SaturationResult, achievable_cost_within_budget, config_for_node_count,
-    saturate_with_budget, saturate_with_full_budget,
+    saturate_guided_until_applications, saturate_with_budget, saturate_with_full_budget,
 };
 
 // Re-export rule types from math module for backward compatibility
