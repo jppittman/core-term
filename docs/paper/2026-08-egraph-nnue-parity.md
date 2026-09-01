@@ -1,10 +1,22 @@
 # A Well-Calibrated Learned Cost Model Ties a Measured Latency Table at E-Graph Extraction (and Two Targeted Attempts to Beat It Backfired)
 
 **Status:** workshop paper, final form (EGRAPHS @ PLDI / ML-for-Systems bar), 2026-08-31.
-**Provenance:** every number in this paper maps to a line of
-`docs/results/journal.jsonl`, a named results/plan document, or a per-kernel
-data artifact via [`NUMBERS.md`](NUMBERS.md). Nothing here is quoted from
-memory.
+**Provenance:** every number in this paper maps, via
+[`NUMBERS.md`](NUMBERS.md), to a line of `docs/results/journal.jsonl`, a
+named results/plan document, or a per-kernel data artifact. Two classes of
+exception are marked there and are worth stating up front rather than
+burying in a table:
+
+- **Round 2b (§5.3) is carried from a session draft**, not from a journal
+  line — that worktree no longer exists on disk and the line was never
+  committed. Those numbers underpin §5.3's central result, so treat them as
+  the paper's weakest trace until the run is re-executed.
+- **The per-kernel `D2a`/`D3` JSONL artifacts are not committed to this
+  repository.** Figures re-derived from them (extraction overheads, floor
+  statistics, gate counts, the flip analysis) were verified against those
+  files in-session, but a reader with only this repository cannot reproduce
+  them; `journal.jsonl` carries the run-level numbers and not the per-kernel
+  rows.
 
 ---
 
@@ -33,8 +45,8 @@ targeted the model's one measured behavioral gap — it declines
 hardware-estimate-op substitutions the table takes. The intervention moved
 the mechanism (57% of targeted substitution gaps closed) and worsened the
 outcome (1.0153, 95% CI [1.0097, 1.0213], entirely above parity); only
-35.5% of the newly-taken substitutions were measured wins, refuting the
-assumed mechanism–speed link. (2) Enabling the embedding gradients — the
+39.2% of the newly-taken substitutions with a measured outcome were wins,
+refuting the assumed mechanism–speed link. (2) Enabling the embedding gradients — the
 embeddings had been frozen by a defect for the entire program, so this was
 the first time the model could learn per-op cost structure at all —
 produced the best calibration ever measured (ρ = 0.9887) and a confirmed
@@ -45,9 +57,9 @@ The historical arc is the summary: as *our own* measurement defects were
 removed, the learned model's deficit marched to parity (1.0389 → 1.0181 →
 1.0037), and both attempts to leave parity by improving the model landed on
 the slow side of it (1.0153, 1.0082). Parity behaves like an attractor: the
-objective is nearly additive, dynamic programming over the additive table is
-exactly optimal for the additive part, and the residual sits at the
-per-pair measurement floor.
+objective is nearly additive, dynamic programming over the additive table
+already optimizes it exactly (over unfolded tree cost — §6 states the gap to
+DAG cost), and the residual sits at the per-pair measurement floor.
 
 We also report a negative architectural finding with a positive twin. The
 premise that makes NNUE pay off in chess — tiny state deltas — does not
@@ -102,9 +114,9 @@ learned model's end-to-end deficit shrank monotonically — 1.0389 → 1.0181 �
 had been *our own measurement error*, and once it was gone, there was almost
 nothing left: the objective is nearly additive (a bare op count achieves
 Spearman ρ = 0.949 on the same corpus where the table achieves 0.944),
-dynamic programming over an additive table is exactly optimal for the
-additive part, and the non-additive residual sits at the per-pair
-measurement floor. Both pre-registered model-side levers were then pulled —
+dynamic programming over an additive table already optimizes it exactly
+(over unfolded tree cost, which §6 distinguishes from DAG cost), and the
+non-additive residual sits at the per-pair measurement floor. Both pre-registered model-side levers were then pulled —
 a contrastive ranking objective aimed at the model's measured behavioral gap
 (§5.3), and unfreezing the per-op embeddings so the model could learn cost
 structure at all (§5.4). Each demonstrably moved the thing it targeted, and
@@ -120,7 +132,8 @@ Contributions:
    own runs.
 2. **Two mechanism-level refutations** (§5.3, §5.4): closing the model's
    conservatism gap on estimate-op substitutions does not close the speed
-   gap (57% of targeted substitutions taken, 35.5% of them won); and the
+   gap (57% of targeted substitutions taken, 39.2% of those with an
+   outcome won); and the
    best-calibrated checkpoint of the program — the first with trained
    embeddings — is confidently slower end-to-end than its frozen-embedding
    predecessor.
@@ -391,10 +404,13 @@ somebody briefly believed:
   assertion (that sidecar is where §3's 52/4324 comes from).
 - **Embeddings frozen but decaying.** The embedding gradient path had no
   caller, so embeddings never trained, while weight decay eroded their
-  latency-prior initialization — the model could only linearly re-read
-  distorted constants. Found by inspection after two measurement rounds
-  missed it; **closed 2026-08-31** by the typed edge stream (§2.2), and
-  the effect of closing it is measured in §5.4.
+  initialization — the model could only linearly re-read distorted
+  constants. That initialization was `ExprNnue::new_random` (He-scaled
+  noise) for every round through 2b: the cold start did not seed from the
+  latency prior until the Round-3 commit that §5.4 benches, so what decayed
+  in Rounds 0–2b was random init, not a prior. Found by inspection after
+  two measurement rounds missed it; **closed 2026-08-31** by the typed edge
+  stream (§2.2), and the effect of closing it is measured in §5.4.
 
 ## 5. Results
 
@@ -460,6 +476,13 @@ conclusion.
 
 ### 5.3 Round 2b: the contrastive attempt, and the first refutation
 
+> **Trace caveat.** Every number in this subsection is `R2B` in
+> [`NUMBERS.md`](NUMBERS.md): the Round-2b journal line was never committed
+> and its worktree no longer exists, so these are carried from that
+> session's draft rather than re-derived from a durable artifact. The
+> §5.3 result is the paper's weakest-traced claim, and its trainer bug
+> (below) is a second, independent reason to treat it as provisional.
+
 Round 1's mechanism analysis had found NNUE to be the *conservative*
 policy: on 12 re-inspected kernels it took 14 hardware-estimate-op
 substitutions (`Recip`/`Rsqrt`/`MulAdd`/`Sqrt`) where static took 26, and
@@ -497,7 +520,11 @@ n = 12 framing already fails at corpus scale) but was conservative on 187
 individual kernels (16.7%). Round 2b's checkpoint moved strictly toward
 static's substitution count on 107 of those 187 (57.2%), fully matching or
 exceeding it on 85. Cross-referencing those 107 kernels against the run's
-own measured timings: **38 wins (35.5%), 53 losses (49.5%), 6 ties.** The
+own measured timings: **38 wins, 53 losses, 6 ties** — 97 kernels, so
+**39.2% wins among those with an outcome**. The remaining 10 carry no
+recorded win/loss/tie, and the probe that produced this cross-reference was
+run and discarded (§ NUMBERS.md, D2B), so why is no longer recoverable;
+quoting 35.5% over all 107 would silently count them as non-wins. The
 conservatism gap closed; the speed gap did not follow it. The Round-0
 "near-monotone in estimate-op delta" mechanism is refuted — the
 substitutions the static table takes are not, individually, where its
@@ -546,27 +573,39 @@ Three readings, in decreasing order of importance:
 
 1. **The lever worked on the objective and backfired on the outcome.** The
    50k prior-seeded checkpoint is the best-calibrated model this program has
-   produced (ρ 0.9887 vs Round 2a's 0.9875; MAE 0.133 vs 0.145), and it is
-   the first caveat-free valid run whose CI sits entirely on the slow side
-   of parity (Round 2b's did too, but §5.3's trainer bug binds that verdict
-   to its artifact) — a confirmed regression from Round 2a's tie (1.0037, CI straddling 1.0)
-   on the byte-identical corpus under the identical protocol. The
+   produced (ρ 0.9887 vs Round 2a's 0.9875; MAE 0.133 vs 0.145), and its CI
+   sits entirely on the slow side of parity — a confirmed regression from
+   Round 2a's tie (1.0037, CI straddling 1.0) on the byte-identical corpus
+   under the identical protocol. So does the random-init run in the same
+   table, and so did Round 2b, though §5.3's trainer bug binds that verdict
+   to its artifact; what is new here is not the sign but that the
+   best-calibrated checkpoint the program has produced carries it. The
    trained-embeddings lever is exhausted; the Round-2a frozen-embedding
    checkpoint remains the best learned extraction policy.
-2. **The prior seed matters even when embeddings train.** Random-init
-   trained to respectable calibration (ρ 0.9856) but a worse policy
-   (1.0118); seeding the cold start from the latency prior recovered
-   0.36 points of geomean. What the seed provides — a per-op cost ordering
-   consistent with hardware — is evidently not fully recoverable from
-   50k corpus labels.
+2. **The prior seed and the training budget move together, and this pair
+   cannot separate them.** Random-init trained to respectable calibration
+   (ρ 0.9856) but a worse policy (1.0118); the prior-seeded checkpoint is
+   0.36 points of geomean better. The two runs differ in *both*
+   initialization and label budget (8k vs 50k), so that gap is not
+   attributable to the seed: it is equally consistent with 50k labels
+   simply buying a better policy than 8k. Separating them needs a
+   random-init 50k run or a prior-seeded 8k one, neither of which was
+   benched — the pre-registered lever was "train the embeddings at all,"
+   and the budgets are what each cold start happened to be run at. What the
+   seed provides — a per-op cost ordering consistent with hardware — may or
+   may not be recoverable from corpus labels alone; this program does not
+   answer that.
 3. **Zero miscompiles on refactored codegen.** Between Rounds 2a and 3 the
    backend was substantially refactored (assembler/encoder unification, a
    retyped AVX2+FMA tier, the edge-stream rework). Round 3's same-form gate
    ran 2352 gates (1568 on extracted forms) with **0 miscompiles** and 0
    compile failures; cross-form divergence 5.87% of extracted forms (under
    the 10% gate; 559 ill-conditioned disagreements recorded as metadata,
-   not counted); 32 gates bounded nothing and are excluded from the
-   denominator; mean bound coverage 74.0% (worst kernel 1.4%). The FINAL
+   not counted). That rate is `GateTally::cross_form_rate` — 92/1568, over
+   *every* extracted-policy gate, the 32 that bounded no grid point
+   included; those 32 are excluded from the bound-coverage and same-form
+   miscompile denominators, not from this one, and excluding them here
+   would read 5.99%. Mean bound coverage 74.0% (worst kernel 1.4%). The FINAL
    re-mint's oracle pass was likewise clean. The correctness harness is
    doing double duty as the refactor regression net.
 
@@ -657,20 +696,43 @@ up.)
 
 ## 6. Why the table is (so) hard to beat
 
-**The objective is nearly additive, and DP over an additive table is
-exactly optimal for the additive part.** A bare count of
+**The objective is nearly additive, and DP over an additive table already
+optimizes it exactly.** A bare count of
 transcendental/divide ops reaches Spearman ρ = 0.9486 on the DEV corpus;
 the handwritten table reaches 0.9438; the NNUE reaches 0.9887. Corpus-wide
 ranking is saturated by expression size — nearly all between-expression
 variance is "how many expensive ops" — and extraction with the static
-table already optimizes exactly that additive quantity, *optimally*, by
-dynamic programming. The handcrafted baseline is not a strawman; it is
-~95% of the truth, applied by an exact optimizer. What remains learnable
-is the non-additive residual: schedule effects — ILP, port contention,
-dependency-chain latency — that are precisely the terms an edge-multiset
-feature map cannot see (the accumulator is topology-blind for
-edge-multiset-identical graphs by construction). The model had the wrong
-eyes for the only part of the problem left.
+table already optimizes an additive quantity by dynamic programming.
+
+Two qualifications on "optimally", both of which narrow the claim without
+changing its force. The DP recurrence in `egraph::extract` sums each
+child's full best cost *per reference*, so a subexpression reachable twice
+is charged twice — while `choices_to_arena` afterwards materializes each
+shared e-class once. The quantity minimized exactly is therefore the
+**unfolded tree cost**, which coincides with the executed DAG's additive
+cost only when nothing is shared; and `repair_choices_well_founded` may
+replace recorded choices after that cost is computed. So the baseline is an
+exact optimizer of a close proxy, not of the additive DAG cost itself. It
+is still not a strawman — it is ~95% of the truth applied by an exact
+optimizer of something near it — and closing this gap needs a DAG-aware
+extractor, which would raise the bar the learned model has to clear rather
+than lower it.
+
+What remains learnable is the non-additive residual: schedule effects —
+ILP, port contention, dependency-chain latency. The deployed
+`EdgeAccumulator` is not a flat edge multiset: half of it is depth-encoded,
+binding each parent/child embedding to an effective depth
+(`tree_depth * MAX_ARITY + child_slot`) through a sinusoidal positional
+encoding, and the DAG walker emits distinct `Var` reload edges for shared
+references. Graphs whose flat edge counts agree but whose depths, child
+positions or sharing differ therefore do *not* produce identical inputs.
+The limitation is weaker than "cannot see topology by construction," and
+weaker is the honest word: aggregation into a fixed-width accumulator
+discards enough structure that two schedules with genuinely different port
+pressure can still land close together, and the head has no term for
+contention regardless. The model had blurry eyes, not no eyes, for the only
+part of the problem left — and §5.4 measures that blur costing more than it
+buys.
 
 **The decisions sit at the per-pair noise floor.** Derived from the
 Round 2a run's own per-kernel records: the median |nnue−static| per-kernel
@@ -838,8 +900,10 @@ tightening union-causality in parallel, evaluated as quality-at-budget
 gradient bug and re-run Round 2b to separate objective from artifact;
 (2) predict the **residual over the DP-additive table** rather than
 absolute cost, with schedule-aware features (dependency depth, port
-pressure) that an edge-multiset cannot express — the additive part is
-already solved exactly; (3) **top-k rerank**: extract k candidates under
+pressure) that survive aggregation into a fixed-width accumulator — the
+additive part is already solved exactly, over unfolded tree cost, and a
+DAG-aware extractor would close the remaining gap in the baseline rather
+than in the model; (3) **top-k rerank**: extract k candidates under
 the table and rerank with the learned model, confining the model to
 decisions the table cannot make; (4) use SmoothE-style relaxation as a
 *training* mechanism (differentiate through extraction against measured

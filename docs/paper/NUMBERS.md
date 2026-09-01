@@ -4,13 +4,31 @@ Every number in the paper traces to one of the sources below. Numbers with no
 valid trace do not appear in the paper. Last reconciled: 2026-09-01 (Round-3
 final form).
 
+## Artifact availability (read this before trusting a `D2a`/`D3` row)
+
+`docs/results/journal.jsonl` is committed (LFS) and carries the run-level
+numbers. **The per-kernel `D2a` and `D3` JSONL files are not in this
+repository** — they were written under `pixelflow-pipeline/data/` on the run
+machine, which `.gitignore` excludes, and the Round-2a/Round-3 worktrees no
+longer exist. `J@…​.data_jsonl` records their filenames, which is a name, not
+a copy.
+
+Every row sourced `D2a`, `D3`, `RUN3` or `FLIP` was therefore re-derived
+against those files *in-session* and cannot be re-derived by a reader with
+only this repository. That covers the extraction-overhead figures, the
+gate/divergence counts, the A/A floor restatements, the mechanism
+cross-reference and the flip analysis. The paper's header says so too.
+
+Closing this needs the runs re-executed with the per-kernel output committed
+(LFS, alongside `journal.jsonl`), not a re-derivation from what is here.
+
 ## Source legend
 
 | Key | Source |
 |---|---|
 | `J@<ts>` | `docs/results/journal.jsonl`, the line with that `ts_unix` (this worktree, branch `claude/workshop-writeup`) |
-| `D3` | Round-3 per-kernel data: `pixelflow-pipeline/data/bench_extraction_3way_1788248016_9e275056fb7cc710.jsonl` (referenced by `J@1788248059.data_jsonl`) |
-| `D2a` | Round-2a per-kernel data: `bench_extraction_3way_1786997003_4ac3aa76ff033f2e.jsonl` (referenced by `J@1786997047.data_jsonl`) |
+| `D3` | Round-3 per-kernel data: `pixelflow-pipeline/data/bench_extraction_3way_1788248016_9e275056fb7cc710.jsonl` (referenced by `J@1788248059.data_jsonl`). **Not committed** — see the artifact note below. |
+| `D2a` | Round-2a per-kernel data: `bench_extraction_3way_1786997003_4ac3aa76ff033f2e.jsonl` (referenced by `J@1786997047.data_jsonl`). **Not committed** — see the artifact note below. |
 | `FLIP` | `pixelflow-pipeline/examples/inspect_flip.rs` pass over `D3` + the Round-2a checkpoint on identical saturated e-graphs (Round-3 session report, 2026-08-31) |
 | `NOTES` | `docs/plans/2026-08-17-egraph-vsa-nnue-research-notes.md` |
 | `PLAN` | `docs/plans/2026-08-05-egraph-nnue-research-workflow.md` |
@@ -36,7 +54,7 @@ final form).
 | same-form miscompiles | 0 of 2352 gates (1568 extracted) | rate: `J@1788248059.same_form_miscompile_rate`=0.0; gate counts: `RUN3`/`D3` |
 | cross-form divergence | 92/1568 = 5.87% of extracted = 3.91% of all gates | `J@1788248059.cross_form_divergence_rate`=0.058673…; counts: `RUN3`/`D3` |
 | ill-conditioned disagreements (metadata) | 559 | `RUN3`/`D3` |
-| gates that bounded nothing | 32 (excluded from denominator) | `RUN3`/`D3` |
+| gates that bounded nothing | 32 | `RUN3`/`D3`. Excluded from the bound-coverage and same-form-miscompile denominators, **not** from the cross-form one above: `GateTally::cross_form_rate` divides by every extracted-policy gate, so 5.87% is 92/1568 with these 32 included (92/1536 would read 5.99%). |
 | compile failures / oracle-unsupported | 0 / 0 | `RUN3`/`D3` |
 | bound coverage | mean 74.0% of 72 grid points over 2228 gated policies; worst 1.4% | `J@1788248059.bound_coverage_mean_pct`; per-policy count + worst: `RUN3` |
 | extraction overhead (mean, n=784) | nnue 3595.06 µs, static 83.67 µs (~43×) | `RUN3`/`D3` |
@@ -121,8 +139,9 @@ see legend): geomean 1.0153, CI [1.0097, 1.0213]; 1016 pairs
 DEV re-mint 784→1120; pairwise-accuracy replicates +0.038/+0.011/+0.162
 (3/3 seeds at λ=1.0); aggregate estimate-op counts 8072 vs 7591;
 conservative on 187 kernels (16.7%); moved toward static on 107/187
-(57.2%), matched/exceeded on 85; of the 107: 38 wins (35.5%), 53 losses
-(49.5%), 6 ties; `backward_pairwise` gradient-check failure (one
+(57.2%), matched/exceeded on 85; of the 107: 38 wins, 53 losses, 6 ties
+= 97 with an outcome (39.2% wins; 35.5% only if the 10 unaccounted are
+counted as non-wins — see the R2B arithmetic note); `backward_pairwise` gradient-check failure (one
 shared-trunk entry 20% relative vs 5% tolerance).
 
 ## Rounds 0–1 and lineage (§4.4, §4.5, §5.5, NOTES §1.5)
@@ -175,7 +194,9 @@ shared-trunk entry 20% relative vs 5% tolerance).
   substitution count, the carried outcome split is 38W/53L/6T = 97; the 10
   unaccounted kernels presumably lacked surviving paired timings (policy
   failures), but that reason is unrecoverable without the R2B journal line
-  and is therefore not asserted in the paper.
+  and is therefore not asserted in the paper. §5.3 accordingly reports the
+  win rate over the 97 kernels that have an outcome (39.2%), not over all
+  107 (35.5%) — the latter silently counts the 10 unaccounted as non-wins.
 - **R2B trace debt:** the Round-2b journal line should be recovered from
   the 2026-08-27 session's worktree backup if one exists, or the run
   re-executed after the regalloc boundary; until then every `R2B` number
