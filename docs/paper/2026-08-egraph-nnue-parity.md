@@ -32,7 +32,9 @@ updatable edge accumulator, a small MLP head) was trained on JIT-measured
 latencies and reached excellent calibration — ultimately Spearman
 ρ = 0.9887 and MAE 0.133 log-ns on a family-held-out DEV tier, better than
 the static table (ρ = 0.9438) or a bare op count (ρ = 0.9486) by every
-intrinsic metric. Driving extraction with it produces kernels that **tie**
+intrinsic metric — though those two baselines were measured on Round 1's
+392-kernel DEV tier, not Round 3's 784, so the comparison is across
+populations and Spearman depends on the population (see §5.0). Driving extraction with it produces kernels that **tie**
 the static table: nnue/static geomean 1.0037, 95% CI [0.9982, 1.0089] over
 719 paired kernels (276W/409L/34T), leave-one-out geomean range
 [1.0031, 1.0044], against an A/A noise floor of ±0.07% (Round 2a). This was
@@ -43,7 +45,8 @@ Two pre-registered model-side levers were then pulled, and both backfired
 measurably. (1) A contrastive ranking loss over within-e-graph variant sets
 targeted the model's one measured behavioral gap — it declines
 hardware-estimate-op substitutions the table takes. The intervention moved
-the mechanism (57% of targeted substitution gaps closed) and worsened the
+the mechanism (57.2% of the 187 conservative kernels moved toward static's
+substitution count, 45.5% matched or exceeded it) and worsened the
 outcome (1.0153, 95% CI [1.0097, 1.0213], entirely above parity); only
 39.2% of the newly-taken substitutions with a measured outcome were wins,
 refuting the assumed mechanism–speed link. (2) Enabling the embedding gradients — the
@@ -136,8 +139,9 @@ Contributions:
    own runs.
 2. **Two mechanism-level refutations** (§5.3, §5.4): closing the model's
    conservatism gap on estimate-op substitutions does not close the speed
-   gap (57% of targeted substitutions taken, 39.2% of those with an
-   outcome won); and the
+   gap (57.2% of conservative kernels moved toward static's count, 45.5%
+   matched or exceeded it; 39.2% of those with a timing outcome won); and
+   the
    best-calibrated checkpoint of the program — the first with trained
    embeddings — is confidently slower end-to-end than its frozen-embedding
    predecessor.
@@ -267,14 +271,21 @@ state this plainly rather than letting a corpus table imply otherwise.
 **The 3-way benchmark.** For each DEV kernel: build and saturate the
 e-graph once, extract under each policy, JIT-compile each extracted form,
 verify it (§4.2), and measure it — interleaved, repeated (5 repeats),
-randomized order under a recorded seed, with bootstrap CIs (10k resamples)
+randomized *policy-arm* order under a recorded seed, with bootstrap CIs
+(10k resamples)
 over per-kernel nnue/static ratios, a leave-one-out geomean range, and an
 A/A noise-floor run of the same policy against itself. Verdicts are emitted
 by a gate pipeline that checks correctness first, censoring second, margin
 last (§4.4). Saturation runs under a fixed budget (40 rounds here);
 saturation spends its budget and stops — quiescence is a diagnostic
 condition, never a certified closure, and no claim in this paper depends on
-one. Environment: aarch64 macOS, baseline ISA, no FMA, release profile —
+one. Environment: aarch64 macOS, baseline ISA, release profile —
+**with** fused multiply-add: the aarch64 emitter lowers every
+`ResolvedOp::FusedMulAdd` to `FMLA` (`emit/aarch64.rs:2131`). Earlier drafts
+said "no FMA", reading `environment_fingerprint`'s `target_feature="fma"`
+flag, which is x86-specific and does not describe what this target emits.
+That matters here specifically, because `MulAdd` substitutions are one of
+the axes §5.3's mechanism analysis is about —
 one machine, stated as a limitation (§8).
 
 **Decision band.** Pre-registered: promote only on >+5% DEV geomean with
@@ -299,7 +310,17 @@ end-to-end run showed macOS's post-build daemons reliably produce 11–19%
 drift, which would have made every run red. The revised discipline:
 **varied data absorbs contention noise the way more repetitions do,
 provided benchmark order is randomized so drift decorrelates from
-expression structure.** So the sentinel *records* — local sentinel ns and a
+expression structure.**
+
+That proviso is not met for the full-DEV runs this paper reports.
+`subsample` returns the tier unchanged when `max_kernels == 0`, and Phase B
+walks `prepared.iter()` in that same corpus order on every repeat; the
+recorded `ORDER_SEED` shuffles only the four policy arms *within* each
+kernel. So arm-versus-arm comparison is protected — which is what the
+paired ratios rest on — but corpus-ordered families occupy the same
+temporal positions in all five repeats, and the drift defense above does
+not hold at the family level. Shuffling the kernel traversal per repeat is
+the fix; it was not done here. So the sentinel *records* — local sentinel ns and a
 normalization factor accompany every batch, labels are denominated in a
 single session clock via that factor — and *aborts* only on regime change
 (≥50% drift: the E-core-migration / thermal-step class that genuinely
@@ -676,7 +697,23 @@ Three readings, in decreasing order of importance:
 
 **Mechanism: where the trained embeddings changed decisions.** Against the
 Round-2a checkpoint on the identical saturated e-graphs, 174 kernels
-flipped win↔loss. The asymmetry is directional: of the 109 kernels that
+flipped win↔loss.
+
+Two caveats on this analysis, both structural. First, the flips are not
+measured together: `inspect_flip` loads both checkpoints and prints
+extracted forms, node counts and predicted costs, but never compiles or
+times anything (it contains no benchmark harness at all), so a "flip" here
+splices the timing sign from the Round-2a session against the sign from the
+Round-3 session. Given §5.2's own finding that most per-kernel differences
+are smaller than their repeat spread, and the contention recorded during
+Round 3, an individual sign flip can be measurement noise rather than a
+consequence of the changed decision. Second, the predicted-cost comparisons
+below score each checkpoint only on the form that checkpoint chose — two
+models on two arenas. That shows the two disagree; it does not show that
+Round 3 *ranked* the fusion below its alternative, which is a within-model
+comparison of both forms and was not run. Read the individual flips as
+illustrations of the disagreement, not as evidence of its direction; the
+aggregate node-delta asymmetry does not depend on either caveat. The asymmetry is directional: of the 109 kernels that
 flipped **to losses**, Round 3's extracted tree is *larger* (node count) in
 72 (66%), smaller in 13 (12%), unchanged in 24 (22%); of the 65 flips to
 wins, larger in 24 (37%), smaller in 26 (40%). Mean node delta over all
@@ -877,7 +914,9 @@ K = 32 with no unbinding, the honest name is a learned feature map.
 ## 8. Limitations
 
 - **One machine, one ISA.** All numbers: aarch64 macOS, baseline ISA
-  level, no FMA, release profile. The per-op latency landscape differs
+  level, release profile, FMA present as `FMLA` (see §4.1 — the recorded
+  `target_feature="fma"=false` is an x86 flag, not a statement about this
+  target). The per-op latency landscape differs
   across the ISA matrix (several ops are documented as
   platform-divergent), and both the table and the learned model would
   shift. Nothing here licenses a cross-ISA conclusion.
