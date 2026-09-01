@@ -339,7 +339,7 @@ mod tests {
     fn candidate_summary_new_should_round_trip_features_and_rule_embed() {
         use crate::egraph::candidate::Firing;
         use crate::egraph::ops;
-        use crate::egraph::{ENode, EGraph, Rewrite};
+        use crate::egraph::{EGraph, ENode, Rewrite};
         use crate::math::algebra::Commutative;
 
         let rules: Vec<Box<dyn Rewrite>> = vec![Commutative::new(&ops::Add)];
