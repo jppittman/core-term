@@ -537,13 +537,24 @@ jobs:
   # imports and seven `f32` inherent methods routed through the `libm`
   # dependency the crate already carried.
   #
-  # `pixelflow-search` with `std` off is enforced here too (since 2026-08-30,
-  # when its `std` feature became honest: the `PIXELFLOW_NNUE_WEIGHTS` opt-in
-  # callers in `egraph/extraction.rs` gained the `#[cfg(feature = "std")]`
-  # gates matching `ExprNnue::from_bytes`). This replaced the informational
-  # `std-off-status` job that tracked the gap while it existed.
+  # `pixelflow-search` with its own `std` feature off is enforced here too
+  # (since 2026-08-30, when that feature became honest: the
+  # `PIXELFLOW_NNUE_WEIGHTS` opt-in callers in `egraph/extraction.rs` gained
+  # the `#[cfg(feature = "std")]` gates matching `ExprNnue::from_bytes`). This
+  # replaced the informational `std-off-status` job that tracked the gap
+  # while it existed.
+  #
+  # Unlike the pixelflow-ir check above, this is not a no_std guarantee:
+  # pixelflow-search's `lib.rs` never applies `#![no_std]`, `egraph/graph.rs`
+  # uses `std::` unconditionally outside the NNUE opt-in path, and this
+  # crate's own Cargo.toml hard-forces its `pixelflow-ir` dependency's `std`
+  # feature on. So this step only proves the crate's own `std` Cargo feature
+  # can be turned off without breaking the build (i.e. the NNUE opt-in is
+  # properly gated) on a host that still has libstd -- not that the crate
+  # builds without it. Making pixelflow-search genuinely no_std is separate,
+  # larger work.
   no-std:
-    name: std-off builds (pixelflow-ir, pixelflow-search)
+    name: pixelflow-ir no_std + pixelflow-search std-feature-off builds
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

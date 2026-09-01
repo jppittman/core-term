@@ -8,14 +8,14 @@
 # broken: nothing else in the workspace needed `bitflags/serde`, so
 # `--all-features` never noticed it wasn't wired up.
 #
-# One gap is already known and tracked elsewhere (pixelflow-search's std-off
-# build) -- see the `std-off-status` job. This script is not the place to fix
-# that; it exists so any *other*, *new* single-feature break gets caught
-# automatically instead of requiring another one-off manual audit like the
-# one that found the pixelflow-graphics bug in the first place.
+# No gap is currently known: KNOWN_BROKEN below is empty, and this script
+# exists so any single-feature break gets caught automatically instead of
+# requiring another one-off manual audit like the one that found the
+# pixelflow-graphics bug in the first place.
 # (pixelflow-ir's no_std build went green on 2026-08-02 and its `oracle`
-# feature on 2026-08-08; both are enforced by the `no-std` job now, so they
-# are deliberately NOT listed below -- a regression must fail this script.)
+# feature on 2026-08-08; pixelflow-search's std-off build joined them on
+# 2026-08-30. All three are enforced by the `no-std` job now, so they are
+# deliberately NOT listed below -- a regression must fail this script.)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
