@@ -184,11 +184,38 @@ impl SaturationConfig {
     }
 
     /// Normal complexity (11-50 nodes): balanced.
+    ///
+    /// `max_classes` is 10,000, not the tier's original 2000: a `Dwrt`-bearing
+    /// body starting well inside this node-count bracket can still need a
+    /// four-figure e-class count to fully expand and re-simplify under the
+    /// chain rule — differentiation multiplies terms combinatorially in a
+    /// way plain node count doesn't predict. Measured on the real glyph
+    /// winding ramp (`AnalyticalLine::kernel`'s gradient-normalized coverage
+    /// math, 26 reachable nodes — squarely "rapid"): it settles at a
+    /// `Dwrt`-free fixed point around ~1000-1100 classes in 6 iterations,
+    /// well inside `rapid`'s existing 50-iteration/50ms budget. But the
+    /// *final* class count understates the peak: a single round's rule
+    /// batch can transiently create far more e-nodes than survive that
+    /// round's hash-consing rebuild (`EGraph::saturate_with_limits`'s
+    /// per-rule `batch.node_count() > max_classes` guard checks the
+    /// pre-rebuild, in-flight count), so a cap sized to the post-rebuild
+    /// count alone can still truncate a round mid-batch and strand the
+    /// graph at a `Dwrt`-carrying local fixed point — a correctness bug
+    /// (the residual `Dwrt` is unrepresentable by any backend), not a
+    /// missed optimization: empirically, 2000 truncates this body
+    /// (measured 802 final classes, `Dwrt` survives) and 5000 is still not
+    /// reliably enough headroom above the transient peak, while 10,000 —
+    /// the flat cap every tier used before this file's per-size presets
+    /// existed, so not a new number — converges consistently. A doubled,
+    /// two-`Dwrt`-site probe standing in for `AnalyticalQuad` (53 nodes,
+    /// `classical`) converged at 1298 classes, comfortably inside
+    /// `classical`'s existing 5000, so that tier's cap is unchanged
+    /// (2026-09-01 integration audit, docs/plans/2026-08-17-cost-model-domain.md).
     pub fn rapid() -> Self {
         Self {
             max_iterations: 50,
             hard_timeout: std::time::Duration::from_millis(50),
-            max_classes: 2000,
+            max_classes: 10_000,
         }
     }
 
