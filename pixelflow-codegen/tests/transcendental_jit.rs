@@ -470,7 +470,7 @@ fn compile_shift(op: pixelflow_ir::OpKind, count: f32) -> bool {
     let x = a.push_var(0);
     let c = a.push_const(count);
     let root = a.push_binary(op, x, c);
-    pixelflow_codegen::emit::compile_arena_dag(&a, root).is_ok()
+    pixelflow_codegen::emit::compile(&a, root).is_ok()
 }
 
 /// A shift count is refused where the `Const` narrows to the encoder's `u8`,

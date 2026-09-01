@@ -19,7 +19,7 @@
 //! with the no-op zero-weight cost model — extraction keeps the original
 //! form; peephole/CSE still run. The point is the *pipeline*, end to end.
 
-use pixelflow_codegen::emit::compile_collapse;
+use pixelflow_codegen::emit::compile;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
 use pixelflow_search::egraph::{EGraph, IncrementalExtractor, choices_to_arena};
 use pixelflow_search::math::all_rules;
@@ -90,8 +90,8 @@ fn prod_swirl_kernel_through_nnue_and_jit() {
 
     // JIT both the original and the NNUE-optimized DAG. Both paths run the
     // shared transcendental-lowering + regalloc + codegen pipeline.
-    let orig_jit = compile_collapse(&orig, orig_root).expect("JIT original");
-    let opt_jit = compile_collapse(&opt, opt_root).expect("JIT optimized");
+    let orig_jit = compile(&orig, orig_root).expect("JIT original");
+    let opt_jit = compile(&opt, opt_root).expect("JIT optimized");
     eprintln!(
         "[swirl] spills: original = {}, optimized = {}",
         orig_jit.spill_count, opt_jit.spill_count

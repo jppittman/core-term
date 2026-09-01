@@ -1,14 +1,17 @@
 //! Isolate Rust-to-JIT call overhead from expression cost.
 //!
-//! Both cases execute the same compiled arena over the same 2D lattice. The
-//! baseline calls `KernelFn` once per SIMD group from a Rust loop; the collapse
-//! case calls `CollapseKernelFn` once for the whole frame.
+//! Both cases execute the *same compiled kernel* over the same 2D lattice and
+//! differ only in call granularity: the baseline crosses the Rust↔JIT boundary
+//! once per SIMD group from a Rust loop, the collapse case once for the whole
+//! frame. One kernel timed two ways is what makes the delta attributable to
+//! the boundary; compiling the baseline separately would fold codegen
+//! differences into the same figure.
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use pixelflow_codegen::JIT_VECTOR_BYTES;
-use pixelflow_codegen::emit::{CompileResult, compile_arena_dag, compile_collapse};
+use pixelflow_codegen::emit::{CompileResult, compile};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::ExprArena;
 
@@ -34,19 +37,26 @@ fn arena() -> (ExprArena, pixelflow_ir::arena::ExprId) {
 
 fn bench_collapse_overhead(c: &mut Criterion) {
     let (arena, root) = arena();
-    let batch = compile_arena_dag(&arena, root).expect("per-batch compile must succeed");
-    let collapse = compile_collapse(&arena, root).expect("collapse compile must succeed");
+    let collapse = compile(&arena, root).expect("collapse compile must succeed");
     let mut out = vec![0.0f32; GROUPS * LANES * ROWS];
     let seq: Vec<f32> = (0..LANES).map(|lane| lane as f32 + 0.5).collect();
 
     // Warm executable pages and branch predictors before Criterion samples.
-    per_batch_frame(&batch, &mut out, &seq, GROUPS, ROWS);
+    per_group_frame(&collapse, &mut out, &seq, GROUPS, ROWS);
     collapse_frame(&collapse, &mut out, &seq, GROUPS, ROWS);
 
     let mut group = c.benchmark_group("jit_collapse_call_overhead");
     group.throughput(Throughput::Elements((GROUPS * LANES * ROWS) as u64));
-    group.bench_function(BenchmarkId::new("rust_per_batch_loop", LANES), |b| {
-        b.iter(|| per_batch_frame(black_box(&batch), black_box(&mut out), &seq, GROUPS, ROWS));
+    group.bench_function(BenchmarkId::new("rust_per_group_loop", LANES), |b| {
+        b.iter(|| {
+            per_group_frame(
+                black_box(&collapse),
+                black_box(&mut out),
+                &seq,
+                GROUPS,
+                ROWS,
+            )
+        });
     });
     group.bench_function(BenchmarkId::new("one_2d_collapse_call", LANES), |b| {
         b.iter(|| {
@@ -62,7 +72,8 @@ fn bench_collapse_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-fn per_batch_frame(
+/// One boundary crossing per SIMD group, driven from a Rust loop.
+fn per_group_frame(
     result: &CompileResult,
     out: &mut [f32],
     _seq: &[f32],
@@ -90,6 +101,7 @@ fn per_batch_frame(
     }
 }
 
+/// One boundary crossing for the whole frame.
 fn collapse_frame(
     result: &CompileResult,
     out: &mut [f32],

@@ -18,9 +18,11 @@
 extern crate alloc;
 
 pub mod emit;
+pub mod error;
 
 pub mod jit_manifold;
 pub use emit::executable::{Extent2D, Point4, TileSlice};
+pub use error::CompileError;
 pub use jit_manifold::JitManifold;
 
 // x86-64 and aarch64 are the architectures with emitters.
@@ -28,11 +30,11 @@ pub use jit_manifold::JitManifold;
 pub mod jit_cache;
 
 /// Byte width of the SIMD vector this build's JIT emits and calls — i.e. the
-/// size of one [`CollapseKernelFn`](emit::executable::CollapseKernelFn) argument vector.
+/// size of one [`KernelFn`](emit::executable::KernelFn) argument vector.
 ///
 /// The JIT has no dependency on `pixelflow-core`, so it cannot name `Field`
 /// directly. This const is the single source of truth for the width the emitter
-/// and the `CollapseKernelFn` ABI agree on. Callers that bridge `Field` to a JIT kernel
+/// and the `KernelFn` ABI agree on. Callers that bridge `Field` to a JIT kernel
 /// assert `size_of::<Field>() == JIT_VECTOR_BYTES` at compile time, turning any
 /// width disagreement into a clear build error rather than a raw `transmute` size
 /// error (or, worse, a silent miscompile).

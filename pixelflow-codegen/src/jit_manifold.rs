@@ -16,6 +16,7 @@ pub struct JitManifold {
 
 impl JitManifold {
     /// Wrap newly compiled executable code into a `JitManifold`.
+    ///
     #[must_use]
     pub const fn new(code: ExecutableCode) -> Self {
         Self { code }
@@ -90,7 +91,7 @@ impl JitManifold {
         tile: TileSlice,
         origin: Point4<V>,
     ) {
-        // SAFETY: Delegated to ExecutableCode which invokes the emitted CollapseKernelFn.
+        // SAFETY: Delegated to ExecutableCode which invokes the emitted KernelFn.
         unsafe { self.code.call_collapse(ctx, tile, origin) }
     }
 
@@ -144,6 +145,19 @@ impl JitManifold {
             }
             out[offset..].copy_from_slice(&scratch[..tail]);
         }
+    }
+
+    /// Evaluate the kernel at a single point.
+    ///
+    /// The safe counterpart to the hand-written `extern "C"` signature every
+    /// caller used to spell for itself: no intrinsics, no transmute, and no
+    /// per-ISA `cfg` — the batch width is the kernel's business, not the
+    /// caller's.
+    #[must_use]
+    pub fn eval_at(&self, origin: Point4<f32>) -> f32 {
+        let mut out = [0.0f32; 1];
+        self.eval_row(&mut out, origin);
+        out[0]
     }
 
     /// Safe evaluator for a 2D rectangular grid of pixels.

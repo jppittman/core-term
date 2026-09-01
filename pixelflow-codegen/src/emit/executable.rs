@@ -4,6 +4,8 @@
 
 use core::ptr;
 
+use crate::error::CompileError;
+
 /// A region of executable memory containing JIT-compiled code.
 ///
 /// The memory is allocated as read-write, code is written to it,
@@ -25,9 +27,9 @@ impl ExecutableCode {
     /// The caller must ensure the code buffer contains valid machine code
     /// for the current architecture.
     #[cfg(unix)]
-    pub unsafe fn from_code(code: &[u8]) -> Result<Self, &'static str> {
+    pub unsafe fn from_code(code: &[u8]) -> Result<Self, CompileError> {
         if code.is_empty() {
-            return Err("empty code buffer");
+            return Err(CompileError::EmptyCodeBuffer);
         }
 
         let page_size = page_size();
@@ -69,12 +71,13 @@ impl ExecutableCode {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+}
 
+impl ExecutableCode {
     /// Execute the collapse kernel over a 2D tile destination.
     ///
     /// # Safety
     ///
-    /// - The compiled code must match the [`CollapseKernelFn`] ABI.
     /// - `tile.out` must have space for `tile.rows * (tile.groups * LANES)` floats plus row skip padding.
     /// - `size_of::<V>() == JIT_VECTOR_BYTES`.
     #[inline(always)]
@@ -85,7 +88,7 @@ impl ExecutableCode {
         origin: Point4<V>,
     ) {
         debug_assert_eq!(core::mem::size_of::<V>(), crate::JIT_VECTOR_BYTES);
-        let func: CollapseKernelFn = unsafe { self.as_fn() };
+        let func: KernelFn = unsafe { self.as_fn() };
         unsafe {
             func(
                 ctx,
@@ -170,10 +173,19 @@ impl Extent2D {
     }
 
     /// Total number of elements (`width * height`).
+    ///
+    /// # Panics
+    ///
+    /// If the product overflows `usize`. Callers size buffers by this figure,
+    /// so a wrapped one is a buffer-too-small check that passes on a buffer
+    /// that is too small — the one failure mode the check exists to stop.
     #[must_use]
     #[inline(always)]
     pub const fn len(self) -> usize {
-        self.width * self.height
+        match self.width.checked_mul(self.height) {
+            Some(n) => n,
+            None => panic!("Extent2D::len overflowed usize"),
+        }
     }
 
     /// True if either dimension is 0.
@@ -306,7 +318,7 @@ struct CodePages {
 #[cfg(unix)]
 impl CodePages {
     /// Map `capacity` bytes readable and writable.
-    fn map(capacity: usize) -> Result<Self, &'static str> {
+    fn map(capacity: usize) -> Result<Self, CompileError> {
         use libc::{MAP_ANON, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap};
 
         // SAFETY: a null hint with a non-zero length and no backing fd is the
@@ -322,7 +334,7 @@ impl CodePages {
             )
         };
         if ptr == libc::MAP_FAILED {
-            return Err("mmap failed");
+            return Err(CompileError::Mmap);
         }
         Ok(Self {
             ptr: ptr.cast::<u8>(),
@@ -339,7 +351,7 @@ impl CodePages {
 
     /// Flip to read-execute, make the written bytes visible to instruction
     /// fetch, and hand the mapping to an [`ExecutableCode`].
-    fn finish(self, len: usize) -> Result<ExecutableCode, &'static str> {
+    fn finish(self, len: usize) -> Result<ExecutableCode, CompileError> {
         use libc::{PROT_EXEC, PROT_READ, mprotect};
 
         // SAFETY: `self` owns this mapping and `capacity` is its length.
@@ -352,7 +364,7 @@ impl CodePages {
         };
         if rc != 0 {
             // `self` is still live, so `Drop` unmaps on the way out.
-            return Err("mprotect failed");
+            return Err(CompileError::Mprotect);
         }
 
         sync_instruction_cache(self.ptr, len);
@@ -494,13 +506,13 @@ use core::arch::x86_64::__m256;
 use core::arch::x86_64::__m512;
 
 /// JIT-compiled *collapse* kernel (ARM64). See the AVX-512
-/// [`CollapseKernelFn`] doc for the contract. AAPCS64 argument registers:
+/// [`KernelFn`] doc for the contract. AAPCS64 argument registers:
 /// `x0` = context, `x1` = `out`, `x2` = `groups`, `x3` = `rows`, `x4` =
 /// `row_skip_bytes`, `v0..3` = x0/y0/z/w. Batch width is 4 lanes; the
 /// per-iteration X step is 4.0 and Y advances by 1.0 per row.
 #[allow(improper_ctypes_definitions)]
 #[cfg(target_arch = "aarch64")]
-pub type CollapseKernelFn = extern "C" fn(
+pub type KernelFn = extern "C" fn(
     *const *const f32,
     *mut f32,
     usize,
@@ -527,11 +539,11 @@ pub type CollapseKernelFn = extern "C" fn(
 /// bytes to skip after each row's final full group, `zmm0..3` = x0/y0/z/w.
 #[allow(improper_ctypes_definitions)]
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-pub type CollapseKernelFn =
+pub type KernelFn =
     extern "C" fn(*const *const f32, *mut f32, usize, usize, usize, __m512, __m512, __m512, __m512);
 
 /// JIT-compiled *collapse* kernel (x86-64 AVX2). See the AVX-512
-/// [`CollapseKernelFn`] doc for the contract; batch width is 8 lanes and the
+/// [`KernelFn`] doc for the contract; batch width is 8 lanes and the
 /// per-iteration X step is 8.0.
 #[allow(improper_ctypes_definitions)]
 #[cfg(all(
@@ -539,11 +551,11 @@ pub type CollapseKernelFn =
     target_feature = "avx2",
     not(target_feature = "avx512f")
 ))]
-pub type CollapseKernelFn =
+pub type KernelFn =
     extern "C" fn(*const *const f32, *mut f32, usize, usize, usize, __m256, __m256, __m256, __m256);
 
 /// JIT-compiled *collapse* kernel (x86-64, 128-bit). See the AVX-512
-/// [`CollapseKernelFn`] doc for the contract; batch width is 4 lanes and the
+/// [`KernelFn`] doc for the contract; batch width is 4 lanes and the
 /// per-iteration X step is 4.0.
 #[allow(improper_ctypes_definitions)]
 #[cfg(all(
@@ -551,7 +563,7 @@ pub type CollapseKernelFn =
     not(target_feature = "avx512f"),
     not(target_feature = "avx2")
 ))]
-pub type CollapseKernelFn =
+pub type KernelFn =
     extern "C" fn(*const *const f32, *mut f32, usize, usize, usize, __m128, __m128, __m128, __m128);
 
 // =============================================================================
@@ -562,6 +574,32 @@ pub type CollapseKernelFn =
 // 128-bit `KernelFn`, so they are specific to the SSE2 (no AVX2, no AVX-512)
 // ABI. Under `+avx512f` or `+avx2`, `KernelFn` is `__m512`/`__m256` and these
 // `__m128` call sites don't type check; those paths are covered by the
+/// `Extent2D` arithmetic, independent of ISA level and architecture.
+#[cfg(test)]
+mod extent_tests {
+    use super::*;
+
+    #[test]
+    fn len_is_the_product() {
+        assert_eq!(Extent2D::new(7, 5).len(), 35);
+        assert_eq!(Extent2D::new(0, 5).len(), 0);
+    }
+
+    /// A wrapped product is the failure this check exists to prevent: callers
+    /// size output buffers by `len()` and assert against it, so `2^32 x 2^32`
+    /// wrapping to 0 let an empty buffer satisfy a request for 2^64 pixels
+    /// while the kernel was still told to fill 2^32 rows.
+    #[test]
+    #[should_panic(expected = "Extent2D::len overflowed usize")]
+    fn len_refuses_to_wrap() {
+        assert_eq!(
+            Extent2D::new(1 << 32, 1 << 32).len(),
+            0,
+            "unreachable: len panics"
+        );
+    }
+}
+
 /// Page preparation, independent of ISA level and architecture.
 ///
 /// Ungated on purpose: `CodePages`, `page_size` and `sync_instruction_cache`
@@ -628,7 +666,7 @@ mod page_tests {
     fn an_empty_buffer_is_refused() {
         // SAFETY: empty slice; rejected before anything is mapped.
         match unsafe { ExecutableCode::from_code(&[]) } {
-            Err(e) => assert_eq!(e, "empty code buffer"),
+            Err(e) => assert_eq!(e, CompileError::EmptyCodeBuffer),
             Ok(_) => panic!("an empty buffer must not map"),
         }
     }

@@ -46,8 +46,8 @@ use alloc::vec::Vec;
 /// Run every legalization pass, in the one order they compose in.
 ///
 /// This is the whole pipeline. It was previously four calls copied into each
-/// compile entry, which is how two entries — `compile_arena_dag_avx2` and
-/// `compile_arena_dag_avx512` — came to run none of them, and how the deleted
+/// compile entry, which is how two since-deleted entries came to run none of
+/// them, and how the deleted
 /// `CompileWorkspace` came to run none of them *and* skip the guard that
 /// refuses a surviving `Dwrt`. An order that has to be retyped is an order
 /// that can be forgotten.
@@ -196,7 +196,7 @@ pub fn expand_transcendentals(arena: &mut ExprArena, root: ExprId) -> ExprId {
     })
 }
 
-/// Convenience wrapper for the public `compile_arena_dag*` entries, which hold a
+/// Convenience wrapper for the public compile entry, which holds a
 /// shared `&ExprArena`: clone it, expand transcendentals in the clone, and
 /// return the owned arena + new root. Cheap when there are no transcendentals
 /// (the clone is two `Vec`s and the walk just copies), so every entry can call

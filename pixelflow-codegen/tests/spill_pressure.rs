@@ -16,71 +16,27 @@
 
 #![cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 
-use pixelflow_codegen::emit::compile_arena_dag;
-use pixelflow_codegen::emit::executable::ExecutableCode;
+use pixelflow_codegen::JitManifold;
+use pixelflow_codegen::emit::compile;
+use pixelflow_codegen::emit::executable::Point4;
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
 use pixelflow_ir::eval_scalar;
 
-#[allow(improper_ctypes_definitions)]
-#[cfg(target_feature = "avx2")]
-type KernelFn = extern "C" fn(
-    core::arch::x86_64::__m256,
-    core::arch::x86_64::__m256,
-    core::arch::x86_64::__m256,
-    core::arch::x86_64::__m256,
-) -> core::arch::x86_64::__m256;
-
-#[allow(improper_ctypes_definitions)]
-#[cfg(not(target_feature = "avx2"))]
-type KernelFn = extern "C" fn(
-    core::arch::x86_64::__m128,
-    core::arch::x86_64::__m128,
-    core::arch::x86_64::__m128,
-    core::arch::x86_64::__m128,
-) -> core::arch::x86_64::__m128;
-
-#[cfg(target_feature = "avx2")]
-fn jit_eval(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        _mm256_cvtss_f32(f(
-            _mm256_set1_ps(x),
-            _mm256_set1_ps(y),
-            _mm256_set1_ps(z),
-            _mm256_set1_ps(w),
-        ))
-    }
-}
-
-#[cfg(not(target_feature = "avx2"))]
-fn jit_eval(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let f: KernelFn = code.as_fn();
-        _mm_cvtss_f32(f(
-            _mm_set1_ps(x),
-            _mm_set1_ps(y),
-            _mm_set1_ps(z),
-            _mm_set1_ps(w),
-        ))
-    }
-}
-
 /// Compile and compare against the interpreter over a coordinate grid.
 /// Returns the spill count so scenarios can assert they really exercised
 /// the spill paths (a pressure test that doesn't spill proves nothing).
 fn assert_jit_matches_interp(arena: &ExprArena, root: ExprId, label: &str) -> u32 {
-    let result = compile_arena_dag(arena, root)
-        .unwrap_or_else(|e| panic!("{label}: JIT compile failed: {e}"));
+    let result =
+        compile(arena, root).unwrap_or_else(|e| panic!("{label}: JIT compile failed: {e}"));
     let spills = result.spill_count;
+    let jit = JitManifold::new(result.code);
     let coords = [-2.5f32, -1.0, -0.3, 0.0, 0.4, 1.0, 1.7, 3.0];
     for &x in &coords {
         for &y in &coords {
             let want = eval_scalar(arena, root, &[x, y, 0.1, 0.9], &BindingTable::empty());
-            let got = jit_eval(&result.code, x, y, 0.1, 0.9);
+            let got = jit.eval_at(Point4::new(x, y, 0.1, 0.9));
             assert!(
                 (want.is_nan() && got.is_nan()) || floats_agree(want, got),
                 "{label}: JIT {got} != interp {want} at ({x}, {y}) [spills={spills}]"
@@ -276,15 +232,16 @@ fn frame_mode_beyond_red_zone() {
     let vals: Vec<ExprId> = (0..24).map(|i| tree(&mut a, 2, 700 + i * 23)).collect();
     let root = fold_add(&mut a, &vals);
 
-    let result = compile_arena_dag(&a, root).expect("frame-mode compile failed");
+    let result = compile(&a, root).expect("frame-mode compile failed");
     assert!(
         result.spill_bytes > 128,
         "scenario stayed inside the red zone (spill_bytes={}), not testing frame mode",
         result.spill_bytes
     );
+    let jit = JitManifold::new(result.code);
     for &(x, y) in &[(0.3f32, -1.2f32), (2.0, 0.7), (-0.9, 3.1)] {
         let want = eval_scalar(&a, root, &[x, y, 0.1, 0.9], &BindingTable::empty());
-        let got = jit_eval(&result.code, x, y, 0.1, 0.9);
+        let got = jit.eval_at(Point4::new(x, y, 0.1, 0.9));
         assert!(
             want == got,
             "frame_mode: JIT {got} != interp {want} at ({x}, {y})"

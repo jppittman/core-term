@@ -327,7 +327,7 @@ type NativeSimd = <backend::arm::Neon as Backend>::F32;
 #[cfg(target_arch = "aarch64")]
 type NativeU32Simd = <backend::arm::Neon as Backend>::U32;
 
-// No scalar fallback: the JIT (`compile_arena_dag`, and therefore
+// No scalar fallback: the JIT (`compile`, and therefore
 // `Lattice::bake`) exists only on x86-64 and aarch64, and there is no
 // interpreter render path. A target without a JIT could compile a `Field` but
 // could not render anything, so it fails here, loudly, rather than silently
