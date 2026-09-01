@@ -1,0 +1,10 @@
+{
+  "checkpoint": "pixelflow-pipeline/data/guide_checkpoint_strict_v1.json",
+  "dev_path": "pixelflow-pipeline/data/strict_labels_dev.jsonl",
+  "records_checked": 155231,
+  "tol": 0.000001,
+  "max_abs_diff": 0.0,
+  "mean_abs_diff": 0.0,
+  "exceeding_tol": 0,
+  "passed": true
+}
