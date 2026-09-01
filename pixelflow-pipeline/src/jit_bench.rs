@@ -303,7 +303,7 @@ fn op_count(arena: &ExprArena, root: ExprId) -> usize {
 ///
 /// Not used to weaken the plausibility floor, and deliberately so: a var-free
 /// arena is only *foldable in principle*. Neither emitter folds
-/// (`compile_arena_dag_with_ctx` lowers Dwrt/Reduce/Gather/transcendentals and
+/// (`compile` lowers Dwrt/Reduce/Gather/transcendentals and
 /// then schedules every remaining node on both aarch64 and x86-64 — there is
 /// no constant-propagation pass), so a var-free expression still executes its
 /// ops and the floor still describes real work. Exempting it would silently
@@ -1371,7 +1371,7 @@ pub fn benchmark_compile_cached_miss(kernels: Vec<(ExprArena, ExprId)>) -> Resul
     validate_median(times[COMPILE_TIMED_RUNS / 2] as f64)
 }
 
-/// Median wall-clock cost of one `compile_arena_dag` call, fresh-allocation
+/// Median wall-clock cost of one `compile` call, fresh-allocation
 /// path: every compile mmaps a new executable region and munmaps it on drop.
 /// Both syscalls are inside the timed window.
 ///
@@ -1581,9 +1581,9 @@ mod tests {
     fn var_free_arenas_still_execute_their_ops() {
         // The premise behind exempting var-free arenas from the plausibility
         // floor is that the JIT folds them to a constant `ret`. It does not:
-        // neither `compile_arena_dag_with_ctx` lowers through a constant-
-        // propagation pass, so a 300-op var-free kernel really runs 300 ops
-        // and sits far above the 15ns floor (measured ~185ns on M-series).
+        // `compile` has no constant-propagation pass, so a 300-op var-free
+        // kernel really runs 300 ops and sits far above the 15ns floor
+        // (measured ~185ns on M-series).
         //
         // If this test ever fails, a folding pass has landed — and the fix is
         // to compute the floor from the LOWERED schedule the emitter built,

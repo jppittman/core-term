@@ -354,14 +354,14 @@ pub struct CompileResult {
     pub hoisted_values: u32,
 }
 
-/// The architecture seam for the shared per-batch driver.
+/// The architecture seam for the shared driver.
 ///
-/// `compile_dag_via_backend` owns the architecture-INDEPENDENT logic — schedule,
+/// [`compile_via_backend`] owns the architecture-INDEPENDENT logic — schedule,
 /// register allocation, frame layout, and the Select short-circuit control flow
 /// — and calls an `IsaBackend` for the leaf operations that actually differ
 /// between x86-64 and aarch64 (instruction encoding, branch encoding, the
-/// prologue/epilogue, and any arch-specific finalization such as aarch64's
-/// constant pool). Both backends therefore run the *same* driver: there is one
+/// collapse-loop scaffold, and any arch-specific finalization such as
+/// aarch64's constant pool). Both backends therefore run the *same* driver: there is one
 /// place that decides when to emit a guard branch, where the root goes, etc.
 ///
 /// `Branch` is an opaque per-backend fixup token (aarch64 distinguishes CBZ from
@@ -644,7 +644,7 @@ const SCAFFOLD_SCRATCH: Reg = Reg(1);
 
 /// Drive a schedule to machine code via an [`IsaBackend`].
 ///
-/// This is the single shared per-batch driver for both architectures. The
+/// This is the single shared body driver for both architectures. The
 /// control flow here — Select guard analysis, short-circuit branch emission and
 /// patching, root resolution — is identical regardless of ISA; only the leaf
 /// emits go through `backend`.
@@ -652,9 +652,8 @@ const SCAFFOLD_SCRATCH: Reg = Reg(1);
 /// plus root resolution — with **no** prologue, epilogue, or `RET`. Returns the
 /// body bytes, the register holding the root value, the spill-frame size, and
 /// the spill count. The body's branches are self-relative, so a caller may
-/// freely prepend a prologue / wrap it in a loop / append an epilogue. This is
-/// the seam that lets both the per-batch kernel and the internal-loop collapse
-/// driver share one body emitter.
+/// freely wrap it in a loop. This is the seam between the body emitter and
+/// the collapse-loop scaffold.
 fn emit_dag_body<B: IsaBackend>(
     schedule: Vec<regalloc::Def>,
     backend: &mut B,
@@ -998,7 +997,7 @@ fn arena_to_schedule(
             ExprNode::Const(v) => ScheduledOp::Const(*v),
             ExprNode::Param(i) => panic!(
                 "ExprNode::Param({}) reached the JIT emitter -- \
-                 call substitute_params before compile_arena()",
+                 call substitute_params before compile()",
                 i
             ),
             // A Buffer leaf is always folded into a `Gather`'s `slot` immediate
@@ -1840,8 +1839,8 @@ type Native = x86_64::driver::X86Backend;
 /// realization of a lattice collapse.
 ///
 /// The per-batch body (produced by [`emit_dag_body`], with derivatives /
-/// reductions / gathers / transcendentals already lowered — the same Stage-1
-/// chain as [`compile_arena_dag`]) is wrapped in the build width's
+/// reductions / gathers / transcendentals already lowered) is wrapped in the
+/// build width's
 /// [`IsaBackend::emit_collapse_loop`] scaffold: X steps by the batch width and
 /// resets per row, Y steps by 1.0, Z/W stay invariant, gathers read buffer
 /// bases from the context register, and each batch stores straight to `out`.
@@ -2012,9 +2011,22 @@ fn compile_via_backend<B: IsaBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixelflow_ir::arena::{ExprArena, ExprId};
+    use pixelflow_ir::arena::ExprArena;
+    // Only the 128-bit x86 helpers (`run1`, `run_xy`, `run2`) take an `ExprId`
+    // at this level; the wider-ISA submodules import their own.
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
+    use pixelflow_ir::arena::ExprId;
+
+    // The three helpers below are shared by ISA-gated tests; which subset is
+    // live depends on the build's target features, so none is unconditionally
+    // used.
 
     /// Lanes in one SIMD batch for this build.
+    #[allow(dead_code)]
     const LANES: usize = crate::JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 
     /// Evaluate one batch at arbitrary per-lane coordinates.
@@ -2024,6 +2036,7 @@ mod tests {
     /// — the two things every caller in this file used to spell for itself,
     /// once per ISA. `ctx` may be empty: a kernel that declares no buffer never
     /// reads the pointer.
+    #[allow(dead_code)]
     fn eval_batch(
         code: &executable::ExecutableCode,
         ctx: &[*const f32],
@@ -2043,102 +2056,11 @@ mod tests {
     }
 
     /// Evaluate at a single point (all lanes the same X).
+    #[allow(dead_code)]
     fn eval_point(code: &executable::ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
         let o = executable::Point4::new([x; LANES], [y; LANES], [z; LANES], [w; LANES]);
         eval_batch(code, &[], o)[0]
     }
-
-    #[allow(dead_code, improper_ctypes_definitions)]
-    #[cfg(target_arch = "aarch64")]
-    type KernelFn = extern "C" fn(
-        core::arch::aarch64::float32x4_t,
-        core::arch::aarch64::float32x4_t,
-        core::arch::aarch64::float32x4_t,
-        core::arch::aarch64::float32x4_t,
-    ) -> core::arch::aarch64::float32x4_t;
-
-    #[allow(dead_code, improper_ctypes_definitions)]
-    #[cfg(target_arch = "aarch64")]
-    type CtxKernelFn = extern "C" fn(
-        *const *const f32,
-        core::arch::aarch64::float32x4_t,
-        core::arch::aarch64::float32x4_t,
-        core::arch::aarch64::float32x4_t,
-        core::arch::aarch64::float32x4_t,
-    ) -> core::arch::aarch64::float32x4_t;
-
-    #[allow(dead_code, improper_ctypes_definitions)]
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    type KernelFn = extern "C" fn(
-        core::arch::x86_64::__m512,
-        core::arch::x86_64::__m512,
-        core::arch::x86_64::__m512,
-        core::arch::x86_64::__m512,
-    ) -> core::arch::x86_64::__m512;
-
-    #[allow(dead_code, improper_ctypes_definitions)]
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    type CtxKernelFn = extern "C" fn(
-        *const *const f32,
-        core::arch::x86_64::__m512,
-        core::arch::x86_64::__m512,
-        core::arch::x86_64::__m512,
-        core::arch::x86_64::__m512,
-    ) -> core::arch::x86_64::__m512;
-
-    #[allow(dead_code, improper_ctypes_definitions)]
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        not(target_feature = "avx512f")
-    ))]
-    type KernelFn = extern "C" fn(
-        core::arch::x86_64::__m256,
-        core::arch::x86_64::__m256,
-        core::arch::x86_64::__m256,
-        core::arch::x86_64::__m256,
-    ) -> core::arch::x86_64::__m256;
-
-    #[allow(dead_code, improper_ctypes_definitions)]
-    #[cfg(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        not(target_feature = "avx512f")
-    ))]
-    type CtxKernelFn = extern "C" fn(
-        *const *const f32,
-        core::arch::x86_64::__m256,
-        core::arch::x86_64::__m256,
-        core::arch::x86_64::__m256,
-        core::arch::x86_64::__m256,
-    ) -> core::arch::x86_64::__m256;
-
-    #[allow(dead_code, improper_ctypes_definitions)]
-    #[cfg(all(
-        target_arch = "x86_64",
-        not(target_feature = "avx512f"),
-        not(target_feature = "avx2")
-    ))]
-    type KernelFn = extern "C" fn(
-        core::arch::x86_64::__m128,
-        core::arch::x86_64::__m128,
-        core::arch::x86_64::__m128,
-        core::arch::x86_64::__m128,
-    ) -> core::arch::x86_64::__m128;
-
-    #[allow(dead_code, improper_ctypes_definitions)]
-    #[cfg(all(
-        target_arch = "x86_64",
-        not(target_feature = "avx512f"),
-        not(target_feature = "avx2")
-    ))]
-    type CtxKernelFn = extern "C" fn(
-        *const *const f32,
-        core::arch::x86_64::__m128,
-        core::arch::x86_64::__m128,
-        core::arch::x86_64::__m128,
-        core::arch::x86_64::__m128,
-    ) -> core::arch::x86_64::__m128;
 
     /// A `Dwrt` that reaches the scheduler (a caller bypassed the lowering
     /// pipeline) must fail loudly at the schedule boundary, not as a cryptic
@@ -2691,7 +2613,7 @@ mod tests {
     // =========================================================================
 
     // These three tests call the private `arena_to_schedule`/`arena_to_uses`
-    // directly rather than through `compile_arena_dag`: value numbering and
+    // directly rather than through `compile`: value numbering and
     // dead-node filtering are schedule-shape invariants with no output-value
     // signature (a regression here wastes registers/instructions, it doesn't
     // change what a compiled kernel computes), so there is no public
@@ -2757,17 +2679,7 @@ mod tests {
         let result = compile(&arena, sum).expect("arena DAG compile failed");
         assert_eq!(result.spill_count, 0);
 
-        unsafe {
-            use core::arch::aarch64::*;
-            let x = vdupq_n_f32(3.0);
-            let y = vdupq_n_f32(4.0);
-            let z = vdupq_n_f32(0.0);
-            let w = vdupq_n_f32(0.0);
-
-            let func: KernelFn = result.code.as_fn();
-            let out = func(x, y, z, w);
-            assert_eq!(vgetq_lane_f32(out, 0), 7.0);
-        }
+        assert_eq!(eval_point(&result.code, 3.0, 4.0, 0.0, 0.0), 7.0);
     }
 
     #[test]
@@ -2784,18 +2696,8 @@ mod tests {
 
         let result = compile(&arena, sum).expect("arena DAG compile failed");
 
-        unsafe {
-            use core::arch::aarch64::*;
-            let x = vdupq_n_f32(3.0);
-            let y = vdupq_n_f32(4.0);
-            let z = vdupq_n_f32(0.0);
-            let w = vdupq_n_f32(0.0);
-
-            let func: KernelFn = result.code.as_fn();
-            let out = func(x, y, z, w);
-            // 3*2 + 4 = 10
-            assert_eq!(vgetq_lane_f32(out, 0), 10.0);
-        }
+        // 3*2 + 4 = 10
+        assert_eq!(eval_point(&result.code, 3.0, 4.0, 0.0, 0.0), 10.0);
     }
 
     #[test]
@@ -2819,23 +2721,13 @@ mod tests {
 
         assert!(result.spill_count > 0, "expected spills with max_regs=2");
 
-        unsafe {
-            use core::arch::aarch64::*;
-            let x = vdupq_n_f32(1.0);
-            let y = vdupq_n_f32(2.0);
-            let z = vdupq_n_f32(3.0);
-            let w = vdupq_n_f32(4.0);
-
-            let func: KernelFn = result.code.as_fn();
-            let out = func(x, y, z, w);
-            // (1+2) + (3+4) = 10
-            assert_eq!(vgetq_lane_f32(out, 0), 10.0);
-        }
+        // (1+2) + (3+4) = 10
+        assert_eq!(eval_point(&result.code, 1.0, 2.0, 3.0, 4.0), 10.0);
     }
 
-    /// Run a per-batch arena kernel at `x` (Y/Z/W = 0) and return lane 0.
-    /// 128-bit `KernelFn`; the builtin-parity tests below use it. Gated off
-    /// `+avx512f` (those builtins aren't in the AVX-512 op set yet anyway).
+    /// Run an arena kernel at `x` (Y/Z/W = 0) and return lane 0. The
+    /// builtin-parity tests below use it. Gated off `+avx512f` (those builtins
+    /// aren't in the AVX-512 op set yet anyway).
     #[cfg(all(
         target_arch = "x86_64",
         not(target_feature = "avx512f"),
@@ -2846,8 +2738,7 @@ mod tests {
         eval_point(&r.code, x, 0.0, 0.0, 0.0)
     }
 
-    /// Per-batch eval at (X=x, Y=y, Z=W=0), lane 0. 128-bit `KernelFn`, so gated
-    /// off `+avx512f` like `run1`.
+    /// Eval at (X=x, Y=y, Z=W=0), lane 0. Gated off `+avx512f` like `run1`.
     #[cfg(all(
         target_arch = "x86_64",
         not(target_feature = "avx512f"),
@@ -3195,7 +3086,7 @@ mod tests {
     // Forward-mode dual (jet) lowering — validated against analytic derivatives.
     // Uses hardware sqrtps/divps (no polynomial approximations), so tolerances
     // are tight.
-    /// Transcendental lowering: sin/cos/tan JIT through the per-batch path with
+    /// Transcendental lowering: sin/cos/tan JIT through the shared driver with
     /// no backend ever emitting a transcendental (they expand to arithmetic in
     /// `lowering`). Validated against `f32` on the default (128-bit) build.
     #[cfg(all(
@@ -3361,10 +3252,9 @@ mod tests {
     }
 
     // =========================================================================
-    // x86 shared-pipeline per-batch path (schedule → regalloc → spill).
+    // x86 shared-pipeline path (schedule → regalloc → spill).
     // =========================================================================
-    // Calls kernels through the per-batch `KernelFn` (128-bit here); gated off
-    // `+avx512f` where that ABI is `__m512` (AVX-512 covered by `avx512_driver`).
+    // 128-bit build only; gated off `+avx512f` (covered by `avx512_driver`).
     #[cfg(all(
         target_arch = "x86_64",
         not(target_feature = "avx512f"),
@@ -3389,8 +3279,8 @@ mod tests {
         /// computes the right answer.
         ///
         /// This used to compare a "Sethi-Ullman path" against a "scheduled
-        /// path". Both arms had long since become the same `compile_arena_dag`
-        /// call, so it compiled one function twice and asserted it equalled
+        /// path". Both arms had long since become the same `compile` call,
+        /// so it compiled one function twice and asserted it equalled
         /// itself; only the ground-truth comparison was load-bearing.
         #[test]
         fn sched_no_spill_is_correct() {
@@ -3659,7 +3549,7 @@ mod tests {
         fn matmul_reduce_jit_matches_interpreter() {
             // out(j) = Σ_i W(i,j) * input(i), evaluated per output lane j = X.
             // The reduction over i unrolls to a flat gather/FMA chain (bound
-            // extent), and the whole thing runs as one CtxKernelFn.
+            // extent), and the whole thing runs as one bound-memory kernel.
             //   W is IN×OUT row-major (width=IN, height=OUT); input is length IN.
             let (in_dim, out_dim) = (4usize, 6usize);
             let w: Vec<f32> = (0..(in_dim * out_dim))
@@ -3704,33 +3594,12 @@ mod tests {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     mod avx512_driver {
         use super::*;
-        use pixelflow_ir::arena::ExprArena;
-
-        // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
-        // not-FFI-safe is a false positive here, as for `executable`'s aliases.
-        #[allow(improper_ctypes_definitions)]
-        type K = unsafe extern "C" fn(
-            core::arch::x86_64::__m512,
-            core::arch::x86_64::__m512,
-            core::arch::x86_64::__m512,
-            core::arch::x86_64::__m512,
-        ) -> core::arch::x86_64::__m512;
+        use pixelflow_ir::arena::{ExprArena, ExprId};
 
         /// Run a compiled zmm kernel over 16 distinct lanes per coordinate.
         fn run16(res: &CompileResult, xs: [f32; 16], ys: [f32; 16], zs: [f32; 16]) -> [f32; 16] {
-            unsafe {
-                use core::arch::x86_64::*;
-                let f: K = res.code.as_fn();
-                let r = f(
-                    _mm512_loadu_ps(xs.as_ptr()),
-                    _mm512_loadu_ps(ys.as_ptr()),
-                    _mm512_loadu_ps(zs.as_ptr()),
-                    _mm512_setzero_ps(),
-                );
-                let mut out = [0.0f32; 16];
-                _mm512_storeu_ps(out.as_mut_ptr(), r);
-                out
-            }
+            let o = executable::Point4::new(xs, ys, zs, [0.0; 16]);
+            eval_batch(&res.code, &[], o)
         }
 
         fn lanes() -> ([f32; 16], [f32; 16], [f32; 16]) {
@@ -3759,39 +3628,15 @@ mod tests {
 
         // ---- Bound-memory gather: JIT vs reference interpreter ----
 
-        // Passing __m512 by value IS the emitted ABI (SysV: zmm0-7), so
-        // not-FFI-safe is a false positive here, as for `executable`'s aliases.
-        #[allow(improper_ctypes_definitions)]
-        type CtxK = unsafe extern "C" fn(
-            *const *const f32,
-            core::arch::x86_64::__m512,
-            core::arch::x86_64::__m512,
-            core::arch::x86_64::__m512,
-            core::arch::x86_64::__m512,
-        ) -> core::arch::x86_64::__m512;
-
-        /// Run a compiled gather kernel as a `CtxKernelFn`: the context (array of
-        /// buffer base pointers) goes in rdi, coords in zmm0..3.
+        /// Run a compiled gather kernel with `ctx` bound as its buffer bases.
         fn run16_ctx(
             res: &CompileResult,
             ctx: &[*const f32],
             xs: [f32; 16],
             ys: [f32; 16],
         ) -> [f32; 16] {
-            unsafe {
-                use core::arch::x86_64::*;
-                let f: CtxK = res.code.as_fn();
-                let r = f(
-                    ctx.as_ptr(),
-                    _mm512_loadu_ps(xs.as_ptr()),
-                    _mm512_loadu_ps(ys.as_ptr()),
-                    _mm512_setzero_ps(),
-                    _mm512_setzero_ps(),
-                );
-                let mut out = [0.0f32; 16];
-                _mm512_storeu_ps(out.as_mut_ptr(), r);
-                out
-            }
+            let o = executable::Point4::new(xs, ys, [0.0; 16], [0.0; 16]);
+            eval_batch(&res.code, ctx, o)
         }
 
         /// Check a compiled gather kernel lane-for-lane against `eval_scalar`,
@@ -3911,7 +3756,7 @@ mod tests {
         fn matmul_reduce_jit_matches_interpreter() {
             // out(j) = Σ_i W(i,j) * input(i), evaluated per output lane j = X.
             // The reduction over i unrolls to a flat gather/FMA chain (bound
-            // extent), and the whole thing runs as one CtxKernelFn.
+            // extent), and the whole thing runs as one bound-memory kernel.
             //   W is IN×OUT row-major (width=IN, height=OUT); input is length IN.
             let (in_dim, out_dim) = (4usize, 6usize);
             let w: Vec<f32> = (0..(in_dim * out_dim))
@@ -4006,13 +3851,9 @@ mod tests {
             }
             let root = terms[0];
 
-            let (legal, legal_root) = pixelflow_ir::passes::legalize(&a, root).expect("legalize");
-            let schedule = arena_to_schedule(&legal, legal_root);
-            let res = compile_dag_via_backend(
-                schedule,
-                &mut avx512::driver::Avx512Backend::new(EmitCtx::with_max_regs(4)),
-            )
-            .expect("avx512 compile");
+            let res = EmitCtx::with_max_regs(4)
+                .compile(&a, root)
+                .expect("avx512 compile");
             assert!(res.spill_count > 0, "expected spilling");
 
             let (xs, ys, zs) = lanes();
@@ -4132,8 +3973,7 @@ mod tests {
     // `aarch64_backend_covers_required_ops` always runs on aarch64, and
     // `avx512_backend_covers_required_ops` only compiles (and only needs to
     // pass) when built with `avx512f` — the same feature gate
-    // `compile_arena_dag_with_ctx` uses to select `Avx512Backend` in
-    // production. On a default `cargo test --workspace` (no RUSTFLAGS) on
+    // `compile` uses to select `Avx512Backend` in production. On a default `cargo test --workspace` (no RUSTFLAGS) on
     // this x86-64 host, that means: the SSE2 test runs and must be green
     // (it is: X86Backend already covers every required op), and the AVX-512
     // test does not even compile — it isn't lying about passing, it simply

@@ -14,7 +14,7 @@
 //!     --test avx512_evex_proof
 
 #[cfg(target_feature = "avx512f")]
-use pixelflow_codegen::emit::executable::{ExecutableCode, PerBatch};
+use pixelflow_codegen::emit::executable::ExecutableCode;
 
 // ============================================================================
 // Minimal EVEX encoder (512-bit). Promoted to a real module once proven.
@@ -144,14 +144,14 @@ fn evex_runtime_16_lanes() {
     vaddps(&mut a, 0, 0, 1);
     vmulps(&mut a, 0, 0, 2);
     a.push(0xC3);
-    let code_a = unsafe { ExecutableCode::<PerBatch>::from_code(&a).expect("mmap A") };
+    let code_a = unsafe { ExecutableCode::from_code(&a).expect("mmap A") };
 
     // Kernel B: X*Y + Z via real FMA
     //   vfmadd213ps zmm0, zmm1, zmm2  (zmm0 = zmm1*zmm0 + zmm2) ; ret
     let mut b = Vec::new();
     vfmadd213ps(&mut b, 0, 1, 2);
     b.push(0xC3);
-    let code_b = unsafe { ExecutableCode::<PerBatch>::from_code(&b).expect("mmap B") };
+    let code_b = unsafe { ExecutableCode::from_code(&b).expect("mmap B") };
 
     unsafe {
         let fa: Kernel = code_a.as_fn();

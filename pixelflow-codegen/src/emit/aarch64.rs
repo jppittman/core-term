@@ -1219,13 +1219,13 @@ fn decode_aarch64_mnemonic(word: u32) -> String {
 ///
 /// # Errors
 ///
-/// Returns an error string if compilation fails (same errors as `compile_arena`).
+/// Returns an error string if compilation fails (same errors as [`compile`](super::compile)).
 #[cfg(target_arch = "aarch64")]
 pub fn dump_jit_asm(
     arena: &pixelflow_ir::arena::ExprArena,
     root: pixelflow_ir::arena::ExprId,
 ) -> Result<String, &'static str> {
-    let result = super::compile_arena_dag(arena, root)?;
+    let result = super::compile(arena, root)?;
     Ok(disassemble_code(result.code.as_bytes()))
 }
 
