@@ -862,14 +862,8 @@ impl SimdOps for F32x8 {
 
     #[inline(always)]
     fn mul_add(self, b: Self, c: Self) -> Self {
-        #[cfg(target_feature = "fma")]
-        unsafe {
-            Self(_mm256_fmadd_ps(self.0, b.0, c.0))
-        }
-        #[cfg(not(target_feature = "fma"))]
-        {
-            self * b + c
-        }
+        // The AVX2 tier requires FMA, so this is unconditionally one rounding.
+        unsafe { Self(_mm256_fmadd_ps(self.0, b.0, c.0)) }
     }
 
     #[inline(always)]
@@ -960,20 +954,11 @@ impl SimdOps for F32x8 {
             let c0 = _mm256_set1_ps(log2_poly::C0);
 
             // Horner's method with FMA when available
-            #[cfg(target_feature = "fma")]
             {
                 let mut poly = _mm256_fmadd_ps(c4, f, c3);
                 poly = _mm256_fmadd_ps(poly, f, c2);
                 poly = _mm256_fmadd_ps(poly, f, c1);
                 poly = _mm256_fmadd_ps(poly, f, c0);
-                Self(_mm256_add_ps(n, poly))
-            }
-            #[cfg(not(target_feature = "fma"))]
-            {
-                let mut poly = _mm256_add_ps(_mm256_mul_ps(c4, f), c3);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c2);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c1);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c0);
                 Self(_mm256_add_ps(n, poly))
             }
         }
@@ -993,7 +978,6 @@ impl SimdOps for F32x8 {
             let c0 = _mm256_set1_ps(1.0);
 
             // Horner's method
-            #[cfg(target_feature = "fma")]
             {
                 let mut poly = _mm256_fmadd_ps(c4, f, c3);
                 poly = _mm256_fmadd_ps(poly, f, c2);
@@ -1001,20 +985,6 @@ impl SimdOps for F32x8 {
                 poly = _mm256_fmadd_ps(poly, f, c0);
 
                 // 2^n = (n + 127) << 23
-                let bias = _mm256_set1_epi32(127);
-                let n_i32 = _mm256_cvtps_epi32(n);
-                let exp_bits = _mm256_slli_epi32(_mm256_add_epi32(n_i32, bias), 23);
-                let scale = _mm256_castsi256_ps(exp_bits);
-
-                Self(_mm256_mul_ps(poly, scale))
-            }
-            #[cfg(not(target_feature = "fma"))]
-            {
-                let mut poly = _mm256_add_ps(_mm256_mul_ps(c4, f), c3);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c2);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c1);
-                poly = _mm256_add_ps(_mm256_mul_ps(poly, f), c0);
-
                 let bias = _mm256_set1_epi32(127);
                 let n_i32 = _mm256_cvtps_epi32(n);
                 let exp_bits = _mm256_slli_epi32(_mm256_add_epi32(n_i32, bias), 23);
