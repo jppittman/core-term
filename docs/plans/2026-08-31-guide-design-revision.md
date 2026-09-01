@@ -30,14 +30,14 @@ semantics), all pinned to a static-latency-prior cost model, no wall-clock timin
 **Audit note on this round's provenance.** All three artifacts existed on disk from an
 interrupted session (three agents that each hit a session limit mid-write) and were audited,
 not regenerated from scratch, per the closing task's instruction. Two corrections were made
-during the audit and are recorded in their respective reports:
+during the initial audit (2026-08-31) and are recorded in their respective reports:
 
 - `guide-headroom.md`'s pooled-ratio prose (0.7535, 7,061,943 applications, "418x") was
   transcribed from a run slightly earlier than the JSON that shipped; the pooled totals carry
   ~0.1-1% run-to-run noise from a handful of combinatorial-blowup expressions (confirmed by
   re-running the harness), while the per-expression medians/quartiles — the numbers this
   document leads with — reproduced bit-for-bit across re-runs. The prose was corrected to match
-  the shipped JSON (0.7557 pooled, ~434x).
+  the shipped JSON at the time (0.7557 pooled, ~434x) — now superseded again, see below.
 - `guide-scope-saturation-delta`'s harness was rewritten mid-session, *after* its first JSON was
   generated, from a single-application-stepping design to the real production batched algorithm
   (`EGraph::saturate_with_limits`) — a deliberate, well-argued methodology upgrade documented in
@@ -49,8 +49,33 @@ during the audit and are recorded in their respective reports:
   qualitative conclusion is unchanged and *stronger* than the superseded draft; every specific
   number is different. See that report's "Revision note" for the full account.
 
-The third measurement (`oracle_filtered_budget_curves`) needed no data correction, but its result
-is a **null** one — see §2.3.
+**A second round of corrections landed 2026-09-01**, from an automated PR review
+(`chatgpt-codex-connector` on PR #1067) that caught six issues across the harnesses, two of them
+P1: `guide_headroom` was reusing production `saturate()`'s 500ms wall-clock deadline as its own
+stopping condition, silently truncating any expression that took longer and making the
+"deterministic" ratios depend on host speed (27/800 expressions actually exceeded 500ms — fixed
+with a generous, fail-loud safety ceiling instead; pooled ratios moved 0.756->0.719 labeler,
+0.0017->0.0014 strict, medians essentially unchanged); and `guide_scope_saturation_delta` was
+attributing node/edge deltas to applications whose created node was later pruned by a rare e-graph
+rebuild refusal, inconsistently counting the node but zeroing its edge contribution (136 refusal
+events, 1,997 origins affected — 0.044% of applications, now excluded consistently; negligible
+effect on the headline numbers). Two more P2 findings were also fixed: a stale-median-derived
+"0.00x" speedup figure now correctly derives from the state-changing-only median (~728x, not
+"731x" — the fix also slightly changed which applications count as state-changing), and a
+`saturate_with_limits` cap-vs-quiescence conflation in the same harness (0/1,512 expressions
+changed classification in practice, but the harness no longer depends on that being true by
+luck). A `oracle_filtered_budget_curves` finding (safety-timeout scoped per-single-iteration
+instead of per-curve, and a zero-baseline regret formula that could mask real regret) had no
+effect on this round's already-null result (see §2.3) but is fixed for the recalibrated re-run
+§2.3 recommends. Every specific number in §2.1 and §2.2 below reflects this second round; see
+`docs/results/2026-08-30-guide-headroom.md` and
+`docs/results/2026-08-30-guide-scope-saturation-delta.md`'s own revision notes for full detail,
+including the correction of an unrelated, unreproducible ρ≈0.02 Spearman-correlation claim the
+same review's questions led to catching (the correct value, computed from the shipped JSON, is
+ρ≈0.35 — see §2.1).
+
+The third measurement (`oracle_filtered_budget_curves`) needed no *data* correction in the first
+audit pass, but its result is a **null** one — see §2.3.
 
 ## 2. The economics, honestly
 
@@ -62,23 +87,28 @@ for the winning extraction":
 
 | Bound | Pooled ratio | Per-expression median | Q1 | Q3 | Implied oracle savings (1/median) |
 |---|---:|---:|---:|---:|---:|
-| **Labeler** (`derivation_ancestors`, over-approximate — the label a Guide would actually train on) | 0.756 | **0.382** | 0.333 | 0.527 | **2.6x** |
-| **Strict lower bound** (application's output node is literally on the extracted derivation path) | 0.0017 | **0.029** | 0.006 | 0.058 | **34x** |
+| **Labeler** (`derivation_ancestors`, over-approximate — the label a Guide would actually train on) | 0.7188 | **0.382** | 0.333 | 0.527 | **2.6x** |
+| **Strict lower bound** (application's output node is literally on the extracted derivation path) | 0.0014 | **0.029** | 0.006 | 0.058 | **34x** |
 
 Both bounds clear the bar Phase 2 used to justify building the extraction head
 (static/noswap=0.54) — there is real slack for a Guide to recover under either reading. But the
 two bounds don't just disagree in magnitude (2.6x vs 34x, a ~13x spread on the headline number
-alone); **they rank rules almost independently** (Spearman ρ ≈ 0.02 across the 62-rule library
-that fired). Structural/congruence rules (commutative, associative, distribute, identity,
-annihilator, involution) score 73-93% under the labeler bound and ~0% under the strict one,
+alone; ~507x on the pooled ratios); **they correlate only moderately overall** (Spearman ρ ≈
+0.35, n=55 rule instances that fired — average-rank tie handling; see the headroom report's
+"revision note" for how this was computed, and for the correction of an earlier draft's
+unreproducible ρ≈0.02 claim, which was never actually computed from this harness's output).
+The moderate overall correlation masks a clean split by rule *class*:
+structural/congruence rules (commutative, fma-fusion, distribute, reverse-associative,
+associative, identity) score 63-84% under the labeler bound and ~0% under the strict one,
 because their entire job is enabling congruence closure, not surviving into the extracted
 expression — invisible to a walk that only credits the literal chosen derivation path. Numeric
-rules (power-recip, power-sqrt, recip-sqrt, ...) are the opposite shape and are the only rules
-where the two bounds roughly agree.
+rules (power-recip, power-sqrt, recip-sqrt, ...) are the opposite shape and are the only rule
+class where the two bounds track each other closely (6-17% both).
 
-**This is the first-order finding of the whole round.** A ranking disagreement this total means
-"headroom exists" is not by itself a green light for training a Guide on labeler labels — see
-§3, where this becomes design decision #1.
+**This per-class split, not the single correlation number, is the first-order finding of the
+whole round.** A structural/numeric split this clean means "headroom exists" is not by itself a
+green light for training a Guide on labeler labels — see §3, where this becomes design decision
+#1.
 
 ### 2.2 Does incremental evaluation pay in the (monotone-append) saturation setting? Yes, decisively
 
@@ -93,12 +123,12 @@ the real production batched algorithm, over 1,512 corpus expressions:
 |---|---:|
 | Recorded applications with zero node/edge delta (idempotent re-fires — see below) | **91.1%** |
 | Edge-delta fraction, state-changing applications only (median / p90) | **0.14%** / 0.79% |
-| Implied speedup among state-changing applications (1/median) | **~731x** |
+| Implied speedup among state-changing applications (1/median) | **~728x** |
 | Cumulative-vs-incremental ratio, pooled across all applications | **14,422x** |
 | Candidate evals per committed rewrite action | 10.4x (90.4% of scored candidates commit nothing) |
 
 **Incremental evaluation pays, and pays harder than the chess-engine analogy this codebase's own
-docs use as the aspirational target** (1/731 ≈ 0.14% incremental cost, i.e. ~99.86% savings on
+docs use as the aspirational target** (1/728 ≈ 0.14% incremental cost, i.e. ~99.86% savings on
 the applications that do anything at all — and 91.1% of applications need literally zero work).
 `GraphAccumulator::add_edge`/`remove_edge` (`pixelflow-search/src/nnue/guide/accumulator.rs`,
 already implemented, currently dead-code-gated behind the J10/A2 roadmap seam in the cost-model
@@ -161,14 +191,16 @@ one measurement of the three that could, in principle, still come back negative.
 
 The redesign plan already flagged tightening `derivation_ancestors`'s union-causality
 over-approximation as a "known follow-up... before training the Guide on per-application labels"
-(Phase 1 entry). This round's finding — that the labeler and strict bounds rank rules at
-Spearman ρ ≈ 0.02, effectively independently — upgrades that from a nice-to-have refinement to a
-**precondition on Phase 3's training signal**: a Guide trained on labeler labels and one trained
-on strict labels would learn almost unrelated rule priorities, and the labeler bound is the one
-whose over-approximation axes are named but not yet bounded (`provenance.rs` documents three:
-credits every node in a class not just the chosen one, pulls in union events by class membership,
-has no fixed-point pruning). Building Phase 3 on an unexamined training signal risks teaching a
-confidently wrong policy rather than a merely noisy one.
+(Phase 1 entry). This round's finding — that the labeler and strict bounds correlate only
+moderately overall (Spearman ρ ≈ 0.35) and disagree sharply for the highest-volume rule class
+(structural/congruence rules: 63-84% labeler, ~0% strict) — upgrades that from a nice-to-have
+refinement to a **precondition on Phase 3's training signal**: a Guide trained on labeler labels
+would learn to prize exactly the rule class the strict bound says contributes almost nothing to
+the literal extracted expression, and the labeler bound is the one whose over-approximation axes
+are named but not yet bounded (`provenance.rs` documents three: credits every node in a class not
+just the chosen one, pulls in union events by class membership, has no fixed-point pruning).
+Building Phase 3 on an unexamined training signal risks teaching a confidently wrong policy for
+that rule class rather than a merely noisy one.
 
 **Options:**
 
@@ -301,14 +333,15 @@ specific numbers instead of a qualitative check.
 
 **Honest fallback (pre-registered, mirroring the extraction-head program's §6 pattern)**: if the
 kill gate fires, the deliverable becomes the measured economics themselves — the incrementality
-result (§2.2, stronger than the chess-engine analogy), the headroom bounds and their
-Spearman-ρ≈0.02 divergence (§2.1, a genuine methodological finding about hindsight-labeling
-provenance systems independent of whether a Guide gets built on them), and the candidate-level
-deduplication requirement (§2.2) as a load-bearing finding for *any* future guided-saturation
-attempt, not just this one. This is not a consolation prize — a rigorous negative on "does
-labeler-trained guidance beat greedy full saturation at this budget scale," backed by the bounds
-analysis explaining *why* (rank-uncorrelated labels), is itself a publishable and useful result,
-exactly as the sibling extraction-head program pre-registered for its own kill gate.
+result (§2.2, stronger than the chess-engine analogy), the headroom bounds and their per-rule-class
+divergence (§2.1, a genuine methodological finding about hindsight-labeling provenance systems
+independent of whether a Guide gets built on them), and the candidate-level deduplication
+requirement (§2.2) as a load-bearing finding for *any* future guided-saturation attempt, not just
+this one. This is not a consolation prize — a rigorous negative on "does labeler-trained guidance
+beat greedy full saturation at this budget scale," backed by the bounds analysis explaining *why*
+(the highest-volume rule class is exactly where the two label sources disagree most), is itself a
+publishable and useful result, exactly as the sibling extraction-head program pre-registered for
+its own kill gate.
 
 ## 6. Explicitly out of scope for Phase 3
 
