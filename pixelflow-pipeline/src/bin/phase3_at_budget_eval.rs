@@ -65,7 +65,7 @@
 //! cargo run --release -p pixelflow-pipeline --features training --bin phase3_at_budget_eval -- \
 //!     --out-jsonl docs/results/2026-09-01-phase3-at-budget-eval.jsonl \
 //!     --out-json docs/results/2026-09-01-phase3-at-budget-eval.json \
-//!     --out-md docs/results/2026-09-01-phase3-at-budget-eval.md
+//!     --out-md docs/results/2026-09-01-phase3-at-budget-eval-report.md
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -118,7 +118,7 @@ struct Args {
     classical_samples: usize,
 
     /// DEV blitz and rapid expressions per band, reported for completeness
-    /// only (no claim is registered on them).
+    /// only (no claim is registered on them). 0 = none.
     #[arg(long, default_value_t = 30)]
     other_samples: usize,
 
@@ -138,7 +138,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value = "docs/results/2026-09-01-phase3-at-budget-eval.md"
+        default_value = "docs/results/2026-09-01-phase3-at-budget-eval-report.md"
     )]
     out_md: String,
 
@@ -153,6 +153,14 @@ struct Args {
     /// Journal to append the run record to.
     #[arg(long, default_value = "docs/results/journal.jsonl")]
     journal: String,
+
+    /// Override the guided arms' checkpoint grid (comma-separated, strictly
+    /// increasing, must contain every registered B and 4B). Sensitivity
+    /// check only: a guided round's remaining scored survivors are dropped
+    /// when a checkpoint's application target is reached, so a denser grid
+    /// can only cost a guided arm, never help it.
+    #[arg(long, default_value = "")]
+    guided_grid: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -599,6 +607,7 @@ struct CurveInput<'a> {
     root: ExprId,
     class_cap: usize,
     costs: &'a CostModel,
+    guided_grid: &'a [usize],
 }
 
 fn run_guided<G: SaturationGuide>(
@@ -611,7 +620,7 @@ fn run_guided<G: SaturationGuide>(
         input.arena,
         input.root,
         all_rules(),
-        GUIDED_GRID,
+        input.guided_grid,
         input.class_cap,
         SWEEP_SAFETY_CEILING,
         SAFETY_TIMEOUT,
@@ -628,6 +637,7 @@ fn evaluate_expression(
     root: ExprId,
     guides: &Guides,
     costs: &CostModel,
+    guided_grid: &[usize],
 ) -> ExprRow {
     let node_count = arena.nodes_raw().len();
     let class_cap = config_for_node_count(node_count).max_classes;
@@ -647,6 +657,7 @@ fn evaluate_expression(
         root,
         class_cap,
         costs,
+        guided_grid,
     };
     let (control, control_seen) = run_guided(&guides.control, &guides.embeds, &input);
     let (linear, linear_seen) = run_guided(&guides.linear, &guides.embeds, &input);
@@ -805,6 +816,23 @@ struct ArmAtB {
     strict_precision_pooled: f64,
     rounds_to_b: Dist,
     app_actual_at_b: Dist,
+    /// Guided runs that had already quiesced (dedup exhaustion) before
+    /// reaching B applications — for them "at B" is "at quiescence".
+    ended_before_b: usize,
+    /// Expressions where this arm's curve reaches the empirical best cost
+    /// somewhere along it.
+    reaches_empirical_best: usize,
+    /// This arm's cost@B against the production call's cost.
+    vs_production_better: usize,
+    vs_production_equal: usize,
+    vs_production_worse: usize,
+    /// Applications when the guided run ended (quiesced or grid end).
+    ended_at_apps: Dist,
+    /// `(seen_keys - recorded applications) / seen_keys` on quiesced runs:
+    /// candidate keys the loop marked seen but whose `apply_single_rule`
+    /// recorded nothing (stale `node_idx` after an earlier application in
+    /// the same round rebuilt the class) — burned, never retried.
+    burned_key_share: Dist,
 }
 
 #[derive(Serialize, Clone)]
@@ -828,6 +856,13 @@ struct TierResult {
     approach_clause_holds: BTreeMap<String, bool>,
     beats_unguided_at_all: BTreeMap<String, bool>,
     linear_beats_control: bool,
+    unguided_structural_share_pooled: f64,
+    unguided_strict_precision_pooled: f64,
+    /// Head-to-head at B: expressions where linear's cost is below / equal
+    /// to / above control's.
+    linear_lt_control: usize,
+    linear_eq_control: usize,
+    linear_gt_control: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -920,8 +955,38 @@ fn tier_result(rows: &[&ExprRow], band: &str, b: usize, y: f64, l: f64) -> TierR
         let (mut apps, mut structural, mut positive) = (0usize, 0usize, 0usize);
         let mut rounds = Vec::new();
         let mut app_actual = Vec::new();
+        let mut ended_before_b = 0usize;
+        let mut reaches_best = 0usize;
+        let (mut pb, mut pe, mut pw) = (0usize, 0usize, 0usize);
+        let mut ended_at = Vec::new();
+        let mut burned = Vec::new();
         for r in rows {
             let a = &r.arms[arm_name];
+            if a.ended != "app_budget" && a.ended_at_apps < b {
+                ended_before_b += 1;
+            }
+            if a.best_cost() == best(r) {
+                reaches_best += 1;
+            }
+            if let Some(p) = &r.production {
+                match a.cost_at(b).cmp(&p.cost) {
+                    std::cmp::Ordering::Less => pb += 1,
+                    std::cmp::Ordering::Equal => pe += 1,
+                    std::cmp::Ordering::Greater => pw += 1,
+                }
+            }
+            ended_at.push(a.ended_at_apps as f64);
+            if a.ended == "quiesced" {
+                let seen = a.seen_keys.expect("guided arm records seen_keys");
+                assert!(
+                    seen >= a.ended_at_apps,
+                    "{}: {} recorded more applications ({}) than candidate keys scored ({seen})",
+                    r.name,
+                    arm_name,
+                    a.ended_at_apps
+                );
+                burned.push((seen - a.ended_at_apps) as f64 / seen.max(1) as f64);
+            }
             let ca = a.cost_at(b);
             let cu = ung(r).cost_at(b);
             let cu4 = ung(r).cost_at(b4);
@@ -965,6 +1030,13 @@ fn tier_result(rows: &[&ExprRow], band: &str, b: usize, y: f64, l: f64) -> TierR
             },
             rounds_to_b: dist(&rounds),
             app_actual_at_b: dist(&app_actual),
+            ended_before_b,
+            reaches_empirical_best: reaches_best,
+            vs_production_better: pb,
+            vs_production_equal: pe,
+            vs_production_worse: pw,
+            ended_at_apps: dist(&ended_at),
+            burned_key_share: dist(&burned),
         });
     }
 
@@ -985,6 +1057,22 @@ fn tier_result(rows: &[&ExprRow], band: &str, b: usize, y: f64, l: f64) -> TierR
         beats.insert(a.arm.clone(), a.ratio_vs_unguided_at_b.median < 1.0);
     }
     let linear_beats_control = arms[1].regret_pct.median < arms[0].regret_pct.median;
+    let (mut u_apps, mut u_struct, mut u_pos) = (0usize, 0usize, 0usize);
+    let (mut lt, mut eq, mut gt) = (0usize, 0usize, 0usize);
+    for r in rows {
+        let d = &r.at_budget["unguided"][&b];
+        u_apps += d.applications;
+        u_struct += d.structural;
+        u_pos += d.strict_positive;
+        match r.arms["linear"]
+            .cost_at(b)
+            .cmp(&r.arms["control"].cost_at(b))
+        {
+            std::cmp::Ordering::Less => lt += 1,
+            std::cmp::Ordering::Equal => eq += 1,
+            std::cmp::Ordering::Greater => gt += 1,
+        }
+    }
 
     TierResult {
         band: band.to_string(),
@@ -1002,6 +1090,19 @@ fn tier_result(rows: &[&ExprRow], band: &str, b: usize, y: f64, l: f64) -> TierR
         approach_clause_holds: approach,
         beats_unguided_at_all: beats,
         linear_beats_control,
+        unguided_structural_share_pooled: if u_apps == 0 {
+            0.0
+        } else {
+            u_struct as f64 / u_apps as f64
+        },
+        unguided_strict_precision_pooled: if u_apps == 0 {
+            0.0
+        } else {
+            u_pos as f64 / u_apps as f64
+        },
+        linear_lt_control: lt,
+        linear_eq_control: eq,
+        linear_gt_control: gt,
     }
 }
 
@@ -1240,15 +1341,8 @@ Strict-oracle arm: not run (see the harness module doc — no cheap provenance r
             "| (a) unguided @B | 1.000 (by definition) | — | {} | {} | 0 | {:.3} | {:.4} | — |\n",
             fmt_pct(&t.unguided_truncation_loss_pct),
             fmt_pct(&t.unguided_regret_at_b_pct),
-            report
-                .enabler
-                .iter()
-                .find(|e| e.band == t.band)
-                .and_then(|e| e.structural_share_at_b.get("unguided"))
-                .and_then(|m| m.get(&t.b))
-                .copied()
-                .unwrap_or(f64::NAN),
-            f64::NAN,
+            t.unguided_structural_share_pooled,
+            t.unguided_strict_precision_pooled,
         ));
         md.push_str(&format!(
             "| (b) unguided @4B | — | — | 0 | {} | 1 | — | — | — |\n",
@@ -1276,6 +1370,25 @@ Strict-oracle arm: not run (see the harness module doc — no cheap provenance r
             ));
         }
         md.push('\n');
+        md.push_str(&format!(
+            "Ladder diagnostics: linear < control on {} expressions, equal on {}, linear > control on {}. ",
+            t.linear_lt_control, t.linear_eq_control, t.linear_gt_control
+        ));
+        for a in &t.arms {
+            md.push_str(&format!(
+                "{}: quiesced before B on {} / {} (ended at {} applications; burned-key share {}); reaches the empirical best on {}; vs production cost better / equal / worse = {} / {} / {}. ",
+                a.arm,
+                a.ended_before_b,
+                t.n,
+                fmt_d(&a.ended_at_apps),
+                fmt_d(&a.burned_key_share),
+                a.reaches_empirical_best,
+                a.vs_production_better,
+                a.vs_production_equal,
+                a.vs_production_worse,
+            ));
+        }
+        md.push_str("\n\n");
         if binding {
             let lin = &t.arms[1];
             let ctl = &t.arms[0];
@@ -1426,8 +1539,13 @@ fn git_rev() -> String {
         .unwrap_or_else(|e| format!("git unavailable: {e}"))
 }
 
-fn stride_sample<T>(mut items: Vec<T>, n: usize) -> Vec<T> {
-    if n == 0 || n >= items.len() {
+/// Size-stratified stride sample of `n` items (`items` sorted by size);
+/// `None` = every item.
+fn stride_sample<T>(mut items: Vec<T>, n: Option<usize>) -> Vec<T> {
+    let Some(n) = n else {
+        return items;
+    };
+    if n >= items.len() {
         return items;
     }
     let stride = items.len() as f64 / n as f64;
@@ -1457,6 +1575,25 @@ fn main() {
 
     if !args.aggregate_only {
         let costs = CostModel::latency_prior();
+        let guided_grid: Vec<usize> = if args.guided_grid.trim().is_empty() {
+            GUIDED_GRID.to_vec()
+        } else {
+            args.guided_grid
+                .split(',')
+                .map(|t| {
+                    t.trim()
+                        .parse::<usize>()
+                        .unwrap_or_else(|e| panic!("--guided-grid: bad entry {t:?}: {e}"))
+                })
+                .collect()
+        };
+        for (b, _, _) in REGISTERED_TIERS {
+            assert!(
+                guided_grid.contains(&b) && guided_grid.contains(&(4 * b)),
+                "--guided-grid {guided_grid:?} must contain registered B={b} and 4B={}",
+                4 * b
+            );
+        }
         let dev_path = PathBuf::from(&args.corpus_dir).join("corpus_dev.bin");
         let mut entries = read_corpus(&dev_path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", dev_path.display()));
@@ -1479,12 +1616,12 @@ fn main() {
         let mut selected: Vec<(String, ExprArena, ExprId)> = Vec::new();
         selected.extend(stride_sample(
             by_band.remove("classical").unwrap_or_default(),
-            args.classical_samples,
+            (args.classical_samples > 0).then_some(args.classical_samples),
         ));
         for band in ["rapid", "blitz"] {
             selected.extend(stride_sample(
                 by_band.remove(band).unwrap_or_default(),
-                args.other_samples,
+                Some(args.other_samples),
             ));
         }
 
@@ -1527,7 +1664,7 @@ fn main() {
                 arena.nodes_raw().len(),
                 tier_name(arena.nodes_raw().len())
             );
-            let row = evaluate_expression(name, arena, *root, &guides, &costs);
+            let row = evaluate_expression(name, arena, *root, &guides, &costs, &guided_grid);
             let line = serde_json::to_string(&row).expect("serialize row");
             writeln!(out, "{line}")
                 .unwrap_or_else(|e| panic!("write {}: {e}", jsonl_path.display()));
@@ -1573,7 +1710,14 @@ fn main() {
     );
     context.insert(
         "guided_grid".to_string(),
-        format!("{GUIDED_GRID:?} (unguided: {APP_CHECKPOINT_GRID:?})"),
+        format!(
+            "{} (unguided: {APP_CHECKPOINT_GRID:?})",
+            if args.guided_grid.trim().is_empty() {
+                format!("{GUIDED_GRID:?}")
+            } else {
+                args.guided_grid.clone()
+            }
+        ),
     );
     context.insert(
         "structural_rules".to_string(),
