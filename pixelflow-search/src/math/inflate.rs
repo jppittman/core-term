@@ -317,7 +317,9 @@ fn touches_domain_restricted_op(arena: &ExprArena, id: pixelflow_ir::ExprId) -> 
             | OpKind::Sqrt
             | OpKind::Rsqrt
             | OpKind::Recip
-    ) || arena.children(id).any(|c| touches_domain_restricted_op(arena, c))
+    ) || arena
+        .children(id)
+        .any(|c| touches_domain_restricted_op(arena, c))
 }
 
 /// Enumerate every valid composition of `base`'s templated rules, in
@@ -366,7 +368,9 @@ pub fn compose_rules(base: &[Box<dyn Rewrite>]) -> Vec<Composition> {
                 let rhs = rule
                     .rhs_template(&mut disp)
                     .expect("TemplateRewrite always has both templates");
-                if touches_domain_restricted_op(&disp, lhs) || touches_domain_restricted_op(&disp, rhs) {
+                if touches_domain_restricted_op(&disp, lhs)
+                    || touches_domain_restricted_op(&disp, rhs)
+                {
                     continue;
                 }
                 let key = (disp.display(lhs).to_string(), disp.display(rhs).to_string());
@@ -421,7 +425,8 @@ pub fn composition_pool(base: &[Box<dyn Rewrite>], seed: u64) -> Vec<Composition
 }
 
 /// Total |R| → composition-count prefix, per §3's grid.
-pub const COMPOSITION_GRID: &[(usize, usize)] = &[(62, 0), (93, 31), (124, 62), (186, 124), (248, 186)];
+pub const COMPOSITION_GRID: &[(usize, usize)] =
+    &[(62, 0), (93, 31), (124, 62), (186, 124), (248, 186)];
 
 fn build_composition_set(total: usize) -> Result<Vec<Box<dyn Rewrite>>, RuleSetError> {
     let Some(&(_, inflation)) = COMPOSITION_GRID.iter().find(|(t, _)| *t == total) else {
