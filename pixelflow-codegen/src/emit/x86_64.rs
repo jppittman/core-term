@@ -716,15 +716,6 @@ pub fn emit_movmskps_eax(code: &mut Vec<u8>, src: Reg) {
 
 /// Emit `jcc rel32` with a zero placeholder; returns the offset of the rel32
 /// field (pass to [`patch_rel32`]). `cc` is the 0x8_ condition byte (0x84 = je/jz,
-/// 0x85 = jne/jnz).
-pub fn emit_jcc_rel32(code: &mut Vec<u8>, cc: u8) -> usize {
-    code.push(0x0F);
-    code.push(cc);
-    let pos = code.len();
-    code.extend_from_slice(&[0, 0, 0, 0]);
-    pos
-}
-
 /// Emit `jmp rel32` with a zero placeholder; returns the rel32 field offset.
 pub fn emit_jmp_rel32(code: &mut Vec<u8>) -> usize {
     code.push(0xE9);
@@ -733,7 +724,7 @@ pub fn emit_jmp_rel32(code: &mut Vec<u8>) -> usize {
     pos
 }
 
-/// Patch a rel32 branch displacement (emitted by [`emit_jcc_rel32`] /
+/// Patch a rel32 branch displacement (emitted by the `jcc` forms /
 /// [`emit_jmp_rel32`]) so it lands at `target`.
 pub fn patch_rel32(code: &mut [u8], pos: usize, target: usize) {
     let rel = (target as i64) - (pos as i64 + 4);
@@ -796,10 +787,18 @@ mod tests {
 /// makes — confine what cannot be checked, so the rest is checked by
 /// construction.
 ///
-/// Dead in a build that selected a different `Native`; that is the intended
-/// shape, not an oversight, which is why the allow sits here once rather than
-/// on each item.
-#[allow(dead_code)]
+/// Dead only in a build that selected a *different* `Native`. The condition
+/// mirrors this backend's `Native` alias, so a genuinely unused item in the
+/// backend this build actually compiles still trips `dead_code`; an
+/// unconditional allow here would hide it from CI's `clippy -D warnings`.
+#[cfg_attr(
+    not(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx2"),
+        not(target_feature = "avx512f")
+    )),
+    allow(dead_code)
+)]
 pub(crate) mod driver {
     use super::super::*;
     use super::scaffold;
@@ -1091,13 +1090,13 @@ pub(crate) mod driver {
         fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             super::emit_test_eax(code);
-            super::emit_jcc_rel32(code, 0x84) // jz: taken when eax == 0 (all lanes false)
+            super::je(code).field() // ZF set when eax == 0 (all lanes false)
         }
 
         fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
             super::emit_movmskps_eax(code, mask_reg);
             super::emit_cmp_eax_imm8(code, 0x0F);
-            super::emit_jcc_rel32(code, 0x84) // je: taken when eax == 0xF (all lanes true)
+            super::je(code).field() // ZF set when eax == 0xF (all lanes true)
         }
 
         fn emit_jump(&mut self, code: &mut Vec<u8>) -> usize {
@@ -1440,7 +1439,26 @@ impl Rel32 {
 /// `jae rel32` — taken when the previous [`cmp`] found `lhs >= rhs` unsigned.
 #[inline(always)]
 pub fn jae(code: &mut Vec<u8>) -> Rel32 {
-    code.extend_from_slice(&[0x0F, 0x83]);
+    jcc(code, 0x83)
+}
+
+/// `je rel32` — taken when the previous compare or test set ZF.
+#[inline(always)]
+pub fn je(code: &mut Vec<u8>) -> Rel32 {
+    jcc(code, 0x84)
+}
+
+/// `jc rel32` — taken when the previous operation set CF.
+#[inline(always)]
+pub fn jc(code: &mut Vec<u8>) -> Rel32 {
+    jcc(code, 0x82)
+}
+
+/// The shared body of the `jcc rel32` forms. Private: a condition is chosen by
+/// calling the mnemonic, never by handing a byte to a generic emitter.
+#[inline(always)]
+fn jcc(code: &mut Vec<u8>, cc: u8) -> Rel32 {
+    code.extend_from_slice(&[0x0F, cc]);
     let at = code.len();
     code.extend_from_slice(&[0, 0, 0, 0]);
     Rel32(at)

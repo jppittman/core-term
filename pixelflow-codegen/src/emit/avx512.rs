@@ -841,10 +841,14 @@ mod tests {
 /// makes — confine what cannot be checked, so the rest is checked by
 /// construction.
 ///
-/// Dead in a build that selected a different `Native`; that is the intended
-/// shape, not an oversight, which is why the allow sits here once rather than
-/// on each item.
-#[allow(dead_code)]
+/// Dead only in a build that selected a *different* `Native`. The condition
+/// mirrors this backend's `Native` alias, so a genuinely unused item in the
+/// backend this build actually compiles still trips `dead_code`; an
+/// unconditional allow here would hide it from CI's `clippy -D warnings`.
+#[cfg_attr(
+    not(all(target_arch = "x86_64", target_feature = "avx512f")),
+    allow(dead_code)
+)]
 pub(crate) mod driver {
     use super::super::*;
     use crate::emit::x86_64 as x86;
@@ -1041,11 +1045,11 @@ pub(crate) mod driver {
         // false arm). Mirrors the SSE2 MOVMSKPS guards, k-register-based.
         fn emit_skip_if_all_false(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
             super::emit_mask_flags(code, mask_reg);
-            x86_64::emit_jcc_rel32(code, 0x84) // jz: ZF set when k1 == 0 (all false)
+            x86_64::je(code).field() // ZF set when k1 == 0 (all false)
         }
         fn emit_skip_if_all_true(&mut self, code: &mut Vec<u8>, mask_reg: Reg) -> usize {
             super::emit_mask_flags(code, mask_reg);
-            x86_64::emit_jcc_rel32(code, 0x82) // jc: CF set when k1 == 0xFFFF (all true)
+            x86_64::jc(code).field() // CF set when k1 == 0xFFFF (all true)
         }
         fn emit_jump(&mut self, code: &mut Vec<u8>) -> usize {
             x86_64::emit_jmp_rel32(code)

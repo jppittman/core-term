@@ -1533,10 +1533,11 @@ mod tests {
 /// makes — confine what cannot be checked, so the rest is checked by
 /// construction.
 ///
-/// Dead in a build that selected a different `Native`; that is the intended
-/// shape, not an oversight, which is why the allow sits here once rather than
-/// on each item.
-#[allow(dead_code)]
+/// Dead only in a build that selected a *different* `Native`. The condition
+/// mirrors this backend's `Native` alias, so a genuinely unused item in the
+/// backend this build actually compiles still trips `dead_code`; an
+/// unconditional allow here would hide it from CI's `clippy -D warnings`.
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
 pub(crate) mod driver {
     use super::super::*;
     use super::Xr;
@@ -1750,7 +1751,7 @@ pub(crate) mod driver {
         }
 
         fn emit_mov(&mut self, code: &mut Vec<u8>, dst: Reg, src: Reg) {
-            emit_mov_reg(code, dst, src);
+            super::emit_mov(code, dst, src);
         }
 
         fn emit_store(
@@ -1813,13 +1814,12 @@ pub(crate) mod driver {
 
         fn epilogue(&mut self, code: &mut Vec<u8>, result_reg: Reg, frame_size: u32) {
             if result_reg.0 != 0 {
-                emit_mov_reg(code, Reg(0), result_reg);
+                super::emit_mov(code, Reg(0), result_reg);
             }
             if frame_size > 0 {
                 super::emit_add_sp(code, frame_size);
             }
-            // RET
-            code.extend_from_slice(&0xD65F03C0u32.to_le_bytes());
+            super::ret(code);
             self.finish_pool(code);
         }
 
@@ -1917,15 +1917,6 @@ pub(crate) mod driver {
             Counter::Row => X3,
         }
     }
-    /// Emit MOV (vector register copy) — used by emit_instruction_plan.
-    fn emit_mov_reg(code: &mut Vec<u8>, dst: Reg, src: Reg) {
-        if dst.0 != src.0 {
-            // ORR Vd.16B, Vn.16B, Vn.16B
-            let inst =
-                0x4EA01C00u32 | (dst.0 as u32) | ((src.0 as u32) << 5) | ((src.0 as u32) << 16);
-            code.extend_from_slice(&inst.to_le_bytes());
-        }
-    }
     /// Emit machine code for a resolved instruction plan.
     ///
     /// This is a DETERMINISTIC DISPATCH: given a plan, emit the exact
@@ -1952,7 +1943,7 @@ pub(crate) mod driver {
 
         // 2. Emit setup MOV (for FMLA accumulator or BSL mask)
         if let Some((dst, src)) = plan.setup_mov {
-            emit_mov_reg(code, dst, src);
+            super::emit_mov(code, dst, src);
         }
 
         // 3. Emit main op

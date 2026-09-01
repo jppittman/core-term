@@ -1593,7 +1593,6 @@ fn analyze_select_guards(schedule: &[regalloc::Def]) -> Vec<SelectGuard> {
 /// The "dst-as-temporary" trick: every backend here reads all of an
 /// instruction's sources before writing its destination, so loading a spilled
 /// operand into dst is safe for binary ops.
-#[allow(clippy::too_many_arguments)] // the register-allocation state is one logical argument
 pub fn resolve_operands(
     op: &ScheduledOp,
     dst_loc: Loc,
