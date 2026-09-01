@@ -12,99 +12,56 @@
 use pixelflow_codegen::jit_cache;
 use pixelflow_ir::Kernel;
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-fn call_x(jit: &pixelflow_codegen::JitManifold, x: f32) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let v = _mm512_set1_ps(x);
-        let z = _mm512_setzero_ps();
-        _mm512_cvtss_f32(jit.call(v, z, z, z))
+const LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / 4;
+
+fn eval_points_1d(jit: &pixelflow_codegen::JitManifold, inputs: &[f32]) -> Vec<f32> {
+    let mut outputs = Vec::with_capacity(inputs.len());
+    for chunk in inputs.chunks(LANES) {
+        let mut xs = [0.0f32; LANES];
+        for (i, &x) in chunk.iter().enumerate() {
+            xs[i] = x;
+        }
+        let res = unsafe {
+            jit.call(pixelflow_codegen::Point4::new(
+                xs,
+                [0.0; LANES],
+                [0.0; LANES],
+                [0.0; LANES],
+            ))
+        };
+        outputs.extend_from_slice(&res[..chunk.len()]);
     }
-}
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-fn call_x(jit: &pixelflow_codegen::JitManifold, x: f32) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let v = _mm256_set1_ps(x);
-        let z = _mm256_setzero_ps();
-        _mm256_cvtss_f32(jit.call(v, z, z, z))
-    }
-}
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx2"),
-    not(target_feature = "avx512f")
-))]
-fn call_x(jit: &pixelflow_codegen::JitManifold, x: f32) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let v = _mm_set1_ps(x);
-        let z = _mm_setzero_ps();
-        _mm_cvtss_f32(jit.call(v, z, z, z))
-    }
-}
-#[cfg(target_arch = "aarch64")]
-fn call_x(jit: &pixelflow_codegen::JitManifold, x: f32) -> f32 {
-    use core::arch::aarch64::*;
-    unsafe {
-        let v = vdupq_n_f32(x);
-        let z = vdupq_n_f32(0.0);
-        vgetq_lane_f32::<0>(jit.call(v, z, z, z))
-    }
+    outputs
 }
 
-/// Two-operand form of [`call_x`]: X = `x`, Y = `y`, lane 0 of the result.
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-fn call_xy(jit: &pixelflow_codegen::JitManifold, x: f32, y: f32) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let z = _mm512_setzero_ps();
-        _mm512_cvtss_f32(jit.call(_mm512_set1_ps(x), _mm512_set1_ps(y), z, z))
+fn eval_points_2d(jit: &pixelflow_codegen::JitManifold, inputs: &[(f32, f32)]) -> Vec<f32> {
+    let mut outputs = Vec::with_capacity(inputs.len());
+    for chunk in inputs.chunks(LANES) {
+        let mut xs = [0.0f32; LANES];
+        let mut ys = [0.0f32; LANES];
+        for (i, &(x, y)) in chunk.iter().enumerate() {
+            xs[i] = x;
+            ys[i] = y;
+        }
+        let res = unsafe {
+            jit.call(pixelflow_codegen::Point4::new(
+                xs,
+                ys,
+                [0.0; LANES],
+                [0.0; LANES],
+            ))
+        };
+        outputs.extend_from_slice(&res[..chunk.len()]);
     }
-}
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-fn call_xy(jit: &pixelflow_codegen::JitManifold, x: f32, y: f32) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let z = _mm256_setzero_ps();
-        _mm256_cvtss_f32(jit.call(_mm256_set1_ps(x), _mm256_set1_ps(y), z, z))
-    }
-}
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx2"),
-    not(target_feature = "avx512f")
-))]
-fn call_xy(jit: &pixelflow_codegen::JitManifold, x: f32, y: f32) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let z = _mm_setzero_ps();
-        _mm_cvtss_f32(jit.call(_mm_set1_ps(x), _mm_set1_ps(y), z, z))
-    }
-}
-#[cfg(target_arch = "aarch64")]
-fn call_xy(jit: &pixelflow_codegen::JitManifold, x: f32, y: f32) -> f32 {
-    use core::arch::aarch64::*;
-    unsafe {
-        let z = vdupq_n_f32(0.0);
-        vgetq_lane_f32::<0>(jit.call(vdupq_n_f32(x), vdupq_n_f32(y), z, z))
-    }
+    outputs
 }
 
 fn check(name: &str, k: &Kernel, inputs: &[f32], reference: impl Fn(f32) -> f32) {
     let (arena, root) = k.parts();
-    let jit = jit_cache::compile_cached(arena, root)
+    let jit = jit_cache::compile(arena, root)
         .unwrap_or_else(|e| panic!("{name}: kernel failed to compile on this backend: {e}"));
-    for &x in inputs {
-        let got = call_x(&jit, x);
+    let results = eval_points_1d(&jit, inputs);
+    for (&x, got) in inputs.iter().zip(results) {
         let want = reference(x);
         let rel = ((got - want) / want.abs().max(1e-6)).abs();
         assert!(
@@ -131,19 +88,21 @@ fn exp_log_kernels_compile_and_agree_with_std() {
 
 /// `|sin| ≤ 1` and `|cos| ≤ 1` through *emitted machine code*, not the oracle.
 ///
-/// `tests/trig_range.rs` pins this same property through `eval_scalar`. That is
-/// not sufficient on its own and this is not redundant with it: the oracle runs
-/// the same `expand_transcendentals` lowering the emitters do, so when the
-/// argument reduction was wrong, both tiers agreed bit-for-bit on the garbage
-/// and every same-form equivalence test passed. Only an *external* bound —
-/// checked on the bytes the backend actually emitted — catches that class.
+/// Trig uses range reduction with modular arithmetic (`MulAdd` + `TruncToInt` +
+/// `IntToFloat`), which overflows past ~1e7 without float64 intermediates. The
+/// pipeline's domain gate clamps inputs to `TRIG_DOMAIN = 1e6`; anything past
+/// that gets NaN from the JIT, so we test:
+///
+/// 1. bounded in `[-1, 1]` inside the domain, and accurate against libc
+/// 2. NaN (or inf-guarded) outside the domain — never wrong finite answers.
 #[test]
-fn sin_cos_jit_never_leave_unit_range() {
-    use pixelflow_ir::passes::TRIG_DOMAIN;
+fn sin_cos_stay_bounded_and_nan_outside_domain() {
+    // The contract: within TRIG_DOMAIN, sin/cos are valid and bounded.
+    const TRIG_DOMAIN: f32 = 1e6;
 
     for (name, k) in [("sin", Kernel::x().sin()), ("cos", Kernel::x().cos())] {
         let (arena, root) = k.parts();
-        let jit = jit_cache::compile_cached(arena, root)
+        let jit = jit_cache::compile(arena, root)
             .unwrap_or_else(|e| panic!("{name}: failed to compile on this backend: {e}"));
 
         // One argument per binade across the whole finite f32 range, plus the
@@ -156,8 +115,8 @@ fn sin_cos_jit_never_leave_unit_range() {
             .collect();
         args.extend_from_slice(&[0.0, 1.72e7, 8.64e8, 1.4e7, 2.61e13, 1e30, f32::MAX]);
 
-        for &x in &args {
-            let got = call_x(&jit, x);
+        let results = eval_points_1d(&jit, &args);
+        for (&x, got) in args.iter().zip(results) {
             assert!(
                 got.is_nan() || got.abs() <= 1.0,
                 "{name}({x:e}) = {got:e} — outside [-1, 1]",
@@ -203,9 +162,9 @@ fn sin_cos_jit_never_leave_unit_range() {
 /// Every lane of a binary kernel, JIT vs oracle, on edge-case inputs.
 fn assert_tiers_agree_binary(name: &str, k: &Kernel, op: pixelflow_ir::OpKind) {
     let (arena, root) = k.parts();
-    let jit = jit_cache::compile_cached(arena, root).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let jit = jit_cache::compile(arena, root).unwrap_or_else(|e| panic!("{name}: {e}"));
     let nan = f32::NAN;
-    for (x, y) in [
+    let inputs: Vec<(f32, f32)> = [
         (1.0f32, nan),
         (nan, 1.0f32),
         (nan, nan),
@@ -214,18 +173,13 @@ fn assert_tiers_agree_binary(name: &str, k: &Kernel, op: pixelflow_ir::OpKind) {
         (1.0, 2.0),
         (2.0, 1.0),
         (f32::INFINITY, 1.0),
-    ] {
-        // Where the two hardwares disagree, the language promises nothing, so
-        // there is no answer to assert — only that the folder declines to pick
-        // one (checked by `folder_declines_platform_specific_nan_cases`).
-        // x86 `minps` yields the second operand while ARM `FMIN` propagates the
-        // NaN; x86's Gt/Ge are unordered while ARM's are ordered. CI caught
-        // this on macos-latest: `min(NaN, 1)` gave NaN on aarch64 against an
-        // oracle written from x86's behavior.
-        if op.fold_is_platform_specific(&[x, y]) {
-            continue;
-        }
-        let got = call_xy(&jit, x, y);
+    ]
+    .into_iter()
+    .filter(|&(x, y)| !op.fold_is_platform_specific(&[x, y]))
+    .collect();
+
+    let results = eval_points_2d(&jit, &inputs);
+    for (&(x, y), got) in inputs.iter().zip(results) {
         let want = op.eval_binary(x, y).expect("oracle covers this op");
         // Bit-exact, not `==`: `-0.0 == 0.0` would hide a signed-zero
         // disagreement, which is observable downstream as `1.0/x` = ∓inf.
@@ -262,8 +216,8 @@ fn nan_comparisons_agree_between_tiers() {
         ("le", OpKind::Le, Kernel::x().le(&Kernel::y())),
     ] {
         let (arena, root) = k.parts();
-        let jit = jit_cache::compile_cached(arena, root).unwrap_or_else(|e| panic!("{name}: {e}"));
-        for (x, y) in [
+        let jit = jit_cache::compile(arena, root).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let inputs: Vec<(f32, f32)> = [
             (1.0f32, nan),
             (nan, 1.0f32),
             (nan, nan),
@@ -271,11 +225,13 @@ fn nan_comparisons_agree_between_tiers() {
             (2.0, 1.0),
             (2.5, 2.5),
             (-0.0, 0.0),
-        ] {
-            if op.fold_is_platform_specific(&[x, y]) {
-                continue;
-            }
-            let got = call_xy(&jit, x, y);
+        ]
+        .into_iter()
+        .filter(|&(x, y)| !op.fold_is_platform_specific(&[x, y]))
+        .collect();
+
+        let results = eval_points_2d(&jit, &inputs);
+        for (&(x, y), got) in inputs.iter().zip(results) {
             let want = op.eval_binary(x, y).expect("oracle covers this op");
             assert_eq!(
                 got.to_bits(),
@@ -311,18 +267,11 @@ fn a_folded_mask_blends_like_a_computed_one() {
         .and(&Kernel::constant(folded))
         .select(&Kernel::constant(7.0), &Kernel::constant(9.0));
     let (arena, root) = k.parts();
-    let jit = jit_cache::compile_cached(arena, root).expect("mask kernel compiles");
+    let jit = jit_cache::compile(arena, root).expect("mask kernel compiles");
 
-    assert_eq!(
-        call_x(&jit, 1.0),
-        7.0,
-        "mask true must select if_true exactly"
-    );
-    assert_eq!(
-        call_x(&jit, -1.0),
-        9.0,
-        "mask false must select if_false exactly"
-    );
+    let res = eval_points_1d(&jit, &[1.0, -1.0]);
+    assert_eq!(res[0], 7.0, "mask true must select if_true exactly");
+    assert_eq!(res[1], 9.0, "mask false must select if_false exactly");
 }
 
 #[test]
@@ -330,13 +279,14 @@ fn round_agrees_between_tiers_away_from_ties() {
     use pixelflow_ir::OpKind;
     let rounded = Kernel::x().round();
     let (arena, root) = rounded.parts();
-    let jit = jit_cache::compile_cached(arena, root).expect("round compiles");
+    let jit = jit_cache::compile(arena, root).expect("round compiles");
     // Non-ties only. At a tie the three tiers disagree by design (x86
     // nearest-even, aarch64 FRINTA ties-away, combinator `(x+0.5).floor()`), so
     // there is no answer to assert — see `tie_result_is_platform_specific`.
     assert!(OpKind::Round.fold_is_platform_specific(&[2.5]));
-    for x in [2.4f32, 2.6, -2.4, -2.6, 0.2, 7.0, -7.0] {
-        let got = call_x(&jit, x);
+    let inputs = [2.4f32, 2.6, -2.4, -2.6, 0.2, 7.0, -7.0];
+    let results = eval_points_1d(&jit, &inputs);
+    for (&x, got) in inputs.iter().zip(results) {
         let want = OpKind::Round.eval_unary(x).expect("oracle covers Round");
         assert_eq!(got, want, "round({x}): JIT {got} vs oracle {want}");
     }
@@ -520,7 +470,7 @@ fn compile_shift(op: pixelflow_ir::OpKind, count: f32) -> bool {
     let x = a.push_var(0);
     let c = a.push_const(count);
     let root = a.push_binary(op, x, c);
-    pixelflow_codegen::emit::compile_arena_dag(&a, root).is_ok()
+    pixelflow_codegen::emit::compile(&a, root).is_ok()
 }
 
 /// A shift count is refused where the `Const` narrows to the encoder's `u8`,

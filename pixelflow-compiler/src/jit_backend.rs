@@ -391,7 +391,7 @@ fn jit_wrapper_tokens() -> TokenStream {
             #[inline]
             fn __compiled(&self) -> &::std::sync::Arc<::pixelflow_core::__macro::codegen::JitManifold> {
                 self.jit.get_or_init(|| {
-                    ::pixelflow_core::__macro::codegen::jit_cache::compile_cached(&self.ir.0, self.ir.1)
+                    ::pixelflow_core::__macro::codegen::jit_cache::compile(&self.ir.0, self.ir.1)
                         .expect("kernel JIT compilation failed")
                 })
             }
@@ -406,10 +406,10 @@ fn jit_wrapper_tokens() -> TokenStream {
             }
         }
         // The JIT emits and is called at `pixelflow_codegen::JIT_VECTOR_BYTES` width;
-        // `eval` transmutes `Field` to that ABI. If this build selected a `Field`
+        // `eval` passes `Field` to that ABI. If this build selected a `Field`
         // whose width the JIT does not emit (e.g. an AVX-512 `Field` while the
         // JIT still emits 128-bit), fail at compile time with a clear message
-        // rather than a raw transmute size error or a silent miscompile.
+        // rather than a raw size error or a silent miscompile.
         const _: () = assert!(
             ::core::mem::size_of::<::pixelflow_core::Field>() == ::pixelflow_core::__macro::codegen::JIT_VECTOR_BYTES,
             "kernel_jit!: pixelflow-core Field width does not match the JIT's emitted \
@@ -431,14 +431,7 @@ fn jit_wrapper_tokens() -> TokenStream {
                 ::pixelflow_core::Field,
             )) -> ::pixelflow_core::Field {
                 unsafe {
-                    ::core::mem::transmute(
-                        self.__compiled().call(
-                            ::core::mem::transmute(x),
-                            ::core::mem::transmute(y),
-                            ::core::mem::transmute(z),
-                            ::core::mem::transmute(w),
-                        )
-                    )
+                    self.__compiled().call(::pixelflow_codegen::Point4::new(x, y, z, w))
                 }
             }
         }

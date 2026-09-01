@@ -285,8 +285,6 @@ fn occlusion_shaped_accumulation_over_samples() {
 #[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 mod jit {
     use super::*;
-    use pixelflow_codegen::emit::compile_arena_dag;
-    use pixelflow_codegen::jit_manifold::JitManifold;
 
     // JitManifold::call's ABI tracks the build's selected width (SSE2/AVX2;
     // this module is gated off avx512f above), so the splat/extract pair must
@@ -295,15 +293,15 @@ mod jit {
     fn jit_eval(k: &Kernel, x: f32, y: f32) -> f32 {
         use core::arch::x86_64::*;
         let (arena, root) = k.parts();
-        let compiled = compile_arena_dag(arena, root).expect("reduction JIT compile");
-        let jit = JitManifold::new(compiled.code);
+        let jit =
+            pixelflow_codegen::jit_cache::compile(arena, root).expect("reduction JIT compile");
         unsafe {
-            _mm256_cvtss_f32(jit.call(
+            _mm256_cvtss_f32(jit.call(pixelflow_codegen::Point4::new(
                 _mm256_set1_ps(x),
                 _mm256_set1_ps(y),
                 _mm256_set1_ps(0.0),
                 _mm256_set1_ps(0.0),
-            ))
+            )))
         }
     }
 
@@ -311,15 +309,15 @@ mod jit {
     fn jit_eval(k: &Kernel, x: f32, y: f32) -> f32 {
         use core::arch::x86_64::*;
         let (arena, root) = k.parts();
-        let compiled = compile_arena_dag(arena, root).expect("reduction JIT compile");
-        let jit = JitManifold::new(compiled.code);
+        let jit =
+            pixelflow_codegen::jit_cache::compile(arena, root).expect("reduction JIT compile");
         unsafe {
-            _mm_cvtss_f32(jit.call(
+            _mm_cvtss_f32(jit.call(pixelflow_codegen::Point4::new(
                 _mm_set1_ps(x),
                 _mm_set1_ps(y),
                 _mm_set1_ps(0.0),
                 _mm_set1_ps(0.0),
-            ))
+            )))
         }
     }
 

@@ -110,7 +110,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use clap::Parser;
 use serde::Serialize;
 
-use pixelflow_codegen::emit::compile_arena_dag;
+use pixelflow_codegen::emit::compile;
 use pixelflow_codegen::emit::executable::ExecutableCode;
 use pixelflow_ir::{
     BindingTable, DifferentialCheck, ExprArena, ExprId, MaskComparison, MaskVerdict, PointCheck,
@@ -480,13 +480,10 @@ fn named_kernels() -> Vec<(&'static str, ExprArena, ExprId)> {
     ]
 }
 
-// ---------------------------------------------------------------------------
-// JIT execution helper: `run_scalar` (broadcast to all lanes, read lane 0)
-// lives in `pixelflow_pipeline::oracle_compare` — the one copy every
-// JIT/oracle cross-check harness imports
-// (docs/plans/2026-08-17-cost-model-domain.md, J14).
-// ---------------------------------------------------------------------------
-use pixelflow_pipeline::oracle_compare::run_scalar;
+use pixelflow_codegen::JIT_VECTOR_BYTES;
+use pixelflow_codegen::emit::executable::{Point4, TileSlice};
+
+const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 
 // ---------------------------------------------------------------------------
 // Oracle-referenced correctness gate (H1/H2)
@@ -821,7 +818,7 @@ fn check_policy(
         }
     }
 
-    let compiled = compile_arena_dag(cand_arena, cand_root)
+    let compiled = compile(cand_arena, cand_root)
         .map_err(|e| GateFailure::CompileFailed(format!("{label}: JIT compile failed: {e}")))?;
 
     let bindings = BindingTable::empty();
@@ -845,111 +842,132 @@ fn check_policy(
     };
     let mut divergence: Option<CrossFormDivergence> = None;
 
-    for (pi, &p) in grid.points.iter().enumerate() {
-        let pc = cand_check.at(&p, &bindings);
-        if pc.is_platform_divergent() {
-            // Contract, not a defect: no backend's answer is "the" answer here.
-            check.skipped += 1;
-            continue;
+    for (chunk_idx, points) in grid.points.chunks(LANES).enumerate() {
+        let mut xs = [0.0f32; LANES];
+        let mut ys = [0.0f32; LANES];
+        let mut zs = [0.0f32; LANES];
+        let mut ws = [0.0f32; LANES];
+        for (i, p) in points.iter().enumerate() {
+            xs[i] = p[0];
+            ys[i] = p[1];
+            zs[i] = p[2];
+            ws[i] = p[3];
+        }
+        let p4 = Point4::new(xs, ys, zs, ws);
+        let mut out = [0.0f32; LANES];
+        unsafe {
+            compiled
+                .code
+                .call_collapse(core::ptr::null(), TileSlice::single(out.as_mut_ptr()), p4);
         }
 
-        // ── Tier (a): same-form hard gate ───────────────────────────────────
-        let got = run_scalar(&compiled.code, p[0], p[1], p[2], p[3]);
-        if mask_root {
-            match pc.classify_mask_root(got) {
-                MaskVerdict::Agree => {}
-                MaskVerdict::NearThreshold => {
-                    // Either verdict is legal here, so the point binds neither
-                    // tier and is withheld from per-repeat verification.
-                    check.mask_near_threshold += 1;
-                    continue;
-                }
-                MaskVerdict::Miscompile => {
-                    return Err(GateFailure::SameForm(format!(
-                        "{label}: mask-valued root produced the OPPOSITE mask at \
+        for (i, &p) in points.iter().enumerate() {
+            let pi = chunk_idx * LANES + i;
+            let pc = cand_check.at(&p, &bindings);
+            if pc.is_platform_divergent() {
+                // Contract, not a defect: no backend's answer is "the" answer here.
+                check.skipped += 1;
+                continue;
+            }
+
+            // ── Tier (a): same-form hard gate ───────────────────────────────────
+            let got = out[i];
+            if mask_root {
+                match pc.classify_mask_root(got) {
+                    MaskVerdict::Agree => {}
+                    MaskVerdict::NearThreshold => {
+                        // Either verdict is legal here, so the point binds neither
+                        // tier and is withheld from per-repeat verification.
+                        check.mask_near_threshold += 1;
+                        continue;
+                    }
+                    MaskVerdict::Miscompile => {
+                        return Err(GateFailure::SameForm(format!(
+                            "{label}: mask-valued root produced the OPPOSITE mask at \
                          ({}, {}, {}, {}), with the deciding comparison well clear of its \
                          threshold: got {:#010x}, want {:#010x} — a wrong answer, not \
                          near-threshold contract (Codex R2)",
-                        p[0],
-                        p[1],
-                        p[2],
-                        p[3],
-                        got.to_bits(),
-                        pc.value().to_bits()
-                    )));
-                }
-                MaskVerdict::InvalidPattern {
-                    got_is_mask,
-                    want_is_mask,
-                } => {
-                    return Err(GateFailure::SameForm(format!(
-                        "{label}: mask-valued root produced an INVALID lane pattern at \
+                            p[0],
+                            p[1],
+                            p[2],
+                            p[3],
+                            got.to_bits(),
+                            pc.value().to_bits()
+                        )));
+                    }
+                    MaskVerdict::InvalidPattern {
+                        got_is_mask,
+                        want_is_mask,
+                    } => {
+                        return Err(GateFailure::SameForm(format!(
+                            "{label}: mask-valued root produced an INVALID lane pattern at \
                          ({}, {}, {}, {}): got {:#010x} (is_mask={got_is_mask}), want \
                          {:#010x} (is_mask={want_is_mask}) — a broken mask corrupts every \
                          bitwise consumer; miscompile, no proximity and no bound excuses it",
-                        p[0],
-                        p[1],
-                        p[2],
-                        p[3],
-                        got.to_bits(),
-                        pc.value().to_bits()
-                    )));
+                            p[0],
+                            p[1],
+                            p[2],
+                            p[3],
+                            got.to_bits(),
+                            pc.value().to_bits()
+                        )));
+                    }
                 }
-            }
-        } else {
-            match pc.verdict(got) {
-                PointVerdict::Accept => {}
-                PointVerdict::Unbounded => {
-                    check.unbounded += 1;
-                    continue;
-                }
-                PointVerdict::Reject => {
-                    return Err(GateFailure::SameForm(format!(
-                        "{label}: JIT disagrees with the scalar oracle on its OWN arena at \
+            } else {
+                match pc.verdict(got) {
+                    PointVerdict::Accept => {}
+                    PointVerdict::Unbounded => {
+                        check.unbounded += 1;
+                        continue;
+                    }
+                    PointVerdict::Reject => {
+                        return Err(GateFailure::SameForm(format!(
+                            "{label}: JIT disagrees with the scalar oracle on its OWN arena at \
                          ({}, {}, {}, {}): got {got:e}, want {:e}, composed bound {:e} \
                          (relative {:e}) — miscompile/lowering bug, not a rewrite issue \
                          (audit H1/H2)",
-                        p[0],
-                        p[1],
-                        p[2],
-                        p[3],
-                        pc.value(),
-                        pc.error_bound(),
-                        pc.relative_error_bound()
-                    )));
+                            p[0],
+                            p[1],
+                            p[2],
+                            p[3],
+                            pc.value(),
+                            pc.error_bound(),
+                            pc.relative_error_bound()
+                        )));
+                    }
                 }
             }
-        }
-        check.checked += 1;
-        // grid.points lists the harness tuples first, in order; only points
-        // that just passed the same-form gate are re-verified per repeat.
-        if pi < check.expected.len() {
-            check.expected[pi] = Some(pc);
-        }
-
-        // ── Tier (b): cross-form conditioned gate ───────────────────────────
-        let po = orig_check.at(&p, &bindings);
-        if po.is_platform_divergent() {
-            continue;
-        }
-        if !pc.is_well_conditioned() || !po.is_well_conditioned() {
-            check.cross_ill_points += 1;
-            if forms_agree(label, &p, pc, po) == FormAgreement::Disagree {
-                // Algebraically-valid rewrites legitimately change values at or
-                // near singularities (plan 0.4) — metadata, never an exclusion.
-                check.cross_ill_disagreements += 1;
+            check.checked += 1;
+            // grid.points lists the harness tuples first, in order; only points
+            // that just passed the same-form gate are re-verified per repeat.
+            if pi < check.expected.len() {
+                check.expected[pi] = Some(pc);
             }
-            continue;
-        }
-        check.cross_compared += 1;
-        if forms_agree(label, &p, pc, po) == FormAgreement::Disagree {
-            check.cross_wc_disagreements += 1;
-            if divergence.is_none() {
-                divergence = Some(CrossFormDivergence {
-                    point: p,
-                    cand: pc,
-                    orig: po,
-                });
+
+            // ── Tier (b): cross-form conditioned gate ───────────────────────────
+            let po = orig_check.at(&p, &bindings);
+            if po.is_platform_divergent() {
+                continue;
+            }
+            if !pc.is_well_conditioned() || !po.is_well_conditioned() {
+                check.cross_ill_points += 1;
+                if forms_agree(label, &p, pc, po) == FormAgreement::Disagree {
+                    // Algebraically-valid rewrites legitimately change values at or
+                    // near singularities (plan 0.4) — metadata, never an exclusion.
+                    check.cross_ill_disagreements += 1;
+                }
+                continue;
+            }
+            check.cross_compared += 1;
+            if forms_agree(label, &p, pc, po) == FormAgreement::Disagree {
+                check.cross_wc_disagreements += 1;
+                if divergence.is_none() {
+                    divergence = Some(CrossFormDivergence {
+                        point: p,
+                        cand: pc,
+                        orig: po,
+                    });
+                }
             }
         }
     }
