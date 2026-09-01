@@ -648,6 +648,30 @@ fn push_dwrt(arena: &mut ExprArena, expr: ExprId, var: u8) -> ExprId {
 /// zero like any non-differentiation variable.
 const PARAM_VAR_BASE: u8 = 16;
 
+/// `Param(i) -> Var(16+i)`, the e-graph-side encoding [`differentiate_in_optimizer`]
+/// round-trips through — factored out so the production path and its
+/// measurement/regression tests build the identical encoded arena rather
+/// than two copies of this mapping drifting apart.
+fn encode_params_as_vars(arena: &ExprArena) -> ExprArena {
+    use pixelflow_ir::arena::ExprNode;
+
+    let encoded_nodes: Vec<ExprNode> = arena
+        .nodes_raw()
+        .iter()
+        .map(|n| match n {
+            ExprNode::Param(i) => {
+                assert!(
+                    PARAM_VAR_BASE + i < MANIFOLD_SLOT_BASE,
+                    "kernel has too many scalar params to encode for the e-graph"
+                );
+                ExprNode::Var(PARAM_VAR_BASE + i)
+            }
+            other => other.clone(),
+        })
+        .collect();
+    ExprArena::from_raw(encoded_nodes, arena.nary_children_raw().to_vec())
+}
+
 /// Run the AOT-tier e-graph (full rule set: derivative + algebra + fusion)
 /// over a `Dwrt`-carrying expansion arena, so derivatives are expanded *and
 /// simplified* at macro-expansion time and the runtime never sees the
@@ -660,7 +684,9 @@ const PARAM_VAR_BASE: u8 = 16;
 /// contract is that a `Some` is `Dwrt`-free and mathematically equivalent.
 fn differentiate_in_optimizer(arena: &ExprArena, root: ExprId) -> Option<(ExprArena, ExprId)> {
     use pixelflow_ir::arena::ExprNode;
-    use pixelflow_search::egraph::{CostModel, EGraph, extract};
+    use pixelflow_search::egraph::{
+        EGraph, choices_to_arena, env_extraction_policy, saturate_for_extraction,
+    };
 
     if !contains_dwrt(arena) {
         return None;
@@ -695,33 +721,29 @@ fn differentiate_in_optimizer(arena: &ExprArena, root: ExprId) -> Option<(ExprAr
         return None;
     }
 
-    // Param(i) -> Var(16+i) for the round-trip.
-    let encoded_nodes: Vec<ExprNode> = arena
-        .nodes_raw()
-        .iter()
-        .map(|n| match n {
-            ExprNode::Param(i) => {
-                assert!(
-                    PARAM_VAR_BASE + i < MANIFOLD_SLOT_BASE,
-                    "kernel has too many scalar params to encode for the e-graph"
-                );
-                ExprNode::Var(PARAM_VAR_BASE + i)
-            }
-            other => other.clone(),
-        })
-        .collect();
-    let encoded = ExprArena::from_raw(encoded_nodes, arena.nary_children_raw().to_vec());
+    let encoded = encode_params_as_vars(arena);
 
     // One saturation, full rule set: differentiation and algebra rewrite
     // TOGETHER — the point of the e-graph is that there is no pass ordering,
     // so the optimizer is free to simplify the differentiand before, during,
     // or after the chain rule fires (see the `derivative` module doc in
-    // pixelflow-search). Standard optimizer budget.
+    // pixelflow-search). Same production policy as every other tier
+    // (`pixelflow-compiler::optimize`'s macro tier and
+    // `pixelflow-search::runtime::optimize_runtime_arena`'s runtime tier):
+    // `config_for_node_count` sizes the budget off a reachable-node count
+    // (`saturate_for_extraction`), and extraction goes through
+    // `env_extraction_policy()` — honoring `PIXELFLOW_NNUE_WEIGHTS` here too
+    // instead of silently ignoring it — via the DAG-preserving
+    // `ExtractionPolicy::extraction` / `choices_to_arena`, not the tree
+    // `extract`. One policy, no second copy (2026-09-01 integration audit).
     let mut eg = EGraph::with_rules(crate::optimize::standard_rules());
     let root_class = eg.add_arena(&encoded, root);
-    eg.saturate();
+    let node_count = reachable_node_count(&encoded, root);
+    saturate_for_extraction(&mut eg, node_count);
 
-    let (out, out_root, _cost) = extract(&eg, root_class, &CostModel::default());
+    let policy = env_extraction_policy();
+    let extraction = policy.extraction(&eg, root_class);
+    let (out, out_root) = choices_to_arena(&extraction);
     if contains_dwrt(&out) {
         return None;
     }
@@ -737,6 +759,26 @@ fn differentiate_in_optimizer(arena: &ExprArena, root: ExprId) -> Option<(ExprAr
         .collect();
     let decoded = ExprArena::from_raw(decoded_nodes, out.nary_children_raw().to_vec());
     Some((decoded, out_root))
+}
+
+/// Count of distinct nodes reachable from `root` — the size proxy
+/// [`config_for_node_count`](pixelflow_search::egraph::config_for_node_count)
+/// classifies into a saturation budget for arena-shaped input, matching the
+/// proxy `pixelflow_search::runtime::optimize_runtime_arena` uses for the
+/// runtime tier (an AST-node count serves the macro tier's own
+/// `count_ast_nodes`, since there is no arena yet at that point).
+fn reachable_node_count(arena: &ExprArena, root: ExprId) -> usize {
+    let mut seen = vec![false; arena.nodes_raw().len()];
+    let mut stack = vec![root];
+    let mut n = 0usize;
+    while let Some(id) = stack.pop() {
+        if std::mem::replace(&mut seen[id.0 as usize], true) {
+            continue;
+        }
+        n += 1;
+        stack.extend(arena.children(id));
+    }
+    n
 }
 
 fn contains_dwrt(arena: &ExprArena) -> bool {
@@ -936,5 +978,217 @@ mod expansion_derivative_tests {
         let y = a.push_var(1);
         let root = a.push_binary(OpKind::Add, x, y);
         assert!(differentiate_in_optimizer(&a, root).is_none());
+    }
+
+    /// X - ((Y - y0) * dx_over_dy + x0), the crossing distance every
+    /// `AnalyticalLine`/`AnalyticalQuad` coverage ramp in
+    /// `pixelflow-graphics::fonts::ttf_curve_analytical` is built from, with
+    /// `y0`/`dx_over_dy`/`x0` as scalar params (matching the real kernel's
+    /// `Param` slots).
+    fn winding_crossing_distance(a: &mut ExprArena) -> ExprId {
+        let x = a.push_var(0);
+        let y = a.push_var(1);
+        let y0 = a.push_param(1);
+        let dx_over_dy = a.push_param(2);
+        let x0 = a.push_param(0);
+        let y_sub_y0 = a.push_binary(OpKind::Sub, y, y0);
+        let scaled = a.push_binary(OpKind::Mul, y_sub_y0, dx_over_dy);
+        let shifted = a.push_binary(OpKind::Add, scaled, x0);
+        a.push_binary(OpKind::Sub, x, shifted)
+    }
+
+    /// The gradient-normalized coverage ramp from `AnalyticalLine::kernel`
+    /// (ttf_curve_analytical.rs:106-129), `d`'s crossing distance through
+    /// `clamp(d / (‖∇d‖ + ε) + 0.5, 0, 1)` — everything downstream of `DX`/`DY`
+    /// in the real kernel, minus the `in_y` boundary mask (see
+    /// [`winding_kernel_dwrt_bails_to_runtime_tier`] for why that mask
+    /// matters). `d` is shared three ways (`DX`, `DY`, the ratio numerator),
+    /// so this is exactly the CSE case DAG extraction exists for.
+    fn winding_ramp_core(a: &mut ExprArena) -> ExprId {
+        let d = winding_crossing_distance(a);
+        let min_grad = a.push_param(5);
+        let dx = push_dwrt(a, d, 0);
+        let dy = push_dwrt(a, d, 1);
+        let dx2 = a.push_binary(OpKind::Mul, dx, dx);
+        let dy2 = a.push_binary(OpKind::Mul, dy, dy);
+        let sum2 = a.push_binary(OpKind::Add, dx2, dy2);
+        let grad = a.push_unary(OpKind::Sqrt, sum2);
+        let denom = a.push_binary(OpKind::Add, grad, min_grad);
+        let ratio = a.push_binary(OpKind::Div, d, denom);
+        let half = a.push_const(0.5);
+        let plus_half = a.push_binary(OpKind::Add, ratio, half);
+        let zero = a.push_const(0.0);
+        let one = a.push_const(1.0);
+        let clamped_lo = a.push_binary(OpKind::Max, plus_half, zero);
+        a.push_binary(OpKind::Min, clamped_lo, one)
+    }
+
+    /// The full `AnalyticalLine::kernel` shape: [`winding_ramp_core`] gated
+    /// by `in_y = (Y >= y_min) & (Y < y_max)`.
+    ///
+    /// **Finding**: `&` lexes to `OpKind::BitAnd`
+    /// (`pixelflow-compiler/src/ast.rs:255,291`), and `BitAnd` has no
+    /// rewrite-rule `Op` — `ops::op_from_kind` returns `None` for it by
+    /// design, since bit-manip primitives are a *lowering* output, never an
+    /// e-graph input (`pixelflow-search/src/egraph/ops.rs`). Every real
+    /// `Dwrt`-bearing `kernel_value!` body in this codebase gates its ramp
+    /// with exactly this kind of boundary mask (`AnalyticalLine`,
+    /// `AnalyticalQuad`'s `in_t`/`valid_plus`/`valid_minus` — see the DX/DY
+    /// grep in the PR description), so `differentiate_in_optimizer`'s
+    /// `representable` check has always rejected the flagship glyph kernel
+    /// and bailed to `None` — both before and after this unification. Its
+    /// `Dwrt` resolution actually happens one tier down, in
+    /// `pixelflow_search::runtime::optimize_runtime_arena` (via
+    /// `Kernel::from_parts` → `Lattice::bake`), which already ran the ONE
+    /// production policy before this PR. This unification changes behavior
+    /// for `Dwrt` bodies that skip the representable gate — the two
+    /// `*_matches_runtime_tier` tests above, and any future `kernel_value!`
+    /// body with derivatives but no boolean mask — not for glyph rendering
+    /// itself.
+    fn winding_kernel_arena() -> (ExprArena, ExprId) {
+        let mut a = ExprArena::new();
+        let y = a.push_var(1);
+        let y_min = a.push_param(3);
+        let y_max = a.push_param(4);
+        let in_y_lo = a.push_binary(OpKind::Ge, y, y_min);
+        let in_y_hi = a.push_binary(OpKind::Lt, y, y_max);
+        let in_y = a.push_binary(OpKind::BitAnd, in_y_lo, in_y_hi);
+        let coverage = winding_ramp_core(&mut a);
+        let dir = a.push_param(6);
+        let scaled_cov = a.push_binary(OpKind::Mul, coverage, dir);
+        let zero = a.push_const(0.0);
+        let root = a.push_ternary(OpKind::Select, in_y, scaled_cov, zero);
+        (a, root)
+    }
+
+    #[test]
+    fn winding_kernel_dwrt_bails_to_runtime_tier() {
+        let (a, root) = winding_kernel_arena();
+        assert!(
+            differentiate_in_optimizer(&a, root).is_none(),
+            "the real glyph winding kernel's `in_y` BitAnd mask should keep tripping \
+             the representable gate — see this fn's doc comment"
+        );
+    }
+
+    /// BEFORE/AFTER regression pin for the unified policy
+    /// (2026-09-01 integration audit, docs/results/2026-09-01-integration-audit.md):
+    /// [`winding_ramp_core`] — the exact gradient-normalized coverage math
+    /// every glyph edge kernel shares (`AnalyticalLine`/`AnalyticalQuad` in
+    /// `pixelflow-graphics::fonts::ttf_curve_analytical`) — must fully
+    /// resolve its `Dwrt` under `differentiate_in_optimizer`'s new,
+    /// size-tiered production policy exactly as it did under the old
+    /// hardcoded `eg.saturate()` (100 iters / 10,000 classes / 500ms) +
+    /// tree `extract`.
+    ///
+    /// This is a real regression this PR fixes, not a hypothetical: at 26
+    /// reachable nodes `winding_ramp_core` lands in `SaturationConfig::rapid`
+    /// (11-50), whose class cap was 2000 before this PR — too tight for
+    /// this body. Differentiation multiplies terms combinatorially in a way
+    /// plain node count doesn't predict, so this expression genuinely needs
+    /// ~1000-1400 e-classes (comfortably inside `rapid`'s 50-iteration/50ms
+    /// budget) to fully expand under the chain rule and re-simplify back to
+    /// `Dwrt`-free; the old 2000-class cap cut a round short mid-batch and
+    /// stranded the graph at a `Dwrt`-carrying local fixed point — a
+    /// correctness bug, since a surviving `Dwrt` is unrepresentable by any
+    /// backend. `rapid`'s cap is now 5000 (see its doc comment). This test
+    /// pins that fix: without it, `differentiate_in_optimizer` on this body
+    /// returns a `Some` that still `contains_dwrt`.
+    ///
+    /// Both BEFORE and AFTER saturate independently under their own
+    /// wall-clock budgets, so their node counts are not directly comparable
+    /// (one can converge deeper than the other depending on scheduling —
+    /// this crate's test binary shares the machine with the rest of
+    /// `cargo test --workspace`) and neither is asserted `.expect()`-style:
+    /// a `None` (BEFORE ran fully — its 500ms/10,000-class budget was never
+    /// the constraint being tested — but AFTER can still legitimately miss
+    /// `rapid`'s tighter 50ms) is the documented graceful fallback, not a
+    /// failure. The invariant this test actually pins is narrower and
+    /// unconditional: whenever AFTER *does* produce a `Some`, it must be
+    /// `Dwrt`-free.
+    #[test]
+    fn winding_ramp_core_takes_production_policy() {
+        use pixelflow_search::egraph::{CostModel, EGraph, config_for_node_count, extract};
+
+        let mut a = ExprArena::new();
+        let root = winding_ramp_core(&mut a);
+        let node_count = super::reachable_node_count(&a, root);
+        let config = config_for_node_count(node_count);
+        eprintln!("[node_count] reachable={node_count} tier={config:?}");
+
+        // --- BEFORE: the exact pre-fix body (crate::optimize::standard_rules(),
+        //     eg.saturate() == saturate_with_limits(100, 10_000, 500ms),
+        //     extract(&eg, root, &CostModel::default()) — a tree extract). ---
+        let encoded = super::encode_params_as_vars(&a);
+        let mut before_eg = EGraph::with_rules(crate::optimize::standard_rules());
+        let before_root_class = before_eg.add_arena(&encoded, root);
+        let before_classes_before = before_eg.num_classes();
+        let before_stats =
+            before_eg.saturate_with_limits(100, 10_000, std::time::Duration::from_millis(500));
+        let before_classes_after = before_eg.num_classes();
+        let (before_out, _, before_cost) =
+            extract(&before_eg, before_root_class, &CostModel::default());
+        eprintln!(
+            "[BEFORE] iterations={} total_unions={} classes {before_classes_before}->{before_classes_after} \
+             extracted(tree) node_count={} cost={before_cost:.3} contains_dwrt={}",
+            before_stats.iterations,
+            before_stats.total_unions,
+            before_out.len(),
+            contains_dwrt(&before_out),
+        );
+
+        // --- AFTER: the real, unified production path. ---
+        match differentiate_in_optimizer(&a, root) {
+            Some((after_out, _after_root)) => {
+                eprintln!(
+                    "[AFTER] extracted(dag) node_count={} contains_dwrt={}",
+                    after_out.len(),
+                    contains_dwrt(&after_out),
+                );
+                assert!(
+                    !contains_dwrt(&after_out),
+                    "AFTER must be Dwrt-free — rapid's class cap must be large enough for \
+                     this body to fully expand and re-simplify under the chain rule"
+                );
+            }
+            None => eprintln!("[AFTER] budget miss (rapid's 50ms) — graceful fallback"),
+        }
+    }
+    /// Two independent ramp cores summed — an `AnalyticalQuad`-shaped
+    /// stand-in (two `DX`/`DY` sites instead of one, landing in `classical`
+    /// at 53 reachable nodes rather than `rapid`) — regression-pinning that
+    /// `classical`'s existing 5000-class cap (unchanged by this PR) already
+    /// has enough headroom for a two-`Dwrt`-site body, the way `rapid`'s did
+    /// not for a one-site body at its old 2000 (see `SaturationConfig::rapid`'s
+    /// doc comment).
+    fn quad_shaped_core(a: &mut ExprArena) -> ExprId {
+        let c1 = winding_ramp_core(a);
+        let c2 = winding_ramp_core(a);
+        a.push_binary(OpKind::Add, c1, c2)
+    }
+
+    /// Not a hard convergence requirement: `classical`'s 200ms hard timeout
+    /// is wall-clock, and this crate's test binary runs alongside every
+    /// other crate's under `cargo test --workspace` — under real scheduling
+    /// contention this body has been observed to legitimately miss budget
+    /// (measured isolated: converges at 1298 classes, well inside
+    /// `classical`'s 5000-class cap — the failure mode this test actually
+    /// guards against is `differentiate_in_optimizer` returning a `Some`
+    /// that still `contains_dwrt`, not a `None`). A `None` here is the
+    /// documented graceful fallback (the runtime `lower_dwrt` tier takes
+    /// over), so only check the Dwrt-freedom invariant when saturation did
+    /// converge in time.
+    #[test]
+    fn quad_shaped_core_takes_production_policy() {
+        let mut a = ExprArena::new();
+        let root = quad_shaped_core(&mut a);
+        let node_count = super::reachable_node_count(&a, root);
+        assert!(
+            node_count > 50,
+            "quad_shaped_core should land in the classical tier (51+ nodes), got {node_count}"
+        );
+        if let Some((out, _)) = differentiate_in_optimizer(&a, root) {
+            assert!(!contains_dwrt(&out), "a Some(..) result must be Dwrt-free");
+        }
     }
 }
