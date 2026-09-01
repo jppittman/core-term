@@ -4,20 +4,25 @@
 //! and low-level collapse execution methods.
 
 use crate::JIT_VECTOR_BYTES;
-use crate::emit::executable::{ExecutableCode, Extent2D, Point4, TileSlice};
+use crate::emit::executable::{Collapse, ExecutableCode, Extent2D, Point4, TileSlice};
 
 const LANES: usize = JIT_VECTOR_BYTES / core::mem::size_of::<f32>();
 
 /// A JIT-compiled kernel. Owns the executable memory for one specific parameter
 /// combination. No cache — caller decides lifetime.
 pub struct JitManifold {
-    code: ExecutableCode,
+    code: ExecutableCode<Collapse>,
 }
 
 impl JitManifold {
     /// Wrap newly compiled executable code into a `JitManifold`.
+    ///
+    /// Every method on this type is a collapse call, so the argument is
+    /// `ExecutableCode<Collapse>` and not merely documented as such: handing
+    /// it a per-batch kernel used to compile fine and then read whatever the
+    /// callee happened to leave on the stack.
     #[must_use]
-    pub const fn new(code: ExecutableCode) -> Self {
+    pub const fn new(code: ExecutableCode<Collapse>) -> Self {
         Self { code }
     }
 
@@ -29,6 +34,10 @@ impl JitManifold {
     }
 
     /// Evaluate the kernel over a single SIMD vector batch coordinate point `origin`.
+    ///
+    /// This is a one-batch collapse call, not a per-batch one: the result is
+    /// read back from the output slot the kernel writes, never from a return
+    /// register.
     ///
     /// # Safety
     ///
@@ -51,7 +60,7 @@ impl JitManifold {
 
     /// Evaluate a bound-memory kernel for a single SIMD vector batch:
     /// `ctx` is the array of buffer base pointers passed in the first integer
-    /// register.
+    /// register. Like [`Self::call`], a one-batch collapse call.
     ///
     /// # Safety
     ///

@@ -17,7 +17,7 @@
 #![cfg(all(target_arch = "x86_64", not(target_feature = "avx512f")))]
 
 use pixelflow_codegen::emit::compile_arena_dag;
-use pixelflow_codegen::emit::executable::ExecutableCode;
+use pixelflow_codegen::emit::executable::{ExecutableCode, PerBatch};
 use pixelflow_ir::OpKind;
 use pixelflow_ir::arena::{ExprArena, ExprId};
 use pixelflow_ir::binding::BindingTable;
@@ -42,7 +42,7 @@ type KernelFn = extern "C" fn(
 ) -> core::arch::x86_64::__m128;
 
 #[cfg(target_feature = "avx2")]
-fn jit_eval(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
+fn jit_eval(code: &ExecutableCode<PerBatch>, x: f32, y: f32, z: f32, w: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let f: KernelFn = code.as_fn();
@@ -56,7 +56,7 @@ fn jit_eval(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
 }
 
 #[cfg(not(target_feature = "avx2"))]
-fn jit_eval(code: &ExecutableCode, x: f32, y: f32, z: f32, w: f32) -> f32 {
+fn jit_eval(code: &ExecutableCode<PerBatch>, x: f32, y: f32, z: f32, w: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let f: KernelFn = code.as_fn();

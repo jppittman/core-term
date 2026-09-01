@@ -13,6 +13,7 @@
 
 #![cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 
+use pixelflow_codegen::emit::executable::{Collapse, PerBatch};
 use pixelflow_codegen::emit::{CompileResult, compile_arena_dag, compile_collapse};
 use pixelflow_codegen::{JIT_VECTOR_BYTES, Point4, TileSlice};
 use pixelflow_ir::OpKind;
@@ -25,7 +26,7 @@ const LANES: usize = JIT_VECTOR_BYTES / 4;
 /// One collapse call: fill `out` (whose length must be `groups * LANES`)
 /// from lane-sequential X starting at `origin.x`, with loop-invariant y/z/w.
 fn run_collapse_grid(
-    res: &CompileResult,
+    res: &CompileResult<Collapse>,
     ctx: &[*const f32],
     tile: TileSlice,
     origin: Point4<f32>,
@@ -48,7 +49,12 @@ fn run_collapse_grid(
     }
 }
 
-fn run_collapse(res: &CompileResult, ctx: &[*const f32], out: &mut [f32], origin: Point4<f32>) {
+fn run_collapse(
+    res: &CompileResult<Collapse>,
+    ctx: &[*const f32],
+    out: &mut [f32],
+    origin: Point4<f32>,
+) {
     assert_eq!(out.len() % LANES, 0);
     let groups = out.len() / LANES;
     run_collapse_grid(
@@ -110,7 +116,12 @@ type CtxKernelFn = extern "C" fn(
 /// The per-batch oracle: evaluate the same arena batch by batch through the
 /// per-batch entry (`CtxKernelFn` shape — a buffer-free kernel never reads
 /// the context, so passing it unconditionally is sound) over the same row.
-fn run_per_batch(res: &CompileResult, ctx: &[*const f32], out: &mut [f32], origin: Point4<f32>) {
+fn run_per_batch(
+    res: &CompileResult<PerBatch>,
+    ctx: &[*const f32],
+    out: &mut [f32],
+    origin: Point4<f32>,
+) {
     assert_eq!(out.len() % LANES, 0);
     for (g, chunk) in out.as_chunks_mut::<LANES>().0.iter_mut().enumerate() {
         let base = origin.x + (g * LANES) as f32;
@@ -187,7 +198,7 @@ fn assert_collapse_matches_per_batch(
     ctx: &[*const f32],
     groups: usize,
     label: &str,
-) -> CompileResult {
+) -> CompileResult<Collapse> {
     let collapse = compile_collapse(arena, root)
         .unwrap_or_else(|e| panic!("{label}: collapse compile failed: {e}"));
     let batch = compile_arena_dag(arena, root)
