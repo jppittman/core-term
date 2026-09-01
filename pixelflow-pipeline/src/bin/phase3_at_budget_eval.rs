@@ -76,9 +76,10 @@ use std::time::Duration;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
-use pixelflow_ir::{ExprArena, ExprId};
+use pixelflow_ir::{ExprArena, ExprId, ExprNode, OpKind};
 use pixelflow_pipeline::journal::append_record;
 use pixelflow_pipeline::training::corpus::read_corpus;
+use pixelflow_pipeline::training::structural::FenceKey;
 use pixelflow_search::egraph::{
     APP_CHECKPOINT_GRID, AnytimeCurveOutput, ApplicationId, CostModel, EClassId, EGraph, ENode,
     ENodeId, EpisodeLabels, GuidedSaturation, Origin, SaturationStop, all_rules,
@@ -93,9 +94,26 @@ use pixelflow_search::runtime::production_saturation_probe;
 #[command(name = "phase3_at_budget_eval")]
 #[command(about = "Phase 3 at-budget ablation ladder on DEV against the registered claim")]
 struct Args {
-    /// Directory holding `corpus_dev.bin` (only file read).
+    /// Directory holding `corpus_dev.bin` (default corpus) and
+    /// `corpus_train.bin` (fence source — read whenever any corpus is
+    /// loaded, per docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §3).
     #[arg(long, default_value = "pixelflow-pipeline/data")]
     corpus_dir: String,
+
+    /// DEV-side corpus file to evaluate, overriding `<corpus_dir>/corpus_dev.bin`
+    /// (for OOD families per the round-1b registration §3). Every entry is
+    /// still fence-checked against `<corpus_dir>/corpus_train.bin` — a
+    /// collision is a hard error regardless of which corpus is loaded.
+    #[arg(long)]
+    corpus: Option<String>,
+
+    /// Emit the registered op-composition stratum
+    /// (docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md §2)
+    /// per expression in the JSONL rows, and per-stratum summary tables
+    /// (population counts over the full classical corpus, plus per-stratum
+    /// D_A statistics for whatever classical rows this run evaluated).
+    #[arg(long, default_value_t = false)]
+    stratify_by_ops: bool,
 
     /// `train_guide` checkpoint for the linear Guide (the claim arm).
     #[arg(
@@ -195,6 +213,227 @@ const STRUCTURAL_RULES: [&str; 6] = [
 ];
 
 const ARM_NAMES: [&str; 3] = ["unguided", "control", "linear"];
+
+// ---------------------------------------------------------------------------
+// Round-1b registered constants (docs/plans/2026-09-01-phase3-round1b-domain-shift-registration.md
+// §1). `D_A(S, B) = m_A^S(B) - m_A^DEV(B)`; `m_A^DEV(B)` below is quoted
+// verbatim from Round 1's own DEV-overall classical result (PR #1084,
+// `2026-09-01-phase3-at-budget-eval.json`, `tiers[].arms[].ratio_vs_unguided_at_b.median`)
+// and is NOT recomputed from this run — recomputing it here would let a
+// differently-sampled run silently redefine its own baseline.
+// ---------------------------------------------------------------------------
+
+/// `m_A^DEV(B)`: (B, arm) -> Round-1 DEV-overall classical median ratio.
+const DEV_REFERENCE_MEDIAN: [(usize, &str, f64); 4] = [
+    (100, "control", 0.5655),
+    (100, "linear", 0.5366),
+    (200, "control", 0.6991),
+    (200, "linear", 0.6959),
+];
+
+fn dev_reference_median_for(b: usize, arm: &str) -> f64 {
+    DEV_REFERENCE_MEDIAN
+        .iter()
+        .find(|(rb, ra, _)| *rb == b && *ra == arm)
+        .unwrap_or_else(|| panic!("no Round-1 DEV reference median for arm {arm:?} at B={b}"))
+        .2
+}
+
+/// `M_B`: the largest `|D_control - D_linear|` Round 1 already produced
+/// across its 8 no-shift DEV families (§1.1) — the null scale a shift
+/// effect must exceed to be distinguishable from ordinary between-family
+/// noise.
+fn registered_margin(b: usize) -> f64 {
+    match b {
+        100 => 0.06,
+        200 => 0.07,
+        other => panic!("no registered margin M_B for B={other} (only 100/200 are registered)"),
+    }
+}
+
+/// A verdict is claimed only on a set with n >= 30 classical expressions
+/// (§1, "Primary test").
+const MIN_N_FOR_VERDICT: usize = 30;
+
+// ---------------------------------------------------------------------------
+// DEV stratification by op composition (round-1b registration §2). First
+// matching row over the arena's non-leaf ops (`Var`/`Const`/`Param`/`Buffer`
+// leaves excluded).
+// ---------------------------------------------------------------------------
+
+const TRIG_OPS: &[OpKind] = &[
+    OpKind::Sin,
+    OpKind::Cos,
+    OpKind::Tan,
+    OpKind::Asin,
+    OpKind::Acos,
+    OpKind::Atan,
+    OpKind::Atan2,
+];
+const TRANS_OPS: &[OpKind] = &[
+    OpKind::Exp,
+    OpKind::Exp2,
+    OpKind::Ln,
+    OpKind::Log2,
+    OpKind::Log10,
+    OpKind::Pow,
+];
+const ROOT_OPS: &[OpKind] = &[OpKind::Sqrt, OpKind::Rsqrt, OpKind::Recip];
+const POLY_OPS: &[OpKind] = &[
+    OpKind::Add,
+    OpKind::Sub,
+    OpKind::Mul,
+    OpKind::MulAdd,
+    OpKind::Neg,
+];
+
+/// The op of a non-leaf `ExprNode`, or `None` for a leaf
+/// (`Var`/`Const`/`Param`/`Buffer` — excluded from the stratification rule).
+fn non_leaf_op(node: &ExprNode) -> Option<OpKind> {
+    match node {
+        ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Param(_) | ExprNode::Buffer(_) => None,
+        ExprNode::Unary(op, _)
+        | ExprNode::Binary(op, _, _)
+        | ExprNode::Ternary(op, _, _, _)
+        | ExprNode::Nary(op, _, _) => Some(*op),
+    }
+}
+
+/// The registered op-composition stratum of an arena (§2): first matching
+/// row over `polynomial-only` / `trig-heavy` / `transcendental-heavy` /
+/// `sqrt-recip-heavy` / `mixed`. `polynomial-only` is vacuously true for an
+/// arena with no non-leaf nodes at all (a bare `Var`/`Const`), matching the
+/// registered "every op ∈ POLY" wording.
+fn ops_stratum(arena: &ExprArena) -> &'static str {
+    let mut trig = 0usize;
+    let mut trans = 0usize;
+    let mut root = 0usize;
+    let mut poly_only = true;
+    for node in arena.nodes_raw() {
+        let Some(op) = non_leaf_op(node) else {
+            continue;
+        };
+        if TRIG_OPS.contains(&op) {
+            trig += 1;
+        }
+        if TRANS_OPS.contains(&op) {
+            trans += 1;
+        }
+        if ROOT_OPS.contains(&op) {
+            root += 1;
+        }
+        if !POLY_OPS.contains(&op) {
+            poly_only = false;
+        }
+    }
+    if poly_only {
+        "polynomial-only"
+    } else if trig >= 3 {
+        "trig-heavy"
+    } else if trans >= 3 {
+        "transcendental-heavy"
+    } else if root >= 3 {
+        "sqrt-recip-heavy"
+    } else {
+        "mixed"
+    }
+}
+
+#[cfg(test)]
+mod ops_stratum_tests {
+    use super::*;
+
+    #[test]
+    fn polynomial_only_is_vacuous_on_a_bare_leaf() {
+        let mut a = ExprArena::new();
+        let _x = a.push_var(0);
+        assert_eq!(ops_stratum(&a), "polynomial-only");
+    }
+
+    #[test]
+    fn polynomial_only_over_add_sub_mul_muladd_neg() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let c = a.push_const(2.0);
+        let add = a.push_binary(OpKind::Add, x, c);
+        let sub = a.push_binary(OpKind::Sub, add, x);
+        let mul = a.push_binary(OpKind::Mul, sub, c);
+        let neg = a.push_unary(OpKind::Neg, mul);
+        let _ma = a.push_ternary(OpKind::MulAdd, neg, x, c);
+        assert_eq!(ops_stratum(&a), "polynomial-only");
+    }
+
+    #[test]
+    fn one_div_breaks_polynomial_only_into_mixed() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let c = a.push_const(2.0);
+        let _ = a.push_binary(OpKind::Div, x, c);
+        assert_eq!(ops_stratum(&a), "mixed");
+    }
+
+    #[test]
+    fn trig_heavy_needs_three_trig_ops() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let s = a.push_unary(OpKind::Sin, x);
+        let c = a.push_unary(OpKind::Cos, x);
+        let two = a.push_binary(OpKind::Mul, s, c);
+        // Only two trig ops so far — should NOT be trig-heavy yet.
+        assert_ne!(ops_stratum(&a), "trig-heavy");
+        let _t = a.push_unary(OpKind::Tan, two);
+        assert_eq!(ops_stratum(&a), "trig-heavy");
+    }
+
+    #[test]
+    fn transcendental_heavy_needs_three_trans_ops() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let e1 = a.push_unary(OpKind::Exp, x);
+        let e2 = a.push_unary(OpKind::Ln, e1);
+        let _e3 = a.push_unary(OpKind::Log2, e2);
+        assert_eq!(ops_stratum(&a), "transcendental-heavy");
+    }
+
+    #[test]
+    fn sqrt_recip_heavy_needs_three_root_ops() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let r1 = a.push_unary(OpKind::Sqrt, x);
+        let r2 = a.push_unary(OpKind::Rsqrt, r1);
+        let _r3 = a.push_unary(OpKind::Recip, r2);
+        assert_eq!(ops_stratum(&a), "sqrt-recip-heavy");
+    }
+
+    #[test]
+    fn trig_takes_priority_over_transcendental_and_root() {
+        // 3 trig + 3 trans + 3 root ops present: trig-heavy wins (first
+        // matching row after polynomial-only).
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let mut n = a.push_unary(OpKind::Sin, x);
+        n = a.push_unary(OpKind::Cos, n);
+        n = a.push_unary(OpKind::Tan, n);
+        n = a.push_unary(OpKind::Exp, n);
+        n = a.push_unary(OpKind::Ln, n);
+        n = a.push_unary(OpKind::Log2, n);
+        n = a.push_unary(OpKind::Sqrt, n);
+        n = a.push_unary(OpKind::Rsqrt, n);
+        let _ = a.push_unary(OpKind::Recip, n);
+        assert_eq!(ops_stratum(&a), "trig-heavy");
+    }
+
+    #[test]
+    fn mixed_is_the_fallback() {
+        let mut a = ExprArena::new();
+        let x = a.push_var(0);
+        let s = a.push_unary(OpKind::Sin, x);
+        let e = a.push_unary(OpKind::Exp, s);
+        let _ = a.push_unary(OpKind::Sqrt, e);
+        // One of each group, none reaching 3 — falls through to mixed.
+        assert_eq!(ops_stratum(&a), "mixed");
+    }
+}
 
 fn tier_name(node_count: usize) -> &'static str {
     match node_count {
@@ -314,6 +553,10 @@ struct ExprRow {
     tier: String,
     node_count: usize,
     class_cap: usize,
+    /// Round-1b op-composition stratum (registration §2), present only when
+    /// `--stratify-by-ops` was set for the run that produced this row.
+    #[serde(default)]
+    stratum: Option<String>,
     arms: BTreeMap<String, ArmCurve>,
     /// arm -> B -> diagnostics at B.
     at_budget: BTreeMap<String, BTreeMap<usize, AtBudgetDiag>>,
@@ -632,7 +875,12 @@ fn run_guided<G: SaturationGuide>(
     (out, seen)
 }
 
-fn evaluate_expression(name: &str, input: &CurveInput<'_>, guides: &Guides) -> ExprRow {
+fn evaluate_expression(
+    name: &str,
+    input: &CurveInput<'_>,
+    guides: &Guides,
+    stratify_by_ops: bool,
+) -> ExprRow {
     let CurveInput {
         arena,
         root,
@@ -709,6 +957,7 @@ fn evaluate_expression(name: &str, input: &CurveInput<'_>, guides: &Guides) -> E
         tier: tier_name(node_count).to_string(),
         node_count,
         class_cap,
+        stratum: stratify_by_ops.then(|| ops_stratum(arena).to_string()),
         arms,
         at_budget,
         enabler,
@@ -828,6 +1077,31 @@ struct ArmAtB {
     burned_key_share: Dist,
 }
 
+/// Round-1b domain-shift statistic (registration §1): `D_A(S, B) =
+/// m_A^S(B) minus m_A^DEV(B)` per arm against Round 1's fixed DEV-overall
+/// classical reference, the registered margin `M_B`, and the resulting
+/// verdict.
+/// Populated only for the classical band — `m_A^DEV(B)` is specifically the
+/// classical-band Round-1 reference and is not meaningful against a
+/// rapid/blitz set.
+#[derive(Serialize, Clone)]
+struct Round1bStat {
+    /// `m_A^DEV(B)`, per arm — quoted from Round 1, not recomputed here.
+    dev_reference_median: BTreeMap<String, f64>,
+    /// `D_A(S, B)`, per arm, for THIS run's evaluated set `S`.
+    d_arm: BTreeMap<String, f64>,
+    /// `M_B` — the largest within-DEV `|D_control - D_linear|` Round 1
+    /// already produced across its 8 families (§1.1).
+    margin_m: f64,
+    /// `D_control - D_linear`.
+    d_diff_control_minus_linear: f64,
+    /// `H_shift` / `H_null` / `H_inv` / `underpowered (n < 30)`, per §1's
+    /// pre-committed decision rule. `unclassified` covers the residual case
+    /// `D_control - D_linear > M` with `D_control <= 0` — outside all three
+    /// named hypotheses, reported rather than silently forced into one.
+    verdict: String,
+}
+
 #[derive(Serialize, Clone)]
 struct TierResult {
     band: String,
@@ -856,6 +1130,9 @@ struct TierResult {
     linear_lt_control: usize,
     linear_eq_control: usize,
     linear_gt_control: usize,
+    /// Round-1b domain-shift statistic (classical band only; `None` for
+    /// rapid/blitz).
+    round1b: Option<Round1bStat>,
 }
 
 #[derive(Serialize, Clone)]
@@ -909,10 +1186,45 @@ struct Report {
     tiers: Vec<TierResult>,
     production: Vec<ProductionSummary>,
     enabler: Vec<EnablerSummary>,
+    /// Round-1b op-composition stratification (registration §2); `None`
+    /// unless `--stratify-by-ops` was set.
+    strata: Option<StrataReport>,
     context: BTreeMap<String, String>,
 }
 
-fn tier_result(rows: &[&ExprRow], band: &str, b: usize, y: f64, l: f64) -> TierResult {
+/// Round-1b op-composition stratification output (registration §2/§1).
+#[derive(Serialize, Clone)]
+struct StrataReport {
+    /// Stratum -> count over the FULL classical DEV population read from
+    /// the corpus this run loaded — independent of how many of them were
+    /// actually put through the ablation ladder (`--classical-samples`).
+    population_counts: BTreeMap<String, usize>,
+    /// One `TierResult` per (stratum, registered B) over the classical rows
+    /// this run actually evaluated that carry a stratum label — `band` on
+    /// each is the stratum name; `round1b` is always populated.
+    evaluated: Vec<TierResult>,
+}
+
+/// The registered-tier parameters `tier_result` needs beyond `rows`/`band` —
+/// grouped so the function stays under the workspace's argument-count lint
+/// (CLAUDE.md: "Functions < 4 arguments (group into structs)").
+struct TierBudget {
+    b: usize,
+    y: f64,
+    l: f64,
+    /// Whether to compute the round-1b `D_A` statistic (§1) for this set —
+    /// true for the whole-DEV classical band and for each op-composition
+    /// stratum of it, false for rapid/blitz.
+    compute_round1b: bool,
+}
+
+fn tier_result(rows: &[&ExprRow], band: &str, budget: TierBudget) -> TierResult {
+    let TierBudget {
+        b,
+        y,
+        l,
+        compute_round1b,
+    } = budget;
     let b4 = 4 * b;
     fn ung(r: &ExprRow) -> &ArmCurve {
         &r.arms["unguided"]
@@ -1067,6 +1379,46 @@ fn tier_result(rows: &[&ExprRow], band: &str, b: usize, y: f64, l: f64) -> TierR
         }
     }
 
+    // Round-1b domain-shift statistic (registration §1) — only for a
+    // classical-sized set, since `m_A^DEV(B)` is the classical-band Round-1
+    // reference (the caller decides: the whole-DEV classical band, or a
+    // classical-band op-composition stratum; never rapid/blitz).
+    let round1b = compute_round1b.then(|| {
+        let mut dev_reference_median = BTreeMap::new();
+        let mut d_arm = BTreeMap::new();
+        for a in &arms {
+            let refm = dev_reference_median_for(b, &a.arm);
+            dev_reference_median.insert(a.arm.clone(), refm);
+            d_arm.insert(a.arm.clone(), a.ratio_vs_unguided_at_b.median - refm);
+        }
+        let margin_m = registered_margin(b);
+        let d_control = d_arm["control"];
+        let d_linear = d_arm["linear"];
+        let d_diff_control_minus_linear = d_control - d_linear;
+        let verdict = if rows.len() < MIN_N_FOR_VERDICT {
+            format!("underpowered (n={} < {MIN_N_FOR_VERDICT})", rows.len())
+        } else if d_diff_control_minus_linear.abs() <= margin_m {
+            "H_null".to_string()
+        } else if d_diff_control_minus_linear > margin_m {
+            if d_control > 0.0 {
+                "H_shift".to_string()
+            } else {
+                format!(
+                    "unclassified (D_control-D_linear={d_diff_control_minus_linear:.4} > M={margin_m:.2} but D_control={d_control:.4} <= 0)"
+                )
+            }
+        } else {
+            "H_inv".to_string()
+        };
+        Round1bStat {
+            dev_reference_median,
+            d_arm,
+            margin_m,
+            d_diff_control_minus_linear,
+            verdict,
+        }
+    });
+
     TierResult {
         band: band.to_string(),
         b,
@@ -1096,6 +1448,7 @@ fn tier_result(rows: &[&ExprRow], band: &str, b: usize, y: f64, l: f64) -> TierR
         linear_lt_control: lt,
         linear_eq_control: eq,
         linear_gt_control: gt,
+        round1b,
     }
 }
 
@@ -1285,6 +1638,76 @@ fn fmt_pct(d: &Dist) -> String {
     )
 }
 
+/// Round-1b domain-shift statistic (registration §1) for one classical-sized
+/// set `S` (the whole-DEV classical band, or one op-composition stratum of
+/// it).
+fn write_round1b(md: &mut String, set_name: &str, r: &Round1bStat) {
+    md.push_str(&format!(
+        "**Round-1b domain-shift statistic (S = {set_name}):** M_B = {:.2}. ",
+        r.margin_m
+    ));
+    for arm in ["control", "linear"] {
+        md.push_str(&format!(
+            "D_{arm} = {:.4} (m_{arm}^S = {:.4}, m_{arm}^DEV = {:.4}). ",
+            r.d_arm[arm],
+            r.d_arm[arm] + r.dev_reference_median[arm],
+            r.dev_reference_median[arm],
+        ));
+    }
+    md.push_str(&format!(
+        "D_control − D_linear = {:.4} → **{}**.\n\n",
+        r.d_diff_control_minus_linear, r.verdict
+    ));
+}
+
+/// Round-1b op-composition stratification section (registration §2).
+fn write_strata(md: &mut String, s: &StrataReport) {
+    md.push_str("## DEV op-composition stratification (round-1b registration §2)\n\n");
+    let total: usize = s.population_counts.values().sum();
+    md.push_str(&format!(
+        "Population counts over the FULL classical DEV corpus loaded this run (n = {total}), by first-matching stratum:\n\n"
+    ));
+    md.push_str("| stratum | n | share |\n|---|---:|---:|\n");
+    for (stratum, n) in &s.population_counts {
+        md.push_str(&format!(
+            "| {stratum} | {n} | {:.1}% |\n",
+            if total == 0 {
+                0.0
+            } else {
+                100.0 * *n as f64 / total as f64
+            }
+        ));
+    }
+    md.push('\n');
+    if s.evaluated.is_empty() {
+        md.push_str("No evaluated classical row carries a stratum label (nothing was put through the ablation ladder with `--stratify-by-ops` set).\n\n");
+        return;
+    }
+    md.push_str("Per-stratum results, over classical rows THIS run actually put through the ablation ladder (may be a small sample — see population counts above for the true stratum sizes):\n\n");
+    md.push_str("| stratum | B | n | control ratio med | linear ratio med | D_control | D_linear | D_control − D_linear | M_B | verdict |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---|\n");
+    for t in &s.evaluated {
+        let Some(r1b) = &t.round1b else {
+            continue;
+        };
+        let ctl = &t.arms[0];
+        let lin = &t.arms[1];
+        md.push_str(&format!(
+            "| {} | {} | {} | {:.3} | {:.3} | {:.4} | {:.4} | {:.4} | {:.2} | {} |\n",
+            t.band,
+            t.b,
+            t.n,
+            ctl.ratio_vs_unguided_at_b.median,
+            lin.ratio_vs_unguided_at_b.median,
+            r1b.d_arm["control"],
+            r1b.d_arm["linear"],
+            r1b.d_diff_control_minus_linear,
+            r1b.margin_m,
+            r1b.verdict,
+        ));
+    }
+    md.push('\n');
+}
+
 fn write_markdown(report: &Report, path: &Path, jsonl: &str) {
     let mut md = String::new();
     md.push_str(
@@ -1403,6 +1826,13 @@ Strict-oracle arm: not run (see the harness module doc — no cheap provenance r
                 if t.linear_beats_control { "beats" } else { "does not beat" },
             ));
         }
+        if let Some(r1b) = &t.round1b {
+            write_round1b(&mut md, &t.band, r1b);
+        }
+    }
+
+    if let Some(strata) = &report.strata {
+        write_strata(&mut md, strata);
     }
 
     md.push_str("## Enabler-starvation diagnostics\n\n");
@@ -1554,6 +1984,80 @@ fn stride_sample<T>(mut items: Vec<T>, n: Option<usize>) -> Vec<T> {
     out
 }
 
+/// Op-composition stratum counts (registration §2) over a set of entries.
+fn strata_counts(entries: &[(String, ExprArena, ExprId)]) -> BTreeMap<String, usize> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for (_, arena, _) in entries {
+        *counts.entry(ops_stratum(arena).to_string()).or_default() += 1;
+    }
+    counts
+}
+
+/// Every `FenceKey` in `corpus_dir/corpus_train.bin` — the TRAIN side of the
+/// round-1b OOD fence check (registration §3: "every OOD FenceKey probed
+/// against corpus_train.bin, collision = hard error").
+///
+/// # Panics
+///
+/// Panics if `corpus_train.bin` is missing — a fence that silently checked
+/// against nothing would validate nothing while looking like it validated
+/// everything (same discipline as `split::Fence::build`).
+fn train_fence_keys(corpus_dir: &Path) -> HashSet<FenceKey> {
+    let path = corpus_dir.join("corpus_train.bin");
+    assert!(
+        path.exists(),
+        "TRAIN corpus not found at {} — the fence check cannot run without it (regenerate the \
+         tiered corpus with gen_bench_corpus, --output {})",
+        path.display(),
+        corpus_dir.display()
+    );
+    let entries =
+        read_corpus(&path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    entries
+        .iter()
+        .map(|(_, arena, root)| FenceKey::of(arena, *root))
+        .collect()
+}
+
+/// Hard-fails (registration §3) if any entry in `entries` (loaded from
+/// `corpus_path`) shares a feature-quotient structure with TRAIN — enforced
+/// regardless of which corpus was loaded (`corpus_dev.bin` or a
+/// `--corpus`-supplied OOD file), so a caller cannot silently skip the check
+/// by pointing `--corpus` at the default.
+fn enforce_train_fence(
+    corpus_path: &Path,
+    corpus_dir: &Path,
+    entries: &[(String, ExprArena, ExprId)],
+) {
+    let train_keys = train_fence_keys(corpus_dir);
+    let collisions: Vec<&str> = entries
+        .iter()
+        .filter(|(_, arena, root)| train_keys.contains(&FenceKey::of(arena, *root)))
+        .map(|(name, _, _)| name.as_str())
+        .collect();
+    assert!(
+        collisions.is_empty(),
+        "TRAIN-fence violation: {} of {} entries in {} share a feature-quotient structure with \
+         {}/corpus_train.bin (a leak, not a hygiene event — round-1b registration §3): {:?}{}",
+        collisions.len(),
+        entries.len(),
+        corpus_path.display(),
+        corpus_dir.display(),
+        &collisions[..collisions.len().min(10)],
+        if collisions.len() > 10 {
+            ", ... (truncated)"
+        } else {
+            ""
+        },
+    );
+    eprintln!(
+        "phase3_at_budget_eval: TRAIN fence check OK — {} entries in {} probed against {} TRAIN structures, 0 collisions",
+        entries.len(),
+        corpus_path.display(),
+        train_keys.len(),
+    );
+}
+
 fn main() {
     let args = Args::parse();
     let jsonl_path = PathBuf::from(&args.out_jsonl);
@@ -1565,6 +2069,9 @@ fn main() {
         .map(str::to_string)
         .collect();
     let load_start = uptime();
+    // Populated only when `--stratify-by-ops` runs the corpus-population
+    // scan below (skipped in `--aggregate-only`, which reads no corpus).
+    let mut strata_population_out: Option<BTreeMap<String, usize>> = None;
 
     if !args.aggregate_only {
         let costs = CostModel::latency_prior();
@@ -1587,9 +2094,15 @@ fn main() {
                 4 * b
             );
         }
-        let dev_path = PathBuf::from(&args.corpus_dir).join("corpus_dev.bin");
+        let corpus_dir = PathBuf::from(&args.corpus_dir);
+        let dev_path: PathBuf = args
+            .corpus
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| corpus_dir.join("corpus_dev.bin"));
         let mut entries = read_corpus(&dev_path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", dev_path.display()));
+        enforce_train_fence(&dev_path, &corpus_dir, &entries);
         entries.sort_by(|a, b| {
             a.1.nodes_raw()
                 .len()
@@ -1605,6 +2118,18 @@ fn main() {
         }
         let counts: BTreeMap<&str, usize> = by_band.iter().map(|(k, v)| (*k, v.len())).collect();
         eprintln!("phase3_at_budget_eval: DEV population by band: {counts:?}");
+
+        if args.stratify_by_ops {
+            let classical_strata = by_band
+                .get("classical")
+                .map(|v| strata_counts(v))
+                .unwrap_or_default();
+            eprintln!(
+                "phase3_at_budget_eval: classical population by op-composition stratum (n={}): {classical_strata:?}",
+                by_band.get("classical").map_or(0, Vec::len),
+            );
+            strata_population_out = Some(classical_strata);
+        }
 
         let mut selected: Vec<(String, ExprArena, ExprId)> = Vec::new();
         selected.extend(stride_sample(
@@ -1664,7 +2189,7 @@ fn main() {
                 costs: &costs,
                 guided_grid: &guided_grid,
             };
-            let row = evaluate_expression(name, &input, &guides);
+            let row = evaluate_expression(name, &input, &guides, args.stratify_by_ops);
             let line = serde_json::to_string(&row).expect("serialize row");
             writeln!(out, "{line}")
                 .unwrap_or_else(|e| panic!("write {}: {e}", jsonl_path.display()));
@@ -1694,11 +2219,53 @@ fn main() {
             continue;
         }
         for (b, y, l) in REGISTERED_TIERS {
-            tiers.push(tier_result(&sub, band, b, y, l));
+            tiers.push(tier_result(
+                &sub,
+                band,
+                TierBudget {
+                    b,
+                    y,
+                    l,
+                    compute_round1b: band == "classical",
+                },
+            ));
         }
         production.push(production_summary(&sub, band));
         enabler.push(enabler_summary(&sub, band));
     }
+
+    // Round-1b op-composition stratification (registration §2), only when
+    // any row carries a stratum label.
+    let strata = rows.iter().any(|r| r.stratum.is_some()).then(|| {
+        let mut by_stratum: BTreeMap<String, Vec<&ExprRow>> = BTreeMap::new();
+        for r in rows.iter().filter(|r| r.tier == "classical") {
+            if let Some(s) = &r.stratum {
+                by_stratum.entry(s.clone()).or_default().push(r);
+            }
+        }
+        let evaluated: Vec<TierResult> = by_stratum
+            .iter()
+            .flat_map(|(stratum, sub)| {
+                REGISTERED_TIERS.iter().map(move |&(b, y, l)| {
+                    tier_result(
+                        sub,
+                        stratum,
+                        TierBudget {
+                            b,
+                            y,
+                            l,
+                            compute_round1b: true,
+                        },
+                    )
+                })
+            })
+            .collect();
+        StrataReport {
+            population_counts: strata_population_out.clone().unwrap_or_default(),
+            evaluated,
+        }
+    });
+
     let mut context = BTreeMap::new();
     context.insert("source_rev".to_string(), git_rev());
     context.insert("load_at_start".to_string(), load_start);
@@ -1732,6 +2299,7 @@ fn main() {
         tiers,
         production,
         enabler,
+        strata,
         context,
     };
     let json = serde_json::to_string_pretty(&report).expect("serialize report");
