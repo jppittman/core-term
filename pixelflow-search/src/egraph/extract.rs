@@ -898,13 +898,22 @@ pub fn extract<C: CostFunction>(
                             CYCLE_COST
                         } else {
                             let op_cost = costs.node_cost(node, None);
+                            // Saturating fold, not `.sum()`: a child's own
+                            // `best_cost` can already sit at a prohibitive
+                            // sentinel (`Dwrt`'s `usize::MAX / 4` from
+                            // `CostModel::node_op_cost`, or this function's
+                            // own `CYCLE_COST`), and a node with several such
+                            // children genuinely overflows a plain `usize`
+                            // sum — reachable once a real (not synthetic)
+                            // `Dwrt`-bearing e-graph goes through DAG
+                            // extraction (2026-09-01 integration audit).
                             let children_cost: usize = children
                                 .iter()
                                 .map(|&child| {
                                     let c = egraph.find(child);
                                     best_cost[c.0 as usize].unwrap_or(CYCLE_COST)
                                 })
-                                .sum();
+                                .fold(0usize, usize::saturating_add);
                             op_cost.saturating_add(children_cost)
                         }
                     }
@@ -1584,6 +1593,12 @@ pub fn extract_dag_scoped<C: CostFunction>(
                             CYCLE_COST
                         } else {
                             let op_cost = scaled(costs.node_cost(node, None));
+                            // Saturating fold, not `.sum()`: a child's own
+                            // `best_cost` can already sit at a prohibitive
+                            // sentinel (`Dwrt`'s `usize::MAX / 4` from
+                            // `CostModel::node_op_cost`, or this function's
+                            // own `CYCLE_COST`), so a node with several such
+                            // children overflows a plain `usize` sum.
                             let children_cost: usize = children
                                 .iter()
                                 .map(|&child| {
