@@ -1,0 +1,11 @@
+{
+  "dev_path": "pixelflow-pipeline/data/strict_labels_dev.jsonl",
+  "dev_samples_checked": 155231,
+  "linear_dev_auc": 0.9902216826100187,
+  "linear_dev_pr_auc": 0.4594751631016252,
+  "per_rule_rate_dev_auc": 0.9367570366970414,
+  "per_rule_rate_dev_pr_auc": 0.10834450541654285,
+  "auc_gap": 0.05346464591297739,
+  "pr_auc_gap": 0.35113065768508234,
+  "verdict": "REAL GAP (AUC gap +0.0535 >= 0.02): the linear model meaningfully outranks a per-rule lookup table — candidate-local features are carrying signal beyond each rule's base rate. PR-AUC gap is +0.3511."
+}
