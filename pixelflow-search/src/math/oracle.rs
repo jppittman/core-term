@@ -375,4 +375,73 @@ mod tests {
             dropped.join("\n")
         );
     }
+
+    /// Register census (Round 2 §6, "validated rule counts per mode"): the
+    /// `comp:<total>` rule sets take PREFIXES of the seeded pool without
+    /// re-running the oracle at construction time, so the Register needs to
+    /// know, for each realized prefix, how many of its compositions the
+    /// oracle kept, dropped, or could not test. Printed as metadata; the
+    /// only assertion is that every prefix is accounted for exactly.
+    #[test]
+    fn composition_prefix_oracle_census() {
+        use crate::math::inflate::COMPOSITION_GRID;
+        const MIN_AGREEMENT_RATE: f64 = 0.60;
+        let pool = composition_pool(&all_rules(), COMPOSITION_SEED);
+        let max_prefix = COMPOSITION_GRID
+            .iter()
+            .map(|(_, inflation)| *inflation)
+            .max()
+            .expect("non-empty composition grid");
+        assert!(
+            pool.len() >= max_prefix,
+            "pool ({}) smaller than the largest grid prefix ({max_prefix})",
+            pool.len()
+        );
+        let status: Vec<&'static str> = pool
+            .iter()
+            .take(max_prefix)
+            .map(|c| {
+                match cross_form_oracle(&c.rule as &dyn Rewrite, ORACLE_SEED, POINTS_PER_RULE) {
+                    None => "untestable",
+                    Some(v) if v.agreement_rate() < MIN_AGREEMENT_RATE => "dropped",
+                    Some(_) => "kept",
+                }
+            })
+            .collect();
+        // One JSON line per pool entry in prefix order — the Register's
+        // ordered composition list (design §2.2 step 4), extracted from this
+        // test's stderr into docs/results/…-round2-compositions.json.
+        for (i, (c, s)) in pool.iter().zip(status.iter()).enumerate() {
+            eprintln!(
+                "COMPOSITION_JSON {{\"pool_idx\":{i},\"name\":{:?},\"a_idx\":{},\"b_idx\":{},\"position\":{:?},\"oracle\":{s:?}}}",
+                c.rule.name(),
+                c.a_idx,
+                c.b_idx,
+                c.position
+            );
+        }
+        for &(total, inflation) in COMPOSITION_GRID {
+            let prefix = &status[..inflation];
+            let kept = prefix.iter().filter(|s| **s == "kept").count();
+            let dropped = prefix.iter().filter(|s| **s == "dropped").count();
+            let untestable = prefix.iter().filter(|s| **s == "untestable").count();
+            assert_eq!(kept + dropped + untestable, inflation);
+            eprintln!(
+                "composition_prefix_oracle_census: comp:{total} (prefix {inflation}): \
+                 kept={kept} dropped={dropped} untestable={untestable}"
+            );
+            for (i, s) in prefix.iter().enumerate() {
+                if *s != "kept" {
+                    let c = &pool[i];
+                    eprintln!(
+                        "  pool[{i}] {} (a_idx={} b_idx={} pos={:?}): {s}",
+                        c.rule.name(),
+                        c.a_idx,
+                        c.b_idx,
+                        c.position
+                    );
+                }
+            }
+        }
+    }
 }

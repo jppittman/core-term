@@ -25,7 +25,8 @@
 //! ```bash
 //! cargo run --release -p pixelflow-pipeline --features training --bin phase3_round2_new_rules -- \
 //!     --corpus-dir pixelflow-pipeline/data --samples 400 \
-//!     --out-md docs/results/2026-09-01-round2-unguided-vs-rulecount.md
+//!     --out-md docs/results/2026-09-01-round2-unguided-vs-rulecount.md \
+//!     --out-csv docs/results/2026-09-01-round2-unguided-vs-rulecount-mode-iii.csv
 //! ```
 
 use std::path::PathBuf;
@@ -39,6 +40,7 @@ use pixelflow_search::egraph::{
     APP_CHECKPOINT_GRID, AnytimeCurveOutput, CostModel, SaturationStop, all_rules,
     config_for_node_count, run_anytime_curve,
 };
+use pixelflow_search::math::inflate::rule_set_fingerprint;
 use pixelflow_search::math::round2_rules::experimental_rules;
 
 #[derive(Parser)]
@@ -64,6 +66,16 @@ struct Args {
         default_value = "docs/results/2026-09-01-round2-unguided-vs-rulecount.md"
     )]
     out_md: String,
+
+    /// Full per-expression, per-checkpoint, per-arm curve CSV — the same
+    /// schema `phase3_round2_unguided_curves` writes for modes (i)/(ii)
+    /// (`rule_set` is `base` / `new:<total>`), so the Register's
+    /// closure-aware regret is computed from raw rows, never from medians.
+    #[arg(
+        long,
+        default_value = "docs/results/2026-09-01-round2-unguided-vs-rulecount-mode-iii.csv"
+    )]
+    out_csv: String,
 }
 
 const MIN_SAMPLES: usize = 300;
@@ -92,11 +104,26 @@ fn tier_name(node_count: usize) -> &'static str {
     }
 }
 
+/// Stop-reason label, identical to `phase3_round2_unguided_curves`' so the
+/// two CSVs share one vocabulary.
+fn stop_name(stop: SaturationStop) -> &'static str {
+    match stop {
+        SaturationStop::Quiesced => "quiesced",
+        SaturationStop::ApplicationBudget => "app_budget",
+        SaturationStop::ClassCap => "class_cap",
+        SaturationStop::IterationCeiling => "sweep_ceiling",
+        SaturationStop::Timeout => "timeout",
+    }
+}
+
 #[derive(Clone)]
 struct ExprCurve {
     name: String,
+    origin: &'static str,
     tier: &'static str,
+    node_count: usize,
     cost_at: Vec<usize>,
+    apps_at: Vec<usize>,
     ended: SaturationStop,
     ended_at_apps: usize,
     /// Cost at the LAST grid checkpoint the run actually reached before
@@ -147,7 +174,7 @@ fn run_curves(
     let grid = APP_CHECKPOINT_GRID;
     let mut curves = Vec::with_capacity(sampled.len());
 
-    for (i, (_origin, name, arena, root)) in sampled.iter().enumerate() {
+    for (i, (origin, name, arena, root)) in sampled.iter().enumerate() {
         let node_count = arena.nodes_raw().len();
         let class_cap = config_for_node_count(node_count).max_classes;
         let AnytimeCurveOutput { curve, .. } = run_anytime_curve(
@@ -169,8 +196,11 @@ fn run_curves(
             .unwrap_or_else(|| curve.checkpoints.last().expect("non-empty grid").cost);
         curves.push(ExprCurve {
             name: name.clone(),
+            origin,
             tier: tier_name(node_count),
+            node_count,
             cost_at: curve.checkpoints.iter().map(|c| c.cost).collect(),
+            apps_at: curve.checkpoints.iter().map(|c| c.app_actual).collect(),
             ended: curve.ended,
             ended_at_apps: curve.ended_at_apps,
             quiescence_cost,
@@ -262,6 +292,63 @@ fn arm_rows(curves: &[&ExprCurve], grid: &[usize]) -> Vec<ArmRow> {
     rows
 }
 
+/// One row per (arm, expression, grid checkpoint), byte-compatible with the
+/// modes (i)/(ii) CSV so a single analysis reads every mode. `rule_set` is
+/// `base` for the production 62 and `new:<total>` for the batch arm; the
+/// fingerprint is `rule_set_fingerprint` over the arm's rule vector.
+fn write_curve_csv(path: &str, grid: &[usize], arms: &[(&str, &Vec<ExprCurve>)]) {
+    use std::io::Write as _;
+    let out = PathBuf::from(path);
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).expect("create CSV output directory");
+    }
+    let mut f = std::fs::File::create(&out)
+        .unwrap_or_else(|e| panic!("cannot create {}: {e}", out.display()));
+    writeln!(
+        f,
+        "rule_set,num_rules,fingerprint,expr_name,origin,tier,node_count,app_target,app_actual,\
+         cost,ended,ended_at_apps"
+    )
+    .unwrap();
+    for (label, curves) in arms {
+        let rules = match *label {
+            "base" => all_rules(),
+            "new" => {
+                let mut r = all_rules();
+                r.extend(experimental_rules());
+                r
+            }
+            other => panic!("write_curve_csv: unknown arm label {other:?}"),
+        };
+        let num_rules = rules.len();
+        let fingerprint = rule_set_fingerprint(&rules);
+        let rule_set = match *label {
+            "base" => "base".to_string(),
+            _ => format!("new:{num_rules}"),
+        };
+        for c in curves.iter() {
+            assert_eq!(c.cost_at.len(), grid.len(), "curve/grid length mismatch");
+            for (j, &target) in grid.iter().enumerate() {
+                writeln!(
+                    f,
+                    "{rule_set},{num_rules},{fingerprint},{},{},{},{},{target},{},{},{},{}",
+                    c.name,
+                    c.origin,
+                    c.tier,
+                    c.node_count,
+                    c.apps_at[j],
+                    c.cost_at[j],
+                    stop_name(c.ended),
+                    c.ended_at_apps,
+                )
+                .unwrap();
+            }
+        }
+    }
+    f.flush().unwrap();
+    eprintln!("phase3_round2_new_rules: wrote {}", out.display());
+}
+
 fn main() {
     let args = Args::parse();
     assert!(
@@ -351,6 +438,12 @@ fn main() {
 
     let grid = APP_CHECKPOINT_GRID;
     let tiers = ["blitz", "rapid", "classical"];
+
+    write_curve_csv(
+        &args.out_csv,
+        grid,
+        &[("base", &base_curves), ("new", &batch_curves)],
+    );
 
     let mut md = String::new();
     md.push_str("## Round 2, mode (iii): unguided anytime curves, |R|=62 vs 62+batch\n\n");
@@ -498,11 +591,11 @@ fn main() {
     md.push('\n');
 
     md.push_str(&format!(
-        "Raw per-expression rows: {} expressions x {} grid checkpoints x 2 arms, computed but not \
-         dumped here (this is a curve/aggregate report, not a raw-data artifact — re-run this binary \
-         for the full grid if per-expression rows are needed).\n\n",
+        "Raw per-expression rows: {} expressions x {} grid checkpoints x 2 arms, written to \
+         `{}` (same schema as the modes (i)/(ii) CSV; `rule_set` = `base` / `new:{total_count}`).\n\n",
         sampled.len(),
         grid.len(),
+        args.out_csv,
     ));
 
     md.push_str(&format!(
