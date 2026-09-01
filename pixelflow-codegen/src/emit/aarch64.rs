@@ -285,7 +285,7 @@ pub fn emit_bsl(code: &mut Vec<u8>, mask: Reg, if_true: Reg, if_false: Reg) {
 /// 3. General: MOVZ W16 + MOVK W16 + DUP Vd.4S, W16 (3 instructions)
 ///
 /// TODO: Use a constant pool with LDR for better performance on general case.
-pub fn emit_fmov_imm(code: &mut Vec<u8>, dst: Reg, val: f32, _scratch: [Reg; 4]) {
+pub fn emit_fmov_imm(code: &mut Vec<u8>, dst: Reg, val: f32) {
     let bits = val.to_bits();
 
     if bits == 0 {
@@ -640,13 +640,13 @@ pub fn emit_round_builtin(code: &mut Vec<u8>, dst: Reg, src: Reg) {
 
 #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
 /// Emit unary operation - dispatches to appropriate instruction(s)
-pub(crate) fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: [Reg; 4]) {
+pub(crate) fn emit_unary(code: &mut Vec<u8>, op: OpKind, dst: Reg, src: Reg, scratch: Reg) {
     match op {
         OpKind::Neg => emit_fneg(code, dst, src),
         OpKind::Abs => emit_fabs(code, dst, src),
         OpKind::Sqrt => emit_fsqrt(code, dst, src),
-        OpKind::Rsqrt => emit_frsqrt(code, dst, src, scratch[0]),
-        OpKind::Recip => emit_frecip(code, dst, src, scratch[0]),
+        OpKind::Rsqrt => emit_frsqrt(code, dst, src, scratch),
+        OpKind::Recip => emit_frecip(code, dst, src, scratch),
         OpKind::Floor => emit_frintm(code, dst, src),
         OpKind::Ceil => emit_frintp(code, dst, src),
         OpKind::Round => emit_round_builtin(code, dst, src),
@@ -1278,10 +1278,9 @@ mod tests {
     fn emit_fmov_imm_uses_single_instruction_for_encodable() {
         let mut code = Vec::new();
         let dst = Reg(0);
-        let scratch = [Reg(16), Reg(17), Reg(18), Reg(19)];
 
         // 1.0 is FMOV-encodable → should emit exactly 1 instruction (4 bytes)
-        emit_fmov_imm(&mut code, dst, 1.0, scratch);
+        emit_fmov_imm(&mut code, dst, 1.0);
         assert_eq!(
             code.len(),
             4,
@@ -1297,19 +1296,14 @@ mod tests {
     #[test]
     fn emit_fmov_imm_zero_is_movi() {
         let mut code = Vec::new();
-        emit_fmov_imm(&mut code, Reg(0), 0.0, [Reg(16), Reg(17), Reg(18), Reg(19)]);
+        emit_fmov_imm(&mut code, Reg(0), 0.0);
         assert_eq!(code.len(), 4, "zero should emit 1 instruction (MOVI)");
     }
 
     #[test]
     fn emit_fmov_imm_fallback_for_non_encodable() {
         let mut code = Vec::new();
-        emit_fmov_imm(
-            &mut code,
-            Reg(0),
-            core::f32::consts::PI,
-            [Reg(16), Reg(17), Reg(18), Reg(19)],
-        );
+        emit_fmov_imm(&mut code, Reg(0), core::f32::consts::PI);
         assert_eq!(
             code.len(),
             12,
@@ -1396,7 +1390,7 @@ mod tests {
     #[test]
     fn disassemble_zero_const() {
         let mut code = Vec::new();
-        emit_fmov_imm(&mut code, Reg(0), 0.0, [Reg(28), Reg(29), Reg(30), Reg(31)]);
+        emit_fmov_imm(&mut code, Reg(0), 0.0);
         let dis = disassemble_code(&code);
         assert!(
             dis.contains("movi"),
@@ -1599,8 +1593,7 @@ pub(crate) mod driver {
         if let Some(offset) = pool.offset_for(val_bits) {
             super::emit_ldr_q_x17(code, dst, offset);
         } else {
-            let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
-            super::emit_fmov_imm(code, dst, f32::from_bits(val_bits), scratch);
+            super::emit_fmov_imm(code, dst, f32::from_bits(val_bits));
         }
     }
     /// A pending aarch64 branch: CBZ and B are patched differently.
@@ -1610,6 +1603,13 @@ pub(crate) mod driver {
         /// A `b.hs` awaiting its target — the collapse loop's exit test.
         Hs(super::Cond19),
     }
+
+    /// The one vector register `emit_unary` may clobber.
+    ///
+    /// Outside the allocatable pool, the reload pair and `select_reload`, so
+    /// `RegisterFile::checked` can prove the disjointness rather than a comment
+    /// asserting it.
+    const UNARY_SCRATCH: Reg = Reg(29);
 
     /// aarch64 implementation of the shared driver's leaf operations.
     ///
@@ -1630,12 +1630,18 @@ pub(crate) mod driver {
     ///   v28-v31: fixed-purpose scratch (select guard reduction, imm construction)
     const AARCH64_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
         inputs: INPUT_REGS,
-        scratch_base: 16,
-        scratch_count: 10,
+        // v16-v25 plus v4-v7 and v31. AAPCS64 callee-saves the low 64 bits of
+        // v8-v15 and these are leaf kernels with no prologue that preserves
+        // them, so v8-v15 stay out; v4-v7 are unused argument registers.
+        scratch: regalloc::RegSet::range(16, 10)
+            .union(regalloc::RegSet::range(4, 4))
+            .union(regalloc::RegSet::of(&[Reg(31)])),
         reload: [Reg(26), Reg(27)],
         // v28: fixed-purpose scratch outside the allocatable range; BSL reads its
         // three operands directly and never touches it.
         select_reload: Reg(28),
+        // v29: `emit_unary`'s temp. v30: the gather's truncated-index register.
+        fixed: &[UNARY_SCRATCH, Reg(30)],
         vector_bytes: 16,
     }
     .checked();
@@ -1880,7 +1886,7 @@ pub(crate) mod driver {
         }
 
         fn add_scalar(&mut self, code: &mut Vec<u8>, dst: Reg, scratch: Reg, scalar: f32) {
-            super::emit_fmov_imm(code, scratch, scalar, FMOV_FALLBACK_SCRATCH);
+            super::emit_fmov_imm(code, scratch, scalar);
             super::emit_fadd(code, dst, dst, scratch);
         }
 
@@ -1888,10 +1894,6 @@ pub(crate) mod driver {
             super::ret(code);
         }
     }
-
-    /// Vector registers `emit_fmov_imm` may use when a constant is not
-    /// FMOV-immediate encodable and has to come from the pool.
-    const FMOV_FALLBACK_SCRATCH: [Reg; 4] = [Reg(28), Reg(29), Reg(30), Reg(31)];
 
     /// The register each loop counter lives in.
     const fn counter_reg(counter: Counter) -> Xr {
@@ -1945,8 +1947,7 @@ pub(crate) mod driver {
                 emit_const_load(code, *dst, *val_bits, pool);
             }
             ResolvedOp::Unary { op, dst, src } => {
-                let scratch = [Reg(28), Reg(29), Reg(30), Reg(31)];
-                emit_unary(code, *op, *dst, *src, scratch);
+                emit_unary(code, *op, *dst, *src, UNARY_SCRATCH);
             }
             ResolvedOp::ShiftImm {
                 op,
@@ -1965,7 +1966,7 @@ pub(crate) mod driver {
                 // v28 is fixed-purpose scratch (outside the allocatable range);
                 // x9-x11 are caller-saved GPR scratch clear of the branch guard
                 // (w16) and the const-pool anchor (x17).
-                const IDX_INT: Reg = Reg(28);
+                const IDX_INT: Reg = Reg(30);
                 const BASE_GPR: u8 = 9;
                 const IDX_GPR: u8 = 10;
                 const VAL_GPR: u8 = 11;

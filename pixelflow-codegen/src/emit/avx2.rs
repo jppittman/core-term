@@ -774,10 +774,20 @@ pub(crate) mod driver {
     /// instead would restore the sixth register; that is a contained change to
     /// `super::emit_gather_scalar` and is the better long-term fix.
     const AVX2_FILE: regalloc::RegisterFile = regalloc::RegisterFile {
-        scratch_count: 4,
+        // ymm4-7. ymm8/ymm9 carry the gather's high half and ymm14/ymm15 its
+        // low half and the unary temp, so a sixteen-register file leaves four.
+        scratch: regalloc::RegSet::range(4, 4),
         // ymm13: outside the allocatable range and the reload pair; the AVX2
         // select is a VEX blend with no internal temp.
         select_reload: Reg(13),
+        // ymm15: `emit_unary`'s sign-mask temp.
+        fixed: &[
+            super::UNARY_SCRATCH,
+            x86_64::GATHER_VALUE,
+            x86_64::GATHER_IDX,
+            Reg(8),
+            Reg(9),
+        ],
         vector_bytes: 32,
         ..SSE2_FILE
     }
@@ -870,8 +880,8 @@ pub(crate) mod driver {
                                 base_gpr: 0,  // rax
                                 index_gpr: 1, // rcx
                                 ctx_gpr: 7,   // rdi
-                                idx_lanes: Reg(13),
-                                value: Reg(14),
+                                idx_lanes: x86_64::GATHER_IDX,
+                                value: x86_64::GATHER_VALUE,
                             },
                             idx_hi: Reg(9),
                             res_hi: Reg(8),
