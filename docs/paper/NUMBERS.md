@@ -4,6 +4,17 @@ Every number in the paper traces to one of the sources below. Numbers with no
 valid trace do not appear in the paper. Last reconciled: 2026-09-01 (Round-3
 final form).
 
+## Harness defects affecting every timing row (2026-09-01 review)
+
+Four, all confirmed in code and none repaired retroactively — see §5.0 of the
+paper. In short: reported ratios include the 4.272 ns call overhead
+(`bench_extraction_3way.rs:2589` aggregates `bench.ns`, not `adjusted_ns`),
+which biases every ratio toward 1; the NNUE and static arms use different
+*search* algorithms, not only different cost models; the bootstrap resamples
+kernels though `training::split` defines the `(band, seed)` family as the
+split unit; and no Round-3-versus-Round-2a paired comparison was run. Every
+geomean, CI and LOO range below inherits all four.
+
 ## Artifact availability (read this before trusting a `D2a`/`D3` row)
 
 `docs/results/journal.jsonl` is committed (LFS) and carries the run-level

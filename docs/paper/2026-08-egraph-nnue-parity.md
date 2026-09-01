@@ -56,7 +56,11 @@ above parity (Round 3).
 The historical arc is the summary: as *our own* measurement defects were
 removed, the learned model's deficit marched to parity (1.0389 → 1.0181 →
 1.0037), and both attempts to leave parity by improving the model landed on
-the slow side of it (1.0153, 1.0082). Parity behaves like an attractor: the
+the slow side of it (1.0153, 1.0082). One defect outlived the writing: the
+aggregation never subtracts the 4.272 ns call overhead it measures, which
+biases every ratio toward 1 — so "parity" is the reading these numbers most
+overstate, while the two negative results only get larger under the
+correction (§5.0). Parity behaves like an attractor: the
 objective is nearly additive, dynamic programming over the additive table
 already optimizes it exactly (over unfolded tree cost — §6 states the gap to
 DAG cost), and the residual sits at the per-pair measurement floor.
@@ -414,6 +418,61 @@ somebody briefly believed:
 
 ## 5. Results
 
+### 5.0 Four threats to every interval in this section
+
+Review of the harness against the claims (2026-09-01) found four ways the
+numbers below are weaker than they read. None is repaired here — each needs
+a re-run this paper cannot perform retroactively — so each is stated before
+the results rather than after them. Two of the four cut *against* the
+paper's own framing, which is why they matter.
+
+**1. The reported ratios include call overhead.** `BenchResult::ns` is the
+raw measurement; `adjusted_ns` (`raw.ns - call_overhead_ns`) is computed and
+serialized but never aggregated — `bench_extraction_3way.rs:2589` pushes
+`bench.ns * normalization`. So every geomean and CI here is
+`(n + c) / (s + c)` with `c` = 4.272 ns, not `n / s`.
+
+That is a bias *toward* the number 1, algebraically and on both arms: it
+shrinks the reported effect whichever way the effect points. The paper's
+central claim is a **tie**, and a tie is exactly the result this artifact
+manufactures. So §5.2's parity should be read as an upper bound on how close
+the two policies really are, and §5.4's regression as a lower bound on how
+large it really is — the negative conclusion survives, but "ties the table"
+is the reading most exposed. With 4.272 ns against a corpus containing many
+short kernels, the correction is plausibly the same size as the 0.4–1.5%
+effects being reported. Re-aggregating on `adjusted_ns` is a one-line change
+and every interval here should be recomputed before any of them is quoted as
+a measurement of the cost model alone.
+
+**2. The two arms differ in search, not only in scoring.** The NNUE arm runs
+`IncrementalExtractor::extract_choices_only` (refinement from
+`Extraction::from_backfill`, top-k = 8); the static arm runs `egraph::extract`'s
+exact DP. Those are different algorithms over different reachable sets, so
+every A-versus-B number here measures *cost model plus search policy* and
+cannot attribute the difference to the cost model alone. §4.1's protocol
+describes seeding the learned arm from the static choices; the harness does
+not do that. Until it does, "the learned cost model ties the table" is
+properly "the learned extraction *policy* ties the table."
+
+**3. The bootstrap resamples kernels, but the corpus's unit is the family.**
+`training::split` defines the split unit as a `(band, seed)` generator
+family — "never by random split", because draws within a family reuse
+structural motifs — and the DEV tier is 56 families × 14 expressions.
+Resampling ~716 surviving kernels as independent understates uncertainty by
+whatever the within-family correlation is. The narrow Round-3 interval
+carrying the "confirmed regression" verdict is the one most exposed; a
+cluster bootstrap over families, with leave-one-family-out sensitivity, is
+the correct estimator and is not what produced these numbers.
+
+**4. Round 3 versus Round 2a was never tested directly.** Each checkpoint
+has a CI against static; the two intervals ([1.0031, 1.0133] and
+[0.9982, 1.0089]) overlap substantially, and they come from separate
+sessions. "Significant against 1" for one and "not significant against 1"
+for the other does not establish that the checkpoints differ from each
+other. Statements below that Round 3 is a regression *from Round 2a*, and
+that the trained-embeddings lever is therefore exhausted, need a paired
+interleaved comparison that was not run.
+
 ### 5.1 Calibration (the model is good, and gets better)
 
 Round-3 cold-start learning curve (trainable embeddings, latency-prior
@@ -579,9 +638,12 @@ Three readings, in decreasing order of importance:
    under the identical protocol. So does the random-init run in the same
    table, and so did Round 2b, though §5.3's trainer bug binds that verdict
    to its artifact; what is new here is not the sign but that the
-   best-calibrated checkpoint the program has produced carries it. The
-   trained-embeddings lever is exhausted; the Round-2a frozen-embedding
-   checkpoint remains the best learned extraction policy.
+   best-calibrated checkpoint the program has produced carries it. Note
+   what this does *not* establish: Round 3's interval and Round 2a's overlap
+   and were measured in separate sessions, so "a regression from Round 2a"
+   is not tested here (§5.0, threat 4). The weaker claim the data supports
+   is that trained embeddings did not move the program off the slow side of
+   parity — not that they are worse than frozen ones.
 2. **The prior seed and the training budget move together, and this pair
    cannot separate them.** Random-init trained to respectable calibration
    (ρ 0.9856) but a worse policy (1.0118); the prior-seeded checkpoint is
@@ -603,9 +665,12 @@ Three readings, in decreasing order of importance:
    the 10% gate; 559 ill-conditioned disagreements recorded as metadata,
    not counted). That rate is `GateTally::cross_form_rate` — 92/1568, over
    *every* extracted-policy gate, the 32 that bounded no grid point
-   included; those 32 are excluded from the bound-coverage and same-form
-   miscompile denominators, not from this one, and excluding them here
-   would read 5.99%. Mean bound coverage 74.0% (worst kernel 1.4%). The FINAL
+   included; excluding them here would read 5.99%. They are excluded from
+   the *bound-coverage* mean only — `same_form_rate` also divides by
+   `GateTally::gates`, which `record_noswap`/`record_extracted` increment
+   before the outcome is inspected, so all 32 sit in the 2352-gate
+   same-form denominator too (its rate is unchanged only because the
+   numerator is zero). Mean bound coverage 74.0% (worst kernel 1.4%). The FINAL
    re-mint's oracle pass was likewise clean. The correctness harness is
    doing double duty as the refactor regression net.
 
