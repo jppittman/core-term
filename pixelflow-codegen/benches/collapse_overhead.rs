@@ -62,163 +62,50 @@ fn bench_collapse_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(target_arch = "x86_64")]
 fn per_batch_frame(
     result: &CompileResult,
     out: &mut [f32],
-    seq: &[f32],
+    _seq: &[f32],
     groups: usize,
     rows: usize,
 ) {
-    use core::arch::x86_64::*;
     for row in 0..rows {
         let y = row as f32 + 0.5;
         let row_out = &mut out[row * groups * LANES..][..groups * LANES];
-        #[cfg(target_feature = "avx512f")]
-        unsafe {
-            let f: pixelflow_codegen::emit::executable::KernelFn = result.code.as_fn();
-            let step = _mm512_set1_ps(LANES as f32);
-            let mut x = _mm512_loadu_ps(seq.as_ptr());
-            let yv = _mm512_set1_ps(y);
-            let zero = _mm512_setzero_ps();
-            for chunk in row_out.as_chunks_mut::<LANES>().0 {
-                _mm512_storeu_ps(chunk.as_mut_ptr(), f(x, yv, zero, zero));
-                x = _mm512_add_ps(x, step);
+        for g in 0..groups {
+            let x0 = (g * LANES) as f32 + 0.5;
+            let mut x0_vec = [0.0f32; LANES];
+            for (i, lane) in x0_vec.iter_mut().enumerate() {
+                *lane = x0 + i as f32;
             }
-        }
-        #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
-        unsafe {
-            let f: pixelflow_codegen::emit::executable::KernelFn = result.code.as_fn();
-            let step = _mm256_set1_ps(LANES as f32);
-            let mut x = _mm256_loadu_ps(seq.as_ptr());
-            let yv = _mm256_set1_ps(y);
-            let zero = _mm256_setzero_ps();
-            for chunk in row_out.as_chunks_mut::<LANES>().0 {
-                _mm256_storeu_ps(chunk.as_mut_ptr(), f(x, yv, zero, zero));
-                x = _mm256_add_ps(x, step);
-            }
-        }
-        #[cfg(not(any(target_feature = "avx2", target_feature = "avx512f")))]
-        unsafe {
-            let f: pixelflow_codegen::emit::executable::KernelFn = result.code.as_fn();
-            let step = _mm_set1_ps(LANES as f32);
-            let mut x = _mm_loadu_ps(seq.as_ptr());
-            let yv = _mm_set1_ps(y);
-            let zero = _mm_setzero_ps();
-            for chunk in row_out.as_chunks_mut::<LANES>().0 {
-                _mm_storeu_ps(chunk.as_mut_ptr(), f(x, yv, zero, zero));
-                x = _mm_add_ps(x, step);
+            let chunk = &mut row_out[g * LANES..][..LANES];
+            unsafe {
+                result.code.call_collapse(
+                    core::ptr::null(),
+                    pixelflow_codegen::TileSlice::single(chunk.as_mut_ptr()),
+                    pixelflow_codegen::Point4::new(x0_vec, [y; LANES], [0.0; LANES], [0.0; LANES]),
+                );
             }
         }
     }
 }
 
-#[cfg(target_arch = "aarch64")]
-fn per_batch_frame(
-    result: &CompileResult,
-    out: &mut [f32],
-    seq: &[f32],
-    groups: usize,
-    rows: usize,
-) {
-    use core::arch::aarch64::*;
-    unsafe {
-        let f: pixelflow_codegen::emit::executable::KernelFn = result.code.as_fn();
-        let step = vdupq_n_f32(LANES as f32);
-        let zero = vdupq_n_f32(0.0);
-        for row in 0..rows {
-            let mut x = vld1q_f32(seq.as_ptr());
-            let y = vdupq_n_f32(row as f32 + 0.5);
-            let row_out = &mut out[row * groups * LANES..][..groups * LANES];
-            for chunk in row_out.as_chunks_mut::<LANES>().0 {
-                vst1q_f32(chunk.as_mut_ptr(), f(x, y, zero, zero));
-                x = vaddq_f32(x, step);
-            }
-        }
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
 fn collapse_frame(
     result: &CompileResult,
     out: &mut [f32],
-    seq: &[f32],
+    _seq: &[f32],
     groups: usize,
     rows: usize,
 ) {
-    use core::arch::x86_64::*;
-    #[cfg(target_feature = "avx512f")]
-    unsafe {
-        let f: pixelflow_codegen::emit::executable::CollapseKernelFn = result.code.as_fn();
-        let zero = _mm512_setzero_ps();
-        f(
-            core::ptr::null(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            0,
-            _mm512_loadu_ps(seq.as_ptr()),
-            _mm512_set1_ps(0.5),
-            zero,
-            zero,
-        );
+    let mut x0_vec = [0.0f32; LANES];
+    for (i, lane) in x0_vec.iter_mut().enumerate() {
+        *lane = 0.5 + i as f32;
     }
-    #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
     unsafe {
-        let f: pixelflow_codegen::emit::executable::CollapseKernelFn = result.code.as_fn();
-        let zero = _mm256_setzero_ps();
-        f(
+        result.code.call_collapse(
             core::ptr::null(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            0,
-            _mm256_loadu_ps(seq.as_ptr()),
-            _mm256_set1_ps(0.5),
-            zero,
-            zero,
-        );
-    }
-    #[cfg(not(any(target_feature = "avx2", target_feature = "avx512f")))]
-    unsafe {
-        let f: pixelflow_codegen::emit::executable::CollapseKernelFn = result.code.as_fn();
-        let zero = _mm_setzero_ps();
-        f(
-            core::ptr::null(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            0,
-            _mm_loadu_ps(seq.as_ptr()),
-            _mm_set1_ps(0.5),
-            zero,
-            zero,
-        );
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn collapse_frame(
-    result: &CompileResult,
-    out: &mut [f32],
-    seq: &[f32],
-    groups: usize,
-    rows: usize,
-) {
-    use core::arch::aarch64::*;
-    unsafe {
-        let f: pixelflow_codegen::emit::executable::CollapseKernelFn = result.code.as_fn();
-        let zero = vdupq_n_f32(0.0);
-        f(
-            core::ptr::null(),
-            out.as_mut_ptr(),
-            groups,
-            rows,
-            0,
-            vld1q_f32(seq.as_ptr()),
-            vdupq_n_f32(0.5),
-            zero,
-            zero,
+            pixelflow_codegen::TileSlice::contiguous(out.as_mut_ptr(), groups, rows),
+            pixelflow_codegen::Point4::new(x0_vec, [0.5; LANES], [0.0; LANES], [0.0; LANES]),
         );
     }
 }

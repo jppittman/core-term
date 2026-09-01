@@ -2170,6 +2170,98 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     use pixelflow_ir::arena::ExprArena;
 
+    #[allow(dead_code, improper_ctypes_definitions)]
+    #[cfg(target_arch = "aarch64")]
+    type KernelFn = extern "C" fn(
+        core::arch::aarch64::float32x4_t,
+        core::arch::aarch64::float32x4_t,
+        core::arch::aarch64::float32x4_t,
+        core::arch::aarch64::float32x4_t,
+    ) -> core::arch::aarch64::float32x4_t;
+
+    #[allow(dead_code, improper_ctypes_definitions)]
+    #[cfg(target_arch = "aarch64")]
+    type CtxKernelFn = extern "C" fn(
+        *const *const f32,
+        core::arch::aarch64::float32x4_t,
+        core::arch::aarch64::float32x4_t,
+        core::arch::aarch64::float32x4_t,
+        core::arch::aarch64::float32x4_t,
+    ) -> core::arch::aarch64::float32x4_t;
+
+    #[allow(dead_code, improper_ctypes_definitions)]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    type KernelFn = extern "C" fn(
+        core::arch::x86_64::__m512,
+        core::arch::x86_64::__m512,
+        core::arch::x86_64::__m512,
+        core::arch::x86_64::__m512,
+    ) -> core::arch::x86_64::__m512;
+
+    #[allow(dead_code, improper_ctypes_definitions)]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+    type CtxKernelFn = extern "C" fn(
+        *const *const f32,
+        core::arch::x86_64::__m512,
+        core::arch::x86_64::__m512,
+        core::arch::x86_64::__m512,
+        core::arch::x86_64::__m512,
+    ) -> core::arch::x86_64::__m512;
+
+    #[allow(dead_code, improper_ctypes_definitions)]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
+    type KernelFn = extern "C" fn(
+        core::arch::x86_64::__m256,
+        core::arch::x86_64::__m256,
+        core::arch::x86_64::__m256,
+        core::arch::x86_64::__m256,
+    ) -> core::arch::x86_64::__m256;
+
+    #[allow(dead_code, improper_ctypes_definitions)]
+    #[cfg(all(
+        target_arch = "x86_64",
+        target_feature = "avx2",
+        not(target_feature = "avx512f")
+    ))]
+    type CtxKernelFn = extern "C" fn(
+        *const *const f32,
+        core::arch::x86_64::__m256,
+        core::arch::x86_64::__m256,
+        core::arch::x86_64::__m256,
+        core::arch::x86_64::__m256,
+    ) -> core::arch::x86_64::__m256;
+
+    #[allow(dead_code, improper_ctypes_definitions)]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
+    type KernelFn = extern "C" fn(
+        core::arch::x86_64::__m128,
+        core::arch::x86_64::__m128,
+        core::arch::x86_64::__m128,
+        core::arch::x86_64::__m128,
+    ) -> core::arch::x86_64::__m128;
+
+    #[allow(dead_code, improper_ctypes_definitions)]
+    #[cfg(all(
+        target_arch = "x86_64",
+        not(target_feature = "avx512f"),
+        not(target_feature = "avx2")
+    ))]
+    type CtxKernelFn = extern "C" fn(
+        *const *const f32,
+        core::arch::x86_64::__m128,
+        core::arch::x86_64::__m128,
+        core::arch::x86_64::__m128,
+        core::arch::x86_64::__m128,
+    ) -> core::arch::x86_64::__m128;
+
     /// A `Dwrt` that reaches the scheduler (a caller bypassed the lowering
     /// pipeline) must fail loudly at the schedule boundary, not as a cryptic
     /// emit panic. The compile entry points run `lower_dwrt` first, so this
@@ -2794,7 +2886,7 @@ mod tests {
             let z = vdupq_n_f32(0.0);
             let w = vdupq_n_f32(0.0);
 
-            let func: executable::KernelFn = result.code.as_fn();
+            let func: KernelFn = result.code.as_fn();
             let out = func(x, y, z, w);
             assert_eq!(vgetq_lane_f32(out, 0), 7.0);
         }
@@ -2821,7 +2913,7 @@ mod tests {
             let z = vdupq_n_f32(0.0);
             let w = vdupq_n_f32(0.0);
 
-            let func: executable::KernelFn = result.code.as_fn();
+            let func: KernelFn = result.code.as_fn();
             let out = func(x, y, z, w);
             // 3*2 + 4 = 10
             assert_eq!(vgetq_lane_f32(out, 0), 10.0);
@@ -2855,7 +2947,7 @@ mod tests {
             let z = vdupq_n_f32(3.0);
             let w = vdupq_n_f32(4.0);
 
-            let func: executable::KernelFn = result.code.as_fn();
+            let func: KernelFn = result.code.as_fn();
             let out = func(x, y, z, w);
             // (1+2) + (3+4) = 10
             assert_eq!(vgetq_lane_f32(out, 0), 10.0);
@@ -2874,7 +2966,7 @@ mod tests {
         use core::arch::x86_64::*;
         let r = compile_arena_dag(arena, root).expect("compile failed");
         unsafe {
-            let f: executable::KernelFn = r.code.as_fn();
+            let f: KernelFn = r.code.as_fn();
             let z = _mm_set1_ps(0.0);
             _mm_cvtss_f32(f(_mm_set1_ps(x), z, z, z))
         }
@@ -2891,7 +2983,7 @@ mod tests {
         use core::arch::x86_64::*;
         let r = compile_arena_dag(arena, root).expect("compile failed");
         unsafe {
-            let f: executable::KernelFn = r.code.as_fn();
+            let f: KernelFn = r.code.as_fn();
             let z = _mm_set1_ps(0.0);
             _mm_cvtss_f32(f(_mm_set1_ps(x), _mm_set1_ps(y), z, z))
         }
@@ -3128,7 +3220,7 @@ mod tests {
         unsafe fn run2(arena: &ExprArena, root: ExprId, x: f32, y: f32) -> f32 {
             unsafe {
                 let r = compile_arena_dag(arena, root).expect("compile failed");
-                let f: executable::KernelFn = r.code.as_fn();
+                let f: KernelFn = r.code.as_fn();
                 let z = _mm_set1_ps(0.0);
                 _mm_cvtss_f32(f(_mm_set1_ps(x), _mm_set1_ps(y), z, z))
             }
@@ -3421,7 +3513,7 @@ mod tests {
         fn run(res: &CompileResult, x: f32, y: f32, z: f32, w: f32) -> f32 {
             unsafe {
                 use core::arch::x86_64::*;
-                let f: executable::KernelFn = res.code.as_fn();
+                let f: KernelFn = res.code.as_fn();
                 let o = f(
                     _mm_set1_ps(x),
                     _mm_set1_ps(y),
@@ -3581,7 +3673,7 @@ mod tests {
         ) -> [f32; 4] {
             unsafe {
                 use core::arch::aarch64::*;
-                let f: executable::CtxKernelFn = res.code.as_fn();
+                let f: CtxKernelFn = res.code.as_fn();
                 let r = f(
                     ctx.as_ptr(),
                     vld1q_f32(xs.as_ptr()),
@@ -3605,7 +3697,7 @@ mod tests {
         ) -> [f32; 4] {
             unsafe {
                 use core::arch::x86_64::*;
-                let f: executable::CtxKernelFn = res.code.as_fn();
+                let f: CtxKernelFn = res.code.as_fn();
                 let r = f(
                     ctx.as_ptr(),
                     _mm_loadu_ps(xs.as_ptr()),

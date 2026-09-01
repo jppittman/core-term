@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use pixelflow_codegen::emit::compile_arena_dag;
+use pixelflow_codegen::emit::compile_collapse;
 use pixelflow_codegen::emit::executable::ExecutableCode;
 use pixelflow_ir::{ExprArena, ExprId, OpKind};
 
@@ -745,122 +745,7 @@ struct RawMeasurement {
     outputs: Vec<[f32; 4]>,
 }
 
-// SIMD register plumbing shared by the measurement core. The KernelFn ABI is
-// per-arch (and per-ISA-level on x86), so alias the register type and give it
-// splat/extract helpers; the timed loop itself is arch-agnostic.
-
-#[cfg(target_arch = "aarch64")]
-type SimdReg = core::arch::aarch64::float32x4_t;
-#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-type SimdReg = core::arch::x86_64::__m512;
-#[cfg(all(
-    target_arch = "x86_64",
-    target_feature = "avx2",
-    not(target_feature = "avx512f")
-))]
-type SimdReg = core::arch::x86_64::__m256;
-#[cfg(all(
-    target_arch = "x86_64",
-    not(any(target_feature = "avx512f", target_feature = "avx2"))
-))]
-type SimdReg = core::arch::x86_64::__m128;
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn splat_reg(v: f32) -> SimdReg {
-    // SAFETY: neon is a baseline target feature on every aarch64 target this
-    // crate builds for.
-    unsafe { core::arch::aarch64::vdupq_n_f32(v) }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn splat_reg(v: f32) -> SimdReg {
-    // SAFETY: each arm is gated on the very `target_feature` its intrinsic
-    // requires, and sse (the fallback arm) is baseline on every x86_64 target.
-    #[cfg(target_feature = "avx512f")]
-    return unsafe { core::arch::x86_64::_mm512_set1_ps(v) };
-    #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
-    return unsafe { core::arch::x86_64::_mm256_set1_ps(v) };
-    #[cfg(not(any(target_feature = "avx512f", target_feature = "avx2")))]
-    return unsafe { core::arch::x86_64::_mm_set1_ps(v) };
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn first4_lanes(v: SimdReg) -> [f32; 4] {
-    let mut out = [0.0f32; 4];
-    unsafe { core::arch::aarch64::vst1q_f32(out.as_mut_ptr(), v) };
-    out
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-fn first4_lanes(v: SimdReg) -> [f32; 4] {
-    let mut out = [0.0f32; 4];
-    #[cfg(target_feature = "avx512f")]
-    {
-        let mut wide = [0.0f32; 16];
-        unsafe { core::arch::x86_64::_mm512_storeu_ps(wide.as_mut_ptr(), v) };
-        out.copy_from_slice(&wide[..4]);
-    }
-    #[cfg(all(target_feature = "avx2", not(target_feature = "avx512f")))]
-    {
-        let mut wide = [0.0f32; 8];
-        unsafe { core::arch::x86_64::_mm256_storeu_ps(wide.as_mut_ptr(), v) };
-        out.copy_from_slice(&wide[..4]);
-    }
-    #[cfg(not(any(target_feature = "avx512f", target_feature = "avx2")))]
-    unsafe {
-        core::arch::x86_64::_mm_storeu_ps(out.as_mut_ptr(), v)
-    };
-    out
-}
-
-/// One fully-unrolled independent eval per listed index — constant indices,
-/// no loop counter, so no per-iteration bias corrupting the additive cost
-/// model on small expressions.
-macro_rules! eval_at {
-    ($func:ident, $inputs:ident, $($i:tt),+ $(,)?) => {{
-        $(
-            std::hint::black_box($func(
-                $inputs[$i].0,
-                $inputs[$i].1,
-                $inputs[$i].2,
-                $inputs[$i].3,
-            ));
-        )+
-    }};
-}
-
-/// One fully-unrolled *chained* eval per listed index: the previous output is
-/// fed into EVERY input lane through `black_box`, serializing the dependency
-/// chain no matter which variables the expression reads (audit H3,
-/// [`BenchMode::Latency`] — feeding only the x lane breaks the chain for any
-/// expression that does not read Var(0)). The indices only count unrolled
-/// evals; the input buffer is not consulted here.
-macro_rules! eval_chain_at {
-    ($func:ident, $prev:ident, $($i:tt),+ $(,)?) => {{
-        $(
-            let _ = $i;
-            let p = std::hint::black_box($prev);
-            $prev = std::hint::black_box($func(p, p, p, p));
-        )+
-    }};
-}
-
-/// Append the full input-buffer index list (0..[`INPUT_TUPLES`]) to an eval
-/// macro invocation, so the list is written exactly once.
-macro_rules! with_all_inputs {
-    ($m:ident ! ($($args:tt)*)) => {
-        $m!($($args)*,
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-            16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-            32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
-            48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
-        )
-    };
-}
+const LANES: usize = pixelflow_codegen::JIT_VECTOR_BYTES / 4;
 
 /// Core timed loop: warmup, output capture over the full input buffer,
 /// tick-floor autoscaling of `repeat_batches` (audit H5), and TIMED_RUNS
@@ -871,95 +756,138 @@ fn measure_exec_code(
     start_batches: usize,
     mode: BenchMode,
 ) -> Result<RawMeasurement, BenchError> {
-    use pixelflow_codegen::emit::executable::KernelFn;
-    unsafe {
-        let func: KernelFn = exec_code.as_fn();
+    use pixelflow_codegen::emit::executable::{Point4, TileSlice};
 
-        let zero = splat_reg(0.0);
-        let mut inputs = [(zero, zero, zero, zero); INPUT_TUPLES];
-        for (slot, t) in inputs.iter_mut().zip(input_tuples().iter()) {
-            *slot = (
-                splat_reg(t[0]),
-                splat_reg(t[1]),
-                splat_reg(t[2]),
-                splat_reg(t[3]),
-            );
+    const INPUT_VECTORS: usize = INPUT_TUPLES / LANES;
+    let mut input_points = [Point4::new(
+        [0.0f32; LANES],
+        [0.0f32; LANES],
+        [0.0f32; LANES],
+        [0.0f32; LANES],
+    ); INPUT_VECTORS];
+    let tuples = input_tuples();
+    for (v_idx, pt) in input_points.iter_mut().enumerate() {
+        let mut xs = [0.0f32; LANES];
+        let mut ys = [0.0f32; LANES];
+        let mut zs = [0.0f32; LANES];
+        let mut ws = [0.0f32; LANES];
+        for lane in 0..LANES {
+            let t = &tuples[v_idx * LANES + lane];
+            xs[lane] = t[0];
+            ys[lane] = t[1];
+            zs[lane] = t[2];
+            ws[lane] = t[3];
         }
+        *pt = Point4::new(xs, ys, zs, ws);
+    }
 
-        for _ in 0..WARMUP_PASSES {
-            with_all_inputs!(eval_at!(func, inputs));
+    let mut out_buf = [0.0f32; LANES];
+    for _ in 0..WARMUP_PASSES {
+        for &p in &input_points {
+            unsafe {
+                exec_code.call_collapse(
+                    core::ptr::null(),
+                    TileSlice::single(out_buf.as_mut_ptr()),
+                    p,
+                );
+            }
         }
+    }
 
-        // Independent (non-chained) evals over the whole buffer, so the
-        // recorded outputs are mode-independent pure function values.
-        let mut outputs = Vec::with_capacity(INPUT_TUPLES);
-        for &(x, y, z, w) in inputs.iter() {
-            outputs.push(first4_lanes(func(x, y, z, w)));
+    // Independent (non-chained) evals over the whole buffer, so the
+    // recorded outputs are mode-independent pure function values.
+    let mut outputs = Vec::with_capacity(INPUT_TUPLES);
+    for &p in &input_points {
+        let mut out = [0.0f32; LANES];
+        unsafe {
+            exec_code.call_collapse(core::ptr::null(), TileSlice::single(out.as_mut_ptr()), p);
         }
-        let output = outputs[0];
+        for &val in &out {
+            outputs.push([val; 4]);
+        }
+    }
+    let output = outputs[0];
 
-        let mut repeat_batches = start_batches.max(1);
-        loop {
-            let mut totals = [0u64; TIMED_RUNS];
-            for t in &mut totals {
-                match mode {
-                    BenchMode::Throughput => {
-                        let start = nanos_now();
-                        // The outer batch loop's counter overhead is amortized
-                        // over INPUT_TUPLES unrolled evals per iteration.
-                        for _ in 0..repeat_batches {
-                            with_all_inputs!(eval_at!(func, inputs));
+    let mut repeat_batches = start_batches.max(1);
+    loop {
+        let mut totals = [0u64; TIMED_RUNS];
+        for t in &mut totals {
+            match mode {
+                BenchMode::Throughput => {
+                    let start = nanos_now();
+                    for _ in 0..repeat_batches {
+                        for &p in &input_points {
+                            unsafe {
+                                exec_code.call_collapse(
+                                    core::ptr::null(),
+                                    TileSlice::single(out_buf.as_mut_ptr()),
+                                    p,
+                                );
+                            }
                         }
-                        *t = nanos_now() - start;
                     }
-                    BenchMode::Latency => {
-                        // Seed eval OUTSIDE the timed window: the per-eval
-                        // divisor counts INPUT_TUPLES * repeat_batches evals,
-                        // so a seed inside the window would inflate every
-                        // sample by 1/(64 * repeat_batches).
-                        let mut prev = func(inputs[0].0, inputs[0].1, inputs[0].2, inputs[0].3);
-                        let start = nanos_now();
-                        for _ in 0..repeat_batches {
-                            with_all_inputs!(eval_chain_at!(func, prev));
+                    *t = nanos_now() - start;
+                }
+                BenchMode::Latency => {
+                    let mut prev = [0.0f32; LANES];
+                    unsafe {
+                        exec_code.call_collapse(
+                            core::ptr::null(),
+                            TileSlice::single(prev.as_mut_ptr()),
+                            input_points[0],
+                        );
+                    }
+                    let start = nanos_now();
+                    for _ in 0..repeat_batches {
+                        for _ in 0..INPUT_VECTORS {
+                            let p = Point4::new(prev, prev, prev, prev);
+                            std::hint::black_box(&p);
+                            unsafe {
+                                exec_code.call_collapse(
+                                    core::ptr::null(),
+                                    TileSlice::single(prev.as_mut_ptr()),
+                                    p,
+                                );
+                            }
                         }
-                        std::hint::black_box(prev);
-                        *t = nanos_now() - start;
                     }
+                    std::hint::black_box(prev);
+                    *t = nanos_now() - start;
                 }
             }
-            totals.sort_unstable();
-            let median_total = totals[TIMED_RUNS / 2];
+        }
+        totals.sort_unstable();
+        let median_total = totals[TIMED_RUNS / 2];
 
-            if median_total < MIN_TIMED_SAMPLE_NS {
-                assert!(
-                    repeat_batches < MAX_REPEAT_BATCHES,
-                    "jit_bench harness bug: median timed sample {}ns is below the {}ns tick \
+        if median_total < MIN_TIMED_SAMPLE_NS {
+            assert!(
+                repeat_batches < MAX_REPEAT_BATCHES,
+                "jit_bench harness bug: median timed sample {}ns is below the {}ns tick \
                      floor even at repeat_batches={} ({} evals/sample) — the timer or the \
                      emitted code is broken (audit H5)",
-                    median_total,
-                    MIN_TIMED_SAMPLE_NS,
-                    repeat_batches,
-                    INPUT_TUPLES * repeat_batches,
-                );
-                repeat_batches = (repeat_batches * 2).min(MAX_REPEAT_BATCHES);
-                continue;
-            }
-
-            let evals = (INPUT_TUPLES * repeat_batches) as f64;
-            // totals is sorted and the per-eval transform is monotone, so the
-            // median index is unchanged (audit M5: keep the median selection).
-            let per_eval: Vec<f64> = totals.iter().map(|&t| t as f64 / evals).collect();
-            let median = per_eval[TIMED_RUNS / 2];
-            let dispersion = iqr(&per_eval);
-            return validate_median(median).map(|ns| RawMeasurement {
-                ns,
-                iqr_ns: dispersion,
+                median_total,
+                MIN_TIMED_SAMPLE_NS,
                 repeat_batches,
-                mode,
-                output,
-                outputs,
-            });
+                INPUT_TUPLES * repeat_batches,
+            );
+            repeat_batches = (repeat_batches * 2).min(MAX_REPEAT_BATCHES);
+            continue;
         }
+
+        let evals = (INPUT_TUPLES * repeat_batches) as f64;
+        // totals is sorted and the per-eval transform is monotone, so the
+        // median index is unchanged (audit M5: keep the median selection).
+        let per_eval: Vec<f64> = totals.iter().map(|&t| t as f64 / evals).collect();
+        let median = per_eval[TIMED_RUNS / 2];
+        let dispersion = iqr(&per_eval);
+        return validate_median(median).map(|ns| RawMeasurement {
+            ns,
+            iqr_ns: dispersion,
+            repeat_batches,
+            mode,
+            output,
+            outputs,
+        });
     }
 }
 
@@ -1020,7 +948,7 @@ pub fn benchmark_jit_arena_repeated(
     root: ExprId,
     repeat_batches: usize,
 ) -> Result<BenchResult, BenchError> {
-    let result = compile_arena_dag(arena, root).map_err(BenchError::CompileFailed)?;
+    let result = compile_collapse(arena, root).map_err(BenchError::CompileFailed)?;
     let raw = measure_exec_code(&result.code, repeat_batches, BenchMode::Throughput)?;
     Ok(finalize(raw, op_count(arena, root), 0.0, None))
 }
@@ -1114,7 +1042,7 @@ impl BenchSession {
         pin_qos();
 
         let (sentinel_arena, sentinel_root) = sentinel_arena();
-        let sentinel_code = compile_arena_dag(&sentinel_arena, sentinel_root)
+        let sentinel_code = compile_collapse(&sentinel_arena, sentinel_root)
             .unwrap_or_else(|e| panic!("BenchSession: sentinel kernel failed to compile: {e}"))
             .code;
 
@@ -1131,7 +1059,7 @@ impl BenchSession {
         // latency overheads differ (overlapped vs serialized call/ret), so
         // each mode subtracts its own.
         let (identity_arena, identity_root) = identity_arena();
-        let identity_code = compile_arena_dag(&identity_arena, identity_root)
+        let identity_code = compile_collapse(&identity_arena, identity_root)
             .unwrap_or_else(|e| panic!("BenchSession: identity kernel failed to compile: {e}"))
             .code;
         let overhead_throughput_ns = measure_exec_code(&identity_code, 1, BenchMode::Throughput)
@@ -1224,7 +1152,7 @@ impl BenchSession {
         // immediately ahead of the timed loop. Delegating wholesale to
         // `benchmark_compiled` would silently reorder that.
         self.check_sentinel_if_due();
-        let compiled = compile_arena_dag(arena, root).map_err(BenchError::CompileFailed)?;
+        let compiled = compile_collapse(arena, root).map_err(BenchError::CompileFailed)?;
         self.measure_gated(&compiled.code, arena, root, mode)
     }
 
@@ -1289,7 +1217,7 @@ impl BenchSession {
         root: ExprId,
     ) -> Result<(BenchResult, BenchResult), BenchError> {
         self.check_sentinel_if_due();
-        let compiled = compile_arena_dag(arena, root).map_err(BenchError::CompileFailed)?;
+        let compiled = compile_collapse(arena, root).map_err(BenchError::CompileFailed)?;
         let ops = op_count(arena, root);
         let throughput = measure_exec_code(&compiled.code, 1, BenchMode::Throughput)?;
         let latency = measure_exec_code(&compiled.code, 1, BenchMode::Latency)?;
@@ -1381,11 +1309,11 @@ pub struct CompileCostResult {
 }
 
 /// Median wall-clock cost of one *production* cache-miss compile through
-/// [`pixelflow_codegen::jit_cache::compile_cached`]. On a miss that entry
+/// [`pixelflow_codegen::jit_cache::compile`]. On a miss that entry
 /// point runs canonical-key construction, the cache lock,
 /// `optimize_runtime_arena` (e-graph saturation + extraction, itself keyed by
 /// the same structure and therefore also a miss for a distinct kernel),
-/// `compile_arena_dag`, and cache insertion. This is what one distinct kernel
+/// `compile_collapse`, and cache insertion. This is what one distinct kernel
 /// actually costs at runtime; [`benchmark_compile_fresh`] times only the emit
 /// step and exists for attribution.
 ///
@@ -1416,8 +1344,7 @@ pub fn benchmark_compile_cached_miss(kernels: Vec<(ExprArena, ExprId)>) -> Resul
     let mut kernels = kernels.into_iter();
 
     for (arena, root) in kernels.by_ref().take(COMPILE_WARMUP_ITERS) {
-        let compiled =
-            jit_cache::compile_cached(&arena, root).map_err(BenchError::CompileFailed)?;
+        let compiled = jit_cache::compile(&arena, root).map_err(BenchError::CompileFailed)?;
         std::hint::black_box(&compiled);
     }
 
@@ -1425,8 +1352,7 @@ pub fn benchmark_compile_cached_miss(kernels: Vec<(ExprArena, ExprId)>) -> Resul
     for t in &mut times {
         let (arena, root) = kernels.next().expect("stream length asserted above");
         let start = nanos_now();
-        let compiled =
-            jit_cache::compile_cached(&arena, root).map_err(BenchError::CompileFailed)?;
+        let compiled = jit_cache::compile(&arena, root).map_err(BenchError::CompileFailed)?;
         std::hint::black_box(&compiled);
         *t = nanos_now() - start;
         // The cache retains its own Arc, so dropping ours (and the source
@@ -1459,7 +1385,7 @@ pub fn benchmark_compile_fresh(
     root: ExprId,
 ) -> Result<CompileCostResult, BenchError> {
     for _ in 0..COMPILE_WARMUP_ITERS {
-        let result = compile_arena_dag(arena, root).map_err(BenchError::CompileFailed)?;
+        let result = compile_collapse(arena, root).map_err(BenchError::CompileFailed)?;
         std::hint::black_box(result.code.as_bytes().first());
     }
 
@@ -1467,7 +1393,7 @@ pub fn benchmark_compile_fresh(
     let mut code_bytes = 0usize;
     for t in &mut times {
         let start = nanos_now();
-        let result = compile_arena_dag(arena, root).map_err(BenchError::CompileFailed)?;
+        let result = compile_collapse(arena, root).map_err(BenchError::CompileFailed)?;
         std::hint::black_box(result.code.as_bytes().first());
         code_bytes = result.code.len();
         drop(result); // munmap inside the timed window
@@ -1685,7 +1611,7 @@ mod tests {
         // directly, with no compile inside the session call, and yields the
         // same outputs as the compile-inside path.
         let (arena, root) = sentinel_arena();
-        let compiled = compile_arena_dag(&arena, root).expect("sentinel kernel compiles");
+        let compiled = compile_collapse(&arena, root).expect("sentinel kernel compiles");
         let mut session = BenchSession::new();
         let via_code = session
             .benchmark_compiled(&compiled.code, &arena, root, BenchMode::Throughput)
