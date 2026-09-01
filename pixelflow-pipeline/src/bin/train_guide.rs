@@ -95,8 +95,10 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
-use pixelflow_ir::OpKind;
 use pixelflow_pipeline::schema::{SchemaIdentity, fnv1a64_hex, identity_mismatch, unix_now_s};
+use pixelflow_pipeline::training::guide_linear::{
+    Model, Record, Sample, auc_roc, average_precision, op_index_table, to_sample,
+};
 
 #[derive(Parser)]
 #[command(name = "train_guide")]
@@ -165,83 +167,15 @@ struct Args {
     report_md: Option<String>,
 }
 
-// ── Input schema (must match `gen_strict_labels`'s JSONL writer field-for-field) ──
-
-#[derive(Deserialize)]
-struct Record {
-    #[allow(dead_code)]
-    expr_name: String,
-    family_band: u32,
-    family_seed: u64,
-    #[allow(dead_code)]
-    expr_node_count: usize,
-    rule_idx: usize,
-    rule_name: String,
-    budget_fraction: f32,
-    match_class_node_count: usize,
-    neighborhood_op_count: usize,
-    neighborhood_op_hist: BTreeMap<String, usize>,
-    label_positive: bool,
-}
-
-// ── Feature encoding ─────────────────────────────────────────────────────────
-
-/// One training/eval sample's encoded features plus its label. Sparse in the
-/// op dimension (`op_feats`) since a matched class's neighborhood rarely
-/// touches more than a handful of distinct `OpKind`s even though the full op
-/// table has ~50 entries.
-struct Sample {
-    rule_idx: usize,
-    /// `(op_index, log1p(count))` pairs, one per distinct op present.
-    op_feats: Vec<(usize, f32)>,
-    budget_fraction: f32,
-    log_match_class: f32,
-    log_neighborhood: f32,
-    log_expr_size: f32,
-    label: f32,
-}
-
-/// Build the `OpKind` name -> dense-index table, in `OpKind::all()`'s own
-/// order. `gen_strict_labels` wrote histogram keys as `format!("{op:?}")`
-/// (a bare variant name, e.g. `"Abs"`), so `format!("{:?}", op)` here reads
-/// back exactly the same strings — one definition of the op-name spelling
-/// (`OpKind`'s own `Debug` impl), not restated.
-fn op_index_table() -> (Vec<String>, HashMap<String, usize>) {
-    let names: Vec<String> = OpKind::all().map(|op| format!("{op:?}")).collect();
-    let index: HashMap<String, usize> = names
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (n.clone(), i))
-        .collect();
-    (names, index)
-}
-
-fn to_sample(record: &Record, op_index: &HashMap<String, usize>) -> Sample {
-    let mut op_feats: Vec<(usize, f32)> = record
-        .neighborhood_op_hist
-        .iter()
-        .map(|(name, &count)| {
-            let idx = *op_index.get(name).unwrap_or_else(|| {
-                panic!(
-                    "train_guide: neighborhood_op_hist names op {name:?}, which is not in \
-                     OpKind::all() — the strict-label dataset was minted against a different \
-                     OpKind table than this binary was built with; regenerate the dataset"
-                )
-            });
-            (idx, (count as f32 + 1.0).ln())
-        })
-        .collect();
-    op_feats.sort_by_key(|&(i, _)| i);
-    Sample {
-        rule_idx: record.rule_idx,
-        op_feats,
-        budget_fraction: record.budget_fraction,
-        log_match_class: (record.match_class_node_count as f32 + 1.0).ln(),
-        log_neighborhood: (record.neighborhood_op_count as f32 + 1.0).ln(),
-        log_expr_size: (record.expr_node_count as f32 + 1.0).ln(),
-        label: if record.label_positive { 1.0 } else { 0.0 },
-    }
-}
+// ── Input schema + feature encoding: shared with the skew test ──────────────
+//
+// `Record`/`Sample`/`op_index_table`/`to_sample` moved to
+// `pixelflow_pipeline::training::guide_linear` (2026-09-02) so this trainer
+// and `skew_test_linear_guide` (which checks this binary's forward pass
+// against `nnue::guide::linear::LinearCandidateGuide`'s deployed one) share
+// exactly one definition of "what a JSONL row means as a feature vector" —
+// see that module's doc for why a second copy here would undermine the very
+// skew test it exists to support.
 
 /// Everything one JSONL split contributes: encoded samples plus the
 /// aggregates the report needs (rule name table, family count, measured
@@ -314,75 +248,9 @@ fn load_jsonl(path: &Path, op_index: &HashMap<String, usize>) -> LoadedSplit {
     }
 }
 
-// ── Model: per-rule bias + bag-of-ops linear term + scalar features ─────────
-
-/// A transparent linear classifier: `logit = bias + w_rule[rule_idx] +
-/// sum_op(hist[op] * w_op[op]) + w_budget*budget_fraction +
-/// w_match*log_match_class + w_neigh*log_neighborhood + w_size*log_expr_size`.
-///
-/// See module doc "Why a small linear model" for why this is the right scope
-/// for a cold-start baseline rather than backpropagating through
-/// `SaturationHead`'s private candidate tower.
-struct Model {
-    bias: f32,
-    w_rule: Vec<f32>,
-    w_op: Vec<f32>,
-    w_budget: f32,
-    w_match_class: f32,
-    w_neighborhood: f32,
-    w_expr_size: f32,
-}
-
-impl Model {
-    /// Cold start: every weight at zero (design doc §5, "no warm-start from
-    /// any prior guide/mask-head weights").
-    fn zero(num_rules: usize, num_ops: usize) -> Self {
-        Self {
-            bias: 0.0,
-            w_rule: vec![0.0; num_rules],
-            w_op: vec![0.0; num_ops],
-            w_budget: 0.0,
-            w_match_class: 0.0,
-            w_neighborhood: 0.0,
-            w_expr_size: 0.0,
-        }
-    }
-
-    fn logit(&self, s: &Sample) -> f32 {
-        let mut z = self.bias
-            + self.w_rule[s.rule_idx]
-            + self.w_budget * s.budget_fraction
-            + self.w_match_class * s.log_match_class
-            + self.w_neighborhood * s.log_neighborhood
-            + self.w_expr_size * s.log_expr_size;
-        for &(idx, count) in &s.op_feats {
-            z += self.w_op[idx] * count;
-        }
-        z
-    }
-
-    /// One online-SGD step for sample `s`, given the loss gradient w.r.t.
-    /// the logit (`grad_z`, already clipped by the caller). L2 weight decay
-    /// is applied to every weight this sample actually touched — not the
-    /// bias, per convention (a bias term has no "large weight" failure mode
-    /// L2 exists to guard against).
-    fn sgd_step(&mut self, s: &Sample, grad_z: f32, lr: f32, l2: f32) {
-        self.bias -= lr * grad_z;
-
-        let wr = &mut self.w_rule[s.rule_idx];
-        *wr -= lr * (grad_z + l2 * *wr);
-
-        for &(idx, count) in &s.op_feats {
-            let wo = &mut self.w_op[idx];
-            *wo -= lr * (grad_z * count + l2 * *wo);
-        }
-
-        self.w_budget -= lr * (grad_z * s.budget_fraction + l2 * self.w_budget);
-        self.w_match_class -= lr * (grad_z * s.log_match_class + l2 * self.w_match_class);
-        self.w_neighborhood -= lr * (grad_z * s.log_neighborhood + l2 * self.w_neighborhood);
-        self.w_expr_size -= lr * (grad_z * s.log_expr_size + l2 * self.w_expr_size);
-    }
-}
+// `Model` (per-rule bias + bag-of-ops linear term + scalar features) also
+// moved to `pixelflow_pipeline::training::guide_linear` — see this file's
+// "Input schema + feature encoding" note above.
 
 /// Numerically stable logistic sigmoid.
 fn sigmoid(z: f32) -> f32 {
@@ -434,68 +302,12 @@ fn shuffled_indices(n: usize, seed: u64) -> Vec<usize> {
     idx
 }
 
-// ── Ranking metrics ──────────────────────────────────────────────────────────
-
-/// Rank-based AUC-ROC (Mann-Whitney U, average-rank tie handling). `None` if
-/// either class is absent — undefined, not zero.
-fn auc_roc(scores: &[f32], labels: &[f32]) -> Option<f64> {
-    let n = scores.len();
-    let n_pos = labels.iter().filter(|&&y| y > 0.5).count();
-    let n_neg = n - n_pos;
-    if n_pos == 0 || n_neg == 0 {
-        return None;
-    }
-    let mut idx: Vec<usize> = (0..n).collect();
-    idx.sort_by(|&a, &b| {
-        scores[a]
-            .partial_cmp(&scores[b])
-            .unwrap_or_else(|| panic!("auc_roc: NaN score"))
-    });
-    let mut ranks = vec![0.0f64; n];
-    let mut i = 0;
-    while i < n {
-        let mut j = i;
-        while j + 1 < n && scores[idx[j + 1]] == scores[idx[i]] {
-            j += 1;
-        }
-        let avg_rank = ((i + 1) + (j + 1)) as f64 / 2.0;
-        for &k in &idx[i..=j] {
-            ranks[k] = avg_rank;
-        }
-        i = j + 1;
-    }
-    let sum_ranks_pos: f64 = (0..n).filter(|&i| labels[i] > 0.5).map(|i| ranks[i]).sum();
-    Some((sum_ranks_pos - n_pos as f64 * (n_pos as f64 + 1.0) / 2.0) / (n_pos as f64 * n_neg as f64))
-}
-
-/// Average precision (area under the precision-recall step function,
-/// sklearn's `average_precision_score` convention). `None` if there are no
-/// positives.
-fn average_precision(scores: &[f32], labels: &[f32]) -> Option<f64> {
-    let n_pos = labels.iter().filter(|&&y| y > 0.5).count();
-    if n_pos == 0 {
-        return None;
-    }
-    let mut idx: Vec<usize> = (0..scores.len()).collect();
-    idx.sort_by(|&a, &b| {
-        scores[b]
-            .partial_cmp(&scores[a])
-            .unwrap_or_else(|| panic!("average_precision: NaN score"))
-    });
-    let mut tp = 0usize;
-    let mut fp = 0usize;
-    let mut ap = 0.0f64;
-    for &i in &idx {
-        if labels[i] > 0.5 {
-            tp += 1;
-            let precision = tp as f64 / (tp + fp) as f64;
-            ap += precision / n_pos as f64;
-        } else {
-            fp += 1;
-        }
-    }
-    Some(ap)
-}
+// Ranking metrics (`auc_roc`/`average_precision`) moved to
+// `pixelflow_pipeline::training::guide_linear` (2026-09-02) so
+// `eval_control_guides` (DEV AUC/PR-AUC for the `PerRuleRateGuide` control
+// arm, design doc §5 task 2) scores its table by the exact same formula this
+// binary reports for the linear model — a side-by-side comparison is only
+// honest if both sides are measured the same way.
 
 /// Spearman rank correlation (average-rank tie handling) — shared pattern
 /// with `tightened_labeler_rank.rs`'s `spearman`/`pearson` (kept as a
@@ -810,6 +622,9 @@ struct RuleRow {
 #[derive(Serialize)]
 struct Report {
     label_source: String,
+    /// Provenance note for the 2026-09-02 budget-denominator correction —
+    /// see `write_md_report`'s leading banner for the human-readable form.
+    denominator_note: String,
     pos_weight: f32,
     pos_weight_rationale: String,
     train_samples: usize,
@@ -838,6 +653,7 @@ fn write_json_report(path: &str, report: &Report) {
 fn write_md_report(path: &str, report: &Report) {
     let mut md = String::new();
     md.push_str("# Guide cold-start training report (strict-v1 labels)\n\n");
+    md.push_str(&format!("> {}\n\n", report.denominator_note));
     md.push_str(&format!(
         "TRAIN: {} samples, {} families, positive rate {:.4}%.\n\n",
         report.train_samples,
@@ -1170,6 +986,17 @@ fn main() {
 
     let report = Report {
         label_source: "strict-v1".to_string(),
+        denominator_note: format!(
+            "Budget denominator: REGISTERED_PRIMARY_BUDGET_APPLICATIONS = {} \
+             (docs/plans/2026-09-01-phase3-registration.md §4, classical-band primary tier), \
+             imported by both gen_strict_labels and saturate_guided_until_applications so \
+             budget_fraction means the same thing at mint time and at deploy time. The first \
+             mint/train pass of this round (2026-09-01) used a 195-application placeholder \
+             (this round's measured median application count, before B was registered) — a \
+             train/deploy denominator skew, caught and fixed before this checkpoint (see git \
+             history for the placeholder-era numbers).",
+            pixelflow_search::egraph::REGISTERED_PRIMARY_BUDGET_APPLICATIONS
+        ),
         pos_weight,
         pos_weight_rationale,
         train_samples: train.samples.len(),
