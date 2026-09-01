@@ -1152,7 +1152,11 @@ mod tests {
 /// drops it (`runtime.rs:128-133`), so production cannot say whether a real
 /// core-term kernel quiesces or is cut off by the iteration cap, the class
 /// cap, or the wall-clock ceiling. This `#[ignore]`d test replays the same
-/// three production calls — `EGraph::with_rules(all_rules())` (`:122`),
+/// three production calls, reads the stop reason off
+/// `SaturationResult::stop_reason` — the loop's own decision, never inferred
+/// from counts or from extra runs — and measures what the budget cost by
+/// re-running each kernel with a generous budget and no wall clock. It
+/// replays — `EGraph::with_rules(all_rules())` (`:122`),
 /// `config_for_node_count` + `saturate_with_full_budget` (`:126-133`),
 /// `env_extraction_policy()` + `extraction` + `choices_to_arena` (`:135-137`)
 /// — on arenas dumped from the production constructors (the packed cell grid
@@ -1162,12 +1166,17 @@ mod tests {
 /// runtime-only mask/int ops it resolves are private to this module; moving
 /// them out would be the public-API change this measurement must not make.
 ///
-/// Nothing here changes production behavior: no signature, no visibility,
-/// no code outside `#[cfg(test)]`.
+/// Nothing here changes production behavior. The one production change this
+/// measurement depends on is `SaturationStopReason` / `stop_reason` on
+/// `SaturationStats` and `SaturationResult` (with `ApplyResult::stop` feeding
+/// it): a type for a meaning the loop already had, so the reason can be read
+/// instead of inferred. Everything else is `#[cfg(test)]`.
 #[cfg(test)]
 mod production_telemetry {
     use super::*;
-    use crate::egraph::{CostModel, ExtractionPolicy, SaturationConfig, extract_dag};
+    use crate::egraph::{
+        CostModel, ExtractionPolicy, SaturationConfig, SaturationStopReason, extract_dag,
+    };
     use pixelflow_ir::arena::{BufferDecl, BufferIdentity};
     use std::fmt::Write as _;
     use std::path::{Path, PathBuf};
@@ -1176,14 +1185,16 @@ mod production_telemetry {
     const DIR_VAR: &str = "PIXELFLOW_TELEMETRY_DIR";
     const OUT_VAR: &str = "PIXELFLOW_TELEMETRY_OUT";
     const REF_MULT_VAR: &str = "PIXELFLOW_TELEMETRY_REF_MULT";
-    const REF_CEILING_VAR: &str = "PIXELFLOW_TELEMETRY_REF_CEILING_S";
-    /// Reference-run multiplier over the production tier's iteration cap
-    /// (and, for the cap-lifted reference, its class cap), mirroring the
-    /// Guide registration's "unguided-at-4B" comparison.
+    const KERNEL_CEILING_VAR: &str = "PIXELFLOW_TELEMETRY_KERNEL_CEILING_S";
+    /// Generous-run multiplier over the production tier's iteration cap
+    /// (and, for the cap-lifted run, its class cap), mirroring the Guide
+    /// registration's "unguided-at-4B" comparison.
     const DEFAULT_REF_MULT: usize = 4;
-    /// Reference-run wall-clock is a SAFETY CEILING, never a metric: if it
-    /// binds the run panics rather than reporting a truncated reference.
-    const DEFAULT_REF_CEILING_S: u64 = 600;
+    /// Per-KERNEL wall-clock ceiling shared by the two generous runs. It is
+    /// a harness bound, not a metric: a generous run it cuts reports
+    /// `Timeout` from the loop, the row's loss against that run is `NA`,
+    /// and the row is listed under "loss unmeasured" — never skipped.
+    const DEFAULT_KERNEL_CEILING_S: u64 = 1200;
 
     fn env_required(var: &str) -> String {
         std::env::var(var).unwrap_or_else(|e| panic!("{var} must be set ({e})"))
@@ -1219,7 +1230,10 @@ mod production_telemetry {
                 .unwrap_or_else(|| panic!("{}: unknown OpKind {s:?}", path.display()))
         };
         let id = |s: &str| -> ExprId {
-            ExprId(s.parse().unwrap_or_else(|e| panic!("{}: bad id {s:?}: {e}", path.display())))
+            ExprId(
+                s.parse()
+                    .unwrap_or_else(|e| panic!("{}: bad id {s:?}: {e}", path.display())),
+            )
         };
         for line in lines {
             let f: Vec<&str> = line.split_whitespace().collect();
@@ -1238,7 +1252,12 @@ mod production_telemetry {
                         width: w.parse().expect("buf width"),
                         height: h.parse().expect("buf height"),
                     });
-                    assert_eq!(slot.0, buf_count, "{}: buffer slot order drifted", path.display());
+                    assert_eq!(
+                        slot.0,
+                        buf_count,
+                        "{}: buffer slot order drifted",
+                        path.display()
+                    );
                     buf_count += 1;
                     continue;
                 }
@@ -1286,7 +1305,9 @@ mod production_telemetry {
             }
             let kind = match arena.node(id) {
                 ExprNode::Var(_) | ExprNode::Const(_) | ExprNode::Buffer(_) => None,
-                ExprNode::Unary(k, _) | ExprNode::Binary(k, _, _) | ExprNode::Ternary(k, _, _, _) => Some(*k),
+                ExprNode::Unary(k, _)
+                | ExprNode::Binary(k, _, _)
+                | ExprNode::Ternary(k, _, _, _) => Some(*k),
                 other @ (ExprNode::Param(_) | ExprNode::Nary(..)) => {
                     panic!("extracted arena contains {other:?}")
                 }
@@ -1300,15 +1321,8 @@ mod production_telemetry {
         total
     }
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum Stop {
-        Quiesced,
-        IterationCap,
-        ClassCap,
-        Timeout,
-    }
-
     struct Run {
+        stop: SaturationStopReason,
         iterations: usize,
         total_unions: usize,
         classes_after: usize,
@@ -1324,16 +1338,28 @@ mod production_telemetry {
         /// The budget-independent trajectory signature: two runs of the same
         /// arena that were never cut differently agree on all of these.
         fn signature(&self) -> (usize, usize, usize, usize, usize) {
-            (self.iterations, self.total_unions, self.classes_after, self.applications, self.cost)
+            (
+                self.iterations,
+                self.total_unions,
+                self.classes_after,
+                self.applications,
+                self.cost,
+            )
         }
     }
 
     /// The production sequence of `optimize_runtime_arena_uncached`
     /// (`runtime.rs:106-137`) from the e-graph build onward, with the budget
     /// as parameters so the same function runs the production tier and both
-    /// references. `lower_dwrt_owned` (`:120`) and `config_for_node_count`
+    /// generous runs. `lower_dwrt_owned` (`:120`) and `config_for_node_count`
     /// (`:126-127`) run once in the caller since they are budget-independent.
-    fn run(arena: &ExprArena, root: ExprId, max_iterations: usize, max_classes: usize, timeout: Duration) -> Run {
+    fn run(
+        arena: &ExprArena,
+        root: ExprId,
+        max_iterations: usize,
+        max_classes: usize,
+        timeout: Duration,
+    ) -> Run {
         // runtime.rs:122-124
         let mut egraph = EGraph::with_rules(all_rules());
         let mut memo: HashMap<ExprId, EClassId> = HashMap::new();
@@ -1342,7 +1368,12 @@ mod production_telemetry {
 
         // runtime.rs:128-133 — the SaturationResult production discards.
         let started = Instant::now();
-        let result = crate::egraph::saturate_with_full_budget(&mut egraph, max_iterations, max_classes, timeout);
+        let result = crate::egraph::saturate_with_full_budget(
+            &mut egraph,
+            max_iterations,
+            max_classes,
+            timeout,
+        );
         let elapsed = started.elapsed();
 
         // runtime.rs:135-137
@@ -1361,6 +1392,7 @@ mod production_telemetry {
         let dp_cost = extract_dag(&egraph, root_class, &costs).total_cost;
 
         Run {
+            stop: result.stop_reason,
             iterations: result.iterations,
             total_unions: result.total_unions,
             classes_after: result.classes_after,
@@ -1373,55 +1405,6 @@ mod production_telemetry {
         }
     }
 
-    /// Why the production run stopped, decided against two unceilinged
-    /// references rather than `SaturationResult::saturated` (which reads
-    /// `iterations < max || total_unions == 0` and so calls a class-cap or
-    /// timeout stop "saturated"). The class cap cannot be read off any
-    /// count: `apply_rule_at_index_timed` refuses an application whenever
-    /// `classes + estimated_new > max_classes` (graph.rs:937,964), so a
-    /// cap-bound graph settles AT or under the cap and the next round
-    /// commits zero unions exactly like a quiesced one. Only a run with the
-    /// cap lifted can tell the two apart: if lifting the cap changes the
-    /// trajectory, the cap was binding.
-    ///
-    /// `refr` = same class cap, `mult`× iterations, no time ceiling.
-    /// `lifted` = `mult`× iterations AND `mult`× class cap, no time ceiling.
-    fn classify(prod: &Run, refr: &Run, lifted: &Run, config: &SaturationConfig) -> Stop {
-        let stopped_on_its_own_at_prod_round = refr.iterations == prod.iterations;
-        if stopped_on_its_own_at_prod_round {
-            let cap_bound = refr.signature() != lifted.signature();
-            return if cap_bound { Stop::ClassCap } else { Stop::Quiesced };
-        }
-        if prod.iterations < config.max_iterations {
-            return Stop::Timeout;
-        }
-        Stop::IterationCap
-    }
-
-    /// Stop reason of an unceilinged reference: the cap bound if the
-    /// cap-lifted run diverged from it; otherwise it either used every
-    /// iteration or quiesced.
-    fn classify_reference(refr: &Run, lifted: &Run, max_iterations: usize) -> Stop {
-        if refr.signature() != lifted.signature() {
-            Stop::ClassCap
-        } else if refr.iterations >= max_iterations {
-            Stop::IterationCap
-        } else {
-            Stop::Quiesced
-        }
-    }
-
-    fn classify_lifted(lifted: &Run, max_iterations: usize, max_classes: usize) -> &'static str {
-        if lifted.iterations >= max_iterations {
-            "IterationCap"
-        } else if lifted.classes_after * 10 >= max_classes * 9 {
-            // Cannot be proven without lifting again; flagged, not asserted.
-            "NearLiftedCap"
-        } else {
-            "Quiesced"
-        }
-    }
-
     fn tier_name(config: &SaturationConfig) -> &'static str {
         match config.max_iterations {
             20 => "blitz",
@@ -1431,8 +1414,26 @@ mod production_telemetry {
         }
     }
 
-    fn loss_pct(cost: usize, baseline: usize) -> f64 {
-        (cost as f64 - baseline as f64) / baseline as f64 * 100.0
+    /// Production's cost over a generous run's, as a percentage. `None` when
+    /// the generous run was cut by the harness ceiling (nothing to compare
+    /// against) or when both costs are zero (the 1-node space glyph: 0/0 is
+    /// undefined, not 0%).
+    fn loss_pct(prod: &Run, generous: &Run) -> Option<f64> {
+        if generous.stop == SaturationStopReason::Timeout {
+            return None;
+        }
+        if generous.cost == 0 {
+            assert_eq!(
+                prod.cost, 0,
+                "generous run extracted cost 0 but production did not"
+            );
+            return None;
+        }
+        Some((prod.cost as f64 - generous.cost as f64) / generous.cost as f64 * 100.0)
+    }
+
+    fn fmt_opt(v: Option<f64>) -> String {
+        v.map_or_else(|| "NA".to_string(), |v| format!("{v:.2}"))
     }
 
     fn median(v: &[f64]) -> f64 {
@@ -1440,7 +1441,11 @@ mod production_telemetry {
         let mut v = v.to_vec();
         v.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
         let n = v.len();
-        if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 }
+        if n % 2 == 1 {
+            v[n / 2]
+        } else {
+            (v[n / 2 - 1] + v[n / 2]) / 2.0
+        }
     }
 
     fn percentile(v: &[f64], p: f64) -> f64 {
@@ -1451,8 +1456,23 @@ mod production_telemetry {
         v[idx]
     }
 
+    /// `uptime`'s load averages, recorded so a run can be labelled quiet or
+    /// loaded. The 200ms production wall clock is the one budget whose
+    /// verdict depends on the host, so this is part of the measurement.
+    fn load_averages() -> String {
+        let out = std::process::Command::new("uptime")
+            .output()
+            .expect("uptime must be runnable to record host load");
+        assert!(out.status.success(), "uptime failed: {out:?}");
+        let text = String::from_utf8(out.stdout).expect("uptime output is utf-8");
+        let idx = text
+            .find("load average")
+            .unwrap_or_else(|| panic!("uptime output has no load average: {text:?}"));
+        text[idx..].trim().to_string()
+    }
+
     #[test]
-    #[ignore = "measurement: PIXELFLOW_TELEMETRY_DIR=<dumps> PIXELFLOW_TELEMETRY_OUT=<tsv> cargo test -p pixelflow-search --release -- --ignored production_saturation_telemetry --nocapture"]
+    #[ignore = "measurement: PIXELFLOW_TELEMETRY_DIR=<dumps> PIXELFLOW_TELEMETRY_OUT=<tsv> cargo test -p pixelflow-search --release -- --ignored production_saturation_telemetry --nocapture --test-threads=1"]
     fn production_saturation_telemetry() {
         let dir = PathBuf::from(env_required(DIR_VAR));
         let out_path = PathBuf::from(env_required(OUT_VAR));
@@ -1460,9 +1480,9 @@ mod production_telemetry {
             .map(|s| s.parse().expect("REF_MULT must be an integer"))
             .unwrap_or(DEFAULT_REF_MULT);
         let ceiling = Duration::from_secs(
-            std::env::var(REF_CEILING_VAR)
-                .map(|s| s.parse().expect("REF_CEILING_S must be an integer"))
-                .unwrap_or(DEFAULT_REF_CEILING_S),
+            std::env::var(KERNEL_CEILING_VAR)
+                .map(|s| s.parse().expect("KERNEL_CEILING_S must be an integer"))
+                .unwrap_or(DEFAULT_KERNEL_CEILING_S),
         );
         assert!(
             std::env::var("PIXELFLOW_NNUE_WEIGHTS").is_err(),
@@ -1477,19 +1497,24 @@ mod production_telemetry {
         files.sort();
         assert!(!files.is_empty(), "no *.arena files in {}", dir.display());
 
+        let load_start = load_averages();
+        println!("host load at start: {load_start}");
+
         let header = "name\tgroup\tnodes\ttier\tstop\tmachine_dependent\titers\tmax_iters\tclasses\tmax_classes\tapps\tunions\tjournal_unions\telapsed_ms\tcost\tdp_cost\text_nodes\
                       \tref_stop\tref_iters\tref_classes\tref_apps\tref_elapsed_ms\tref_cost\tloss_vs_ref_pct\
-                      \tlifted_stop\tlifted_iters\tlifted_classes\tlifted_apps\tlifted_elapsed_ms\tlifted_cost\tloss_vs_lifted_pct\tanomaly";
+                      \tlifted_stop\tlifted_iters\tlifted_classes\tlifted_apps\tlifted_elapsed_ms\tlifted_cost\tloss_vs_lifted_pct\tcap_lift_changed\tanomaly";
         let mut tsv = String::new();
         writeln!(tsv, "{header}").expect("write");
         println!("{header}");
 
         struct Row {
+            name: String,
             group: String,
-            stop: Stop,
-            ref_stop: Stop,
-            loss_vs_ref: f64,
-            loss_vs_lifted: f64,
+            stop: SaturationStopReason,
+            ref_stop: SaturationStopReason,
+            lifted_stop: SaturationStopReason,
+            loss_vs_ref: Option<f64>,
+            loss_vs_lifted: Option<f64>,
             apps: usize,
             anomaly: Option<String>,
             fatal: bool,
@@ -1507,61 +1532,90 @@ mod production_telemetry {
             let node_count = reachable_count(&arena, root);
             let config = config_for_node_count(node_count);
 
-            let prod = run(&arena, root, config.max_iterations, config.max_classes, config.hard_timeout);
+            let prod = run(
+                &arena,
+                root,
+                config.max_iterations,
+                config.max_classes,
+                config.hard_timeout,
+            );
 
+            // Two generous runs share one per-kernel ceiling: `refr` keeps
+            // production's class cap and lifts only the iterations and the
+            // clock (so its loss is the clock's bite alone); `lifted` lifts
+            // the class cap too (the whole budget's bite).
             let ref_iters = config.max_iterations * mult;
             let lifted_classes = config.max_classes * mult;
             let refr = run(&arena, root, ref_iters, config.max_classes, ceiling);
-            assert!(
-                refr.elapsed < ceiling,
-                "{name}: reference run hit its {ceiling:?} safety ceiling after {} iterations — \
-                 the ceiling is a stop condition, not a metric; raise {REF_CEILING_VAR} and re-run",
-                refr.iterations
-            );
-            let lifted = run(&arena, root, ref_iters, lifted_classes, ceiling);
-            assert!(
-                lifted.elapsed < ceiling,
-                "{name}: cap-lifted run hit its {ceiling:?} safety ceiling after {} iterations — \
-                 the ceiling is a stop condition, not a metric; raise {REF_CEILING_VAR} and re-run",
-                lifted.iterations
-            );
+            let remaining = ceiling.saturating_sub(refr.elapsed);
+            let lifted = run(&arena, root, ref_iters, lifted_classes, remaining);
 
-            let stop = classify(&prod, &refr, &lifted, &config);
-            let ref_stop = classify_reference(&refr, &lifted, ref_iters);
-            let lifted_stop = classify_lifted(&lifted, ref_iters, lifted_classes);
-            let loss_vs_ref = loss_pct(prod.cost, refr.cost);
-            let loss_vs_lifted = loss_pct(prod.cost, lifted.cost);
+            let loss_vs_ref = loss_pct(&prod, &refr);
+            let loss_vs_lifted = loss_pct(&prod, &lifted);
+            let cap_lift_changed = refr.signature() != lifted.signature();
 
-            let mut anomaly: Option<String> = None;
+            let mut anomaly: Vec<String> = Vec::new();
             let mut fatal = false;
-            if matches!(stop, Stop::Quiesced | Stop::ClassCap)
-                && (prod.total_unions, prod.classes_after, prod.applications, prod.cost)
-                    != (refr.total_unions, refr.classes_after, refr.applications, refr.cost)
+            let clock_did_not_decide = matches!(
+                prod.stop,
+                SaturationStopReason::Converged | SaturationStopReason::ClassLimit
+            );
+            if clock_did_not_decide
+                && refr.stop != SaturationStopReason::Timeout
+                && prod.signature() != refr.signature()
             {
-                // Same round reached on their own, yet different work done:
-                // either a mid-round deadline cut production's last round
-                // (a Timeout wearing Quiesced's clothes) or the optimizer
-                // is nondeterministic. Either way the row is not trustworthy.
+                // Production stopped on its own (no clock involved), so the
+                // same-cap run with more iterations and no clock must retrace
+                // it exactly. If it does not, the optimizer is
+                // nondeterministic and the row is not trustworthy.
                 fatal = true;
-                anomaly = Some(format!(
-                    "reference stopped at production's round but trajectories differ: prod(unions={},classes={},apps={},cost={}) ref(unions={},classes={},apps={},cost={})",
-                    prod.total_unions, prod.classes_after, prod.applications, prod.cost,
-                    refr.total_unions, refr.classes_after, refr.applications, refr.cost
+                anomaly.push(format!(
+                    "production stopped {:?} but the same-cap generous run diverged: prod(iters={},unions={},classes={},apps={},cost={}) ref(iters={},unions={},classes={},apps={},cost={})",
+                    prod.stop,
+                    prod.iterations,
+                    prod.total_unions,
+                    prod.classes_after,
+                    prod.applications,
+                    prod.cost,
+                    refr.iterations,
+                    refr.total_unions,
+                    refr.classes_after,
+                    refr.applications,
+                    refr.cost
                 ));
-            } else if prod.cost < refr.cost || prod.cost < lifted.cost || refr.cost < lifted.cost {
-                anomaly = Some(format!(
+            }
+            if refr.stop == SaturationStopReason::Timeout {
+                anomaly.push(format!(
+                    "same-cap generous run cut by the {ceiling:?} harness ceiling after {} iterations: loss_vs_ref unmeasured",
+                    refr.iterations
+                ));
+            }
+            if lifted.stop == SaturationStopReason::Timeout {
+                anomaly.push(format!(
+                    "cap-lifted generous run cut by the harness ceiling ({remaining:?} left of {ceiling:?}) after {} iterations: loss_vs_lifted unmeasured",
+                    lifted.iterations
+                ));
+            }
+            if loss_vs_ref.is_some_and(|l| l < 0.0)
+                || loss_vs_lifted.is_some_and(|l| l < 0.0)
+                || (lifted.stop != SaturationStopReason::Timeout
+                    && refr.stop != SaturationStopReason::Timeout
+                    && refr.cost < lifted.cost)
+            {
+                anomaly.push(format!(
                     "more saturation extracted WORSE: cost prod={} ref={} lifted={}",
                     prod.cost, refr.cost, lifted.cost
                 ));
             }
+            let anomaly = (!anomaly.is_empty()).then(|| anomaly.join("; "));
 
             let line = format!(
                 "{name}\t{group}\t{node_count}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\
-                 \t{:?}\t{}\t{}\t{}\t{:.1}\t{}\t{:.2}\
-                 \t{}\t{}\t{}\t{}\t{:.1}\t{}\t{:.2}\t{}",
+                 \t{:?}\t{}\t{}\t{}\t{:.1}\t{}\t{}\
+                 \t{:?}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}",
                 tier_name(&config),
-                stop,
-                stop == Stop::Timeout,
+                prod.stop,
+                prod.stop == SaturationStopReason::Timeout,
                 prod.iterations,
                 config.max_iterations,
                 prod.classes_after,
@@ -1573,67 +1627,147 @@ mod production_telemetry {
                 prod.cost,
                 prod.dp_cost,
                 prod.extracted_nodes,
-                ref_stop,
+                refr.stop,
                 refr.iterations,
                 refr.classes_after,
                 refr.applications,
                 refr.elapsed.as_secs_f64() * 1e3,
                 refr.cost,
-                loss_vs_ref,
-                lifted_stop,
+                fmt_opt(loss_vs_ref),
+                lifted.stop,
                 lifted.iterations,
                 lifted.classes_after,
                 lifted.applications,
                 lifted.elapsed.as_secs_f64() * 1e3,
                 lifted.cost,
-                loss_vs_lifted,
+                fmt_opt(loss_vs_lifted),
+                cap_lift_changed,
                 anomaly.as_deref().unwrap_or("-"),
             );
             println!("{line}");
             writeln!(tsv, "{line}").expect("write");
-            rows.push(Row { group, stop, ref_stop, loss_vs_ref, loss_vs_lifted, apps: prod.applications, anomaly, fatal });
+            rows.push(Row {
+                name: name.clone(),
+                group,
+                stop: prod.stop,
+                ref_stop: refr.stop,
+                lifted_stop: lifted.stop,
+                loss_vs_ref,
+                loss_vs_lifted,
+                apps: prod.applications,
+                anomaly,
+                fatal,
+            });
         }
 
-        assert_eq!(rows.len(), files.len(), "every dumped kernel must produce a row");
-        std::fs::write(&out_path, &tsv).unwrap_or_else(|e| panic!("write {}: {e}", out_path.display()));
+        assert_eq!(
+            rows.len(),
+            files.len(),
+            "every dumped kernel must produce a row"
+        );
+        std::fs::write(&out_path, &tsv)
+            .unwrap_or_else(|e| panic!("write {}: {e}", out_path.display()));
+        let load_end = load_averages();
+        let meta_path = out_path.with_extension("meta");
+        std::fs::write(
+            &meta_path,
+            format!(
+                "kernels\t{}\nref_mult\t{mult}\nkernel_ceiling_s\t{}\nload_start\t{load_start}\nload_end\t{load_end}\n",
+                rows.len(),
+                ceiling.as_secs()
+            ),
+        )
+        .unwrap_or_else(|e| panic!("write {}: {e}", meta_path.display()));
+        println!("host load at end: {load_end}");
 
         let mut groups: Vec<String> = rows.iter().map(|r| r.group.clone()).collect();
         groups.sort();
         groups.dedup();
         groups.push("ALL".to_string());
-        println!("\n== summary (ref = {mult}x iterations/same cap; lifted = {mult}x iterations/{mult}x cap; no time ceilings) ==");
-        println!("group\tn\tquiesced\titer_cap\tclass_cap\ttimeout\tref_cap_bound\tmed_loss_ref%\tp90_loss_ref%\tmax_loss_ref%\tmed_loss_lifted%\tp90_loss_lifted%\tmax_loss_lifted%\tmed_apps\tmax_apps");
+        println!(
+            "\n== summary (stop = SaturationResult::stop_reason; ref = {mult}x iterations/same cap; lifted = {mult}x iterations/{mult}x cap; both without production's clock, under a {ceiling:?} per-kernel ceiling) =="
+        );
+        println!(
+            "group\tn\tconverged\titer_limit\tclass_limit\ttimeout\tref_class_limit\tlifted_class_limit\tn_loss_ref\tmed_loss_ref%\tp90_loss_ref%\tmax_loss_ref%\tn_loss_lifted\tmed_loss_lifted%\tp90_loss_lifted%\tmax_loss_lifted%\tmed_apps\tmax_apps"
+        );
         for g in &groups {
-            let sel: Vec<&Row> = rows.iter().filter(|r| g == "ALL" || &r.group == g).collect();
-            let count = |s: Stop| sel.iter().filter(|r| r.stop == s).count();
-            let lr: Vec<f64> = sel.iter().map(|r| r.loss_vs_ref).collect();
-            let ll: Vec<f64> = sel.iter().map(|r| r.loss_vs_lifted).collect();
+            let sel: Vec<&Row> = rows
+                .iter()
+                .filter(|r| g == "ALL" || &r.group == g)
+                .collect();
+            let count = |s: SaturationStopReason| sel.iter().filter(|r| r.stop == s).count();
+            let lr: Vec<f64> = sel.iter().filter_map(|r| r.loss_vs_ref).collect();
+            let ll: Vec<f64> = sel.iter().filter_map(|r| r.loss_vs_lifted).collect();
             let apps: Vec<f64> = sel.iter().map(|r| r.apps as f64).collect();
+            let q = |v: &[f64]| {
+                if v.is_empty() {
+                    "NA\tNA\tNA".to_string()
+                } else {
+                    format!(
+                        "{:.2}\t{:.2}\t{:.2}",
+                        median(v),
+                        percentile(v, 0.9),
+                        percentile(v, 1.0)
+                    )
+                }
+            };
             println!(
-                "{g}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.0}\t{:.0}",
+                "{g}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}",
                 sel.len(),
-                count(Stop::Quiesced),
-                count(Stop::IterationCap),
-                count(Stop::ClassCap),
-                count(Stop::Timeout),
-                sel.iter().filter(|r| r.ref_stop == Stop::ClassCap).count(),
-                median(&lr),
-                percentile(&lr, 0.9),
-                percentile(&lr, 1.0),
-                median(&ll),
-                percentile(&ll, 0.9),
-                percentile(&ll, 1.0),
+                count(SaturationStopReason::Converged),
+                count(SaturationStopReason::IterationLimit),
+                count(SaturationStopReason::ClassLimit),
+                count(SaturationStopReason::Timeout),
+                sel.iter()
+                    .filter(|r| r.ref_stop == SaturationStopReason::ClassLimit)
+                    .count(),
+                sel.iter()
+                    .filter(|r| r.lifted_stop == SaturationStopReason::ClassLimit)
+                    .count(),
+                lr.len(),
+                q(&lr),
+                ll.len(),
+                q(&ll),
                 median(&apps),
                 percentile(&apps, 1.0),
             );
         }
-        let soft: Vec<&Row> = rows.iter().filter(|r| r.anomaly.is_some() && !r.fatal).collect();
-        println!("\nnon-fatal anomalies (more saturation extracted worse): {}", soft.len());
+        let worse: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.anomaly.as_deref().is_some_and(|a| a.contains("WORSE")))
+            .collect();
+        println!(
+            "\nnon-fatal anomalies (more saturation extracted worse): {}",
+            worse.len()
+        );
+        let ceiling_hits: Vec<&Row> = rows
+            .iter()
+            .filter(|r| {
+                r.ref_stop == SaturationStopReason::Timeout
+                    || r.lifted_stop == SaturationStopReason::Timeout
+            })
+            .collect();
+        println!(
+            "loss unmeasured (a generous run hit the {ceiling:?} per-kernel harness ceiling): {}{}",
+            ceiling_hits.len(),
+            if ceiling_hits.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " — {}",
+                    ceiling_hits
+                        .iter()
+                        .map(|r| r.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        );
 
         let fatal: Vec<String> = rows
             .iter()
             .filter(|r| r.fatal)
-            .map(|r| format!("{}: {}", r.group, r.anomaly.as_deref().unwrap_or("?")))
+            .map(|r| format!("{}: {}", r.name, r.anomaly.as_deref().unwrap_or("?")))
             .collect();
         assert!(
             fatal.is_empty(),

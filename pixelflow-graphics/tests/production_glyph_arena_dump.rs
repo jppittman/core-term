@@ -24,7 +24,10 @@
 use pixelflow_graphics::fonts::{Font, GlyphAtlas};
 use pixelflow_ir::arena::{ExprArena, ExprId, ExprNode};
 
-const FONT_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/NotoSansMono-Regular.ttf");
+const FONT_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/NotoSansMono-Regular.ttf"
+);
 const CELL_HEIGHT_PT: f32 = 16.0;
 const ATLAS_CAPACITY: usize = 128;
 
@@ -45,9 +48,21 @@ fn dump_production_glyph_arenas() {
         // The cell-grid dumper's restatement of atlas.rs:90-98 (PAD = 1,
         // 12 slots per row, 11 rows for capacity 128).
         let tile_px = (CELL_HEIGHT_PT * density).round().max(1.0) as usize;
-        assert_eq!(atlas.tile_px(), tile_px, "tile_px arithmetic drifted from GlyphAtlas::new");
-        assert_eq!(atlas.width(), 12 * (tile_px + 2), "atlas width arithmetic drifted");
-        assert_eq!(atlas.height(), 11 * (tile_px + 2), "atlas height arithmetic drifted");
+        assert_eq!(
+            atlas.tile_px(),
+            tile_px,
+            "tile_px arithmetic drifted from GlyphAtlas::new"
+        );
+        assert_eq!(
+            atlas.width(),
+            12 * (tile_px + 2),
+            "atlas width arithmetic drifted"
+        );
+        assert_eq!(
+            atlas.height(),
+            11 * (tile_px + 2),
+            "atlas height arithmetic drifted"
+        );
 
         for ch in ' '..='~' {
             let Some(kernel) = font.glyph_kernel_scaled(ch, atlas.tile_px() as f32) else {
