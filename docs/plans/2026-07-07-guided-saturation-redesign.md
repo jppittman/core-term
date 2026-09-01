@@ -100,6 +100,24 @@ experiment: big-library guided vs small-library full saturation, same budget, JI
 *Gate:* if guided can't match full saturation even greedily, record it and stop — the thesis
 is answered.
 
+**Phase 3 pre-flight — oracle headroom at corpus scale.** ✅ **MEASURED 2026-08-30** (scoping
+only — no Guide built). The analogue of Phase 2's static/noswap=0.54 gate: over 800
+stride-sampled expressions from a regenerated `corpus_train.bin`/`corpus_dev.bin`, median
+per-expression load-bearing ratio is 38% under the hindsight labeler (implying ~2.6x oracle
+savings) and 2.9% under a strict lower bound that credits only applications whose output node
+is literally on the extracted derivation path (implying ~34x). Headroom clears the bar to run
+Phase 3. The load-bearing new finding, not previously visible from the 5-toy-kernel rule report:
+**the labeler and strict bounds rank rules almost independently** (Spearman ρ ≈ 0.02 across the
+62-rule library) — structural rules (commutative/associative/distribute/identity/annihilator/
+involution) score 73-93% under the labeler bound and ~0% under the strict one, because their
+job is enabling congruence closure rather than surviving into the extracted expression, which
+the strict walk can't see by construction. This sharpens (doesn't resolve) the "known follow-up"
+above: before training a Guide on labeler labels, the union-causality tightening needs to be
+understood well enough to know whether it would reorder the rule-priority ranking a Guide would
+learn. Full report: `docs/results/2026-08-30-guide-headroom.md` /
+`docs/results/2026-08-30-guide-headroom.json`. Harness (additive, new):
+`pixelflow-pipeline/src/bin/guide_headroom.rs`.
+
 **Phase 4 — Search (conditional).** Only if Phase 3 shows under-credited chains (oracle
 runs contain deep derivations guided runs never find): arena rollback, shallow beam
 lookahead, search-as-policy-target.
