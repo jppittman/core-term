@@ -558,6 +558,131 @@ pub fn depth_pe(depth: u32) -> &'static [f32; K] {
 }
 
 // ============================================================================
+// Typed Feature Edges (the walker's replayable output)
+// ============================================================================
+
+/// The row of the sinusoidal PE table a feature edge was bound at.
+///
+/// Constructed only by clamping an effective depth
+/// (`tree_depth * MAX_ARITY + child_slot`) into the table, so a value of this
+/// type IS a valid row index — [`PeSlot::pe`] cannot miss, and no consumer
+/// has to re-validate a raw integer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PeSlot(u16);
+
+impl PeSlot {
+    /// Clamp an effective depth into the PE table, exactly as [`depth_pe`]
+    /// does — the two must stay in lockstep or a recorded edge would replay
+    /// at a different rotation than the walk applied.
+    #[inline]
+    #[must_use]
+    pub fn from_effective_depth(effective_depth: u32) -> Self {
+        Self(effective_depth.min((MAX_DEPTH - 1) as u32) as u16)
+    }
+
+    /// The PE table row this slot names.
+    #[inline]
+    #[must_use]
+    pub fn pe(self) -> &'static [f32; K] {
+        &DEPTH_PE[self.0 as usize]
+    }
+}
+
+/// One edge of the extraction head's feature stream: `parent → child`, bound
+/// at PE row `pe`. A register reload (second and later references to a shared
+/// node) is the edge `parent → OpKind::Var`, exactly as the walker emits it.
+///
+/// This is the walker's entire embedding-relevant output. Everything else an
+/// [`EdgeAccumulator`] holds (node count, variance histogram) is independent
+/// of the embeddings — so a recorded edge stream is both sides of the
+/// embedding contract at once: [`EdgeTrace::realize`] replays it forward into
+/// the identical accumulator, and the trainer differentiates the same fold
+/// backward to move [`OpEmbeddings`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CostEdge {
+    /// The referencing operation.
+    pub parent: OpKind,
+    /// The operation computed into this slot — [`OpKind::Var`] for a
+    /// register reload of an already-emitted shared node.
+    pub child: OpKind,
+    /// The PE rotation this edge was accumulated under.
+    pub pe: PeSlot,
+}
+
+/// A replayable record of one [`EdgeAccumulator::from_cost_dag`] walk: the
+/// edge stream in emission order, plus the embedding-independent node
+/// statistics.
+///
+/// Denotation: an `EdgeTrace` and an [`OpEmbeddings`] together determine an
+/// [`EdgeAccumulator`] exactly. [`EdgeTrace::realize`] performs that fold
+/// with the same `accumulate_edge` calls, in the same order, as the walk
+/// that recorded it — so the result is bit-identical to the accumulator the
+/// walk returned (pinned by `trace_realize_replays_the_walk`). This is what
+/// lets a trainer keep only the trace and rebuild features from *live*
+/// embeddings on every forward pass: cached-feature staleness is not
+/// avoided, it is unrepresentable.
+#[derive(Clone, Debug, Default)]
+pub struct EdgeTrace {
+    edges: Vec<CostEdge>,
+    node_count: u32,
+    variance: [f32; SCALAR_FEATURE_COUNT],
+}
+
+impl EdgeTrace {
+    /// Fold the recorded edges against `emb`, restoring the node statistics.
+    ///
+    /// Bit-identical to the accumulator returned by the walk that recorded
+    /// this trace, provided `emb` is the same table — and the correct
+    /// current-embedding features when it is not (that is the point).
+    #[must_use]
+    pub fn realize(&self, emb: &OpEmbeddings) -> EdgeAccumulator {
+        let mut acc = EdgeAccumulator::new();
+        for &edge in &self.edges {
+            acc.accumulate_edge(emb, edge);
+        }
+        acc.node_count = self.node_count;
+        acc.variance_frac_const = self.variance[0];
+        acc.variance_frac_frame = self.variance[1];
+        acc.variance_frac_scanline = self.variance[2];
+        acc.variance_frac_pixel = self.variance[3];
+        acc
+    }
+
+    /// The recorded edges, in the walk's emission order.
+    #[must_use]
+    pub fn edges(&self) -> &[CostEdge] {
+        &self.edges
+    }
+
+    /// Node count of the recorded walk — the `1/sqrt(node_count)` feature
+    /// scale, needed by the backward pass to undo the same scaling.
+    #[must_use]
+    pub fn node_count(&self) -> u32 {
+        self.node_count
+    }
+}
+
+/// Where a walk sends the edges it emits. `()` discards them (deployment:
+/// the accumulator is the only product); `Vec<CostEdge>` records them
+/// (training: the trace outlives the walk). The walker emits through exactly
+/// one call site, so the accumulator and the recorded stream cannot drift.
+trait EdgeSink {
+    fn record(&mut self, edge: CostEdge);
+}
+
+impl EdgeSink for () {
+    #[inline]
+    fn record(&mut self, _: CostEdge) {}
+}
+
+impl EdgeSink for Vec<CostEdge> {
+    #[inline]
+    fn record(&mut self, edge: CostEdge) {
+        self.push(edge);
+    }
+}
+
+// ============================================================================
 // Edge Accumulator (Dual: Flat + Depth-Encoded)
 // ============================================================================
 
@@ -722,6 +847,14 @@ impl EdgeAccumulator {
         input
     }
 
+    /// Fold one typed [`CostEdge`] into the accumulator — the operation
+    /// [`EdgeTrace::realize`] repeats and the walker performs, so both are
+    /// the same fold by construction.
+    #[inline]
+    pub fn accumulate_edge(&mut self, emb: &OpEmbeddings, edge: CostEdge) {
+        self.add_edge_with_pe(emb, edge.parent, edge.child, edge.pe.pe());
+    }
+
     /// Add a single edge contribution (both flat and depth-encoded).
     ///
     /// Flat half: raw embedding addition (preserves magnitude).
@@ -864,6 +997,27 @@ impl EdgeAccumulator {
         Self::from_cost_dag_scratch(dag, emb, &mut scratch)
     }
 
+    /// Same walk as [`Self::from_cost_dag`], additionally recording the edge
+    /// stream it emits as an [`EdgeTrace`]. The returned accumulator and
+    /// trace come from ONE walk with one emission point, so
+    /// `trace.realize(emb)` is bit-identical to the returned accumulator.
+    fn from_cost_dag_traced<D: CostDag>(dag: &D, emb: &OpEmbeddings) -> (Self, EdgeTrace) {
+        let mut scratch = AccumulatorScratch::new(dag.id_bound());
+        let mut edges = Vec::new();
+        let acc = Self::from_cost_dag_scratch_sink(dag, emb, &mut scratch, &mut edges);
+        let trace = EdgeTrace {
+            edges,
+            node_count: acc.node_count,
+            variance: [
+                acc.variance_frac_const,
+                acc.variance_frac_frame,
+                acc.variance_frac_scanline,
+                acc.variance_frac_pixel,
+            ],
+        };
+        (acc, trace)
+    }
+
     /// Same walk as [`Self::from_cost_dag`], but its four working buffers
     /// (`expanded`, `edge_emitted`, the DFS `stack`, and the per-node
     /// `children` scratch) live in caller-supplied `scratch` instead of
@@ -882,6 +1036,19 @@ impl EdgeAccumulator {
         dag: &D,
         emb: &OpEmbeddings,
         scratch: &mut AccumulatorScratch,
+    ) -> Self {
+        Self::from_cost_dag_scratch_sink(dag, emb, scratch, &mut ())
+    }
+
+    /// The one walk, parametric in where its edge stream goes: `&mut ()`
+    /// discards it (deployment), `&mut Vec<CostEdge>` records it (training).
+    /// The sink is fed at the same single point that feeds the accumulator,
+    /// so a recorded stream cannot disagree with the features it explains.
+    fn from_cost_dag_scratch_sink<D: CostDag, S: EdgeSink>(
+        dag: &D,
+        emb: &OpEmbeddings,
+        scratch: &mut AccumulatorScratch,
+        sink: &mut S,
     ) -> Self {
         let mut acc = Self::new();
         let bound = dag.id_bound();
@@ -952,13 +1119,20 @@ impl EdgeAccumulator {
 
                 let eff_depth = depth * MAX_ARITY as u32 + (child_idx.min(MAX_ARITY - 1)) as u32;
 
-                if edge_emitted[child as usize] {
+                let child_feature = if edge_emitted[child as usize] {
                     // Shared reuse: a register reload, not a recomputation.
-                    acc.add_var_ref_edges(emb, parent_op, eff_depth, 1);
+                    OpKind::Var
                 } else {
                     edge_emitted[child as usize] = true;
-                    acc.add_edge(emb, parent_op, child_op, eff_depth);
-                }
+                    child_op
+                };
+                let edge = CostEdge {
+                    parent: parent_op,
+                    child: child_feature,
+                    pe: PeSlot::from_effective_depth(eff_depth),
+                };
+                acc.accumulate_edge(emb, edge);
+                sink.record(edge);
 
                 // Push child for expansion (guarded by `expanded`).
                 stack.push((child, depth + 1));
@@ -1004,6 +1178,29 @@ impl EdgeAccumulator {
     pub fn from_arena_dag(arena: &ExprArena, root: ExprId, emb: &OpEmbeddings) -> Self {
         let variance = pixelflow_ir::variance::compute_arena_variance(arena);
         Self::from_cost_dag(
+            &ArenaCostDag {
+                arena,
+                root,
+                variance,
+            },
+            emb,
+        )
+    }
+
+    /// [`Self::from_arena_dag`], additionally returning the [`EdgeTrace`] the
+    /// walk emitted — the training-side entry point. The trace is what a
+    /// `ValueSample` keeps: it re-realizes features from the LIVE embeddings
+    /// on every forward pass (so trained features can never go stale against
+    /// a moving embedding table), and it is the record the embedding backward
+    /// pass differentiates through.
+    #[must_use]
+    pub fn from_arena_dag_traced(
+        arena: &ExprArena,
+        root: ExprId,
+        emb: &OpEmbeddings,
+    ) -> (Self, EdgeTrace) {
+        let variance = pixelflow_ir::variance::compute_arena_variance(arena);
+        Self::from_cost_dag_traced(
             &ArenaCostDag {
                 arena,
                 root,
@@ -1890,5 +2087,73 @@ mod tests {
             );
         }
         assert_eq!(acc.edge_count, 0);
+    }
+
+    // ========================================================================
+    // EdgeTrace: recorded stream replays the walk exactly
+    // ========================================================================
+
+    /// An arena exercising every edge kind the walker emits: a shared
+    /// subexpression (first reference = computation edge, second = register
+    /// reload), unary and binary ops, and leaves of several variance classes
+    /// so the histogram fractions are nonzero.
+    fn arena_with_sharing() -> (ExprArena, ExprId) {
+        let mut arena = ExprArena::new();
+        let x = arena.push_var(0);
+        let sq = arena.push_binary(OpKind::Mul, x, x);
+        let s = arena.push_unary(OpKind::Sqrt, sq);
+        // `s` referenced twice: Add(s, s) — the second reference must be
+        // recorded as a reload edge (child = Var), same as the walk emits.
+        let sum = arena.push_binary(OpKind::Add, s, s);
+        let c = arena.push_const(2.0);
+        let root = arena.push_binary(OpKind::Mul, sum, c);
+        (arena, root)
+    }
+
+    #[test]
+    fn trace_realize_replays_the_walk() {
+        let emb = OpEmbeddings::new_random(42);
+        let (arena, root) = arena_with_sharing();
+
+        let (walked, trace) = EdgeAccumulator::from_arena_dag_traced(&arena, root, &emb);
+        let untraced = EdgeAccumulator::from_arena_dag(&arena, root, &emb);
+        let replayed = trace.realize(&emb);
+
+        // Tracing must not perturb the walk itself…
+        assert_eq!(walked.values, untraced.values, "tracing changed the walk");
+        // …and the replayed fold must be bit-identical to the walked one:
+        // same accumulate_edge calls, same order, same floats.
+        assert_eq!(replayed.values, walked.values, "replay diverged from walk");
+        assert_eq!(replayed.edge_count, walked.edge_count);
+        assert_eq!(replayed.node_count, walked.node_count);
+        assert_eq!(replayed.extraction_input(), walked.extraction_input());
+
+        // The shared `s = sqrt(x*x)` is referenced twice by Add: exactly one
+        // reload edge (child = Var at a Nonleaf slot) must be on record.
+        let reloads = trace
+            .edges()
+            .iter()
+            .filter(|e| e.parent == OpKind::Add && e.child == OpKind::Var)
+            .count();
+        assert_eq!(reloads, 1, "Add(s, s) must record exactly one reload edge");
+    }
+
+    #[test]
+    fn trace_realize_tracks_live_embeddings() {
+        // The point of keeping the trace: realizing against a DIFFERENT
+        // embedding table gives exactly the features a fresh walk with that
+        // table would give — no staleness is representable.
+        let emb_old = OpEmbeddings::new_random(42);
+        let emb_new = OpEmbeddings::new_random(1729);
+        let (arena, root) = arena_with_sharing();
+
+        let (_, trace) = EdgeAccumulator::from_arena_dag_traced(&arena, root, &emb_old);
+        let fresh = EdgeAccumulator::from_arena_dag(&arena, root, &emb_new);
+
+        assert_eq!(
+            trace.realize(&emb_new).extraction_input(),
+            fresh.extraction_input(),
+            "realize(new embeddings) must equal a fresh walk with those embeddings"
+        );
     }
 }
