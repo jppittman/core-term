@@ -458,8 +458,26 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
             // Dedup BEFORE scoring (§2.2/§4): the ordinal recorded is a
             // per-round approximation (see doc above), used only for the
             // budget_fraction feature, never for correctness.
+            //
+            // A key becomes "seen" only once an application has actually
+            // been RECORDED for it (below), not here at enumeration time.
+            // Marking at enumeration burned every scored survivor the
+            // round never got to — the ones after a mid-round budget /
+            // deadline / class-cap stop, and the ones whose `node_idx` an
+            // earlier application in the same round staled so
+            // `apply_single_rule` recorded nothing — and the next round's
+            // rescan then deduped them away for good. Measured on
+            // 2026-09-01 (DEV classical, 334 expressions): a median 39–44%
+            // of scored keys were burned that way, and sampling a guided
+            // anytime curve at 25/50 before 100 cost the guided arm a
+            // median ~50% of its applications-to-quiescence versus sampling
+            // at 100 directly — the curve definition was silently
+            // handicapping exactly the arm it exists to measure.
+            // `round_keys` only dedups within this round's match list (two
+            // nodes of one class matching the same rule).
             let ordinal = egraph.provenance().application_count() as u64;
             let mut survivors: Vec<(RewriteTarget, CandidateFeatures)> = Vec::new();
+            let mut round_keys: HashSet<CandidateKey> = HashSet::new();
             for target in matches {
                 let firing = Firing {
                     rule_idx: target.rule_idx,
@@ -468,7 +486,10 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
                     registered_budget: REGISTERED_PRIMARY_BUDGET_APPLICATIONS,
                 };
                 let features = CandidateFeatures::observe(egraph, &firing);
-                if seen_keys.insert(features.key.clone()) {
+                if seen_keys.contains(&features.key) {
+                    continue;
+                }
+                if round_keys.insert(features.key.clone()) {
                     survivors.push((target, features));
                 }
             }
@@ -529,9 +550,17 @@ impl<'a, G: SaturationGuide> GuidedSaturation<'a, G> {
                 if start.elapsed() >= timeout {
                     break 'outer SaturationStop::Timeout;
                 }
-                let target = survivors[idx].0;
+                let (target, features) = &survivors[idx];
+                let before = egraph.provenance().application_count();
                 if egraph.apply_single_rule(target.rule_idx, target.class_id, target.node_idx) {
                     total_unions += 1;
+                }
+                // Recorded (whether or not it changed anything): this key
+                // is resolved. Not recorded (stale index, no match): leave
+                // it unseen so the next rescan can retry it with a fresh
+                // index — see the dedup comment above.
+                if egraph.provenance().application_count() > before {
+                    seen_keys.insert(features.key.clone());
                 }
                 if egraph.num_classes() > max_classes {
                     break 'outer SaturationStop::ClassCap;
@@ -793,6 +822,39 @@ mod guided_tests {
         fn score_candidates(&self, candidates: &[CandidateSummary]) -> Vec<f32> {
             candidates.iter().map(|c| c.rule_embed[0]).collect()
         }
+    }
+
+    #[test]
+    fn a_budget_stop_mid_round_must_not_burn_the_candidates_the_round_never_reached() {
+        // Two independent candidates, one round, budget 1: the round scores
+        // both, applies the higher-scored one, and hits the budget. The
+        // lower-scored candidate was scored but never applied — it must
+        // still fire when the SAME episode is resumed with a larger budget
+        // (an anytime curve sampling at 1 then at 1000), not be deduped
+        // away as "already seen". Before 2026-09-01 the second call
+        // reported Quiesced with a single application.
+        let mut eg = two_rule_egraph();
+        let rule_embeds = [[1.0f32; EMBED_DIM], [10.0f32; EMBED_DIM]];
+        let mut episode = GuidedSaturation::new(&ScoreByRuleEmbedFirstLane, &rule_embeds);
+
+        let first = episode.until_applications(&mut eg, 1, 50, 2_000, Duration::from_secs(5));
+        assert_eq!(first.stop, SaturationStop::ApplicationBudget);
+        assert_eq!(first.applications, 1);
+
+        let second = episode.until_applications(&mut eg, 1_000, 50, 2_000, Duration::from_secs(5));
+        assert_eq!(second.stop, SaturationStop::Quiesced);
+        let mut fired: Vec<usize> = eg
+            .provenance()
+            .applications()
+            .map(|(_, r)| r.rule_idx)
+            .collect();
+        fired.sort_unstable();
+        fired.dedup();
+        assert_eq!(
+            fired,
+            vec![0, 1],
+            "the candidate cut off by the budget stop must fire on resume, not be burned"
+        );
     }
 
     #[test]
