@@ -858,14 +858,15 @@ impl EGraph {
         self.nodes(id).iter().any(|n| n.is_const(val))
     }
 
-    // `saturate`/`saturate_with_limit` (hardcoded 100-or-N/10,000/500ms
-    // convenience wrappers) were deleted here (J11,
-    // docs/plans/2026-08-17-cost-model-domain.md, 2026-09-01 integration
-    // audit): a second, ad hoc budget alongside `SaturationConfig`'s presets
-    // is exactly the drift the domain model doc calls out. Every caller now
-    // goes through `super::saturate::saturate_with_full_budget` (same
-    // limits, spelled out at the call site) or, in production code,
-    // `config_for_node_count`'s size-tiered budget.
+    // Two convenience wrappers with a hardcoded 10,000-class/500ms budget
+    // (one also fixing 100 iterations, one taking just an iteration count)
+    // were deleted here (J11, docs/plans/2026-08-17-cost-model-domain.md,
+    // 2026-09-01 integration audit): a second, ad hoc budget alongside
+    // `SaturationConfig`'s presets is exactly the drift the domain model
+    // doc calls out. Tests and measurement harnesses now call
+    // `saturate_with_limits` with the same limits spelled out at the call
+    // site; production code goes through
+    // `super::extraction::saturate_for_extraction`'s size-tiered budget.
 
     /// Saturate with full time and size control.
     ///
