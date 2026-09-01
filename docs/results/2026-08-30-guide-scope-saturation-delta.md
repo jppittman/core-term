@@ -37,6 +37,32 @@ reported as "median 0.0%" with no explanation. The harness was extended (this ro
 to also report the zero-delta share and the delta distribution conditioned on state-changing
 applications only, so the headline is accurate rather than misleadingly degenerate.
 
+**Revision note 2 (2026-09-01, PR review fixes):** an automated review of PR #1067
+(`chatgpt-codex-connector`) found two further defects in this harness, both now fixed and both
+re-measured rather than assumed away:
+
+1. *Dropped-node attribution.* `rebuild_budgeted` can permanently drop a node from its class when
+   canonicalizing it collides with a different, constant-incompatible class (`EGraph::union`'s
+   ill-conditioned-kernel refusal, `graph.rs` — a deliberate under-merging valve, not routine
+   congruence closure). `Provenance::origins()` is append-only and still names such a node's
+   creating application forever, but the node is gone from the final canonical structure this
+   harness's `arity_of` map is built from — so the previous code counted it toward `nodes_added`
+   while silently defaulting its edge contribution to 0, an inconsistency between the two counts
+   for one application. Fixed: such origins are now excluded from both counts consistently, and
+   the exclusion count is reported. **Measured impact: 136 refusal events, 1,997 origins excluded
+   — 0.044% of the 4.49M total applications.** The concern was valid; the practical effect on the
+   headline numbers below is negligible, now shown rather than assumed.
+2. *Rejected round vs. quiescence.* This function's own pre-round guard checks *canonical*
+   (live-root) class count against `max_classes`, but `saturate_with_limits`'s internal cap checks
+   *allocated* class-slot count (always >= canonical count, since it includes classes already
+   unioned away). A round could pass this function's guard, then have `saturate_with_limits`
+   immediately hit its own stricter cap and do zero work (`stats.iterations == 0`) — which the
+   previous `stats.total_unions == 0` check alone could not distinguish from genuine convergence.
+   Fixed: a round with `stats.iterations == 0` is now treated as budget-exhausted, not quiescence.
+   **Measured impact: 0/1,512 expressions changed classification** — this corpus's
+   `max_classes=3000` budget never actually triggered the gap in a way that flipped a result, but
+   the harness no longer depends on that being true by luck.
+
 ## The question
 
 The extraction-head program refuted NNUE incrementality for **extraction candidates**: sibling
@@ -59,12 +85,12 @@ no new state), 6,840 saturation rounds, 0/1,512 expressions hit a budget cap bef
 
 | Quantity | Value |
 |---|---|
-| Applications with **zero** node/edge delta (idempotent re-fires — see below) | **91.1%** (4,095,709 / 4,495,274) |
+| Applications with **zero** node/edge delta (idempotent re-fires — see below) | **91.1%** (4,096,878 / 4,495,274) |
 | Per-application edge-delta fraction, all applications (median / p90) | **0.00%** / 0.00% (floored by the 91.1% zero share) |
 | Per-application edge-delta fraction, **state-changing applications only** (median / p90) | **0.14%** / 0.79% |
 | Trend across a run, state-changing applications only (early / mid / late third, edge-delta median) | 0.18% → 0.06% → 0.05% — **confirms shrinking as the graph grows** |
 | Cumulative-vs-incremental work ratio (pooled, Σedges_before / Σedges_added, all applications) | **14,422x** |
-| Implied speedup, state-changing applications only (1/median) | **~731x** |
+| Implied speedup, state-changing applications only (1/median) | **~728x** |
 | Evals (candidate matches scored) per committed action | 10.41x |
 | Stale rate (candidate scored, produced no committed rewrite action) | 90.4% |
 
@@ -78,7 +104,7 @@ of what an incremental accumulator would ever be asked to process costs **litera
 which is a stronger form of incrementality than "small delta." The conditional row answers "for
 the minority of applications that actually change the graph, how big is that change" — median
 0.14%, a genuine incremental update — the number to contrast directly against the extraction
-study's 44.9%: **state-changing saturation deltas are ~330x smaller than extraction-candidate
+study's 44.9%: **state-changing saturation deltas are ~325x smaller than extraction-candidate
 deltas**, and then 91.1% of all applications need no update at all.
 
 ## Why the deltas are this small: the domain difference is real, not an artifact
@@ -86,9 +112,9 @@ deltas**, and then 91.1% of all applications need no update at all.
 The extraction study compares **structurally unrelated sibling subtrees** at a decision point —
 two different implementations of the same subexpression, which can differ arbitrarily. A rewrite
 APPLICATION during saturation is instead almost always a **local, single-node edit**: of the
-399,565 applications that create at least one node, the `nodes_added` distribution is
-overwhelmingly 1 (326,064) or 2 (63,541), with 3+ rare (9,555 at 3 nodes, falling off sharply —
-the heaviest bucket above 3 is 313 applications creating 7 nodes,
+398,396 applications that create at least one node, the `nodes_added` distribution is
+overwhelmingly 1 (325,458) or 2 (63,232), with 3+ rare (9,301 at 3 nodes, falling off sharply —
+the heaviest bucket above 3 is 308 applications creating 7 nodes,
 `AngleAddition`/`ExpandSquare`-shaped multi-node rules). A rule that creates at most 1-2 nodes
 against a graph that has already grown to hundreds or thousands of nodes is, by construction, a
 small fraction of the whole — the append-only structure isn't incidental to this result, it's the
@@ -128,7 +154,7 @@ re-offering itself.
 
 ## The eval-count economics: a second, separate cost the accumulator win does not solve
 
-14,422x (or 731x, conditional) incremental savings on *accumulator maintenance* does not mean a
+14,422x (or 728x, conditional) incremental savings on *accumulator maintenance* does not mean a
 Guide's total per-round work drops by the same factor, because most of what a Guide would score
 every round is not a live candidate at all. `evals_per_applied` = 10.41x system-wide (worse at
 higher iteration counts: eval_count median 153/round, p90 2,276/round, while applied actions
@@ -210,7 +236,7 @@ vs. `Commutative::new(&ops::Mul)` — same `name()`, different `rule_idx`, match
 
 1. **Build the Guide's state scorer on the incremental `GraphAccumulator`, not a from-scratch
    rebuild — this measurement's strongest possible confirmation.** 91.1% of recorded applications
-   need zero accumulator work, and the remainder need a ~0.14%-of-graph-size update (~731x
+   need zero accumulator work, and the remainder need a ~0.14%-of-graph-size update (~728x
    cheaper than a rebuild). `add_edge`/`remove_edge` (`accumulator.rs`) are already the right
    shape for this.
 2. **Candidate-level deduplication is the more urgent of the two costs, not accumulator

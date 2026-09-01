@@ -267,10 +267,24 @@ fn quantile(mut xs: Vec<f64>, p: f64) -> f64 {
 
 /// Drive one expression's e-graph through standard (batched, production)
 /// saturation one round at a time, recording per-iteration samples. Stops
-/// at the first of: quiescence (`stats.total_unions == 0` for a round — a
-/// diagnostic condition, not a certified fixpoint; this optimizer is
-/// budget-only by design), the `max_iterations` round cap, or the
-/// `max_classes` canonical-class cap.
+/// at the first of: quiescence (`stats.total_unions == 0` for a round that
+/// actually ran — a diagnostic condition, not a certified fixpoint; this
+/// optimizer is budget-only by design), the `max_iterations` round cap, or
+/// the `max_classes` class cap.
+///
+/// The class cap needs checking twice, at two different granularities, and
+/// conflating them mislabels a truncated run as converged: this function's
+/// own pre-round guard (`canon > max_classes`, `canon` from `snapshot_graph`)
+/// counts *canonical* (live-root) classes, while `saturate_with_limits`'s
+/// own internal check (`self.classes.len() > max_classes`) counts every
+/// *allocated* class slot, including ones already unioned away and excluded
+/// from canonical iteration. Allocated count is always >= canonical count,
+/// so `saturate_with_limits` can hit its cap and return `stats.iterations ==
+/// 0, total_unions == 0` (did zero work this round) even when this
+/// function's own pre-check just passed. `stats.total_unions == 0` alone
+/// cannot tell that apart from "the round ran and genuinely found nothing to
+/// union" — only `stats.iterations == 0` can, since `iterations` increments
+/// only after both of `saturate_with_limits`'s own cap checks pass.
 fn run_saturation_instrumented(
     egraph: &mut EGraph,
     max_iterations: usize,
@@ -294,6 +308,18 @@ fn run_saturation_instrumented(
         let unions_before_round = egraph.provenance().union_count();
 
         let stats = egraph.saturate_with_limits(1, max_classes, big_timeout);
+
+        // `stats.iterations == 0` means `saturate_with_limits`'s own
+        // allocated-class-count cap tripped before this round could run at
+        // all (see this function's doc comment) -- budget-exhausted, same
+        // disposition as the canonical-count pre-check above, NOT
+        // quiescence. Nothing happened this round, so no `IterationSample`
+        // is recorded for it either (a zero-change entry would only dilute
+        // the per-iteration medians with a round that never actually ran).
+        if stats.iterations == 0 {
+            break;
+        }
+
         let eval_count: usize = egraph.match_counts.values().sum();
 
         let (new_canon, new_edges) = snapshot_graph(egraph);
@@ -321,15 +347,17 @@ fn run_saturation_instrumented(
     (iters, reached_quiescence)
 }
 
-/// Reconstruct exact per-application node/edge deltas from `Provenance`,
-/// post-hoc, per the module doc's three-step method. `seed_nodes`/
-/// `seed_edges` are the graph size right after `add_arena`, before any
-/// rewriting — the replay's starting point.
+/// Reconstruct per-application node/edge deltas from `Provenance`, post-hoc,
+/// per the module doc's three-step method. `seed_nodes`/`seed_edges` are the
+/// graph size right after `add_arena`, before any rewriting — the replay's
+/// starting point. Returns the per-application samples plus the count of
+/// origin-recorded nodes that were later pruned from the final canonical
+/// structure and so excluded from every delta (see step 2's comment).
 fn reconstruct_applications(
     egraph: &EGraph,
     seed_nodes: usize,
     seed_edges: usize,
-) -> Vec<ApplicationSample> {
+) -> (Vec<ApplicationSample>, usize) {
     // Step 1: ENodeId -> arity, one O(final graph size) walk.
     let mut arity_of: HashMap<ENodeId, usize> = HashMap::new();
     for id in egraph.class_ids() {
@@ -346,14 +374,38 @@ fn reconstruct_applications(
     }
 
     // Step 2: ApplicationId -> the ENodeIds it created, one pass over
-    // `origins()`.
+    // `origins()` -- filtered to nodes that actually survive into the final
+    // canonical structure (`arity_of`, step 1). `rebuild_budgeted` can
+    // permanently drop a node from its class's node/tag vectors: when
+    // canonicalizing finds a memo collision with an existing, *different*
+    // class whose constant fact conflicts (`graph.rs`'s `union` refusal for
+    // provably-unequal constants -- an ill-conditioned-kernel detector, not
+    // routine congruence closure), the colliding node is discarded rather
+    // than merged (`if self.find(id) != self.find(existing) { continue; }`).
+    // `Provenance::origins()` is an append-only log and still names that
+    // node's creating application forever, but the node is gone from every
+    // canonical class by the time this function's `arity_of` walk runs. A
+    // origin whose tag has no `arity_of` entry is exactly this case: it was
+    // minted, then pruned before this post-hoc reconstruction ran. Excluding
+    // it from BOTH `nodes_added` and `edges_added` (rather than counting it
+    // toward nodes_added while defaulting its arity to 0, which would make
+    // the two disagree about the same application) keeps this reconstruction
+    // consistent with "graph size in the final, live structure" -- the
+    // object an incremental accumulator actually maintains. `dropped_origins`
+    // reports how often this fires so the harness's own output states the
+    // approximation's scope instead of leaving it silent.
     let mut nodes_by_app: HashMap<u64, Vec<ENodeId>> = HashMap::new();
+    let mut dropped_origins = 0usize;
     for (enode_id, origin) in egraph.provenance().origins() {
         if let Origin::Rule(app_id) = origin {
-            nodes_by_app
-                .entry(app_id.as_u64())
-                .or_default()
-                .push(enode_id);
+            if arity_of.contains_key(&enode_id) {
+                nodes_by_app
+                    .entry(app_id.as_u64())
+                    .or_default()
+                    .push(enode_id);
+            } else {
+                dropped_origins += 1;
+            }
         }
     }
 
@@ -369,7 +421,15 @@ fn reconstruct_applications(
         let edges_added: usize = created
             .map(|ids| {
                 ids.iter()
-                    .map(|t| arity_of.get(t).copied().unwrap_or(0))
+                    .map(|t| {
+                        arity_of.get(t).copied().unwrap_or_else(|| {
+                            unreachable!(
+                                "guide_scope_saturation_delta: tag survived the \
+                                 arity_of filter above but is missing from arity_of \
+                                 -- nodes_by_app and arity_of disagree"
+                            )
+                        })
+                    })
                     .sum()
             })
             .unwrap_or(0);
@@ -388,7 +448,7 @@ fn reconstruct_applications(
         running_edges += edges_added;
     }
 
-    apps
+    (apps, dropped_origins)
 }
 
 /// Bucket an application into thirds of its own expression's run, by firing
@@ -457,6 +517,17 @@ fn main() {
     let mut all_iters: Vec<IterationSample> = Vec::new();
     let mut per_rule_fired: BTreeMap<usize, usize> = BTreeMap::new();
     let mut truncated_by_budget = 0usize;
+    // Diagnostics for `reconstruct_applications`'s dropped-node filter (see
+    // its doc comment): `total_dropped_origins` counts nodes excluded from
+    // every delta because a later rebuild pruned them from the final
+    // canonical structure; `total_refused_const_unions` is the underlying
+    // cause (`EGraph::union`'s conflicting-constant refusal) reported
+    // per-expression via the graph's own durable record, to distinguish
+    // "the filter fired because of genuine ill-conditioned collisions" from
+    // "the filter fired for some other reason" -- if these ever diverge,
+    // that is itself a finding.
+    let mut total_dropped_origins = 0usize;
+    let mut total_refused_const_unions = 0usize;
 
     for (i, (_name, arena, root)) in entries.iter().enumerate() {
         let mut egraph = EGraph::with_rules(all_rules());
@@ -473,7 +544,9 @@ fn main() {
             truncated_by_budget += 1;
         }
 
-        let apps = reconstruct_applications(&egraph, seed_nodes, seed_edges);
+        total_refused_const_unions += egraph.refused_const_unions().len();
+        let (apps, dropped_origins) = reconstruct_applications(&egraph, seed_nodes, seed_edges);
+        total_dropped_origins += dropped_origins;
         for a in &apps {
             *per_rule_fired.entry(a.rule_idx).or_insert(0) += 1;
         }
@@ -589,8 +662,17 @@ fn main() {
     } else {
         0.0
     };
-    let median_implied_speedup = if edge_frac_median > 0.0 {
-        1.0 / edge_frac_median
+    // Derived from `nonzero_edge_frac_median` (state-changing applications
+    // only), not the unconditioned `edge_frac_median` -- the latter is
+    // exactly 0.0 (91.1% of applications are zero-delta idempotent re-fires,
+    // see `zero_delta_fraction` above), so `1.0 / edge_frac_median` would be
+    // either a nonsensical 0.0x (guarded away by the `else` branch below) or,
+    // read naively, "no speedup" for a population where the real finding is
+    // the opposite: most applications need no incremental work at all, and
+    // the ones that do are ~731x cheaper than a rebuild. Reported inconsistently
+    // with the design doc's headline number before this fix.
+    let median_implied_speedup = if nonzero_edge_frac_median > 0.0 {
+        1.0 / nonzero_edge_frac_median
     } else {
         0.0
     };
@@ -618,6 +700,11 @@ fn main() {
         all_apps.len(),
         all_iters.len(),
         truncated_by_budget
+    );
+    println!(
+        "refused-constant-union events (EGraph::union's ill-conditioned-kernel detector): {total_refused_const_unions}  \
+         -> origins excluded from every delta because their node was later pruned from the final canonical structure: \
+         {total_dropped_origins}"
     );
     println!();
     println!("--- (1) Per-application delta fraction (vs. graph size immediately before) ---");
@@ -685,7 +772,7 @@ fn main() {
         "  cumulative/incremental ratio (pooled, work-weighted): {cumulative_vs_incremental_ratio:.2}x"
     );
     println!(
-        "  median-edge-fraction-implied speedup (extraction-study-style, 1/median): {median_implied_speedup:.2}x"
+        "  median-edge-fraction-implied speedup (extraction-study-style, 1/nonzero-median): {median_implied_speedup:.2}x"
     );
     println!();
     println!(
@@ -715,6 +802,12 @@ fn main() {
         json.push_str(&format!("  \"total_iterations\": {},\n", all_iters.len()));
         json.push_str(&format!(
             "  \"expressions_truncated_by_budget\": {truncated_by_budget},\n"
+        ));
+        json.push_str(&format!(
+            "  \"refused_const_union_events\": {total_refused_const_unions},\n"
+        ));
+        json.push_str(&format!(
+            "  \"dropped_origins_excluded_from_deltas\": {total_dropped_origins},\n"
         ));
         json.push_str("  \"per_application_delta_fraction\": {\n");
         json.push_str(&format!("    \"edge_median\": {edge_frac_median:.6},\n"));
@@ -787,7 +880,7 @@ fn main() {
             "    \"pooled_ratio\": {cumulative_vs_incremental_ratio:.6},\n"
         ));
         json.push_str(&format!(
-            "    \"median_fraction_implied_speedup\": {median_implied_speedup:.6}\n"
+            "    \"nonzero_median_fraction_implied_speedup\": {median_implied_speedup:.6}\n"
         ));
         json.push_str("  },\n");
         json.push_str("  \"eval_count_economics\": {\n");

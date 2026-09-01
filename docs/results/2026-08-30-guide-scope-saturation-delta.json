@@ -3,6 +3,8 @@
   "total_applications": 4495274,
   "total_iterations": 6840,
   "expressions_truncated_by_budget": 0,
+  "refused_const_union_events": 136,
+  "dropped_origins_excluded_from_deltas": 1997,
   "per_application_delta_fraction": {
     "edge_median": 0.000000,
     "edge_p90": 0.000000,
@@ -11,12 +13,12 @@
     "edge_median_early_third": 0.000000,
     "edge_median_mid_third": 0.000000,
     "edge_median_late_third": 0.000000,
-    "zero_delta_count": 4095709,
-    "zero_delta_fraction": 0.911114,
-    "nonzero_edge_median": 0.001369,
-    "nonzero_edge_p90": 0.007890,
-    "nonzero_edge_median_early_third": 0.001833,
-    "nonzero_edge_median_mid_third": 0.000614,
+    "zero_delta_count": 4096878,
+    "zero_delta_fraction": 0.911374,
+    "nonzero_edge_median": 0.001375,
+    "nonzero_edge_p90": 0.007905,
+    "nonzero_edge_median_early_third": 0.001839,
+    "nonzero_edge_median_mid_third": 0.000616,
     "nonzero_edge_median_late_third": 0.000521
   },
   "per_iteration": {
@@ -33,7 +35,7 @@
     "sum_edges_before": 14892625904,
     "sum_edges_added": 1032645,
     "pooled_ratio": 14421.825413,
-    "median_fraction_implied_speedup": 0.000000
+    "nonzero_median_fraction_implied_speedup": 727.500000
   },
   "eval_count_economics": {
     "eval_count_median": 153.000000,
