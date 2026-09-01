@@ -116,3 +116,10 @@ path = "src/bin/gen_strict_labels.rs"
 required-features = ["training"]
 # libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
 bench = false
+
+[[bin]]
+name = "train_guide"
+path = "src/bin/train_guide.rs"
+required-features = ["training"]
+# libtest harness rejects Criterion's bencher flags under `cargo bench --benches`.
+bench = false
